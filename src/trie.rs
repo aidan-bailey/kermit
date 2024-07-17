@@ -1,16 +1,29 @@
 /// Trie node
 pub struct Node<KT: Ord> {
-    key: KT
+    key: KT,
+    children: Vec<Node<KT>>,
 }
 
 impl<KT: Ord> Node<KT> {
     /// Construct a node with a key
     pub fn new(key: KT) -> Node<KT> {
-        Node { key }
+        Node {
+            key,
+            children: vec![],
+        }
     }
-    /// Get the key
     pub fn key(&self) -> &KT {
         &self.key
+    }
+}
+
+impl<KT: Ord> Children<KT> for Node<KT> {
+    fn children(&self) -> &Vec<Node<KT>> {
+        &self.children
+    }
+
+    fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
+        &mut self.children
     }
 }
 
@@ -24,8 +37,22 @@ impl<KT: Ord> Trie<KT> {
     pub fn new() -> Trie<KT> {
         Trie { children: vec![] }
     }
-    /// Returns true iff the Trie has no children
-    pub fn is_empty(&self) -> bool {
-        self.children.is_empty()
+}
+
+impl<KT: Ord> Children<KT> for Trie<KT> {
+    fn children(&self) -> &Vec<Node<KT>> {
+        &self.children
+    }
+    fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
+        &mut self.children
+    }
+}
+
+pub trait Children<KT: Ord> {
+    fn children(&self) -> &Vec<Node<KT>>;
+    fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
+    /// Returns true iff the Node has no children
+    fn is_empty(&self) -> bool {
+        self.children().is_empty()
     }
 }
