@@ -55,4 +55,14 @@ pub trait Children<KT: Ord> {
     fn is_empty(&self) -> bool {
         self.children().is_empty()
     }
+    fn size(&self) -> usize {
+        self.children().len()
+    }
+    fn height(&self) -> usize {
+        if let Some(child) = self.children().first() {
+            1 + child.height()
+        } else {
+            0
+        }
+    }
 }
