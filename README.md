@@ -1,2 +1,2 @@
-# RS Trie
+# Tuple Trie
 

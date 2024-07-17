@@ -1,8 +1,8 @@
-pub mod trie;
+pub mod tuple_trie;
 
 #[cfg(test)]
 mod tests {
-    use crate::trie::{Children, Node, Trie};
+    use crate::tuple_trie::{Children, Node, Trie};
 
     #[test]
     fn node_new() {

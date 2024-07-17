@@ -1,11 +1,11 @@
 [package]
-name = "rs-trie"
+name = "tuple-trie"
 version = "0.0.1"
 edition = "2021"
 authors = ["Aidan Bailey"]
-description = "A simple Trie data structure implementation"
+description = "Trie data structure specialised for Tuples"
 readme = "README.md"
-repository = "https://github.com/aidan-bailey/rs-trie"
+repository = "https://github.com/aidan-bailey/tuple-trie"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
