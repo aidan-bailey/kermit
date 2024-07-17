@@ -50,13 +50,14 @@ mod tests {
 
     #[test]
     fn trie_new() {
-        let empty_tri = Trie::<u64>::new();
+        let empty_tri = Trie::<u64>::new(1);
+        assert_eq!(empty_tri.arity(), &1);
         assert!(empty_tri.is_empty());
     }
 
     #[test]
     fn trie_insert() {
-        let mut trie = Trie::<u64>::new();
+        let mut trie = Trie::<u64>::new(2);
 
         trie.insert(vec![1, 2]);
 
@@ -97,7 +98,7 @@ mod tests {
 
     #[test]
     fn trie_search() {
-        let mut trie = Trie::<u64>::new();
+        let mut trie = Trie::<u64>::new(2);
 
         trie.insert(vec![1, 2]);
         trie.insert(vec![0, 2]);
@@ -111,7 +112,7 @@ mod tests {
 
     #[test]
     fn trie_remove() {
-        let mut trie = Trie::<u64>::new();
+        let mut trie = Trie::<u64>::new(2);
 
         trie.insert(vec![1, 2]);
         trie.insert(vec![0, 2]);

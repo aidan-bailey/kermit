@@ -44,13 +44,17 @@ impl<KT: Ord> Children<KT> for Node<KT> {
 
 /// Trie root
 pub struct Trie<KT: Ord> {
+    arity: usize,
     children: Vec<Node<KT>>,
 }
 
 impl<KT: Ord> Trie<KT> {
     /// Construct an empty Trie
-    pub fn new() -> Trie<KT> {
-        Trie { children: vec![] }
+    pub fn new(arity: usize) -> Trie<KT> {
+        Trie { arity, children: vec![] }
+    }
+    pub fn arity(&self) -> &usize {
+        &self.arity
     }
 }
 
