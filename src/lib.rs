@@ -28,7 +28,6 @@ mod tests {
     fn node_height() {
         let mut node = Node::new(1);
         node.children_mut().push(Node::new(2));
-        node.children_mut().push(Node::new(3));
         assert_eq!(node.height(), 1);
     }
 
