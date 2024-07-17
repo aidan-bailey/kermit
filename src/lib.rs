@@ -108,4 +108,17 @@ mod tests {
         assert!(trie.search(vec![1, 1]).is_some());
         assert!(trie.search(vec![0, 1]).is_none());
     }
+
+    #[test]
+    fn trie_remove() {
+        let mut trie = Trie::<u64>::new();
+
+        trie.insert(vec![1, 2]);
+        trie.insert(vec![0, 2]);
+        trie.insert(vec![1, 1]);
+
+        assert!(trie.search(vec![1, 2]).is_some());
+        trie.remove(vec![1, 2]);
+        assert!(trie.search(vec![1, 2]).is_none());
+    }
 }

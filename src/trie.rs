@@ -121,4 +121,21 @@ pub trait Children<KT: Ord> {
     fn search(&self, keys: Vec<KT>) -> Option<&Node<KT>> {
         self.search_deque(keys.into())
     }
+    fn remove_deque(&mut self, mut keys: VecDeque<KT>){
+        if let Some(key) = keys.pop_front() {
+            for i in 0..self.size() {
+                let child = &mut self.children_mut()[i];
+                if key == *child.key() {
+                    child.remove_deque(keys);
+                    if child.is_empty() {
+                        self.children_mut().remove(i);
+                    }
+                    break
+                }
+            }
+        }
+    }
+    fn remove(&mut self, keys: Vec<KT>){
+        self.remove_deque(keys.into())
+    }
 }
