@@ -80,7 +80,6 @@ pub trait Children<KT: Ord> {
             0
         }
     }
-
     fn insert_deque(&mut self, mut keys: VecDeque<KT>) -> Result<(), &'static str> {
         if let Some(key) = keys.pop_front() {
             if self.is_empty() {
@@ -108,7 +107,6 @@ pub trait Children<KT: Ord> {
             Ok(())
         }
     }
-
     fn insert(&mut self, keys: Vec<KT>) -> Result<(), &'static str> {
         self.insert_deque(keys.into())
     }
