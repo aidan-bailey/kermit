@@ -2,7 +2,7 @@ pub mod trie;
 
 #[cfg(test)]
 mod tests {
-    use crate::trie::{Node, Trie, Children};
+    use crate::trie::{Children, Node, Trie};
 
     #[test]
     fn node_new() {
@@ -97,5 +97,4 @@ mod tests {
         assert_eq!(child.key(), &1);
         assert_eq!(child.size(), 0);
     }
-
 }
