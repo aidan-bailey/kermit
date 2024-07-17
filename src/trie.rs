@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 /// Trie node
 pub struct Node<KT: Ord> {
     key: KT,
@@ -11,6 +13,19 @@ impl<KT: Ord> Node<KT> {
             key,
             children: vec![],
         }
+    }
+    pub fn with_keys_deque(key: KT, mut keys: VecDeque<KT>) -> Node<KT> {
+        if let Some(next_key) = keys.pop_front() {
+            let mut node = Node::new(key);
+            let child = Node::with_keys_deque(next_key, keys);
+            node.children_mut().push(child);
+            node
+        } else {
+            Node::new(key)
+        }
+    }
+    pub fn with_keys(key: KT, keys: Vec<KT>) -> Node<KT> {
+        Node::with_keys_deque(key, keys.into())
     }
     pub fn key(&self) -> &KT {
         &self.key
@@ -64,5 +79,37 @@ pub trait Children<KT: Ord> {
         } else {
             0
         }
+    }
+
+    fn insert_deque(&mut self, mut keys: VecDeque<KT>) -> Result<(), &'static str> {
+        if let Some(key) = keys.pop_front() {
+            if self.is_empty() {
+                let node = Node::with_keys_deque(key, keys);
+                self.children_mut().push(node);
+            } else {
+                let mut i = 0;
+                for child in self.children_mut() {
+                    if key == *child.key() {
+                        return child.insert_deque(keys);
+                    } else if key > *child.key() {
+                        i += 1
+                    } else {
+                        let node = Node::with_keys_deque(key, keys);
+                        self.children_mut().insert(i, node);
+                        break
+                    }
+                }
+            }
+            Ok(())
+        } else if !self.is_empty() {
+            // No more keys
+            Err("There should be more keys")
+        } else {
+            Ok(())
+        }
+    }
+
+    fn insert(&mut self, keys: Vec<KT>) -> Result<(), &'static str> {
+        self.insert_deque(keys.into())
     }
 }
