@@ -96,7 +96,7 @@ pub trait Children<KT: Ord> {
                     } else {
                         let node = Node::with_keys_deque(key, keys);
                         self.children_mut().insert(i, node);
-                        break
+                        break;
                     }
                 }
             }

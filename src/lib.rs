@@ -54,5 +54,48 @@ mod tests {
         assert!(empty_tri.is_empty());
     }
 
+    #[test]
+    fn trie_insert() {
+        let mut trie = Trie::<u64>::new();
+
+        let res = trie.insert(vec![1, 2]);
+
+        assert!(res.is_ok());
+        assert_eq!(trie.size(), 1);
+        // check first level child
+        let child = &trie.children()[0];
+        assert_eq!(child.key(), &1);
+        assert_eq!(child.size(), 1);
+        // check second level child
+        let child = &child.children()[0];
+        assert_eq!(child.key(), &2);
+        assert_eq!(child.size(), 0);
+
+        let res = trie.insert(vec![0, 2]);
+
+        assert!(res.is_ok());
+        assert_eq!(trie.size(), 2);
+        // check first level child
+        let child = &trie.children()[0];
+        assert_eq!(child.key(), &0);
+        assert_eq!(child.size(), 1);
+        // check second level child
+        let child = &child.children()[0];
+        assert_eq!(child.key(), &2);
+        assert_eq!(child.size(), 0);
+
+        let res = trie.insert(vec![1, 1]);
+
+        assert!(res.is_ok());
+        assert_eq!(trie.size(), 2);
+        // check first level child
+        let child = &trie.children()[1];
+        assert_eq!(child.key(), &1);
+        assert_eq!(child.size(), 2);
+        // check second level child
+        let child = &child.children()[0];
+        assert_eq!(child.key(), &1);
+        assert_eq!(child.size(), 0);
+    }
 
 }
