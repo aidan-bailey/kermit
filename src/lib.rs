@@ -58,9 +58,8 @@ mod tests {
     fn trie_insert() {
         let mut trie = Trie::<u64>::new();
 
-        let res = trie.insert(vec![1, 2]);
+        trie.insert(vec![1, 2]);
 
-        assert!(res.is_ok());
         assert_eq!(trie.size(), 1);
         // check first level child
         let child = &trie.children()[0];
@@ -71,9 +70,8 @@ mod tests {
         assert_eq!(child.key(), &2);
         assert_eq!(child.size(), 0);
 
-        let res = trie.insert(vec![0, 2]);
+        trie.insert(vec![0, 2]);
 
-        assert!(res.is_ok());
         assert_eq!(trie.size(), 2);
         // check first level child
         let child = &trie.children()[0];
@@ -84,9 +82,8 @@ mod tests {
         assert_eq!(child.key(), &2);
         assert_eq!(child.size(), 0);
 
-        let res = trie.insert(vec![1, 1]);
+        trie.insert(vec![1, 1]);
 
-        assert!(res.is_ok());
         assert_eq!(trie.size(), 2);
         // check first level child
         let child = &trie.children()[1];
@@ -96,5 +93,19 @@ mod tests {
         let child = &child.children()[0];
         assert_eq!(child.key(), &1);
         assert_eq!(child.size(), 0);
+    }
+
+    #[test]
+    fn trie_search() {
+        let mut trie = Trie::<u64>::new();
+
+        trie.insert(vec![1, 2]);
+        trie.insert(vec![0, 2]);
+        trie.insert(vec![1, 1]);
+
+        assert!(trie.search(vec![1, 2]).is_some());
+        assert!(trie.search(vec![0, 2]).is_some());
+        assert!(trie.search(vec![1, 1]).is_some());
+        assert!(trie.search(vec![0, 1]).is_none());
     }
 }

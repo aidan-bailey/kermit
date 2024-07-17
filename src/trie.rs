@@ -80,7 +80,7 @@ pub trait Children<KT: Ord> {
             0
         }
     }
-    fn insert_deque(&mut self, mut keys: VecDeque<KT>) -> Result<(), &'static str> {
+    fn insert_deque(&mut self, mut keys: VecDeque<KT>) {
         if let Some(key) = keys.pop_front() {
             if self.is_empty() {
                 let node = Node::with_keys_deque(key, keys);
@@ -99,15 +99,26 @@ pub trait Children<KT: Ord> {
                     }
                 }
             }
-            Ok(())
-        } else if !self.is_empty() {
-            // No more keys
-            Err("There should be more keys")
-        } else {
-            Ok(())
         }
     }
-    fn insert(&mut self, keys: Vec<KT>) -> Result<(), &'static str> {
+    fn insert(&mut self, keys: Vec<KT>) {
         self.insert_deque(keys.into())
+    }
+    fn search_deque(&self, mut keys: VecDeque<KT>) -> Option<&Node<KT>> {
+        if let Some(key) = keys.pop_front() {
+            for child in self.children() {
+                if key == *child.key() {
+                    return if keys.is_empty() {
+                        Some(&child)
+                    } else {
+                        child.search_deque(keys)
+                    };
+                }
+            }
+        }
+        None
+    }
+    fn search(&self, keys: Vec<KT>) -> Option<&Node<KT>> {
+        self.search_deque(keys.into())
     }
 }
