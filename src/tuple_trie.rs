@@ -32,16 +32,6 @@ impl<KT: Ord> Node<KT> {
     }
 }
 
-impl<KT: Ord> Children<KT> for Node<KT> {
-    fn children(&self) -> &Vec<Node<KT>> {
-        &self.children
-    }
-
-    fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
-        &mut self.children
-    }
-}
-
 /// Trie root
 pub struct Trie<KT: Ord> {
     arity: usize,
@@ -59,20 +49,22 @@ impl<KT: Ord> Trie<KT> {
     pub fn arity(&self) -> &usize {
         &self.arity
     }
+
+    pub fn insert(&mut self, keys: Vec<KT>) {
+        self.insert_deque(keys.into())
+    }
+
+    pub fn search(&self, keys: Vec<KT>) -> Option<&Node<KT>> {
+        self.search_deque(keys.into())
+    }
+
+    pub fn remove(&mut self, keys: Vec<KT>) {
+        self.remove_deque(keys.into())
+    }
 }
 
-impl<KT: Ord> Children<KT> for Trie<KT> {
-    fn children(&self) -> &Vec<Node<KT>> {
-        &self.children
-    }
-    fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
-        &mut self.children
-    }
-}
-
-pub trait Children<KT: Ord> {
+pub trait TrieFields<KT: Ord> {
     fn children(&self) -> &Vec<Node<KT>>;
-    fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
     /// Returns true iff the Node has no children
     fn is_empty(&self) -> bool {
         self.children().is_empty()
@@ -87,6 +79,23 @@ pub trait Children<KT: Ord> {
             0
         }
     }
+}
+
+impl<KT: Ord> TrieFields<KT> for Node<KT> {
+    fn children(&self) -> &Vec<Node<KT>> {
+        &self.children
+    }
+}
+
+impl<KT: Ord> TrieFields<KT> for Trie<KT> {
+    fn children(&self) -> &Vec<Node<KT>> {
+        &self.children
+    }
+}
+
+trait Internal<KT: Ord>: TrieFields<KT> {
+    fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
+
     fn insert_deque(&mut self, mut keys: VecDeque<KT>) {
         if let Some(key) = keys.pop_front() {
             if self.is_empty() {
@@ -108,9 +117,7 @@ pub trait Children<KT: Ord> {
             }
         }
     }
-    fn insert(&mut self, keys: Vec<KT>) {
-        self.insert_deque(keys.into())
-    }
+
     fn search_deque(&self, mut keys: VecDeque<KT>) -> Option<&Node<KT>> {
         if let Some(key) = keys.pop_front() {
             for child in self.children() {
@@ -125,9 +132,7 @@ pub trait Children<KT: Ord> {
         }
         None
     }
-    fn search(&self, keys: Vec<KT>) -> Option<&Node<KT>> {
-        self.search_deque(keys.into())
-    }
+
     fn remove_deque(&mut self, mut keys: VecDeque<KT>) {
         if let Some(key) = keys.pop_front() {
             for i in 0..self.size() {
@@ -142,7 +147,16 @@ pub trait Children<KT: Ord> {
             }
         }
     }
-    fn remove(&mut self, keys: Vec<KT>) {
-        self.remove_deque(keys.into())
+}
+
+impl<KT: Ord> Internal<KT> for Node<KT> {
+    fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
+        &mut self.children
+    }
+}
+
+impl<KT: Ord> Internal<KT> for Trie<KT> {
+    fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
+        &mut self.children
     }
 }

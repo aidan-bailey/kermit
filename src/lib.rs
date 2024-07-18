@@ -2,7 +2,7 @@ pub mod tuple_trie;
 
 #[cfg(test)]
 mod tests {
-    use crate::tuple_trie::{Children, Node, Trie};
+    use crate::tuple_trie::{Node, Trie, TrieFields};
 
     #[test]
     fn node_new() {
@@ -31,21 +31,6 @@ mod tests {
     fn node_is_empty() {
         let node = Node::new(1);
         assert!(node.is_empty());
-    }
-
-    #[test]
-    fn node_size() {
-        let mut node = Node::new(1);
-        node.children_mut().push(Node::new(2));
-        node.children_mut().push(Node::new(3));
-        assert_eq!(node.size(), 2);
-    }
-
-    #[test]
-    fn node_height() {
-        let mut node = Node::new(1);
-        node.children_mut().push(Node::new(2));
-        assert_eq!(node.height(), 1);
     }
 
     #[test]
@@ -122,4 +107,5 @@ mod tests {
         trie.remove(vec![1, 2]);
         assert!(trie.search(vec![1, 2]).is_none());
     }
+
 }
