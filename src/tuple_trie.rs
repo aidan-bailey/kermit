@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 pub struct Node<KT: Ord> {
     /// Maximum height (1-based index of key in tuple)
     arity: usize,
-    /// Key
+    /// Key for tuple value
     key: KT,
     /// Children
     children: Vec<Node<KT>>,
@@ -12,7 +12,7 @@ pub struct Node<KT: Ord> {
 
 impl<KT: Ord> Node<KT> {
 
-    /// Construct a Node with a key
+    /// Construct a Node with a tuple-value key
     fn new(key: KT) -> Node<KT> {
         Node {
             arity: 0,
@@ -21,7 +21,7 @@ impl<KT: Ord> Node<KT> {
         }
     }
 
-    /// Construct a Node with a key and a child
+    /// Construct a Node with a tuple-value key and a child
     fn with_child(key: KT, child: Node<KT>) -> Node<KT> {
         Node {
             arity: child.arity() + 1,
