@@ -9,21 +9,21 @@ pub struct Node<KT: Ord> {
 
 impl<KT: Ord> Node<KT> {
     /// Construct a node with a key
-    pub fn new(key: KT) -> Node<KT> {
+    fn new(key: KT) -> Node<KT> {
         Node {
             arity: 0,
             key,
             children: vec![],
         }
     }
-    pub fn with_child(key: KT, child: Node<KT>) -> Node<KT> {
+    fn with_child(key: KT, child: Node<KT>) -> Node<KT> {
         Node {
             arity: child.arity() + 1,
             key,
             children: vec![child],
         }
     }
-    pub fn with_keys_deque(key: KT, mut keys: VecDeque<KT>) -> Node<KT> {
+    fn with_keys_deque(key: KT, mut keys: VecDeque<KT>) -> Node<KT> {
         if let Some(next_key) = keys.pop_front() {
             let child = Node::with_keys_deque(next_key, keys);
             let node = Node::with_child(key, child);
@@ -31,9 +31,6 @@ impl<KT: Ord> Node<KT> {
         } else {
             Node::new(key)
         }
-    }
-    pub fn with_keys(key: KT, keys: Vec<KT>) -> Node<KT> {
-        Node::with_keys_deque(key, keys.into())
     }
     pub fn key(&self) -> &KT {
         &self.key
@@ -182,4 +179,56 @@ impl<KT: Ord> Internal<KT> for Trie<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
         &mut self.children
     }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn node_size() {
+        let mut node = Node::new(1);
+        node.children_mut().push(Node::new(2));
+        node.children_mut().push(Node::new(3));
+        assert_eq!(node.size(), 2);
+    }
+
+    #[test]
+    fn node_height() {
+        let mut node = Node::new(1);
+        node.children_mut().push(Node::new(2));
+        assert_eq!(node.height(), 1);
+    }
+
+    #[test]
+    fn node_new() {
+        let node = Node::new(1);
+        assert_eq!(node.key(), &1);
+        assert_eq!(node.arity(), 0);
+    }
+
+    #[test]
+    fn node_with_keys() {
+        let node = Node::with_keys_deque(1, vec![2, 3, 1].into());
+
+        assert_eq!(node.key(), &1);
+        assert_eq!(node.size(), 1);
+
+        assert_eq!(node.children()[0].key(), &2);
+        assert_eq!(node.children()[0].size(), 1);
+
+        assert_eq!(node.children()[0].children()[0].key(), &3);
+        assert_eq!(node.children()[0].children()[0].size(), 1);
+
+        assert_eq!(node.children()[0].children()[0].children()[0].key(), &1);
+        assert_eq!(node.children()[0].children()[0].children()[0].size(), 0);
+    }
+
+    #[test]
+    fn node_is_empty() {
+        let node = Node::new(1);
+        assert!(node.is_empty());
+    }
+
 }

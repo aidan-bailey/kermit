@@ -2,37 +2,7 @@ pub mod tuple_trie;
 
 #[cfg(test)]
 mod tests {
-    use crate::tuple_trie::{Node, Trie, TrieFields};
-
-    #[test]
-    fn node_new() {
-        let node = Node::new(1);
-        assert_eq!(node.key(), &1);
-        assert_eq!(node.arity(), 0);
-    }
-
-    #[test]
-    fn node_with_keys() {
-        let node = Node::with_keys(1, vec![2, 3, 1]);
-
-        assert_eq!(node.key(), &1);
-        assert_eq!(node.size(), 1);
-
-        assert_eq!(node.children()[0].key(), &2);
-        assert_eq!(node.children()[0].size(), 1);
-
-        assert_eq!(node.children()[0].children()[0].key(), &3);
-        assert_eq!(node.children()[0].children()[0].size(), 1);
-
-        assert_eq!(node.children()[0].children()[0].children()[0].key(), &1);
-        assert_eq!(node.children()[0].children()[0].children()[0].size(), 0);
-    }
-
-    #[test]
-    fn node_is_empty() {
-        let node = Node::new(1);
-        assert!(node.is_empty());
-    }
+    use crate::tuple_trie::{Trie, TrieFields};
 
     #[test]
     fn trie_new() {
