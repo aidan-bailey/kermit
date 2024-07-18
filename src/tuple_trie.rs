@@ -2,13 +2,17 @@ use std::collections::VecDeque;
 
 /// Trie node
 pub struct Node<KT: Ord> {
+    /// Maximum height (1-based index of key in tuple)
     arity: usize,
+    /// Key
     key: KT,
+    /// Children
     children: Vec<Node<KT>>,
 }
 
 impl<KT: Ord> Node<KT> {
-    /// Construct a node with a key
+
+    /// Construct a Node with a key
     fn new(key: KT) -> Node<KT> {
         Node {
             arity: 0,
@@ -16,6 +20,8 @@ impl<KT: Ord> Node<KT> {
             children: vec![],
         }
     }
+
+    /// Construct a Node with a key and a child
     fn with_child(key: KT, child: Node<KT>) -> Node<KT> {
         Node {
             arity: child.arity() + 1,
@@ -23,6 +29,7 @@ impl<KT: Ord> Node<KT> {
             children: vec![child],
         }
     }
+
     fn with_keys_deque(key: KT, mut keys: VecDeque<KT>) -> Node<KT> {
         if let Some(next_key) = keys.pop_front() {
             let child = Node::with_keys_deque(next_key, keys);
@@ -32,9 +39,12 @@ impl<KT: Ord> Node<KT> {
             Node::new(key)
         }
     }
+
+    /// Returns the Node's key
     pub fn key(&self) -> &KT {
         &self.key
     }
+
 }
 
 /// Trie root
