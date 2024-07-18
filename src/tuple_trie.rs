@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 /// Trie node
 pub struct Node<KT: Ord> {
+    arity: usize,
     key: KT,
     children: Vec<Node<KT>>,
 }
@@ -10,15 +11,22 @@ impl<KT: Ord> Node<KT> {
     /// Construct a node with a key
     pub fn new(key: KT) -> Node<KT> {
         Node {
+            arity: 1,
             key,
             children: vec![],
         }
     }
+    pub fn with_child(key: KT, child: Node<KT>) -> Node<KT> {
+        Node {
+            arity: child.arity() + 1,
+            key,
+            children: vec![child],
+        }
+    }
     pub fn with_keys_deque(key: KT, mut keys: VecDeque<KT>) -> Node<KT> {
         if let Some(next_key) = keys.pop_front() {
-            let mut node = Node::new(key);
             let child = Node::with_keys_deque(next_key, keys);
-            node.children_mut().push(child);
+            let node = Node::with_child(key, child);
             node
         } else {
             Node::new(key)
@@ -46,20 +54,28 @@ impl<KT: Ord> Trie<KT> {
             children: vec![],
         }
     }
-    pub fn arity(&self) -> &usize {
-        &self.arity
+
+    pub fn insert(&mut self, keys: Vec<KT>) -> Result<(), &'static str> {
+        if keys.len() != self.arity {
+            return Err("Arity doesn't match.")
+        }
+        self.insert_deque(keys.into());
+        Ok(())
     }
 
-    pub fn insert(&mut self, keys: Vec<KT>) {
-        self.insert_deque(keys.into())
+    pub fn search(&self, keys: Vec<KT>) -> Result<Option<&Node<KT>>, &'static str> {
+        if keys.len() != self.arity {
+            return Err("Arity doesn't match.")
+        }
+        Ok(self.search_deque(keys.into()))
     }
 
-    pub fn search(&self, keys: Vec<KT>) -> Option<&Node<KT>> {
-        self.search_deque(keys.into())
-    }
-
-    pub fn remove(&mut self, keys: Vec<KT>) {
-        self.remove_deque(keys.into())
+    pub fn remove(&mut self, keys: Vec<KT>) -> Result<(), &'static str> {
+        if keys.len() != self.arity {
+            return Err("Arity doesn't match.")
+        }
+        self.remove_deque(keys.into());
+        Ok(())
     }
 }
 
@@ -79,17 +95,24 @@ pub trait TrieFields<KT: Ord> {
             0
         }
     }
+    fn arity(&self) -> usize;
 }
 
 impl<KT: Ord> TrieFields<KT> for Node<KT> {
     fn children(&self) -> &Vec<Node<KT>> {
         &self.children
     }
+    fn arity(&self) -> usize {
+        self.arity
+    }
 }
 
 impl<KT: Ord> TrieFields<KT> for Trie<KT> {
     fn children(&self) -> &Vec<Node<KT>> {
         &self.children
+    }
+    fn arity(&self) -> usize {
+        self.arity
     }
 }
 
