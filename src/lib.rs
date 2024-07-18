@@ -1,8 +1,9 @@
 pub mod tuple_trie;
+pub mod iterator;
 
 #[cfg(test)]
 mod tests {
-    use crate::tuple_trie::{Trie, TrieFields};
+    use crate::{iterator::{TrieIter, TrieIterator}, tuple_trie::{Trie, TrieFields}};
 
     #[test]
     fn trie_new() {
@@ -77,6 +78,58 @@ mod tests {
         assert!(trie.search(vec![1, 2]).unwrap().is_some());
         let _ = trie.remove(vec![1, 2]);
         assert!(trie.search(vec![1, 2]).unwrap().is_none());
+    }
+
+    #[test]
+    fn trie_iterator() {
+        let mut trie = Trie::<u64>::new(3);
+
+        assert!(trie.insert(vec![1, 3, 4]).is_ok());
+        assert!(trie.insert(vec![1, 3, 5]).is_ok());
+        assert!(trie.insert(vec![1, 4, 6]).is_ok());
+        assert!(trie.insert(vec![1, 4, 8]).is_ok());
+        assert!(trie.insert(vec![1, 4, 9]).is_ok());
+        assert!(trie.insert(vec![1, 5, 2]).is_ok());
+        assert!(trie.insert(vec![3, 5, 2]).is_ok());
+
+        let mut iter = TrieIter::new(&trie);
+
+        assert!(iter.open().is_ok());
+        assert_eq!(iter.key().unwrap(), &1);
+        assert!(iter.open().is_ok());
+        assert_eq!(iter.key().unwrap(), &3);
+        assert!(iter.open().is_ok());
+        assert_eq!(iter.key().unwrap(), &4);
+
+        assert!(iter.next().is_ok());
+        assert_eq!(iter.key().unwrap(), &5);
+
+        assert!(iter.up().is_ok());
+        assert_eq!(iter.key().unwrap(), &3);
+
+        assert!(iter.next().is_ok());
+        assert_eq!(iter.key().unwrap(), &4);
+
+        assert!(iter.open().is_ok());
+        assert_eq!(iter.key().unwrap(), &6);
+
+        assert!(iter.seek(&9).is_ok());
+
+        assert!(iter.up().is_ok());
+        assert_eq!(iter.key().unwrap(), &4);
+
+        assert!(iter.up().is_ok());
+        assert_eq!(iter.key().unwrap(), &1);
+
+        assert!(iter.next().is_ok());
+        assert_eq!(iter.key().unwrap(), &3);
+
+        assert!(iter.open().is_ok());
+        assert_eq!(iter.key().unwrap(), &5);
+        assert!(iter.open().is_ok());
+        assert_eq!(iter.key().unwrap(), &2);
+        assert!(iter.open().is_err());
+
     }
 
 }
