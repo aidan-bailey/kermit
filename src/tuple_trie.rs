@@ -141,9 +141,10 @@ trait Internal<KT: Ord>: TrieFields<KT> {
                     } else {
                         let node = Node::with_keys_deque(key, keys);
                         self.children_mut().insert(i, node);
-                        break;
+                        return;
                     }
                 }
+                self.children_mut().push(Node::with_keys_deque(key, keys));
             }
         }
     }
