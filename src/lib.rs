@@ -8,7 +8,7 @@ mod tests {
     fn node_new() {
         let node = Node::new(1);
         assert_eq!(node.key(), &1);
-        assert_eq!(node.arity(), 1);
+        assert_eq!(node.arity(), 0);
     }
 
     #[test]

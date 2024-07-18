@@ -11,7 +11,7 @@ impl<KT: Ord> Node<KT> {
     /// Construct a node with a key
     pub fn new(key: KT) -> Node<KT> {
         Node {
-            arity: 1,
+            arity: 0,
             key,
             children: vec![],
         }
