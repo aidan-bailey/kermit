@@ -53,6 +53,8 @@ impl<T: PartialOrd + SampleUniform + Copy + std::fmt::Display> BenchParams<T> {
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("insertion");
+    group.sampling_mode(criterion::SamplingMode::Linear);
+    group.sample_size(10);
     let bench_params = vec![
         BenchParams::new(1, 3, i32::MIN, i32::MAX),
         BenchParams::new(2, 3, i32::MIN, i32::MAX),
@@ -75,10 +77,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         BenchParams::new(262144, 3, i32::MIN, i32::MAX),
         BenchParams::new(524288, 3, i32::MIN, i32::MAX),
         BenchParams::new(1048576, 3, i32::MIN, i32::MAX),
-        BenchParams::new(2097152, 3, i32::MIN, i32::MAX),
-        BenchParams::new(4194304, 3, i32::MIN, i32::MAX),
-        BenchParams::new(8388608, 3, i32::MIN, i32::MAX),
-        BenchParams::new(16777216, 3, i32::MIN, i32::MAX),
     ];
 
     for bench_param in bench_params {
@@ -88,10 +86,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     generate_tuples(bench_param)
                 },
                 |tuples| black_box(Trie::from_tuples(bench_param.arity, tuples)),
-                BatchSize::PerIteration,
+                BatchSize::NumIterations(1),
             )
         });
     }
+    group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);
