@@ -15,6 +15,14 @@ impl<KT: Ord> Trie<KT> {
         }
     }
 
+    pub fn from_tuples(arity: usize, tuples: Vec<Vec<KT>>) -> Trie<KT> {
+        let mut trie = Trie::new(arity);
+        for tuple in tuples {
+            trie.insert(tuple).unwrap();
+        }
+        trie
+    }
+
     pub fn insert(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
         if tuple.len() != self.arity {
             return Err("Arity doesn't match.");
