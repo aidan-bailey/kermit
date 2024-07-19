@@ -29,9 +29,9 @@ impl<KT: Ord> Node<KT> {
         }
     }
 
-    fn with_keys_deque(key: KT, mut keys: VecDeque<KT>) -> Node<KT> {
-        if let Some(next_key) = keys.pop_front() {
-            let child = Node::with_keys_deque(next_key, keys);
+    fn with_tuple_deque(key: KT, mut tuple: VecDeque<KT>) -> Node<KT> {
+        if let Some(next_key) = tuple.pop_front() {
+            let child = Node::with_tuple_deque(next_key, tuple);
             let node = Node::with_child(key, child);
             node
         } else {
@@ -76,37 +76,37 @@ impl<KT: Ord> TrieFields<KT> for Node<KT> {
 pub(crate) trait Internal<KT: Ord>: TrieFields<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
-    fn insert_deque(&mut self, mut keys: VecDeque<KT>) {
-        if let Some(key) = keys.pop_front() {
+    fn insert_deque(&mut self, mut tuple: VecDeque<KT>) {
+        if let Some(key) = tuple.pop_front() {
             if self.is_empty() {
-                let node = Node::with_keys_deque(key, keys);
+                let node = Node::with_tuple_deque(key, tuple);
                 self.children_mut().push(node);
             } else {
                 let mut i = 0;
                 for child in self.children_mut() {
                     if key == *child.key() {
-                        return child.insert_deque(keys);
+                        return child.insert_deque(tuple);
                     } else if key > *child.key() {
                         i += 1
                     } else {
-                        let node = Node::with_keys_deque(key, keys);
+                        let node = Node::with_tuple_deque(key, tuple);
                         self.children_mut().insert(i, node);
                         return;
                     }
                 }
-                self.children_mut().push(Node::with_keys_deque(key, keys));
+                self.children_mut().push(Node::with_tuple_deque(key, tuple));
             }
         }
     }
 
-    fn search_deque(&self, mut keys: VecDeque<KT>) -> Option<&Node<KT>> {
-        if let Some(key) = keys.pop_front() {
+    fn search_deque(&self, mut tuple: VecDeque<KT>) -> Option<&Node<KT>> {
+        if let Some(key) = tuple.pop_front() {
             for child in self.children() {
                 if key == *child.key() {
-                    return if keys.is_empty() {
+                    return if tuple.is_empty() {
                         Some(&child)
                     } else {
-                        child.search_deque(keys)
+                        child.search_deque(tuple)
                     };
                 }
             }
@@ -114,12 +114,12 @@ pub(crate) trait Internal<KT: Ord>: TrieFields<KT> {
         None
     }
 
-    fn remove_deque(&mut self, mut keys: VecDeque<KT>) {
-        if let Some(key) = keys.pop_front() {
+    fn remove_deque(&mut self, mut tuple: VecDeque<KT>) {
+        if let Some(key) = tuple.pop_front() {
             for i in 0..self.size() {
                 let child = &mut self.children_mut()[i];
                 if key == *child.key() {
-                    child.remove_deque(keys);
+                    child.remove_deque(tuple);
                     if child.is_empty() {
                         self.children_mut().remove(i);
                     }
@@ -164,8 +164,8 @@ mod tests {
     }
 
     #[test]
-    fn node_with_keys() {
-        let node = Node::with_keys_deque(1, vec![2, 3, 1].into());
+    fn node_with_tuple() {
+        let node = Node::with_tuple_deque(1, vec![2, 3, 1].into());
 
         assert_eq!(node.key(), &1);
         assert_eq!(node.size(), 1);

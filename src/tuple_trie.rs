@@ -15,26 +15,26 @@ impl<KT: Ord> Trie<KT> {
         }
     }
 
-    pub fn insert(&mut self, keys: Vec<KT>) -> Result<(), &'static str> {
-        if keys.len() != self.arity {
+    pub fn insert(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
+        if tuple.len() != self.arity {
             return Err("Arity doesn't match.");
         }
-        self.insert_deque(keys.into());
+        self.insert_deque(tuple.into());
         Ok(())
     }
 
-    pub fn search(&self, keys: Vec<KT>) -> Result<Option<&Node<KT>>, &'static str> {
-        if keys.len() != self.arity {
+    pub fn search(&self, tuple: Vec<KT>) -> Result<Option<&Node<KT>>, &'static str> {
+        if tuple.len() != self.arity {
             return Err("Arity doesn't match.");
         }
-        Ok(self.search_deque(keys.into()))
+        Ok(self.search_deque(tuple.into()))
     }
 
-    pub fn remove(&mut self, keys: Vec<KT>) -> Result<(), &'static str> {
-        if keys.len() != self.arity {
+    pub fn remove(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
+        if tuple.len() != self.arity {
             return Err("Arity doesn't match.");
         }
-        self.remove_deque(keys.into());
+        self.remove_deque(tuple.into());
         Ok(())
     }
 }
