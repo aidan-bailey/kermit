@@ -54,19 +54,31 @@ impl<T: PartialOrd + SampleUniform + Copy + std::fmt::Display> BenchParams<T> {
 pub fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("insertion");
     let bench_params = vec![
-        BenchParams::new(2, 1000, 0, 1000000),
-        BenchParams::new(4, 1000, 0, 1000000),
-        BenchParams::new(8, 1000, 0, 1000000),
-        BenchParams::new(16, 1000, 0, 1000000),
-        BenchParams::new(32, 1000, 0, 1000000),
-        BenchParams::new(64, 1000, 0, 1000000),
-        BenchParams::new(128, 1000, 0, 1000000),
-        BenchParams::new(256, 1000, 0, 1000000),
-        BenchParams::new(512, 1000, 0, 1000000),
-        BenchParams::new(1024, 1000, 0, 1000000),
-        BenchParams::new(2048, 1000, 0, 1000000),
-        BenchParams::new(4096, 1000, 0, 1000000),
-        BenchParams::new(8192, 1000, 0, 1000000),
+        BenchParams::new(1, 3, i32::MIN, i32::MAX),
+        BenchParams::new(2, 3, i32::MIN, i32::MAX),
+        BenchParams::new(4, 3, i32::MIN, i32::MAX),
+        BenchParams::new(8, 3, i32::MIN, i32::MAX),
+        BenchParams::new(16, 3, i32::MIN, i32::MAX),
+        BenchParams::new(32, 3, i32::MIN, i32::MAX),
+        BenchParams::new(64, 3, i32::MIN, i32::MAX),
+        BenchParams::new(128, 3, i32::MIN, i32::MAX),
+        BenchParams::new(256, 3, i32::MIN, i32::MAX),
+        BenchParams::new(512, 3, i32::MIN, i32::MAX),
+        BenchParams::new(1024, 3, i32::MIN, i32::MAX),
+        BenchParams::new(2048, 3, i32::MIN, i32::MAX),
+        BenchParams::new(4096, 3, i32::MIN, i32::MAX),
+        BenchParams::new(8192, 3, i32::MIN, i32::MAX),
+        BenchParams::new(16384, 3, i32::MIN, i32::MAX),
+        BenchParams::new(32768, 3, i32::MIN, i32::MAX),
+        BenchParams::new(65536, 3, i32::MIN, i32::MAX),
+        BenchParams::new(131072, 3, i32::MIN, i32::MAX),
+        BenchParams::new(262144, 3, i32::MIN, i32::MAX),
+        BenchParams::new(524288, 3, i32::MIN, i32::MAX),
+        BenchParams::new(1048576, 3, i32::MIN, i32::MAX),
+        BenchParams::new(2097152, 3, i32::MIN, i32::MAX),
+        BenchParams::new(4194304, 3, i32::MIN, i32::MAX),
+        BenchParams::new(8388608, 3, i32::MIN, i32::MAX),
+        BenchParams::new(16777216, 3, i32::MIN, i32::MAX),
     ];
 
     for bench_param in bench_params {
@@ -76,7 +88,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     generate_tuples(bench_param)
                 },
                 |tuples| black_box(Trie::from_tuples(bench_param.arity, tuples)),
-                BatchSize::LargeInput,
+                BatchSize::PerIteration,
             )
         });
     }
