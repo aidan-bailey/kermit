@@ -8,16 +8,11 @@ fn generate_vector<T: PartialOrd + SampleUniform + Copy>(
     min: T,
     max: T,
     sorted: bool,
-    unique: bool,
 ) -> Vec<T> {
     let mut rng = rand::thread_rng();
     let mut vector = Vec::<T>::new();
-    while vector.len() < arity {
-        let value = rng.gen_range(min..max);
-        if unique && vector.contains(&value) {
-            continue;
-        }
-        vector.push(value);
+    for _ in 0..arity {
+        vector.push(rng.gen_range(min..max));
     }
     if sorted {
         vector.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
@@ -30,7 +25,7 @@ fn generate_tuples<T: PartialOrd + SampleUniform + Copy>(
 ) -> Vec<Vec<T>> {
     let mut vectors = Vec::<Vec<T>>::new();
     while vectors.len() < params.size {
-        let vector = generate_vector(params.arity, params.min, params.max, params.sorted, params.unique);
+        let vector = generate_vector(params.arity, params.min, params.max, params.sorted);
         if !vectors.contains(&vector) {
             vectors.push(vector);
         }
@@ -44,42 +39,40 @@ struct BenchParams<T: PartialOrd + SampleUniform + Copy> {
     min: T,
     max: T,
     sorted: bool,
-    unique: bool,
 }
 
 impl<T: PartialOrd + SampleUniform + Copy + std::fmt::Display> BenchParams<T> {
-    fn new(size: usize, arity: usize, min: T, max: T, sorted: bool, unique: bool) -> BenchParams<T> {
+    fn new(size: usize, arity: usize, min: T, max: T, sorted: bool) -> BenchParams<T> {
         BenchParams {
             size,
             arity,
             min,
             max,
             sorted,
-            unique,
         }
     }
 
     fn to_string(&self) -> String {
-        format!("size: {}, arity: {}, min: {}, max: {}, sorted: {}, unique: {}", self.size, self.arity, self.min, self.max, self.sorted, self.unique)
+        format!("size: {}, arity: {}, min: {}, max: {}, sorted: {}", self.size, self.arity, self.min, self.max, self.sorted)
     }
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("insertion");
     let bench_params = vec![
-        BenchParams::new(2, 1000, 0, 1000000, false, false),
-        BenchParams::new(4, 1000, 0, 1000000, false, false),
-        BenchParams::new(8, 1000, 0, 1000000, false, false),
-        BenchParams::new(16, 1000, 0, 1000000, false, false),
-        BenchParams::new(32, 1000, 0, 1000000, false, false),
-        BenchParams::new(64, 1000, 0, 1000000, false, false),
-        BenchParams::new(128, 1000, 0, 1000000, false, false),
-        BenchParams::new(256, 1000, 0, 1000000, false, false),
-        BenchParams::new(512, 1000, 0, 1000000, false, false),
-        BenchParams::new(1024, 1000, 0, 1000000, false, false),
-        BenchParams::new(2048, 1000, 0, 1000000, false, false),
-        BenchParams::new(4096, 1000, 0, 1000000, false, false),
-        BenchParams::new(8192, 1000, 0, 1000000, false, false),
+        BenchParams::new(2, 1000, 0, 1000000, false),
+        BenchParams::new(4, 1000, 0, 1000000, false),
+        BenchParams::new(8, 1000, 0, 1000000, false),
+        BenchParams::new(16, 1000, 0, 1000000, false),
+        BenchParams::new(32, 1000, 0, 1000000, false),
+        BenchParams::new(64, 1000, 0, 1000000, false),
+        BenchParams::new(128, 1000, 0, 1000000, false),
+        BenchParams::new(256, 1000, 0, 1000000, false),
+        BenchParams::new(512, 1000, 0, 1000000, false),
+        BenchParams::new(1024, 1000, 0, 1000000, false),
+        BenchParams::new(2048, 1000, 0, 1000000, false),
+        BenchParams::new(4096, 1000, 0, 1000000, false),
+        BenchParams::new(8192, 1000, 0, 1000000, false),
     ];
 
     for bench_param in bench_params {
