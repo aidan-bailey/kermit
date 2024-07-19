@@ -1,13 +1,20 @@
-use crate::tuple_trie::Trie;
 use crate::node::{Node, TrieFields};
+use crate::tuple_trie::Trie;
 
 pub struct TrieIter<'a, KT: Ord> {
+    /// Current Node's index amongst its siblings.
     pos: usize,
+    /// Trie that is being iterated.
     trie: &'a Trie<KT>,
+    /// Stack containing cursor's path down the trie.
+    /// The tuples hold the Node and its index amongst its siblings.
+    /// If the stack is empty, the cursor points to the root.
+    /// If the stack is non-empty, the cursor points to the last element.
     stack: Vec<(&'a Node<KT>, usize)>,
 }
 
 impl<'a, KT: Ord> TrieIter<'a, KT> {
+    /// Construct a new Trie iterator.
     pub fn new(trie: &'a Trie<KT>) -> Self {
         TrieIter {
             pos: 0,
@@ -16,6 +23,9 @@ impl<'a, KT: Ord> TrieIter<'a, KT> {
         }
     }
 
+    /// Get the siblings of the node pointed to by the cursor (including the node).
+    ///
+    /// Returns None if the cursor points to the root.
     fn siblings(&self) -> Option<&'a Vec<Node<KT>>> {
         if self.stack.is_empty() {
             None
@@ -27,8 +37,10 @@ impl<'a, KT: Ord> TrieIter<'a, KT> {
     }
 }
 
+/// Trie iterator interface.
 pub trait TrieIterator<KT: Ord> {
-    /// Returns the key at the current iterator position
+    /// If the cursor does not point to the root, returns the key of the node,
+    /// otherwise returns Err.
     fn key(&self) -> Result<&KT, &'static str>;
     /// Proceeds to the next key
     fn next(&mut self) -> Result<(), &'static str>;
