@@ -82,19 +82,30 @@ pub(crate) trait Internal<KT: Ord>: TrieFields<KT> {
                 let node = Node::with_keys_deque(key, keys);
                 self.children_mut().push(node);
             } else {
-                let mut i = 0;
-                for child in self.children_mut() {
-                    if key == *child.key() {
-                        return child.insert_deque(keys);
-                    } else if key > *child.key() {
-                        i += 1
+
+                let mut l: usize = 0;
+                let mut r: usize = self.children().len() - 1;
+                while l <= r {
+                    let m: usize = (l + r) / 2;
+                    if self.children()[m].key() < &key {
+                        l = m + 1;
+                    } else if self.children()[m].key() > &key {
+                        if m == 0 {
+                            self.children_mut().insert(m, Node::with_keys_deque(key, keys));
+                            return;
+                        }
+                        r = m - 1;
                     } else {
-                        let node = Node::with_keys_deque(key, keys);
-                        self.children_mut().insert(i, node);
-                        return;
+                        return self.children_mut()[m].insert_deque(keys);
                     }
                 }
-                self.children_mut().push(Node::with_keys_deque(key, keys));
+
+                if l < self.children().len() {
+                    self.children_mut().insert(l, Node::with_keys_deque(key, keys));
+                } else {
+                    self.children_mut().push(Node::with_keys_deque(key, keys));
+                }
+
             }
         }
     }
