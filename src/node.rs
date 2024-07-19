@@ -141,6 +141,38 @@ mod tests {
 
     use super::*;
 
+    // Node implementation tests
+
+    #[test]
+    fn node_new() {
+        let node = Node::new(1);
+        assert_eq!(node.key(), &1);
+        assert_eq!(node.arity(), 0);
+    }
+
+    #[test]
+    fn node_with_child() {
+        let node = Node::with_child(1, Node::new(2));
+        assert_eq!(node.key(), &1);
+        assert_eq!(node.arity(), 1);
+        assert_eq!(node.children()[0].key(), &2);
+    }
+
+    #[test]
+    fn node_with_keys_deque() {
+        let node = Node::with_keys_deque(1, vec![2, 3, 1].into());
+        assert_eq!(node.key(), &1);
+        assert_eq!(node.arity(), 3);
+        assert_eq!(node.children()[0].key(), &2);
+        assert_eq!(node.children()[0].arity(), 2);
+        assert_eq!(node.children()[0].children()[0].key(), &3);
+        assert_eq!(node.children()[0].children()[0].arity(), 1);
+        assert_eq!(node.children()[0].children()[0].children()[0].key(), &1);
+        assert_eq!(node.children()[0].children()[0].children()[0].arity(), 0);
+    }
+
+    // TrieFields implementation tests
+
     #[test]
     fn node_size() {
         let mut node = Node::new(1);
@@ -157,32 +189,45 @@ mod tests {
     }
 
     #[test]
-    fn node_new() {
-        let node = Node::new(1);
-        assert_eq!(node.key(), &1);
-        assert_eq!(node.arity(), 0);
-    }
-
-    #[test]
-    fn node_with_keys() {
-        let node = Node::with_keys_deque(1, vec![2, 3, 1].into());
-
-        assert_eq!(node.key(), &1);
-        assert_eq!(node.size(), 1);
-
-        assert_eq!(node.children()[0].key(), &2);
-        assert_eq!(node.children()[0].size(), 1);
-
-        assert_eq!(node.children()[0].children()[0].key(), &3);
-        assert_eq!(node.children()[0].children()[0].size(), 1);
-
-        assert_eq!(node.children()[0].children()[0].children()[0].key(), &1);
-        assert_eq!(node.children()[0].children()[0].children()[0].size(), 0);
-    }
-
-    #[test]
     fn node_is_empty() {
         let node = Node::new(1);
         assert!(node.is_empty());
     }
+
+    // Internal implementation tests
+
+    #[test]
+    fn node_insert_deque() {
+        let mut node = Node::new(1);
+
+        // Basic
+        node.insert_deque(vec![2, 3, 1].into());
+        assert_eq!(node.children()[0].key(), &2);
+        assert_eq!(node.children()[0].arity(), 2);
+        assert_eq!(node.children()[0].children()[0].key(), &3);
+        assert_eq!(node.children()[0].children()[0].arity(), 1);
+        assert_eq!(node.children()[0].children()[0].children()[0].key(), &1);
+        assert_eq!(node.children()[0].children()[0].children()[0].arity(), 0);
+
+        // First level
+
+        // Left Top
+        node.insert_deque(vec![1, 3, 4].into());
+        assert_eq!(node.children()[0].key(), &1);
+        assert_eq!(node.children()[0].arity(), 2);
+        assert_eq!(node.children()[0].children()[0].key(), &3);
+        assert_eq!(node.children()[0].children()[0].arity(), 1);
+        assert_eq!(node.children()[0].children()[0].children()[0].key(), &4);
+        assert_eq!(node.children()[0].children()[0].children()[0].arity(), 0);
+
+        // Right top
+        node.insert_deque(vec![3, 3, 4].into());
+        assert_eq!(node.children()[2].key(), &3);
+        assert_eq!(node.children()[2].arity(), 2);
+        assert_eq!(node.children()[2].children()[0].key(), &3);
+        assert_eq!(node.children()[2].children()[0].arity(), 1);
+        assert_eq!(node.children()[2].children()[0].children()[0].key(), &4);
+        assert_eq!(node.children()[2].children()[0].children()[0].arity(), 0);
+    }
+
 }
