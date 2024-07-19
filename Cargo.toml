@@ -7,14 +7,12 @@ description = "Trie data structure specialised for Tuples"
 readme = "README.md"
 repository = "https://github.com/aidan-bailey/tuple-trie"
 license = "MIT OR Apache-2.0"
-bench = false
 
 [dependencies]
 
 [[bench]]
 name = "main"
 harness = false
-html_reports = true
 
 [dev-dependencies]
 criterion = "0.3"
