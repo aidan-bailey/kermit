@@ -1,7 +1,5 @@
-use crate::{
-    node::{Node, TrieFields},
-    tuple_trie::Trie,
-};
+use crate::tuple_trie::Trie;
+use crate::node::{Node, TrieFields};
 
 pub struct TrieIter<'a, KT: Ord> {
     pos: usize,
