@@ -1,9 +1,14 @@
-pub mod tuple_trie;
 pub mod iterator;
+pub mod node;
+pub mod tuple_trie;
 
 #[cfg(test)]
 mod tests {
-    use crate::{iterator::{TrieIter, TrieIterator}, tuple_trie::{Trie, TrieFields}};
+    use crate::{
+        iterator::{TrieIter, TrieIterator},
+        node::TrieFields,
+        tuple_trie::Trie,
+    };
 
     #[test]
     fn trie_new() {
@@ -129,7 +134,5 @@ mod tests {
         assert!(iter.open().is_ok());
         assert_eq!(iter.key().unwrap(), &2);
         assert!(iter.open().is_err());
-
     }
-
 }
