@@ -93,7 +93,7 @@ impl<'a, KT: Ord> TrieIterator<KT> for TrieIter<'a, KT> {
             } else {
                 // If there exists a key, there should ALWAYS be at least one sibling
                 // (i.e., the current node itself).
-                let siblings = self.siblings().unwrap();
+                let siblings = self.siblings().expect("If there exists a key, there should ALWAYS be at least one sibling");
                 while (!self.at_end()) && seek_key > siblings[self.pos].key() {
                     self.pos += 1;
                 }
