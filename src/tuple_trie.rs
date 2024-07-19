@@ -23,11 +23,12 @@ impl<KT: Ord> Trie<KT> {
         trie
     }
 
-    pub fn insert(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
+    pub fn insert(&mut self, mut tuple: Vec<KT>) -> Result<(), &'static str> {
         if tuple.len() != self.arity {
             return Err("Arity doesn't match.");
         }
-        self.insert_deque(tuple.into());
+        tuple.reverse();
+        self.insert_deque(tuple);
         Ok(())
     }
 

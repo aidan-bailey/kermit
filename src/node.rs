@@ -29,9 +29,12 @@ impl<KT: Ord> Node<KT> {
         }
     }
 
-    fn with_keys_deque(key: KT, mut keys: VecDeque<KT>) -> Node<KT> {
-        if let Some(next_key) = keys.pop_front() {
-            let child = Node::with_keys_deque(next_key, keys);
+    /// Construct a Node with a tuple-value key and a child
+    ///
+    /// EXPECTS KEYS TO BE REVERSED!!!!
+    fn with_reverse_keys(key: KT, mut keys: Vec<KT>) -> Node<KT> {
+        if let Some(next_key) = keys.pop() {
+            let child = Node::with_reverse_keys(next_key, keys);
             let node = Node::with_child(key, child);
             node
         } else {
@@ -76,10 +79,10 @@ impl<KT: Ord> TrieFields<KT> for Node<KT> {
 pub(crate) trait Internal<KT: Ord>: TrieFields<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
-    fn insert_deque(&mut self, mut keys: VecDeque<KT>) {
-        if let Some(key) = keys.pop_front() {
+    fn insert_deque(&mut self, mut keys: Vec<KT>) {
+        if let Some(key) = keys.pop() {
             if self.is_empty() {
-                let node = Node::with_keys_deque(key, keys);
+                let node = Node::with_reverse_keys(key, keys);
                 self.children_mut().push(node);
             } else {
 
@@ -91,7 +94,7 @@ pub(crate) trait Internal<KT: Ord>: TrieFields<KT> {
                         l = m + 1;
                     } else if self.children()[m].key() > &key {
                         if m == 0 {
-                            self.children_mut().insert(m, Node::with_keys_deque(key, keys));
+                            self.children_mut().insert(m, Node::with_reverse_keys(key, keys));
                             return;
                         }
                         r = m - 1;
@@ -101,9 +104,9 @@ pub(crate) trait Internal<KT: Ord>: TrieFields<KT> {
                 }
 
                 if l < self.children().len() {
-                    self.children_mut().insert(l, Node::with_keys_deque(key, keys));
+                    self.children_mut().insert(l, Node::with_reverse_keys(key, keys));
                 } else {
-                    self.children_mut().push(Node::with_keys_deque(key, keys));
+                    self.children_mut().push(Node::with_reverse_keys(key, keys));
                 }
 
             }
@@ -171,7 +174,7 @@ mod tests {
 
     #[test]
     fn node_with_keys_deque() {
-        let node = Node::with_keys_deque(1, vec![2, 3, 1].into());
+        let node = Node::with_reverse_keys(1, vec![1, 3, 2].into());
         assert_eq!(node.key(), &1);
         assert_eq!(node.arity(), 3);
         assert_eq!(node.children()[0].key(), &2);
@@ -212,7 +215,7 @@ mod tests {
         let mut node = Node::new(1);
 
         // Basic
-        node.insert_deque(vec![2, 3, 1].into());
+        node.insert_deque(vec![1, 3, 2].into());
         assert_eq!(node.children()[0].key(), &2);
         assert_eq!(node.children()[0].arity(), 2);
         assert_eq!(node.children()[0].children()[0].key(), &3);
@@ -223,7 +226,7 @@ mod tests {
         // First level
 
         // Left Top
-        node.insert_deque(vec![1, 3, 4].into());
+        node.insert_deque(vec![4, 3, 1].into());
         assert_eq!(node.children()[0].key(), &1);
         assert_eq!(node.children()[0].arity(), 2);
         assert_eq!(node.children()[0].children()[0].key(), &3);
@@ -232,7 +235,7 @@ mod tests {
         assert_eq!(node.children()[0].children()[0].children()[0].arity(), 0);
 
         // Right top
-        node.insert_deque(vec![3, 3, 4].into());
+        node.insert_deque(vec![4, 3, 3].into());
         assert_eq!(node.children()[2].key(), &3);
         assert_eq!(node.children()[2].arity(), 2);
         assert_eq!(node.children()[2].children()[0].key(), &3);
