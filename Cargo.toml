@@ -16,5 +16,5 @@ name = "main"
 harness = false
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = "0.5.1"
 rand = "0.8.5"
