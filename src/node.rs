@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 /// Trie node
-pub struct Node<KT: Ord> {
+pub struct Node<KT: PartialOrd + PartialEq> {
     /// Maximum height (1-based index of key in tuple)
     arity: usize,
     /// Key for tuple value
@@ -10,7 +10,7 @@ pub struct Node<KT: Ord> {
     children: Vec<Node<KT>>,
 }
 
-impl<KT: Ord> Node<KT> {
+impl<KT: PartialOrd + PartialEq> Node<KT> {
     /// Construct a Node with a tuple-value key
     fn new(key: KT) -> Node<KT> {
         Node {
@@ -48,7 +48,7 @@ impl<KT: Ord> Node<KT> {
     }
 }
 
-pub trait TrieFields<KT: Ord> {
+pub trait TrieFields<KT: PartialOrd + PartialEq> {
     fn children(&self) -> &Vec<Node<KT>>;
     /// Returns true iff the Node has no children
     fn is_empty(&self) -> bool {
@@ -67,7 +67,7 @@ pub trait TrieFields<KT: Ord> {
     fn arity(&self) -> usize;
 }
 
-impl<KT: Ord> TrieFields<KT> for Node<KT> {
+impl<KT: PartialOrd + PartialEq> TrieFields<KT> for Node<KT> {
     fn children(&self) -> &Vec<Node<KT>> {
         &self.children
     }
@@ -76,7 +76,7 @@ impl<KT: Ord> TrieFields<KT> for Node<KT> {
     }
 }
 
-pub(crate) trait Internal<KT: Ord>: TrieFields<KT> {
+pub(crate) trait Internal<KT: PartialOrd + PartialEq>: TrieFields<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
     fn insert_deque(&mut self, mut keys: Vec<KT>) {
@@ -144,7 +144,7 @@ pub(crate) trait Internal<KT: Ord>: TrieFields<KT> {
     }
 }
 
-impl<KT: Ord> Internal<KT> for Node<KT> {
+impl<KT: PartialOrd + PartialEq> Internal<KT> for Node<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
         &mut self.children
     }

@@ -1,7 +1,7 @@
 use crate::node::{Node, TrieFields};
 use crate::tuple_trie::Trie;
 
-pub struct TrieIter<'a, KT: Ord> {
+pub struct TrieIter<'a, KT: PartialOrd + PartialEq> {
     /// Current Node's index amongst its siblings.
     pos: usize,
     /// Trie that is being iterated.
@@ -13,7 +13,7 @@ pub struct TrieIter<'a, KT: Ord> {
     stack: Vec<(&'a Node<KT>, usize)>,
 }
 
-impl<'a, KT: Ord> TrieIter<'a, KT> {
+impl<'a, KT: PartialOrd + PartialEq> TrieIter<'a, KT> {
     /// Construct a new Trie iterator.
     pub fn new(trie: &'a Trie<KT>) -> Self {
         TrieIter {
@@ -38,7 +38,7 @@ impl<'a, KT: Ord> TrieIter<'a, KT> {
 }
 
 /// Trie iterator interface.
-pub trait TrieIterator<KT: Ord> {
+pub trait TrieIterator<KT: PartialOrd + PartialEq> {
     /// If the cursor does not point to the root, returns the key of the node,
     /// otherwise returns Err.
     fn key(&self) -> Result<&KT, &'static str>;
@@ -61,7 +61,7 @@ pub trait TrieIterator<KT: Ord> {
     fn up(&mut self) -> Result<(), &'static str>;
 }
 
-impl<'a, KT: Ord> TrieIterator<KT> for TrieIter<'a, KT> {
+impl<'a, KT: PartialOrd + PartialEq> TrieIterator<KT> for TrieIter<'a, KT> {
     fn key(&self) -> Result<&KT, &'static str> {
         if let Some((node, _)) = self.stack.last() {
             Ok(node.key())
