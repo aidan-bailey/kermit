@@ -1,6 +1,7 @@
 pub mod iterator;
 pub mod node;
 pub mod tuple_trie;
+pub mod variable_type;
 
 #[cfg(test)]
 mod tests {
@@ -8,6 +9,7 @@ mod tests {
         iterator::{TrieIter, TrieIterator},
         node::TrieFields,
         tuple_trie::Trie,
+        variable_type::VariableType,
     };
 
     #[test]
@@ -134,5 +136,19 @@ mod tests {
         assert!(iter.open().is_ok());
         assert_eq!(iter.key().unwrap(), &2);
         assert!(iter.open().is_err());
+    }
+
+    // Variable types
+    #[test]
+    fn trie_with_variable_type() {
+        let mut trie = Trie::<VariableType>::new(2);
+
+        let _ = trie.insert(vec![VariableType::Int(1), VariableType::String("2".to_string())]);
+        let _ = trie.insert(vec![VariableType::Int(0), VariableType::Float(2.)]);
+        let _ = trie.insert(vec![VariableType::Int(1), VariableType::Int(1)]);
+
+        assert!(trie.search(vec![VariableType::Int(1), VariableType::String("2".to_string())]).unwrap().is_some());
+        assert!(trie.search(vec![VariableType::Int(0), VariableType::Float(2.)]).unwrap().is_some());
+        assert!(trie.search(vec![VariableType::Int(1), VariableType::Int(1)]).unwrap().is_some());
     }
 }
