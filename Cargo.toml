@@ -9,6 +9,7 @@ repository = "https://github.com/aidan-bailey/tuple-trie"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+csv = "1.1"
 
 [[bench]]
 name = "main"

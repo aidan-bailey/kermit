@@ -1,4 +1,6 @@
-use crate::node::{Internal, Node, TrieFields};
+use crate::{node::{Internal, Node, TrieFields}, variable_type::VariableType};
+use csv::{self, Error};
+use std::{fmt::Debug, fs::File, io::Read, mem::Discriminant, path::Path, str::FromStr};
 
 /// Trie root
 pub struct Trie<KT: PartialOrd + PartialEq> {
@@ -21,6 +23,31 @@ impl<KT: PartialOrd + PartialEq> Trie<KT> {
             trie.insert(tuple).unwrap();
         }
         trie
+    }
+
+    pub fn from_file<KT2: PartialOrd + PartialEq + FromStr + Debug, P: AsRef<Path>>(arity: usize, filepath: P) -> Result<Trie<KT2>, Error> {
+        let file = File::open(filepath)?;
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .delimiter(b',')
+            .double_quote(false)
+            .escape(Some(b'\\'))
+            .flexible(false)
+            .comment(Some(b'#'))
+            .from_reader(file);
+        let mut tuples = vec![];
+        for result in rdr.records() {
+            let record = result?;
+            let mut tuple: Vec<KT2> = vec![];
+            for x in record.iter() {
+                if let Ok(y) =  x.to_string().parse::<KT2>() {
+                    tuple.push(y);
+                }
+            }
+            tuples.push(tuple);
+        }
+        let trie = Trie::<KT2>::from_tuples(arity, tuples);
+        Ok(trie)
     }
 
     pub fn insert(&mut self, mut tuple: Vec<KT>) -> Result<(), &'static str> {
