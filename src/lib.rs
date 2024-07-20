@@ -155,7 +155,7 @@ mod tests {
     // Read from file
     #[test]
     fn trie_read_from_file() {
-        let trie = Trie::<String>::from_file::<String, &str>(3, "Test.csv").unwrap();
+        let trie = Trie::<String>::from_file::<String, &str>(3, "test.csv").unwrap();
         assert_eq!(trie.children()[0].key(), "1");
         assert_eq!(trie.children()[1].key(), "3");
         assert_eq!(trie.children()[0].children()[0].key(), "3");
