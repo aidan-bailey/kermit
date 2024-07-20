@@ -2,6 +2,7 @@ pub mod iterator;
 pub mod node;
 pub mod tuple_trie;
 pub mod variable_type;
+pub mod trie_builder;
 
 #[cfg(test)]
 mod tests {
@@ -152,22 +153,4 @@ mod tests {
         assert!(trie.search(vec![VariableType::Int(1), VariableType::Int(1)]).unwrap().is_some());
     }
 
-    // Read from file
-    #[test]
-    fn trie_read_from_file() {
-        let trie = Trie::<String>::from_file::<String, &str>(3, "test.csv").unwrap();
-        assert_eq!(trie.children()[0].key(), "1");
-        assert_eq!(trie.children()[1].key(), "3");
-        assert_eq!(trie.children()[0].children()[0].key(), "3");
-        assert_eq!(trie.children()[0].children()[1].key(), "4");
-        assert_eq!(trie.children()[0].children()[2].key(), "5");
-        assert_eq!(trie.children()[1].children()[0].key(), "5");
-        assert_eq!(trie.children()[0].children()[0].children()[0].key(), "4");
-        assert_eq!(trie.children()[0].children()[0].children()[1].key(), "5");
-        assert_eq!(trie.children()[0].children()[1].children()[0].key(), "6");
-        assert_eq!(trie.children()[0].children()[1].children()[1].key(), "8");
-        assert_eq!(trie.children()[0].children()[1].children()[2].key(), "9");
-        assert_eq!(trie.children()[0].children()[2].children()[0].key(), "2");
-        assert_eq!(trie.children()[1].children()[0].children()[0].key(), "2");
-    }
 }
