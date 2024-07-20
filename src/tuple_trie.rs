@@ -1,6 +1,4 @@
-use crate::{node::{Internal, Node, TrieFields}, variable_type::VariableType};
-use csv::{self, Error};
-use std::{fmt::Debug, fs::File, io::Read, mem::Discriminant, path::Path, str::FromStr};
+use crate::node::{Internal, Node, TrieFields};
 
 /// Trie root
 pub struct Trie<KT: PartialOrd + PartialEq> {

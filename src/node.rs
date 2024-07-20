@@ -85,7 +85,6 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq>: TrieFields<KT> {
                 let node = Node::with_reverse_keys(key, keys);
                 self.children_mut().push(node);
             } else {
-
                 let mut l: usize = 0;
                 let mut r: usize = self.children().len() - 1;
                 while l <= r {
@@ -94,7 +93,8 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq>: TrieFields<KT> {
                         l = m + 1;
                     } else if self.children()[m].key() > &key {
                         if m == 0 {
-                            self.children_mut().insert(m, Node::with_reverse_keys(key, keys));
+                            self.children_mut()
+                                .insert(m, Node::with_reverse_keys(key, keys));
                             return;
                         }
                         r = m - 1;
@@ -104,11 +104,11 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq>: TrieFields<KT> {
                 }
 
                 if l < self.children().len() {
-                    self.children_mut().insert(l, Node::with_reverse_keys(key, keys));
+                    self.children_mut()
+                        .insert(l, Node::with_reverse_keys(key, keys));
                 } else {
                     self.children_mut().push(Node::with_reverse_keys(key, keys));
                 }
-
             }
         }
     }
@@ -243,5 +243,4 @@ mod tests {
         assert_eq!(node.children()[2].children()[0].children()[0].key(), &4);
         assert_eq!(node.children()[2].children()[0].children()[0].arity(), 0);
     }
-
 }
