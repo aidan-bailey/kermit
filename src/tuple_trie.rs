@@ -1,12 +1,12 @@
 use crate::node::{Internal, Node, TrieFields};
 
 /// Trie root
-pub struct Trie<KT: Ord> {
+pub struct Trie<KT: PartialOrd + PartialEq> {
     arity: usize,
     children: Vec<Node<KT>>,
 }
 
-impl<KT: Ord> Trie<KT> {
+impl<KT: PartialOrd + PartialEq> Trie<KT> {
     /// Construct an empty Trie
     pub fn new(arity: usize) -> Trie<KT> {
         Trie {
@@ -48,7 +48,7 @@ impl<KT: Ord> Trie<KT> {
     }
 }
 
-impl<KT: Ord> TrieFields<KT> for Trie<KT> {
+impl<KT: PartialOrd + PartialEq> TrieFields<KT> for Trie<KT> {
     fn children(&self) -> &Vec<Node<KT>> {
         &self.children
     }
@@ -57,7 +57,7 @@ impl<KT: Ord> TrieFields<KT> for Trie<KT> {
     }
 }
 
-impl<KT: Ord> Internal<KT> for Trie<KT> {
+impl<KT: PartialOrd + PartialEq> Internal<KT> for Trie<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
         &mut self.children
     }
