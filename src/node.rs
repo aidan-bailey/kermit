@@ -42,6 +42,16 @@ impl<KT: PartialOrd + PartialEq> Node<KT> {
         }
     }
 
+    fn with_deque_tuple(key: KT, mut tuple: VecDeque<KT>) -> Node<KT> {
+        if let Some(next_key) = tuple.pop_back() {
+            let child = Node::with_deque_tuple(next_key, tuple);
+            let node = Node::with_child(key, child);
+            node
+        } else {
+            Node::new(key)
+        }
+    }
+
     /// Returns the Node's key
     pub fn key(&self) -> &KT {
         &self.key
