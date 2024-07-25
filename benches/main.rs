@@ -74,9 +74,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         BenchParams::new(32768, 3, i32::MIN, i32::MAX),
         BenchParams::new(65536, 3, i32::MIN, i32::MAX),
         BenchParams::new(131072, 3, i32::MIN, i32::MAX),
-        BenchParams::new(262144, 3, i32::MIN, i32::MAX),
-        BenchParams::new(524288, 3, i32::MIN, i32::MAX),
-        BenchParams::new(1048576, 3, i32::MIN, i32::MAX),
+        //BenchParams::new(262144, 3, i32::MIN, i32::MAX),
+        //BenchParams::new(524288, 3, i32::MIN, i32::MAX),
+        //BenchParams::new(1048576, 3, i32::MIN, i32::MAX),
     ];
 
     for bench_param in bench_params {
