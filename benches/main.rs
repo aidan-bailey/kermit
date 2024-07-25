@@ -52,9 +52,7 @@ impl<T: PartialOrd + SampleUniform + Copy + std::fmt::Display> BenchParams<T> {
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("insertion");
-    group.sampling_mode(criterion::SamplingMode::Linear);
-    group.sample_size(10);
+
     let bench_params = vec![
         BenchParams::new(1, 3, i32::MIN, i32::MAX),
         BenchParams::new(2, 3, i32::MIN, i32::MAX),
@@ -79,18 +77,22 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         //BenchParams::new(1048576, 3, i32::MIN, i32::MAX),
     ];
 
-    for bench_param in bench_params {
-        group.bench_with_input(BenchmarkId::from_parameter(bench_param.to_string()), &bench_param, |b, bench_param| {
+    let mut insertion_group = c.benchmark_group("insertion");
+    insertion_group.sampling_mode(criterion::SamplingMode::Linear);
+    insertion_group.sample_size(10);
+    for bench_param in &bench_params {
+        insertion_group.bench_with_input(BenchmarkId::from_parameter(bench_param.to_string()), &bench_param, |b, bench_param| {
             b.iter_batched(
                 || {
                     generate_tuples(bench_param)
                 },
-                |tuples| black_box(Trie::from_tuples(bench_param.arity, tuples)),
-                BatchSize::NumIterations(1),
+                |tuples| black_box(Trie::from_tuples_presort(bench_param.arity, tuples)),
+                BatchSize::SmallInput,
             )
         });
     }
-    group.finish();
+    insertion_group.finish();
+
 }
 
 criterion_group!(benches, criterion_benchmark);
