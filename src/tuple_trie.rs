@@ -44,7 +44,7 @@ impl<KT: PartialOrd + PartialEq> Trie<KT> {
             return Err("Arity doesn't match.");
         }
 
-        self.insert_internal(tuple);
+        self.insert_linear(tuple);
 
         Ok(())
     }
