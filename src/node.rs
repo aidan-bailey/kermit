@@ -85,10 +85,10 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq>: TrieFields<KT> {
                 current_children = current_children[0].children_mut();
             } else {
                 for i in 0..current_children.len() {
-                    if key == *current_children[i].key() {
+                    if &key == current_children[i].key() {
                         current_children = current_children[i].children_mut();
                         break;
-                    } else if key < *current_children[i].key() {
+                    } else if &key < current_children[i].key() {
                         current_children.insert(i, Node::new(key));
                         current_children = current_children[i].children_mut();
                         break;
