@@ -35,38 +35,6 @@ impl<KT: PartialOrd + PartialEq> Node<KT> {
         }
     }
 
-    /// Construct a Node with a tuple-value key and a child
-    fn with_child(key: KT, child: Node<KT>) -> Node<KT> {
-        Node {
-            arity: child.arity() + 1,
-            key,
-            children: vec![child],
-        }
-    }
-
-    /// Construct a Node with a tuple-value key and a child
-    ///
-    /// EXPECTS KEYS TO BE REVERSED!!!!
-    fn with_reverse_keys(key: KT, mut keys: Vec<KT>) -> Node<KT> {
-        if let Some(next_key) = keys.pop() {
-            let child = Node::with_reverse_keys(next_key, keys);
-            let node = Node::with_child(key, child);
-            node
-        } else {
-            Node::new(key)
-        }
-    }
-
-    fn with_deque_tuple(key: KT, mut tuple: VecDeque<KT>) -> Node<KT> {
-        if let Some(next_key) = tuple.pop_back() {
-            let child = Node::with_deque_tuple(next_key, tuple);
-            let node = Node::with_child(key, child);
-            node
-        } else {
-            Node::new(key)
-        }
-    }
-
     /// Returns the Node's key
     pub fn key(&self) -> &KT {
         &self.key
@@ -104,35 +72,31 @@ impl<KT: PartialOrd + PartialEq> TrieFields<KT> for Node<KT> {
 pub(crate) trait Internal<KT: PartialOrd + PartialEq>: TrieFields<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
-    fn insert_deque(&mut self, mut keys: Vec<KT>) {
-        if let Some(key) = keys.pop() {
-            if self.is_empty() {
-                let node = Node::with_reverse_keys(key, keys);
-                self.children_mut().push(node);
-            } else {
-                let mut l: usize = 0;
-                let mut r: usize = self.children().len() - 1;
-                while l <= r {
-                    let m: usize = (l + r) / 2;
-                    if self.children()[m].key() < &key {
-                        l = m + 1;
-                    } else if self.children()[m].key() > &key {
-                        if m == 0 {
-                            self.children_mut()
-                                .insert(m, Node::with_reverse_keys(key, keys));
-                            return;
-                        }
-                        r = m - 1;
-                    } else {
-                        return self.children_mut()[m].insert_deque(keys);
-                    }
-                }
+    fn insert_internal(&mut self, tuple: Vec<KT>) {
+        if tuple.is_empty() {
+            return;
+        }
 
-                if l < self.children().len() {
-                    self.children_mut()
-                        .insert(l, Node::with_reverse_keys(key, keys));
-                } else {
-                    self.children_mut().push(Node::with_reverse_keys(key, keys));
+        let mut current_children = self.children_mut();
+
+        for key in tuple.into_iter() {
+            if current_children.is_empty() {
+                current_children.push(Node::new(key));
+                current_children = current_children[0].children_mut();
+            } else {
+                for i in 0..current_children.len() {
+                    if key == *current_children[i].key() {
+                        current_children = current_children[i].children_mut();
+                        break;
+                    } else if key < *current_children[i].key() {
+                        current_children.insert(i, Node::new(key));
+                        current_children = current_children[i].children_mut();
+                        break;
+                    } else if i == current_children.len() - 1 {
+                        current_children.push(Node::new(key));
+                        current_children = current_children[i + 1].children_mut();
+                        break;
+                    }
                 }
             }
         }
@@ -191,23 +155,17 @@ mod tests {
 
     #[test]
     fn node_with_child() {
-        let node = Node::with_child(1, Node::new(2));
+        let node = {
+            let child = Node::new(2);
+            Node {
+                arity: child.arity() + 1,
+                key: 1,
+                children: vec![child],
+            }
+        };
         assert_eq!(node.key(), &1);
         assert_eq!(node.arity(), 1);
         assert_eq!(node.children()[0].key(), &2);
-    }
-
-    #[test]
-    fn node_with_keys_deque() {
-        let node = Node::with_reverse_keys(1, vec![1, 3, 2].into());
-        assert_eq!(node.key(), &1);
-        assert_eq!(node.arity(), 3);
-        assert_eq!(node.children()[0].key(), &2);
-        assert_eq!(node.children()[0].arity(), 2);
-        assert_eq!(node.children()[0].children()[0].key(), &3);
-        assert_eq!(node.children()[0].children()[0].arity(), 1);
-        assert_eq!(node.children()[0].children()[0].children()[0].key(), &1);
-        assert_eq!(node.children()[0].children()[0].children()[0].arity(), 0);
     }
 
     // TrieFields implementation tests
@@ -236,36 +194,27 @@ mod tests {
     // Internal implementation tests
 
     #[test]
-    fn node_insert_deque() {
-        let mut node = Node::new(1);
+    fn node_insert() {
+        let mut node = Node::new(3);
 
         // Basic
-        node.insert_deque(vec![1, 3, 2].into());
-        assert_eq!(node.children()[0].key(), &2);
-        assert_eq!(node.children()[0].arity(), 2);
-        assert_eq!(node.children()[0].children()[0].key(), &3);
-        assert_eq!(node.children()[0].children()[0].arity(), 1);
-        assert_eq!(node.children()[0].children()[0].children()[0].key(), &1);
-        assert_eq!(node.children()[0].children()[0].children()[0].arity(), 0);
+        node.insert_internal(vec![2, 3, 1]);
+        assert_eq!(node[0].key(), &2);
+        assert_eq!(node[0][0].key(), &3);
+        assert_eq!(node[0][0][0].key(), &1);
 
         // First level
 
         // Left Top
-        node.insert_deque(vec![4, 3, 1].into());
-        assert_eq!(node.children()[0].key(), &1);
-        assert_eq!(node.children()[0].arity(), 2);
-        assert_eq!(node.children()[0].children()[0].key(), &3);
-        assert_eq!(node.children()[0].children()[0].arity(), 1);
-        assert_eq!(node.children()[0].children()[0].children()[0].key(), &4);
-        assert_eq!(node.children()[0].children()[0].children()[0].arity(), 0);
+        node.insert_internal(vec![1, 3, 4]);
+        assert_eq!(node[0].key(), &1);
+        assert_eq!(node[0][0].key(), &3);
+        assert_eq!(node[0][0][0].key(), &4);
 
         // Right top
-        node.insert_deque(vec![4, 3, 3].into());
-        assert_eq!(node.children()[2].key(), &3);
-        assert_eq!(node.children()[2].arity(), 2);
-        assert_eq!(node.children()[2].children()[0].key(), &3);
-        assert_eq!(node.children()[2].children()[0].arity(), 1);
-        assert_eq!(node.children()[2].children()[0].children()[0].key(), &4);
-        assert_eq!(node.children()[2].children()[0].children()[0].arity(), 0);
+        node.insert_internal(vec![3, 3, 4]);
+        assert_eq!(node[2].key(), &3);
+        assert_eq!(node[2][0].key(), &3);
+        assert_eq!(node[2][0][0].key(), &4);
     }
 }
