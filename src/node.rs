@@ -147,18 +147,30 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq>: TrieFields<KT> {
         }
     }
 
-    fn search_deque(&self, mut keys: VecDeque<KT>) -> Option<&Node<KT>> {
-        if let Some(key) = keys.pop_front() {
-            for child in self.children() {
-                if key == *child.key() {
-                    return if keys.is_empty() {
-                        Some(&child)
-                    } else {
-                        child.search_deque(keys)
-                    };
+    fn search_linear(&self, tuple: Vec<KT>) -> Option<&Node<KT>> {
+
+        if tuple.is_empty() {
+            return None;
+        }
+
+        let mut current_children = self.children();
+
+        for key in tuple.into_iter() {
+            if current_children.is_empty() {
+                return None;
+            } else {
+                for i in 0..current_children.len() {
+                    if &key == current_children[i].key() {
+                        if current_children[i].children().is_empty() {
+                            return Some(&current_children[i]);
+                        }
+                        current_children = current_children[i].children();
+                        break;
+                    }
                 }
             }
         }
+
         None
     }
 
@@ -239,7 +251,7 @@ mod tests {
     // Internal implementation tests
 
     #[test]
-    fn node_insert() {
+    fn node_insert_linear() {
         let mut node = Node::new(3);
 
         // Basic
@@ -264,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn node_binary() {
+    fn node_insert_binary() {
         let mut node = Node::new(3);
 
         // Basic

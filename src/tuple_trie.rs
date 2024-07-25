@@ -50,7 +50,7 @@ impl<KT: PartialOrd + PartialEq> Trie<KT> {
         if tuple.len() != self.arity {
             return Err("Arity doesn't match.");
         }
-        Ok(self.search_deque(tuple.into()))
+        Ok(self.search_linear(tuple))
     }
 
     pub fn remove(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
