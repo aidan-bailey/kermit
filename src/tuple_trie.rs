@@ -1,9 +1,18 @@
 use crate::node::{Internal, Node, TrieFields};
+use std::ops::{Index, IndexMut};
 
 /// Trie root
 pub struct Trie<KT: PartialOrd + PartialEq> {
     arity: usize,
     children: Vec<Node<KT>>,
+}
+
+impl<KT: PartialOrd + PartialEq> Index<usize> for Trie<KT> {
+    type Output = Node<KT>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.children()[index]
+    }
 }
 
 impl<KT: PartialOrd + PartialEq> Trie<KT> {
