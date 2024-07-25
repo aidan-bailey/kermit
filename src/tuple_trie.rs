@@ -1,5 +1,5 @@
 use crate::node::{Internal, Node, TrieFields};
-use std::ops::{Index, IndexMut};
+use std::ops::Index;
 
 /// Trie root
 pub struct Trie<KT: PartialOrd + PartialEq> {
