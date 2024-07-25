@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::ops::Index;
 
 /// Trie node
 pub struct Node<KT: PartialOrd + PartialEq> {
@@ -8,6 +9,14 @@ pub struct Node<KT: PartialOrd + PartialEq> {
     key: KT,
     /// Children
     children: Vec<Node<KT>>,
+}
+
+impl<KT: PartialOrd + PartialEq> Index<usize> for Node<KT> {
+    type Output = Node<KT>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.children()[index]
+    }
 }
 
 impl<KT: PartialOrd + PartialEq> Node<KT> {
