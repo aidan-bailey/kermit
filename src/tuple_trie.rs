@@ -1,5 +1,5 @@
 use crate::node::{Internal, Node, TrieFields};
-use std::ops::Index;
+use std::ops::{Index, IndexMut};
 
 /// Trie root
 pub struct Trie<KT: PartialOrd + PartialEq> {
@@ -12,6 +12,12 @@ impl<KT: PartialOrd + PartialEq> Index<usize> for Trie<KT> {
 
     fn index(&self, index: usize) -> &Self::Output {
         &self.children()[index]
+    }
+}
+
+impl<KT: PartialOrd + PartialEq> IndexMut<usize> for Trie<KT> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.children_mut()[index]
     }
 }
 

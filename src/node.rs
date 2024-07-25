@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::ops::Index;
+use std::ops::{Index, IndexMut};
 
 /// Trie node
 pub struct Node<KT: PartialOrd + PartialEq> {
@@ -16,6 +16,12 @@ impl<KT: PartialOrd + PartialEq> Index<usize> for Node<KT> {
 
     fn index(&self, index: usize) -> &Self::Output {
         &self.children()[index]
+    }
+}
+
+impl<KT: PartialOrd + PartialEq> IndexMut<usize> for Node<KT> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.children_mut()[index]
     }
 }
 
