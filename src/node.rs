@@ -84,23 +84,30 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq>: TrieFields<KT> {
                 current_children.push(Node::new(key));
                 current_children = current_children[0].children_mut();
             } else {
-                for i in 0..current_children.len() {
+                for i in (0..current_children.len()).rev() {
                     if &key == current_children[i].key() {
                         current_children = current_children[i].children_mut();
                         break;
-                    } else if &key < current_children[i].key() {
-                        current_children.insert(i, Node::new(key));
-                        current_children = current_children[i].children_mut();
-                        break;
-                    } else if i == current_children.len() - 1 {
-                        current_children.push(Node::new(key));
-                        current_children = current_children[i + 1].children_mut();
+                    } else if &key > current_children[i].key() {
+                        if i == current_children.len() - 1 {
+                            current_children.push(Node::new(key));
+                            current_children = current_children[i + 1].children_mut();
+                            break;
+                        } else {
+                            current_children.insert(i, Node::new(key));
+                            current_children = current_children[i].children_mut();
+                            break;
+                        }
+                    } else if i == 0 {
+                        current_children.insert(0, Node::new(key));
+                        current_children = current_children[0].children_mut();
                         break;
                     }
                 }
             }
         }
     }
+
 
     fn insert_binary(&mut self, tuple: Vec<KT>) {
         if tuple.is_empty() {
