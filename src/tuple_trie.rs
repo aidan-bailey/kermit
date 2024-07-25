@@ -39,7 +39,7 @@ impl<KT: PartialOrd + PartialEq> Trie<KT> {
     }
 
     pub fn from_tuples_presort(arity: usize, mut tuples: Vec<Vec<KT>>) -> Trie<KT> {
-        tuples.sort_by(|a, b| {
+        tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
                 if a[i] < b[i] {
                     return std::cmp::Ordering::Less;
