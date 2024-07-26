@@ -7,11 +7,12 @@ pub mod trie_builder;
 #[cfg(test)]
 mod tests {
     use crate::{
-        iterator::{TrieIter, TrieIterator},
+        iterator::TrieIter,
         node::TrieFields,
         tuple_trie::Trie,
         variable_type::VariableType,
     };
+    use kermit_iters::trie::TrieIterator;
 
     #[test]
     fn trie_new() {
