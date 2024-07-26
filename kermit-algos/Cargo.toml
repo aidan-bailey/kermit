@@ -10,3 +10,4 @@ readme = "README.md"
 repository.workspace = true
 
 [dependencies]
+kermit-iters = { path = "../kermit-iters" }
