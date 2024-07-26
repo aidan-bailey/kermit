@@ -1,5 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use tuple_trie::{iterator::{TrieIter, TrieIterator}, tuple_trie::Trie};
+use tuple_trie::{
+    iterator::{TrieIter, TrieIterator},
+    tuple_trie::Trie,
+};
 
 use rand::{distributions::uniform::SampleUniform, Rng};
 
