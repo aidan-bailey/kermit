@@ -121,13 +121,11 @@ impl<'a, KT: PartialOrd + PartialEq> TrieIterator<KT> for TrieIter<'a, KT> {
             } else {
                 Err("Node is empty")
             }
+        } else if self.trie.is_empty() {
+            Err("Empty trie")
         } else {
-            if self.trie.is_empty() {
-                Err("Empty trie")
-            } else {
-                self.stack.push((&self.trie.children()[0], 0));
-                Ok(())
-            }
+            self.stack.push((&self.trie.children()[0], 0));
+            Ok(())
         }
     }
 
