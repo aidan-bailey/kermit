@@ -11,3 +11,6 @@ repository.workspace = true
 
 [dependencies]
 kermit-iters = { path = "../kermit-iters" }
+
+[dev-dependencies]
+kermit-ds = { path = "../kermit-ds" }
