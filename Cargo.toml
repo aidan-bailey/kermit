@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "kermit-algos",
     "kermit-ds",
     "kermit-iters"
 ]
