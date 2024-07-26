@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "kermit-ds",
+    "kermit-iters"
 ]
 
 [workspace.package]
