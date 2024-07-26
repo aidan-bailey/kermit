@@ -8,7 +8,7 @@ pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
     fn search(&mut self);
     fn seek(&mut self, seek_key: &KT);
     fn open(&mut self);
-    fn up(&mut self) -> bool;
+    fn up(&mut self);
 }
 
 pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> {
@@ -41,13 +41,6 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         self.iters.len()
     }
 
-    fn iters(&self) -> &Vec<IT> {
-        &self.iters
-    }
-
-    fn iters_mut(&mut self) -> &mut Vec<IT> {
-        &mut self.iters
-    }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<KT>
@@ -61,10 +54,11 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     }
 
     fn search(&mut self) {
-        while true {
-            let x_prime = self.iters[(self.p - 1) % self.k()]
-                .key()
-                .expect("Not at root").clone();
+        let prime_i = if self.p == 0 {self.k() - 1} else {self.p - 1};
+        let mut x_prime = self.iters[prime_i]
+            .key()
+            .expect("Not at root").clone();
+        loop {
             let x = self.iters[self.p].key().expect("Not at root");
             if x == &x_prime {
                 return;
@@ -72,6 +66,10 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             self.iters[self.p].seek(&x_prime).expect("Happy");
             if self.iters[self.p].at_end() {
                 return;
+            }
+            else {
+                x_prime = self.iters[self.p].key().expect("Not at root").clone();
+                self.p = if self.p == usize::MAX {0} else {self.p + 1};
             }
         }
     }
@@ -94,10 +92,16 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     }
 
     fn open(&mut self) {
-        todo!()
+        for iter in &mut self.iters {
+            iter.open().expect("Open should succeed");
+        }
+        self.init();
     }
 
-    fn up(&mut self) -> bool {
-        todo!()
+    fn up(&mut self) {
+        for iter in &mut self.iters {
+            iter.up().expect("Up should succeed");
+        }
+        self.init()
     }
 }
