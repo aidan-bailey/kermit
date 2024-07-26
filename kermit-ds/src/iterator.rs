@@ -74,6 +74,8 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, 
                 while (!self.at_end()) && seek_key > siblings[self.pos].key() {
                     self.pos += 1;
                 }
+                self.stack.pop();
+                self.stack.push((&siblings[self.pos], self.pos));
                 Ok(())
             }
         } else {
