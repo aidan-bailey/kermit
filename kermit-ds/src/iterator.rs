@@ -56,7 +56,7 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, 
                 self.pos = newpos;
                 Ok(())
             } else {
-                Err("At end")
+                Ok(())
             }
         } else {
             Err("At root")
@@ -64,6 +64,11 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, 
     }
 
     fn seek(&mut self, seek_key: &KT) -> Result<(), &'static str> {
+
+        if self.at_end() {
+            return Ok(());
+        }
+
         if let Ok(current_key) = self.key() {
             if current_key > seek_key {
                 Err("The sought key must be ≥ the key at the current position.")
@@ -74,6 +79,11 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, 
                 while (!self.at_end()) && seek_key > siblings[self.pos].key() {
                     self.pos += 1;
                 }
+
+                if self.at_end() {
+                    return Ok(());
+                }
+
                 self.stack.pop();
                 self.stack.push((&siblings[self.pos], self.pos));
                 Ok(())
@@ -85,7 +95,7 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, 
 
     fn at_end(&self) -> bool {
         if let Some(siblings) = self.siblings() {
-            self.pos + 1 > siblings.len() - 1
+            self.pos == siblings.len()
         } else {
             true
         }
