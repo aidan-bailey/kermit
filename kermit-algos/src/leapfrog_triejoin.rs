@@ -96,7 +96,11 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     fn next(&mut self) -> Result<(), &'static str> {
         self.iters[self.p].next().expect("Happy");
         if !self.iters[self.p].at_end() {
-            self.p = self.p + 1 % self.k();
+            self.p = if self.p == self.k() - 1 {
+                0
+            } else {
+                self.p + 1
+            };
             self.search();
         }
         Ok(())
@@ -105,7 +109,11 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     fn seek(&mut self, seek_key: &KT) {
         self.iters[self.p].seek(seek_key).expect("Happy");
         if !self.iters[self.p].at_end() {
-            self.p = self.p + 1 % self.k();
+            self.p = if self.p == self.k() - 1 {
+                0
+            } else {
+                self.p + 1
+            };
             self.search();
         }
     }
