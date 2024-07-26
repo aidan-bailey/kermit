@@ -1,8 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use kermit_ds::{
-    iterator::{TrieIter, TrieIterator},
+    iterator::TrieIter,
     tuple_trie::Trie,
 };
+use kermit_iters::trie::TrieIterator;
 
 use rand::{distributions::uniform::SampleUniform, Rng};
 
