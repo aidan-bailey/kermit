@@ -1,4 +1,3 @@
-# Tuple Trie
+# Kermit DS
 
-Trie data structure specialised for Tuples
-
+Data structures
