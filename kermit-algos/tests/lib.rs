@@ -1,13 +1,12 @@
-
 #[cfg(test)]
 mod tests {
-    use kermit_ds::{iterator::TrieIter, trie_builder::TrieBuilder};
     use kermit_algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator};
+    use kermit_ds::{iterator::TrieIter, trie_builder::TrieBuilder};
     use kermit_iters::trie::TrieIterator;
 
     // Variable types
     #[test]
-    fn trie_with_variable_type() {
+    fn figure1() {
         let trie_a = TrieBuilder::<i32>::new(1)
             .add_tuples(vec![
                 vec![0],
@@ -35,7 +34,6 @@ mod tests {
         let mut iter_c = TrieIter::new(&trie_c);
         iter_c.open();
         let mut triejoin = LeapfrogTriejoinIter::new(vec![iter_a, iter_b, iter_c]);
-        //assert_eq!(triejoin.next(), Some(8));
-        assert!(true);
+        assert_eq!(triejoin.key.unwrap(), 8);
     }
 }
