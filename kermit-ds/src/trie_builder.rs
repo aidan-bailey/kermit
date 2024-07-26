@@ -65,7 +65,7 @@ mod tests {
     // Read from file
     #[test]
     fn trie_builder_read_from_file() {
-        let trie = TrieBuilder::<String>::new(3).from_file::<&str>("Taxon Name Parent.csv").unwrap().build();
+        let trie = TrieBuilder::<String>::new(3).from_file::<&str>("test.csv").unwrap().build();
         assert_eq!(trie.children()[0].key(), "1");
         assert_eq!(trie.children()[1].key(), "3");
         assert_eq!(trie.children()[0].children()[0].key(), "3");
