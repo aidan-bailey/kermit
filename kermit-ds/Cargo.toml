@@ -1,0 +1,21 @@
+[package]
+name = "kermit-ds"
+description.workspace = true
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+
+[dependencies]
+csv = "1.1"
+
+[[bench]]
+name = "main"
+harness = false
+
+[dev-dependencies]
+criterion = "0.5.1"
+rand = "0.8.5"

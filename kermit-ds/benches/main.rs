@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use tuple_trie::{
+use kermit_ds::{
     iterator::{TrieIter, TrieIterator},
     tuple_trie::Trie,
 };

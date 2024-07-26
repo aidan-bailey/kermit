@@ -1,20 +1,15 @@
-[package]
-name = "tuple-trie"
-version = "0.0.1"
-edition = "2021"
+[workspace]
+resolver = "2"
+members = [
+    "kermit-ds",
+]
+
+[workspace.package]
+description = "Kermit, the Leapfrog Triejoin algorithm with associated data structures"
+version = "0.0.1-dev"
 authors = ["Aidan Bailey"]
-description = "Trie data structure specialised for Tuples"
-readme = "README.md"
-repository = "https://github.com/aidan-bailey/tuple-trie"
+edition = "2021"
+homepage = "https://github.com/aidan-bailey/kermit"
 license = "MIT OR Apache-2.0"
-
-[dependencies]
-csv = "1.1"
-
-[[bench]]
-name = "main"
-harness = false
-
-[dev-dependencies]
-criterion = "0.5.1"
-rand = "0.8.5"
+readme = "README.md"
+repository = "https://github.com/aidan-bailey/kermit"
