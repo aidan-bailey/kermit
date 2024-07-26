@@ -12,6 +12,7 @@ pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
 }
 
 pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> {
+    pub key: Option<KT>,
     p: usize,
     iters: Vec<IT>,
     phantom: PhantomData<KT>,
@@ -20,6 +21,7 @@ pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIter
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIter<KT, IT> {
     pub fn new(iters: Vec<IT>) -> Self {
         let mut iter = LeapfrogTriejoinIter {
+            key: None,
             p: 0,
             iters,
             phantom: PhantomData,
@@ -40,7 +42,6 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     fn k(&self) -> usize {
         self.iters.len()
     }
-
 }
 
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<KT>
@@ -48,28 +49,46 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
 {
     fn init(&mut self) {
         if !self.at_end() {
+            self.iters.sort_unstable_by(|a, b| {
+                let a_key = a.key().expect("Not at root");
+                let b_key = b.key().expect("Not at root");
+                if a_key < b_key {
+                    return std::cmp::Ordering::Less;
+                } else if a_key > b_key {
+                    return std::cmp::Ordering::Greater;
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            });
             self.p = 0;
             self.search();
         }
     }
 
     fn search(&mut self) {
-        let prime_i = if self.p == 0 {self.k() - 1} else {self.p - 1};
-        let mut x_prime = self.iters[prime_i]
-            .key()
-            .expect("Not at root").clone();
+        self.key = None;
+        let prime_i = if self.p == 0 {
+            self.k() - 1
+        } else {
+            self.p - 1
+        };
+        let mut x_prime = self.iters[prime_i].key().expect("Not at root").clone();
         loop {
             let x = self.iters[self.p].key().expect("Not at root");
             if x == &x_prime {
+                self.key = Some(x_prime);
                 return;
             }
             self.iters[self.p].seek(&x_prime).expect("Happy");
             if self.iters[self.p].at_end() {
                 return;
-            }
-            else {
+            } else {
                 x_prime = self.iters[self.p].key().expect("Not at root").clone();
-                self.p = if self.p == usize::MAX {0} else {self.p + 1};
+                self.p = if self.p == self.k() - 1 {
+                    0
+                } else {
+                    self.p + 1
+                };
             }
         }
     }
