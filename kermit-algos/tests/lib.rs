@@ -7,33 +7,35 @@ mod tests {
     // Variable types
     #[test]
     fn figure1() {
-        let trie_a = TrieBuilder::<i32>::new(1)
-            .add_tuples(vec![
-                vec![0],
-                vec![1],
-                vec![3],
-                vec![4],
-                vec![5],
-                vec![6],
-                vec![7],
-                vec![8],
-                vec![9],
-                vec![11],
-            ])
-            .build();
-        let trie_b = TrieBuilder::<i32>::new(1)
-            .add_tuples(vec![vec![0], vec![2], vec![6], vec![7], vec![8], vec![9]])
-            .build();
-        let trie_c = TrieBuilder::<i32>::new(1)
-            .add_tuples(vec![vec![2], vec![4], vec![5], vec![8], vec![10]])
-            .build();
+        let trie_a = TrieBuilder::<i32>::new(1).from_file("tests/data/a.csv").unwrap().build();
+        let trie_b = TrieBuilder::<i32>::new(1).from_file("tests/data/b.csv").unwrap().build();
+        let trie_c = TrieBuilder::<i32>::new(1).from_file("tests/data/c.csv").unwrap().build();
         let mut iter_a = TrieIter::new(&trie_a);
-        iter_a.open();
+        iter_a.open().unwrap();
         let mut iter_b = TrieIter::new(&trie_b);
-        iter_b.open();
+        iter_b.open().unwrap();
         let mut iter_c = TrieIter::new(&trie_c);
-        iter_c.open();
+        iter_c.open().unwrap();
         let mut triejoin = LeapfrogTriejoinIter::new(vec![iter_a, iter_b, iter_c]);
         assert_eq!(triejoin.key.unwrap(), 8);
+    }
+
+    #[test]
+    fn full_join() {
+        let trie_a = TrieBuilder::<i32>::new(1).from_file("tests/data/onetoten.csv").unwrap().build();
+        let trie_b = TrieBuilder::<i32>::new(1).from_file("tests/data/onetoten.csv").unwrap().build();
+        let trie_c = TrieBuilder::<i32>::new(1).from_file("tests/data/onetoten.csv").unwrap().build();
+        let mut iter_a = TrieIter::new(&trie_a);
+        iter_a.open().unwrap();
+        let mut iter_b = TrieIter::new(&trie_b);
+        iter_b.open().unwrap();
+        let mut iter_c = TrieIter::new(&trie_c);
+        iter_c.open().unwrap();
+        let mut triejoin = LeapfrogTriejoinIter::new(vec![iter_a, iter_b, iter_c]);
+        assert_eq!(triejoin.key.unwrap(), 1);
+        for i in 2..11 {
+            triejoin.next().expect("Hello");
+            assert_eq!(triejoin.key.unwrap(), i);
+        }
     }
 }
