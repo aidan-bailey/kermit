@@ -2,7 +2,7 @@ use crate::node::{Node, TrieFields};
 use crate::tuple_trie::Trie;
 use kermit_iters::trie::TrieIterator;
 
-pub struct TrieIter<'a, KT: PartialOrd + PartialEq> {
+pub struct TrieIter<'a, KT: PartialOrd + PartialEq  + Clone> {
     /// Current Node's index amongst its siblings.
     pos: usize,
     /// Trie that is being iterated.
@@ -14,7 +14,7 @@ pub struct TrieIter<'a, KT: PartialOrd + PartialEq> {
     stack: Vec<(&'a Node<KT>, usize)>,
 }
 
-impl<'a, KT: PartialOrd + PartialEq> TrieIter<'a, KT> {
+impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIter<'a, KT> {
     /// Construct a new Trie iterator.
     pub fn new(trie: &'a Trie<KT>) -> Self {
         TrieIter {
@@ -38,7 +38,7 @@ impl<'a, KT: PartialOrd + PartialEq> TrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq> TrieIterator<KT> for TrieIter<'a, KT> {
+impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, KT> {
     fn key(&self) -> Result<&KT, &'static str> {
         if let Some((node, _)) = self.stack.last() {
             Ok(node.key())

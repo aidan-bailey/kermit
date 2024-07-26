@@ -4,12 +4,12 @@ use csv::Error;
 
 use crate::tuple_trie::Trie;
 
-pub struct TrieBuilder<KT: PartialOrd + PartialEq + FromStr + Debug> {
+pub struct TrieBuilder<KT: PartialOrd + PartialEq  + Clone + FromStr + Debug> {
     arity: usize,
     tuples: Vec<Vec<KT>>,
 }
 
-impl<KT: PartialOrd + PartialEq + FromStr + Debug> TrieBuilder<KT> {
+impl<KT: PartialOrd + PartialEq  + Clone + FromStr + Debug> TrieBuilder<KT> {
 
     pub fn new(arity: usize) -> TrieBuilder<KT> {
         TrieBuilder {

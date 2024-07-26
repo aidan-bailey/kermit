@@ -1,5 +1,5 @@
 /// Trie iterator interface.
-pub trait TrieIterator<KT: PartialOrd + PartialEq> {
+pub trait TrieIterator<KT: PartialOrd + PartialEq  + Clone> {
     /// If the cursor does not point to the root, returns the key of the node,
     /// otherwise returns Err.
     fn key(&self) -> Result<&KT, &'static str>;
