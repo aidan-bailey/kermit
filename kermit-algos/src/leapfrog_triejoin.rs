@@ -3,12 +3,13 @@ use std::marker::PhantomData;
 use kermit_iters::trie::TrieIterator;
 
 pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
-    fn init(&mut self);
+    fn init(&mut self) -> Result<(), &'static str>;
     fn next(&mut self) -> Result<(), &'static str>;
-    fn search(&mut self);
+    fn search(&mut self) -> Result<(), &'static str>;
     fn seek(&mut self, seek_key: &KT);
-    fn open(&mut self);
-    fn up(&mut self);
+    fn at_end(&self) -> bool;
+    fn open(&mut self) -> Result<(), &'static str>;
+    fn up(&mut self) -> Result<(), &'static str>;
 }
 
 pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> {
@@ -30,15 +31,6 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         iter
     }
 
-    fn at_end(&self) -> bool {
-        for iter in &self.iters {
-            if iter.at_end() {
-                return true;
-            }
-        }
-        false
-    }
-
     fn k(&self) -> usize {
         self.iters.len()
     }
@@ -47,7 +39,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<KT>
     for LeapfrogTriejoinIter<KT, IT>
 {
-    fn init(&mut self) {
+    fn init(&mut self) -> Result<(), &'static str> {
         if !self.at_end() {
             self.iters.sort_unstable_by(|a, b| {
                 let a_key = a.key().expect("Not at root");
@@ -61,11 +53,27 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
                 }
             });
             self.p = 0;
-            self.search();
+            self.search()
+        } else {
+            Ok(())
         }
     }
 
-    fn search(&mut self) {
+    fn next(&mut self) -> Result<(), &'static str> {
+        self.iters[self.p].next()?;
+        if !self.iters[self.p].at_end() {
+            self.p = if self.p == self.k() - 1 {
+                0
+            } else {
+                self.p + 1
+            };
+            self.search()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn search(&mut self) -> Result<(), &'static str> {
         self.key = None;
         let prime_i = if self.p == 0 {
             self.k() - 1
@@ -77,11 +85,11 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             let x = self.iters[self.p].key().expect("Not at root");
             if x == &x_prime {
                 self.key = Some(x_prime);
-                return;
+                break Ok(());
             }
             self.iters[self.p].seek(&x_prime).expect("Happy");
             if self.iters[self.p].at_end() {
-                return;
+                break Ok(());
             } else {
                 x_prime = self.iters[self.p].key().expect("Not at root").clone();
                 self.p = if self.p == self.k() - 1 {
@@ -93,41 +101,39 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         }
     }
 
-    fn next(&mut self) -> Result<(), &'static str> {
-        self.iters[self.p].next().expect("Happy");
+    fn seek(&mut self, seek_key: &KT) -> Result<(), &'static str> {
+        self.iters[self.p].seek(seek_key)?;
         if !self.iters[self.p].at_end() {
             self.p = if self.p == self.k() - 1 {
                 0
             } else {
                 self.p + 1
             };
-            self.search();
-        }
-        Ok(())
-    }
-
-    fn seek(&mut self, seek_key: &KT) {
-        self.iters[self.p].seek(seek_key).expect("Happy");
-        if !self.iters[self.p].at_end() {
-            self.p = if self.p == self.k() - 1 {
-                0
-            } else {
-                self.p + 1
-            };
-            self.search();
+            self.search()
+        } else {
+            Ok(())
         }
     }
 
-    fn open(&mut self) {
+    fn at_end(&self) -> bool {
+        for iter in &self.iters {
+            if iter.at_end() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn open(&mut self) -> Result<(), &'static str> {
         for iter in &mut self.iters {
-            iter.open().expect("Open should succeed");
+            iter.open()?;
         }
-        self.init();
+        self.init()
     }
 
-    fn up(&mut self) {
+    fn up(&mut self) -> Result<(), &'static str> {
         for iter in &mut self.iters {
-            iter.up().expect("Up should succeed");
+            iter.up()?;
         }
         self.init()
     }
