@@ -1,15 +1,15 @@
 use std::marker::PhantomData;
 
-use kermit_iters::trie::TrieIterator;
+use kermit_iters::trie::{TrieIterable, TrieIterator};
 
 pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn next(&mut self) -> Result<(), &'static str>;
-    fn search(&mut self) -> Result<(), &'static str>;
-    fn seek(&mut self, seek_key: &KT) -> Result<(), &'static str>;
+    fn init(&mut self) -> Option<&KT>;
+    fn next(&mut self) -> Option<&KT>;
+    fn search(&mut self) -> Option<&KT>;
+    fn seek(&mut self, seek_key: &KT) -> Option<&KT>;
     fn at_end(&self) -> bool;
-    fn open(&mut self) -> Result<(), &'static str>;
-    fn up(&mut self) -> Result<(), &'static str>;
+    fn open(&mut self) -> Option<&KT>;
+    fn up(&mut self) -> Option<&KT>;
 }
 
 pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> {
@@ -27,7 +27,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             iters,
             phantom: PhantomData,
         };
-        iter.init().expect("GIGO");
+        iter.init();
         iter
     }
 
@@ -39,7 +39,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<KT>
     for LeapfrogTriejoinIter<KT, IT>
 {
-    fn init(&mut self) -> Result<(), &'static str> {
+    fn init(&mut self) -> Option<&KT> {
         if !self.at_end() {
             self.iters.sort_unstable_by(|a, b| {
                 let a_key = a.key().expect("Not at root");
@@ -55,11 +55,11 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             self.p = 0;
             self.search()
         } else {
-            Ok(())
+            None
         }
     }
 
-    fn next(&mut self) -> Result<(), &'static str> {
+    fn next(&mut self) -> Option<&KT> {
         self.key = None;
         self.iters[self.p].next()?;
         if !self.iters[self.p].at_end() {
@@ -70,11 +70,11 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             };
             self.search()
         } else {
-            Ok(())
+            None
         }
     }
 
-    fn search(&mut self) -> Result<(), &'static str> {
+    fn search(&mut self) -> Option<&KT> {
         self.key = None;
         let prime_i = if self.p == 0 {
             self.k() - 1
@@ -86,11 +86,11 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             let x = self.iters[self.p].key().expect("Not at root");
             if x == &x_prime {
                 self.key = Some(x_prime);
-                break Ok(());
+                break self.key.as_ref();
             }
             self.iters[self.p].seek(&x_prime).expect("Happy");
             if self.iters[self.p].at_end() {
-                break Ok(());
+                break None;
             } else {
                 x_prime = self.iters[self.p].key().expect("Not at root").clone();
                 self.p = if self.p == self.k() - 1 {
@@ -102,7 +102,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         }
     }
 
-    fn seek(&mut self, seek_key: &KT) -> Result<(), &'static str> {
+    fn seek(&mut self, seek_key: &KT) -> Option<&KT> {
         self.iters[self.p].seek(seek_key)?;
         if !self.iters[self.p].at_end() {
             self.p = if self.p == self.k() - 1 {
@@ -112,7 +112,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             };
             self.search()
         } else {
-            Ok(())
+            None
         }
     }
 
@@ -125,17 +125,27 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         false
     }
 
-    fn open(&mut self) -> Result<(), &'static str> {
+    fn open(&mut self) -> Option<&KT> {
         for iter in &mut self.iters {
             iter.open()?;
         }
         self.init()
     }
 
-    fn up(&mut self) -> Result<(), &'static str> {
+    fn up(&mut self) -> Option<&KT> {
         for iter in &mut self.iters {
             iter.up()?;
         }
         self.init()
     }
+}
+
+pub fn leapfrog_triejoin<KT: PartialOrd + PartialEq + Clone>(
+    trie_iterables: Vec<&impl TrieIterable<KT>>,
+) {
+    let mut iters = trie_iterables
+        .into_iter()
+        .map(|t| t.trie_iter())
+        .collect::<Vec<_>>();
+    let mut iter = LeapfrogTriejoinIter::new(iters);
 }

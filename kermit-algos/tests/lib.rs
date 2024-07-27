@@ -52,8 +52,7 @@ mod tests {
         let mut triejoin = LeapfrogTriejoinIter::new(vec![iter_a, iter_b, iter_c]);
         assert_eq!(triejoin.key.unwrap(), 1);
         for i in 2..11 {
-            triejoin.next().expect("Hello");
-            assert_eq!(triejoin.key.unwrap(), i);
+            assert_eq!(triejoin.next().unwrap(), &i);
         }
     }
 
@@ -79,11 +78,9 @@ mod tests {
         iter_c.open().unwrap();
         let mut triejoin = LeapfrogTriejoinIter::new(vec![iter_a, iter_b, iter_c]);
         assert_eq!(triejoin.key.unwrap(), 7);
-        triejoin.next().expect("Hello");
-        assert_eq!(triejoin.key.unwrap(), 10);
-        triejoin.next().expect("Hello");
-        assert_eq!(triejoin.key.unwrap(), 20);
-        triejoin.next().expect("Hello");
+        assert_eq!(triejoin.next().unwrap(), &10);
+        assert_eq!(triejoin.next().unwrap(), &20);
+        assert!(triejoin.next().is_none());
         assert!(triejoin.at_end());
     }
 }

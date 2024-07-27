@@ -39,57 +39,61 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
 }
 
 impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, KT> {
-    fn key(&self) -> Result<&KT, &'static str> {
-        if let Some((node, _)) = self.stack.last() {
-            Ok(node.key())
+    fn key(&self) -> Option<&KT> {
+        if self.at_end() {
+            None
         } else {
-            Err("At root")
+            Some(
+                self.stack
+                    .last()
+                    .expect("Not at the Root or the end")
+                    .0
+                    .key(),
+            )
         }
     }
 
-    fn next(&mut self) -> Result<(), &'static str> {
+    fn next(&mut self) -> Option<&KT> {
         if let Some(siblings) = self.siblings() {
             self.pos += 1;
             if let Some(node) = siblings.get(self.pos) {
                 self.stack.pop();
                 self.stack.push((node, self.pos));
-                Ok(())
-            } else {
-                Ok(())
+                return Some(node.key());
             }
-        } else {
-            Err("At root")
         }
+        None
     }
 
-    fn seek(&mut self, seek_key: &KT) -> Result<(), &'static str> {
+    fn seek(&mut self, seek_key: &KT) -> Option<&KT> {
         if self.at_end() {
-            return Ok(());
+            return None;
         }
 
-        if let Ok(current_key) = self.key() {
+        if let Some(current_key) = self.key() {
             if current_key > seek_key {
-                Err("The sought key must be ≥ the key at the current position.")
+                panic!("The sought key must be ≥ the key at the current position.")
             } else {
                 // If there exists a key, there should ALWAYS be at least one sibling
                 // (i.e., the current node itself).
                 let siblings = self
                     .siblings()
                     .expect("If there exists a key, there should ALWAYS be at least one sibling");
+
                 while (!self.at_end()) && seek_key > siblings[self.pos].key() {
                     self.pos += 1;
                 }
 
                 if self.at_end() {
-                    return Ok(());
+                    None
+                } else {
+                    self.stack.pop();
+                    self.stack.push((&siblings[self.pos], self.pos));
+                    Some(siblings[self.pos].key())
                 }
-
-                self.stack.pop();
-                self.stack.push((&siblings[self.pos], self.pos));
-                Ok(())
             }
         } else {
-            Ok(())
+            None
         }
     }
 
@@ -101,33 +105,33 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, K
         }
     }
 
-    fn open(&mut self) -> Result<(), &'static str> {
+    fn open(&mut self) -> Option<&KT> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
                 self.stack.push((child, 0));
                 self.pos = 0;
-                Ok(())
+                Some(child.key())
             } else {
-                Err("Node is empty")
+                None
             }
         } else if self.trie.is_empty() {
-            Err("Empty trie")
+            None
         } else {
             self.stack.push((&self.trie.children()[0], 0));
-            Ok(())
+            Some(self.trie.children()[0].key())
         }
     }
 
-    fn up(&mut self) -> Result<(), &'static str> {
+    fn up(&mut self) -> Option<&KT> {
         if self.stack.pop().is_none() {
-            Err("At root")
+            None
         } else {
             self.pos = if let Some((_, i)) = self.stack.last() {
                 *i
             } else {
                 0
             };
-            Ok(())
+            self.key()
         }
     }
 }

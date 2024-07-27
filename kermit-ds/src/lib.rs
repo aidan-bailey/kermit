@@ -100,41 +100,20 @@ mod tests {
             .build();
         let mut iter = trie.trie_iter();
 
-        assert!(iter.open().is_ok());
-        assert_eq!(iter.key().unwrap(), &1);
-        assert!(iter.open().is_ok());
-        assert_eq!(iter.key().unwrap(), &3);
-        assert!(iter.open().is_ok());
-        assert_eq!(iter.key().unwrap(), &4);
-
-        assert!(iter.next().is_ok());
-        assert_eq!(iter.key().unwrap(), &5);
-
-        assert!(iter.up().is_ok());
-        assert_eq!(iter.key().unwrap(), &3);
-
-        assert!(iter.next().is_ok());
-        assert_eq!(iter.key().unwrap(), &4);
-
-        assert!(iter.open().is_ok());
-        assert_eq!(iter.key().unwrap(), &6);
-
-        assert!(iter.seek(&9).is_ok());
-
-        assert!(iter.up().is_ok());
-        assert_eq!(iter.key().unwrap(), &4);
-
-        assert!(iter.up().is_ok());
-        assert_eq!(iter.key().unwrap(), &1);
-
-        assert!(iter.next().is_ok());
-        assert_eq!(iter.key().unwrap(), &3);
-
-        assert!(iter.open().is_ok());
-        assert_eq!(iter.key().unwrap(), &5);
-        assert!(iter.open().is_ok());
-        assert_eq!(iter.key().unwrap(), &2);
-        assert!(iter.open().is_err());
+        assert_eq!(iter.open().unwrap(), &1);
+        assert_eq!(iter.open().unwrap(), &3);
+        assert_eq!(iter.open().unwrap(), &4);
+        assert_eq!(iter.next().unwrap(), &5);
+        assert_eq!(iter.up().unwrap(), &3);
+        assert_eq!(iter.next().unwrap(), &4);
+        assert_eq!(iter.open().unwrap(), &6);
+        assert!(iter.seek(&9).is_some());
+        assert_eq!(iter.up().unwrap(), &4);
+        assert_eq!(iter.up().unwrap(), &1);
+        assert_eq!(iter.next().unwrap(), &3);
+        assert_eq!(iter.open().unwrap(), &5);
+        assert_eq!(iter.open().unwrap(), &2);
+        assert!(iter.open().is_none());
     }
 
     // Variable types
