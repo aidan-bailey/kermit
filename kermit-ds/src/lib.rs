@@ -7,9 +7,10 @@ pub mod variable_type;
 #[cfg(test)]
 mod tests {
     use crate::{
-        iterator::TrieIter, node::TrieFields, tuple_trie::Trie, variable_type::VariableType,
+        iterator::TrieIter, node::TrieFields, trie_builder::TrieBuilder, tuple_trie::Trie,
+        variable_type::VariableType,
     };
-    use kermit_iters::trie::TrieIterator;
+    use kermit_iters::trie::{TrieIterable, TrieIterator};
 
     #[test]
     fn trie_new() {
@@ -88,17 +89,16 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let mut trie = Trie::<u64>::new(3);
-
-        assert!(trie.insert(vec![1, 3, 4]).is_ok());
-        assert!(trie.insert(vec![1, 3, 5]).is_ok());
-        assert!(trie.insert(vec![1, 4, 6]).is_ok());
-        assert!(trie.insert(vec![1, 4, 8]).is_ok());
-        assert!(trie.insert(vec![1, 4, 9]).is_ok());
-        assert!(trie.insert(vec![1, 5, 2]).is_ok());
-        assert!(trie.insert(vec![3, 5, 2]).is_ok());
-
-        let mut iter = TrieIter::new(&trie);
+        let trie = TrieBuilder::<u64>::new(3)
+            .add_tuple(vec![1, 3, 4])
+            .add_tuple(vec![1, 3, 5])
+            .add_tuple(vec![1, 4, 6])
+            .add_tuple(vec![1, 4, 8])
+            .add_tuple(vec![1, 4, 9])
+            .add_tuple(vec![1, 5, 2])
+            .add_tuple(vec![3, 5, 2])
+            .build();
+        let mut iter = trie.trie_iter();
 
         assert!(iter.open().is_ok());
         assert_eq!(iter.key().unwrap(), &1);
