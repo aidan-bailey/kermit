@@ -25,7 +25,7 @@ mod tests {
         iter_b.open().unwrap();
         let mut iter_c = TrieIter::new(&trie_c);
         iter_c.open().unwrap();
-        let mut triejoin = LeapfrogTriejoinIter::new(vec![iter_a, iter_b, iter_c]);
+        let triejoin = LeapfrogTriejoinIter::new(vec![iter_a, iter_b, iter_c]);
         assert_eq!(triejoin.key.unwrap(), 8);
     }
 
