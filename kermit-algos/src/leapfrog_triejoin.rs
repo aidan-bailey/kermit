@@ -141,11 +141,14 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
 }
 
 pub fn leapfrog_triejoin<KT: PartialOrd + PartialEq + Clone>(
-    trie_iterables: Vec<&impl TrieIterable<KT>>,
+    _trie_iterables: Vec<&impl TrieIterable<KT>>,
 ) {
-    let mut iters = trie_iterables
+    /* 
+    let iters = trie_iterables
         .into_iter()
         .map(|t| t.trie_iter())
         .collect::<Vec<_>>();
-    let mut iter = LeapfrogTriejoinIter::new(iters);
+    let iter = LeapfrogTriejoinIter::new(iters);
+    */
+    todo!();
 }

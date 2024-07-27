@@ -7,7 +7,7 @@ pub mod variable_type;
 #[cfg(test)]
 mod tests {
     use crate::{
-        iterator::TrieIter, node::TrieFields, trie_builder::TrieBuilder, tuple_trie::Trie,
+        node::TrieFields, trie_builder::TrieBuilder, tuple_trie::Trie,
         variable_type::VariableType,
     };
     use kermit_iters::trie::{TrieIterable, TrieIterator};

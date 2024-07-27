@@ -105,9 +105,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     |trie| {
                         black_box({
                             let mut iter = TrieIter::new(&trie);
-                            while iter.open().is_ok() {
-                                while !iter.at_end() {
-                                    iter.next();
+                            while iter.open().is_some() {
+                                while iter.next().is_some() {
                                 }
                             }
                         })
