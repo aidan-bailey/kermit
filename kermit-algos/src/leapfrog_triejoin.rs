@@ -120,14 +120,42 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
 }
 
 pub fn leapfrog_triejoin<KT: PartialOrd + PartialEq + Clone>(
-    _trie_iterables: Vec<&impl TrieIterable<KT>>,
-) {
-    /*
-    let iters = trie_iterables
+    trie_iterables: Vec<&impl TrieIterable<KT>>,
+) -> Vec<Vec<KT>> {
+    let mut iters = trie_iterables
         .into_iter()
         .map(|t| t.trie_iter())
         .collect::<Vec<_>>();
-    let iter = LeapfrogTriejoinIter::new(iters);
-    */
-    todo!();
+    for iter in &mut iters {
+        iter.open();
+    }
+    let mut iter = LeapfrogTriejoinIter::new(iters);
+
+    let mut results: Vec<Vec<KT>> = vec![];
+    let mut buffer: Vec<KT> = vec![];
+
+    let mut depth = 1;
+    while depth != 0 {
+        if iter.at_end() {
+            if iter.up().is_none() {
+                break;
+            } else {
+                buffer.pop();
+                depth -= 1;
+            }
+        } else {
+            if let Some(ref key) = iter.key {
+                buffer.push(key.clone());
+                if iter.open().is_none() {
+                    results.push(buffer.clone());
+                    buffer.pop();
+                    iter.next();
+                } else {
+                    depth += 1;
+                }
+            }
+        }
+    }
+
+    results
 }
