@@ -1,4 +1,4 @@
-use crate::node::{Internal, Node, TrieFields};
+use crate::tuple_trie::node::{Internal, Node, TrieFields};
 use std::ops::{Index, IndexMut};
 
 /// Trie root

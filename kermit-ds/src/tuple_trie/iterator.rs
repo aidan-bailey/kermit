@@ -1,5 +1,5 @@
-use crate::node::{Node, TrieFields};
-use crate::tuple_trie::Trie;
+use crate::tuple_trie::node::{Node, TrieFields};
+use crate::tuple_trie::tuple_trie::Trie;
 use kermit_iters::trie::{TrieIterable, TrieIterator};
 
 pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
