@@ -6,7 +6,7 @@ pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
     fn init(&mut self) -> Result<(), &'static str>;
     fn next(&mut self) -> Result<(), &'static str>;
     fn search(&mut self) -> Result<(), &'static str>;
-    fn seek(&mut self, seek_key: &KT);
+    fn seek(&mut self, seek_key: &KT) -> Result<(), &'static str>;
     fn at_end(&self) -> bool;
     fn open(&mut self) -> Result<(), &'static str>;
     fn up(&mut self) -> Result<(), &'static str>;
@@ -27,7 +27,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             iters,
             phantom: PhantomData,
         };
-        iter.init();
+        iter.init().expect("GIGO");
         iter
     }
 
