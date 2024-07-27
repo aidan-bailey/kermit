@@ -60,6 +60,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     }
 
     fn next(&mut self) -> Result<(), &'static str> {
+        self.key = None;
         self.iters[self.p].next()?;
         if !self.iters[self.p].at_end() {
             self.p = if self.p == self.k() - 1 {
