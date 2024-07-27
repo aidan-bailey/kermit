@@ -21,3 +21,7 @@ pub trait TrieIterator<KT: PartialOrd + PartialEq + Clone> {
     /// previous depth
     fn up(&mut self) -> Result<(), &'static str>;
 }
+
+pub trait TrieIterable<KT: PartialOrd + PartialEq + Clone> {
+    fn trie_iter(&self) -> impl TrieIterator<KT>;
+}

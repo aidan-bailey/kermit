@@ -1,6 +1,6 @@
 use crate::node::{Node, TrieFields};
 use crate::tuple_trie::Trie;
-use kermit_iters::trie::TrieIterator;
+use kermit_iters::trie::{TrieIterable, TrieIterator};
 
 pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
     /// Current Node's index amongst its siblings.
@@ -129,5 +129,11 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, K
             };
             Ok(())
         }
+    }
+}
+
+impl<KT: PartialOrd + PartialEq + Clone> TrieIterable<KT> for Trie<KT> {
+    fn trie_iter(&self) -> impl TrieIterator<KT> {
+        TrieIter::new(self)
     }
 }
