@@ -1,4 +1,4 @@
-pub mod iterator;
+pub mod trie_iter;
 pub mod node;
 pub mod trie_builder;
 pub mod tuple_trie;
