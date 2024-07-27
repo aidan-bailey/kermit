@@ -3,7 +3,7 @@ mod tests {
     use kermit_algos::leapfrog_triejoin::{
         leapfrog_triejoin, LeapfrogTriejoinIter, LeapfrogTriejoinIterator,
     };
-    use kermit_ds::tuple_trie::{iterator::TrieIter, trie_builder::TrieBuilder};
+    use kermit_ds::tuple_trie::{trie_iter::TrieIter, trie_builder::TrieBuilder};
     use kermit_iters::trie::TrieIterator;
 
     // Variable types
