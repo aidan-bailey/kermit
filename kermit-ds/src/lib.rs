@@ -1,16 +1,13 @@
 pub mod iterator;
 pub mod node;
+pub mod trie_builder;
 pub mod tuple_trie;
 pub mod variable_type;
-pub mod trie_builder;
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        iterator::TrieIter,
-        node::TrieFields,
-        tuple_trie::Trie,
-        variable_type::VariableType,
+        iterator::TrieIter, node::TrieFields, tuple_trie::Trie, variable_type::VariableType,
     };
     use kermit_iters::trie::TrieIterator;
 
@@ -145,13 +142,27 @@ mod tests {
     fn trie_with_variable_type() {
         let mut trie = Trie::<VariableType>::new(2);
 
-        let _ = trie.insert(vec![VariableType::Int(1), VariableType::String("2".to_string())]);
+        let _ = trie.insert(vec![
+            VariableType::Int(1),
+            VariableType::String("2".to_string()),
+        ]);
         let _ = trie.insert(vec![VariableType::Int(0), VariableType::Float(2.)]);
         let _ = trie.insert(vec![VariableType::Int(1), VariableType::Int(1)]);
 
-        assert!(trie.search(vec![VariableType::Int(1), VariableType::String("2".to_string())]).unwrap().is_some());
-        assert!(trie.search(vec![VariableType::Int(0), VariableType::Float(2.)]).unwrap().is_some());
-        assert!(trie.search(vec![VariableType::Int(1), VariableType::Int(1)]).unwrap().is_some());
+        assert!(trie
+            .search(vec![
+                VariableType::Int(1),
+                VariableType::String("2".to_string())
+            ])
+            .unwrap()
+            .is_some());
+        assert!(trie
+            .search(vec![VariableType::Int(0), VariableType::Float(2.)])
+            .unwrap()
+            .is_some());
+        assert!(trie
+            .search(vec![VariableType::Int(1), VariableType::Int(1)])
+            .unwrap()
+            .is_some());
     }
-
 }

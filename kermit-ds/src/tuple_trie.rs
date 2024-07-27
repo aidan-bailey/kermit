@@ -2,12 +2,12 @@ use crate::node::{Internal, Node, TrieFields};
 use std::ops::{Index, IndexMut};
 
 /// Trie root
-pub struct Trie<KT: PartialOrd + PartialEq  + Clone> {
+pub struct Trie<KT: PartialOrd + PartialEq + Clone> {
     arity: usize,
     children: Vec<Node<KT>>,
 }
 
-impl<KT: PartialOrd + PartialEq  + Clone> Index<usize> for Trie<KT> {
+impl<KT: PartialOrd + PartialEq + Clone> Index<usize> for Trie<KT> {
     type Output = Node<KT>;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -15,13 +15,13 @@ impl<KT: PartialOrd + PartialEq  + Clone> Index<usize> for Trie<KT> {
     }
 }
 
-impl<KT: PartialOrd + PartialEq  + Clone> IndexMut<usize> for Trie<KT> {
+impl<KT: PartialOrd + PartialEq + Clone> IndexMut<usize> for Trie<KT> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         &mut self.children_mut()[index]
     }
 }
 
-impl<KT: PartialOrd + PartialEq  + Clone> Trie<KT> {
+impl<KT: PartialOrd + PartialEq + Clone> Trie<KT> {
     /// Construct an empty Trie
     pub fn new(arity: usize) -> Trie<KT> {
         Trie {
@@ -80,7 +80,7 @@ impl<KT: PartialOrd + PartialEq  + Clone> Trie<KT> {
     }
 }
 
-impl<KT: PartialOrd + PartialEq  + Clone> TrieFields<KT> for Trie<KT> {
+impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for Trie<KT> {
     fn children(&self) -> &Vec<Node<KT>> {
         &self.children
     }
@@ -89,7 +89,7 @@ impl<KT: PartialOrd + PartialEq  + Clone> TrieFields<KT> for Trie<KT> {
     }
 }
 
-impl<KT: PartialOrd + PartialEq  + Clone> Internal<KT> for Trie<KT> {
+impl<KT: PartialOrd + PartialEq + Clone> Internal<KT> for Trie<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
         &mut self.children
     }

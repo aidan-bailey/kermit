@@ -4,13 +4,12 @@ use csv::Error;
 
 use crate::tuple_trie::Trie;
 
-pub struct TrieBuilder<KT: PartialOrd + PartialEq  + Clone + FromStr + Debug> {
+pub struct TrieBuilder<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> {
     arity: usize,
     tuples: Vec<Vec<KT>>,
 }
 
-impl<KT: PartialOrd + PartialEq  + Clone + FromStr + Debug> TrieBuilder<KT> {
-
+impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> TrieBuilder<KT> {
     pub fn new(arity: usize) -> TrieBuilder<KT> {
         TrieBuilder {
             arity,
@@ -46,7 +45,7 @@ impl<KT: PartialOrd + PartialEq  + Clone + FromStr + Debug> TrieBuilder<KT> {
             let record = result?;
             let mut tuple: Vec<KT> = vec![];
             for x in record.iter() {
-                if let Ok(y) =  x.to_string().parse::<KT>() {
+                if let Ok(y) = x.to_string().parse::<KT>() {
                     tuple.push(y);
                 }
             }
@@ -54,7 +53,6 @@ impl<KT: PartialOrd + PartialEq  + Clone + FromStr + Debug> TrieBuilder<KT> {
         }
         Ok(self)
     }
-
 }
 
 #[cfg(test)]
@@ -65,7 +63,10 @@ mod tests {
     // Read from file
     #[test]
     fn trie_builder_read_from_file() {
-        let trie = TrieBuilder::<String>::new(3).from_file::<&str>("test.csv").unwrap().build();
+        let trie = TrieBuilder::<String>::new(3)
+            .from_file::<&str>("test.csv")
+            .unwrap()
+            .build();
         assert_eq!(trie.children()[0].key(), "1");
         assert_eq!(trie.children()[1].key(), "3");
         assert_eq!(trie.children()[0].children()[0].key(), "3");
@@ -80,5 +81,4 @@ mod tests {
         assert_eq!(trie.children()[0].children()[2].children()[0].key(), "2");
         assert_eq!(trie.children()[1].children()[0].children()[0].key(), "2");
     }
-
 }

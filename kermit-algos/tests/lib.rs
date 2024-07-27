@@ -7,9 +7,18 @@ mod tests {
     // Variable types
     #[test]
     fn figure1() {
-        let trie_a = TrieBuilder::<i32>::new(1).from_file("tests/data/a.csv").unwrap().build();
-        let trie_b = TrieBuilder::<i32>::new(1).from_file("tests/data/b.csv").unwrap().build();
-        let trie_c = TrieBuilder::<i32>::new(1).from_file("tests/data/c.csv").unwrap().build();
+        let trie_a = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/a.csv")
+            .unwrap()
+            .build();
+        let trie_b = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/b.csv")
+            .unwrap()
+            .build();
+        let trie_c = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/c.csv")
+            .unwrap()
+            .build();
         let mut iter_a = TrieIter::new(&trie_a);
         iter_a.open().unwrap();
         let mut iter_b = TrieIter::new(&trie_b);
@@ -22,9 +31,18 @@ mod tests {
 
     #[test]
     fn full_join() {
-        let trie_a = TrieBuilder::<i32>::new(1).from_file("tests/data/onetoten.csv").unwrap().build();
-        let trie_b = TrieBuilder::<i32>::new(1).from_file("tests/data/onetoten.csv").unwrap().build();
-        let trie_c = TrieBuilder::<i32>::new(1).from_file("tests/data/onetoten.csv").unwrap().build();
+        let trie_a = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/onetoten.csv")
+            .unwrap()
+            .build();
+        let trie_b = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/onetoten.csv")
+            .unwrap()
+            .build();
+        let trie_c = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/onetoten.csv")
+            .unwrap()
+            .build();
         let mut iter_a = TrieIter::new(&trie_a);
         iter_a.open().unwrap();
         let mut iter_b = TrieIter::new(&trie_b);
@@ -41,9 +59,18 @@ mod tests {
 
     #[test]
     fn join3() {
-        let trie_a = TrieBuilder::<i32>::new(1).from_file("tests/data/col_a.csv").unwrap().build();
-        let trie_b = TrieBuilder::<i32>::new(1).from_file("tests/data/col_b.csv").unwrap().build();
-        let trie_c = TrieBuilder::<i32>::new(1).from_file("tests/data/col_c.csv").unwrap().build();
+        let trie_a = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/col_a.csv")
+            .unwrap()
+            .build();
+        let trie_b = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/col_b.csv")
+            .unwrap()
+            .build();
+        let trie_c = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/col_c.csv")
+            .unwrap()
+            .build();
         let mut iter_a = TrieIter::new(&trie_a);
         iter_a.open().unwrap();
         let mut iter_b = TrieIter::new(&trie_b);

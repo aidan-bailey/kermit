@@ -2,7 +2,7 @@ use crate::node::{Node, TrieFields};
 use crate::tuple_trie::Trie;
 use kermit_iters::trie::TrieIterator;
 
-pub struct TrieIter<'a, KT: PartialOrd + PartialEq  + Clone> {
+pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
     /// Current Node's index amongst its siblings.
     pos: usize,
     /// Trie that is being iterated.
@@ -14,7 +14,7 @@ pub struct TrieIter<'a, KT: PartialOrd + PartialEq  + Clone> {
     stack: Vec<(&'a Node<KT>, usize)>,
 }
 
-impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIter<'a, KT> {
+impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
     /// Construct a new Trie iterator.
     pub fn new(trie: &'a Trie<KT>) -> Self {
         TrieIter {
@@ -38,7 +38,7 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, KT> {
+impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, KT> {
     fn key(&self) -> Result<&KT, &'static str> {
         if let Some((node, _)) = self.stack.last() {
             Ok(node.key())
@@ -63,7 +63,6 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, 
     }
 
     fn seek(&mut self, seek_key: &KT) -> Result<(), &'static str> {
-
         if self.at_end() {
             return Ok(());
         }
@@ -74,7 +73,9 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, 
             } else {
                 // If there exists a key, there should ALWAYS be at least one sibling
                 // (i.e., the current node itself).
-                let siblings = self.siblings().expect("If there exists a key, there should ALWAYS be at least one sibling");
+                let siblings = self
+                    .siblings()
+                    .expect("If there exists a key, there should ALWAYS be at least one sibling");
                 while (!self.at_end()) && seek_key > siblings[self.pos].key() {
                     self.pos += 1;
                 }
