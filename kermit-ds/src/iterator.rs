@@ -49,11 +49,10 @@ impl<'a, KT: PartialOrd + PartialEq  + Clone> TrieIterator<KT> for TrieIter<'a, 
 
     fn next(&mut self) -> Result<(), &'static str> {
         if let Some(siblings) = self.siblings() {
-            let newpos = self.pos + 1;
-            if let Some(node) = siblings.get(newpos) {
+            self.pos += 1;
+            if let Some(node) = siblings.get(self.pos) {
                 self.stack.pop();
-                self.stack.push((node, newpos));
-                self.pos = newpos;
+                self.stack.push((node, self.pos));
                 Ok(())
             } else {
                 Ok(())
