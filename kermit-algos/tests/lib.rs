@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use kermit_algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator};
+    use kermit_algos::leapfrog_triejoin::{
+        leapfrog_triejoin, LeapfrogTriejoinIter, LeapfrogTriejoinIterator,
+    };
     use kermit_ds::{iterator::TrieIter, trie_builder::TrieBuilder};
     use kermit_iters::trie::TrieIterator;
 
@@ -82,5 +84,38 @@ mod tests {
         assert_eq!(triejoin.next().unwrap(), &20);
         assert!(triejoin.next().is_none());
         assert!(triejoin.at_end());
+    }
+
+    // Variable types
+    #[test]
+    fn algo() {
+        let trie_a = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/onetoten.csv")
+            .unwrap()
+            .build();
+        let trie_b = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/onetoten.csv")
+            .unwrap()
+            .build();
+        let trie_c = TrieBuilder::<i32>::new(1)
+            .from_file("tests/data/onetoten.csv")
+            .unwrap()
+            .build();
+        let res = leapfrog_triejoin(vec![&trie_a, &trie_b, &trie_c]);
+        assert_eq!(
+            res,
+            vec![
+                vec![1],
+                vec![2],
+                vec![3],
+                vec![4],
+                vec![5],
+                vec![6],
+                vec![7],
+                vec![8],
+                vec![9],
+                vec![10]
+            ]
+        );
     }
 }
