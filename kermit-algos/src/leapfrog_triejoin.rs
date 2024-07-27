@@ -45,9 +45,9 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
                 let a_key = a.key().expect("Not at root");
                 let b_key = b.key().expect("Not at root");
                 if a_key < b_key {
-                    return std::cmp::Ordering::Less;
+                    std::cmp::Ordering::Less
                 } else if a_key > b_key {
-                    return std::cmp::Ordering::Greater;
+                    std::cmp::Ordering::Greater
                 } else {
                     std::cmp::Ordering::Equal
                 }
