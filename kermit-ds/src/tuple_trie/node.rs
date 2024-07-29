@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::ops::{Index, IndexMut};
 
 /// Trie node
+#[derive(Clone, Debug)]
 pub struct Node<KT: PartialOrd + PartialEq + Clone> {
     /// Maximum height (1-based index of key in tuple)
     arity: usize,

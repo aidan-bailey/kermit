@@ -2,6 +2,7 @@ use crate::tuple_trie::node::{Internal, Node, TrieFields};
 use std::ops::{Index, IndexMut};
 
 /// Trie root
+#[derive(Clone, Debug)]
 pub struct Trie<KT: PartialOrd + PartialEq + Clone> {
     arity: usize,
     children: Vec<Node<KT>>,
