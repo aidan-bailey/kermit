@@ -32,4 +32,22 @@ mod tests {
         let res = leapfrog_triejoin(tries.iter().collect());
         assert_eq!(res, expected);
     }
+
+    #[test_case(
+        1,
+        vec![
+            vec![vec![1], vec![2], vec![3]],
+            vec![vec![1], vec![2], vec![3]]
+        ],
+        vec![vec![1], vec![2], vec![3]];
+        "1-ary"
+    )]
+    fn test_inputs_outputs(arity: usize, inputs: Vec<Vec<Vec<i32>>>, expected: Vec<Vec<i32>>) {
+        let tries: Vec<_> = inputs
+            .into_iter()
+            .map(|input| TrieBuilder::<i32>::new(arity).add_tuples(input).build())
+            .collect();
+        let res = leapfrog_triejoin(tries.iter().collect());
+        assert_eq!(res, expected);
+    }
 }
