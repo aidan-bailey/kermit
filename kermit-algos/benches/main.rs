@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use kermit_algos::leapfrog_triejoin::leapfrog_triejoin;
-use kermit_ds::relational_trie::relational_trie::RelationalTrie;
+use kermit_ds::trie::relational_trie::RelationalTrie;
 use kermit_iters::trie::{TrieIterable, TrieIterator};
 
 use rand::{distributions::uniform::SampleUniform, Rng};

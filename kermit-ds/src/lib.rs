@@ -1,2 +1,2 @@
 pub mod relation;
-pub mod relational_trie;
+pub mod trie;

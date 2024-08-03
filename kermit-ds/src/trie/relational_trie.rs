@@ -1,4 +1,4 @@
-use crate::relational_trie::node::{Internal, Node, TrieFields};
+use crate::trie::node::{Internal, Node, TrieFields};
 use std::ops::{Index, IndexMut};
 
 /// Trie root

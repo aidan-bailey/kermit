@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use kermit_algos::leapfrog_triejoin::leapfrog_triejoin;
-    use kermit_ds::relational_trie::trie_builder::TrieBuilder;
+    use kermit_ds::trie::trie_builder::TrieBuilder;
     use test_case::test_case;
 
     #[test_case(

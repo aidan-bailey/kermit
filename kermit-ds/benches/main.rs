@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use kermit_ds::relational_trie::{trie_iter::TrieIter, relational_trie::RelationalTrie};
+use kermit_ds::trie::{trie_iter::TrieIter, relational_trie::RelationalTrie};
 use kermit_iters::trie::TrieIterator;
 use kermit_iters::linear::LinearIterator;
 

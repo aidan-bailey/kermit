@@ -1,4 +1,4 @@
-use crate::relational_trie::{
+use crate::trie::{
     node::{Node, TrieFields},
     relational_trie::RelationalTrie,
 };

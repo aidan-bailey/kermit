@@ -2,7 +2,7 @@ use std::{fmt::Debug, fs::File, path::Path, str::FromStr};
 
 use csv::Error;
 
-use crate::relational_trie::relational_trie::RelationalTrie;
+use crate::trie::relational_trie::RelationalTrie;
 
 pub struct TrieBuilder<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> {
     arity: usize,
@@ -58,7 +58,7 @@ impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> TrieBuilder<KT> {
 #[cfg(test)]
 mod tests {
 
-    use crate::relational_trie::{node::TrieFields, trie_builder::TrieBuilder};
+    use crate::trie::{node::TrieFields, trie_builder::TrieBuilder};
 
     // Read from file
     #[test]

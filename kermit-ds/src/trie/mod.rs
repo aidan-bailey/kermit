@@ -6,7 +6,7 @@ pub mod variable_type;
 
 #[cfg(test)]
 mod tests {
-    use crate::relational_trie::{
+    use crate::trie::{
         node::TrieFields, trie_builder::TrieBuilder, relational_trie::RelationalTrie, variable_type::VariableType,
     };
     use kermit_iters::trie::{TrieIterable, TrieIterator};
