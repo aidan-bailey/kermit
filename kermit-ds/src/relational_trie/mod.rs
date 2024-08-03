@@ -1,27 +1,27 @@
 pub mod trie_iter;
 pub mod node;
 pub mod trie_builder;
-pub mod tuple_trie;
+pub mod relational_trie;
 pub mod variable_type;
 
 #[cfg(test)]
 mod tests {
-    use crate::tuple_trie::{
-        node::TrieFields, trie_builder::TrieBuilder, tuple_trie::Trie, variable_type::VariableType,
+    use crate::relational_trie::{
+        node::TrieFields, trie_builder::TrieBuilder, relational_trie::RelationalTrie, variable_type::VariableType,
     };
     use kermit_iters::trie::{TrieIterable, TrieIterator};
     use kermit_iters::linear::LinearIterator;
 
     #[test]
     fn trie_new() {
-        let empty_tri = Trie::<u64>::new(1);
+        let empty_tri = RelationalTrie::<u64>::new(1);
         assert_eq!(empty_tri.arity(), 1);
         assert!(empty_tri.is_empty());
     }
 
     #[test]
     fn trie_insert() {
-        let mut trie = Trie::<u64>::new(2);
+        let mut trie = RelationalTrie::<u64>::new(2);
 
         let _ = trie.insert(vec![1, 2]);
 
@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn trie_search() {
-        let mut trie = Trie::<u64>::new(2);
+        let mut trie = RelationalTrie::<u64>::new(2);
 
         let _ = trie.insert(vec![1, 2]);
         let _ = trie.insert(vec![0, 2]);
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn trie_remove() {
-        let mut trie = Trie::<u64>::new(2);
+        let mut trie = RelationalTrie::<u64>::new(2);
 
         let _ = trie.insert(vec![1, 2]);
         let _ = trie.insert(vec![0, 2]);
@@ -119,7 +119,7 @@ mod tests {
     // Variable types
     #[test]
     fn trie_with_variable_type() {
-        let mut trie = Trie::<VariableType>::new(2);
+        let mut trie = RelationalTrie::<VariableType>::new(2);
 
         let _ = trie.insert(vec![
             VariableType::Int(1),

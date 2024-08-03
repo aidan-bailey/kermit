@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use kermit_algos::leapfrog_triejoin::leapfrog_triejoin;
-use kermit_ds::tuple_trie::tuple_trie::Trie;
+use kermit_ds::relational_trie::relational_trie::RelationalTrie;
 use kermit_iters::trie::{TrieIterable, TrieIterator};
 
 use rand::{distributions::uniform::SampleUniform, Rng};
@@ -75,7 +75,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             |b, bench_param| {
                 b.iter_batched(
                     || {
-                        let trie = Trie::from_tuples_presort(
+                        let trie = RelationalTrie::from_tuples_presort(
                             bench_param.arity,
                             generate_tuples(bench_param),
                         );
