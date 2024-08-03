@@ -1,6 +1,6 @@
 use crate::trie::{
     node::{Node, TrieFields},
-    relational_trie::RelationalTrie,
+    relation_trie::RelationTrie,
 };
 use kermit_iters::trie::{TrieIterable, TrieIterator};
 use kermit_iters::linear::LinearIterator;
@@ -9,7 +9,7 @@ pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
     /// Current Node's index amongst its siblings.
     pos: usize,
     /// Trie that is being iterated.
-    trie: &'a RelationalTrie<KT>,
+    trie: &'a RelationTrie<KT>,
     /// Stack containing cursor's path down the trie.
     /// The tuples hold the Node and its index amongst its siblings.
     /// If the stack is empty, the cursor points to the root.
@@ -19,7 +19,7 @@ pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
 
 impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
     /// Construct a new Trie iterator.
-    pub fn new(trie: &'a RelationalTrie<KT>) -> Self {
+    pub fn new(trie: &'a RelationTrie<KT>) -> Self {
         TrieIter {
             pos: 0,
             trie,
@@ -141,7 +141,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, K
     }
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> TrieIterable<KT> for RelationalTrie<KT> {
+impl<KT: PartialOrd + PartialEq + Clone> TrieIterable<KT> for RelationTrie<KT> {
     fn trie_iter(&self) -> impl TrieIterator<KT> {
         TrieIter::new(self)
     }

@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use kermit_ds::trie::{trie_iter::TrieIter, relational_trie::RelationalTrie};
+use kermit_ds::trie::{trie_iter::TrieIter, relation_trie::RelationTrie};
 use kermit_iters::trie::TrieIterator;
 use kermit_iters::linear::LinearIterator;
 
@@ -85,7 +85,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             |b, bench_param| {
                 b.iter_batched(
                     || generate_tuples(bench_param),
-                    |tuples| black_box(RelationalTrie::from_tuples_presort(bench_param.arity, tuples)),
+                    |tuples| black_box(RelationTrie::from_tuples_presort(bench_param.arity, tuples)),
                     BatchSize::SmallInput,
                 )
             },
@@ -102,7 +102,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             &bench_param,
             |b, bench_param| {
                 b.iter_batched(
-                    || RelationalTrie::from_tuples_presort(bench_param.arity, generate_tuples(bench_param)),
+                    || RelationTrie::from_tuples_presort(bench_param.arity, generate_tuples(bench_param)),
                     |trie| {
                         black_box({
                             let mut iter = TrieIter::new(&trie);
