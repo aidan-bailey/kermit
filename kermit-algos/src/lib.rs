@@ -1,4 +1,5 @@
 pub mod leapfrog_triejoin;
+pub mod leapfrog_join;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
