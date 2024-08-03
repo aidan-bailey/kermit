@@ -85,9 +85,6 @@ impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for RelationTrie<KT> {
     fn children(&self) -> &Vec<Node<KT>> {
         &self.children
     }
-    fn arity(&self) -> usize {
-        self.arity
-    }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> Internal<KT> for RelationTrie<KT> {

@@ -4,8 +4,6 @@ use std::ops::{Index, IndexMut};
 /// Trie node
 #[derive(Clone, Debug)]
 pub struct Node<KT: PartialOrd + PartialEq + Clone> {
-    /// Maximum height (1-based index of key in tuple)
-    arity: usize,
     /// Key for tuple value
     key: KT,
     /// Children
@@ -30,7 +28,6 @@ impl<KT: PartialOrd + PartialEq + Clone> Node<KT> {
     /// Construct a Node with a tuple-value key
     fn new(key: KT) -> Node<KT> {
         Node {
-            arity: 0,
             key,
             children: vec![],
         }
@@ -58,15 +55,11 @@ pub trait TrieFields<KT: PartialOrd + PartialEq + Clone> {
             0
         }
     }
-    fn arity(&self) -> usize;
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for Node<KT> {
     fn children(&self) -> &Vec<Node<KT>> {
         &self.children
-    }
-    fn arity(&self) -> usize {
-        self.arity
     }
 }
 
@@ -213,7 +206,6 @@ mod tests {
     fn node_new() {
         let node = Node::new(1);
         assert_eq!(node.key(), &1);
-        assert_eq!(node.arity(), 0);
     }
 
     #[test]
@@ -221,13 +213,11 @@ mod tests {
         let node = {
             let child = Node::new(2);
             Node {
-                arity: child.arity() + 1,
                 key: 1,
                 children: vec![child],
             }
         };
         assert_eq!(node.key(), &1);
-        assert_eq!(node.arity(), 1);
         assert_eq!(node.children()[0].key(), &2);
     }
 
