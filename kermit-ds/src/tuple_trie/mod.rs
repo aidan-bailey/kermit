@@ -10,6 +10,7 @@ mod tests {
         node::TrieFields, trie_builder::TrieBuilder, tuple_trie::Trie, variable_type::VariableType,
     };
     use kermit_iters::trie::{TrieIterable, TrieIterator};
+    use kermit_iters::linear::LinearIterator;
 
     #[test]
     fn trie_new() {

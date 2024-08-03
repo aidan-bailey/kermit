@@ -3,6 +3,7 @@ use crate::tuple_trie::{
     tuple_trie::Trie,
 };
 use kermit_iters::trie::{TrieIterable, TrieIterator};
+use kermit_iters::linear::LinearIterator;
 
 pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
     /// Current Node's index amongst its siblings.
@@ -40,7 +41,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, KT> {
+impl<'a, KT: PartialOrd + PartialEq + Clone> LinearIterator<KT> for TrieIter<'a, KT> {
     fn key(&self) -> Option<&KT> {
         if self.at_end() {
             None
@@ -106,7 +107,9 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, K
             true
         }
     }
+}
 
+impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, KT> {
     fn open(&mut self) -> Option<&KT> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
