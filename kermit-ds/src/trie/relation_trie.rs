@@ -10,7 +10,10 @@ pub struct RelationTrie<KT: PartialOrd + PartialEq + Clone> {
 
 impl<KT: PartialOrd + PartialEq + Clone> Relational<KT> for RelationTrie<KT> {
     fn new(cardinality: usize) -> Self {
-        RelationTrie{ cardinality, children: vec![] }
+        RelationTrie {
+            cardinality,
+            children: vec![],
+        }
     }
 
     fn cardinality(&self) -> usize {
@@ -18,7 +21,11 @@ impl<KT: PartialOrd + PartialEq + Clone> Relational<KT> for RelationTrie<KT> {
     }
 
     fn tuples(&self) -> Vec<Vec<&KT>> {
-        todo!()
+        let mut tuples = vec![];
+        for child in &self.children {
+            tuples.extend(child.traverse());
+        }
+        tuples
     }
 
     fn remove(&mut self, tuple: Vec<KT>) -> bool {
@@ -41,7 +48,6 @@ impl<KT: PartialOrd + PartialEq + Clone> Relational<KT> for RelationTrie<KT> {
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> RelationTrie<KT> {
-
     pub fn from_tuples_presort(arity: usize, mut tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
@@ -66,7 +72,6 @@ impl<KT: PartialOrd + PartialEq + Clone> RelationTrie<KT> {
         }
         Ok(self.search_linear(tuple))
     }
-
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for RelationTrie<KT> {

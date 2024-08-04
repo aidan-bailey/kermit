@@ -37,6 +37,29 @@ impl<KT: PartialOrd + PartialEq + Clone> Node<KT> {
     pub fn key(&self) -> &KT {
         &self.key
     }
+
+    fn traverse_inner<'a>(&'a self, mut tuple: Vec<&'a KT>) -> Vec<Vec<&'a KT>> {
+        tuple.push(self.key());
+
+        if self.is_empty() {
+            return vec![tuple];
+        }
+
+        let mut result = vec![];
+        for child in self.children.iter() {
+            result.extend(child.traverse_inner(tuple.clone()));
+        }
+
+        result
+    }
+
+    pub fn traverse(&self) -> Vec<Vec<&KT>> {
+        let mut result = vec![];
+        for child in self.children.iter() {
+            result.extend(child.traverse_inner(vec![]));
+        }
+        result
+    }
 }
 
 pub trait TrieFields<KT: PartialOrd + PartialEq + Clone> {
@@ -187,8 +210,7 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
                 }
             }
             return false;
-        }
-        else {
+        } else {
             return true;
         }
     }
