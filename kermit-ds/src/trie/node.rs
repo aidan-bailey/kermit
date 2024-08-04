@@ -66,9 +66,9 @@ impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for Node<KT> {
 pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
-    fn insert_linear(&mut self, tuple: Vec<KT>) {
+    fn insert_linear(&mut self, tuple: Vec<KT>) -> bool {
         if tuple.is_empty() {
-            return;
+            return false;
         }
 
         let mut current_children = self.children_mut();
@@ -100,6 +100,7 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
                 }
             }
         }
+        true
     }
 
     fn insert_binary(&mut self, tuple: Vec<KT>) {
@@ -173,18 +174,22 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
         None
     }
 
-    fn remove_deque(&mut self, mut keys: VecDeque<KT>) {
+    fn remove_deque(&mut self, mut keys: VecDeque<KT>) -> bool {
         if let Some(key) = keys.pop_front() {
             for i in 0..self.size() {
                 let child = &mut self.children_mut()[i];
                 if key == *child.key() {
-                    child.remove_deque(keys);
+                    let removed = child.remove_deque(keys);
                     if child.is_empty() {
                         self.children_mut().remove(i);
                     }
-                    break;
+                    return removed;
                 }
             }
+            return false;
+        }
+        else {
+            return true;
         }
     }
 }

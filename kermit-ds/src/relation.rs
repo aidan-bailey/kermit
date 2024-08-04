@@ -1,60 +1,54 @@
-use std::ops::Index;
+use std::collections::BTreeSet;
 
-pub trait Relational<KT: Clone> : Index<usize> {
+pub trait Relational<KT: Clone + PartialEq> {
+    fn new(cardinality: usize) -> Self;
     fn cardinality(&self) -> usize;
-    fn tuples(&self) -> &Vec<Vec<KT>>;
-    fn insert(&mut self, tuple: Vec<KT>);
-    fn insert_all(&mut self, tuples: Vec<Vec<KT>>);
+    fn tuples(&self) -> Vec<Vec<&KT>>;
+    fn insert(&mut self, tuple: Vec<KT>) -> bool;
+    fn remove(&mut self, tuple: Vec<KT>) -> bool;
     fn clear(&mut self);
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> Index<usize> for Relation<KT> {
-    type Output = Vec<KT>;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.tuples[index]
-    }
-}
-
 #[derive(Clone)]
-pub struct Relation<KT: Clone> {
+pub struct Relation<KT: Clone + Ord> {
     cardinality: usize,
-    tuples: Vec<Vec<KT>>,
+    tuples: BTreeSet<Vec<KT>>,
 }
 
-impl<KT: Clone> Relation<KT> {
-    pub fn new(cardinality: usize) -> Self {
+impl<KT: Clone + Ord> Relational<KT> for Relation<KT> {
+    fn new(cardinality: usize) -> Self {
         Relation {
             cardinality,
-            tuples: Vec::new(),
+            tuples: BTreeSet::<Vec<KT>>::new(),
         }
     }
 
-    pub fn cardinality(&self) -> usize {
+    fn cardinality(&self) -> usize {
         self.cardinality
     }
 
-    pub fn tuples(&self) -> &Vec<Vec<KT>> {
-        &self.tuples
+    fn tuples(&self) -> Vec<Vec<&KT>> {
+        self.tuples
+            .iter()
+            .map(|tuple| tuple.iter().collect())
+            .collect()
     }
 
-    pub fn insert(&mut self, tuple: Vec<KT>) {
+    fn insert(&mut self, tuple: Vec<KT>) -> bool {
         if tuple.len() != self.cardinality {
             panic!("Tuple has wrong cardinality");
         }
-        self.tuples.push(tuple);
+        self.tuples.insert(tuple)
     }
 
-    pub fn insert_all(&mut self, tuples: Vec<Vec<KT>>) {
-        for tuple in tuples.iter() {
-            if tuple.len() != self.cardinality {
-                panic!("Tuple has wrong cardinality");
-            }
-        }
-        self.tuples.extend(tuples);
-    }
-
-    pub fn clear(&mut self) {
+    fn clear(&mut self) {
         self.tuples.clear();
+    }
+
+    fn remove(&mut self, tuple: Vec<KT>) -> bool {
+        if tuple.len() != self.cardinality {
+            panic!("Tuple has wrong cardinality");
+        }
+        self.tuples.remove(&tuple)
     }
 }

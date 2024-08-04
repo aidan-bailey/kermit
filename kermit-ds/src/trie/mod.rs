@@ -9,6 +9,7 @@ mod tests {
     use crate::trie::{
         node::TrieFields, trie_builder::TrieBuilder, relation_trie::RelationTrie, variable_type::VariableType,
     };
+    use crate::relation::Relational;
     use kermit_iters::trie::{TrieIterable, TrieIterator};
     use kermit_iters::linear::LinearIterator;
 
