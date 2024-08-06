@@ -1,6 +1,6 @@
-use std::{marker::PhantomData, mem};
+use std::marker::PhantomData;
 
-use kermit_iters::trie::{TrieIterable, TrieIterator};
+use kermit_iters::trie::TrieIterator;
 
 pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
     fn init(&mut self) -> Option<&KT>;
@@ -28,8 +28,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         let mut iter_indexes_at_variable: Vec<Vec<usize>> = Vec::new();
         for v in &variables {
             let mut iters_at_level_v: Vec<usize> = Vec::new();
-            for r_i in 0..rel_variables.len() {
-                let r = &rel_variables[r_i];
+            for (r_i, r) in rel_variables.iter().enumerate() {
                 if r.contains(v) {
                     iters_at_level_v.push(r_i);
                 }
@@ -39,7 +38,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
 
         let iters = iters.into_iter().map(|iter| Some(iter)).collect();
 
-        let iter = LeapfrogTriejoinIter {
+        LeapfrogTriejoinIter {
             key: None,
             p: 0,
             iters,
@@ -47,8 +46,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
             iter_indexes_at_variable,
             depth: 0,
             phantom: PhantomData,
-        };
-        iter
+        }
     }
 
     fn update_iters(&mut self) {
@@ -58,7 +56,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         }
 
         for i in &self.iter_indexes_at_variable[self.depth - 1] {
-            let iter = mem::replace(&mut self.iters[*i], None);
+            let iter = self.iters[*i].take();
             self.current_iters.push((*i, iter.expect("There should alway be an iterator here")));
         }
 

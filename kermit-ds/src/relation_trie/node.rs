@@ -109,6 +109,7 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
         }
     }
 
+    #[allow(dead_code)]
     fn insert_binary(&mut self, tuple: Vec<KT>) {
         if tuple.is_empty() {
             return;

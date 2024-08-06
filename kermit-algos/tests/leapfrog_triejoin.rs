@@ -2,8 +2,7 @@
 mod tests {
     use kermit_algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator};
     use kermit_ds::relation_trie::trie_builder::TrieBuilder;
-    use kermit_iters::trie::{TrieIterable, TrieIterator};
-    use test_case::test_case;
+    use kermit_iters::trie::TrieIterable;
 
     #[test]
     fn test_classic() {

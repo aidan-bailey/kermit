@@ -1,7 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use kermit_ds::relation_trie::{trie_iter::TrieIter, trie::RelationTrie};
-use kermit_iters::trie::TrieIterator;
+use kermit_ds::relation_trie::{trie::RelationTrie, trie_iter::TrieIter};
 use kermit_iters::linear::LinearIterator;
+use kermit_iters::trie::TrieIterator;
+use std::fmt;
 
 use rand::{distributions::uniform::SampleUniform, Rng};
 
@@ -32,7 +33,7 @@ struct BenchParams<T: PartialOrd + SampleUniform + Copy> {
     max: T,
 }
 
-impl<T: PartialOrd + SampleUniform + Copy + std::fmt::Display> BenchParams<T> {
+impl<T: PartialOrd + SampleUniform + Copy + fmt::Display> BenchParams<T> {
     fn new(size: usize, arity: usize, min: T, max: T) -> BenchParams<T> {
         BenchParams {
             size,
@@ -41,9 +42,12 @@ impl<T: PartialOrd + SampleUniform + Copy + std::fmt::Display> BenchParams<T> {
             max,
         }
     }
+}
 
-    fn to_string(&self) -> String {
-        format!(
+impl<T: PartialOrd + SampleUniform + Copy + fmt::Display> fmt::Display for BenchParams<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
             "size: {}, arity: {}, min: {}, max: {}",
             self.size, self.arity, self.min, self.max
         )
@@ -85,7 +89,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             |b, bench_param| {
                 b.iter_batched(
                     || generate_tuples(bench_param),
-                    |tuples| black_box(RelationTrie::from_tuples_presort(bench_param.arity, tuples)),
+                    |tuples| {
+                        black_box(RelationTrie::from_tuples_presort(bench_param.arity, tuples))
+                    },
                     BatchSize::SmallInput,
                 )
             },
@@ -102,15 +108,19 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             &bench_param,
             |b, bench_param| {
                 b.iter_batched(
-                    || RelationTrie::from_tuples_presort(bench_param.arity, generate_tuples(bench_param)),
+                    || {
+                        RelationTrie::from_tuples_presort(
+                            bench_param.arity,
+                            generate_tuples(bench_param),
+                        )
+                    },
                     |trie| {
-                        black_box({
-                            let mut iter = TrieIter::new(&trie);
-                            while iter.open().is_some() {
-                                while iter.next().is_some() {
-                                }
+                        let mut iter = TrieIter::new(&trie);
+                        while iter.open().is_some() {
+                            while iter.next().is_some() {
+                                black_box(());
                             }
-                        })
+                        }
                     },
                     BatchSize::SmallInput,
                 )
