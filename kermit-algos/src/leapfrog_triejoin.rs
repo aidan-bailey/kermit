@@ -1,6 +1,4 @@
-use std::marker::PhantomData;
-
-use kermit_iters::trie::TrieIterator;
+use {kermit_iters::trie::TrieIterator, std::marker::PhantomData};
 
 pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
     fn init(&mut self) -> Option<&KT>;
@@ -24,7 +22,6 @@ pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIter
 
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIter<KT, IT> {
     pub fn new(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iters: Vec<IT>) -> Self {
-
         let mut iter_indexes_at_variable: Vec<Vec<usize>> = Vec::new();
         for v in &variables {
             let mut iters_at_level_v: Vec<usize> = Vec::new();
@@ -50,27 +47,23 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     }
 
     fn update_iters(&mut self) {
-
         while let Some((i, iter)) = self.current_iters.pop() {
             self.iters[i] = Some(iter);
         }
 
         for i in &self.iter_indexes_at_variable[self.depth - 1] {
             let iter = self.iters[*i].take();
-            self.current_iters.push((*i, iter.expect("There should alway be an iterator here")));
+            self.current_iters
+                .push((*i, iter.expect("There should alway be an iterator here")));
         }
-
     }
 
-    fn k(&self) -> usize {
-        self.current_iters.len()
-    }
+    fn k(&self) -> usize { self.current_iters.len() }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<KT>
     for LeapfrogTriejoinIter<KT, IT>
 {
-
     fn init(&mut self) -> Option<&KT> {
         if !self.at_end() {
             self.current_iters.sort_unstable_by(|a, b| {

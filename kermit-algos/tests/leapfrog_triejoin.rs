@@ -1,8 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use kermit_algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator};
-    use kermit_ds::relation_trie::trie_builder::TrieBuilder;
-    use kermit_iters::trie::TrieIterable;
+    use {
+        kermit_algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
+        kermit_ds::relation_trie::trie_builder::TrieBuilder,
+        kermit_iters::trie::TrieIterable,
+    };
 
     #[test]
     fn test_classic() {
@@ -51,53 +53,50 @@ mod tests {
         assert_eq!(triejoin_iter.key.unwrap(), 5);
     }
 
-    /*
-    #[test_case(
-        vec!["tests/data/a.csv", "tests/data/b.csv", "tests/data/c.csv"],
-        vec![vec![8]];
-        "a,b,c"
-    )]
-    #[test_case(
-        vec!["tests/data/onetoten.csv", "tests/data/onetoten.csv", "tests/data/onetoten.csv"],
-        vec![vec![1], vec![2], vec![3], vec![4], vec![5], vec![6], vec![7], vec![8], vec![9], vec![10]];
-        "onetoten x 3"
-    )]
-    #[test_case(
-        vec!["tests/data/col_a.csv", "tests/data/col_b.csv", "tests/data/col_c.csv"],
-        vec![vec![7], vec![10], vec![20]];
-        "col_a, col_b, col_c"
-    )]
-    fn test_files(file_paths: Vec<&'static str>, expected: Vec<Vec<i32>>) {
-        let tries: Vec<_> = file_paths
-            .iter()
-            .map(|file_path| {
-                TrieBuilder::<i32>::new(1)
-                    .from_file(file_path)
-                    .unwrap()
-                    .build()
-            })
-            .collect();
-        let res = leapfrog_triejoin(tries.iter().collect());
-        assert_eq!(res, expected);
-    }
-
-    #[test_case(
-        1,
-        vec![
-            vec![vec![1], vec![2], vec![3]],
-            vec![vec![1], vec![2], vec![3]]
-        ],
-        vec![vec![1], vec![2], vec![3]];
-        "1-ary"
-    )]
-    fn test_inputs_outputs(arity: usize, inputs: Vec<Vec<Vec<i32>>>, expected: Vec<Vec<i32>>) {
-        let tries: Vec<_> = inputs
-            .into_iter()
-            .map(|input| TrieBuilder::<i32>::new(arity).add_tuples(input).build())
-            .collect();
-        let res = leapfrog_triejoin(tries.iter().collect());
-        assert_eq!(res, expected);
-    }
-    */
-
+    // #[test_case(
+    // vec!["tests/data/a.csv", "tests/data/b.csv", "tests/data/c.csv"],
+    // vec![vec![8]];
+    // "a,b,c"
+    // )]
+    // #[test_case(
+    // vec!["tests/data/onetoten.csv", "tests/data/onetoten.csv",
+    // "tests/data/onetoten.csv"], vec![vec![1], vec![2], vec![3], vec![4],
+    // vec![5], vec![6], vec![7], vec![8], vec![9], vec![10]]; "onetoten x
+    // 3" )]
+    // #[test_case(
+    // vec!["tests/data/col_a.csv", "tests/data/col_b.csv",
+    // "tests/data/col_c.csv"], vec![vec![7], vec![10], vec![20]];
+    // "col_a, col_b, col_c"
+    // )]
+    // fn test_files(file_paths: Vec<&'static str>, expected: Vec<Vec<i32>>) {
+    // let tries: Vec<_> = file_paths
+    // .iter()
+    // .map(|file_path| {
+    // TrieBuilder::<i32>::new(1)
+    // .from_file(file_path)
+    // .unwrap()
+    // .build()
+    // })
+    // .collect();
+    // let res = leapfrog_triejoin(tries.iter().collect());
+    // assert_eq!(res, expected);
+    // }
+    //
+    // #[test_case(
+    // 1,
+    // vec![
+    // vec![vec![1], vec![2], vec![3]],
+    // vec![vec![1], vec![2], vec![3]]
+    // ],
+    // vec![vec![1], vec![2], vec![3]];
+    // "1-ary"
+    // )]
+    // fn test_inputs_outputs(arity: usize, inputs: Vec<Vec<Vec<i32>>>,
+    // expected: Vec<Vec<i32>>) { let tries: Vec<_> = inputs
+    // .into_iter()
+    // .map(|input| TrieBuilder::<i32>::new(arity).add_tuples(input).build())
+    // .collect();
+    // let res = leapfrog_triejoin(tries.iter().collect());
+    // assert_eq!(res, expected);
+    // }
 }

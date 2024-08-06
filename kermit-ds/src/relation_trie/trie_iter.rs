@@ -1,9 +1,13 @@
-use crate::relation_trie::{
-    node::{Node, TrieFields},
-    trie::RelationTrie,
+use {
+    crate::relation_trie::{
+        node::{Node, TrieFields},
+        trie::RelationTrie,
+    },
+    kermit_iters::{
+        linear::LinearIterator,
+        trie::{TrieIterable, TrieIterator},
+    },
 };
-use kermit_iters::trie::{TrieIterable, TrieIterator};
-use kermit_iters::linear::LinearIterator;
 
 pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
     /// Current Node's index amongst its siblings.
@@ -27,7 +31,8 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
         }
     }
 
-    /// Get the siblings of the node pointed to by the cursor (including the node).
+    /// Get the siblings of the node pointed to by the cursor (including the
+    /// node).
     ///
     /// Returns None if the cursor points to the root.
     fn siblings(&self) -> Option<&'a Vec<Node<KT>>> {
@@ -142,7 +147,5 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, K
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> TrieIterable<KT> for RelationTrie<KT> {
-    fn trie_iter(&self) -> impl TrieIterator<KT> {
-        TrieIter::new(self)
-    }
+    fn trie_iter(&self) -> impl TrieIterator<KT> { TrieIter::new(self) }
 }

@@ -1,5 +1,7 @@
-use std::collections::VecDeque;
-use std::ops::{Index, IndexMut};
+use std::{
+    collections::VecDeque,
+    ops::{Index, IndexMut},
+};
 
 /// Trie node
 #[derive(Clone, Debug)]
@@ -15,15 +17,11 @@ pub struct Node<KT: PartialOrd + PartialEq + Clone> {
 impl<KT: PartialOrd + PartialEq + Clone> Index<usize> for Node<KT> {
     type Output = Node<KT>;
 
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.children()[index]
-    }
+    fn index(&self, index: usize) -> &Self::Output { &self.children()[index] }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> IndexMut<usize> for Node<KT> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.children_mut()[index]
-    }
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children_mut()[index] }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> Node<KT> {
@@ -37,20 +35,14 @@ impl<KT: PartialOrd + PartialEq + Clone> Node<KT> {
     }
 
     /// Returns the Node's key
-    pub fn key(&self) -> &KT {
-        &self.key
-    }
+    pub fn key(&self) -> &KT { &self.key }
 }
 
 pub trait TrieFields<KT: PartialOrd + PartialEq + Clone> {
     fn children(&self) -> &Vec<Node<KT>>;
     /// Returns true iff the Node has no children
-    fn is_empty(&self) -> bool {
-        self.children().is_empty()
-    }
-    fn size(&self) -> usize {
-        self.children().len()
-    }
+    fn is_empty(&self) -> bool { self.children().is_empty() }
+    fn size(&self) -> usize { self.children().len() }
     fn height(&self) -> usize {
         if let Some(child) = self.children().first() {
             1 + child.height()
@@ -62,12 +54,9 @@ pub trait TrieFields<KT: PartialOrd + PartialEq + Clone> {
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for Node<KT> {
-    fn children(&self) -> &Vec<Node<KT>> {
-        &self.children
-    }
-    fn arity(&self) -> usize {
-        self.arity
-    }
+    fn children(&self) -> &Vec<Node<KT>> { &self.children }
+
+    fn arity(&self) -> usize { self.arity }
 }
 
 pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
@@ -198,9 +187,7 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> Internal<KT> for Node<KT> {
-    fn children_mut(&mut self) -> &mut Vec<Node<KT>> {
-        &mut self.children
-    }
+    fn children_mut(&mut self) -> &mut Vec<Node<KT>> { &mut self.children }
 }
 
 #[cfg(test)]

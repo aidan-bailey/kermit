@@ -1,8 +1,8 @@
-use std::{fmt::Debug, fs::File, path::Path, str::FromStr};
-
-use csv::Error;
-
-use crate::relation_trie::trie::RelationTrie;
+use {
+    crate::relation_trie::trie::RelationTrie,
+    csv::Error,
+    std::{fmt::Debug, fs::File, path::Path, str::FromStr},
+};
 
 pub struct TrieBuilder<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> {
     arity: usize,
