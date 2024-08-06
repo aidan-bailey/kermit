@@ -1,1 +1,1 @@
-pub mod tuple_trie;
+pub mod relation_trie;

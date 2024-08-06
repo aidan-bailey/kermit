@@ -2,7 +2,7 @@ use std::{fmt::Debug, fs::File, path::Path, str::FromStr};
 
 use csv::Error;
 
-use crate::tuple_trie::tuple_trie::Trie;
+use crate::relation_trie::trie::RelationTrie;
 
 pub struct TrieBuilder<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> {
     arity: usize,
@@ -17,8 +17,8 @@ impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> TrieBuilder<KT> {
         }
     }
 
-    pub fn build(self) -> Trie<KT> {
-        Trie::from_tuples_presort(self.arity, self.tuples)
+    pub fn build(self) -> RelationTrie<KT> {
+        RelationTrie::from_tuples_presort(self.arity, self.tuples)
     }
 
     pub fn add_tuple(mut self, tuple: Vec<KT>) -> TrieBuilder<KT> {
@@ -58,7 +58,7 @@ impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> TrieBuilder<KT> {
 #[cfg(test)]
 mod tests {
 
-    use crate::tuple_trie::{node::TrieFields, trie_builder::TrieBuilder};
+    use crate::relation_trie::{node::TrieFields, trie_builder::TrieBuilder};
 
     // Read from file
     #[test]

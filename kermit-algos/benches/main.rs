@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use kermit_ds::tuple_trie::tuple_trie::Trie;
+use kermit_ds::relation_trie::trie::RelationTrie;
 use kermit_iters::trie::{TrieIterable, TrieIterator};
 
 use rand::{distributions::uniform::SampleUniform, Rng};
