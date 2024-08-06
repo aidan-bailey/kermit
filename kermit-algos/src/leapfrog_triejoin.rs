@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, mem};
 
 use kermit_iters::trie::{TrieIterable, TrieIterator};
 
@@ -15,35 +15,69 @@ pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
 pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> {
     pub key: Option<KT>,
     p: usize,
-    iters: Vec<IT>,
+    iters: Vec<Option<IT>>,
+    current_iters: Vec<(usize, IT)>,
+    iter_indexes_at_variable: Vec<Vec<usize>>,
+    depth: usize,
     phantom: PhantomData<KT>,
 }
 
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIter<KT, IT> {
-    pub fn new(iters: Vec<IT>) -> Self {
-        let mut iter = LeapfrogTriejoinIter {
+    pub fn new(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iters: Vec<IT>) -> Self {
+
+        let mut iter_indexes_at_variable: Vec<Vec<usize>> = Vec::new();
+        for v in &variables {
+            let mut iters_at_level_v: Vec<usize> = Vec::new();
+            for r_i in 0..rel_variables.len() {
+                let r = &rel_variables[r_i];
+                if r.contains(v) {
+                    iters_at_level_v.push(r_i);
+                }
+            }
+            iter_indexes_at_variable.push(iters_at_level_v);
+        }
+
+        let iters = iters.into_iter().map(|iter| Some(iter)).collect();
+
+        let iter = LeapfrogTriejoinIter {
             key: None,
             p: 0,
             iters,
+            current_iters: Vec::new(),
+            iter_indexes_at_variable,
+            depth: 0,
             phantom: PhantomData,
         };
-        iter.init();
         iter
     }
 
+    fn update_iters(&mut self) {
+
+        while let Some((i, iter)) = self.current_iters.pop() {
+            self.iters[i] = Some(iter);
+        }
+
+        for i in &self.iter_indexes_at_variable[self.depth - 1] {
+            let iter = mem::replace(&mut self.iters[*i], None);
+            self.current_iters.push((*i, iter.expect("There should alway be an iterator here")));
+        }
+
+    }
+
     fn k(&self) -> usize {
-        self.iters.len()
+        self.current_iters.len()
     }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<KT>
     for LeapfrogTriejoinIter<KT, IT>
 {
+
     fn init(&mut self) -> Option<&KT> {
         if !self.at_end() {
-            self.iters.sort_unstable_by(|a, b| {
-                let a_key = a.key().expect("Not at root");
-                let b_key = b.key().expect("Not at root");
+            self.current_iters.sort_unstable_by(|a, b| {
+                let a_key = a.1.key().expect("Not at root");
+                let b_key = b.1.key().expect("Not at root");
                 if a_key < b_key {
                     std::cmp::Ordering::Less
                 } else if a_key > b_key {
@@ -61,7 +95,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
 
     fn next(&mut self) -> Option<&KT> {
         self.key = None;
-        self.iters[self.p].next()?;
+        self.current_iters[self.p].1.next()?;
         self.p = (self.p + 1) % self.k();
         self.search()
     }
@@ -73,21 +107,21 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         } else {
             self.p - 1
         };
-        let mut x_prime = self.iters[prime_i].key()?.clone();
+        let mut x_prime = self.current_iters[prime_i].1.key()?.clone();
         loop {
-            let x = self.iters[self.p].key()?;
+            let x = self.current_iters[self.p].1.key()?;
             if x == &x_prime {
                 self.key = Some(x.clone());
                 break self.key.as_ref();
             }
-            x_prime = self.iters[self.p].seek(&x_prime)?.clone();
+            x_prime = self.current_iters[self.p].1.seek(&x_prime)?.clone();
             self.p = (self.p + 1) % self.k();
         }
     }
 
     fn seek(&mut self, seek_key: &KT) -> Option<&KT> {
-        self.iters[self.p].seek(seek_key)?;
-        if !self.iters[self.p].at_end() {
+        self.current_iters[self.p].1.seek(seek_key)?;
+        if !self.current_iters[self.p].1.at_end() {
             self.p = (self.p + 1) % self.k();
             self.search()
         } else {
@@ -96,7 +130,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     }
 
     fn at_end(&self) -> bool {
-        for iter in &self.iters {
+        for (_, iter) in &self.current_iters {
             if iter.at_end() {
                 return true;
             }
@@ -105,57 +139,20 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
     }
 
     fn open(&mut self) -> Option<&KT> {
-        for iter in &mut self.iters {
+        self.depth += 1;
+        self.update_iters();
+        for (_, iter) in &mut self.current_iters {
             iter.open()?;
         }
         self.init()
     }
 
     fn up(&mut self) -> Option<&KT> {
-        for iter in &mut self.iters {
+        for (_, iter) in &mut self.current_iters {
             iter.up()?;
         }
-        self.init()
+        self.depth -= 1;
+        self.update_iters();
+        self.key.as_ref()
     }
-}
-
-pub fn leapfrog_triejoin<KT: PartialOrd + PartialEq + Clone>(
-    trie_iterables: Vec<&impl TrieIterable<KT>>,
-) -> Vec<Vec<KT>> {
-    let mut iters = trie_iterables
-        .into_iter()
-        .map(|t| t.trie_iter())
-        .collect::<Vec<_>>();
-    for iter in &mut iters {
-        iter.open();
-    }
-    let mut iter = LeapfrogTriejoinIter::new(iters);
-
-    let mut results: Vec<Vec<KT>> = vec![];
-    let mut buffer: Vec<KT> = vec![];
-
-    let mut depth = 1;
-    while depth != 0 {
-        if iter.at_end() {
-            if iter.up().is_none() {
-                break;
-            } else {
-                buffer.pop();
-                depth -= 1;
-            }
-        } else {
-            if let Some(ref key) = iter.key {
-                buffer.push(key.clone());
-                if iter.open().is_none() {
-                    results.push(buffer.clone());
-                    buffer.pop();
-                    iter.next();
-                } else {
-                    depth += 1;
-                }
-            }
-        }
-    }
-
-    results
 }
