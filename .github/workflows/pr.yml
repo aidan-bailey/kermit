@@ -11,6 +11,7 @@ concurrency:
 
 env:
   RUST_BACKTRACE: 1
+  MIRIFLAGS: "-Zmiri-disable-isolation"
 
 jobs:
   test:

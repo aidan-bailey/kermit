@@ -1,16 +1,21 @@
-pub mod trie_iter;
 pub mod node;
-pub mod trie_builder;
 pub mod trie;
+pub mod trie_builder;
+pub mod trie_iter;
 pub mod variable_type;
 
 #[cfg(test)]
 mod tests {
-    use crate::relation_trie::{
-        node::TrieFields, trie_builder::TrieBuilder, trie::RelationTrie, variable_type::VariableType,
+    use {
+        crate::relation_trie::{
+            node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder,
+            variable_type::VariableType,
+        },
+        kermit_iters::{
+            linear::LinearIterator,
+            trie::{TrieIterable, TrieIterator},
+        },
     };
-    use kermit_iters::trie::{TrieIterable, TrieIterator};
-    use kermit_iters::linear::LinearIterator;
 
     #[test]
     fn trie_new() {

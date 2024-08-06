@@ -1,10 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use kermit_ds::relation_trie::{trie::RelationTrie, trie_iter::TrieIter};
-use kermit_iters::linear::LinearIterator;
-use kermit_iters::trie::TrieIterator;
-use std::fmt;
-
-use rand::{distributions::uniform::SampleUniform, Rng};
+use {
+    criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion},
+    kermit_ds::relation_trie::{trie::RelationTrie, trie_iter::TrieIter},
+    kermit_iters::{linear::LinearIterator, trie::TrieIterator},
+    rand::{distributions::uniform::SampleUniform, Rng},
+    std::fmt,
+};
 
 fn generate_vector<T: PartialOrd + SampleUniform + Copy>(arity: usize, min: T, max: T) -> Vec<T> {
     let mut rng = rand::thread_rng();
@@ -80,8 +80,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     ];
 
     let mut insertion_group = c.benchmark_group("insertion");
-    //insertion_group.sampling_mode(criterion::SamplingMode::Flat);
-    //insertion_group.sample_size(10);
+    // insertion_group.sampling_mode(criterion::SamplingMode::Flat);
+    // insertion_group.sample_size(10);
     for bench_param in &bench_params {
         insertion_group.bench_with_input(
             BenchmarkId::from_parameter(bench_param.to_string()),
@@ -100,8 +100,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     insertion_group.finish();
 
     let mut tri_iterator_group = c.benchmark_group("tri-iterator");
-    //tri_iterator_group.sampling_mode(criterion::SamplingMode::Flat);
-    //tri_iterator_group.sample_size(10);
+    // tri_iterator_group.sampling_mode(criterion::SamplingMode::Flat);
+    // tri_iterator_group.sample_size(10);
     for bench_param in &bench_params {
         tri_iterator_group.bench_with_input(
             BenchmarkId::from_parameter(bench_param.to_string()),
