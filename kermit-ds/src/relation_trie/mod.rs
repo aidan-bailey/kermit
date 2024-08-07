@@ -20,7 +20,7 @@ mod tests {
     #[test]
     fn trie_new() {
         let empty_tri = RelationTrie::<u64>::new(1);
-        assert_eq!(empty_tri.arity(), 1);
+        assert_eq!(empty_tri.cardinality(), 1);
         assert!(empty_tri.is_empty());
     }
 

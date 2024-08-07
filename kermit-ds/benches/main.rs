@@ -6,10 +6,10 @@ use {
     std::fmt,
 };
 
-fn generate_vector<T: PartialOrd + SampleUniform + Copy>(arity: usize, min: T, max: T) -> Vec<T> {
+fn generate_vector<T: PartialOrd + SampleUniform + Copy>(cardinality: usize, min: T, max: T) -> Vec<T> {
     let mut rng = rand::thread_rng();
     let mut vector = Vec::<T>::new();
-    for _ in 0..arity {
+    for _ in 0..cardinality {
         vector.push(rng.gen_range(min..max));
     }
     vector
@@ -18,7 +18,7 @@ fn generate_vector<T: PartialOrd + SampleUniform + Copy>(arity: usize, min: T, m
 fn generate_tuples<T: PartialOrd + SampleUniform + Copy>(params: &BenchParams<T>) -> Vec<Vec<T>> {
     let mut vectors = Vec::<Vec<T>>::new();
     while vectors.len() < params.size {
-        let vector = generate_vector(params.arity, params.min, params.max);
+        let vector = generate_vector(params.cardinality, params.min, params.max);
         if !vectors.contains(&vector) {
             vectors.push(vector);
         }
@@ -28,16 +28,16 @@ fn generate_tuples<T: PartialOrd + SampleUniform + Copy>(params: &BenchParams<T>
 
 struct BenchParams<T: PartialOrd + SampleUniform + Copy> {
     size: usize,
-    arity: usize,
+    cardinality: usize,
     min: T,
     max: T,
 }
 
 impl<T: PartialOrd + SampleUniform + Copy + fmt::Display> BenchParams<T> {
-    fn new(size: usize, arity: usize, min: T, max: T) -> BenchParams<T> {
+    fn new(size: usize, cardinality: usize, min: T, max: T) -> BenchParams<T> {
         BenchParams {
             size,
-            arity,
+            cardinality,
             min,
             max,
         }
@@ -48,8 +48,8 @@ impl<T: PartialOrd + SampleUniform + Copy + fmt::Display> fmt::Display for Bench
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "size: {}, arity: {}, min: {}, max: {}",
-            self.size, self.arity, self.min, self.max
+            "size: {}, cardinality: {}, min: {}, max: {}",
+            self.size, self.cardinality, self.min, self.max
         )
     }
 }
@@ -90,7 +90,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 b.iter_batched(
                     || generate_tuples(bench_param),
                     |tuples| {
-                        black_box(RelationTrie::from_tuples_presort(bench_param.arity, tuples))
+                        black_box(RelationTrie::from_tuples_presort(bench_param.cardinality, tuples))
                     },
                     BatchSize::SmallInput,
                 )
@@ -110,7 +110,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         RelationTrie::from_tuples_presort(
-                            bench_param.arity,
+                            bench_param.cardinality,
                             generate_tuples(bench_param),
                         )
                     },
