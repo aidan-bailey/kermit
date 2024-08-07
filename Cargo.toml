@@ -11,3 +11,9 @@ homepage = "https://github.com/aidan-bailey/kermit"
 license = "LGPL-2.1"
 readme = "README.md"
 repository = "https://github.com/aidan-bailey/kermit"
+
+[patch.crates-io]
+kermit = { path = "kermit" }
+kermit-ds = { path = "kermit-ds" }
+kermit-iters = { path = "kermit-iters" }
+kermit-algos = { path = "kermit-algos" }
