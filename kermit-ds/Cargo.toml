@@ -1,7 +1,7 @@
 [package]
 name = "kermit-ds"
 description.workspace = true
-version.workspace = "0.0.2-dev"
+version = "0.0.2-dev"
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
