@@ -1,6 +1,6 @@
 # Kermit
 
-*Kermit* is a library containing data structures, iterators and algorithms relating to [relational algebra](https://en.wikipedia.org/wiki/Relational_algebra), primarily for the purpose of education and benchmarking.
+*Kermit* is a library containing data structures, iterators and algorithms related to [relational algebra](https://en.wikipedia.org/wiki/Relational_algebra), primarily for the purpose of research and benchmarking. It is currently in early stages of development and as such all builds and releases should be considered unstable.
 
 It is being written primarily to provide a platform for my Masters thesis.
 The scope of which (preliminarily) encompassing benchmarking the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481) over a variety of data structures.
