@@ -19,5 +19,5 @@ harness = false
 [dev-dependencies]
 criterion = "0.5.1"
 rand = "0.8.5"
-kermit-ds = { path = "../kermit-ds" }
+kermit-ds = { path = "../kermit-ds", version = "0.0.1-dev" }
 test-case = "3.3.1"
