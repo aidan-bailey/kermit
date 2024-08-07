@@ -6,7 +6,9 @@ use {
     std::fmt,
 };
 
-fn generate_vector<T: PartialOrd + SampleUniform + Copy>(cardinality: usize, min: T, max: T) -> Vec<T> {
+fn generate_vector<T: PartialOrd + SampleUniform + Copy>(
+    cardinality: usize, min: T, max: T,
+) -> Vec<T> {
     let mut rng = rand::thread_rng();
     let mut vector = Vec::<T>::new();
     for _ in 0..cardinality {
@@ -90,7 +92,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 b.iter_batched(
                     || generate_tuples(bench_param),
                     |tuples| {
-                        black_box(RelationTrie::from_tuples_presort(bench_param.cardinality, tuples))
+                        black_box(RelationTrie::from_tuples_presort(
+                            bench_param.cardinality,
+                            tuples,
+                        ))
                     },
                     BatchSize::SmallInput,
                 )
