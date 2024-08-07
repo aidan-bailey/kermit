@@ -1,10 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "kermit-algos",
-    "kermit-ds",
-    "kermit-iters"
-]
+members = ["kermit", "kermit-algos", "kermit-ds", "kermit-iters"]
 
 [workspace.package]
 description = "Kermit, the Leapfrog Triejoin algorithm with associated data structures"
@@ -13,6 +9,11 @@ authors = ["Aidan Bailey"]
 edition = "2021"
 homepage = "https://github.com/aidan-bailey/kermit"
 license = "LGPL-2.1"
-license-file = "LICENSE.txt"
 readme = "README.md"
 repository = "https://github.com/aidan-bailey/kermit"
+
+[patch.crates-io]
+kermit = { path = "kermit" }
+kermit-ds = { path = "kermit-ds" }
+kermit-iters = { path = "kermit-iters" }
+kermit-algos = { path = "kermit-algos" }
