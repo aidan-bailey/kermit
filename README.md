@@ -1,6 +1,6 @@
 # Kermit
 
-*Kermit* is a library for data structures, iterators and algorithms relating to [relational algebra](https://en.wikipedia.org/wiki/Relational_algebra), primarily for the purpose of education and benchmarking.
+*Kermit* is a library containing data structures, iterators and algorithms relating to [relational algebra](https://en.wikipedia.org/wiki/Relational_algebra), primarily for the purpose of education and benchmarking.
 
 It is being written primarily to provide a platform for my Masters thesis.
 The scope of which (preliminarily) encompassing benchmarking the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481) over a variety of data structures.
@@ -14,8 +14,8 @@ My objective is to write entirely safe, stable, and hopefully idiomatic Rust the
 
 ## Contributing
 
-Perhaps after I'm finished my thesis!
+Thanks for taking an interest! Perhaps after I've finished my thesis.
 
 ## License
 
-*Kermit* is license under [LGPL-2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html).
+This repository is licensed under [LGPL-2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html).
