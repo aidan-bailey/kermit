@@ -6,8 +6,10 @@ authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true
-license-file.workspace = true
-readme.workspace = true
+readme = "README.md"
 repository.workspace = true
 
 [dependencies]
+kermit-ds = { path = "../kermit-ds" }
+kermit-iters = { path = "../kermit-iters" }
+kermit-algos = { path = "../kermit-algos" }
