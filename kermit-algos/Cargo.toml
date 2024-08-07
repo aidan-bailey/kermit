@@ -10,7 +10,7 @@ readme = "README.md"
 repository.workspace = true
 
 [dependencies]
-kermit-iters = { path = "../kermit-iters" }
+kermit-iters = { path = "../kermit-iters", version = "0.0.1-dev" }
 
 [[bench]]
 name = "main"
@@ -19,5 +19,5 @@ harness = false
 [dev-dependencies]
 criterion = "0.5.1"
 rand = "0.8.5"
-kermit-ds = { path = "../kermit-ds", version = "0.0.1-dev" }
+kermit-ds = { path = "../kermit-ds" }
 test-case = "3.3.1"
