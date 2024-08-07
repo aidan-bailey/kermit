@@ -10,7 +10,7 @@ readme = "README.md"
 repository.workspace = true
 
 [dependencies]
-kermit-iters = { path = "../kermit-iters", version = "0.0.1-dev" }
+kermit-iters = "0.0.3-dev"
 
 [[bench]]
 name = "main"

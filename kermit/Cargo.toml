@@ -10,6 +10,6 @@ readme = "README.md"
 repository.workspace = true
 
 [dependencies]
-kermit-ds = { path = "../kermit-ds", version="0.0.1-dev" }
-kermit-iters = { path = "../kermit-iters", version="0.0.1-dev" }
-kermit-algos = { path = "../kermit-algos", version="0.0.1-dev" }
+kermit-ds = "0.0.3-dev"
+kermit-iters = "0.0.3-dev"
+kermit-algos = "0.0.3-dev"
