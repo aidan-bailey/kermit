@@ -6,7 +6,7 @@ use {
 /// Trie root
 #[derive(Clone, Debug)]
 pub struct RelationTrie<KT: PartialOrd + PartialEq + Clone> {
-    arity: usize,
+    cardinality: usize,
     children: Vec<Node<KT>>,
 }
 
@@ -22,22 +22,22 @@ impl<KT: PartialOrd + PartialEq + Clone> IndexMut<usize> for RelationTrie<KT> {
 
 impl<KT: PartialOrd + PartialEq + Clone> RelationTrie<KT> {
     /// Construct an empty Trie
-    pub fn new(arity: usize) -> RelationTrie<KT> {
+    pub fn new(cardinality: usize) -> RelationTrie<KT> {
         RelationTrie {
-            arity,
+            cardinality,
             children: vec![],
         }
     }
 
-    pub fn from_tuples(arity: usize, tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
-        let mut trie = RelationTrie::new(arity);
+    pub fn from_tuples(cardinality: usize, tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
+        let mut trie = RelationTrie::new(cardinality);
         for tuple in tuples {
             trie.insert(tuple).unwrap();
         }
         trie
     }
 
-    pub fn from_tuples_presort(arity: usize, mut tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
+    pub fn from_tuples_presort(cardinality: usize, mut tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
                 if a[i] < b[i] {
@@ -48,7 +48,7 @@ impl<KT: PartialOrd + PartialEq + Clone> RelationTrie<KT> {
             }
             std::cmp::Ordering::Equal
         });
-        let mut trie = RelationTrie::new(arity);
+        let mut trie = RelationTrie::new(cardinality);
         for tuple in tuples {
             trie.insert(tuple).unwrap();
         }
@@ -56,7 +56,7 @@ impl<KT: PartialOrd + PartialEq + Clone> RelationTrie<KT> {
     }
 
     pub fn insert(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
-        if tuple.len() != self.arity {
+        if tuple.len() != self.cardinality {
             return Err("Arity doesn't match.");
         }
         self.insert_linear(tuple);
@@ -64,14 +64,14 @@ impl<KT: PartialOrd + PartialEq + Clone> RelationTrie<KT> {
     }
 
     pub fn search(&self, tuple: Vec<KT>) -> Result<Option<&Node<KT>>, &'static str> {
-        if tuple.len() != self.arity {
+        if tuple.len() != self.cardinality {
             return Err("Arity doesn't match.");
         }
         Ok(self.search_linear(tuple))
     }
 
     pub fn remove(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
-        if tuple.len() != self.arity {
+        if tuple.len() != self.cardinality {
             return Err("Arity doesn't match.");
         }
         self.remove_deque(tuple.into());
@@ -82,7 +82,7 @@ impl<KT: PartialOrd + PartialEq + Clone> RelationTrie<KT> {
 impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for RelationTrie<KT> {
     fn children(&self) -> &Vec<Node<KT>> { &self.children }
 
-    fn arity(&self) -> usize { self.arity }
+    fn cardinality(&self) -> usize { self.cardinality }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> Internal<KT> for RelationTrie<KT> {

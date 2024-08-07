@@ -5,20 +5,20 @@ use {
 };
 
 pub struct TrieBuilder<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> {
-    arity: usize,
+    cardinality: usize,
     tuples: Vec<Vec<KT>>,
 }
 
 impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> TrieBuilder<KT> {
-    pub fn new(arity: usize) -> TrieBuilder<KT> {
+    pub fn new(cardinality: usize) -> TrieBuilder<KT> {
         TrieBuilder {
-            arity,
+            cardinality,
             tuples: vec![],
         }
     }
 
     pub fn build(self) -> RelationTrie<KT> {
-        RelationTrie::from_tuples_presort(self.arity, self.tuples)
+        RelationTrie::from_tuples_presort(self.cardinality, self.tuples)
     }
 
     pub fn add_tuple(mut self, tuple: Vec<KT>) -> TrieBuilder<KT> {
