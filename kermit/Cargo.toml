@@ -6,10 +6,10 @@ authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true
-readme = "README.md"
+readme.workspace = true
 repository.workspace = true
 
 [dependencies]
-kermit-ds = "0.0.3-dev"
-kermit-iters = "0.0.3-dev"
-kermit-algos = "0.0.3-dev"
+kermit-ds = { version = "0.0.4-dev", path = "../kermit-ds" }
+kermit-iters = { version = "0.0.4-dev", path = "../kermit-iters" }
+kermit-algos = { version = "0.0.4-dev", path = "../kermit-algos" }
