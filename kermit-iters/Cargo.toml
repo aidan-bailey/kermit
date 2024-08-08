@@ -1,6 +1,6 @@
 [package]
 name = "kermit-iters"
-description.workspace = true
+description = "Iterators used in Kermit"
 version = "0.0.4-dev"
 authors.workspace = true
 edition.workspace = true

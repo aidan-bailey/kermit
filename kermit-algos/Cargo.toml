@@ -1,6 +1,6 @@
 [package]
 name = "kermit-algos"
-description.workspace = true
+description = "Algorithms used in Kermit"
 version = "0.0.4-dev"
 authors.workspace = true
 edition.workspace = true
@@ -21,3 +21,8 @@ criterion = "0.5.1"
 rand = "0.8.5"
 kermit-ds = { path = "../kermit-ds" }
 test-case = "3.3.1"
+
+[patch.crates-io]
+kermit-ds = { workspace = true }
+kermit-iters = { workspace = true }
+kermit-algos = { workspace = true }

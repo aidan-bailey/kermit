@@ -3,8 +3,6 @@ resolver = "2"
 members = ["kermit", "kermit-algos", "kermit-ds", "kermit-iters"]
 
 [workspace.package]
-description = "Kermit, the Leapfrog Triejoin algorithm with associated data structures"
-version = "0.0.4-dev"
 authors = ["Aidan Bailey"]
 edition = "2021"
 homepage = "https://github.com/aidan-bailey/kermit"
