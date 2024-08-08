@@ -10,7 +10,7 @@ readme = "README.md"
 repository.workspace = true
 
 [dependencies]
-kermit-iters = { version = "0.0.4-dev", path = "../kermit-iters"}
+kermit-iters = { version = "0.0.4-dev", path = "../kermit-iters" }
 
 [[bench]]
 name = "main"
@@ -21,8 +21,3 @@ criterion = "0.5.1"
 rand = "0.8.5"
 kermit-ds = { path = "../kermit-ds" }
 test-case = "3.3.1"
-
-[patch.crates-io]
-kermit-ds = { workspace = true }
-kermit-iters = { workspace = true }
-kermit-algos = { workspace = true }

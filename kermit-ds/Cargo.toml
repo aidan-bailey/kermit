@@ -20,8 +20,3 @@ harness = false
 [dev-dependencies]
 criterion = "0.5.1"
 rand = "0.8.5"
-
-[patch.crates-io]
-kermit-ds = { workspace = true }
-kermit-iters = { workspace = true }
-kermit-algos = { workspace = true }

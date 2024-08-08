@@ -13,8 +13,3 @@ repository.workspace = true
 kermit-ds = { version = "0.0.4-dev", path = "../kermit-ds" }
 kermit-iters = { version = "0.0.4-dev", path = "../kermit-iters" }
 kermit-algos = { version = "0.0.4-dev", path = "../kermit-algos" }
-
-[patch.crates-io]
-kermit-ds = { workspace = true }
-kermit-iters = { workspace = true }
-kermit-algos = { workspace = true }
