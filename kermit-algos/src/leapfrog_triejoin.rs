@@ -1,5 +1,6 @@
 use {kermit_iters::trie::TrieIterator, std::marker::PhantomData};
 
+/// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator<KT>
 where
     KT: PartialOrd + PartialEq + Clone,
@@ -52,7 +53,6 @@ where
     KT: PartialOrd + PartialEq + Clone,
     IT: TrieIterator<KT>,
 {
-
     /// Construct a new `LeapfrogTriejoinIter` with the given iterators.
     ///
     /// Q(a, b, c) = R(a, b) S(b, c), T(a, c)
