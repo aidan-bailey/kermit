@@ -17,11 +17,8 @@ impl<KT> RelationTrie<KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
-
     /// Cardinality of the trie's relations.
-    pub fn cardinality(&self) -> usize {
-        self.cardinality
-    }
+    pub fn cardinality(&self) -> usize { self.cardinality }
 
     /// Construct an empty Trie.
     ///
@@ -51,7 +48,8 @@ where
     // TODO: Rename this method
     /// Construct a Trie from a list of tuples.
     ///
-    /// Optimising the insertion through sorting the input tuples before constructing the Trie.
+    /// Optimising the insertion through sorting the input tuples before
+    /// constructing the Trie.
     ///
     /// # Panics
     /// If any tuple does not have a matching `cardinality`.
@@ -77,7 +75,6 @@ where
         self.insert_internal(tuple);
         Ok(())
     }
-
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for RelationTrie<KT> {

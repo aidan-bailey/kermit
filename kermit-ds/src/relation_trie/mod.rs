@@ -7,9 +7,7 @@ pub mod variable_type;
 #[cfg(test)]
 mod tests {
     use {
-        crate::relation_trie::{
-            node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder,
-        },
+        crate::relation_trie::{node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder},
         kermit_iters::{
             linear::LinearIterator,
             trie::{TrieIterable, TrieIterator},
@@ -92,5 +90,4 @@ mod tests {
         assert_eq!(iter.open().unwrap(), &2);
         assert!(iter.open().is_none());
     }
-
 }
