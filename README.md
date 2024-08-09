@@ -1,4 +1,4 @@
-# Kermit &emsp; [![Build Status]][actions] [![Latest Version]][crates.io]
+# Kermit &emsp; [![Build Status]][actions] [![dependency status](https://deps.rs/repo/github/aidan-bailey/kermit/status.svg)](https://deps.rs/repo/github/aidan-bailey/kermit) [![Latest Version]][crates.io]
 
 [Build Status]: https://img.shields.io/github/actions/workflow/status/aidan-bailey/kermit/build.yml?branch=master
 [actions]: https://github.com/aidan-bailey/kermit/actions?query=branch%3Amaster
