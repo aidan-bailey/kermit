@@ -1,6 +1,9 @@
 use {kermit_iters::trie::TrieIterator, std::marker::PhantomData};
 
-pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
+pub trait LeapfrogTriejoinIterator<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     /// Initializes the iterator.
     fn init(&mut self) -> Option<&KT>;
 
@@ -28,7 +31,11 @@ pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
     fn up(&mut self) -> Option<&KT>;
 }
 
-pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> {
+pub struct LeapfrogTriejoinIter<KT, IT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+    IT: TrieIterator<KT>,
+{
     pub key: Option<KT>,
     p: usize,
     iters: Vec<Option<IT>>,
@@ -38,7 +45,11 @@ pub struct LeapfrogTriejoinIter<KT: PartialOrd + PartialEq + Clone, IT: TrieIter
     phantom: PhantomData<KT>,
 }
 
-impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIter<KT, IT> {
+impl<KT, IT> LeapfrogTriejoinIter<KT, IT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+    IT: TrieIterator<KT>,
+{
     pub fn new(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iters: Vec<IT>) -> Self {
         let mut iter_indexes_at_variable: Vec<Vec<usize>> = Vec::new();
         for v in &variables {
