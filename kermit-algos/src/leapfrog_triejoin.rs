@@ -1,7 +1,6 @@
 use {kermit_iters::trie::TrieIterator, std::marker::PhantomData};
 
 pub trait LeapfrogTriejoinIterator<KT: PartialOrd + PartialEq + Clone> {
-
     /// Initializes the iterator.
     fn init(&mut self) -> Option<&KT>;
 
