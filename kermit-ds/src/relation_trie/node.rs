@@ -6,11 +6,9 @@ pub struct Node<KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
-    /// Maximum height (1-based index of key in tuple)
-    cardinality: usize,
-    /// Key for tuple value
+    /// Key of the tuple value.
     key: KT,
-    /// Children
+    /// Children of the trie node.
     children: Vec<Node<KT>>,
 }
 
@@ -37,7 +35,6 @@ where
     /// Construct a Node with a tuple-value key
     fn new(key: KT) -> Node<KT> {
         Node {
-            cardinality: 0,
             key,
             children: vec![],
         }
@@ -62,7 +59,6 @@ where
             0
         }
     }
-    fn cardinality(&self) -> usize;
 }
 
 impl<KT> TrieFields<KT> for Node<KT>
@@ -70,8 +66,6 @@ where
     KT: PartialOrd + PartialEq + Clone,
 {
     fn children(&self) -> &Vec<Node<KT>> { &self.children }
-
-    fn cardinality(&self) -> usize { self.cardinality }
 }
 
 pub(crate) trait Internal<KT>: TrieFields<KT>
@@ -135,7 +129,6 @@ mod tests {
     fn node_new() {
         let node = Node::new(1);
         assert_eq!(node.key(), &1);
-        assert_eq!(node.cardinality(), 0);
     }
 
     #[test]
@@ -143,13 +136,11 @@ mod tests {
         let node = {
             let child = Node::new(2);
             Node {
-                cardinality: child.cardinality() + 1,
                 key: 1,
                 children: vec![child],
             }
         };
         assert_eq!(node.key(), &1);
-        assert_eq!(node.cardinality(), 1);
         assert_eq!(node.children()[0].key(), &2);
     }
 

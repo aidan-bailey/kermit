@@ -17,6 +17,12 @@ impl<KT> RelationTrie<KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
+
+    /// Cardinality of the trie's relations.
+    pub fn cardinality(&self) -> usize {
+        self.cardinality
+    }
+
     /// Construct an empty Trie.
     ///
     /// # Panics
@@ -76,8 +82,6 @@ where
 
 impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for RelationTrie<KT> {
     fn children(&self) -> &Vec<Node<KT>> { &self.children }
-
-    fn cardinality(&self) -> usize { self.cardinality }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> Internal<KT> for RelationTrie<KT> {
