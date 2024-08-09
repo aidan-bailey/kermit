@@ -58,6 +58,8 @@ where
     // TODO: Rename this method
     /// Construct a Trie from a list of tuples.
     ///
+    /// Optimising the insertion through sorting the input tuples before constructing the Trie.
+    ///
     /// # Examples
     /// ```
     /// use trie_rs::relation_trie::RelationTrie;
@@ -66,7 +68,7 @@ where
     ///
     /// # Panics
     /// If any tuple does not have a matching `cardinality`.
-    pub fn from_tuples_presort(cardinality: usize, mut tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
+    pub fn from_mut_tuples(cardinality: usize, mut tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
                 if a[i] < b[i] {

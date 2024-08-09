@@ -18,7 +18,7 @@ impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> TrieBuilder<KT> {
     }
 
     pub fn build(self) -> RelationTrie<KT> {
-        RelationTrie::from_tuples_presort(self.cardinality, self.tuples)
+        RelationTrie::from_mut_tuples(self.cardinality, self.tuples)
     }
 
     pub fn add_tuple(mut self, tuple: Vec<KT>) -> TrieBuilder<KT> {
