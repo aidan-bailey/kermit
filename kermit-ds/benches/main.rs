@@ -92,7 +92,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 b.iter_batched(
                     || generate_tuples(bench_param),
                     |tuples| {
-                        black_box(RelationTrie::from_tuples_presort(
+                        black_box(RelationTrie::from_mut_tuples(
                             bench_param.cardinality,
                             tuples,
                         ))
@@ -114,7 +114,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             |b, bench_param| {
                 b.iter_batched(
                     || {
-                        RelationTrie::from_tuples_presort(
+                        RelationTrie::from_mut_tuples(
                             bench_param.cardinality,
                             generate_tuples(bench_param),
                         )
