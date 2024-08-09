@@ -1,3 +1,0 @@
-# Kermit DS
-
-Data structures

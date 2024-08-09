@@ -1,3 +1,0 @@
-# Kermit Iters
-
-Iterators

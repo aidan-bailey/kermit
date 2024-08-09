@@ -1,3 +1,0 @@
-# Kermit
-
-Conglomeration library
