@@ -1,26 +1,19 @@
-use {
-    crate::relation_trie::node::{Internal, Node, TrieFields},
-    std::ops::{Index, IndexMut},
-};
+use crate::relation_trie::node::{Internal, Node, TrieFields};
 
-/// Trie root
+/// Trie
 #[derive(Clone, Debug)]
-pub struct RelationTrie<KT: PartialOrd + PartialEq + Clone> {
+pub struct RelationTrie<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     cardinality: usize,
     children: Vec<Node<KT>>,
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> Index<usize> for RelationTrie<KT> {
-    type Output = Node<KT>;
-
-    fn index(&self, index: usize) -> &Self::Output { &self.children()[index] }
-}
-
-impl<KT: PartialOrd + PartialEq + Clone> IndexMut<usize> for RelationTrie<KT> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children_mut()[index] }
-}
-
-impl<KT: PartialOrd + PartialEq + Clone> RelationTrie<KT> {
+impl<KT> RelationTrie<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     /// Construct an empty Trie
     pub fn new(cardinality: usize) -> RelationTrie<KT> {
         RelationTrie {
