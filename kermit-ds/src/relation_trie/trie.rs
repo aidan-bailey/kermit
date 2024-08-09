@@ -19,12 +19,6 @@ where
 {
     /// Construct an empty Trie.
     ///
-    /// # Examples
-    /// ```
-    /// use trie_rs::relation_trie::RelationTrie;
-    /// let trie = RelationTrie::<usize>::new(2);
-    /// ```
-    ///
     /// # Panics
     /// If `cardinality` is less than 1.
     pub fn new(cardinality: usize) -> RelationTrie<KT> {
@@ -36,13 +30,6 @@ where
     }
 
     /// Construct a Trie from a list of tuples.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use trie_rs::relation_trie::RelationTrie;
-    /// let trie = RelationTrie::<usize>::from_tuples(2, vec![vec![1, 2], vec![3, 4]]);
-    /// ```
     ///
     /// # Panics
     /// If any tuple does not have a matching `cardinality`.
@@ -59,12 +46,6 @@ where
     /// Construct a Trie from a list of tuples.
     ///
     /// Optimising the insertion through sorting the input tuples before constructing the Trie.
-    ///
-    /// # Examples
-    /// ```
-    /// use trie_rs::relation_trie::RelationTrie;
-    /// let trie = RelationTrie::<usize>::from_tuples_presort(2, vec![vec![1, 2], vec![3, 4]]);
-    /// ```
     ///
     /// # Panics
     /// If any tuple does not have a matching `cardinality`.
@@ -87,24 +68,10 @@ where
         if tuple.len() != self.cardinality {
             return Err("Arity doesn't match.");
         }
-        self.insert_linear(tuple);
+        self.insert_internal(tuple);
         Ok(())
     }
 
-    pub fn search(&self, tuple: Vec<KT>) -> Result<Option<&Node<KT>>, &'static str> {
-        if tuple.len() != self.cardinality {
-            return Err("Arity doesn't match.");
-        }
-        Ok(self.search_linear(tuple))
-    }
-
-    pub fn remove(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
-        if tuple.len() != self.cardinality {
-            return Err("Arity doesn't match.");
-        }
-        self.remove_deque(tuple.into());
-        Ok(())
-    }
 }
 
 impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for RelationTrie<KT> {

@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::ops::{Index, IndexMut};
 
 /// Trie node
 #[derive(Clone, Debug)]
@@ -12,6 +12,22 @@ where
     key: KT,
     /// Children
     children: Vec<Node<KT>>,
+}
+
+impl<KT> Index<usize> for Node<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
+    type Output = Node<KT>;
+
+    fn index(&self, index: usize) -> &Self::Output { &self.children()[index] }
+}
+
+impl<KT> IndexMut<usize> for Node<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children_mut()[index] }
 }
 
 impl<KT> Node<KT>
@@ -64,7 +80,7 @@ where
 {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
-    fn insert_linear(&mut self, tuple: Vec<KT>) {
+    fn insert_internal(&mut self, tuple: Vec<KT>) {
         if tuple.is_empty() {
             return;
         }
@@ -95,93 +111,6 @@ where
                         current_children = current_children[0].children_mut();
                         break;
                     }
-                }
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn insert_binary(&mut self, tuple: Vec<KT>) {
-        if tuple.is_empty() {
-            return;
-        }
-
-        let mut current_children = self.children_mut();
-
-        for key in tuple.into_iter() {
-            if current_children.is_empty() {
-                current_children.push(Node::new(key));
-                current_children = current_children[0].children_mut();
-            } else {
-                let mut l: usize = 0;
-                let mut r: usize = current_children.len() - 1;
-                while l <= r {
-                    let m: usize = (l + r) / 2;
-                    if current_children[m].key() < &key {
-                        l = m + 1;
-                    } else if current_children[m].key() > &key {
-                        if m == 0 {
-                            current_children.insert(0, Node::new(key));
-                            current_children = current_children[0].children_mut();
-                            break;
-                        }
-                        r = m - 1;
-                    } else {
-                        current_children = current_children[m].children_mut();
-                        break;
-                    }
-
-                    if l > r {
-                        if l < current_children.len() {
-                            current_children.insert(l, Node::new(key));
-                            current_children = current_children[l].children_mut();
-                        } else {
-                            current_children.push(Node::new(key));
-                            current_children = current_children[l].children_mut();
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    fn search_linear(&self, tuple: Vec<KT>) -> Option<&Node<KT>> {
-        if tuple.is_empty() {
-            return None;
-        }
-
-        let mut current_children = self.children();
-
-        for key in tuple.into_iter() {
-            if current_children.is_empty() {
-                return None;
-            } else {
-                for i in 0..current_children.len() {
-                    if &key == current_children[i].key() {
-                        if current_children[i].children().is_empty() {
-                            return Some(&current_children[i]);
-                        }
-                        current_children = current_children[i].children();
-                        break;
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn remove_deque(&mut self, mut keys: VecDeque<KT>) {
-        if let Some(key) = keys.pop_front() {
-            for i in 0..self.size() {
-                let child = &mut self.children_mut()[i];
-                if key == *child.key() {
-                    child.remove_deque(keys);
-                    if child.is_empty() {
-                        self.children_mut().remove(i);
-                    }
-                    break;
                 }
             }
         }
@@ -254,7 +183,7 @@ mod tests {
         let mut node = Node::new(3);
 
         // Basic
-        node.insert_linear(vec![2, 3, 1]);
+        node.insert_internal(vec![2, 3, 1]);
         assert_eq!(node[0].key(), &2);
         assert_eq!(node[0][0].key(), &3);
         assert_eq!(node[0][0][0].key(), &1);
@@ -262,38 +191,13 @@ mod tests {
         // First level
 
         // Left Top
-        node.insert_linear(vec![1, 3, 4]);
+        node.insert_internal(vec![1, 3, 4]);
         assert_eq!(node[0].key(), &1);
         assert_eq!(node[0][0].key(), &3);
         assert_eq!(node[0][0][0].key(), &4);
 
         // Right top
-        node.insert_linear(vec![3, 3, 4]);
-        assert_eq!(node[2].key(), &3);
-        assert_eq!(node[2][0].key(), &3);
-        assert_eq!(node[2][0][0].key(), &4);
-    }
-
-    #[test]
-    fn node_insert_binary() {
-        let mut node = Node::new(3);
-
-        // Basic
-        node.insert_binary(vec![2, 3, 1]);
-        assert_eq!(node[0].key(), &2);
-        assert_eq!(node[0][0].key(), &3);
-        assert_eq!(node[0][0][0].key(), &1);
-
-        // First level
-
-        // Left Top
-        node.insert_binary(vec![1, 3, 4]);
-        assert_eq!(node[0].key(), &1);
-        assert_eq!(node[0][0].key(), &3);
-        assert_eq!(node[0][0][0].key(), &4);
-
-        // Right top
-        node.insert_binary(vec![3, 3, 4]);
+        node.insert_internal(vec![3, 3, 4]);
         assert_eq!(node[2].key(), &3);
         assert_eq!(node[2][0].key(), &3);
         assert_eq!(node[2][0][0].key(), &4);
