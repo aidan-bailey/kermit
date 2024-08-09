@@ -1,11 +1,11 @@
-use std::{
-    collections::VecDeque,
-    ops::{Index, IndexMut},
-};
+use std::collections::VecDeque;
 
 /// Trie node
 #[derive(Clone, Debug)]
-pub struct Node<KT: PartialOrd + PartialEq + Clone> {
+pub struct Node<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     /// Maximum height (1-based index of key in tuple)
     cardinality: usize,
     /// Key for tuple value
@@ -14,17 +14,10 @@ pub struct Node<KT: PartialOrd + PartialEq + Clone> {
     children: Vec<Node<KT>>,
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> Index<usize> for Node<KT> {
-    type Output = Node<KT>;
-
-    fn index(&self, index: usize) -> &Self::Output { &self.children()[index] }
-}
-
-impl<KT: PartialOrd + PartialEq + Clone> IndexMut<usize> for Node<KT> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children_mut()[index] }
-}
-
-impl<KT: PartialOrd + PartialEq + Clone> Node<KT> {
+impl<KT> Node<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     /// Construct a Node with a tuple-value key
     fn new(key: KT) -> Node<KT> {
         Node {
@@ -38,7 +31,10 @@ impl<KT: PartialOrd + PartialEq + Clone> Node<KT> {
     pub fn key(&self) -> &KT { &self.key }
 }
 
-pub trait TrieFields<KT: PartialOrd + PartialEq + Clone> {
+pub trait TrieFields<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     fn children(&self) -> &Vec<Node<KT>>;
     /// Returns true iff the Node has no children
     fn is_empty(&self) -> bool { self.children().is_empty() }
@@ -53,13 +49,19 @@ pub trait TrieFields<KT: PartialOrd + PartialEq + Clone> {
     fn cardinality(&self) -> usize;
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for Node<KT> {
+impl<KT> TrieFields<KT> for Node<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     fn children(&self) -> &Vec<Node<KT>> { &self.children }
 
     fn cardinality(&self) -> usize { self.cardinality }
 }
 
-pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
+pub(crate) trait Internal<KT>: TrieFields<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
     fn insert_linear(&mut self, tuple: Vec<KT>) {
@@ -186,7 +188,10 @@ pub(crate) trait Internal<KT: PartialOrd + PartialEq + Clone>: TrieFields<KT> {
     }
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> Internal<KT> for Node<KT> {
+impl<KT> Internal<KT> for Node<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
     fn children_mut(&mut self) -> &mut Vec<Node<KT>> { &mut self.children }
 }
 
