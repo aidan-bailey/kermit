@@ -31,11 +31,13 @@ where
     fn up(&mut self) -> Option<&KT>;
 }
 
+/// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub struct LeapfrogTriejoinIter<KT, IT>
 where
     KT: PartialOrd + PartialEq + Clone,
     IT: TrieIterator<KT>,
 {
+    /// The key of the current position.
     pub key: Option<KT>,
     p: usize,
     iters: Vec<Option<IT>>,
@@ -50,6 +52,17 @@ where
     KT: PartialOrd + PartialEq + Clone,
     IT: TrieIterator<KT>,
 {
+
+    /// Construct a new `LeapfrogTriejoinIter` with the given iterators.
+    ///
+    /// Q(a, b, c) = R(a, b) S(b, c), T(a, c)
+    /// variables = [a, b, c]
+    /// rel_variables = [[a, b], [b, c], [a, c]]
+    ///
+    /// # Arguments
+    /// * `variables` - The variables and their ordering.
+    /// * `rel_variables` - The variables in their relations.
+    /// * `iters` - Trie iterators.
     pub fn new(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iters: Vec<IT>) -> Self {
         let mut iter_indexes_at_variable: Vec<Vec<usize>> = Vec::new();
         for v in &variables {
