@@ -1,4 +1,7 @@
-use crate::relation_trie::node::{Internal, Node, TrieFields};
+use crate::{
+    relation::Relation,
+    relation_trie::node::{Internal, Node, TrieFields},
+};
 
 /// Trie data structure for relations.
 #[derive(Clone, Debug)]
@@ -10,6 +13,28 @@ where
     cardinality: usize,
     /// Children of the trie root.
     children: Vec<Node<KT>>,
+}
+
+impl<KT> Relation<KT> for RelationTrie<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
+    fn cardinality(&self) -> usize { self.cardinality }
+
+    fn insert(&mut self, tuple: Vec<KT>) -> bool { self.insert(tuple) }
+
+    fn insert_all(&mut self, tuples: Vec<Vec<KT>>) -> bool {
+        for tuple in tuples {
+            if !self.insert(tuple) {
+                panic!("Failed to insert tuple.")
+            }
+        }
+        true
+    }
+
+    fn from_tuples(cardinality: usize, tuples: Vec<Vec<KT>>) -> Self {
+        RelationTrie::from_mut_tuples(cardinality, tuples)
+    }
 }
 
 /// Trie implementation.
@@ -40,7 +65,9 @@ where
         assert!(tuples.iter().all(|tuple| tuple.len() == cardinality));
         let mut trie = RelationTrie::new(cardinality);
         for tuple in tuples {
-            trie.insert(tuple).unwrap();
+            if !trie.insert(tuple) {
+                panic!("Failed to build from tuples.");
+            }
         }
         trie
     }
@@ -68,12 +95,11 @@ where
     }
 
     /// Insert a tuple into the Trie.
-    pub fn insert(&mut self, tuple: Vec<KT>) -> Result<(), &'static str> {
+    pub fn insert(&mut self, tuple: Vec<KT>) -> bool {
         if tuple.len() != self.cardinality {
-            return Err("Arity doesn't match.");
+            panic!("Arity doesn't match.");
         }
-        self.insert_internal(tuple);
-        Ok(())
+        self.insert_internal(tuple)
     }
 }
 
