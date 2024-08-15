@@ -21,7 +21,12 @@ where
 {
     fn cardinality(&self) -> usize { self.cardinality }
 
-    fn insert(&mut self, tuple: Vec<KT>) -> bool { self.insert(tuple) }
+    fn insert(&mut self, tuple: Vec<KT>) -> bool {
+        if tuple.len() != self.cardinality {
+            panic!("Arity doesn't match.");
+        }
+        self.insert_internal(tuple)
+    }
 
     fn insert_all(&mut self, tuples: Vec<Vec<KT>>) -> bool {
         for tuple in tuples {
@@ -42,9 +47,6 @@ impl<KT> RelationTrie<KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
-    /// Cardinality of the trie's relations.
-    pub fn cardinality(&self) -> usize { self.cardinality }
-
     /// Construct an empty Trie.
     ///
     /// # Panics
@@ -92,14 +94,6 @@ where
             std::cmp::Ordering::Equal
         });
         RelationTrie::from_tuples(cardinality, tuples)
-    }
-
-    /// Insert a tuple into the Trie.
-    pub fn insert(&mut self, tuple: Vec<KT>) -> bool {
-        if tuple.len() != self.cardinality {
-            panic!("Arity doesn't match.");
-        }
-        self.insert_internal(tuple)
     }
 }
 
