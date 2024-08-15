@@ -74,9 +74,9 @@ where
 {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
-    fn insert_internal(&mut self, tuple: Vec<KT>) {
+    fn insert_internal(&mut self, tuple: Vec<KT>) -> bool {
         if tuple.is_empty() {
-            return;
+            return true;
         }
 
         let mut current_children = self.children_mut();
@@ -108,6 +108,7 @@ where
                 }
             }
         }
+        true
     }
 }
 
