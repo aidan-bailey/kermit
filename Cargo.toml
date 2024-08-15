@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kermit", "kermit-algos", "kermit-ds", "kermit-dv", "kermit-iters"]
+members = ["kermit", "kermit-algos", "kermit-ds", "kermit-kvs", "kermit-iters"]
 
 [workspace.package]
 authors = ["Aidan Bailey"]
@@ -12,7 +12,7 @@ repository = "https://github.com/aidan-bailey/kermit"
 
 [patch.crates-io]
 kermit = { path = "kermit" }
-# kermit-dv = { path = "kermit-algos" }
+# kermit-kvs = { path = "kermit-kvs" }
 kermit-ds = { path = "kermit-ds" }
 kermit-iters = { path = "kermit-iters" }
 kermit-algos = { path = "kermit-algos" }
