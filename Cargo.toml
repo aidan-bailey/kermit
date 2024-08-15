@@ -12,7 +12,7 @@ repository = "https://github.com/aidan-bailey/kermit"
 
 [patch.crates-io]
 kermit = { path = "kermit" }
-# kermit-kvs = { path = "kermit-kvs" }
+kermit-kvs = { path = "kermit-kvs" }
 kermit-ds = { path = "kermit-ds" }
 kermit-iters = { path = "kermit-iters" }
 kermit-algos = { path = "kermit-algos" }
