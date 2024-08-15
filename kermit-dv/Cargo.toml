@@ -1,0 +1,12 @@
+[package]
+name = "kermit-dv"
+description = "Data value stores used in Kermit"
+version = "0.0.1-dev"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[dependencies]
