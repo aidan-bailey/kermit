@@ -10,3 +10,4 @@ readme.workspace = true
 repository.workspace = true
 
 [dependencies]
+nohash-hasher = "0.2.0"
