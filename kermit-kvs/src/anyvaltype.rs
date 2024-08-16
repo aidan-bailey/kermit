@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use std::{any::TypeId, hash::Hash};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnyValType {
@@ -78,11 +78,11 @@ impl From<f64> for AnyValType {
 impl Hash for AnyValType {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            | AnyValType::Str(v) => v.hash(state),
-            | AnyValType::I32(v) => v.hash(state),
-            | AnyValType::I64(v) => v.hash(state),
-            | AnyValType::F32(v) => v.to_bits().hash(state),
-            | AnyValType::F64(v) => v.to_bits().hash(state),
+            | AnyValType::Str(v) => (TypeId::of::<String>(), v).hash(state),
+            | AnyValType::I32(v) => (TypeId::of::<i32>(), v).hash(state),
+            | AnyValType::I64(v) => (TypeId::of::<i64>(), v).hash(state),
+            | AnyValType::F32(v) => (TypeId::of::<f32>(), v.to_bits()).hash(state),
+            | AnyValType::F64(v) => (TypeId::of::<f64>(), v.to_bits()).hash(state),
         }
     }
 }
