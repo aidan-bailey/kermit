@@ -65,30 +65,10 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum AnyValType {
-    Str(String),
-    I32(i32),
-    I64(i64),
-    F32(f32),
-    F64(f64),
-}
-
-impl Hash for AnyValType {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            | AnyValType::Str(v) => v.hash(state),
-            | AnyValType::I32(v) => v.hash(state),
-            | AnyValType::I64(v) => v.hash(state),
-            | AnyValType::F32(v) => v.to_bits().hash(state),
-            | AnyValType::F64(v) => v.to_bits().hash(state),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::anyvaltype::*;
 
     #[test]
     fn test_default() {
