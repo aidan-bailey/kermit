@@ -32,12 +32,11 @@ where
     }
 
     fn get(&self, key: &u64) -> Option<&VT> {
-        let hash = self.hash_builder.hash_one(&key);
-        self.map.get(&hash)
+        self.map.get(key)
     }
 
     fn get_all(&self, key: Vec<&u64>) -> Vec<Option<&VT>> {
-        key.into_iter().map(|k| self.get(&k)).collect()
+        key.into_iter().map(|k| self.get(k)).collect()
     }
 }
 
@@ -64,4 +63,21 @@ where
             hash_builder: BuildHasherDefault::<DefaultHasher>::default(),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default() {
+        let mut store = NaiveStore::<String, _>::default();
+        let key1 = store.add("hello".to_string());
+        let key2 = store.add("world".to_string());
+        assert_eq!(store.get(&key1), Some(&"hello".to_string()));
+        assert_eq!(store.get(&key2), Some(&"world".to_string()));
+        assert_eq!(store.get(&0), None);
+        assert_eq!(store.get_all(vec![&key1, &key2, &0]), vec![Some(&"hello".to_string()), Some(&"world".to_string()), None]);
+    }
+
 }
