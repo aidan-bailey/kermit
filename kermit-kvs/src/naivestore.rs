@@ -54,11 +54,11 @@ where
     }
 }
 
-impl<VT> NaiveStore<VT, BuildHasherDefault<DefaultHasher>>
+impl<VT> Default for NaiveStore<VT, BuildHasherDefault<DefaultHasher>>
 where
     VT: Hash + Clone,
 {
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
             map: HashMap::with_hasher(BuildNoHashHasher::<u64>::default()),
             hash_builder: BuildHasherDefault::<DefaultHasher>::default(),
