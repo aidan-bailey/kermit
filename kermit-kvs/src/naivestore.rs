@@ -45,10 +45,10 @@ where
     VT: Hash + Clone,
     HB: BuildHasher,
 {
-    pub fn with_hasher(hasher: HB) -> Self {
+    pub fn with_hasher(hasher_builder: HB) -> Self {
         Self {
             map: HashMap::with_hasher(BuildNoHashHasher::<u64>::default()),
-            hash_builder: hasher,
+            hash_builder: hasher_builder,
         }
     }
 }
