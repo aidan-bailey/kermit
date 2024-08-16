@@ -12,7 +12,7 @@ pub enum AnyValType {
 // To Methods
 
 impl AnyValType {
-    pub fn to_str(&self) -> Option<&str> {
+    pub fn to_string(&self) -> Option<&String> {
         match self {
             | AnyValType::Str(v) => Some(v),
             | _ => None,
@@ -46,6 +46,7 @@ impl AnyValType {
             | _ => None,
         }
     }
+
 }
 
 // From Methods

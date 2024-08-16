@@ -88,15 +88,15 @@ mod tests {
     #[test]
     fn test_anyvaltype() {
         let mut store = NaiveStore::<AnyValType, _>::default();
-        let str_key1 = store.add(AnyValType::Str("hello".to_string()));
-        let str_key2 = store.add(AnyValType::Str("world".to_string()));
+        let str_key1 = store.add(AnyValType::from("hello"));
+        let str_key2 = store.add(AnyValType::from("world"));
         assert_eq!(
             store.get(&str_key1),
-            Some(&AnyValType::Str("hello".to_string()))
+            Some(&AnyValType::from("hello"))
         );
         assert_eq!(
             store.get(&str_key2),
-            Some(&AnyValType::Str("world".to_string()))
+            Some(&AnyValType::from("world"))
         );
         let float_key1 = store.add(AnyValType::F64(0.5));
         assert_eq!(store.get(&float_key1), Some(&AnyValType::F64(0.5)));
