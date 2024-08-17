@@ -43,6 +43,14 @@ where
     fn size(&self) -> usize {
         self.map.len()
     }
+
+    fn contains_key(&self, key: &u64) -> bool {
+        self.map.contains_key(key)
+    }
+
+    fn contains_val(&self, val: &VT) -> bool {
+        self.contains_key(&self.hash_builder.hash_one(val))
+    }
 }
 
 impl<VT, HB> NaiveStore<VT, HB>
