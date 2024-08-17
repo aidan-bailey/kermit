@@ -1,10 +1,7 @@
 use {
-    crate::keyvalstore::KeyValStore,
-    nohash_hasher::BuildNoHashHasher,
-    std::{
-        collections::HashMap,
-        hash::{BuildHasher, BuildHasherDefault, DefaultHasher, Hash, Hasher},
-    },
+    crate::{anyvaltype::AnyValType, keyvalstore::KeyValStore}, csv::Error, nohash_hasher::BuildNoHashHasher, std::{
+        collections::HashMap, fs::File, hash::{BuildHasher, BuildHasherDefault, DefaultHasher, Hash, Hasher}, path::Path
+    }
 };
 
 pub struct NaiveStore<VT, HB>
@@ -38,6 +35,10 @@ where
     fn get_all(&self, key: Vec<&u64>) -> Vec<Option<&VT>> {
         key.into_iter().map(|k| self.get(k)).collect()
     }
+
+    fn keys(&self) -> Vec<u64> {
+        self.map.keys().cloned().collect()
+    }
 }
 
 impl<VT, HB> NaiveStore<VT, HB>
@@ -50,6 +51,30 @@ where
             map: HashMap::with_hasher(BuildNoHashHasher::<u64>::default()),
             hash_builder: hasher_builder,
         }
+    }
+}
+
+impl<HB> NaiveStore<AnyValType, HB> where HB: BuildHasher {
+    pub fn add_file<P: AsRef<Path>>(&mut self, types: Vec<AnyValType>, filepath: P) -> Result<(), Error> {
+        let file = File::open(filepath)?;
+        let mut rdr = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .delimiter(b',')
+            .double_quote(false)
+            .escape(Some(b'\\'))
+            .flexible(false)
+            .comment(Some(b'#'))
+            .from_reader(file);
+        for result in rdr.records() {
+            let record = result?;
+            for (i, x) in record.iter().enumerate() {
+                let t = &types[i];
+                let val = t.parse_into_self(x);
+                self.add(val);
+            }
+
+        }
+        Ok(())
     }
 }
 
@@ -67,8 +92,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::anyvaltype::*;
+    use {super::*, crate::anyvaltype::*};
 
     #[test]
     fn test_default() {
@@ -90,14 +114,8 @@ mod tests {
         let mut store = NaiveStore::<AnyValType, _>::default();
         let str_key1 = store.add(AnyValType::from("hello"));
         let str_key2 = store.add(AnyValType::from("world"));
-        assert_eq!(
-            store.get(&str_key1),
-            Some(&AnyValType::from("hello"))
-        );
-        assert_eq!(
-            store.get(&str_key2),
-            Some(&AnyValType::from("world"))
-        );
+        assert_eq!(store.get(&str_key1), Some(&AnyValType::from("hello")));
+        assert_eq!(store.get(&str_key2), Some(&AnyValType::from("world")));
         let float_key1 = store.add(AnyValType::F64(0.5));
         assert_eq!(store.get(&float_key1), Some(&AnyValType::F64(0.5)));
     }
