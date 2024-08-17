@@ -9,6 +9,44 @@ pub enum AnyValType {
     F64(f64),
 }
 
+// Defaults
+
+impl AnyValType {
+    pub fn default_str() -> Self { AnyValType::Str(String::new()) }
+
+    pub fn default_i32() -> Self { AnyValType::I32(0) }
+
+    pub fn default_i64() -> Self { AnyValType::I64(0) }
+
+    pub fn default_f32() -> Self { AnyValType::F32(0.0) }
+
+    pub fn default_f64() -> Self { AnyValType::F64(0.0) }
+}
+
+// Parsing
+
+impl AnyValType {
+    pub fn parse_str(v: &str) -> Self { AnyValType::Str(v.to_string()) }
+
+    pub fn parse_i32(v: &str) -> Self { AnyValType::I32(v.parse().unwrap()) }
+
+    pub fn parse_i64(v: &str) -> Self { AnyValType::I64(v.parse().unwrap()) }
+
+    pub fn parse_f32(v: &str) -> Self { AnyValType::F32(v.parse().unwrap()) }
+
+    pub fn parse_f64(v: &str) -> Self { AnyValType::F64(v.parse().unwrap()) }
+
+    pub fn parse_into_self(&self, v: &str) -> Self {
+        match self {
+            | AnyValType::Str(_) => AnyValType::parse_str(v),
+            | AnyValType::I32(_) => AnyValType::parse_i32(v),
+            | AnyValType::I64(_) => AnyValType::parse_i64(v),
+            | AnyValType::F32(_) => AnyValType::parse_f32(v),
+            | AnyValType::F64(_) => AnyValType::parse_f64(v),
+        }
+    }
+}
+
 // To Methods
 
 impl AnyValType {
@@ -46,7 +84,6 @@ impl AnyValType {
             | _ => None,
         }
     }
-
 }
 
 // From Methods
