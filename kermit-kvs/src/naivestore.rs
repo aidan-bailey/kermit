@@ -1,7 +1,13 @@
 use {
-    crate::{anyvaltype::AnyValType, keyvalstore::KeyValStore}, csv::Error, nohash_hasher::BuildNoHashHasher, std::{
-        collections::HashMap, fs::File, hash::{BuildHasher, BuildHasherDefault, DefaultHasher, Hash, Hasher}, path::Path
-    }
+    crate::{anyvaltype::AnyValType, keyvalstore::KeyValStore},
+    csv::Error,
+    nohash_hasher::BuildNoHashHasher,
+    std::{
+        collections::HashMap,
+        fs::File,
+        hash::{BuildHasher, BuildHasherDefault, DefaultHasher, Hash, Hasher},
+        path::Path,
+    },
 };
 
 pub struct NaiveStore<VT, HB>
@@ -36,21 +42,13 @@ where
         key.into_iter().map(|k| self.get(k)).collect()
     }
 
-    fn keys(&self) -> Vec<u64> {
-        self.map.keys().cloned().collect()
-    }
+    fn keys(&self) -> Vec<u64> { self.map.keys().cloned().collect() }
 
-    fn size(&self) -> usize {
-        self.map.len()
-    }
+    fn size(&self) -> usize { self.map.len() }
 
-    fn contains_key(&self, key: &u64) -> bool {
-        self.map.contains_key(key)
-    }
+    fn contains_key(&self, key: &u64) -> bool { self.map.contains_key(key) }
 
-    fn contains_val(&self, val: &VT) -> bool {
-        self.contains_key(&self.hash_builder.hash_one(val))
-    }
+    fn contains_val(&self, val: &VT) -> bool { self.contains_key(&self.hash_builder.hash_one(val)) }
 }
 
 impl<VT, HB> NaiveStore<VT, HB>
@@ -66,8 +64,13 @@ where
     }
 }
 
-impl<HB> NaiveStore<AnyValType, HB> where HB: BuildHasher {
-    pub fn add_file<P: AsRef<Path>>(&mut self, types: Vec<AnyValType>, filepath: P) -> Result<(), Error> {
+impl<HB> NaiveStore<AnyValType, HB>
+where
+    HB: BuildHasher,
+{
+    pub fn add_file<P: AsRef<Path>>(
+        &mut self, types: Vec<AnyValType>, filepath: P,
+    ) -> Result<(), Error> {
         let file = File::open(filepath)?;
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(false)
@@ -84,7 +87,6 @@ impl<HB> NaiveStore<AnyValType, HB> where HB: BuildHasher {
                 let val = t.parse_into_self(x);
                 self.add(val);
             }
-
         }
         Ok(())
     }
@@ -101,4 +103,3 @@ where
         }
     }
 }
-
