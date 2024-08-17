@@ -9,3 +9,7 @@ pub mod ds {
 pub mod iters {
     pub use kermit_iters::*;
 }
+
+pub mod kvs {
+    pub use kermit_kvs::*;
+}
