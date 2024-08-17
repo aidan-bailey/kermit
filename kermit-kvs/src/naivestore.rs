@@ -25,9 +25,7 @@ where
     HB: BuildHasher,
 {
     fn add(&mut self, val: VT) -> u64 {
-        let mut hasher = self.hash_builder.build_hasher();
-        val.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = self.hash_builder.hash_one(&val);
         self.map.insert(hash, val);
         hash
     }
