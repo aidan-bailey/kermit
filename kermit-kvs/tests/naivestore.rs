@@ -42,6 +42,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(5, store.size());
+        assert!(store.contains_val(&"Apple".into()));
+        assert!(store.contains_val(&"Is".into()));
+        assert!(store.contains_val(&"Delicious".into()));
+        assert!(store.contains_val(&"Banana".into()));
+        assert!(store.contains_val(&"Yellow".into()));
         store
             .add_file(
                 vec![
@@ -54,5 +59,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(11, store.size());
+        assert!(store.contains_val(&"house".into()));
+        assert!(store.contains_val(&"locatedat".into()));
+        assert!(store.contains_val(&0_i32.into()));
+        assert!(store.contains_val(&5_i32.into()));
+        assert!(store.contains_val(&2_i32.into()));
+        assert!(store.contains_val(&"chair".into()));
     }
 }
