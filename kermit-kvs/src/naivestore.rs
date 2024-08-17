@@ -5,7 +5,7 @@ use {
     std::{
         collections::HashMap,
         fs::File,
-        hash::{BuildHasher, BuildHasherDefault, DefaultHasher, Hash, Hasher},
+        hash::{BuildHasher, BuildHasherDefault, DefaultHasher, Hash},
         path::Path,
     },
 };
