@@ -38,7 +38,7 @@ mod tests {
                     AnyValType::default_str(),
                     AnyValType::default_str(),
                 ],
-                "test1.csv",
+                "tests/test1.csv",
             )
             .unwrap();
         store
@@ -49,7 +49,7 @@ mod tests {
                     AnyValType::default_i32(),
                     AnyValType::default_i32(),
                 ],
-                "test2.csv",
+                "tests/test2.csv",
             )
             .unwrap();
     }

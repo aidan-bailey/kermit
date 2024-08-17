@@ -39,6 +39,10 @@ where
     fn keys(&self) -> Vec<u64> {
         self.map.keys().cloned().collect()
     }
+
+    fn size(&self) -> usize {
+        self.map.len()
+    }
 }
 
 impl<VT, HB> NaiveStore<VT, HB>

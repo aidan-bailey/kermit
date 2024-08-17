@@ -10,4 +10,5 @@ where
     fn get(&self, key: &KT) -> Option<&VT>;
     fn get_all(&self, key: Vec<&KT>) -> Vec<Option<&VT>>;
     fn keys(&self) -> Vec<KT>;
+    fn size(&self) -> usize;
 }
