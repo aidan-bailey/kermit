@@ -38,9 +38,10 @@ mod tests {
                     AnyValType::default_str(),
                     AnyValType::default_str(),
                 ],
-                "tests/test1.csv",
+                "tests/test1.csv.test",
             )
             .unwrap();
+        assert_eq!(5, store.size());
         store
             .add_file(
                 vec![
@@ -49,8 +50,9 @@ mod tests {
                     AnyValType::default_i32(),
                     AnyValType::default_i32(),
                 ],
-                "tests/test2.csv",
+                "tests/test2.csv.test",
             )
             .unwrap();
+        assert_eq!(11, store.size());
     }
 }
