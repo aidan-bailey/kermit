@@ -37,9 +37,6 @@ where
         true
     }
 
-    fn from_tuples(cardinality: usize, tuples: Vec<Vec<KT>>) -> Self {
-        RelationTrie::from_mut_tuples(cardinality, tuples)
-    }
 }
 
 /// Trie implementation.
@@ -47,6 +44,7 @@ impl<KT> RelationTrie<KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
+
     /// Construct an empty Trie.
     ///
     /// # Panics
