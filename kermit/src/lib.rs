@@ -13,3 +13,7 @@ pub mod iters {
 pub mod kvs {
     pub use kermit_kvs::*;
 }
+
+pub mod db {
+    pub use kermit_db::*;
+}
