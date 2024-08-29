@@ -1,6 +1,7 @@
 [package]
 name = "kermit-db"
-version = "0.1.0"
+description = "Relational databases used in Kermit"
+version = "0.0.1-dev"
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
