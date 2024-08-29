@@ -1,22 +1,39 @@
 use {
-    kermit_ds::relation::Relation, kermit_kvs::keyvalstore::KeyValStore, std::{collections::HashMap, hash::Hash},
+    kermit_ds::relation::Relation,
+    kermit_iters::trie::TrieIterable,
+    kermit_kvs::keyvalstore::KeyValStore,
+    std::{collections::HashMap, hash::Hash},
 };
 
-pub struct Database<KT, VT, KVST>
+pub trait RelationTrait<'a, KT: std::cmp::PartialOrd + std::clone::Clone>:
+    Relation<KT> + TrieIterable<'a, KT>
+{
+}
+
+impl<'a, KT, T> RelationTrait<'a, KT> for T
+where
+    KT: std::cmp::PartialOrd + std::clone::Clone,
+    T: Relation<KT> + TrieIterable<'a, KT>,
+{
+}
+
+pub struct Database<'a, KT, VT, KVST>
 where
     KT: PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
-    KVST: KeyValStore<KT, VT>, VT: Hash
+    KVST: KeyValStore<KT, VT>,
+    VT: Hash,
 {
     name: String,
-    relations: HashMap<String, Box<dyn Relation<KT>>>,
+    relations: HashMap<String, Box<dyn RelationTrait<'a, KT> + 'a>>,
     store: KVST,
     phantom_vt: std::marker::PhantomData<VT>,
 }
 
-impl<KT, VT, KVST> Database<KT, VT, KVST>
+impl<'a, KT, VT, KVST> Database<'a, KT, VT, KVST>
 where
     KT: PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
-    KVST: KeyValStore<KT, VT>, VT: Hash
+    KVST: KeyValStore<KT, VT>,
+    VT: Hash,
 {
     pub fn new(name: String, store: KVST) -> Self {
         Database {
@@ -27,20 +44,31 @@ where
         }
     }
 
-    pub fn add_relation(&mut self, name: String, relation: Box<dyn Relation<KT>>) {
-        self.relations.insert(name, relation);
-    }
-
-    pub fn get_relation(&self, name: &str) -> Option<&Box<dyn Relation<KT>>>
-    {
-        self.relations.get(name)
-    }
-
-    pub fn get_store(&self) -> &KVST {
-        &self.store
-    }
-
-    pub fn get_name(&self) -> &str {
+    pub fn name(&self) -> &String {
         &self.name
+    }
+
+    pub fn add_relation(&mut self, name: String, relation: impl RelationTrait<'a, KT> + 'a) {
+        self.relations.insert(name, Box::new(relation));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use {
+        super::*,
+        kermit_ds::relation_trie::trie_builder::TrieBuilder,
+        kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
+    };
+
+    #[test]
+    fn test_classic() {
+        let mut db = Database::new("test".to_string(), NaiveStore::<AnyValType, _>::default());
+
+        let t1 = TrieBuilder::new(1)
+            .add_tuples(vec![vec![1], vec![2], vec![3]])
+            .build();
+        db.add_relation("apple".to_string(), t1);
     }
 }
