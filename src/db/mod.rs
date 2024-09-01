@@ -60,7 +60,7 @@ mod tests {
     use {
         super::*,
         crate::{
-            ds::relation_trie::trie_builder::TrieBuilder,
+            ds::{relation_builder::RelationBuilder, relation_trie::trie_builder::TrieBuilder},
             kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
         },
     };

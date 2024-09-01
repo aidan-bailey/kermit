@@ -195,7 +195,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> LeapfrogTriejoinIterator<KT>
 mod tests {
     use crate::{
         algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
-        ds::relation_trie::trie_builder::TrieBuilder,
+        ds::{relation_builder::RelationBuilder, relation_trie::trie_builder::TrieBuilder},
         iters::trie::TrieIterable,
     };
 

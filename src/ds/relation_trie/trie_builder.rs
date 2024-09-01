@@ -1,5 +1,5 @@
 use {
-    crate::ds::relation_trie::trie::RelationTrie,
+    crate::ds::{relation_builder::RelationBuilder, relation_trie::trie::RelationTrie},
     csv::Error,
     std::{fmt::Debug, fs::File, path::Path, str::FromStr},
 };
@@ -9,29 +9,31 @@ pub struct TrieBuilder<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> {
     tuples: Vec<Vec<KT>>,
 }
 
-impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> TrieBuilder<KT> {
-    pub fn new(cardinality: usize) -> TrieBuilder<KT> {
+impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> RelationBuilder<KT, RelationTrie<KT>>
+    for TrieBuilder<KT>
+{
+    fn new(cardinality: usize) -> Self {
         TrieBuilder {
             cardinality,
             tuples: vec![],
         }
     }
 
-    pub fn build(self) -> RelationTrie<KT> {
+    fn build(self) -> RelationTrie<KT> {
         RelationTrie::from_mut_tuples(self.cardinality, self.tuples)
     }
 
-    pub fn add_tuple(mut self, tuple: Vec<KT>) -> TrieBuilder<KT> {
+    fn add_tuple(mut self, tuple: Vec<KT>) -> TrieBuilder<KT> {
         self.tuples.push(tuple);
         self
     }
 
-    pub fn add_tuples(mut self, tuples: Vec<Vec<KT>>) -> TrieBuilder<KT> {
+    fn add_tuples(mut self, tuples: Vec<Vec<KT>>) -> TrieBuilder<KT> {
         self.tuples.extend(tuples);
         self
     }
 
-    pub fn from_file<P: AsRef<Path>>(mut self, filepath: P) -> Result<TrieBuilder<KT>, Error> {
+    fn from_file<P: AsRef<Path>>(mut self, filepath: P) -> Result<TrieBuilder<KT>, Error> {
         let file = File::open(filepath)?;
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(false)

@@ -9,6 +9,7 @@ mod tests {
     use crate::{
         ds::{
             relation::Relation,
+            relation_builder::RelationBuilder,
             relation_trie::{node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder},
         },
         iters::trie::TrieIterable,
