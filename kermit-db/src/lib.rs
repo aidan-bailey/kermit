@@ -44,9 +44,7 @@ where
         }
     }
 
-    pub fn name(&self) -> &String {
-        &self.name
-    }
+    pub fn name(&self) -> &String { &self.name }
 
     pub fn add_relation(&mut self, name: String, relation: impl RelationTrait<'a, KT> + 'a) {
         self.relations.insert(name, Box::new(relation));
@@ -56,7 +54,6 @@ where
         let keys = self.store.add_all(tuple);
         self.relations.get_mut(&relation_name).unwrap().insert(keys);
     }
-
 }
 
 #[cfg(test)]

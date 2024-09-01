@@ -36,7 +36,6 @@ where
         }
         true
     }
-
 }
 
 /// Trie implementation.
@@ -44,7 +43,6 @@ impl<KT> RelationTrie<KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
-
     /// Construct an empty Trie.
     ///
     /// # Panics
