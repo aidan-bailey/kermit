@@ -76,7 +76,7 @@ where
             iter_indexes_at_variable.push(iters_at_level_v);
         }
 
-        let iters = iters.into_iter().map(|iter| Some(iter)).collect();
+        let iters = iters.into_iter().map(Some).collect();
 
         LeapfrogTriejoinIter {
             key: None,
