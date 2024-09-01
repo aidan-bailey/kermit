@@ -1,7 +1,7 @@
 use {
     crate::ds::relation::Relation,
     csv::Error,
-    std::{fmt::Debug, fs::File, path::Path, str::FromStr},
+    std::{fmt::Debug, path::Path, str::FromStr},
 };
 
 pub trait RelationBuilder<KT, R>
