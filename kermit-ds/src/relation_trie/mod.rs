@@ -11,10 +11,7 @@ mod tests {
             relation::Relation,
             relation_trie::{node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder},
         },
-        kermit_iters::{
-            linear::LinearIterator,
-            trie::{TrieIterable, TrieIterator},
-        },
+        kermit_iters::trie::TrieIterable,
     };
 
     #[test]
