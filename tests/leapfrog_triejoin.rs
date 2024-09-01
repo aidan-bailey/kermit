@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use {
-        kermit::algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
-        kermit::ds::relation_trie::trie_builder::TrieBuilder,
-        kermit::iters::trie::TrieIterable,
+    use kermit::{
+        algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
+        ds::relation_trie::trie_builder::TrieBuilder,
+        iters::trie::TrieIterable,
     };
 
     #[test]

@@ -6,12 +6,12 @@ pub mod variable_type;
 
 #[cfg(test)]
 mod tests {
-    use {
-        crate::ds::{
+    use crate::{
+        ds::{
             relation::Relation,
             relation_trie::{node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder},
         },
-        crate::iters::trie::TrieIterable,
+        iters::trie::TrieIterable,
     };
 
     #[test]

@@ -1,7 +1,5 @@
 use {
-    crate::ds::relation::Relation,
-    crate::iters::trie::TrieIterable,
-    crate::kvs::keyvalstore::KeyValStore,
+    crate::{ds::relation::Relation, iters::trie::TrieIterable, kvs::keyvalstore::KeyValStore},
     std::{collections::HashMap, hash::Hash},
 };
 
@@ -61,8 +59,10 @@ mod tests {
 
     use {
         super::*,
-        crate::ds::relation_trie::trie_builder::TrieBuilder,
-        crate::kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
+        crate::{
+            ds::relation_trie::trie_builder::TrieBuilder,
+            kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
+        },
     };
 
     #[test]

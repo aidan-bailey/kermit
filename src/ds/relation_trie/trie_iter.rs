@@ -1,9 +1,9 @@
-use {
-    crate::ds::relation_trie::{
+use crate::{
+    ds::relation_trie::{
         node::{Node, TrieFields},
         trie::RelationTrie,
     },
-    crate::iters::{
+    iters::{
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},
     },
