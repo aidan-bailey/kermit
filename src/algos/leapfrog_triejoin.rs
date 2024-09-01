@@ -1,4 +1,4 @@
-use {kermit_iters::trie::TrieIterator, std::marker::PhantomData};
+use {crate::iters::trie::TrieIterator, std::marker::PhantomData};
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator<KT>

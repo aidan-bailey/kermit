@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use kermit_kvs::{anyvaltype::*, keyvalstore::*, naivestore::*};
+    use kermit::kvs::{anyvaltype::*, keyvalstore::*, naivestore::*};
 
     #[test]
     fn test_default() {

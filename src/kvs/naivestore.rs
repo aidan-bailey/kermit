@@ -1,5 +1,5 @@
 use {
-    crate::{anyvaltype::AnyValType, keyvalstore::KeyValStore},
+    crate::kvs::{anyvaltype::AnyValType, keyvalstore::KeyValStore},
     csv::Error,
     nohash_hasher::BuildNoHashHasher,
     std::{

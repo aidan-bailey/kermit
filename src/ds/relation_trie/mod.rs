@@ -7,11 +7,11 @@ pub mod variable_type;
 #[cfg(test)]
 mod tests {
     use {
-        crate::{
+        crate::ds::{
             relation::Relation,
             relation_trie::{node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder},
         },
-        kermit_iters::trie::TrieIterable,
+        crate::iters::trie::TrieIterable,
     };
 
     #[test]

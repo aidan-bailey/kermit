@@ -1,5 +1,5 @@
 use {
-    crate::relation_trie::trie::RelationTrie,
+    crate::ds::relation_trie::trie::RelationTrie,
     csv::Error,
     std::{fmt::Debug, fs::File, path::Path, str::FromStr},
 };
@@ -58,7 +58,7 @@ impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> TrieBuilder<KT> {
 #[cfg(test)]
 mod tests {
 
-    use crate::relation_trie::{node::TrieFields, trie_builder::TrieBuilder};
+    use crate::ds::relation_trie::{node::TrieFields, trie_builder::TrieBuilder};
 
     // Read from file
     #[test]
