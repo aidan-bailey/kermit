@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kermit", "kermit-algos", "kermit-ds", "kermit-kvs", "kermit-iters"]
+members = ["kermit", "kermit-algos", "kermit-ds", "kermit-kvs", "kermit-iters", "kermit-db"]
 
 [workspace.package]
 authors = ["Aidan Bailey"]

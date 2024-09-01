@@ -36,10 +36,6 @@ where
         }
         true
     }
-
-    fn from_tuples(cardinality: usize, tuples: Vec<Vec<KT>>) -> Self {
-        RelationTrie::from_mut_tuples(cardinality, tuples)
-    }
 }
 
 /// Trie implementation.
