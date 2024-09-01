@@ -1,9 +1,9 @@
-use {
-    crate::relation_trie::{
+use crate::{
+    ds::relation_trie::{
         node::{Node, TrieFields},
         trie::RelationTrie,
     },
-    kermit_iters::{
+    iters::{
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},
     },

@@ -1,7 +1,5 @@
 use {
-    kermit_ds::relation::Relation,
-    kermit_iters::trie::TrieIterable,
-    kermit_kvs::keyvalstore::KeyValStore,
+    crate::{ds::relation::Relation, iters::trie::TrieIterable, kvs::keyvalstore::KeyValStore},
     std::{collections::HashMap, hash::Hash},
 };
 
@@ -61,8 +59,10 @@ mod tests {
 
     use {
         super::*,
-        kermit_ds::relation_trie::trie_builder::TrieBuilder,
-        kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
+        crate::{
+            ds::relation_trie::trie_builder::TrieBuilder,
+            kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
+        },
     };
 
     #[test]
