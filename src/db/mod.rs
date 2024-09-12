@@ -1,23 +1,27 @@
 use {
-    crate::{ds::relation::Relation, iters::trie::TrieIterable, kvs::keyvalstore::KeyValStore},
-    std::{collections::HashMap, hash::Hash},
+    crate::{
+        ds::{relation::Relation, relation_builder::RelationBuilder, relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder}},
+        iters::trie::TrieIterable,
+        kvs::keyvalstore::KeyValStore,
+    },
+    std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
 };
 
-pub trait RelationTrait<'a, KT: std::cmp::PartialOrd + std::clone::Clone>:
+pub trait RelationTrait<'a, KT: Debug + FromStr + std::cmp::PartialOrd + std::clone::Clone>:
     Relation<KT> + TrieIterable<'a, KT>
 {
 }
 
 impl<'a, KT, T> RelationTrait<'a, KT> for T
 where
-    KT: std::cmp::PartialOrd + std::clone::Clone,
+    KT: Debug + FromStr +  std::cmp::PartialOrd + std::clone::Clone,
     T: Relation<KT> + TrieIterable<'a, KT>,
 {
 }
 
 pub struct Database<'a, KT, VT, KVST>
 where
-    KT: PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
+    KT: Debug + FromStr +  PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
     KVST: KeyValStore<KT, VT>,
     VT: Hash,
 {
@@ -29,7 +33,7 @@ where
 
 impl<'a, KT, VT, KVST> Database<'a, KT, VT, KVST>
 where
-    KT: PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
+    KT: Debug + FromStr +  PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
     KVST: KeyValStore<KT, VT>,
     VT: Hash,
 {
@@ -44,13 +48,16 @@ where
 
     pub fn name(&self) -> &String { &self.name }
 
-    pub fn add_relation(&mut self, name: String, relation: impl RelationTrait<'a, KT> + 'a) {
-        self.relations.insert(name, Box::new(relation));
+    pub fn add_relation<B, R>(&mut self, name: String, cardinality: usize) where
+        B: RelationBuilder<KT, R>,
+        R: RelationTrait<'a, KT> + 'a,{
+        let relation = Box::new(B::new(cardinality).build());
+        self.relations.insert(name, relation);
     }
 
-    pub fn add_tuple(&mut self, relation_name: String, tuple: Vec<VT>) {
+    pub fn add_tuple(&mut self, relation_name: &String, tuple: Vec<VT>) {
         let keys = self.store.add_all(tuple);
-        self.relations.get_mut(&relation_name).unwrap().insert(keys);
+        self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
 }
 
@@ -66,12 +73,11 @@ mod tests {
     };
 
     #[test]
-    fn test_classic() {
+    fn test_relation() {
         let mut db = Database::new("test".to_string(), NaiveStore::<AnyValType, _>::default());
-
-        let t1 = TrieBuilder::new(1)
-            .add_tuples(vec![vec![1], vec![2], vec![3]])
-            .build();
-        db.add_relation("apple".to_string(), t1);
+        let relation_name = "apple".to_string();
+        db.add_relation::<TrieBuilder<_>, _>(relation_name.clone(), 3);
+        let tuple = vec![AnyValType::from("Apple"), AnyValType::from(1), AnyValType::from(2)];
+        db.add_tuple(&relation_name, tuple)
     }
 }
