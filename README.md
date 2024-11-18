@@ -12,7 +12,7 @@ The scope of which (preliminarily) encompassing benchmarking the [Leapfrog Triej
 I intend to design Kermit in an easily-extensible way, allowing for the possibility of benchmarking other algorithms and datastructures in the future.
 
 Rust was chosen as the project language for two main reasons:
-1. The [Knowledge-Based Systems group](https://iccl.inf.tu-dresden.de/web/Wissensbasierte_Systeme/en) at [TU Dresden](https://tu-dresden.de/), the place I'm currently attending a research exchange, is developing a new Rust-based rule engine [Nemo](https://github.com/knowsys/nemo), which I'm hoping the knowledge and implementions developed during this Masters will prove useful for. I strongly recommend checking Nemo out. Not only is it a very promising project, it is one of most beautiful, pedantically managed repositories I've come across.
+1. The [Knowledge-Based Systems group](https://iccl.inf.tu-dresden.de/web/Wissensbasierte_Systeme/en) at [TU Dresden](https://tu-dresden.de/) is developing a new Rust-based rule engine [Nemo](https://github.com/knowsys/nemo), which I'm hoping the knowledge and implementions developed during this Masters will prove useful for. I strongly recommend checking Nemo out. Not only is it a very promising project, it is one of most beautiful, pedantically managed repositories I've come across.
 2. I wanted an excuse to write Rust with actual purpose.
 
 My objective is to write entirely safe, stable, and hopefully idiomatic Rust the whole way through. I am very interested in how much one can maintain readibility (and sanity) while striving to achieve this.
