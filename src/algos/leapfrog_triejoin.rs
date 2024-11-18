@@ -44,7 +44,6 @@ where
     current_iters: Vec<(usize, Box<dyn TrieIterator<KT> + 'a>)>,
     iter_indexes_at_variable: Vec<Vec<usize>>,
     depth: usize,
-    phantom: PhantomData<KT>,
 }
 
 impl<'a, KT> LeapfrogTriejoinIter<'a, KT>
