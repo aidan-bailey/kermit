@@ -23,5 +23,5 @@ Thanks for taking an interest! Perhaps after I've finished my thesis.
 
 ## License
 
-This repository is duel-licensed the [MIT](https://github.com/aidan-bailey/kermit/blob/master/LICENSE-MIT.txt) and [Apache-V2](https://github.com/aidan-bailey/kermit/blob/master/LICENSE-APACHE.txt).
+This repository, as is customary with Rust projects, is duel-licensed under the [MIT](https://github.com/aidan-bailey/kermit/blob/master/LICENSE-MIT.txt) and [Apache-V2](https://github.com/aidan-bailey/kermit/blob/master/LICENSE-APACHE.txt) licenses.
 
