@@ -102,8 +102,8 @@ where
     fn k(&self) -> usize { self.current_iters.len() }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> LeapfrogTriejoinIterator<KT>
-    for LeapfrogTriejoinIter<'a, KT>
+impl<KT: PartialOrd + PartialEq + Clone> LeapfrogTriejoinIterator<KT>
+    for LeapfrogTriejoinIter<'_, KT>
 {
     fn init(&mut self) -> Option<&KT> {
         if !self.at_end() {
