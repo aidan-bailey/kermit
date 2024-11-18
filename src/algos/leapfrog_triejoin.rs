@@ -33,22 +33,24 @@ where
 }
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub struct LeapfrogTriejoinIter<'a, KT>
+pub struct LeapfrogTriejoinIter<KT, IT>
 where
     KT: PartialOrd + PartialEq + Clone,
+    IT: TrieIterator<KT>,
 {
     /// The key of the current position.
     pub key: Option<KT>,
     p: usize,
-    iters: Vec<Option<Box<dyn TrieIterator<KT> + 'a>>>,
-    current_iters: Vec<(usize, Box<dyn TrieIterator<KT> + 'a>)>,
+    iters: Vec<Option<IT>>,
+    current_iters: Vec<(usize, IT)>,
     iter_indexes_at_variable: Vec<Vec<usize>>,
     depth: usize,
 }
 
-impl<'a, KT> LeapfrogTriejoinIter<'a, KT>
+impl<KT, IT> LeapfrogTriejoinIter<KT, IT>
 where
     KT: PartialOrd + PartialEq + Clone,
+    IT: TrieIterator<KT>,
 {
     /// Construct a new `LeapfrogTriejoinIter` with the given iterators.
     ///
@@ -60,10 +62,7 @@ where
     /// * `variables` - The variables and their ordering.
     /// * `rel_variables` - The variables in their relations.
     /// * `iters` - Trie iterators.
-    pub fn new(
-        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-        iters: Vec<Box<dyn TrieIterator<KT> + 'a>>,
-    ) -> Self {
+    pub fn new(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iters: Vec<IT>) -> Self {
         let mut iter_indexes_at_variable: Vec<Vec<usize>> = Vec::new();
         for v in &variables {
             let mut iters_at_level_v: Vec<usize> = Vec::new();
@@ -102,8 +101,8 @@ where
     fn k(&self) -> usize { self.current_iters.len() }
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> LeapfrogTriejoinIterator<KT>
-    for LeapfrogTriejoinIter<'_, KT>
+impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<KT>
+    for LeapfrogTriejoinIter<KT, IT>
 {
     fn init(&mut self) -> Option<&KT> {
         if !self.at_end() {

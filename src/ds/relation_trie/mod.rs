@@ -12,7 +12,10 @@ mod tests {
             relation_builder::RelationBuilder,
             relation_trie::{node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder},
         },
-        iters::trie::TrieIterable,
+        iters::{
+            linear::LinearIterator,
+            trie::{TrieIterable, TrieIterator},
+        },
     };
 
     #[test]
