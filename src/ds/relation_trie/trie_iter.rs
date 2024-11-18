@@ -46,7 +46,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> LinearIterator<KT> for TrieIter<'a, KT> {
+impl<KT: PartialOrd + PartialEq + Clone> LinearIterator<KT> for TrieIter<'_, KT> {
     fn key(&self) -> Option<&KT> {
         if self.at_end() {
             None
@@ -114,7 +114,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> LinearIterator<KT> for TrieIter<'a,
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'a, KT> {
+impl<KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'_, KT> {
     fn open(&mut self) -> Option<&KT> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {

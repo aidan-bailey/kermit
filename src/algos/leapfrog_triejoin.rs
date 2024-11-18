@@ -1,4 +1,4 @@
-use {crate::iters::trie::TrieIterator, std::marker::PhantomData};
+use crate::iters::trie::TrieIterator;
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator<KT>
@@ -44,7 +44,6 @@ where
     current_iters: Vec<(usize, Box<dyn TrieIterator<KT> + 'a>)>,
     iter_indexes_at_variable: Vec<Vec<usize>>,
     depth: usize,
-    phantom: PhantomData<KT>,
 }
 
 impl<'a, KT> LeapfrogTriejoinIter<'a, KT>
@@ -85,7 +84,6 @@ where
             current_iters: Vec::new(),
             iter_indexes_at_variable,
             depth: 0,
-            phantom: PhantomData,
         }
     }
 
@@ -104,8 +102,8 @@ where
     fn k(&self) -> usize { self.current_iters.len() }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> LeapfrogTriejoinIterator<KT>
-    for LeapfrogTriejoinIter<'a, KT>
+impl<KT: PartialOrd + PartialEq + Clone> LeapfrogTriejoinIterator<KT>
+    for LeapfrogTriejoinIter<'_, KT>
 {
     fn init(&mut self) -> Option<&KT> {
         if !self.at_end() {

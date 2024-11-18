@@ -33,7 +33,7 @@ impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> RelationBuilder<KT, R
         self
     }
 
-    fn from_file<P: AsRef<Path>>(mut self, filepath: P) -> Result<TrieBuilder<KT>, Error> {
+    fn add_file<P: AsRef<Path>>(mut self, filepath: P) -> Result<TrieBuilder<KT>, Error> {
         let file = File::open(filepath)?;
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(false)
