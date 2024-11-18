@@ -23,4 +23,5 @@ Thanks for taking an interest! Perhaps after I've finished my thesis.
 
 ## License
 
-This repository is licensed under [LGPL-2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html).
+This repository is duel-licensed the [MIT](https://github.com/aidan-bailey/kermit/blob/master/LICENSE-MIT.txt) and [Apache-V2](https://github.com/aidan-bailey/kermit/blob/master/LICENSE-APACHE.txt).
+
