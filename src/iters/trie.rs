@@ -24,5 +24,5 @@ pub trait TrieIterator<KT: PartialOrd + PartialEq + Clone>: LinearIterator<KT> {
 
 /// Trie iterable trait
 pub trait TrieIterable<'a, KT: PartialOrd + PartialEq + Clone> {
-    fn trie_iter(&'a self) -> Box<dyn TrieIterator<KT> + 'a>;
+    fn trie_iter(&'a self) -> impl TrieIterator<KT>;
 }
