@@ -5,7 +5,7 @@ version = "0.0.6-dev"
 authors = ["Aidan Bailey"]
 edition = "2021"
 homepage = "https://github.com/aidan-bailey/kermit"
-license = "LGPL-2.1"
+license = "APACHE-2.0 OR MIT"
 readme = "README.md"
 repository = "https://github.com/aidan-bailey/kermit"
 
