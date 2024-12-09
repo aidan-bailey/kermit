@@ -9,8 +9,24 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+
+  build:
+    name: Build Rust ${{ matrix.rust }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [nightly]
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hecrj/setup-rust-action@v1
+        with:
+          rust-version: ${{ matrix.rust }}
+      - run: cargo build --verbose
+
   test:
-    name: Test Rust ${{ matrix.rust }} on ${{ matrix.os }} and publish to crates.io
+    name: Test Rust ${{ matrix.rust }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -22,8 +38,22 @@ jobs:
       - uses: hecrj/setup-rust-action@v2
         with:
           rust-version: ${{ matrix.rust }}
-      - run: cargo build --verbose
       - run: cargo test --verbose
-      - run: cargo login ${{ secrets.CRATESTOKEN }}
-      - run: cargo publish --workspace -Z package-workspace --verbose
 
+  publish:
+    needs: test
+    name: Publish Rust ${{ matrix.rust }} on ${{ matrix.os }}
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [nightly]
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hecrj/setup-rust-action@v1
+        with:
+          rust-version: ${{ matrix.rust }}
+      - run: cargo login ${{ secrets.CARGOTOKEN }}
+      - run: cargo package --workspace -Z package-workspace --verbose
