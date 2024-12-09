@@ -55,8 +55,8 @@ jobs:
         with:
           rust-version: ${{ matrix.rust }}
       - run: cargo login ${{ secrets.CRATESTOKEN }}
-      - run: cargo package -p kermit --verbose
-      - run: cargo package -p kermit-algos --verbose
-      - run: cargo package -p kermit-ds --verbose
-      - run: cargo package -p kermit-iters --verbose
-      - run: cargo package -p kermit-kvs --verbose
+      - run: cargo publish -p kermit --verbose
+      - run: cargo publish -p kermit-algos --verbose
+      - run: cargo publish -p kermit-ds --verbose
+      - run: cargo publish -p kermit-iters --verbose
+      - run: cargo publish -p kermit-kvs --verbose
