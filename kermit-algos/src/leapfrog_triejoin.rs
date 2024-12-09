@@ -1,4 +1,4 @@
-use crate::iters::trie::TrieIterator;
+use kermit_iters::trie::TrieIterator;
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator<KT>
@@ -190,10 +190,10 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        algos::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
-        ds::{relation_builder::RelationBuilder, relation_trie::trie_builder::TrieBuilder},
-        iters::trie::TrieIterable,
+    use {
+        crate::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
+        kermit_ds::{relation_builder::RelationBuilder, relation_trie::trie_builder::TrieBuilder},
+        kermit_iters::trie::TrieIterable,
     };
 
     #[test]

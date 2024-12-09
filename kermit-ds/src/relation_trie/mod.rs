@@ -6,13 +6,13 @@ pub mod variable_type;
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        ds::{
+    use {
+        crate::{
             relation::Relation,
             relation_builder::RelationBuilder,
             relation_trie::{node::TrieFields, trie::RelationTrie, trie_builder::TrieBuilder},
         },
-        iters::{
+        kermit_iters::{
             linear::LinearIterator,
             trie::{TrieIterable, TrieIterator},
         },

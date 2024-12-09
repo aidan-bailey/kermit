@@ -1,5 +1,5 @@
 use {
-    crate::kvs::{anyvaltype::AnyValType, keyvalstore::KeyValStore},
+    crate::{anyvaltype::AnyValType, keyvalstore::KeyValStore},
     csv::Error,
     nohash_hasher::BuildNoHashHasher,
     std::{
@@ -104,7 +104,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::kvs::{anyvaltype::*, keyvalstore::*, naivestore::*};
+    use crate::{anyvaltype::*, keyvalstore::*, naivestore::*};
 
     #[test]
     fn test_default() {
