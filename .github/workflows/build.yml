@@ -24,5 +24,6 @@ jobs:
           rust-version: ${{ matrix.rust }}
       - run: cargo build --verbose
       - run: cargo test --verbose
+      - run: cargo login ${{ secrets.CRATESTOKEN }}
       - run: cargo publish --workspace -Z package-workspace --verbose
 
