@@ -1,7 +1,7 @@
 [package]
 name = "kermit-ds"
 description = "Data structures used in Kermit"
-version = "0.0.7-dev"
+version = "0.0.8-dev"
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
@@ -11,7 +11,7 @@ repository.workspace = true
 
 [dependencies]
 csv = "1.1"
-kermit-iters = { version = "0.0.7-dev", path = "../kermit-iters" }
+kermit-iters = { version = "0.0.8-dev", path = "../kermit-iters" }
 
 #[[bench]]
 #name = "main"
