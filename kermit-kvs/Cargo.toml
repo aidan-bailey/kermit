@@ -1,0 +1,14 @@
+[package]
+name = "kermit-kvs"
+description = "Key-value stores used in Kermit"
+version = "0.0.8-dev"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[dependencies]
+csv = "1.1"
+nohash-hasher = "0.2.0"

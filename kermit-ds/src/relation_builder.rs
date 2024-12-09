@@ -1,5 +1,5 @@
 use {
-    crate::ds::relation::Relation,
+    crate::relation::Relation,
     csv::Error,
     std::{fmt::Debug, path::Path, str::FromStr},
 };

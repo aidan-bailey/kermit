@@ -1,5 +1,5 @@
 use {
-    crate::ds::{relation_builder::RelationBuilder, relation_trie::trie::RelationTrie},
+    crate::{relation_builder::RelationBuilder, relation_trie::trie::RelationTrie},
     csv::Error,
     std::{fmt::Debug, fs::File, path::Path, str::FromStr},
 };

@@ -1,4 +1,4 @@
-use crate::iters::linear::LinearIterator;
+use crate::linear::LinearIterator;
 
 /// Trie iterator trait
 pub trait TrieIterator<KT: PartialOrd + PartialEq + Clone>: LinearIterator<KT> {

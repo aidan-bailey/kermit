@@ -38,3 +38,19 @@ jobs:
         with:
           rust-version: ${{ matrix.rust }}
       - run: cargo build --verbose
+
+  publish:
+    name: Publish Rust ${{ matrix.rust }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [nightly]
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hecrj/setup-rust-action@v1
+        with:
+          rust-version: ${{ matrix.rust }}
+      - run: cargo login ${{ secrets.CARGOTOKEN }}
+      - run: cargo package --workspace -Z package-workspace --verbose

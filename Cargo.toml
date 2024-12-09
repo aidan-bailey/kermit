@@ -1,23 +1,18 @@
-[package]
-name = "kermit"
-description = "Relational data structures, iterators and algorithms"
-version = "0.0.6-dev"
+[workspace]
+resolver = "2"
+members = ["kermit", "kermit-algos", "kermit-ds", "kermit-kvs", "kermit-iters"]
+
+[workspace.package]
 authors = ["Aidan Bailey"]
 edition = "2021"
 homepage = "https://github.com/aidan-bailey/kermit"
-license = "APACHE-2.0 OR MIT"
+license = "LGPL-2.1"
 readme = "README.md"
 repository = "https://github.com/aidan-bailey/kermit"
 
-[dependencies]
-csv = "1.1"
-nohash-hasher = "0.2.0"
-
-[dev-dependencies]
-criterion = "0.5.1"
-rand = "0.8.5"
-test-case = "3.3.1"
-
-[[bench]]
-name = "main"
-harness = false
+[patch.crates-io]
+kermit = { path = "kermit" }
+kermit-kvs = { path = "kermit-kvs" }
+kermit-ds = { path = "kermit-ds" }
+kermit-iters = { path = "kermit-iters" }
+kermit-algos = { path = "kermit-algos" }

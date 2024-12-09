@@ -1,0 +1,16 @@
+[package]
+name = "kermit"
+description = "Relational data structures, iterators and algorithms"
+version = "0.0.8-dev"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[dependencies]
+kermit-ds = { version = "0.0.8-dev", path = "../kermit-ds" }
+kermit-iters = { version = "0.0.8-dev", path = "../kermit-iters" }
+kermit-algos = { version = "0.0.8-dev", path = "../kermit-algos" }
+kermit-kvs = { version = "0.0.8-dev", path = "../kermit-kvs" }
