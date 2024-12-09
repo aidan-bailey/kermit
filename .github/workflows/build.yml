@@ -53,4 +53,4 @@ jobs:
         with:
           rust-version: ${{ matrix.rust }}
       - run: cargo login ${{ secrets.CARGOTOKEN }}
-      - run: cargo package --verbose
+      - run: cargo package --workspace -Z package-workspace --verbose
