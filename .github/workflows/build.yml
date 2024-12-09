@@ -52,5 +52,5 @@ jobs:
       - uses: hecrj/setup-rust-action@v1
         with:
           rust-version: ${{ matrix.rust }}
-      - run: cargo login ${{ secrets.CARGOTOKEN }}
+      - run: cargo login ${{ secrets.CRATESTOKEN }}
       - run: cargo package --workspace -Z package-workspace --verbose
