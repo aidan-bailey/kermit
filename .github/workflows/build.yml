@@ -43,7 +43,6 @@ jobs:
   publish:
     needs: test
     name: Publish Rust ${{ matrix.rust }} on ${{ matrix.os }}
-    continue-on-error: true
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -55,5 +54,5 @@ jobs:
       - uses: hecrj/setup-rust-action@v1
         with:
           rust-version: ${{ matrix.rust }}
-      - run: cargo login ${{ secrets.CARGOTOKEN }}
+      - run: cargo login ${{ secrets.CRATESTOKEN }}
       - run: cargo package --workspace -Z package-workspace --verbose
