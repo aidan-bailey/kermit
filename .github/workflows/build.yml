@@ -41,22 +41,41 @@ jobs:
       - run: cargo test --verbose
 
   publish:
-    needs: test
-    name: Publish Rust ${{ matrix.rust }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+
+    name: 'publish'
+
+    # Reference your environment variables
+    environment: cargo
+
     strategy:
       fail-fast: false
       matrix:
-        rust: [nightly]
-        os: [ubuntu-latest]
+        include:
+          - dir: "/kermit/"
+            tag_prefix: "kermit"
+          - dir: "/kermit-algos/"
+            tag_prefix: "kermit-algos"
+          - dir: "/kermit-ds/"
+            tag_prefix: "kermit-ds"
+          - dir: "/kermit-iters/"
+            tag_prefix: "kermit-iters"
+          - dir: "/kermit-kvs/"
+            tag_prefix: "kermit-kvs"
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: hecrj/setup-rust-action@v1
+      - uses: actions/checkout@master
         with:
-          rust-version: ${{ matrix.rust }}
-      - run: cargo login ${{ secrets.CRATESTOKEN }}
-      - run: cargo publish -p kermit --verbose
-      - run: cargo publish -p kermit-algos --verbose
-      - run: cargo publish -p kermit-ds --verbose
-      - run: cargo publish -p kermit-iters --verbose
-      - run: cargo publish -p kermit-kvs --verbose
+          # get git tags info
+          fetch-depth: 0
+      
+      - name: Run publish-action
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          # This can help you tagging the github repository
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This can help you publish to crates.io
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: ${{ matrix.dir }}
+          TAG_PREFIX: ${{ matrix.tag_prefix }}
