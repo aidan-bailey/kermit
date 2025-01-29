@@ -13,9 +13,6 @@ where
     fn build(self) -> R;
     fn add_tuple(self, tuple: Vec<KT>) -> Self;
     fn add_tuples(self, tuple: Vec<Vec<KT>>) -> Self;
-    fn add_file<P: AsRef<Path>>(self, filepath: P) -> Result<Self, Error>
-    where
-        Self: Sized;
 }
 
 pub trait RelationBuilderFileExt<KT, R>: RelationBuilder<KT, R>

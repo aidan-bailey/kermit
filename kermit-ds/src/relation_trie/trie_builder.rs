@@ -33,28 +33,6 @@ impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> RelationBuilder<KT, R
         self
     }
 
-    fn add_file<P: AsRef<Path>>(mut self, filepath: P) -> Result<TrieBuilder<KT>, Error> {
-        let file = File::open(filepath)?;
-        let mut rdr = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .delimiter(b',')
-            .double_quote(false)
-            .escape(Some(b'\\'))
-            .flexible(false)
-            .comment(Some(b'#'))
-            .from_reader(file);
-        for result in rdr.records() {
-            let record = result?;
-            let mut tuple: Vec<KT> = vec![];
-            for x in record.iter() {
-                if let Ok(y) = x.to_string().parse::<KT>() {
-                    tuple.push(y);
-                }
-            }
-            self.tuples.push(tuple);
-        }
-        Ok(self)
-    }
 }
 
 #[cfg(test)]
