@@ -1,7 +1,6 @@
 use {
     crate::{relation_builder::RelationBuilder, relation_trie::trie::RelationTrie},
-    csv::Error,
-    std::{fmt::Debug, fs::File, path::Path, str::FromStr},
+    std::{fmt::Debug, str::FromStr},
 };
 
 pub struct TrieBuilder<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> {
@@ -32,7 +31,6 @@ impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> RelationBuilder<KT, R
         self.tuples.extend(tuples);
         self
     }
-
 }
 
 #[cfg(test)]
