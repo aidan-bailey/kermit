@@ -3,9 +3,7 @@ use {
         ds::{
             relation::Relation,
             relation_builder::RelationBuilder,
-            relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
         },
-        iters::trie::TrieIterable,
         kvs::keyvalstore::KeyValStore,
     },
     std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
