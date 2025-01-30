@@ -1,9 +1,6 @@
 use {
     crate::{
-        ds::{
-            relation::Relation,
-            relation_builder::RelationBuilder,
-        },
+        ds::{relation::Relation, relation_builder::RelationBuilder},
         kvs::keyvalstore::KeyValStore,
     },
     std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
@@ -63,7 +60,7 @@ mod tests {
     use {
         super::*,
         crate::{
-            ds::relation_trie::trie_builder::TrieBuilder,
+            ds::relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
             kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
         },
     };
@@ -73,9 +70,9 @@ mod tests {
         let mut db: Database<
             u64,
             AnyValType,
-            NaiveStore<AnyValType, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>,
-            RelationTrie<u64>,
-            TrieBuilder<u64>,
+            NaiveStore<_, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>,
+            RelationTrie<_>,
+            TrieBuilder<_>,
         > = Database::new("test".to_string(), NaiveStore::<AnyValType, _>::default());
         let relation_name = "apple".to_string();
         db.add_relation(relation_name.clone(), 3);
