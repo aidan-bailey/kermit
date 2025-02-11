@@ -15,3 +15,5 @@ pub mod kvs {
 }
 
 pub mod db;
+
+pub mod triejoin_db;

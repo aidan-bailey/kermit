@@ -6,6 +6,7 @@ use {
     kermit_iters::{
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},
+        JoinIterator,
     },
 };
 

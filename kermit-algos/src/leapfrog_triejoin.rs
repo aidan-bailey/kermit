@@ -1,18 +1,18 @@
 use kermit_iters::trie::TrieIterator;
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub trait LeapfrogTriejoinIterator<KT>
+pub trait LeapfrogTriejoinIterator<'a, KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
     /// Initializes the iterator.
-    fn init(&mut self) -> Option<&KT>;
+    fn init(&mut self) -> Option<&'a KT>;
 
     /// Proceed to the next key.
-    fn next(&mut self) -> Option<&KT>;
+    fn next(&mut self) -> Option<&'a KT>;
 
     /// Proceed to the next matching key.
-    fn search(&mut self) -> Option<&KT>;
+    fn search(&mut self) -> Option<&'a KT>;
 
     /// Position the iterator at a least
     /// upper bound for seekKey,
@@ -20,23 +20,23 @@ where
     /// move to end if no such key exists.
     /// The sought key must be ≥ the
     /// key at the current position.
-    fn seek(&mut self, seek_key: &KT) -> Option<&KT>;
+    fn seek(&mut self, seek_key: &KT) -> Option<&'a KT>;
 
     /// Check if the iterator is at the end.
     fn at_end(&self) -> bool;
 
     /// Proceed to the first key at the next depth.
-    fn open(&mut self) -> Option<&KT>;
+    fn open(&mut self) -> Option<&'a KT>;
 
     /// Proceed to the parent key at the previous depth.
-    fn up(&mut self) -> Option<&KT>;
+    fn up(&mut self) -> Option<&'a KT>;
 }
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub struct LeapfrogTriejoinIter<KT, IT>
+pub struct LeapfrogTriejoinIter<'a, KT, IT>
 where
     KT: PartialOrd + PartialEq + Clone,
-    IT: TrieIterator<KT>,
+    IT: TrieIterator<&'a KT>,
 {
     /// The key of the current position.
     pub key: Option<KT>,
@@ -101,10 +101,10 @@ where
     fn k(&self) -> usize { self.current_iters.len() }
 }
 
-impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<KT>
+impl<'a, KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<'a, KT>
     for LeapfrogTriejoinIter<KT, IT>
 {
-    fn init(&mut self) -> Option<&KT> {
+    fn init(&mut self) -> Option<&'a KT> {
         if !self.at_end() {
             self.current_iters.sort_unstable_by(|a, b| {
                 let a_key = a.1.key().expect("Not at root");
@@ -124,14 +124,14 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         }
     }
 
-    fn next(&mut self) -> Option<&KT> {
+    fn next(&mut self) -> Option<&'a KT> {
         self.key = None;
         self.current_iters[self.p].1.next()?;
         self.p = (self.p + 1) % self.k();
         self.search()
     }
 
-    fn search(&mut self) -> Option<&KT> {
+    fn search(&mut self) -> Option<&'a KT> {
         self.key = None;
         let prime_i = if self.p == 0 {
             self.k() - 1
@@ -150,7 +150,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         }
     }
 
-    fn seek(&mut self, seek_key: &KT) -> Option<&KT> {
+    fn seek(&mut self, seek_key: &KT) -> Option<&'a KT> {
         self.current_iters[self.p].1.seek(seek_key)?;
         if !self.current_iters[self.p].1.at_end() {
             self.p = (self.p + 1) % self.k();
@@ -169,7 +169,7 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         false
     }
 
-    fn open(&mut self) -> Option<&KT> {
+    fn open(&mut self) -> Option<&'a KT> {
         self.depth += 1;
         self.update_iters();
         for (_, iter) in &mut self.current_iters {
@@ -178,13 +178,31 @@ impl<KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinI
         self.init()
     }
 
-    fn up(&mut self) -> Option<&KT> {
+    fn up(&mut self) -> Option<&'a KT> {
         for (_, iter) in &mut self.current_iters {
             iter.up()?;
         }
         self.depth -= 1;
         self.update_iters();
         self.key.as_ref()
+    }
+}
+
+impl<'a, KT, IT> Iterator for LeapfrogTriejoinIter<KT, IT>
+where
+    KT: PartialOrd + PartialEq + Clone + 'a,
+    IT: TrieIterator<KT>,
+{
+    type Item = Option<&'a KT>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.todos.list.len() {
+            let result = Some(&self.todos.list[self.index]);
+            self.index += 1;
+            result
+        } else {
+            None
+        }
     }
 }
 

@@ -1,52 +1,52 @@
 use {
     crate::{
         algos::join_algo::JoinAlgo,
-        ds::{relation::Relation, relation_builder::RelationBuilder},
+        ds::{
+            relation::Relation,
+            relation_builder::RelationBuilder,
+            relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
+        },
         kvs::keyvalstore::KeyValStore,
     },
+    kermit_algos::leapfrog_triejoin::LeapfrogTriejoinIter,
+    kermit_ds::relation_trie::trie_iter::TrieIter,
     kermit_iters::JoinIterator,
     std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
 };
 
-pub struct Database<KT, VT, KVST, R, RB>
+pub struct LFTJDatabase<KT, VT, KVST>
 where
     KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
     KVST: KeyValStore<KT, VT>,
     VT: Hash,
-    R: Relation<KT>,
-    RB: RelationBuilder<KT, R>,
 {
     name: String,
-    relations: HashMap<String, R>,
+    relations: HashMap<String, RelationTrie<KT>>,
     store: KVST,
     phantom_vt: std::marker::PhantomData<VT>,
     phantom_kt: std::marker::PhantomData<KT>,
-    phantom_rb: std::marker::PhantomData<RB>,
 }
 
-impl<KT, VT, KVST, R, RB> Database<KT, VT, KVST, R, RB>
+impl<KT, VT, KVST> LFTJDatabase<KT, VT, KVST>
 where
     KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
     KVST: KeyValStore<KT, VT>,
     VT: Hash,
-    R: Relation<KT>,
-    RB: RelationBuilder<KT, R>,
 {
     pub fn new(name: String, store: KVST) -> Self {
-        Database {
+        LFTJDatabase {
             name,
             relations: HashMap::new(),
             store,
             phantom_vt: std::marker::PhantomData,
             phantom_kt: std::marker::PhantomData,
-            phantom_rb: std::marker::PhantomData,
         }
     }
 
     pub fn name(&self) -> &String { &self.name }
 
     pub fn add_relation(&mut self, name: String, cardinality: usize) {
-        let relation = RB::new(cardinality).build();
+        let relation = TrieBuilder::new(cardinality).build();
         self.relations.insert(name, relation);
     }
 
@@ -55,15 +55,18 @@ where
         self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
 
-    pub fn join<J, IT>(
-        &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-        iters: Vec<IT>,
-    ) -> R
-    where
-        J: JoinAlgo<KT, IT>,
-        IT: JoinIterator<KT>,
-    {
-        unimplemented!();
+    pub fn join(
+        &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, output_relation: String,
+    ) {
+        let iters = relations
+            .iter()
+            .map(|rel_name| {
+                let rel = self.relations.get(rel_name).unwrap();
+                let mut iter = TrieIter::new(rel);
+                iter
+            })
+            .collect::<Vec<TrieIter<KT>>>();
+        let lftj_iter = LeapfrogTriejoinIter::new(variables, rel_variables, iters);
     }
 }
 
@@ -80,13 +83,11 @@ mod tests {
 
     #[test]
     fn test_relation() {
-        let mut db: Database<
+        let mut db: LFTJDatabase<
             u64,
             AnyValType,
             NaiveStore<_, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>,
-            RelationTrie<_>,
-            TrieBuilder<_>,
-        > = Database::new("test".to_string(), NaiveStore::<AnyValType, _>::default());
+        > = LFTJDatabase::new("test".to_string(), NaiveStore::<AnyValType, _>::default());
         let relation_name = "apple".to_string();
         db.add_relation(relation_name.clone(), 3);
         let tuple = vec![
