@@ -9,7 +9,7 @@ where
     fn init(&mut self) -> Option<&'a KT>;
 
     /// Proceed to the next key.
-    fn next(&mut self) -> Option<&'a KT>;
+    fn leapfrog_next(&mut self) -> Option<&'a KT>;
 
     /// Proceed to the next matching key.
     fn search(&mut self) -> Option<&'a KT>;
@@ -36,10 +36,10 @@ where
 pub struct LeapfrogTriejoinIter<'a, KT, IT>
 where
     KT: PartialOrd + PartialEq + Clone,
-    IT: TrieIterator<&'a KT>,
+    IT: TrieIterator<'a, KT>,
 {
     /// The key of the current position.
-    pub key: Option<KT>,
+    pub key: Option<&'a KT>,
     p: usize,
     iters: Vec<Option<IT>>,
     current_iters: Vec<(usize, IT)>,
@@ -47,10 +47,10 @@ where
     depth: usize,
 }
 
-impl<KT, IT> LeapfrogTriejoinIter<KT, IT>
+impl<'a, KT, IT> LeapfrogTriejoinIter<'a, KT, IT>
 where
     KT: PartialOrd + PartialEq + Clone,
-    IT: TrieIterator<KT>,
+    IT: TrieIterator<'a, KT>,
 {
     /// Construct a new `LeapfrogTriejoinIter` with the given iterators.
     ///
@@ -101,8 +101,10 @@ where
     fn k(&self) -> usize { self.current_iters.len() }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriejoinIterator<'a, KT>
-    for LeapfrogTriejoinIter<KT, IT>
+impl<'a, KT, IT> LeapfrogTriejoinIterator<'a, KT> for LeapfrogTriejoinIter<'a, KT, IT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+    IT: TrieIterator<'a, KT>,
 {
     fn init(&mut self) -> Option<&'a KT> {
         if !self.at_end() {
@@ -124,7 +126,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriej
         }
     }
 
-    fn next(&mut self) -> Option<&'a KT> {
+    fn leapfrog_next(&mut self) -> Option<&'a KT> {
         self.key = None;
         self.current_iters[self.p].1.next()?;
         self.p = (self.p + 1) % self.k();
@@ -142,8 +144,8 @@ impl<'a, KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriej
         loop {
             let x = self.current_iters[self.p].1.key()?;
             if x == &x_prime {
-                self.key = Some(x.clone());
-                break self.key.as_ref();
+                self.key = Some(x);
+                break self.key;
             }
             x_prime = self.current_iters[self.p].1.seek(&x_prime)?.clone();
             self.p = (self.p + 1) % self.k();
@@ -184,25 +186,36 @@ impl<'a, KT: PartialOrd + PartialEq + Clone, IT: TrieIterator<KT>> LeapfrogTriej
         }
         self.depth -= 1;
         self.update_iters();
-        self.key.as_ref()
+        self.key
     }
 }
 
-impl<'a, KT, IT> Iterator for LeapfrogTriejoinIter<KT, IT>
+impl<'a, KT, IT> Iterator for LeapfrogTriejoinIter<'a, KT, IT>
 where
     KT: PartialOrd + PartialEq + Clone + 'a,
-    IT: TrieIterator<KT>,
+    IT: TrieIterator<'a, KT>,
 {
-    type Item = Option<&'a KT>;
+    type Item = Option<Vec<&'a KT>>;
+
+
 
     fn next(&mut self) -> Option<Self::Item> {
+
+        // If not at top, or leaf, complain
+        if self.depth != 0 {
+            panic!("Not at top level");
+        }
+
+        None
+
+        /*
         if self.index < self.todos.list.len() {
             let result = Some(&self.todos.list[self.index]);
             self.index += 1;
             result
         } else {
             None
-        }
+        }*/
     }
 }
 
@@ -227,7 +240,7 @@ mod tests {
         let mut triejoin_iter =
             LeapfrogTriejoinIter::new(vec![0], vec![vec![0], vec![0]], vec![t1_iter, t2_iter]);
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key.unwrap(), 1);
+        assert_eq!(triejoin_iter.key.unwrap().clone(), 1);
         assert_eq!(triejoin_iter.next().unwrap(), &2);
         assert_eq!(triejoin_iter.next().unwrap(), &3);
     }
@@ -252,13 +265,13 @@ mod tests {
             vec![r_iter, s_iter, t_iter],
         );
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key.unwrap(), 7);
+        assert_eq!(triejoin_iter.key.unwrap().clone(), 7);
         assert!(triejoin_iter.next().is_none());
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key.unwrap(), 4);
+        assert_eq!(triejoin_iter.key.unwrap().clone(), 4);
         assert!(triejoin_iter.next().is_none());
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key.unwrap(), 5);
+        assert_eq!(triejoin_iter.key.unwrap().clone(), 5);
     }
 
     // #[test_case(
