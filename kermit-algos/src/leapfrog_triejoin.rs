@@ -1,4 +1,6 @@
-use kermit_iters::trie::TrieIterator;
+use kermit_iters::trie::{TrieIterable, TrieIterator};
+
+use crate::join_algo::JoinAlgo;
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator<'a, KT>
@@ -216,6 +218,18 @@ where
         } else {
             None
         }*/
+    }
+}
+
+pub struct LeapfrogTriejoin {}
+
+impl<'a, KT, ITB> JoinAlgo<'a, KT, ITB> for LeapfrogTriejoin
+where
+    KT: Ord + Clone,
+    ITB: TrieIterable<'a, KT>,
+{
+    fn join(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>) {
+        print!("Nice!")
     }
 }
 

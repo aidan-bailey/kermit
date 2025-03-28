@@ -1,11 +1,8 @@
 use {
     crate::{
         ds::{relation::Relation, relation_builder::RelationBuilder},
-        join_algos::JoinAlgo,
         kvs::keyvalstore::KeyValStore,
-    },
-    kermit_iters::{trie::Iterable, JoinIterator},
-    std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
+    }, kermit_algos::join_algo::JoinAlgo, kermit_iters::trie::Iterable, std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr}
 };
 
 pub struct Database<KT, VT, KVST, R, RB>
@@ -76,9 +73,8 @@ mod tests {
         super::*,
         crate::{
             ds::relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
-            join_algos::LeapfrogTriejoin,
             kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
-        },
+        }, kermit_algos::leapfrog_triejoin::LeapfrogTriejoin
     };
 
     #[test]
