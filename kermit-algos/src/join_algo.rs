@@ -1,4 +1,4 @@
-use kermit_iters::trie::{Iterable, TrieIterable};
+use kermit_iters::trie::Iterable;
 
 pub trait JoinAlgo<'a, KT, ITB>
 where
