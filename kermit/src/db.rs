@@ -2,8 +2,7 @@ use {
     crate::{
         ds::{relation::Relation, relation_builder::RelationBuilder},
         kvs::keyvalstore::KeyValStore,
-    },
-    std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
+    }, kermit_algos::join_algo::JoinAlgo, kermit_iters::trie::Iterable, std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr}
 };
 
 pub struct Database<KT, VT, KVST, R, RB>
@@ -22,12 +21,12 @@ where
     phantom_rb: std::marker::PhantomData<RB>,
 }
 
-impl<KT, VT, KVST, R, RB> Database<KT, VT, KVST, R, RB>
+impl<'a, KT, VT, KVST, R, RB> Database<KT, VT, KVST, R, RB>
 where
-    KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
+    KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq + Ord,
     KVST: KeyValStore<KT, VT>,
     VT: Hash,
-    R: Relation<KT>,
+    R: Relation<KT> + Iterable<'a, KT>,
     RB: RelationBuilder<KT, R>,
 {
     pub fn new(name: String, store: KVST) -> Self {
@@ -52,6 +51,19 @@ where
         let keys = self.store.add_all(tuple);
         self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
+
+    pub fn join<JA>(
+        &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
+    )// -> R
+    where
+        JA: JoinAlgo<'a, KT, R>,
+    {
+        let iterables = relations
+            .iter()
+            .map(|name| self.relations.get(name).unwrap())
+            .collect::<Vec<&R>>();
+        JA::join(variables, rel_variables, iterables)
+    }
 }
 
 #[cfg(test)]
@@ -62,7 +74,7 @@ mod tests {
         crate::{
             ds::relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
             kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
-        },
+        }, kermit_algos::leapfrog_triejoin::LeapfrogTriejoin
     };
 
     #[test]
@@ -81,6 +93,7 @@ mod tests {
             AnyValType::from(1),
             AnyValType::from(2),
         ];
+        db.join::<LeapfrogTriejoin>(vec!["apple".to_string()], vec![], vec![]);
         db.add_tuple(&relation_name, tuple)
     }
 }
