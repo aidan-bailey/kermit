@@ -207,6 +207,7 @@ where
         }
 
         None
+        // TODO
 
         // if self.index < self.todos.list.len() {
         // let result = Some(&self.todos.list[self.index]);
@@ -277,10 +278,10 @@ mod tests {
         );
         triejoin_iter.open();
         assert_eq!(triejoin_iter.key.unwrap().clone(), 7);
-        assert!(triejoin_iter.next().is_none());
+        assert!(triejoin_iter.leapfrog_next().is_none());
         triejoin_iter.open();
         assert_eq!(triejoin_iter.key.unwrap().clone(), 4);
-        assert!(triejoin_iter.next().is_none());
+        assert!(triejoin_iter.leapfrog_next().is_none());
         triejoin_iter.open();
         assert_eq!(triejoin_iter.key.unwrap().clone(), 5);
     }
