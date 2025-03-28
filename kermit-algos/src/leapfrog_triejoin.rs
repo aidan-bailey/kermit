@@ -1,7 +1,7 @@
-use kermit_iters::{trie::TrieIterator, JoinIterator};
+use kermit_iters::trie::TrieIterator;
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub trait LeapfrogTriejoinIterator<'a, KT>: JoinIterator<KT>
+pub trait LeapfrogTriejoinIterator<'a, KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
