@@ -1,6 +1,7 @@
-use kermit_iters::trie::{TrieIterable, TrieIterator};
-
-use crate::join_algo::JoinAlgo;
+use {
+    crate::join_algo::JoinAlgo,
+    kermit_iters::trie::{TrieIterable, TrieIterator},
+};
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator<'a, KT>
@@ -199,10 +200,7 @@ where
 {
     type Item = Option<Vec<&'a KT>>;
 
-
-
     fn next(&mut self) -> Option<Self::Item> {
-
         // If not at top, or leaf, complain
         if self.depth != 0 {
             panic!("Not at top level");
@@ -210,14 +208,13 @@ where
 
         None
 
-        /*
-        if self.index < self.todos.list.len() {
-            let result = Some(&self.todos.list[self.index]);
-            self.index += 1;
-            result
-        } else {
-            None
-        }*/
+        // if self.index < self.todos.list.len() {
+        // let result = Some(&self.todos.list[self.index]);
+        // self.index += 1;
+        // result
+        // } else {
+        // None
+        // }
     }
 }
 

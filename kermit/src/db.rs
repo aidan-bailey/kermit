@@ -2,7 +2,10 @@ use {
     crate::{
         ds::{relation::Relation, relation_builder::RelationBuilder},
         kvs::keyvalstore::KeyValStore,
-    }, kermit_algos::join_algo::JoinAlgo, kermit_iters::trie::Iterable, std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr}
+    },
+    kermit_algos::join_algo::JoinAlgo,
+    kermit_iters::trie::Iterable,
+    std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
 };
 
 pub struct Database<KT, VT, KVST, R, RB>
@@ -54,7 +57,8 @@ where
 
     pub fn join<JA>(
         &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-    )// -> R
+    )
+    // -> R
     where
         JA: JoinAlgo<'a, KT, R>,
     {
@@ -74,7 +78,8 @@ mod tests {
         crate::{
             ds::relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
             kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
-        }, kermit_algos::leapfrog_triejoin::LeapfrogTriejoin
+        },
+        kermit_algos::leapfrog_triejoin::LeapfrogTriejoin,
     };
 
     #[test]
