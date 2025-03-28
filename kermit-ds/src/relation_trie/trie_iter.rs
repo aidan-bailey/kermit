@@ -46,8 +46,8 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
     }
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> LinearIterator<KT> for TrieIter<'_, KT> {
-    fn key(&self) -> Option<&KT> {
+impl<'a, KT: PartialOrd + PartialEq + Clone> LinearIterator<'a, KT> for TrieIter<'a, KT> {
+    fn key(&self) -> Option<&'a KT> {
         if self.at_end() {
             None
         } else {
@@ -61,7 +61,7 @@ impl<KT: PartialOrd + PartialEq + Clone> LinearIterator<KT> for TrieIter<'_, KT>
         }
     }
 
-    fn next(&mut self) -> Option<&KT> {
+    fn next(&mut self) -> Option<&'a KT> {
         if let Some(siblings) = self.siblings() {
             self.pos += 1;
             if let Some(node) = siblings.get(self.pos) {
@@ -73,7 +73,7 @@ impl<KT: PartialOrd + PartialEq + Clone> LinearIterator<KT> for TrieIter<'_, KT>
         None
     }
 
-    fn seek(&mut self, seek_key: &KT) -> Option<&KT> {
+    fn seek(&mut self, seek_key: &KT) -> Option<&'a KT> {
         if self.at_end() {
             return None;
         }
@@ -114,8 +114,8 @@ impl<KT: PartialOrd + PartialEq + Clone> LinearIterator<KT> for TrieIter<'_, KT>
     }
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'_, KT> {
-    fn open(&mut self) -> Option<&KT> {
+impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<'a, KT> for TrieIter<'a, KT> {
+    fn open(&mut self) -> Option<&'a KT> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
                 self.stack.push((child, 0));
@@ -132,7 +132,7 @@ impl<KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'_, KT> {
         }
     }
 
-    fn up(&mut self) -> Option<&KT> {
+    fn up(&mut self) -> Option<&'a KT> {
         if self.stack.pop().is_none() {
             None
         } else {
@@ -146,6 +146,9 @@ impl<KT: PartialOrd + PartialEq + Clone> TrieIterator<KT> for TrieIter<'_, KT> {
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterable<'a, KT> for RelationTrie<KT> {
-    fn trie_iter(&'a self) -> impl TrieIterator<KT> { TrieIter::<'a>::new(self) }
+impl<'a, KT> TrieIterable<'a, KT> for RelationTrie<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
+    fn trie_iter(&'a self) -> impl TrieIterator<'a, KT> { TrieIter::<'a>::new(self) }
 }

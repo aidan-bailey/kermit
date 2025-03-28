@@ -29,7 +29,7 @@ impl<KT, R, T> RelationBuilderFileExt<KT, R> for T
 where
     KT: PartialOrd + PartialEq + Clone + FromStr + Debug,
     R: Relation<KT>,
-    T: RelationBuilder<KT, R>
+    T: RelationBuilder<KT, R>,
 {
     fn add_csv<P: AsRef<Path>>(mut self, filepath: P, delimiter: u8) -> Result<Self, Error> {
         let file = File::open(filepath)?;

@@ -18,6 +18,6 @@ kermit-iters = { version = "0.0.8-dev", path = "../kermit-iters" }
 
 [dev-dependencies]
 criterion = "0.5.1"
-rand = "0.8.5"
+rand = "0.9.0"
 kermit-ds = { path = "../kermit-ds" }
 test-case = "3.3.1"

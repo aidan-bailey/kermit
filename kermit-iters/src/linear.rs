@@ -1,15 +1,15 @@
 /// Trie iterator trait
-pub trait LinearIterator<KT: PartialOrd + PartialEq + Clone> {
+pub trait LinearIterator<'a, KT: PartialOrd + PartialEq + Clone> {
     /// Returns a reference to the key if
     /// the iterator is positioned at a
     /// non-root node, otherwise None.
-    fn key(&self) -> Option<&KT>;
+    fn key(&self) -> Option<&'a KT>;
 
     /// Moves the iterator forward and returns
     /// a reference to the key if the iterator
     /// is positioned at a non-root node, otherwise
     /// None.
-    fn next(&mut self) -> Option<&KT>;
+    fn next(&mut self) -> Option<&'a KT>;
 
     /// Positions the iterator at a least
     /// upper bound for seek_key,
@@ -22,7 +22,7 @@ pub trait LinearIterator<KT: PartialOrd + PartialEq + Clone> {
     ///
     /// If the seek_key is not ≥ the key at the
     /// current position.
-    fn seek(&mut self, seek_key: &KT) -> Option<&KT>;
+    fn seek(&mut self, seek_key: &KT) -> Option<&'a KT>;
 
     /// Returns true iff the iterator is positioned
     /// at the end.
@@ -30,6 +30,6 @@ pub trait LinearIterator<KT: PartialOrd + PartialEq + Clone> {
 }
 
 /// Trie iterable trait
-pub trait LinearIterable<KT: PartialOrd + PartialEq + Clone> {
-    fn linear_iter(&self) -> impl LinearIterable<KT>;
+pub trait LinearIterable<'a, KT: PartialOrd + PartialEq + Clone> {
+    fn linear_iter(&'a self) -> impl LinearIterable<'a, KT>;
 }
