@@ -22,7 +22,20 @@ pub trait TrieIterator<'a, KT: PartialOrd + PartialEq + Clone>: LinearIterator<'
     fn up(&mut self) -> Option<&'a KT>;
 }
 
+pub trait Iterable<'a, KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
+}
+
 /// Trie iterable trait
-pub trait TrieIterable<'a, KT: PartialOrd + PartialEq + Clone> {
+pub trait TrieIterable<'a, KT: PartialOrd + PartialEq + Clone>: Iterable<'a, KT> {
     fn trie_iter(&'a self) -> impl TrieIterator<'a, KT>;
+}
+
+impl<'a, KT, T> Iterable<'a, KT> for T
+where
+    T: TrieIterable<'a, KT>,
+    KT: PartialOrd + PartialEq + Clone,
+{
 }

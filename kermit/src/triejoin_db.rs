@@ -1,3 +1,4 @@
+/*
 use {
     crate::{
         algos::join_algo::JoinAlgo,
@@ -98,3 +99,4 @@ mod tests {
         db.add_tuple(&relation_name, tuple)
     }
 }
+*/

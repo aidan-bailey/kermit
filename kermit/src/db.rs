@@ -1,10 +1,10 @@
 use {
     crate::{
-        algos::join_algo::JoinAlgo,
         ds::{relation::Relation, relation_builder::RelationBuilder},
+        join_algos::JoinAlgo,
         kvs::keyvalstore::KeyValStore,
     },
-    kermit_iters::JoinIterator,
+    kermit_iters::{trie::Iterable, JoinIterator},
     std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
 };
 
@@ -24,12 +24,12 @@ where
     phantom_rb: std::marker::PhantomData<RB>,
 }
 
-impl<KT, VT, KVST, R, RB> Database<KT, VT, KVST, R, RB>
+impl<'a, KT, VT, KVST, R, RB> Database<KT, VT, KVST, R, RB>
 where
-    KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq,
+    KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq + Ord,
     KVST: KeyValStore<KT, VT>,
     VT: Hash,
-    R: Relation<KT>,
+    R: Relation<KT> + Iterable<'a, KT>,
     RB: RelationBuilder<KT, R>,
 {
     pub fn new(name: String, store: KVST) -> Self {
@@ -55,15 +55,17 @@ where
         self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
 
-    pub fn join<J, IT>(
+    pub fn join<JA>(
         &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-        iters: Vec<IT>,
-    ) -> R
+    )// -> R
     where
-        J: JoinAlgo<KT, IT>,
-        IT: JoinIterator<KT>,
+        JA: JoinAlgo<'a, KT, R>,
     {
-        unimplemented!();
+        let iterables = relations
+            .iter()
+            .map(|name| self.relations.get(name).unwrap())
+            .collect::<Vec<&R>>();
+        JA::join(variables, rel_variables, iterables)
     }
 }
 
@@ -74,6 +76,7 @@ mod tests {
         super::*,
         crate::{
             ds::relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
+            join_algos::LeapfrogTriejoin,
             kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
         },
     };
@@ -94,6 +97,7 @@ mod tests {
             AnyValType::from(1),
             AnyValType::from(2),
         ];
+        db.join::<LeapfrogTriejoin>(vec!["apple".to_string()], vec![], vec![]);
         db.add_tuple(&relation_name, tuple)
     }
 }
