@@ -17,3 +17,5 @@ pub mod kvs {
 pub mod db;
 
 pub mod triejoin_db;
+
+pub mod join_algos;
