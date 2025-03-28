@@ -146,6 +146,9 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<'a, KT> for TrieIter<'
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterable<'a, KT> for RelationTrie<KT> {
-    fn trie_iter(&'a self) -> impl TrieIterator<KT> { TrieIter::<'a>::new(self) }
+impl<'a, KT> TrieIterable<'a, KT> for RelationTrie<KT>
+where
+    KT: PartialOrd + PartialEq + Clone,
+{
+    fn trie_iter(&'a self) -> impl TrieIterator<'a, KT> { TrieIter::<'a>::new(self) }
 }
