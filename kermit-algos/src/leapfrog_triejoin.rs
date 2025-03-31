@@ -8,6 +8,10 @@ pub trait LeapfrogTriejoinIterator<'a, KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
+
+    /// Returns the key at the current position.
+    fn key(&self) -> Option<&'a KT>;
+
     /// Initializes the iterator.
     fn init(&mut self) -> Option<&'a KT>;
 
@@ -42,7 +46,7 @@ where
     IT: TrieIterator<'a, KT>,
 {
     /// The key of the current position.
-    pub key: Option<&'a KT>,
+    stack: Vec<&'a KT>,
     p: usize,
     iters: Vec<Option<IT>>,
     current_iters: Vec<(usize, IT)>,
@@ -80,7 +84,7 @@ where
         let iters = iters.into_iter().map(Some).collect();
 
         LeapfrogTriejoinIter {
-            key: None,
+            stack: vec![],
             p: 0,
             iters,
             current_iters: Vec::new(),
@@ -109,6 +113,11 @@ where
     KT: PartialOrd + PartialEq + Clone,
     IT: TrieIterator<'a, KT>,
 {
+
+    fn key(&self) -> Option<&'a KT> {
+        self.stack.last().copied()
+    }
+
     fn init(&mut self) -> Option<&'a KT> {
         if !self.at_end() {
             self.current_iters.sort_unstable_by(|a, b| {
@@ -130,14 +139,14 @@ where
     }
 
     fn leapfrog_next(&mut self) -> Option<&'a KT> {
-        self.key = None;
+        self.stack.pop();
         self.current_iters[self.p].1.next()?;
         self.p = (self.p + 1) % self.k();
         self.search()
     }
 
     fn search(&mut self) -> Option<&'a KT> {
-        self.key = None;
+        self.stack.pop();
         let prime_i = if self.p == 0 {
             self.k() - 1
         } else {
@@ -147,8 +156,8 @@ where
         loop {
             let x = self.current_iters[self.p].1.key()?;
             if x == &x_prime {
-                self.key = Some(x);
-                break self.key;
+                self.stack.push(x);
+                break self.key();
             }
             x_prime = self.current_iters[self.p].1.seek(&x_prime)?.clone();
             self.p = (self.p + 1) % self.k();
@@ -189,7 +198,7 @@ where
         }
         self.depth -= 1;
         self.update_iters();
-        self.key
+        self.key()
     }
 }
 
@@ -252,7 +261,7 @@ mod tests {
         let mut triejoin_iter =
             LeapfrogTriejoinIter::new(vec![0], vec![vec![0], vec![0]], vec![t1_iter, t2_iter]);
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key.unwrap().clone(), 1);
+        assert_eq!(triejoin_iter.key().unwrap().clone(), 1);
         // assert_eq!(triejoin_iter.next().unwrap(), &2);
         // assert_eq!(triejoin_iter.next().unwrap(), &3);
     }
@@ -277,13 +286,13 @@ mod tests {
             vec![r_iter, s_iter, t_iter],
         );
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key.unwrap().clone(), 7);
+        assert_eq!(triejoin_iter.key().unwrap().clone(), 7);
         assert!(triejoin_iter.leapfrog_next().is_none());
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key.unwrap().clone(), 4);
+        assert_eq!(triejoin_iter.key().unwrap().clone(), 4);
         assert!(triejoin_iter.leapfrog_next().is_none());
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key.unwrap().clone(), 5);
+        assert_eq!(triejoin_iter.key().unwrap().clone(), 5);
     }
 
     // #[test_case(
