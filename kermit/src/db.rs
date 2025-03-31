@@ -60,7 +60,10 @@ where
     }
 
     pub fn add_keys_batch(&mut self, relation_name: &String, keys: Vec<Vec<KT>>) {
-        self.relations.get_mut(relation_name).unwrap().insert_all(keys);
+        self.relations
+            .get_mut(relation_name)
+            .unwrap()
+            .insert_all(keys);
     }
 
     pub fn join<JA>(
