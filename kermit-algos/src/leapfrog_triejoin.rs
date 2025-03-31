@@ -93,13 +93,12 @@ where
     }
 
     fn update_iters(&mut self) {
-
         while let Some((i, iter)) = self.current_iters.pop() {
             self.iters[i] = Some(iter);
         }
 
         if self.depth == 0 {
-            return
+            return;
         }
 
         for i in &self.iter_indexes_at_variable[self.depth - 1] {
@@ -261,8 +260,10 @@ where
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&'a ITB>,
     ) -> Vec<Vec<KT>> {
         let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
-        let mut triejoin_iter = LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters);
-        todo!();
+        LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
+            .into_iter()
+            .map(|v| v.into_iter().map(|x| x.clone()).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
     }
 }
 
