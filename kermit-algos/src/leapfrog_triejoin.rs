@@ -329,6 +329,7 @@ mod tests {
         assert!(triejoin_iter.at_end());
         triejoin_iter.open();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 4);
+        triejoin_iter.leapfrog_next();
         assert!(triejoin_iter.at_end());
         triejoin_iter.open();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 5);
