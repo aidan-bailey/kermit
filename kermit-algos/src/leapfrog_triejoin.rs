@@ -8,7 +8,6 @@ pub trait LeapfrogTriejoinIterator<'a, KT>
 where
     KT: PartialOrd + PartialEq + Clone,
 {
-
     /// Returns the key at the current position.
     fn key(&self) -> Option<&'a KT>;
 
@@ -113,10 +112,7 @@ where
     KT: PartialOrd + PartialEq + Clone,
     IT: TrieIterator<'a, KT>,
 {
-
-    fn key(&self) -> Option<&'a KT> {
-        self.stack.last().copied()
-    }
+    fn key(&self) -> Option<&'a KT> { self.stack.last().copied() }
 
     fn init(&mut self) -> Option<&'a KT> {
         if !self.at_end() {
@@ -232,11 +228,15 @@ pub struct LeapfrogTriejoin {}
 
 impl<'a, KT, ITB> JoinAlgo<'a, KT, ITB> for LeapfrogTriejoin
 where
-    KT: Ord + Clone,
+    KT: Ord + Clone + 'a,
     ITB: TrieIterable<'a, KT>,
 {
-    fn join(_variables: Vec<usize>, _rel_variables: Vec<Vec<usize>>, _iterables: Vec<&ITB>) {
-        print!("Nice!")
+    fn join(
+        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&'a ITB>,
+    ) -> Vec<Vec<KT>> {
+        let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
+        let mut triejoin_iter = LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters);
+        todo!();
     }
 }
 

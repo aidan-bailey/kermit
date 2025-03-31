@@ -56,7 +56,7 @@ where
     }
 
     pub fn join<JA>(
-        &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
+        &'a self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     )
     // -> R
     where
@@ -66,7 +66,7 @@ where
             .iter()
             .map(|name| self.relations.get(name).unwrap())
             .collect::<Vec<&R>>();
-        JA::join(variables, rel_variables, iterables)
+        let r = JA::join(variables, rel_variables, iterables);
     }
 }
 
