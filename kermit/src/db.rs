@@ -45,9 +45,9 @@ where
 
     pub fn name(&self) -> &String { &self.name }
 
-    pub fn add_relation(&mut self, name: &String, cardinality: usize) {
+    pub fn add_relation(&mut self, name: &str, cardinality: usize) {
         let relation = RB::new(cardinality).build();
-        self.relations.insert(name.clone(), relation);
+        self.relations.insert(name.to_owned(), relation);
     }
 
     pub fn add_tuple(&mut self, relation_name: &String, tuple: Vec<VT>) {
