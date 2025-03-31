@@ -131,7 +131,7 @@ mod tests {
         db.add_relation(&second_name, 1);
         db.add_keys_batch(&second_name, vec![vec![1_u64], vec![2], vec![3]]);
 
-        let res = db.join::<LeapfrogTriejoin>(
+        let _res = db.join::<LeapfrogTriejoin>(
             vec!["first".to_string(), "second".to_string()],
             vec![0],
             vec![vec![0], vec![0]],
