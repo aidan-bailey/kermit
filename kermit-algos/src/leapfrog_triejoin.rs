@@ -261,8 +261,7 @@ where
     ) -> Vec<Vec<KT>> {
         let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
         LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
-            .into_iter()
-            .map(|v| v.into_iter().map(|x| x.clone()).collect::<Vec<_>>())
+            .map(|v| v.into_iter().cloned().collect::<Vec<_>>())
             .collect::<Vec<_>>()
     }
 }
@@ -298,8 +297,7 @@ mod tests {
         triejoin_iter.up();
         assert!(triejoin_iter.at_end());
         let res = triejoin_iter
-            .into_iter()
-            .map(|v| v.into_iter().map(|x| *x).collect::<Vec<_>>())
+            .map(|v| v.into_iter().copied().collect::<Vec<_>>())
             .collect::<Vec<_>>();
         assert_eq!(res, vec![vec![1_i32], vec![2_i32], vec![3_i32]]);
     }

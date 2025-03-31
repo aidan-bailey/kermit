@@ -78,7 +78,7 @@ where
             .collect::<Vec<&R>>();
         let cardinality = variables.len();
         let tuples = JA::join(variables, rel_variables, iterables);
-        return RB::new(cardinality).add_tuples(tuples).build();
+        RB::new(cardinality).add_tuples(tuples).build()
     }
 }
 
