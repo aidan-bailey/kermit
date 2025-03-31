@@ -93,8 +93,13 @@ where
     }
 
     fn update_iters(&mut self) {
+
         while let Some((i, iter)) = self.current_iters.pop() {
             self.iters[i] = Some(iter);
+        }
+
+        if self.depth == 0 {
+            return
         }
 
         for i in &self.iter_indexes_at_variable[self.depth - 1] {
@@ -171,6 +176,9 @@ where
     }
 
     fn at_end(&self) -> bool {
+        if self.depth == 0 {
+            return true;
+        }
         for (_, iter) in &self.current_iters {
             if iter.at_end() {
                 return true;
@@ -189,8 +197,11 @@ where
     }
 
     fn up(&mut self) -> Option<&'a KT> {
+        if self.depth == 0 {
+            panic!("Cannot go any more up")
+        }
         for (_, iter) in &mut self.current_iters {
-            iter.up()?;
+            iter.up();
         }
         self.depth -= 1;
         self.update_iters();
@@ -285,20 +296,6 @@ mod tests {
         assert!(triejoin_iter.at_end());
         triejoin_iter.up();
         assert!(triejoin_iter.at_end());
-    }
-
-    #[test]
-    fn test_iterator() {
-        let t1 = TrieBuilder::<i32>::new(1)
-            .add_tuples(vec![vec![1], vec![2], vec![3]])
-            .build();
-        let t2 = TrieBuilder::<i32>::new(1)
-            .add_tuples(vec![vec![1], vec![2], vec![3]])
-            .build();
-        let t1_iter = t1.trie_iter();
-        let t2_iter = t2.trie_iter();
-        let mut triejoin_iter =
-            LeapfrogTriejoinIter::new(vec![0], vec![vec![0], vec![0]], vec![t1_iter, t2_iter]);
         let res = triejoin_iter
             .into_iter()
             .map(|v| v.into_iter().map(|x| *x).collect::<Vec<_>>())
@@ -308,7 +305,6 @@ mod tests {
 
     #[test]
     fn more_complicated() {
-        return;
         let r = TrieBuilder::<i32>::new(2)
             .add_tuples(vec![vec![7, 4]])
             .build();
