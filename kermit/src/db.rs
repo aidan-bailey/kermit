@@ -50,16 +50,16 @@ where
         self.relations.insert(name.to_owned(), relation);
     }
 
-    pub fn add_tuple(&mut self, relation_name: &String, tuple: Vec<VT>) {
+    pub fn add_tuple(&mut self, relation_name: &str, tuple: Vec<VT>) {
         let keys = self.store.add_all(tuple);
         self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
 
-    pub fn add_keys(&mut self, relation_name: &String, keys: Vec<KT>) {
+    pub fn add_keys(&mut self, relation_name: &str, keys: Vec<KT>) {
         self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
 
-    pub fn add_keys_batch(&mut self, relation_name: &String, keys: Vec<Vec<KT>>) {
+    pub fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<KT>>) {
         self.relations
             .get_mut(relation_name)
             .unwrap()
@@ -123,13 +123,11 @@ mod tests {
             TrieBuilder<_>,
         > = Database::new("test".to_string(), NaiveStore::<AnyValType, _>::default());
 
-        let first_name = "first".to_string();
-        db.add_relation(&first_name, 1);
-        db.add_keys_batch(&"first".to_string(), vec![vec![1_u64], vec![2], vec![3]]);
+        db.add_relation("first", 1);
+        db.add_keys_batch("first", vec![vec![1_u64], vec![2], vec![3]]);
 
-        let second_name = "second".to_string();
-        db.add_relation(&second_name, 1);
-        db.add_keys_batch(&second_name, vec![vec![1_u64], vec![2], vec![3]]);
+        db.add_relation("second", 1);
+        db.add_keys_batch("second", vec![vec![1_u64], vec![2], vec![3]]);
 
         let _res = db.join::<LeapfrogTriejoin>(
             vec!["first".to_string(), "second".to_string()],
