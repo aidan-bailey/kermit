@@ -29,7 +29,7 @@ where
     KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq + Ord,
     KVST: KeyValStore<KT, VT>,
     VT: Hash,
-    R: Relation<KT> + Iterable<'a, KT>,
+    R: Relation<KT> + Iterable<KT>,
     RB: RelationBuilder<KT, R>,
 {
     pub fn new(name: String, store: KVST) -> Self {
