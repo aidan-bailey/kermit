@@ -24,7 +24,7 @@ where
     phantom_rb: std::marker::PhantomData<RB>,
 }
 
-impl<'a, KT, VT, KVST, R, RB> Database<KT, VT, KVST, R, RB>
+impl<KT, VT, KVST, R, RB> Database<KT, VT, KVST, R, RB>
 where
     KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq + Ord,
     KVST: KeyValStore<KT, VT>,
