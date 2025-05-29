@@ -254,7 +254,7 @@ pub struct LeapfrogTriejoin {}
 impl<'a, KT, ITB> JoinAlgo<'a, KT, ITB> for LeapfrogTriejoin
 where
     KT: Ord + Clone + 'a,
-    ITB: TrieIterable<'a, KT>,
+    ITB: TrieIterable<KT>,
 {
     fn join(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&'a ITB>,
