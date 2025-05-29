@@ -67,10 +67,10 @@ where
     }
 
     pub fn join<JA>(
-        &'a self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
+        &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     ) -> R
     where
-        JA: JoinAlgo<'a, KT, R>,
+        JA: JoinAlgo<KT, R>,
     {
         let iterables = relations
             .iter()
