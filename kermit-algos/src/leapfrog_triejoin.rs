@@ -251,7 +251,7 @@ where
 
 pub struct LeapfrogTriejoin {}
 
-impl<'a, KT, ITB> JoinAlgo<KT, ITB> for LeapfrogTriejoin
+impl<KT, ITB> JoinAlgo<KT, ITB> for LeapfrogTriejoin
 where
     KT: Ord + Clone,
     ITB: TrieIterable<KT>,
