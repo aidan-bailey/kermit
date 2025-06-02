@@ -1,15 +1,11 @@
 use {
     crate::db::Database,
     kermit_algos::join_algo::JoinAlgo,
-    kermit_ds::{
-        relation::Relation,
-        relation_builder::RelationBuilder,
-    },
+    kermit_ds::{relation::Relation, relation_builder::RelationBuilder},
     kermit_iters::trie::Iterable,
     kermit_kvs::keyvalstore::KeyValStore,
     std::{cmp::PartialOrd, fmt::Debug, hash::Hash, str::FromStr},
 };
-
 
 pub fn compute_join<KT, R, RB, JA>(
     arity: usize, input: Vec<Vec<Vec<KT>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
