@@ -1,10 +1,8 @@
 use {
-    crate::{
-        ds::{relation::Relation, relation_builder::RelationBuilder},
-        kvs::keyvalstore::KeyValStore,
-    },
     kermit_algos::join_algo::JoinAlgo,
+    kermit_ds::{relation::Relation, relation_builder::RelationBuilder},
     kermit_iters::trie::Iterable,
+    kermit_kvs::keyvalstore::KeyValStore,
     std::{collections::HashMap, fmt::Debug, hash::Hash, str::FromStr},
 };
 
@@ -87,11 +85,9 @@ mod tests {
 
     use {
         super::*,
-        crate::{
-            ds::relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
-            kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
-        },
         kermit_algos::leapfrog_triejoin::LeapfrogTriejoin,
+        kermit_ds::relation_trie::{trie::RelationTrie, trie_builder::TrieBuilder},
+        kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
     };
 
     #[test]
