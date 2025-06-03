@@ -1,6 +1,8 @@
+use crate::key_type::KeyType;
+
 pub trait Relation<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     fn cardinality(&self) -> usize;
     fn insert(&mut self, tuple: Vec<KT>) -> bool;

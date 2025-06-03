@@ -1,15 +1,15 @@
 use {
-    crate::relation_trie::{
+    crate::{key_type::KeyType, relation_trie::{
         node::{Node, TrieFields},
         trie::RelationTrie,
-    },
+    }},
     kermit_iters::{
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},
     },
 };
 
-pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
+pub struct TrieIter<'a, KT: KeyType> {
     /// Current Node's index amongst its siblings.
     pos: usize,
     /// Trie that is being iterated.
@@ -21,7 +21,7 @@ pub struct TrieIter<'a, KT: PartialOrd + PartialEq + Clone> {
     stack: Vec<(&'a Node<KT>, usize)>,
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
+impl<'a, KT: KeyType> TrieIter<'a, KT> {
     /// Construct a new Trie iterator.
     pub fn new(trie: &'a RelationTrie<KT>) -> Self {
         TrieIter {
@@ -46,7 +46,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> LinearIterator<'a, KT> for TrieIter<'a, KT> {
+impl<'a, KT: KeyType> LinearIterator<'a, KT> for TrieIter<'a, KT> {
     fn key(&self) -> Option<&'a KT> {
         if self.at_end() {
             None
@@ -114,7 +114,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> LinearIterator<'a, KT> for TrieIter
     }
 }
 
-impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<'a, KT> for TrieIter<'a, KT> {
+impl<'a, KT: KeyType> TrieIterator<'a, KT> for TrieIter<'a, KT> {
     fn open(&mut self) -> Option<&'a KT> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
@@ -148,7 +148,7 @@ impl<'a, KT: PartialOrd + PartialEq + Clone> TrieIterator<'a, KT> for TrieIter<'
 
 impl<KT> TrieIterable<KT> for RelationTrie<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     fn trie_iter(&self) -> impl TrieIterator<'_, KT> { TrieIter::new(self) }
 }

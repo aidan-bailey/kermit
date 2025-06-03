@@ -1,12 +1,12 @@
 use {
-    crate::relation::Relation,
+    crate::{key_type::KeyType, relation::Relation},
     csv::Error,
     std::{fmt::Debug, fs::File, path::Path, str::FromStr},
 };
 
 pub trait RelationBuilder<KT, R>
 where
-    KT: PartialOrd + PartialEq + Clone + FromStr + Debug,
+    KT: KeyType,
     R: Relation<KT>,
 {
     fn new(cardinality: usize) -> Self;

@@ -1,14 +1,14 @@
 use {
-    crate::{relation_builder::RelationBuilder, relation_trie::trie::RelationTrie},
+    crate::{key_type::KeyType, relation_builder::RelationBuilder, relation_trie::trie::RelationTrie},
     std::{fmt::Debug, str::FromStr},
 };
 
-pub struct TrieBuilder<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> {
+pub struct TrieBuilder<KT: KeyType> {
     cardinality: usize,
     tuples: Vec<Vec<KT>>,
 }
 
-impl<KT: PartialOrd + PartialEq + Clone + FromStr + Debug> RelationBuilder<KT, RelationTrie<KT>>
+impl<KT: KeyType> RelationBuilder<KT, RelationTrie<KT>>
     for TrieBuilder<KT>
 {
     fn new(cardinality: usize) -> Self {
