@@ -1,15 +1,13 @@
 use kermit::{
     algos::LeapfrogTriejoin,
     compute_db_join, compute_join,
-    ds::{RelationTrie, TrieBuilder},
+    ds::TrieBuilder,
     kvs::{AnyValType, NaiveStore},
 };
 
 #[test]
 fn test_simple_join() {
-    type KT = u64; // Key Type
-    type R = RelationTrie<KT>;
-    type RB = TrieBuilder<KT>;
+    type RB = TrieBuilder<u64>;
     type JA = LeapfrogTriejoin;
 
     let arity = 1;
@@ -18,20 +16,13 @@ fn test_simple_join() {
     let inputs = vec![inputa, inputb];
     let variables = vec![0];
     let rel_variables = vec![vec![0], vec![0]];
-    compute_join::<R, RB, JA>(arity, inputs, variables, rel_variables);
+    compute_join::<RB, JA>(arity, inputs, variables, rel_variables);
 }
 
 #[test]
 fn test_db_creation() {
-    compute_db_join::<
-        AnyValType,
-        NaiveStore<_, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>,
-        RelationTrie<u64>,
-        TrieBuilder<_>,
-        LeapfrogTriejoin,
-    >(vec![vec![1_u64], vec![2], vec![3]], vec![
-        vec![1_u64],
-        vec![2],
-        vec![3],
-    ]);
+    compute_db_join::<AnyValType, NaiveStore<_, _>, TrieBuilder<u64>, LeapfrogTriejoin>(
+        vec![vec![1_u64], vec![2], vec![3]],
+        vec![vec![1_u64], vec![2], vec![3]],
+    );
 }

@@ -7,14 +7,14 @@ use {
     std::hash::Hash,
 };
 
-pub fn compute_join<R, RB, JA>(
-    arity: usize, input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>,
+pub fn compute_join<RB, JA>(
+    arity: usize, input: Vec<Vec<Vec<<RB::Output as Relation>::KT>>>, variables: Vec<usize>,
     rel_variables: Vec<Vec<usize>>,
-) -> Vec<Vec<R::KT>>
+) -> Vec<Vec<<RB::Output as Relation>::KT>>
 where
-    R: Relation + Iterable<R::KT>,
-    RB: RelationBuilder<R>,
-    JA: JoinAlgo<R::KT, R>,
+    RB::Output: Relation + Iterable<<RB::Output as Relation>::KT>,
+    RB: RelationBuilder,
+    JA: JoinAlgo<<RB::Output as Relation>::KT, RB::Output>,
 {
     let relations: Vec<_> = input
         .into_iter()
@@ -24,17 +24,17 @@ where
     JA::join(variables, rel_variables, iterables)
 }
 
-pub fn compute_db_join<VT, KVST, R, RB, JA>(
-    input1: Vec<Vec<R::KT>>, input2: Vec<Vec<R::KT>>,
-) -> Database<VT, KVST, R, RB>
+pub fn compute_db_join<VT, KVST, RB, JA>(
+    input1: Vec<Vec<<RB::Output as Relation>::KT>>, input2: Vec<Vec<<RB::Output as Relation>::KT>>,
+) -> Database<VT, KVST, RB>
 where
-    KVST: KeyValStore<R::KT, VT> + Default,
+    KVST: KeyValStore<<RB::Output as Relation>::KT, VT> + Default,
     VT: Hash,
-    R: Relation + Iterable<R::KT>,
-    RB: RelationBuilder<R>,
-    JA: JoinAlgo<R::KT, R>,
+    RB::Output: Relation + Iterable<<RB::Output as Relation>::KT>,
+    RB: RelationBuilder,
+    JA: JoinAlgo<<RB::Output as Relation>::KT, RB::Output>,
 {
-    let mut db = Database::<VT, KVST, R, RB>::new("test_db".to_string(), KVST::default());
+    let mut db = Database::<VT, KVST, RB>::new("test_db".to_string(), KVST::default());
 
     db.add_relation("first", 1);
     db.add_keys_batch("first", input1);

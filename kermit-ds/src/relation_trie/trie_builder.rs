@@ -1,13 +1,15 @@
 use crate::{
-        key_type::KeyType, relation_builder::RelationBuilder, relation_trie::trie::RelationTrie,
-    };
+    key_type::KeyType, relation_builder::RelationBuilder, relation_trie::trie::RelationTrie,
+};
 
 pub struct TrieBuilder<KT: KeyType> {
     cardinality: usize,
     tuples: Vec<Vec<KT>>,
 }
 
-impl<KT: KeyType> RelationBuilder<RelationTrie<KT>> for TrieBuilder<KT> {
+impl<KT: KeyType> RelationBuilder for TrieBuilder<KT> {
+    type Output = RelationTrie<KT>;
+
     fn new(cardinality: usize) -> Self {
         TrieBuilder {
             cardinality,
@@ -15,16 +17,14 @@ impl<KT: KeyType> RelationBuilder<RelationTrie<KT>> for TrieBuilder<KT> {
         }
     }
 
-    fn build(self) -> RelationTrie<KT> {
-        RelationTrie::from_mut_tuples(self.cardinality, self.tuples)
-    }
+    fn build(self) -> Self::Output { RelationTrie::from_mut_tuples(self.cardinality, self.tuples) }
 
-    fn add_tuple(mut self, tuple: Vec<KT>) -> TrieBuilder<KT> {
+    fn add_tuple(mut self, tuple: Vec<KT>) -> Self {
         self.tuples.push(tuple);
         self
     }
 
-    fn add_tuples(mut self, tuples: Vec<Vec<KT>>) -> TrieBuilder<KT> {
+    fn add_tuples(mut self, tuples: Vec<Vec<KT>>) -> Self {
         self.tuples.extend(tuples);
         self
     }
