@@ -15,7 +15,7 @@ fn test_simple_join() {
     let inputb = vec![vec![1u64], vec![2u64], vec![3u64]];
     let inputs = vec![inputa, inputb];
     let variables = vec![0];
-    let rel_variables = vec![vec![0], vec![0]];
+    let rel_variables = vec![vec![0]];
     compute_join::<RB, JA>(arity, inputs, variables, rel_variables);
 }
 
