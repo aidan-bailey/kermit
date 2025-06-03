@@ -83,7 +83,7 @@ mod tests {
     use {
         super::*,
         kermit_algos::leapfrog_triejoin::LeapfrogTriejoin,
-        kermit_ds::relation_trie::{trie_builder::TrieBuilder},
+        kermit_ds::relation_trie::trie_builder::TrieBuilder,
         kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
     };
 
