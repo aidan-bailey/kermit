@@ -1,35 +1,29 @@
 use {
-    crate::{key_type::KeyType, relation::Relation},
+    crate::relation::Relation,
     csv::Error,
-    std::{fmt::Debug, fs::File, path::Path, str::FromStr},
+    std::{fs::File, path::Path},
 };
 
-pub trait RelationBuilder<KT, R>
-where
-    KT: KeyType,
-    R: Relation<KT>,
-{
+pub trait RelationBuilder<R: Relation> {
     fn new(cardinality: usize) -> Self;
     fn build(self) -> R;
-    fn add_tuple(self, tuple: Vec<KT>) -> Self;
-    fn add_tuples(self, tuple: Vec<Vec<KT>>) -> Self;
+    fn add_tuple(self, tuple: Vec<R::KT>) -> Self;
+    fn add_tuples(self, tuple: Vec<Vec<R::KT>>) -> Self;
 }
 
-pub trait RelationBuilderFileExt<KT, R>: RelationBuilder<KT, R>
+pub trait RelationBuilderFileExt<R>: RelationBuilder<R>
 where
-    KT: PartialOrd + PartialEq + Clone + FromStr + Debug,
-    R: Relation<KT>,
+    R: Relation,
 {
     fn add_csv<P: AsRef<Path>>(self, filepath: P, delimiter: u8) -> Result<Self, Error>
     where
         Self: Sized;
 }
 
-impl<KT, R, T> RelationBuilderFileExt<KT, R> for T
+impl<R, T> RelationBuilderFileExt<R> for T
 where
-    KT: PartialOrd + PartialEq + Clone + FromStr + Debug,
-    R: Relation<KT>,
-    T: RelationBuilder<KT, R>,
+    R: Relation,
+    T: RelationBuilder<R>,
 {
     fn add_csv<P: AsRef<Path>>(mut self, filepath: P, delimiter: u8) -> Result<Self, Error> {
         let file = File::open(filepath)?;
@@ -44,9 +38,9 @@ where
             .from_reader(file);
         for result in rdr.records() {
             let record = result?;
-            let mut tuple: Vec<KT> = vec![];
+            let mut tuple: Vec<R::KT> = vec![];
             for x in record.iter() {
-                if let Ok(y) = x.to_string().parse::<KT>() {
+                if let Ok(y) = x.to_string().parse::<R::KT>() {
                     tuple.push(y);
                 }
             }

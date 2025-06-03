@@ -1,5 +1,7 @@
 use crate::{
-    key_type::KeyType, relation::Relation, relation_trie::node::{Internal, Node, TrieFields}
+    key_type::KeyType,
+    relation::Relation,
+    relation_trie::node::{Internal, Node, TrieFields},
 };
 
 /// Trie data structure for relations.
@@ -14,10 +16,9 @@ where
     children: Vec<Node<KT>>,
 }
 
-impl<KT> Relation<KT> for RelationTrie<KT>
-where
-    KT: KeyType,
-{
+impl<KT: KeyType> Relation for RelationTrie<KT> {
+    type KT = KT;
+
     fn cardinality(&self) -> usize { self.cardinality }
 
     fn insert(&mut self, tuple: Vec<KT>) -> bool {

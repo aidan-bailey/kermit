@@ -1,6 +1,7 @@
-use std::ops::{Index, IndexMut};
-
-use crate::key_type::KeyType;
+use {
+    crate::key_type::KeyType,
+    std::ops::{Index, IndexMut},
+};
 
 /// Trie node
 #[derive(Clone, Debug)]

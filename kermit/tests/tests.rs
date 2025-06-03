@@ -18,16 +18,15 @@ fn test_simple_join() {
     let inputs = vec![inputa, inputb];
     let variables = vec![0];
     let rel_variables = vec![vec![0], vec![0]];
-    compute_join::<KT, R, RB, JA>(arity, inputs, variables, rel_variables);
+    compute_join::<R, RB, JA>(arity, inputs, variables, rel_variables);
 }
 
 #[test]
 fn test_db_creation() {
     compute_db_join::<
-        u64,
         AnyValType,
         NaiveStore<_, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>,
-        RelationTrie<_>,
+        RelationTrie<u64>,
         TrieBuilder<_>,
         LeapfrogTriejoin,
     >(vec![vec![1_u64], vec![2], vec![3]], vec![

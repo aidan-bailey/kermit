@@ -4,17 +4,17 @@ use {
     kermit_ds::{relation::Relation, relation_builder::RelationBuilder},
     kermit_iters::trie::Iterable,
     kermit_kvs::keyvalstore::KeyValStore,
-    std::{cmp::PartialOrd, fmt::Debug, hash::Hash, str::FromStr},
+    std::hash::Hash,
 };
 
-pub fn compute_join<KT, R, RB, JA>(
-    arity: usize, input: Vec<Vec<Vec<KT>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-) -> Vec<Vec<KT>>
+pub fn compute_join<R, RB, JA>(
+    arity: usize, input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>,
+    rel_variables: Vec<Vec<usize>>,
+) -> Vec<Vec<R::KT>>
 where
-    KT: PartialOrd + std::clone::Clone + Ord + Debug + FromStr,
-    R: Relation<KT> + Iterable<KT>,
-    RB: RelationBuilder<KT, R>,
-    JA: JoinAlgo<KT, R>,
+    R: Relation + Iterable<R::KT>,
+    RB: RelationBuilder<R>,
+    JA: JoinAlgo<R::KT, R>,
 {
     let relations: Vec<_> = input
         .into_iter()
@@ -24,18 +24,17 @@ where
     JA::join(variables, rel_variables, iterables)
 }
 
-pub fn compute_db_join<KT, VT, KVST, R, RB, JA>(
-    input1: Vec<Vec<KT>>, input2: Vec<Vec<KT>>,
-) -> Database<KT, VT, KVST, R, RB>
+pub fn compute_db_join<VT, KVST, R, RB, JA>(
+    input1: Vec<Vec<R::KT>>, input2: Vec<Vec<R::KT>>,
+) -> Database<VT, KVST, R, RB>
 where
-    KT: Debug + FromStr + PartialOrd + PartialEq + Clone + Hash + std::cmp::Eq + Ord,
-    KVST: KeyValStore<KT, VT> + Default,
+    KVST: KeyValStore<R::KT, VT> + Default,
     VT: Hash,
-    R: Relation<KT> + Iterable<KT>,
-    RB: RelationBuilder<KT, R>,
-    JA: JoinAlgo<KT, R>,
+    R: Relation + Iterable<R::KT>,
+    RB: RelationBuilder<R>,
+    JA: JoinAlgo<R::KT, R>,
 {
-    let mut db = Database::<KT, VT, KVST, R, RB>::new("test_db".to_string(), KVST::default());
+    let mut db = Database::<VT, KVST, R, RB>::new("test_db".to_string(), KVST::default());
 
     db.add_relation("first", 1);
     db.add_keys_batch("first", input1);

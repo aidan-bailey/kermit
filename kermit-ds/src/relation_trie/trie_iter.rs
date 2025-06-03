@@ -1,8 +1,11 @@
 use {
-    crate::{key_type::KeyType, relation_trie::{
-        node::{Node, TrieFields},
-        trie::RelationTrie,
-    }},
+    crate::{
+        key_type::KeyType,
+        relation_trie::{
+            node::{Node, TrieFields},
+            trie::RelationTrie,
+        },
+    },
     kermit_iters::{
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},

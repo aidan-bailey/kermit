@@ -1,16 +1,13 @@
-use {
-    crate::{key_type::KeyType, relation_builder::RelationBuilder, relation_trie::trie::RelationTrie},
-    std::{fmt::Debug, str::FromStr},
-};
+use crate::{
+        key_type::KeyType, relation_builder::RelationBuilder, relation_trie::trie::RelationTrie,
+    };
 
 pub struct TrieBuilder<KT: KeyType> {
     cardinality: usize,
     tuples: Vec<Vec<KT>>,
 }
 
-impl<KT: KeyType> RelationBuilder<KT, RelationTrie<KT>>
-    for TrieBuilder<KT>
-{
+impl<KT: KeyType> RelationBuilder<RelationTrie<KT>> for TrieBuilder<KT> {
     fn new(cardinality: usize) -> Self {
         TrieBuilder {
             cardinality,
