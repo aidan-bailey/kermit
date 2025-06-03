@@ -1,4 +1,5 @@
 use crate::{
+    key_type::KeyType,
     relation::Relation,
     relation_trie::node::{Internal, Node, TrieFields},
 };
@@ -7,7 +8,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct RelationTrie<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     /// Cardinality of the trie.
     cardinality: usize,
@@ -15,10 +16,9 @@ where
     children: Vec<Node<KT>>,
 }
 
-impl<KT> Relation<KT> for RelationTrie<KT>
-where
-    KT: PartialOrd + PartialEq + Clone,
-{
+impl<KT: KeyType> Relation for RelationTrie<KT> {
+    type KT = KT;
+
     fn cardinality(&self) -> usize { self.cardinality }
 
     fn insert(&mut self, tuple: Vec<KT>) -> bool {
@@ -41,7 +41,7 @@ where
 /// Trie implementation.
 impl<KT> RelationTrie<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     /// Construct an empty Trie.
     ///
@@ -93,10 +93,10 @@ where
     }
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> TrieFields<KT> for RelationTrie<KT> {
+impl<KT: KeyType> TrieFields<KT> for RelationTrie<KT> {
     fn children(&self) -> &Vec<Node<KT>> { &self.children }
 }
 
-impl<KT: PartialOrd + PartialEq + Clone> Internal<KT> for RelationTrie<KT> {
+impl<KT: KeyType> Internal<KT> for RelationTrie<KT> {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>> { &mut self.children }
 }

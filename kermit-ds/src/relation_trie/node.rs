@@ -1,10 +1,13 @@
-use std::ops::{Index, IndexMut};
+use {
+    crate::key_type::KeyType,
+    std::ops::{Index, IndexMut},
+};
 
 /// Trie node
 #[derive(Clone, Debug)]
 pub struct Node<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     /// Key of the tuple value.
     key: KT,
@@ -14,7 +17,7 @@ where
 
 impl<KT> Index<usize> for Node<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     type Output = Node<KT>;
 
@@ -23,14 +26,14 @@ where
 
 impl<KT> IndexMut<usize> for Node<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children_mut()[index] }
 }
 
 impl<KT> Node<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     /// Construct a Node with a tuple-value key
     fn new(key: KT) -> Node<KT> {
@@ -46,7 +49,7 @@ where
 
 pub trait TrieFields<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     fn children(&self) -> &Vec<Node<KT>>;
     /// Returns true iff the Node has no children
@@ -63,14 +66,14 @@ where
 
 impl<KT> TrieFields<KT> for Node<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     fn children(&self) -> &Vec<Node<KT>> { &self.children }
 }
 
 pub(crate) trait Internal<KT>: TrieFields<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
 
@@ -114,7 +117,7 @@ where
 
 impl<KT> Internal<KT> for Node<KT>
 where
-    KT: PartialOrd + PartialEq + Clone,
+    KT: KeyType,
 {
     fn children_mut(&mut self) -> &mut Vec<Node<KT>> { &mut self.children }
 }
