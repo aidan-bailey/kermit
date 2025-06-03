@@ -1,10 +1,15 @@
+//! This module provides a trait for building relations, including methods for adding tuples and reading from CSV files.
+
 use {
     crate::relation::Relation,
     csv::Error,
     std::{fs::File, path::Path},
 };
 
+/// Trait for building relations.
 pub trait RelationBuilder {
+
+    /// The type of relation being built.
     type Output: Relation;
     fn new(cardinality: usize) -> Self;
     fn build(self) -> Self::Output;
