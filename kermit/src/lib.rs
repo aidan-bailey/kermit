@@ -7,7 +7,7 @@ pub mod kvs {
 }
 
 pub mod ds {
-    pub use kermit_ds::relation_trie::{relation_trie::RelationTrie, trie_builder::TrieBuilder};
+    pub use kermit_ds::relation_trie::{relation_trie::RelationTrie, relation_trie_builder::RelationTrieBuilder};
 }
 
 pub mod db;

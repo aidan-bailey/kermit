@@ -2,16 +2,16 @@ use crate::{
     key_type::KeyType, relation_builder::RelationBuilder, relation_trie::relation_trie::RelationTrie,
 };
 
-pub struct TrieBuilder<KT: KeyType> {
+pub struct RelationTrieBuilder<KT: KeyType> {
     cardinality: usize,
     tuples: Vec<Vec<KT>>,
 }
 
-impl<KT: KeyType> RelationBuilder for TrieBuilder<KT> {
+impl<KT: KeyType> RelationBuilder for RelationTrieBuilder<KT> {
     type Output = RelationTrie<KT>;
 
     fn new(cardinality: usize) -> Self {
-        TrieBuilder {
+        RelationTrieBuilder {
             cardinality,
             tuples: vec![],
         }

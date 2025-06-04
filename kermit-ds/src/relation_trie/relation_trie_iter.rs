@@ -12,7 +12,7 @@ use {
     },
 };
 
-pub struct TrieIter<'a, KT: KeyType> {
+pub struct RelationTrieIter<'a, KT: KeyType> {
     /// Current Node's index amongst its siblings.
     pos: usize,
     /// Trie that is being iterated.
@@ -24,10 +24,10 @@ pub struct TrieIter<'a, KT: KeyType> {
     stack: Vec<(&'a TrieNode<KT>, usize)>,
 }
 
-impl<'a, KT: KeyType> TrieIter<'a, KT> {
+impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
     /// Construct a new Trie iterator.
     pub fn new(trie: &'a RelationTrie<KT>) -> Self {
-        TrieIter {
+        RelationTrieIter {
             pos: 0,
             trie,
             stack: Vec::new(),
@@ -49,7 +49,7 @@ impl<'a, KT: KeyType> TrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: KeyType> LinearIterator<'a, KT> for TrieIter<'a, KT> {
+impl<'a, KT: KeyType> LinearIterator<'a, KT> for RelationTrieIter<'a, KT> {
     fn key(&self) -> Option<&'a KT> {
         if self.at_end() {
             None
@@ -117,7 +117,7 @@ impl<'a, KT: KeyType> LinearIterator<'a, KT> for TrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: KeyType> TrieIterator<'a, KT> for TrieIter<'a, KT> {
+impl<'a, KT: KeyType> TrieIterator<'a, KT> for RelationTrieIter<'a, KT> {
     fn open(&mut self) -> Option<&'a KT> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
@@ -153,5 +153,5 @@ impl<KT> TrieIterable<KT> for RelationTrie<KT>
 where
     KT: KeyType,
 {
-    fn trie_iter(&self) -> impl TrieIterator<'_, KT> { TrieIter::new(self) }
+    fn trie_iter(&self) -> impl TrieIterator<'_, KT> { RelationTrieIter::new(self) }
 }
