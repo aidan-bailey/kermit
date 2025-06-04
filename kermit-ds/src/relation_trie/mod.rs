@@ -1,7 +1,7 @@
 //! This module provides a [trie](https://en.wikipedia.org/wiki/Trie)-based implementation of a relation.
 
 pub mod relation_trie;
-pub(crate) mod trie;
+pub(crate) mod trie_node;
 pub mod relation_trie_builder;
 pub mod relation_trie_iter;
 
@@ -12,7 +12,7 @@ mod tests {
             relation::Relation,
             relation_builder::RelationBuilder,
             relation_trie::{
-                relation_trie::RelationTrie, trie::TrieFields, relation_trie_builder::RelationTrieBuilder,
+                relation_trie::RelationTrie, trie_node::TrieFields, relation_trie_builder::RelationTrieBuilder,
             },
         },
         kermit_iters::{

@@ -1,7 +1,7 @@
 use crate::{
     key_type::KeyType,
     relation::Relation,
-    relation_trie::trie::{Internal, TrieNode, TrieFields},
+    relation_trie::trie_node::{Internal, TrieNode, TrieFields},
 };
 
 /// Trie data structure for relations.
