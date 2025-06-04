@@ -1,5 +1,5 @@
 use crate::{
-    key_type::KeyType, relation_builder::RelationBuilder, relation_trie::trie::RelationTrie,
+    key_type::KeyType, relation_builder::RelationBuilder, relation_trie::relation_trie::RelationTrie,
 };
 
 pub struct TrieBuilder<KT: KeyType> {

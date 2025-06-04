@@ -3,7 +3,7 @@ use {
         key_type::KeyType,
         relation_trie::{
             node::{Node, TrieFields},
-            trie::RelationTrie,
+            relation_trie::RelationTrie,
         },
     },
     kermit_iters::{
