@@ -1,10 +1,9 @@
 //! This module provides a [trie](https://en.wikipedia.org/wiki/Trie)-based implementation of a relation.
 
-pub mod trie;
 pub mod relation_trie;
-pub mod trie_builder;
-pub mod trie_iter;
-pub mod variable_type;
+pub(crate) mod trie;
+pub mod relation_trie_builder;
+pub mod relation_trie_iter;
 
 #[cfg(test)]
 mod tests {
@@ -12,7 +11,9 @@ mod tests {
         crate::{
             relation::Relation,
             relation_builder::RelationBuilder,
-            relation_trie::{trie::TrieFields, relation_trie::RelationTrie, trie_builder::TrieBuilder},
+            relation_trie::{
+                relation_trie::RelationTrie, trie::TrieFields, relation_trie_builder::RelationTrieBuilder,
+            },
         },
         kermit_iters::{
             linear::LinearIterator,
@@ -70,7 +71,7 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = TrieBuilder::<u64>::new(3)
+        let trie = RelationTrieBuilder::<u64>::new(3)
             .add_tuple(vec![1, 3, 4])
             .add_tuple(vec![1, 3, 5])
             .add_tuple(vec![1, 4, 6])

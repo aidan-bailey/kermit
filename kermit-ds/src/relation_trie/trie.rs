@@ -5,7 +5,7 @@ use {
 
 /// Trie node
 #[derive(Clone, Debug)]
-pub struct TrieNode<KT>
+pub(crate) struct TrieNode<KT>
 where
     KT: KeyType,
 {
@@ -47,7 +47,7 @@ where
     pub fn key(&self) -> &KT { &self.key }
 }
 
-pub trait TrieFields<KT>
+pub(crate) trait TrieFields<KT>
 where
     KT: KeyType,
 {
@@ -121,6 +121,10 @@ where
 {
     fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
 }
+
+/////////////////////
+// === TESTING === //
+/////////////////////
 
 #[cfg(test)]
 mod tests {
