@@ -1,7 +1,10 @@
 use crate::{
     key_type::KeyType,
     relation::Relation,
-    relation_trie::trie_node::{Internal, TrieNode, TrieFields},
+    relation_trie::{
+        trie_node::TrieNode,
+        trie_traits::{Internal, TrieFields},
+    },
 };
 
 /// Trie data structure for relations.
@@ -93,10 +96,12 @@ where
     }
 }
 
-impl<KT: KeyType> TrieFields<KT> for RelationTrie<KT> {
-    fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
-}
+impl<KT: KeyType> TrieFields for RelationTrie<KT> {
+    type NodeType = TrieNode<KT>;
 
-impl<KT: KeyType> Internal<KT> for RelationTrie<KT> {
+    fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
+
     fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
 }
+
+impl<KT: KeyType> Internal for RelationTrie<KT> {}
