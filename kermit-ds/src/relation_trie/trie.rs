@@ -5,39 +5,39 @@ use {
 
 /// Trie node
 #[derive(Clone, Debug)]
-pub struct Node<KT>
+pub struct TrieNode<KT>
 where
     KT: KeyType,
 {
     /// Key of the tuple value.
     key: KT,
     /// Children of the trie node.
-    children: Vec<Node<KT>>,
+    children: Vec<TrieNode<KT>>,
 }
 
-impl<KT> Index<usize> for Node<KT>
+impl<KT> Index<usize> for TrieNode<KT>
 where
     KT: KeyType,
 {
-    type Output = Node<KT>;
+    type Output = TrieNode<KT>;
 
     fn index(&self, index: usize) -> &Self::Output { &self.children()[index] }
 }
 
-impl<KT> IndexMut<usize> for Node<KT>
+impl<KT> IndexMut<usize> for TrieNode<KT>
 where
     KT: KeyType,
 {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children_mut()[index] }
 }
 
-impl<KT> Node<KT>
+impl<KT> TrieNode<KT>
 where
     KT: KeyType,
 {
     /// Construct a Node with a tuple-value key
-    fn new(key: KT) -> Node<KT> {
-        Node {
+    fn new(key: KT) -> TrieNode<KT> {
+        TrieNode {
             key,
             children: vec![],
         }
@@ -51,7 +51,7 @@ pub trait TrieFields<KT>
 where
     KT: KeyType,
 {
-    fn children(&self) -> &Vec<Node<KT>>;
+    fn children(&self) -> &Vec<TrieNode<KT>>;
     /// Returns true iff the Node has no children
     fn is_empty(&self) -> bool { self.children().is_empty() }
     fn size(&self) -> usize { self.children().len() }
@@ -64,18 +64,18 @@ where
     }
 }
 
-impl<KT> TrieFields<KT> for Node<KT>
+impl<KT> TrieFields<KT> for TrieNode<KT>
 where
     KT: KeyType,
 {
-    fn children(&self) -> &Vec<Node<KT>> { &self.children }
+    fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
 }
 
 pub(crate) trait Internal<KT>: TrieFields<KT>
 where
     KT: KeyType,
 {
-    fn children_mut(&mut self) -> &mut Vec<Node<KT>>;
+    fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>>;
 
     fn insert_internal(&mut self, tuple: Vec<KT>) -> bool {
         if tuple.is_empty() {
@@ -86,7 +86,7 @@ where
 
         for key in tuple.into_iter() {
             if current_children.is_empty() {
-                current_children.push(Node::new(key));
+                current_children.push(TrieNode::new(key));
                 current_children = current_children[0].children_mut();
             } else {
                 for i in (0..current_children.len()).rev() {
@@ -95,16 +95,16 @@ where
                         break;
                     } else if &key > current_children[i].key() {
                         if i == current_children.len() - 1 {
-                            current_children.push(Node::new(key));
+                            current_children.push(TrieNode::new(key));
                             current_children = current_children[i + 1].children_mut();
                             break;
                         } else {
-                            current_children.insert(i, Node::new(key));
+                            current_children.insert(i, TrieNode::new(key));
                             current_children = current_children[i].children_mut();
                             break;
                         }
                     } else if i == 0 {
-                        current_children.insert(0, Node::new(key));
+                        current_children.insert(0, TrieNode::new(key));
                         current_children = current_children[0].children_mut();
                         break;
                     }
@@ -115,11 +115,11 @@ where
     }
 }
 
-impl<KT> Internal<KT> for Node<KT>
+impl<KT> Internal<KT> for TrieNode<KT>
 where
     KT: KeyType,
 {
-    fn children_mut(&mut self) -> &mut Vec<Node<KT>> { &mut self.children }
+    fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
 }
 
 #[cfg(test)]
@@ -131,15 +131,15 @@ mod tests {
 
     #[test]
     fn node_new() {
-        let node = Node::new(1);
+        let node = TrieNode::new(1);
         assert_eq!(node.key(), &1);
     }
 
     #[test]
     fn node_with_child() {
         let node = {
-            let child = Node::new(2);
-            Node {
+            let child = TrieNode::new(2);
+            TrieNode {
                 key: 1,
                 children: vec![child],
             }
@@ -152,22 +152,22 @@ mod tests {
 
     #[test]
     fn node_size() {
-        let mut node = Node::new(1);
-        node.children_mut().push(Node::new(2));
-        node.children_mut().push(Node::new(3));
+        let mut node = TrieNode::new(1);
+        node.children_mut().push(TrieNode::new(2));
+        node.children_mut().push(TrieNode::new(3));
         assert_eq!(node.size(), 2);
     }
 
     #[test]
     fn node_height() {
-        let mut node = Node::new(1);
-        node.children_mut().push(Node::new(2));
+        let mut node = TrieNode::new(1);
+        node.children_mut().push(TrieNode::new(2));
         assert_eq!(node.height(), 1);
     }
 
     #[test]
     fn node_is_empty() {
-        let node = Node::new(1);
+        let node = TrieNode::new(1);
         assert!(node.is_empty());
     }
 
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn node_insert_linear() {
-        let mut node = Node::new(3);
+        let mut node = TrieNode::new(3);
 
         // Basic
         node.insert_internal(vec![2, 3, 1]);

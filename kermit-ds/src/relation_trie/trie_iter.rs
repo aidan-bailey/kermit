@@ -2,7 +2,7 @@ use {
     crate::{
         key_type::KeyType,
         relation_trie::{
-            trie::{Node, TrieFields},
+            trie::{TrieNode, TrieFields},
             relation_trie::RelationTrie,
         },
     },
@@ -21,7 +21,7 @@ pub struct TrieIter<'a, KT: KeyType> {
     /// The tuples hold the Node and its index amongst its siblings.
     /// If the stack is empty, the cursor points to the root.
     /// If the stack is non-empty, the cursor points to the last element.
-    stack: Vec<(&'a Node<KT>, usize)>,
+    stack: Vec<(&'a TrieNode<KT>, usize)>,
 }
 
 impl<'a, KT: KeyType> TrieIter<'a, KT> {
@@ -38,7 +38,7 @@ impl<'a, KT: KeyType> TrieIter<'a, KT> {
     /// node).
     ///
     /// Returns None if the cursor points to the root.
-    fn siblings(&self) -> Option<&'a Vec<Node<KT>>> {
+    fn siblings(&self) -> Option<&'a Vec<TrieNode<KT>>> {
         if self.stack.is_empty() {
             None
         } else if self.stack.len() == 1 {
