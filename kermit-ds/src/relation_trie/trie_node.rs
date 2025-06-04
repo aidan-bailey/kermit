@@ -5,7 +5,9 @@
 //! visibility) but rather as part of the `RelationTrie` implementation.
 
 use {
-    super::trie_traits::{Internal, Node, TrieFields}, crate::key_type::KeyType, std::ops::{Index, IndexMut}
+    super::trie_traits::{Internal, Node, TrieFields},
+    crate::key_type::KeyType,
+    std::ops::{Index, IndexMut},
 };
 
 /// Trie node
@@ -38,8 +40,7 @@ where
     fn key(&self) -> &KT { &self.key }
 }
 
-impl<KT: KeyType> TrieFields for TrieNode<KT>
-{
+impl<KT: KeyType> TrieFields for TrieNode<KT> {
     type NodeType = TrieNode<KT>;
 
     fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
@@ -47,9 +48,7 @@ impl<KT: KeyType> TrieFields for TrieNode<KT>
     fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
 }
 
-impl<KT: KeyType> Internal for TrieNode<KT>
-{
-}
+impl<KT: KeyType> Internal for TrieNode<KT> {}
 
 // INDEXING
 

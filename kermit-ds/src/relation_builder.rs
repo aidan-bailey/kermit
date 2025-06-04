@@ -27,18 +27,20 @@ pub trait RelationBuilder {
 
 /// Extension trait for `RelationBuilder` to add CSV file reading capabilities.
 pub trait RelationBuilderFileExt: RelationBuilder {
-
     /// Adds tuples from a CSV file to the relation being built.
-    /// 
+    ///
     /// # Note
-    /// * The CSV file should not have headers, and the delimiter can be specified.
-    /// * Each line represents a tuple, and each value in the line should be parsable into `Relation::KT`. 
+    /// * The CSV file should not have headers, and the delimiter can be
+    ///   specified.
+    /// * Each line represents a tuple, and each value in the line should be
+    ///   parsable into `Relation::KT`.
     fn add_csv<P: AsRef<Path>>(self, filepath: P, delimiter: u8) -> Result<Self, Error>
     where
         Self: Sized;
 }
 
-/// Blanket implementation of `RelationBuilderFileExt` for any type that implements `RelationBuilder`.
+/// Blanket implementation of `RelationBuilderFileExt` for any type that
+/// implements `RelationBuilder`.
 impl<T> RelationBuilderFileExt for T
 where
     T: RelationBuilder,
