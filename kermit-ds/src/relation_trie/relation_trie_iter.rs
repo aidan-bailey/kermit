@@ -2,7 +2,7 @@ use {
     crate::{
         key_type::KeyType,
         relation_trie::{
-            trie::{TrieNode, TrieFields},
+            trie_node::{TrieNode, TrieFields},
             relation_trie::RelationTrie,
         },
     },
