@@ -1,11 +1,16 @@
+//! This module implements a node used within a trie.
+//!
+//! # Note
+//! This module is not intended to be used directly (hence its `crate`
+//! visibility) but rather as part of the `RelationTrie` implementation.
+
 use {
-    crate::key_type::KeyType,
-    std::ops::{Index, IndexMut},
+    super::trie_traits::{Internal, Node, TrieFields}, crate::key_type::KeyType, std::ops::{Index, IndexMut}
 };
 
 /// Trie node
 #[derive(Clone, Debug)]
-pub(crate) struct TrieNode<KT>
+pub struct TrieNode<KT>
 where
     KT: KeyType,
 {
@@ -14,6 +19,39 @@ where
     /// Children of the trie node.
     children: Vec<TrieNode<KT>>,
 }
+
+impl<KT> Node for TrieNode<KT>
+where
+    KT: KeyType,
+{
+    type KT = KT;
+
+    /// Construct a Node with a tuple-value key
+    fn new(key: KT) -> TrieNode<KT> {
+        TrieNode {
+            key,
+            children: vec![],
+        }
+    }
+
+    /// Returns the Node's key
+    fn key(&self) -> &KT { &self.key }
+}
+
+impl<KT: KeyType> TrieFields for TrieNode<KT>
+{
+    type NodeType = TrieNode<KT>;
+
+    fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
+
+    fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
+}
+
+impl<KT: KeyType> Internal for TrieNode<KT>
+{
+}
+
+// INDEXING
 
 impl<KT> Index<usize> for TrieNode<KT>
 where
@@ -29,97 +67,6 @@ where
     KT: KeyType,
 {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children_mut()[index] }
-}
-
-impl<KT> TrieNode<KT>
-where
-    KT: KeyType,
-{
-    /// Construct a Node with a tuple-value key
-    fn new(key: KT) -> TrieNode<KT> {
-        TrieNode {
-            key,
-            children: vec![],
-        }
-    }
-
-    /// Returns the Node's key
-    pub fn key(&self) -> &KT { &self.key }
-}
-
-pub(crate) trait TrieFields<KT>
-where
-    KT: KeyType,
-{
-    fn children(&self) -> &Vec<TrieNode<KT>>;
-    /// Returns true iff the Node has no children
-    fn is_empty(&self) -> bool { self.children().is_empty() }
-    fn size(&self) -> usize { self.children().len() }
-    fn height(&self) -> usize {
-        if let Some(child) = self.children().first() {
-            1 + child.height()
-        } else {
-            0
-        }
-    }
-}
-
-impl<KT> TrieFields<KT> for TrieNode<KT>
-where
-    KT: KeyType,
-{
-    fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
-}
-
-pub(crate) trait Internal<KT>: TrieFields<KT>
-where
-    KT: KeyType,
-{
-    fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>>;
-
-    fn insert_internal(&mut self, tuple: Vec<KT>) -> bool {
-        if tuple.is_empty() {
-            return true;
-        }
-
-        let mut current_children = self.children_mut();
-
-        for key in tuple.into_iter() {
-            if current_children.is_empty() {
-                current_children.push(TrieNode::new(key));
-                current_children = current_children[0].children_mut();
-            } else {
-                for i in (0..current_children.len()).rev() {
-                    if &key == current_children[i].key() {
-                        current_children = current_children[i].children_mut();
-                        break;
-                    } else if &key > current_children[i].key() {
-                        if i == current_children.len() - 1 {
-                            current_children.push(TrieNode::new(key));
-                            current_children = current_children[i + 1].children_mut();
-                            break;
-                        } else {
-                            current_children.insert(i, TrieNode::new(key));
-                            current_children = current_children[i].children_mut();
-                            break;
-                        }
-                    } else if i == 0 {
-                        current_children.insert(0, TrieNode::new(key));
-                        current_children = current_children[0].children_mut();
-                        break;
-                    }
-                }
-            }
-        }
-        true
-    }
-}
-
-impl<KT> Internal<KT> for TrieNode<KT>
-where
-    KT: KeyType,
-{
-    fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
 }
 
 /////////////////////
@@ -176,10 +123,11 @@ mod tests {
     }
 
     // Internal implementation tests
-
     #[test]
     fn node_insert_linear() {
         let mut node = TrieNode::new(3);
+        assert_eq!(node.size(), 0); // Check initial size
+        assert_eq!(node.height(), 0); // Check initial height
 
         // Basic
         node.insert_internal(vec![2, 3, 1]);
