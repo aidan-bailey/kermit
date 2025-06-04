@@ -3,6 +3,9 @@
 
 use std::{fmt::Debug, hash::Hash, str::FromStr};
 
-// TODO: Consider if all these traits are necessary.
+
+/// Trait for key types used in relations.
+/// 
+/// TODO: Consider if all these traits are necessary.
 pub trait KeyType: PartialOrd + PartialEq + Clone + FromStr + Debug + Eq + Hash + Ord {}
 impl<KT> KeyType for KT where KT: PartialOrd + PartialEq + Clone + FromStr + Debug + Eq + Hash + Ord {}

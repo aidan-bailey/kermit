@@ -1,4 +1,5 @@
-//! This module provides a trait for building relations, including methods for adding tuples and reading from CSV files.
+//! This module provides a trait for building relations, including methods for
+//! adding tuples and reading from CSV files.
 
 use {
     crate::relation::Relation,
@@ -8,21 +9,36 @@ use {
 
 /// Trait for building relations.
 pub trait RelationBuilder {
-
     /// The type of relation being built.
     type Output: Relation;
+
+    /// Creates a new relation builder with the specified cardinality.
     fn new(cardinality: usize) -> Self;
+
+    /// Consumes the builder and returns the relation.
     fn build(self) -> Self::Output;
+
+    /// Adds a tuple to the relation being built.
     fn add_tuple(self, tuple: Vec<<Self::Output as Relation>::KT>) -> Self;
+
+    /// Adds multiple tuples to the relation being built.
     fn add_tuples(self, tuple: Vec<Vec<<Self::Output as Relation>::KT>>) -> Self;
 }
 
+/// Extension trait for `RelationBuilder` to add CSV file reading capabilities.
 pub trait RelationBuilderFileExt: RelationBuilder {
+
+    /// Adds tuples from a CSV file to the relation being built.
+    /// 
+    /// # Note
+    /// * The CSV file should not have headers, and the delimiter can be specified.
+    /// * Each line represents a tuple, and each value in the line should be parsable into `Relation::KT`. 
     fn add_csv<P: AsRef<Path>>(self, filepath: P, delimiter: u8) -> Result<Self, Error>
     where
         Self: Sized;
 }
 
+/// Blanket implementation of `RelationBuilderFileExt` for any type that implements `RelationBuilder`.
 impl<T> RelationBuilderFileExt for T
 where
     T: RelationBuilder,

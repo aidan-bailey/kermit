@@ -1,3 +1,5 @@
+//! This module provides a [trie](https://en.wikipedia.org/wiki/Trie)-based implementation of a relation.
+
 pub mod node;
 pub mod trie;
 pub mod trie_builder;
