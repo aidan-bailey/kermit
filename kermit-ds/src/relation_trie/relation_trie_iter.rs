@@ -1,13 +1,13 @@
 use {
-    super::trie_traits::{Node, TrieFields}, crate::{
+    super::trie_traits::{Node, TrieFields},
+    crate::{
         key_type::KeyType,
-        relation_trie::{
-            relation_trie::RelationTrie, trie_node::TrieNode
-        },
-    }, kermit_iters::{
+        relation_trie::{relation_trie::RelationTrie, trie_node::TrieNode},
+    },
+    kermit_iters::{
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},
-    }
+    },
 };
 
 pub struct RelationTrieIter<'a, KT: KeyType> {
