@@ -4,48 +4,23 @@ use {
 };
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub trait LeapfrogTriejoinIterator<'a, KT>
-where
-    KT: PartialOrd + PartialEq + Clone,
-{
-    /// Returns the key at the current position.
-    fn key(&self) -> Option<&'a KT>;
-
+pub trait LeapfrogTriejoinIterator<'a>: TrieIterator<'a> {
     /// Initializes the iterator.
-    fn init(&mut self) -> Option<&'a KT>;
-
-    /// Proceed to the next key.
-    fn leapfrog_next(&mut self) -> Option<&'a KT>;
+    fn init(&mut self) -> Option<&'a Self::KT>;
 
     /// Proceed to the next matching key.
-    fn search(&mut self) -> Option<&'a KT>;
+    fn search(&mut self) -> Option<&'a Self::KT>;
 
-    /// Position the iterator at a least
-    /// upper bound for seekKey,
-    /// i.e. the least key ≥ seekKey, or
-    /// move to end if no such key exists.
-    /// The sought key must be ≥ the
-    /// key at the current position.
-    fn seek(&mut self, seek_key: &KT) -> Option<&'a KT>;
-
-    /// Check if the iterator is at the end.
-    fn at_end(&self) -> bool;
-
-    /// Proceed to the first key at the next depth.
-    fn open(&mut self) -> Option<&'a KT>;
-
-    /// Proceed to the parent key at the previous depth.
-    fn up(&mut self) -> Option<&'a KT>;
+    fn leapfrog_next(&mut self) -> Option<&'a Self::KT>;
 }
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub struct LeapfrogTriejoinIter<'a, KT, IT>
+pub struct LeapfrogTriejoinIter<'a, IT>
 where
-    KT: PartialOrd + PartialEq + Clone,
-    IT: TrieIterator<'a, KT>,
+    IT: TrieIterator<'a>,
 {
     /// The key of the current position.
-    pub(self) stack: Vec<&'a KT>,
+    pub(self) stack: Vec<&'a IT::KT>,
     p: usize,
     iters: Vec<Option<IT>>,
     current_iters: Vec<(usize, IT)>,
@@ -53,10 +28,9 @@ where
     depth: usize,
 }
 
-impl<'a, KT, IT> LeapfrogTriejoinIter<'a, KT, IT>
+impl<'a, IT> LeapfrogTriejoinIter<'a, IT>
 where
-    KT: PartialOrd + PartialEq + Clone,
-    IT: TrieIterator<'a, KT>,
+    IT: TrieIterator<'a>,
 {
     /// Construct a new `LeapfrogTriejoinIter` with the given iterators.
     ///
@@ -111,14 +85,70 @@ where
     fn k(&self) -> usize { self.current_iters.len() }
 }
 
-impl<'a, KT, IT> LeapfrogTriejoinIterator<'a, KT> for LeapfrogTriejoinIter<'a, KT, IT>
+impl<'a, IT> TrieIterator<'a> for LeapfrogTriejoinIter<'a, IT>
 where
-    KT: PartialOrd + PartialEq + Clone,
-    IT: TrieIterator<'a, KT>,
+    IT: TrieIterator<'a> + 'a,
 {
-    fn key(&self) -> Option<&'a KT> { self.stack.last().copied() }
+    type KT = IT::KT;
 
-    fn init(&mut self) -> Option<&'a KT> {
+    fn key(&self) -> Option<&'a Self::KT> { self.stack.last().copied() }
+
+    fn open(&mut self) -> Option<&'a Self::KT> {
+        self.depth += 1;
+        self.update_iters();
+        for (_, iter) in &mut self.current_iters {
+            iter.open()?;
+        }
+        self.init()
+    }
+
+    fn up(&mut self) -> Option<&'a Self::KT> {
+        if self.depth == 0 {
+            panic!("Cannot go any more up")
+        }
+        for (_, iter) in &mut self.current_iters {
+            iter.up();
+        }
+        self.depth -= 1;
+        self.update_iters();
+        self.key()
+    }
+
+    fn next(&mut self) -> Option<&'a Self::KT> {
+        self.stack.pop();
+        self.current_iters[self.p].1.next()?;
+        self.p = (self.p + 1) % self.k();
+        self.search()
+    }
+
+    fn at_end(&self) -> bool {
+        if self.depth == 0 {
+            return true;
+        }
+        for (_, iter) in &self.current_iters {
+            if iter.at_end() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT> {
+        self.current_iters[self.p].1.seek(seek_key)?;
+        if !self.current_iters[self.p].1.at_end() {
+            self.p = (self.p + 1) % self.k();
+            self.search()
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, IT> LeapfrogTriejoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+where
+    IT: TrieIterator<'a> + 'a,
+{
+    fn init(&mut self) -> Option<&'a Self::KT> {
         if !self.at_end() {
             self.current_iters.sort_unstable_by(|a, b| {
                 let a_key = a.1.key().expect("Not at root");
@@ -138,14 +168,7 @@ where
         }
     }
 
-    fn leapfrog_next(&mut self) -> Option<&'a KT> {
-        self.stack.pop();
-        self.current_iters[self.p].1.next()?;
-        self.p = (self.p + 1) % self.k();
-        self.search()
-    }
-
-    fn search(&mut self) -> Option<&'a KT> {
+    fn search(&mut self) -> Option<&'a Self::KT> {
         self.stack.pop();
         let prime_i = if self.p == 0 {
             self.k() - 1
@@ -164,56 +187,14 @@ where
         }
     }
 
-    fn seek(&mut self, seek_key: &KT) -> Option<&'a KT> {
-        self.current_iters[self.p].1.seek(seek_key)?;
-        if !self.current_iters[self.p].1.at_end() {
-            self.p = (self.p + 1) % self.k();
-            self.search()
-        } else {
-            None
-        }
-    }
-
-    fn at_end(&self) -> bool {
-        if self.depth == 0 {
-            return true;
-        }
-        for (_, iter) in &self.current_iters {
-            if iter.at_end() {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn open(&mut self) -> Option<&'a KT> {
-        self.depth += 1;
-        self.update_iters();
-        for (_, iter) in &mut self.current_iters {
-            iter.open()?;
-        }
-        self.init()
-    }
-
-    fn up(&mut self) -> Option<&'a KT> {
-        if self.depth == 0 {
-            panic!("Cannot go any more up")
-        }
-        for (_, iter) in &mut self.current_iters {
-            iter.up();
-        }
-        self.depth -= 1;
-        self.update_iters();
-        self.key()
-    }
+    fn leapfrog_next(&mut self) -> Option<&'a Self::KT> { TrieIterator::next(self) }
 }
 
-impl<'a, KT, IT> Iterator for LeapfrogTriejoinIter<'a, KT, IT>
+impl<'a, IT> Iterator for LeapfrogTriejoinIter<'a, IT>
 where
-    KT: PartialOrd + PartialEq + Clone + 'a,
-    IT: TrieIterator<'a, KT>,
+    IT: TrieIterator<'a> + 'a,
 {
-    type Item = Vec<&'a KT>;
+    type Item = Vec<&'a IT::KT>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -224,7 +205,7 @@ where
                 }
             } else if self.depth == self.stack.capacity() {
                 // At leaf
-                self.leapfrog_next();
+                TrieIterator::next(self);
                 if self.at_end() {
                     // find next path
                     while self.at_end() {
@@ -232,7 +213,7 @@ where
                             return None;
                         }
                         self.up();
-                        self.leapfrog_next();
+                        TrieIterator::next(self);
                     }
                 } else if self.stack.is_empty() {
                     panic!("Stack should never be empty at leaf")
@@ -251,18 +232,18 @@ where
 
 pub struct LeapfrogTriejoin {}
 
-impl<KT, ITB> JoinAlgo<KT, ITB> for LeapfrogTriejoin
+impl<ITB> JoinAlgo<ITB> for LeapfrogTriejoin
 where
-    KT: Ord + Clone,
-    ITB: TrieIterable<KT>,
+    ITB: TrieIterable,
 {
     fn join(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
-    ) -> Vec<Vec<KT>> {
+    ) -> Vec<Vec<ITB::KT>> {
         let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
-        LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
-            .map(|v| v.into_iter().cloned().collect::<Vec<_>>())
-            .collect::<Vec<_>>()
+        return vec![];
+        //LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
+        // .map(|v| v.into_iter().cloned().collect::<Vec<_>>())
+        // .collect::<Vec<_>>()
     }
 }
 
@@ -274,12 +255,13 @@ mod tests {
             ds::relation_trie::RelationTrie,
             relation_builder::{Builder, RelationBuilder},
         },
-        kermit_iters::trie::TrieIterable,
+        kermit_iters::trie::{TrieIterable, TrieIterator},
     };
 
     #[test]
     fn test_classic() {
-        let t1 = Builder::<RelationTrie<i32>>::new(1)
+        type KT = i32;
+        let t1: RelationTrie<i32> = Builder::<RelationTrie<i32>>::new(1)
             .add_tuples(vec![vec![1], vec![2], vec![3]])
             .build();
         let t2 = Builder::<RelationTrie<i32>>::new(1)
@@ -290,7 +272,7 @@ mod tests {
         let mut triejoin_iter =
             LeapfrogTriejoinIter::new(vec![0], vec![vec![0], vec![0]], vec![t1_iter, t2_iter]);
         triejoin_iter.open();
-        assert_eq!(triejoin_iter.key().unwrap().clone(), 1);
+        assert_eq!(triejoin_iter.key().unwrap().clone(), 1_i32);
         triejoin_iter.leapfrog_next();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 2);
         triejoin_iter.leapfrog_next();

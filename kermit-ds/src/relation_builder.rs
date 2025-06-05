@@ -4,6 +4,7 @@
 use {
     crate::relation::Relation,
     csv::Error,
+    kermit_iters::trie::Iterable,
     std::{fs::File, path::Path},
 };
 
@@ -19,10 +20,10 @@ pub trait RelationBuilder {
     fn build(self) -> Self::Output;
 
     /// Adds a tuple to the relation being built.
-    fn add_tuple(self, tuple: Vec<<Self::Output as Relation>::KT>) -> Self;
+    fn add_tuple(self, tuple: Vec<<Self::Output as Iterable>::KT>) -> Self;
 
     /// Adds multiple tuples to the relation being built.
-    fn add_tuples(self, tuples: Vec<Vec<<Self::Output as Relation>::KT>>) -> Self;
+    fn add_tuples(self, tuples: Vec<Vec<<Self::Output as Iterable>::KT>>) -> Self;
 }
 
 pub struct Builder<R: Relation> {
@@ -46,12 +47,12 @@ impl<R: Relation> RelationBuilder for Builder<R> {
         r
     }
 
-    fn add_tuple(mut self, tuple: Vec<<Self::Output as Relation>::KT>) -> Self {
+    fn add_tuple(mut self, tuple: Vec<<Self::Output as Iterable>::KT>) -> Self {
         self.tuples.push(tuple);
         self
     }
 
-    fn add_tuples(mut self, tuples: Vec<Vec<<Self::Output as Relation>::KT>>) -> Self {
+    fn add_tuples(mut self, tuples: Vec<Vec<<Self::Output as Iterable>::KT>>) -> Self {
         self.tuples.extend(tuples);
         self
     }
@@ -90,9 +91,9 @@ where
             .from_reader(file);
         for result in rdr.records() {
             let record = result?;
-            let mut tuple: Vec<<T::Output as Relation>::KT> = vec![];
+            let mut tuple: Vec<<T::Output as Iterable>::KT> = vec![];
             for x in record.iter() {
-                if let Ok(y) = x.to_string().parse::<<T::Output as Relation>::KT>() {
+                if let Ok(y) = x.to_string().parse::<<T::Output as Iterable>::KT>() {
                     tuple.push(y);
                 }
             }

@@ -1,11 +1,10 @@
 use kermit_iters::trie::Iterable;
 
-pub trait JoinAlgo<KT, ITB>
+pub trait JoinAlgo<ITB>
 where
-    KT: Ord + Clone,
-    ITB: Iterable<KT>,
+    ITB: Iterable,
 {
     fn join(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
-    ) -> Vec<Vec<KT>>;
+    ) -> Vec<Vec<ITB::KT>>;
 }

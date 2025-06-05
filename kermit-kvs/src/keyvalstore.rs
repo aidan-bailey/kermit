@@ -1,8 +1,8 @@
-use std::hash::Hash;
+use std::{fmt::Debug, hash::Hash, str::FromStr};
 
 pub trait KeyValStore<KT, VT>
 where
-    KT: Eq + Hash + Clone + PartialOrd,
+    KT: PartialOrd + PartialEq + Clone + FromStr + Debug + Eq + Hash + Ord,
     VT: Hash,
 {
     fn add(&mut self, val: VT) -> KT;

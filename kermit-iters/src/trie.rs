@@ -1,7 +1,17 @@
-use crate::linear::LinearIterator;
+use {
+    crate::key_type::KeyType,
+    std::{fmt::Debug, hash::Hash, str::FromStr},
+};
 
 /// Trie iterator trait
-pub trait TrieIterator<'a, KT: PartialOrd + PartialEq + Clone>: LinearIterator<'a, KT> {
+pub trait TrieIterator<'a> {
+    type KT: KeyType;
+
+    /// Returns a reference to the key if
+    /// the iterator is positioned at a
+    /// non-root node, otherwise None.
+    fn key(&self) -> Option<&'a Self::KT>;
+
     /// If there is a non-root node at the iterator's current position which has
     /// children, positions the iterator at the first child and returns a
     /// reference to the key. Otherwise, returns None.
@@ -9,7 +19,7 @@ pub trait TrieIterator<'a, KT: PartialOrd + PartialEq + Clone>: LinearIterator<'
     /// # Note
     /// If the iterator is positioned at the end, then this functions as if
     /// the iterator is positioned at the previous node.
-    fn open(&mut self) -> Option<&'a KT>;
+    fn open(&mut self) -> Option<&'a Self::KT>;
 
     /// If there is a non-root node at the iterator's current position,
     /// positions the iterator at its parent and returns a reference to the key
@@ -19,23 +29,44 @@ pub trait TrieIterator<'a, KT: PartialOrd + PartialEq + Clone>: LinearIterator<'
     /// # Note
     /// If the iterator is positioned at the end, then this functions as if
     /// the iterator is positioned at the previous node.
-    fn up(&mut self) -> Option<&'a KT>;
+    fn up(&mut self) -> Option<&'a Self::KT>;
+
+    /// Moves the iterator forward and returns
+    /// a reference to the key if the iterator
+    /// is positioned at a non-root node, otherwise
+    /// None.
+    fn next(&mut self) -> Option<&'a Self::KT>;
+
+    /// Positions the iterator at a least
+    /// upper bound for seek_key,
+    /// i.e. the least key ≥ seek_key,
+    /// and returns a reference to the key, or
+    /// move to end if no such key exists and
+    /// returns None.
+    ///
+    /// # Panics
+    ///
+    /// If the seek_key is not ≥ the key at the
+    /// current position.
+    fn seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT>;
+
+    /// Returns true iff the iterator is positioned
+    /// at the end.
+    fn at_end(&self) -> bool;
 }
 
-pub trait Iterable<KT>
-where
-    KT: PartialOrd + PartialEq + Clone,
-{
+pub trait Iterable {
+    type KT: KeyType;
 }
 
 /// Trie iterable trait
-pub trait TrieIterable<KT: PartialOrd + PartialEq + Clone>: Iterable<KT> {
-    fn trie_iter(&self) -> impl TrieIterator<'_, KT>;
+pub trait TrieIterable: Iterable {
+    fn trie_iter(&self) -> impl TrieIterator<'_>;
 }
 
-impl<KT, T> Iterable<KT> for T
-where
-    T: TrieIterable<KT>,
-    KT: PartialOrd + PartialEq + Clone,
-{
-}
+// impl<T> Iterable for T
+// where
+// T: TrieIterable,
+// {
+// type KT = T::KT;
+// }

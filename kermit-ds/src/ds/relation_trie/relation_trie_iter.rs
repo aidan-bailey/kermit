@@ -1,9 +1,10 @@
 use {
     super::{implementation::RelationTrie, trie_node::TrieNode, trie_traits::TrieFields},
-    crate::{key_type::KeyType, shared::nodes::Node},
+    crate::shared::nodes::Node,
     kermit_iters::{
+        key_type::KeyType,
         linear::LinearIterator,
-        trie::{TrieIterable, TrieIterator},
+        trie::{Iterable, TrieIterable, TrieIterator},
     },
 };
 
@@ -44,7 +45,9 @@ impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: KeyType> LinearIterator<'a, KT> for RelationTrieIter<'a, KT> {
+impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
+    type KT = KT;
+
     fn key(&self) -> Option<&'a KT> {
         if self.at_end() {
             None
@@ -110,9 +113,7 @@ impl<'a, KT: KeyType> LinearIterator<'a, KT> for RelationTrieIter<'a, KT> {
             true
         }
     }
-}
 
-impl<'a, KT: KeyType> TrieIterator<'a, KT> for RelationTrieIter<'a, KT> {
     fn open(&mut self) -> Option<&'a KT> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
@@ -144,9 +145,6 @@ impl<'a, KT: KeyType> TrieIterator<'a, KT> for RelationTrieIter<'a, KT> {
     }
 }
 
-impl<KT> TrieIterable<KT> for RelationTrie<KT>
-where
-    KT: KeyType,
-{
-    fn trie_iter(&self) -> impl TrieIterator<'_, KT> { RelationTrieIter::new(self) }
+impl<KT: KeyType> TrieIterable for RelationTrie<KT> {
+    fn trie_iter(&self) -> impl TrieIterator<'_, KT = KT> { RelationTrieIter::new(self) }
 }

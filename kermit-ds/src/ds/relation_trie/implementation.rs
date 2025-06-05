@@ -3,7 +3,11 @@ use {
         trie_node::TrieNode,
         trie_traits::{Internal, TrieFields},
     },
-    crate::{key_type::KeyType, relation::Relation},
+    crate::relation::Relation,
+    kermit_iters::{
+        key_type::KeyType,
+        trie::{Iterable, TrieIterable},
+    },
 };
 
 /// Trie data structure for relations.
@@ -18,9 +22,11 @@ where
     children: Vec<TrieNode<KT>>,
 }
 
-impl<KT: KeyType> Relation for RelationTrie<KT> {
+impl<KT: KeyType> Iterable for RelationTrie<KT> {
     type KT = KT;
+}
 
+impl<KT: KeyType> Relation for RelationTrie<KT> {
     fn new(cardinality: usize) -> Self { RelationTrie::new(cardinality) }
 
     fn cardinality(&self) -> usize { self.cardinality }

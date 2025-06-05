@@ -15,8 +15,8 @@ pub fn compute_join<R, JA>(
     rel_variables: Vec<Vec<usize>>,
 ) -> Vec<Vec<R::KT>>
 where
-    R: Relation + Iterable<R::KT>,
-    JA: JoinAlgo<R::KT, R>,
+    R: Relation + Iterable,
+    JA: JoinAlgo<R>,
 {
     let relations: Vec<_> = input
         .into_iter()
@@ -31,8 +31,8 @@ pub fn compute_db_join<VT, KVST, R, JA>(
 where
     KVST: KeyValStore<R::KT, VT> + Default,
     VT: Hash,
-    R: Relation + Iterable<R::KT>,
-    JA: JoinAlgo<R::KT, R>,
+    R: Relation,
+    JA: JoinAlgo<R>,
 {
     let mut db = Database::<VT, KVST, R>::new("test_db".to_string(), KVST::default());
 

@@ -1,11 +1,8 @@
+use kermit_iters::trie::Iterable;
 /// ! This module defines the `Relation` trait.
-use crate::key_type::KeyType;
 
 /// Trait for relations.
-pub trait Relation {
-    /// The type of value stored in a relation's tuples.
-    type KT: KeyType;
-
+pub trait Relation: Iterable {
     /// Creates a new relation with the specified cardinality.
     fn new(cardinality: usize) -> Self;
 

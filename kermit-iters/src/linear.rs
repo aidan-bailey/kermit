@@ -1,5 +1,10 @@
+use {
+    crate::key_type::KeyType,
+    std::{fmt::Debug, hash::Hash, str::FromStr},
+};
+
 /// Trie iterator trait
-pub trait LinearIterator<'a, KT: PartialOrd + PartialEq + Clone> {
+pub trait LinearIterator<'a, KT: KeyType> {
     /// Returns a reference to the key if
     /// the iterator is positioned at a
     /// non-root node, otherwise None.
@@ -30,6 +35,6 @@ pub trait LinearIterator<'a, KT: PartialOrd + PartialEq + Clone> {
 }
 
 /// Trie iterable trait
-pub trait LinearIterable<'a, KT: PartialOrd + PartialEq + Clone> {
+pub trait LinearIterable<'a, KT: KeyType> {
     fn linear_iter(&'a self) -> impl LinearIterable<'a, KT>;
 }

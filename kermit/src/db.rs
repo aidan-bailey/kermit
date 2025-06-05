@@ -26,7 +26,7 @@ impl<VT, KVST, R> Database<VT, KVST, R>
 where
     KVST: KeyValStore<R::KT, VT>,
     VT: Hash,
-    R: Relation + Iterable<R::KT>,
+    R: Relation,
 {
     pub fn new(name: String, store: KVST) -> Self {
         Database {
@@ -65,7 +65,7 @@ where
         &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     ) -> R
     where
-        JA: JoinAlgo<R::KT, R>,
+        JA: JoinAlgo<R>,
     {
         let iterables = relations
             .iter()
