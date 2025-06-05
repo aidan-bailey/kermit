@@ -1,10 +1,9 @@
-use crate::{
-    key_type::KeyType,
-    relation::Relation,
-    relation_trie::{
+use {
+    super::{
         trie_node::TrieNode,
         trie_traits::{Internal, TrieFields},
     },
+    crate::{key_type::KeyType, relation::Relation},
 };
 
 /// Trie data structure for relations.

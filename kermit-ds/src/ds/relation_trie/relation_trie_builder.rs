@@ -1,6 +1,6 @@
-use crate::{
-    key_type::KeyType, relation_builder::RelationBuilder,
-    relation_trie::relation_trie::RelationTrie,
+use {
+    super::relation_trie::RelationTrie,
+    crate::{key_type::KeyType, relation_builder::RelationBuilder},
 };
 
 pub struct RelationTrieBuilder<KT: KeyType> {

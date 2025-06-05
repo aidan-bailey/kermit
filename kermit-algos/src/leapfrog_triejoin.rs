@@ -270,10 +270,7 @@ where
 mod tests {
     use {
         crate::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
-        kermit_ds::{
-            relation_builder::RelationBuilder,
-            relation_trie::relation_trie_builder::RelationTrieBuilder,
-        },
+        kermit_ds::{ds::relation_trie::RelationTrieBuilder, relation_builder::RelationBuilder},
         kermit_iters::trie::TrieIterable,
     };
 
