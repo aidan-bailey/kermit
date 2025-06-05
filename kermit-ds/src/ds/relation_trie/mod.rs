@@ -11,10 +11,7 @@ mod trie_traits;
 mod tests {
     use {
         crate::{
-            ds::relation_trie::{
-                relation_trie::RelationTrie,
-                trie_traits::TrieFields,
-            },
+            ds::relation_trie::{relation_trie::RelationTrie, trie_traits::TrieFields},
             relation::Relation,
             relation_builder::{Builder, RelationBuilder},
             shared::nodes::Node,

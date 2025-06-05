@@ -1,24 +1,26 @@
 use {
     crate::db::Database,
     kermit_algos::join_algo::JoinAlgo,
-    kermit_ds::{relation::Relation, relation_builder::RelationBuilder},
+    kermit_ds::{
+        relation::Relation,
+        relation_builder::{Builder, RelationBuilder},
+    },
     kermit_iters::trie::Iterable,
     kermit_kvs::keyvalstore::KeyValStore,
     std::hash::Hash,
 };
 
-pub fn compute_join<RB, JA>(
-    arity: usize, input: Vec<Vec<Vec<<RB::Output as Relation>::KT>>>, variables: Vec<usize>,
+pub fn compute_join<R, JA>(
+    arity: usize, input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>,
     rel_variables: Vec<Vec<usize>>,
-) -> Vec<Vec<<RB::Output as Relation>::KT>>
+) -> Vec<Vec<R::KT>>
 where
-    RB::Output: Relation + Iterable<<RB::Output as Relation>::KT>,
-    RB: RelationBuilder,
-    JA: JoinAlgo<<RB::Output as Relation>::KT, RB::Output>,
+    R: Relation + Iterable<R::KT>,
+    JA: JoinAlgo<R::KT, R>,
 {
     let relations: Vec<_> = input
         .into_iter()
-        .map(|tuples| RB::new(arity).add_tuples(tuples).build())
+        .map(|tuples| Builder::<R>::new(arity).add_tuples(tuples).build())
         .collect();
     let iterables = relations.iter().collect::<Vec<_>>();
     JA::join(variables, rel_variables, iterables)
