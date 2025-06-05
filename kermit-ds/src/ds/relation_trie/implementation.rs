@@ -4,10 +4,7 @@ use {
         trie_traits::{Internal, TrieFields},
     },
     crate::relation::Relation,
-    kermit_iters::{
-        key_type::KeyType,
-        trie::{Iterable, TrieIterable},
-    },
+    kermit_iters::{key_type::KeyType, trie::Iterable},
 };
 
 /// Trie data structure for relations.

@@ -4,7 +4,6 @@ use {
         relation::Relation,
         relation_builder::{Builder, RelationBuilder},
     },
-    kermit_iters::trie::Iterable,
     kermit_kvs::keyvalstore::KeyValStore,
     std::{collections::HashMap, hash::Hash},
 };
