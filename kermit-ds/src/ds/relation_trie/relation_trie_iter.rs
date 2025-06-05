@@ -3,7 +3,6 @@ use {
     crate::shared::nodes::Node,
     kermit_iters::{
         key_type::KeyType,
-        linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},
     },
 };
