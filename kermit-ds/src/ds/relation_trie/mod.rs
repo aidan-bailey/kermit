@@ -4,8 +4,9 @@ mod relation_trie;
 pub use relation_trie::RelationTrie;
 mod relation_trie_builder;
 pub use relation_trie_builder::RelationTrieBuilder;
-pub mod relation_trie_iter;
-pub mod trie_node;
+mod relation_trie_iter;
+pub use relation_trie_iter::RelationTrieIter;
+mod trie_node;
 mod trie_traits;
 
 #[cfg(test)]
