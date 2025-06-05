@@ -1,7 +1,7 @@
 //! This module provides a [trie](https://en.wikipedia.org/wiki/Trie)-based implementation of a relation.
 
-mod relation_trie;
-pub use relation_trie::RelationTrie;
+mod implementation;
+pub use implementation::RelationTrie;
 mod relation_trie_iter;
 mod trie_node;
 mod trie_traits;
@@ -10,7 +10,7 @@ mod trie_traits;
 mod tests {
     use {
         crate::{
-            ds::relation_trie::{relation_trie::RelationTrie, trie_traits::TrieFields},
+            ds::relation_trie::{implementation::RelationTrie, trie_traits::TrieFields},
             relation::Relation,
             relation_builder::{Builder, RelationBuilder},
             shared::nodes::Node,

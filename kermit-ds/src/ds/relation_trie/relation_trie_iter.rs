@@ -1,5 +1,5 @@
 use {
-    super::{relation_trie::RelationTrie, trie_node::TrieNode, trie_traits::TrieFields},
+    super::{implementation::RelationTrie, trie_node::TrieNode, trie_traits::TrieFields},
     crate::{key_type::KeyType, shared::nodes::Node},
     kermit_iters::{
         linear::LinearIterator,
