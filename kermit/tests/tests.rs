@@ -1,7 +1,7 @@
 use kermit::{
     algos::LeapfrogTriejoin,
     compute_db_join, compute_join,
-    ds::{Builder, RelationTrie},
+    ds::RelationTrie,
     kvs::{AnyValType, NaiveStore},
 };
 
