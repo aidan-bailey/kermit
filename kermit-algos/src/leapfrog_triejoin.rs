@@ -241,7 +241,7 @@ where
     ) -> Vec<Vec<ITB::KT>> {
         let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
         return vec![];
-        //LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
+        // LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
         // .map(|v| v.into_iter().cloned().collect::<Vec<_>>())
         // .collect::<Vec<_>>()
     }

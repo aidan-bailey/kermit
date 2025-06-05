@@ -4,7 +4,7 @@ use {
     kermit_iters::{
         key_type::KeyType,
         linear::LinearIterator,
-        trie::{Iterable, TrieIterable, TrieIterator},
+        trie::{TrieIterable, TrieIterator},
     },
 };
 
