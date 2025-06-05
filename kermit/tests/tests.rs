@@ -1,10 +1,13 @@
 use kermit::{
-    algos::LeapfrogTriejoin, compute_db_join, compute_join, ds::{Builder, RelationTrie}, kvs::{AnyValType, NaiveStore}
+    algos::LeapfrogTriejoin,
+    compute_db_join, compute_join,
+    ds::{Builder, RelationTrie},
+    kvs::{AnyValType, NaiveStore},
 };
 
 #[test]
 fn test_simple_join() {
-    type RB = Builder<RelationTrie<u64>>;
+    type R = RelationTrie<u64>;
     type JA = LeapfrogTriejoin;
 
     let arity = 1;
@@ -13,7 +16,7 @@ fn test_simple_join() {
     let inputs = vec![inputa, inputb];
     let variables = vec![0];
     let rel_variables = vec![vec![0]];
-    compute_join::<RB, JA>(arity, inputs, variables, rel_variables);
+    compute_join::<R, JA>(arity, inputs, variables, rel_variables);
 }
 
 #[test]

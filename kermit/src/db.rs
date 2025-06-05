@@ -81,7 +81,10 @@ where
 mod tests {
 
     use {
-        super::*, kermit_algos::leapfrog_triejoin::LeapfrogTriejoin, kermit_ds::{ds::relation_trie::RelationTrie, relation_builder::Builder}, kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore}
+        super::*,
+        kermit_algos::leapfrog_triejoin::LeapfrogTriejoin,
+        kermit_ds::{ds::relation_trie::RelationTrie, relation_builder::Builder},
+        kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
     };
 
     #[test]
