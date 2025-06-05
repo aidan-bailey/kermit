@@ -2,8 +2,6 @@
 
 mod relation_trie;
 pub use relation_trie::RelationTrie;
-mod relation_trie_builder;
-pub use relation_trie_builder::RelationTrieBuilder;
 mod relation_trie_iter;
 pub use relation_trie_iter::RelationTrieIter;
 mod trie_node;
@@ -14,11 +12,11 @@ mod tests {
     use {
         crate::{
             ds::relation_trie::{
-                relation_trie::RelationTrie, relation_trie_builder::RelationTrieBuilder,
+                relation_trie::RelationTrie,
                 trie_traits::TrieFields,
             },
             relation::Relation,
-            relation_builder::RelationBuilder,
+            relation_builder::{Builder, RelationBuilder},
             shared::nodes::Node,
         },
         kermit_iters::{
@@ -77,7 +75,7 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = RelationTrieBuilder::<u64>::new(3)
+        let trie = Builder::<RelationTrie<u64>>::new(3)
             .add_tuple(vec![1, 3, 4])
             .add_tuple(vec![1, 3, 5])
             .add_tuple(vec![1, 4, 6])

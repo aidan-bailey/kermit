@@ -6,6 +6,9 @@ pub trait Relation {
     /// The type of value stored in a relation's tuples.
     type KT: KeyType;
 
+    /// Creates a new relation with the specified cardinality.
+    fn new(cardinality: usize) -> Self;
+
     /// Returns the cardinality of the relation, which is the number of tuples
     /// it contains.
     fn cardinality(&self) -> usize;

@@ -21,6 +21,10 @@ where
 impl<KT: KeyType> Relation for RelationTrie<KT> {
     type KT = KT;
 
+    fn new(cardinality: usize) -> Self {
+        RelationTrie::new(cardinality)
+    }
+
     fn cardinality(&self) -> usize { self.cardinality }
 
     fn insert(&mut self, tuple: Vec<KT>) -> bool {
