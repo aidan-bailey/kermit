@@ -21,7 +21,7 @@ fn test_simple_join() {
 
 #[test]
 fn test_db_creation() {
-    compute_db_join::<AnyValType, NaiveStore<_, _>, Builder<RelationTrie<u64>>, LeapfrogTriejoin>(
+    compute_db_join::<AnyValType, NaiveStore<_, _>, RelationTrie<u64>, LeapfrogTriejoin>(
         vec![vec![1_u64], vec![2], vec![3]],
         vec![vec![1_u64], vec![2], vec![3]],
     );

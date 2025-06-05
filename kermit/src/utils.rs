@@ -25,18 +25,16 @@ where
     let iterables = relations.iter().collect::<Vec<_>>();
     JA::join(variables, rel_variables, iterables)
 }
-
-pub fn compute_db_join<VT, KVST, RB, JA>(
-    input1: Vec<Vec<<RB::Output as Relation>::KT>>, input2: Vec<Vec<<RB::Output as Relation>::KT>>,
-) -> Database<VT, KVST, RB>
+pub fn compute_db_join<VT, KVST, R, JA>(
+    input1: Vec<Vec<R::KT>>, input2: Vec<Vec<R::KT>>,
+) -> Database<VT, KVST, R>
 where
-    KVST: KeyValStore<<RB::Output as Relation>::KT, VT> + Default,
+    KVST: KeyValStore<R::KT, VT> + Default,
     VT: Hash,
-    RB::Output: Relation + Iterable<<RB::Output as Relation>::KT>,
-    RB: RelationBuilder,
-    JA: JoinAlgo<<RB::Output as Relation>::KT, RB::Output>,
+    R: Relation + Iterable<R::KT>,
+    JA: JoinAlgo<R::KT, R>,
 {
-    let mut db = Database::<VT, KVST, RB>::new("test_db".to_string(), KVST::default());
+    let mut db = Database::<VT, KVST, R>::new("test_db".to_string(), KVST::default());
 
     db.add_relation("first", 1);
     db.add_keys_batch("first", input1);

@@ -1,30 +1,32 @@
 use {
     kermit_algos::join_algo::JoinAlgo,
-    kermit_ds::{relation::Relation, relation_builder::RelationBuilder},
+    kermit_ds::{
+        relation::Relation,
+        relation_builder::{Builder, RelationBuilder},
+    },
     kermit_iters::trie::Iterable,
     kermit_kvs::keyvalstore::KeyValStore,
     std::{collections::HashMap, hash::Hash},
 };
 
-pub struct Database<VT, KVST, RB>
+pub struct Database<VT, KVST, R>
 where
-    KVST: KeyValStore<<RB::Output as Relation>::KT, VT>,
+    KVST: KeyValStore<R::KT, VT>,
     VT: Hash,
-    RB: RelationBuilder,
+    R: Relation,
 {
     name: String,
-    relations: HashMap<String, RB::Output>,
+    relations: HashMap<String, R>,
     store: KVST,
     phantom_vt: std::marker::PhantomData<VT>,
-    phantom_rb: std::marker::PhantomData<RB>,
+    phantom_rb: std::marker::PhantomData<R>,
 }
 
-impl<VT, KVST, RB> Database<VT, KVST, RB>
+impl<VT, KVST, R> Database<VT, KVST, R>
 where
-    KVST: KeyValStore<<RB::Output as Relation>::KT, VT>,
+    KVST: KeyValStore<R::KT, VT>,
     VT: Hash,
-    RB: RelationBuilder,
-    RB::Output: Relation + Iterable<<RB::Output as Relation>::KT>,
+    R: Relation + Iterable<R::KT>,
 {
     pub fn new(name: String, store: KVST) -> Self {
         Database {
@@ -39,7 +41,7 @@ where
     pub fn name(&self) -> &String { &self.name }
 
     pub fn add_relation(&mut self, name: &str, cardinality: usize) {
-        let relation = RB::new(cardinality).build();
+        let relation = Builder::<R>::new(cardinality).build();
         self.relations.insert(name.to_owned(), relation);
     }
 
@@ -48,13 +50,11 @@ where
         self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
 
-    pub fn add_keys(&mut self, relation_name: &str, keys: Vec<<RB::Output as Relation>::KT>) {
+    pub fn add_keys(&mut self, relation_name: &str, keys: Vec<R::KT>) {
         self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
 
-    pub fn add_keys_batch(
-        &mut self, relation_name: &str, keys: Vec<Vec<<RB::Output as Relation>::KT>>,
-    ) {
+    pub fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<R::KT>>) {
         self.relations
             .get_mut(relation_name)
             .unwrap()
@@ -63,17 +63,17 @@ where
 
     pub fn join<JA>(
         &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-    ) -> RB::Output
+    ) -> R
     where
-        JA: JoinAlgo<<RB::Output as Relation>::KT, RB::Output>,
+        JA: JoinAlgo<R::KT, R>,
     {
         let iterables = relations
             .iter()
             .map(|name| self.relations.get(name).unwrap())
-            .collect::<Vec<&RB::Output>>();
+            .collect::<Vec<&R>>();
         let cardinality = variables.len();
         let tuples = JA::join(variables, rel_variables, iterables);
-        RB::new(cardinality).add_tuples(tuples).build()
+        Builder::<R>::new(cardinality).add_tuples(tuples).build()
     }
 }
 
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_relation() {
-        let mut db: Database<AnyValType, NaiveStore<_, _>, Builder<RelationTrie<u64>>> =
+        let mut db: Database<AnyValType, NaiveStore<_, _>, RelationTrie<u64>> =
             Database::new("test".to_string(), NaiveStore::<_, _>::default());
         let relation_name = "apple".to_string();
         db.add_relation(&relation_name, 3);
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let mut db: Database<AnyValType, NaiveStore<_, _>, Builder<RelationTrie<u64>>> =
+        let mut db: Database<AnyValType, NaiveStore<_, _>, RelationTrie<u64>> =
             Database::new("test".to_string(), NaiveStore::<_, _>::default());
 
         db.add_relation("first", 1);
