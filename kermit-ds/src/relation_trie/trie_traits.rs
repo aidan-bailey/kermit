@@ -1,10 +1,7 @@
-use crate::key_type::KeyType;
+//! This module defines the traits for nodes and trie fields used in a trie
+//! structure.
 
-pub trait Node {
-    type KT: KeyType;
-    fn new(key: Self::KT) -> Self;
-    fn key(&self) -> &Self::KT;
-}
+use crate::shared::nodes::Node;
 
 pub trait TrieFields {
     type NodeType: Node + TrieFields;

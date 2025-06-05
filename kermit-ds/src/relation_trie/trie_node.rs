@@ -5,8 +5,8 @@
 //! visibility) but rather as part of the `RelationTrie` implementation.
 
 use {
-    super::trie_traits::{Internal, Node, TrieFields},
-    crate::key_type::KeyType,
+    super::trie_traits::{Internal, TrieFields},
+    crate::{key_type::KeyType, shared::nodes::Node},
     std::ops::{Index, IndexMut},
 };
 

@@ -1,8 +1,9 @@
 use {
-    super::trie_traits::{Node, TrieFields},
+    super::trie_traits::TrieFields,
     crate::{
         key_type::KeyType,
         relation_trie::{relation_trie::RelationTrie, trie_node::TrieNode},
+        shared::nodes::Node,
     },
     kermit_iters::{
         linear::LinearIterator,
