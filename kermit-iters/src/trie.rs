@@ -1,4 +1,4 @@
-use crate::key_type::KeyType;
+use crate::{join_iterable::JoinIterable, key_type::KeyType};
 
 /// Trie iterator trait
 pub trait TrieIterator<'a> {
@@ -52,12 +52,8 @@ pub trait TrieIterator<'a> {
     fn at_end(&self) -> bool;
 }
 
-pub trait Iterable {
-    type KT: KeyType;
-}
-
 /// Trie iterable trait
-pub trait TrieIterable: Iterable {
+pub trait TrieIterable: JoinIterable {
     fn trie_iter(&self) -> impl TrieIterator<'_, KT = Self::KT>;
 }
 

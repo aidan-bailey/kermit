@@ -4,7 +4,7 @@
 use {
     crate::relation::Relation,
     csv::Error,
-    kermit_iters::trie::Iterable,
+    kermit_iters::join_iterable::JoinIterable,
     std::{fs::File, path::Path},
 };
 
@@ -20,10 +20,10 @@ pub trait RelationBuilder {
     fn build(self) -> Self::Output;
 
     /// Adds a tuple to the relation being built.
-    fn add_tuple(self, tuple: Vec<<Self::Output as Iterable>::KT>) -> Self;
+    fn add_tuple(self, tuple: Vec<<Self::Output as JoinIterable>::KT>) -> Self;
 
     /// Adds multiple tuples to the relation being built.
-    fn add_tuples(self, tuples: Vec<Vec<<Self::Output as Iterable>::KT>>) -> Self;
+    fn add_tuples(self, tuples: Vec<Vec<<Self::Output as JoinIterable>::KT>>) -> Self;
 }
 
 pub struct Builder<R: Relation> {
@@ -47,12 +47,12 @@ impl<R: Relation> RelationBuilder for Builder<R> {
         r
     }
 
-    fn add_tuple(mut self, tuple: Vec<<Self::Output as Iterable>::KT>) -> Self {
+    fn add_tuple(mut self, tuple: Vec<<Self::Output as JoinIterable>::KT>) -> Self {
         self.tuples.push(tuple);
         self
     }
 
-    fn add_tuples(mut self, tuples: Vec<Vec<<Self::Output as Iterable>::KT>>) -> Self {
+    fn add_tuples(mut self, tuples: Vec<Vec<<Self::Output as JoinIterable>::KT>>) -> Self {
         self.tuples.extend(tuples);
         self
     }
@@ -91,9 +91,9 @@ where
             .from_reader(file);
         for result in rdr.records() {
             let record = result?;
-            let mut tuple: Vec<<T::Output as Iterable>::KT> = vec![];
+            let mut tuple: Vec<<T::Output as JoinIterable>::KT> = vec![];
             for x in record.iter() {
-                if let Ok(y) = x.to_string().parse::<<T::Output as Iterable>::KT>() {
+                if let Ok(y) = x.to_string().parse::<<T::Output as JoinIterable>::KT>() {
                     tuple.push(y);
                 }
             }

@@ -1,8 +1,8 @@
-use kermit_iters::trie::Iterable;
-/// ! This module defines the `Relation` trait.
+//! This module defines the `Relation` trait.
+use kermit_iters::join_iterable::JoinIterable;
 
 /// Trait for relations.
-pub trait Relation: Iterable {
+pub trait Relation: JoinIterable {
     /// Creates a new relation with the specified cardinality.
     fn new(cardinality: usize) -> Self;
 
