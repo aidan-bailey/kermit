@@ -6,7 +6,8 @@
 
 use {
     super::trie_traits::{Internal, TrieFields},
-    crate::{key_type::KeyType, shared::nodes::Node},
+    crate::shared::nodes::Node,
+    kermit_iters::key_type::KeyType,
     std::ops::{Index, IndexMut},
 };
 

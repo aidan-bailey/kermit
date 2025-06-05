@@ -1,4 +1,4 @@
-use crate::key_type::KeyType;
+use kermit_iters::key_type::KeyType;
 
 pub trait Node {
     type KT: KeyType;
