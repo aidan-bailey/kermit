@@ -2,7 +2,7 @@
 //! adding tuples and reading from CSV files.
 
 use {
-    crate::{key_type::KeyType, relation::Relation},
+    crate::relation::Relation,
     csv::Error,
     std::{fs::File, path::Path},
 };
