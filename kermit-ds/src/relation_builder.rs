@@ -2,7 +2,7 @@
 //! adding tuples and reading from CSV files.
 
 use {
-    crate::relation::Relation,
+    crate::{key_type::KeyType, relation::Relation},
     csv::Error,
     std::{fs::File, path::Path},
 };
@@ -22,7 +22,39 @@ pub trait RelationBuilder {
     fn add_tuple(self, tuple: Vec<<Self::Output as Relation>::KT>) -> Self;
 
     /// Adds multiple tuples to the relation being built.
-    fn add_tuples(self, tuple: Vec<Vec<<Self::Output as Relation>::KT>>) -> Self;
+    fn add_tuples(self, tuples: Vec<Vec<<Self::Output as Relation>::KT>>) -> Self;
+}
+
+pub struct Builder<R: Relation> {
+    cardinality: usize,
+    tuples: Vec<Vec<R::KT>>,
+}
+
+impl<R: Relation> RelationBuilder for Builder<R> {
+    type Output = R;
+
+    fn new(cardinality: usize) -> Self {
+        Builder {
+            cardinality,
+            tuples: vec![],
+        }
+    }
+
+    fn build(self) -> Self::Output {
+        let mut r = R::new(self.cardinality);
+        r.insert_all(self.tuples);
+        r
+    }
+
+    fn add_tuple(mut self, tuple: Vec<<Self::Output as Relation>::KT>) -> Self {
+        self.tuples.push(tuple);
+        self
+    }
+
+    fn add_tuples(mut self, tuples: Vec<Vec<<Self::Output as Relation>::KT>>) -> Self {
+        self.tuples.extend(tuples);
+        self
+    }
 }
 
 /// Extension trait for `RelationBuilder` to add CSV file reading capabilities.

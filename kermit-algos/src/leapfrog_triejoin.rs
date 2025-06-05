@@ -270,16 +270,16 @@ where
 mod tests {
     use {
         crate::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
-        kermit_ds::{ds::relation_trie::RelationTrieBuilder, relation_builder::RelationBuilder},
+        kermit_ds::{ds::relation_trie::RelationTrie, relation_builder::{Builder, RelationBuilder}},
         kermit_iters::trie::TrieIterable,
     };
 
     #[test]
     fn test_classic() {
-        let t1 = RelationTrieBuilder::<i32>::new(1)
+        let t1 = Builder::<RelationTrie<i32>>::new(1)
             .add_tuples(vec![vec![1], vec![2], vec![3]])
             .build();
-        let t2 = RelationTrieBuilder::<i32>::new(1)
+        let t2 = Builder::<RelationTrie<i32>>::new(1)
             .add_tuples(vec![vec![1], vec![2], vec![3]])
             .build();
         let t1_iter = t1.trie_iter();
@@ -304,13 +304,13 @@ mod tests {
 
     #[test]
     fn more_complicated() {
-        let r = RelationTrieBuilder::<i32>::new(2)
+        let r = Builder::<RelationTrie<i32>>::new(2)
             .add_tuples(vec![vec![7, 4]])
             .build();
-        let s = RelationTrieBuilder::<i32>::new(2)
+        let s = Builder::<RelationTrie<i32>>::new(2)
             .add_tuples(vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]])
             .build();
-        let t = RelationTrieBuilder::<i32>::new(2)
+        let t = Builder::<RelationTrie<i32>>::new(2)
             .add_tuples(vec![vec![7, 2], vec![7, 3], vec![7, 5]])
             .build();
         let r_iter = r.trie_iter();
