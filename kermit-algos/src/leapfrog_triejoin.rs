@@ -240,10 +240,9 @@ where
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
     ) -> Vec<Vec<ITB::KT>> {
         let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
-        return vec![];
-        // LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
-        // .map(|v| v.into_iter().cloned().collect::<Vec<_>>())
-        // .collect::<Vec<_>>()
+        LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
+            .map(|v| v.into_iter().cloned().collect::<Vec<_>>())
+            .collect::<Vec<_>>()
     }
 }
 
@@ -260,7 +259,6 @@ mod tests {
 
     #[test]
     fn test_classic() {
-        type KT = i32;
         let t1: RelationTrie<i32> = Builder::<RelationTrie<i32>>::new(1)
             .add_tuples(vec![vec![1], vec![2], vec![3]])
             .build();

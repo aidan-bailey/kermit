@@ -58,7 +58,7 @@ pub trait Iterable {
 
 /// Trie iterable trait
 pub trait TrieIterable: Iterable {
-    fn trie_iter(&self) -> impl TrieIterator<'_>;
+    fn trie_iter(&self) -> impl TrieIterator<'_, KT = Self::KT>;
 }
 
 // impl<T> Iterable for T
