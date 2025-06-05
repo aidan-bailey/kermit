@@ -1,8 +1,8 @@
-use kermit_iters::trie::Iterable;
+use kermit_iters::join_iterable::JoinIterable;
 
 pub trait JoinAlgo<ITB>
 where
-    ITB: Iterable,
+    ITB: JoinIterable,
 {
     fn join(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
