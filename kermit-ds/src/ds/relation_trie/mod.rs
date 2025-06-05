@@ -3,7 +3,6 @@
 mod relation_trie;
 pub use relation_trie::RelationTrie;
 mod relation_trie_iter;
-pub use relation_trie_iter::RelationTrieIter;
 mod trie_node;
 mod trie_traits;
 
