@@ -15,7 +15,7 @@ mod tests {
             relation_builder::{Builder, RelationBuilder},
             shared::nodes::Node,
         },
-        kermit_iters::trie::{TrieIterable, TrieIterator},
+        kermit_iters::{linear::LinearIterator, trie::{TrieIterable, TrieIterator}},
     };
 
     #[test]
