@@ -6,6 +6,9 @@ pub trait Relation: JoinIterable {
     /// Creates a new relation with the specified cardinality.
     fn new(cardinality: usize) -> Self;
 
+    /// Creates a new relation with the specified cardinality and given tuples
+    fn from_tuples(cardinality: usize, tuples: Vec<Vec<Self::KT>>) -> Self;
+
     /// Returns the cardinality of the relation, which is the number of tuples
     /// it contains.
     fn cardinality(&self) -> usize;
