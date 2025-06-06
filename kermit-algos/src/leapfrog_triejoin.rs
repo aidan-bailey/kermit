@@ -1,17 +1,17 @@
 use {
-    crate::join_algo::JoinAlgo,
-    kermit_iters::{linear::LinearIterator, trie::{TrieIterable, TrieIterator}},
+    crate::{join_algo::JoinAlgo, leapfrog_join::LeapfrogJoinIterator},
+    kermit_iters::{
+        key_type::KeyType,
+        linear::LinearIterator,
+        trie::{TrieIterable, TrieIterator},
+    },
 };
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub trait LeapfrogTriejoinIterator<'a>: TrieIterator<'a> {
-    /// Initializes the iterator.
-    fn leapfrog_init(&mut self) -> Option<&'a Self::KT>;
+pub trait LeapfrogTriejoinIterator<'a>: LeapfrogJoinIterator<'a> {
+    fn triejoin_open(&mut self) -> Option<&'a Self::KT>;
 
-    /// Proceed to the next matching key.
-    fn leapfrog_search(&mut self) -> Option<&'a Self::KT>;
-
-    fn leapfrog_next(&mut self) -> Option<&'a Self::KT>;
+    fn triejoin_up(&mut self) -> Option<&'a Self::KT>;
 }
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
@@ -26,6 +26,83 @@ where
     current_iters: Vec<(usize, IT)>,
     iter_indexes_at_variable: Vec<Vec<usize>>,
     depth: usize,
+}
+
+impl<'a, IT> LeapfrogJoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+where
+    IT: TrieIterator<'a> + 'a,
+{
+    type KT = IT::KT;
+
+    fn leapfrog_next(&mut self) -> Option<&'a Self::KT> {
+        self.stack.pop();
+        self.current_iters[self.p].1.next()?;
+        self.p = (self.p + 1) % self.k();
+        self.leapfrog_search()
+    }
+
+    fn key(&self) -> Option<&'a Self::KT> { self.stack.last().copied() }
+
+    fn leapfrog_init(&mut self) -> Option<&'a Self::KT> {
+        if self.at_end() {
+            return None;
+        }
+
+        self.current_iters.sort_unstable_by(|a, b| {
+            let a_key = a.1.key().expect("Not at root");
+            let b_key = b.1.key().expect("Not at root");
+            if a_key < b_key {
+                std::cmp::Ordering::Less
+            } else if a_key > b_key {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+        self.p = 0;
+        self.leapfrog_search()
+    }
+
+    fn leapfrog_search(&mut self) -> Option<&'a Self::KT> {
+        self.stack.pop();
+        let prime_i = if self.p == 0 {
+            self.k() - 1
+        } else {
+            self.p - 1
+        };
+        let mut x_prime = self.current_iters[prime_i].1.key()?.clone();
+        loop {
+            let x = self.current_iters[self.p].1.key()?;
+            if x == &x_prime {
+                self.stack.push(x);
+                break self.key();
+            }
+            x_prime = self.current_iters[self.p].1.seek(&x_prime)?.clone();
+            self.p = (self.p + 1) % self.k();
+        }
+    }
+
+    fn at_end(&self) -> bool {
+        if self.depth == 0 {
+            return true;
+        }
+        for (_, iter) in &self.current_iters {
+            if iter.at_end() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT> {
+        self.current_iters[self.p].1.seek(seek_key)?;
+        if !self.current_iters[self.p].1.at_end() {
+            self.p = (self.p + 1) % self.k();
+            self.leapfrog_search()
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a, IT> LeapfrogTriejoinIter<'a, IT>
@@ -85,51 +162,11 @@ where
     fn k(&self) -> usize { self.current_iters.len() }
 }
 
-impl<'a, IT> LinearIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+impl<'a, IT> LeapfrogTriejoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
 where
     IT: TrieIterator<'a> + 'a,
 {
-    type KT = IT::KT;
-
-    fn next(&mut self) -> Option<&'a Self::KT> {
-        self.stack.pop();
-        self.current_iters[self.p].1.next()?;
-        self.p = (self.p + 1) % self.k();
-        self.leapfrog_search()
-    }
-
-    fn at_end(&self) -> bool {
-        if self.depth == 0 {
-            return true;
-        }
-        for (_, iter) in &self.current_iters {
-            if iter.at_end() {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT> {
-        self.current_iters[self.p].1.seek(seek_key)?;
-        if !self.current_iters[self.p].1.at_end() {
-            self.p = (self.p + 1) % self.k();
-            self.leapfrog_search()
-        } else {
-            None
-        }
-    }
-
-
-    fn key(&self) -> Option<&'a Self::KT> { self.stack.last().copied() }
-}
-
-impl<'a, IT> TrieIterator<'a> for LeapfrogTriejoinIter<'a, IT>
-where
-    IT: TrieIterator<'a> + 'a,
-{
-
-    fn open(&mut self) -> Option<&'a Self::KT> {
+    fn triejoin_open(&mut self) -> Option<&'a Self::KT> {
         self.depth += 1;
         self.update_iters();
         for (_, iter) in &mut self.current_iters {
@@ -138,7 +175,7 @@ where
         self.leapfrog_init()
     }
 
-    fn up(&mut self) -> Option<&'a Self::KT> {
+    fn triejoin_up(&mut self) -> Option<&'a Self::KT> {
         if self.depth == 0 {
             panic!("Cannot go any more up")
         }
@@ -149,53 +186,6 @@ where
         self.update_iters();
         self.key()
     }
-
-}
-
-impl<'a, IT> LeapfrogTriejoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
-where
-    IT: TrieIterator<'a> + 'a,
-{
-    fn leapfrog_init(&mut self) -> Option<&'a Self::KT> {
-        if self.at_end() {
-            return None;
-        }
-
-        self.current_iters.sort_unstable_by(|a, b| {
-            let a_key = a.1.key().expect("Not at root");
-            let b_key = b.1.key().expect("Not at root");
-            if a_key < b_key {
-                std::cmp::Ordering::Less
-            } else if a_key > b_key {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Equal
-            }
-        });
-        self.p = 0;
-        self.leapfrog_search()
-    }
-
-    fn leapfrog_search(&mut self) -> Option<&'a Self::KT> {
-        self.stack.pop();
-        let prime_i = if self.p == 0 {
-            self.k() - 1
-        } else {
-            self.p - 1
-        };
-        let mut x_prime = self.current_iters[prime_i].1.key()?.clone();
-        loop {
-            let x = self.current_iters[self.p].1.key()?;
-            if x == &x_prime {
-                self.stack.push(x);
-                break self.key();
-            }
-            x_prime = self.current_iters[self.p].1.seek(&x_prime)?.clone();
-            self.p = (self.p + 1) % self.k();
-        }
-    }
-
-    fn leapfrog_next(&mut self) -> Option<&'a Self::KT> { LinearIterator::next(self) }
 }
 
 impl<'a, IT> Iterator for LeapfrogTriejoinIter<'a, IT>
@@ -207,21 +197,21 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.depth == 0 {
-                self.open()?;
+                self.triejoin_open()?;
                 if self.depth == self.stack.capacity() {
                     return Some(self.stack.clone());
                 }
             } else if self.depth == self.stack.capacity() {
                 // At leaf
-                LinearIterator::next(self);
+                self.leapfrog_next();
                 if self.at_end() {
                     // find next path
                     while self.at_end() {
                         if self.depth == 1 {
                             return None;
                         }
-                        self.up();
-                        LinearIterator::next(self);
+                        self.triejoin_up();
+                        self.leapfrog_next();
                     }
                 } else if self.stack.is_empty() {
                     panic!("Stack should never be empty at leaf")
@@ -230,7 +220,7 @@ where
                 }
             } else {
                 while self.depth < self.stack.capacity() {
-                    self.open();
+                    self.triejoin_open();
                 }
                 return Some(self.stack.clone());
             }
@@ -257,12 +247,18 @@ where
 #[cfg(test)]
 mod tests {
     use {
-        crate::leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
+        crate::{
+            leapfrog_join::LeapfrogJoinIterator,
+            leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
+        },
         kermit_ds::{
             ds::relation_trie::RelationTrie,
             relation_builder::{Builder, RelationBuilder},
         },
-        kermit_iters::{linear::LinearIterator, trie::{TrieIterable, TrieIterator}},
+        kermit_iters::{
+            linear::LinearIterator,
+            trie::{TrieIterable, TrieIterator},
+        },
     };
 
     #[test]
@@ -277,7 +273,7 @@ mod tests {
         let t2_iter = t2.trie_iter();
         let mut triejoin_iter =
             LeapfrogTriejoinIter::new(vec![0], vec![vec![0], vec![0]], vec![t1_iter, t2_iter]);
-        triejoin_iter.open();
+        triejoin_iter.triejoin_open();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 1_i32);
         triejoin_iter.leapfrog_next();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 2);
@@ -285,7 +281,7 @@ mod tests {
         assert_eq!(triejoin_iter.key().unwrap().clone(), 3);
         triejoin_iter.leapfrog_next();
         assert!(triejoin_iter.at_end());
-        triejoin_iter.up();
+        triejoin_iter.triejoin_up();
         assert!(triejoin_iter.at_end());
         let res = triejoin_iter
             .map(|v| v.into_iter().copied().collect::<Vec<_>>())
@@ -312,15 +308,15 @@ mod tests {
             vec![vec![0, 1], vec![1, 2], vec![0, 2]],
             vec![r_iter, s_iter, t_iter],
         );
-        triejoin_iter.open();
+        triejoin_iter.triejoin_open();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 7);
         triejoin_iter.leapfrog_next();
         assert!(triejoin_iter.at_end());
-        triejoin_iter.open();
+        triejoin_iter.triejoin_open();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 4);
         triejoin_iter.leapfrog_next();
         assert!(triejoin_iter.at_end());
-        triejoin_iter.open();
+        triejoin_iter.triejoin_open();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 5);
     }
 
