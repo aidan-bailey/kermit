@@ -1,17 +1,19 @@
 use crate::key_type::KeyType;
 
 /// Trie iterator trait
-pub trait LinearIterator<'a, KT: KeyType> {
+pub trait LinearIterator<'a> {
+    type KT: KeyType;
+
     /// Returns a reference to the key if
     /// the iterator is positioned at a
     /// non-root node, otherwise None.
-    fn key(&self) -> Option<&'a KT>;
+    fn key(&self) -> Option<&'a Self::KT>;
 
     /// Moves the iterator forward and returns
     /// a reference to the key if the iterator
     /// is positioned at a non-root node, otherwise
     /// None.
-    fn next(&mut self) -> Option<&'a KT>;
+    fn next(&mut self) -> Option<&'a Self::KT>;
 
     /// Positions the iterator at a least
     /// upper bound for seek_key,
@@ -24,14 +26,14 @@ pub trait LinearIterator<'a, KT: KeyType> {
     ///
     /// If the seek_key is not ≥ the key at the
     /// current position.
-    fn seek(&mut self, seek_key: &KT) -> Option<&'a KT>;
+    fn seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT>;
 
     /// Returns true iff the iterator is positioned
     /// at the end.
     fn at_end(&self) -> bool;
 }
 
-/// Trie iterable trait
+/// Linear iterable trait
 pub trait LinearIterable<'a, KT: KeyType> {
-    fn linear_iter(&'a self) -> impl LinearIterable<'a, KT>;
+    fn linear_iter(&'a self) -> impl LinearIterator<'a>;
 }
