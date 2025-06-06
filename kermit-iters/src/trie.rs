@@ -1,4 +1,4 @@
-use crate::{join_iterable::JoinIterable, key_type::KeyType, linear::LinearIterator};
+use crate::{join_iterable::JoinIterable, linear::LinearIterator};
 
 /// Trie iterator trait
 pub trait TrieIterator<'a>: LinearIterator<'a> {
