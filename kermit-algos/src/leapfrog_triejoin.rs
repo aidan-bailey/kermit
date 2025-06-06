@@ -149,23 +149,23 @@ where
     IT: TrieIterator<'a> + 'a,
 {
     fn leapfrog_init(&mut self) -> Option<&'a Self::KT> {
-        if !self.at_end() {
-            self.current_iters.sort_unstable_by(|a, b| {
-                let a_key = a.1.key().expect("Not at root");
-                let b_key = b.1.key().expect("Not at root");
-                if a_key < b_key {
-                    std::cmp::Ordering::Less
-                } else if a_key > b_key {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            });
-            self.p = 0;
-            self.leapfrog_search()
-        } else {
-            None
+        if self.at_end() {
+            return None;
         }
+
+        self.current_iters.sort_unstable_by(|a, b| {
+            let a_key = a.1.key().expect("Not at root");
+            let b_key = b.1.key().expect("Not at root");
+            if a_key < b_key {
+                std::cmp::Ordering::Less
+            } else if a_key > b_key {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+        self.p = 0;
+        self.leapfrog_search()
     }
 
     fn leapfrog_search(&mut self) -> Option<&'a Self::KT> {
