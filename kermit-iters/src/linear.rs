@@ -1,4 +1,4 @@
-use crate::key_type::KeyType;
+use crate::{join_iterable::JoinIterable, key_type::KeyType};
 
 /// Trie iterator trait
 pub trait LinearIterator<'a> {
@@ -34,6 +34,83 @@ pub trait LinearIterator<'a> {
 }
 
 /// Linear iterable trait
-pub trait LinearIterable<'a, KT: KeyType> {
-    fn linear_iter(&'a self) -> impl LinearIterator<'a>;
+pub trait LinearIterable: JoinIterable {
+    fn linear_iter(&self) -> impl LinearIterator<'_, KT = Self::KT>;
+}
+
+pub struct VecLinearIterator<'a, KT: KeyType> {
+    data: &'a [KT],
+    index: usize,
+}
+
+impl<'a, KT: KeyType> LinearIterator<'a> for VecLinearIterator<'a, KT> {
+    type KT = KT;
+
+    fn key(&self) -> Option<&'a Self::KT> {
+        if self.index == 0 {
+            None // No key at the start
+        } else if !self.at_end() {
+            Some(&self.data[self.index - 1]) // Return the last key returned by
+                                             // next
+        } else {
+            None // At the end, no key available
+        }
+    }
+
+    fn next(&mut self) -> Option<&'a Self::KT> {
+        if self.at_end() {
+            return None;
+        }
+        self.index += 1;
+        self.key()
+    }
+
+    fn seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT> {
+        while let Some(key) = self.key() {
+           if key >= seek_key {
+              return Some(key);
+           }
+           self.index += 1;
+        }
+        None
+    }
+
+    fn at_end(&self) -> bool { self.index > self.data.len() }
+
+}
+
+impl<KT: KeyType> JoinIterable for Vec<KT> {
+    type KT = KT;
+}
+
+impl<KT> LinearIterable for Vec<KT>
+where
+    KT: KeyType,
+{
+    fn linear_iter(&self) -> impl LinearIterator<'_, KT = KT> {
+        VecLinearIterator {
+            data: self,
+            index: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vec_linear_iterator() {
+        let data = vec![1, 2, 3, 4, 5];
+        let mut iter = data.linear_iter();
+
+        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), Some(&2));
+        assert_eq!(iter.seek(&3), Some(&3));
+        assert_eq!(iter.next(), Some(&4));
+        assert!(!iter.at_end());
+        assert_eq!(iter.next(), Some(&5));
+        assert_eq!(iter.next(), None);
+        assert!(iter.at_end());
+    }
 }
