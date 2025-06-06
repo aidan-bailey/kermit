@@ -19,12 +19,19 @@ where
     children: Vec<TrieNode<KT>>,
 }
 
-impl<KT: KeyType> JoinIterable for RelationTrie<KT> {
-    type KT = KT;
-}
-
 impl<KT: KeyType> Relation for RelationTrie<KT> {
-    fn new(cardinality: usize) -> Self { RelationTrie::new(cardinality) }
+
+    /// Construct an empty Trie.
+    ///
+    /// # Panics
+    /// If `cardinality` is less than 1.
+    fn new(cardinality: usize) -> Self {
+        assert!(cardinality > 0, "Cardinality must be greater than 0.");
+        RelationTrie {
+            cardinality,
+            children: vec![],
+        }
+    }
 
     fn cardinality(&self) -> usize { self.cardinality }
 
@@ -45,23 +52,15 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     }
 }
 
+impl<KT: KeyType> JoinIterable for RelationTrie<KT> {
+    type KT = KT;
+}
+
 /// Trie implementation.
 impl<KT> RelationTrie<KT>
 where
     KT: KeyType,
 {
-    /// Construct an empty Trie.
-    ///
-    /// # Panics
-    /// If `cardinality` is less than 1.
-    pub fn new(cardinality: usize) -> RelationTrie<KT> {
-        assert!(cardinality > 0, "Cardinality must be greater than 0.");
-        RelationTrie {
-            cardinality,
-            children: vec![],
-        }
-    }
-
     /// Construct a Trie from a list of tuples.
     ///
     /// # Panics
