@@ -6,10 +6,10 @@ use {
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator<'a>: TrieIterator<'a> {
     /// Initializes the iterator.
-    fn init(&mut self) -> Option<&'a Self::KT>;
+    fn leapfrog_init(&mut self) -> Option<&'a Self::KT>;
 
     /// Proceed to the next matching key.
-    fn search(&mut self) -> Option<&'a Self::KT>;
+    fn leapfrog_search(&mut self) -> Option<&'a Self::KT>;
 
     fn leapfrog_next(&mut self) -> Option<&'a Self::KT>;
 }
@@ -99,7 +99,7 @@ where
         for (_, iter) in &mut self.current_iters {
             iter.open()?;
         }
-        self.init()
+        self.leapfrog_init()
     }
 
     fn up(&mut self) -> Option<&'a Self::KT> {
@@ -118,7 +118,7 @@ where
         self.stack.pop();
         self.current_iters[self.p].1.next()?;
         self.p = (self.p + 1) % self.k();
-        self.search()
+        self.leapfrog_search()
     }
 
     fn at_end(&self) -> bool {
@@ -137,7 +137,7 @@ where
         self.current_iters[self.p].1.seek(seek_key)?;
         if !self.current_iters[self.p].1.at_end() {
             self.p = (self.p + 1) % self.k();
-            self.search()
+            self.leapfrog_search()
         } else {
             None
         }
@@ -148,7 +148,7 @@ impl<'a, IT> LeapfrogTriejoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
 where
     IT: TrieIterator<'a> + 'a,
 {
-    fn init(&mut self) -> Option<&'a Self::KT> {
+    fn leapfrog_init(&mut self) -> Option<&'a Self::KT> {
         if !self.at_end() {
             self.current_iters.sort_unstable_by(|a, b| {
                 let a_key = a.1.key().expect("Not at root");
@@ -162,13 +162,13 @@ where
                 }
             });
             self.p = 0;
-            self.search()
+            self.leapfrog_search()
         } else {
             None
         }
     }
 
-    fn search(&mut self) -> Option<&'a Self::KT> {
+    fn leapfrog_search(&mut self) -> Option<&'a Self::KT> {
         self.stack.pop();
         let prime_i = if self.p == 0 {
             self.k() - 1
