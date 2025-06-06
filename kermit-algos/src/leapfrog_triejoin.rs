@@ -1,6 +1,6 @@
 use {
     crate::join_algo::JoinAlgo,
-    kermit_iters::trie::{TrieIterable, TrieIterator},
+    kermit_iters::{linear::LinearIterator, trie::{TrieIterable, TrieIterator}},
 };
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
@@ -85,34 +85,11 @@ where
     fn k(&self) -> usize { self.current_iters.len() }
 }
 
-impl<'a, IT> TrieIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+impl<'a, IT> LinearIterator<'a> for LeapfrogTriejoinIter<'a, IT>
 where
     IT: TrieIterator<'a> + 'a,
 {
     type KT = IT::KT;
-
-    fn key(&self) -> Option<&'a Self::KT> { self.stack.last().copied() }
-
-    fn open(&mut self) -> Option<&'a Self::KT> {
-        self.depth += 1;
-        self.update_iters();
-        for (_, iter) in &mut self.current_iters {
-            iter.open()?;
-        }
-        self.leapfrog_init()
-    }
-
-    fn up(&mut self) -> Option<&'a Self::KT> {
-        if self.depth == 0 {
-            panic!("Cannot go any more up")
-        }
-        for (_, iter) in &mut self.current_iters {
-            iter.up();
-        }
-        self.depth -= 1;
-        self.update_iters();
-        self.key()
-    }
 
     fn next(&mut self) -> Option<&'a Self::KT> {
         self.stack.pop();
@@ -142,6 +119,37 @@ where
             None
         }
     }
+
+
+    fn key(&self) -> Option<&'a Self::KT> { self.stack.last().copied() }
+}
+
+impl<'a, IT> TrieIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+where
+    IT: TrieIterator<'a> + 'a,
+{
+
+    fn open(&mut self) -> Option<&'a Self::KT> {
+        self.depth += 1;
+        self.update_iters();
+        for (_, iter) in &mut self.current_iters {
+            iter.open()?;
+        }
+        self.leapfrog_init()
+    }
+
+    fn up(&mut self) -> Option<&'a Self::KT> {
+        if self.depth == 0 {
+            panic!("Cannot go any more up")
+        }
+        for (_, iter) in &mut self.current_iters {
+            iter.up();
+        }
+        self.depth -= 1;
+        self.update_iters();
+        self.key()
+    }
+
 }
 
 impl<'a, IT> LeapfrogTriejoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
@@ -187,7 +195,7 @@ where
         }
     }
 
-    fn leapfrog_next(&mut self) -> Option<&'a Self::KT> { TrieIterator::next(self) }
+    fn leapfrog_next(&mut self) -> Option<&'a Self::KT> { LinearIterator::next(self) }
 }
 
 impl<'a, IT> Iterator for LeapfrogTriejoinIter<'a, IT>
@@ -205,7 +213,7 @@ where
                 }
             } else if self.depth == self.stack.capacity() {
                 // At leaf
-                TrieIterator::next(self);
+                LinearIterator::next(self);
                 if self.at_end() {
                     // find next path
                     while self.at_end() {
@@ -213,7 +221,7 @@ where
                             return None;
                         }
                         self.up();
-                        TrieIterator::next(self);
+                        LinearIterator::next(self);
                     }
                 } else if self.stack.is_empty() {
                     panic!("Stack should never be empty at leaf")
@@ -254,7 +262,7 @@ mod tests {
             ds::relation_trie::RelationTrie,
             relation_builder::{Builder, RelationBuilder},
         },
-        kermit_iters::trie::{TrieIterable, TrieIterator},
+        kermit_iters::{linear::LinearIterator, trie::{TrieIterable, TrieIterator}},
     };
 
     #[test]

@@ -3,6 +3,7 @@ use {
     crate::shared::nodes::Node,
     kermit_iters::{
         key_type::KeyType,
+        linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},
     },
 };
@@ -44,7 +45,7 @@ impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
+impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
     type KT = KT;
 
     fn key(&self) -> Option<&'a KT> {
@@ -112,7 +113,9 @@ impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
             true
         }
     }
+}
 
+impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
     fn open(&mut self) -> Option<&'a KT> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
