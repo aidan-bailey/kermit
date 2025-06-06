@@ -67,16 +67,15 @@ impl<'a, KT: KeyType> LinearIterator<'a> for VecLinearIterator<'a, KT> {
 
     fn seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT> {
         while let Some(key) = self.key() {
-           if key >= seek_key {
-              return Some(key);
-           }
-           self.index += 1;
+            if key >= seek_key {
+                return Some(key);
+            }
+            self.index += 1;
         }
         None
     }
 
     fn at_end(&self) -> bool { self.index > self.data.len() }
-
 }
 
 impl<KT: KeyType> JoinIterable for Vec<KT> {

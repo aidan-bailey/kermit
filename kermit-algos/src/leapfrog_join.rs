@@ -9,6 +9,8 @@ pub trait LeapfrogJoinIterator<'a> {
 
     fn leapfrog_search(&mut self) -> Option<&'a Self::KT>;
 
+    fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT>;
+
     fn leapfrog_next(&mut self) -> Option<&'a Self::KT>;
 
     fn at_end(&self) -> bool;
@@ -47,7 +49,6 @@ where
     fn key(&self) -> Option<&'a Self::KT> { self.key }
 
     fn leapfrog_init(&mut self) -> Option<&'a Self::KT> {
-
         for iter in &mut self.iterators {
             iter.next();
         }
@@ -114,12 +115,21 @@ where
         }
         false
     }
+
+    fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT> {
+        self.iterators[self.p].seek(seek_key);
+        if self.iterators[self.p].at_end() {
+            return None;
+        } else {
+            self.p = (self.p + 1) % self.k();
+            self.leapfrog_search()
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use kermit_iters::linear::LinearIterable;
+    use {super::*, kermit_iters::linear::LinearIterable};
 
     #[test]
     fn test_leapfrog_join_iter() {
@@ -168,7 +178,8 @@ mod tests {
         let v2 = vec![2, 4, 5, 6];
         let v3 = vec![2, 5, 7];
 
-        let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
+        let mut join_iter =
+            LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
 
         assert_eq!(join_iter.leapfrog_init(), Some(&2));
         assert_eq!(join_iter.leapfrog_next(), Some(&5));
@@ -181,7 +192,8 @@ mod tests {
         let v2 = vec![2, 4, 6];
         let v3 = vec![7, 8, 9];
 
-        let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
+        let mut join_iter =
+            LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
 
         assert_eq!(join_iter.leapfrog_init(), None);
     }
@@ -202,7 +214,8 @@ mod tests {
         let v2: Vec<i32> = vec![];
         let v3: Vec<i32> = vec![];
 
-        let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
+        let mut join_iter =
+            LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
 
         assert_eq!(join_iter.leapfrog_init(), None);
     }
@@ -224,7 +237,8 @@ mod tests {
         let v2 = vec![2, 4, 4];
         let v3 = vec![2, 5, 7];
 
-        let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
+        let mut join_iter =
+            LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
 
         assert_eq!(join_iter.leapfrog_init(), Some(&2));
         assert_eq!(join_iter.leapfrog_next(), None);
@@ -247,9 +261,9 @@ mod tests {
         let v2: Vec<i32> = vec![];
         let v3 = vec![2, 4, 6];
 
-        let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
+        let mut join_iter =
+            LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
 
         assert_eq!(join_iter.leapfrog_init(), None);
     }
-
 }

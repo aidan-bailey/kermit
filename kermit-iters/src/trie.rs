@@ -2,7 +2,6 @@ use crate::{join_iterable::JoinIterable, key_type::KeyType, linear::LinearIterat
 
 /// Trie iterator trait
 pub trait TrieIterator<'a>: LinearIterator<'a> {
-
     /// If there is a non-root node at the iterator's current position which has
     /// children, positions the iterator at the first child and returns a
     /// reference to the key. Otherwise, returns None.
@@ -21,7 +20,6 @@ pub trait TrieIterator<'a>: LinearIterator<'a> {
     /// If the iterator is positioned at the end, then this functions as if
     /// the iterator is positioned at the previous node.
     fn up(&mut self) -> Option<&'a Self::KT>;
-
 }
 
 /// Trie iterable trait
