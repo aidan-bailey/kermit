@@ -20,7 +20,6 @@ where
 }
 
 impl<KT: KeyType> Relation for RelationTrie<KT> {
-
     /// Construct an empty Trie.
     ///
     /// # Panics
@@ -31,6 +30,36 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
             cardinality,
             children: vec![],
         }
+    }
+
+    /// Construct a Trie from a list of tuples.
+    ///
+    /// # Notes
+    ///
+    /// Optimising the insertion through sorting the input tuples before
+    /// constructing the Trie.
+    ///
+    /// # Panics
+    /// If any tuple does not have a matching `cardinality`.
+    fn from_tuples(cardinality: usize, mut tuples: Vec<Vec<KT>>) -> Self {
+        assert!(tuples.iter().all(|tuple| tuple.len() == cardinality));
+        tuples.sort_unstable_by(|a, b| {
+            for i in 0..a.len() {
+                if a[i] < b[i] {
+                    return std::cmp::Ordering::Less;
+                } else if a[i] > b[i] {
+                    return std::cmp::Ordering::Greater;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        let mut trie = RelationTrie::new(cardinality);
+        for tuple in tuples {
+            if !trie.insert(tuple) {
+                panic!("Failed to build from tuples.");
+            }
+        }
+        trie
     }
 
     fn cardinality(&self) -> usize { self.cardinality }
@@ -57,47 +86,7 @@ impl<KT: KeyType> JoinIterable for RelationTrie<KT> {
 }
 
 /// Trie implementation.
-impl<KT> RelationTrie<KT>
-where
-    KT: KeyType,
-{
-    /// Construct a Trie from a list of tuples.
-    ///
-    /// # Panics
-    /// If any tuple does not have a matching `cardinality`.
-    pub fn from_tuples(cardinality: usize, tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
-        assert!(tuples.iter().all(|tuple| tuple.len() == cardinality));
-        let mut trie = RelationTrie::new(cardinality);
-        for tuple in tuples {
-            if !trie.insert(tuple) {
-                panic!("Failed to build from tuples.");
-            }
-        }
-        trie
-    }
-
-    // TODO: Rename this method
-    /// Construct a Trie from a list of tuples.
-    ///
-    /// Optimising the insertion through sorting the input tuples before
-    /// constructing the Trie.
-    ///
-    /// # Panics
-    /// If any tuple does not have a matching `cardinality`.
-    pub fn from_mut_tuples(cardinality: usize, mut tuples: Vec<Vec<KT>>) -> RelationTrie<KT> {
-        tuples.sort_unstable_by(|a, b| {
-            for i in 0..a.len() {
-                if a[i] < b[i] {
-                    return std::cmp::Ordering::Less;
-                } else if a[i] > b[i] {
-                    return std::cmp::Ordering::Greater;
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
-        RelationTrie::from_tuples(cardinality, tuples)
-    }
-}
+impl<KT> RelationTrie<KT> where KT: KeyType {}
 
 impl<KT: KeyType> TrieFields for RelationTrie<KT> {
     type NodeType = TrieNode<KT>;

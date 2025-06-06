@@ -5,7 +5,6 @@ use {
         relation::Relation,
         relation_builder::{Builder, RelationBuilder},
     },
-    kermit_iters::join_iterable::JoinIterable,
     kermit_kvs::keyvalstore::KeyValStore,
     std::hash::Hash,
 };
@@ -15,7 +14,7 @@ pub fn compute_join<R, JA>(
     rel_variables: Vec<Vec<usize>>,
 ) -> Vec<Vec<R::KT>>
 where
-    R: Relation + JoinIterable,
+    R: Relation,
     JA: JoinAlgo<R>,
 {
     let relations: Vec<_> = input
