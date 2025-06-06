@@ -1,7 +1,6 @@
 use {
     crate::{join_algo::JoinAlgo, leapfrog_join::LeapfrogJoinIterator},
     kermit_iters::{
-        key_type::KeyType,
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator},
     },
