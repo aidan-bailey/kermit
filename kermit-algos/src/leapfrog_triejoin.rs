@@ -10,7 +10,7 @@ use {
 pub trait LeapfrogTriejoinIterator<'a>: LeapfrogJoinIterator<'a> {
     fn triejoin_open(&mut self) -> bool;
 
-    fn triejoin_up(&mut self) -> Option<&'a Self::KT>;
+    fn triejoin_up(&mut self) -> bool;
 }
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
@@ -136,16 +136,16 @@ where
         self.leapfrog_init()
     }
 
-    fn triejoin_up(&mut self) -> Option<&'a Self::KT> {
+    fn triejoin_up(&mut self) -> bool {
         if self.depth == 0 {
-            panic!("Cannot go any more up")
+            return false;
         }
         for iter in &mut self.leapfrog.iterators {
             iter.up();
         }
         self.depth -= 1;
         self.update_iters();
-        self.key()
+        true
     }
 }
 
