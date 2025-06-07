@@ -269,7 +269,7 @@ mod tests {
         },
         kermit_iters::{
             linear::LinearIterator,
-            trie::{TrieIterable, TrieIterator},
+            trie::TrieIterable,
         },
     };
 
