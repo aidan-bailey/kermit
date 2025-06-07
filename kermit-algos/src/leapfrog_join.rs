@@ -61,9 +61,9 @@ where
             let a_key = a.key().unwrap();
             let b_key = b.key().unwrap();
             match a_key.cmp(b_key) {
-                std::cmp::Ordering::Less => std::cmp::Ordering::Less,
-                std::cmp::Ordering::Greater => std::cmp::Ordering::Greater,
-                std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
+                | std::cmp::Ordering::Less => std::cmp::Ordering::Less,
+                | std::cmp::Ordering::Greater => std::cmp::Ordering::Greater,
+                | std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
             }
         });
 

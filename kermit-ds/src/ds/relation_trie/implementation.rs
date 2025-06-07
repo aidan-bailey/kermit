@@ -46,9 +46,9 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
                 match a[i].cmp(&b[i]) {
-                    std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
-                    std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
-                    std::cmp::Ordering::Equal => continue,
+                    | std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+                    | std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+                    | std::cmp::Ordering::Equal => continue,
                 }
             }
             std::cmp::Ordering::Equal
