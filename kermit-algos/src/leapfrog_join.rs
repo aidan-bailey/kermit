@@ -89,7 +89,7 @@ where
                 self.iterators[self.p].seek(x_prime);
                 if self.iterators[self.p].at_end() {
                     return false;
-                } 
+                }
                 x_prime = self.iterators[self.p].key().unwrap();
                 self.p = (self.p + 1) % self.k();
             }
@@ -99,7 +99,7 @@ where
     fn leapfrog_next(&mut self) -> Option<&'a Self::KT> {
         self.iterators[self.p].next();
         if self.iterators[self.p].at_end() {
-            return None;
+            None
         } else {
             self.p = (self.p + 1) % self.k();
             self.leapfrog_search();
