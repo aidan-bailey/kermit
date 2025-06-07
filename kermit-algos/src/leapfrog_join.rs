@@ -20,9 +20,9 @@ pub struct LeapfrogJoinIter<'a, IT>
 where
     IT: LinearIterator<'a>,
 {
-    key: Option<&'a IT::KT>,
     pub(crate) iterators: Vec<IT>,
     p: usize,
+    _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a, IT> LeapfrogJoinIter<'a, IT>
@@ -31,9 +31,9 @@ where
 {
     pub fn new(iterators: Vec<IT>) -> Self {
         LeapfrogJoinIter {
-            key: None,
             iterators,
             p: 0,
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -81,7 +81,6 @@ where
         loop {
             let x = self.iterators[self.p].key().unwrap();
             if x == x_prime {
-                self.key = Some(x);
                 return true;
             } else {
                 self.iterators[self.p].seek(x_prime);
