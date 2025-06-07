@@ -16,7 +16,11 @@ fn test_simple_join() {
     let inputs = vec![inputa, inputb];
     let variables = vec![0];
     let rel_variables = vec![vec![0]];
-    compute_join::<R, JA>(arity, inputs, variables, rel_variables);
+    let res = compute_join::<R, JA>(arity, inputs, variables, rel_variables);
+    assert_eq!(res.len(), 3);
+    assert_eq!(res[0], vec![1u64]);
+    assert_eq!(res[1], vec![2u64]);
+    assert_eq!(res[2], vec![3u64]);
 }
 
 #[test]
