@@ -19,9 +19,7 @@ where
     IT: TrieIterator<'a>,
 {
     /// The key of the current position.
-    pub(self) stack: Vec<&'a IT::KT>,
     cardinality: usize,
-    p: usize,
     iters: Vec<Option<IT>>,
     current_iters_indexes: Vec<usize>,
     iter_indexes_at_variable: Vec<Vec<usize>>,
@@ -90,8 +88,6 @@ where
         let iters = iters.into_iter().map(Some).collect();
 
         LeapfrogTriejoinIter {
-            stack: Vec::with_capacity(variables.len()),
-            p: 0,
             iters,
             current_iters_indexes: Vec::new(),
             iter_indexes_at_variable,
@@ -267,10 +263,7 @@ mod tests {
             ds::relation_trie::RelationTrie,
             relation_builder::{Builder, RelationBuilder},
         },
-        kermit_iters::{
-            linear::LinearIterator,
-            trie::TrieIterable,
-        },
+        kermit_iters::trie::TrieIterable,
     };
 
     #[test]

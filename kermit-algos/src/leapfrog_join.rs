@@ -60,12 +60,10 @@ where
         self.iterators.sort_unstable_by(|a, b| {
             let a_key = a.key().unwrap();
             let b_key = b.key().unwrap();
-            if a_key < b_key {
-                std::cmp::Ordering::Less
-            } else if a_key > b_key {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Equal
+            match a_key.cmp(b_key) {
+                std::cmp::Ordering::Less => std::cmp::Ordering::Less,
+                std::cmp::Ordering::Greater => std::cmp::Ordering::Greater,
+                std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
             }
         });
 
