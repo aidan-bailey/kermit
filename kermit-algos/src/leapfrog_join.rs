@@ -21,7 +21,7 @@ where
     IT: LinearIterator<'a>,
 {
     key: Option<&'a IT::KT>,
-    iterators: Vec<IT>,
+    pub(crate) iterators: Vec<IT>,
     p: usize,
 }
 
