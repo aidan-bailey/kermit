@@ -279,11 +279,9 @@ mod tests {
         let mut triejoin_iter =
             LeapfrogTriejoinIter::new(vec![0], vec![vec![0], vec![0]], vec![t1_iter, t2_iter]);
         triejoin_iter.triejoin_open();
-        assert_eq!(triejoin_iter.key().unwrap().clone(), 1_i32);
-        triejoin_iter.leapfrog_next();
-        assert_eq!(triejoin_iter.key().unwrap().clone(), 2);
-        triejoin_iter.leapfrog_next();
-        assert_eq!(triejoin_iter.key().unwrap().clone(), 3);
+        assert_eq!(triejoin_iter.key(), Some(&1));
+        assert_eq!(triejoin_iter.leapfrog_next(), Some(&2));
+        assert_eq!(triejoin_iter.leapfrog_next(), Some(&3));
         triejoin_iter.leapfrog_next();
         assert!(triejoin_iter.at_end());
         triejoin_iter.triejoin_up();
