@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(iter.up().unwrap(), &3);
 
         assert_eq!(iter.next().unwrap(), &4);
-        
+
         assert!(iter.open());
         assert_eq!(iter.next().unwrap(), &6);
 
