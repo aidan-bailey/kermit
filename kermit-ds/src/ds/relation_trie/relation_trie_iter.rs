@@ -65,7 +65,7 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
     fn next(&mut self) -> Option<&'a KT> {
         if let Some(siblings) = self.siblings() {
             self.pos += 1;
-            if let Some(node) = siblings.get(self.pos) {
+            if let Some(node) = siblings.get(self.pos - 1) {
                 self.stack.pop();
                 self.stack.push((node, self.pos));
                 return Some(node.key());
@@ -74,9 +74,9 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
         None
     }
 
-    fn seek(&mut self, seek_key: &KT) -> Option<&'a KT> {
+    fn seek(&mut self, seek_key: &KT) -> bool {
         if self.at_end() {
-            return None;
+            return false;
         }
 
         if let Some(current_key) = self.key() {
@@ -94,21 +94,21 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
                 }
 
                 if self.at_end() {
-                    None
+                    false
                 } else {
                     self.stack.pop();
                     self.stack.push((&siblings[self.pos], self.pos));
-                    Some(siblings[self.pos].key())
+                    true
                 }
             }
         } else {
-            None
+            false
         }
     }
 
     fn at_end(&self) -> bool {
         if let Some(siblings) = self.siblings() {
-            self.pos == siblings.len()
+            self.pos == siblings.len() + 1
         } else {
             true
         }
@@ -116,20 +116,20 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
 }
 
 impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
-    fn open(&mut self) -> Option<&'a KT> {
+    fn open(&mut self) -> bool {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
                 self.stack.push((child, 0));
                 self.pos = 0;
-                Some(child.key())
+                true
             } else {
-                None
+                false
             }
         } else if self.trie.is_empty() {
-            None
+            false
         } else {
             self.stack.push((&self.trie.children()[0], 0));
-            Some(self.trie.children()[0].key())
+            true
         }
     }
 

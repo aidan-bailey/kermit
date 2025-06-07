@@ -26,7 +26,7 @@ pub trait LinearIterator<'a> {
     ///
     /// If the seek_key is not ≥ the key at the
     /// current position.
-    fn seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT>;
+    fn seek(&mut self, seek_key: &Self::KT) -> bool;
 
     /// Returns true iff the iterator is positioned
     /// at the end.
@@ -65,14 +65,14 @@ impl<'a, KT: KeyType> LinearIterator<'a> for VecLinearIterator<'a, KT> {
         self.key()
     }
 
-    fn seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT> {
+    fn seek(&mut self, seek_key: &Self::KT) -> bool {
         while let Some(key) = self.key() {
             if key >= seek_key {
-                return Some(key);
+                return true;
             }
             self.index += 1;
         }
-        None
+        false
     }
 
     fn at_end(&self) -> bool { self.index > self.data.len() }
@@ -105,7 +105,7 @@ mod tests {
 
         assert_eq!(iter.next(), Some(&1));
         assert_eq!(iter.next(), Some(&2));
-        assert_eq!(iter.seek(&3), Some(&3));
+        assert!(iter.seek(&3));
         assert_eq!(iter.next(), Some(&4));
         assert!(!iter.at_end());
         assert_eq!(iter.next(), Some(&5));

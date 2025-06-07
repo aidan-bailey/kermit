@@ -12,7 +12,7 @@ use {
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator<'a>: LeapfrogJoinIterator<'a> {
-    fn triejoin_open(&mut self) -> Option<&'a Self::KT>;
+    fn triejoin_open(&mut self) -> bool;
 
     fn triejoin_up(&mut self) -> Option<&'a Self::KT>;
 }
@@ -41,11 +41,17 @@ where
 
     fn leapfrog_next(&mut self) -> Option<&'a Self::KT> { self.leapfrog.leapfrog_next() }
 
-    fn key(&self) -> Option<&'a Self::KT> { self.leapfrog.key() }
+    fn key(&self) -> Option<&'a Self::KT> {
+        if self.depth == 0 {
+            None
+        } else {
+            self.leapfrog.key()
+        }
+    }
 
-    fn leapfrog_init(&mut self) -> Option<&'a Self::KT> { self.leapfrog.leapfrog_init() }
+    fn leapfrog_init(&mut self) -> bool { self.leapfrog.leapfrog_init() }
 
-    fn leapfrog_search(&mut self) -> Option<&'a Self::KT> { self.leapfrog.leapfrog_search() }
+    fn leapfrog_search(&mut self) -> bool { self.leapfrog.leapfrog_search() }
 
     fn at_end(&self) -> bool {
         if self.depth == 0 {
@@ -54,7 +60,7 @@ where
         self.leapfrog.at_end()
     }
 
-    fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> Option<&'a Self::KT> {
+    fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> bool {
         self.leapfrog.leapfrog_seek(seek_key)
     }
 }
@@ -127,11 +133,13 @@ impl<'a, IT> LeapfrogTriejoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
 where
     IT: TrieIterator<'a> + 'a,
 {
-    fn triejoin_open(&mut self) -> Option<&'a Self::KT> {
+    fn triejoin_open(&mut self) -> bool {
         self.depth += 1;
         self.update_iters();
         for iter in &mut self.leapfrog.iterators {
-            iter.open()?;
+            if !iter.open() {
+                return false;
+            }
         }
         self.leapfrog_init()
     }
@@ -183,7 +191,10 @@ where
         loop {
             if self.iter.depth == 0 {
                 // At the root node
-                self.iter.triejoin_open()?; // If we cannot open, the join is empty
+                if !self.iter.triejoin_open() {
+                    return None;
+                }
+                // If we cannot open, the join is empty
                 self.stack
                     .push(self.iter.key().expect("There should be a key here"));
                 if self.iter.depth == self.iter.cardinality {

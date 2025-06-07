@@ -9,7 +9,7 @@ pub trait TrieIterator<'a>: LinearIterator<'a> {
     /// # Note
     /// If the iterator is positioned at the end, then this functions as if
     /// the iterator is positioned at the previous node.
-    fn open(&mut self) -> Option<&'a Self::KT>;
+    fn open(&mut self) -> bool;
 
     /// If there is a non-root node at the iterator's current position,
     /// positions the iterator at its parent and returns a reference to the key
