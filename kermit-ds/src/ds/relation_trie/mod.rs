@@ -11,8 +11,7 @@ mod tests {
     use {
         crate::{
             ds::relation_trie::{implementation::RelationTrie, trie_traits::TrieFields},
-            relation::Relation,
-            relation_builder::{Builder, RelationBuilder},
+            relation::{Builder, Relation, RelationBuilder},
             shared::nodes::Node,
         },
         kermit_iters::{
