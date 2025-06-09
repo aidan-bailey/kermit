@@ -1,9 +1,9 @@
-//! This module defines the Linear iterator trait along with its implementation
+//! This module defines the `LinearIterator` trait along with its implementation
 //! for vectors.
 
 use crate::{join_iterable::JoinIterable, key_type::KeyType};
 
-/// The Linear iterator trait, designed for iterators that traverse a linear
+/// The `LinearIterator` trait, designed for iterators that traverse a linear
 /// structure
 ///
 /// # Note
