@@ -1,8 +1,4 @@
 //! This module implements a node used within a trie.
-//!
-//! # Note
-//! This module is not intended to be used directly (hence its `crate`
-//! visibility) but rather as part of the `RelationTrie` implementation.
 
 use {
     super::trie_traits::{Internal, TrieFields},
@@ -11,15 +7,15 @@ use {
     std::ops::{Index, IndexMut},
 };
 
-/// Trie node
+/// The `TrieNode` struct represents a node in a trie data structure.
 #[derive(Clone, Debug)]
 pub struct TrieNode<KT>
 where
     KT: KeyType,
 {
-    /// Key of the tuple value.
+    /// Value stored.
     key: KT,
-    /// Children of the trie node.
+    /// Children of node.
     children: Vec<TrieNode<KT>>,
 }
 
@@ -29,7 +25,6 @@ where
 {
     type KT = KT;
 
-    /// Construct a Node with a tuple-value key
     fn new(key: KT) -> TrieNode<KT> {
         TrieNode {
             key,
@@ -37,7 +32,6 @@ where
         }
     }
 
-    /// Returns the Node's key
     fn key(&self) -> &KT { &self.key }
 }
 

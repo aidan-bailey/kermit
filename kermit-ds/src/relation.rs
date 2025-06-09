@@ -1,23 +1,19 @@
-//! This module defines the `Relation` trait.
-//! This module provides a trait for building relations, including methods for
-//! adding tuples and reading from CSV files.
-
+//! This module defines the `Relation` and `RelationBuilder` traits.
 use {
     csv::Error,
     kermit_iters::join_iterable::JoinIterable,
     std::{fs::File, path::Path},
 };
 
-/// Trait for relations.
+/// The `Relation` trait defines a relational data structure.
 pub trait Relation: JoinIterable {
     /// Creates a new relation with the specified cardinality.
     fn new(cardinality: usize) -> Self;
 
-    /// Creates a new relation with the specified cardinality and given tuples
+    /// Creates a new relation with the specified cardinality and given tuples.
     fn from_tuples(cardinality: usize, tuples: Vec<Vec<Self::KT>>) -> Self;
 
-    /// Returns the cardinality of the relation, which is the number of tuples
-    /// it contains.
+    /// Returns the cardinality of the relation.
     fn cardinality(&self) -> usize;
 
     /// Inserts a tuple into the relation, returning `true` if successful and
@@ -28,6 +24,7 @@ pub trait Relation: JoinIterable {
     /// successful and `false` if otherwise.
     fn insert_all(&mut self, tuples: Vec<Vec<Self::KT>>) -> bool;
 
+    /// Creates a new relation builder with the specified cardinality.
     fn builder(cardinality: usize) -> impl RelationBuilder<Output = Self>
     where
         Self: Relation + Sized,
@@ -36,7 +33,11 @@ pub trait Relation: JoinIterable {
     }
 }
 
-/// Trait for building relations.
+/// The `RelationBuilder` trait defines a relational data structure builder.
+///
+/// # Note
+/// Why is this trait needed? Perhaps there is an optimised way during the
+/// initialisation of a relation to build it.
 pub trait RelationBuilder {
     /// The type of relation being built.
     type Output: Relation;
@@ -44,7 +45,7 @@ pub trait RelationBuilder {
     /// Creates a new relation builder with the specified cardinality.
     fn new(cardinality: usize) -> Self;
 
-    /// Consumes the builder and returns the relation.
+    /// Consumes the builder and returns the resulting relation.
     fn build(self) -> Self::Output;
 
     /// Adds a tuple to the relation being built.
@@ -54,11 +55,14 @@ pub trait RelationBuilder {
     fn add_tuples(self, tuples: Vec<Vec<<Self::Output as JoinIterable>::KT>>) -> Self;
 }
 
+/// A concrete, default implementation of the `RelationBuilder` trait for a
+/// specific relation type `R`.
 pub struct Builder<R: Relation> {
     cardinality: usize,
     tuples: Vec<Vec<R::KT>>,
 }
 
+/// Implementation of the `RelationBuilder` trait for the `Builder<R>` type.
 impl<R: Relation> RelationBuilder for Builder<R> {
     type Output = R;
 
