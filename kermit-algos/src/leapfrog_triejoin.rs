@@ -250,6 +250,13 @@ where
             .map(|v| v.into_iter().cloned().collect::<Vec<_>>())
             .collect::<Vec<_>>()
     }
+
+    fn join_iter<'a>(
+        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&'a ITB>,
+    ) -> impl Iterator<Item = Vec<&'a ITB::KT>> {
+        let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
+        LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters).into_iter()
+    }
 }
 
 #[cfg(test)]
