@@ -1,35 +1,35 @@
+//! This module defines the Linear iterator trait along with its implementation
+//! for vectors.
+
 use crate::{join_iterable::JoinIterable, key_type::KeyType};
 
-/// Trie iterator trait
+/// The Linear iterator trait, designed for iterators that traverse a linear
+/// structure
+///
+/// # Note
+/// The linear iterator should be initialised one item before the first item,
+/// i.e., `next` returns the first item on the first call.
 pub trait LinearIterator<'a> {
+    /// The key type for the iterator.
     type KT: KeyType;
 
-    /// Returns a reference to the key if
-    /// the iterator is positioned at a
-    /// non-root node, otherwise None.
+    /// Returns a reference to the key at the iterator's current position,
+    /// otherwise `None` if `next` has not yet been called, or the iterator
+    /// is positioned at the end.
     fn key(&self) -> Option<&'a Self::KT>;
 
     /// Moves the iterator forward and returns
-    /// a reference to the key if the iterator
-    /// is positioned at a non-root node, otherwise
-    /// None.
+    /// a reference to the key at the new position.
     fn next(&mut self) -> Option<&'a Self::KT>;
 
     /// Positions the iterator at a least
-    /// upper bound for seek_key,
-    /// i.e. the least key ≥ seek_key,
-    /// and returns a reference to the key, or
-    /// move to end if no such key exists and
-    /// returns None.
-    ///
-    /// # Panics
-    ///
-    /// If the seek_key is not ≥ the key at the
-    /// current position.
+    /// upper bound for the `seek_key`,
+    /// i.e., the smallest key ≥ `seek_key`, or
+    /// moves it to the end if no such key exists.
     fn seek(&mut self, seek_key: &Self::KT) -> bool;
 
-    /// Returns true iff the iterator is positioned
-    /// at the end.
+    /// Returns `true` iff the iterator is positioned
+    /// at the end, i.e., one after the last key.
     fn at_end(&self) -> bool;
 }
 
