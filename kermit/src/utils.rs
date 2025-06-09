@@ -1,9 +1,6 @@
 use {
-    crate::db::Database,
-    kermit_algos::join_algo::JoinAlgo,
-    kermit_ds::relation::Relation,
-    kermit_kvs::keyvalstore::KeyValStore,
-    std::hash::Hash,
+    crate::db::Database, kermit_algos::join_algo::JoinAlgo, kermit_ds::relation::Relation,
+    kermit_kvs::keyvalstore::KeyValStore, std::hash::Hash,
 };
 
 pub fn compute_join<R, JA>(
