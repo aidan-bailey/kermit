@@ -1,6 +1,8 @@
 name: Build and Test master
 
 on:
+  permissions:
+    contents: write
   push:
     branches:
       - master
@@ -41,6 +43,9 @@ jobs:
       - run: cargo test --verbose
 
   publish:
+
+    if: github.repository == 'aidan-bailey/kermit'
+
     needs: test
   
     runs-on: ubuntu-latest
