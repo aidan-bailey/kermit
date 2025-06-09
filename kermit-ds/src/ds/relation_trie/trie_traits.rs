@@ -3,21 +3,25 @@
 
 use crate::shared::nodes::Node;
 
+/// The `TrieFields` trait defines the basic structure and operations for a trie node.
 pub trait TrieFields {
     type NodeType: Node + TrieFields;
 
-    /// Returns the children of the Node
+    /// Returns a reference to the children of the node.
     fn children(&self) -> &Vec<Self::NodeType>;
 
+    /// Returns a mutable reference to the children of the node.
     fn children_mut(&mut self) -> &mut Vec<Self::NodeType>;
 
-    /// Returns true iff the Node has no children
+    /// Returns true iff the Node has no children.
     fn is_empty(&self) -> bool { self.children().is_empty() }
 
     #[cfg(test)]
+    /// Returns the node's number of children.
     fn size(&self) -> usize { self.children().len() }
 
     #[cfg(test)]
+    /// Returns the height from the current node.
     fn height(&self) -> usize {
         if let Some(child) = self.children().first() {
             1 + child.height()
