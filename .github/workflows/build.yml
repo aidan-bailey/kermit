@@ -1,11 +1,12 @@
 name: Build and Test master
 
 on:
-  permissions:
-    contents: write
   push:
     branches:
       - master
+
+permissions:
+  contents: write
 
 env:
   RUST_BACKTRACE: 1
