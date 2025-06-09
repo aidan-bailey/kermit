@@ -133,16 +133,16 @@ impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
         }
     }
 
-    fn up(&mut self) -> Option<&'a KT> {
-        if self.stack.pop().is_none() {
-            None
-        } else {
+    fn up(&mut self) -> bool {
+        if self.stack.pop().is_some() {
             self.pos = if let Some((_, i)) = self.stack.last() {
                 *i
             } else {
                 0
             };
-            self.key()
+            true
+        } else {
+            false
         }
     }
 }
