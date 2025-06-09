@@ -3,7 +3,8 @@
 
 use crate::shared::nodes::Node;
 
-/// The `TrieFields` trait defines the basic structure and operations for a trie node.
+/// The `TrieFields` trait defines the basic structure and operations for a trie
+/// node.
 pub trait TrieFields {
     type NodeType: Node + TrieFields;
 

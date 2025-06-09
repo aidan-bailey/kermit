@@ -1,4 +1,5 @@
-//! This module defines any kinds of nodes that could be shared amongst data structures.
+//! This module defines any kinds of nodes that could be shared amongst data
+//! structures.
 use kermit_iters::key_type::KeyType;
 
 /// The `Node` trait defines a node with an associated value.

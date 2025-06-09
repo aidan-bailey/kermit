@@ -1,4 +1,5 @@
-//! This module provides a `TrieIterator` implementation for the `RelationTrie` data structure.
+//! This module provides a `TrieIterator` implementation for the `RelationTrie`
+//! data structure.
 
 use {
     super::{implementation::RelationTrie, trie_node::TrieNode, trie_traits::TrieFields},
