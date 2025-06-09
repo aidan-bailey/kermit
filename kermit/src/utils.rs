@@ -1,7 +1,7 @@
 use {
     crate::db::Database,
     kermit_algos::join_algo::JoinAlgo,
-    kermit_ds::relation::{Relation, RelationBuilder},
+    kermit_ds::relation::Relation,
     kermit_kvs::keyvalstore::KeyValStore,
     std::hash::Hash,
 };
@@ -16,7 +16,7 @@ where
 {
     let relations: Vec<_> = input
         .into_iter()
-        .map(|tuples| R::builder(arity).add_tuples(tuples).build())
+        .map(|tuples| R::from_tuples(arity, tuples))
         .collect();
     let iterables = relations.iter().collect::<Vec<_>>();
     JA::join(variables, rel_variables, iterables)
