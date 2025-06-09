@@ -1,3 +1,5 @@
+//! This module provides a `TrieIterator` implementation for the `RelationTrie` data structure.
+
 use {
     super::{implementation::RelationTrie, trie_node::TrieNode, trie_traits::TrieFields},
     crate::shared::nodes::Node,
@@ -8,7 +10,8 @@ use {
     },
 };
 
-pub struct RelationTrieIter<'a, KT: KeyType> {
+/// An iterator over the nodes of a `RelationTrie`.
+struct RelationTrieIter<'a, KT: KeyType> {
     /// Current Node's index amongst its siblings.
     pos: usize,
     /// Trie that is being iterated.
