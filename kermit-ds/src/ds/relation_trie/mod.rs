@@ -92,7 +92,8 @@ mod tests {
 
         assert_eq!(iter.next().unwrap(), &5);
 
-        assert_eq!(iter.up().unwrap(), &3);
+        assert!(iter.up());
+        assert_eq!(iter.key().unwrap(), &3);
 
         assert_eq!(iter.next().unwrap(), &4);
 
@@ -100,8 +101,10 @@ mod tests {
         assert_eq!(iter.next().unwrap(), &6);
 
         assert!(iter.seek(&9));
-        assert_eq!(iter.up().unwrap(), &4);
-        assert_eq!(iter.up().unwrap(), &1);
+        assert!(iter.up());
+        assert_eq!(iter.key().unwrap(), &4);
+        assert!(iter.up());
+        assert_eq!(iter.key().unwrap(), &1);
         assert_eq!(iter.next().unwrap(), &3);
 
         assert!(iter.open());
