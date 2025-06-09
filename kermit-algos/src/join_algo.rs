@@ -18,6 +18,8 @@ where
             .collect()
     }
 
+    /// Joins the given iterables based on the specified join plan.
+    /// Returns an iterator over the resulting join.
     fn join_iter<'a>(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&'a ITB>,
     ) -> impl Iterator<Item = Vec<&'a ITB::KT>>;

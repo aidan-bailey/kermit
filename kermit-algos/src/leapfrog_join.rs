@@ -1,18 +1,40 @@
+//! This modules defines traits, structs and iters used to compute a Leapfrog
+//! Join.
+
 use kermit_iters::{key_type::KeyType, linear::LinearIterator};
 
+/// The `LeapfrogJoinIterator` trait defines the interface for a leapfrog join
+/// iterator.
 pub trait LeapfrogJoinIterator<'a> {
+    /// The key type for the iterator.
     type KT: KeyType;
 
+    /// Returns a reference to the key at the iterator's current position,
+    /// otherwise `None` if `leapfrog_init` has not yet been called, or the
+    /// iterator is positioned at the end.
     fn key(&self) -> Option<&'a Self::KT>;
 
+    /// Initialises the iterator and finds the first common key.
+    ///
+    /// Returns `true` if a common key is found, otherwise `false`.
     fn leapfrog_init(&mut self) -> bool;
 
+    /// Searches for a common key in the iterators.
+    ///
+    /// Returns `true` if a common key is found, otherwise `false`.
     fn leapfrog_search(&mut self) -> bool;
 
+    /// Seeks the iterator to the least upper bound for the `seek_key`,
+    /// i.e., the smallest key ≥ `seek_key`.
+    ///
+    /// Returns `true` if the key exists, otherwise `false`.
     fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> bool;
 
+    /// Moves the iterator to the next common key and returns a reference
+    /// to it, or `None` if there are no more common keys.
     fn leapfrog_next(&mut self) -> Option<&'a Self::KT>;
 
+    /// Returns `true` if the iterator is positioned at the end.
     fn at_end(&self) -> bool;
 }
 
