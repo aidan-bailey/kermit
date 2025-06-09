@@ -21,6 +21,7 @@ where
     let iterables = relations.iter().collect::<Vec<_>>();
     JA::join(variables, rel_variables, iterables)
 }
+
 pub fn compute_db_join<VT, KVST, R, JA>(
     input1: Vec<Vec<R::KT>>, input2: Vec<Vec<R::KT>>,
 ) -> Database<VT, KVST, R>

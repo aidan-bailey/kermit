@@ -150,6 +150,7 @@ impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
     }
 }
 
+/// Implementation of the `TrieIterable` trait for `RelationTrie`.
 impl<KT: KeyType> TrieIterable for RelationTrie<KT> {
     fn trie_iter(&self) -> impl TrieIterator<'_, KT = KT> { RelationTrieIter::new(self) }
 }
