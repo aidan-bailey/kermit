@@ -1,5 +1,7 @@
 use kermit::{algos::LeapfrogTriejoin, compute_join, ds::RelationTrie};
 
+fn test_join()
+
 #[test]
 fn test_simple_join() {
     type R = RelationTrie<u64>;
