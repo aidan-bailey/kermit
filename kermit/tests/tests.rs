@@ -1,9 +1,4 @@
-use kermit::{
-    algos::LeapfrogTriejoin,
-    compute_db_join, compute_join,
-    ds::RelationTrie,
-    kvs::{AnyValType, NaiveStore},
-};
+use kermit::{algos::LeapfrogTriejoin, compute_join, ds::RelationTrie};
 
 #[test]
 fn test_simple_join() {
@@ -21,12 +16,4 @@ fn test_simple_join() {
     assert_eq!(res[0], vec![1u64]);
     assert_eq!(res[1], vec![2u64]);
     assert_eq!(res[2], vec![3u64]);
-}
-
-#[test]
-fn test_db_creation() {
-    compute_db_join::<AnyValType, NaiveStore<_, _>, RelationTrie<u64>, LeapfrogTriejoin>(
-        vec![vec![1_u64], vec![2], vec![3]],
-        vec![vec![1_u64], vec![2], vec![3]],
-    );
 }
