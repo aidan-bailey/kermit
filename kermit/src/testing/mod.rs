@@ -10,8 +10,7 @@ mod tests {
     use crate::define_join_test_suite;
 
     define_join_test_suite!(
-        test_join_leapfrog_triejoin,
-        RelationTrie<u64>,
+        RelationTrie,
         LeapfrogTriejoin,
     );
 
