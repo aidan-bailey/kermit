@@ -15,5 +15,7 @@ pub mod ds {
 
 pub mod db;
 
+pub mod testing;
+
 mod utils;
-pub use utils::{compute_db_join, compute_join};
+pub use utils::compute_join;
