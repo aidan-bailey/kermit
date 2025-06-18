@@ -63,7 +63,7 @@ where
 
     pub fn k(&self) -> usize { self.iterators.len() }
 
-    fn iter(&mut self, i: usize) -> &mut IT {
+    fn mut_iter(&mut self, i: usize) -> &mut IT {
         &mut self.iterators[self.iterator_indexes[i]]
     }
 }
@@ -102,25 +102,25 @@ where
         } else {
             self.p - 1
         };
-        let mut x_prime = self.iter(prime_i).key().unwrap();
+        let mut x_prime = self.mut_iter(prime_i).key().unwrap();
         loop {
-            let x = self.iter(self.p).key().unwrap();
+            let x = self.mut_iter(self.p).key().unwrap();
             if x == x_prime {
                 return true;
             } else {
-                self.iter(self.p).seek(x_prime);
-                if self.iter(self.p).at_end() {
+                self.mut_iter(self.p).seek(x_prime);
+                if self.mut_iter(self.p).at_end() {
                     return false;
                 }
-                x_prime = self.iter(self.p).key().unwrap();
+                x_prime = self.mut_iter(self.p).key().unwrap();
                 self.p = (self.p + 1) % self.k();
             }
         }
     }
 
     fn leapfrog_next(&mut self) -> Option<&'a Self::KT> {
-        self.iter(self.p).next();
-        if self.iter(self.p).at_end() {
+        self.mut_iter(self.p).next();
+        if self.mut_iter(self.p).at_end() {
             None
         } else {
             self.p = (self.p + 1) % self.k();
@@ -139,8 +139,8 @@ where
     }
 
     fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> bool {
-        self.iter(self.p).seek(seek_key);
-        if self.iter(self.p).at_end() {
+        self.mut_iter(self.p).seek(seek_key);
+        if self.mut_iter(self.p).at_end() {
             false
         } else {
             self.p = (self.p + 1) % self.k();
