@@ -153,5 +153,4 @@ mod tests {
 
         assert!(!iter.open());
     }
-
 }
