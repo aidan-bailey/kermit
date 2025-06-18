@@ -98,7 +98,6 @@ where
     }
 
     fn update_iters(&mut self) {
-
         while let Some(i) = self.current_iters_indexes.pop() {
             let iter = self
                 .leapfrog
@@ -112,9 +111,8 @@ where
             return;
         }
 
-        let mut next_iters = Vec::<IT>::with_capacity(
-            self.iter_indexes_at_variable[self.depth - 1].len(),
-        );
+        let mut next_iters =
+            Vec::<IT>::with_capacity(self.iter_indexes_at_variable[self.depth - 1].len());
         for i in &self.iter_indexes_at_variable[self.depth - 1] {
             let iter = self.iters[*i].take().expect("There is an iterator here");
             next_iters.push(iter);
