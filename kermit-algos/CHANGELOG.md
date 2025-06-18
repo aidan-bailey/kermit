@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- LeapfrogTriejoin not being aware of how LeapfrogJoin sorts its iterators
-- LeapfrogTrie's Iterator implementation
+- `LeapfrogTriejoin` not being aware of how `LeapfrogJoin` sorts its iterators
+- `LeapfrogTrie`'s `Iterator` implementation
 
 ## [0.0.1] - 2025-06-09
 
