@@ -1,7 +1,7 @@
 use {kermit_algos::join_algo::JoinAlgo, kermit_ds::relation::Relation};
 
 pub fn test_join<R, JA>(
-    arity: usize, input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>,
+    input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>,
     rel_variables: Vec<Vec<usize>>, result: Vec<Vec<R::KT>>,
 ) where
     R: Relation,
@@ -9,7 +9,7 @@ pub fn test_join<R, JA>(
 {
     let relations: Vec<_> = input
         .into_iter()
-        .map(|tuples| R::from_tuples(arity, tuples))
+        .map(|tuples| R::from_tuples(tuples))
         .collect();
     let iterables = relations.iter().collect::<Vec<_>>();
     assert_eq!(JA::join(variables, rel_variables, iterables), result);
