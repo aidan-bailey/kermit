@@ -141,7 +141,7 @@ where
             return false;
         }
         for iter in &mut self.leapfrog.iterators {
-            iter.up();
+            assert!(iter.up());
         }
         self.depth -= 1;
         self.update_iters();
@@ -179,6 +179,37 @@ where
         }
     }
 
+    fn up(&mut self) -> bool {
+        if self.iter.depth == 0 {
+            return false;
+        }
+        self.stack.pop();
+        self.iter.triejoin_up();
+        true
+    }
+
+    fn down(&mut self) -> bool {
+        if self.iter.depth == self.iter.cardinality {
+            return false;
+        }
+        self.iter.triejoin_open();
+        self.stack
+            .push(self.iter.key().expect("Should be a key here"));
+        true
+    }
+
+    fn next_wrapper(&mut self) -> bool {
+        if self.iter.at_end() {
+            false
+        } else if let Some(key) = self.iter.leapfrog_next() {
+            self.stack.pop();
+            self.stack.push(key);
+            true
+        } else {
+            false
+        }
+    }
+
     fn next(&mut self) -> Option<Vec<&'a IT::KT>> {
         loop {
             if self.iter.depth == 0 {
@@ -201,10 +232,8 @@ where
                         if self.iter.depth == 1 {
                             return None;
                         }
-                        self.stack.pop();
-                        self.iter.triejoin_up();
-                        self.stack.pop();
-                        self.iter.leapfrog_next();
+                        self.up();
+                        self.next_wrapper();
                     }
                 } else if self.stack.is_empty() {
                     panic!("Stack should never be empty at leaf")
@@ -216,9 +245,7 @@ where
                 }
             } else {
                 while self.iter.depth < self.iter.cardinality {
-                    self.iter.triejoin_open();
-                    self.stack
-                        .push(self.iter.key().expect("There should be a key here"));
+                    self.down();
                 }
                 return Some(self.stack.clone());
             }
@@ -329,6 +356,47 @@ mod tests {
         assert!(triejoin_iter.at_end());
         triejoin_iter.triejoin_open();
         assert_eq!(triejoin_iter.key().unwrap().clone(), 5);
+    }
+
+    #[test]
+    fn chain() {
+        let r = RelationTrie::<i32>::builder(2)
+            .add_tuples(vec![vec![1, 2], vec![2, 3]])
+            .build();
+        let s = RelationTrie::<i32>::builder(2)
+            .add_tuples(vec![vec![2, 4], vec![3, 5]])
+            .build();
+        let t = RelationTrie::<i32>::builder(2)
+            .add_tuples(vec![vec![4, 6], vec![5, 7]])
+            .build();
+        let r_iter = r.trie_iter();
+        let s_iter = s.trie_iter();
+        let t_iter = t.trie_iter();
+        let mut triejoin_iter = LeapfrogTriejoinIter::new(
+            vec![0, 1, 2, 3],
+            vec![vec![0, 1], vec![1, 2], vec![2, 3]],
+            vec![r_iter, s_iter, t_iter],
+        );
+        assert!(triejoin_iter.triejoin_open());
+        assert_eq!(triejoin_iter.key(), Some(&1));
+        assert!(triejoin_iter.triejoin_open());
+        assert_eq!(triejoin_iter.key(), Some(&2));
+        assert!(triejoin_iter.triejoin_open());
+        assert_eq!(triejoin_iter.key(), Some(&4));
+        assert!(triejoin_iter.triejoin_open());
+        assert_eq!(triejoin_iter.key(), Some(&6));
+
+        assert!(triejoin_iter.triejoin_up());
+        assert!(triejoin_iter.triejoin_up());
+        assert!(triejoin_iter.triejoin_up());
+
+        assert_eq!(triejoin_iter.leapfrog_next(), Some(&2));
+        assert!(triejoin_iter.triejoin_open());
+        assert_eq!(triejoin_iter.key(), Some(&3));
+        assert!(triejoin_iter.triejoin_open());
+        assert_eq!(triejoin_iter.key(), Some(&5));
+        assert!(triejoin_iter.triejoin_open());
+        assert_eq!(triejoin_iter.key(), Some(&7));
     }
 
     // #[test_case(
