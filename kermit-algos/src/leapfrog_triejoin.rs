@@ -98,6 +98,7 @@ where
     }
 
     fn update_iters(&mut self) {
+
         while let Some(i) = self.current_iters_indexes.pop() {
             let iter = self
                 .leapfrog

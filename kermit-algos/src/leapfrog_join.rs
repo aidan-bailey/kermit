@@ -66,6 +66,7 @@ where
     fn mut_iter(&mut self, i: usize) -> &mut IT {
         &mut self.iterators[self.iterator_indexes[i]]
     }
+
 }
 
 impl<'a, IT> LeapfrogJoinIterator<'a> for LeapfrogJoinIter<'a, IT>
