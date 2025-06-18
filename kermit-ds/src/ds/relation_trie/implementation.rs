@@ -41,7 +41,8 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     ///
     /// # Panics
     /// If any tuple does not have a matching `cardinality`.
-    fn from_tuples(cardinality: usize, mut tuples: Vec<Vec<KT>>) -> Self {
+    fn from_tuples(mut tuples: Vec<Vec<KT>>) -> Self {
+        let cardinality = tuples[0].len();
         assert!(tuples.iter().all(|tuple| tuple.len() == cardinality));
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
