@@ -125,7 +125,6 @@ macro_rules! define_multiway_join_test_suite {
         ),+
     ) => {
         $(
-            /*
                 $crate::define_unary_multiway_join_test!(
                     $relation_type,
                     $join_algorithm
@@ -140,7 +139,6 @@ macro_rules! define_multiway_join_test_suite {
                     $relation_type,
                     $join_algorithm
                 );
-            */
 
                 $crate::define_star_multiway_join_test!(
                     $relation_type,
