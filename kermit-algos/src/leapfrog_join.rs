@@ -54,7 +54,7 @@ where
 {
     pub fn new(iterators: Vec<IT>) -> Self {
         LeapfrogJoinIter {
-            iterator_indexes: vec![],
+            iterator_indexes: (0..iterators.len()).collect(),
             iterators,
             p: 0,
             _marker: std::marker::PhantomData,
@@ -63,7 +63,7 @@ where
 
     pub fn k(&self) -> usize { self.iterators.len() }
 
-    pub(crate) fn iter(&mut self, i: usize) -> &mut IT {
+    fn iter(&mut self, i: usize) -> &mut IT {
         &mut self.iterators[self.iterator_indexes[i]]
     }
 }
@@ -84,8 +84,6 @@ where
         if self.at_end() {
             return false;
         }
-
-        self.iterator_indexes = (0..self.k()).collect();
 
         self.iterator_indexes.sort_unstable_by(|a, b| {
             self.iterators[*a]
