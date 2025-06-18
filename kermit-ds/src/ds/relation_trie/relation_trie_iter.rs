@@ -52,19 +52,7 @@ impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
 impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
     type KT = KT;
 
-    fn key(&self) -> Option<&'a KT> {
-        if self.at_end() {
-            None
-        } else {
-            Some(
-                self.stack
-                    .last()
-                    .expect("Not at the Root or the end")
-                    .0
-                    .key(),
-            )
-        }
-    }
+    fn key(&self) -> Option<&'a KT> { Some(self.siblings()?.get(self.pos - 1)?.key()) }
 
     fn next(&mut self) -> Option<&'a KT> {
         if let Some(siblings) = self.siblings() {
@@ -93,7 +81,7 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
                     .siblings()
                     .expect("If there exists a key, there should ALWAYS be at least one sibling");
 
-                while (!self.at_end()) && seek_key > siblings[self.pos].key() {
+                while (!self.at_end()) && seek_key > siblings[self.pos - 1].key() {
                     self.pos += 1;
                 }
 
@@ -101,7 +89,7 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
                     false
                 } else {
                     self.stack.pop();
-                    self.stack.push((&siblings[self.pos], self.pos));
+                    self.stack.push((&siblings[self.pos - 1], self.pos));
                     true
                 }
             }
@@ -123,7 +111,7 @@ impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
     fn open(&mut self) -> bool {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
-                self.stack.push((child, 0));
+                self.stack.push((child, 1));
                 self.pos = 0;
                 true
             } else {
@@ -133,6 +121,7 @@ impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
             false
         } else {
             self.stack.push((&self.trie.children()[0], 0));
+            self.pos = 0;
             true
         }
     }

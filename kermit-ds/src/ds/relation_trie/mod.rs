@@ -69,6 +69,44 @@ mod tests {
     }
 
     #[test]
+    fn linear_iterator() {
+        let trie = Builder::<RelationTrie<u64>>::new(1)
+            .add_tuple(vec![1])
+            .add_tuple(vec![2])
+            .add_tuple(vec![3])
+            .add_tuple(vec![4])
+            .add_tuple(vec![5])
+            .build();
+        let mut iter = trie.trie_iter();
+        assert!(iter.key().is_none());
+        assert!(iter.open());
+        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), Some(&2));
+        assert!(iter.seek(&4));
+        assert_eq!(iter.key(), Some(&4));
+        assert_eq!(iter.next(), Some(&5));
+    }
+
+    #[test]
+    fn test_relation_trie() {
+        let trie = RelationTrie::<u64>::builder(2)
+            .add_tuples(vec![vec![2, 4], vec![3, 5]])
+            .build();
+        let mut iter = trie.trie_iter();
+
+        assert!(iter.open());
+        assert_eq!(iter.next(), Some(&2));
+        assert!(iter.open());
+        assert_eq!(iter.next(), Some(&4));
+
+        assert!(iter.up());
+        assert_eq!(iter.key(), Some(&2));
+        assert_eq!(iter.next(), Some(&3));
+        assert!(iter.open());
+        assert_eq!(iter.next(), Some(&5));
+    }
+
+    #[test]
     fn trie_iterator() {
         let trie = Builder::<RelationTrie<u64>>::new(3)
             .add_tuple(vec![1, 3, 4])
@@ -115,4 +153,5 @@ mod tests {
 
         assert!(!iter.open());
     }
+
 }
