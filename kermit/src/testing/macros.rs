@@ -27,12 +27,12 @@ macro_rules! define_multiway_join_test {
 }
 
 #[macro_export]
-macro_rules! define_simple_multiway_join_test {
-    ($key_type:ty, $relation_type:ident, $join_algorithm:ty) => {
+macro_rules! define_unary_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<simple_multiwayjoin_ $relation_type:lower _ $join_algorithm:lower _ $key_type:lower>],
-            $key_type,
+            [<simple_multiwayjoin_ $relation_type:lower _ $join_algorithm:lower>],
+            u8,
             $relation_type,
             $join_algorithm,
             1,
@@ -50,21 +50,21 @@ macro_rules! define_simple_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_triangle_multiway_join_test {
-    ($key_type:ty, $relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<triangle_ $relation_type:lower _ $join_algorithm:lower _ $key_type:lower>],
-            $key_type,
+            [<triangle_ $relation_type:lower _ $join_algorithm:lower>],
+            u8,
             $relation_type,
             $join_algorithm,
             2,
             [
                 vec![vec![1, 2], vec![2, 3], vec![3, 1]],
                 vec![vec![2, 3], vec![3, 1], vec![1, 2]],
-                vec![vec![3, 1], vec![1, 2], vec![2, 3]]
+                vec![vec![1, 3], vec![2, 1], vec![3, 2]]
             ],
             vec![0, 1, 2],
-            vec![vec![0, 1], vec![1, 2], vec![2, 3]],
+            vec![vec![0, 1], vec![1, 2], vec![0, 2]],
             vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]
         );
         }
@@ -72,12 +72,12 @@ macro_rules! define_triangle_multiway_join_test {
 }
 
 #[macro_export]
-macro_rules! define_chainjoin_multiway_join_test {
-    ($key_type:ty, $relation_type:ident, $join_algorithm:ty) => {
+macro_rules! define_chain_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<chainjoin_ $relation_type:lower _ $join_algorithm:lower _ $key_type:lower>],
-            $key_type,
+            [<chain_ $relation_type:lower _ $join_algorithm:lower>],
+            u8,
             $relation_type,
             $join_algorithm,
             2,
@@ -95,6 +95,28 @@ macro_rules! define_chainjoin_multiway_join_test {
 }
 
 #[macro_export]
+macro_rules! define_star_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<star_ $relation_type:lower _ $join_algorithm:lower>],
+            u8,
+            $relation_type,
+            $join_algorithm,
+            2,
+            [
+                vec![vec![1, 10], vec![2, 20]],
+                vec![vec![1, 100], vec![2, 200]]
+            ],
+            vec![0, 1, 2],
+            vec![vec![0, 1], vec![0, 2]],
+            vec![vec![1, 10, 100], vec![2, 20, 200]]
+        );
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! define_multiway_join_test_suite {
     (
         $(
@@ -103,22 +125,24 @@ macro_rules! define_multiway_join_test_suite {
         ),+
     ) => {
         $(
-                $crate::define_simple_multiway_join_test!(
-                    u64,
+            /*
+                $crate::define_unary_multiway_join_test!(
                     $relation_type,
                     $join_algorithm
                 );
 
-            /*
                 $crate::define_triangle_multiway_join_test!(
-                    u64,
+                    $relation_type,
+                    $join_algorithm
+                );
+
+                $crate::define_chain_multiway_join_test!(
                     $relation_type,
                     $join_algorithm
                 );
             */
 
-                $crate::define_chainjoin_multiway_join_test!(
-                    u64,
+                $crate::define_star_multiway_join_test!(
                     $relation_type,
                     $join_algorithm
                 );
