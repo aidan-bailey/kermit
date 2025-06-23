@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- kermit package dependencies to be minimum versions
+- `kermit-ds` dependency to version 0.0.3
+- `kermit-iters` dependency to version 0.0.2
+- `kermit-algos` dependency to version 0.0.3
 
 ### Fixed
 
