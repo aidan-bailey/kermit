@@ -60,6 +60,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Publish kermit-derive
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: /kermit-derive/
+          TAG_PREFIX: kermit-derive
+
       - name: Publish kermit-kvs
         uses: tu6ge/publish-action@v0.4.5
         env:
