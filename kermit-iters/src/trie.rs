@@ -66,7 +66,8 @@ where
         if !self.iter.open() {
             return false;
         }
-        self.next_wrapper()
+        self.stack.push(self.iter.key().unwrap());
+        true
     }
 
     fn next_wrapper(&mut self) -> bool {

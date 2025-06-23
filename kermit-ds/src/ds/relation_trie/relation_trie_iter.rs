@@ -54,12 +54,12 @@ impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
 impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
     type KT = KT;
 
-    fn key(&self) -> Option<&'a KT> { Some(self.siblings()?.get(self.pos - 1)?.key()) }
+    fn key(&self) -> Option<&'a KT> { Some(self.siblings()?.get(self.pos)?.key()) }
 
     fn next(&mut self) -> Option<&'a KT> {
         if let Some(siblings) = self.siblings() {
             self.pos += 1;
-            if let Some(node) = siblings.get(self.pos - 1) {
+            if let Some(node) = siblings.get(self.pos) {
                 self.stack.pop();
                 self.stack.push((node, self.pos));
                 return Some(node.key());
@@ -83,7 +83,7 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
                     .siblings()
                     .expect("If there exists a key, there should ALWAYS be at least one sibling");
 
-                while (!self.at_end()) && seek_key > siblings[self.pos - 1].key() {
+                while (!self.at_end()) && seek_key > siblings[self.pos].key() {
                     self.pos += 1;
                 }
 
@@ -91,7 +91,7 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
                     false
                 } else {
                     self.stack.pop();
-                    self.stack.push((&siblings[self.pos - 1], self.pos));
+                    self.stack.push((&siblings[self.pos], self.pos));
                     true
                 }
             }
@@ -102,7 +102,7 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
 
     fn at_end(&self) -> bool {
         if let Some(siblings) = self.siblings() {
-            self.pos == siblings.len() + 1
+            self.pos == siblings.len()
         } else {
             true
         }
@@ -113,7 +113,7 @@ impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
     fn open(&mut self) -> bool {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
-                self.stack.push((child, 1));
+                self.stack.push((child, 0));
                 self.pos = 0;
                 true
             } else {
