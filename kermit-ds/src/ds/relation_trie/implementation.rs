@@ -13,8 +13,8 @@ pub struct RelationTrie<KT>
 where
     KT: KeyType,
 {
-    /// Cardinality of the trie.
-    cardinality: usize,
+    /// Degree of the trie.
+    degree: usize,
     /// Children of the trie root.
     children: Vec<TrieNode<KT>>,
 }
@@ -23,10 +23,10 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     /// Construct an empty Trie.
     ///
     /// # Panics
-    /// If `cardinality` is less than 1.
-    fn new(cardinality: usize) -> Self {
+    /// If `degree` is less than 1.
+    fn new(degree: usize) -> Self {
         RelationTrie {
-            cardinality,
+            degree,
             children: vec![],
         }
     }
@@ -39,14 +39,14 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     /// constructing the Trie.
     ///
     /// # Panics
-    /// If any tuple does not have a matching `cardinality`.
+    /// If any tuple does not have a matching `degree`.
     fn from_tuples(mut tuples: Vec<Vec<KT>>) -> Self {
         if tuples.is_empty() {
             return RelationTrie::new(0);
         }
 
-        let cardinality = tuples[0].len();
-        assert!(tuples.iter().all(|tuple| tuple.len() == cardinality));
+        let degree = tuples[0].len();
+        assert!(tuples.iter().all(|tuple| tuple.len() == degree));
 
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
@@ -58,7 +58,7 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
             }
             std::cmp::Ordering::Equal
         });
-        let mut trie = RelationTrie::new(cardinality);
+        let mut trie = RelationTrie::new(degree);
         for tuple in tuples {
             if !trie.insert(tuple) {
                 panic!("Failed to build from tuples.");
@@ -67,10 +67,10 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
         trie
     }
 
-    fn cardinality(&self) -> usize { self.cardinality }
+    fn degree(&self) -> usize { self.degree }
 
     fn insert(&mut self, tuple: Vec<KT>) -> bool {
-        if tuple.len() != self.cardinality {
+        if tuple.len() != self.degree {
             panic!("Arity doesn't match.");
         }
         self.insert_internal(tuple)

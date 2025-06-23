@@ -7,14 +7,14 @@ use {
 
 /// The `Relation` trait defines a relational data structure.
 pub trait Relation: JoinIterable {
-    /// Creates a new relation with the specified cardinality.
-    fn new(cardinality: usize) -> Self;
+    /// Creates a new relation with the specified degree.
+    fn new(degree: usize) -> Self;
 
-    /// Creates a new relation with the specified cardinality and given tuples.
+    /// Creates a new relation with the specified degree and given tuples.
     fn from_tuples(tuples: Vec<Vec<Self::KT>>) -> Self;
 
-    /// Returns the cardinality of the relation.
-    fn cardinality(&self) -> usize;
+    /// Returns the degree of the relation.
+    fn degree(&self) -> usize;
 
     /// Inserts a tuple into the relation, returning `true` if successful and
     /// `false` if otherwise.
@@ -24,12 +24,12 @@ pub trait Relation: JoinIterable {
     /// successful and `false` if otherwise.
     fn insert_all(&mut self, tuples: Vec<Vec<Self::KT>>) -> bool;
 
-    /// Creates a new relation builder with the specified cardinality.
-    fn builder(cardinality: usize) -> impl RelationBuilder<Output = Self>
+    /// Creates a new relation builder with the specified degree.
+    fn builder(degree: usize) -> impl RelationBuilder<Output = Self>
     where
         Self: Relation + Sized,
     {
-        Builder::<Self>::new(cardinality)
+        Builder::<Self>::new(degree)
     }
 }
 
@@ -42,8 +42,8 @@ pub trait RelationBuilder {
     /// The type of relation being built.
     type Output: Relation;
 
-    /// Creates a new relation builder with the specified cardinality.
-    fn new(cardinality: usize) -> Self;
+    /// Creates a new relation builder with the specified degree.
+    fn new(degree: usize) -> Self;
 
     /// Consumes the builder and returns the resulting relation.
     fn build(self) -> Self::Output;
@@ -58,7 +58,7 @@ pub trait RelationBuilder {
 /// A concrete, default implementation of the `RelationBuilder` trait for a
 /// specific relation type `R`.
 pub struct Builder<R: Relation> {
-    cardinality: usize,
+    degree: usize,
     tuples: Vec<Vec<R::KT>>,
 }
 
@@ -66,15 +66,15 @@ pub struct Builder<R: Relation> {
 impl<R: Relation> RelationBuilder for Builder<R> {
     type Output = R;
 
-    fn new(cardinality: usize) -> Self {
+    fn new(degree: usize) -> Self {
         Builder {
-            cardinality,
+            degree,
             tuples: vec![],
         }
     }
 
     fn build(self) -> Self::Output {
-        let mut r = R::new(self.cardinality);
+        let mut r = R::new(self.degree);
         r.insert_all(self.tuples);
         r
     }

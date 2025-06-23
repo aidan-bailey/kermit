@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `RelationalTrie`'s `LinearIterator` implementation
-- `Relation` trait requiring cardinality be specified when creating from tuples
+- `Relation` trait requiring degree be specified when creating from tuples
 
 ## [0.0.1] - 2025-06-09
 
