@@ -3,7 +3,6 @@ use {
         join_algo::JoinAlgo,
         leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
     },
-    kermit_derive::IntoTrieIter,
     kermit_iters::{
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
