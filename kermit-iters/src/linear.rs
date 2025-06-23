@@ -67,10 +67,10 @@ impl<'a, KT: KeyType> LinearIterator<'a> for VecLinearIter<'a, KT> {
     }
 
     fn next(&mut self) -> Option<&'a Self::KT> {
+        self.index += 1;
         if self.at_end() {
             return None;
         }
-        self.index += 1;
         self.key()
     }
 
