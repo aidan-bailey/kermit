@@ -1,0 +1,18 @@
+[package]
+name = "kermit-derive"
+description = "Kermit derive macros"
+version = "0.0.1"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2"
+quote = "1"
+proc-macro2 = "1"
