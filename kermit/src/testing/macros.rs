@@ -157,7 +157,7 @@ macro_rules! define_multiway_join_test_suite {
     (
         $(
             $relation_type:ident,
-            $join_algorithm:ty,
+            $join_algorithm:ty
         ),+
     ) => {
         $(

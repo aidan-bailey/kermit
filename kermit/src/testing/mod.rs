@@ -9,5 +9,5 @@ mod tests {
         kermit_ds::ds::relation_trie::RelationTrie,
     };
 
-    define_multiway_join_test_suite!(RelationTrie, LeapfrogTriejoin,);
+    define_multiway_join_test_suite!(RelationTrie, LeapfrogTriejoin);
 }
