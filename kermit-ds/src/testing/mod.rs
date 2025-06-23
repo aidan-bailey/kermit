@@ -1,4 +1,5 @@
 mod macros;
+#[cfg(test)]
 mod utils;
 
 #[cfg(test)]
