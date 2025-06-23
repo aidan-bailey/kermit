@@ -55,31 +55,52 @@ jobs:
 
     environment: cargo
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - dir: "/kermit/"
-            tag_prefix: "kermit"
-          - dir: "/kermit-algos/"
-            tag_prefix: "kermit-algos"
-          - dir: "/kermit-ds/"
-            tag_prefix: "kermit-ds"
-          - dir: "/kermit-iters/"
-            tag_prefix: "kermit-iters"
-          - dir: "/kermit-kvs/"
-            tag_prefix: "kermit-kvs"
-
     steps:
-      - uses: actions/checkout@master
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
-      - name: Run publish-action
+
+      - name: Publish kermit-kvs
         uses: tu6ge/publish-action@v0.4.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         with:
-          DIR: ${{ matrix.dir }}
-          TAG_PREFIX: ${{ matrix.tag_prefix }}
+          DIR: /kermit-kvs/
+          TAG_PREFIX: kermit-kvs
+
+      - name: Publish kermit-iters
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: /kermit-iters/
+          TAG_PREFIX: kermit-iters
+
+      - name: Publish kermit-ds
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: /kermit-ds/
+          TAG_PREFIX: kermit-ds
+
+      - name: Publish kermit-algos
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: /kermit-algos/
+          TAG_PREFIX: kermit-algos
+
+      - name: Publish kermit
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: /kermit/
+          TAG_PREFIX: kermit
