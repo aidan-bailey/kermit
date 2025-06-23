@@ -80,7 +80,7 @@ mod tests {
         let mut iter = trie.trie_iter();
         assert!(iter.key().is_none());
         assert!(iter.open());
-        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.key(), Some(&1));
         assert_eq!(iter.next(), Some(&2));
         assert!(iter.seek(&4));
         assert_eq!(iter.key(), Some(&4));
@@ -95,15 +95,15 @@ mod tests {
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
-        assert_eq!(iter.next(), Some(&2));
+        assert_eq!(iter.key(), Some(&2));
         assert!(iter.open());
-        assert_eq!(iter.next(), Some(&4));
+        assert_eq!(iter.key(), Some(&4));
 
         assert!(iter.up());
         assert_eq!(iter.key(), Some(&2));
         assert_eq!(iter.next(), Some(&3));
         assert!(iter.open());
-        assert_eq!(iter.next(), Some(&5));
+        assert_eq!(iter.key(), Some(&5));
     }
 
     #[test]
@@ -120,13 +120,13 @@ mod tests {
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
-        assert_eq!(iter.next().unwrap(), &1);
+        assert_eq!(iter.key().unwrap(), &1);
 
         assert!(iter.open());
-        assert_eq!(iter.next().unwrap(), &3);
+        assert_eq!(iter.key().unwrap(), &3);
 
         assert!(iter.open());
-        assert_eq!(iter.next().unwrap(), &4);
+        assert_eq!(iter.key().unwrap(), &4);
 
         assert_eq!(iter.next().unwrap(), &5);
 
@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(iter.next().unwrap(), &4);
 
         assert!(iter.open());
-        assert_eq!(iter.next().unwrap(), &6);
+        assert_eq!(iter.key().unwrap(), &6);
 
         assert!(iter.seek(&9));
         assert!(iter.up());
@@ -146,10 +146,10 @@ mod tests {
         assert_eq!(iter.next().unwrap(), &3);
 
         assert!(iter.open());
-        assert_eq!(iter.next().unwrap(), &5);
+        assert_eq!(iter.key().unwrap(), &5);
 
         assert!(iter.open());
-        assert_eq!(iter.next().unwrap(), &2);
+        assert_eq!(iter.key().unwrap(), &2);
 
         assert!(!iter.open());
     }
