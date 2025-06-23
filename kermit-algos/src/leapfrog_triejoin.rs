@@ -19,7 +19,7 @@ where
     IT: TrieIterator<'a>,
 {
     /// The key of the current position.
-    cardinality: usize,
+    degree: usize,
     iters: Vec<Option<IT>>,
     current_iters_indexes: Vec<usize>,
     iter_indexes_at_variable: Vec<Vec<usize>>,
@@ -91,7 +91,7 @@ where
             iters,
             current_iters_indexes: Vec::new(),
             iter_indexes_at_variable,
-            cardinality: variables.len(),
+            degree: variables.len(),
             depth: 0,
             leapfrog: LeapfrogJoinIter::new(vec![]),
         }
@@ -173,10 +173,10 @@ where
     IT: TrieIterator<'a> + 'a,
 {
     pub fn new(iter: LeapfrogTriejoinIter<'a, IT>) -> Self {
-        let cardinality = iter.cardinality;
+        let degree = iter.degree;
         LeapfrogTriejoinIterWrapper {
             iter,
-            stack: Vec::with_capacity(cardinality),
+            stack: Vec::with_capacity(degree),
         }
     }
 
@@ -190,7 +190,7 @@ where
     }
 
     fn down(&mut self) -> bool {
-        if self.iter.depth == self.iter.cardinality {
+        if self.iter.depth == self.iter.degree {
             return false;
         }
         self.iter.triejoin_open();
@@ -221,10 +221,10 @@ where
                 // If we cannot open, the join is empty
                 self.stack
                     .push(self.iter.key().expect("There should be a key here"));
-                if self.iter.depth == self.iter.cardinality {
+                if self.iter.depth == self.iter.degree {
                     return Some(self.stack.clone());
                 }
-            } else if self.iter.depth == self.iter.cardinality {
+            } else if self.iter.depth == self.iter.degree {
                 // At leaf
                 self.iter.leapfrog_next();
                 if self.iter.at_end() {
@@ -245,7 +245,7 @@ where
                     return Some(self.stack.clone());
                 }
             } else {
-                while self.iter.depth < self.iter.cardinality {
+                while self.iter.depth < self.iter.degree {
                     self.down();
                 }
                 return Some(self.stack.clone());
@@ -438,11 +438,11 @@ mod tests {
     // vec![vec![1], vec![2], vec![3]];
     // "1-ary"
     // )]
-    // fn test_inputs_outputs(cardinality: usize, inputs: Vec<Vec<Vec<i32>>>,
+    // fn test_inputs_outputs(degree: usize, inputs: Vec<Vec<Vec<i32>>>,
     // expected: Vec<Vec<i32>>) { let tries: Vec<_> = inputs
     // .into_iter()
     // .map(|input|
-    // TrieBuilder::<i32>::new(cardinality).add_tuples(input).build())
+    // TrieBuilder::<i32>::new(degree).add_tuples(input).build())
     // .collect();
     // let res = leapfrog_triejoin(tries.iter().collect());
     // assert_eq!(res, expected);

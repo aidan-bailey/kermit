@@ -36,8 +36,8 @@ where
 
     pub fn name(&self) -> &String { &self.name }
 
-    pub fn add_relation(&mut self, name: &str, cardinality: usize) {
-        let relation = R::builder(cardinality).build();
+    pub fn add_relation(&mut self, name: &str, degree: usize) {
+        let relation = R::builder(degree).build();
         self.relations.insert(name.to_owned(), relation);
     }
 
@@ -67,9 +67,9 @@ where
             .iter()
             .map(|name| self.relations.get(name).unwrap())
             .collect::<Vec<&R>>();
-        let cardinality = variables.len();
+        let degree = variables.len();
         let tuples = JA::join(variables, rel_variables, iterables);
-        R::builder(cardinality).add_tuples(tuples).build()
+        R::builder(degree).add_tuples(tuples).build()
     }
 }
 
