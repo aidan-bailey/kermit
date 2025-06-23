@@ -66,9 +66,7 @@ where
         if !self.iter.open() {
             return false;
         }
-        self.stack
-            .push(self.iter.key().expect("Should be a key here"));
-        true
+        self.next_wrapper()
     }
 
     fn next_wrapper(&mut self) -> bool {
