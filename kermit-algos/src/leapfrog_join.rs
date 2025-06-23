@@ -76,11 +76,13 @@ where
 
     fn leapfrog_init(&mut self) -> bool {
         for iter in &mut self.iterators {
-            iter.next();
-        }
-
-        if self.at_end() {
-            return false;
+            if iter.key().is_none() {
+                iter.next(); // Move to the first key if not already set.
+            }
+            if iter.at_end() {
+                return false; // If iterator is at the end, no common key can be
+                              // found.
+            }
         }
 
         self.iterator_indexes.sort_unstable_by(|a, b| {
