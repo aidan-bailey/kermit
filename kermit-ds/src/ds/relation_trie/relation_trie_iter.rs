@@ -2,16 +2,15 @@
 //! data structure.
 
 use {
-    super::{implementation::RelationTrie, trie_node::TrieNode, trie_traits::TrieFields},
-    crate::shared::nodes::Node,
-    kermit_iters::{
+    super::{implementation::RelationTrie, trie_node::TrieNode, trie_traits::TrieFields}, crate::shared::nodes::Node, kermit_derive::IntoTrieIter, kermit_iters::{
         key_type::KeyType,
         linear::LinearIterator,
-        trie::{TrieIterable, TrieIterator},
-    },
+        trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
+    }
 };
 
 /// An iterator over the nodes of a `RelationTrie`.
+#[derive(IntoTrieIter)]
 struct RelationTrieIter<'a, KT: KeyType> {
     /// Current Node's index amongst its siblings.
     pos: usize,
@@ -142,5 +141,27 @@ impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
 
 /// Implementation of the `TrieIterable` trait for `RelationTrie`.
 impl<KT: KeyType> TrieIterable for RelationTrie<KT> {
-    fn trie_iter(&self) -> impl TrieIterator<'_, KT = KT> { RelationTrieIter::new(self) }
+    fn trie_iter(&self) -> impl TrieIterator<'_, KT = KT> + IntoIterator<Item = Vec<&'_ KT>> { RelationTrieIter::new(self) }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::relation::Relation;
+
+    use super::*;
+
+    #[test]
+    fn test_relation_trie_iter() {
+        let trie = RelationTrie::<i32>::from_tuples(vec![
+            vec![1, 2],
+            vec![1, 3],
+            vec![2, 4],
+            vec![3, 5],
+        ]);
+        let iter = trie.trie_iter();
+        for v in iter {
+            assert!(!v.is_empty(), "Each iteration should yield a non-empty vector.");
+        }
+    }
+
 }
