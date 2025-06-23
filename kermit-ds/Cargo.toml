@@ -12,6 +12,7 @@ repository.workspace = true
 [dependencies]
 csv = "1.1"
 kermit-iters = { version = "0.0.1", path = "../kermit-iters" }
+kermit-derive = { version = "0.0.1", path = "../kermit-derive" }
 
 #[[bench]]
 #name = "main"
