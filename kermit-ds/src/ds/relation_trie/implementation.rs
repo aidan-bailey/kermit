@@ -13,8 +13,8 @@ pub struct RelationTrie<KT>
 where
     KT: KeyType,
 {
-    /// Degree of the trie.
-    degree: usize,
+    /// Arity of the trie.
+    arity: usize,
     /// Children of the trie root.
     children: Vec<TrieNode<KT>>,
 }
@@ -23,10 +23,10 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     /// Construct an empty Trie.
     ///
     /// # Panics
-    /// If `degree` is less than 1.
-    fn new(degree: usize) -> Self {
+    /// If `arity` is less than 1.
+    fn new(arity: usize) -> Self {
         RelationTrie {
-            degree,
+            arity,
             children: vec![],
         }
     }
@@ -39,14 +39,14 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     /// constructing the Trie.
     ///
     /// # Panics
-    /// If any tuple does not have a matching `degree`.
+    /// If any tuple does not have a matching `arity`.
     fn from_tuples(mut tuples: Vec<Vec<KT>>) -> Self {
         if tuples.is_empty() {
             return RelationTrie::new(0);
         }
 
-        let degree = tuples[0].len();
-        assert!(tuples.iter().all(|tuple| tuple.len() == degree));
+        let arity = tuples[0].len();
+        assert!(tuples.iter().all(|tuple| tuple.len() == arity));
 
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
@@ -58,7 +58,7 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
             }
             std::cmp::Ordering::Equal
         });
-        let mut trie = RelationTrie::new(degree);
+        let mut trie = RelationTrie::new(arity);
         for tuple in tuples {
             if !trie.insert(tuple) {
                 panic!("Failed to build from tuples.");
@@ -67,10 +67,10 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
         trie
     }
 
-    fn degree(&self) -> usize { self.degree }
+    fn arity(&self) -> usize { self.arity }
 
     fn insert(&mut self, tuple: Vec<KT>) -> bool {
-        if tuple.len() != self.degree {
+        if tuple.len() != self.arity {
             panic!("Arity doesn't match.");
         }
         self.insert_internal(tuple)
