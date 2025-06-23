@@ -36,6 +36,20 @@ macro_rules! define_initialisation_tests {
                 [vec![1], vec![2], vec![3]],
             );
 
+            $crate::define_initialisation_test!(
+                [<binary_$relation_type:lower _ key_type:lower>],
+                u8,
+                $relation_type,
+                [vec![1, 2], vec![3, 4]],
+            );
+
+            $crate::define_initialisation_test!(
+                [<ternary_$relation_type:lower _ key_type:lower>],
+                u8,
+                $relation_type,
+                [vec![1, 2, 3], vec![4, 5, 6]],
+            );
+
         }
     };
 }
