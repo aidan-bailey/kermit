@@ -2,7 +2,7 @@
 //! for a key type used in relations. NOTE: Yes, the number of traits is large
 //! and probably not necessary.
 
-use std::{fmt::Debug, hash::Hash, str::FromStr};
+use std::{fmt::Debug, hash::Hash};
 
 /// Trait for key types used in relations.
 ///
