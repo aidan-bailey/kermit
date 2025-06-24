@@ -2,7 +2,7 @@ use std::{fmt::Debug, hash::Hash, str::FromStr};
 
 pub trait KeyValStore<KT, VT>
 where
-    KT: PartialOrd + PartialEq + Clone + FromStr + Debug + Eq + Hash + Ord,
+    KT: PartialOrd + PartialEq + Debug + Eq + Hash + Ord,
     VT: Hash,
 {
     fn add(&mut self, val: VT) -> KT;

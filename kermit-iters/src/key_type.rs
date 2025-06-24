@@ -8,10 +8,10 @@ use std::{fmt::Debug, hash::Hash, str::FromStr};
 ///
 /// TODO: Consider if all these traits are necessary.
 pub trait KeyType:
-    PartialOrd + PartialEq + Clone + FromStr + Debug + Eq + Hash + Ord + Sized
+    PartialOrd + PartialEq + Debug + Eq + Hash + Ord + Sized + Copy
 {
 }
 impl<KT> KeyType for KT where
-    KT: PartialOrd + PartialEq + Clone + FromStr + Debug + Eq + Hash + Ord + Sized
+    KT: PartialOrd + PartialEq + Debug + Eq + Hash + Ord + Sized + Copy
 {
 }
