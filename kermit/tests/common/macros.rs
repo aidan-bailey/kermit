@@ -14,7 +14,7 @@ macro_rules! define_multiway_join_test {
         fn $test_name() {
             let inputs: Vec<Vec<Vec<$key_type>>> = vec![$($input.to_vec()),+];
 
-            $crate::testing::utils::test_join::<$relation_type<$key_type>, $join_algorithm>(
+            $crate::common::utils::test_join::<$relation_type<$key_type>, $join_algorithm>(
                 inputs,
                 $join_vars.to_vec(),
                 $projection.to_vec(),
