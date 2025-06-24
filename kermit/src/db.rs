@@ -8,6 +8,7 @@ use {
 pub struct Database<VT, KVST, R>
 where
     KVST: KeyValStore<R::KT, VT>,
+    R::KT: Hash,
     VT: Hash,
     R: Relation,
 {
@@ -21,6 +22,7 @@ where
 impl<VT, KVST, R> Database<VT, KVST, R>
 where
     KVST: KeyValStore<R::KT, VT>,
+    R::KT: Hash,
     VT: Hash,
     R: Relation,
 {
