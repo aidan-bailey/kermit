@@ -1,7 +1,7 @@
 [package]
 name = "kermit"
 description = "Relational data structures, iterators and algorithms"
-version = "0.0.4"
+version = "0.0.5"
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
@@ -14,4 +14,6 @@ kermit-ds = { version = "0.0.4", path = "../kermit-ds" }
 kermit-iters = { version = "0.0.2", path = "../kermit-iters" }
 kermit-algos = { version = "0.0.3", path = "../kermit-algos" }
 kermit-kvs = { version = "0.0.1", path = "../kermit-kvs" }
+
+[dev-dependencies]
 paste = "1.0.15"
