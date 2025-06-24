@@ -4,7 +4,7 @@ use crate::{join_iterable::JoinIterable, linear::LinearIterator};
 
 /// The `TrieIterator` trait, designed for iterators that traverse a trie-based
 /// structure.
-pub trait TrieIterator<'a>: LinearIterator<'a> {
+pub trait TrieIterator: LinearIterator {
     /// If there is a child iterator at the iterator's current position,
     /// repositions at said iterator and returns `true`, otherwise returns
     /// `false`.
@@ -29,22 +29,20 @@ pub trait TrieIterator<'a>: LinearIterator<'a> {
 /// through the `TrieIterable` interface, and as such used in algorithms that
 /// require such an iterator.
 pub trait TrieIterable: JoinIterable {
-    fn trie_iter(
-        &self,
-    ) -> impl TrieIterator<'_, KT = Self::KT> + IntoIterator<Item = Vec<&'_ Self::KT>>;
+    fn trie_iter(&self) -> impl TrieIterator<KT = Self::KT> + IntoIterator<Item = Vec<Self::KT>>;
 }
 
-pub struct TrieIteratorWrapper<'a, IT>
+pub struct TrieIteratorWrapper<IT>
 where
-    IT: TrieIterator<'a>,
+    IT: TrieIterator,
 {
     iter: IT,
-    stack: Vec<&'a IT::KT>,
+    stack: Vec<IT::KT>,
 }
 
-impl<'a, IT> TrieIteratorWrapper<'a, IT>
+impl<IT> TrieIteratorWrapper<IT>
 where
-    IT: TrieIterator<'a> + 'a,
+    IT: TrieIterator,
 {
     pub fn new(iter: IT) -> Self {
         TrieIteratorWrapper {
@@ -82,7 +80,7 @@ where
         }
     }
 
-    fn next(&mut self) -> Option<Vec<&'a IT::KT>> {
+    fn next(&mut self) -> Option<Vec<IT::KT>> {
         if !self.stack.is_empty() {
             while !self.next_wrapper() {
                 if !self.up() {
@@ -101,11 +99,11 @@ where
     }
 }
 
-impl<'a, IT> Iterator for TrieIteratorWrapper<'a, IT>
+impl<IT> Iterator for TrieIteratorWrapper<IT>
 where
-    IT: TrieIterator<'a> + 'a,
+    IT: TrieIterator,
 {
-    type Item = Vec<&'a IT::KT>;
+    type Item = Vec<IT::KT>;
 
     fn next(&mut self) -> Option<Self::Item> { self.next() }
 }

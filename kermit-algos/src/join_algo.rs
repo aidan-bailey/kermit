@@ -13,14 +13,12 @@ where
     fn join(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
     ) -> Vec<Vec<ITB::KT>> {
-        Self::join_iter(variables, rel_variables, iterables)
-            .map(|tuple| tuple.into_iter().cloned().collect())
-            .collect()
+        Self::join_iter(variables, rel_variables, iterables).collect()
     }
 
     /// Joins the given iterables based on the specified join plan.
     /// Returns an iterator over the resulting join.
     fn join_iter(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
-    ) -> impl Iterator<Item = Vec<&ITB::KT>>;
+    ) -> impl Iterator<Item = Vec<ITB::KT>>;
 }

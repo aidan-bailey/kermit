@@ -10,16 +10,16 @@ use {
 };
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub trait LeapfrogTriejoinIterator<'a>: LeapfrogJoinIterator<'a> {
+pub trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
     fn triejoin_open(&mut self) -> bool;
 
     fn triejoin_up(&mut self) -> bool;
 }
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub struct LeapfrogTriejoinIter<'a, IT>
+pub struct LeapfrogTriejoinIter<IT>
 where
-    IT: TrieIterator<'a>,
+    IT: TrieIterator,
 {
     /// The key of the current position.
     arity: usize,
@@ -27,18 +27,18 @@ where
     current_iters_indexes: Vec<usize>,
     iter_indexes_at_variable: Vec<Vec<usize>>,
     depth: usize,
-    leapfrog: LeapfrogJoinIter<'a, IT>,
+    leapfrog: LeapfrogJoinIter<IT>,
 }
 
-impl<'a, IT> LeapfrogJoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+impl<IT> LeapfrogJoinIterator for LeapfrogTriejoinIter<IT>
 where
-    IT: TrieIterator<'a> + 'a,
+    IT: TrieIterator,
 {
     type KT = IT::KT;
 
-    fn leapfrog_next(&mut self) -> Option<&'a Self::KT> { self.leapfrog.leapfrog_next() }
+    fn leapfrog_next(&mut self) -> Option<Self::KT> { self.leapfrog.leapfrog_next() }
 
-    fn key(&self) -> Option<&'a Self::KT> {
+    fn key(&self) -> Option<Self::KT> {
         if self.depth == 0 {
             None
         } else {
@@ -57,14 +57,14 @@ where
         self.leapfrog.at_end()
     }
 
-    fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> bool {
+    fn leapfrog_seek(&mut self, seek_key: Self::KT) -> bool {
         self.leapfrog.leapfrog_seek(seek_key)
     }
 }
 
-impl<'a, IT> LeapfrogTriejoinIter<'a, IT>
+impl<IT> LeapfrogTriejoinIter<IT>
 where
-    IT: TrieIterator<'a>,
+    IT: TrieIterator,
 {
     /// Construct a new `LeapfrogTriejoinIter` with the given iterators.
     ///
@@ -125,9 +125,9 @@ where
     }
 }
 
-impl<'a, IT> LeapfrogTriejoinIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+impl<IT> LeapfrogTriejoinIterator for LeapfrogTriejoinIter<IT>
 where
-    IT: TrieIterator<'a> + 'a,
+    IT: TrieIterator,
 {
     fn triejoin_open(&mut self) -> bool {
         if self.depth == self.arity {
@@ -156,36 +156,36 @@ where
     }
 }
 
-impl<'a, IT> TrieIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+impl<IT> TrieIterator for LeapfrogTriejoinIter<IT>
 where
-    IT: TrieIterator<'a> + 'a,
+    IT: TrieIterator,
 {
     fn open(&mut self) -> bool { self.triejoin_open() }
 
     fn up(&mut self) -> bool { self.triejoin_up() }
 }
 
-impl<'a, IT> LinearIterator<'a> for LeapfrogTriejoinIter<'a, IT>
+impl<IT> LinearIterator for LeapfrogTriejoinIter<IT>
 where
-    IT: TrieIterator<'a> + 'a,
+    IT: TrieIterator,
 {
     type KT = IT::KT;
 
-    fn key(&self) -> Option<&'a Self::KT> { LeapfrogJoinIterator::key(self) }
+    fn key(&self) -> Option<Self::KT> { LeapfrogJoinIterator::key(self) }
 
-    fn next(&mut self) -> Option<&'a Self::KT> { self.leapfrog_next() }
+    fn next(&mut self) -> Option<Self::KT> { self.leapfrog_next() }
 
-    fn seek(&mut self, seek_key: &Self::KT) -> bool { self.leapfrog_seek(seek_key) }
+    fn seek(&mut self, seek_key: Self::KT) -> bool { self.leapfrog_seek(seek_key) }
 
     fn at_end(&self) -> bool { LeapfrogJoinIterator::at_end(self) }
 }
 
-impl<'a, IT> IntoIterator for LeapfrogTriejoinIter<'a, IT>
+impl<IT> IntoIterator for LeapfrogTriejoinIter<IT>
 where
-    IT: TrieIterator<'a> + 'a,
+    IT: TrieIterator,
 {
-    type IntoIter = TrieIteratorWrapper<'a, Self>;
-    type Item = Vec<&'a IT::KT>;
+    type IntoIter = TrieIteratorWrapper<Self>;
+    type Item = Vec<IT::KT>;
 
     fn into_iter(self) -> Self::IntoIter { TrieIteratorWrapper::new(self) }
 }
@@ -196,19 +196,9 @@ impl<ITB> JoinAlgo<ITB> for LeapfrogTriejoin
 where
     ITB: TrieIterable,
 {
-    fn join(
-        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
-    ) -> Vec<Vec<ITB::KT>> {
-        let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
-        LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters)
-            .into_iter()
-            .map(|v| v.into_iter().cloned().collect::<Vec<_>>())
-            .collect::<Vec<_>>()
-    }
-
     fn join_iter(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
-    ) -> impl Iterator<Item = Vec<&ITB::KT>> {
+    ) -> impl Iterator<Item = Vec<ITB::KT>> {
         let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
         LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters).into_iter()
     }
@@ -241,17 +231,14 @@ mod tests {
         let mut triejoin_iter =
             LeapfrogTriejoinIter::new(vec![0], vec![vec![0], vec![0]], vec![t1_iter, t2_iter]);
         triejoin_iter.triejoin_open();
-        assert_eq!(triejoin_iter.key(), Some(&1));
-        assert_eq!(triejoin_iter.leapfrog_next(), Some(&2));
-        assert_eq!(triejoin_iter.leapfrog_next(), Some(&3));
+        assert_eq!(triejoin_iter.key(), Some(1));
+        assert_eq!(triejoin_iter.leapfrog_next(), Some(2));
+        assert_eq!(triejoin_iter.leapfrog_next(), Some(3));
         triejoin_iter.leapfrog_next();
         assert!(triejoin_iter.at_end());
         triejoin_iter.triejoin_up();
         assert!(triejoin_iter.at_end());
-        let res = triejoin_iter
-            .into_iter()
-            .map(|v| v.into_iter().copied().collect::<Vec<_>>())
-            .collect::<Vec<_>>();
+        let res = triejoin_iter.into_iter().collect::<Vec<_>>();
         assert_eq!(res, vec![vec![1_i32], vec![2_i32], vec![3_i32]]);
     }
 
@@ -306,25 +293,25 @@ mod tests {
             vec![r_iter, s_iter, t_iter],
         );
         assert!(triejoin_iter.triejoin_open());
-        assert_eq!(triejoin_iter.key(), Some(&1));
+        assert_eq!(triejoin_iter.key(), Some(1));
         assert!(triejoin_iter.triejoin_open());
-        assert_eq!(triejoin_iter.key(), Some(&2));
+        assert_eq!(triejoin_iter.key(), Some(2));
         assert!(triejoin_iter.triejoin_open());
-        assert_eq!(triejoin_iter.key(), Some(&4));
+        assert_eq!(triejoin_iter.key(), Some(4));
         assert!(triejoin_iter.triejoin_open());
-        assert_eq!(triejoin_iter.key(), Some(&6));
+        assert_eq!(triejoin_iter.key(), Some(6));
 
         assert!(triejoin_iter.triejoin_up());
         assert!(triejoin_iter.triejoin_up());
         assert!(triejoin_iter.triejoin_up());
 
-        assert_eq!(triejoin_iter.leapfrog_next(), Some(&2));
+        assert_eq!(triejoin_iter.leapfrog_next(), Some(2));
         assert!(triejoin_iter.triejoin_open());
-        assert_eq!(triejoin_iter.key(), Some(&3));
+        assert_eq!(triejoin_iter.key(), Some(3));
         assert!(triejoin_iter.triejoin_open());
-        assert_eq!(triejoin_iter.key(), Some(&5));
+        assert_eq!(triejoin_iter.key(), Some(5));
         assert!(triejoin_iter.triejoin_open());
-        assert_eq!(triejoin_iter.key(), Some(&7));
+        assert_eq!(triejoin_iter.key(), Some(7));
     }
 
     // #[test_case(

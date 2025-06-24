@@ -49,10 +49,10 @@ pub trait Internal: TrieFields {
                 current_children = current_children[0].children_mut();
             } else {
                 for i in (0..current_children.len()).rev() {
-                    if &key == current_children[i].key() {
+                    if key == current_children[i].key() {
                         current_children = current_children[i].children_mut();
                         break;
-                    } else if &key > current_children[i].key() {
+                    } else if key > current_children[i].key() {
                         if i == current_children.len() - 1 {
                             current_children.push(Self::NodeType::new(key));
                             current_children = current_children[i + 1].children_mut();
