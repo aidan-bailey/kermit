@@ -1,18 +1,18 @@
 //! This modules defines traits, structs and iters used to compute a Leapfrog
 //! Join.
 
-use kermit_iters::{key_type::KeyType, linear::LinearIterator};
+use kermit_iters::linear::LinearIterator;
 
 /// The `LeapfrogJoinIterator` trait defines the interface for a leapfrog join
 /// iterator.
-pub trait LeapfrogJoinIterator<'a> {
+pub trait LeapfrogJoinIterator {
     /// The key type for the iterator.
-    type KT: KeyType;
+    type KT: Copy + Ord;
 
     /// Returns a reference to the key at the iterator's current position,
     /// otherwise `None` if `leapfrog_init` has not yet been called, or the
     /// iterator is positioned at the end.
-    fn key(&self) -> Option<&'a Self::KT>;
+    fn key(&self) -> Option<Self::KT>;
 
     /// Initialises the iterator and finds the first common key.
     ///
@@ -28,36 +28,34 @@ pub trait LeapfrogJoinIterator<'a> {
     /// i.e., the smallest key ≥ `seek_key`.
     ///
     /// Returns `true` if the key exists, otherwise `false`.
-    fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> bool;
+    fn leapfrog_seek(&mut self, seek_key: Self::KT) -> bool;
 
     /// Moves the iterator to the next common key and returns a reference
     /// to it, or `None` if there are no more common keys.
-    fn leapfrog_next(&mut self) -> Option<&'a Self::KT>;
+    fn leapfrog_next(&mut self) -> Option<Self::KT>;
 
     /// Returns `true` if the iterator is positioned at the end.
     fn at_end(&self) -> bool;
 }
 
-pub struct LeapfrogJoinIter<'a, IT>
+pub struct LeapfrogJoinIter<IT>
 where
-    IT: LinearIterator<'a>,
+    IT: LinearIterator,
 {
     pub(crate) iterators: Vec<IT>,
     pub iterator_indexes: Vec<usize>,
     p: usize,
-    _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a, IT> LeapfrogJoinIter<'a, IT>
+impl<IT> LeapfrogJoinIter<IT>
 where
-    IT: LinearIterator<'a>,
+    IT: LinearIterator,
 {
     pub fn new(iterators: Vec<IT>) -> Self {
         LeapfrogJoinIter {
             iterator_indexes: (0..iterators.len()).collect(),
             iterators,
             p: 0,
-            _marker: std::marker::PhantomData,
         }
     }
 
@@ -66,13 +64,13 @@ where
     fn mut_iter(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.iterator_indexes[i]] }
 }
 
-impl<'a, IT> LeapfrogJoinIterator<'a> for LeapfrogJoinIter<'a, IT>
+impl<IT> LeapfrogJoinIterator for LeapfrogJoinIter<IT>
 where
-    IT: LinearIterator<'a> + 'a,
+    IT: LinearIterator,
 {
     type KT = IT::KT;
 
-    fn key(&self) -> Option<&'a Self::KT> { self.iterators[self.p].key() }
+    fn key(&self) -> Option<Self::KT> { self.iterators[self.p].key() }
 
     fn leapfrog_init(&mut self) -> bool {
         for iter in &mut self.iterators {
@@ -89,7 +87,7 @@ where
             self.iterators[*a]
                 .key()
                 .unwrap()
-                .cmp(self.iterators[*b].key().unwrap())
+                .cmp(&self.iterators[*b].key().unwrap())
         });
 
         self.p = 0;
@@ -118,7 +116,7 @@ where
         }
     }
 
-    fn leapfrog_next(&mut self) -> Option<&'a Self::KT> {
+    fn leapfrog_next(&mut self) -> Option<Self::KT> {
         self.mut_iter(self.p).next();
         if self.mut_iter(self.p).at_end() {
             None
@@ -138,7 +136,7 @@ where
         false
     }
 
-    fn leapfrog_seek(&mut self, seek_key: &Self::KT) -> bool {
+    fn leapfrog_seek(&mut self, seek_key: Self::KT) -> bool {
         self.mut_iter(self.p).seek(seek_key);
         if self.mut_iter(self.p).at_end() {
             false
@@ -161,8 +159,8 @@ mod tests {
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
         assert!(join_iter.leapfrog_init());
-        assert_eq!(join_iter.key(), Some(&2));
-        assert_eq!(join_iter.leapfrog_next(), Some(&3));
+        assert_eq!(join_iter.key(), Some(2));
+        assert_eq!(join_iter.leapfrog_next(), Some(3));
         assert_eq!(join_iter.leapfrog_next(), None);
     }
 
@@ -193,7 +191,7 @@ mod tests {
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter()]);
 
         assert!(join_iter.leapfrog_init());
-        assert_eq!(join_iter.key(), Some(&1));
+        assert_eq!(join_iter.key(), Some(1));
     }
 
     #[test]
@@ -206,8 +204,8 @@ mod tests {
             LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
 
         assert!(join_iter.leapfrog_init());
-        assert_eq!(join_iter.key(), Some(&2));
-        assert_eq!(join_iter.leapfrog_next(), Some(&5));
+        assert_eq!(join_iter.key(), Some(2));
+        assert_eq!(join_iter.leapfrog_next(), Some(5));
         assert_eq!(join_iter.leapfrog_next(), None);
     }
 
@@ -253,7 +251,7 @@ mod tests {
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
         assert!(join_iter.leapfrog_init());
-        assert_eq!(join_iter.key(), Some(&2));
+        assert_eq!(join_iter.key(), Some(2));
     }
 
     #[test]
@@ -266,7 +264,7 @@ mod tests {
             LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
 
         assert!(join_iter.leapfrog_init());
-        assert_eq!(join_iter.key(), Some(&2));
+        assert_eq!(join_iter.key(), Some(2));
     }
 
     #[test]
@@ -277,8 +275,8 @@ mod tests {
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
         assert!(join_iter.leapfrog_init());
-        assert_eq!(join_iter.key(), Some(&500));
-        assert_eq!(join_iter.leapfrog_next(), Some(&501));
+        assert_eq!(join_iter.key(), Some(500));
+        assert_eq!(join_iter.leapfrog_next(), Some(501));
     }
 
     #[test]

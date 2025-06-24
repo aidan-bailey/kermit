@@ -11,5 +11,5 @@ pub trait Node {
     fn new(key: Self::KT) -> Self;
 
     /// Returns a reference to the key.
-    fn key(&self) -> &Self::KT;
+    fn key(&self) -> Self::KT;
 }

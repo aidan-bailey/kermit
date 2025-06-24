@@ -32,7 +32,7 @@ where
         }
     }
 
-    fn key(&self) -> &KT { &self.key }
+    fn key(&self) -> KT { self.key }
 }
 
 impl<KT: KeyType> TrieFields for TrieNode<KT> {
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn node_new() {
         let node = TrieNode::new(1);
-        assert_eq!(node.key(), &1);
+        assert_eq!(node.key(), 1);
     }
 
     #[test]
@@ -89,8 +89,8 @@ mod tests {
                 children: vec![child],
             }
         };
-        assert_eq!(node.key(), &1);
-        assert_eq!(node.children()[0].key(), &2);
+        assert_eq!(node.key(), 1);
+        assert_eq!(node.children()[0].key(), 2);
     }
 
     // TrieFields implementation tests
@@ -125,22 +125,22 @@ mod tests {
 
         // Basic
         node.insert_internal(vec![2, 3, 1]);
-        assert_eq!(node[0].key(), &2);
-        assert_eq!(node[0][0].key(), &3);
-        assert_eq!(node[0][0][0].key(), &1);
+        assert_eq!(node[0].key(), 2);
+        assert_eq!(node[0][0].key(), 3);
+        assert_eq!(node[0][0][0].key(), 1);
 
         // First level
 
         // Left Top
         node.insert_internal(vec![1, 3, 4]);
-        assert_eq!(node[0].key(), &1);
-        assert_eq!(node[0][0].key(), &3);
-        assert_eq!(node[0][0][0].key(), &4);
+        assert_eq!(node[0].key(), 1);
+        assert_eq!(node[0][0].key(), 3);
+        assert_eq!(node[0][0][0].key(), 4);
 
         // Right top
         node.insert_internal(vec![3, 3, 4]);
-        assert_eq!(node[2].key(), &3);
-        assert_eq!(node[2][0].key(), &3);
-        assert_eq!(node[2][0][0].key(), &4);
+        assert_eq!(node[2].key(), 3);
+        assert_eq!(node[2][0].key(), 3);
+        assert_eq!(node[2][0][0].key(), 4);
     }
 }

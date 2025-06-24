@@ -36,11 +36,11 @@ mod tests {
         assert_eq!(trie.size(), 1);
         // check first level child
         let child = &trie.children()[0];
-        assert_eq!(child.key(), &1);
+        assert_eq!(child.key(), 1);
         assert_eq!(child.size(), 1);
         // check second level child
         let child = &child.children()[0];
-        assert_eq!(child.key(), &2);
+        assert_eq!(child.key(), 2);
         assert_eq!(child.size(), 0);
 
         let _ = trie.insert(vec![0, 2]);
@@ -48,11 +48,11 @@ mod tests {
         assert_eq!(trie.size(), 2);
         // check first level child
         let child = &trie.children()[0];
-        assert_eq!(child.key(), &0);
+        assert_eq!(child.key(), 0);
         assert_eq!(child.size(), 1);
         // check second level child
         let child = &child.children()[0];
-        assert_eq!(child.key(), &2);
+        assert_eq!(child.key(), 2);
         assert_eq!(child.size(), 0);
 
         let _ = trie.insert(vec![1, 1]);
@@ -60,11 +60,11 @@ mod tests {
         assert_eq!(trie.size(), 2);
         // check first level child
         let child = &trie.children()[1];
-        assert_eq!(child.key(), &1);
+        assert_eq!(child.key(), 1);
         assert_eq!(child.size(), 2);
         // check second level child
         let child = &child.children()[0];
-        assert_eq!(child.key(), &1);
+        assert_eq!(child.key(), 1);
         assert_eq!(child.size(), 0);
     }
 
@@ -80,11 +80,11 @@ mod tests {
         let mut iter = trie.trie_iter();
         assert!(iter.key().is_none());
         assert!(iter.open());
-        assert_eq!(iter.key(), Some(&1));
-        assert_eq!(iter.next(), Some(&2));
-        assert!(iter.seek(&4));
-        assert_eq!(iter.key(), Some(&4));
-        assert_eq!(iter.next(), Some(&5));
+        assert_eq!(iter.key(), Some(1));
+        assert_eq!(iter.next(), Some(2));
+        assert!(iter.seek(4));
+        assert_eq!(iter.key(), Some(4));
+        assert_eq!(iter.next(), Some(5));
     }
 
     #[test]
@@ -95,15 +95,15 @@ mod tests {
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
-        assert_eq!(iter.key(), Some(&2));
+        assert_eq!(iter.key(), Some(2));
         assert!(iter.open());
-        assert_eq!(iter.key(), Some(&4));
+        assert_eq!(iter.key(), Some(4));
 
         assert!(iter.up());
-        assert_eq!(iter.key(), Some(&2));
-        assert_eq!(iter.next(), Some(&3));
+        assert_eq!(iter.key(), Some(2));
+        assert_eq!(iter.next(), Some(3));
         assert!(iter.open());
-        assert_eq!(iter.key(), Some(&5));
+        assert_eq!(iter.key(), Some(5));
     }
 
     #[test]
@@ -120,36 +120,36 @@ mod tests {
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
-        assert_eq!(iter.key().unwrap(), &1);
+        assert_eq!(iter.key().unwrap(), 1);
 
         assert!(iter.open());
-        assert_eq!(iter.key().unwrap(), &3);
+        assert_eq!(iter.key().unwrap(), 3);
 
         assert!(iter.open());
-        assert_eq!(iter.key().unwrap(), &4);
+        assert_eq!(iter.key().unwrap(), 4);
 
-        assert_eq!(iter.next().unwrap(), &5);
+        assert_eq!(iter.next().unwrap(), 5);
 
         assert!(iter.up());
-        assert_eq!(iter.key().unwrap(), &3);
+        assert_eq!(iter.key().unwrap(), 3);
 
-        assert_eq!(iter.next().unwrap(), &4);
+        assert_eq!(iter.next().unwrap(), 4);
 
         assert!(iter.open());
-        assert_eq!(iter.key().unwrap(), &6);
+        assert_eq!(iter.key().unwrap(), 6);
 
-        assert!(iter.seek(&9));
+        assert!(iter.seek(9));
         assert!(iter.up());
-        assert_eq!(iter.key().unwrap(), &4);
+        assert_eq!(iter.key().unwrap(), 4);
         assert!(iter.up());
-        assert_eq!(iter.key().unwrap(), &1);
-        assert_eq!(iter.next().unwrap(), &3);
+        assert_eq!(iter.key().unwrap(), 1);
+        assert_eq!(iter.next().unwrap(), 3);
 
         assert!(iter.open());
-        assert_eq!(iter.key().unwrap(), &5);
+        assert_eq!(iter.key().unwrap(), 5);
 
         assert!(iter.open());
-        assert_eq!(iter.key().unwrap(), &2);
+        assert_eq!(iter.key().unwrap(), 2);
 
         assert!(!iter.open());
     }

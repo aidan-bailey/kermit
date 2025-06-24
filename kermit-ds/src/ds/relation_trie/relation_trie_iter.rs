@@ -51,12 +51,12 @@ impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
+impl<'a, KT: KeyType> LinearIterator for RelationTrieIter<'a, KT> {
     type KT = KT;
 
-    fn key(&self) -> Option<&'a KT> { Some(self.siblings()?.get(self.pos)?.key()) }
+    fn key(&self) -> Option<KT> { Some(self.siblings()?.get(self.pos)?.key()) }
 
-    fn next(&mut self) -> Option<&'a KT> {
+    fn next(&mut self) -> Option<KT> {
         if let Some(siblings) = self.siblings() {
             self.pos += 1;
             if let Some(node) = siblings.get(self.pos) {
@@ -68,7 +68,7 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
         None
     }
 
-    fn seek(&mut self, seek_key: &KT) -> bool {
+    fn seek(&mut self, seek_key: KT) -> bool {
         if self.at_end() {
             return false;
         }
@@ -109,7 +109,7 @@ impl<'a, KT: KeyType> LinearIterator<'a> for RelationTrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
+impl<'a, KT: KeyType> TrieIterator for RelationTrieIter<'a, KT> {
     fn open(&mut self) -> bool {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
@@ -144,7 +144,7 @@ impl<'a, KT: KeyType> TrieIterator<'a> for RelationTrieIter<'a, KT> {
 
 /// Implementation of the `TrieIterable` trait for `RelationTrie`.
 impl<KT: KeyType> TrieIterable for RelationTrie<KT> {
-    fn trie_iter(&self) -> impl TrieIterator<'_, KT = KT> + IntoIterator<Item = Vec<&'_ KT>> {
+    fn trie_iter(&self) -> impl TrieIterator<KT = KT> + IntoIterator<Item = Vec<KT>> {
         RelationTrieIter::new(self)
     }
 }
