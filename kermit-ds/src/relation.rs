@@ -2,7 +2,7 @@
 use {
     csv::Error,
     kermit_iters::join_iterable::JoinIterable,
-    std::{fs::File, path::Path},
+    std::{fs::File, path::Path, str::FromStr},
 };
 
 /// The `Relation` trait defines a relational data structure.
@@ -109,6 +109,7 @@ pub trait RelationBuilderFileExt: RelationBuilder {
 impl<T> RelationBuilderFileExt for T
 where
     T: RelationBuilder,
+    <T::Output as JoinIterable>::KT: FromStr
 {
     fn add_csv<P: AsRef<Path>>(mut self, filepath: P, delimiter: u8) -> Result<Self, Error> {
         let file = File::open(filepath)?;
