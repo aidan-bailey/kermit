@@ -29,5 +29,5 @@ where
         .map(|tuples| R::from_tuples(tuples))
         .collect();
     let iterables = relations.iter().collect::<Vec<_>>();
-    JA::join(variables, rel_variables, iterables)
+    JA::join_iter(variables, rel_variables, iterables).collect()
 }

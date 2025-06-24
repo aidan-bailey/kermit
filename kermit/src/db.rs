@@ -70,7 +70,7 @@ where
             .map(|name| self.relations.get(name).unwrap())
             .collect::<Vec<&R>>();
         let arity = variables.len();
-        let tuples = JA::join(variables, rel_variables, iterables);
+        let tuples = JA::join_iter(variables, rel_variables, iterables).collect();
         R::builder(arity).add_tuples(tuples).build()
     }
 }
