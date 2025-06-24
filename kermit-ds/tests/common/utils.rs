@@ -1,4 +1,4 @@
-use {crate::relation::Relation, kermit_iters::trie::TrieIterable};
+use {kermit_ds::relation::Relation, kermit_iters::trie::TrieIterable};
 
 pub fn test_trie_relation_iteration<DS>(input: Vec<Vec<DS::KT>>)
 where
