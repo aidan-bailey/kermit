@@ -10,7 +10,7 @@ macro_rules! define_initialisation_test {
         fn $test_name() {
             let inputs: Vec<Vec<$key_type>> = vec![$($input.to_vec()),*];
 
-            $crate::testing::utils::test_trie_relation_iteration::<$relation_type<$key_type>>(
+            $crate::common::utils::test_trie_relation_iteration::<$relation_type<$key_type>>(
                 inputs,
             );
         }
