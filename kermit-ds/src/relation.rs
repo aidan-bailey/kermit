@@ -109,7 +109,7 @@ pub trait RelationBuilderFileExt: RelationBuilder {
 impl<T> RelationBuilderFileExt for T
 where
     T: RelationBuilder,
-    <T::Output as JoinIterable>::KT: FromStr
+    <T::Output as JoinIterable>::KT: FromStr,
 {
     fn add_csv<P: AsRef<Path>>(mut self, filepath: P, delimiter: u8) -> Result<Self, Error> {
         let file = File::open(filepath)?;

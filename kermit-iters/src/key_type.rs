@@ -7,11 +7,5 @@ use std::{fmt::Debug, hash::Hash, str::FromStr};
 /// Trait for key types used in relations.
 ///
 /// TODO: Consider if all these traits are necessary.
-pub trait KeyType:
-    PartialOrd + PartialEq + Debug + Eq + Hash + Ord + Sized + Copy
-{
-}
-impl<KT> KeyType for KT where
-    KT: PartialOrd + PartialEq + Debug + Eq + Hash + Ord + Sized + Copy
-{
-}
+pub trait KeyType: PartialOrd + PartialEq + Debug + Eq + Hash + Ord + Sized + Copy {}
+impl<KT> KeyType for KT where KT: PartialOrd + PartialEq + Debug + Eq + Hash + Ord + Sized + Copy {}
