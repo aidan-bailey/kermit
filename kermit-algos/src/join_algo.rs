@@ -9,14 +9,6 @@ where
     ITB: JoinIterable,
 {
     /// Joins the given iterables based on the specified join plan.
-    /// Returns the resulting tuples as a vector.
-    fn join(
-        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
-    ) -> Vec<Vec<ITB::KT>> {
-        Self::join_iter(variables, rel_variables, iterables).collect()
-    }
-
-    /// Joins the given iterables based on the specified join plan.
     /// Returns an iterator over the resulting join.
     fn join_iter(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
