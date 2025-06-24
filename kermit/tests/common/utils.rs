@@ -12,5 +12,5 @@ pub fn test_join<R, JA>(
         .map(|tuples| R::from_tuples(tuples))
         .collect();
     let iterables = relations.iter().collect::<Vec<_>>();
-    assert_eq!(JA::join(variables, rel_variables, iterables), result);
+    assert_eq!(JA::join_iter(variables, rel_variables, iterables).collect::<Vec<Vec<R::KT>>>(), result);
 }
