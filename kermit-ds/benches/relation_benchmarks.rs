@@ -20,9 +20,9 @@ where
     let k_usize = num_traits::cast::<T, usize>(k).expect("Failed to cast T to usize");
     let mut tuples = Vec::with_capacity((k_usize + 1).pow(3));
 
-    for i in 0..=k_usize {
-        for j in 0..=k_usize {
-            for l in 0..=k_usize {
+    for i in 0..k_usize {
+        for j in 0..k_usize {
+            for l in 0..k_usize {
                 tuples.push(vec![
                     num_traits::cast::<usize, T>(i).unwrap(),
                     num_traits::cast::<usize, T>(j).unwrap(),
@@ -54,7 +54,7 @@ where
             return;
         }
 
-        for i in 0..h {
+        for i in 0..=h_curr {
             let mut new_tuple = current.clone();
             new_tuple.push(num_traits::cast::<usize, T>(i).unwrap());
             recurse(h_curr + 1, h, new_tuple, result);
