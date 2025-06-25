@@ -13,55 +13,64 @@ use {
     std::{any::type_name, collections::HashSet, hash::Hash, hint::black_box},
 };
 
-pub fn generate_all_tuples<T>(k: T) -> Vec<Vec<T>>
+pub fn generate_exponential_tuples<T>(k: T) -> Vec<Vec<T>>
 where
     T: PrimInt + num_traits::NumCast,
 {
     let k_usize = num_traits::cast::<T, usize>(k).expect("Failed to cast T to usize");
-    let mut tuples = Vec::with_capacity((k_usize + 1).pow(3));
-
-    for i in 0..k_usize {
-        for j in 0..k_usize {
-            for l in 0..k_usize {
-                tuples.push(vec![
-                    num_traits::cast::<usize, T>(i).unwrap(),
-                    num_traits::cast::<usize, T>(j).unwrap(),
-                    num_traits::cast::<usize, T>(l).unwrap(),
-                ]);
-            }
-        }
-    }
-
-    tuples
-}
-
-pub fn generate_factorial_tuple_trie<T>(h: T) -> Vec<Vec<T>>
-where
-    T: PrimInt + num_traits::NumCast,
-{
-    let h_usize = num_traits::cast::<T, usize>(h).expect("Failed to cast T to usize");
     let mut tuples: Vec<Vec<T>> = vec![];
 
     // build Vec<T> with h_usize elements, all set to 0
-    let tuple = (0..h_usize).map(|_| num_traits::cast::<usize, T>(0).unwrap()).collect::<Vec<T>>();
+    let tuple = (0..k_usize).map(|_| num_traits::cast::<usize, T>(0).unwrap()).collect::<Vec<T>>();
 
-    fn recurse<T>(h_curr: usize, h: usize, current: Vec<T>, result: &mut Vec<Vec<T>>) 
+    fn recurse<T>(k_curr: usize, k: usize, current: Vec<T>, result: &mut Vec<Vec<T>>) 
     where
         T: PrimInt + num_traits::NumCast,
     {
-        if h_curr == h {
+        if k_curr == k {
             result.push(current);
             return;
         }
 
-        for i in 0..=h_curr {
+        for i in 0..k {
             let mut new_tuple = current.clone();
             new_tuple.push(num_traits::cast::<usize, T>(i).unwrap());
-            recurse(h_curr + 1, h, new_tuple, result);
+            recurse(k_curr + 1, k, new_tuple, result);
         }
     }
 
-    recurse(0, h_usize, tuple, &mut tuples);
+    recurse(0, k_usize, tuple, &mut tuples);
+
+    tuples
+}
+
+pub fn generate_factorial_tuples<T>(k: T) -> Vec<Vec<T>>
+where
+    T: PrimInt + num_traits::NumCast,
+{
+    let k_usize = num_traits::cast::<T, usize>(k).expect("Failed to cast T to usize");
+    let mut tuples: Vec<Vec<T>> = vec![];
+
+    // build Vec<T> with h_usize elements, all set to 0
+    let tuple = (0..k_usize).map(|_| num_traits::cast::<usize, T>(0).unwrap()).collect::<Vec<T>>();
+
+    fn recurse<T>(k_curr: usize, k: usize, current: Vec<T>, result: &mut Vec<Vec<T>>) 
+    where
+        T: PrimInt + num_traits::NumCast,
+    {
+        if k_curr == k {
+            result.push(current);
+            return;
+        }
+
+        for i in 0..=k_curr {
+            let mut new_tuple = current.clone();
+            new_tuple.push(num_traits::cast::<usize, T>(i).unwrap());
+            recurse(k_curr + 1, k, new_tuple, result);
+        }
+    }
+
+    recurse(0, k_usize, tuple, &mut tuples);
 
     tuples
 }
@@ -88,6 +97,7 @@ where
     R::KT: Clone + SampleUniform + PrimInt + Hash,
 {
     for k in [1, 2, 3] {
+        continue;
         for n in [100, 1000, 10000] {
             group.throughput(criterion::Throughput::Elements(n as u64));
             group.bench_with_input(format!("Insert/Random/{}/{}", k, n), &n, |b, &n| {
@@ -104,7 +114,7 @@ where
     }
 
     for k in [1, 2, 3, 4, 5] {
-        let tuples = generate_all_tuples(num_traits::cast(k).unwrap());
+        let tuples = generate_exponential_tuples(num_traits::cast(k).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(tuples.len() as u64));
         group.bench_with_input(
@@ -124,7 +134,7 @@ where
     }
 
     for h in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
-        let tuples = generate_factorial_tuple_trie(num_traits::cast(h).unwrap());
+        let tuples = generate_factorial_tuples(num_traits::cast(h).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
         group.bench_with_input(
@@ -167,7 +177,7 @@ where
     }
 
     for k in [1, 2, 3, 4, 5] {
-        let tuples = generate_all_tuples(num_traits::cast(k).unwrap());
+        let tuples = generate_exponential_tuples(num_traits::cast(k).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
         let relation = R::from_tuples(tuples);
@@ -189,7 +199,7 @@ where
     }
 
     for h in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
-        let tuples = generate_factorial_tuple_trie(num_traits::cast(h).unwrap());
+        let tuples = generate_factorial_tuples(num_traits::cast(h).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
         let relation = R::from_tuples(tuples);
