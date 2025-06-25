@@ -5,7 +5,7 @@ use {
     },
     kermit_ds::{ds::relation_trie::RelationTrie, relation::Relation},
     kermit_iters::trie::TrieIterable,
-    num_traits::{Bounded, PrimInt},
+    num_traits::PrimInt,
     rand::{
         distr::{uniform::SampleUniform, Uniform},
         rng, Rng,
