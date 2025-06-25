@@ -7,7 +7,8 @@ use {
     kermit_iters::trie::TrieIterable,
     num_traits::{Bounded, PrimInt},
     rand::{
-        distr::{uniform::SampleUniform, Uniform}, rng, Rng
+        distr::{uniform::SampleUniform, Uniform},
+        rng, Rng,
     },
     std::{any::type_name, collections::HashSet, fmt::format, hash::Hash, hint::black_box},
 };
@@ -96,7 +97,6 @@ fn bench_trie_relation_iteration<R: Relation + TrieIterable>(group: &mut Benchma
 where
     R::KT: Clone + SampleUniform + PrimInt + Hash,
 {
-
     for k in [1, 2, 3] {
         for n in [100, 1000, 10000].iter() {
             group.throughput(criterion::Throughput::Elements(*n as u64));
