@@ -35,7 +35,7 @@ where
     tuples
 }
 
-pub fn generate_exponential_tuple_trie<T>(h: T) -> Vec<Vec<T>>
+pub fn generate_factorial_tuple_trie<T>(h: T) -> Vec<Vec<T>>
 where
     T: PrimInt + num_traits::NumCast,
 {
@@ -54,7 +54,7 @@ where
             return;
         }
 
-        for i in 0..=h {
+        for i in 0..h {
             let mut new_tuple = current.clone();
             new_tuple.push(num_traits::cast::<usize, T>(i).unwrap());
             recurse(h_curr + 1, h, new_tuple, result);
@@ -124,7 +124,7 @@ where
     }
 
     for h in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
-        let tuples = generate_exponential_tuple_trie(num_traits::cast(h).unwrap());
+        let tuples = generate_factorial_tuple_trie(num_traits::cast(h).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
         group.bench_with_input(
@@ -189,7 +189,7 @@ where
     }
 
     for h in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
-        let tuples = generate_exponential_tuple_trie(num_traits::cast(h).unwrap());
+        let tuples = generate_factorial_tuple_trie(num_traits::cast(h).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
         let relation = R::from_tuples(tuples);
