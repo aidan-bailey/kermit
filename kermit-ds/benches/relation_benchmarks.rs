@@ -35,6 +35,37 @@ where
     tuples
 }
 
+pub fn generate_exponential_tuple_trie<T>(h: T) -> Vec<Vec<T>>
+where
+    T: PrimInt + num_traits::NumCast,
+{
+    let h_usize = num_traits::cast::<T, usize>(h).expect("Failed to cast T to usize");
+    let mut tuples: Vec<Vec<T>> = vec![];
+
+    // build Vec<T> with h_usize elements, all set to 0
+    let tuple = (0..h_usize).map(|_| num_traits::cast::<usize, T>(0).unwrap()).collect::<Vec<T>>();
+
+    fn recurse<T>(h_curr: usize, h: usize, current: Vec<T>, result: &mut Vec<Vec<T>>) 
+    where
+        T: PrimInt + num_traits::NumCast,
+    {
+        if h_curr == h {
+            result.push(current);
+            return;
+        }
+
+        for i in 0..=h {
+            let mut new_tuple = current.clone();
+            new_tuple.push(num_traits::cast::<usize, T>(i).unwrap());
+            recurse(h_curr + 1, h, new_tuple, result);
+        }
+    }
+
+    recurse(0, h_usize, tuple, &mut tuples);
+
+    tuples
+}
+
 pub fn generate_distinct_tuples<T>(n: usize, k: usize) -> Vec<Vec<T>>
 where
     T: PrimInt + SampleUniform + Hash,
@@ -77,7 +108,7 @@ where
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(tuples.len() as u64));
         group.bench_with_input(
-            format!("Insert/Random/{}/{}", k, n),
+            format!("Insert/Exponential/{}/{}", k, n),
             &tuples,
             |b, tuples| {
                 b.iter_batched(
@@ -91,6 +122,27 @@ where
             },
         );
     }
+
+    for h in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
+        let tuples = generate_exponential_tuple_trie(num_traits::cast(h).unwrap());
+        let n = tuples.len();
+        group.throughput(criterion::Throughput::Elements(n as u64));
+        group.bench_with_input(
+            format!("Insert/Factorial/{}/{}", h, n),
+            &tuples,
+            |b, tuples| {
+                b.iter_batched(
+                    || tuples.clone(),
+                    |input| {
+                        let relation = R::from_tuples(input);
+                        black_box(relation);
+                    },
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+    }
+
 }
 
 fn bench_trie_relation_iteration<R: Relation + TrieIterable>(group: &mut BenchmarkGroup<WallTime>)
@@ -120,7 +172,29 @@ where
         group.throughput(criterion::Throughput::Elements(n as u64));
         let relation = R::from_tuples(tuples);
         group.bench_with_input(
-            format!("Iterate/Cartesian/{}/{}", k, n),
+            format!("Iterate/Exponential/{}/{}", k, n),
+            &relation,
+            |b, relation| {
+                b.iter_batched(
+                    || &relation,
+                    |relation| {
+                        for tuple in relation.trie_iter() {
+                            black_box(tuple);
+                        }
+                    },
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+    }
+
+    for h in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
+        let tuples = generate_exponential_tuple_trie(num_traits::cast(h).unwrap());
+        let n = tuples.len();
+        group.throughput(criterion::Throughput::Elements(n as u64));
+        let relation = R::from_tuples(tuples);
+        group.bench_with_input(
+            format!("Iterate/Factorial/{}/{}", h, n),
             &relation,
             |b, relation| {
                 b.iter_batched(
