@@ -55,7 +55,7 @@ struct VecLinearIter<'a, KT: KeyType> {
 }
 
 /// Implementation of the `LinearIterator` trait for `VecLinearIter`.
-impl<'a, KT: KeyType> LinearIterator for VecLinearIter<'a, KT> {
+impl<KT: KeyType> LinearIterator for VecLinearIter<'_, KT> {
     type KT = KT;
 
     fn key(&self) -> Option<Self::KT> {

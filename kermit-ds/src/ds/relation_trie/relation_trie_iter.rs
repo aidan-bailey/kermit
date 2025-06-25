@@ -51,7 +51,7 @@ impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: KeyType> LinearIterator for RelationTrieIter<'a, KT> {
+impl<KT: KeyType> LinearIterator for RelationTrieIter<'_, KT> {
     type KT = KT;
 
     fn key(&self) -> Option<KT> { Some(self.siblings()?.get(self.pos)?.key()) }
@@ -109,7 +109,7 @@ impl<'a, KT: KeyType> LinearIterator for RelationTrieIter<'a, KT> {
     }
 }
 
-impl<'a, KT: KeyType> TrieIterator for RelationTrieIter<'a, KT> {
+impl<KT: KeyType> TrieIterator for RelationTrieIter<'_, KT> {
     fn open(&mut self) -> bool {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
