@@ -103,7 +103,7 @@ where
     for k in [1, 2, 3] {
         for n in [100, 1000, 10000] {
             group.throughput(criterion::Throughput::Elements(n as u64));
-            group.bench_with_input(format!("Insert/Random/{}/{}", k, n), &n, |b, &n| {
+            group.bench_with_input(format!("Insert/Random/{k}/{n}"), &n, |b, &n| {
                 b.iter_batched(
                     || generate_distinct_tuples::<R::KT>(n, 3),
                     |input| {
@@ -121,7 +121,7 @@ where
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(tuples.len() as u64));
         group.bench_with_input(
-            format!("Insert/Exponential/{}/{}", k, n),
+            format!("Insert/Exponential/{k}/{n}"),
             &tuples,
             |b, tuples| {
                 b.iter_batched(
@@ -141,7 +141,7 @@ where
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
         group.bench_with_input(
-            format!("Insert/Factorial/{}/{}", h, n),
+            format!("Insert/Factorial/{h}/{n}"),
             &tuples,
             |b, tuples| {
                 b.iter_batched(
@@ -164,7 +164,7 @@ where
     for k in [1, 2, 3] {
         for n in [100, 1000, 10000].iter() {
             group.throughput(criterion::Throughput::Elements(*n as u64));
-            group.bench_with_input(format!("Iterate/Random/{}/{}", k, n), &n, |b, &n| {
+            group.bench_with_input(format!("Iterate/Random/{k}/{n}"), &n, |b, &n| {
                 b.iter_batched(
                     || R::from_tuples(generate_distinct_tuples(*n, k)),
                     |relation| {
@@ -184,7 +184,7 @@ where
         group.throughput(criterion::Throughput::Elements(n as u64));
         let relation = R::from_tuples(tuples);
         group.bench_with_input(
-            format!("Iterate/Exponential/{}/{}", k, n),
+            format!("Iterate/Exponential/{k}/{n}"),
             &relation,
             |b, relation| {
                 b.iter_batched(
@@ -206,7 +206,7 @@ where
         group.throughput(criterion::Throughput::Elements(n as u64));
         let relation = R::from_tuples(tuples);
         group.bench_with_input(
-            format!("Iterate/Factorial/{}/{}", h, n),
+            format!("Iterate/Factorial/{h}/{n}"),
             &relation,
             |b, relation| {
                 b.iter_batched(
