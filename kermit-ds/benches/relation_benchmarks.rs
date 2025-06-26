@@ -104,8 +104,7 @@ where
                 b.iter_batched(
                     || generate_distinct_tuples::<R::KT>(n, k),
                     |input| {
-                        let relation = R::from_tuples(input);
-                        black_box(relation);
+                        black_box(R::from_tuples(input));
                     },
                     BatchSize::LargeInput,
                 );
@@ -124,8 +123,7 @@ where
                 b.iter_batched(
                     || tuples.clone(),
                     |input| {
-                        let relation = R::from_tuples(input);
-                        black_box(relation);
+                        black_box(R::from_tuples(input));
                     },
                     BatchSize::LargeInput,
                 );
@@ -141,8 +139,7 @@ where
             b.iter_batched(
                 || tuples.clone(),
                 |input| {
-                    let relation = R::from_tuples(input);
-                    black_box(relation);
+                    black_box(R::from_tuples(input));
                 },
                 BatchSize::LargeInput,
             );
