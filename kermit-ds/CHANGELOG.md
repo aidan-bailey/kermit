@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- `i8` benchmark
+- `i8` benchmarks (which run forever)
 
 ## [0.0.6] - 2025-06-26
 
