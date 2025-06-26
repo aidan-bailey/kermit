@@ -97,7 +97,6 @@ where
     R::KT: Clone + SampleUniform + PrimInt + Hash,
 {
     for k in [1, 2, 3] {
-        continue;
         for n in [100, 1000, 10000] {
             group.throughput(criterion::Throughput::Elements(n as u64));
             group.bench_with_input(format!("Insert/Random/{}/{}", k, n), &n, |b, &n| {
@@ -232,7 +231,7 @@ where
         .unwrap_or("UnknownType")
         .to_string();
     let mut group = c.benchmark_group(groupname);
-    group.sample_size(1000);
+    group.sample_size(10000);
     bench_relation_insert::<R>(&mut group);
     bench_trie_relation_iteration::<R>(&mut group);
 }
