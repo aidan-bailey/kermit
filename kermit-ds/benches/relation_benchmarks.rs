@@ -214,22 +214,43 @@ where
 }
 
 // Tie together construction and separate benchmarks
-fn bench_trie_relation<R: Relation + TrieIterable>(c: &mut Criterion)
+fn bench_trie_relation<R: Relation + TrieIterable>(groupname: &str, c: &mut Criterion)
 where
     R::KT: Clone + SampleUniform + PrimInt + Hash,
 {
-    let groupname = type_name::<R>()
-        .rsplit("::")
-        .next()
-        .unwrap_or("UnknownType")
-        .to_string();
+    // let groupname = type_name::<R>()
+    // .rsplit("::")
+    // .next()
+    // .unwrap_or("UnknownType")
+    // .to_string();
     let mut group = c.benchmark_group(groupname);
     group.sample_size(10000);
     bench_relation_insert::<R>(&mut group);
     bench_trie_relation_iteration::<R>(&mut group);
 }
 
-fn bench_relation_trie(c: &mut Criterion) { bench_trie_relation::<RelationTrie<i32>>(c); }
+#[macro_export]
+macro_rules! define_trie_relation_benchmarks {
+    (
+        $(
+            $relation_type:ident
+        ),+
+    ) => {
+        paste::paste! {
+            $(
+                fn [<bench_ $relation_type:lower>](c: &mut Criterion) {
+                    bench_trie_relation::<$relation_type<i8>>(format!("{}/i8", stringify!($relation_type)).as_str(), c);
+                    bench_trie_relation::<$relation_type<i16>>(format!("{}/i16", stringify!($relation_type)).as_str(), c);
+                    bench_trie_relation::<$relation_type<i32>>(format!("{}/i32", stringify!($relation_type)).as_str(), c);
+                    bench_trie_relation::<$relation_type<i64>>(format!("{}/i64", stringify!($relation_type)).as_str(), c);
+                }
 
-criterion_group!(benches, bench_relation_trie,);
+                criterion_group!(benches, [<bench_ $relation_type:lower>]);
+            )+
+        }
+    };
+}
+
+define_trie_relation_benchmarks!(RelationTrie);
+
 criterion_main!(benches);
