@@ -105,7 +105,7 @@ where
             group.throughput(criterion::Throughput::Elements(n as u64));
             group.bench_with_input(format!("Insert/Random/{k}/{n}"), &n, |b, &n| {
                 b.iter_batched(
-                    || generate_distinct_tuples::<R::KT>(n, 3),
+                    || generate_distinct_tuples::<R::KT>(n, k),
                     |input| {
                         let relation = R::from_tuples(input);
                         black_box(relation);
