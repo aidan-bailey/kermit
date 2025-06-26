@@ -140,20 +140,16 @@ where
         let tuples = generate_factorial_tuples(num_traits::cast(h).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
-        group.bench_with_input(
-            format!("Insert/Factorial/{h}/{n}"),
-            &tuples,
-            |b, tuples| {
-                b.iter_batched(
-                    || tuples.clone(),
-                    |input| {
-                        let relation = R::from_tuples(input);
-                        black_box(relation);
-                    },
-                    BatchSize::LargeInput,
-                );
-            },
-        );
+        group.bench_with_input(format!("Insert/Factorial/{h}/{n}"), &tuples, |b, tuples| {
+            b.iter_batched(
+                || tuples.clone(),
+                |input| {
+                    let relation = R::from_tuples(input);
+                    black_box(relation);
+                },
+                BatchSize::LargeInput,
+            );
+        });
     }
 }
 
