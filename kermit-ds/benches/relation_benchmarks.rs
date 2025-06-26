@@ -1,11 +1,16 @@
 use {
-    common::tuple_generation::{generate_distinct_tuples, generate_exponential_tuples, generate_factorial_tuples}, criterion::{
+    common::tuple_generation::{
+        generate_distinct_tuples, generate_exponential_tuples, generate_factorial_tuples,
+    },
+    criterion::{
         criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
         Criterion,
-    }, kermit_ds::{ds::relation_trie::RelationTrie, relation::Relation}, kermit_iters::trie::TrieIterable, num_traits::PrimInt, rand::{
-        distr::{uniform::SampleUniform, Uniform},
-        rng, Rng,
-    }, std::{collections::HashSet, hash::Hash, hint::black_box}
+    },
+    kermit_ds::{ds::relation_trie::RelationTrie, relation::Relation},
+    kermit_iters::trie::TrieIterable,
+    num_traits::PrimInt,
+    rand::distr::uniform::SampleUniform,
+    std::{hash::Hash, hint::black_box},
 };
 
 mod common;
