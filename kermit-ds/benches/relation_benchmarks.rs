@@ -20,7 +20,6 @@ where
     let k_usize = num_traits::cast::<T, usize>(k).expect("Failed to cast T to usize");
     let mut tuples: Vec<Vec<T>> = vec![];
 
-    // build Vec<T> with h_usize elements, all set to 0
     let tuple = (0..k_usize)
         .map(|_| num_traits::cast::<usize, T>(0).unwrap())
         .collect::<Vec<T>>();
@@ -53,7 +52,6 @@ where
     let k_usize = num_traits::cast::<T, usize>(k).expect("Failed to cast T to usize");
     let mut tuples: Vec<Vec<T>> = vec![];
 
-    // build Vec<T> with h_usize elements, all set to 0
     let tuple = (0..k_usize)
         .map(|_| num_traits::cast::<usize, T>(0).unwrap())
         .collect::<Vec<T>>();
@@ -95,7 +93,6 @@ where
     set.into_iter().collect()
 }
 
-// Benchmark just the insertion (as before)
 fn bench_relation_insert<R: Relation>(group: &mut BenchmarkGroup<WallTime>)
 where
     R::KT: Clone + SampleUniform + PrimInt + Hash,
