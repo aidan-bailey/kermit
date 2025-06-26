@@ -229,7 +229,7 @@ where
     bench_trie_relation_iteration::<R>(&mut group);
 }
 
-fn bench_relation_trie(c: &mut Criterion) { bench_trie_relation::<RelationTrie<u16>>(c); }
+fn bench_relation_trie(c: &mut Criterion) { bench_trie_relation::<RelationTrie<i32>>(c); }
 
 criterion_group!(benches, bench_relation_trie,);
 criterion_main!(benches);
