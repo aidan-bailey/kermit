@@ -10,7 +10,7 @@ use {
         distr::{uniform::SampleUniform, Uniform},
         rng, Rng,
     },
-    std::{any::type_name, collections::HashSet, hash::Hash, hint::black_box},
+    std::{collections::HashSet, hash::Hash, hint::black_box},
 };
 
 pub fn generate_exponential_tuples<T>(k: T) -> Vec<Vec<T>>
