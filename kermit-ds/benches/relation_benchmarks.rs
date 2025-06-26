@@ -21,9 +21,11 @@ where
     let mut tuples: Vec<Vec<T>> = vec![];
 
     // build Vec<T> with h_usize elements, all set to 0
-    let tuple = (0..k_usize).map(|_| num_traits::cast::<usize, T>(0).unwrap()).collect::<Vec<T>>();
+    let tuple = (0..k_usize)
+        .map(|_| num_traits::cast::<usize, T>(0).unwrap())
+        .collect::<Vec<T>>();
 
-    fn recurse<T>(k_curr: usize, k: usize, current: Vec<T>, result: &mut Vec<Vec<T>>) 
+    fn recurse<T>(k_curr: usize, k: usize, current: Vec<T>, result: &mut Vec<Vec<T>>)
     where
         T: PrimInt + num_traits::NumCast,
     {
@@ -52,9 +54,11 @@ where
     let mut tuples: Vec<Vec<T>> = vec![];
 
     // build Vec<T> with h_usize elements, all set to 0
-    let tuple = (0..k_usize).map(|_| num_traits::cast::<usize, T>(0).unwrap()).collect::<Vec<T>>();
+    let tuple = (0..k_usize)
+        .map(|_| num_traits::cast::<usize, T>(0).unwrap())
+        .collect::<Vec<T>>();
 
-    fn recurse<T>(k_curr: usize, k: usize, current: Vec<T>, result: &mut Vec<Vec<T>>) 
+    fn recurse<T>(k_curr: usize, k: usize, current: Vec<T>, result: &mut Vec<Vec<T>>)
     where
         T: PrimInt + num_traits::NumCast,
     {
@@ -151,7 +155,6 @@ where
             },
         );
     }
-
 }
 
 fn bench_trie_relation_iteration<R: Relation + TrieIterable>(group: &mut BenchmarkGroup<WallTime>)
