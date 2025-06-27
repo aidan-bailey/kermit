@@ -221,7 +221,7 @@ macro_rules! define_trie_iteration_tests {
                 |iter: &mut dyn TrieIterator<KT = usize>| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
-                    assert!(iter.open());   
+                    assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(2));
