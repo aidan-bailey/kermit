@@ -6,5 +6,5 @@ where
 {
     let relation = DS::from_tuples(input.clone());
     let res = relation.trie_iter().into_iter().collect::<Vec<_>>();
-    assert_eq!(res.len(), input.len());
+    assert_eq!(res, input);
 }
