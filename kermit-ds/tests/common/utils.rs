@@ -1,4 +1,9 @@
-use {kermit_ds::relation::Relation, kermit_iters::trie::TrieIterable};
+use {
+    kermit_ds::relation::Relation, kermit_iters::{
+        linear::LinearIterator,
+        trie::{TrieIterable, TrieIterator},
+    }, num_traits::{Num, NumCast}, std::usize
+};
 
 pub fn test_trie_relation_iteration<DS>(input: Vec<Vec<DS::KT>>)
 where
@@ -8,3 +13,4 @@ where
     let res = relation.trie_iter().into_iter().collect::<Vec<_>>();
     assert_eq!(res, input);
 }
+
