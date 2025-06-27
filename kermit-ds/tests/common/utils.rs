@@ -1,8 +1,5 @@
 use {
-    kermit_ds::relation::Relation, kermit_iters::{
-        linear::LinearIterator,
-        trie::{TrieIterable, TrieIterator},
-    }, num_traits::{Num, NumCast}, std::usize
+    kermit_ds::relation::Relation, kermit_iters::trie::TrieIterable
 };
 
 pub fn test_trie_relation_iteration<DS>(input: Vec<Vec<DS::KT>>)
