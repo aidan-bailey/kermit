@@ -24,34 +24,22 @@ macro_rules! relation_construction_tests {
 
             use super::*;
 
-            $crate::relation_construction_test!(
-                empty,
-                u8,
-                $relation_type,
-                []
-            );
+            $crate::relation_construction_test!(empty, u8, $relation_type, []);
 
-            $crate::relation_construction_test!(
-                unary,
-                u8,
-                $relation_type,
-                [vec![1], vec![2], vec![3]]
-            );
+            $crate::relation_construction_test!(unary, u8, $relation_type, [
+                vec![1],
+                vec![2],
+                vec![3]
+            ]);
 
-            $crate::relation_construction_test!(
-                binary,
-                u8,
-                $relation_type,
-                [vec![1, 2], vec![3, 4]]
-            );
+            $crate::relation_construction_test!(binary, u8, $relation_type, [vec![1, 2], vec![
+                3, 4
+            ]]);
 
-            $crate::relation_construction_test!(
-                ternary,
-                u8,
-                $relation_type,
-                [vec![1, 2, 3], vec![4, 5, 6]]
-            );
-
+            $crate::relation_construction_test!(ternary, u8, $relation_type, [
+                vec![1, 2, 3],
+                vec![4, 5, 6]
+            ]);
         }
     };
 }
