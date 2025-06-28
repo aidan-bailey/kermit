@@ -222,7 +222,6 @@ macro_rules! trie_traversal_tests {
                     assert!(!iter.open());
                 }
             );
-
         }
     };
 }
