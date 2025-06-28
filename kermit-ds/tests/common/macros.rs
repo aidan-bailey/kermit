@@ -1,5 +1,5 @@
 #[macro_export]
-macro_rules! relation_init_test {
+macro_rules! relation_construction_test {
     (
         $test_name:ident,
         $key_type:ty,
@@ -18,34 +18,34 @@ macro_rules! relation_init_test {
 }
 
 #[macro_export]
-macro_rules! relation_init_tests {
+macro_rules! relation_construction_tests {
     ($relation_type:ident) => {
-        mod init {
+        mod construction {
 
             use super::*;
 
-            $crate::relation_init_test!(
+            $crate::relation_construction_test!(
                 empty,
                 u8,
                 $relation_type,
                 []
             );
 
-            $crate::relation_init_test!(
+            $crate::relation_construction_test!(
                 unary,
                 u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]]
             );
 
-            $crate::relation_init_test!(
+            $crate::relation_construction_test!(
                 binary,
                 u8,
                 $relation_type,
                 [vec![1, 2], vec![3, 4]]
             );
 
-            $crate::relation_init_test!(
+            $crate::relation_construction_test!(
                 ternary,
                 u8,
                 $relation_type,
@@ -253,7 +253,7 @@ macro_rules! relation_trie_test_suite {
 
                     use super::*;
 
-                    $crate::relation_init_tests!(
+                    $crate::relation_construction_tests!(
                         $relation_type
                     );
 
