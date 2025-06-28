@@ -236,7 +236,7 @@ macro_rules! trie_traversal_tests {
 }
 
 #[macro_export]
-macro_rules! define_trie_relation_test_suite {
+macro_rules! relation_trie_test_suite {
     (
         $(
             $relation_type:ident
