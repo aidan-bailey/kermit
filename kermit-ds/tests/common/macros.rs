@@ -8,11 +8,11 @@ macro_rules! define_initialisation_test {
     ) => {
         #[test]
         fn $test_name() {
-            let inputs: Vec<Vec<$key_type>> = vec![$($input.to_vec()),*];
-
-            $crate::common::utils::test_trie_relation_iteration::<$relation_type<$key_type>>(
-                inputs,
-            );
+            use {kermit_ds::relation::Relation, kermit_iters::trie::TrieIterable};
+            let tuples: Vec<Vec<$key_type>> = vec![$($input.to_vec()),*];
+            let relation = $relation_type::from_tuples(tuples.clone());
+            let res = relation.trie_iter().into_iter().collect::<Vec<_>>();
+            assert_eq!(res, tuples);
         }
     };
 }
@@ -76,7 +76,7 @@ macro_rules! generate_iter_test {
 }
 
 #[macro_export]
-macro_rules! define_trie_iteration_tests {
+macro_rules! define_trie_traversal_tests {
     ($relation_type:ident) => {
         paste::paste! {
 
@@ -246,7 +246,7 @@ macro_rules! define_trie_relation_test_suite {
                 $crate::define_initialisation_tests!(
                     $relation_type
                 );
-                $crate::define_trie_iteration_tests!($relation_type);
+                $crate::define_trie_traversal_tests!($relation_type);
         )+
     };
 }
