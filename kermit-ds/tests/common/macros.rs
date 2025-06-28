@@ -55,7 +55,7 @@ macro_rules! define_initialisation_tests {
 }
 
 #[macro_export]
-macro_rules! generate_iter_test {
+macro_rules! trie_test {
     (
         $test_name:ident,
         $key_type:ty,
@@ -80,7 +80,7 @@ macro_rules! define_trie_traversal_tests {
     ($relation_type:ident) => {
         paste::paste! {
 
-            $crate::generate_iter_test!(
+            $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ empty>],
                 usize,
                 $relation_type,
@@ -95,7 +95,7 @@ macro_rules! define_trie_traversal_tests {
                 }
             );
 
-            $crate::generate_iter_test!(
+            $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ single>],
                 usize,
                 $relation_type,
@@ -114,7 +114,7 @@ macro_rules! define_trie_traversal_tests {
                 }
             );
 
-            $crate::generate_iter_test!(
+            $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ siblings>],
                 usize,
                 $relation_type,
@@ -138,7 +138,7 @@ macro_rules! define_trie_traversal_tests {
                 }
             );
 
-            $crate::generate_iter_test!(
+            $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ shared>],
                 usize,
                 $relation_type,
@@ -155,7 +155,7 @@ macro_rules! define_trie_traversal_tests {
                 }
             );
 
-            $crate::generate_iter_test!(
+            $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ deep>],
                 usize,
                 $relation_type,
@@ -177,7 +177,7 @@ macro_rules! define_trie_traversal_tests {
                 }
             );
 
-            $crate::generate_iter_test!(
+            $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ linear>],
                 usize,
                 $relation_type,
@@ -213,7 +213,7 @@ macro_rules! define_trie_traversal_tests {
                 }
             );
 
-            $crate::generate_iter_test!(
+            $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ open>],
                 usize,
                 $relation_type,
