@@ -20,31 +20,33 @@ macro_rules! relation_init_test {
 #[macro_export]
 macro_rules! relation_init_tests {
     ($relation_type:ident) => {
-        paste::paste! {
+        mod init {
+
+            use super::*;
 
             $crate::relation_init_test!(
-                [<$relation_type:lower _ init  _ empty>],
+                empty,
                 u8,
                 $relation_type,
                 []
             );
 
             $crate::relation_init_test!(
-                [<$relation_type:lower _ init  _ unary>],
+                unary,
                 u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]]
             );
 
             $crate::relation_init_test!(
-                [<$relation_type:lower _ init  _ binary>],
+                binary,
                 u8,
                 $relation_type,
                 [vec![1, 2], vec![3, 4]]
             );
 
             $crate::relation_init_test!(
-                [<$relation_type:lower _ init _ ternary>],
+                ternary,
                 u8,
                 $relation_type,
                 [vec![1, 2, 3], vec![4, 5, 6]]
@@ -78,10 +80,12 @@ macro_rules! trie_test {
 #[macro_export]
 macro_rules! trie_traversal_tests {
     ($relation_type:ident) => {
-        paste::paste! {
+        mod trie_traversal {
+
+            use super::*;
 
             $crate::trie_test!(
-                [<$relation_type:lower _ trieiter _ empty>],
+                empty,
                 u8,
                 $relation_type,
                 [],
@@ -96,7 +100,7 @@ macro_rules! trie_traversal_tests {
             );
 
             $crate::trie_test!(
-                [<$relation_type:lower _ trieiter _ single>],
+                single,
                 u8,
                 $relation_type,
                 [vec![1]],
@@ -115,7 +119,7 @@ macro_rules! trie_traversal_tests {
             );
 
             $crate::trie_test!(
-                [<$relation_type:lower _ trieiter _ siblings>],
+                siblings,
                 u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
@@ -139,7 +143,7 @@ macro_rules! trie_traversal_tests {
             );
 
             $crate::trie_test!(
-                [<$relation_type:lower _ trieiter _ shared>],
+                shared,
                 u8,
                 $relation_type,
                 [vec![1, 2], vec![1, 3]],
@@ -156,7 +160,7 @@ macro_rules! trie_traversal_tests {
             );
 
             $crate::trie_test!(
-                [<$relation_type:lower _ trieiter _ deep>],
+                deep,
                 u8,
                 $relation_type,
                 [vec![1, 2, 3]],
@@ -178,7 +182,7 @@ macro_rules! trie_traversal_tests {
             );
 
             $crate::trie_test!(
-                [<$relation_type:lower _ trieiter _ linear>],
+                linear,
                 u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
@@ -214,7 +218,7 @@ macro_rules! trie_traversal_tests {
             );
 
             $crate::trie_test!(
-                [<$relation_type:lower _ trieiter _ open>],
+                open,
                 u8,
                 $relation_type,
                 [vec![1, 2, 3]],
@@ -243,10 +247,20 @@ macro_rules! relation_trie_test_suite {
         ),+
     ) => {
         $(
-                $crate::relation_init_tests!(
-                    $relation_type
-                );
-                $crate::trie_traversal_tests!($relation_type);
+            paste::paste! {
+                #[cfg(test)]
+                mod [<$relation_type:lower>] {
+
+                    use super::*;
+
+                    $crate::relation_init_tests!(
+                        $relation_type
+                    );
+
+                    $crate::trie_traversal_tests!($relation_type);
+
+                }
+            }
         )+
     };
 }
