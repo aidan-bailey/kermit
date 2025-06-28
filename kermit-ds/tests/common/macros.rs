@@ -82,10 +82,10 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ empty>],
-                usize,
+                u8,
                 $relation_type,
                 [],
-                |iter: &mut dyn TrieIterator<KT = usize>| {
+                |iter: &mut dyn TrieIterator<KT = u8>| {
                     assert!(iter.key().is_none());
                     assert!(!iter.open());
                     assert!(!iter.up());
@@ -97,10 +97,10 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ single>],
-                usize,
+                u8,
                 $relation_type,
                 [vec![1]],
-                |iter: &mut dyn TrieIterator<KT = usize>| {
+                |iter: &mut dyn TrieIterator<KT = u8>| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(iter.open());
@@ -116,10 +116,10 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ siblings>],
-                usize,
+                u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
-                |iter: &mut dyn TrieIterator<KT = usize>| {
+                |iter: &mut dyn TrieIterator<KT = u8>| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(iter.open());
@@ -140,10 +140,10 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ shared>],
-                usize,
+                u8,
                 $relation_type,
                 [vec![1, 2], vec![1, 3]],
-                |iter: &mut dyn TrieIterator<KT = usize>| {
+                |iter: &mut dyn TrieIterator<KT = u8>| {
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(iter.open());
@@ -157,10 +157,10 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ deep>],
-                usize,
+                u8,
                 $relation_type,
                 [vec![1, 2, 3]],
-                |iter: &mut dyn TrieIterator<KT = usize>| {
+                |iter: &mut dyn TrieIterator<KT = u8>| {
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(iter.open());
@@ -179,10 +179,10 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ linear>],
-                usize,
+                u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
-                |iter: &mut dyn TrieIterator<KT = usize>| {
+                |iter: &mut dyn TrieIterator<KT = u8>| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(iter.open());
@@ -215,10 +215,10 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 [<$relation_type:lower _ trieiter _ open>],
-                usize,
+                u8,
                 $relation_type,
                 [vec![1, 2, 3]],
-                |iter: &mut dyn TrieIterator<KT = usize>| {
+                |iter: &mut dyn TrieIterator<KT = u8>| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(iter.open());
