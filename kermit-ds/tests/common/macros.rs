@@ -4,7 +4,7 @@ macro_rules! relation_init_test {
         $test_name:ident,
         $key_type:ty,
         $relation_type:ident,
-        [ $( $input:expr ),* $(,)? ],
+        [ $( $input:expr ),* $(,)? ]
     ) => {
         #[test]
         fn $test_name() {
@@ -26,28 +26,28 @@ macro_rules! relation_init_tests {
                 [<$relation_type:lower _ init  _ empty>],
                 u8,
                 $relation_type,
-                [],
+                []
             );
 
             $crate::relation_init_test!(
                 [<$relation_type:lower _ init  _ unary>],
                 u8,
                 $relation_type,
-                [vec![1], vec![2], vec![3]],
+                [vec![1], vec![2], vec![3]]
             );
 
             $crate::relation_init_test!(
                 [<$relation_type:lower _ init  _ binary>],
                 u8,
                 $relation_type,
-                [vec![1, 2], vec![3, 4]],
+                [vec![1, 2], vec![3, 4]]
             );
 
             $crate::relation_init_test!(
                 [<$relation_type:lower _ init _ ternary>],
                 u8,
                 $relation_type,
-                [vec![1, 2, 3], vec![4, 5, 6]],
+                [vec![1, 2, 3], vec![4, 5, 6]]
             );
 
         }
