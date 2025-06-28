@@ -1,5 +1,5 @@
 #[macro_export]
-macro_rules! define_initialisation_test {
+macro_rules! relation_init_test {
     (
         $test_name:ident,
         $key_type:ty,
@@ -18,32 +18,32 @@ macro_rules! define_initialisation_test {
 }
 
 #[macro_export]
-macro_rules! define_initialisation_tests {
+macro_rules! relation_init_tests {
     ($relation_type:ident) => {
         paste::paste! {
 
-            $crate::define_initialisation_test!(
+            $crate::relation_init_test!(
                 [<$relation_type:lower _ init  _ empty>],
                 u8,
                 $relation_type,
                 [],
             );
 
-            $crate::define_initialisation_test!(
+            $crate::relation_init_test!(
                 [<$relation_type:lower _ init  _ unary>],
                 u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
             );
 
-            $crate::define_initialisation_test!(
+            $crate::relation_init_test!(
                 [<$relation_type:lower _ init  _ binary>],
                 u8,
                 $relation_type,
                 [vec![1, 2], vec![3, 4]],
             );
 
-            $crate::define_initialisation_test!(
+            $crate::relation_init_test!(
                 [<$relation_type:lower _ init _ ternary>],
                 u8,
                 $relation_type,
@@ -76,7 +76,7 @@ macro_rules! trie_test {
 }
 
 #[macro_export]
-macro_rules! define_trie_traversal_tests {
+macro_rules! trie_traversal_tests {
     ($relation_type:ident) => {
         paste::paste! {
 
@@ -243,10 +243,10 @@ macro_rules! define_trie_relation_test_suite {
         ),+
     ) => {
         $(
-                $crate::define_initialisation_tests!(
+                $crate::relation_init_tests!(
                     $relation_type
                 );
-                $crate::define_trie_traversal_tests!($relation_type);
+                $crate::trie_traversal_tests!($relation_type);
         )+
     };
 }
