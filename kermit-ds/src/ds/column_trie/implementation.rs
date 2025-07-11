@@ -85,7 +85,7 @@ impl<KT: KeyType> ColumnTrie<KT> {
                     // otherwise insert
                     layer.data.insert(end_index, *k);
                     // increment all intervals after this index
-                    for j in (end_index + 1)..layer.interval.len() {
+                    for j in interval_index + 1..layer.interval.len() {
                         layer.interval[j] += 1;
                     }
                     if rest.is_empty() {
@@ -176,9 +176,9 @@ mod tests {
         println!("{trie}");
         assert!(trie.insert(vec![1, 3, 5]));
         println!("{trie}");
-        assert!(trie.insert(vec![1, 3, 6]));
-        println!("{trie}");
         assert!(trie.insert(vec![2, 1, 2]));
+        println!("{trie}");
+        assert!(trie.insert(vec![1, 3, 6]));
         println!("{trie}");
     }
 }
