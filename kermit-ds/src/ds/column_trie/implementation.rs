@@ -77,8 +77,6 @@ impl<KT: KeyType> ColumnTrie<KT> {
                     // add another interval for the next layer
                     let next_layer = &mut self.layers[layer_i + 1];
                     next_layer.interval.push(next_layer.data.len());
-                    // push the data in the next layer
-                    //next_layer.data.push(rest[0]);
                     // now we continue
                     self.internal_insert(end_index, rest)
                 } else {
@@ -99,8 +97,6 @@ impl<KT: KeyType> ColumnTrie<KT> {
                     for j in (end_index + 1)..next_layer.interval.len() {
                         next_layer.interval[j] += 1;
                     }
-                    // insert the data in the next layer
-                    next_layer.data.insert(end_index, rest[0]);
                     //now we continue
                     self.internal_insert(end_index, rest)
                 }
