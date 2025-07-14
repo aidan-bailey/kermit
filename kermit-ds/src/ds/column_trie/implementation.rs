@@ -16,6 +16,20 @@ pub struct ColumnTrie<KT: KeyType> {
 
 impl<KT: KeyType> ColumnTrie<KT> {
     fn internal_insert(&mut self, interval_index: usize, tuples: &[KT]) -> bool {
+        /// Adds an interval to a layer at some index.
+        fn add_interval<KT: KeyType>(layer: &mut ColumnTrieLayer<KT>, i: usize) {
+            if i == layer.data.len() {
+                // If the index is greater than the length of the layer, we push a new interval
+                layer.interval.push(layer.data.len());
+            } else {
+                // Otherwise, we insert the interval at the specified index
+                layer.interval.insert(i, layer.data.len());
+                for j in (i + 1)..layer.interval.len() {
+                    layer.interval[j] += 1;
+                }
+            }
+        }
+
         let layer_i = self.arity - tuples.len();
         if let Some((k, rest)) = tuples.split_first() {
             // There are still keys to insert
@@ -50,19 +64,9 @@ impl<KT: KeyType> ColumnTrie<KT> {
                         return if rest.is_empty() {
                             true
                         } else {
-                            // if not, we need to insert an interval in the next layer
-                            let next_layer = &mut self.layers[layer_i + 1];
-                            next_layer.interval.insert(i, next_layer.interval[i]);
-                            // now we increment every interval in the next layer past this index
-                            for j in (i + 1)..next_layer.interval.len() {
-                                next_layer.interval[j] += 1;
-                            }
-                            // finally we insert the next value from the tuple
-                            next_layer.data.insert(next_layer.interval[i], rest[0]);
-                            // now we continue
-                            return self.internal_insert(i, rest)
-                        }
-
+                            add_interval(&mut self.layers[layer_i + 1], i);
+                            return self.internal_insert(i, rest);
+                        };
                     }
                 }
 
@@ -70,15 +74,6 @@ impl<KT: KeyType> ColumnTrie<KT> {
                 if end_index == layer.data.len() {
                     // if we're at the end, we have to push
                     layer.data.push(*k);
-                    if rest.is_empty() {
-                        // if there are no more layers, we are done
-                        return true;
-                    }
-                    // add another interval for the next layer
-                    let next_layer = &mut self.layers[layer_i + 1];
-                    next_layer.interval.push(next_layer.data.len());
-                    // now we continue
-                    self.internal_insert(end_index, rest)
                 } else {
                     // otherwise insert
                     layer.data.insert(end_index, *k);
@@ -86,20 +81,13 @@ impl<KT: KeyType> ColumnTrie<KT> {
                     for j in interval_index + 1..layer.interval.len() {
                         layer.interval[j] += 1;
                     }
-                    if rest.is_empty() {
-                        // if there are no more layers, we are done
-                        return true;
-                    }
-                    // add another interval for the next layer
-                    let next_layer = &mut self.layers[layer_i + 1];
-                    next_layer.interval.insert(end_index, next_layer.interval[end_index]);
-                    // increment all intervals after this index
-                    for j in (end_index + 1)..next_layer.interval.len() {
-                        next_layer.interval[j] += 1;
-                    }
-                    //now we continue
-                    self.internal_insert(end_index, rest)
                 }
+                if rest.is_empty() {
+                    // if there are no more layers, we are done
+                    return true;
+                }
+                add_interval(&mut self.layers[layer_i + 1], end_index);
+                self.internal_insert(end_index, rest)
             }
         } else {
             // If there are no keys to insert, we are done
