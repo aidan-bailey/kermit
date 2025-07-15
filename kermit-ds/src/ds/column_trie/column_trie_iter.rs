@@ -135,11 +135,11 @@ impl<KT: KeyType> TrieIterator for ColumnTrieIter<'_, KT> {
             let data_index = self.interval_i;
             // We need to find the interval index of the data in the previous layer
             // The start indexes are ordered, so we need to find the point at which the
-            // data index is less than the current start index. Then the previous index 
+            // data index is less than the current start index. Then the previous index
             // is our new interval index
             for (i, start_index) in layer.interval.iter().enumerate() {
                 if data_index < *start_index {
-                    break
+                    break;
                 } else {
                     self.interval_i = i;
                 }
@@ -188,5 +188,4 @@ mod tests {
 
         let res = t.into_iter().collect::<Vec<_>>();
     }
-
 }

@@ -79,7 +79,7 @@ where
             }
             if iter.at_end() {
                 return false; // If iterator is at the end, no common key can be
-                              // found.
+                // found.
             }
         }
 
