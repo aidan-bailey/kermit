@@ -222,6 +222,104 @@ macro_rules! trie_traversal_tests {
                     assert!(!iter.open());
                 }
             );
+
+            $crate::trie_test!(
+                hard,
+                u8,
+                $relation_type,
+                [
+                    vec![1, 2, 3],
+                    vec![1, 2, 4],
+                    vec![1, 5, 6],
+                    vec![7, 8, 9]
+                ],
+                |iter: &mut dyn TrieIterator<KT = u8>| {
+                    // Begin at root
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+            
+                    // Open root → 1
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(1));
+                    assert!(!iter.at_end());
+            
+                    // Open 1 → 2
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(2));
+                    assert!(!iter.at_end());
+            
+                    // Open 2 → 3
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(3));
+                    assert!(!iter.open()); // 3 is a leaf
+            
+                    // next() → 4 (sibling of 3 under [1,2])
+                    assert_eq!(iter.next(), Some(4));
+                    assert_eq!(iter.key(), Some(4));
+                    assert!(!iter.open()); // 4 is a leaf
+            
+                    // up() → [1,2]
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(2));
+            
+                    // up() → [1]
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(1));
+            
+                    // next() → 5 (sibling of 2 under [1])
+                    assert!(iter.open());
+                    assert_eq!(iter.next(), Some(5));
+                    assert_eq!(iter.key(), Some(5));
+            
+                    // open() → 6
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(6));
+                    assert!(!iter.open()); // 6 is a leaf
+            
+                    // up() → 5
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(5));
+            
+                    // up() → 1
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(1));
+            
+                    // up() → root
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), None);
+                    assert!(iter.at_end());
+            
+                    // open() → 7
+                    assert!(iter.open());
+                    assert_eq!(iter.next(), Some(7));
+            
+                    // open() → 8
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(8));
+            
+                    // open() → 9
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(9));
+                    assert!(!iter.open()); // 9 is a leaf
+            
+                    // up() → 8
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(8));
+            
+                    // up() → 7
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(7));
+            
+                    // up() → root
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), None);
+            
+                    // Now should be at end
+                    assert!(iter.at_end());
+                    assert!(iter.next().is_none());
+                }
+            );
+
         }
     };
 }
