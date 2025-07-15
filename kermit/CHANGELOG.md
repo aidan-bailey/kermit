@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `kermit-ds` dependency to 0.0.9
 - `kermit-iters` dependency to 0.0.4
+- `kermit-algos` dependency to 0.0.5
 
 ## [0.0.9] - 2025-07-07
 
