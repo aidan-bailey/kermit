@@ -1,5 +1,5 @@
 use {
-    super::implementation::{ColumnTrie, ColumnTrieLayer},
+    super::implementation::ColumnTrie,
     kermit_derive::IntoTrieIter, // Ensure TrieIteratorWrapper is imported
     kermit_iters::{
         key_type::KeyType,
