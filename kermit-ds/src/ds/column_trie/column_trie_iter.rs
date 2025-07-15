@@ -167,4 +167,3 @@ impl<KT: KeyType> TrieIterable for ColumnTrie<KT> {
         ColumnTrieIter::new(self)
     }
 }
-
