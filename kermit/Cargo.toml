@@ -12,7 +12,7 @@ repository.workspace = true
 [dependencies]
 kermit-ds = { version = "0.0.9", path = "../kermit-ds" }
 kermit-iters = { version = "0.0.4", path = "../kermit-iters" }
-kermit-algos = { version = "0.0.4", path = "../kermit-algos" }
+kermit-algos = { version = "0.0.5", path = "../kermit-algos" }
 kermit-kvs = { version = "0.0.2", path = "../kermit-kvs" }
 
 [dev-dependencies]
