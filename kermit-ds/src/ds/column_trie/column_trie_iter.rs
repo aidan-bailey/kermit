@@ -168,21 +168,3 @@ impl<KT: KeyType> TrieIterable for ColumnTrie<KT> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use {
-        super::*,
-        crate::relation::{Relation, RelationBuilder},
-    };
-
-    #[test]
-    fn test_insert() {
-        let trie = ColumnTrie::<usize>::builder(3)
-            .add_tuples(vec![vec![1, 2, 3], vec![4, 5, 6]])
-            .build();
-        println!("{trie}");
-        let t = trie.trie_iter();
-
-        let res = t.into_iter().collect::<Vec<_>>();
-    }
-}
