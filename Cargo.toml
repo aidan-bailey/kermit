@@ -4,7 +4,7 @@ members = ["kermit", "kermit-algos", "kermit-ds", "kermit-kvs", "kermit-iters", 
 
 [workspace.package]
 authors = ["Aidan Bailey"]
-edition = "2021"
+edition = "2024"
 homepage = "https://github.com/aidan-bailey/kermit"
 license = "Apache-2.0 OR MIT"
 readme = "README.md"
