@@ -171,7 +171,7 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
 
 #[cfg(test)]
 mod tests {
-    use {super::ColumnTrie, crate::relation::Relation as _, kermit_iters::key_type::KeyType};
+    use {super::ColumnTrie, crate::relation::Relation as _};
 
     #[test]
     fn test_insert() {
