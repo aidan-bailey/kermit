@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust: [nightly]
+        rust: [2024]
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
