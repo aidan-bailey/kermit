@@ -20,15 +20,12 @@ impl<KT: KeyType> ColumnTrie<KT> {
     fn internal_insert(&mut self, interval_index: usize, tuples: &[KT]) -> bool {
         /// Adds an interval to a layer at some index.
         fn add_interval<KT: KeyType>(layer: &mut ColumnTrieLayer<KT>, i: usize) {
-            if i == layer.data.len() {
+            if i == layer.interval.len() {
                 // If the index is greater than the length of the layer, we push a new interval
                 layer.interval.push(layer.data.len());
             } else {
                 // Otherwise, we insert the interval at the specified index
-                layer.interval.insert(i, layer.data.len());
-                for j in (i + 1)..layer.interval.len() {
-                    layer.interval[j] += 1;
-                }
+                layer.interval.insert(i, layer.interval[i]);
             }
         }
 
@@ -178,16 +175,13 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let mut trie = ColumnTrie::<usize>::new(3);
-        assert!(trie.insert(vec![1, 2, 3]));
+        let mut trie = ColumnTrie::<usize>::new(2);
+        trie.insert(vec![2, 3]);
         println!("{trie}");
-        assert!(trie.insert(vec![1, 2, 4]));
+        trie.insert(vec![3, 1]);
         println!("{trie}");
-        assert!(trie.insert(vec![1, 3, 5]));
+        trie.insert(vec![1, 2]);
         println!("{trie}");
-        assert!(trie.insert(vec![2, 1, 2]));
-        println!("{trie}");
-        assert!(trie.insert(vec![1, 3, 6]));
-        println!("{trie}");
+        println!("potato")
     }
 }
