@@ -23,8 +23,6 @@ pub struct ColumnTrieIter<'a, KT: KeyType> {
 }
 
 impl<'a, KT: KeyType> ColumnTrieIter<'a, KT> {
-    pub fn at_root(&self) -> bool { self.layer_number == 0 }
-
     pub fn new(trie: &'a ColumnTrie<KT>) -> Self {
         ColumnTrieIter {
             interval_i: 0,
