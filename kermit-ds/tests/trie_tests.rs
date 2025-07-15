@@ -1,5 +1,4 @@
-use kermit_ds::ds::relation_trie::RelationTrie;
-use kermit_ds::ds::column_trie::ColumnTrie;
+use kermit_ds::ds::{column_trie::ColumnTrie, relation_trie::RelationTrie};
 mod common;
 
 relation_trie_test_suite!(RelationTrie);

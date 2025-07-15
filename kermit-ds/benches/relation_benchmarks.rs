@@ -3,8 +3,8 @@ use {
         generate_distinct_tuples, generate_exponential_tuples, generate_factorial_tuples,
     },
     criterion::{
-        criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
-        Criterion,
+        BatchSize, BenchmarkGroup, Criterion, criterion_group, criterion_main,
+        measurement::WallTime,
     },
     kermit_ds::{ds::relation_trie::RelationTrie, relation::Relation},
     kermit_iters::trie::TrieIterable,

@@ -1,8 +1,9 @@
 use {
     num_traits::PrimInt,
     rand::{
-        distr::{uniform::SampleUniform, Uniform},
-        rng, Rng,
+        Rng,
+        distr::{Uniform, uniform::SampleUniform},
+        rng,
     },
     std::{collections::HashSet, hash::Hash},
 };
