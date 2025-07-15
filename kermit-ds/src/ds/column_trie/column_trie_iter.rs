@@ -173,16 +173,15 @@ mod tests {
     use {
         super::*,
         crate::relation::{Relation, RelationBuilder},
-        kermit_iters::key_type::KeyType,
     };
 
     #[test]
     fn test_insert() {
-        let mut trie = ColumnTrie::<usize>::builder(3)
+        let trie = ColumnTrie::<usize>::builder(3)
             .add_tuples(vec![vec![1, 2, 3], vec![4, 5, 6]])
             .build();
         println!("{trie}");
-        let mut t = trie.trie_iter();
+        let t = trie.trie_iter();
 
         let res = t.into_iter().collect::<Vec<_>>();
     }
