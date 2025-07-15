@@ -5,16 +5,18 @@ use {
 };
 
 pub struct ColumnTrieLayer<KT: KeyType> {
-    data: Vec<KT>,
-    interval: Vec<usize>,
+    pub data: Vec<KT>,
+    pub interval: Vec<usize>,
 }
 
 pub struct ColumnTrie<KT: KeyType> {
-    arity: usize,
-    layers: Vec<ColumnTrieLayer<KT>>,
+    pub arity: usize,
+    pub layers: Vec<ColumnTrieLayer<KT>>,
 }
 
 impl<KT: KeyType> ColumnTrie<KT> {
+    pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer<KT> { &self.layers[layer_i] }
+
     fn internal_insert(&mut self, interval_index: usize, tuples: &[KT]) -> bool {
         /// Adds an interval to a layer at some index.
         fn add_interval<KT: KeyType>(layer: &mut ColumnTrieLayer<KT>, i: usize) {
@@ -138,13 +140,36 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
         }
     }
 
-    fn from_tuples(tuples: Vec<Vec<Self::KT>>) -> Self { todo!() }
+    fn from_tuples(tuples: Vec<Vec<Self::KT>>) -> Self {
+        if tuples.is_empty() {
+            Self::new(0)
+        } else {
+            let mut trie = Self::new(tuples[0].len());
+            for tuple in tuples {
+                trie.insert(tuple);
+            }
+            trie
+        }
+    }
 
     fn arity(&self) -> usize { self.arity }
 
-    fn insert(&mut self, tuple: Vec<Self::KT>) -> bool { self.internal_insert(0, &tuple) }
+    fn insert(&mut self, tuple: Vec<Self::KT>) -> bool {
+        assert!(
+            tuple.len() == self.arity,
+            "Tuple length must match the arity of the trie."
+        );
+        self.internal_insert(0, &tuple)
+    }
 
-    fn insert_all(&mut self, tuples: Vec<Vec<Self::KT>>) -> bool { todo!() }
+    fn insert_all(&mut self, tuples: Vec<Vec<Self::KT>>) -> bool {
+        for tuple in tuples {
+            if !self.insert(tuple) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[cfg(test)]
