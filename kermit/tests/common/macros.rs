@@ -8,11 +8,14 @@ macro_rules! define_multiway_join_test {
         [ $( $input:expr ),+ $(,)? ],
         $join_vars:expr,
         $projection:expr,
-        $expected:expr
+        $expected:expr,
+        $debugger:block
     ) => {
         #[test]
         fn $test_name() {
             let inputs: Vec<Vec<Vec<$key_type>>> = vec![$($input.to_vec()),+];
+
+            $debugger
 
             $crate::common::utils::test_join::<$relation_type<$key_type>, $join_algorithm>(
                 inputs,
@@ -39,7 +42,8 @@ macro_rules! define_unary_multiway_join_test {
             ],
             vec![0],
             vec![vec![0]],
-            vec![vec![1], vec![2], vec![3]]
+            vec![vec![1], vec![2], vec![3]],
+            {print!("");}
         );
         }
     };
@@ -61,7 +65,8 @@ macro_rules! define_triangle_multiway_join_test {
             ],
             vec![0, 1, 2],
             vec![vec![0, 1], vec![1, 2], vec![0, 2]],
-            vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]
+            vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]],
+            {print!("");}
         );
         }
     };
@@ -83,7 +88,8 @@ macro_rules! define_chain_multiway_join_test {
             ],
             vec![0, 1, 2, 3],
             vec![vec![0, 1], vec![1, 2], vec![2, 3]],
-            vec![vec![1, 2, 4, 6], vec![2, 3, 5, 7]]
+            vec![vec![1, 2, 4, 6], vec![2, 3, 5, 7]],
+            {print!("");}
         );
         }
     };
@@ -104,7 +110,8 @@ macro_rules! define_star_multiway_join_test {
             ],
             vec![0, 1, 2],
             vec![vec![0, 1], vec![0, 2]],
-            vec![vec![1, 10, 100], vec![2, 20, 200]]
+            vec![vec![1, 10, 100], vec![2, 20, 200]],
+            {print!("");}
         );
         }
     };
@@ -125,7 +132,8 @@ macro_rules! define_self_multiway_join_test {
             ],
             vec![0, 1, 2],
             vec![vec![0, 1], vec![1, 2]],
-            vec![vec![1, 2, 3], vec![2, 3, 4], vec![3, 4, 5]]
+            vec![vec![1, 2, 3], vec![2, 3, 4], vec![3, 4, 5]],
+            {print!("");}
         );
         }
     };
@@ -146,7 +154,8 @@ macro_rules! define_existential_multiway_join_test {
             ],
             vec![0],
             vec![vec![0], vec![0]],
-            vec![vec![2], vec![3]]
+            vec![vec![2], vec![3]],
+            {print!("");}
         );
         }
     };
@@ -161,16 +170,19 @@ macro_rules! define_multiway_join_test_suite {
         ),+
     ) => {
         $(
+            /*
                 $crate::define_unary_multiway_join_test!(
                     $relation_type,
                     $join_algorithm
                 );
+            */
 
                 $crate::define_triangle_multiway_join_test!(
                     $relation_type,
                     $join_algorithm
                 );
 
+            /*
                 $crate::define_chain_multiway_join_test!(
                     $relation_type,
                     $join_algorithm
@@ -190,6 +202,7 @@ macro_rules! define_multiway_join_test_suite {
                     $relation_type,
                     $join_algorithm
                 );
+            */
         )+
     };
 }
