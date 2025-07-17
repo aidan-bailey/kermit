@@ -46,9 +46,10 @@ impl<KT: KeyType> LinearIterator for ColumnTrieIter<'_, KT> {
     }
 
     fn next(&mut self) -> Option<Self::KT> {
-        if let Some(data) = self.rel_data
-            && self.rel_data_i < data.len()
-        {
+        if let Some(data) = self.rel_data {
+            if self.rel_data_i > data.len() - 1 {
+                return None;
+            }
             self.rel_data_i += 1;
             data.get(self.rel_data_i).copied()
         } else {
@@ -57,9 +58,11 @@ impl<KT: KeyType> LinearIterator for ColumnTrieIter<'_, KT> {
     }
 
     fn seek(&mut self, seek_key: Self::KT) -> bool {
-        while let Some(key) = self.next()
-            && key < seek_key
-        {}
+        while let Some(key) = self.next() {
+            if key >= seek_key {
+                break;
+            }
+        }
         self.at_end()
     }
 
