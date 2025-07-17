@@ -184,9 +184,7 @@ macro_rules! define_trie_relation_benchmarks {
         paste::paste! {
             $(
                 fn [<bench_ $relation_type:lower>](c: &mut Criterion) {
-                    bench_trie_relation::<$relation_type<i16>>(concat!(stringify!($relation_type), "/i16"), c);
-                    bench_trie_relation::<$relation_type<i32>>(concat!(stringify!($relation_type), "/i32"), c);
-                    bench_trie_relation::<$relation_type<i64>>(concat!(stringify!($relation_type), "/i64"), c);
+                    bench_trie_relation::<$relation_type<usize>>(stringify!($relation_type), c);
                 }
             )+
 
