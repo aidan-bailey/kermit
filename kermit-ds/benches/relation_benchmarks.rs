@@ -3,10 +3,13 @@ use {
         generate_distinct_tuples, generate_exponential_tuples, generate_factorial_tuples,
     },
     criterion::{
-        BatchSize, BenchmarkGroup, Criterion, criterion_group, criterion_main,
-        measurement::WallTime,
+        criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
+        Criterion,
     },
-    kermit_ds::{ds::{relation_trie::RelationTrie, column_trie::ColumnTrie}, relation::Relation},
+    kermit_ds::{
+        ds::{column_trie::ColumnTrie, relation_trie::RelationTrie},
+        relation::Relation,
+    },
     kermit_iters::trie::TrieIterable,
     num_traits::PrimInt,
     rand::distr::uniform::SampleUniform,

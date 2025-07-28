@@ -1,7 +1,7 @@
 use {
     proc_macro::TokenStream,
     quote::quote,
-    syn::{DeriveInput, parse_macro_input},
+    syn::{parse_macro_input, DeriveInput},
 };
 
 #[proc_macro_derive(IntoTrieIter)]
