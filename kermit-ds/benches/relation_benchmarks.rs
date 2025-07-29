@@ -3,10 +3,13 @@ use {
         generate_distinct_tuples, generate_exponential_tuples, generate_factorial_tuples,
     },
     criterion::{
-        BatchSize, BenchmarkGroup, Criterion, criterion_group, criterion_main,
-        measurement::WallTime,
+        criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
+        Criterion,
     },
-    kermit_ds::{ds::relation_trie::RelationTrie, relation::Relation},
+    kermit_ds::{
+        ds::{column_trie::ColumnTrie, relation_trie::RelationTrie},
+        relation::Relation,
+    },
     kermit_iters::trie::TrieIterable,
     num_traits::PrimInt,
     rand::distr::uniform::SampleUniform,
@@ -161,17 +164,20 @@ macro_rules! define_trie_relation_benchmarks {
         paste::paste! {
             $(
                 fn [<bench_ $relation_type:lower>](c: &mut Criterion) {
-                    bench_trie_relation::<$relation_type<i16>>(format!("{}/i16", stringify!($relation_type)).as_str(), c);
-                    bench_trie_relation::<$relation_type<i32>>(format!("{}/i32", stringify!($relation_type)).as_str(), c);
-                    bench_trie_relation::<$relation_type<i64>>(format!("{}/i64", stringify!($relation_type)).as_str(), c);
+                    bench_trie_relation::<$relation_type<usize>>(stringify!($relation_type), c);
                 }
-
-                criterion_group!(benches, [<bench_ $relation_type:lower>]);
             )+
+
+            criterion_group!(
+                benches,
+                $(
+                    [<bench_ $relation_type:lower>]
+                ),+
+            );
         }
     };
 }
 
-define_trie_relation_benchmarks!(RelationTrie);
+define_trie_relation_benchmarks!(RelationTrie, ColumnTrie);
 
 criterion_main!(benches);
