@@ -137,10 +137,22 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
         }
     }
 
-    fn from_tuples(tuples: Vec<Vec<Self::KT>>) -> Self {
+    fn from_tuples(mut tuples: Vec<Vec<Self::KT>>) -> Self {
         if tuples.is_empty() {
             Self::new(0)
         } else {
+
+            tuples.sort_unstable_by(|a, b| {
+                for i in 0..a.len() {
+                    match a[i].cmp(&b[i]) {
+                        | std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+                        | std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+                        | std::cmp::Ordering::Equal => continue,
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+
             let mut trie = Self::new(tuples[0].len());
             for tuple in tuples {
                 trie.insert(tuple);
