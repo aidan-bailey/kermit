@@ -1,6 +1,6 @@
 use {
     common::tuple_generation::{
-        generate_distinct_tuples, generate_exponential_tuples, generate_factorial_tuples,
+        generate_exponential_tuples, generate_factorial_tuples,
     },
     criterion::{
         criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
