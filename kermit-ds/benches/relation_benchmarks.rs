@@ -31,7 +31,7 @@ where
                     |input| {
                         black_box(R::from_tuples(input));
                     },
-                    BatchSize::LargeInput,
+                    BatchSize::SmallInput,
                 );
             });
         }
@@ -50,7 +50,7 @@ where
                     |input| {
                         black_box(R::from_tuples(input));
                     },
-                    BatchSize::LargeInput,
+                    BatchSize::SmallInput,
                 );
             },
         );
@@ -66,7 +66,7 @@ where
                 |input| {
                     black_box(R::from_tuples(input));
                 },
-                BatchSize::LargeInput,
+                BatchSize::SmallInput,
             );
         });
     }
@@ -87,7 +87,7 @@ where
                             black_box(tuple);
                         }
                     },
-                    BatchSize::LargeInput,
+                    BatchSize::SmallInput,
                 );
             });
         }
@@ -109,7 +109,7 @@ where
                             black_box(tuple);
                         }
                     },
-                    BatchSize::LargeInput,
+                    BatchSize::SmallInput,
                 );
             },
         );
@@ -131,7 +131,7 @@ where
                             black_box(tuple);
                         }
                     },
-                    BatchSize::LargeInput,
+                    BatchSize::SmallInput,
                 );
             },
         );
