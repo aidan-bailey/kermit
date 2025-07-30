@@ -71,6 +71,7 @@ where
     tuples
 }
 
+#[allow(dead_code)]
 pub fn generate_distinct_tuples<T>(n: usize, k: usize) -> Vec<Vec<T>>
 where
     T: PrimInt + SampleUniform + Hash,
