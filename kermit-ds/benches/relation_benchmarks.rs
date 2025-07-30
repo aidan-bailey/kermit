@@ -22,21 +22,6 @@ fn bench_relation_insert<R: Relation>(group: &mut BenchmarkGroup<WallTime>)
 where
     R::KT: Clone + SampleUniform + PrimInt + Hash,
 {
-    for k in [1, 2, 3] {
-        for n in [100, 1000, 10000] {
-            group.throughput(criterion::Throughput::Elements(n as u64));
-            group.bench_with_input(format!("Insert/Random/{k}/{n}"), &n, |b, &n| {
-                b.iter_batched(
-                    || generate_distinct_tuples::<R::KT>(n, k),
-                    |input| {
-                        black_box(R::from_tuples(input));
-                    },
-                    BatchSize::SmallInput,
-                );
-            });
-        }
-    }
-
     for k in [1, 2, 3, 4, 5] {
         let tuples = generate_exponential_tuples(num_traits::cast(k).unwrap());
         let n = tuples.len();
@@ -76,23 +61,6 @@ fn bench_trie_relation_iteration<R: Relation + TrieIterable>(group: &mut Benchma
 where
     R::KT: Clone + SampleUniform + PrimInt + Hash,
 {
-    for k in [1, 2, 3] {
-        for n in [100, 1000, 10000].iter() {
-            group.throughput(criterion::Throughput::Elements(*n as u64));
-            group.bench_with_input(format!("Iterate/Random/{k}/{n}"), &n, |b, &n| {
-                b.iter_batched(
-                    || R::from_tuples(generate_distinct_tuples(*n, k)),
-                    |relation| {
-                        for tuple in relation.trie_iter() {
-                            black_box(tuple);
-                        }
-                    },
-                    BatchSize::SmallInput,
-                );
-            });
-        }
-    }
-
     for k in [1, 2, 3, 4, 5] {
         let tuples = generate_exponential_tuples(num_traits::cast(k).unwrap());
         let n = tuples.len();
