@@ -111,11 +111,6 @@ fn bench_trie_relation<R: Relation + TrieIterable>(groupname: &str, c: &mut Crit
 where
     R::KT: Clone + SampleUniform + PrimInt + Hash,
 {
-    // let groupname = type_name::<R>()
-    // .rsplit("::")
-    // .next()
-    // .unwrap_or("UnknownType")
-    // .to_string();
     let mut group = c.benchmark_group(groupname);
     group.sample_size(10000);
     bench_relation_insert::<R>(&mut group);
