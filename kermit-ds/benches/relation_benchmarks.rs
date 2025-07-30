@@ -1,7 +1,5 @@
 use {
-    common::tuple_generation::{
-        generate_exponential_tuples, generate_factorial_tuples,
-    },
+    common::tuple_generation::{generate_exponential_tuples, generate_factorial_tuples},
     criterion::{
         criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
         Criterion,
