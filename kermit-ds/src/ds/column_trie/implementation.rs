@@ -17,7 +17,7 @@ pub struct ColumnTrie<KT: KeyType> {
 impl<KT: KeyType> ColumnTrie<KT> {
     pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer<KT> { &self.layers[layer_i] }
 
-    fn internal_insert(&mut self, tuples: &[KT]) -> bool {
+    fn internal_insert(&mut self, tuple: &[KT]) -> bool {
         /// Adds an interval to a layer at some index.
         fn add_interval<KT: KeyType>(layer: &mut ColumnTrieLayer<KT>, i: usize) {
             if i == layer.interval.len() {
@@ -30,9 +30,8 @@ impl<KT: KeyType> ColumnTrie<KT> {
         }
 
         let mut interval_index = 0;
-        'layer_loop: for layer_i in 0..tuples.len() {
+        'layer_loop: for (layer_i, &k) in tuple.iter().enumerate() {
             // There are still keys to insert
-            let k = tuples[layer_i];
 
             if self.layers[layer_i].data.is_empty() {
                 // layer is empty, so we can just add the key and continue
