@@ -151,10 +151,7 @@ impl<KT: KeyType> TrieIterable for RelationTrie<KT> {
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        crate::relation::Relation,
-    };
+    use {super::*, crate::relation::Relation};
 
     #[test]
     fn test_relation_trie_iter() {
