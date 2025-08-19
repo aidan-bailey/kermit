@@ -7,51 +7,60 @@ use {
 
 pub enum ModelType {
     Positional,
-    Named
+    Named,
 }
 
 #[derive(Clone, Debug)]
 pub struct RelationHeader {
     name: String,
     attrs: Vec<String>,
-    arity: usize
+    arity: usize,
 }
 
 impl RelationHeader {
-    /// Creates a new `RelationHeader` with the specified name, attributes, and arity.
+    /// Creates a new `RelationHeader` with the specified name, attributes, and
+    /// arity.
     pub fn new(name: impl Into<String>, attrs: Vec<String>) -> Self {
         let arity = attrs.len();
-        RelationHeader { name: name.into(), attrs, arity }
+        RelationHeader {
+            name: name.into(),
+            attrs,
+            arity,
+        }
     }
 
     pub fn new_nameless(attrs: Vec<String>) -> Self {
         let arity = attrs.len();
-        RelationHeader { name: String::new(), attrs, arity }
+        RelationHeader {
+            name: String::new(),
+            attrs,
+            arity,
+        }
     }
 
     pub fn new_positional(name: impl Into<String>, arity: usize) -> Self {
-        RelationHeader { name: name.into(), attrs: vec![], arity }
+        RelationHeader {
+            name: name.into(),
+            attrs: vec![],
+            arity,
+        }
     }
 
     pub fn new_nameless_positional(arity: usize) -> Self {
-        RelationHeader { name: String::new(), attrs: vec![], arity }
+        RelationHeader {
+            name: String::new(),
+            attrs: vec![],
+            arity,
+        }
     }
 
-    pub fn is_nameless(&self) -> bool {
-        self.name.is_empty()
-    }
+    pub fn is_nameless(&self) -> bool { self.name.is_empty() }
 
-    pub fn name(&self) -> &str {
-        &self.name
-    }
+    pub fn name(&self) -> &str { &self.name }
 
-    pub fn attrs(&self) -> &[String] {
-        &self.attrs
-    }
+    pub fn attrs(&self) -> &[String] { &self.attrs }
 
-    pub fn arity(&self) -> usize {
-        self.arity
-    }
+    pub fn arity(&self) -> usize { self.arity }
 
     pub fn model_type(&self) -> ModelType {
         if self.attrs.is_empty() {
@@ -63,14 +72,11 @@ impl RelationHeader {
 }
 
 impl From<usize> for RelationHeader {
-    fn from(value: usize) -> RelationHeader {
-        RelationHeader::new_nameless_positional(value)
-    }
+    fn from(value: usize) -> RelationHeader { RelationHeader::new_nameless_positional(value) }
 }
 
 /// The `Relation` trait defines a relational data structure.
 pub trait Relation: JoinIterable {
-
     fn header(&self) -> &RelationHeader;
 
     /// Creates a new relation with the specified arity.

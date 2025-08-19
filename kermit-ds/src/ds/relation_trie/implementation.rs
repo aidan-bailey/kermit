@@ -19,10 +19,7 @@ where
 }
 
 impl<KT: KeyType> Relation for RelationTrie<KT> {
-
-    fn header(&self) -> &RelationHeader {
-        &self.header
-    }
+    fn header(&self) -> &RelationHeader { &self.header }
 
     /// Construct an empty Trie.
     ///

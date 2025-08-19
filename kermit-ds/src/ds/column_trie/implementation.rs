@@ -122,10 +122,7 @@ impl<KT: KeyType> JoinIterable for ColumnTrie<KT> {
 }
 
 impl<KT: KeyType> Relation for ColumnTrie<KT> {
-
-    fn header(&self) -> &RelationHeader {
-        &self.header
-    }
+    fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
         ColumnTrie {
@@ -182,7 +179,10 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
 
 #[cfg(test)]
 mod tests {
-    use {super::ColumnTrie, crate::relation::{Relation as _, RelationHeader}};
+    use {
+        super::ColumnTrie,
+        crate::relation::{Relation as _, RelationHeader},
+    };
 
     #[test]
     fn test_insert() {

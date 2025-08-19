@@ -27,7 +27,11 @@ where
     let relations: Vec<_> = input
         .into_iter()
         .map(|tuples| {
-            let k = if tuples.is_empty() { 0 } else { tuples[0].len() };
+            let k = if tuples.is_empty() {
+                0
+            } else {
+                tuples[0].len()
+            };
             R::from_tuples(k.into(), tuples)
         })
         .collect();
