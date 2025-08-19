@@ -1,9 +1,12 @@
 use {
-    super::implementation::ColumnTrie, crate::relation::Relation, kermit_derive::IntoTrieIter, kermit_iters::{
+    super::implementation::ColumnTrie,
+    crate::relation::Relation,
+    kermit_derive::IntoTrieIter,
+    kermit_iters::{
         key_type::KeyType,
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
-    }
+    },
 };
 
 #[derive(IntoTrieIter)]
