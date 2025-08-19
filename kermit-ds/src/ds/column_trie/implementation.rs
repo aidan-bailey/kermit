@@ -1,5 +1,5 @@
 use {
-    crate::relation::Relation,
+    crate::relation::{Relation, RelationHeader},
     kermit_iters::{join_iterable::JoinIterable, key_type::KeyType},
     std::fmt,
 };
@@ -10,7 +10,7 @@ pub struct ColumnTrieLayer<KT: KeyType> {
 }
 
 pub struct ColumnTrie<KT: KeyType> {
-    pub arity: usize,
+    header: RelationHeader,
     pub layers: Vec<ColumnTrieLayer<KT>>,
 }
 
@@ -59,7 +59,7 @@ impl<KT: KeyType> ColumnTrie<KT> {
                             self.layers[layer_i].interval[j] += 1;
                         }
                         // if this is the last layer, we're finished
-                        if layer_i == self.arity - 1 {
+                        if layer_i == self.header().arity() - 1 {
                             return true;
                         }
                         add_interval(&mut self.layers[layer_i + 1], i);
@@ -80,7 +80,7 @@ impl<KT: KeyType> ColumnTrie<KT> {
                         self.layers[layer_i].interval[j] += 1;
                     }
                 }
-                if layer_i == self.arity - 1 {
+                if layer_i == self.header().arity() - 1 {
                     // if there are no more layers, we are done
                     return true;
                 }
@@ -122,21 +122,26 @@ impl<KT: KeyType> JoinIterable for ColumnTrie<KT> {
 }
 
 impl<KT: KeyType> Relation for ColumnTrie<KT> {
-    fn new(arity: usize) -> Self {
+
+    fn header(&self) -> &RelationHeader {
+        &self.header
+    }
+
+    fn new(header: RelationHeader) -> Self {
         ColumnTrie {
-            arity,
-            layers: (0..arity)
+            layers: (0..header.arity())
                 .map(|_| ColumnTrieLayer::<KT> {
                     data: vec![],
                     interval: vec![],
                 })
                 .collect::<Vec<_>>(),
+            header,
         }
     }
 
-    fn from_tuples(mut tuples: Vec<Vec<Self::KT>>) -> Self {
+    fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<Self::KT>>) -> Self {
         if tuples.is_empty() {
-            Self::new(0)
+            Self::new(header)
         } else {
             tuples.sort_unstable_by(|a, b| {
                 for i in 0..a.len() {
@@ -149,7 +154,7 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
                 std::cmp::Ordering::Equal
             });
 
-            let mut trie = Self::new(tuples[0].len());
+            let mut trie = Self::new(header);
             for tuple in tuples {
                 trie.insert(tuple);
             }
@@ -157,11 +162,9 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
         }
     }
 
-    fn arity(&self) -> usize { self.arity }
-
     fn insert(&mut self, tuple: Vec<Self::KT>) -> bool {
         debug_assert!(
-            tuple.len() == self.arity,
+            tuple.len() == self.header().arity(),
             "Tuple length must match the arity of the trie."
         );
         self.internal_insert(&tuple)
@@ -179,11 +182,11 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
 
 #[cfg(test)]
 mod tests {
-    use {super::ColumnTrie, crate::relation::Relation as _};
+    use {super::ColumnTrie, crate::relation::{Relation as _, RelationHeader}};
 
     #[test]
     fn test_insert() {
-        let mut trie = ColumnTrie::<usize>::new(2);
+        let mut trie = ColumnTrie::<usize>::new(2.into());
         trie.insert(vec![2, 3]);
         println!("{trie}");
         trie.insert(vec![3, 1]);

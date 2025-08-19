@@ -31,7 +31,7 @@ where
                 b.iter_batched(
                     || tuples.clone(),
                     |input| {
-                        black_box(R::from_tuples(input));
+                        black_box(R::from_tuples(k.into(), input));
                     },
                     BatchSize::SmallInput,
                 );
@@ -47,7 +47,7 @@ where
             b.iter_batched(
                 || tuples.clone(),
                 |input| {
-                    black_box(R::from_tuples(input));
+                    black_box(R::from_tuples(h.into(), input));
                 },
                 BatchSize::SmallInput,
             );
@@ -63,7 +63,7 @@ where
         let tuples = generate_exponential_tuples(num_traits::cast(k).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
-        let relation = R::from_tuples(tuples);
+        let relation = R::from_tuples(k.into(), tuples);
         group.bench_with_input(
             format!("Iterate/Exponential/{k}/{n}"),
             &relation,
@@ -85,7 +85,7 @@ where
         let tuples = generate_factorial_tuples(num_traits::cast(h).unwrap());
         let n = tuples.len();
         group.throughput(criterion::Throughput::Elements(n as u64));
-        let relation = R::from_tuples(tuples);
+        let relation = R::from_tuples(h.into(), tuples);
         group.bench_with_input(
             format!("Iterate/Factorial/{h}/{n}"),
             &relation,

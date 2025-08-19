@@ -11,7 +11,7 @@ mod tests {
     use {
         crate::{
             ds::relation_trie::{implementation::RelationTrie, trie_traits::TrieFields},
-            relation::{Builder, Relation, RelationBuilder},
+            relation::{Builder, Relation, RelationBuilder, RelationHeader},
             shared::nodes::Node,
         },
         kermit_iters::{
@@ -22,7 +22,7 @@ mod tests {
 
     #[test]
     fn trie_insert() {
-        let mut trie = RelationTrie::<u64>::new(2);
+        let mut trie = RelationTrie::<u64>::new(2.into());
 
         let _ = trie.insert(vec![1, 2]);
 
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn linear_iterator() {
-        let trie = Builder::<RelationTrie<u64>>::new(1)
+        let trie = Builder::<RelationTrie<u64>>::new(1.into())
             .add_tuple(vec![1])
             .add_tuple(vec![2])
             .add_tuple(vec![3])
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_relation_trie() {
-        let trie = RelationTrie::<u64>::builder(2)
+        let trie = RelationTrie::<u64>::builder(2.into())
             .add_tuples(vec![vec![2, 4], vec![3, 5]])
             .build();
         let mut iter = trie.trie_iter();
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = Builder::<RelationTrie<u64>>::new(3)
+        let trie = Builder::<RelationTrie<u64>>::new(3.into())
             .add_tuple(vec![1, 3, 4])
             .add_tuple(vec![1, 3, 5])
             .add_tuple(vec![1, 4, 6])

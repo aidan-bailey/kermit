@@ -9,7 +9,10 @@ pub fn test_join<R, JA>(
 {
     let relations: Vec<_> = input
         .into_iter()
-        .map(|tuples| R::from_tuples(tuples))
+        .map(|tuples| {
+            let k = if tuples.is_empty() { 0 } else { tuples[0].len() };
+            R::from_tuples(k.into(), tuples)
+        })
         .collect();
     let iterables = relations.iter().collect::<Vec<_>>();
     assert_eq!(

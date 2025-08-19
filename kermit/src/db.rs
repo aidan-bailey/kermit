@@ -39,7 +39,7 @@ where
     pub fn name(&self) -> &String { &self.name }
 
     pub fn add_relation(&mut self, name: &str, arity: usize) {
-        let relation = R::builder(arity).build();
+        let relation = R::builder(arity.into()).build();
         self.relations.insert(name.to_owned(), relation);
     }
 
@@ -71,7 +71,7 @@ where
             .collect::<Vec<&R>>();
         let arity = variables.len();
         let tuples = JA::join_iter(variables, rel_variables, iterables).collect();
-        R::builder(arity).add_tuples(tuples).build()
+        R::builder(arity.into()).add_tuples(tuples).build()
     }
 }
 

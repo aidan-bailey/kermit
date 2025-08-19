@@ -220,10 +220,10 @@ mod tests {
 
     #[test]
     fn test_classic() {
-        let t1 = RelationTrie::<i32>::builder(1)
+        let t1 = RelationTrie::<i32>::builder(1.into())
             .add_tuples(vec![vec![1], vec![2], vec![3]])
             .build();
-        let t2 = RelationTrie::<i32>::builder(1)
+        let t2 = RelationTrie::<i32>::builder(1.into())
             .add_tuples(vec![vec![1], vec![2], vec![3]])
             .build();
         let t1_iter = t1.trie_iter();
@@ -244,13 +244,13 @@ mod tests {
 
     #[test]
     fn more_complicated() {
-        let r = RelationTrie::<i32>::builder(2)
+        let r = RelationTrie::<i32>::builder(2.into())
             .add_tuples(vec![vec![7, 4]])
             .build();
-        let s = RelationTrie::<i32>::builder(2)
+        let s = RelationTrie::<i32>::builder(2.into())
             .add_tuples(vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]])
             .build();
-        let t = RelationTrie::<i32>::builder(2)
+        let t = RelationTrie::<i32>::builder(2.into())
             .add_tuples(vec![vec![7, 2], vec![7, 3], vec![7, 5]])
             .build();
         let r_iter = r.trie_iter();
@@ -275,13 +275,13 @@ mod tests {
 
     #[test]
     fn chain() {
-        let r = RelationTrie::<i32>::builder(2)
+        let r = RelationTrie::<i32>::builder(2.into())
             .add_tuples(vec![vec![1, 2], vec![2, 3]])
             .build();
-        let s = RelationTrie::<i32>::builder(2)
+        let s = RelationTrie::<i32>::builder(2.into())
             .add_tuples(vec![vec![2, 4], vec![3, 5]])
             .build();
-        let t = RelationTrie::<i32>::builder(2)
+        let t = RelationTrie::<i32>::builder(2.into())
             .add_tuples(vec![vec![4, 6], vec![5, 7]])
             .build();
         let r_iter = r.trie_iter();
