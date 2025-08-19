@@ -181,7 +181,7 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
 mod tests {
     use {
         super::ColumnTrie,
-        crate::relation::{Relation as _, RelationHeader},
+        crate::relation::Relation as _,
     };
 
     #[test]
