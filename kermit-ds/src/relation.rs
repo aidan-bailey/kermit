@@ -17,12 +17,6 @@ pub struct RelationHeader {
     arity: usize
 }
 
-impl From<usize> for RelationHeader {
-    fn from(value: usize) -> RelationHeader {
-        RelationHeader::new_nameless_positional(value)
-    }
-}
-
 impl RelationHeader {
     /// Creates a new `RelationHeader` with the specified name, attributes, and arity.
     pub fn new(name: impl Into<String>, attrs: Vec<String>) -> Self {
@@ -43,6 +37,10 @@ impl RelationHeader {
         RelationHeader { name: String::new(), attrs: vec![], arity }
     }
 
+    pub fn is_nameless(&self) -> bool {
+        self.name.is_empty()
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -61,6 +59,12 @@ impl RelationHeader {
         } else {
             ModelType::Named
         }
+    }
+}
+
+impl From<usize> for RelationHeader {
+    fn from(value: usize) -> RelationHeader {
+        RelationHeader::new_nameless_positional(value)
     }
 }
 
