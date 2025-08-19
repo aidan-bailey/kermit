@@ -1,11 +1,9 @@
 use {
-    super::implementation::ColumnTrie,
-    kermit_derive::IntoTrieIter, // Ensure TrieIteratorWrapper is imported
-    kermit_iters::{
+    super::implementation::ColumnTrie, crate::relation::Relation, kermit_derive::IntoTrieIter, kermit_iters::{
         key_type::KeyType,
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
-    },
+    }
 };
 
 #[derive(IntoTrieIter)]
@@ -77,7 +75,7 @@ impl<KT: KeyType> LinearIterator for ColumnTrieIter<'_, KT> {
 
 impl<KT: KeyType> TrieIterator for ColumnTrieIter<'_, KT> {
     fn open(&mut self) -> bool {
-        if self.layer_number == self.trie.arity {
+        if self.layer_number == self.trie.header().arity() {
             // If at leaf, return false
             false
         } else if self.layer_number == 0 {

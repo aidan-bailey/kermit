@@ -5,16 +5,75 @@ use {
     std::{fs::File, path::Path, str::FromStr},
 };
 
+pub enum ModelType {
+    Positional,
+    Named
+}
+
+#[derive(Clone, Debug)]
+pub struct RelationHeader {
+    name: String,
+    attrs: Vec<String>,
+    arity: usize
+}
+
+impl From<usize> for RelationHeader {
+    fn from(value: usize) -> RelationHeader {
+        RelationHeader::new_nameless_positional(value)
+    }
+}
+
+impl RelationHeader {
+    /// Creates a new `RelationHeader` with the specified name, attributes, and arity.
+    pub fn new(name: impl Into<String>, attrs: Vec<String>) -> Self {
+        let arity = attrs.len();
+        RelationHeader { name: name.into(), attrs, arity }
+    }
+
+    pub fn new_nameless(attrs: Vec<String>) -> Self {
+        let arity = attrs.len();
+        RelationHeader { name: String::new(), attrs, arity }
+    }
+
+    pub fn new_positional(name: impl Into<String>, arity: usize) -> Self {
+        RelationHeader { name: name.into(), attrs: vec![], arity }
+    }
+
+    pub fn new_nameless_positional(arity: usize) -> Self {
+        RelationHeader { name: String::new(), attrs: vec![], arity }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn attrs(&self) -> &[String] {
+        &self.attrs
+    }
+
+    pub fn arity(&self) -> usize {
+        self.arity
+    }
+
+    pub fn model_type(&self) -> ModelType {
+        if self.attrs.is_empty() {
+            ModelType::Positional
+        } else {
+            ModelType::Named
+        }
+    }
+}
+
 /// The `Relation` trait defines a relational data structure.
 pub trait Relation: JoinIterable {
+
+    fn header(&self) -> &RelationHeader;
+
     /// Creates a new relation with the specified arity.
-    fn new(arity: usize) -> Self;
+    fn new(header: RelationHeader) -> Self;
 
     /// Creates a new relation with the specified arity and given tuples.
-    fn from_tuples(tuples: Vec<Vec<Self::KT>>) -> Self;
-
-    /// Returns the arity of the relation.
-    fn arity(&self) -> usize;
+    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<Self::KT>>) -> Self;
 
     /// Inserts a tuple into the relation, returning `true` if successful and
     /// `false` if otherwise.
@@ -25,11 +84,11 @@ pub trait Relation: JoinIterable {
     fn insert_all(&mut self, tuples: Vec<Vec<Self::KT>>) -> bool;
 
     /// Creates a new relation builder with the specified arity.
-    fn builder(arity: usize) -> impl RelationBuilder<Output = Self>
+    fn builder(header: RelationHeader) -> impl RelationBuilder<Output = Self>
     where
         Self: Relation + Sized,
     {
-        Builder::<Self>::new(arity)
+        Builder::<Self>::new(header)
     }
 }
 
@@ -43,7 +102,7 @@ pub trait RelationBuilder {
     type Output: Relation;
 
     /// Creates a new relation builder with the specified arity.
-    fn new(arity: usize) -> Self;
+    fn new(header: RelationHeader) -> Self;
 
     /// Consumes the builder and returns the resulting relation.
     fn build(self) -> Self::Output;
@@ -58,7 +117,7 @@ pub trait RelationBuilder {
 /// A concrete, default implementation of the `RelationBuilder` trait for a
 /// specific relation type `R`.
 pub struct Builder<R: Relation> {
-    arity: usize,
+    header: RelationHeader,
     tuples: Vec<Vec<R::KT>>,
 }
 
@@ -66,15 +125,15 @@ pub struct Builder<R: Relation> {
 impl<R: Relation> RelationBuilder for Builder<R> {
     type Output = R;
 
-    fn new(arity: usize) -> Self {
+    fn new(header: RelationHeader) -> Self {
         Builder {
-            arity,
+            header,
             tuples: vec![],
         }
     }
 
     fn build(self) -> Self::Output {
-        let mut r = R::new(self.arity);
+        let mut r = R::new(self.header);
         r.insert_all(self.tuples);
         r
     }

@@ -151,12 +151,12 @@ impl<KT: KeyType> TrieIterable for RelationTrie<KT> {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::relation::Relation};
+    use {super::*, crate::relation::{Relation, RelationHeader}};
 
     #[test]
     fn test_relation_trie_iter() {
         let trie =
-            RelationTrie::<i32>::from_tuples(vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]]);
+            RelationTrie::<i32>::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]]);
         let iter = trie.trie_iter();
         for v in iter {
             assert!(
