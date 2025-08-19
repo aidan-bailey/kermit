@@ -179,10 +179,7 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::ColumnTrie,
-        crate::relation::Relation as _,
-    };
+    use {super::ColumnTrie, crate::relation::Relation as _};
 
     #[test]
     fn test_insert() {
