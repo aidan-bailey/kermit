@@ -153,7 +153,7 @@ impl<KT: KeyType> TrieIterable for RelationTrie<KT> {
 mod tests {
     use {
         super::*,
-        crate::relation::{Relation, RelationHeader},
+        crate::relation::Relation,
     };
 
     #[test]
