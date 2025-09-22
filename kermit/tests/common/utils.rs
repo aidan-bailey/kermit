@@ -1,4 +1,4 @@
-use {kermit_algos::join_algo::JoinAlgo, kermit_ds::Relation};
+use {kermit_algos::JoinAlgo, kermit_ds::Relation};
 
 pub fn test_join<R, JA>(
     input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,

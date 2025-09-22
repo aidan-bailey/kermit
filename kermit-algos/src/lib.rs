@@ -1,3 +1,6 @@
-pub mod join_algo;
 pub mod leapfrog_join;
-pub mod leapfrog_triejoin;
+mod leapfrog_triejoin;
+mod join_algo;
+
+pub use leapfrog_triejoin::LeapfrogTriejoin;
+pub use join_algo::JoinAlgo;

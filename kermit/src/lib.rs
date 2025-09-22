@@ -1,5 +1,5 @@
 pub mod algos {
-    pub use kermit_algos::leapfrog_triejoin::LeapfrogTriejoin;
+    pub use kermit_algos::LeapfrogTriejoin;
 }
 
 pub mod kvs {
@@ -15,7 +15,7 @@ pub mod ds {
 
 pub mod db;
 
-use {kermit_algos::join_algo::JoinAlgo, kermit_ds::Relation};
+use {kermit_algos::JoinAlgo, kermit_ds::Relation};
 
 pub fn compute_join<R, JA>(
     input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,

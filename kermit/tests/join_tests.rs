@@ -1,7 +1,7 @@
 mod common;
 
 use {
-    kermit_algos::leapfrog_triejoin::LeapfrogTriejoin,
+    kermit_algos::LeapfrogTriejoin,
     kermit_ds::{ColumnTrie, TreeTrie},
 };
 
