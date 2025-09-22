@@ -2,7 +2,7 @@ mod common;
 
 use {
     kermit_algos::leapfrog_triejoin::LeapfrogTriejoin,
-    kermit_ds::ds::{column_trie::ColumnTrie, tree_trie::TreeTrie},
+    kermit_ds::{ColumnTrie, TreeTrie},
 };
 
 define_multiway_join_test_suite!(TreeTrie, LeapfrogTriejoin);

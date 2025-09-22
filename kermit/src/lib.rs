@@ -8,14 +8,14 @@ pub mod kvs {
 
 pub mod ds {
     pub use kermit_ds::{
-        ds::tree_trie::TreeTrie,
-        relation::{Builder, RelationBuilder},
+        TreeTrie,
+        RelationBuilder,
     };
 }
 
 pub mod db;
 
-use {kermit_algos::join_algo::JoinAlgo, kermit_ds::relation::Relation};
+use {kermit_algos::join_algo::JoinAlgo, kermit_ds::Relation};
 
 pub fn compute_join<R, JA>(
     input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,

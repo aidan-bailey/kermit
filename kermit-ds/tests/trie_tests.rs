@@ -1,4 +1,4 @@
-use kermit_ds::ds::{column_trie::ColumnTrie, tree_trie::TreeTrie};
+use kermit_ds::{ColumnTrie, TreeTrie};
 mod common;
 
 relation_trie_test_suite!(TreeTrie);

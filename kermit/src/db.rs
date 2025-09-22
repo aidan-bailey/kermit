@@ -1,6 +1,6 @@
 use {
     kermit_algos::join_algo::JoinAlgo,
-    kermit_ds::relation::{Relation, RelationBuilder},
+    kermit_ds::{Relation, RelationBuilder},
     kermit_kvs::keyvalstore::KeyValStore,
     std::{collections::HashMap, hash::Hash},
 };
@@ -81,7 +81,7 @@ mod tests {
     use {
         super::*,
         kermit_algos::leapfrog_triejoin::LeapfrogTriejoin,
-        kermit_ds::ds::tree_trie::TreeTrie,
+        kermit_ds::TreeTrie,
         kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
     };
 
