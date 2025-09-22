@@ -1,45 +1,30 @@
-//! This module provides a `TrieIterator` implementation for the `TreeTrie`
-//! data structure.
-
 use {
-    super::{implementation::TreeTrie, trie_node::TrieNode, trie_traits::TrieFields},
-    crate::shared::nodes::Node,
-    kermit_derive::IntoTrieIter,
+    super::implementation::{TreeTrie, TrieNode},
     kermit_iters::{
         key_type::KeyType,
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
     },
+    kermit_derive::IntoTrieIter,
 };
 
 /// An iterator over the nodes of a `TreeTrie`.
 #[derive(IntoTrieIter)]
 struct TreeTrieIter<'a, KT: KeyType> {
-    /// Current Node's index amongst its siblings.
     pos: usize,
-    /// Trie that is being iterated.
     trie: &'a TreeTrie<KT>,
-    /// Stack containing cursor's path down the trie.
-    /// The tuples hold the Node and its index amongst its siblings.
-    /// If the stack is empty, the cursor points to the root.
-    /// If the stack is non-empty, the cursor points to the last element.
     stack: Vec<(&'a TrieNode<KT>, usize)>,
 }
 
 impl<'a, KT: KeyType> TreeTrieIter<'a, KT> {
-    /// Construct a new Trie iterator.
-    pub fn new(trie: &'a TreeTrie<KT>) -> Self {
-        TreeTrieIter {
+    fn new(trie: &'a TreeTrie<KT>) -> Self {
+        Self {
             pos: 0,
             trie,
             stack: Vec::new(),
         }
     }
 
-    /// Get the siblings of the node pointed to by the cursor (including the
-    /// node).
-    ///
-    /// Returns None if the cursor points to the root.
     fn siblings(&self) -> Option<&'a Vec<TrieNode<KT>>> {
         if self.stack.is_empty() {
             None
@@ -54,7 +39,9 @@ impl<'a, KT: KeyType> TreeTrieIter<'a, KT> {
 impl<KT: KeyType> LinearIterator for TreeTrieIter<'_, KT> {
     type KT = KT;
 
-    fn key(&self) -> Option<KT> { Some(self.siblings()?.get(self.pos)?.key()) }
+    fn key(&self) -> Option<KT> {
+        Some(self.siblings()?.get(self.pos)?.key())
+    }
 
     fn next(&mut self) -> Option<KT> {
         if let Some(siblings) = self.siblings() {
@@ -75,13 +62,9 @@ impl<KT: KeyType> LinearIterator for TreeTrieIter<'_, KT> {
 
         if let Some(current_key) = self.key() {
             if current_key > seek_key {
-                panic!("The sought key must be ≥ the key at the current position.")
+                panic!("The sought key must be ≥ the key at the current position.");
             } else {
-                // If there exists a key, there should ALWAYS be at least one sibling
-                // (i.e., the current node itself).
-                let siblings = self
-                    .siblings()
-                    .expect("If there exists a key, there should ALWAYS be at least one sibling");
+                let siblings = self.siblings().expect("If there exists a key, there should ALWAYS be at least one sibling");
 
                 while (!self.at_end()) && seek_key > siblings[self.pos].key() {
                     self.pos += 1;
@@ -119,7 +102,7 @@ impl<KT: KeyType> TrieIterator for TreeTrieIter<'_, KT> {
             } else {
                 false
             }
-        } else if self.trie.is_empty() {
+        } else if self.trie.children().is_empty() {
             false
         } else {
             self.stack.push((&self.trie.children()[0], 0));
@@ -142,31 +125,8 @@ impl<KT: KeyType> TrieIterator for TreeTrieIter<'_, KT> {
     }
 }
 
-/// Implementation of the `TrieIterable` trait for `TreeTrie`.
 impl<KT: KeyType> TrieIterable for TreeTrie<KT> {
     fn trie_iter(&self) -> impl TrieIterator<KT = KT> + IntoIterator<Item = Vec<KT>> {
         TreeTrieIter::new(self)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use {super::*, crate::relation::Relation};
-
-    #[test]
-    fn test_tree_trie_iter() {
-        let trie = TreeTrie::<i32>::from_tuples(2.into(), vec![
-            vec![1, 2],
-            vec![1, 3],
-            vec![2, 4],
-            vec![3, 5],
-        ]);
-        let iter = trie.trie_iter();
-        for v in iter {
-            assert!(
-                !v.is_empty(),
-                "Each iteration should yield a non-empty vector."
-            );
-        }
     }
 }

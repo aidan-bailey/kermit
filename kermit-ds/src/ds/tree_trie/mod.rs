@@ -1,18 +1,15 @@
 //! This module provides a [trie](https://en.wikipedia.org/wiki/Trie)-based implementation of a relation.
 
 mod implementation;
-pub use implementation::TreeTrie;
 mod tree_trie_iter;
-mod trie_node;
-mod trie_traits;
+
+pub use implementation::{TreeTrie, TrieNode};
 
 #[cfg(test)]
 mod tests {
     use {
         crate::{
-            ds::tree_trie::{implementation::TreeTrie, trie_traits::TrieFields},
             relation::{Builder, Relation, RelationBuilder},
-            shared::nodes::Node,
         },
         kermit_iters::{
             linear::LinearIterator,
@@ -20,45 +17,47 @@ mod tests {
         },
     };
 
+    use super::implementation::*;
+
     #[test]
     fn trie_insert() {
         let mut trie = TreeTrie::<u64>::new(2.into());
 
         let _ = trie.insert(vec![1, 2]);
 
-        assert_eq!(trie.size(), 1);
+        assert_eq!(trie.children().len(), 1);
         // check first level child
         let child = &trie.children()[0];
         assert_eq!(child.key(), 1);
-        assert_eq!(child.size(), 1);
+        assert_eq!(child.children().len(), 1);
         // check second level child
         let child = &child.children()[0];
         assert_eq!(child.key(), 2);
-        assert_eq!(child.size(), 0);
+        assert_eq!(child.children().len(), 0);
 
         let _ = trie.insert(vec![0, 2]);
 
-        assert_eq!(trie.size(), 2);
+        assert_eq!(trie.children().len(), 2);
         // check first level child
         let child = &trie.children()[0];
         assert_eq!(child.key(), 0);
-        assert_eq!(child.size(), 1);
+        assert_eq!(child.children().len(), 1);
         // check second level child
         let child = &child.children()[0];
         assert_eq!(child.key(), 2);
-        assert_eq!(child.size(), 0);
+        assert_eq!(child.children().len(), 0);
 
         let _ = trie.insert(vec![1, 1]);
 
-        assert_eq!(trie.size(), 2);
+        assert_eq!(trie.children().len(), 2);
         // check first level child
         let child = &trie.children()[1];
         assert_eq!(child.key(), 1);
-        assert_eq!(child.size(), 2);
+        assert_eq!(child.children().len(), 2);
         // check second level child
         let child = &child.children()[0];
         assert_eq!(child.key(), 1);
-        assert_eq!(child.size(), 0);
+        assert_eq!(child.children().len(), 0);
     }
 
     #[test]
@@ -82,9 +81,7 @@ mod tests {
 
     #[test]
     fn test_tree_trie() {
-        let trie = TreeTrie::<u64>::builder(2.into())
-            .add_tuples(vec![vec![2, 4], vec![3, 5]])
-            .build();
+        let trie = TreeTrie::<u64>::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
@@ -145,5 +142,22 @@ mod tests {
         assert_eq!(iter.key().unwrap(), 2);
 
         assert!(!iter.open());
+    }
+
+    #[test]
+    fn test_tree_trie_iter() {
+        let trie = TreeTrie::<i32>::from_tuples(2.into(), vec![
+            vec![1, 2],
+            vec![1, 3],
+            vec![2, 4],
+            vec![3, 5],
+        ]);
+        let iter = trie.trie_iter();
+        for v in iter {
+            assert!(
+                !v.is_empty(),
+                "Each iteration should yield a non-empty vector."
+            );
+        }
     }
 }
