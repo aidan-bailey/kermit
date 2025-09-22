@@ -3,7 +3,7 @@
 mod implementation;
 mod tree_trie_iter;
 
-pub use implementation::{TreeTrie, TrieNode};
+pub use implementation::TreeTrie;
 
 #[cfg(test)]
 mod tests {
