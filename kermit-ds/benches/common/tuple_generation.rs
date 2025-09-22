@@ -14,10 +14,6 @@ where
     let k_usize = num_traits::cast::<T, usize>(k).expect("Failed to cast T to usize");
     let mut tuples: Vec<Vec<T>> = vec![];
 
-    let tuple = (0..k_usize)
-        .map(|_| num_traits::cast::<usize, T>(0).unwrap())
-        .collect::<Vec<T>>();
-
     fn recurse<T>(k_curr: usize, k: usize, current: Vec<T>, result: &mut Vec<Vec<T>>)
     where
         T: PrimInt + num_traits::NumCast,
@@ -34,7 +30,7 @@ where
         }
     }
 
-    recurse(0, k_usize, tuple, &mut tuples);
+    recurse(0, k_usize, vec![], &mut tuples);
 
     tuples
 }
@@ -45,10 +41,6 @@ where
 {
     let k_usize = num_traits::cast::<T, usize>(k).expect("Failed to cast T to usize");
     let mut tuples: Vec<Vec<T>> = vec![];
-
-    let tuple = (0..k_usize)
-        .map(|_| num_traits::cast::<usize, T>(0).unwrap())
-        .collect::<Vec<T>>();
 
     fn recurse<T>(k_curr: usize, k: usize, current: Vec<T>, result: &mut Vec<Vec<T>>)
     where
@@ -66,7 +58,7 @@ where
         }
     }
 
-    recurse(0, k_usize, tuple, &mut tuples);
+    recurse(0, k_usize, vec![], &mut tuples);
 
     tuples
 }
