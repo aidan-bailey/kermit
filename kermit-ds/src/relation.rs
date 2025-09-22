@@ -75,8 +75,12 @@ impl From<usize> for RelationHeader {
     fn from(value: usize) -> RelationHeader { RelationHeader::new_nameless_positional(value) }
 }
 
+pub trait Projectable {
+    fn project(&self, columns: Vec<usize>) -> Self;
+}
+
 /// The `Relation` trait defines a relational data structure.
-pub trait Relation: Joinable {
+pub trait Relation: Joinable + Projectable {
     fn header(&self) -> &RelationHeader;
 
     /// Creates a new relation with the specified arity.

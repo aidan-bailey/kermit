@@ -4,5 +4,5 @@ mod shared;
 
 pub use {
     ds::{ColumnTrie, TreeTrie},
-    relation::{Relation, RelationBuilder},
+    relation::{Relation, RelationBuilder, Projectable},
 };
