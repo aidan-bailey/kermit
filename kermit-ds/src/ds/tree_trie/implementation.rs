@@ -4,7 +4,7 @@ use {
         trie_traits::{Internal, TrieFields},
     },
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::{join_iterable::JoinIterable, key_type::KeyType},
+    kermit_iters::{joinable::Joinable, key_type::KeyType},
 };
 
 /// Trie data structure for relations.
@@ -85,7 +85,7 @@ impl<KT: KeyType> Relation for TreeTrie<KT> {
     }
 }
 
-impl<KT: KeyType> JoinIterable for TreeTrie<KT> {
+impl<KT: KeyType> Joinable for TreeTrie<KT> {
     type KT = KT;
 }
 

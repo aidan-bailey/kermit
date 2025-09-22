@@ -1,6 +1,6 @@
 use {
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::{join_iterable::JoinIterable, key_type::KeyType},
+    kermit_iters::{joinable::Joinable, key_type::KeyType},
     std::fmt,
 };
 
@@ -117,7 +117,7 @@ impl<KT: KeyType> fmt::Display for ColumnTrie<KT> {
     }
 }
 
-impl<KT: KeyType> JoinIterable for ColumnTrie<KT> {
+impl<KT: KeyType> Joinable for ColumnTrie<KT> {
     type KT = KT;
 }
 

@@ -1,7 +1,7 @@
 //! This module defines the `LinearIterator` trait along with its implementation
 //! for vectors.
 
-use crate::{join_iterable::JoinIterable, key_type::KeyType};
+use crate::{joinable::Joinable, key_type::KeyType};
 
 /// The `LinearIterator` trait, designed for iterators that traverse a linear
 /// structure.
@@ -37,14 +37,14 @@ pub trait LinearIterator {
 /// The `LinearIterable` trait is used to specify types that can be iterated
 /// through the `LinearIterator` interface, and as such used in algorithms that
 /// require such an iterator.
-pub trait LinearIterable: JoinIterable {
+pub trait LinearIterable: Joinable {
     /// Returns a linear iterator for the type.
     fn linear_iter(&self) -> impl LinearIterator<KT = Self::KT>;
 }
 
-/// `JoinIterable` implementation for `Vec<KT>` informing the type system that
+/// `Joinable` implementation for `Vec<KT>` informing the type system that
 /// it may be used in some kind of join operation.
-impl<KT: KeyType> JoinIterable for Vec<KT> {
+impl<KT: KeyType> Joinable for Vec<KT> {
     type KT = KT;
 }
 

@@ -1,7 +1,7 @@
 //! This module defines the `Relation` and `RelationBuilder` traits.
 use {
     csv::Error,
-    kermit_iters::join_iterable::JoinIterable,
+    kermit_iters::joinable::Joinable,
     std::{fs::File, path::Path, str::FromStr},
 };
 
@@ -76,7 +76,7 @@ impl From<usize> for RelationHeader {
 }
 
 /// The `Relation` trait defines a relational data structure.
-pub trait Relation: JoinIterable {
+pub trait Relation: Joinable {
     fn header(&self) -> &RelationHeader;
 
     /// Creates a new relation with the specified arity.
@@ -118,10 +118,10 @@ pub trait RelationBuilder {
     fn build(self) -> Self::Output;
 
     /// Adds a tuple to the relation being built.
-    fn add_tuple(self, tuple: Vec<<Self::Output as JoinIterable>::KT>) -> Self;
+    fn add_tuple(self, tuple: Vec<<Self::Output as Joinable>::KT>) -> Self;
 
     /// Adds multiple tuples to the relation being built.
-    fn add_tuples(self, tuples: Vec<Vec<<Self::Output as JoinIterable>::KT>>) -> Self;
+    fn add_tuples(self, tuples: Vec<Vec<<Self::Output as Joinable>::KT>>) -> Self;
 }
 
 /// A concrete, default implementation of the `RelationBuilder` trait for a
@@ -148,12 +148,12 @@ impl<R: Relation> RelationBuilder for Builder<R> {
         r
     }
 
-    fn add_tuple(mut self, tuple: Vec<<Self::Output as JoinIterable>::KT>) -> Self {
+    fn add_tuple(mut self, tuple: Vec<<Self::Output as Joinable>::KT>) -> Self {
         self.tuples.push(tuple);
         self
     }
 
-    fn add_tuples(mut self, tuples: Vec<Vec<<Self::Output as JoinIterable>::KT>>) -> Self {
+    fn add_tuples(mut self, tuples: Vec<Vec<<Self::Output as Joinable>::KT>>) -> Self {
         self.tuples.extend(tuples);
         self
     }
@@ -178,7 +178,7 @@ pub trait RelationBuilderFileExt: RelationBuilder {
 impl<T> RelationBuilderFileExt for T
 where
     T: RelationBuilder,
-    <T::Output as JoinIterable>::KT: FromStr,
+    <T::Output as Joinable>::KT: FromStr,
 {
     fn add_csv<P: AsRef<Path>>(mut self, filepath: P, delimiter: u8) -> Result<Self, Error> {
         let file = File::open(filepath)?;
@@ -193,9 +193,9 @@ where
             .from_reader(file);
         for result in rdr.records() {
             let record = result?;
-            let mut tuple: Vec<<T::Output as JoinIterable>::KT> = vec![];
+            let mut tuple: Vec<<T::Output as Joinable>::KT> = vec![];
             for x in record.iter() {
-                if let Ok(y) = x.to_string().parse::<<T::Output as JoinIterable>::KT>() {
+                if let Ok(y) = x.to_string().parse::<<T::Output as Joinable>::KT>() {
                     tuple.push(y);
                 }
             }
