@@ -9,7 +9,7 @@ use {
 
 /// Trie data structure for relations.
 #[derive(Clone, Debug)]
-pub struct RelationTrie<KT>
+pub struct TreeTrie<KT>
 where
     KT: KeyType,
 {
@@ -18,7 +18,7 @@ where
     children: Vec<TrieNode<KT>>,
 }
 
-impl<KT: KeyType> Relation for RelationTrie<KT> {
+impl<KT: KeyType> Relation for TreeTrie<KT> {
     fn header(&self) -> &RelationHeader { &self.header }
 
     /// Construct an empty Trie.
@@ -26,7 +26,7 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     /// # Panics
     /// If `arity` is less than 1.
     fn new(header: RelationHeader) -> Self {
-        RelationTrie {
+        TreeTrie {
             header,
             children: vec![],
         }
@@ -43,7 +43,7 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     /// If any tuple does not have a matching `arity`.
     fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<KT>>) -> Self {
         if tuples.is_empty() {
-            return RelationTrie::new(header);
+            return TreeTrie::new(header);
         }
 
         let arity = tuples[0].len();
@@ -59,7 +59,7 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
             }
             std::cmp::Ordering::Equal
         });
-        let mut trie = RelationTrie::new(header);
+        let mut trie = TreeTrie::new(header);
         for tuple in tuples {
             if !trie.insert(tuple) {
                 panic!("Failed to build from tuples.");
@@ -85,14 +85,14 @@ impl<KT: KeyType> Relation for RelationTrie<KT> {
     }
 }
 
-impl<KT: KeyType> JoinIterable for RelationTrie<KT> {
+impl<KT: KeyType> JoinIterable for TreeTrie<KT> {
     type KT = KT;
 }
 
 /// Trie implementation.
-impl<KT> RelationTrie<KT> where KT: KeyType {}
+impl<KT> TreeTrie<KT> where KT: KeyType {}
 
-impl<KT: KeyType> TrieFields for RelationTrie<KT> {
+impl<KT: KeyType> TrieFields for TreeTrie<KT> {
     type NodeType = TrieNode<KT>;
 
     fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
@@ -100,4 +100,4 @@ impl<KT: KeyType> TrieFields for RelationTrie<KT> {
     fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
 }
 
-impl<KT: KeyType> Internal for RelationTrie<KT> {}
+impl<KT: KeyType> Internal for TreeTrie<KT> {}

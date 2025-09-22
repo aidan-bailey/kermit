@@ -8,7 +8,7 @@ pub mod kvs {
 
 pub mod ds {
     pub use kermit_ds::{
-        ds::relation_trie::RelationTrie,
+        ds::tree_trie::TreeTrie,
         relation::{Builder, RelationBuilder},
     };
 }

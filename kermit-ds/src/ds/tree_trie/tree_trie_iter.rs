@@ -1,8 +1,8 @@
-//! This module provides a `TrieIterator` implementation for the `RelationTrie`
+//! This module provides a `TrieIterator` implementation for the `TreeTrie`
 //! data structure.
 
 use {
-    super::{implementation::RelationTrie, trie_node::TrieNode, trie_traits::TrieFields},
+    super::{implementation::TreeTrie, trie_node::TrieNode, trie_traits::TrieFields},
     crate::shared::nodes::Node,
     kermit_derive::IntoTrieIter,
     kermit_iters::{
@@ -12,13 +12,13 @@ use {
     },
 };
 
-/// An iterator over the nodes of a `RelationTrie`.
+/// An iterator over the nodes of a `TreeTrie`.
 #[derive(IntoTrieIter)]
-struct RelationTrieIter<'a, KT: KeyType> {
+struct TreeTrieIter<'a, KT: KeyType> {
     /// Current Node's index amongst its siblings.
     pos: usize,
     /// Trie that is being iterated.
-    trie: &'a RelationTrie<KT>,
+    trie: &'a TreeTrie<KT>,
     /// Stack containing cursor's path down the trie.
     /// The tuples hold the Node and its index amongst its siblings.
     /// If the stack is empty, the cursor points to the root.
@@ -26,10 +26,10 @@ struct RelationTrieIter<'a, KT: KeyType> {
     stack: Vec<(&'a TrieNode<KT>, usize)>,
 }
 
-impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
+impl<'a, KT: KeyType> TreeTrieIter<'a, KT> {
     /// Construct a new Trie iterator.
-    pub fn new(trie: &'a RelationTrie<KT>) -> Self {
-        RelationTrieIter {
+    pub fn new(trie: &'a TreeTrie<KT>) -> Self {
+        TreeTrieIter {
             pos: 0,
             trie,
             stack: Vec::new(),
@@ -51,7 +51,7 @@ impl<'a, KT: KeyType> RelationTrieIter<'a, KT> {
     }
 }
 
-impl<KT: KeyType> LinearIterator for RelationTrieIter<'_, KT> {
+impl<KT: KeyType> LinearIterator for TreeTrieIter<'_, KT> {
     type KT = KT;
 
     fn key(&self) -> Option<KT> { Some(self.siblings()?.get(self.pos)?.key()) }
@@ -109,7 +109,7 @@ impl<KT: KeyType> LinearIterator for RelationTrieIter<'_, KT> {
     }
 }
 
-impl<KT: KeyType> TrieIterator for RelationTrieIter<'_, KT> {
+impl<KT: KeyType> TrieIterator for TreeTrieIter<'_, KT> {
     fn open(&mut self) -> bool {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
@@ -142,10 +142,10 @@ impl<KT: KeyType> TrieIterator for RelationTrieIter<'_, KT> {
     }
 }
 
-/// Implementation of the `TrieIterable` trait for `RelationTrie`.
-impl<KT: KeyType> TrieIterable for RelationTrie<KT> {
+/// Implementation of the `TrieIterable` trait for `TreeTrie`.
+impl<KT: KeyType> TrieIterable for TreeTrie<KT> {
     fn trie_iter(&self) -> impl TrieIterator<KT = KT> + IntoIterator<Item = Vec<KT>> {
-        RelationTrieIter::new(self)
+        TreeTrieIter::new(self)
     }
 }
 
@@ -154,8 +154,8 @@ mod tests {
     use {super::*, crate::relation::Relation};
 
     #[test]
-    fn test_relation_trie_iter() {
-        let trie = RelationTrie::<i32>::from_tuples(2.into(), vec![
+    fn test_tree_trie_iter() {
+        let trie = TreeTrie::<i32>::from_tuples(2.into(), vec![
             vec![1, 2],
             vec![1, 3],
             vec![2, 4],

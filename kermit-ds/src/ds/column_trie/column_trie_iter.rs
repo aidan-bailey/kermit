@@ -165,7 +165,7 @@ impl<KT: KeyType> TrieIterator for ColumnTrieIter<'_, KT> {
     }
 }
 
-/// Implementation of the `TrieIterable` trait for `RelationTrie`.
+/// Implementation of the `TrieIterable` trait for `TreeTrie`.
 impl<KT: KeyType> TrieIterable for ColumnTrie<KT> {
     fn trie_iter(&self) -> impl TrieIterator<KT = KT> + IntoIterator<Item = Vec<KT>> {
         ColumnTrieIter::new(self)

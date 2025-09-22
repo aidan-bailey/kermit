@@ -81,13 +81,13 @@ mod tests {
     use {
         super::*,
         kermit_algos::leapfrog_triejoin::LeapfrogTriejoin,
-        kermit_ds::ds::relation_trie::RelationTrie,
+        kermit_ds::ds::tree_trie::TreeTrie,
         kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore},
     };
 
     #[test]
     fn test_relation() {
-        let mut db: Database<AnyValType, NaiveStore<_, _>, RelationTrie<u64>> =
+        let mut db: Database<AnyValType, NaiveStore<_, _>, TreeTrie<u64>> =
             Database::new("test".to_string(), NaiveStore::<_, _>::default());
         let relation_name = "apple".to_string();
         db.add_relation(&relation_name, 3);
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let mut db: Database<AnyValType, NaiveStore<_, _>, RelationTrie<u64>> =
+        let mut db: Database<AnyValType, NaiveStore<_, _>, TreeTrie<u64>> =
             Database::new("test".to_string(), NaiveStore::<_, _>::default());
 
         db.add_relation("first", 1);

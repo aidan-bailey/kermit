@@ -18,7 +18,7 @@ use crate::key_type::KeyType;
 /// that implements the `TrieIterator`.
 ///
 /// On the data structure side, all things that conform to the `Relation` trait
-/// must implement `JoinIterable`. In the case of `RelationTrie`, `TrieIterable`
+/// must implement `JoinIterable`. In the case of `TreeTrie`, `TrieIterable`
 /// is implemented. TODO: Complete this
 pub trait JoinIterable {
     /// The key type for the iterable.

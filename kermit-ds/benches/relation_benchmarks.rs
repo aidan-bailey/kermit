@@ -5,7 +5,7 @@ use {
         Criterion,
     },
     kermit_ds::{
-        ds::{column_trie::ColumnTrie, relation_trie::RelationTrie},
+        ds::{column_trie::ColumnTrie, tree_trie::TreeTrie},
         relation::Relation,
     },
     kermit_iters::trie::TrieIterable,
@@ -139,6 +139,6 @@ macro_rules! define_trie_relation_benchmarks {
     };
 }
 
-define_trie_relation_benchmarks!(RelationTrie, ColumnTrie);
+define_trie_relation_benchmarks!(TreeTrie, ColumnTrie);
 
 criterion_main!(benches);

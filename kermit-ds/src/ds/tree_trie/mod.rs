@@ -1,8 +1,8 @@
 //! This module provides a [trie](https://en.wikipedia.org/wiki/Trie)-based implementation of a relation.
 
 mod implementation;
-pub use implementation::RelationTrie;
-mod relation_trie_iter;
+pub use implementation::TreeTrie;
+mod tree_trie_iter;
 mod trie_node;
 mod trie_traits;
 
@@ -10,7 +10,7 @@ mod trie_traits;
 mod tests {
     use {
         crate::{
-            ds::relation_trie::{implementation::RelationTrie, trie_traits::TrieFields},
+            ds::tree_trie::{implementation::TreeTrie, trie_traits::TrieFields},
             relation::{Builder, Relation, RelationBuilder},
             shared::nodes::Node,
         },
@@ -22,7 +22,7 @@ mod tests {
 
     #[test]
     fn trie_insert() {
-        let mut trie = RelationTrie::<u64>::new(2.into());
+        let mut trie = TreeTrie::<u64>::new(2.into());
 
         let _ = trie.insert(vec![1, 2]);
 
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn linear_iterator() {
-        let trie = Builder::<RelationTrie<u64>>::new(1.into())
+        let trie = Builder::<TreeTrie<u64>>::new(1.into())
             .add_tuple(vec![1])
             .add_tuple(vec![2])
             .add_tuple(vec![3])
@@ -81,8 +81,8 @@ mod tests {
     }
 
     #[test]
-    fn test_relation_trie() {
-        let trie = RelationTrie::<u64>::builder(2.into())
+    fn test_tree_trie() {
+        let trie = TreeTrie::<u64>::builder(2.into())
             .add_tuples(vec![vec![2, 4], vec![3, 5]])
             .build();
         let mut iter = trie.trie_iter();
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = Builder::<RelationTrie<u64>>::new(3.into())
+        let trie = Builder::<TreeTrie<u64>>::new(3.into())
             .add_tuple(vec![1, 3, 4])
             .add_tuple(vec![1, 3, 5])
             .add_tuple(vec![1, 4, 6])
