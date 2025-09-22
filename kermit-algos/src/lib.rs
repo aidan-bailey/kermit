@@ -1,4 +1,4 @@
-pub mod leapfrog_join;
+mod leapfrog_join;
 mod leapfrog_triejoin;
 mod join_algo;
 

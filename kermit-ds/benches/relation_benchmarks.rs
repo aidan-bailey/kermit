@@ -5,8 +5,8 @@ use {
         Criterion,
     },
     kermit_ds::{
-        ds::{column_trie::ColumnTrie, tree_trie::TreeTrie},
-        relation::Relation,
+        ColumnTrie, TreeTrie,
+        Relation,
     },
     kermit_iters::trie::TrieIterable,
     num_traits::PrimInt,
