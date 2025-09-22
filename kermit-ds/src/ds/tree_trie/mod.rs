@@ -8,16 +8,13 @@ pub use implementation::TreeTrie;
 #[cfg(test)]
 mod tests {
     use {
-        crate::{
-            relation::{Builder, Relation, RelationBuilder},
-        },
+        super::implementation::*,
+        crate::relation::{Builder, Relation, RelationBuilder},
         kermit_iters::{
             linear::LinearIterator,
             trie::{TrieIterable, TrieIterator},
         },
     };
-
-    use super::implementation::*;
 
     #[test]
     fn trie_insert() {
@@ -146,12 +143,10 @@ mod tests {
 
     #[test]
     fn test_tree_trie_iter() {
-        let trie = TreeTrie::<i32>::from_tuples(2.into(), vec![
-            vec![1, 2],
-            vec![1, 3],
-            vec![2, 4],
-            vec![3, 5],
-        ]);
+        let trie =
+            TreeTrie::<i32>::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
+                3, 5,
+            ]]);
         let iter = trie.trie_iter();
         for v in iter {
             assert!(

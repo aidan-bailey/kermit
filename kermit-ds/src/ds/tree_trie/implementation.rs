@@ -19,17 +19,11 @@ impl<KT: KeyType> TrieNode<KT> {
         }
     }
 
-    pub(crate) fn key(&self) -> KT {
-        self.key
-    }
+    pub(crate) fn key(&self) -> KT { self.key }
 
-    pub(crate) fn children(&self) -> &Vec<TrieNode<KT>> {
-        &self.children
-    }
+    pub(crate) fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
 
-    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> {
-        &mut self.children
-    }
+    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
 
     pub(crate) fn insert_internal(&mut self, tuple: Vec<KT>) -> bool {
         if tuple.is_empty() {
@@ -42,19 +36,19 @@ impl<KT: KeyType> TrieNode<KT> {
         if let Some(key) = key_iter.next() {
             // Find insertion point or existing node
             let insert_pos = current_children.binary_search_by(|node| node.key().cmp(&key));
-            
+
             match insert_pos {
-                Ok(pos) => {
+                | Ok(pos) => {
                     // Key exists, continue with its children
                     current_children[pos].insert_internal(key_iter.collect())
-                }
-                Err(pos) => {
+                },
+                | Err(pos) => {
                     // Key doesn't exist, insert new node
                     let mut new_node = TrieNode::new(key);
                     new_node.insert_internal(key_iter.collect());
                     current_children.insert(pos, new_node);
                     true
-                }
+                },
             }
         } else {
             true
@@ -64,15 +58,12 @@ impl<KT: KeyType> TrieNode<KT> {
 
 impl<KT: KeyType> Index<usize> for TrieNode<KT> {
     type Output = TrieNode<KT>;
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.children[index]
-    }
+
+    fn index(&self, index: usize) -> &Self::Output { &self.children[index] }
 }
 
 impl<KT: KeyType> IndexMut<usize> for TrieNode<KT> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.children[index]
-    }
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children[index] }
 }
 
 /// Trie data structure for relations.
@@ -83,13 +74,9 @@ pub struct TreeTrie<KT: KeyType> {
 }
 
 impl<KT: KeyType> TreeTrie<KT> {
-    pub(crate) fn children(&self) -> &Vec<TrieNode<KT>> {
-        &self.children
-    }
+    pub(crate) fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
 
-    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> {
-        &mut self.children
-    }
+    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
 
     pub(crate) fn insert_internal(&mut self, tuple: Vec<KT>) -> bool {
         if tuple.is_empty() {
@@ -102,19 +89,19 @@ impl<KT: KeyType> TreeTrie<KT> {
         if let Some(key) = key_iter.next() {
             // Find insertion point or existing node
             let insert_pos = current_children.binary_search_by(|node| node.key().cmp(&key));
-            
+
             match insert_pos {
-                Ok(pos) => {
+                | Ok(pos) => {
                     // Key exists, continue with its children
                     current_children[pos].insert_internal(key_iter.collect())
-                }
-                Err(pos) => {
+                },
+                | Err(pos) => {
                     // Key doesn't exist, insert new node
                     let mut new_node = TrieNode::new(key);
                     new_node.insert_internal(key_iter.collect());
                     current_children.insert(pos, new_node);
                     true
-                }
+                },
             }
         } else {
             true
@@ -123,9 +110,7 @@ impl<KT: KeyType> TreeTrie<KT> {
 }
 
 impl<KT: KeyType> Relation for TreeTrie<KT> {
-    fn header(&self) -> &RelationHeader {
-        &self.header
-    }
+    fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
         Self {
@@ -146,9 +131,9 @@ impl<KT: KeyType> Relation for TreeTrie<KT> {
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
                 match a[i].cmp(&b[i]) {
-                    std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
-                    std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
-                    std::cmp::Ordering::Equal => continue,
+                    | std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+                    | std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+                    | std::cmp::Ordering::Equal => continue,
                 }
             }
             std::cmp::Ordering::Equal

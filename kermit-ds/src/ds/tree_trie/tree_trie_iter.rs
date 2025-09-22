@@ -1,11 +1,11 @@
 use {
     super::implementation::{TreeTrie, TrieNode},
+    kermit_derive::IntoTrieIter,
     kermit_iters::{
         key_type::KeyType,
         linear::LinearIterator,
         trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
     },
-    kermit_derive::IntoTrieIter,
 };
 
 /// An iterator over the nodes of a `TreeTrie`.
@@ -39,9 +39,7 @@ impl<'a, KT: KeyType> TreeTrieIter<'a, KT> {
 impl<KT: KeyType> LinearIterator for TreeTrieIter<'_, KT> {
     type KT = KT;
 
-    fn key(&self) -> Option<KT> {
-        Some(self.siblings()?.get(self.pos)?.key())
-    }
+    fn key(&self) -> Option<KT> { Some(self.siblings()?.get(self.pos)?.key()) }
 
     fn next(&mut self) -> Option<KT> {
         if let Some(siblings) = self.siblings() {
@@ -64,7 +62,9 @@ impl<KT: KeyType> LinearIterator for TreeTrieIter<'_, KT> {
             if current_key > seek_key {
                 panic!("The sought key must be ≥ the key at the current position.");
             } else {
-                let siblings = self.siblings().expect("If there exists a key, there should ALWAYS be at least one sibling");
+                let siblings = self
+                    .siblings()
+                    .expect("If there exists a key, there should ALWAYS be at least one sibling");
 
                 while (!self.at_end()) && seek_key > siblings[self.pos].key() {
                     self.pos += 1;
