@@ -211,10 +211,7 @@ mod tests {
             leapfrog_join::LeapfrogJoinIterator,
             leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
         },
-        kermit_ds::{
-            TreeTrie,
-            Relation, RelationBuilder,
-        },
+        kermit_ds::{Relation, RelationBuilder, TreeTrie},
         kermit_iters::trie::TrieIterable,
     };
 

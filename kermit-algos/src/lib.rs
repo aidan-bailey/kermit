@@ -1,6 +1,5 @@
+mod join_algo;
 mod leapfrog_join;
 mod leapfrog_triejoin;
-mod join_algo;
 
-pub use leapfrog_triejoin::LeapfrogTriejoin;
-pub use join_algo::JoinAlgo;
+pub use {join_algo::JoinAlgo, leapfrog_triejoin::LeapfrogTriejoin};

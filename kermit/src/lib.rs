@@ -7,10 +7,7 @@ pub mod kvs {
 }
 
 pub mod ds {
-    pub use kermit_ds::{
-        TreeTrie,
-        RelationBuilder,
-    };
+    pub use kermit_ds::{RelationBuilder, TreeTrie};
 }
 
 pub mod db;

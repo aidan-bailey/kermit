@@ -4,10 +4,7 @@ use {
         criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
         Criterion,
     },
-    kermit_ds::{
-        ColumnTrie, TreeTrie,
-        Relation,
-    },
+    kermit_ds::{ColumnTrie, Relation, TreeTrie},
     kermit_iters::trie::TrieIterable,
     num_traits::PrimInt,
     rand::distr::uniform::SampleUniform,
