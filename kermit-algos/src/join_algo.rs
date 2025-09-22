@@ -1,7 +1,7 @@
 //! This module defines the `JoinAlgo` trait, used as a base for join
 //! algorithms.
 
-use kermit_iters::joinable::Joinable;
+use kermit_iters::Joinable;
 
 /// The `JoinAlgo` trait is used as a base for join algorithms.
 pub trait JoinAlgo<ITB>

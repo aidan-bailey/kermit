@@ -10,10 +10,7 @@ mod tests {
     use {
         super::implementation::*,
         crate::relation::{Builder, Relation, RelationBuilder},
-        kermit_iters::{
-            linear::LinearIterator,
-            trie::{TrieIterable, TrieIterator},
-        },
+        kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
     };
 
     #[test]

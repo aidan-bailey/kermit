@@ -3,10 +3,7 @@ use {
         join_algo::JoinAlgo,
         leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
     },
-    kermit_iters::{
-        linear::LinearIterator,
-        trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
-    },
+    kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
@@ -212,7 +209,7 @@ mod tests {
             leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
         },
         kermit_ds::{Relation, RelationBuilder, TreeTrie},
-        kermit_iters::trie::TrieIterable,
+        kermit_iters::TrieIterable,
     };
 
     #[test]

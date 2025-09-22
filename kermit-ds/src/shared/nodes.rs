@@ -1,6 +1,6 @@
 //! This module defines any kinds of nodes that could be shared amongst data
 //! structures.
-use kermit_iters::key_type::KeyType;
+use kermit_iters::KeyType;
 
 /// The `Node` trait defines a node with an associated value.
 pub trait Node {

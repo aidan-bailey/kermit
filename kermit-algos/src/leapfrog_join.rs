@@ -1,7 +1,7 @@
 //! This modules defines traits, structs and iters used to compute a Leapfrog
 //! Join.
 
-use kermit_iters::linear::LinearIterator;
+use kermit_iters::LinearIterator;
 
 /// The `LeapfrogJoinIterator` trait defines the interface for a leapfrog join
 /// iterator.
@@ -149,7 +149,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use {super::*, kermit_iters::linear::LinearIterable};
+    use {super::*, kermit_iters::LinearIterable};
 
     #[test]
     fn test_leapfrog_join_iter() {

@@ -1,7 +1,7 @@
 //! This module defines the `Relation` and `RelationBuilder` traits.
 use {
     csv::Error,
-    kermit_iters::joinable::Joinable,
+    kermit_iters::Joinable,
     std::{fs::File, path::Path, str::FromStr},
 };
 

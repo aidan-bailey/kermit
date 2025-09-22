@@ -8,7 +8,7 @@ macro_rules! relation_construction_test {
     ) => {
         #[test]
         fn $test_name() {
-            use {kermit_ds::Relation, kermit_iters::trie::TrieIterable};
+            use {kermit_ds::Relation, kermit_iters::TrieIterable};
             let tuples: Vec<Vec<$key_type>> = vec![$($input.to_vec()),*];
             let k = if tuples.is_empty() { 0 } else { tuples[0].len() };
             let relation = $relation_type::from_tuples(k.into(), tuples.clone());
@@ -57,8 +57,7 @@ macro_rules! trie_test {
         #[test]
        fn $test_name() {
             use kermit_ds::Relation;
-            use kermit_iters::trie::TrieIterable;
-            use kermit_iters::trie::TrieIterator;
+            use kermit_iters::{TrieIterable, TrieIterator};
             let inputs: Vec<Vec<$key_type>> = vec![$($input.to_vec()),*];
             let k = if inputs.is_empty() { 0 } else { inputs[0].len() };
             let relation = $relation_type::<$key_type>::from_tuples(k.into(), inputs);

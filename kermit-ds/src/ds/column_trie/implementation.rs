@@ -1,6 +1,6 @@
 use {
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::{joinable::Joinable, key_type::KeyType},
+    kermit_iters::{Joinable, KeyType},
     std::fmt,
 };
 

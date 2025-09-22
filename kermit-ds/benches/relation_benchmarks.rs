@@ -5,7 +5,7 @@ use {
         Criterion,
     },
     kermit_ds::{ColumnTrie, Relation, TreeTrie},
-    kermit_iters::trie::TrieIterable,
+    kermit_iters::TrieIterable,
     num_traits::PrimInt,
     rand::distr::uniform::SampleUniform,
     std::{hash::Hash, hint::black_box},

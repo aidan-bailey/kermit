@@ -1,11 +1,7 @@
 use {
     super::implementation::{TreeTrie, TrieNode},
     kermit_derive::IntoTrieIter,
-    kermit_iters::{
-        key_type::KeyType,
-        linear::LinearIterator,
-        trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
-    },
+    kermit_iters::{KeyType, LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 
 /// An iterator over the nodes of a `TreeTrie`.
