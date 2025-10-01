@@ -1,59 +1,28 @@
-use crate::dataset::dataset::{Dataset, DatasetMetadata};
-use std::fs;
-use std::path::Path;
-use std::process::Command;
-
-pub struct OxfordDatasetMetadata {}
-
-impl DatasetMetadata for OxfordDatasetMetadata {
-    fn name(&self) -> &str {
-        "Oxford Dataset"
-    }
-
-    fn description(&self) -> &str {
-        "Oxford Database Systems and Implementation final course exam"
-    }
-
-    fn url(&self) -> &str {
-        "https://github.com/schroederdewitt/leapfrog-triejoin"
-    }
-}
+use {
+    crate::dataset::{
+        dataset::{DatasetMetadata, DatasetTrait},
+        downloader::{DownloadMethod, DownloadSpec, Downloader},
+    },
+    std::path::Path,
+};
 
 pub struct OxfordDataset;
 
-impl Dataset for OxfordDataset {
-    fn metadata(&self) -> impl DatasetMetadata {
-        OxfordDatasetMetadata {}
-    }
+static METADATA: DatasetMetadata = DatasetMetadata::new(
+    "Oxford Dataset",
+    "Oxford Database Systems and Implementation final course exam",
+    DownloadSpec {
+        name: "oxford_dataset",
+        method: DownloadMethod::CLONE,
+        url: "https://github.com/schroederdewitt/leapfrog-triejoin",
+    },
+);
 
-    fn load(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // Create data directory if it doesn't exist
-        let data_dir = Path::new("data/oxford");
-        if !data_dir.exists() {
-            fs::create_dir_all(data_dir)?;
-        }
+impl DatasetTrait for OxfordDataset {
+    fn metadata(&self) -> &DatasetMetadata { &METADATA }
 
-        // Check if dataset is already downloaded
-        let dataset_path = data_dir.join("leapfrog-triejoin");
-        if dataset_path.exists() {
-            println!("Oxford dataset already exists at {:?}", dataset_path);
-            return Ok(());
-        }
-
-        // Download the dataset using git clone
-        println!("Downloading Oxford dataset...");
-        let output = Command::new("git")
-            .arg("clone")
-            .arg("https://github.com/schroederdewitt/leapfrog-triejoin.git")
-            .arg(dataset_path.to_str().unwrap())
-            .output()?;
-
-        if !output.status.success() {
-            let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Failed to clone repository: {}", error_msg).into());
-        }
-
-        println!("Oxford dataset downloaded successfully to {:?}", dataset_path);
+    fn load(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let dest = Downloader::download(self.metadata().download_spec())?;
         Ok(())
     }
 }
