@@ -1,0 +1,15 @@
+[package]
+name = "kermit-bench"
+description = "Benchmarking utilities and benchmarks"
+version = "0.0.1"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+

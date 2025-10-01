@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kermit", "kermit-algos", "kermit-ds", "kermit-kvs", "kermit-iters", "kermit-derive"]
+members = ["kermit", "kermit-algos", "kermit-bench", "kermit-ds", "kermit-kvs", "kermit-iters", "kermit-derive"]
 
 [workspace.package]
 authors = ["Aidan Bailey"]
@@ -17,3 +17,4 @@ kermit-ds = { path = "kermit-ds" }
 kermit-iters = { path = "kermit-iters" }
 kermit-algos = { path = "kermit-algos" }
 kermit-derive = { path = "kermit-derive" }
+kermit-bench = { path = "kermit-bench" }

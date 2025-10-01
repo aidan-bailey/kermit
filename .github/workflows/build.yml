@@ -69,6 +69,15 @@ jobs:
           DIR: /kermit-derive/
           TAG_PREFIX: kermit-derive
 
+      - name: Publish kermit-bench
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: /kermit-bench/
+          TAG_PREFIX: kermit-bench
+
       - name: Publish kermit-kvs
         uses: tu6ge/publish-action@v0.4.5
         env:
