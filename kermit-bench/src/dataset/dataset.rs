@@ -24,7 +24,19 @@ impl DatasetMetadata {
     pub fn download_spec(&self) -> &DownloadSpec { &self.download_spec }
 }
 
+pub struct Dataset {
+    metadata: DatasetMetadata,
+}
+
+impl Dataset {
+    pub const fn new(metadata: DatasetMetadata) -> Self {
+        Self {
+            metadata,
+        }
+    }
+}
+
 pub trait DatasetTrait {
     fn metadata(&self) -> &DatasetMetadata;
-    fn load(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>>;
+    fn load(&self, source: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>>;
 }
