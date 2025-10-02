@@ -22,25 +22,33 @@ impl Downloader {
         }
     }
 
-    pub fn cleanup() {
+    pub fn cleanall() {
         let tmp_dir = Self::tmp_dir();
         if tmp_dir.exists() {
             std::fs::remove_dir_all(&tmp_dir).expect("Failed to clean up temporary directory");
         }
     }
 
+    pub fn clean(spec: &DownloadSpec) {
+        let dest = Self::tmp_dir().join(spec.name);
+        if dest.exists() {
+            std::fs::remove_dir_all(&dest).expect("Failed to clean up temporary directory");
+        }
+    }
+
     pub fn download(spec: &DownloadSpec) -> Result<PathBuf, Box<dyn std::error::Error>> {
         Self::ensure_init();
         let dest = Self::tmp_dir().join(spec.name);
+        if dest.exists() {
+            return Ok(dest.to_path_buf());
+        }
         match spec.method {
             | DownloadMethod::CLONE => {
                 let status = std::process::Command::new("git")
                     .args(["clone", spec.url, dest.to_str().unwrap()])
                     .status()?;
                 if !status.success() {
-                    if dest.exists() {
-                        std::fs::remove_dir_all(&dest)?;
-                    }
+                    Self::clean(spec);
                     return Err(format!("Git clone failed with status: {}", status).into());
                 }
             },
