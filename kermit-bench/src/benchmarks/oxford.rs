@@ -1,23 +1,35 @@
 use {
-    crate::dataset::{
-        dataset::{Dataset, DatasetMetadata, DatasetTrait},
+    crate::{
+        benchmark::{Benchmark, BenchmarkMetadata, Task},
         downloader::{DownloadMethod, DownloadSpec, Downloader},
         utils,
     },
     std::path::Path,
 };
 
-pub struct OxfordDataset;
+pub struct OxfordBenchmark;
 
-static METADATA: DatasetMetadata = DatasetMetadata::new(
-    "Oxford Dataset",
-    "Oxford Database Systems and Implementation final course exam",
-    DownloadSpec {
+static METADATA: BenchmarkMetadata = BenchmarkMetadata {
+    name: "Oxford Dataset",
+    description: "Oxford Database Systems and Implementation final course exam",
+    download_spec: DownloadSpec {
         name: "oxford_dataset",
         method: DownloadMethod::CLONE,
         url: "https://github.com/schroederdewitt/leapfrog-triejoin",
     },
-);
+    tasks: &[
+        Task {
+            name: "Uniform",
+            description: "Uniformly distributed data",
+            location: "dataset1-uniform",
+        },
+        Task {
+            name: "Zipf",
+            description: "Zipf distributed data",
+            location: "dataset2-zipf",
+        },
+    ],
+};
 
 fn translate_dataset(source: &Path, dest: &Path) {
     // Get header names
@@ -85,11 +97,11 @@ fn translate_query(source: &Path, dest: &Path) {
     writeln!(file, "{}", attrs.join(",")).unwrap();
 }
 
-impl DatasetTrait for OxfordDataset {
-    fn metadata(&self) -> &DatasetMetadata { &METADATA }
+impl Benchmark for OxfordBenchmark {
+    fn metadata(&self) -> &BenchmarkMetadata { &METADATA }
 
     fn load(&self, source: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        let dl_spec = self.metadata().download_spec();
+        let dl_spec = &self.metadata().download_spec;
         let data_dest = path.join(dl_spec.name).join("data");
         let ds_tmp_path = source.join("datasets");
         for dataset_parent in ["dataset1-uniform", "dataset2-zipf"] {

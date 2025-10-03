@@ -1,11 +1,11 @@
 use {
-    super::{dataset::DatasetTrait, downloader::Downloader},
+    super::{benchmark::Benchmark, downloader::Downloader},
     std::path::PathBuf,
 };
 
 pub struct DatasetManager {
     dir: PathBuf,
-    datasets: Vec<Box<dyn DatasetTrait + 'static>>,
+    datasets: Vec<Box<dyn Benchmark + 'static>>,
 }
 
 impl DatasetManager {
@@ -21,9 +21,9 @@ impl DatasetManager {
     }
 
     pub fn init_dataset(
-        &mut self, dataset: impl DatasetTrait + 'static,
+        &mut self, dataset: impl Benchmark + 'static,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let dl_spec = dataset.metadata().download_spec();
+        let dl_spec = &dataset.metadata().download_spec;
         let source = Downloader::download(dl_spec)?;
         dataset.load(&source, self.dir.as_path())?;
         Downloader::clean(dl_spec);
