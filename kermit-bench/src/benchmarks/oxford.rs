@@ -1,7 +1,7 @@
 use {
     crate::{
         benchmark::{Benchmark, BenchmarkMetadata, Task},
-        downloader::{DownloadMethod, DownloadSpec, Downloader},
+        downloader::{DownloadMethod, DownloadSpec},
         utils,
     },
     std::path::Path,
@@ -48,7 +48,7 @@ fn translate_dataset(source: &Path, dest: &Path) {
         let rel_attrs: Vec<String> = header_content[2..]
             .iter()
             .map(|s| s.trim().to_string())
-            .filter(|s| *s != "")
+            .filter(|s| !s.is_empty())
             .collect();
 
         let data_path = source.join(rel_file_name);
@@ -82,12 +82,12 @@ fn translate_query(source: &Path, dest: &Path) {
         .collect();
     let rels = query_content[0]
         .split(",")
-        .filter(|s| *s != "")
+        .filter(|s| !s.is_empty())
         .map(|s| s.trim())
         .collect::<Vec<_>>();
     let attrs = query_content[1]
         .split(",")
-        .filter(|s| *s != "")
+        .filter(|s| !s.is_empty())
         .map(|s| s.trim())
         .collect::<Vec<_>>();
     // Write files
