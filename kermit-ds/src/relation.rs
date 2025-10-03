@@ -164,6 +164,7 @@ impl<R: Relation> RelationBuilder for Builder<R> {
 }
 
 /// Extension trait for `RelationBuilder` to add CSV file reading capabilities.
+#[allow(dead_code)]
 pub trait RelationBuilderFileExt: RelationBuilder {
     /// Adds tuples from a CSV file to the relation being built.
     ///
