@@ -78,7 +78,6 @@ impl<KT: KeyType> TreeTrie<KT> {
 
     pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
 
-
     pub(crate) fn insert_internal(&mut self, tuple: Vec<KT>) -> bool {
         if tuple.is_empty() {
             return true;
@@ -174,10 +173,11 @@ impl<KT: KeyType> crate::relation::Projectable for TreeTrie<KT> {
     fn project(&self, columns: Vec<usize>) -> Self {
         // Create a new header based on the current header but with projected attributes
         let current_header = self.header();
-        let projected_attrs: Vec<String> = columns.iter()
+        let projected_attrs: Vec<String> = columns
+            .iter()
             .filter_map(|&col_idx| current_header.attrs().get(col_idx).cloned())
             .collect();
-        
+
         let new_header = if projected_attrs.is_empty() {
             // If no named attributes, create a positional header
             crate::relation::RelationHeader::new_nameless_positional(columns.len())
@@ -185,20 +185,16 @@ impl<KT: KeyType> crate::relation::Projectable for TreeTrie<KT> {
             // Create a header with the projected attributes
             crate::relation::RelationHeader::new_nameless(projected_attrs)
         };
-        
+
         // Collect all tuples from the current relation using the iterator
         let all_tuples: Vec<Vec<KT>> = self.trie_iter().into_iter().collect();
-        
+
         // Project each tuple to the specified columns
         let projected_tuples: Vec<Vec<KT>> = all_tuples
             .into_iter()
-            .map(|tuple| {
-                columns.iter()
-                    .map(|&col_idx| tuple[col_idx])
-                    .collect()
-            })
+            .map(|tuple| columns.iter().map(|&col_idx| tuple[col_idx]).collect())
             .collect();
-        
+
         // Create new relation from projected tuples
         Self::from_tuples(new_header, projected_tuples)
     }

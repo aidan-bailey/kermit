@@ -17,7 +17,6 @@ pub struct ColumnTrie<KT: KeyType> {
 impl<KT: KeyType> ColumnTrie<KT> {
     pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer<KT> { &self.layers[layer_i] }
 
-
     fn internal_insert(&mut self, tuple: &[KT]) -> bool {
         /// Adds an interval to a layer at some index.
         fn add_interval<KT: KeyType>(layer: &mut ColumnTrieLayer<KT>, i: usize) {
@@ -126,10 +125,11 @@ impl<KT: KeyType> crate::relation::Projectable for ColumnTrie<KT> {
     fn project(&self, columns: Vec<usize>) -> Self {
         // Create a new header based on the current header but with projected attributes
         let current_header = self.header();
-        let projected_attrs: Vec<String> = columns.iter()
+        let projected_attrs: Vec<String> = columns
+            .iter()
             .filter_map(|&col_idx| current_header.attrs().get(col_idx).cloned())
             .collect();
-        
+
         let new_header = if projected_attrs.is_empty() {
             // If no named attributes, create a positional header
             crate::relation::RelationHeader::new_nameless_positional(columns.len())
@@ -137,20 +137,16 @@ impl<KT: KeyType> crate::relation::Projectable for ColumnTrie<KT> {
             // Create a header with the projected attributes
             crate::relation::RelationHeader::new_nameless(projected_attrs)
         };
-        
+
         // Collect all tuples from the current relation using the iterator
         let all_tuples: Vec<Vec<KT>> = self.trie_iter().into_iter().collect();
-        
+
         // Project each tuple to the specified columns
         let projected_tuples: Vec<Vec<KT>> = all_tuples
             .into_iter()
-            .map(|tuple| {
-                columns.iter()
-                    .map(|&col_idx| tuple[col_idx])
-                    .collect()
-            })
+            .map(|tuple| columns.iter().map(|&col_idx| tuple[col_idx]).collect())
             .collect();
-        
+
         // Create new relation from projected tuples
         Self::from_tuples(new_header, projected_tuples)
     }
@@ -214,7 +210,11 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
 
 #[cfg(test)]
 mod tests {
-    use {super::ColumnTrie, crate::relation::{Relation as _, Projectable}, kermit_iters::TrieIterable};
+    use {
+        super::ColumnTrie,
+        crate::relation::{Projectable, Relation as _},
+        kermit_iters::TrieIterable,
+    };
 
     #[test]
     fn test_insert() {
@@ -234,14 +234,14 @@ mod tests {
         trie.insert(vec![1, 2, 3]);
         trie.insert(vec![4, 5, 6]);
         trie.insert(vec![7, 8, 9]);
-        
+
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);
         assert_eq!(projected.header().arity(), 2);
-        
+
         // Collect all tuples from the projected relation using iterator
         let mut all_tuples: Vec<Vec<usize>> = projected.trie_iter().into_iter().collect();
-        
+
         // Sort for comparison
         all_tuples.sort();
         assert_eq!(all_tuples, vec![vec![1, 3], vec![4, 6], vec![7, 9]]);
@@ -250,19 +250,26 @@ mod tests {
     #[test]
     fn test_project_with_named_attributes() {
         // Create a relation with named attributes
-        let header = crate::relation::RelationHeader::new_nameless(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let header = crate::relation::RelationHeader::new_nameless(vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+        ]);
         let mut trie = ColumnTrie::<usize>::new(header);
         trie.insert(vec![1, 2, 3]);
         trie.insert(vec![4, 5, 6]);
-        
+
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);
         assert_eq!(projected.header().arity(), 2);
-        assert_eq!(projected.header().attrs(), &["a".to_string(), "c".to_string()]);
-        
+        assert_eq!(projected.header().attrs(), &[
+            "a".to_string(),
+            "c".to_string()
+        ]);
+
         // Collect all tuples from the projected relation using iterator
         let mut all_tuples: Vec<Vec<usize>> = projected.trie_iter().into_iter().collect();
-        
+
         // Sort for comparison
         all_tuples.sort();
         assert_eq!(all_tuples, vec![vec![1, 3], vec![4, 6]]);
