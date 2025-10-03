@@ -36,9 +36,7 @@ where
         }
     }
 
-    pub fn name(&self) -> &String {
-        &self.name
-    }
+    pub fn name(&self) -> &String { &self.name }
 
     pub fn add_relation(&mut self, name: &str, arity: usize) {
         let relation = R::builder(arity.into()).build();

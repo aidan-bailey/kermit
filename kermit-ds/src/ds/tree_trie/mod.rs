@@ -9,7 +9,7 @@ pub use implementation::TreeTrie;
 mod tests {
     use {
         super::implementation::*,
-        crate::relation::{Builder, Relation, RelationBuilder, Projectable},
+        crate::relation::{Builder, Projectable, Relation, RelationBuilder},
         kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
     };
 
@@ -155,19 +155,18 @@ mod tests {
 
     #[test]
     fn test_project() {
-        let trie = TreeTrie::<usize>::from_tuples(3.into(), vec![
-            vec![1, 2, 3],
-            vec![4, 5, 6],
-            vec![7, 8, 9],
-        ]);
-        
+        let trie =
+            TreeTrie::<usize>::from_tuples(3.into(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![
+                7, 8, 9,
+            ]]);
+
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);
         assert_eq!(projected.header().arity(), 2);
-        
+
         // Collect all tuples from the projected relation using iterator
         let mut all_tuples: Vec<Vec<usize>> = projected.trie_iter().into_iter().collect();
-        
+
         // Sort for comparison
         all_tuples.sort();
         assert_eq!(all_tuples, vec![vec![1, 3], vec![4, 6], vec![7, 9]]);
@@ -176,20 +175,24 @@ mod tests {
     #[test]
     fn test_project_with_named_attributes() {
         // Create a relation with named attributes
-        let header = crate::relation::RelationHeader::new_nameless(vec!["x".to_string(), "y".to_string(), "z".to_string()]);
-        let trie = TreeTrie::<usize>::from_tuples(header, vec![
-            vec![1, 2, 3],
-            vec![4, 5, 6],
+        let header = crate::relation::RelationHeader::new_nameless(vec![
+            "x".to_string(),
+            "y".to_string(),
+            "z".to_string(),
         ]);
-        
+        let trie = TreeTrie::<usize>::from_tuples(header, vec![vec![1, 2, 3], vec![4, 5, 6]]);
+
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);
         assert_eq!(projected.header().arity(), 2);
-        assert_eq!(projected.header().attrs(), &["x".to_string(), "z".to_string()]);
-        
+        assert_eq!(projected.header().attrs(), &[
+            "x".to_string(),
+            "z".to_string()
+        ]);
+
         // Collect all tuples from the projected relation using iterator
         let mut all_tuples: Vec<Vec<usize>> = projected.trie_iter().into_iter().collect();
-        
+
         // Sort for comparison
         all_tuples.sort();
         assert_eq!(all_tuples, vec![vec![1, 3], vec![4, 6]]);
