@@ -4,7 +4,7 @@ use {
         datatypes::{DataType, Field, Schema},
     },
     parquet::{
-        arrow::{arrow_writer::ArrowWriterOptions, ArrowWriter},
+        arrow::ArrowWriter,
         file::properties::WriterProperties,
     },
     std::{path::Path, sync::Arc},
