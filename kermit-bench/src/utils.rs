@@ -3,10 +3,7 @@ use {
         array::{Int64Array, RecordBatch},
         datatypes::{DataType, Field, Schema},
     },
-    parquet::{
-        arrow::ArrowWriter,
-        file::properties::WriterProperties,
-    },
+    parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     std::{path::Path, sync::Arc},
 };
 
