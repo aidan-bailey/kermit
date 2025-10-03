@@ -3,6 +3,7 @@
 use kermit_iters::KeyType;
 
 /// The `Node` trait defines a node with an associated value.
+#[allow(dead_code)]
 pub trait Node {
     /// The type of key stored.
     type KT: KeyType;
