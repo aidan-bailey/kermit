@@ -1,9 +1,16 @@
 use {super::downloader::DownloadSpec, std::path::Path};
 
+pub struct SubTask {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub data_paths: &'static [&'static str],
+    pub query_paths: &'static [&'static str],
+}
+
 pub struct Task {
     pub name: &'static str,
     pub description: &'static str,
-    pub location: &'static str,
+    pub subtasks: &'static [SubTask],
 }
 
 pub struct BenchmarkMetadata {

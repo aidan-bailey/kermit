@@ -1,6 +1,6 @@
 use {
     crate::{
-        benchmark::{Benchmark, BenchmarkMetadata, Task},
+        benchmark::{Benchmark, BenchmarkMetadata, SubTask, Task},
         downloader::{DownloadMethod, DownloadSpec},
         utils,
     },
@@ -21,12 +21,86 @@ static METADATA: BenchmarkMetadata = BenchmarkMetadata {
         Task {
             name: "Uniform",
             description: "Uniformly distributed data",
-            location: "dataset1-uniform",
+            subtasks: &[
+                SubTask {
+                    name: "Scale 1",
+                    data_paths: &["dataset1-uniform/scale1"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 1 Dataset",
+                },
+                SubTask {
+                    name: "Scale 2",
+                    data_paths: &["dataset1-uniform/scale2"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 2 Dataset",
+                },
+                SubTask {
+                    name: "Scale 3",
+                    data_paths: &["dataset1-uniform/scale3"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 3 Dataset",
+                },
+                SubTask {
+                    name: "Scale 4",
+                    data_paths: &["dataset1-uniform/scale4"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 4 Dataset",
+                },
+                SubTask {
+                    name: "Scale 5",
+                    data_paths: &["dataset1-uniform/scale5"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 5 Dataset",
+                },
+                SubTask {
+                    name: "Scale 6",
+                    data_paths: &["dataset1-uniform/scale6"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 6 Dataset",
+                },
+            ],
         },
         Task {
             name: "Zipf",
             description: "Zipf distributed data",
-            location: "dataset2-zipf",
+            subtasks: &[
+                SubTask {
+                    name: "Scale 1",
+                    data_paths: &["dataset2-zipf/scale1"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 1 Dataset",
+                },
+                SubTask {
+                    name: "Scale 2",
+                    data_paths: &["dataset2-zipf/scale2"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 2 Dataset",
+                },
+                SubTask {
+                    name: "Scale 3",
+                    data_paths: &["dataset2-zipf/scale3"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 3 Dataset",
+                },
+                SubTask {
+                    name: "Scale 4",
+                    data_paths: &["dataset2-zipf/scale4"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 4 Dataset",
+                },
+                SubTask {
+                    name: "Scale 5",
+                    data_paths: &["dataset2-zipf/scale5"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 5 Dataset",
+                },
+                SubTask {
+                    name: "Scale 6",
+                    data_paths: &["dataset2-zipf/scale6"],
+                    query_paths: &["queries/query1", "queries/query2", "queries/query3"],
+                    description: "Scale 6 Dataset",
+                },
+            ],
         },
     ],
 };
@@ -102,27 +176,48 @@ impl Benchmark for OxfordBenchmark {
 
     fn load(&self, source: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let dl_spec = &self.metadata().download_spec;
-        let data_dest = path.join(dl_spec.name).join("data");
+
+        //////////////////////
+        // DATA PROCESSING  //
+        //////////////////////
+
+        // oxford_dataset/data
+        let data_dir = path.join(dl_spec.name).join("data");
+
+        // leapfrog-triejoin/datasets
         let ds_tmp_path = source.join("datasets");
+
         for dataset_parent in ["dataset1-uniform", "dataset2-zipf"] {
             for dataset_sub in ["scale1", "scale2", "scale3", "scale4", "scale5", "scale6"] {
+                // leapfrog-triejoin/datasets/dataset1-uniform/scale1
                 let source_path = ds_tmp_path.join(dataset_parent).join(dataset_sub);
-                let dest_path = data_dest.join(dataset_parent).join(dataset_sub);
+
+                // oxford_dataset/data/dataset1-uniform/scale1
+                let dest_path = data_dir.join(dataset_parent).join(dataset_sub);
+
+                // if destination path does not exist, create it
                 if !dest_path.exists() {
                     std::fs::create_dir_all(&dest_path)?;
                 }
+
                 translate_dataset(&source_path, &dest_path);
             }
         }
+
+        // oxford_dataset/queries
         let queries_dest = path.join(dl_spec.name).join("queries");
+
         if !queries_dest.exists() {
             std::fs::create_dir_all(&queries_dest)?;
         }
         for query_file in ["query1", "query2", "query3"] {
+            // leapfrog-triejoin/datasets/query1
             let source_path = ds_tmp_path.join(query_file);
+            // oxford_dataset/queries/query1.txt
             let dest_path = queries_dest.join(format!("{}.txt", query_file));
             translate_query(&source_path, &dest_path);
         }
+
         Ok(())
     }
 }

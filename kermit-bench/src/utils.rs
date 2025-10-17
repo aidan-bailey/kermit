@@ -4,7 +4,7 @@ use {
         datatypes::{DataType, Field, Schema},
     },
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
-    std::{path::Path, sync::Arc},
+    std::{io, path::Path, sync::Arc},
 };
 
 pub fn write_relation_to_parquet(
@@ -36,4 +36,20 @@ pub fn write_relation_to_parquet(
     writer.close()?;
 
     Ok(())
+}
+
+pub fn create_symlink(src: &Path, dst: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(src, dst)
+    }
+
+    #[cfg(windows)]
+    {
+        if src.is_dir() {
+            std::os::windows::fs::symlink_dir(src, dst)
+        } else {
+            std::os::windows::fs::symlink_file(src, dst)
+        }
+    }
 }

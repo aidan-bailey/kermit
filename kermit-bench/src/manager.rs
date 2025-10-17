@@ -4,6 +4,7 @@ use {
 };
 
 pub struct DatasetManager {
+    // Directory where datasets are stored
     dir: PathBuf,
     datasets: Vec<Box<dyn Benchmark + 'static>>,
 }
@@ -28,6 +29,19 @@ impl DatasetManager {
         dataset.load(&source, self.dir.as_path())?;
         Downloader::clean(dl_spec);
         self.datasets.push(Box::new(dataset));
+        Ok(())
+    }
+
+    pub fn rm_dataset(
+        &mut self, dataset: impl Benchmark + 'static,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dl_spec = &dataset.metadata().download_spec;
+        let dest = self.dir.join(dl_spec.name);
+        if dest.exists() {
+            std::fs::remove_dir_all(&dest)?;
+        }
+        self.datasets
+            .retain(|d| d.metadata().name != dataset.metadata().name);
         Ok(())
     }
 }
