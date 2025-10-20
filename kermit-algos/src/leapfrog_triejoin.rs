@@ -208,18 +208,14 @@ mod tests {
             leapfrog_join::LeapfrogJoinIterator,
             leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
         },
-        kermit_ds::{Relation, RelationBuilder, TreeTrie},
+        kermit_ds::{Relation, TreeTrie},
         kermit_iters::TrieIterable,
     };
 
     #[test]
     fn test_classic() {
-        let t1 = TreeTrie::<i32>::builder(1.into())
-            .add_tuples(vec![vec![1], vec![2], vec![3]])
-            .build();
-        let t2 = TreeTrie::<i32>::builder(1.into())
-            .add_tuples(vec![vec![1], vec![2], vec![3]])
-            .build();
+        let t1 = TreeTrie::<i32>::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let t2 = TreeTrie::<i32>::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
         let t1_iter = t1.trie_iter();
         let t2_iter = t2.trie_iter();
         let mut triejoin_iter =
@@ -238,15 +234,9 @@ mod tests {
 
     #[test]
     fn more_complicated() {
-        let r = TreeTrie::<i32>::builder(2.into())
-            .add_tuples(vec![vec![7, 4]])
-            .build();
-        let s = TreeTrie::<i32>::builder(2.into())
-            .add_tuples(vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]])
-            .build();
-        let t = TreeTrie::<i32>::builder(2.into())
-            .add_tuples(vec![vec![7, 2], vec![7, 3], vec![7, 5]])
-            .build();
+        let r = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![7, 4]]);
+        let s = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]]);
+        let t = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![7, 2], vec![7, 3], vec![7, 5]]);
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
         let t_iter = t.trie_iter();
@@ -269,15 +259,9 @@ mod tests {
 
     #[test]
     fn chain() {
-        let r = TreeTrie::<i32>::builder(2.into())
-            .add_tuples(vec![vec![1, 2], vec![2, 3]])
-            .build();
-        let s = TreeTrie::<i32>::builder(2.into())
-            .add_tuples(vec![vec![2, 4], vec![3, 5]])
-            .build();
-        let t = TreeTrie::<i32>::builder(2.into())
-            .add_tuples(vec![vec![4, 6], vec![5, 7]])
-            .build();
+        let r = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3]]);
+        let s = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
+        let t = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![4, 6], vec![5, 7]]);
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
         let t_iter = t.trie_iter();

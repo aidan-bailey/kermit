@@ -1,7 +1,9 @@
-//! This module defines the `Relation` and `RelationBuilder` traits.
+//! This module defines the `Relation` trait and file reading extensions.
 use {
+    arrow::array::AsArray,
     csv::Error,
     kermit_iters::Joinable,
+    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     std::{fs::File, path::Path, str::FromStr},
 };
 
@@ -96,116 +98,126 @@ pub trait Relation: Joinable + Projectable {
     /// Inserts multiple tuples into the relation, returning `true` if
     /// successful and `false` if otherwise.
     fn insert_all(&mut self, tuples: Vec<Vec<Self::KT>>) -> bool;
+}
 
-    /// Creates a new relation builder with the specified arity.
-    fn builder(header: RelationHeader) -> impl RelationBuilder<Output = Self>
+/// Extension trait for `Relation` to add file reading capabilities.
+pub trait RelationFileExt: Relation {
+    /// Creates a new relation from a Parquet file with header.
+    ///
+    /// This method extracts column names from the Parquet schema and the
+    /// relation name from the filename.
+    fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, Error>
     where
-        Self: Relation + Sized,
-    {
-        Builder::<Self>::new(header)
-    }
-}
+        Self: Sized;
 
-/// The `RelationBuilder` trait defines a relational data structure builder.
-///
-/// # Note
-/// Why is this trait needed? Perhaps there is an optimised way during the
-/// initialisation of a relation to build it.
-pub trait RelationBuilder {
-    /// The type of relation being built.
-    type Output: Relation;
-
-    /// Creates a new relation builder with the specified arity.
-    fn new(header: RelationHeader) -> Self;
-
-    /// Consumes the builder and returns the resulting relation.
-    fn build(self) -> Self::Output;
-
-    /// Adds a tuple to the relation being built.
-    fn add_tuple(self, tuple: Vec<<Self::Output as Joinable>::KT>) -> Self;
-
-    /// Adds multiple tuples to the relation being built.
-    fn add_tuples(self, tuples: Vec<Vec<<Self::Output as Joinable>::KT>>) -> Self;
-}
-
-/// A concrete, default implementation of the `RelationBuilder` trait for a
-/// specific relation type `R`.
-pub struct Builder<R: Relation> {
-    header: RelationHeader,
-    tuples: Vec<Vec<R::KT>>,
-}
-
-/// Implementation of the `RelationBuilder` trait for the `Builder<R>` type.
-impl<R: Relation> RelationBuilder for Builder<R> {
-    type Output = R;
-
-    fn new(header: RelationHeader) -> Self {
-        Builder {
-            header,
-            tuples: vec![],
-        }
-    }
-
-    fn build(self) -> Self::Output {
-        let mut r = R::new(self.header);
-        r.insert_all(self.tuples);
-        r
-    }
-
-    fn add_tuple(mut self, tuple: Vec<<Self::Output as Joinable>::KT>) -> Self {
-        self.tuples.push(tuple);
-        self
-    }
-
-    fn add_tuples(mut self, tuples: Vec<Vec<<Self::Output as Joinable>::KT>>) -> Self {
-        self.tuples.extend(tuples);
-        self
-    }
-}
-
-/// Extension trait for `RelationBuilder` to add CSV file reading capabilities.
-#[allow(dead_code)]
-pub trait RelationBuilderFileExt: RelationBuilder {
-    /// Adds tuples from a CSV file to the relation being built.
+    /// Creates a new relation from a CSV file.
     ///
     /// # Note
     /// * The CSV file should not have headers, and the delimiter can be
     ///   specified.
     /// * Each line represents a tuple, and each value in the line should be
     ///   parsable into `Relation::KT`.
-    fn add_csv<P: AsRef<Path>>(self, filepath: P, delimiter: u8) -> Result<Self, Error>
+    fn from_csv<P: AsRef<Path>>(filepath: P, header: RelationHeader, delimiter: u8) -> Result<Self, Error>
     where
         Self: Sized;
 }
 
-/// Blanket implementation of `RelationBuilderFileExt` for any type that
-/// implements `RelationBuilder`.
-impl<T> RelationBuilderFileExt for T
+/// Blanket implementation of `RelationFileExt` for any type that
+/// implements `Relation`.
+impl<R> RelationFileExt for R
 where
-    T: RelationBuilder,
-    <T::Output as Joinable>::KT: FromStr,
+    R: Relation,
+    R::KT: FromStr + TryFrom<i64>,
 {
-    fn add_csv<P: AsRef<Path>>(mut self, filepath: P, delimiter: u8) -> Result<Self, Error> {
+    fn from_csv<P: AsRef<Path>>(filepath: P, header: RelationHeader, delimiter: u8) -> Result<Self, Error> {
         let file = File::open(filepath)?;
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(false)
-            //.delimiter(b',')
             .delimiter(delimiter)
             .double_quote(false)
             .escape(Some(b'\\'))
             .flexible(false)
             .comment(Some(b'#'))
             .from_reader(file);
+        
+        let mut tuples = Vec::new();
         for result in rdr.records() {
             let record = result?;
-            let mut tuple: Vec<<T::Output as Joinable>::KT> = vec![];
+            let mut tuple: Vec<R::KT> = vec![];
             for x in record.iter() {
-                if let Ok(y) = x.to_string().parse::<<T::Output as Joinable>::KT>() {
+                if let Ok(y) = x.to_string().parse::<R::KT>() {
                     tuple.push(y);
                 }
             }
-            self = self.add_tuple(tuple);
+            tuples.push(tuple);
         }
-        Ok(self)
+        Ok(R::from_tuples(header, tuples))
+    }
+    
+    fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, Error> {
+        let path = filepath.as_ref();
+        let file = File::open(path)
+            .map_err(|e| Error::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+            .map_err(|e| Error::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        
+        // Extract schema to get column names
+        let schema = builder.schema();
+        let attrs: Vec<String> = schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect();
+        
+        // Extract relation name from filename (without extension)
+        let relation_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        
+        // Create header from the parquet schema with the extracted name
+        let header = RelationHeader::new(relation_name, attrs);
+        
+        // Build the reader
+        let mut reader = builder.build()
+            .map_err(|e| Error::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        
+        // Collect all tuples first for efficient construction
+        let mut tuples = Vec::new();
+        
+        // Read all record batches and collect tuples
+        while let Some(batch_result) = reader.next() {
+            let batch = batch_result
+                .map_err(|e| Error::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            
+            let num_rows = batch.num_rows();
+            let num_cols = batch.num_columns();
+            
+            // Convert columnar data to row format (tuples)
+            for row_idx in 0..num_rows {
+                let mut tuple = Vec::with_capacity(num_cols);
+                
+                for col_idx in 0..num_cols {
+                    let column = batch.column(col_idx);
+                    let int_array = column.as_primitive::<arrow::datatypes::Int64Type>();
+                    
+                    if let Some(value) = int_array.value(row_idx).try_into().ok() {
+                        tuple.push(value);
+                    } else {
+                        return Err(Error::from(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Failed to convert parquet value",
+                        )));
+                    }
+                }
+                
+                tuples.push(tuple);
+            }
+        }
+        
+        // Use from_tuples for efficient construction (sorts before insertion)
+        Ok(R::from_tuples(header, tuples))
     }
 }

@@ -9,7 +9,7 @@ pub use implementation::TreeTrie;
 mod tests {
     use {
         super::implementation::*,
-        crate::relation::{Builder, Projectable, Relation, RelationBuilder},
+        crate::relation::{Projectable, Relation},
         kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
     };
 
@@ -56,13 +56,7 @@ mod tests {
 
     #[test]
     fn linear_iterator() {
-        let trie = Builder::<TreeTrie<u64>>::new(1.into())
-            .add_tuple(vec![1])
-            .add_tuple(vec![2])
-            .add_tuple(vec![3])
-            .add_tuple(vec![4])
-            .add_tuple(vec![5])
-            .build();
+        let trie = TreeTrie::<u64>::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4], vec![5]]);
         let mut iter = trie.trie_iter();
         assert!(iter.key().is_none());
         assert!(iter.open());
@@ -92,15 +86,18 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = Builder::<TreeTrie<u64>>::new(3.into())
-            .add_tuple(vec![1, 3, 4])
-            .add_tuple(vec![1, 3, 5])
-            .add_tuple(vec![1, 4, 6])
-            .add_tuple(vec![1, 4, 8])
-            .add_tuple(vec![1, 4, 9])
-            .add_tuple(vec![1, 5, 2])
-            .add_tuple(vec![3, 5, 2])
-            .build();
+        let trie = TreeTrie::<u64>::from_tuples(
+            3.into(),
+            vec![
+                vec![1, 3, 4],
+                vec![1, 3, 5],
+                vec![1, 4, 6],
+                vec![1, 4, 8],
+                vec![1, 4, 9],
+                vec![1, 5, 2],
+                vec![3, 5, 2],
+            ],
+        );
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
