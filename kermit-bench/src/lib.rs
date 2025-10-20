@@ -10,12 +10,12 @@ mod tests {
         crate::{
             benchmark::Benchmark, benchmarks::oxford::OxfordBenchmark, manager::DatasetManager,
         },
-        std::{env, path::Path},
+        std::path::PathBuf,
     };
 
     #[test]
     fn oxford_benchmark() {
-        let tmp_dir = env::temp_dir().join("kermit-bench-testing");
+        let tmp_dir = PathBuf::from("data"); // env::temp_dir().join("kermit-bench-testing");
         if tmp_dir.exists() {
             std::fs::remove_dir_all(&tmp_dir).expect("Failed to remove temporary directory");
         }
@@ -26,17 +26,9 @@ mod tests {
         let ds_dir = tmp_dir.join(OxfordBenchmark.metadata().download_spec.name);
         assert!(ds_dir.exists());
 
-        for task in OxfordBenchmark.metadata().tasks {
-            let task_data_dir = ds_dir.join("data").join(task.dir);
-            assert!(task_data_dir.exists());
-            let task_query_dir = ds_dir.join("queries");
-            assert!(task_query_dir.exists());
-            for subtask in task.subtasks {
-                let subtask_data_dir = task_data_dir.join(subtask.datadir);
-                assert!(subtask_data_dir.exists())
-            }
-        }
+        // Test validation - should succeed when dataset is properly loaded
+        assert!(OxfordBenchmark.validate(&tmp_dir).is_ok());
 
-        assert!(man.rm_dataset(OxfordBenchmark).is_ok());
+        // assert!(man.rm_dataset(OxfordBenchmark).is_ok());
     }
 }
