@@ -1,6 +1,6 @@
 use {
     kermit_algos::JoinAlgo,
-    kermit_ds::{Relation, RelationBuilder},
+    kermit_ds::Relation,
     kermit_kvs::keyvalstore::KeyValStore,
     std::{collections::HashMap, hash::Hash},
 };
@@ -39,7 +39,7 @@ where
     pub fn name(&self) -> &String { &self.name }
 
     pub fn add_relation(&mut self, name: &str, arity: usize) {
-        let relation = R::builder(arity.into()).build();
+        let relation = R::new(arity.into());
         self.relations.insert(name.to_owned(), relation);
     }
 
@@ -71,7 +71,7 @@ where
             .collect::<Vec<&R>>();
         let arity = variables.len();
         let tuples = JA::join_iter(variables, rel_variables, iterables).collect();
-        R::builder(arity.into()).add_tuples(tuples).build()
+        R::from_tuples(arity.into(), tuples)
     }
 }
 
