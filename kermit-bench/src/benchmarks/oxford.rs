@@ -25,37 +25,61 @@ static METADATA: BenchmarkMetadata = BenchmarkMetadata {
                 SubTask {
                     name: "Scale 1",
                     data_paths: &["data/dataset1-uniform/scale1"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 1 Dataset",
                 },
                 SubTask {
                     name: "Scale 2",
                     data_paths: &["data/dataset1-uniform/scale2"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 2 Dataset",
                 },
                 SubTask {
                     name: "Scale 3",
                     data_paths: &["data/dataset1-uniform/scale3"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 3 Dataset",
                 },
                 SubTask {
                     name: "Scale 4",
                     data_paths: &["data/dataset1-uniform/scale4"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 4 Dataset",
                 },
                 SubTask {
                     name: "Scale 5",
                     data_paths: &["data/dataset1-uniform/scale5"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 5 Dataset",
                 },
                 SubTask {
                     name: "Scale 6",
                     data_paths: &["data/dataset1-uniform/scale6"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 6 Dataset",
                 },
             ],
@@ -67,37 +91,61 @@ static METADATA: BenchmarkMetadata = BenchmarkMetadata {
                 SubTask {
                     name: "Scale 1",
                     data_paths: &["data/dataset2-zipf/scale1"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 1 Dataset",
                 },
                 SubTask {
                     name: "Scale 2",
                     data_paths: &["data/dataset2-zipf/scale2"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 2 Dataset",
                 },
                 SubTask {
                     name: "Scale 3",
                     data_paths: &["data/dataset2-zipf/scale3"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 3 Dataset",
                 },
                 SubTask {
                     name: "Scale 4",
                     data_paths: &["data/dataset2-zipf/scale4"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 4 Dataset",
                 },
                 SubTask {
                     name: "Scale 5",
                     data_paths: &["data/dataset2-zipf/scale5"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 5 Dataset",
                 },
                 SubTask {
                     name: "Scale 6",
                     data_paths: &["data/dataset2-zipf/scale6"],
-                    query_paths: &["queries/query1.txt", "queries/query2.txt", "queries/query3.txt"],
+                    query_paths: &[
+                        "queries/query1.txt",
+                        "queries/query2.txt",
+                        "queries/query3.txt",
+                    ],
                     description: "Scale 6 Dataset",
                 },
             ],
@@ -220,5 +268,4 @@ impl Benchmark for OxfordBenchmark {
 
         Ok(())
     }
-
 }

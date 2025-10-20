@@ -25,7 +25,7 @@ pub trait Benchmark {
     fn load(&self, source: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>>;
     fn validate(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let metadata = self.metadata();
-        
+
         for task in metadata.tasks {
             for subtask in task.subtasks {
                 // Validate data paths
@@ -36,10 +36,11 @@ pub trait Benchmark {
                             "Data path does not exist: {} (expected at: {})",
                             data_path,
                             full_data_path.display()
-                        ).into());
+                        )
+                        .into());
                     }
                 }
-                
+
                 // Validate query paths
                 for query_path in subtask.query_paths {
                     let full_query_path = path.join(metadata.download_spec.name).join(query_path);
@@ -48,12 +49,13 @@ pub trait Benchmark {
                             "Query path does not exist: {} (expected at: {})",
                             query_path,
                             full_query_path.display()
-                        ).into());
+                        )
+                        .into());
                     }
                 }
             }
         }
-        
+
         Ok(())
     }
 }
