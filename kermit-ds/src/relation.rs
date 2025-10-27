@@ -113,11 +113,9 @@ pub trait RelationFileExt: Relation {
     /// Creates a new relation from a CSV file.
     ///
     /// # Note
-    /// * The CSV file should not have headers, and the delimiter can be
-    ///   specified.
     /// * Each line represents a tuple, and each value in the line should be
     ///   parsable into `Relation::KT`.
-    fn from_csv<P: AsRef<Path>>(filepath: P, header: RelationHeader, delimiter: u8) -> Result<Self, Error>
+    fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, Error>
     where
         Self: Sized;
 }
@@ -129,16 +127,34 @@ where
     R: Relation,
     R::KT: FromStr + TryFrom<i64>,
 {
-    fn from_csv<P: AsRef<Path>>(filepath: P, header: RelationHeader, delimiter: u8) -> Result<Self, Error> {
-        let file = File::open(filepath)?;
+    fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, Error> {
+        let path = filepath.as_ref();
+        let file = File::open(path)?;
+        
         let mut rdr = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .delimiter(delimiter)
+            .has_headers(true)
+            .delimiter(b',')
             .double_quote(false)
             .escape(Some(b'\\'))
             .flexible(false)
             .comment(Some(b'#'))
             .from_reader(file);
+        
+        // Extract column names from CSV header
+        let attrs: Vec<String> = rdr.headers()?
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        
+        // Extract relation name from filename (without extension)
+        let relation_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        
+        // Create header from the CSV header with the extracted name
+        let header = RelationHeader::new(relation_name, attrs);
         
         let mut tuples = Vec::new();
         for result in rdr.records() {
