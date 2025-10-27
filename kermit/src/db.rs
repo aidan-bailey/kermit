@@ -1,8 +1,8 @@
 use {
     kermit_algos::JoinAlgo,
-    kermit_ds::Relation,
+    kermit_ds::{Relation, RelationFileExt},
     kermit_kvs::keyvalstore::KeyValStore,
-    std::{collections::HashMap, hash::Hash},
+    std::{collections::HashMap, hash::Hash, path::Path},
 };
 
 pub struct Database<VT, KVST, R>
@@ -72,6 +72,41 @@ where
         let arity = variables.len();
         let tuples = JA::join_iter(variables, rel_variables, iterables).collect();
         R::from_tuples(arity.into(), tuples)
+    }
+
+    /// Loads a relation from a file (CSV or Parquet) and adds it to the database.
+    /// 
+    /// The file type is determined by the extension (.csv or .parquet).
+    /// The relation name is extracted from the filename.
+    pub fn add_file<P: AsRef<Path>>(&mut self, filepath: P) -> Result<(), std::io::Error>
+    where
+        R: RelationFileExt,
+    {
+        let path = filepath.as_ref();
+        let extension = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        
+        let relation = match extension.to_lowercase().as_str() {
+            "csv" => R::from_csv(path).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+            })?,
+            "parquet" => R::from_parquet(path).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+            })?,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Unsupported file extension: {}", extension),
+                ))
+            }
+        };
+        
+        let relation_name = relation.header().name().to_string();
+        self.relations.insert(relation_name, relation);
+        
+        Ok(())
     }
 }
 
