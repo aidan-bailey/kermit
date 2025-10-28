@@ -14,6 +14,7 @@ kermit-ds = { version = "0.0.13", path = "../kermit-ds" }
 kermit-iters = { version = "0.0.5", path = "../kermit-iters" }
 kermit-algos = { version = "0.0.7", path = "../kermit-algos" }
 kermit-kvs = { version = "0.0.2", path = "../kermit-kvs" }
+kermit-bench = { version = "0.0.3", path = "../kermit-bench" }
 
 [dev-dependencies]
 paste = "1.0.15"
