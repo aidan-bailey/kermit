@@ -8,7 +8,7 @@ mod utils;
 mod tests {
     use {
         crate::{
-            benchmark::Benchmark, benchmarks::oxford::OxfordBenchmark, manager::DatasetManager,
+            benchmark::Benchmark, benchmarks::oxford::OxfordBenchmark, manager::BenchmarkManager,
         },
         std::path::PathBuf,
     };
@@ -20,8 +20,8 @@ mod tests {
             std::fs::remove_dir_all(&tmp_dir).expect("Failed to remove temporary directory");
         }
         std::fs::create_dir_all(&tmp_dir).expect("Failed to create temporary directory");
-        let mut man = DatasetManager::new(&tmp_dir);
-        assert!(man.init_dataset(OxfordBenchmark).is_ok());
+        let mut man = BenchmarkManager::new(&tmp_dir);
+        assert!(man.add_benchmark(OxfordBenchmark).is_ok());
 
         let ds_dir = tmp_dir.join(OxfordBenchmark.metadata().download_spec.name);
         assert!(ds_dir.exists());
