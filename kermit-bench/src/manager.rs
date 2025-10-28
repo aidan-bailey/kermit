@@ -23,6 +23,17 @@ impl BenchmarkManager {
     pub fn add_benchmark(
         &mut self, benchmark: impl Benchmark + 'static,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if self
+            .datasets
+            .iter()
+            .any(|d| d.metadata().name == benchmark.metadata().name)
+        {
+            return Err(format!(
+                "Benchmark '{}' already exists in manager",
+                benchmark.metadata().name
+            )
+            .into());
+        }
         let dl_spec = &benchmark.metadata().download_spec;
         let source = Downloader::download(dl_spec)?;
         benchmark.load(&source, self.dir.as_path())?;
