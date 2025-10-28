@@ -55,12 +55,12 @@ enum Commands {
         indexstructure: String,
 
         /// Dataset directory (generated)
-        #[arg(short, long, value_name = "PATH", default_value = "benchmarks")]
+        #[arg(short, long, value_name = "PATH", default_value = "datasets")]
         dataset_dir: PathBuf,
 
-        /// Output directory for results (generated)
+        /// Results directory for benchmarks (generated)
         #[arg(short, long, value_name = "PATH", default_value = "results")]
-        output_dir: PathBuf,
+        results_dir: PathBuf,
     },
 }
 
@@ -94,7 +94,7 @@ fn main() -> anyhow::Result<()> {
         | Commands::Benchmark {
             name,
             dataset_dir,
-            output_dir,
+            results_dir,
             algorithm,
             indexstructure,
         } => {
@@ -103,7 +103,7 @@ fn main() -> anyhow::Result<()> {
             println!("  Index structure: {}", indexstructure);
             println!("  Algorithm: {}", algorithm);
             println!("  Dataset directory: {:?}", dataset_dir);
-            println!("  Output directory: {:?}", output_dir);
+            println!("  Results directory: {:?}", results_dir);
             todo!("Implement benchmark execution");
         },
     }
