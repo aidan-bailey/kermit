@@ -32,4 +32,8 @@ where
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.manager.add_benchmark(benchmark)
     }
+
+    pub fn execute_benchmarks(&self) {
+        todo!("Implement benchmark execution logic");
+    }
 }
