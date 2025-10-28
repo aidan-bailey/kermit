@@ -1,5 +1,7 @@
-use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use {
+    clap::{Parser, Subcommand},
+    std::path::PathBuf,
+};
 
 #[derive(Parser)]
 #[command(name = "kermit")]
@@ -15,7 +17,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-
     /// Run a join query
     Join {
         /// Input relation data paths (files or directories)
@@ -41,7 +42,6 @@ enum Commands {
 
     /// Run a benchmark
     Benchmark {
-
         /// Benchmark name
         #[arg(short, long, value_name = "NAME", required = true)]
         name: String,
@@ -61,7 +61,6 @@ enum Commands {
         /// Output directory for results (generated)
         #[arg(short, long, value_name = "PATH", default_value = "results")]
         output_dir: PathBuf,
-
     },
 }
 
@@ -73,7 +72,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        Commands::Join {
+        | Commands::Join {
             relations: input,
             query,
             algorithm,
@@ -82,14 +81,17 @@ fn main() -> anyhow::Result<()> {
         } => {
             println!("Running join query:");
             println!("  Input files: {:?}", input);
-            println!("  Output: {:?}", output.unwrap_or_else(|| PathBuf::from("stdout")));
+            println!(
+                "  Output: {:?}",
+                output.unwrap_or_else(|| PathBuf::from("stdout"))
+            );
             println!("  Query: {:?}", query);
             println!("  Index structure: {}", indexstructure);
             println!("  Algorithm: {}", algorithm);
             todo!("Implement join execution");
-        }
+        },
 
-        Commands::Benchmark {
+        | Commands::Benchmark {
             name,
             dataset_dir,
             output_dir,
@@ -103,9 +105,8 @@ fn main() -> anyhow::Result<()> {
             println!("  Dataset directory: {:?}", dataset_dir);
             println!("  Output directory: {:?}", output_dir);
             todo!("Implement benchmark execution");
-        }
+        },
     }
 
     Ok(())
 }
-
