@@ -3,15 +3,14 @@ use {
     std::path::PathBuf,
 };
 
-pub struct DatasetManager {
-    // Directory where datasets are stored
+pub struct BenchmarkManager {
     dir: PathBuf,
     datasets: Vec<Box<dyn Benchmark + 'static>>,
 }
 
-impl DatasetManager {
-    pub fn new<P: Into<PathBuf>>(dataset_dir: P) -> Self {
-        let path = dataset_dir.into();
+impl BenchmarkManager {
+    pub fn new<P: Into<PathBuf>>(benchmark_dir: P) -> Self {
+        let path = benchmark_dir.into();
         if !path.exists() {
             std::fs::create_dir_all(&path).expect("Failed to create dataset directory");
         }
@@ -21,27 +20,27 @@ impl DatasetManager {
         }
     }
 
-    pub fn init_dataset(
-        &mut self, dataset: impl Benchmark + 'static,
+    pub fn add_benchmark(
+        &mut self, benchmark: impl Benchmark + 'static,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let dl_spec = &dataset.metadata().download_spec;
+        let dl_spec = &benchmark.metadata().download_spec;
         let source = Downloader::download(dl_spec)?;
-        dataset.load(&source, self.dir.as_path())?;
+        benchmark.load(&source, self.dir.as_path())?;
         Downloader::clean(dl_spec);
-        self.datasets.push(Box::new(dataset));
+        self.datasets.push(Box::new(benchmark));
         Ok(())
     }
 
-    pub fn rm_dataset(
-        &mut self, dataset: impl Benchmark + 'static,
+    pub fn rm_benchmark(
+        &mut self, benchmark: impl Benchmark + 'static,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let dl_spec = &dataset.metadata().download_spec;
+        let dl_spec = &benchmark.metadata().download_spec;
         let dest = self.dir.join(dl_spec.name);
         if dest.exists() {
             std::fs::remove_dir_all(&dest)?;
         }
         self.datasets
-            .retain(|d| d.metadata().name != dataset.metadata().name);
+            .retain(|d| d.metadata().name != benchmark.metadata().name);
         Ok(())
     }
 }
