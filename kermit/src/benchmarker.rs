@@ -2,6 +2,7 @@ use {
     kermit_algos::JoinAlgo,
     kermit_bench::{benchmark::Benchmark, manager::BenchmarkManager},
     kermit_ds::Relation,
+    std::path::PathBuf,
 };
 
 pub struct Benchmarker<R, JA>
@@ -12,6 +13,7 @@ where
     phantom_r: std::marker::PhantomData<R>,
     phantom_ja: std::marker::PhantomData<JA>,
     manager: BenchmarkManager,
+    output_dir: PathBuf,
 }
 
 impl<R, JA> Benchmarker<R, JA>
@@ -19,11 +21,12 @@ where
     R: Relation,
     JA: JoinAlgo<R>,
 {
-    pub fn new() -> Self {
+    pub fn new<P1: Into<PathBuf>, P2: Into<PathBuf>>(benchmark_dir: P1, output_dir: P2) -> Self {
         Benchmarker {
             phantom_r: std::marker::PhantomData,
             phantom_ja: std::marker::PhantomData,
-            manager: BenchmarkManager::new("benchmarks"),
+            manager: BenchmarkManager::new(benchmark_dir),
+            output_dir: output_dir.into(),
         }
     }
 
