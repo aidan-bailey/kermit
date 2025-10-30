@@ -18,7 +18,7 @@ pub struct Predicate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Query {
+pub struct JoinQuery {
     pub head: Predicate,
     pub body: Vec<Predicate>,
 }
@@ -85,19 +85,19 @@ fn predicate(input: &mut &str) -> PResult<Predicate> {
 }
 
 // ---------- query ----------
-fn query(input: &mut &str) -> PResult<Query> {
+fn query(input: &mut &str) -> PResult<JoinQuery> {
     let head = predicate.parse_next(input)?;
     // ":-" separates head from body
     let _ = delimited(ws, ":-", ws).parse_next(input)?;
     let body = separated(1.., predicate, comma).parse_next(input)?;
     let _ = dot.parse_next(input)?;
-    Ok(Query {
+    Ok(JoinQuery {
         head,
         body,
     })
 }
 
-impl std::str::FromStr for Query {
+impl std::str::FromStr for JoinQuery {
     type Err = ErrMode<ContextError>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn test_query_from_str_simple() {
         let query_str = "P(X) :- Q(X).";
-        let query: Query = query_str.parse().expect("Failed to parse query");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query");
         
         assert_eq!(query.head.name, "P");
         assert_eq!(query.head.terms.len(), 1);
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn test_query_from_str_multiple_body_predicates() {
         let query_str = "ancestor(X, Z) :- parent(X, Y), parent(Y, Z).";
-        let query: Query = query_str.parse().expect("Failed to parse query");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query");
         
         assert_eq!(query.head.name, "ancestor");
         assert_eq!(query.head.terms.len(), 2);
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn test_query_from_str_with_atoms() {
         let query_str = "likes(alice, X):- food(X), healthy(X).";
-        let query: Query = query_str.parse().expect("Failed to parse query");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query");
         
         assert_eq!(query.head.name, "likes");
         assert_eq!(query.head.terms[0], Term::Atom("alice".to_string()));
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_query_from_str_with_whitespace() {
         let query_str = "  P(X,Y)  :-  Q(X),R(Y)  .  ";
-        let query: Query = query_str.parse().expect("Failed to parse query with whitespace");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query with whitespace");
         
         assert_eq!(query.head.name, "P");
         assert_eq!(query.head.terms.len(), 2);
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn test_query_from_str_minimal_whitespace() {
         let query_str = "P(X,Y):-Q(X),R(Y).";
-        let query: Query = query_str.parse().expect("Failed to parse query with minimal whitespace");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query with minimal whitespace");
         
         assert_eq!(query.head.name, "P");
         assert_eq!(query.head.terms.len(), 2);
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn test_query_from_str_spaces_after_commas() {
         let query_str = "result(X, Y, Z) :- relation1(X, Y), relation2(Y, Z).";
-        let query: Query = query_str.parse().expect("Failed to parse query with spaces after commas");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query with spaces after commas");
         
         assert_eq!(query.head.name, "result");
         assert_eq!(query.head.terms.len(), 3);
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_query_from_str_complex() {
         let query_str = "path(X, Z) :- edge(X, Y), edge(Y, Z), vertex(X), vertex(Y), vertex(Z).";
-        let query: Query = query_str.parse().expect("Failed to parse complex query");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse complex query");
         
         assert_eq!(query.head.name, "path");
         assert_eq!(query.head.terms.len(), 2);
@@ -224,28 +224,28 @@ mod tests {
     #[test]
     fn test_query_from_str_invalid_no_dot() {
         let query_str = "P(X) :- Q(X)";
-        let result: Result<Query, _> = query_str.parse();
+        let result: Result<JoinQuery, _> = query_str.parse();
         assert!(result.is_err());
     }
 
     #[test]
     fn test_query_from_str_invalid_no_arrow() {
         let query_str = "P(X) Q(X).";
-        let result: Result<Query, _> = query_str.parse();
+        let result: Result<JoinQuery, _> = query_str.parse();
         assert!(result.is_err());
     }
 
     #[test]
     fn test_query_from_str_invalid_empty_body() {
         let query_str = "P(X) :- .";
-        let result: Result<Query, _> = query_str.parse();
+        let result: Result<JoinQuery, _> = query_str.parse();
         assert!(result.is_err());
     }
 
     #[test]
     fn test_query_from_str_with_placeholder() {
         let query_str = "result(X, _) :- relation(X, _).";
-        let query: Query = query_str.parse().expect("Failed to parse query with placeholder");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query with placeholder");
         
         assert_eq!(query.head.name, "result");
         assert_eq!(query.head.terms.len(), 2);
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn test_query_from_str_multiple_placeholders() {
         let query_str = "query(_, _, Z) :- data(_, _, Z).";
-        let query: Query = query_str.parse().expect("Failed to parse query with multiple placeholders");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query with multiple placeholders");
         
         assert_eq!(query.head.terms[0], Term::Placeholder);
         assert_eq!(query.head.terms[1], Term::Placeholder);
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn test_query_from_str_placeholder_with_atoms() {
         let query_str = "match(alice, _) :- person(alice, _), active(_).";
-        let query: Query = query_str.parse().expect("Failed to parse query with placeholders and atoms");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query with placeholders and atoms");
         
         assert_eq!(query.head.terms[0], Term::Atom("alice".to_string()));
         assert_eq!(query.head.terms[1], Term::Placeholder);
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn test_query_from_str_only_placeholders() {
         let query_str = "any(_,_) :- data(_,_).";
-        let query: Query = query_str.parse().expect("Failed to parse query with only placeholders");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse query with only placeholders");
         
         assert_eq!(query.head.terms.len(), 2);
         assert_eq!(query.head.terms[0], Term::Placeholder);
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn test_query_from_str_placeholder_mixed() {
         let query_str = "filter(X, _, bob, Y) :- source(X, _, bob, Y), check(X, Y).";
-        let query: Query = query_str.parse().expect("Failed to parse complex query with placeholders");
+        let query: JoinQuery = query_str.parse().expect("Failed to parse complex query with placeholders");
         
         assert_eq!(query.head.terms.len(), 4);
         assert_eq!(query.head.terms[0], Term::Var("X".to_string()));
