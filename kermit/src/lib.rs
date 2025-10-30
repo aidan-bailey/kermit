@@ -14,6 +14,8 @@ pub mod db;
 
 pub mod benchmarker;
 
+mod parser;
+
 use {kermit_algos::JoinAlgo, kermit_ds::Relation};
 
 pub fn compute_join<R, JA>(
