@@ -12,6 +12,7 @@ repository.workspace = true
 [dependencies]
 kermit-iters = { version = "0.0.5", path = "../kermit-iters" }
 kermit-derive = { version = "0.0.2", path = "../kermit-derive" }
+winnow = "0.7.13"
 
 #[[bench]]
 #name = "main"
@@ -22,4 +23,3 @@ criterion = "0.5.1"
 rand = "0.9.0"
 kermit-ds = { path = "../kermit-ds" }
 test-case = "3.3.1"
-winnow = "0.7.13"
