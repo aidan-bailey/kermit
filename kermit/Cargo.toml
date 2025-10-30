@@ -17,6 +17,7 @@ kermit-kvs = { version = "0.0.2", path = "../kermit-kvs" }
 kermit-bench = { version = "0.0.3", path = "../kermit-bench" }
 clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
+winnow = "0.7.13"
 
 [dev-dependencies]
 paste = "1.0.15"
