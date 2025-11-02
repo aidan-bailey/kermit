@@ -20,7 +20,7 @@ pub struct BenchmarkMetadata {
     pub tasks: &'static [Task],
 }
 
-pub trait Benchmark {
+pub trait BenchmarkConfig {
     fn metadata(&self) -> &BenchmarkMetadata;
     fn load(&self, source: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>>;
     fn validate(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {

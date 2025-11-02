@@ -1,11 +1,11 @@
 use {
-    super::{benchmark::Benchmark, downloader::Downloader},
+    super::{benchmark::BenchmarkConfig, downloader::Downloader},
     std::path::PathBuf,
 };
 
 pub struct BenchmarkManager {
     dir: PathBuf,
-    datasets: Vec<Box<dyn Benchmark + 'static>>,
+    datasets: Vec<Box<dyn BenchmarkConfig + 'static>>,
 }
 
 impl BenchmarkManager {
@@ -21,7 +21,7 @@ impl BenchmarkManager {
     }
 
     pub fn add_benchmark(
-        &mut self, benchmark: impl Benchmark + 'static,
+        &mut self, benchmark: impl BenchmarkConfig + 'static,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if self
             .datasets
@@ -43,7 +43,7 @@ impl BenchmarkManager {
     }
 
     pub fn rm_benchmark(
-        &mut self, benchmark: impl Benchmark + 'static,
+        &mut self, benchmark: impl BenchmarkConfig + 'static,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dl_spec = &benchmark.metadata().download_spec;
         let dest = self.dir.join(dl_spec.name);

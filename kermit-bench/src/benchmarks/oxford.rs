@@ -1,6 +1,6 @@
 use {
     crate::{
-        benchmark::{Benchmark, BenchmarkMetadata, SubTask, Task},
+        benchmark::{BenchmarkConfig, BenchmarkMetadata, SubTask, Task},
         downloader::{DownloadMethod, DownloadSpec},
         utils,
     },
@@ -219,7 +219,7 @@ fn translate_query(source: &Path, dest: &Path) {
     writeln!(file, "{}", attrs.join(",")).unwrap();
 }
 
-impl Benchmark for OxfordBenchmark {
+impl BenchmarkConfig for OxfordBenchmark {
     fn metadata(&self) -> &BenchmarkMetadata { &METADATA }
 
     fn load(&self, source: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
