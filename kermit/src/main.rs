@@ -1,5 +1,9 @@
 use {
-    clap::{Parser, Subcommand}, kermit_bench::benchmarks::Benchmark, kermit_ds::IndexStructure, std::path::PathBuf
+    clap::{Parser, Subcommand},
+    kermit_algos::JoinAlgorithm,
+    kermit_bench::benchmarks::Benchmark,
+    kermit_ds::IndexStructure,
+    std::path::PathBuf,
 };
 
 #[derive(Parser)]
@@ -27,8 +31,8 @@ enum Commands {
         query: PathBuf,
 
         /// Join algorithm
-        #[arg(short, long, value_name = "ALGORITHM", required = true)]
-        algorithm: String,
+        #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
+        algorithm: JoinAlgorithm,
 
         /// Data structure
         #[arg(short, long, value_name = "INDEXSTRUCTURE", required = true, value_enum)]
@@ -46,8 +50,8 @@ enum Commands {
         name: Benchmark,
 
         /// Join algorithm
-        #[arg(short, long, value_name = "ALGORITHM", required = true)]
-        algorithm: String,
+        #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
+        algorithm: JoinAlgorithm,
 
         /// Index structure
         #[arg(short, long, value_name = "INDEXSTRUCTURE", required = true, value_enum)]
@@ -86,7 +90,7 @@ fn main() -> anyhow::Result<()> {
             );
             println!("  Query: {:?}", query);
             println!("  Index structure: {:?}", indexstructure);
-            println!("  Algorithm: {}", algorithm);
+            println!("  Algorithm: {:?}", algorithm);
             todo!("Implement join execution");
         },
 
@@ -100,7 +104,7 @@ fn main() -> anyhow::Result<()> {
             println!("Running benchmarks:");
             println!("  Benchmark name: {}", name.name());
             println!("  Index structure: {:?}", indexstructure);
-            println!("  Algorithm: {}", algorithm);
+            println!("  Algorithm: {:?}", algorithm);
             println!("  Dataset directory: {:?}", dataset_dir);
             println!("  Results directory: {:?}", results_dir);
             todo!("Implement benchmark execution");
