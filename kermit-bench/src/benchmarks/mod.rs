@@ -2,6 +2,7 @@ use crate::benchmark::BenchmarkConfig;
 
 pub mod oxford;
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Benchmark {
     Oxford,
 }
