@@ -1,6 +1,6 @@
 use {
     kermit_algos::JoinAlgo,
-    kermit_bench::{benchmark::Benchmark, manager::BenchmarkManager},
+    kermit_bench::{benchmarks::Benchmark, manager::BenchmarkManager},
     kermit_ds::Relation,
     std::path::PathBuf,
 };
@@ -30,9 +30,7 @@ where
         }
     }
 
-    pub fn add_benchmark(
-        &mut self, benchmark: impl Benchmark + 'static,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn add_benchmark(&mut self, benchmark: Benchmark) -> Result<(), Box<dyn std::error::Error>> {
         self.manager.add_benchmark(benchmark)
     }
 
