@@ -15,6 +15,7 @@ csv = "1.1"
 parquet = "56.2.0"
 kermit-iters = { version = "0.0.5", path = "../kermit-iters" }
 kermit-derive = { version = "0.0.2", path = "../kermit-derive" }
+clap = { version = "4.4", features = ["derive" ] }
 
 [[bench]]
 name = "relation_benchmarks"
