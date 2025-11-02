@@ -9,9 +9,7 @@ mod utils;
 #[cfg(test)]
 mod tests {
     use {
-        crate::{
-            benchmark::BenchmarkConfig, benchmarks::oxford::OxfordBenchmark, manager::BenchmarkManager,
-        },
+        crate::{benchmarks::Benchmark, manager::BenchmarkManager},
         std::path::PathBuf,
     };
 
@@ -23,13 +21,13 @@ mod tests {
         }
         std::fs::create_dir_all(&tmp_dir).expect("Failed to create temporary directory");
         let mut man = BenchmarkManager::new(&tmp_dir);
-        assert!(man.add_benchmark(OxfordBenchmark).is_ok());
+        assert!(man.add_benchmark(Benchmark::Oxford).is_ok());
 
-        let ds_dir = tmp_dir.join(OxfordBenchmark.metadata().download_spec.name);
+        let ds_dir = tmp_dir.join(Benchmark::Oxford.config().metadata().download_spec.name);
         assert!(ds_dir.exists());
 
         // Test validation - should succeed when dataset is properly loaded
-        assert!(OxfordBenchmark.validate(&tmp_dir).is_ok());
+        assert!(Benchmark::Oxford.config().validate(&tmp_dir).is_ok());
 
         // assert!(man.rm_dataset(OxfordBenchmark).is_ok());
     }
