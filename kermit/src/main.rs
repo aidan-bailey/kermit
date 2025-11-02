@@ -47,7 +47,7 @@ enum Commands {
     Benchmark {
         /// Benchmark to run
         #[arg(short, long, value_name = "NAME", required = true, value_enum)]
-        name: Benchmark,
+        benchmark: Benchmark,
 
         /// Join algorithm
         #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
@@ -95,19 +95,18 @@ fn main() -> anyhow::Result<()> {
         },
 
         | Commands::Benchmark {
-            name,
+            benchmark,
             dataset_dir,
             results_dir,
             algorithm,
             indexstructure,
         } => {
             println!("Running benchmarks:");
-            println!("  Benchmark name: {}", name.name());
+            println!("  Benchmark: {:?}", benchmark.name());
             println!("  Index structure: {:?}", indexstructure);
             println!("  Algorithm: {:?}", algorithm);
             println!("  Dataset directory: {:?}", dataset_dir);
             println!("  Results directory: {:?}", results_dir);
-            todo!("Implement benchmark execution");
         },
     }
 
