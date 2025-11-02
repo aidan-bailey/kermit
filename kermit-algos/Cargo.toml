@@ -13,6 +13,7 @@ repository.workspace = true
 kermit-iters = { version = "0.0.5", path = "../kermit-iters" }
 kermit-derive = { version = "0.0.2", path = "../kermit-derive" }
 winnow = "0.7.13"
+clap = { version = "4.4", features = ["derive" ] }
 
 #[[bench]]
 #name = "main"
