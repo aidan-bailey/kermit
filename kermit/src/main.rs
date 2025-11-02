@@ -1,5 +1,5 @@
 use {
-    clap::{Parser, Subcommand}, kermit_bench::benchmarks::Benchmark, std::path::PathBuf
+    clap::{Parser, Subcommand}, kermit_bench::benchmarks::Benchmark, kermit_ds::IndexStructure, std::path::PathBuf
 };
 
 #[derive(Parser)]
@@ -31,8 +31,8 @@ enum Commands {
         algorithm: String,
 
         /// Data structure
-        #[arg(short, long, value_name = "INDEXSTRUCTURE", required = true)]
-        indexstructure: String,
+        #[arg(short, long, value_name = "INDEXSTRUCTURE", required = true, value_enum)]
+        indexstructure: IndexStructure,
 
         /// Output file (optional, defaults to stdout)
         #[arg(short, long, value_name = "PATH")]
@@ -50,8 +50,8 @@ enum Commands {
         algorithm: String,
 
         /// Index structure
-        #[arg(short, long, value_name = "INDEXSTRUCTURE", required = true)]
-        indexstructure: String,
+        #[arg(short, long, value_name = "INDEXSTRUCTURE", required = true, value_enum)]
+        indexstructure: IndexStructure,
 
         /// Dataset directory (generated)
         #[arg(short, long, value_name = "PATH", default_value = "datasets")]
@@ -85,7 +85,7 @@ fn main() -> anyhow::Result<()> {
                 output.unwrap_or_else(|| PathBuf::from("stdout"))
             );
             println!("  Query: {:?}", query);
-            println!("  Index structure: {}", indexstructure);
+            println!("  Index structure: {:?}", indexstructure);
             println!("  Algorithm: {}", algorithm);
             todo!("Implement join execution");
         },
@@ -99,7 +99,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             println!("Running benchmarks:");
             println!("  Benchmark name: {}", name.name());
-            println!("  Index structure: {}", indexstructure);
+            println!("  Index structure: {:?}", indexstructure);
             println!("  Algorithm: {}", algorithm);
             println!("  Dataset directory: {:?}", dataset_dir);
             println!("  Results directory: {:?}", results_dir);
