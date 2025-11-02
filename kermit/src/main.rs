@@ -1,6 +1,5 @@
 use {
-    clap::{Parser, Subcommand},
-    std::path::PathBuf,
+    clap::{Parser, Subcommand}, kermit_bench::benchmarks::Benchmark, std::path::PathBuf
 };
 
 #[derive(Parser)]
@@ -42,9 +41,9 @@ enum Commands {
 
     /// Run a benchmark
     Benchmark {
-        /// Benchmark name
-        #[arg(short, long, value_name = "NAME", required = true)]
-        name: String,
+        /// Benchmark to run
+        #[arg(short, long, value_name = "NAME", required = true, value_enum)]
+        name: Benchmark,
 
         /// Join algorithm
         #[arg(short, long, value_name = "ALGORITHM", required = true)]
@@ -99,7 +98,7 @@ fn main() -> anyhow::Result<()> {
             indexstructure,
         } => {
             println!("Running benchmarks:");
-            println!("  Benchmark name: {}", name);
+            println!("  Benchmark name: {}", name.name());
             println!("  Index structure: {}", indexstructure);
             println!("  Algorithm: {}", algorithm);
             println!("  Dataset directory: {:?}", dataset_dir);

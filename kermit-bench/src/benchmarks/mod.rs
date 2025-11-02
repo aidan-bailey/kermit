@@ -1,8 +1,11 @@
+use std::str::FromStr;
+
 use crate::benchmark::BenchmarkConfig;
+use clap::ValueEnum;
 
 pub mod oxford;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Benchmark {
     Oxford,
 }
@@ -31,4 +34,12 @@ impl Benchmark {
         }
     }
 
+}
+
+impl FromStr for Benchmark {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_name(s).map_err(|e| e.to_string())
+    }
 }
