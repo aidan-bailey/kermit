@@ -4,11 +4,13 @@ pub mod downloader;
 pub mod manager;
 mod utils;
 
+
+
 #[cfg(test)]
 mod tests {
     use {
         crate::{
-            benchmark::Benchmark, benchmarks::oxford::OxfordBenchmark, manager::BenchmarkManager,
+            benchmark::BenchmarkConfig, benchmarks::oxford::OxfordBenchmark, manager::BenchmarkManager,
         },
         std::path::PathBuf,
     };
