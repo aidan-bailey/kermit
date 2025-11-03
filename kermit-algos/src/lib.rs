@@ -19,7 +19,7 @@ impl FromStr for JoinAlgorithm {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             | "leapfrog_triejoin" => Ok(Self::LeapfrogTriejoin),
-            | _ => Err(format!("Invalid join algorithm: {}", s).into()),
+            | _ => Err(format!("Invalid join algorithm: {}", s)),
         }
     }
 }

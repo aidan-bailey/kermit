@@ -172,10 +172,10 @@ where
     fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, Error> {
         let path = filepath.as_ref();
         let file = File::open(path)
-            .map_err(|e| Error::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| Error::from(std::io::Error::other(e)))?;
         
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| Error::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| Error::from(std::io::Error::other(e)))?;
         
         // Extract schema to get column names
         let schema = builder.schema();
@@ -196,16 +196,16 @@ where
         let header = RelationHeader::new(relation_name, attrs);
         
         // Build the reader
-        let mut reader = builder.build()
-            .map_err(|e| Error::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        let reader = builder.build()
+            .map_err(|e| Error::from(std::io::Error::other(e)))?;
         
         // Collect all tuples first for efficient construction
         let mut tuples = Vec::new();
         
         // Read all record batches and collect tuples
-        while let Some(batch_result) = reader.next() {
+        for batch_result in reader {
             let batch = batch_result
-                .map_err(|e| Error::from(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                .map_err(|e| Error::from(std::io::Error::other(e)))?;
             
             let num_rows = batch.num_rows();
             let num_cols = batch.num_columns();

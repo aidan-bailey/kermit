@@ -24,7 +24,7 @@ impl BenchmarkManager {
             return Err(format!("Benchmark '{}' already exists in manager", name).into());
         }
 
-        let config = benchmark.clone().config();
+        let config = benchmark.config();
         let dl_spec = &config.metadata().download_spec;
         let source = Downloader::download(dl_spec)?;
         config.load(&source, self.dir.as_path())?;
