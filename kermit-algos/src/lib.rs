@@ -3,10 +3,10 @@ mod leapfrog_join;
 mod leapfrog_triejoin;
 mod queries;
 
+use {clap::ValueEnum, std::str::FromStr};
 pub use {
     join_algo::JoinAlgo, leapfrog_triejoin::LeapfrogTriejoin, queries::join_query::JoinQuery,
 };
-use {clap::ValueEnum, std::str::FromStr};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum JoinAlgorithm {

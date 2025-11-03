@@ -129,7 +129,7 @@ where
     fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, Error> {
         let path = filepath.as_ref();
         let file = File::open(path)?;
-        
+
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(true)
             .delimiter(b',')
@@ -138,23 +138,20 @@ where
             .flexible(false)
             .comment(Some(b'#'))
             .from_reader(file);
-        
+
         // Extract column names from CSV header
-        let attrs: Vec<String> = rdr.headers()?
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        
+        let attrs: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
+
         // Extract relation name from filename (without extension)
         let relation_name = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-        
+
         // Create header from the CSV header with the extracted name
         let header = RelationHeader::new(relation_name, attrs);
-        
+
         let mut tuples = Vec::new();
         for result in rdr.records() {
             let record = result?;
@@ -168,15 +165,14 @@ where
         }
         Ok(R::from_tuples(header, tuples))
     }
-    
+
     fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, Error> {
         let path = filepath.as_ref();
-        let file = File::open(path)
-            .map_err(|e| Error::from(std::io::Error::other(e)))?;
-        
+        let file = File::open(path).map_err(|e| Error::from(std::io::Error::other(e)))?;
+
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)
             .map_err(|e| Error::from(std::io::Error::other(e)))?;
-        
+
         // Extract schema to get column names
         let schema = builder.schema();
         let attrs: Vec<String> = schema
@@ -184,36 +180,36 @@ where
             .iter()
             .map(|field| field.name().clone())
             .collect();
-        
+
         // Extract relation name from filename (without extension)
         let relation_name = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-        
+
         // Create header from the parquet schema with the extracted name
         let header = RelationHeader::new(relation_name, attrs);
-        
+
         // Build the reader
-        let reader = builder.build()
+        let reader = builder
+            .build()
             .map_err(|e| Error::from(std::io::Error::other(e)))?;
-        
+
         // Collect all tuples first for efficient construction
         let mut tuples = Vec::new();
-        
+
         // Read all record batches and collect tuples
         for batch_result in reader {
-            let batch = batch_result
-                .map_err(|e| Error::from(std::io::Error::other(e)))?;
-            
+            let batch = batch_result.map_err(|e| Error::from(std::io::Error::other(e)))?;
+
             let num_rows = batch.num_rows();
             let num_cols = batch.num_columns();
-            
+
             // Convert columnar data to row format (tuples)
             for row_idx in 0..num_rows {
                 let mut tuple: Vec<usize> = Vec::with_capacity(num_cols);
-                
+
                 for col_idx in 0..num_cols {
                     let column = batch.column(col_idx);
                     let int_array = column.as_primitive::<arrow::datatypes::Int64Type>();
@@ -227,11 +223,11 @@ where
                         )));
                     }
                 }
-                
+
                 tuples.push(tuple);
             }
         }
-        
+
         // Use from_tuples for efficient construction (sorts before insertion)
         Ok(R::from_tuples(header, tuples))
     }

@@ -35,7 +35,13 @@ enum Commands {
         algorithm: JoinAlgorithm,
 
         /// Data structure
-        #[arg(short, long, value_name = "INDEXSTRUCTURE", required = true, value_enum)]
+        #[arg(
+            short,
+            long,
+            value_name = "INDEXSTRUCTURE",
+            required = true,
+            value_enum
+        )]
         indexstructure: IndexStructure,
 
         /// Output file (optional, defaults to stdout)
@@ -54,7 +60,13 @@ enum Commands {
         algorithm: JoinAlgorithm,
 
         /// Index structure
-        #[arg(short, long, value_name = "INDEXSTRUCTURE", required = true, value_enum)]
+        #[arg(
+            short,
+            long,
+            value_name = "INDEXSTRUCTURE",
+            required = true,
+            value_enum
+        )]
         indexstructure: IndexStructure,
 
         /// Dataset directory (generated)

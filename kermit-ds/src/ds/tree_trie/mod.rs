@@ -56,7 +56,8 @@ mod tests {
 
     #[test]
     fn linear_iterator() {
-        let trie = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4], vec![5]]);
+        let trie =
+            TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4], vec![5]]);
         let mut iter = trie.trie_iter();
         assert!(iter.key().is_none());
         assert!(iter.open());
@@ -86,18 +87,15 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = TreeTrie::from_tuples(
-            3.into(),
-            vec![
-                vec![1, 3, 4],
-                vec![1, 3, 5],
-                vec![1, 4, 6],
-                vec![1, 4, 8],
-                vec![1, 4, 9],
-                vec![1, 5, 2],
-                vec![3, 5, 2],
-            ],
-        );
+        let trie = TreeTrie::from_tuples(3.into(), vec![
+            vec![1, 3, 4],
+            vec![1, 3, 5],
+            vec![1, 4, 6],
+            vec![1, 4, 8],
+            vec![1, 4, 9],
+            vec![1, 5, 2],
+            vec![3, 5, 2],
+        ]);
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
@@ -137,10 +135,9 @@ mod tests {
 
     #[test]
     fn test_tree_trie_iter() {
-        let trie =
-            TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
-                3, 5,
-            ]]);
+        let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
+            3, 5,
+        ]]);
         let iter = trie.trie_iter();
         for v in iter {
             assert!(
@@ -153,9 +150,7 @@ mod tests {
     #[test]
     fn test_project() {
         let trie =
-            TreeTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![
-                7, 8, 9,
-            ]]);
+            TreeTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]]);
 
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);

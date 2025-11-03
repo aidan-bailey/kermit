@@ -85,7 +85,10 @@ impl LinearIterator for VecLinearIter<'_> {
 /// implementations.
 impl LinearIterable for Vec<usize> {
     fn linear_iter(&self) -> impl LinearIterator {
-        VecLinearIter { data: self, index: 0 }
+        VecLinearIter {
+            data: self,
+            index: 0,
+        }
     }
 }
 
