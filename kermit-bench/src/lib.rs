@@ -29,6 +29,6 @@ mod tests {
         // Test validation - should succeed when dataset is properly loaded
         assert!(Benchmark::Oxford.config().validate(&tmp_dir).is_ok());
 
-        // assert!(man.rm_dataset(OxfordBenchmark).is_ok());
+        assert!(man.rm_benchmark(Benchmark::Oxford).is_ok());
     }
 }
