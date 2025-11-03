@@ -49,14 +49,14 @@ where
 
     pub fn join(
         &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-    ) -> R {
+    ) {
         let iterables = relations
             .iter()
             .map(|name| self.relations.get(name).unwrap())
             .collect::<Vec<&R>>();
         let arity = variables.len();
         let tuples = JA::join_iter(variables, rel_variables, iterables).collect();
-        R::from_tuples(arity.into(), tuples)
+        R::from_tuples(arity.into(), tuples);
     }
 
     /// Loads a relation from a file (CSV or Parquet) and adds it to the
