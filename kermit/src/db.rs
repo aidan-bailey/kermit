@@ -5,26 +5,29 @@ use {
     std::{collections::HashMap, hash::Hash, path::Path},
 };
 
-pub struct Database<VT, KVST, R>
+pub struct Database<VT, KVST, R, JA>
 where
     KVST: KeyValStore<R::KT, VT>,
     R::KT: Hash,
     VT: Hash,
     R: Relation,
+    JA: JoinAlgo<R>,
 {
     name: String,
     relations: HashMap<String, R>,
     store: KVST,
     phantom_vt: std::marker::PhantomData<VT>,
     phantom_rb: std::marker::PhantomData<R>,
+    phantom_ja: std::marker::PhantomData<JA>,
 }
 
-impl<VT, KVST, R> Database<VT, KVST, R>
+impl<VT, KVST, R, JA> Database<VT, KVST, R, JA>
 where
     KVST: KeyValStore<R::KT, VT>,
     R::KT: Hash,
     VT: Hash,
     R: Relation,
+    JA: JoinAlgo<R>,
 {
     pub fn new(name: String, store: KVST) -> Self {
         Database {
@@ -33,6 +36,7 @@ where
             store,
             phantom_vt: std::marker::PhantomData,
             phantom_rb: std::marker::PhantomData,
+            phantom_ja: std::marker::PhantomData,
         }
     }
 
@@ -59,12 +63,9 @@ where
             .insert_all(keys);
     }
 
-    pub fn join<JA>(
+    pub fn join(
         &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-    ) -> R
-    where
-        JA: JoinAlgo<R>,
-    {
+    ) -> R {
         let iterables = relations
             .iter()
             .map(|name| self.relations.get(name).unwrap())
@@ -118,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_relation() {
-        let mut db: Database<AnyValType, NaiveStore<_, _>, TreeTrie<u64>> =
+        let mut db: Database<AnyValType, NaiveStore<_, _>, TreeTrie<u64>, LeapfrogTriejoin> =
             Database::new("test".to_string(), NaiveStore::<_, _>::default());
         let relation_name = "apple".to_string();
         db.add_relation(&relation_name, 3);
@@ -132,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let mut db: Database<AnyValType, NaiveStore<_, _>, TreeTrie<u64>> =
+        let mut db: Database<AnyValType, NaiveStore<_, _>, TreeTrie<u64>, LeapfrogTriejoin> =
             Database::new("test".to_string(), NaiveStore::<_, _>::default());
 
         db.add_relation("first", 1);
@@ -141,7 +142,7 @@ mod tests {
         db.add_relation("second", 1);
         db.add_keys_batch("second", vec![vec![1_u64], vec![2], vec![3]]);
 
-        let _res = db.join::<LeapfrogTriejoin>(
+        let _res = db.join(
             vec!["first".to_string(), "second".to_string()],
             vec![0],
             vec![vec![0], vec![0]],
