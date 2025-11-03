@@ -1,7 +1,4 @@
-use std::str::FromStr;
-
-use crate::benchmark::BenchmarkConfig;
-use clap::ValueEnum;
+use {crate::benchmark::BenchmarkConfig, clap::ValueEnum, std::str::FromStr};
 
 pub mod oxford;
 
@@ -11,7 +8,6 @@ pub enum Benchmark {
 }
 
 impl Benchmark {
-
     pub fn from_name(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         if name == Benchmark::Oxford.name() {
             Ok(Self::Oxford)
@@ -20,20 +16,15 @@ impl Benchmark {
         }
     }
 
-    pub fn names() -> Vec<String> {
-        vec![Self::Oxford.name()]
-    }
+    pub fn names() -> Vec<String> { vec![Self::Oxford.name()] }
 
-    pub fn name(self) -> String {
-        self.config().metadata().name.to_string()
-    }
+    pub fn name(self) -> String { self.config().metadata().name.to_string() }
 
     pub fn config(self) -> Box<dyn BenchmarkConfig + 'static> {
         match self {
             | Self::Oxford => Box::new(oxford::OxfordBenchmark),
         }
     }
-
 }
 
 impl FromStr for Benchmark {

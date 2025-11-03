@@ -94,11 +94,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use {
-        super::*,
-        kermit_algos::LeapfrogTriejoin,
-        kermit_ds::TreeTrie,
-    };
+    use {super::*, kermit_algos::LeapfrogTriejoin, kermit_ds::TreeTrie};
 
     #[test]
     fn test_relation() {

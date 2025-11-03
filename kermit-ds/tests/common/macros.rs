@@ -26,20 +26,13 @@ macro_rules! relation_construction_tests {
 
             $crate::relation_construction_test!(empty, $relation_type, []);
 
-            $crate::relation_construction_test!(unary, $relation_type, [
-                vec![1],
-                vec![2],
-                vec![3]
-            ]);
+            $crate::relation_construction_test!(unary, $relation_type, [vec![1], vec![2], vec![3]]);
 
-            $crate::relation_construction_test!(binary, $relation_type, [vec![1, 2], vec![
-                3, 4
+            $crate::relation_construction_test!(binary, $relation_type, [vec![1, 2], vec![3, 4]]);
+
+            $crate::relation_construction_test!(ternary, $relation_type, [vec![1, 2, 3], vec![
+                4, 5, 6
             ]]);
-
-            $crate::relation_construction_test!(ternary, $relation_type, [
-                vec![1, 2, 3],
-                vec![4, 5, 6]
-            ]);
         }
     };
 }
@@ -71,19 +64,14 @@ macro_rules! trie_traversal_tests {
 
             use super::*;
 
-            $crate::trie_test!(
-                empty,
-                $relation_type,
-                [],
-                |iter: &mut dyn TrieIterator| {
-                    assert!(iter.key().is_none());
-                    assert!(!iter.open());
-                    assert!(!iter.up());
-                    assert!(iter.next().is_none());
-                    assert!(iter.key().is_none());
-                    assert!(iter.at_end());
-                }
-            );
+            $crate::trie_test!(empty, $relation_type, [], |iter: &mut dyn TrieIterator| {
+                assert!(iter.key().is_none());
+                assert!(!iter.open());
+                assert!(!iter.up());
+                assert!(iter.next().is_none());
+                assert!(iter.key().is_none());
+                assert!(iter.at_end());
+            });
 
             $crate::trie_test!(
                 single,

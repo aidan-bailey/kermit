@@ -11,8 +11,7 @@ use {
 
 mod common;
 
-fn bench_relation_insert<R: Relation>(group: &mut BenchmarkGroup<WallTime>)
-{
+fn bench_relation_insert<R: Relation>(group: &mut BenchmarkGroup<WallTime>) {
     for k in [1, 2, 3, 4, 5] {
         let tuples = generate_exponential_tuples(num_traits::cast(k).unwrap());
         let n = tuples.len();

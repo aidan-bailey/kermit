@@ -156,7 +156,10 @@ impl Relation for ColumnTrie {
     fn new(header: RelationHeader) -> Self {
         ColumnTrie {
             layers: (0..header.arity())
-                .map(|_| ColumnTrieLayer { data: vec![], interval: vec![] })
+                .map(|_| ColumnTrieLayer {
+                    data: vec![],
+                    interval: vec![],
+                })
                 .collect::<Vec<_>>(),
             header,
         }

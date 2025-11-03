@@ -52,9 +52,7 @@ where
         self.leapfrog.at_end()
     }
 
-    fn leapfrog_seek(&mut self, seek_key: usize) -> bool {
-        self.leapfrog.leapfrog_seek(seek_key)
-    }
+    fn leapfrog_seek(&mut self, seek_key: usize) -> bool { self.leapfrog.leapfrog_seek(seek_key) }
 }
 
 impl<IT> LeapfrogTriejoinIter<IT>
@@ -231,7 +229,9 @@ mod tests {
     #[test]
     fn more_complicated() {
         let r = TreeTrie::from_tuples(2.into(), vec![vec![7, 4]]);
-        let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![
+            4, 9,
+        ]]);
         let t = TreeTrie::from_tuples(2.into(), vec![vec![7, 2], vec![7, 3], vec![7, 5]]);
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();

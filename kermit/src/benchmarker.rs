@@ -30,7 +30,9 @@ where
         }
     }
 
-    pub fn add_benchmark(&mut self, benchmark: Benchmark) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn add_benchmark(
+        &mut self, benchmark: Benchmark,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.manager.add_benchmark(benchmark)
     }
 

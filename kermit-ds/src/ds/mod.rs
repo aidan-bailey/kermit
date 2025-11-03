@@ -1,8 +1,8 @@
 mod column_trie;
 mod tree_trie;
 
-pub use {column_trie::ColumnTrie, tree_trie::TreeTrie};
 use {clap::ValueEnum, std::str::FromStr};
+pub use {column_trie::ColumnTrie, tree_trie::TreeTrie};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum IndexStructure {

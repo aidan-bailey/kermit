@@ -120,5 +120,7 @@ impl TrieIterator for TreeTrieIter<'_> {
 }
 
 impl TrieIterable for TreeTrie {
-    fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>> { TreeTrieIter::new(self) }
+    fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>> {
+        TreeTrieIter::new(self)
+    }
 }

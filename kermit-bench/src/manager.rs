@@ -1,4 +1,7 @@
-use {super::{benchmarks::Benchmark, downloader::Downloader}, std::path::PathBuf};
+use {
+    super::{benchmarks::Benchmark, downloader::Downloader},
+    std::path::PathBuf,
+};
 
 pub struct BenchmarkManager {
     dir: PathBuf,
@@ -17,8 +20,9 @@ impl BenchmarkManager {
         }
     }
 
-    pub fn add_benchmark(&mut self, benchmark: Benchmark) -> Result<(), Box<dyn std::error::Error>> {
-
+    pub fn add_benchmark(
+        &mut self, benchmark: Benchmark,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if self.datasets.iter().any(|d| d == &benchmark) {
             let name = benchmark.config().metadata().name;
             return Err(format!("Benchmark '{}' already exists in manager", name).into());

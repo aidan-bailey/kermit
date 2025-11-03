@@ -11,9 +11,7 @@ use {
 
 /// Helper function to write test data to a parquet file
 fn write_test_parquet(
-    path: &PathBuf,
-    attributes: &[String],
-    data: &[Vec<usize>],
+    path: &PathBuf, attributes: &[String], data: &[Vec<usize>],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let fields: Vec<Field> = attributes
         .iter()
@@ -156,13 +154,14 @@ mod from_parquet_tests {
         let parquet_path = temp_dir.join("test_from_oxford.parquet");
 
         // Simulate Oxford dataset format
-        let attributes = vec!["attr1".to_string(), "attr2".to_string(), "attr3".to_string()];
-        let data = vec![
-            vec![10, 20, 30],
-            vec![15, 25, 35],
-            vec![20, 30, 40],
-            vec![25, 35, 45],
+        let attributes = vec![
+            "attr1".to_string(),
+            "attr2".to_string(),
+            "attr3".to_string(),
         ];
+        let data = vec![vec![10, 20, 30], vec![15, 25, 35], vec![20, 30, 40], vec![
+            25, 35, 45,
+        ]];
 
         write_test_parquet(&parquet_path, &attributes, &data).unwrap();
 
@@ -241,5 +240,3 @@ mod from_parquet_tests {
         std::fs::remove_file(parquet_path).ok();
     }
 }
-
-
