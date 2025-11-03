@@ -192,7 +192,8 @@ where
     fn join_iter(
         query: JoinQuery, datastructures: HashMap<String, &DS>,
     ) -> impl Iterator<Item = Vec<usize>> {
-        // Map variable names to unique indices, ordered by first appearance in head then body
+        // Map variable names to unique indices, ordered by first appearance in head
+        // then body
         let mut var_to_index: HashMap<String, usize> = HashMap::new();
         let mut next_index: usize = 0;
 
@@ -227,7 +228,8 @@ where
         // Variables vector is 0..num_vars in the discovered order
         let variables: Vec<usize> = (0..var_to_index.len()).collect();
 
-        // Build rel_variables following each predicate's order; ignore placeholders and atoms
+        // Build rel_variables following each predicate's order; ignore placeholders and
+        // atoms
         let mut rel_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
         for pred in &query.body {
             let mut rel_vars_for_pred: Vec<usize> = Vec::new();
@@ -241,7 +243,8 @@ where
             rel_variables.push(rel_vars_for_pred);
         }
 
-        // Build trie iterators in the same order as query body using provided datastructures
+        // Build trie iterators in the same order as query body using provided
+        // datastructures
         let trie_iters: Vec<_> = query
             .body
             .iter()

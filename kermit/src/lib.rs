@@ -10,8 +10,11 @@ pub mod db;
 
 pub mod benchmarker;
 
-use {kermit_algos::{JoinAlgo, JoinQuery}, kermit_ds::Relation};
-use std::collections::HashMap;
+use {
+    kermit_algos::{JoinAlgo, JoinQuery},
+    kermit_ds::Relation,
+    std::collections::HashMap,
+};
 
 pub fn compute_join<R, JA>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
@@ -40,15 +43,14 @@ where
         let var_list = if rv.is_empty() {
             "_".to_string()
         } else {
-            rv.iter().map(|v| format!("V{}", v)).collect::<Vec<_>>().join(", ")
+            rv.iter()
+                .map(|v| format!("V{}", v))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         body_preds.push(format!("R{}({})", i, var_list));
     }
-    let query_str = format!(
-        "Q({}) :- {}.",
-        head_vars.join(", "),
-        body_preds.join(", ")
-    );
+    let query_str = format!("Q({}) :- {}.", head_vars.join(", "), body_preds.join(", "));
     let query: JoinQuery = query_str.parse().expect("Failed to build JoinQuery");
 
     // Map datastructures by the synthetic names
