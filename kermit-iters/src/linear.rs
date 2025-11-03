@@ -1,7 +1,7 @@
 //! This module defines the `LinearIterator` trait along with its implementation
 //! for vectors.
 
-use crate::{joinable::Joinable, key_type::KeyType};
+use crate::joinable::Joinable;
 
 /// The `LinearIterator` trait, designed for iterators that traverse a linear
 /// structure.
@@ -10,24 +10,21 @@ use crate::{joinable::Joinable, key_type::KeyType};
 /// The linear iterator should be initialised one item before the first item,
 /// i.e., `next` returns the first item on the first call.
 pub trait LinearIterator {
-    /// The key type for the iterator.
-    type KT: Copy + Ord;
-
-    /// Returns a reference to the key at the iterator's current position,
+    /// Returns the key at the iterator's current position,
     /// otherwise `None` if `next` has not yet been called, or the iterator
     /// is positioned at the end.
-    fn key(&self) -> Option<Self::KT>;
+    fn key(&self) -> Option<usize>;
 
     /// Moves the iterator forward and returns
-    /// a reference to the key at the new position.
-    fn next(&mut self) -> Option<Self::KT>;
+    /// the key at the new position.
+    fn next(&mut self) -> Option<usize>;
 
     /// Positions the iterator at a least
     /// upper bound for the `seek_key`,
     /// i.e., the smallest key ≥ `seek_key`, or
     /// moves it to the end if no such key exists.
     /// Returns `true` iff the key exists.
-    fn seek(&mut self, seek_key: Self::KT) -> bool;
+    fn seek(&mut self, seek_key: usize) -> bool;
 
     /// Returns `true` iff the iterator is positioned
     /// at the end, i.e., one after the last key.
@@ -39,26 +36,22 @@ pub trait LinearIterator {
 /// require such an iterator.
 pub trait LinearIterable: Joinable {
     /// Returns a linear iterator for the type.
-    fn linear_iter(&self) -> impl LinearIterator<KT = Self::KT>;
+    fn linear_iter(&self) -> impl LinearIterator;
 }
 
-/// `Joinable` implementation for `Vec<KT>` informing the type system that
+/// `Joinable` implementation for `Vec<usize>` informing the type system that
 /// it may be used in some kind of join operation.
-impl<KT: KeyType> Joinable for Vec<KT> {
-    type KT = KT;
-}
+impl Joinable for Vec<usize> {}
 
 /// A linear iterator for vectors.
-struct VecLinearIter<'a, KT: KeyType> {
-    data: &'a [KT],
+struct VecLinearIter<'a> {
+    data: &'a [usize],
     index: usize,
 }
 
 /// Implementation of the `LinearIterator` trait for `VecLinearIter`.
-impl<KT: KeyType> LinearIterator for VecLinearIter<'_, KT> {
-    type KT = KT;
-
-    fn key(&self) -> Option<Self::KT> {
+impl LinearIterator for VecLinearIter<'_> {
+    fn key(&self) -> Option<usize> {
         if self.index != 0 && !self.at_end() {
             Some(self.data[self.index - 1])
         } else {
@@ -66,7 +59,7 @@ impl<KT: KeyType> LinearIterator for VecLinearIter<'_, KT> {
         }
     }
 
-    fn next(&mut self) -> Option<Self::KT> {
+    fn next(&mut self) -> Option<usize> {
         self.index += 1;
         if self.at_end() {
             return None;
@@ -74,7 +67,7 @@ impl<KT: KeyType> LinearIterator for VecLinearIter<'_, KT> {
         self.key()
     }
 
-    fn seek(&mut self, seek_key: Self::KT) -> bool {
+    fn seek(&mut self, seek_key: usize) -> bool {
         while let Some(key) = self.key() {
             if key >= seek_key {
                 return true;
@@ -90,15 +83,9 @@ impl<KT: KeyType> LinearIterator for VecLinearIter<'_, KT> {
 /// Implementation of the `LinearIterable` trait for `Vec<KT>` informing the
 /// type system that `Vec<KT>` can be used for joins requiring `LinearIterator`
 /// implementations.
-impl<KT> LinearIterable for Vec<KT>
-where
-    KT: KeyType,
-{
-    fn linear_iter(&self) -> impl LinearIterator<KT = KT> {
-        VecLinearIter {
-            data: self,
-            index: 0,
-        }
+impl LinearIterable for Vec<usize> {
+    fn linear_iter(&self) -> impl LinearIterator {
+        VecLinearIter { data: self, index: 0 }
     }
 }
 

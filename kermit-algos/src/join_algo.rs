@@ -12,5 +12,5 @@ where
     /// Returns an iterator over the resulting join.
     fn join_iter(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
-    ) -> impl Iterator<Item = Vec<ITB::KT>>;
+    ) -> impl Iterator<Item = Vec<usize>>;
 }

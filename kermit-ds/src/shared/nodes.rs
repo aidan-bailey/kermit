@@ -1,16 +1,12 @@
 //! This module defines any kinds of nodes that could be shared amongst data
 //! structures.
-use kermit_iters::KeyType;
 
 /// The `Node` trait defines a node with an associated value.
 #[allow(dead_code)]
 pub trait Node {
-    /// The type of key stored.
-    type KT: KeyType;
-
     /// Creates a new node with the given key.
-    fn new(key: Self::KT) -> Self;
+    fn new(key: usize) -> Self;
 
     /// Returns a reference to the key.
-    fn key(&self) -> Self::KT;
+    fn key(&self) -> usize;
 }

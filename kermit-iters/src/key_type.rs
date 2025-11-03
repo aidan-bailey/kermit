@@ -1,9 +1,5 @@
-//! This module defines the `KeyType` trait, which specifies the requirements
-//! for a key type used in relations. NOTE: Yes, the number of traits is large
-//! and probably not necessary.
+//! This module previously defined the `KeyType` trait. The key type is now
+//! fixed to `usize` across the library.
 
-use std::fmt::{Debug, Display};
-
-/// Trait for key types used in relations.
-pub trait KeyType: Debug + Ord + Copy + Display {}
-impl<KT> KeyType for KT where KT: Debug + Ord + Copy + Display {}
+/// Canonical key type used throughout the library.
+pub type Key = usize;

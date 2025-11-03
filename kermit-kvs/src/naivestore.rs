@@ -15,38 +15,41 @@ where
     VT: Hash + Clone,
     HB: BuildHasher,
 {
-    map: HashMap<u64, VT, BuildNoHashHasher<u64>>,
+    map: HashMap<usize, VT, BuildNoHashHasher<usize>>,
     hash_builder: HB,
 }
 
-impl<VT, HB> KeyValStore<u64, VT> for NaiveStore<VT, HB>
+impl<VT, HB> KeyValStore<VT> for NaiveStore<VT, HB>
 where
     VT: Hash + Clone,
     HB: BuildHasher,
 {
-    fn add(&mut self, val: VT) -> u64 {
-        let hash = self.hash_builder.hash_one(&val);
+    fn add(&mut self, val: VT) -> usize {
+        let hash: usize = self.hash_builder.hash_one(&val) as usize;
         self.map.insert(hash, val);
         hash
     }
 
-    fn add_all(&mut self, val: Vec<VT>) -> Vec<u64> {
+    fn add_all(&mut self, val: Vec<VT>) -> Vec<usize> {
         val.into_iter().map(|v| self.add(v)).collect()
     }
 
-    fn get(&self, key: &u64) -> Option<&VT> { self.map.get(key) }
+    fn get(&self, key: &usize) -> Option<&VT> { self.map.get(key) }
 
-    fn get_all(&self, key: Vec<&u64>) -> Vec<Option<&VT>> {
+    fn get_all(&self, key: Vec<&usize>) -> Vec<Option<&VT>> {
         key.into_iter().map(|k| self.get(k)).collect()
     }
 
-    fn keys(&self) -> Vec<u64> { self.map.keys().cloned().collect() }
+    fn keys(&self) -> Vec<usize> { self.map.keys().cloned().collect() }
 
     fn size(&self) -> usize { self.map.len() }
 
-    fn contains_key(&self, key: &u64) -> bool { self.map.contains_key(key) }
+    fn contains_key(&self, key: &usize) -> bool { self.map.contains_key(key) }
 
-    fn contains_val(&self, val: &VT) -> bool { self.contains_key(&self.hash_builder.hash_one(val)) }
+    fn contains_val(&self, val: &VT) -> bool {
+        let key = self.hash_builder.hash_one(val) as usize;
+        self.contains_key(&key)
+    }
 }
 
 impl<VT, HB> NaiveStore<VT, HB>
@@ -56,7 +59,7 @@ where
 {
     pub fn with_hasher(hasher_builder: HB) -> Self {
         Self {
-            map: HashMap::with_hasher(BuildNoHashHasher::<u64>::default()),
+            map: HashMap::with_hasher(BuildNoHashHasher::<usize>::default()),
             hash_builder: hasher_builder,
         }
     }
@@ -96,7 +99,7 @@ where
 {
     fn default() -> Self {
         Self {
-            map: HashMap::with_hasher(BuildNoHashHasher::<u64>::default()),
+            map: HashMap::with_hasher(BuildNoHashHasher::<usize>::default()),
             hash_builder: BuildHasherDefault::<DefaultHasher>::default(),
         }
     }

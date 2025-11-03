@@ -2,10 +2,6 @@ pub mod algos {
     pub use kermit_algos::LeapfrogTriejoin;
 }
 
-pub mod kvs {
-    pub use kermit_kvs::{anyvaltype::AnyValType, naivestore::NaiveStore};
-}
-
 pub mod ds {
     pub use kermit_ds::{RelationFileExt, TreeTrie};
 }
@@ -17,8 +13,8 @@ pub mod benchmarker;
 use {kermit_algos::JoinAlgo, kermit_ds::Relation};
 
 pub fn compute_join<R, JA>(
-    input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-) -> Vec<Vec<R::KT>>
+    input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
+) -> Vec<Vec<usize>>
 where
     R: Relation,
     JA: JoinAlgo<R>,

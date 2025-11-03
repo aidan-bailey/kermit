@@ -11,11 +11,8 @@ pub fn derive_into_trie_iter(input: TokenStream) -> TokenStream {
 
     let output = quote! {
 
-        impl<'a, KT> IntoIterator for #ident<'a, KT>
-        where
-            KT: KeyType
-        {
-            type Item = Vec<KT>;
+        impl<'a> IntoIterator for #ident<'a> {
+            type Item = Vec<usize>;
             type IntoIter = TrieIteratorWrapper<Self>;
 
             fn into_iter(self) -> Self::IntoIter {

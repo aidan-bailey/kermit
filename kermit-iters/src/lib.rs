@@ -5,7 +5,7 @@ mod trie;
 
 pub use {
     joinable::Joinable,
-    key_type::KeyType,
+    key_type::Key as Key,
     linear::{LinearIterable, LinearIterator},
     trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
 };

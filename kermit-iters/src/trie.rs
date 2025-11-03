@@ -29,7 +29,7 @@ pub trait TrieIterator: LinearIterator {
 /// through the `TrieIterable` interface, and as such used in algorithms that
 /// require such an iterator.
 pub trait TrieIterable: Joinable {
-    fn trie_iter(&self) -> impl TrieIterator<KT = Self::KT> + IntoIterator<Item = Vec<Self::KT>>;
+    fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>>;
 }
 
 pub struct TrieIteratorWrapper<IT>
@@ -37,7 +37,7 @@ where
     IT: TrieIterator,
 {
     iter: IT,
-    stack: Vec<IT::KT>,
+    stack: Vec<usize>,
 }
 
 impl<IT> TrieIteratorWrapper<IT>
@@ -80,7 +80,7 @@ where
         }
     }
 
-    fn next(&mut self) -> Option<Vec<IT::KT>> {
+    fn next(&mut self) -> Option<Vec<usize>> {
         if !self.stack.is_empty() {
             while !self.next_wrapper() {
                 if !self.up() {
@@ -103,7 +103,7 @@ impl<IT> Iterator for TrieIteratorWrapper<IT>
 where
     IT: TrieIterator,
 {
-    type Item = Vec<IT::KT>;
+    type Item = Vec<usize>;
 
     fn next(&mut self) -> Option<Self::Item> { self.next() }
 }

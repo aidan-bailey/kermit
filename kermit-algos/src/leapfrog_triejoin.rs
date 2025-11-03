@@ -31,11 +31,9 @@ impl<IT> LeapfrogJoinIterator for LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    type KT = IT::KT;
+    fn leapfrog_next(&mut self) -> Option<usize> { self.leapfrog.leapfrog_next() }
 
-    fn leapfrog_next(&mut self) -> Option<Self::KT> { self.leapfrog.leapfrog_next() }
-
-    fn key(&self) -> Option<Self::KT> {
+    fn key(&self) -> Option<usize> {
         if self.depth == 0 {
             None
         } else {
@@ -54,7 +52,7 @@ where
         self.leapfrog.at_end()
     }
 
-    fn leapfrog_seek(&mut self, seek_key: Self::KT) -> bool {
+    fn leapfrog_seek(&mut self, seek_key: usize) -> bool {
         self.leapfrog.leapfrog_seek(seek_key)
     }
 }
@@ -166,13 +164,11 @@ impl<IT> LinearIterator for LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    type KT = IT::KT;
+    fn key(&self) -> Option<usize> { LeapfrogJoinIterator::key(self) }
 
-    fn key(&self) -> Option<Self::KT> { LeapfrogJoinIterator::key(self) }
+    fn next(&mut self) -> Option<usize> { self.leapfrog_next() }
 
-    fn next(&mut self) -> Option<Self::KT> { self.leapfrog_next() }
-
-    fn seek(&mut self, seek_key: Self::KT) -> bool { self.leapfrog_seek(seek_key) }
+    fn seek(&mut self, seek_key: usize) -> bool { self.leapfrog_seek(seek_key) }
 
     fn at_end(&self) -> bool { LeapfrogJoinIterator::at_end(self) }
 }
@@ -182,7 +178,7 @@ where
     IT: TrieIterator,
 {
     type IntoIter = TrieIteratorWrapper<Self>;
-    type Item = Vec<IT::KT>;
+    type Item = Vec<usize>;
 
     fn into_iter(self) -> Self::IntoIter { TrieIteratorWrapper::new(self) }
 }
@@ -195,7 +191,7 @@ where
 {
     fn join_iter(
         variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
-    ) -> impl Iterator<Item = Vec<ITB::KT>> {
+    ) -> impl Iterator<Item = Vec<usize>> {
         let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
         LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters).into_iter()
     }
@@ -214,8 +210,8 @@ mod tests {
 
     #[test]
     fn test_classic() {
-        let t1 = TreeTrie::<i32>::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
-        let t2 = TreeTrie::<i32>::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let t1 = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let t2 = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
         let t1_iter = t1.trie_iter();
         let t2_iter = t2.trie_iter();
         let mut triejoin_iter =
@@ -229,14 +225,14 @@ mod tests {
         triejoin_iter.triejoin_up();
         assert!(triejoin_iter.at_end());
         let res = triejoin_iter.into_iter().collect::<Vec<_>>();
-        assert_eq!(res, vec![vec![1_i32], vec![2_i32], vec![3_i32]]);
+        assert_eq!(res, vec![vec![1], vec![2], vec![3]]);
     }
 
     #[test]
     fn more_complicated() {
-        let r = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![7, 4]]);
-        let s = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]]);
-        let t = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![7, 2], vec![7, 3], vec![7, 5]]);
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![7, 4]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]]);
+        let t = TreeTrie::from_tuples(2.into(), vec![vec![7, 2], vec![7, 3], vec![7, 5]]);
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
         let t_iter = t.trie_iter();
@@ -259,9 +255,9 @@ mod tests {
 
     #[test]
     fn chain() {
-        let r = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3]]);
-        let s = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
-        let t = TreeTrie::<i32>::from_tuples(2.into(), vec![vec![4, 6], vec![5, 7]]);
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
+        let t = TreeTrie::from_tuples(2.into(), vec![vec![4, 6], vec![5, 7]]);
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
         let t_iter = t.trie_iter();

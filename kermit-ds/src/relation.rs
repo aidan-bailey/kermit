@@ -4,7 +4,7 @@ use {
     csv::Error,
     kermit_iters::Joinable,
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    std::{fs::File, path::Path, str::FromStr},
+    std::{fs::File, path::Path},
 };
 
 pub enum ModelType {
@@ -89,15 +89,15 @@ pub trait Relation: Joinable + Projectable {
     fn new(header: RelationHeader) -> Self;
 
     /// Creates a new relation with the specified arity and given tuples.
-    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<Self::KT>>) -> Self;
+    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self;
 
     /// Inserts a tuple into the relation, returning `true` if successful and
     /// `false` if otherwise.
-    fn insert(&mut self, tuple: Vec<Self::KT>) -> bool;
+    fn insert(&mut self, tuple: Vec<usize>) -> bool;
 
     /// Inserts multiple tuples into the relation, returning `true` if
     /// successful and `false` if otherwise.
-    fn insert_all(&mut self, tuples: Vec<Vec<Self::KT>>) -> bool;
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool;
 }
 
 /// Extension trait for `Relation` to add file reading capabilities.
@@ -125,7 +125,6 @@ pub trait RelationFileExt: Relation {
 impl<R> RelationFileExt for R
 where
     R: Relation,
-    R::KT: FromStr + TryFrom<i64>,
 {
     fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, Error> {
         let path = filepath.as_ref();
@@ -159,9 +158,9 @@ where
         let mut tuples = Vec::new();
         for result in rdr.records() {
             let record = result?;
-            let mut tuple: Vec<R::KT> = vec![];
+            let mut tuple: Vec<usize> = vec![];
             for x in record.iter() {
-                if let Ok(y) = x.to_string().parse::<R::KT>() {
+                if let Ok(y) = x.to_string().parse::<usize>() {
                     tuple.push(y);
                 }
             }
@@ -213,13 +212,13 @@ where
             
             // Convert columnar data to row format (tuples)
             for row_idx in 0..num_rows {
-                let mut tuple = Vec::with_capacity(num_cols);
+                let mut tuple: Vec<usize> = Vec::with_capacity(num_cols);
                 
                 for col_idx in 0..num_cols {
                     let column = batch.column(col_idx);
                     let int_array = column.as_primitive::<arrow::datatypes::Int64Type>();
-                    
-                    if let Some(value) = int_array.value(row_idx).try_into().ok() {
+
+                    if let Ok(value) = usize::try_from(int_array.value(row_idx)) {
                         tuple.push(value);
                     } else {
                         return Err(Error::from(std::io::Error::new(

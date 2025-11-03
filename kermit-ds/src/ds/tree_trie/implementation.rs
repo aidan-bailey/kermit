@@ -1,31 +1,31 @@
 use {
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::{Joinable, KeyType, TrieIterable},
+    kermit_iters::{Joinable, TrieIterable},
     std::ops::{Index, IndexMut},
 };
 
 /// A node in the trie data structure.
 #[derive(Clone, Debug)]
-pub struct TrieNode<KT: KeyType> {
-    key: KT,
-    children: Vec<TrieNode<KT>>,
+pub struct TrieNode {
+    key: usize,
+    children: Vec<TrieNode>,
 }
 
-impl<KT: KeyType> TrieNode<KT> {
-    pub(crate) fn new(key: KT) -> Self {
+impl TrieNode {
+    pub(crate) fn new(key: usize) -> Self {
         Self {
             key,
             children: vec![],
         }
     }
 
-    pub(crate) fn key(&self) -> KT { self.key }
+    pub(crate) fn key(&self) -> usize { self.key }
 
-    pub(crate) fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
+    pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
 
-    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
+    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode> { &mut self.children }
 
-    pub(crate) fn insert_internal(&mut self, tuple: Vec<KT>) -> bool {
+    pub(crate) fn insert_internal(&mut self, tuple: Vec<usize>) -> bool {
         if tuple.is_empty() {
             return true;
         }
@@ -56,29 +56,29 @@ impl<KT: KeyType> TrieNode<KT> {
     }
 }
 
-impl<KT: KeyType> Index<usize> for TrieNode<KT> {
-    type Output = TrieNode<KT>;
+impl Index<usize> for TrieNode {
+    type Output = TrieNode;
 
     fn index(&self, index: usize) -> &Self::Output { &self.children[index] }
 }
 
-impl<KT: KeyType> IndexMut<usize> for TrieNode<KT> {
+impl IndexMut<usize> for TrieNode {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children[index] }
 }
 
 /// Trie data structure for relations.
 #[derive(Clone, Debug)]
-pub struct TreeTrie<KT: KeyType> {
+pub struct TreeTrie {
     header: RelationHeader,
-    children: Vec<TrieNode<KT>>,
+    children: Vec<TrieNode>,
 }
 
-impl<KT: KeyType> TreeTrie<KT> {
-    pub(crate) fn children(&self) -> &Vec<TrieNode<KT>> { &self.children }
+impl TreeTrie {
+    pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
 
-    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode<KT>> { &mut self.children }
+    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode> { &mut self.children }
 
-    pub(crate) fn insert_internal(&mut self, tuple: Vec<KT>) -> bool {
+    pub(crate) fn insert_internal(&mut self, tuple: Vec<usize>) -> bool {
         if tuple.is_empty() {
             return true;
         }
@@ -109,7 +109,7 @@ impl<KT: KeyType> TreeTrie<KT> {
     }
 }
 
-impl<KT: KeyType> Relation for TreeTrie<KT> {
+impl Relation for TreeTrie {
     fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
@@ -119,7 +119,7 @@ impl<KT: KeyType> Relation for TreeTrie<KT> {
         }
     }
 
-    fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<KT>>) -> Self {
+    fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<usize>>) -> Self {
         if tuples.is_empty() {
             return Self::new(header);
         }
@@ -148,14 +148,14 @@ impl<KT: KeyType> Relation for TreeTrie<KT> {
         trie
     }
 
-    fn insert(&mut self, tuple: Vec<KT>) -> bool {
+    fn insert(&mut self, tuple: Vec<usize>) -> bool {
         if tuple.len() != self.header().arity() {
             panic!("Arity doesn't match.");
         }
         self.insert_internal(tuple)
     }
 
-    fn insert_all(&mut self, tuples: Vec<Vec<KT>>) -> bool {
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool {
         for tuple in tuples {
             if !self.insert(tuple) {
                 panic!("Failed to insert tuple.");
@@ -165,11 +165,9 @@ impl<KT: KeyType> Relation for TreeTrie<KT> {
     }
 }
 
-impl<KT: KeyType> Joinable for TreeTrie<KT> {
-    type KT = KT;
-}
+impl Joinable for TreeTrie {}
 
-impl<KT: KeyType> crate::relation::Projectable for TreeTrie<KT> {
+impl crate::relation::Projectable for TreeTrie {
     fn project(&self, columns: Vec<usize>) -> Self {
         // Create a new header based on the current header but with projected attributes
         let current_header = self.header();
@@ -187,10 +185,10 @@ impl<KT: KeyType> crate::relation::Projectable for TreeTrie<KT> {
         };
 
         // Collect all tuples from the current relation using the iterator
-        let all_tuples: Vec<Vec<KT>> = self.trie_iter().into_iter().collect();
+        let all_tuples: Vec<Vec<usize>> = self.trie_iter().into_iter().collect();
 
         // Project each tuple to the specified columns
-        let projected_tuples: Vec<Vec<KT>> = all_tuples
+        let projected_tuples: Vec<Vec<usize>> = all_tuples
             .into_iter()
             .map(|tuple| columns.iter().map(|&col_idx| tuple[col_idx]).collect())
             .collect();

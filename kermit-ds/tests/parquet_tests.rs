@@ -58,7 +58,7 @@ mod from_parquet_tests {
         write_test_parquet(&parquet_path, &attributes, &data).unwrap();
 
         // Read using from_parquet
-        let relation = ColumnTrie::<usize>::from_parquet(&parquet_path).unwrap();
+        let relation = ColumnTrie::from_parquet(&parquet_path).unwrap();
 
         let result: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
         assert_eq!(result, data);
@@ -84,7 +84,7 @@ mod from_parquet_tests {
         write_test_parquet(&parquet_path, &attributes, &data).unwrap();
 
         // Read using from_parquet
-        let relation = ColumnTrie::<usize>::from_parquet(&parquet_path).unwrap();
+        let relation = ColumnTrie::from_parquet(&parquet_path).unwrap();
 
         let result: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
         assert_eq!(result, data);
@@ -110,7 +110,7 @@ mod from_parquet_tests {
         write_test_parquet(&parquet_path, &attributes, &data).unwrap();
 
         // Read using from_parquet
-        let relation = ColumnTrie::<usize>::from_parquet(&parquet_path).unwrap();
+        let relation = ColumnTrie::from_parquet(&parquet_path).unwrap();
 
         let result: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
         assert_eq!(result, data);
@@ -136,7 +136,7 @@ mod from_parquet_tests {
         write_test_parquet(&parquet_path, &attributes, &data).unwrap();
 
         // Read using from_parquet
-        let relation = ColumnTrie::<usize>::from_parquet(&parquet_path).unwrap();
+        let relation = ColumnTrie::from_parquet(&parquet_path).unwrap();
 
         let result: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
         assert_eq!(result, data);
@@ -167,7 +167,7 @@ mod from_parquet_tests {
         write_test_parquet(&parquet_path, &attributes, &data).unwrap();
 
         // Read using from_parquet
-        let relation = ColumnTrie::<usize>::from_parquet(&parquet_path).unwrap();
+        let relation = ColumnTrie::from_parquet(&parquet_path).unwrap();
 
         let result: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
         assert_eq!(result.len(), data.len());
@@ -194,7 +194,7 @@ mod from_parquet_tests {
         write_test_parquet(&parquet_path, &attributes, &data).unwrap();
 
         // Read using from_parquet
-        let relation = ColumnTrie::<usize>::from_parquet(&parquet_path).unwrap();
+        let relation = ColumnTrie::from_parquet(&parquet_path).unwrap();
 
         let result: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
         assert_eq!(result, data);
@@ -224,7 +224,7 @@ mod from_parquet_tests {
         write_test_parquet(&parquet_path, &attributes, &data).unwrap();
 
         // Read using from_parquet
-        let relation = ColumnTrie::<usize>::from_parquet(&parquet_path).unwrap();
+        let relation = ColumnTrie::from_parquet(&parquet_path).unwrap();
 
         // Verify the relation name and column names were extracted correctly
         assert_eq!(relation.header().name(), "test_from_column_names");

@@ -2,7 +2,6 @@
 macro_rules! define_multiway_join_test {
     (
         $test_name:ident,
-        $key_type:ty,
         $relation_type:ident,
         $join_algorithm:ty,
         [ $( $input:expr ),+ $(,)? ],
@@ -13,11 +12,11 @@ macro_rules! define_multiway_join_test {
     ) => {
         #[test]
         fn $test_name() {
-            let inputs: Vec<Vec<Vec<$key_type>>> = vec![$($input.to_vec()),+];
+            let inputs: Vec<Vec<Vec<usize>>> = vec![$($input.to_vec()),+];
 
             $debugger
 
-            $crate::common::utils::test_join::<$relation_type<$key_type>, $join_algorithm>(
+            $crate::common::utils::test_join::<$relation_type, $join_algorithm>(
                 inputs,
                 $join_vars.to_vec(),
                 $projection.to_vec(),
@@ -33,7 +32,6 @@ macro_rules! define_unary_multiway_join_test {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<simple_multiwayjoin_ $relation_type:lower _ $join_algorithm:lower>],
-            u8,
             $relation_type,
             $join_algorithm,
             [
@@ -55,7 +53,6 @@ macro_rules! define_triangle_multiway_join_test {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<triangle_ $relation_type:lower _ $join_algorithm:lower>],
-            u8,
             $relation_type,
             $join_algorithm,
             [
@@ -78,7 +75,6 @@ macro_rules! define_chain_multiway_join_test {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<chain_ $relation_type:lower _ $join_algorithm:lower>],
-            u8,
             $relation_type,
             $join_algorithm,
             [
@@ -101,7 +97,6 @@ macro_rules! define_star_multiway_join_test {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<star_ $relation_type:lower _ $join_algorithm:lower>],
-            u8,
             $relation_type,
             $join_algorithm,
             [
@@ -123,7 +118,6 @@ macro_rules! define_self_multiway_join_test {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<selfjoin_ $relation_type:lower _ $join_algorithm:lower>],
-            u8,
             $relation_type,
             $join_algorithm,
             [
@@ -145,7 +139,6 @@ macro_rules! define_existential_multiway_join_test {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<existential_ $relation_type:lower _ $join_algorithm:lower>],
-            u8,
             $relation_type,
             $join_algorithm,
             [
