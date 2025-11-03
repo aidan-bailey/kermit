@@ -138,7 +138,11 @@ pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm) -> Box<dyn DB
 #[cfg(test)]
 mod tests {
 
-    use {super::*, kermit_algos::{JoinQuery, LeapfrogTriejoin}, kermit_ds::TreeTrie};
+    use {
+        super::*,
+        kermit_algos::{JoinQuery, LeapfrogTriejoin},
+        kermit_ds::TreeTrie,
+    };
 
     #[test]
     fn test_relation() {

@@ -1,5 +1,8 @@
-use {kermit_algos::{JoinAlgo, JoinQuery}, kermit_ds::Relation};
-use std::collections::HashMap;
+use {
+    kermit_algos::{JoinAlgo, JoinQuery},
+    kermit_ds::Relation,
+    std::collections::HashMap,
+};
 
 pub fn test_join<R, JA>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
@@ -26,15 +29,14 @@ pub fn test_join<R, JA>(
         let var_list = if rv.is_empty() {
             "_".to_string()
         } else {
-            rv.iter().map(|v| format!("V{}", v)).collect::<Vec<_>>().join(", ")
+            rv.iter()
+                .map(|v| format!("V{}", v))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         body_preds.push(format!("R{}({})", i, var_list));
     }
-    let query_str = format!(
-        "Q({}) :- {}.",
-        head_vars.join(", "),
-        body_preds.join(", ")
-    );
+    let query_str = format!("Q({}) :- {}.", head_vars.join(", "), body_preds.join(", "));
     let query: JoinQuery = query_str.parse().expect("Failed to build JoinQuery");
 
     let mut ds_map: HashMap<String, &R> = HashMap::new();
@@ -42,5 +44,8 @@ pub fn test_join<R, JA>(
         ds_map.insert(format!("R{}", i), rel);
     }
 
-    assert_eq!(JA::join_iter(query, ds_map).collect::<Vec<Vec<usize>>>(), result);
+    assert_eq!(
+        JA::join_iter(query, ds_map).collect::<Vec<Vec<usize>>>(),
+        result
+    );
 }
