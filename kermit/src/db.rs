@@ -1,5 +1,5 @@
 use {
-    kermit_algos::{JoinAlgo, JoinAlgorithm, LeapfrogTriejoin},
+    kermit_algos::{JoinAlgo, JoinAlgorithm, JoinQuery, LeapfrogTriejoin},
     kermit_ds::{ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
     std::{collections::HashMap, path::Path},
 };
@@ -17,7 +17,7 @@ pub trait DB {
 
     fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>);
 
-    fn join(&self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>);
+    fn join(&self, query: kermit_algos::JoinQuery);
 
     fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>;
 }
@@ -68,14 +68,19 @@ where
             .insert_all(keys);
     }
 
-    fn join(&self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>) {
-        let iterables = relations
-            .iter()
-            .map(|name| self.relations.get(name).unwrap())
-            .collect::<Vec<&R>>();
-        let arity = variables.len();
-        let tuples = JA::join_iter(variables, rel_variables, iterables).collect();
-        R::from_tuples(arity.into(), tuples);
+    fn join(&self, query: JoinQuery) {
+        // Build datastructure map from predicate names in the query body
+        let mut ds_map: HashMap<String, &R> = HashMap::new();
+        for pred in &query.body {
+            let r = self
+                .relations
+                .get(&pred.name)
+                .expect("missing relation in DB for predicate");
+            ds_map.entry(pred.name.clone()).or_insert(r);
+        }
+
+        // Execute join and collect results (discard relation construction for now)
+        let _tuples: Vec<Vec<usize>> = JA::join_iter(query, ds_map).collect();
     }
 
     /// Loads a relation from a file (CSV or Parquet) and adds it to the
@@ -118,7 +123,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use {super::*, kermit_algos::LeapfrogTriejoin, kermit_ds::TreeTrie};
+    use {super::*, kermit_algos::{JoinQuery, LeapfrogTriejoin}, kermit_ds::TreeTrie};
 
     #[test]
     fn test_relation() {
@@ -138,11 +143,8 @@ mod tests {
         db.add_relation("second", 1);
         db.add_keys_batch("second", vec![vec![1_usize], vec![2], vec![3]]);
 
-        let _res = db.join(
-            vec!["first".to_string(), "second".to_string()],
-            vec![0],
-            vec![vec![0], vec![0]],
-        );
+        let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
+        let _res = db.join(query);
     }
 }
 
