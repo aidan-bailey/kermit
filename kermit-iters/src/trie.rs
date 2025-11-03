@@ -1,6 +1,6 @@
 //! This module defines the `TrieIterator` trait.
 
-use crate::{joinable::Joinable, linear::LinearIterator};
+use crate::{joinable::JoinIterable, linear::LinearIterator};
 
 /// The `TrieIterator` trait, designed for iterators that traverse a trie-based
 /// structure.
@@ -28,7 +28,7 @@ pub trait TrieIterator: LinearIterator {
 /// The `TrieIterable` trait is used to specify types that can be iterated
 /// through the `TrieIterable` interface, and as such used in algorithms that
 /// require such an iterator.
-pub trait TrieIterable: Joinable {
+pub trait TrieIterable: JoinIterable {
     fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>>;
 }
 

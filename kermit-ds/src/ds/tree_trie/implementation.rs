@@ -1,6 +1,6 @@
 use {
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::{Joinable, TrieIterable},
+    kermit_iters::{JoinIterable, TrieIterable},
     std::ops::{Index, IndexMut},
 };
 
@@ -165,7 +165,7 @@ impl Relation for TreeTrie {
     }
 }
 
-impl Joinable for TreeTrie {}
+impl JoinIterable for TreeTrie {}
 
 impl crate::relation::Projectable for TreeTrie {
     fn project(&self, columns: Vec<usize>) -> Self {

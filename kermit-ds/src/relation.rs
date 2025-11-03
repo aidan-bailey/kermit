@@ -2,7 +2,7 @@
 use {
     arrow::array::AsArray,
     csv::Error,
-    kermit_iters::Joinable,
+    kermit_iters::JoinIterable,
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     std::{fs::File, path::Path},
 };
@@ -82,7 +82,7 @@ pub trait Projectable {
 }
 
 /// The `Relation` trait defines a relational data structure.
-pub trait Relation: Joinable + Projectable {
+pub trait Relation: JoinIterable + Projectable {
     fn header(&self) -> &RelationHeader;
 
     /// Creates a new relation with the specified arity.
