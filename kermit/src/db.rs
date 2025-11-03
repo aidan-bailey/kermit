@@ -1,8 +1,26 @@
 use {
-    kermit_algos::JoinAlgo,
-    kermit_ds::{Relation, RelationFileExt},
+    kermit_algos::{JoinAlgo, JoinAlgorithm, LeapfrogTriejoin},
+    kermit_ds::{ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
     std::{collections::HashMap, path::Path},
 };
+
+pub trait DB {
+    fn new(name: String) -> Self
+    where
+        Self: Sized;
+
+    fn name(&self) -> &String;
+
+    fn add_relation(&mut self, name: &str, arity: usize);
+
+    fn add_keys(&mut self, relation_name: &str, keys: Vec<usize>);
+
+    fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>);
+
+    fn join(
+        &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
+    );
+}
 
 pub struct Database<R, JA>
 where
@@ -15,12 +33,15 @@ where
     phantom_ja: std::marker::PhantomData<JA>,
 }
 
-impl<R, JA> Database<R, JA>
+impl<R, JA> DB for Database<R, JA>
 where
     R: Relation,
     JA: JoinAlgo<R>,
 {
-    pub fn new(name: String) -> Self {
+    fn new(name: String) -> Self
+    where
+        Self: Sized,
+    {
         Database {
             name,
             relations: HashMap::new(),
@@ -29,25 +50,25 @@ where
         }
     }
 
-    pub fn name(&self) -> &String { &self.name }
+    fn name(&self) -> &String { &self.name }
 
-    pub fn add_relation(&mut self, name: &str, arity: usize) {
+    fn add_relation(&mut self, name: &str, arity: usize) {
         let relation = R::new(arity.into());
         self.relations.insert(name.to_owned(), relation);
     }
 
-    pub fn add_keys(&mut self, relation_name: &str, keys: Vec<usize>) {
+    fn add_keys(&mut self, relation_name: &str, keys: Vec<usize>) {
         self.relations.get_mut(relation_name).unwrap().insert(keys);
     }
 
-    pub fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>) {
+    fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>) {
         self.relations
             .get_mut(relation_name)
             .unwrap()
             .insert_all(keys);
     }
 
-    pub fn join(
+    fn join(
         &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     ) {
         let iterables = relations
@@ -58,6 +79,14 @@ where
         let tuples = JA::join_iter(variables, rel_variables, iterables).collect();
         R::from_tuples(arity.into(), tuples);
     }
+}
+
+impl<R, JA> Database<R, JA>
+where
+    R: Relation,
+    JA: JoinAlgo<R>,
+{
+    pub fn new(name: String) -> Self { <Self as DB>::new(name) }
 
     /// Loads a relation from a file (CSV or Parquet) and adds it to the
     /// database.
@@ -119,5 +148,16 @@ mod tests {
             vec![0],
             vec![vec![0], vec![0]],
         );
+    }
+}
+
+pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm) -> Box<dyn DB> {
+    match (ds, ja) {
+        (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
+            Box::new(Database::<TreeTrie, LeapfrogTriejoin>::new("test".to_string()))
+        },
+        (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
+            Box::new(Database::<ColumnTrie, LeapfrogTriejoin>::new("test".to_string()))
+        },
     }
 }
