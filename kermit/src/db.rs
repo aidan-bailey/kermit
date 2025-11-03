@@ -20,6 +20,8 @@ pub trait DB {
     fn join(
         &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     );
+
+    fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>;
 }
 
 pub struct Database<R, JA>
@@ -79,25 +81,15 @@ where
         let tuples = JA::join_iter(variables, rel_variables, iterables).collect();
         R::from_tuples(arity.into(), tuples);
     }
-}
-
-impl<R, JA> Database<R, JA>
-where
-    R: Relation,
-    JA: JoinAlgo<R>,
-{
-    pub fn new(name: String) -> Self { <Self as DB>::new(name) }
 
     /// Loads a relation from a file (CSV or Parquet) and adds it to the
     /// database.
     ///
     /// The file type is determined by the extension (.csv or .parquet).
     /// The relation name is extracted from the filename.
-    pub fn add_file<P: AsRef<Path>>(&mut self, filepath: P) -> Result<(), std::io::Error>
-    where
-        R: RelationFileExt,
+    fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>
     {
-        let path = filepath.as_ref();
+        let path = filepath;
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
         let relation = match extension.to_lowercase().as_str() {
@@ -118,6 +110,14 @@ where
 
         Ok(())
     }
+}
+
+impl<R, JA> Database<R, JA>
+where
+    R: Relation,
+    JA: JoinAlgo<R>,
+{
+    pub fn new(name: String) -> Self { <Self as DB>::new(name) }
 }
 
 #[cfg(test)]
