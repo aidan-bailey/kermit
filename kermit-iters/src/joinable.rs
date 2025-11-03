@@ -18,4 +18,4 @@
 /// On the data structure side, all things that conform to the `Relation` trait
 /// must implement `Joinable`. In the case of `TreeTrie`, `TrieIterable`
 /// is implemented. TODO: Complete this
-pub trait Joinable {}
+pub trait JoinIterable {}

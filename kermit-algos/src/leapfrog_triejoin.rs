@@ -183,14 +183,14 @@ where
 
 pub struct LeapfrogTriejoin {}
 
-impl<ITB> JoinAlgo<ITB> for LeapfrogTriejoin
+impl<DS> JoinAlgo<DS> for LeapfrogTriejoin
 where
-    ITB: TrieIterable,
+    DS: TrieIterable,
 {
     fn join_iter(
-        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iterables: Vec<&ITB>,
+        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, datastructures: Vec<&DS>,
     ) -> impl Iterator<Item = Vec<usize>> {
-        let trie_iters: Vec<_> = iterables.into_iter().map(|i| i.trie_iter()).collect();
+        let trie_iters: Vec<_> = datastructures.into_iter().map(|i| i.trie_iter()).collect();
         LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters).into_iter()
     }
 }

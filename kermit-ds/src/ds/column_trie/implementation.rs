@@ -1,6 +1,6 @@
 use {
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::{Joinable, TrieIterable},
+    kermit_iters::{JoinIterable, TrieIterable},
     std::fmt,
 };
 
@@ -117,7 +117,7 @@ impl fmt::Display for ColumnTrie {
     }
 }
 
-impl Joinable for ColumnTrie {}
+impl JoinIterable for ColumnTrie {}
 
 impl crate::relation::Projectable for ColumnTrie {
     fn project(&self, columns: Vec<usize>) -> Self {
