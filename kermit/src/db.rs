@@ -120,6 +120,21 @@ where
     pub fn new(name: String) -> Self { <Self as DB>::new(name) }
 }
 
+pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm) -> Box<dyn DB> {
+    match (ds, ja) {
+        | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
+            Box::new(Database::<TreeTrie, LeapfrogTriejoin>::new(
+                "test".to_string(),
+            ))
+        },
+        | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
+            Box::new(Database::<ColumnTrie, LeapfrogTriejoin>::new(
+                "test".to_string(),
+            ))
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -144,21 +159,6 @@ mod tests {
         db.add_keys_batch("second", vec![vec![1_usize], vec![2], vec![3]]);
 
         let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
-        let _res = db.join(query);
-    }
-}
-
-pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm) -> Box<dyn DB> {
-    match (ds, ja) {
-        | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(Database::<TreeTrie, LeapfrogTriejoin>::new(
-                "test".to_string(),
-            ))
-        },
-        | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(Database::<ColumnTrie, LeapfrogTriejoin>::new(
-                "test".to_string(),
-            ))
-        },
+        db.join(query);
     }
 }
