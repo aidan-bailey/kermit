@@ -2,8 +2,10 @@ use {
     crate::{
         join_algo::JoinAlgo,
         leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
+        JoinQuery,
     },
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
+    std::collections::HashMap,
 };
 
 /// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
@@ -188,9 +190,69 @@ where
     DS: TrieIterable,
 {
     fn join_iter(
-        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, datastructures: Vec<&DS>,
+        query: JoinQuery, datastructures: HashMap<String, &DS>,
     ) -> impl Iterator<Item = Vec<usize>> {
-        let trie_iters: Vec<_> = datastructures.into_iter().map(|i| i.trie_iter()).collect();
+        // Map variable names to unique indices, ordered by first appearance in head then body
+        let mut var_to_index: HashMap<String, usize> = HashMap::new();
+        let mut next_index: usize = 0;
+
+        // Helper to register a variable name and return its index
+        let register_var = |name: &str, map: &mut HashMap<String, usize>, next: &mut usize| {
+            if let std::collections::hash_map::Entry::Vacant(v) = map.entry(name.to_string()) {
+                let idx = *next;
+                v.insert(idx);
+                *next += 1;
+                idx
+            } else {
+                map[name]
+            }
+        };
+
+        // First pass: head variables (ignore placeholders and atoms)
+        for t in &query.head.terms {
+            if let crate::queries::join_query::Term::Var(ref vname) = t {
+                let _ = register_var(vname, &mut var_to_index, &mut next_index);
+            }
+        }
+
+        // Second pass: body variables (ignore placeholders and atoms)
+        for pred in &query.body {
+            for t in &pred.terms {
+                if let crate::queries::join_query::Term::Var(ref vname) = t {
+                    let _ = register_var(vname, &mut var_to_index, &mut next_index);
+                }
+            }
+        }
+
+        // Variables vector is 0..num_vars in the discovered order
+        let variables: Vec<usize> = (0..var_to_index.len()).collect();
+
+        // Build rel_variables following each predicate's order; ignore placeholders and atoms
+        let mut rel_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
+        for pred in &query.body {
+            let mut rel_vars_for_pred: Vec<usize> = Vec::new();
+            for t in &pred.terms {
+                if let crate::queries::join_query::Term::Var(ref vname) = t {
+                    if let Some(idx) = var_to_index.get(vname) {
+                        rel_vars_for_pred.push(*idx);
+                    }
+                }
+            }
+            rel_variables.push(rel_vars_for_pred);
+        }
+
+        // Build trie iterators in the same order as query body using provided datastructures
+        let trie_iters: Vec<_> = query
+            .body
+            .iter()
+            .map(|pred| {
+                let ds = datastructures
+                    .get(&pred.name)
+                    .expect("Missing datastructure for predicate name");
+                ds.trie_iter()
+            })
+            .collect();
+
         LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters).into_iter()
     }
 }
