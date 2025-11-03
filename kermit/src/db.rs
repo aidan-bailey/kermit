@@ -17,9 +17,7 @@ pub trait DB {
 
     fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>);
 
-    fn join(
-        &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-    );
+    fn join(&self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>);
 
     fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>;
 }
@@ -70,9 +68,7 @@ where
             .insert_all(keys);
     }
 
-    fn join(
-        &self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-    ) {
+    fn join(&self, relations: Vec<String>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>) {
         let iterables = relations
             .iter()
             .map(|name| self.relations.get(name).unwrap())
@@ -87,8 +83,7 @@ where
     ///
     /// The file type is determined by the extension (.csv or .parquet).
     /// The relation name is extracted from the filename.
-    fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>
-    {
+    fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error> {
         let path = filepath;
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
@@ -153,11 +148,15 @@ mod tests {
 
 pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm) -> Box<dyn DB> {
     match (ds, ja) {
-        (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(Database::<TreeTrie, LeapfrogTriejoin>::new("test".to_string()))
+        | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
+            Box::new(Database::<TreeTrie, LeapfrogTriejoin>::new(
+                "test".to_string(),
+            ))
         },
-        (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(Database::<ColumnTrie, LeapfrogTriejoin>::new("test".to_string()))
+        | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
+            Box::new(Database::<ColumnTrie, LeapfrogTriejoin>::new(
+                "test".to_string(),
+            ))
         },
     }
 }
