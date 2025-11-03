@@ -15,7 +15,7 @@ mod tests {
 
     #[test]
     fn trie_insert() {
-        let mut trie = TreeTrie::<u64>::new(2.into());
+        let mut trie = TreeTrie::new(2.into());
 
         let _ = trie.insert(vec![1, 2]);
 
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn linear_iterator() {
-        let trie = TreeTrie::<u64>::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4], vec![5]]);
+        let trie = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4], vec![5]]);
         let mut iter = trie.trie_iter();
         assert!(iter.key().is_none());
         assert!(iter.open());
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn test_tree_trie() {
-        let trie = TreeTrie::<u64>::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
+        let trie = TreeTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = TreeTrie::<u64>::from_tuples(
+        let trie = TreeTrie::from_tuples(
             3.into(),
             vec![
                 vec![1, 3, 4],
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn test_tree_trie_iter() {
         let trie =
-            TreeTrie::<i32>::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
+            TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
                 3, 5,
             ]]);
         let iter = trie.trie_iter();
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_project() {
         let trie =
-            TreeTrie::<usize>::from_tuples(3.into(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![
+            TreeTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![
                 7, 8, 9,
             ]]);
 
@@ -177,7 +177,7 @@ mod tests {
             "y".to_string(),
             "z".to_string(),
         ]);
-        let trie = TreeTrie::<usize>::from_tuples(header, vec![vec![1, 2, 3], vec![4, 5, 6]]);
+        let trie = TreeTrie::from_tuples(header, vec![vec![1, 2, 3], vec![4, 5, 6]]);
 
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);

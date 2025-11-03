@@ -1,25 +1,25 @@
 use {
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::{Joinable, KeyType, TrieIterable},
+    kermit_iters::{Joinable, TrieIterable},
     std::fmt,
 };
 
-pub struct ColumnTrieLayer<KT: KeyType> {
-    pub data: Vec<KT>,
+pub struct ColumnTrieLayer {
+    pub data: Vec<usize>,
     pub interval: Vec<usize>,
 }
 
-pub struct ColumnTrie<KT: KeyType> {
+pub struct ColumnTrie {
     header: RelationHeader,
-    pub layers: Vec<ColumnTrieLayer<KT>>,
+    pub layers: Vec<ColumnTrieLayer>,
 }
 
-impl<KT: KeyType> ColumnTrie<KT> {
-    pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer<KT> { &self.layers[layer_i] }
+impl ColumnTrie {
+    pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer { &self.layers[layer_i] }
 
-    fn internal_insert(&mut self, tuple: &[KT]) -> bool {
+    fn internal_insert(&mut self, tuple: &[usize]) -> bool {
         /// Adds an interval to a layer at some index.
-        fn add_interval<KT: KeyType>(layer: &mut ColumnTrieLayer<KT>, i: usize) {
+        fn add_interval(layer: &mut ColumnTrieLayer, i: usize) {
             if i == layer.interval.len() {
                 // If the index is greater than the length of the layer, we push a new interval
                 layer.interval.push(layer.data.len());
@@ -92,7 +92,7 @@ impl<KT: KeyType> ColumnTrie<KT> {
     }
 }
 
-impl<KT: KeyType> fmt::Display for ColumnTrie<KT> {
+impl fmt::Display for ColumnTrie {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (layer_i, layer) in self.layers.iter().enumerate() {
             writeln!(f, "LAYER {layer_i}")?;
@@ -117,11 +117,9 @@ impl<KT: KeyType> fmt::Display for ColumnTrie<KT> {
     }
 }
 
-impl<KT: KeyType> Joinable for ColumnTrie<KT> {
-    type KT = KT;
-}
+impl Joinable for ColumnTrie {}
 
-impl<KT: KeyType> crate::relation::Projectable for ColumnTrie<KT> {
+impl crate::relation::Projectable for ColumnTrie {
     fn project(&self, columns: Vec<usize>) -> Self {
         // Create a new header based on the current header but with projected attributes
         let current_header = self.header();
@@ -139,10 +137,10 @@ impl<KT: KeyType> crate::relation::Projectable for ColumnTrie<KT> {
         };
 
         // Collect all tuples from the current relation using the iterator
-        let all_tuples: Vec<Vec<KT>> = self.trie_iter().into_iter().collect();
+        let all_tuples: Vec<Vec<usize>> = self.trie_iter().into_iter().collect();
 
         // Project each tuple to the specified columns
-        let projected_tuples: Vec<Vec<KT>> = all_tuples
+        let projected_tuples: Vec<Vec<usize>> = all_tuples
             .into_iter()
             .map(|tuple| columns.iter().map(|&col_idx| tuple[col_idx]).collect())
             .collect();
@@ -152,22 +150,19 @@ impl<KT: KeyType> crate::relation::Projectable for ColumnTrie<KT> {
     }
 }
 
-impl<KT: KeyType> Relation for ColumnTrie<KT> {
+impl Relation for ColumnTrie {
     fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
         ColumnTrie {
             layers: (0..header.arity())
-                .map(|_| ColumnTrieLayer::<KT> {
-                    data: vec![],
-                    interval: vec![],
-                })
+                .map(|_| ColumnTrieLayer { data: vec![], interval: vec![] })
                 .collect::<Vec<_>>(),
             header,
         }
     }
 
-    fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<Self::KT>>) -> Self {
+    fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<usize>>) -> Self {
         if tuples.is_empty() {
             Self::new(header)
         } else {
@@ -190,7 +185,7 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
         }
     }
 
-    fn insert(&mut self, tuple: Vec<Self::KT>) -> bool {
+    fn insert(&mut self, tuple: Vec<usize>) -> bool {
         debug_assert!(
             tuple.len() == self.header().arity(),
             "Tuple length must match the arity of the trie."
@@ -198,7 +193,7 @@ impl<KT: KeyType> Relation for ColumnTrie<KT> {
         self.internal_insert(&tuple)
     }
 
-    fn insert_all(&mut self, tuples: Vec<Vec<Self::KT>>) -> bool {
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool {
         for tuple in tuples {
             if !self.insert(tuple) {
                 return false;
@@ -218,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let mut trie = ColumnTrie::<usize>::new(2.into());
+        let mut trie = ColumnTrie::new(2.into());
         trie.insert(vec![2, 3]);
         println!("{trie}");
         trie.insert(vec![3, 1]);
@@ -230,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_project() {
-        let mut trie = ColumnTrie::<usize>::new(3.into());
+        let mut trie = ColumnTrie::new(3.into());
         trie.insert(vec![1, 2, 3]);
         trie.insert(vec![4, 5, 6]);
         trie.insert(vec![7, 8, 9]);
@@ -255,7 +250,7 @@ mod tests {
             "b".to_string(),
             "c".to_string(),
         ]);
-        let mut trie = ColumnTrie::<usize>::new(header);
+        let mut trie = ColumnTrie::new(header);
         trie.insert(vec![1, 2, 3]);
         trie.insert(vec![4, 5, 6]);
 

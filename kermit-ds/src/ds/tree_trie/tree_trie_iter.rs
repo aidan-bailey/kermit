@@ -1,19 +1,19 @@
 use {
     super::implementation::{TreeTrie, TrieNode},
     kermit_derive::IntoTrieIter,
-    kermit_iters::{KeyType, LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
+    kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 
 /// An iterator over the nodes of a `TreeTrie`.
 #[derive(IntoTrieIter)]
-struct TreeTrieIter<'a, KT: KeyType> {
+struct TreeTrieIter<'a> {
     pos: usize,
-    trie: &'a TreeTrie<KT>,
-    stack: Vec<(&'a TrieNode<KT>, usize)>,
+    trie: &'a TreeTrie,
+    stack: Vec<(&'a TrieNode, usize)>,
 }
 
-impl<'a, KT: KeyType> TreeTrieIter<'a, KT> {
-    fn new(trie: &'a TreeTrie<KT>) -> Self {
+impl<'a> TreeTrieIter<'a> {
+    fn new(trie: &'a TreeTrie) -> Self {
         Self {
             pos: 0,
             trie,
@@ -21,7 +21,7 @@ impl<'a, KT: KeyType> TreeTrieIter<'a, KT> {
         }
     }
 
-    fn siblings(&self) -> Option<&'a Vec<TrieNode<KT>>> {
+    fn siblings(&self) -> Option<&'a Vec<TrieNode>> {
         if self.stack.is_empty() {
             None
         } else if self.stack.len() == 1 {
@@ -32,12 +32,10 @@ impl<'a, KT: KeyType> TreeTrieIter<'a, KT> {
     }
 }
 
-impl<KT: KeyType> LinearIterator for TreeTrieIter<'_, KT> {
-    type KT = KT;
+impl LinearIterator for TreeTrieIter<'_> {
+    fn key(&self) -> Option<usize> { Some(self.siblings()?.get(self.pos)?.key()) }
 
-    fn key(&self) -> Option<KT> { Some(self.siblings()?.get(self.pos)?.key()) }
-
-    fn next(&mut self) -> Option<KT> {
+    fn next(&mut self) -> Option<usize> {
         if let Some(siblings) = self.siblings() {
             self.pos += 1;
             if let Some(node) = siblings.get(self.pos) {
@@ -49,7 +47,7 @@ impl<KT: KeyType> LinearIterator for TreeTrieIter<'_, KT> {
         None
     }
 
-    fn seek(&mut self, seek_key: KT) -> bool {
+    fn seek(&mut self, seek_key: usize) -> bool {
         if self.at_end() {
             return false;
         }
@@ -88,7 +86,7 @@ impl<KT: KeyType> LinearIterator for TreeTrieIter<'_, KT> {
     }
 }
 
-impl<KT: KeyType> TrieIterator for TreeTrieIter<'_, KT> {
+impl TrieIterator for TreeTrieIter<'_> {
     fn open(&mut self) -> bool {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
@@ -121,8 +119,6 @@ impl<KT: KeyType> TrieIterator for TreeTrieIter<'_, KT> {
     }
 }
 
-impl<KT: KeyType> TrieIterable for TreeTrie<KT> {
-    fn trie_iter(&self) -> impl TrieIterator<KT = KT> + IntoIterator<Item = Vec<KT>> {
-        TreeTrieIter::new(self)
-    }
+impl TrieIterable for TreeTrie {
+    fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>> { TreeTrieIter::new(self) }
 }

@@ -6,13 +6,10 @@ use kermit_iters::LinearIterator;
 /// The `LeapfrogJoinIterator` trait defines the interface for a leapfrog join
 /// iterator.
 pub trait LeapfrogJoinIterator {
-    /// The key type for the iterator.
-    type KT: Copy + Ord;
-
     /// Returns a reference to the key at the iterator's current position,
     /// otherwise `None` if `leapfrog_init` has not yet been called, or the
     /// iterator is positioned at the end.
-    fn key(&self) -> Option<Self::KT>;
+    fn key(&self) -> Option<usize>;
 
     /// Initialises the iterator and finds the first common key.
     ///
@@ -28,11 +25,11 @@ pub trait LeapfrogJoinIterator {
     /// i.e., the smallest key ≥ `seek_key`.
     ///
     /// Returns `true` if the key exists, otherwise `false`.
-    fn leapfrog_seek(&mut self, seek_key: Self::KT) -> bool;
+    fn leapfrog_seek(&mut self, seek_key: usize) -> bool;
 
     /// Moves the iterator to the next common key and returns a reference
     /// to it, or `None` if there are no more common keys.
-    fn leapfrog_next(&mut self) -> Option<Self::KT>;
+    fn leapfrog_next(&mut self) -> Option<usize>;
 
     /// Returns `true` if the iterator is positioned at the end.
     fn at_end(&self) -> bool;
@@ -68,9 +65,7 @@ impl<IT> LeapfrogJoinIterator for LeapfrogJoinIter<IT>
 where
     IT: LinearIterator,
 {
-    type KT = IT::KT;
-
-    fn key(&self) -> Option<Self::KT> { self.iterators[self.p].key() }
+    fn key(&self) -> Option<usize> { self.iterators[self.p].key() }
 
     fn leapfrog_init(&mut self) -> bool {
         for iter in &mut self.iterators {
@@ -116,7 +111,7 @@ where
         }
     }
 
-    fn leapfrog_next(&mut self) -> Option<Self::KT> {
+    fn leapfrog_next(&mut self) -> Option<usize> {
         self.mut_iter(self.p).next();
         if self.mut_iter(self.p).at_end() {
             None
@@ -136,7 +131,7 @@ where
         false
     }
 
-    fn leapfrog_seek(&mut self, seek_key: Self::KT) -> bool {
+    fn leapfrog_seek(&mut self, seek_key: usize) -> bool {
         self.mut_iter(self.p).seek(seek_key);
         if self.mut_iter(self.p).at_end() {
             false
@@ -153,8 +148,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter() {
-        let v1 = vec![1, 2, 3];
-        let v2 = vec![2, 3, 4];
+        let v1: Vec<usize> = vec![1, 2, 3];
+        let v2: Vec<usize> = vec![2, 3, 4];
 
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
@@ -166,8 +161,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_empty() {
-        let v1: Vec<i32> = vec![];
-        let v2: Vec<i32> = vec![];
+        let v1: Vec<usize> = vec![];
+        let v2: Vec<usize> = vec![];
 
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
@@ -176,8 +171,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_no_common_elements() {
-        let v1 = vec![1, 3, 5];
-        let v2 = vec![2, 4, 6];
+        let v1: Vec<usize> = vec![1, 3, 5];
+        let v2: Vec<usize> = vec![2, 4, 6];
 
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
@@ -186,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_single_iterator() {
-        let v1 = vec![1, 2, 3];
+        let v1: Vec<usize> = vec![1, 2, 3];
 
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter()]);
 
@@ -196,9 +191,9 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_multiple_vectors_with_common_elements() {
-        let v1 = vec![1, 2, 3, 5];
-        let v2 = vec![2, 4, 5, 6];
-        let v3 = vec![2, 5, 7];
+        let v1: Vec<usize> = vec![1, 2, 3, 5];
+        let v2: Vec<usize> = vec![2, 4, 5, 6];
+        let v3: Vec<usize> = vec![2, 5, 7];
 
         let mut join_iter =
             LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
@@ -211,9 +206,9 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_no_common_elements_multiple_vectors() {
-        let v1 = vec![1, 3, 5];
-        let v2 = vec![2, 4, 6];
-        let v3 = vec![7, 8, 9];
+        let v1: Vec<usize> = vec![1, 3, 5];
+        let v2: Vec<usize> = vec![2, 4, 6];
+        let v3: Vec<usize> = vec![7, 8, 9];
 
         let mut join_iter =
             LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
@@ -223,8 +218,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_empty_and_non_empty() {
-        let v1: Vec<i32> = vec![];
-        let v2 = vec![1, 2, 3];
+        let v1: Vec<usize> = vec![];
+        let v2: Vec<usize> = vec![1, 2, 3];
 
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
@@ -233,9 +228,9 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_multiple_empty_vectors() {
-        let v1: Vec<i32> = vec![];
-        let v2: Vec<i32> = vec![];
-        let v3: Vec<i32> = vec![];
+        let v1: Vec<usize> = vec![];
+        let v2: Vec<usize> = vec![];
+        let v3: Vec<usize> = vec![];
 
         let mut join_iter =
             LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
@@ -245,8 +240,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_single_common_element() {
-        let v1 = vec![1, 2, 3];
-        let v2 = vec![2];
+        let v1: Vec<usize> = vec![1, 2, 3];
+        let v2: Vec<usize> = vec![2];
 
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
@@ -256,9 +251,9 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_multiple_vectors_with_duplicates() {
-        let v1 = vec![1, 2, 3];
-        let v2 = vec![2, 4];
-        let v3 = vec![2, 5, 7];
+        let v1: Vec<usize> = vec![1, 2, 3];
+        let v2: Vec<usize> = vec![2, 4];
+        let v3: Vec<usize> = vec![2, 5, 7];
 
         let mut join_iter =
             LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
@@ -269,8 +264,8 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_large_vectors() {
-        let v1: Vec<i32> = (1..1000).collect();
-        let v2: Vec<i32> = (500..1500).collect();
+        let v1: Vec<usize> = (1..1000).map(|x| x as usize).collect();
+        let v2: Vec<usize> = (500..1500).map(|x| x as usize).collect();
 
         let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
 
@@ -281,9 +276,9 @@ mod tests {
 
     #[test]
     fn test_leapfrog_join_iter_multiple_vectors_with_one_empty() {
-        let v1 = vec![1, 2, 3];
-        let v2: Vec<i32> = vec![];
-        let v3 = vec![2, 4, 6];
+        let v1: Vec<usize> = vec![1, 2, 3];
+        let v2: Vec<usize> = vec![];
+        let v3: Vec<usize> = vec![2, 4, 6];
 
         let mut join_iter =
             LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);

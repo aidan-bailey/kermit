@@ -1,8 +1,8 @@
 use {kermit_algos::JoinAlgo, kermit_ds::Relation};
 
 pub fn test_join<R, JA>(
-    input: Vec<Vec<Vec<R::KT>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-    result: Vec<Vec<R::KT>>,
+    input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
+    result: Vec<Vec<usize>>,
 ) where
     R: Relation,
     JA: JoinAlgo<R>,
@@ -19,8 +19,5 @@ pub fn test_join<R, JA>(
         })
         .collect();
     let iterables = relations.iter().collect::<Vec<_>>();
-    assert_eq!(
-        JA::join_iter(variables, rel_variables, iterables).collect::<Vec<Vec<R::KT>>>(),
-        result
-    );
+    assert_eq!(JA::join_iter(variables, rel_variables, iterables).collect::<Vec<Vec<usize>>>(), result);
 }

@@ -1,16 +1,15 @@
-use std::{fmt::Debug, hash::Hash};
+use std::hash::Hash;
 
-pub trait KeyValStore<KT, VT>
+pub trait KeyValStore<VT>
 where
-    KT: PartialOrd + PartialEq + Debug + Eq + Hash + Ord,
     VT: Hash,
 {
-    fn add(&mut self, val: VT) -> KT;
-    fn add_all(&mut self, val: Vec<VT>) -> Vec<KT>;
-    fn get(&self, key: &KT) -> Option<&VT>;
-    fn get_all(&self, key: Vec<&KT>) -> Vec<Option<&VT>>;
-    fn keys(&self) -> Vec<KT>;
+    fn add(&mut self, val: VT) -> usize;
+    fn add_all(&mut self, val: Vec<VT>) -> Vec<usize>;
+    fn get(&self, key: &usize) -> Option<&VT>;
+    fn get_all(&self, key: Vec<&usize>) -> Vec<Option<&VT>>;
+    fn keys(&self) -> Vec<usize>;
     fn size(&self) -> usize;
-    fn contains_key(&self, key: &KT) -> bool;
+    fn contains_key(&self, key: &usize) -> bool;
     fn contains_val(&self, val: &VT) -> bool;
 }
