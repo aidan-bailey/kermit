@@ -17,7 +17,7 @@ impl FromStr for IndexStructure {
         match s {
             | "column_trie" => Ok(Self::ColumnTrie),
             | "tree_trie" => Ok(Self::TreeTrie),
-            | _ => Err(format!("Invalid index structure: {}", s).into()),
+            | _ => Err(format!("Invalid index structure: {}", s)),
         }
     }
 }
