@@ -2,6 +2,7 @@ pub mod benchmark;
 pub mod benchmarks;
 pub mod downloader;
 pub mod manager;
+pub mod generation;
 mod utils;
 
 #[cfg(test)]
