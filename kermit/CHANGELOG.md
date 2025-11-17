@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.15] - 2025-11-17
+
+### Added
+
+- CLI interface with `Join` and `Benchmark` commands
+- `benchmarker` module for benchmark execution
+- `add_file` method to `DB` trait for loading relations from CSV and Parquet files
+- Generic instantiation method for databases
+- Support for `IndexStructure` and `JoinAlgorithm` selection
+
+### Changed
+
+- `Database` struct now takes join algorithm as a generic parameter
+- Refactored DB methods to be entirely generic
+- Removed dependency on `kermit-kvs` module
+- `kermit-ds` dependency to 0.0.14
+- `kermit-algos` dependency to 0.0.8
+- `kermit-bench` dependency to 0.0.4
+
+### Removed
+
+- Builder pattern for database construction
+
 ## [0.0.14] - 2025-09-30
 
 ### Changed
