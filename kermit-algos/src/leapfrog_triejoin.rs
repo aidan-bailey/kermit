@@ -2,9 +2,9 @@ use {
     crate::{
         join_algo::JoinAlgo,
         leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
-        JoinQuery,
     },
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
+    kermit_parser::{JoinQuery, Term},
     std::collections::HashMap,
 };
 
@@ -211,7 +211,7 @@ where
 
         // First pass: head variables (ignore placeholders and atoms)
         for t in &query.head.terms {
-            if let crate::queries::join_query::Term::Var(ref vname) = t {
+            if let Term::Var(ref vname) = t {
                 let _ = register_var(vname, &mut var_to_index, &mut next_index);
             }
         }
@@ -219,7 +219,7 @@ where
         // Second pass: body variables (ignore placeholders and atoms)
         for pred in &query.body {
             for t in &pred.terms {
-                if let crate::queries::join_query::Term::Var(ref vname) = t {
+                if let Term::Var(ref vname) = t {
                     let _ = register_var(vname, &mut var_to_index, &mut next_index);
                 }
             }
@@ -234,7 +234,7 @@ where
         for pred in &query.body {
             let mut rel_vars_for_pred: Vec<usize> = Vec::new();
             for t in &pred.terms {
-                if let crate::queries::join_query::Term::Var(ref vname) = t {
+                if let Term::Var(ref vname) = t {
                     if let Some(idx) = var_to_index.get(vname) {
                         rel_vars_for_pred.push(*idx);
                     }

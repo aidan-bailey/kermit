@@ -14,6 +14,7 @@ kermit-ds = { version = "0.0.14", path = "../kermit-ds" }
 kermit-iters = { version = "0.0.6", path = "../kermit-iters" }
 kermit-algos = { version = "0.0.8", path = "../kermit-algos" }
 kermit-bench = { version = "0.0.4", path = "../kermit-bench" }
+kermit-parser = { version = "0.0.1", path = "../kermit-parser" }
 clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
 

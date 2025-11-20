@@ -1,13 +1,13 @@
-use {
-    super::join_query::{Predicate, Term},
-    crate::JoinQuery,
-    winnow::{
-        ascii::multispace0,
-        combinator::{delimited, separated},
-        error::{ContextError, ErrMode},
-        token::take_while,
-        Parser,
-    },
+mod join_query;
+
+pub use join_query::{JoinQuery, Predicate, Term};
+
+use winnow::{
+    ascii::multispace0,
+    combinator::{delimited, separated},
+    error::{ContextError, ErrMode},
+    token::take_while,
+    Parser,
 };
 
 type PResult<T> = Result<T, winnow::error::ErrMode<ContextError>>;
@@ -321,3 +321,4 @@ mod tests {
         assert_eq!(query.body[1].terms.len(), 2);
     }
 }
+

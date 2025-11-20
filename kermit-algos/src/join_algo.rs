@@ -1,7 +1,7 @@
 //! This module defines the `JoinAlgo` trait, used as a base for join
 //! algorithms.
 
-use {crate::JoinQuery, kermit_iters::JoinIterable, std::collections::HashMap};
+use {kermit_parser::JoinQuery, kermit_iters::JoinIterable, std::collections::HashMap};
 
 /// The `JoinAlgo` trait is used as a base for join algorithms.
 pub trait JoinAlgo<DS>
