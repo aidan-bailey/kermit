@@ -9,13 +9,13 @@ pub use implementation::TreeTrie;
 mod tests {
     use {
         super::implementation::*,
-        crate::relation::{Builder, Projectable, Relation, RelationBuilder},
+        crate::relation::{Projectable, Relation},
         kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
     };
 
     #[test]
     fn trie_insert() {
-        let mut trie = TreeTrie::<u64>::new(2.into());
+        let mut trie = TreeTrie::new(2.into());
 
         let _ = trie.insert(vec![1, 2]);
 
@@ -56,13 +56,8 @@ mod tests {
 
     #[test]
     fn linear_iterator() {
-        let trie = Builder::<TreeTrie<u64>>::new(1.into())
-            .add_tuple(vec![1])
-            .add_tuple(vec![2])
-            .add_tuple(vec![3])
-            .add_tuple(vec![4])
-            .add_tuple(vec![5])
-            .build();
+        let trie =
+            TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4], vec![5]]);
         let mut iter = trie.trie_iter();
         assert!(iter.key().is_none());
         assert!(iter.open());
@@ -75,7 +70,7 @@ mod tests {
 
     #[test]
     fn test_tree_trie() {
-        let trie = TreeTrie::<u64>::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
+        let trie = TreeTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
@@ -92,15 +87,15 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = Builder::<TreeTrie<u64>>::new(3.into())
-            .add_tuple(vec![1, 3, 4])
-            .add_tuple(vec![1, 3, 5])
-            .add_tuple(vec![1, 4, 6])
-            .add_tuple(vec![1, 4, 8])
-            .add_tuple(vec![1, 4, 9])
-            .add_tuple(vec![1, 5, 2])
-            .add_tuple(vec![3, 5, 2])
-            .build();
+        let trie = TreeTrie::from_tuples(3.into(), vec![
+            vec![1, 3, 4],
+            vec![1, 3, 5],
+            vec![1, 4, 6],
+            vec![1, 4, 8],
+            vec![1, 4, 9],
+            vec![1, 5, 2],
+            vec![3, 5, 2],
+        ]);
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
@@ -140,10 +135,9 @@ mod tests {
 
     #[test]
     fn test_tree_trie_iter() {
-        let trie =
-            TreeTrie::<i32>::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
-                3, 5,
-            ]]);
+        let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
+            3, 5,
+        ]]);
         let iter = trie.trie_iter();
         for v in iter {
             assert!(
@@ -156,9 +150,7 @@ mod tests {
     #[test]
     fn test_project() {
         let trie =
-            TreeTrie::<usize>::from_tuples(3.into(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![
-                7, 8, 9,
-            ]]);
+            TreeTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]]);
 
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);
@@ -180,7 +172,7 @@ mod tests {
             "y".to_string(),
             "z".to_string(),
         ]);
-        let trie = TreeTrie::<usize>::from_tuples(header, vec![vec![1, 2, 3], vec![4, 5, 6]]);
+        let trie = TreeTrie::from_tuples(header, vec![vec![1, 2, 3], vec![4, 5, 6]]);
 
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);

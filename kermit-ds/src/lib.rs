@@ -2,7 +2,8 @@ mod ds;
 mod relation;
 mod shared;
 
+// Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
-    ds::{ColumnTrie, TreeTrie},
-    relation::{Projectable, Relation, RelationBuilder},
+    ds::{ColumnTrie, IndexStructure, TreeTrie},
+    relation::{Projectable, Relation, RelationFileExt, RelationHeader},
 };

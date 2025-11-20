@@ -1,17 +1,16 @@
 use {
-    super::{benchmark::Benchmark, downloader::Downloader},
+    super::{benchmarks::Benchmark, downloader::Downloader},
     std::path::PathBuf,
 };
 
-pub struct DatasetManager {
-    // Directory where datasets are stored
+pub struct BenchmarkManager {
     dir: PathBuf,
-    datasets: Vec<Box<dyn Benchmark + 'static>>,
+    datasets: Vec<Benchmark>,
 }
 
-impl DatasetManager {
-    pub fn new<P: Into<PathBuf>>(dataset_dir: P) -> Self {
-        let path = dataset_dir.into();
+impl BenchmarkManager {
+    pub fn new<P: Into<PathBuf>>(benchmark_dir: P) -> Self {
+        let path = benchmark_dir.into();
         if !path.exists() {
             std::fs::create_dir_all(&path).expect("Failed to create dataset directory");
         }
@@ -21,27 +20,31 @@ impl DatasetManager {
         }
     }
 
-    pub fn init_dataset(
-        &mut self, dataset: impl Benchmark + 'static,
+    pub fn add_benchmark(
+        &mut self, benchmark: Benchmark,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let dl_spec = &dataset.metadata().download_spec;
+        if self.datasets.iter().any(|d| d == &benchmark) {
+            let name = benchmark.config().metadata().name;
+            return Err(format!("Benchmark '{}' already exists in manager", name).into());
+        }
+
+        let config = benchmark.config();
+        let dl_spec = &config.metadata().download_spec;
         let source = Downloader::download(dl_spec)?;
-        dataset.load(&source, self.dir.as_path())?;
+        config.load(&source, self.dir.as_path())?;
         Downloader::clean(dl_spec);
-        self.datasets.push(Box::new(dataset));
+        self.datasets.push(benchmark);
         Ok(())
     }
 
-    pub fn rm_dataset(
-        &mut self, dataset: impl Benchmark + 'static,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dl_spec = &dataset.metadata().download_spec;
+    pub fn rm_benchmark(&mut self, benchmark: Benchmark) -> Result<(), Box<dyn std::error::Error>> {
+        let config = benchmark.config();
+        let dl_spec = &config.metadata().download_spec;
         let dest = self.dir.join(dl_spec.name);
         if dest.exists() {
             std::fs::remove_dir_all(&dest)?;
         }
-        self.datasets
-            .retain(|d| d.metadata().name != dataset.metadata().name);
+        self.datasets.retain(|d| d != &benchmark);
         Ok(())
     }
 }

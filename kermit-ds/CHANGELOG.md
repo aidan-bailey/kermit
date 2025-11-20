@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.14] - 2025-11-17
+
+### Added
+
+- `IndexStructure` enum for selecting between `ColumnTrie` and `TreeTrie`
+- Parquet tests
+- `IndexStructure` selector functionality
+
+### Changed
+
+- Refactored `from_csv` method
+- Refactored relation implementations
+- Updated trie iteration implementations
+- Removed dependency on `kermit-kvs` module
+- `kermit-iters` dependency to 0.0.6
+
 ## [0.0.13] - 2025-09-30
 
 ### Added

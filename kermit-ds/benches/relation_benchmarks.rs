@@ -6,17 +6,12 @@ use {
     },
     kermit_ds::{ColumnTrie, Relation, TreeTrie},
     kermit_iters::TrieIterable,
-    num_traits::PrimInt,
-    rand::distr::uniform::SampleUniform,
-    std::{hash::Hash, hint::black_box},
+    std::hint::black_box,
 };
 
 mod common;
 
-fn bench_relation_insert<R: Relation>(group: &mut BenchmarkGroup<WallTime>)
-where
-    R::KT: Clone + SampleUniform + PrimInt + Hash,
-{
+fn bench_relation_insert<R: Relation>(group: &mut BenchmarkGroup<WallTime>) {
     for k in [1, 2, 3, 4, 5] {
         let tuples = generate_exponential_tuples(num_traits::cast(k).unwrap());
         let n = tuples.len();
@@ -52,10 +47,7 @@ where
     }
 }
 
-fn bench_trie_relation_iteration<R: Relation + TrieIterable>(group: &mut BenchmarkGroup<WallTime>)
-where
-    R::KT: Clone + SampleUniform + PrimInt + Hash,
-{
+fn bench_trie_relation_iteration<R: Relation + TrieIterable>(group: &mut BenchmarkGroup<WallTime>) {
     for k in [1, 2, 3, 4, 5] {
         let tuples = generate_exponential_tuples(num_traits::cast(k).unwrap());
         let n = tuples.len();
@@ -102,10 +94,7 @@ where
 }
 
 // Tie together construction and separate benchmarks
-fn bench_trie_relation<R: Relation + TrieIterable>(groupname: &str, c: &mut Criterion)
-where
-    R::KT: Clone + SampleUniform + PrimInt + Hash,
-{
+fn bench_trie_relation<R: Relation + TrieIterable>(groupname: &str, c: &mut Criterion) {
     let mut group = c.benchmark_group(groupname);
     group.sample_size(10000);
     bench_relation_insert::<R>(&mut group);
@@ -122,7 +111,7 @@ macro_rules! define_trie_relation_benchmarks {
         paste::paste! {
             $(
                 fn [<bench_ $relation_type:lower>](c: &mut Criterion) {
-                    bench_trie_relation::<$relation_type<usize>>(stringify!($relation_type), c);
+                    bench_trie_relation::<$relation_type>(stringify!($relation_type), c);
                 }
             )+
 

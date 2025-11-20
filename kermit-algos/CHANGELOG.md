@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.8] - 2025-11-17
+
+### Added
+
+- Datalog query parser using `winnow`
+- `JoinQuery` struct moved from kermit to kermit-algos
+- `JoinAlgorithm` enum for algorithm selection
+- `queries` module with parser and join query types
+
+### Changed
+
+- Refactored to use `JoinQuery` everywhere
+- Restructured queries module
+- Removed dependency on `kermit-kvs` module
+- `kermit-iters` dependency to 0.0.6
+
+### Removed
+
+- Old source files and redundant code
+
 ## [0.0.7] - 2025-09-30
 
 ### Changed

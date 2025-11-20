@@ -1,8 +1,6 @@
 //! This module defines the `Joinable` trait, which is used to specify types
 //! that can be joined.
 
-use crate::key_type::KeyType;
-
 /// The `Joinable` trait is used to specify types that can be joined.
 ///
 /// # Note
@@ -20,7 +18,4 @@ use crate::key_type::KeyType;
 /// On the data structure side, all things that conform to the `Relation` trait
 /// must implement `Joinable`. In the case of `TreeTrie`, `TrieIterable`
 /// is implemented. TODO: Complete this
-pub trait Joinable {
-    /// The key type for the iterable.
-    type KT: KeyType;
-}
+pub trait JoinIterable {}

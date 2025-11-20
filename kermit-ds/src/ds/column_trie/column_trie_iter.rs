@@ -2,11 +2,11 @@ use {
     super::implementation::ColumnTrie,
     crate::relation::Relation,
     kermit_derive::IntoTrieIter,
-    kermit_iters::{KeyType, LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
+    kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 
 #[derive(IntoTrieIter)]
-pub struct ColumnTrieIter<'a, KT: KeyType> {
+pub struct ColumnTrieIter<'a> {
     /// Index of current layer.
     layer_number: usize,
     /// Index of interval start at current layer
@@ -14,13 +14,13 @@ pub struct ColumnTrieIter<'a, KT: KeyType> {
     /// Relative index based on interval
     rel_data_i: usize,
     /// Relative data at current layer
-    rel_data: Option<&'a [KT]>,
+    rel_data: Option<&'a [usize]>,
     /// The trie being iterated.
-    trie: &'a ColumnTrie<KT>,
+    trie: &'a ColumnTrie,
 }
 
-impl<'a, KT: KeyType> ColumnTrieIter<'a, KT> {
-    pub fn new(trie: &'a ColumnTrie<KT>) -> Self {
+impl<'a> ColumnTrieIter<'a> {
+    pub fn new(trie: &'a ColumnTrie) -> Self {
         ColumnTrieIter {
             interval_i: 0,
             rel_data: None,
@@ -31,10 +31,8 @@ impl<'a, KT: KeyType> ColumnTrieIter<'a, KT> {
     }
 }
 
-impl<KT: KeyType> LinearIterator for ColumnTrieIter<'_, KT> {
-    type KT = KT;
-
-    fn key(&self) -> Option<Self::KT> {
+impl LinearIterator for ColumnTrieIter<'_> {
+    fn key(&self) -> Option<usize> {
         if let Some(data) = self.rel_data {
             data.get(self.rel_data_i).copied()
         } else {
@@ -42,7 +40,7 @@ impl<KT: KeyType> LinearIterator for ColumnTrieIter<'_, KT> {
         }
     }
 
-    fn next(&mut self) -> Option<Self::KT> {
+    fn next(&mut self) -> Option<usize> {
         if let Some(data) = self.rel_data {
             if self.rel_data_i > data.len() - 1 {
                 return None;
@@ -54,7 +52,7 @@ impl<KT: KeyType> LinearIterator for ColumnTrieIter<'_, KT> {
         }
     }
 
-    fn seek(&mut self, seek_key: Self::KT) -> bool {
+    fn seek(&mut self, seek_key: usize) -> bool {
         while let Some(key) = self.next() {
             if key >= seek_key {
                 break;
@@ -72,7 +70,7 @@ impl<KT: KeyType> LinearIterator for ColumnTrieIter<'_, KT> {
     }
 }
 
-impl<KT: KeyType> TrieIterator for ColumnTrieIter<'_, KT> {
+impl TrieIterator for ColumnTrieIter<'_> {
     fn open(&mut self) -> bool {
         if self.layer_number == self.trie.header().arity() {
             // If at leaf, return false
@@ -162,8 +160,8 @@ impl<KT: KeyType> TrieIterator for ColumnTrieIter<'_, KT> {
 }
 
 /// Implementation of the `TrieIterable` trait for `TreeTrie`.
-impl<KT: KeyType> TrieIterable for ColumnTrie<KT> {
-    fn trie_iter(&self) -> impl TrieIterator<KT = KT> + IntoIterator<Item = Vec<KT>> {
+impl TrieIterable for ColumnTrie {
+    fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>> {
         ColumnTrieIter::new(self)
     }
 }

@@ -2,14 +2,13 @@
 macro_rules! relation_construction_test {
     (
         $test_name:ident,
-        $key_type:ty,
         $relation_type:ident,
         [ $( $input:expr ),* $(,)? ]
     ) => {
         #[test]
         fn $test_name() {
             use {kermit_ds::Relation, kermit_iters::TrieIterable};
-            let tuples: Vec<Vec<$key_type>> = vec![$($input.to_vec()),*];
+            let tuples: Vec<Vec<usize>> = vec![$($input.to_vec()),*];
             let k = if tuples.is_empty() { 0 } else { tuples[0].len() };
             let relation = $relation_type::from_tuples(k.into(), tuples.clone());
             let res = relation.trie_iter().into_iter().collect::<Vec<_>>();
@@ -25,22 +24,15 @@ macro_rules! relation_construction_tests {
 
             use super::*;
 
-            $crate::relation_construction_test!(empty, u8, $relation_type, []);
+            $crate::relation_construction_test!(empty, $relation_type, []);
 
-            $crate::relation_construction_test!(unary, u8, $relation_type, [
-                vec![1],
-                vec![2],
-                vec![3]
-            ]);
+            $crate::relation_construction_test!(unary, $relation_type, [vec![1], vec![2], vec![3]]);
 
-            $crate::relation_construction_test!(binary, u8, $relation_type, [vec![1, 2], vec![
-                3, 4
+            $crate::relation_construction_test!(binary, $relation_type, [vec![1, 2], vec![3, 4]]);
+
+            $crate::relation_construction_test!(ternary, $relation_type, [vec![1, 2, 3], vec![
+                4, 5, 6
             ]]);
-
-            $crate::relation_construction_test!(ternary, u8, $relation_type, [
-                vec![1, 2, 3],
-                vec![4, 5, 6]
-            ]);
         }
     };
 }
@@ -49,7 +41,6 @@ macro_rules! relation_construction_tests {
 macro_rules! trie_test {
     (
         $test_name:ident,
-        $key_type:ty,
         $relation_type:ident,
         [ $( $input:expr ),* $(,)? ],
         $code: expr
@@ -58,9 +49,9 @@ macro_rules! trie_test {
        fn $test_name() {
             use kermit_ds::Relation;
             use kermit_iters::{TrieIterable, TrieIterator};
-            let inputs: Vec<Vec<$key_type>> = vec![$($input.to_vec()),*];
+            let inputs: Vec<Vec<usize>> = vec![$($input.to_vec()),*];
             let k = if inputs.is_empty() { 0 } else { inputs[0].len() };
-            let relation = $relation_type::<$key_type>::from_tuples(k.into(), inputs);
+            let relation = $relation_type::from_tuples(k.into(), inputs);
             $code(&mut relation.trie_iter());
         }
     };
@@ -73,27 +64,20 @@ macro_rules! trie_traversal_tests {
 
             use super::*;
 
-            $crate::trie_test!(
-                empty,
-                u8,
-                $relation_type,
-                [],
-                |iter: &mut dyn TrieIterator<KT = u8>| {
-                    assert!(iter.key().is_none());
-                    assert!(!iter.open());
-                    assert!(!iter.up());
-                    assert!(iter.next().is_none());
-                    assert!(iter.key().is_none());
-                    assert!(iter.at_end());
-                }
-            );
+            $crate::trie_test!(empty, $relation_type, [], |iter: &mut dyn TrieIterator| {
+                assert!(iter.key().is_none());
+                assert!(!iter.open());
+                assert!(!iter.up());
+                assert!(iter.next().is_none());
+                assert!(iter.key().is_none());
+                assert!(iter.at_end());
+            });
 
             $crate::trie_test!(
                 single,
-                u8,
                 $relation_type,
                 [vec![1]],
-                |iter: &mut dyn TrieIterator<KT = u8>| {
+                |iter: &mut dyn TrieIterator| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(iter.open());
@@ -109,10 +93,9 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 siblings,
-                u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
-                |iter: &mut dyn TrieIterator<KT = u8>| {
+                |iter: &mut dyn TrieIterator| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(iter.open());
@@ -133,10 +116,9 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 shared,
-                u8,
                 $relation_type,
                 [vec![1, 2], vec![1, 3]],
-                |iter: &mut dyn TrieIterator<KT = u8>| {
+                |iter: &mut dyn TrieIterator| {
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(iter.open());
@@ -150,10 +132,9 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 deep,
-                u8,
                 $relation_type,
                 [vec![1, 2, 3]],
-                |iter: &mut dyn TrieIterator<KT = u8>| {
+                |iter: &mut dyn TrieIterator| {
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(iter.open());
@@ -172,10 +153,9 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 linear,
-                u8,
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
-                |iter: &mut dyn TrieIterator<KT = u8>| {
+                |iter: &mut dyn TrieIterator| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(iter.open());
@@ -208,10 +188,9 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 open,
-                u8,
                 $relation_type,
                 [vec![1, 2, 3]],
-                |iter: &mut dyn TrieIterator<KT = u8>| {
+                |iter: &mut dyn TrieIterator| {
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(iter.open());
@@ -226,10 +205,9 @@ macro_rules! trie_traversal_tests {
 
             $crate::trie_test!(
                 hard,
-                u8,
                 $relation_type,
                 [vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]],
-                |iter: &mut dyn TrieIterator<KT = u8>| {
+                |iter: &mut dyn TrieIterator| {
                     // Begin at root
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
