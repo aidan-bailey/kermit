@@ -4,7 +4,6 @@ pub mod downloader;
 pub mod generation;
 pub mod manager;
 mod utils;
-mod generator;
 
 #[cfg(test)]
 mod tests {
