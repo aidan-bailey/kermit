@@ -60,6 +60,17 @@ Join queries follow Datalog syntax:
 - Placeholders: `_`
 - Example: `ancestor(X, Z) :- parent(X, Y), parent(Y, Z).`
 
+## Changelog and Versioning
+
+Each crate has its own `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format with [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Crates are versioned independently.
+
+When making changes:
+1. Update the relevant crate's `CHANGELOG.md` under an `[Unreleased]` section (or new version header)
+2. Use sections: `Added`, `Changed`, `Fixed`, `Removed`
+3. Update dependency versions in `Cargo.toml` if dependent crates changed
+
+Publishing is automated via GitHub Actions on push to master. Each crate uses a tag prefix matching its name (e.g., `kermit-ds-v0.0.14`).
+
 ## Code Style
 
 - Uses nightly Rust features in CI (clippy, miri)
