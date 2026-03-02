@@ -4,6 +4,36 @@ use {
     std::ops::{Index, IndexMut},
 };
 
+/// Insert a tuple into a sorted list of children nodes, recursing for remaining
+/// keys.
+fn insert_into_children(children: &mut Vec<TrieNode>, tuple: Vec<usize>) -> bool {
+    if tuple.is_empty() {
+        return true;
+    }
+
+    let mut key_iter = tuple.into_iter();
+
+    if let Some(key) = key_iter.next() {
+        let insert_pos = children.binary_search_by(|node| node.key().cmp(&key));
+
+        match insert_pos {
+            | Ok(pos) => {
+                // Key exists, continue with its children
+                insert_into_children(children[pos].children_mut(), key_iter.collect())
+            },
+            | Err(pos) => {
+                // Key doesn't exist, insert new node
+                let mut new_node = TrieNode::new(key);
+                insert_into_children(new_node.children_mut(), key_iter.collect());
+                children.insert(pos, new_node);
+                true
+            },
+        }
+    } else {
+        true
+    }
+}
+
 /// A node in the trie data structure.
 #[derive(Clone, Debug)]
 pub struct TrieNode {
@@ -24,36 +54,6 @@ impl TrieNode {
     pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
 
     pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode> { &mut self.children }
-
-    pub(crate) fn insert_internal(&mut self, tuple: Vec<usize>) -> bool {
-        if tuple.is_empty() {
-            return true;
-        }
-
-        let current_children = self.children_mut();
-        let mut key_iter = tuple.into_iter();
-
-        if let Some(key) = key_iter.next() {
-            // Find insertion point or existing node
-            let insert_pos = current_children.binary_search_by(|node| node.key().cmp(&key));
-
-            match insert_pos {
-                | Ok(pos) => {
-                    // Key exists, continue with its children
-                    current_children[pos].insert_internal(key_iter.collect())
-                },
-                | Err(pos) => {
-                    // Key doesn't exist, insert new node
-                    let mut new_node = TrieNode::new(key);
-                    new_node.insert_internal(key_iter.collect());
-                    current_children.insert(pos, new_node);
-                    true
-                },
-            }
-        } else {
-            true
-        }
-    }
 }
 
 impl Index<usize> for TrieNode {
@@ -75,38 +75,6 @@ pub struct TreeTrie {
 
 impl TreeTrie {
     pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
-
-    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode> { &mut self.children }
-
-    pub(crate) fn insert_internal(&mut self, tuple: Vec<usize>) -> bool {
-        if tuple.is_empty() {
-            return true;
-        }
-
-        let current_children = self.children_mut();
-        let mut key_iter = tuple.into_iter();
-
-        if let Some(key) = key_iter.next() {
-            // Find insertion point or existing node
-            let insert_pos = current_children.binary_search_by(|node| node.key().cmp(&key));
-
-            match insert_pos {
-                | Ok(pos) => {
-                    // Key exists, continue with its children
-                    current_children[pos].insert_internal(key_iter.collect())
-                },
-                | Err(pos) => {
-                    // Key doesn't exist, insert new node
-                    let mut new_node = TrieNode::new(key);
-                    new_node.insert_internal(key_iter.collect());
-                    current_children.insert(pos, new_node);
-                    true
-                },
-            }
-        } else {
-            true
-        }
-    }
 }
 
 impl Relation for TreeTrie {
@@ -152,7 +120,7 @@ impl Relation for TreeTrie {
         if tuple.len() != self.header().arity() {
             panic!("Arity doesn't match.");
         }
-        self.insert_internal(tuple)
+        insert_into_children(&mut self.children, tuple)
     }
 
     fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool {
