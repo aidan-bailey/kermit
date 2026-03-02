@@ -1,3 +1,19 @@
+//! Datalog query parser for Kermit.
+//!
+//! Parses queries in the form `Head :- Body1, Body2, ... .` into a
+//! [`JoinQuery`] AST. Built on the [winnow](https://docs.rs/winnow) parser
+//! combinator library.
+//!
+//! # Syntax
+//!
+//! - **Variables** start with an uppercase letter: `X`, `Name`
+//! - **Atoms** (constants) start with a lowercase letter: `alice`, `edge`
+//! - **Placeholders** are the anonymous wildcard `_`
+//!
+//! ```text
+//! path(X, Z) :- edge(X, Y), edge(Y, Z).
+//! ```
+
 mod join_query;
 
 pub use join_query::{JoinQuery, Predicate, Term};

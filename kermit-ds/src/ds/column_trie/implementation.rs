@@ -4,8 +4,17 @@ use {
     std::fmt,
 };
 
+/// A single level of a [`ColumnTrie`].
+///
+/// Keys at this depth are stored in `data`. The `interval` array maps each
+/// parent element (by its position in the parent layer's `data`) to the start
+/// offset of its children within this layer's `data`. The children of parent
+/// element `i` span `data[interval[i]..interval[i+1]]` (or to the end of
+/// `data` for the last parent).
 pub struct ColumnTrieLayer {
+    /// Sorted keys at this trie depth.
     pub data: Vec<usize>,
+    /// Maps each parent element to the start index of its children in `data`.
     pub interval: Vec<usize>,
 }
 
@@ -42,8 +51,15 @@ impl ColumnTrieLayer {
     }
 }
 
+/// A column-oriented trie that stores a relation as parallel arrays per level.
+///
+/// Unlike `TreeTrie`, which uses pointer-based
+/// nodes, `ColumnTrie` flattens each trie level into a `ColumnTrieLayer`
+/// with `data` and `interval` arrays. This layout is more cache-friendly for
+/// large relations and avoids per-node allocation overhead.
 pub struct ColumnTrie {
     header: RelationHeader,
+    /// One layer per attribute/depth in the relation.
     pub layers: Vec<ColumnTrieLayer>,
 }
 

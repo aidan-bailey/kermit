@@ -8,24 +8,42 @@ use {
     std::collections::HashMap,
 };
 
-/// A trait for iterators that implement the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
+/// Extension of [`LeapfrogJoinIterator`] with trie navigation for the
+/// [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 pub trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
+    /// Descends one level in the trie, opening child iterators at the current
+    /// key and initializing the leapfrog join at the new depth.
     fn triejoin_open(&mut self) -> bool;
 
+    /// Ascends one level, restoring the leapfrog join state at the parent
+    /// depth.
     fn triejoin_up(&mut self) -> bool;
 }
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
+///
+/// Coordinates multiple trie iterators (one per body predicate) to compute a
+/// multi-way join. At each variable/depth level, only the iterators that
+/// participate in that variable are active in the inner [`LeapfrogJoinIter`].
+/// Iterators are swapped in and out of the leapfrog as the depth changes.
 pub struct LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    /// The key of the current position.
+    /// Number of variables in the join (determines maximum depth).
     arity: usize,
+    /// Pool of trie iterators, indexed by body predicate position. `None` when
+    /// an iterator is currently borrowed by the leapfrog.
     iters: Vec<Option<IT>>,
+    /// Tracks which iterators (by index into `iters`) are currently in the
+    /// leapfrog, so they can be returned on depth change.
     current_iters_indexes: Vec<usize>,
+    /// For each variable index, the list of iterator indices that participate
+    /// at that depth.
     iter_indexes_at_variable: Vec<Vec<usize>>,
+    /// Current depth in the join (0 = not yet opened, 1..arity = active).
     depth: usize,
+    /// The inner leapfrog join operating at the current depth.
     leapfrog: LeapfrogJoinIter<IT>,
 }
 
@@ -95,6 +113,9 @@ where
         }
     }
 
+    /// Swaps iterators between the pool (`self.iters`) and the active leapfrog
+    /// (`self.leapfrog`) based on which iterators participate at the current
+    /// depth.
     fn update_iters(&mut self) {
         while let Some(i) = self.current_iters_indexes.pop() {
             let iter = self
@@ -186,6 +207,8 @@ where
     }
 }
 
+/// Entry point for the Leapfrog Triejoin algorithm, implementing
+/// [`JoinAlgo`](crate::JoinAlgo) for any [`TrieIterable`] data structure.
 pub struct LeapfrogTriejoin {}
 
 impl<DS> JoinAlgo<DS> for LeapfrogTriejoin

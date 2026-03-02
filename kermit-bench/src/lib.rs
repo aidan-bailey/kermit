@@ -1,3 +1,12 @@
+//! Benchmark infrastructure for Kermit.
+//!
+//! Provides dataset download, conversion (to Parquet), and benchmark
+//! task/subtask definitions. The
+//! [`BenchmarkManager`](manager::BenchmarkManager) coordinates downloading and
+//! loading benchmark datasets, while
+//! [`BenchmarkConfig`](benchmark::BenchmarkConfig) defines the interface each
+//! benchmark must implement.
+
 pub mod benchmark;
 pub mod benchmarks;
 pub mod downloader;

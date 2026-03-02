@@ -188,7 +188,7 @@ impl TrieIterator for ColumnTrieIter<'_> {
     }
 }
 
-/// Implementation of the `TrieIterable` trait for `TreeTrie`.
+/// Implementation of the `TrieIterable` trait for `ColumnTrie`.
 impl TrieIterable for ColumnTrie {
     fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>> {
         ColumnTrieIter::new(self)

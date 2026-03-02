@@ -34,7 +34,10 @@ fn insert_into_children(children: &mut Vec<TrieNode>, tuple: Vec<usize>) -> bool
     }
 }
 
-/// A node in the trie data structure.
+/// A node in the pointer-based trie.
+///
+/// Each node stores a single `usize` key and owns a sorted list of child nodes.
+/// Leaf nodes have an empty `children` vector.
 #[derive(Clone, Debug)]
 pub struct TrieNode {
     key: usize,
@@ -66,7 +69,12 @@ impl IndexMut<usize> for TrieNode {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children[index] }
 }
 
-/// Trie data structure for relations.
+/// A pointer-based trie that stores a relation as a tree of `TrieNode`s.
+///
+/// Children at each level are kept in sorted order by key, enabling binary
+/// search on insertion and linear-scan iteration for the leapfrog join.
+/// Tuples are stored path-wise: a tuple `[a, b, c]` becomes the path
+/// `root → a → b → c`.
 #[derive(Clone, Debug)]
 pub struct TreeTrie {
     header: RelationHeader,

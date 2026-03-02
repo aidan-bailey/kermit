@@ -1,3 +1,10 @@
+//! Join algorithms for Kermit's relational algebra engine.
+//!
+//! Implements the [Leapfrog Triejoin](https://arxiv.org/abs/1210.0481) algorithm,
+//! which performs worst-case optimal multi-way joins over trie-structured
+//! relations. The algorithm is generic over any data structure that implements
+//! [`TrieIterable`](kermit_iters::TrieIterable).
+
 mod join_algo;
 mod leapfrog_join;
 mod leapfrog_triejoin;
@@ -5,6 +12,9 @@ mod leapfrog_triejoin;
 use {clap::ValueEnum, std::str::FromStr};
 pub use {join_algo::JoinAlgo, kermit_parser::JoinQuery, leapfrog_triejoin::LeapfrogTriejoin};
 
+/// The available join algorithm implementations.
+///
+/// Used as a CLI argument to select which algorithm to run.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum JoinAlgorithm {
     LeapfrogTriejoin,

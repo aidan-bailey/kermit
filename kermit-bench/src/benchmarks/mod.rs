@@ -2,6 +2,10 @@ use {crate::benchmark::BenchmarkConfig, clap::ValueEnum, std::str::FromStr};
 
 pub mod oxford;
 
+/// The set of available benchmarks.
+///
+/// Each variant maps to a [`BenchmarkConfig`] implementation that knows how to
+/// download, transform, and validate its dataset.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Benchmark {
     Oxford,

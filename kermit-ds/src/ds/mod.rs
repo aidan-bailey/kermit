@@ -4,6 +4,9 @@ mod tree_trie;
 use {clap::ValueEnum, std::str::FromStr};
 pub use {column_trie::ColumnTrie, tree_trie::TreeTrie};
 
+/// The available trie-based index structures for storing relations.
+///
+/// Used as a CLI argument to select which data structure backs the join.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum IndexStructure {
     ColumnTrie,

@@ -7,11 +7,19 @@ use {
     std::{fs::File, path::Path},
 };
 
+/// Whether a relation's attributes are identified by name or by position.
 pub enum ModelType {
+    /// Attributes are accessed by column index only.
     Positional,
+    /// Attributes have explicit string names.
     Named,
 }
 
+/// Metadata for a relation: its name, attribute names, and arity.
+///
+/// A header can be "positional" (no attribute names, only arity) or "named"
+/// (with explicit column names). A "nameless" header has an empty `name` field,
+/// used for intermediate/projected relations.
 #[derive(Clone, Debug)]
 pub struct RelationHeader {
     name: String,
@@ -31,6 +39,8 @@ impl RelationHeader {
         }
     }
 
+    /// Creates a nameless header with the given attribute names. Arity is
+    /// inferred from the length of `attrs`.
     pub fn new_nameless(attrs: Vec<String>) -> Self {
         let arity = attrs.len();
         RelationHeader {
@@ -40,6 +50,7 @@ impl RelationHeader {
         }
     }
 
+    /// Creates a named header with positional (unnamed) attributes.
     pub fn new_positional(name: impl Into<String>, arity: usize) -> Self {
         RelationHeader {
             name: name.into(),
@@ -48,6 +59,7 @@ impl RelationHeader {
         }
     }
 
+    /// Creates a nameless header with positional attributes of the given arity.
     pub fn new_nameless_positional(arity: usize) -> Self {
         RelationHeader {
             name: String::new(),
@@ -77,12 +89,17 @@ impl From<usize> for RelationHeader {
     fn from(value: usize) -> RelationHeader { RelationHeader::new_nameless_positional(value) }
 }
 
+/// A relation that can produce a new relation containing only the specified
+/// columns.
 pub trait Projectable {
+    /// Returns a new relation containing only the columns at the given indices.
     fn project(&self, columns: Vec<usize>) -> Self;
 }
 
-/// The `Relation` trait defines a relational data structure.
+/// The `Relation` trait defines a relational data structure that can store and
+/// retrieve tuples of `usize` keys, and participate in join operations.
 pub trait Relation: JoinIterable + Projectable {
+    /// Returns the header (name, attributes, arity) of this relation.
     fn header(&self) -> &RelationHeader;
 
     /// Creates a new relation with the specified arity.

@@ -4,11 +4,19 @@ use {
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 
-/// An iterator over the nodes of a `TreeTrie`.
+/// A [`TrieIterator`] over a [`TreeTrie`].
+///
+/// Maintains an explicit `stack` of `(node, sibling_index)` pairs representing
+/// the path from the root to the current position. `pos` tracks the current
+/// sibling index at the deepest level.
 #[derive(IntoTrieIter)]
 struct TreeTrieIter<'a> {
+    /// Current sibling index at the deepest stack level.
     pos: usize,
+    /// The trie being iterated.
     trie: &'a TreeTrie,
+    /// Stack of `(current_node, sibling_index)` pairs from root to current
+    /// depth.
     stack: Vec<(&'a TrieNode, usize)>,
 }
 
@@ -21,6 +29,8 @@ impl<'a> TreeTrieIter<'a> {
         }
     }
 
+    /// Returns the sibling list at the current depth, or `None` if the stack
+    /// is empty (iterator not yet opened).
     fn siblings(&self) -> Option<&'a Vec<TrieNode>> {
         if self.stack.is_empty() {
             None

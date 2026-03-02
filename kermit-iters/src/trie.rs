@@ -29,9 +29,19 @@ pub trait TrieIterator: LinearIterator {
 /// through the `TrieIterable` interface, and as such used in algorithms that
 /// require such an iterator.
 pub trait TrieIterable: JoinIterable {
+    /// Returns a trie iterator over this structure that also implements
+    /// `IntoIterator`, allowing it to be wrapped in a [`TrieIteratorWrapper`]
+    /// for tuple-at-a-time consumption.
     fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>>;
 }
 
+/// Adapts a [`TrieIterator`] into a standard `Iterator<Item = Vec<usize>>`.
+///
+/// Performs a depth-first traversal of the trie, yielding each root-to-leaf
+/// path as a `Vec<usize>`. An internal `stack` tracks the keys along the
+/// current path. When `expected_arity` is set, tuples shorter than that
+/// length are skipped (useful for joins that produce partial paths at
+/// intermediate depths).
 pub struct TrieIteratorWrapper<IT>
 where
     IT: TrieIterator,
@@ -45,6 +55,8 @@ impl<IT> TrieIteratorWrapper<IT>
 where
     IT: TrieIterator,
 {
+    /// Creates a new wrapper that yields all root-to-leaf paths regardless of
+    /// depth.
     pub fn new(iter: IT) -> Self {
         TrieIteratorWrapper {
             iter,
@@ -53,6 +65,8 @@ where
         }
     }
 
+    /// Creates a new wrapper that only yields paths with exactly `arity` keys,
+    /// filtering out shorter partial tuples.
     pub fn with_arity(iter: IT, arity: usize) -> Self {
         TrieIteratorWrapper {
             iter,
@@ -61,6 +75,7 @@ where
         }
     }
 
+    /// Moves the underlying iterator up one level and pops the stack.
     fn up(&mut self) -> bool {
         if self.iter.up() {
             self.stack.pop();
@@ -70,6 +85,8 @@ where
         }
     }
 
+    /// Opens a child level on the underlying iterator and pushes the first
+    /// child key onto the stack. Returns `false` if the current node is a leaf.
     fn down(&mut self) -> bool {
         if !self.iter.open() {
             return false;
@@ -78,6 +95,9 @@ where
         true
     }
 
+    /// Advances to the next sibling at the current depth, updating the stack.
+    /// Returns `false` if there are no more siblings or the iterator is
+    /// exhausted.
     fn next_wrapper(&mut self) -> bool {
         if self.iter.at_end() {
             false
@@ -90,6 +110,10 @@ where
         }
     }
 
+    /// Produces the next complete tuple by advancing through the trie in
+    /// depth-first order. Backtracks via `up`/`next_wrapper` when a leaf is
+    /// reached, then descends again via `down` until the next leaf. Returns
+    /// `None` when the entire trie has been exhausted.
     fn next(&mut self) -> Option<Vec<usize>> {
         loop {
             if !self.stack.is_empty() {

@@ -5,6 +5,8 @@ use {
     std::path::PathBuf,
 };
 
+/// Orchestrates benchmark execution for a given data structure `R` and join
+/// algorithm `JA`. Wraps a [`BenchmarkManager`] for dataset management.
 pub struct Benchmarker<R, JA>
 where
     R: Relation,

@@ -7,6 +7,11 @@ use {
     std::path::Path,
 };
 
+/// The Oxford Database Systems and Implementation course benchmark.
+///
+/// Downloads relation data from the leapfrog-triejoin reference repository,
+/// converts it to Parquet format, and organizes it by distribution (Uniform,
+/// Zipf) and scale factor.
 pub struct OxfordBenchmark;
 
 static METADATA: BenchmarkMetadata = BenchmarkMetadata {

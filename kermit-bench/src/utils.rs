@@ -7,6 +7,8 @@ use {
     std::{path::Path, sync::Arc},
 };
 
+/// Writes relation data to a Parquet file with the given attribute names as
+/// columns. Each inner `Vec<usize>` is one row; values are stored as `Int64`.
 pub fn write_relation_to_parquet(
     path: &Path, attributes: &[String], data: &[Vec<usize>],
 ) -> Result<(), Box<dyn std::error::Error>> {

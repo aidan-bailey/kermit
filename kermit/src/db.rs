@@ -4,6 +4,9 @@ use {
     std::{collections::HashMap, path::Path},
 };
 
+/// Object-safe interface for a relational database that can store relations
+/// and execute join queries. Erases the concrete `Relation` and `JoinAlgo`
+/// type parameters.
 pub trait DB {
     fn new(name: String) -> Self
     where
@@ -22,6 +25,11 @@ pub trait DB {
     fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>;
 }
 
+/// A typed relational database parameterized by its data structure `R` and
+/// join algorithm `JA`.
+///
+/// Implements the object-safe [`DB`] trait so it can be used behind `Box<dyn
+/// DB>`.
 pub struct Database<R, JA>
 where
     R: Relation,
@@ -120,6 +128,8 @@ where
     pub fn new(name: String) -> Self { <Self as DB>::new(name) }
 }
 
+/// Creates a [`Database`] as a `Box<dyn DB>` based on the CLI-selected index
+/// structure and join algorithm.
 pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm) -> Box<dyn DB> {
     match (ds, ja) {
         | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {

@@ -35,12 +35,22 @@ pub trait LeapfrogJoinIterator {
     fn at_end(&self) -> bool;
 }
 
+/// Concrete implementation of the leapfrog join over sorted linear iterators.
+///
+/// Coordinates `k` sorted iterators to find their common keys. The iterators
+/// are logically arranged in a ring; `p` points to the "current" iterator, and
+/// `iterator_indexes` maps logical positions to physical iterator indices
+/// (sorted by initial key during
+/// [`leapfrog_init`](LeapfrogJoinIterator::leapfrog_init)).
 pub struct LeapfrogJoinIter<IT>
 where
     IT: LinearIterator,
 {
+    /// The underlying sorted iterators being joined.
     pub(crate) iterators: Vec<IT>,
+    /// Logical-to-physical index mapping, sorted by initial key value.
     pub iterator_indexes: Vec<usize>,
+    /// Index into `iterator_indexes` for the current iterator in the ring.
     p: usize,
 }
 
@@ -48,6 +58,7 @@ impl<IT> LeapfrogJoinIter<IT>
 where
     IT: LinearIterator,
 {
+    /// Creates a new leapfrog join over the given sorted iterators.
     pub fn new(iterators: Vec<IT>) -> Self {
         LeapfrogJoinIter {
             iterator_indexes: (0..iterators.len()).collect(),
@@ -56,6 +67,7 @@ where
         }
     }
 
+    /// Returns the number of iterators being joined.
     pub fn k(&self) -> usize { self.iterators.len() }
 
     fn mut_iter(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.iterator_indexes[i]] }

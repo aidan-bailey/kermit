@@ -1,14 +1,21 @@
 use std::{env, path::PathBuf};
 
+/// Handles downloading benchmark datasets to a temporary directory.
 pub struct Downloader;
 
+/// How to fetch a benchmark dataset.
 pub enum DownloadMethod {
+    /// Clone a git repository.
     CLONE,
 }
 
+/// Specification for downloading a benchmark dataset.
 pub struct DownloadSpec {
+    /// Short identifier used as the directory name.
     pub name: &'static str,
+    /// Source URL to download from.
     pub url: &'static str,
+    /// The method used to fetch the dataset.
     pub method: DownloadMethod,
 }
 
@@ -22,6 +29,7 @@ impl Downloader {
         }
     }
 
+    /// Removes the entire Kermit temp directory and all downloaded datasets.
     pub fn cleanall() {
         let tmp_dir = Self::tmp_dir();
         if tmp_dir.exists() {
@@ -29,6 +37,7 @@ impl Downloader {
         }
     }
 
+    /// Removes the temp directory for a single dataset.
     pub fn clean(spec: &DownloadSpec) {
         let dest = Self::tmp_dir().join(spec.name);
         if dest.exists() {
@@ -36,6 +45,8 @@ impl Downloader {
         }
     }
 
+    /// Downloads a dataset according to `spec`, returning the path to the
+    /// downloaded directory. No-ops if the dataset is already present.
     pub fn download(spec: &DownloadSpec) -> Result<PathBuf, Box<dyn std::error::Error>> {
         Self::ensure_init();
         let dest = Self::tmp_dir().join(spec.name);

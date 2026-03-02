@@ -1,3 +1,8 @@
+//! Library interface for the Kermit CLI.
+//!
+//! Re-exports algorithm and data structure types and provides the
+//! [`compute_join`] helper for running joins from tuple inputs.
+
 pub mod algos {
     pub use kermit_algos::LeapfrogTriejoin;
 }
@@ -16,6 +21,12 @@ use {
     std::collections::HashMap,
 };
 
+/// Convenience function that builds relations from raw tuple vectors and runs a
+/// join, returning the result tuples.
+///
+/// Constructs a synthetic Datalog query from the `variables` and
+/// `rel_variables` mappings, builds one `R` per input relation, and executes
+/// the join via `JA`.
 pub fn compute_join<R, JA>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
 ) -> Vec<Vec<usize>>
