@@ -110,4 +110,102 @@ mod tests {
         assert_eq!(iter.next(), None);
         assert!(iter.at_end());
     }
+
+    #[test]
+    fn empty_vec() {
+        let data: Vec<usize> = vec![];
+        let mut iter = data.linear_iter();
+        assert_eq!(iter.key(), None);
+        assert_eq!(iter.next(), None);
+        assert!(iter.at_end());
+    }
+
+    #[test]
+    fn single_element() {
+        let data = vec![42];
+        let mut iter = data.linear_iter();
+        assert_eq!(iter.key(), None);
+        assert_eq!(iter.next(), Some(42));
+        assert_eq!(iter.key(), Some(42));
+        assert!(!iter.at_end());
+        assert_eq!(iter.next(), None);
+        assert!(iter.at_end());
+    }
+
+    #[test]
+    fn key_tracks_position() {
+        let data = vec![10, 20, 30];
+        let mut iter = data.linear_iter();
+        assert_eq!(iter.key(), None);
+        assert_eq!(iter.next(), Some(10));
+        assert_eq!(iter.key(), Some(10));
+        assert_eq!(iter.next(), Some(20));
+        assert_eq!(iter.key(), Some(20));
+        assert_eq!(iter.next(), Some(30));
+        assert_eq!(iter.key(), Some(30));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.key(), None);
+    }
+
+    #[test]
+    fn seek_exact_key() {
+        let data = vec![1, 3, 5, 7, 9];
+        let mut iter = data.linear_iter();
+        iter.next();
+        assert!(iter.seek(5));
+        assert_eq!(iter.key(), Some(5));
+    }
+
+    #[test]
+    fn seek_upper_bound() {
+        let data = vec![1, 3, 5, 7, 9];
+        let mut iter = data.linear_iter();
+        iter.next();
+        assert!(iter.seek(4));
+        assert_eq!(iter.key(), Some(5));
+    }
+
+    #[test]
+    fn seek_past_all() {
+        let data = vec![1, 3, 5];
+        let mut iter = data.linear_iter();
+        iter.next();
+        assert!(!iter.seek(100));
+        assert!(iter.at_end());
+    }
+
+    #[test]
+    fn seek_to_current_key() {
+        let data = vec![1, 3, 5, 7];
+        let mut iter = data.linear_iter();
+        iter.next();
+        assert!(iter.seek(1));
+        assert_eq!(iter.key(), Some(1));
+    }
+
+    #[test]
+    fn seek_then_next() {
+        let data = vec![1, 3, 5, 7, 9];
+        let mut iter = data.linear_iter();
+        iter.next();
+        assert!(iter.seek(5));
+        assert_eq!(iter.key(), Some(5));
+        assert_eq!(iter.next(), Some(7));
+        assert_eq!(iter.next(), Some(9));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn multiple_seeks() {
+        let data = vec![1, 3, 5, 7, 9];
+        let mut iter = data.linear_iter();
+        iter.next();
+        assert!(iter.seek(3));
+        assert_eq!(iter.key(), Some(3));
+        assert!(iter.seek(7));
+        assert_eq!(iter.key(), Some(7));
+        assert!(iter.seek(9));
+        assert_eq!(iter.key(), Some(9));
+        assert!(!iter.seek(10));
+    }
 }
