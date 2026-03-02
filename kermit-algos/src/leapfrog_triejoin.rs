@@ -286,6 +286,18 @@ mod tests {
         kermit_iters::TrieIterable,
     };
 
+    /// Collect triejoin results end-to-end via `into_iter().collect()`.
+    fn triejoin_collect(
+        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, relations: Vec<&TreeTrie>,
+    ) -> Vec<Vec<usize>> {
+        let iters: Vec<_> = relations.iter().map(|r| r.trie_iter()).collect();
+        LeapfrogTriejoinIter::new(variables, rel_variables, iters)
+            .into_iter()
+            .collect()
+    }
+
+    // -- Original manual-stepping tests --
+
     #[test]
     fn test_classic() {
         let t1 = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
@@ -366,6 +378,187 @@ mod tests {
         assert_eq!(triejoin_iter.key(), Some(5));
         assert!(triejoin_iter.triejoin_open());
         assert_eq!(triejoin_iter.key(), Some(7));
+    }
+
+    // -- End-to-end collect tests --
+
+    #[test]
+    fn unary_intersection() {
+        let r = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let s = TreeTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]);
+        assert_eq!(
+            triejoin_collect(vec![0], vec![vec![0], vec![0]], vec![&r, &s]),
+            vec![vec![2], vec![3]],
+        );
+    }
+
+    #[test]
+    fn unary_no_match() {
+        let r = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2]]);
+        let s = TreeTrie::from_tuples(1.into(), vec![vec![3], vec![4]]);
+        assert_eq!(
+            triejoin_collect(vec![0], vec![vec![0], vec![0]], vec![&r, &s]),
+            Vec::<Vec<usize>>::new(),
+        );
+    }
+
+    #[test]
+    fn unary_empty_relation() {
+        let r = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let s = TreeTrie::from_tuples(1.into(), vec![]);
+        assert_eq!(
+            triejoin_collect(vec![0], vec![vec![0], vec![0]], vec![&r, &s]),
+            Vec::<Vec<usize>>::new(),
+        );
+    }
+
+    #[test]
+    fn unary_single_match() {
+        let r = TreeTrie::from_tuples(1.into(), vec![vec![5]]);
+        let s = TreeTrie::from_tuples(1.into(), vec![vec![5]]);
+        assert_eq!(
+            triejoin_collect(vec![0], vec![vec![0], vec![0]], vec![&r, &s]),
+            vec![vec![5]],
+        );
+    }
+
+    #[test]
+    fn three_way_unary() {
+        let r = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4]]);
+        let s = TreeTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![5]]);
+        let t = TreeTrie::from_tuples(1.into(), vec![vec![3], vec![4], vec![5]]);
+        assert_eq!(
+            triejoin_collect(vec![0], vec![vec![0], vec![0], vec![0]], vec![&r, &s, &t]),
+            vec![vec![3]],
+        );
+    }
+
+    #[test]
+    fn binary_natural_join() {
+        // R(a,b) ⋈ S(b,c)
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
+        assert_eq!(
+            triejoin_collect(vec![0, 1, 2], vec![vec![0, 1], vec![1, 2]], vec![&r, &s]),
+            vec![vec![1, 2, 4], vec![1, 3, 5]],
+        );
+    }
+
+    #[test]
+    fn no_match_at_shared_variable() {
+        // R(a,b) ⋈ S(a,c) where a values are disjoint — mismatch at the
+        // depth where both relations participate, producing correct empty result
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![3, 4]]);
+        assert_eq!(
+            triejoin_collect(vec![0, 1, 2], vec![vec![0, 1], vec![0, 2]], vec![&r, &s]),
+            Vec::<Vec<usize>>::new(),
+        );
+    }
+
+    #[test]
+    fn triangle_join_collect() {
+        // Q(a,b,c) :- R(a,b), S(b,c), T(a,c)
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![7, 4]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![
+            4, 9,
+        ]]);
+        let t = TreeTrie::from_tuples(2.into(), vec![vec![7, 2], vec![7, 3], vec![7, 5]]);
+        assert_eq!(
+            triejoin_collect(
+                vec![0, 1, 2],
+                vec![vec![0, 1], vec![1, 2], vec![0, 2]],
+                vec![&r, &s, &t],
+            ),
+            vec![vec![7, 4, 5]],
+        );
+    }
+
+    #[test]
+    fn star_join() {
+        // Q(a,b,c) :- R(a,b), S(a,c) — star pattern on variable a
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![1, 5], vec![1, 6], vec![2, 7]]);
+        assert_eq!(
+            triejoin_collect(vec![0, 1, 2], vec![vec![0, 1], vec![0, 2]], vec![&r, &s]),
+            vec![
+                vec![1, 2, 5],
+                vec![1, 2, 6],
+                vec![1, 3, 5],
+                vec![1, 3, 6],
+                vec![2, 4, 7],
+            ],
+        );
+    }
+
+    #[test]
+    fn self_join() {
+        // R(a,b) ⋈ R(b,c) — self-join where every a value has a matching b chain
+        let r1 = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 1]]);
+        let r2 = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 1]]);
+        assert_eq!(
+            triejoin_collect(vec![0, 1, 2], vec![vec![0, 1], vec![1, 2]], vec![&r1, &r2]),
+            vec![vec![1, 2, 1], vec![2, 1, 2]],
+        );
+    }
+
+    #[test]
+    fn four_way_chain() {
+        // Q(a,b,c,d,e) :- R(a,b), S(b,c), T(c,d), U(d,e)
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![2, 3]]);
+        let t = TreeTrie::from_tuples(2.into(), vec![vec![3, 4]]);
+        let u = TreeTrie::from_tuples(2.into(), vec![vec![4, 5]]);
+        assert_eq!(
+            triejoin_collect(
+                vec![0, 1, 2, 3, 4],
+                vec![vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 4]],
+                vec![&r, &s, &t, &u],
+            ),
+            vec![vec![1, 2, 3, 4, 5]],
+        );
+    }
+
+    #[test]
+    fn single_relation_passthrough() {
+        // Join with just one relation returns all its tuples
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(
+            triejoin_collect(vec![0, 1], vec![vec![0, 1]], vec![&r]),
+            vec![vec![1, 2], vec![3, 4]],
+        );
+    }
+
+    #[test]
+    fn column_trie_binary_join() {
+        use kermit_ds::ColumnTrie;
+        let r = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3]]);
+        let s = ColumnTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
+        let r_iter = r.trie_iter();
+        let s_iter = s.trie_iter();
+        let result: Vec<Vec<usize>> =
+            LeapfrogTriejoinIter::new(vec![0, 1, 2], vec![vec![0, 1], vec![1, 2]], vec![
+                r_iter, s_iter,
+            ])
+            .into_iter()
+            .collect();
+        assert_eq!(result, vec![vec![1, 2, 4], vec![1, 3, 5]]);
+    }
+
+    #[test]
+    fn chain_join_collect() {
+        // Q(a,b,c,d) :- R(a,b), S(b,c), T(c,d) — end-to-end collect
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
+        let t = TreeTrie::from_tuples(2.into(), vec![vec![4, 6], vec![5, 7]]);
+        assert_eq!(
+            triejoin_collect(
+                vec![0, 1, 2, 3],
+                vec![vec![0, 1], vec![1, 2], vec![2, 3]],
+                vec![&r, &s, &t],
+            ),
+            vec![vec![1, 2, 4, 6], vec![2, 3, 5, 7]],
+        );
     }
 
     // #[test_case(
