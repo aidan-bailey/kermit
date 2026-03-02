@@ -153,11 +153,10 @@ static METADATA: BenchmarkMetadata = BenchmarkMetadata {
     ],
 };
 
-fn translate_dataset(source: &Path, dest: &Path) {
-    // Get header names
+fn translate_dataset(source: &Path, dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let header_path = source.join("databasefile");
     let headers: Vec<String> = std::fs::read_to_string(&header_path)
-        .unwrap()
+        .map_err(|e| format!("Failed to read header file {}: {e}", header_path.display()))?
         .lines()
         .map(|s| s.to_string())
         .collect();
@@ -175,30 +174,37 @@ fn translate_dataset(source: &Path, dest: &Path) {
 
         let data_path = source.join(rel_file_name);
 
-        let data_content: Vec<Vec<usize>> = std::fs::read_to_string(data_path)
-            .unwrap()
+        let raw = std::fs::read_to_string(&data_path)
+            .map_err(|e| format!("Failed to read data file {}: {e}", data_path.display()))?;
+        let data_content: Vec<Vec<usize>> = raw
             .trim()
             .lines()
             .map(|line| {
                 line.split(",")
                     .take(rel_attrs.len())
-                    .map(|s| s.trim().parse::<usize>().unwrap())
-                    .collect()
+                    .map(|s| {
+                        s.trim().parse::<usize>().map_err(|e| {
+                            format!(
+                                "Failed to parse value {:?} in {}: {e}",
+                                s.trim(),
+                                data_path.display()
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
-        utils::write_relation_to_parquet(
-            &dest.join(format!("{}.parquet", rel_name)),
-            &rel_attrs,
-            &data_content,
-        )
-        .unwrap();
+        let parquet_path = dest.join(format!("{}.parquet", rel_name));
+        utils::write_relation_to_parquet(&parquet_path, &rel_attrs, &data_content)
+            .map_err(|e| format!("Failed to write {}: {e}", parquet_path.display()))?;
     }
+    Ok(())
 }
 
-fn translate_query(source: &Path, dest: &Path) {
+fn translate_query(source: &Path, dest: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let query_content: Vec<_> = std::fs::read_to_string(source)
-        .unwrap()
+        .map_err(|e| format!("Failed to read query file {}: {e}", source.display()))?
         .lines()
         .map(|s| s.to_string())
         .collect();
@@ -212,11 +218,12 @@ fn translate_query(source: &Path, dest: &Path) {
         .filter(|s| !s.is_empty())
         .map(|s| s.trim())
         .collect::<Vec<_>>();
-    // Write files
-    let mut file = std::fs::File::create(dest).unwrap();
+    let mut file = std::fs::File::create(dest)
+        .map_err(|e| format!("Failed to create query output {}: {e}", dest.display()))?;
     use std::io::Write;
-    writeln!(file, "{}", rels.join(",")).unwrap();
-    writeln!(file, "{}", attrs.join(",")).unwrap();
+    writeln!(file, "{}", rels.join(","))?;
+    writeln!(file, "{}", attrs.join(","))?;
+    Ok(())
 }
 
 impl BenchmarkConfig for OxfordBenchmark {
@@ -248,7 +255,7 @@ impl BenchmarkConfig for OxfordBenchmark {
                     std::fs::create_dir_all(&dest_path)?;
                 }
 
-                translate_dataset(&source_path, &dest_path);
+                translate_dataset(&source_path, &dest_path)?;
             }
         }
 
@@ -263,7 +270,7 @@ impl BenchmarkConfig for OxfordBenchmark {
             let source_path = ds_tmp_path.join(query_file);
             // oxford_dataset/queries/query1.txt
             let dest_path = queries_dest.join(format!("{}.txt", query_file));
-            translate_query(&source_path, &dest_path);
+            translate_query(&source_path, &dest_path)?;
         }
 
         Ok(())
