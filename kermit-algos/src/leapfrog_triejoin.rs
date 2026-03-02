@@ -214,6 +214,71 @@ where
     }
 }
 
+/// Indexes the variables in a [`JoinQuery`] for the triejoin algorithm.
+///
+/// Performs three passes over the query:
+/// 1. Register head variables — assigns each unique name a numeric index,
+///    starting from 0. Head variables come first so the output tuple order
+///    matches the head declaration.
+/// 2. Register body-only variables — any variable not already seen in the head
+///    gets the next available index.
+/// 3. Build per-relation variable index lists — for each body predicate, collect
+///    the indices of the variables it contains.
+///
+/// Placeholders (`_`) and atoms are skipped in all passes.
+///
+/// Returns `(variables, rel_variables)` where `variables` is `0..num_vars` and
+/// `rel_variables[i]` lists the variable indices for body predicate `i`.
+fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
+    let mut var_to_index: HashMap<String, usize> = HashMap::new();
+    let mut next_index: usize = 0;
+
+    // Helper: assigns a fresh index to a variable name on first sight,
+    // returns the existing index on subsequent encounters.
+    let register_var = |name: &str, map: &mut HashMap<String, usize>, next: &mut usize| {
+        *map.entry(name.to_string()).or_insert_with(|| {
+            let idx = *next;
+            *next += 1;
+            idx
+        })
+    };
+
+    // Pass 1: head variables — establishes output tuple ordering.
+    for t in &query.head.terms {
+        if let Term::Var(ref vname) = t {
+            let _ = register_var(vname, &mut var_to_index, &mut next_index);
+        }
+    }
+
+    // Pass 2: body-only variables — any variable not already seen in the head.
+    for pred in &query.body {
+        for t in &pred.terms {
+            if let Term::Var(ref vname) = t {
+                let _ = register_var(vname, &mut var_to_index, &mut next_index);
+            }
+        }
+    }
+
+    let variables: Vec<usize> = (0..var_to_index.len()).collect();
+
+    // Pass 3: build per-relation variable index lists. Placeholders and atoms
+    // are skipped — they occupy trie levels but don't bind a join variable.
+    let mut rel_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
+    for pred in &query.body {
+        let mut rel_vars_for_pred: Vec<usize> = Vec::new();
+        for t in &pred.terms {
+            if let Term::Var(ref vname) = t {
+                if let Some(idx) = var_to_index.get(vname) {
+                    rel_vars_for_pred.push(*idx);
+                }
+            }
+        }
+        rel_variables.push(rel_vars_for_pred);
+    }
+
+    (variables, rel_variables)
+}
+
 /// Entry point for the Leapfrog Triejoin algorithm, implementing
 /// [`JoinAlgo`](crate::JoinAlgo) for any [`TrieIterable`] data structure.
 pub struct LeapfrogTriejoin {}
@@ -225,72 +290,8 @@ where
     fn join_iter(
         query: JoinQuery, datastructures: HashMap<String, &DS>,
     ) -> impl Iterator<Item = Vec<usize>> {
-        // Variable indexing happens in three passes:
-        //
-        // 1. Register head variables — assigns each unique variable name a numeric
-        //    index, starting from 0. Head variables come first so the output tuple
-        //    order matches the head declaration.
-        // 2. Register body variables — any variable that appears only in the body (not
-        //    in the head) gets the next available index.
-        // 3. Build per-relation variable index lists (`rel_variables`) — for each body
-        //    predicate, collect the indices of the variables that appear in it. This
-        //    tells the triejoin which iterators participate at each variable/depth
-        //    level.
-        //
-        // Placeholders (`_`) and atoms are skipped in all passes — they represent
-        // projected-away columns that don't participate in the join.
+        let (variables, rel_variables) = build_variable_index(&query);
 
-        let mut var_to_index: HashMap<String, usize> = HashMap::new();
-        let mut next_index: usize = 0;
-
-        // Helper: assigns a fresh index to a variable name on first sight,
-        // returns the existing index on subsequent encounters.
-        let register_var = |name: &str, map: &mut HashMap<String, usize>, next: &mut usize| {
-            *map.entry(name.to_string()).or_insert_with(|| {
-                let idx = *next;
-                *next += 1;
-                idx
-            })
-        };
-
-        // Pass 1: head variables — establishes output tuple ordering.
-        for t in &query.head.terms {
-            if let Term::Var(ref vname) = t {
-                let _ = register_var(vname, &mut var_to_index, &mut next_index);
-            }
-        }
-
-        // Pass 2: body-only variables — any variable not already seen in the head.
-        for pred in &query.body {
-            for t in &pred.terms {
-                if let Term::Var(ref vname) = t {
-                    let _ = register_var(vname, &mut var_to_index, &mut next_index);
-                }
-            }
-        }
-
-        // Variables vector is 0..num_vars in the discovered order
-        let variables: Vec<usize> = (0..var_to_index.len()).collect();
-
-        // Pass 3: build per-relation variable index lists. For each body predicate,
-        // collect the indices of the variables it contains. Placeholders and atoms are
-        // skipped — they occupy trie levels but don't bind a join variable, so they
-        // don't need iterator coordination.
-        let mut rel_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
-        for pred in &query.body {
-            let mut rel_vars_for_pred: Vec<usize> = Vec::new();
-            for t in &pred.terms {
-                if let Term::Var(ref vname) = t {
-                    if let Some(idx) = var_to_index.get(vname) {
-                        rel_vars_for_pred.push(*idx);
-                    }
-                }
-            }
-            rel_variables.push(rel_vars_for_pred);
-        }
-
-        // Build trie iterators in the same order as query body using provided
-        // datastructures
         let trie_iters: Vec<_> = query
             .body
             .iter()
