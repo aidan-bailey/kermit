@@ -16,4 +16,3 @@ pub struct JoinQuery {
     pub head: Predicate,
     pub body: Vec<Predicate>,
 }
-

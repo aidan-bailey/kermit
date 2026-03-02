@@ -3,9 +3,7 @@ mod leapfrog_join;
 mod leapfrog_triejoin;
 
 use {clap::ValueEnum, std::str::FromStr};
-pub use {
-    join_algo::JoinAlgo, leapfrog_triejoin::LeapfrogTriejoin, kermit_parser::JoinQuery,
-};
+pub use {join_algo::JoinAlgo, kermit_parser::JoinQuery, leapfrog_triejoin::LeapfrogTriejoin};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum JoinAlgorithm {

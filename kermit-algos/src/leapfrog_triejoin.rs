@@ -192,8 +192,21 @@ where
     fn join_iter(
         query: JoinQuery, datastructures: HashMap<String, &DS>,
     ) -> impl Iterator<Item = Vec<usize>> {
-        // Map variable names to unique indices, ordered by first appearance in head
-        // then body
+        // Variable indexing happens in three passes:
+        //
+        // 1. Register head variables — assigns each unique variable name a numeric
+        //    index, starting from 0. Head variables come first so the output tuple
+        //    order matches the head declaration.
+        // 2. Register body variables — any variable that appears only in the body (not
+        //    in the head) gets the next available index.
+        // 3. Build per-relation variable index lists (`rel_variables`) — for each body
+        //    predicate, collect the indices of the variables that appear in it. This
+        //    tells the triejoin which iterators participate at each variable/depth
+        //    level.
+        //
+        // Placeholders (`_`) and atoms are skipped in all passes — they represent
+        // projected-away columns that don't participate in the join.
+
         let mut var_to_index: HashMap<String, usize> = HashMap::new();
         let mut next_index: usize = 0;
 
@@ -209,14 +222,14 @@ where
             }
         };
 
-        // First pass: head variables (ignore placeholders and atoms)
+        // Pass 1: head variables — establishes output tuple ordering.
         for t in &query.head.terms {
             if let Term::Var(ref vname) = t {
                 let _ = register_var(vname, &mut var_to_index, &mut next_index);
             }
         }
 
-        // Second pass: body variables (ignore placeholders and atoms)
+        // Pass 2: body-only variables — any variable not already seen in the head.
         for pred in &query.body {
             for t in &pred.terms {
                 if let Term::Var(ref vname) = t {
@@ -228,8 +241,10 @@ where
         // Variables vector is 0..num_vars in the discovered order
         let variables: Vec<usize> = (0..var_to_index.len()).collect();
 
-        // Build rel_variables following each predicate's order; ignore placeholders and
-        // atoms
+        // Pass 3: build per-relation variable index lists. For each body predicate,
+        // collect the indices of the variables it contains. Placeholders and atoms are
+        // skipped — they occupy trie levels but don't bind a join variable, so they
+        // don't need iterator coordination.
         let mut rel_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
         for pred in &query.body {
             let mut rel_vars_for_pred: Vec<usize> = Vec::new();

@@ -1,7 +1,6 @@
 mod join_query;
 
 pub use join_query::{JoinQuery, Predicate, Term};
-
 use winnow::{
     ascii::multispace0,
     combinator::{delimited, separated},
@@ -321,4 +320,3 @@ mod tests {
         assert_eq!(query.body[1].terms.len(), 2);
     }
 }
-

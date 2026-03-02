@@ -5,15 +5,36 @@ use {
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 
+/// Iterator over a [`ColumnTrie`] that traverses the trie layer by layer.
+///
+/// The iterator maintains a position using three coordinates:
+/// - `layer_number`: the current depth (0 = root/uninitialised, 1 = first data
+///   layer, …).
+/// - `interval_i`: index into the *current* layer's `interval` array,
+///   identifying the parent element whose children we are scanning. The
+///   interval array maps each parent element to the start offset of its
+///   children in the layer's `data` array.
+/// - `rel_data_i`: offset *within* the active `rel_data` slice (i.e. relative
+///   to the interval bounds, not a global data index).
+///
+/// `open()` descends one layer: it computes `interval_i = parent_interval_start
+/// + rel_data_i` to find the child interval, then slices the next layer's data
+/// between that interval's start and end. `up()` reverses this by scanning the
+/// parent layer's interval array to recover the previous `interval_i` and
+/// `rel_data_i`.
 #[derive(IntoTrieIter)]
 pub struct ColumnTrieIter<'a> {
-    /// Index of current layer.
+    /// Current depth in the trie (0 = root/uninitialised, 1..arity = data
+    /// layers).
     layer_number: usize,
-    /// Index of interval start at current layer
+    /// Index into the current layer's `interval` array, identifying which
+    /// parent element's children we are iterating over.
     interval_i: usize,
-    /// Relative index based on interval
+    /// Offset within `rel_data` — the position relative to the start of the
+    /// current interval, not a global index into the layer's data.
     rel_data_i: usize,
-    /// Relative data at current layer
+    /// Slice of the current layer's data bounded by the active interval.
+    /// `None` when positioned at the root (layer 0).
     rel_data: Option<&'a [usize]>,
     /// The trie being iterated.
     trie: &'a ColumnTrie,
@@ -88,7 +109,11 @@ impl TrieIterator for ColumnTrieIter<'_> {
             self.rel_data = Some(&self.trie.layer(0).data);
             true
         } else {
-            // If not at root or leaf, compute next interval index
+            // Descend into the children of the element at the current position.
+            // The global data index of the current element is the interval start
+            // plus our relative offset. This becomes our interval index in the
+            // next layer, whose interval array maps each parent data element to
+            // the start of its children.
             let curr_layer = self.trie.layer(self.layer_number - 1);
             let prev_start_index = curr_layer.interval[self.interval_i];
             self.interval_i = prev_start_index + self.rel_data_i;
