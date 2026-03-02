@@ -102,9 +102,9 @@ where
 
         let relation = match extension.to_lowercase().as_str() {
             | "csv" => R::from_csv(path)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?,
             | "parquet" => R::from_parquet(path)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?,
             | _ => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,

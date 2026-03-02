@@ -1,11 +1,65 @@
 //! This module defines the `Relation` trait and file reading extensions.
 use {
     arrow::array::AsArray,
-    csv::Error,
     kermit_iters::JoinIterable,
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    std::{fs::File, path::Path},
+    std::{fmt, fs::File, path::Path},
 };
+
+/// Error type for relation file operations (CSV and Parquet).
+#[derive(Debug)]
+pub enum RelationError {
+    /// A CSV library error.
+    Csv(csv::Error),
+    /// A filesystem I/O error.
+    Io(std::io::Error),
+    /// A Parquet library error.
+    Parquet(parquet::errors::ParquetError),
+    /// An Arrow conversion error.
+    Arrow(arrow::error::ArrowError),
+    /// A data value that could not be converted (e.g. non-integer in a CSV).
+    InvalidData(String),
+}
+
+impl fmt::Display for RelationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            | RelationError::Csv(e) => write!(f, "CSV error: {e}"),
+            | RelationError::Io(e) => write!(f, "I/O error: {e}"),
+            | RelationError::Parquet(e) => write!(f, "Parquet error: {e}"),
+            | RelationError::Arrow(e) => write!(f, "Arrow error: {e}"),
+            | RelationError::InvalidData(msg) => write!(f, "Invalid data: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for RelationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            | RelationError::Csv(e) => Some(e),
+            | RelationError::Io(e) => Some(e),
+            | RelationError::Parquet(e) => Some(e),
+            | RelationError::Arrow(e) => Some(e),
+            | RelationError::InvalidData(_) => None,
+        }
+    }
+}
+
+impl From<csv::Error> for RelationError {
+    fn from(e: csv::Error) -> Self { RelationError::Csv(e) }
+}
+
+impl From<std::io::Error> for RelationError {
+    fn from(e: std::io::Error) -> Self { RelationError::Io(e) }
+}
+
+impl From<parquet::errors::ParquetError> for RelationError {
+    fn from(e: parquet::errors::ParquetError) -> Self { RelationError::Parquet(e) }
+}
+
+impl From<arrow::error::ArrowError> for RelationError {
+    fn from(e: arrow::error::ArrowError) -> Self { RelationError::Arrow(e) }
+}
 
 /// Whether a relation's attributes are identified by name or by position.
 pub enum ModelType {
@@ -123,7 +177,7 @@ pub trait RelationFileExt: Relation {
     ///
     /// This method extracts column names from the Parquet schema and the
     /// relation name from the filename.
-    fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, Error>
+    fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError>
     where
         Self: Sized;
 
@@ -132,7 +186,7 @@ pub trait RelationFileExt: Relation {
     /// # Note
     /// * Each line represents a tuple, and each value in the line should be
     ///   parsable into `Relation::KT`.
-    fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, Error>
+    fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError>
     where
         Self: Sized;
 }
@@ -143,7 +197,7 @@ impl<R> RelationFileExt for R
 where
     R: Relation,
 {
-    fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, Error> {
+    fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError> {
         let path = filepath.as_ref();
         let file = File::open(path)?;
 
@@ -170,25 +224,28 @@ where
         let header = RelationHeader::new(relation_name, attrs);
 
         let mut tuples = Vec::new();
-        for result in rdr.records() {
+        for (row_idx, result) in rdr.records().enumerate() {
             let record = result?;
-            let mut tuple: Vec<usize> = vec![];
-            for x in record.iter() {
-                if let Ok(y) = x.to_string().parse::<usize>() {
-                    tuple.push(y);
-                }
+            let mut tuple: Vec<usize> = Vec::with_capacity(record.len());
+            for (col_idx, field) in record.iter().enumerate() {
+                let value = field.parse::<usize>().map_err(|_| {
+                    RelationError::InvalidData(format!(
+                        "row {row_idx}, column {col_idx}: cannot parse {:?} as usize",
+                        field,
+                    ))
+                })?;
+                tuple.push(value);
             }
             tuples.push(tuple);
         }
         Ok(R::from_tuples(header, tuples))
     }
 
-    fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, Error> {
+    fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError> {
         let path = filepath.as_ref();
-        let file = File::open(path).map_err(|e| Error::from(std::io::Error::other(e)))?;
+        let file = File::open(path)?;
 
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| Error::from(std::io::Error::other(e)))?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
 
         // Extract schema to get column names
         let schema = builder.schema();
@@ -209,16 +266,14 @@ where
         let header = RelationHeader::new(relation_name, attrs);
 
         // Build the reader
-        let reader = builder
-            .build()
-            .map_err(|e| Error::from(std::io::Error::other(e)))?;
+        let reader = builder.build()?;
 
         // Collect all tuples first for efficient construction
         let mut tuples = Vec::new();
 
         // Read all record batches and collect tuples
         for batch_result in reader {
-            let batch = batch_result.map_err(|e| Error::from(std::io::Error::other(e)))?;
+            let batch = batch_result?;
 
             let num_rows = batch.num_rows();
             let num_cols = batch.num_columns();
@@ -234,10 +289,9 @@ where
                     if let Ok(value) = usize::try_from(int_array.value(row_idx)) {
                         tuple.push(value);
                     } else {
-                        return Err(Error::from(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Failed to convert parquet value",
-                        )));
+                        return Err(RelationError::InvalidData(
+                            "failed to convert Parquet value to usize".into(),
+                        ));
                     }
                 }
 
