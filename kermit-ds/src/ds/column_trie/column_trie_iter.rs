@@ -74,12 +74,16 @@ impl LinearIterator for ColumnTrieIter<'_> {
     }
 
     fn seek(&mut self, seek_key: usize) -> bool {
-        while let Some(key) = self.next() {
-            if key >= seek_key {
-                break;
-            }
+        if let Some(data) = self.rel_data {
+            // Binary search within the remaining portion of the sorted slice
+            // to find the first key >= seek_key.
+            let remaining = &data[self.rel_data_i..];
+            let offset = remaining.partition_point(|&k| k < seek_key);
+            self.rel_data_i += offset;
+            !self.at_end()
+        } else {
+            false
         }
-        self.at_end()
     }
 
     fn at_end(&self) -> bool {
