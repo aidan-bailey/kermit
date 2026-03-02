@@ -10,6 +10,12 @@ fn kermit_bin() -> PathBuf { Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf
 fn run_join(
     relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
 ) -> std::process::Output {
+    run_join_with_args(relations, query, algorithm, indexstructure, &[])
+}
+
+fn run_join_with_args(
+    relations: &[&str], query: &str, algorithm: &str, indexstructure: &str, extra_args: &[&str],
+) -> std::process::Output {
     let fixtures = fixtures_dir();
     let mut cmd = Command::new(kermit_bin());
     cmd.arg("join");
@@ -19,6 +25,9 @@ fn run_join(
     cmd.arg("--query").arg(fixtures.join(query));
     cmd.arg("--algorithm").arg(algorithm);
     cmd.arg("--indexstructure").arg(indexstructure);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
     cmd.output().expect("failed to execute kermit binary")
 }
 
@@ -147,4 +156,54 @@ fn cli_join_output_to_file() {
     assert_eq!(tuples, vec![vec![2], vec![3]]);
 
     let _ = std::fs::remove_file(&tmp_output);
+}
+
+#[test]
+fn cli_join_bench_flag_prints_statistics() {
+    let output = run_join_with_args(
+        &["first.csv", "second.csv"],
+        "intersect_query.dl",
+        "leapfrog-triejoin",
+        "tree-trie",
+        &["--bench"],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // stdout still contains correct join results
+    let tuples = parse_output(&output);
+    assert_eq!(tuples, vec![vec![2], vec![3]]);
+
+    // stderr contains bench statistics
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--- join statistics ---"),
+        "stderr missing statistics header: {stderr}"
+    );
+    assert!(stderr.contains("data structure:"));
+    assert!(stderr.contains("algorithm:"));
+    assert!(stderr.contains("output tuples:"));
+    assert!(stderr.contains("load time:"));
+    assert!(stderr.contains("join time:"));
+    assert!(stderr.contains("write time:"));
+    assert!(stderr.contains("total time:"));
+}
+
+#[test]
+fn cli_join_no_bench_flag_stderr_silent() {
+    let output = run_join(
+        &["first.csv", "second.csv"],
+        "intersect_query.dl",
+        "leapfrog-triejoin",
+        "tree-trie",
+    );
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("--- join statistics ---"),
+        "stderr should be empty without --bench: {stderr}"
+    );
 }

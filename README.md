@@ -55,6 +55,29 @@ Output (CSV to stdout):
 
 Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. Both `tree-trie` and `column-trie` index structures are supported.
 
+Add `--bench` (or `-b`) to print timing statistics to stderr:
+
+```sh
+kermit join \
+  --relations edge.csv \
+  --query query.dl \
+  --algorithm leapfrog-triejoin \
+  --indexstructure tree-trie \
+  --bench
+```
+
+```
+--- join statistics ---
+  data structure:  TreeTrie
+  algorithm:       LeapfrogTriejoin
+  relations:       1
+  output tuples:   3
+  load time:       0.000412s
+  join time:       0.000076s
+  write time:      0.000003s
+  total time:      0.000521s
+```
+
 ## Contributing
 
 Thanks for taking an interest! Perhaps after I've finished my thesis.

@@ -8,6 +8,7 @@ use {
         fs,
         io::{self, BufWriter, Write},
         path::PathBuf,
+        time::Instant,
     },
 };
 
@@ -52,6 +53,10 @@ enum Commands {
         /// Output file (optional, defaults to stdout)
         #[arg(short, long, value_name = "PATH")]
         output: Option<PathBuf>,
+
+        /// Output join statistics to stderr
+        #[arg(short, long)]
+        bench: bool,
     },
 
     /// Run a benchmark
@@ -110,7 +115,10 @@ fn main() -> anyhow::Result<()> {
             algorithm,
             indexstructure,
             output,
+            bench,
         } => {
+            let total_start = Instant::now();
+
             let query_str = fs::read_to_string(&query)
                 .map_err(|e| anyhow::anyhow!("Failed to read query file {:?}: {}", query, e))?;
             let join_query: JoinQuery = query_str
@@ -118,19 +126,38 @@ fn main() -> anyhow::Result<()> {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", query, e))?;
 
+            let load_start = Instant::now();
             let mut db = instantiate_database(indexstructure, algorithm);
             for path in &relations {
                 db.add_file(path)
                     .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
             }
+            let load_time = load_start.elapsed();
 
+            let join_start = Instant::now();
             let tuples = db.join(join_query);
+            let join_time = join_start.elapsed();
 
+            let write_start = Instant::now();
             let writer: Box<dyn Write> = match &output {
                 | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
                 | None => Box::new(BufWriter::new(io::stdout().lock())),
             };
             write_tuples(writer, &tuples)?;
+            let write_time = write_start.elapsed();
+
+            if bench {
+                let total_time = total_start.elapsed();
+                eprintln!("--- join statistics ---");
+                eprintln!("  data structure:  {indexstructure:?}");
+                eprintln!("  algorithm:       {algorithm:?}");
+                eprintln!("  relations:       {}", relations.len());
+                eprintln!("  output tuples:   {}", tuples.len());
+                eprintln!("  load time:       {:.6}s", load_time.as_secs_f64());
+                eprintln!("  join time:       {:.6}s", join_time.as_secs_f64());
+                eprintln!("  write time:      {:.6}s", write_time.as_secs_f64());
+                eprintln!("  total time:      {:.6}s", total_time.as_secs_f64());
+            }
         },
 
         | Commands::Benchmark {
