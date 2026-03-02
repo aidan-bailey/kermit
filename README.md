@@ -17,6 +17,44 @@ Rust was chosen as the project language for two main reasons:
 
 My objective is to write entirely safe, stable, and hopefully idiomatic Rust the whole way through. I am very interested in how much one can maintain readibility (and sanity) while striving to achieve this.
 
+## Usage
+
+Given a relation stored as a CSV file (`edge.csv`):
+
+```csv
+src,dst
+1,2
+2,3
+3,4
+1,3
+```
+
+And a Datalog query file (`query.dl`):
+
+```prolog
+path(X, Y, Z) :- edge(X, Y), edge(Y, Z).
+```
+
+Run a join with the `kermit` CLI:
+
+```sh
+kermit join \
+  --relations edge.csv \
+  --query query.dl \
+  --algorithm leapfrog-triejoin \
+  --indexstructure tree-trie
+```
+
+Output (CSV to stdout):
+
+```
+1,2,3
+1,3,4
+2,3,4
+```
+
+Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. Both `tree-trie` and `column-trie` index structures are supported.
+
 ## Contributing
 
 Thanks for taking an interest! Perhaps after I've finished my thesis.
