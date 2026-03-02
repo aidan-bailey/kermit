@@ -20,7 +20,7 @@ pub trait DB {
 
     fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>);
 
-    fn join(&self, query: kermit_algos::JoinQuery);
+    fn join(&self, query: kermit_algos::JoinQuery) -> Vec<Vec<usize>>;
 
     fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>;
 }
@@ -76,7 +76,7 @@ where
             .insert_all(keys);
     }
 
-    fn join(&self, query: JoinQuery) {
+    fn join(&self, query: JoinQuery) -> Vec<Vec<usize>> {
         // Build datastructure map from predicate names in the query body
         let mut ds_map: HashMap<String, &R> = HashMap::new();
         for pred in &query.body {
@@ -87,8 +87,7 @@ where
             ds_map.entry(pred.name.clone()).or_insert(r);
         }
 
-        // Execute join and collect results (discard relation construction for now)
-        let _tuples: Vec<Vec<usize>> = JA::join_iter(query, ds_map).collect();
+        JA::join_iter(query, ds_map).collect()
     }
 
     /// Loads a relation from a file (CSV or Parquet) and adds it to the
