@@ -303,3 +303,120 @@ where
         Ok(R::from_tuples(header, tuples))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── RelationError Display ──────────────────────────────────────────
+
+    #[test]
+    fn relation_error_display_csv() {
+        let csv_err = csv::Error::from(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
+        let err = RelationError::from(csv_err);
+        let msg = err.to_string();
+        assert!(msg.starts_with("CSV error:"), "got: {msg}");
+    }
+
+    #[test]
+    fn relation_error_display_io() {
+        let err = RelationError::from(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert!(err.to_string().starts_with("I/O error:"));
+    }
+
+    #[test]
+    fn relation_error_display_invalid_data() {
+        let err = RelationError::InvalidData("bad value".into());
+        assert_eq!(err.to_string(), "Invalid data: bad value");
+    }
+
+    #[test]
+    fn relation_error_source_delegates() {
+        use std::error::Error;
+
+        let io_err = std::io::Error::other("inner");
+        let err = RelationError::Io(io_err);
+        assert!(err.source().is_some());
+
+        let err = RelationError::InvalidData("no source".into());
+        assert!(err.source().is_none());
+    }
+
+    // ── from_csv error on invalid data ─────────────────────────────────
+
+    #[test]
+    fn from_csv_rejects_non_integer_values() {
+        use crate::ds::TreeTrie;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_csv_bad_value.csv");
+        std::fs::write(&path, "a,b\n1,2\n3,hello\n").unwrap();
+
+        let result = TreeTrie::from_csv(&path);
+        assert!(result.is_err(), "expected error for non-integer CSV value");
+
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("hello"),
+            "error should mention the bad value, got: {msg}"
+        );
+        assert!(
+            msg.contains("row 1"),
+            "error should mention the row, got: {msg}"
+        );
+        assert!(
+            msg.contains("column 1"),
+            "error should mention the column, got: {msg}"
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn from_csv_missing_file_returns_error() {
+        use crate::ds::TreeTrie;
+
+        let result = TreeTrie::from_csv("/tmp/nonexistent_kermit_test_file.csv");
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), RelationError::Io(_)),
+            "expected Io variant for missing file"
+        );
+    }
+
+    // ── from_parquet error paths ───────────────────────────────────────
+
+    #[test]
+    fn from_parquet_missing_file_returns_error() {
+        use crate::ds::TreeTrie;
+
+        let result = TreeTrie::from_parquet("/tmp/nonexistent_kermit_test_file.parquet");
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), RelationError::Io(_)),
+            "expected Io variant for missing file"
+        );
+    }
+
+    #[test]
+    fn from_parquet_invalid_file_returns_error() {
+        use crate::ds::TreeTrie;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_bad_parquet.parquet");
+        std::fs::write(&path, b"this is not a parquet file").unwrap();
+
+        let result = TreeTrie::from_parquet(&path);
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), RelationError::Parquet(_)),
+            "expected Parquet variant for corrupt file"
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+}
