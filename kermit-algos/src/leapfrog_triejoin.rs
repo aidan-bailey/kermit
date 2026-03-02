@@ -34,13 +34,13 @@ where
     arity: usize,
     /// Pool of trie iterators, indexed by body predicate position. `None` when
     /// an iterator is currently borrowed by the leapfrog.
-    iters: Vec<Option<IT>>,
-    /// Tracks which iterators (by index into `iters`) are currently in the
-    /// leapfrog, so they can be returned on depth change.
-    current_iters_indexes: Vec<usize>,
+    iterator_pool: Vec<Option<IT>>,
+    /// Tracks which iterators (by index into `iterator_pool`) are currently in
+    /// the leapfrog, so they can be returned on depth change.
+    active_iter_indices: Vec<usize>,
     /// For each variable index, the list of iterator indices that participate
     /// at that depth.
-    iter_indexes_at_variable: Vec<Vec<usize>>,
+    variable_to_iter_map: Vec<Vec<usize>>,
     /// Current depth in the join (0 = not yet opened, 1..arity = active).
     depth: usize,
     /// The inner leapfrog join operating at the current depth.
@@ -90,7 +90,7 @@ where
     /// * `rel_variables` - The variables in their relations.
     /// * `iters` - Trie iterators.
     pub fn new(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iters: Vec<IT>) -> Self {
-        let mut iter_indexes_at_variable: Vec<Vec<usize>> = Vec::new();
+        let mut variable_to_iter_map: Vec<Vec<usize>> = Vec::new();
         for v in &variables {
             let mut iters_at_level_v: Vec<usize> = Vec::new();
             for (r_i, r) in rel_variables.iter().enumerate() {
@@ -98,32 +98,32 @@ where
                     iters_at_level_v.push(r_i);
                 }
             }
-            iter_indexes_at_variable.push(iters_at_level_v);
+            variable_to_iter_map.push(iters_at_level_v);
         }
 
-        let iters = iters.into_iter().map(Some).collect();
+        let iterator_pool = iters.into_iter().map(Some).collect();
 
         LeapfrogTriejoinIter {
-            iters,
-            current_iters_indexes: Vec::new(),
-            iter_indexes_at_variable,
+            iterator_pool,
+            active_iter_indices: Vec::new(),
+            variable_to_iter_map,
             arity: variables.len(),
             depth: 0,
             leapfrog: LeapfrogJoinIter::new(vec![]),
         }
     }
 
-    /// Swaps iterators between the pool (`self.iters`) and the active leapfrog
+    /// Swaps iterators between the pool (`self.iterator_pool`) and the active leapfrog
     /// (`self.leapfrog`) based on which iterators participate at the current
     /// depth.
     fn update_iters(&mut self) {
-        while let Some(i) = self.current_iters_indexes.pop() {
+        while let Some(i) = self.active_iter_indices.pop() {
             let iter = self
                 .leapfrog
                 .iterators
                 .pop()
                 .expect("There should always be an iterator here");
-            self.iters[i] = Some(iter);
+            self.iterator_pool[i] = Some(iter);
         }
 
         if self.depth == 0 {
@@ -131,11 +131,11 @@ where
         }
 
         let mut next_iters =
-            Vec::<IT>::with_capacity(self.iter_indexes_at_variable[self.depth - 1].len());
-        for i in &self.iter_indexes_at_variable[self.depth - 1] {
-            let iter = self.iters[*i].take().expect("There is an iterator here");
+            Vec::<IT>::with_capacity(self.variable_to_iter_map[self.depth - 1].len());
+        for i in &self.variable_to_iter_map[self.depth - 1] {
+            let iter = self.iterator_pool[*i].take().expect("There is an iterator here");
             next_iters.push(iter);
-            self.current_iters_indexes.push(*i);
+            self.active_iter_indices.push(*i);
         }
         self.leapfrog = LeapfrogJoinIter::new(next_iters);
     }
