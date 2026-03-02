@@ -9,6 +9,39 @@ pub struct ColumnTrieLayer {
     pub interval: Vec<usize>,
 }
 
+impl ColumnTrieLayer {
+    /// Returns the data index range `start..end` for the children of the
+    /// element at `interval_index`.
+    fn data_range(&self, interval_index: usize) -> std::ops::Range<usize> {
+        let start = self.interval[interval_index];
+        let end = if interval_index + 1 < self.interval.len() {
+            self.interval[interval_index + 1]
+        } else {
+            self.data.len()
+        };
+        start..end
+    }
+
+    /// Inserts `key` at position `pos` in the data array and increments all
+    /// interval entries after `interval_index` to account for the shift.
+    fn insert_key_and_shift_intervals(&mut self, pos: usize, key: usize, interval_index: usize) {
+        self.data.insert(pos, key);
+        for j in (interval_index + 1)..self.interval.len() {
+            self.interval[j] += 1;
+        }
+    }
+
+    /// Adds an interval entry for a new child at position `i` in the next
+    /// layer.
+    fn add_interval(&mut self, i: usize) {
+        if i == self.interval.len() {
+            self.interval.push(self.data.len());
+        } else {
+            self.interval.insert(i, self.interval[i]);
+        }
+    }
+}
+
 pub struct ColumnTrie {
     header: RelationHeader,
     pub layers: Vec<ColumnTrieLayer>,
@@ -18,75 +51,50 @@ impl ColumnTrie {
     pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer { &self.layers[layer_i] }
 
     fn internal_insert(&mut self, tuple: &[usize]) -> bool {
-        /// Adds an interval to a layer at some index.
-        fn add_interval(layer: &mut ColumnTrieLayer, i: usize) {
-            if i == layer.interval.len() {
-                // If the index is greater than the length of the layer, we push a new interval
-                layer.interval.push(layer.data.len());
-            } else {
-                // Otherwise, we insert the interval at the specified index
-                layer.interval.insert(i, layer.interval[i]);
-            }
-        }
-
+        let arity = self.header().arity();
         let mut interval_index = 0;
+
         'layer_loop: for (layer_i, &k) in tuple.iter().enumerate() {
-            // There are still keys to insert
+            let is_last_layer = layer_i == arity - 1;
 
             if self.layers[layer_i].data.is_empty() {
-                // layer is empty, so we can just add the key and continue
                 self.layers[layer_i].data.push(k);
                 self.layers[layer_i].interval.push(0);
                 interval_index = 0;
-            } else {
-                // layer is not empty, so we must find the place to insert it
-                let start_index = self.layers[layer_i].interval[interval_index];
-                let end_index = if interval_index == self.layers[layer_i].interval.len() - 1 {
-                    self.layers[layer_i].data.len()
-                } else {
-                    self.layers[layer_i].interval[interval_index + 1]
-                };
-
-                for i in start_index..end_index {
-                    if self.layers[layer_i].data[i] == k {
-                        // key exists in data, so we can just continue
-                        continue 'layer_loop;
-                    } else if k < self.layers[layer_i].data[i] {
-                        // we need to insert at position i
-                        self.layers[layer_i].data.insert(i, k);
-                        // now we increment all intervals after this index
-                        for j in (interval_index + 1)..self.layers[layer_i].interval.len() {
-                            self.layers[layer_i].interval[j] += 1;
-                        }
-                        // if this is the last layer, we're finished
-                        if layer_i == self.header().arity() - 1 {
-                            return true;
-                        }
-                        add_interval(&mut self.layers[layer_i + 1], i);
-                        interval_index = i;
-                        continue 'layer_loop;
-                    }
-                }
-
-                // key is greater than all existing keys, so we add it to the end (at end index)
-                if end_index == self.layers[layer_i].data.len() {
-                    // if we're at the end, we have to push
-                    self.layers[layer_i].data.push(k);
-                } else {
-                    // otherwise insert
-                    self.layers[layer_i].data.insert(end_index, k);
-                    // increment all intervals after this index
-                    for j in interval_index + 1..self.layers[layer_i].interval.len() {
-                        self.layers[layer_i].interval[j] += 1;
-                    }
-                }
-                if layer_i == self.header().arity() - 1 {
-                    // if there are no more layers, we are done
-                    return true;
-                }
-                add_interval(&mut self.layers[layer_i + 1], end_index);
-                interval_index = end_index;
+                continue;
             }
+
+            let range = self.layers[layer_i].data_range(interval_index);
+
+            // Search for the key within the current interval's data range
+            for i in range.clone() {
+                if self.layers[layer_i].data[i] == k {
+                    continue 'layer_loop;
+                }
+                if k < self.layers[layer_i].data[i] {
+                    // Insert before the first larger key
+                    self.layers[layer_i].insert_key_and_shift_intervals(i, k, interval_index);
+                    if is_last_layer {
+                        return true;
+                    }
+                    self.layers[layer_i + 1].add_interval(i);
+                    interval_index = i;
+                    continue 'layer_loop;
+                }
+            }
+
+            // Key is larger than all existing keys in the interval — append
+            let insert_pos = range.end;
+            if insert_pos == self.layers[layer_i].data.len() {
+                self.layers[layer_i].data.push(k);
+            } else {
+                self.layers[layer_i].insert_key_and_shift_intervals(insert_pos, k, interval_index);
+            }
+            if is_last_layer {
+                return true;
+            }
+            self.layers[layer_i + 1].add_interval(insert_pos);
+            interval_index = insert_pos;
         }
         true
     }
