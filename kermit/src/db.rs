@@ -30,7 +30,7 @@ pub trait DB {
 ///
 /// Implements the object-safe [`DB`] trait so it can be used behind `Box<dyn
 /// DB>`.
-pub struct Database<R, JA>
+pub struct DatabaseEngine<R, JA>
 where
     R: Relation,
     JA: JoinAlgo<R>,
@@ -41,7 +41,7 @@ where
     phantom_ja: std::marker::PhantomData<JA>,
 }
 
-impl<R, JA> DB for Database<R, JA>
+impl<R, JA> DB for DatabaseEngine<R, JA>
 where
     R: Relation,
     JA: JoinAlgo<R>,
@@ -50,7 +50,7 @@ where
     where
         Self: Sized,
     {
-        Database {
+        DatabaseEngine {
             name,
             relations: HashMap::new(),
             phantom_rb: std::marker::PhantomData,
@@ -120,7 +120,7 @@ where
     }
 }
 
-impl<R, JA> Database<R, JA>
+impl<R, JA> DatabaseEngine<R, JA>
 where
     R: Relation,
     JA: JoinAlgo<R>,
@@ -128,17 +128,17 @@ where
     pub fn new(name: String) -> Self { <Self as DB>::new(name) }
 }
 
-/// Creates a [`Database`] as a `Box<dyn DB>` based on the CLI-selected index
+/// Creates a [`DatabaseEngine`] as a `Box<dyn DB>` based on the CLI-selected index
 /// structure and join algorithm.
 pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm) -> Box<dyn DB> {
     match (ds, ja) {
         | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(Database::<TreeTrie, LeapfrogTriejoin>::new(
+            Box::new(DatabaseEngine::<TreeTrie, LeapfrogTriejoin>::new(
                 "test".to_string(),
             ))
         },
         | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(Database::<ColumnTrie, LeapfrogTriejoin>::new(
+            Box::new(DatabaseEngine::<ColumnTrie, LeapfrogTriejoin>::new(
                 "test".to_string(),
             ))
         },
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_relation() {
-        let mut db: Database<TreeTrie, LeapfrogTriejoin> = Database::new("test".to_string());
+        let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> = DatabaseEngine::new("test".to_string());
         let relation_name = "apple".to_string();
         db.add_relation(&relation_name, 3);
         db.add_keys(&relation_name, vec![1, 2, 3])
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_join() {
-        let mut db: Database<TreeTrie, LeapfrogTriejoin> = Database::new("test".to_string());
+        let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> = DatabaseEngine::new("test".to_string());
 
         db.add_relation("first", 1);
         db.add_keys_batch("first", vec![vec![1_usize], vec![2], vec![3]]);
