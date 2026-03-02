@@ -65,6 +65,7 @@ macro_rules! trie_traversal_tests {
             use super::*;
 
             $crate::trie_test!(empty, $relation_type, [], |iter: &mut dyn TrieIterator| {
+                // All operations should indicate an empty/exhausted iterator
                 assert!(iter.key().is_none());
                 assert!(!iter.open());
                 assert!(!iter.up());
@@ -78,16 +79,23 @@ macro_rules! trie_traversal_tests {
                 $relation_type,
                 [vec![1]],
                 |iter: &mut dyn TrieIterator| {
+                    // Before open: no key, at end
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
+
+                    // Open root → 1 (leaf)
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(!iter.at_end());
-                    assert!(!iter.open());
+                    assert!(!iter.open()); // leaf, no children
+
+                    // Exhaust siblings → at end
                     assert!(iter.next().is_none());
                     assert!(iter.at_end());
+
+                    // Navigate back up
                     assert!(iter.up());
-                    assert!(!iter.up());
+                    assert!(!iter.up()); // already at root
                 }
             );
 
@@ -96,19 +104,28 @@ macro_rules! trie_traversal_tests {
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
                 |iter: &mut dyn TrieIterator| {
+                    // Before open: no key, at end
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
+
+                    // Open root → 1
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(!iter.at_end());
-                    assert!(!iter.open());
+                    assert!(!iter.open()); // leaf
+
+                    // Walk siblings: 1 → 2 → 3
                     assert_eq!(iter.next(), Some(2));
                     assert_eq!(iter.key(), Some(2));
                     assert_eq!(iter.next(), Some(3));
                     assert_eq!(iter.key(), Some(3));
+
+                    // Exhaust siblings → at end
                     assert!(iter.next().is_none());
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
+
+                    // Navigate back up
                     assert!(iter.up());
                     assert!(!iter.up());
                 }
@@ -119,12 +136,17 @@ macro_rules! trie_traversal_tests {
                 $relation_type,
                 [vec![1, 2], vec![1, 3]],
                 |iter: &mut dyn TrieIterator| {
+                    // Descend: root → 1 → 2
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(2));
+
+                    // Sibling under shared prefix: 2 → 3
                     assert_eq!(iter.next(), Some(3));
                     assert!(iter.next().is_none());
+
+                    // Navigate back up through both levels
                     assert!(iter.up());
                     assert!(iter.up());
                 }
@@ -135,13 +157,16 @@ macro_rules! trie_traversal_tests {
                 $relation_type,
                 [vec![1, 2, 3]],
                 |iter: &mut dyn TrieIterator| {
+                    // Descend: root → 1 → 2 → 3
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(2));
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(3));
-                    assert!(!iter.open());
+                    assert!(!iter.open()); // leaf
+
+                    // Ascend: 3 → 2 → 1 → root
                     assert!(iter.up());
                     assert_eq!(iter.key(), Some(2));
                     assert!(iter.up());
@@ -156,12 +181,17 @@ macro_rules! trie_traversal_tests {
                 $relation_type,
                 [vec![1], vec![2], vec![3]],
                 |iter: &mut dyn TrieIterator| {
+                    // Before open: no key, at end
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
+
+                    // Open root → 1 (leaf, so open fails)
                     assert!(iter.open());
                     assert!(!iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(!iter.at_end());
+
+                    // Walk all leaves: 1 → 2 → 3, each is a leaf
                     assert!(!iter.open());
                     assert_eq!(iter.next(), Some(2));
                     assert_eq!(iter.key(), Some(2));
@@ -171,14 +201,20 @@ macro_rules! trie_traversal_tests {
                     assert_eq!(iter.key(), Some(3));
                     assert!(!iter.at_end());
                     assert!(!iter.open());
+
+                    // Exhaust siblings → at end
                     assert!(iter.next().is_none());
                     assert!(iter.key().is_none());
                     assert!(iter.at_end());
                     assert!(!iter.open());
+
+                    // Navigate back up to root
                     assert!(iter.up());
                     assert!(!iter.up());
                     assert!(iter.key().is_none());
                     assert!(iter.next().is_none());
+
+                    // Re-open: should restart at first key
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(1));
                     assert!(!iter.at_end());
