@@ -105,7 +105,12 @@ impl std::str::FromStr for JoinQuery {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut input = s;
-        query.parse_next(&mut input)
+        let result = query.parse_next(&mut input)?;
+        ws.parse_next(&mut input)?;
+        if !input.is_empty() {
+            return Err(ErrMode::Backtrack(ContextError::new()));
+        }
+        Ok(result)
     }
 }
 
@@ -217,6 +222,9 @@ mod tests {
             ("missing dot", "P(X) :- Q(X)"),
             ("missing :-", "P(X) Q(X)."),
             ("empty body", "P(X) :- ."),
+            ("trailing garbage", "P(X) :- Q(X). GARBAGE"),
+            ("two queries", "P(X) :- Q(X). R(Y) :- S(Y)."),
+            ("double dot", "P(X) :- Q(X).."),
         ];
         for (label, input) in cases {
             let result: Result<JoinQuery, _> = input.parse();
