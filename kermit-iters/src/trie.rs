@@ -116,6 +116,8 @@ where
     /// `None` when the entire trie has been exhausted.
     fn next(&mut self) -> Option<Vec<usize>> {
         loop {
+            // Phase 1: Backtrack — advance to the next sibling, moving up
+            // through ancestors until one has a remaining sibling.
             if !self.stack.is_empty() {
                 while !self.next_wrapper() {
                     if !self.up() {
@@ -124,12 +126,15 @@ where
                 }
             }
 
+            // Phase 2: Descend — greedily open children until a leaf.
             while self.down() {}
 
             if self.stack.is_empty() {
                 return None;
             }
 
+            // Phase 3: Filter — skip tuples shorter than the expected arity
+            // (partial paths produced by joins at intermediate depths).
             if let Some(arity) = self.expected_arity {
                 if self.stack.len() < arity {
                     continue;

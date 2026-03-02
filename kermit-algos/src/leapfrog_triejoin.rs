@@ -243,16 +243,14 @@ where
         let mut var_to_index: HashMap<String, usize> = HashMap::new();
         let mut next_index: usize = 0;
 
-        // Helper to register a variable name and return its index
+        // Helper: assigns a fresh index to a variable name on first sight,
+        // returns the existing index on subsequent encounters.
         let register_var = |name: &str, map: &mut HashMap<String, usize>, next: &mut usize| {
-            if let std::collections::hash_map::Entry::Vacant(v) = map.entry(name.to_string()) {
+            *map.entry(name.to_string()).or_insert_with(|| {
                 let idx = *next;
-                v.insert(idx);
                 *next += 1;
                 idx
-            } else {
-                map[name]
-            }
+            })
         };
 
         // Pass 1: head variables — establishes output tuple ordering.
