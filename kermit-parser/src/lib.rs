@@ -48,7 +48,11 @@ fn dot(input: &mut &str) -> PResult<char> { delimited(ws, '.', ws).parse_next(in
 // ---------- term / predicate ----------
 fn term(input: &mut &str) -> PResult<Term> {
     if input.starts_with('_')
-        && (input.len() == 1 || !input.chars().nth(1).unwrap().is_ascii_alphanumeric())
+        && (input.len() == 1
+            || !input
+                .chars()
+                .nth(1)
+                .is_some_and(|c| c.is_ascii_alphanumeric()))
     {
         let _ = '_'.parse_next(input)?;
         return Ok(Term::Placeholder);
