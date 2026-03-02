@@ -180,7 +180,10 @@ where
     type IntoIter = TrieIteratorWrapper<Self>;
     type Item = Vec<usize>;
 
-    fn into_iter(self) -> Self::IntoIter { TrieIteratorWrapper::new(self) }
+    fn into_iter(self) -> Self::IntoIter {
+        let arity = self.arity;
+        TrieIteratorWrapper::with_arity(self, arity)
+    }
 }
 
 pub struct LeapfrogTriejoin {}
@@ -543,6 +546,34 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(result, vec![vec![1, 2, 4], vec![1, 3, 5]]);
+    }
+
+    #[test]
+    fn binary_no_match_regression() {
+        // Regression: R(a,b) ⋈ S(b,c) where b values are disjoint.
+        // Previously emitted partial tuple [1] because triejoin_open incremented
+        // depth before validating the leapfrog at depth 2 (variable b), and
+        // TrieIteratorWrapper returned the incomplete stack.
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![3, 4]]);
+        assert_eq!(
+            triejoin_collect(vec![0, 1, 2], vec![vec![0, 1], vec![1, 2]], vec![&r, &s]),
+            Vec::<Vec<usize>>::new(),
+        );
+    }
+
+    #[test]
+    fn self_join_with_dead_ends() {
+        // Regression: R(a,b) ⋈ R(b,c) where some a values don't chain.
+        // R = {(1,2),(2,3),(3,4)} — only a=1→b=2→c=3 and a=2→b=3→c=4 produce
+        // full 3-tuples. a=3→b=4 has no continuation in R(b=4,...).
+        // Previously emitted spurious partial tuples like [3].
+        let r1 = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3], vec![3, 4]]);
+        let r2 = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3], vec![3, 4]]);
+        assert_eq!(
+            triejoin_collect(vec![0, 1, 2], vec![vec![0, 1], vec![1, 2]], vec![&r1, &r2]),
+            vec![vec![1, 2, 3], vec![2, 3, 4]],
+        );
     }
 
     #[test]

@@ -38,6 +38,7 @@ where
 {
     iter: IT,
     stack: Vec<usize>,
+    expected_arity: Option<usize>,
 }
 
 impl<IT> TrieIteratorWrapper<IT>
@@ -48,6 +49,15 @@ where
         TrieIteratorWrapper {
             iter,
             stack: vec![],
+            expected_arity: None,
+        }
+    }
+
+    pub fn with_arity(iter: IT, arity: usize) -> Self {
+        TrieIteratorWrapper {
+            iter,
+            stack: vec![],
+            expected_arity: Some(arity),
         }
     }
 
@@ -81,20 +91,28 @@ where
     }
 
     fn next(&mut self) -> Option<Vec<usize>> {
-        if !self.stack.is_empty() {
-            while !self.next_wrapper() {
-                if !self.up() {
-                    return None;
+        loop {
+            if !self.stack.is_empty() {
+                while !self.next_wrapper() {
+                    if !self.up() {
+                        return None;
+                    }
                 }
             }
-        }
 
-        while self.down() {}
+            while self.down() {}
 
-        if self.stack.is_empty() {
-            None
-        } else {
-            Some(self.stack.clone())
+            if self.stack.is_empty() {
+                return None;
+            }
+
+            if let Some(arity) = self.expected_arity {
+                if self.stack.len() < arity {
+                    continue;
+                }
+            }
+
+            return Some(self.stack.clone());
         }
     }
 }
@@ -324,6 +342,45 @@ mod tests {
         let wrapper = TrieIteratorWrapper::new(iter);
         let result: Vec<Vec<usize>> = wrapper.collect();
         assert_eq!(result, vec![vec![1, 2], vec![1, 3], vec![4, 5]]);
+    }
+
+    #[test]
+    fn with_arity_filters_short_tuples() {
+        // Trie has mixed depths: root 1 has children (binary), root 2 is a leaf
+        // (unary). Without arity filter, wrapper emits [[1,3], [1,4], [2]].
+        // With expected_arity=2, the short [2] tuple is skipped.
+        let trie = MockTrie {
+            roots: vec![node(1, vec![leaf(3), leaf(4)]), leaf(2)],
+        };
+        let iter = MockTrieIter::new(&trie);
+        let wrapper = TrieIteratorWrapper::with_arity(iter, 2);
+        let result: Vec<Vec<usize>> = wrapper.collect();
+        assert_eq!(result, vec![vec![1, 3], vec![1, 4]]);
+    }
+
+    #[test]
+    fn with_arity_all_too_short() {
+        // All paths are shorter than expected arity — should return empty.
+        let trie = MockTrie {
+            roots: vec![leaf(1), leaf(2), leaf(3)],
+        };
+        let iter = MockTrieIter::new(&trie);
+        let wrapper = TrieIteratorWrapper::with_arity(iter, 2);
+        let result: Vec<Vec<usize>> = wrapper.collect();
+        assert_eq!(result, Vec::<Vec<usize>>::new());
+    }
+
+    #[test]
+    fn without_arity_returns_all_depths() {
+        // Same ragged trie as above, but using new() (no arity filter) — all
+        // tuples including short ones should be returned.
+        let trie = MockTrie {
+            roots: vec![node(1, vec![leaf(3), leaf(4)]), leaf(2)],
+        };
+        let iter = MockTrieIter::new(&trie);
+        let wrapper = TrieIteratorWrapper::new(iter);
+        let result: Vec<Vec<usize>> = wrapper.collect();
+        assert_eq!(result, vec![vec![1, 3], vec![1, 4], vec![2]]);
     }
 
     #[test]
