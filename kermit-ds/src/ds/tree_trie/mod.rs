@@ -134,6 +134,16 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "The sought key must be ≥ the key at the current position.")]
+    fn seek_backward_panics() {
+        let trie = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![3], vec![5]]);
+        let mut iter = trie.trie_iter();
+        iter.open();
+        iter.seek(3);
+        iter.seek(1); // should panic — seeking backward
+    }
+
+    #[test]
     fn test_tree_trie_iter() {
         let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
             3, 5,

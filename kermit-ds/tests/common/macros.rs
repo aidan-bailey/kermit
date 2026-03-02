@@ -298,6 +298,124 @@ macro_rules! trie_traversal_tests {
 }
 
 #[macro_export]
+macro_rules! trie_seek_tests {
+    ($relation_type:ident) => {
+        mod trie_seek {
+
+            use super::*;
+
+            $crate::trie_test!(
+                seek_exact,
+                $relation_type,
+                [vec![1], vec![3], vec![5], vec![7], vec![9]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(1));
+                    assert!(iter.seek(5));
+                    assert_eq!(iter.key(), Some(5));
+                }
+            );
+
+            $crate::trie_test!(
+                seek_upper_bound,
+                $relation_type,
+                [vec![1], vec![3], vec![5], vec![7], vec![9]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(1));
+                    assert!(iter.seek(4));
+                    assert_eq!(iter.key(), Some(5));
+                }
+            );
+
+            $crate::trie_test!(
+                seek_past_all,
+                $relation_type,
+                [vec![1], vec![3], vec![5]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(1));
+                    assert!(!iter.seek(100));
+                    assert!(iter.at_end());
+                }
+            );
+
+            $crate::trie_test!(
+                seek_to_current,
+                $relation_type,
+                [vec![1], vec![3], vec![5]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(1));
+                    assert!(iter.seek(1));
+                    assert_eq!(iter.key(), Some(1));
+                }
+            );
+
+            $crate::trie_test!(
+                seek_then_next,
+                $relation_type,
+                [vec![1], vec![3], vec![5], vec![7], vec![9]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    assert!(iter.seek(5));
+                    assert_eq!(iter.key(), Some(5));
+                    assert_eq!(iter.next(), Some(7));
+                    assert_eq!(iter.next(), Some(9));
+                    assert_eq!(iter.next(), None);
+                    assert!(iter.at_end());
+                }
+            );
+
+            $crate::trie_test!(
+                seek_at_depth,
+                $relation_type,
+                [vec![1, 2], vec![1, 5], vec![1, 8]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(1));
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(2));
+                    assert!(iter.seek(5));
+                    assert_eq!(iter.key(), Some(5));
+                    assert_eq!(iter.next(), Some(8));
+                }
+            );
+
+            $crate::trie_test!(
+                seek_upper_bound_at_depth,
+                $relation_type,
+                [vec![1, 2], vec![1, 5], vec![1, 8]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(2));
+                    assert!(iter.seek(3));
+                    assert_eq!(iter.key(), Some(5));
+                }
+            );
+
+            $crate::trie_test!(
+                seek_multiple,
+                $relation_type,
+                [vec![1], vec![3], vec![5], vec![7], vec![9]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    assert!(iter.seek(3));
+                    assert_eq!(iter.key(), Some(3));
+                    assert!(iter.seek(7));
+                    assert_eq!(iter.key(), Some(7));
+                    assert!(iter.seek(9));
+                    assert_eq!(iter.key(), Some(9));
+                    assert!(!iter.seek(10));
+                    assert!(iter.at_end());
+                }
+            );
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! relation_trie_test_suite {
     (
         $(
@@ -316,6 +434,8 @@ macro_rules! relation_trie_test_suite {
                     );
 
                     $crate::trie_traversal_tests!($relation_type);
+
+                    $crate::trie_seek_tests!($relation_type);
 
                 }
             }
