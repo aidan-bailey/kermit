@@ -28,6 +28,9 @@ pub trait LinearIterator {
 
     /// Returns `true` iff the iterator is positioned
     /// at the end, i.e., one after the last key.
+    ///
+    /// When `at_end()` is `true`, `key()` returns `None` and `next()` returns
+    /// `None`.
     fn at_end(&self) -> bool;
 }
 

@@ -31,6 +31,12 @@ impl<'a> TreeTrieIter<'a> {
 
     /// Returns the sibling list at the current depth, or `None` if the stack
     /// is empty (iterator not yet opened).
+    ///
+    /// Stack invariant: each entry is `(current_node, sibling_index)` from
+    /// root to the current position. To get the siblings of the current node
+    /// we need the *parent's* children list:
+    /// - depth 1 → parent is the trie root, so siblings are `trie.children()`
+    /// - depth 2+ → parent is at `stack[len - 2]`, so siblings are its children
     fn siblings(&self) -> Option<&'a Vec<TrieNode>> {
         if self.stack.is_empty() {
             None

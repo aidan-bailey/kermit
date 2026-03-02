@@ -90,6 +90,10 @@ where
     /// * `rel_variables` - The variables in their relations.
     /// * `iters` - Trie iterators.
     pub fn new(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iters: Vec<IT>) -> Self {
+        // Build the variable-to-iterator lookup table. For each variable index,
+        // collect the indices (into `iters` / `rel_variables`) of every relation
+        // that mentions that variable. These indices tell the triejoin which
+        // iterators to activate in the leapfrog at each depth level.
         let mut variable_to_iter_map: Vec<Vec<usize>> = Vec::new();
         for v in &variables {
             let mut iters_at_level_v: Vec<usize> = Vec::new();
@@ -164,7 +168,10 @@ where
             return false;
         }
         for iter in &mut self.leapfrog.iterators {
-            assert!(iter.up());
+            assert!(
+                iter.up(),
+                "Iterator must be able to move up from non-root depth"
+            );
         }
         self.depth -= 1;
         self.update_iters();

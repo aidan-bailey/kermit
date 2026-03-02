@@ -66,6 +66,9 @@ pub struct ColumnTrie {
 impl ColumnTrie {
     pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer { &self.layers[layer_i] }
 
+    /// Walks down the layer hierarchy inserting one key per level. The
+    /// `interval_index` tracks our position in each layer's interval array,
+    /// identifying which parent group the new key belongs to.
     fn internal_insert(&mut self, tuple: &[usize]) -> bool {
         let arity = self.header().arity();
         let mut interval_index = 0;
@@ -93,6 +96,7 @@ impl ColumnTrie {
                     if is_last_layer {
                         return true;
                     }
+                    // Inserting at layer_i creates a new child group in layer_i+1
                     self.layers[layer_i + 1].add_interval(i);
                     interval_index = i;
                     continue 'layer_loop;
@@ -109,6 +113,7 @@ impl ColumnTrie {
             if is_last_layer {
                 return true;
             }
+            // Appending at layer_i creates a new child group in layer_i+1
             self.layers[layer_i + 1].add_interval(insert_pos);
             interval_index = insert_pos;
         }
