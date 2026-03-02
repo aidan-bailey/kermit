@@ -155,6 +155,116 @@ macro_rules! define_existential_multiway_join_test {
 }
 
 #[macro_export]
+macro_rules! define_empty_result_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<empty_result_ $relation_type:lower _ $join_algorithm:lower>],
+            $relation_type,
+            $join_algorithm,
+            [
+                vec![vec![1, 2], vec![3, 4]],
+                vec![vec![5, 6], vec![7, 8]]
+            ],
+            vec![0, 1, 2],
+            vec![vec![0, 1], vec![1, 2]],
+            Vec::<Vec<usize>>::new(),
+            {print!("");}
+        );
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! define_single_relation_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<single_relation_ $relation_type:lower _ $join_algorithm:lower>],
+            $relation_type,
+            $join_algorithm,
+            [
+                vec![vec![1, 2], vec![3, 4], vec![5, 6]]
+            ],
+            vec![0, 1],
+            vec![vec![0, 1]],
+            vec![vec![1, 2], vec![3, 4], vec![5, 6]],
+            {print!("");}
+        );
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! define_four_way_chain_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<four_way_chain_ $relation_type:lower _ $join_algorithm:lower>],
+            $relation_type,
+            $join_algorithm,
+            [
+                vec![vec![1, 2]],
+                vec![vec![2, 3]],
+                vec![vec![3, 4]],
+                vec![vec![4, 5]]
+            ],
+            vec![0, 1, 2, 3, 4],
+            vec![vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 4]],
+            vec![vec![1, 2, 3, 4, 5]],
+            {print!("");}
+        );
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! define_wide_fanout_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<wide_fanout_ $relation_type:lower _ $join_algorithm:lower>],
+            $relation_type,
+            $join_algorithm,
+            [
+                vec![vec![1, 2], vec![1, 3], vec![1, 4]],
+                vec![vec![1, 10], vec![1, 20]]
+            ],
+            vec![0, 1, 2],
+            vec![vec![0, 1], vec![0, 2]],
+            vec![
+                vec![1, 2, 10], vec![1, 2, 20],
+                vec![1, 3, 10], vec![1, 3, 20],
+                vec![1, 4, 10], vec![1, 4, 20]
+            ],
+            {print!("");}
+        );
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! define_dead_end_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<dead_end_ $relation_type:lower _ $join_algorithm:lower>],
+            $relation_type,
+            $join_algorithm,
+            [
+                vec![vec![1, 2], vec![2, 3], vec![3, 4]],
+                vec![vec![2, 3], vec![3, 4]]
+            ],
+            vec![0, 1, 2],
+            vec![vec![0, 1], vec![1, 2]],
+            vec![vec![1, 2, 3], vec![2, 3, 4]],
+            {print!("");}
+        );
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! define_multiway_join_test_suite {
     (
         $(
@@ -189,6 +299,31 @@ macro_rules! define_multiway_join_test_suite {
                 );
 
                 $crate::define_existential_multiway_join_test!(
+                    $relation_type,
+                    $join_algorithm
+                );
+
+                $crate::define_empty_result_multiway_join_test!(
+                    $relation_type,
+                    $join_algorithm
+                );
+
+                $crate::define_single_relation_multiway_join_test!(
+                    $relation_type,
+                    $join_algorithm
+                );
+
+                $crate::define_four_way_chain_multiway_join_test!(
+                    $relation_type,
+                    $join_algorithm
+                );
+
+                $crate::define_wide_fanout_multiway_join_test!(
+                    $relation_type,
+                    $join_algorithm
+                );
+
+                $crate::define_dead_end_multiway_join_test!(
                     $relation_type,
                     $join_algorithm
                 );
