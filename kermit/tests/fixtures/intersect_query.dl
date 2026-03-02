@@ -1,0 +1,1 @@
+Q(X) :- first(X), second(X).

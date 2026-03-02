@@ -23,3 +23,4 @@ Cargo.lock
 .DS_Store
 **/*.pdf
 **/*.csv
+!kermit/tests/fixtures/*.csv

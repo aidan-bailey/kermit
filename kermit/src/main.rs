@@ -1,9 +1,14 @@
 use {
     clap::{Parser, Subcommand},
-    kermit_algos::JoinAlgorithm,
+    kermit::db::instantiate_database,
+    kermit_algos::{JoinAlgorithm, JoinQuery},
     kermit_bench::benchmarks::Benchmark,
     kermit_ds::IndexStructure,
-    std::path::PathBuf,
+    std::{
+        fs,
+        io::{self, BufWriter, Write},
+        path::PathBuf,
+    },
 };
 
 #[derive(Parser)]
@@ -79,6 +84,18 @@ enum Commands {
     },
 }
 
+fn write_tuples(mut writer: impl Write, tuples: &[Vec<usize>]) -> io::Result<()> {
+    for tuple in tuples {
+        let line: String = tuple
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        writeln!(writer, "{}", line)?;
+    }
+    writer.flush()
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -88,22 +105,32 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         | Commands::Join {
-            relations: input,
+            relations,
             query,
             algorithm,
             indexstructure,
             output,
         } => {
-            println!("Running join query:");
-            println!("  Input files: {:?}", input);
-            println!(
-                "  Output: {:?}",
-                output.unwrap_or_else(|| PathBuf::from("stdout"))
-            );
-            println!("  Query: {:?}", query);
-            println!("  Index structure: {:?}", indexstructure);
-            println!("  Algorithm: {:?}", algorithm);
-            todo!("Implement join execution");
+            let query_str = fs::read_to_string(&query)
+                .map_err(|e| anyhow::anyhow!("Failed to read query file {:?}: {}", query, e))?;
+            let join_query: JoinQuery = query_str
+                .trim()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", query, e))?;
+
+            let mut db = instantiate_database(indexstructure, algorithm);
+            for path in &relations {
+                db.add_file(path)
+                    .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
+            }
+
+            let tuples = db.join(join_query);
+
+            let writer: Box<dyn Write> = match &output {
+                | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
+                | None => Box::new(BufWriter::new(io::stdout().lock())),
+            };
+            write_tuples(writer, &tuples)?;
         },
 
         | Commands::Benchmark {
@@ -123,4 +150,33 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_tuples_formats_csv_lines() {
+        let tuples = vec![vec![1, 2, 3], vec![4, 5, 6]];
+        let mut buf = Vec::new();
+        write_tuples(&mut buf, &tuples).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "1,2,3\n4,5,6\n");
+    }
+
+    #[test]
+    fn write_tuples_single_column() {
+        let tuples = vec![vec![10], vec![20]];
+        let mut buf = Vec::new();
+        write_tuples(&mut buf, &tuples).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "10\n20\n");
+    }
+
+    #[test]
+    fn write_tuples_empty() {
+        let tuples: Vec<Vec<usize>> = vec![];
+        let mut buf = Vec::new();
+        write_tuples(&mut buf, &tuples).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "");
+    }
 }

@@ -1,0 +1,1 @@
+path(X, Y, Z) :- edge(X, Y), edge(Y, Z).
