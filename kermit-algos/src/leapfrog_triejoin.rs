@@ -117,9 +117,9 @@ where
         }
     }
 
-    /// Swaps iterators between the pool (`self.iterator_pool`) and the active leapfrog
-    /// (`self.leapfrog`) based on which iterators participate at the current
-    /// depth.
+    /// Swaps iterators between the pool (`self.iterator_pool`) and the active
+    /// leapfrog (`self.leapfrog`) based on which iterators participate at
+    /// the current depth.
     fn update_iters(&mut self) {
         while let Some(i) = self.active_iter_indices.pop() {
             let iter = self
@@ -137,7 +137,9 @@ where
         let mut next_iters =
             Vec::<IT>::with_capacity(self.variable_to_iter_map[self.depth - 1].len());
         for i in &self.variable_to_iter_map[self.depth - 1] {
-            let iter = self.iterator_pool[*i].take().expect("There is an iterator here");
+            let iter = self.iterator_pool[*i]
+                .take()
+                .expect("There is an iterator here");
             next_iters.push(iter);
             self.active_iter_indices.push(*i);
         }
@@ -222,8 +224,8 @@ where
 ///    matches the head declaration.
 /// 2. Register body-only variables — any variable not already seen in the head
 ///    gets the next available index.
-/// 3. Build per-relation variable index lists — for each body predicate, collect
-///    the indices of the variables it contains.
+/// 3. Build per-relation variable index lists — for each body predicate,
+///    collect the indices of the variables it contains.
 ///
 /// Placeholders (`_`) and atoms are skipped in all passes.
 ///
