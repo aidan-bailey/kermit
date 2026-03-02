@@ -161,41 +161,22 @@ mod tests {
     }
 
     #[test]
-    fn test_query_from_str_with_whitespace() {
-        let query_str = "  P(X,Y)  :-  Q(X),R(Y)  .  ";
-        let query: JoinQuery = query_str
-            .parse()
-            .expect("Failed to parse query with whitespace");
-
-        assert_eq!(query.head.name, "P");
-        assert_eq!(query.head.terms.len(), 2);
-        assert_eq!(query.body.len(), 2);
-    }
-
-    #[test]
-    fn test_query_from_str_minimal_whitespace() {
-        let query_str = "P(X,Y):-Q(X),R(Y).";
-        let query: JoinQuery = query_str
-            .parse()
-            .expect("Failed to parse query with minimal whitespace");
-
-        assert_eq!(query.head.name, "P");
-        assert_eq!(query.head.terms.len(), 2);
-        assert_eq!(query.body.len(), 2);
-    }
-
-    #[test]
-    fn test_query_from_str_spaces_after_commas() {
-        let query_str = "result(X, Y, Z) :- relation1(X, Y), relation2(Y, Z).";
-        let query: JoinQuery = query_str
-            .parse()
-            .expect("Failed to parse query with spaces after commas");
-
-        assert_eq!(query.head.name, "result");
-        assert_eq!(query.head.terms.len(), 3);
-        assert_eq!(query.body.len(), 2);
-        assert_eq!(query.body[0].terms.len(), 2);
-        assert_eq!(query.body[1].terms.len(), 2);
+    fn test_whitespace_variants() {
+        // All of these encode "P(X,Y) :- Q(X), R(Y)." with varying whitespace.
+        // The parser should handle all of them identically.
+        let cases = [
+            ("extra whitespace", "  P(X,Y)  :-  Q(X),R(Y)  .  "),
+            ("minimal whitespace", "P(X,Y):-Q(X),R(Y)."),
+            ("spaces after commas", "P( X , Y ) :- Q( X ) , R( Y ) ."),
+        ];
+        for (label, input) in cases {
+            let query: JoinQuery = input
+                .parse()
+                .unwrap_or_else(|e| panic!("Failed to parse {label}: {e:?}"));
+            assert_eq!(query.head.name, "P", "{label}");
+            assert_eq!(query.head.terms.len(), 2, "{label}");
+            assert_eq!(query.body.len(), 2, "{label}");
+        }
     }
 
     #[test]
@@ -215,24 +196,16 @@ mod tests {
     }
 
     #[test]
-    fn test_query_from_str_invalid_no_dot() {
-        let query_str = "P(X) :- Q(X)";
-        let result: Result<JoinQuery, _> = query_str.parse();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_query_from_str_invalid_no_arrow() {
-        let query_str = "P(X) Q(X).";
-        let result: Result<JoinQuery, _> = query_str.parse();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_query_from_str_invalid_empty_body() {
-        let query_str = "P(X) :- .";
-        let result: Result<JoinQuery, _> = query_str.parse();
-        assert!(result.is_err());
+    fn test_invalid_syntax() {
+        let cases = [
+            ("missing dot", "P(X) :- Q(X)"),
+            ("missing :-", "P(X) Q(X)."),
+            ("empty body", "P(X) :- ."),
+        ];
+        for (label, input) in cases {
+            let result: Result<JoinQuery, _> = input.parse();
+            assert!(result.is_err(), "{label} should fail to parse");
+        }
     }
 
     #[test]
