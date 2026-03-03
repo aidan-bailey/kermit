@@ -21,10 +21,10 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hecrj/setup-rust-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
-          rust-version: nightly
+          toolchain: nightly
       - run: cargo test --verbose
 
   clippy:
@@ -33,22 +33,22 @@ jobs:
     env:
       RUSTFLAGS: -Dwarnings
     steps:
-      - uses: actions/checkout@v4
-      - uses: hecrj/setup-rust-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
+          toolchain: nightly
           components: clippy
-          rust-version: nightly
       - run: cargo clippy --all-targets --verbose
 
   rustfmt:
     name: Verify code formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hecrj/setup-rust-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
+          toolchain: nightly
           components: rustfmt
-          rust-version: nightly
       - run: cargo fmt --all -- --check
 
   doc:
@@ -58,20 +58,20 @@ jobs:
       RUSTFLAGS: -Dwarnings
       RUSTDOCFLAGS: -Dwarnings
     steps:
-      - uses: actions/checkout@v4
-      - uses: hecrj/setup-rust-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
-          rust-version: nightly
+          toolchain: nightly
       - run: cargo doc --workspace
 
   miri:
     name: Check for undefined behaviour with miri
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hecrj/setup-rust-action@v2
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
+          toolchain: nightly
           components: miri
-          rust-version: nightly
       - run: cargo miri setup
       - run: cargo miri test
