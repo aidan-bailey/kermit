@@ -112,3 +112,61 @@ jobs:
         with:
           DIR: /kermit/
           TAG_PREFIX: kermit
+
+  release:
+
+    if: github.repository == 'aidan-bailey/kermit'
+
+    needs: publish
+
+    runs-on: ubuntu-latest
+
+    name: 'release'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags --force
+
+      - name: Get kermit version
+        id: version
+        run: |
+          VERSION=$(grep '^version' kermit/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG="kermit${VERSION}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Check if release needed
+        id: check
+        run: |
+          if git rev-parse "refs/tags/${{ steps.version.outputs.tag }}" &>/dev/null; then
+            if gh release view "${{ steps.version.outputs.tag }}" &>/dev/null; then
+              echo "should_release=false" >> $GITHUB_OUTPUT
+            else
+              echo "should_release=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate changelog
+        if: steps.check.outputs.should_release == 'true'
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header --tag-pattern "^kermit[0-9]"
+          output: RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.should_release == 'true'
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "kermit ${{ steps.version.outputs.version }}" \
+            --notes-file RELEASE_NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
