@@ -169,11 +169,12 @@ jobs:
 
       - name: Generate changelog
         if: steps.check.outputs.should_release == 'true'
-        uses: orhun/git-cliff-action@c93ef52f3d0ddcdcc9bd5447d98d458a11cd4f72 # v4
+        uses: orhun/git-cliff-action@c93ef52f3d0ddcdcc9bd5447d98d458a11cd4f72 # v4.7.1
         with:
           config: cliff.toml
           args: --latest --strip header --tag-pattern "^kermit[0-9]"
           output: RELEASE_NOTES.md
+          version: v2.11.0
 
       - name: Create GitHub Release
         if: steps.check.outputs.should_release == 'true'
