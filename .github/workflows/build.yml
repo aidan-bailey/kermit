@@ -14,40 +14,30 @@ env:
 jobs:
 
   build:
-    name: Build Rust ${{ matrix.rust }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        rust: [stable]
-        os: [ubuntu-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hecrj/setup-rust-action@v1
-        with:
-          rust-version: ${{ matrix.rust }}
-      - run: cargo build --verbose
-
-  test:
-    name: Test Rust ${{ matrix.rust }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { rust: stable, os: ubuntu-latest }
+    name: Build
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hecrj/setup-rust-action@v2
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: nightly
+      - run: cargo build --verbose
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hecrj/setup-rust-action@v2
+        with:
+          rust-version: nightly
       - run: cargo test --verbose
 
   publish:
 
     if: github.repository == 'aidan-bailey/kermit'
 
-    needs: test
+    needs: [build, test]
   
     runs-on: ubuntu-latest
 
@@ -60,6 +50,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Publish kermit-iters
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: /kermit-iters/
+          TAG_PREFIX: kermit-iters
+
       - name: Publish kermit-derive
         uses: tu6ge/publish-action@v0.4.5
         env:
@@ -69,23 +68,14 @@ jobs:
           DIR: /kermit-derive/
           TAG_PREFIX: kermit-derive
 
-      - name: Publish kermit-bench
+      - name: Publish kermit-parser
         uses: tu6ge/publish-action@v0.4.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         with:
-          DIR: /kermit-bench/
-          TAG_PREFIX: kermit-bench
-
-      - name: Publish kermit-iters
-        uses: tu6ge/publish-action@v0.4.5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        with:
-          DIR: /kermit-iters/
-          TAG_PREFIX: kermit-iters
+          DIR: /kermit-parser/
+          TAG_PREFIX: kermit-parser
 
       - name: Publish kermit-ds
         uses: tu6ge/publish-action@v0.4.5
@@ -104,6 +94,15 @@ jobs:
         with:
           DIR: /kermit-algos/
           TAG_PREFIX: kermit-algos
+
+      - name: Publish kermit-bench
+        uses: tu6ge/publish-action@v0.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        with:
+          DIR: /kermit-bench/
+          TAG_PREFIX: kermit-bench
 
       - name: Publish kermit
         uses: tu6ge/publish-action@v0.4.5
