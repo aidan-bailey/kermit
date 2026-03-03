@@ -1,5 +1,5 @@
 use {
-    clap::{Parser, Subcommand},
+    clap::{Args, Parser, Subcommand},
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery},
     kermit_bench::benchmarks::Benchmark,
@@ -8,7 +8,7 @@ use {
         fs,
         io::{self, BufWriter, Write},
         path::PathBuf,
-        time::Instant,
+        time::Duration,
     },
 };
 
@@ -24,42 +24,70 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Args)]
+struct QueryArgs {
+    /// Input relation data paths (files or directories)
+    #[arg(short, long, value_name = "PATH", num_args = 1.., required = true)]
+    relations: Vec<PathBuf>,
+
+    /// Query file path
+    #[arg(short, long, value_name = "PATH", required = true)]
+    query: PathBuf,
+
+    /// Join algorithm
+    #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
+    algorithm: JoinAlgorithm,
+
+    /// Data structure
+    #[arg(
+        short,
+        long,
+        value_name = "INDEXSTRUCTURE",
+        required = true,
+        value_enum
+    )]
+    indexstructure: IndexStructure,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Run a join query
     Join {
-        /// Input relation data paths (files or directories)
-        #[arg(short, long, value_name = "PATH", num_args = 1.., required = true)]
-        relations: Vec<PathBuf>,
-
-        /// Query file path
-        #[arg(short, long, value_name = "PATH", required = true)]
-        query: PathBuf,
-
-        /// Join algorithm
-        #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
-        algorithm: JoinAlgorithm,
-
-        /// Data structure
-        #[arg(
-            short,
-            long,
-            value_name = "INDEXSTRUCTURE",
-            required = true,
-            value_enum
-        )]
-        indexstructure: IndexStructure,
+        #[command(flatten)]
+        query_args: QueryArgs,
 
         /// Output file (optional, defaults to stdout)
         #[arg(short, long, value_name = "PATH")]
         output: Option<PathBuf>,
-
-        /// Output join statistics to stderr
-        #[arg(short, long)]
-        bench: bool,
     },
 
-    /// Run a benchmark
+    /// Run a Criterion benchmark of a join query
+    Bench {
+        #[command(flatten)]
+        query_args: QueryArgs,
+
+        /// Output file for one run's results (optional)
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
+
+        /// Name for the Criterion benchmark group
+        #[arg(short, long, value_name = "NAME")]
+        name: Option<String>,
+
+        /// Number of samples to collect (min 10)
+        #[arg(long, value_name = "N", default_value = "100")]
+        sample_size: usize,
+
+        /// Measurement time per sample in seconds
+        #[arg(long, value_name = "SECS", default_value = "5")]
+        measurement_time: u64,
+
+        /// Warm-up time in seconds before sampling
+        #[arg(long, value_name = "SECS", default_value = "3")]
+        warm_up_time: u64,
+    },
+
+    /// Run a benchmark suite
     Benchmark {
         /// Benchmark to run
         #[arg(short, long, value_name = "NAME", required = true, value_enum)]
@@ -101,6 +129,23 @@ fn write_tuples(mut writer: impl Write, tuples: &[Vec<usize>]) -> io::Result<()>
     writer.flush()
 }
 
+fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, JoinQuery)> {
+    let query_str = fs::read_to_string(&args.query)
+        .map_err(|e| anyhow::anyhow!("Failed to read query file {:?}: {}", args.query, e))?;
+    let join_query: JoinQuery = query_str
+        .trim()
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", args.query, e))?;
+
+    let mut db = instantiate_database(args.indexstructure, args.algorithm);
+    for path in &args.relations {
+        db.add_file(path)
+            .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
+    }
+
+    Ok((db, join_query))
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -110,54 +155,56 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         | Commands::Join {
-            relations,
-            query,
-            algorithm,
-            indexstructure,
+            query_args,
             output,
-            bench,
         } => {
-            let total_start = Instant::now();
-
-            let query_str = fs::read_to_string(&query)
-                .map_err(|e| anyhow::anyhow!("Failed to read query file {:?}: {}", query, e))?;
-            let join_query: JoinQuery = query_str
-                .trim()
-                .parse()
-                .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", query, e))?;
-
-            let load_start = Instant::now();
-            let mut db = instantiate_database(indexstructure, algorithm);
-            for path in &relations {
-                db.add_file(path)
-                    .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
-            }
-            let load_time = load_start.elapsed();
-
-            let join_start = Instant::now();
+            let (db, join_query) = load_query(&query_args)?;
             let tuples = db.join(join_query);
-            let join_time = join_start.elapsed();
-
-            let write_start = Instant::now();
             let writer: Box<dyn Write> = match &output {
                 | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
                 | None => Box::new(BufWriter::new(io::stdout().lock())),
             };
             write_tuples(writer, &tuples)?;
-            let write_time = write_start.elapsed();
+        },
 
-            if bench {
-                let total_time = total_start.elapsed();
-                eprintln!("--- join statistics ---");
-                eprintln!("  data structure:  {indexstructure:?}");
-                eprintln!("  algorithm:       {algorithm:?}");
-                eprintln!("  relations:       {}", relations.len());
-                eprintln!("  output tuples:   {}", tuples.len());
-                eprintln!("  load time:       {:.6}s", load_time.as_secs_f64());
-                eprintln!("  join time:       {:.6}s", join_time.as_secs_f64());
-                eprintln!("  write time:      {:.6}s", write_time.as_secs_f64());
-                eprintln!("  total time:      {:.6}s", total_time.as_secs_f64());
+        | Commands::Bench {
+            query_args,
+            output,
+            name,
+            sample_size,
+            measurement_time,
+            warm_up_time,
+        } => {
+            let (db, join_query) = load_query(&query_args)?;
+
+            if let Some(path) = &output {
+                let tuples = db.join(join_query.clone());
+                let writer = BufWriter::new(fs::File::create(path)?);
+                write_tuples(writer, &tuples)?;
             }
+
+            let group_name = name.as_deref().unwrap_or("join");
+            let bench_id = format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
+
+            eprintln!("--- bench metadata ---");
+            eprintln!("  data structure:  {:?}", query_args.indexstructure);
+            eprintln!("  algorithm:       {:?}", query_args.algorithm);
+            eprintln!("  relations:       {}", query_args.relations.len());
+
+            let mut criterion = criterion::Criterion::default()
+                .sample_size(sample_size)
+                .measurement_time(Duration::from_secs(measurement_time))
+                .warm_up_time(Duration::from_secs(warm_up_time));
+            let mut group = criterion.benchmark_group(group_name);
+            group.bench_function(criterion::BenchmarkId::new("join", &bench_id), |b| {
+                b.iter_batched(
+                    || join_query.clone(),
+                    |q| db.join(q),
+                    criterion::BatchSize::SmallInput,
+                );
+            });
+            group.finish();
+            criterion.final_summary();
         },
 
         | Commands::Benchmark {

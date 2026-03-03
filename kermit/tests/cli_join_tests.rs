@@ -7,18 +7,13 @@ fn fixtures_dir() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("tests
 
 fn kermit_bin() -> PathBuf { Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf() }
 
-fn run_join(
-    relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
-) -> std::process::Output {
-    run_join_with_args(relations, query, algorithm, indexstructure, &[])
-}
-
-fn run_join_with_args(
-    relations: &[&str], query: &str, algorithm: &str, indexstructure: &str, extra_args: &[&str],
+fn run_subcommand(
+    subcommand: &str, relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
+    extra_args: &[&str],
 ) -> std::process::Output {
     let fixtures = fixtures_dir();
     let mut cmd = Command::new(kermit_bin());
-    cmd.arg("join");
+    cmd.arg(subcommand);
     for rel in relations {
         cmd.arg("--relations").arg(fixtures.join(rel));
     }
@@ -29,6 +24,12 @@ fn run_join_with_args(
         cmd.arg(arg);
     }
     cmd.output().expect("failed to execute kermit binary")
+}
+
+fn run_join(
+    relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
+) -> std::process::Output {
+    run_subcommand("join", relations, query, algorithm, indexstructure, &[])
 }
 
 fn parse_output(output: &std::process::Output) -> Vec<Vec<usize>> {
@@ -159,41 +160,7 @@ fn cli_join_output_to_file() {
 }
 
 #[test]
-fn cli_join_bench_flag_prints_statistics() {
-    let output = run_join_with_args(
-        &["first.csv", "second.csv"],
-        "intersect_query.dl",
-        "leapfrog-triejoin",
-        "tree-trie",
-        &["--bench"],
-    );
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // stdout still contains correct join results
-    let tuples = parse_output(&output);
-    assert_eq!(tuples, vec![vec![2], vec![3]]);
-
-    // stderr contains bench statistics
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--- join statistics ---"),
-        "stderr missing statistics header: {stderr}"
-    );
-    assert!(stderr.contains("data structure:"));
-    assert!(stderr.contains("algorithm:"));
-    assert!(stderr.contains("output tuples:"));
-    assert!(stderr.contains("load time:"));
-    assert!(stderr.contains("join time:"));
-    assert!(stderr.contains("write time:"));
-    assert!(stderr.contains("total time:"));
-}
-
-#[test]
-fn cli_join_no_bench_flag_stderr_silent() {
+fn cli_join_no_bench_stderr_silent() {
     let output = run_join(
         &["first.csv", "second.csv"],
         "intersect_query.dl",
@@ -203,7 +170,74 @@ fn cli_join_no_bench_flag_stderr_silent() {
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("--- join statistics ---"),
-        "stderr should be empty without --bench: {stderr}"
+        !stderr.contains("--- bench metadata ---"),
+        "stderr should be empty for join subcommand: {stderr}"
+    );
+}
+
+#[test]
+fn cli_bench_runs_criterion() {
+    let output = run_subcommand(
+        "bench",
+        &["first.csv", "second.csv"],
+        "intersect_query.dl",
+        "leapfrog-triejoin",
+        "tree-trie",
+        &[
+            "--name",
+            "test-intersect",
+            "--sample-size",
+            "10",
+            "--measurement-time",
+            "1",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // stderr contains metadata
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--- bench metadata ---"),
+        "stderr missing metadata header: {stderr}"
+    );
+    assert!(stderr.contains("data structure:"));
+    assert!(stderr.contains("algorithm:"));
+
+    // stdout contains Criterion benchmark output with the given name
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test-intersect"),
+        "stdout should contain benchmark name: {stdout}"
+    );
+    assert!(
+        stdout.contains("time:"),
+        "stdout should contain Criterion timing output: {stdout}"
+    );
+}
+
+#[test]
+fn cli_bench_default_name() {
+    let output = run_subcommand(
+        "bench",
+        &["first.csv", "second.csv"],
+        "intersect_query.dl",
+        "leapfrog-triejoin",
+        "tree-trie",
+        &["--sample-size", "10", "--measurement-time", "1"],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("join/"),
+        "stdout should use default 'join' group name: {stdout}"
     );
 }
