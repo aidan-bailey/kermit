@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.15] - 2026-03-03
+
+### Fixed
+
+- Prevent `TreeTrieIter` position/stack desynchronization past end of iteration
+- Prevent `ColumnTrieIter` underflow in `next()` and panic in `seek()`
+- Fix `ColumnTrieIter::seek` return value to use binary search correctly
+
+### Changed
+
+- Introduce `RelationError` for structured file parsing error handling
+- Extract `ColumnTrieLayer` helpers from `internal_insert`
+- Extract shared `TreeTrie` insertion logic into free function
+- Add inline documentation across data structure implementations
+- Make parquet tests polymorphic over both data structures
+- Add seek test suite and unit tests for `RelationError`
+- `kermit-iters` dependency to 0.0.7
+- `kermit-derive` dependency to 0.0.4
+
 ## [0.0.14] - 2025-11-17
 
 ### Added

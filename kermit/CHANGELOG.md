@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.16] - 2026-03-03
+
+### Added
+
+- `join` subcommand execution for running joins from the CLI
+- `--bench` (`-b`) flag on `join` subcommand for timing statistics
+
+### Changed
+
+- `DB::join()` now returns result tuples directly
+- Rename `Database` to `DatabaseEngine`
+- Introduce `RelationError` for file parsing operations
+- Expand multiway join test suite with five new patterns
+- Add inline documentation across CLI crate
+- `kermit-ds` dependency to 0.0.15
+- `kermit-iters` dependency to 0.0.7
+- `kermit-algos` dependency to 0.0.9
+- `kermit-bench` dependency to 0.0.5
+
 ## [0.0.15] - 2025-11-17
 
 ### Added

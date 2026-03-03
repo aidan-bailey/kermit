@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.9] - 2026-03-03
+
+### Changed
+
+- Extract `build_variable_index` from `join_iter` for clarity
+- Rename `LeapfrogTriejoinIter` fields for improved readability
+- Add inline documentation across algorithm implementations
+- Add end-to-end `LeapfrogTriejoinIter` test coverage
+- `kermit-iters` dependency to 0.0.7
+- `kermit-derive` dependency to 0.0.4
+
 ## [0.0.8] - 2025-11-17
 
 ### Added
