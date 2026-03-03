@@ -63,7 +63,7 @@ impl LinearIterator for ColumnTrieIter<'_> {
 
     fn next(&mut self) -> Option<usize> {
         if let Some(data) = self.rel_data {
-            if self.rel_data_i > data.len() - 1 {
+            if self.rel_data_i >= data.len() {
                 return None;
             }
             self.rel_data_i += 1;
@@ -74,6 +74,9 @@ impl LinearIterator for ColumnTrieIter<'_> {
     }
 
     fn seek(&mut self, seek_key: usize) -> bool {
+        if self.at_end() {
+            return false;
+        }
         if let Some(data) = self.rel_data {
             // Binary search within the remaining portion of the sorted slice
             // to find the first key >= seek_key.

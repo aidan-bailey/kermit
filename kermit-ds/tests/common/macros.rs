@@ -447,6 +447,36 @@ macro_rules! trie_seek_tests {
                     assert!(iter.at_end());
                 }
             );
+
+            $crate::trie_test!(
+                seek_when_at_end,
+                $relation_type,
+                [vec![1], vec![3], vec![5]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    // Exhaust all siblings
+                    while iter.next().is_some() {}
+                    assert!(iter.at_end());
+                    // seek() at end must return false, not panic
+                    assert!(!iter.seek(1));
+                    assert!(iter.at_end());
+                }
+            );
+
+            $crate::trie_test!(
+                seek_after_repeated_next_past_end,
+                $relation_type,
+                [vec![1], vec![3]],
+                |iter: &mut dyn TrieIterator| {
+                    assert!(iter.open());
+                    while iter.next().is_some() {}
+                    // Redundant next() calls past end
+                    assert_eq!(iter.next(), None);
+                    assert_eq!(iter.next(), None);
+                    // seek() must not panic
+                    assert!(!iter.seek(1));
+                }
+            );
         }
     };
 }
