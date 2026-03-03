@@ -196,7 +196,7 @@ fn main() -> anyhow::Result<()> {
                 .measurement_time(Duration::from_secs(measurement_time))
                 .warm_up_time(Duration::from_secs(warm_up_time));
             let mut group = criterion.benchmark_group(group_name);
-            group.bench_function(criterion::BenchmarkId::new("join", &bench_id), |b| {
+            group.bench_function(&bench_id, |b| {
                 b.iter_batched(
                     || join_query.clone(),
                     |q| db.join(q),
