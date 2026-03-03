@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: master-${{ github.sha }}
+  cancel-in-progress: false
+
 env:
   RUST_BACKTRACE: 1
 
@@ -16,21 +20,25 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: nightly
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
       - run: cargo build --verbose
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
           toolchain: nightly
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
       - run: cargo test --verbose
 
   publish:
@@ -40,6 +48,7 @@ jobs:
     needs: [build, test]
 
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     name: 'publish'
 
@@ -123,6 +132,7 @@ jobs:
     needs: publish
 
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     name: 'release'
 
