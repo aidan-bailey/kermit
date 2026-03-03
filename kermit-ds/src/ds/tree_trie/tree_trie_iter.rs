@@ -53,6 +53,9 @@ impl LinearIterator for TreeTrieIter<'_> {
 
     fn next(&mut self) -> Option<usize> {
         if let Some(siblings) = self.siblings() {
+            if self.at_end() {
+                return None;
+            }
             self.pos += 1;
             if let Some(node) = siblings.get(self.pos) {
                 self.stack.pop();
@@ -95,7 +98,7 @@ impl LinearIterator for TreeTrieIter<'_> {
 
     fn at_end(&self) -> bool {
         if let Some(siblings) = self.siblings() {
-            self.pos == siblings.len()
+            self.pos >= siblings.len()
         } else {
             true
         }

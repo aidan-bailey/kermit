@@ -473,8 +473,11 @@ macro_rules! trie_seek_tests {
                     // Redundant next() calls past end
                     assert_eq!(iter.next(), None);
                     assert_eq!(iter.next(), None);
+                    // at_end() must remain true despite repeated next() calls
+                    assert!(iter.at_end());
                     // seek() must not panic
                     assert!(!iter.seek(1));
+                    assert!(iter.at_end());
                 }
             );
         }
