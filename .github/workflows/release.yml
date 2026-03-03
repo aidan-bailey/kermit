@@ -92,12 +92,17 @@ jobs:
 
             echo "Publishing $crate $CRATE_VERSION (current: $PUBLISHED)"
             for attempt in $(seq 1 6); do
-              if cargo publish -p "$crate" --no-verify 2>&1; then
+              OUTPUT=$(cargo publish -p "$crate" --no-verify 2>&1) && {
                 echo "$crate $CRATE_VERSION published successfully"
+                break
+              }
+              if echo "$OUTPUT" | grep -q "already uploaded"; then
+                echo "$crate $CRATE_VERSION already uploaded, skipping"
                 break
               fi
               if [ "$attempt" -eq 6 ]; then
                 echo "::error::Failed to publish $crate after 6 attempts"
+                echo "$OUTPUT"
                 exit 1
               fi
               echo "Attempt $attempt failed, retrying in 5s..."
