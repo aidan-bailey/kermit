@@ -84,30 +84,18 @@ jobs:
 
           for crate in "${CRATES[@]}"; do
             CRATE_VERSION=$(grep -m1 '^version' "$crate/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
-            PUBLISHED=$(cargo search "$crate" --limit 1 | grep -oP "$crate = \"\K[^\"]+" || echo "0.0.0")
-            if [ "$CRATE_VERSION" = "$PUBLISHED" ]; then
-              echo "$crate $CRATE_VERSION already published, skipping"
+            echo "Publishing $crate $CRATE_VERSION"
+            OUTPUT=$(cargo publish -p "$crate" --no-verify 2>&1) && {
+              echo "$crate $CRATE_VERSION published successfully"
+              continue
+            }
+            if echo "$OUTPUT" | grep -q "already exists"; then
+              echo "$crate $CRATE_VERSION already exists, skipping"
               continue
             fi
-
-            echo "Publishing $crate $CRATE_VERSION (current: $PUBLISHED)"
-            for attempt in $(seq 1 6); do
-              OUTPUT=$(cargo publish -p "$crate" --no-verify 2>&1) && {
-                echo "$crate $CRATE_VERSION published successfully"
-                break
-              }
-              if echo "$OUTPUT" | grep -q "already uploaded"; then
-                echo "$crate $CRATE_VERSION already uploaded, skipping"
-                break
-              fi
-              if [ "$attempt" -eq 6 ]; then
-                echo "::error::Failed to publish $crate after 6 attempts"
-                echo "$OUTPUT"
-                exit 1
-              fi
-              echo "Attempt $attempt failed, retrying in 5s..."
-              sleep 5
-            done
+            echo "::error::Failed to publish $crate"
+            echo "$OUTPUT"
+            exit 1
           done
 
   release:
