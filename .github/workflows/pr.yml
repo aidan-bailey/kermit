@@ -5,6 +5,9 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -15,18 +18,13 @@ env:
 
 jobs:
   test:
-    name: Test Rust ${{ matrix.rust }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { rust: nightly, os: ubuntu-latest }
+    name: Test
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hecrj/setup-rust-action@v2
         with:
-          rust-version: ${{ matrix.rust }}
+          rust-version: nightly
       - run: cargo test --verbose
 
   clippy:
@@ -50,6 +48,7 @@ jobs:
       - uses: hecrj/setup-rust-action@v2
         with:
           components: rustfmt
+          rust-version: nightly
       - run: cargo fmt --all -- --check
 
   doc:
