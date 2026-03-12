@@ -259,3 +259,78 @@ fn cli_bench_default_name() {
         "stdout should use default 'join' group name: {stdout}"
     );
 }
+
+fn run_bench_ds(
+    relation: &str, indexstructure: &str, bench_args: &[&str], ds_args: &[&str],
+) -> std::process::Output {
+    let fixtures = fixtures_dir();
+    let mut cmd = Command::new(kermit_bin());
+    cmd.arg("bench");
+    for arg in bench_args {
+        cmd.arg(arg);
+    }
+    cmd.arg("ds");
+    cmd.arg("--relation").arg(fixtures.join(relation));
+    cmd.arg("--indexstructure").arg(indexstructure);
+    for arg in ds_args {
+        cmd.arg(arg);
+    }
+    cmd.output().expect("failed to execute kermit binary")
+}
+
+#[test]
+fn cli_bench_ds_all_metrics() {
+    let output = run_bench_ds(
+        "first.csv",
+        "tree-trie",
+        &["--sample-size", "10", "--measurement-time", "1", "--warm-up-time", "1"],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--- bench ds metadata ---"),
+        "stderr missing ds metadata header: {stderr}"
+    );
+    assert!(stderr.contains("data structure:"), "missing data structure in metadata");
+    assert!(stderr.contains("heap bytes:"), "missing heap bytes in metadata");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("TreeTrie/insertion"),
+        "stdout should contain insertion benchmark: {stdout}"
+    );
+    assert!(
+        stdout.contains("TreeTrie/iteration"),
+        "stdout should contain iteration benchmark: {stdout}"
+    );
+}
+
+#[test]
+fn cli_bench_ds_space_only() {
+    let output = run_bench_ds(
+        "first.csv",
+        "column-trie",
+        &["--sample-size", "10"],
+        &["-m", "space"],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("heap bytes:"), "missing heap bytes in metadata");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("time:"),
+        "space-only should not have Criterion output: {stdout}"
+    );
+}

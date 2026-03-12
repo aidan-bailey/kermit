@@ -237,13 +237,16 @@ impl Relation for ColumnTrie {
 
 impl crate::heap_size::HeapSize for ColumnTrie {
     fn heap_size_bytes(&self) -> usize {
-        self.layers
+        let layers_vec_bytes = self.layers.capacity() * std::mem::size_of::<ColumnTrieLayer>();
+        let layer_contents_bytes: usize = self
+            .layers
             .iter()
             .map(|layer| {
                 layer.data.capacity() * std::mem::size_of::<usize>()
                     + layer.interval.capacity() * std::mem::size_of::<usize>()
             })
-            .sum()
+            .sum();
+        layers_vec_bytes + layer_contents_bytes
     }
 }
 
@@ -323,7 +326,10 @@ mod heap_size_tests {
     #[test]
     fn empty_column_trie_heap_size() {
         let trie = ColumnTrie::new(2.into());
-        assert_eq!(trie.heap_size_bytes(), 0);
+        // Layers Vec is allocated with arity capacity, but data/interval Vecs are empty
+        let expected =
+            trie.layers.capacity() * std::mem::size_of::<ColumnTrieLayer>();
+        assert_eq!(trie.heap_size_bytes(), expected);
     }
 
     #[test]

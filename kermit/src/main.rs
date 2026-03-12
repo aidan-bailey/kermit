@@ -198,6 +198,7 @@ fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, Join
 
 fn run_ds_bench<R>(
     relation_path: &Path,
+    indexstructure: IndexStructure,
     metrics: &[Metric],
     group_name: &str,
     criterion: &mut criterion::Criterion,
@@ -221,13 +222,10 @@ where
     let tuples: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
     let header = relation.header().clone();
 
-    let type_name = std::any::type_name::<R>()
-        .rsplit("::")
-        .next()
-        .unwrap_or("unknown");
+    let ds_name = format!("{:?}", indexstructure);
 
     eprintln!("--- bench ds metadata ---");
-    eprintln!("  data structure:  {}", type_name);
+    eprintln!("  data structure:  {}", ds_name);
     eprintln!("  relation:        {}", relation_path.display());
     eprintln!("  tuples:          {}", tuples.len());
     eprintln!("  arity:           {}", header.arity());
@@ -246,7 +244,7 @@ where
         if metrics.contains(&Metric::Insertion) {
             let insertion_tuples = tuples.clone();
             let insertion_header = header.clone();
-            group.bench_function(format!("{type_name}/insertion"), |b| {
+            group.bench_function(format!("{ds_name}/insertion"), |b| {
                 b.iter_batched(
                     || (insertion_header.clone(), insertion_tuples.clone()),
                     |(h, t)| R::from_tuples(h, t),
@@ -256,7 +254,7 @@ where
         }
 
         if metrics.contains(&Metric::Iteration) {
-            group.bench_function(format!("{type_name}/iteration"), |b| {
+            group.bench_function(format!("{ds_name}/iteration"), |b| {
                 b.iter(|| relation.trie_iter().into_iter().collect::<Vec<_>>());
             });
         }
@@ -342,6 +340,7 @@ fn main() -> anyhow::Result<()> {
                         | IndexStructure::TreeTrie => {
                             run_ds_bench::<kermit_ds::TreeTrie>(
                                 &relation,
+                                indexstructure,
                                 &metrics,
                                 group_name,
                                 &mut criterion,
@@ -350,6 +349,7 @@ fn main() -> anyhow::Result<()> {
                         | IndexStructure::ColumnTrie => {
                             run_ds_bench::<kermit_ds::ColumnTrie>(
                                 &relation,
+                                indexstructure,
                                 &metrics,
                                 group_name,
                                 &mut criterion,
