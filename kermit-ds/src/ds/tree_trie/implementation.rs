@@ -173,3 +173,43 @@ impl crate::relation::Projectable for TreeTrie {
         Self::from_tuples(new_header, projected_tuples)
     }
 }
+
+impl crate::heap_size::HeapSize for TreeTrie {
+    fn heap_size_bytes(&self) -> usize {
+        fn node_heap_bytes(node: &TrieNode) -> usize {
+            let vec_capacity_bytes = node.children().capacity() * std::mem::size_of::<TrieNode>();
+            vec_capacity_bytes + node.children().iter().map(node_heap_bytes).sum::<usize>()
+        }
+
+        let root_capacity_bytes = self.children().capacity() * std::mem::size_of::<TrieNode>();
+        root_capacity_bytes + self.children().iter().map(node_heap_bytes).sum::<usize>()
+    }
+}
+
+#[cfg(test)]
+mod heap_size_tests {
+    use super::*;
+    use crate::{HeapSize, Relation};
+
+    #[test]
+    fn empty_tree_trie_heap_size() {
+        let trie = TreeTrie::new(2.into());
+        assert_eq!(trie.heap_size_bytes(), 0);
+    }
+
+    #[test]
+    fn single_tuple_tree_trie_heap_size() {
+        let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        assert!(trie.heap_size_bytes() > 0);
+    }
+
+    #[test]
+    fn more_tuples_means_more_heap() {
+        let small = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let large = TreeTrie::from_tuples(
+            2.into(),
+            vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]],
+        );
+        assert!(large.heap_size_bytes() > small.heap_size_bytes());
+    }
+}

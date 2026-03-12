@@ -12,11 +12,13 @@
 //! interchangeable in join algorithms.
 
 mod ds;
+mod heap_size;
 mod relation;
 mod shared;
 
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
     ds::{ColumnTrie, IndexStructure, TreeTrie},
+    heap_size::HeapSize,
     relation::{Projectable, Relation, RelationError, RelationFileExt, RelationHeader},
 };
