@@ -175,10 +175,29 @@ fn cli_join_no_bench_stderr_silent() {
     );
 }
 
+fn run_bench_join(
+    relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
+    bench_args: &[&str],
+) -> std::process::Output {
+    let fixtures = fixtures_dir();
+    let mut cmd = Command::new(kermit_bin());
+    cmd.arg("bench");
+    for arg in bench_args {
+        cmd.arg(arg);
+    }
+    cmd.arg("join");
+    for rel in relations {
+        cmd.arg("--relations").arg(fixtures.join(rel));
+    }
+    cmd.arg("--query").arg(fixtures.join(query));
+    cmd.arg("--algorithm").arg(algorithm);
+    cmd.arg("--indexstructure").arg(indexstructure);
+    cmd.output().expect("failed to execute kermit binary")
+}
+
 #[test]
 fn cli_bench_runs_criterion() {
-    let output = run_subcommand(
-        "bench",
+    let output = run_bench_join(
         &["first.csv", "second.csv"],
         "intersect_query.dl",
         "leapfrog-triejoin",
@@ -221,8 +240,7 @@ fn cli_bench_runs_criterion() {
 
 #[test]
 fn cli_bench_default_name() {
-    let output = run_subcommand(
-        "bench",
+    let output = run_bench_join(
         &["first.csv", "second.csv"],
         "intersect_query.dl",
         "leapfrog-triejoin",
