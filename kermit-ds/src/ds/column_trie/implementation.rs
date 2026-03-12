@@ -235,6 +235,18 @@ impl Relation for ColumnTrie {
     }
 }
 
+impl crate::heap_size::HeapSize for ColumnTrie {
+    fn heap_size_bytes(&self) -> usize {
+        self.layers
+            .iter()
+            .map(|layer| {
+                layer.data.capacity() * std::mem::size_of::<usize>()
+                    + layer.interval.capacity() * std::mem::size_of::<usize>()
+            })
+            .sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {
@@ -300,5 +312,33 @@ mod tests {
         // Sort for comparison
         all_tuples.sort();
         assert_eq!(all_tuples, vec![vec![1, 3], vec![4, 6]]);
+    }
+}
+
+#[cfg(test)]
+mod heap_size_tests {
+    use super::*;
+    use crate::{HeapSize, Relation};
+
+    #[test]
+    fn empty_column_trie_heap_size() {
+        let trie = ColumnTrie::new(2.into());
+        assert_eq!(trie.heap_size_bytes(), 0);
+    }
+
+    #[test]
+    fn single_tuple_column_trie_heap_size() {
+        let trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        assert!(trie.heap_size_bytes() > 0);
+    }
+
+    #[test]
+    fn more_tuples_means_more_heap() {
+        let small = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let large = ColumnTrie::from_tuples(
+            2.into(),
+            (0..100).map(|i| vec![i, i + 1]).collect(),
+        );
+        assert!(large.heap_size_bytes() > small.heap_size_bytes());
     }
 }
