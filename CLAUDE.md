@@ -17,7 +17,7 @@ cargo clippy --all-targets --verbose  # Lint (CI uses RUSTFLAGS=-Dwarnings)
 cargo fmt --all                 # Format (CI checks with --check)
 cargo doc --workspace           # Generate docs (CI uses RUSTDOCFLAGS=-Dwarnings)
 cargo bench --package kermit-ds # Run Criterion benchmarks
-cargo miri setup && cargo miri test   # Check for undefined behavior
+MIRIFLAGS="-Zmiri-disable-isolation" cargo miri setup && cargo miri test  # Check for UB (flag matches CI)
 ```
 
 ## Toolchain
@@ -39,10 +39,11 @@ kermit-ds       → Data structures: TreeTrie (pointer-based), ColumnTrie (colum
 kermit-algos    → Join algorithms: LeapfrogJoinIter (binary), LeapfrogTriejoinIter (multi-way).
                   Generic over any TrieIterable data structure via JoinAlgo<DS> trait.
 kermit-bench    → Benchmark infrastructure: dataset download, task/subtask definitions.
-kermit          → CLI binary (clap). Subcommands: join, benchmark.
+kermit          → CLI binary (clap). Subcommands: join, bench, benchmark.
+                  Provides DB abstraction layer (db::DB trait, DatabaseEngine).
 ```
 
-**Dependency flow:** `kermit-iters` → `kermit-derive`, `kermit-parser` → `kermit-ds`, `kermit-algos` → `kermit-bench` → `kermit`
+**Dependency flow:** `kermit-iters` → `kermit-derive`, `kermit-parser` → `kermit-ds` → `kermit-algos` → `kermit` (binary). `kermit-bench` is isolated (no internal deps); `kermit` depends on it.
 
 ## Key Trait Hierarchy
 
@@ -70,3 +71,10 @@ Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` d
 
 - `rustfmt.toml` is extensively configured: `max_width=100`, `trailing_comma="Vertical"`, `imports_granularity="One"`, `group_imports="StdExternalCrate"`, `match_arm_leading_pipes="Always"`.
 - Always run `cargo fmt --all` before committing — nightly rustfmt required due to unstable features.
+
+## Gotchas
+
+- **Miri isolation**: CI runs miri with `MIRIFLAGS="-Zmiri-disable-isolation"`. Use the same flag locally or tests may fail differently.
+- **git-cliff**: `cliff.toml` configures changelog generation via [git-cliff](https://git-cliff.org/). The release workflow auto-generates changelogs from conventional commits.
+- **Runnable example**: `kermit/examples/star/` contains a complete star-join example with CSV data, a Datalog query, and a `run.sh` script demonstrating all CLI subcommands.
+- **CI env vars**: All CI jobs set `RUST_BACKTRACE=1`. Release workflow requires `CARGO_REGISTRY_TOKEN` secret.
