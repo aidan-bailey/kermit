@@ -3,11 +3,12 @@ use {
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery},
     kermit_bench::benchmarks::Benchmark,
-    kermit_ds::IndexStructure,
+    kermit_ds::{HeapSize, IndexStructure, Relation, RelationFileExt},
+    kermit_iters::TrieIterable,
     std::{
         fs,
         io::{self, BufWriter, Write},
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::Duration,
     },
 };
@@ -195,6 +196,78 @@ fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, Join
     Ok((db, join_query))
 }
 
+fn run_ds_bench<R>(
+    relation_path: &Path,
+    metrics: &[Metric],
+    group_name: &str,
+    criterion: &mut criterion::Criterion,
+) -> anyhow::Result<()>
+where
+    R: Relation + TrieIterable + HeapSize + 'static,
+{
+    let extension = relation_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let relation: R = match extension.to_lowercase().as_str() {
+        | "csv" => R::from_csv(relation_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
+        | "parquet" => R::from_parquet(relation_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
+        | _ => anyhow::bail!("Unsupported file extension: {extension}"),
+    };
+
+    // Extract tuples for the insertion benchmark setup closure
+    let tuples: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
+    let header = relation.header().clone();
+
+    let type_name = std::any::type_name::<R>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("unknown");
+
+    eprintln!("--- bench ds metadata ---");
+    eprintln!("  data structure:  {}", type_name);
+    eprintln!("  relation:        {}", relation_path.display());
+    eprintln!("  tuples:          {}", tuples.len());
+    eprintln!("  arity:           {}", header.arity());
+
+    if metrics.contains(&Metric::Space) {
+        eprintln!("  heap bytes:      {}", relation.heap_size_bytes());
+    }
+
+    let has_criterion_metrics = metrics
+        .iter()
+        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+
+    if has_criterion_metrics {
+        let mut group = criterion.benchmark_group(group_name);
+
+        if metrics.contains(&Metric::Insertion) {
+            let insertion_tuples = tuples.clone();
+            let insertion_header = header.clone();
+            group.bench_function(format!("{type_name}/insertion"), |b| {
+                b.iter_batched(
+                    || (insertion_header.clone(), insertion_tuples.clone()),
+                    |(h, t)| R::from_tuples(h, t),
+                    criterion::BatchSize::SmallInput,
+                );
+            });
+        }
+
+        if metrics.contains(&Metric::Iteration) {
+            group.bench_function(format!("{type_name}/iteration"), |b| {
+                b.iter(|| relation.trie_iter().into_iter().collect::<Vec<_>>());
+            });
+        }
+
+        group.finish();
+        criterion.final_summary();
+    }
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -258,8 +331,31 @@ fn main() -> anyhow::Result<()> {
                     group.finish();
                     criterion.final_summary();
                 },
-                | BenchSubcommand::Ds { .. } => {
-                    todo!("bench ds execution logic")
+                | BenchSubcommand::Ds {
+                    relation,
+                    indexstructure,
+                    metrics,
+                } => {
+                    let group_name = bench_args.name.as_deref().unwrap_or("ds");
+
+                    match indexstructure {
+                        | IndexStructure::TreeTrie => {
+                            run_ds_bench::<kermit_ds::TreeTrie>(
+                                &relation,
+                                &metrics,
+                                group_name,
+                                &mut criterion,
+                            )?;
+                        },
+                        | IndexStructure::ColumnTrie => {
+                            run_ds_bench::<kermit_ds::ColumnTrie>(
+                                &relation,
+                                &metrics,
+                                group_name,
+                                &mut criterion,
+                            )?;
+                        },
+                    }
                 },
             }
         },
