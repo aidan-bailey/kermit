@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2026-03-12
+
+### Added
+
+- `bench ds` subcommand for benchmarking index structures (insertion, iteration, space)
+- `bench join` subcommand (restructured from previous `bench` command)
+- `Metric` enum for selectable benchmark metrics (insertion, iteration, space)
+- Criterion-based benchmarking with configurable sample size, measurement time, and warm-up time
+- Integration tests for `bench ds` subcommand
+
+### Fixed
+
+- Remove redundant "join" nesting in bench benchmark ID
+
+### Changed
+
+- Restructure `Bench` command into sub-subcommands (`join`, `ds`)
+- `kermit-ds` dependency to 0.1.0
+- `kermit-iters` dependency to 0.0.8
+- `kermit-algos` dependency to 0.0.10
+- `kermit-bench` dependency to 0.1.0
+- `kermit-parser` dependency to 0.0.2
+
 ## [0.0.16] - 2026-03-03
 
 ### Added
