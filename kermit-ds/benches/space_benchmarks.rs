@@ -155,7 +155,9 @@ macro_rules! define_space_benchmarks {
 
             criterion_group! {
                 name = space_benches;
-                config = Criterion::default().with_measurement(SpaceMeasurement);
+                // Plots disabled: Criterion's plotters backend panics on zero-variance
+                // (deterministic) data when generating PDF charts.
+                config = Criterion::default().with_measurement(SpaceMeasurement).without_plots();
                 targets = $(
                     [<bench_space_ $relation_type:lower>]
                 ),+
