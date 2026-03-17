@@ -52,21 +52,31 @@ impl TrieNode {
         }
     }
 
-    pub(crate) fn key(&self) -> usize { self.key }
+    pub(crate) fn key(&self) -> usize {
+        self.key
+    }
 
-    pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
+    pub(crate) fn children(&self) -> &Vec<TrieNode> {
+        &self.children
+    }
 
-    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode> { &mut self.children }
+    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode> {
+        &mut self.children
+    }
 }
 
 impl Index<usize> for TrieNode {
     type Output = TrieNode;
 
-    fn index(&self, index: usize) -> &Self::Output { &self.children[index] }
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.children[index]
+    }
 }
 
 impl IndexMut<usize> for TrieNode {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children[index] }
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.children[index]
+    }
 }
 
 /// A pointer-based trie that stores a relation as a tree of `TrieNode`s.
@@ -82,11 +92,15 @@ pub struct TreeTrie {
 }
 
 impl TreeTrie {
-    pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
+    pub(crate) fn children(&self) -> &Vec<TrieNode> {
+        &self.children
+    }
 }
 
 impl Relation for TreeTrie {
-    fn header(&self) -> &RelationHeader { &self.header }
+    fn header(&self) -> &RelationHeader {
+        &self.header
+    }
 
     fn new(header: RelationHeader) -> Self {
         Self {

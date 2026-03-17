@@ -152,7 +152,9 @@ where
 {
     type Item = Vec<usize>;
 
-    fn next(&mut self) -> Option<Self::Item> { self.next() }
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next()
+    }
 }
 
 #[cfg(test)]
@@ -174,10 +176,7 @@ mod tests {
     }
 
     fn node(key: usize, children: Vec<MockNode>) -> MockNode {
-        MockNode {
-            key,
-            children,
-        }
+        MockNode { key, children }
     }
 
     struct MockTrie {
@@ -263,7 +262,9 @@ mod tests {
             }
         }
 
-        fn up(&mut self) -> bool { self.levels.pop().is_some() }
+        fn up(&mut self) -> bool {
+            self.levels.pop().is_some()
+        }
     }
 
     fn collect_tuples(trie: &MockTrie) -> Vec<Vec<usize>> {
@@ -278,9 +279,7 @@ mod tests {
 
     #[test]
     fn empty_trie() {
-        let trie = MockTrie {
-            roots: vec![],
-        };
+        let trie = MockTrie { roots: vec![] };
         assert_eq!(collect_tuples(&trie), Vec::<Vec<usize>>::new());
     }
 
@@ -329,28 +328,27 @@ mod tests {
         let trie = MockTrie {
             roots: vec![node(1, vec![leaf(3), leaf(4)]), node(2, vec![leaf(5)])],
         };
-        assert_eq!(collect_tuples(&trie), vec![vec![1, 3], vec![1, 4], vec![
-            2, 5
-        ]],);
+        assert_eq!(
+            collect_tuples(&trie),
+            vec![vec![1, 3], vec![1, 4], vec![2, 5]],
+        );
     }
 
     #[test]
     fn ternary_tuples() {
         let trie = MockTrie {
             roots: vec![
-                node(1, vec![
-                    node(2, vec![leaf(5), leaf(6)]),
-                    node(3, vec![leaf(7)]),
-                ]),
+                node(
+                    1,
+                    vec![node(2, vec![leaf(5), leaf(6)]), node(3, vec![leaf(7)])],
+                ),
                 node(4, vec![node(8, vec![leaf(9)])]),
             ],
         };
-        assert_eq!(collect_tuples(&trie), vec![
-            vec![1, 2, 5],
-            vec![1, 2, 6],
-            vec![1, 3, 7],
-            vec![4, 8, 9],
-        ],);
+        assert_eq!(
+            collect_tuples(&trie),
+            vec![vec![1, 2, 5], vec![1, 2, 6], vec![1, 3, 7], vec![4, 8, 9],],
+        );
     }
 
     #[test]

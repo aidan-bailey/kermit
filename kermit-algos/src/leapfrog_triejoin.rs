@@ -51,7 +51,9 @@ impl<IT> LeapfrogJoinIterator for LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    fn leapfrog_next(&mut self) -> Option<usize> { self.leapfrog.leapfrog_next() }
+    fn leapfrog_next(&mut self) -> Option<usize> {
+        self.leapfrog.leapfrog_next()
+    }
 
     fn key(&self) -> Option<usize> {
         if self.depth == 0 {
@@ -61,9 +63,13 @@ where
         }
     }
 
-    fn leapfrog_init(&mut self) -> bool { self.leapfrog.leapfrog_init() }
+    fn leapfrog_init(&mut self) -> bool {
+        self.leapfrog.leapfrog_init()
+    }
 
-    fn leapfrog_search(&mut self) -> bool { self.leapfrog.leapfrog_search() }
+    fn leapfrog_search(&mut self) -> bool {
+        self.leapfrog.leapfrog_search()
+    }
 
     fn at_end(&self) -> bool {
         if self.depth == 0 {
@@ -72,7 +78,9 @@ where
         self.leapfrog.at_end()
     }
 
-    fn leapfrog_seek(&mut self, seek_key: usize) -> bool { self.leapfrog.leapfrog_seek(seek_key) }
+    fn leapfrog_seek(&mut self, seek_key: usize) -> bool {
+        self.leapfrog.leapfrog_seek(seek_key)
+    }
 }
 
 impl<IT> LeapfrogTriejoinIter<IT>
@@ -185,22 +193,34 @@ impl<IT> TrieIterator for LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    fn open(&mut self) -> bool { self.triejoin_open() }
+    fn open(&mut self) -> bool {
+        self.triejoin_open()
+    }
 
-    fn up(&mut self) -> bool { self.triejoin_up() }
+    fn up(&mut self) -> bool {
+        self.triejoin_up()
+    }
 }
 
 impl<IT> LinearIterator for LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    fn key(&self) -> Option<usize> { LeapfrogJoinIterator::key(self) }
+    fn key(&self) -> Option<usize> {
+        LeapfrogJoinIterator::key(self)
+    }
 
-    fn next(&mut self) -> Option<usize> { self.leapfrog_next() }
+    fn next(&mut self) -> Option<usize> {
+        self.leapfrog_next()
+    }
 
-    fn seek(&mut self, seek_key: usize) -> bool { self.leapfrog_seek(seek_key) }
+    fn seek(&mut self, seek_key: usize) -> bool {
+        self.leapfrog_seek(seek_key)
+    }
 
-    fn at_end(&self) -> bool { LeapfrogJoinIterator::at_end(self) }
+    fn at_end(&self) -> bool {
+        LeapfrogJoinIterator::at_end(self)
+    }
 }
 
 impl<IT> IntoIterator for LeapfrogTriejoinIter<IT>
@@ -355,9 +375,10 @@ mod tests {
     #[test]
     fn more_complicated() {
         let r = TreeTrie::from_tuples(2.into(), vec![vec![7, 4]]);
-        let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![
-            4, 9,
-        ]]);
+        let s = TreeTrie::from_tuples(
+            2.into(),
+            vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]],
+        );
         let t = TreeTrie::from_tuples(2.into(), vec![vec![7, 2], vec![7, 3], vec![7, 5]]);
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
@@ -494,9 +515,10 @@ mod tests {
     fn triangle_join_collect() {
         // Q(a,b,c) :- R(a,b), S(b,c), T(a,c)
         let r = TreeTrie::from_tuples(2.into(), vec![vec![7, 4]]);
-        let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![
-            4, 9,
-        ]]);
+        let s = TreeTrie::from_tuples(
+            2.into(),
+            vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![4, 9]],
+        );
         let t = TreeTrie::from_tuples(2.into(), vec![vec![7, 2], vec![7, 3], vec![7, 5]]);
         assert_eq!(
             triejoin_collect(
@@ -570,12 +592,13 @@ mod tests {
         let s = ColumnTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
-        let result: Vec<Vec<usize>> =
-            LeapfrogTriejoinIter::new(vec![0, 1, 2], vec![vec![0, 1], vec![1, 2]], vec![
-                r_iter, s_iter,
-            ])
-            .into_iter()
-            .collect();
+        let result: Vec<Vec<usize>> = LeapfrogTriejoinIter::new(
+            vec![0, 1, 2],
+            vec![vec![0, 1], vec![1, 2]],
+            vec![r_iter, s_iter],
+        )
+        .into_iter()
+        .collect();
         assert_eq!(result, vec![vec![1, 2, 4], vec![1, 3, 5]]);
     }
 

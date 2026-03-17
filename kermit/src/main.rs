@@ -197,10 +197,7 @@ fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, Join
 }
 
 fn run_ds_bench<R>(
-    relation_path: &Path,
-    indexstructure: IndexStructure,
-    metrics: &[Metric],
-    group_name: &str,
+    relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric], group_name: &str,
     criterion: &mut criterion::Criterion,
 ) -> anyhow::Result<()>
 where
@@ -274,10 +271,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        | Commands::Join {
-            query_args,
-            output,
-        } => {
+        | Commands::Join { query_args, output } => {
             let (db, join_query) = load_query(&query_args)?;
             let tuples = db.join(join_query);
             let writer: Box<dyn Write> = match &output {
@@ -297,10 +291,7 @@ fn main() -> anyhow::Result<()> {
                 .warm_up_time(Duration::from_secs(bench_args.warm_up_time));
 
             match subcommand {
-                | BenchSubcommand::Join {
-                    query_args,
-                    output,
-                } => {
+                | BenchSubcommand::Join { query_args, output } => {
                     let (db, join_query) = load_query(&query_args)?;
 
                     if let Some(path) = &output {

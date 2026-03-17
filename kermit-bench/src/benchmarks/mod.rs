@@ -20,9 +20,13 @@ impl Benchmark {
         }
     }
 
-    pub fn names() -> Vec<String> { vec![Self::Oxford.name()] }
+    pub fn names() -> Vec<String> {
+        vec![Self::Oxford.name()]
+    }
 
-    pub fn name(self) -> String { self.config().metadata().name.to_string() }
+    pub fn name(self) -> String {
+        self.config().metadata().name.to_string()
+    }
 
     pub fn config(self) -> Box<dyn BenchmarkConfig + 'static> {
         match self {
