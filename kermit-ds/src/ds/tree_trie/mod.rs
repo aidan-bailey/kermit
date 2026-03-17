@@ -87,18 +87,15 @@ mod tests {
 
     #[test]
     fn trie_iterator() {
-        let trie = TreeTrie::from_tuples(
-            3.into(),
-            vec![
-                vec![1, 3, 4],
-                vec![1, 3, 5],
-                vec![1, 4, 6],
-                vec![1, 4, 8],
-                vec![1, 4, 9],
-                vec![1, 5, 2],
-                vec![3, 5, 2],
-            ],
-        );
+        let trie = TreeTrie::from_tuples(3.into(), vec![
+            vec![1, 3, 4],
+            vec![1, 3, 5],
+            vec![1, 4, 6],
+            vec![1, 4, 8],
+            vec![1, 4, 9],
+            vec![1, 5, 2],
+            vec![3, 5, 2],
+        ]);
         let mut iter = trie.trie_iter();
 
         assert!(iter.open());
@@ -148,10 +145,9 @@ mod tests {
 
     #[test]
     fn test_tree_trie_iter() {
-        let trie = TreeTrie::from_tuples(
-            2.into(),
-            vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]],
-        );
+        let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
+            3, 5,
+        ]]);
         let iter = trie.trie_iter();
         for v in iter {
             assert!(
@@ -191,10 +187,10 @@ mod tests {
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);
         assert_eq!(projected.header().arity(), 2);
-        assert_eq!(
-            projected.header().attrs(),
-            &["x".to_string(), "z".to_string()]
-        );
+        assert_eq!(projected.header().attrs(), &[
+            "x".to_string(),
+            "z".to_string()
+        ]);
 
         // Collect all tuples from the projected relation using iterator
         let mut all_tuples: Vec<Vec<usize>> = projected.trie_iter().into_iter().collect();

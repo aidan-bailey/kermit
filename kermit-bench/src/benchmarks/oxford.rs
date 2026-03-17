@@ -232,9 +232,7 @@ fn translate_query(source: &Path, dest: &Path) -> Result<(), Box<dyn std::error:
 }
 
 impl BenchmarkConfig for OxfordBenchmark {
-    fn metadata(&self) -> &BenchmarkMetadata {
-        &METADATA
-    }
+    fn metadata(&self) -> &BenchmarkMetadata { &METADATA }
 
     fn load(&self, source: &Path, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let dl_spec = &self.metadata().download_spec;
