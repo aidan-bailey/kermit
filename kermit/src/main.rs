@@ -2,6 +2,7 @@ use {
     clap::{Args, Parser, Subcommand},
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery},
+    kermit_bench::benchmarks::Benchmark,
     kermit_ds::{HeapSize, IndexStructure, Relation, RelationFileExt},
     kermit_iters::TrieIterable,
     std::{
@@ -94,6 +95,33 @@ enum BenchSubcommand {
         /// Input relation data path (single file)
         #[arg(short, long, value_name = "PATH", required = true)]
         relation: PathBuf,
+
+        /// Data structure
+        #[arg(
+            short,
+            long,
+            value_name = "INDEXSTRUCTURE",
+            required = true,
+            value_enum
+        )]
+        indexstructure: IndexStructure,
+
+        /// Metrics to benchmark
+        #[arg(
+            short,
+            long,
+            value_enum,
+            num_args = 1..,
+            default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
+        )]
+        metrics: Vec<Metric>,
+    },
+
+    /// Run a named benchmark suite on generated data
+    Suite {
+        /// Benchmark workload to run
+        #[arg(short, long, value_name = "BENCHMARK", required = true, value_enum)]
+        benchmark: Benchmark,
 
         /// Data structure
         #[arg(
@@ -235,6 +263,72 @@ where
     Ok(())
 }
 
+fn run_suite_bench<R>(
+    benchmark: Benchmark, metrics: &[Metric], indexstructure: IndexStructure,
+    criterion: &mut criterion::Criterion,
+) -> anyhow::Result<()>
+where
+    R: Relation + TrieIterable + HeapSize + 'static,
+{
+    let config = benchmark.config();
+    let metadata = config.metadata();
+    let ds_name = format!("{:?}", indexstructure);
+
+    eprintln!("--- bench suite metadata ---");
+    eprintln!("  benchmark:       {}", metadata.name);
+    eprintln!("  data structure:  {}", ds_name);
+
+    let has_criterion_metrics = metrics
+        .iter()
+        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+
+    for task in metadata.tasks {
+        for subtask in task.subtasks {
+            let relations = config.generate(subtask);
+            let group_name = format!("{}/{}/{}", metadata.name, task.name, subtask.name);
+
+            for (arity, tuples) in &relations {
+                let n = tuples.len();
+                let header = (*arity).into();
+                let relation = R::from_tuples(header, tuples.clone());
+
+                if metrics.contains(&Metric::Space) {
+                    let bytes = relation.heap_size_bytes();
+                    eprintln!("  {group_name}: {n} tuples, arity {arity}, {bytes} heap bytes");
+                }
+
+                if has_criterion_metrics {
+                    let mut group = criterion.benchmark_group(&group_name);
+                    group.throughput(criterion::Throughput::Elements(n as u64));
+
+                    if metrics.contains(&Metric::Insertion) {
+                        let ins_tuples = tuples.clone();
+                        let ins_header: kermit_ds::RelationHeader = (*arity).into();
+                        group.bench_function(format!("{ds_name}/insertion"), |b| {
+                            b.iter_batched(
+                                || (ins_header.clone(), ins_tuples.clone()),
+                                |(h, t)| R::from_tuples(h, t),
+                                criterion::BatchSize::SmallInput,
+                            );
+                        });
+                    }
+
+                    if metrics.contains(&Metric::Iteration) {
+                        group.bench_function(format!("{ds_name}/iteration"), |b| {
+                            b.iter(|| relation.trie_iter().into_iter().collect::<Vec<_>>());
+                        });
+                    }
+
+                    group.finish();
+                }
+            }
+        }
+    }
+
+    criterion.final_summary();
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -243,10 +337,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        | Commands::Join {
-            query_args,
-            output,
-        } => {
+        | Commands::Join { query_args, output } => {
             let (db, join_query) = load_query(&query_args)?;
             let tuples = db.join(join_query);
             let writer: Box<dyn Write> = match &output {
@@ -266,10 +357,7 @@ fn main() -> anyhow::Result<()> {
                 .warm_up_time(Duration::from_secs(bench_args.warm_up_time));
 
             match subcommand {
-                | BenchSubcommand::Join {
-                    query_args,
-                    output,
-                } => {
+                | BenchSubcommand::Join { query_args, output } => {
                     let (db, join_query) = load_query(&query_args)?;
 
                     if let Some(path) = &output {
@@ -325,6 +413,28 @@ fn main() -> anyhow::Result<()> {
                             )?;
                         },
                     }
+                },
+                | BenchSubcommand::Suite {
+                    benchmark,
+                    indexstructure,
+                    metrics,
+                } => match indexstructure {
+                    | IndexStructure::TreeTrie => {
+                        run_suite_bench::<kermit_ds::TreeTrie>(
+                            benchmark,
+                            &metrics,
+                            indexstructure,
+                            &mut criterion,
+                        )?;
+                    },
+                    | IndexStructure::ColumnTrie => {
+                        run_suite_bench::<kermit_ds::ColumnTrie>(
+                            benchmark,
+                            &metrics,
+                            indexstructure,
+                            &mut criterion,
+                        )?;
+                    },
                 },
             }
         },
