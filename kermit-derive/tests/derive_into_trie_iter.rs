@@ -20,10 +20,7 @@ fn leaf(key: usize) -> MockNode {
 }
 
 fn node(key: usize, children: Vec<MockNode>) -> MockNode {
-    MockNode {
-        key,
-        children,
-    }
+    MockNode { key, children }
 }
 
 struct MockTrie {
@@ -111,7 +108,9 @@ impl TrieIterator for MockTrieIter<'_> {
         }
     }
 
-    fn up(&mut self) -> bool { self.levels.pop().is_some() }
+    fn up(&mut self) -> bool {
+        self.levels.pop().is_some()
+    }
 }
 
 #[test]
@@ -127,9 +126,7 @@ fn derive_generates_into_iterator() {
 
 #[test]
 fn derive_empty_trie() {
-    let trie = MockTrie {
-        roots: vec![],
-    };
+    let trie = MockTrie { roots: vec![] };
     let iter = MockTrieIter::new(&trie);
     let result: Vec<Vec<usize>> = iter.into_iter().collect();
     assert!(result.is_empty());

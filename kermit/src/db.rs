@@ -58,7 +58,9 @@ where
         }
     }
 
-    fn name(&self) -> &String { &self.name }
+    fn name(&self) -> &String {
+        &self.name
+    }
 
     fn add_relation(&mut self, name: &str, arity: usize) {
         let relation = R::new(arity.into());
@@ -124,7 +126,9 @@ where
     R: Relation,
     JA: JoinAlgo<R>,
 {
-    pub fn new(name: String) -> Self { <Self as DB>::new(name) }
+    pub fn new(name: String) -> Self {
+        <Self as DB>::new(name)
+    }
 }
 
 /// Creates a [`DatabaseEngine`] as a `Box<dyn DB>` based on the CLI-selected

@@ -19,7 +19,9 @@ impl Benchmark {
         }
     }
 
-    pub fn names() -> Vec<&'static str> { vec!["exponential", "factorial"] }
+    pub fn names() -> Vec<&'static str> {
+        vec!["exponential", "factorial"]
+    }
 
     pub fn name(self) -> &'static str {
         match self {
