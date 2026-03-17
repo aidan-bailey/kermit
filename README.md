@@ -55,50 +55,44 @@ Output (CSV to stdout):
 
 Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. Both `tree-trie` and `column-trie` index structures are supported.
 
-Add `--bench` (or `-b`) to print timing statistics to stderr:
-
-```sh
-kermit join \
-  --relations edge.csv \
-  --query query.dl \
-  --algorithm leapfrog-triejoin \
-  --indexstructure tree-trie \
-  --bench
-```
-
-```
---- join statistics ---
-  data structure:  TreeTrie
-  algorithm:       LeapfrogTriejoin
-  relations:       1
-  output tuples:   3
-  load time:       0.000412s
-  join time:       0.000076s
-  write time:      0.000003s
-  total time:      0.000521s
-```
-
 ## Benchmarking
 
-### Criterion micro-benchmarks
+All benchmarking is driven through the CLI. Three subcommands are available:
 
-Run Criterion benchmarks for insertion, iteration, and space (heap size) across synthetic data sets:
+### Benchmark suite (synthetic data)
+
+Run named benchmark workloads on synthetic data:
 
 ```sh
-cargo bench --package kermit-ds                       # all benchmarks
-cargo bench --package kermit-ds --bench relation_benchmarks  # time only
-cargo bench --package kermit-ds --bench space_benchmarks     # space only
+kermit bench suite \
+  --benchmark exponential \
+  --indexstructure tree-trie \
+  --metrics insertion iteration space
 ```
 
-### CLI data structure benchmarks
+Available benchmarks: `exponential` (k^k tuples, k=1..5), `factorial` (k! tuples, k=1..9).
 
-Benchmark a specific data structure against a real data file:
+### Data structure benchmark (file)
+
+Benchmark a specific data structure against a data file:
 
 ```sh
 kermit bench ds \
   --relation data.csv \
   --indexstructure tree-trie \
   --metrics insertion iteration space
+```
+
+### Join benchmark (file)
+
+Benchmark end-to-end join execution on data files:
+
+```sh
+kermit bench join \
+  --relations edge.csv \
+  --query query.dl \
+  --algorithm leapfrog-triejoin \
+  --indexstructure tree-trie
 ```
 
 Supported index structures: `tree-trie`, `column-trie`. Supported metrics: `insertion`, `iteration`, `space`.
