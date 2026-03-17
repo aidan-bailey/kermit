@@ -78,3 +78,41 @@ where
 
     set.into_iter().collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exponential_k1_produces_1_tuple() {
+        let tuples = generate_exponential_tuples(1usize);
+        assert_eq!(tuples, vec![vec![0]]);
+    }
+
+    #[test]
+    fn exponential_k3_produces_27_tuples() {
+        let tuples = generate_exponential_tuples(3usize);
+        assert_eq!(tuples.len(), 27);
+        assert_eq!(tuples[0].len(), 3);
+    }
+
+    #[test]
+    fn factorial_k1_produces_1_tuple() {
+        let tuples = generate_factorial_tuples(1usize);
+        assert_eq!(tuples, vec![vec![0]]);
+    }
+
+    #[test]
+    fn factorial_k4_produces_24_tuples() {
+        let tuples = generate_factorial_tuples(4usize);
+        assert_eq!(tuples.len(), 24);
+        assert_eq!(tuples[0].len(), 4);
+    }
+
+    #[test]
+    fn distinct_tuples_count() {
+        let tuples: Vec<Vec<usize>> = generate_distinct_tuples(10, 3);
+        assert_eq!(tuples.len(), 10);
+        assert!(tuples.iter().all(|t| t.len() == 3));
+    }
+}
