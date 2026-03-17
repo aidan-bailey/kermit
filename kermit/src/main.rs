@@ -13,6 +13,8 @@ use {
     },
 };
 
+mod measurement;
+
 #[derive(Parser)]
 #[command(name = "kermit")]
 #[command(version, about = "Relational data structures, iterators and algorithms", long_about = None)]
