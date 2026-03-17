@@ -17,16 +17,5 @@ kermit-iters = { version = "0.0.8", path = "../kermit-iters" }
 kermit-derive = { version = "0.0.5", path = "../kermit-derive" }
 clap = { version = "4.4", features = ["derive" ] }
 
-[[bench]]
-name = "relation_benchmarks"
-harness = false
-
-[[bench]]
-name = "space_benchmarks"
-harness = false
-
 [dev-dependencies]
-criterion = "0.7.0"
-rand = "0.9.1"
 paste = "1.0.15"
-num-traits = "0.2.19"
