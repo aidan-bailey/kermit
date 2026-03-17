@@ -3,13 +3,9 @@ use std::{
     process::Command,
 };
 
-fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
+fn fixtures_dir() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures") }
 
-fn kermit_bin() -> PathBuf {
-    Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf()
-}
+fn kermit_bin() -> PathBuf { Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf() }
 
 fn run_subcommand(
     subcommand: &str, relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
@@ -329,12 +325,9 @@ fn cli_bench_ds_all_metrics() {
 
 #[test]
 fn cli_bench_ds_space_only() {
-    let output = run_bench_ds(
-        "first.csv",
-        "column-trie",
-        &["--sample-size", "10"],
-        &["-m", "space"],
-    );
+    let output = run_bench_ds("first.csv", "column-trie", &["--sample-size", "10"], &[
+        "-m", "space",
+    ]);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -348,8 +341,19 @@ fn cli_bench_ds_space_only() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // Space benchmarks now go through Criterion with SpaceMeasurement, so they
+    // produce Criterion output with byte units (B/KiB/MiB) instead of time units.
     assert!(
-        !stdout.contains("time:"),
-        "space-only should not have Criterion output: {stdout}"
+        stdout.contains(" B"),
+        "space-only output should contain byte units: {stdout}"
+    );
+    // No time-based benchmarks should run
+    assert!(
+        !stdout.contains("insertion"),
+        "space-only should not run insertion benchmark: {stdout}"
+    );
+    assert!(
+        !stdout.contains("iteration"),
+        "space-only should not run iteration benchmark: {stdout}"
     );
 }

@@ -227,10 +227,6 @@ where
     eprintln!("  tuples:          {}", tuples.len());
     eprintln!("  arity:           {}", header.arity());
 
-    if metrics.contains(&Metric::Space) {
-        eprintln!("  heap bytes:      {}", relation.heap_size_bytes());
-    }
-
     let has_criterion_metrics = metrics
         .iter()
         .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
@@ -310,7 +306,7 @@ where
             } else {
                 0
             };
-            bytes * iters as usize + noise
+            bytes.saturating_mul(iters as usize).saturating_add(noise)
         });
     });
     group.finish();
@@ -347,11 +343,6 @@ where
                 let n = tuples.len();
                 let header = (*arity).into();
                 let relation = R::from_tuples(header, tuples.clone());
-
-                if metrics.contains(&Metric::Space) {
-                    let bytes = relation.heap_size_bytes();
-                    eprintln!("  {group_name}: {n} tuples, arity {arity}, {bytes} heap bytes");
-                }
 
                 if has_criterion_metrics {
                     let mut group = criterion.benchmark_group(&group_name);
@@ -402,8 +393,7 @@ where
         .measurement_time(Duration::from_secs(bench_args.measurement_time));
 
     for task in metadata.tasks {
-        let mut group =
-            criterion.benchmark_group(&format!("{}/{}/space", metadata.name, task.name));
+        let mut group = criterion.benchmark_group(format!("{}/{}/space", metadata.name, task.name));
 
         for subtask in task.subtasks {
             let relations = config.generate(subtask);
@@ -429,7 +419,7 @@ where
                         } else {
                             0
                         };
-                        bytes * iters as usize + noise
+                        bytes.saturating_mul(iters as usize).saturating_add(noise)
                     });
                 });
             }
@@ -450,7 +440,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        | Commands::Join { query_args, output } => {
+        | Commands::Join {
+            query_args,
+            output,
+        } => {
             let (db, join_query) = load_query(&query_args)?;
             let tuples = db.join(join_query);
             let writer: Box<dyn Write> = match &output {
@@ -470,7 +463,10 @@ fn main() -> anyhow::Result<()> {
                 .warm_up_time(Duration::from_secs(bench_args.warm_up_time));
 
             match subcommand {
-                | BenchSubcommand::Join { query_args, output } => {
+                | BenchSubcommand::Join {
+                    query_args,
+                    output,
+                } => {
                     let (db, join_query) = load_query(&query_args)?;
 
                     if let Some(path) = &output {
@@ -504,50 +500,101 @@ fn main() -> anyhow::Result<()> {
                     indexstructure,
                     metrics,
                 } => {
-                    let group_name = bench_args.name.as_deref().unwrap_or("ds");
+                    let has_time_metrics = metrics
+                        .iter()
+                        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
 
-                    match indexstructure {
-                        | IndexStructure::TreeTrie => {
-                            run_ds_bench::<kermit_ds::TreeTrie>(
-                                &relation,
-                                indexstructure,
-                                &metrics,
-                                group_name,
-                                &mut criterion,
-                            )?;
-                        },
-                        | IndexStructure::ColumnTrie => {
-                            run_ds_bench::<kermit_ds::ColumnTrie>(
-                                &relation,
-                                indexstructure,
-                                &metrics,
-                                group_name,
-                                &mut criterion,
-                            )?;
-                        },
+                    if has_time_metrics {
+                        let group_name = bench_args.name.as_deref().unwrap_or("ds");
+                        match indexstructure {
+                            | IndexStructure::TreeTrie => {
+                                run_ds_bench::<kermit_ds::TreeTrie>(
+                                    &relation,
+                                    indexstructure,
+                                    &metrics,
+                                    group_name,
+                                    &mut criterion,
+                                )?;
+                            },
+                            | IndexStructure::ColumnTrie => {
+                                run_ds_bench::<kermit_ds::ColumnTrie>(
+                                    &relation,
+                                    indexstructure,
+                                    &metrics,
+                                    group_name,
+                                    &mut criterion,
+                                )?;
+                            },
+                        }
+                    }
+
+                    if metrics.contains(&Metric::Space) {
+                        match indexstructure {
+                            | IndexStructure::TreeTrie => {
+                                run_ds_space_bench::<kermit_ds::TreeTrie>(
+                                    &relation,
+                                    indexstructure,
+                                    &bench_args,
+                                )?;
+                            },
+                            | IndexStructure::ColumnTrie => {
+                                run_ds_space_bench::<kermit_ds::ColumnTrie>(
+                                    &relation,
+                                    indexstructure,
+                                    &bench_args,
+                                )?;
+                            },
+                        }
                     }
                 },
                 | BenchSubcommand::Suite {
                     benchmark,
                     indexstructure,
                     metrics,
-                } => match indexstructure {
-                    | IndexStructure::TreeTrie => {
-                        run_suite_bench::<kermit_ds::TreeTrie>(
-                            benchmark,
-                            &metrics,
-                            indexstructure,
-                            &mut criterion,
-                        )?;
-                    },
-                    | IndexStructure::ColumnTrie => {
-                        run_suite_bench::<kermit_ds::ColumnTrie>(
-                            benchmark,
-                            &metrics,
-                            indexstructure,
-                            &mut criterion,
-                        )?;
-                    },
+                } => {
+                    let has_time_metrics = metrics
+                        .iter()
+                        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+
+                    if has_time_metrics {
+                        match indexstructure {
+                            | IndexStructure::TreeTrie => {
+                                run_suite_bench::<kermit_ds::TreeTrie>(
+                                    benchmark,
+                                    &metrics,
+                                    indexstructure,
+                                    &mut criterion,
+                                )?;
+                            },
+                            | IndexStructure::ColumnTrie => {
+                                run_suite_bench::<kermit_ds::ColumnTrie>(
+                                    benchmark,
+                                    &metrics,
+                                    indexstructure,
+                                    &mut criterion,
+                                )?;
+                            },
+                        }
+                    }
+
+                    if metrics.contains(&Metric::Space) {
+                        match indexstructure {
+                            | IndexStructure::TreeTrie => {
+                                run_suite_space_bench::<kermit_ds::TreeTrie>(
+                                    benchmark,
+                                    indexstructure,
+                                    &bench_args,
+                                )?;
+                            },
+                            | IndexStructure::ColumnTrie => {
+                                run_suite_space_bench::<kermit_ds::ColumnTrie>(
+                                    benchmark,
+                                    indexstructure,
+                                    &bench_args,
+                                )?;
+                            },
+                        }
+                    }
                 },
             }
         },
