@@ -13,8 +13,6 @@ pub mod ds {
 
 pub mod db;
 
-pub mod benchmarker;
-
 use {
     kermit_algos::{JoinAlgo, JoinQuery},
     kermit_ds::Relation,

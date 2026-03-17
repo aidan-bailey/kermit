@@ -2,7 +2,6 @@ use {
     clap::{Args, Parser, Subcommand},
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery},
-    kermit_bench::benchmarks::Benchmark,
     kermit_ds::{HeapSize, IndexStructure, Relation, RelationFileExt},
     kermit_iters::TrieIterable,
     std::{
@@ -137,35 +136,6 @@ enum Commands {
 
         #[command(subcommand)]
         subcommand: BenchSubcommand,
-    },
-
-    /// Run a benchmark suite
-    Benchmark {
-        /// Benchmark to run
-        #[arg(short, long, value_name = "NAME", required = true, value_enum)]
-        benchmark: Benchmark,
-
-        /// Join algorithm
-        #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
-        algorithm: JoinAlgorithm,
-
-        /// Index structure
-        #[arg(
-            short,
-            long,
-            value_name = "INDEXSTRUCTURE",
-            required = true,
-            value_enum
-        )]
-        indexstructure: IndexStructure,
-
-        /// Dataset directory (generated)
-        #[arg(short, long, value_name = "PATH", default_value = "datasets")]
-        dataset_dir: PathBuf,
-
-        /// Results directory for benchmarks (generated)
-        #[arg(short, long, value_name = "PATH", default_value = "results")]
-        results_dir: PathBuf,
     },
 }
 
@@ -357,21 +327,6 @@ fn main() -> anyhow::Result<()> {
                     }
                 },
             }
-        },
-
-        | Commands::Benchmark {
-            benchmark,
-            dataset_dir,
-            results_dir,
-            algorithm,
-            indexstructure,
-        } => {
-            println!("Running benchmarks:");
-            println!("  Benchmark: {:?}", benchmark.name());
-            println!("  Index structure: {:?}", indexstructure);
-            println!("  Algorithm: {:?}", algorithm);
-            println!("  Dataset directory: {:?}", dataset_dir);
-            println!("  Results directory: {:?}", results_dir);
         },
     }
 
