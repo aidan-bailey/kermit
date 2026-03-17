@@ -13,7 +13,8 @@ use {
     },
 };
 
-// SpaceMeasurement infrastructure for future Criterion-based space benchmarking.
+// SpaceMeasurement infrastructure for future Criterion-based space
+// benchmarking.
 #[allow(dead_code)]
 mod measurement;
 
