@@ -22,7 +22,7 @@ MIRIFLAGS="-Zmiri-disable-isolation" cargo miri setup && cargo miri test  # Chec
 
 ## Toolchain
 
-Rust **nightly** (pinned in `rust-toolchain.toml`). Required components: clippy, miri, rust-analyzer, rustfmt. The `rustfmt.toml` uses `unstable_features=true` so nightly rustfmt is required.
+Rust **nightly** (pinned in `rust-toolchain.toml`). Required components: clippy, miri, rust-analyzer, rustfmt. The `rustfmt.toml` uses `unstable_features=true` so nightly rustfmt is required. A Nix flake (`flake.nix`) provides a devshell with the full toolchain, `git-cliff`, and `cargo-expand`, plus pre-set `MIRIFLAGS` and `RUST_BACKTRACE`.
 
 ## CI Checks (PR gate)
 
@@ -59,21 +59,27 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|suite).
 
 Tests use macro-generated suites that combinatorially test all data structures against all algorithms:
 - `define_multiway_join_test!()` — individual parametrized test
-- `define_multiway_join_test_suite!()` — generates 6 standard join patterns (unary, triangle, chain, star, self-join, existential)
+- `define_multiway_join_test_suite!()` — generates 11 standard join patterns (unary, triangle, chain, star, self-join, existential, empty result, single relation, four-way chain, wide fanout, dead end)
 - Uses `paste!` crate for macro hygiene
 
 Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` directories.
 
 ## Extending the System
 
-- **New data structure**: implement `Relation` + `TrieIterable` + `HeapSize` in `kermit-ds`, create a `TrieIterator`, add to `IndexStructure` CLI enum, and add match arms in `run_ds_bench`/`run_suite_bench` in `kermit/src/main.rs`.
-- **New join algorithm**: implement `JoinAlgo<DS>` in `kermit-algos`, add to `JoinAlgorithm` CLI enum.
+- **New data structure**: implement `Relation` + `TrieIterable` + `HeapSize` in `kermit-ds`, create a `TrieIterator`, add variant to `IndexStructure` enum in `kermit-ds/src/ds/mod.rs` (derives `clap::ValueEnum`), and add match arms in `run_ds_bench`/`run_suite_bench` in `kermit/src/main.rs`.
+- **New join algorithm**: implement `JoinAlgo<DS>` in `kermit-algos`, add variant to `JoinAlgorithm` enum in `kermit-algos/src/lib.rs` (derives `clap::ValueEnum`).
 - **New benchmark**: add module in `kermit-bench/src/benchmarks/`, implement `BenchmarkConfig`, add to `Benchmark` enum.
 
 ## Code Style
 
 - `rustfmt.toml` is extensively configured: `max_width=100`, `trailing_comma="Vertical"`, `imports_granularity="One"`, `group_imports="StdExternalCrate"`, `match_arm_leading_pipes="Always"`.
 - Always run `cargo fmt --all` before committing — nightly rustfmt required due to unstable features.
+
+## Design Specs
+
+Detailed specifications live in `docs/specs/`:
+- `benchmarking-architecture.md` — CLI benchmarking design: `bench join|ds|suite` subcommands, `BenchArgs`, `kermit-bench` crate module structure, space measurement via `SpaceMeasurement`/`BytesFormatter`.
+- `space-benchmarks.md` — Criterion output format for space benchmarks: directory layout, JSON schema for `estimates.json`/`sample.json`/`benchmark.json`/`tukey.json`, benchmark ID mapping.
 
 ## Gotchas
 
