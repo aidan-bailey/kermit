@@ -52,31 +52,21 @@ impl TrieNode {
         }
     }
 
-    pub(crate) fn key(&self) -> usize {
-        self.key
-    }
+    pub(crate) fn key(&self) -> usize { self.key }
 
-    pub(crate) fn children(&self) -> &Vec<TrieNode> {
-        &self.children
-    }
+    pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
 
-    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode> {
-        &mut self.children
-    }
+    pub(crate) fn children_mut(&mut self) -> &mut Vec<TrieNode> { &mut self.children }
 }
 
 impl Index<usize> for TrieNode {
     type Output = TrieNode;
 
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.children[index]
-    }
+    fn index(&self, index: usize) -> &Self::Output { &self.children[index] }
 }
 
 impl IndexMut<usize> for TrieNode {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.children[index]
-    }
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut self.children[index] }
 }
 
 /// A pointer-based trie that stores a relation as a tree of `TrieNode`s.
@@ -92,15 +82,11 @@ pub struct TreeTrie {
 }
 
 impl TreeTrie {
-    pub(crate) fn children(&self) -> &Vec<TrieNode> {
-        &self.children
-    }
+    pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
 }
 
 impl Relation for TreeTrie {
-    fn header(&self) -> &RelationHeader {
-        &self.header
-    }
+    fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
         Self {
@@ -202,8 +188,10 @@ impl crate::heap_size::HeapSize for TreeTrie {
 
 #[cfg(test)]
 mod heap_size_tests {
-    use super::*;
-    use crate::{HeapSize, Relation};
+    use {
+        super::*,
+        crate::{HeapSize, Relation},
+    };
 
     #[test]
     fn empty_tree_trie_heap_size() {
@@ -220,10 +208,10 @@ mod heap_size_tests {
     #[test]
     fn more_tuples_means_more_heap() {
         let small = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
-        let large = TreeTrie::from_tuples(
-            2.into(),
-            vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]],
-        );
+        let large =
+            TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
+                3, 5,
+            ]]);
         assert!(large.heap_size_bytes() > small.heap_size_bytes());
     }
 }

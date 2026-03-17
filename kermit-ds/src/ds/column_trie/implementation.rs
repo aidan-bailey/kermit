@@ -64,9 +64,7 @@ pub struct ColumnTrie {
 }
 
 impl ColumnTrie {
-    pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer {
-        &self.layers[layer_i]
-    }
+    pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer { &self.layers[layer_i] }
 
     /// Walks down the layer hierarchy inserting one key per level. The
     /// `interval_index` tracks our position in each layer's interval array,
@@ -182,9 +180,7 @@ impl crate::relation::Projectable for ColumnTrie {
 }
 
 impl Relation for ColumnTrie {
-    fn header(&self) -> &RelationHeader {
-        &self.header
-    }
+    fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
         ColumnTrie {
@@ -308,10 +304,10 @@ mod tests {
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);
         assert_eq!(projected.header().arity(), 2);
-        assert_eq!(
-            projected.header().attrs(),
-            &["a".to_string(), "c".to_string()]
-        );
+        assert_eq!(projected.header().attrs(), &[
+            "a".to_string(),
+            "c".to_string()
+        ]);
 
         // Collect all tuples from the projected relation using iterator
         let mut all_tuples: Vec<Vec<usize>> = projected.trie_iter().into_iter().collect();
@@ -324,8 +320,10 @@ mod tests {
 
 #[cfg(test)]
 mod heap_size_tests {
-    use super::*;
-    use crate::{HeapSize, Relation};
+    use {
+        super::*,
+        crate::{HeapSize, Relation},
+    };
 
     #[test]
     fn empty_column_trie_heap_size() {

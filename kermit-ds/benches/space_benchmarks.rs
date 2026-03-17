@@ -54,9 +54,7 @@ impl ValueFormatter for BytesFormatter {
         }
     }
 
-    fn scale_for_machines(&self, _values: &mut [f64]) -> &'static str {
-        "B"
-    }
+    fn scale_for_machines(&self, _values: &mut [f64]) -> &'static str { "B" }
 }
 
 struct SpaceMeasurement;
@@ -67,25 +65,15 @@ impl Measurement for SpaceMeasurement {
 
     fn start(&self) -> Self::Intermediate {}
 
-    fn end(&self, _i: Self::Intermediate) -> Self::Value {
-        0
-    }
+    fn end(&self, _i: Self::Intermediate) -> Self::Value { 0 }
 
-    fn add(&self, v1: &Self::Value, v2: &Self::Value) -> Self::Value {
-        v1 + v2
-    }
+    fn add(&self, v1: &Self::Value, v2: &Self::Value) -> Self::Value { v1 + v2 }
 
-    fn zero(&self) -> Self::Value {
-        0
-    }
+    fn zero(&self) -> Self::Value { 0 }
 
-    fn to_f64(&self, value: &Self::Value) -> f64 {
-        *value as f64
-    }
+    fn to_f64(&self, value: &Self::Value) -> f64 { *value as f64 }
 
-    fn formatter(&self) -> &dyn ValueFormatter {
-        &BytesFormatter
-    }
+    fn formatter(&self) -> &dyn ValueFormatter { &BytesFormatter }
 }
 
 // --- Benchmark functions ---
