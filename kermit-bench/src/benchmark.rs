@@ -9,7 +9,8 @@ pub enum GenerationParams {
     /// Graph-based generation using a [`GraphModel`].
     Graph(GraphModel),
     /// Custom generation logic — the [`BenchmarkConfig`] implementation
-    /// handles generation directly in its [`generate`](BenchmarkConfig::generate) method.
+    /// handles generation directly in its
+    /// [`generate`](BenchmarkConfig::generate) method.
     Custom,
 }
 
