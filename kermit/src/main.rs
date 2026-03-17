@@ -13,9 +13,6 @@ use {
     },
 };
 
-// SpaceMeasurement infrastructure for future Criterion-based space
-// benchmarking.
-#[allow(dead_code)]
 mod measurement;
 
 #[derive(Parser)]
@@ -266,6 +263,62 @@ where
     Ok(())
 }
 
+fn run_ds_space_bench<R>(
+    relation_path: &Path, indexstructure: IndexStructure, bench_args: &BenchArgs,
+) -> anyhow::Result<()>
+where
+    R: Relation + TrieIterable + HeapSize + 'static,
+{
+    let extension = relation_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let relation: R = match extension.to_lowercase().as_str() {
+        | "csv" => R::from_csv(relation_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
+        | "parquet" => R::from_parquet(relation_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
+        | _ => anyhow::bail!("Unsupported file extension: {extension}"),
+    };
+
+    let tuples: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
+    let header = relation.header().clone();
+    let n = tuples.len();
+    let ds_name = format!("{:?}", indexstructure);
+    let group_name = bench_args.name.as_deref().unwrap_or("ds/space");
+
+    eprintln!("--- bench ds space metadata ---");
+    eprintln!("  data structure:  {}", ds_name);
+    eprintln!("  relation:        {}", relation_path.display());
+    eprintln!("  tuples:          {}", n);
+    eprintln!("  arity:           {}", header.arity());
+    eprintln!("  heap bytes:      {}", relation.heap_size_bytes());
+
+    let mut criterion = criterion::Criterion::default()
+        .with_measurement(measurement::SpaceMeasurement)
+        .sample_size(bench_args.sample_size)
+        .warm_up_time(Duration::from_secs(bench_args.warm_up_time))
+        .measurement_time(Duration::from_secs(bench_args.measurement_time));
+
+    let mut group = criterion.benchmark_group(group_name);
+    group.bench_with_input(criterion::BenchmarkId::new(&ds_name, n), &n, |b, _| {
+        b.iter_custom(|iters| {
+            let r = R::from_tuples(header.clone(), tuples.clone());
+            let bytes = r.heap_size_bytes();
+            let noise = if iters % 2 == 0 {
+                1
+            } else {
+                0
+            };
+            bytes * iters as usize + noise
+        });
+    });
+    group.finish();
+    criterion.final_summary();
+
+    Ok(())
+}
+
 fn run_suite_bench<R>(
     benchmark: Benchmark, metrics: &[Metric], indexstructure: IndexStructure,
     criterion: &mut criterion::Criterion,
@@ -332,6 +385,63 @@ where
     Ok(())
 }
 
+fn run_suite_space_bench<R>(
+    benchmark: Benchmark, indexstructure: IndexStructure, bench_args: &BenchArgs,
+) -> anyhow::Result<()>
+where
+    R: Relation + TrieIterable + HeapSize + 'static,
+{
+    let config = benchmark.config();
+    let metadata = config.metadata();
+    let ds_name = format!("{:?}", indexstructure);
+
+    let mut criterion = criterion::Criterion::default()
+        .with_measurement(measurement::SpaceMeasurement)
+        .sample_size(bench_args.sample_size)
+        .warm_up_time(Duration::from_secs(bench_args.warm_up_time))
+        .measurement_time(Duration::from_secs(bench_args.measurement_time));
+
+    for task in metadata.tasks {
+        let mut group =
+            criterion.benchmark_group(&format!("{}/{}/space", metadata.name, task.name));
+
+        for subtask in task.subtasks {
+            let relations = config.generate(subtask);
+
+            for (arity, tuples) in &relations {
+                let n = tuples.len();
+                let header: kermit_ds::RelationHeader = (*arity).into();
+                let tuples = tuples.clone();
+
+                eprintln!(
+                    "  {}/{}/{}: {} tuples, arity {}",
+                    metadata.name, task.name, subtask.name, n, arity
+                );
+
+                group.bench_with_input(criterion::BenchmarkId::new(&ds_name, n), &n, |b, _| {
+                    b.iter_custom(|iters| {
+                        let r = R::from_tuples(header.clone(), tuples.clone());
+                        let bytes = r.heap_size_bytes();
+                        // ±1 byte noise to avoid Criterion zero-variance panic
+                        // (issues #873, #887)
+                        let noise = if iters % 2 == 0 {
+                            1
+                        } else {
+                            0
+                        };
+                        bytes * iters as usize + noise
+                    });
+                });
+            }
+        }
+
+        group.finish();
+    }
+
+    criterion.final_summary();
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -340,10 +450,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        | Commands::Join {
-            query_args,
-            output,
-        } => {
+        | Commands::Join { query_args, output } => {
             let (db, join_query) = load_query(&query_args)?;
             let tuples = db.join(join_query);
             let writer: Box<dyn Write> = match &output {
@@ -363,10 +470,7 @@ fn main() -> anyhow::Result<()> {
                 .warm_up_time(Duration::from_secs(bench_args.warm_up_time));
 
             match subcommand {
-                | BenchSubcommand::Join {
-                    query_args,
-                    output,
-                } => {
+                | BenchSubcommand::Join { query_args, output } => {
                     let (db, join_query) = load_query(&query_args)?;
 
                     if let Some(path) = &output {
