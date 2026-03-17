@@ -20,7 +20,9 @@ pub struct DownloadSpec {
 }
 
 impl Downloader {
-    fn tmp_dir() -> std::path::PathBuf { env::temp_dir().join("kermit") }
+    fn tmp_dir() -> std::path::PathBuf {
+        env::temp_dir().join("kermit")
+    }
 
     fn ensure_init() {
         let tmp_dir = Self::tmp_dir();

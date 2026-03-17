@@ -64,7 +64,9 @@ pub struct ColumnTrie {
 }
 
 impl ColumnTrie {
-    pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer { &self.layers[layer_i] }
+    pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer {
+        &self.layers[layer_i]
+    }
 
     /// Walks down the layer hierarchy inserting one key per level. The
     /// `interval_index` tracks our position in each layer's interval array,
@@ -180,7 +182,9 @@ impl crate::relation::Projectable for ColumnTrie {
 }
 
 impl Relation for ColumnTrie {
-    fn header(&self) -> &RelationHeader { &self.header }
+    fn header(&self) -> &RelationHeader {
+        &self.header
+    }
 
     fn new(header: RelationHeader) -> Self {
         ColumnTrie {
@@ -304,10 +308,10 @@ mod tests {
         // Project to columns 0 and 2 (first and third columns)
         let projected = trie.project(vec![0, 2]);
         assert_eq!(projected.header().arity(), 2);
-        assert_eq!(projected.header().attrs(), &[
-            "a".to_string(),
-            "c".to_string()
-        ]);
+        assert_eq!(
+            projected.header().attrs(),
+            &["a".to_string(), "c".to_string()]
+        );
 
         // Collect all tuples from the projected relation using iterator
         let mut all_tuples: Vec<Vec<usize>> = projected.trie_iter().into_iter().collect();
@@ -327,8 +331,7 @@ mod heap_size_tests {
     fn empty_column_trie_heap_size() {
         let trie = ColumnTrie::new(2.into());
         // Layers Vec is allocated with arity capacity, but data/interval Vecs are empty
-        let expected =
-            trie.layers.capacity() * std::mem::size_of::<ColumnTrieLayer>();
+        let expected = trie.layers.capacity() * std::mem::size_of::<ColumnTrieLayer>();
         assert_eq!(trie.heap_size_bytes(), expected);
     }
 
@@ -341,10 +344,7 @@ mod heap_size_tests {
     #[test]
     fn more_tuples_means_more_heap() {
         let small = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
-        let large = ColumnTrie::from_tuples(
-            2.into(),
-            (0..100).map(|i| vec![i, i + 1]).collect(),
-        );
+        let large = ColumnTrie::from_tuples(2.into(), (0..100).map(|i| vec![i, i + 1]).collect());
         assert!(large.heap_size_bytes() > small.heap_size_bytes());
     }
 }

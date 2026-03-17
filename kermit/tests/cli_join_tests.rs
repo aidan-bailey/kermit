@@ -3,9 +3,13 @@ use std::{
     process::Command,
 };
 
-fn fixtures_dir() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures") }
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
 
-fn kermit_bin() -> PathBuf { Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf() }
+fn kermit_bin() -> PathBuf {
+    Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf()
+}
 
 fn run_subcommand(
     subcommand: &str, relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
@@ -176,8 +180,7 @@ fn cli_join_no_bench_stderr_silent() {
 }
 
 fn run_bench_join(
-    relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
-    bench_args: &[&str],
+    relations: &[&str], query: &str, algorithm: &str, indexstructure: &str, bench_args: &[&str],
 ) -> std::process::Output {
     let fixtures = fixtures_dir();
     let mut cmd = Command::new(kermit_bin());
@@ -283,7 +286,14 @@ fn cli_bench_ds_all_metrics() {
     let output = run_bench_ds(
         "first.csv",
         "tree-trie",
-        &["--sample-size", "10", "--measurement-time", "1", "--warm-up-time", "1"],
+        &[
+            "--sample-size",
+            "10",
+            "--measurement-time",
+            "1",
+            "--warm-up-time",
+            "1",
+        ],
         &[],
     );
     assert!(
@@ -297,8 +307,14 @@ fn cli_bench_ds_all_metrics() {
         stderr.contains("--- bench ds metadata ---"),
         "stderr missing ds metadata header: {stderr}"
     );
-    assert!(stderr.contains("data structure:"), "missing data structure in metadata");
-    assert!(stderr.contains("heap bytes:"), "missing heap bytes in metadata");
+    assert!(
+        stderr.contains("data structure:"),
+        "missing data structure in metadata"
+    );
+    assert!(
+        stderr.contains("heap bytes:"),
+        "missing heap bytes in metadata"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -326,7 +342,10 @@ fn cli_bench_ds_space_only() {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("heap bytes:"), "missing heap bytes in metadata");
+    assert!(
+        stderr.contains("heap bytes:"),
+        "missing heap bytes in metadata"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(

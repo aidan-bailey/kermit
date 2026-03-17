@@ -46,19 +46,27 @@ impl std::error::Error for RelationError {
 }
 
 impl From<csv::Error> for RelationError {
-    fn from(e: csv::Error) -> Self { RelationError::Csv(e) }
+    fn from(e: csv::Error) -> Self {
+        RelationError::Csv(e)
+    }
 }
 
 impl From<std::io::Error> for RelationError {
-    fn from(e: std::io::Error) -> Self { RelationError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        RelationError::Io(e)
+    }
 }
 
 impl From<parquet::errors::ParquetError> for RelationError {
-    fn from(e: parquet::errors::ParquetError) -> Self { RelationError::Parquet(e) }
+    fn from(e: parquet::errors::ParquetError) -> Self {
+        RelationError::Parquet(e)
+    }
 }
 
 impl From<arrow::error::ArrowError> for RelationError {
-    fn from(e: arrow::error::ArrowError) -> Self { RelationError::Arrow(e) }
+    fn from(e: arrow::error::ArrowError) -> Self {
+        RelationError::Arrow(e)
+    }
 }
 
 /// Whether a relation's attributes are identified by name or by position.
@@ -122,13 +130,21 @@ impl RelationHeader {
         }
     }
 
-    pub fn is_nameless(&self) -> bool { self.name.is_empty() }
+    pub fn is_nameless(&self) -> bool {
+        self.name.is_empty()
+    }
 
-    pub fn name(&self) -> &str { &self.name }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
-    pub fn attrs(&self) -> &[String] { &self.attrs }
+    pub fn attrs(&self) -> &[String] {
+        &self.attrs
+    }
 
-    pub fn arity(&self) -> usize { self.arity }
+    pub fn arity(&self) -> usize {
+        self.arity
+    }
 
     pub fn model_type(&self) -> ModelType {
         if self.attrs.is_empty() {
@@ -140,7 +156,9 @@ impl RelationHeader {
 }
 
 impl From<usize> for RelationHeader {
-    fn from(value: usize) -> RelationHeader { RelationHeader::new_nameless_positional(value) }
+    fn from(value: usize) -> RelationHeader {
+        RelationHeader::new_nameless_positional(value)
+    }
 }
 
 /// A relation that can produce a new relation containing only the specified
