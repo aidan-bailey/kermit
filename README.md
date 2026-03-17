@@ -78,6 +78,31 @@ kermit join \
   total time:      0.000521s
 ```
 
+## Benchmarking
+
+### Criterion micro-benchmarks
+
+Run Criterion benchmarks for insertion, iteration, and space (heap size) across synthetic data sets:
+
+```sh
+cargo bench --package kermit-ds                       # all benchmarks
+cargo bench --package kermit-ds --bench relation_benchmarks  # time only
+cargo bench --package kermit-ds --bench space_benchmarks     # space only
+```
+
+### CLI data structure benchmarks
+
+Benchmark a specific data structure against a real data file:
+
+```sh
+kermit bench ds \
+  --relation data.csv \
+  --indexstructure tree-trie \
+  --metrics insertion iteration space
+```
+
+Supported index structures: `tree-trie`, `column-trie`. Supported metrics: `insertion`, `iteration`, `space`.
+
 ## Contributing
 
 Thanks for taking an interest! Perhaps after I've finished my thesis.

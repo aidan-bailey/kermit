@@ -16,7 +16,7 @@ cargo test test_tree_trie       # Run a single test by name
 cargo clippy --all-targets --verbose  # Lint (CI uses RUSTFLAGS=-Dwarnings)
 cargo fmt --all                 # Format (CI checks with --check)
 cargo doc --workspace           # Generate docs (CI uses RUSTDOCFLAGS=-Dwarnings)
-cargo bench --package kermit-ds # Run Criterion benchmarks
+cargo bench --package kermit-ds # Run Criterion benchmarks (time + space)
 MIRIFLAGS="-Zmiri-disable-isolation" cargo miri setup && cargo miri test  # Check for UB (flag matches CI)
 ```
 
@@ -39,7 +39,7 @@ kermit-ds       → Data structures: TreeTrie (pointer-based), ColumnTrie (colum
 kermit-algos    → Join algorithms: LeapfrogJoinIter (binary), LeapfrogTriejoinIter (multi-way).
                   Generic over any TrieIterable data structure via JoinAlgo<DS> trait.
 kermit-bench    → Benchmark infrastructure: dataset download, task/subtask definitions.
-kermit          → CLI binary (clap). Subcommands: join, bench, benchmark.
+kermit          → CLI binary (clap). Subcommands: join, bench (join|ds), benchmark.
                   Provides DB abstraction layer (db::DB trait, DatabaseEngine).
 ```
 
@@ -51,6 +51,7 @@ kermit          → CLI binary (clap). Subcommands: join, bench, benchmark.
 - **JoinIterable** (marker) → **TrieIterable** → **TrieIterator** : LinearIterator + `open`, `up`
 - **Relation**: JoinIterable + Projectable — core data abstraction (`from_tuples`, `insert`, `header`)
 - **JoinAlgo\<DS\>**: algorithm trait decoupled from data structures
+- **HeapSize**: heap-allocated byte count for space benchmarking (`heap_size_bytes()`)
 
 ## Testing Patterns
 
@@ -63,7 +64,7 @@ Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` d
 
 ## Extending the System
 
-- **New data structure**: implement `Relation` + `TrieIterable` in `kermit-ds`, create a `TrieIterator`, add to `IndexStructure` CLI enum.
+- **New data structure**: implement `Relation` + `TrieIterable` + `HeapSize` in `kermit-ds`, create a `TrieIterator`, add to `IndexStructure` CLI enum and to `define_space_benchmarks!()` in `kermit-ds/benches/space_benchmarks.rs`.
 - **New join algorithm**: implement `JoinAlgo<DS>` in `kermit-algos`, add to `JoinAlgorithm` CLI enum.
 - **New benchmark**: add module in `kermit-bench/src/benchmarks/`, implement `BenchmarkConfig`, add to `Benchmark` enum.
 
@@ -76,5 +77,5 @@ Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` d
 
 - **Miri isolation**: CI runs miri with `MIRIFLAGS="-Zmiri-disable-isolation"`. Use the same flag locally or tests may fail differently.
 - **git-cliff**: `cliff.toml` configures changelog generation via [git-cliff](https://git-cliff.org/). The release workflow auto-generates changelogs from conventional commits.
-- **Runnable example**: `kermit/examples/star/` contains a complete star-join example with CSV data, a Datalog query, and a `run.sh` script demonstrating all CLI subcommands.
+- **Space benchmarks**: `kermit-ds/benches/space_benchmarks.rs` uses a custom Criterion `Measurement` with `.without_plots()` because Criterion's plotters backend panics on zero-variance (deterministic) data.
 - **CI env vars**: All CI jobs set `RUST_BACKTRACE=1`. Release workflow requires `CARGO_REGISTRY_TOKEN` secret.
