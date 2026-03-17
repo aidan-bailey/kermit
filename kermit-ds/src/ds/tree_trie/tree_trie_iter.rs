@@ -49,9 +49,7 @@ impl<'a> TreeTrieIter<'a> {
 }
 
 impl LinearIterator for TreeTrieIter<'_> {
-    fn key(&self) -> Option<usize> {
-        Some(self.siblings()?.get(self.pos)?.key())
-    }
+    fn key(&self) -> Option<usize> { Some(self.siblings()?.get(self.pos)?.key()) }
 
     fn next(&mut self) -> Option<usize> {
         if let Some(siblings) = self.siblings() {

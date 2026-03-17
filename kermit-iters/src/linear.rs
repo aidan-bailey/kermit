@@ -80,9 +80,7 @@ impl LinearIterator for VecLinearIter<'_> {
         false
     }
 
-    fn at_end(&self) -> bool {
-        self.index > self.data.len()
-    }
+    fn at_end(&self) -> bool { self.index > self.data.len() }
 }
 
 /// Implementation of the `LinearIterable` trait for `Vec<KT>` informing the
