@@ -216,23 +216,25 @@ This abstraction allows implementing different join algorithms that work with an
 
 ## Benchmarking (`kermit-bench`)
 
-The benchmark system supports:
+The benchmark crate provides synthetic data generation and workload definitions
+with no internal kermit dependencies:
 
-- **Datasets**: Automatic downloading and extraction (e.g., Oxford benchmark)
-- **Tasks**: Groupings of related queries
-- **SubTasks**: Individual query + data combinations
+- **Generation**: Tuple generators (exponential, factorial, distinct) and graph
+  model stubs (Erdos-Renyi via petgraph)
+- **Tasks**: Groupings of related benchmark workloads
+- **SubTasks**: Individual scale points with declarative generation parameters
 
 ```rust
-struct BenchmarkMetadata {
-    name: &'static str,
-    download_spec: DownloadSpec,
-    tasks: &'static [Task],
+enum GenerationParams {
+    Exponential { k: usize },
+    Factorial { k: usize },
+    Graph(GraphModel),
+    Custom,
 }
 
 trait BenchmarkConfig {
     fn metadata(&self) -> &BenchmarkMetadata;
-    fn load(&self, source: &Path, path: &Path) -> Result<...>;
-    fn validate(&self, path: &Path) -> Result<...>;
+    fn generate(&self, subtask: &SubTask) -> Vec<(usize, Vec<Vec<usize>>)>;
 }
 ```
 
@@ -248,10 +250,15 @@ kermit join \
   --algorithm leapfrog-triejoin \
   --indexstructure tree-trie
 
-# Run a benchmark suite
-kermit benchmark \
-  --benchmark oxford \
-  --algorithm leapfrog-triejoin \
+# Run a named benchmark suite on synthetic data
+kermit bench suite \
+  --benchmark exponential \
+  --indexstructure tree-trie \
+  --metrics insertion iteration space
+
+# Benchmark a single data structure on a file
+kermit bench ds \
+  --relation data.csv \
   --indexstructure column-trie
 ```
 
@@ -285,6 +292,6 @@ All keys are `usize`. String values must be dictionary-encoded before use. This 
 ### New Benchmark
 
 1. Create a module in `kermit-bench/src/benchmarks/`
-2. Define `BenchmarkMetadata` with download spec and tasks
-3. Implement `BenchmarkConfig` trait
+2. Define `BenchmarkMetadata` with tasks and subtasks using `GenerationParams`
+3. Implement `BenchmarkConfig` trait (generate method)
 4. Add to `Benchmark` enum
