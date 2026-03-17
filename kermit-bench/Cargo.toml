@@ -12,6 +12,5 @@ repository.workspace = true
 [dependencies]
 clap = { version = "4.4", features = ["derive" ] }
 num-traits = "0.2.19"
-petgraph = "0.8.3"
 rand = "0.9.1"
 
