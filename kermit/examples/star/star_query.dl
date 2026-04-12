@@ -1,0 +1,1 @@
+star(A, Dept, Salary, Office) :- works_in(A, Dept), earns(A, Salary), located(A, Office).

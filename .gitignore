@@ -24,4 +24,5 @@ Cargo.lock
 **/*.pdf
 **/*.csv
 !kermit/tests/fixtures/*.csv
+!kermit/examples/**/*.csv
 .claude-squad/
