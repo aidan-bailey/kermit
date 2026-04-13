@@ -9,5 +9,7 @@ pub mod definition;
 pub mod discovery;
 pub mod error;
 
-pub use definition::{BenchmarkDefinition, RelationSource};
-pub use error::BenchError;
+pub use {
+    definition::{BenchmarkDefinition, RelationSource},
+    error::BenchError,
+};
