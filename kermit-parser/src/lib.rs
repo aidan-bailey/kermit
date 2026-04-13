@@ -41,9 +41,13 @@ fn ident(input: &mut &str) -> PResult<String> {
     Ok(start[..len].to_string())
 }
 
-fn comma(input: &mut &str) -> PResult<char> { delimited(ws, ',', ws).parse_next(input) }
+fn comma(input: &mut &str) -> PResult<char> {
+    delimited(ws, ',', ws).parse_next(input)
+}
 
-fn dot(input: &mut &str) -> PResult<char> { delimited(ws, '.', ws).parse_next(input) }
+fn dot(input: &mut &str) -> PResult<char> {
+    delimited(ws, '.', ws).parse_next(input)
+}
 
 // ---------- term / predicate ----------
 fn term(input: &mut &str) -> PResult<Term> {
@@ -86,10 +90,7 @@ fn predicate(input: &mut &str) -> PResult<Predicate> {
     ws.parse_next(input)?;
     let name = ident.parse_next(input)?;
     let terms = term_list.parse_next(input)?;
-    Ok(Predicate {
-        name,
-        terms,
-    })
+    Ok(Predicate { name, terms })
 }
 
 fn query(input: &mut &str) -> PResult<JoinQuery> {
@@ -98,10 +99,7 @@ fn query(input: &mut &str) -> PResult<JoinQuery> {
     let _ = delimited(ws, ":-", ws).parse_next(input)?;
     let body = separated(1.., predicate, comma).parse_next(input)?;
     let _ = dot.parse_next(input)?;
-    Ok(JoinQuery {
-        head,
-        body,
-    })
+    Ok(JoinQuery { head, body })
 }
 
 impl std::str::FromStr for JoinQuery {

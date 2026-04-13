@@ -30,9 +30,11 @@ macro_rules! relation_construction_tests {
 
             $crate::relation_construction_test!(binary, $relation_type, [vec![1, 2], vec![3, 4]]);
 
-            $crate::relation_construction_test!(ternary, $relation_type, [vec![1, 2, 3], vec![
-                4, 5, 6
-            ]]);
+            $crate::relation_construction_test!(
+                ternary,
+                $relation_type,
+                [vec![1, 2, 3], vec![4, 5, 6]]
+            );
         }
     };
 }
