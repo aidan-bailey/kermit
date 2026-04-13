@@ -25,3 +25,4 @@ Cargo.lock
 **/*.csv
 !kermit/tests/fixtures/*.csv
 .claude-squad/
+.worktrees/
