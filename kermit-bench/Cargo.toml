@@ -1,6 +1,6 @@
 [package]
 name = "kermit-bench"
-description = "Benchmarking utilities and benchmarks"
+description = "Benchmark definitions, discovery, and caching for Kermit"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -10,7 +10,11 @@ readme.workspace = true
 repository.workspace = true
 
 [dependencies]
-clap = { version = "4.4", features = ["derive" ] }
-num-traits = "0.2.19"
-rand = "0.9.1"
+dirs = "6"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "2"
 
+[dev-dependencies]
+tempfile = "3"

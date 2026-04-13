@@ -1,0 +1,6 @@
+name: triangle
+description: "Triangle query over edge relation"
+relations:
+  - name: edge
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
