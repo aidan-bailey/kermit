@@ -1,0 +1,29 @@
+name: oxford-uniform-s5
+description: "Oxford DSI benchmark - uniform distribution, scale 5 (16K tuples per relation)"
+relations:
+  - name: P
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+  - name: Q
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+  - name: R
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+  - name: S
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+  - name: T
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+  - name: U
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+  - name: V
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+  - name: W
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+queries:
+  - name: binary-join
+    description: "Binary intersection of P and Q on attribute A"
+    query: "Result(A) :- P(A), Q(A)."
+  - name: triangle
+    description: "Triangle join of R, S, T on attributes A, B, C"
+    query: "Result(A, B, C) :- R(A, B, X), S(A, C, Y), T(B, C, Z)."
+  - name: six-way
+    description: "Six-way join across all relations on A, B, C, X, Y, Z"
+    query: "Result(A, B, C, X, Y, Z) :- R(A, B, X), S(A, C, Y), T(B, C, Z), U(X, D), V(Y, E), W(Z, F)."
