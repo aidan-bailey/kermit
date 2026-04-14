@@ -68,16 +68,22 @@ where
     }
 
     /// Returns the number of iterators being joined.
-    pub fn k(&self) -> usize { self.iterators.len() }
+    pub fn k(&self) -> usize {
+        self.iterators.len()
+    }
 
-    fn mut_iter(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.iterator_indexes[i]] }
+    fn mut_iter(&mut self, i: usize) -> &mut IT {
+        &mut self.iterators[self.iterator_indexes[i]]
+    }
 }
 
 impl<IT> LeapfrogJoinIterator for LeapfrogJoinIter<IT>
 where
     IT: LinearIterator,
 {
-    fn key(&self) -> Option<usize> { self.iterators[self.p].key() }
+    fn key(&self) -> Option<usize> {
+        self.iterators[self.p].key()
+    }
 
     fn leapfrog_init(&mut self) -> bool {
         for iter in &mut self.iterators {
