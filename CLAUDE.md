@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Kermit is a Rust library for relational algebra research and benchmarking, built as a platform for a Masters thesis investigating the Leapfrog Triejoin algorithm across different data structures. It is a Cargo workspace with 7 crates. All keys are `usize` (dictionary-encoded). The codebase uses entirely safe Rust with no unsafe blocks.
+Kermit is a Rust library for relational algebra research and benchmarking, built as a platform for a Masters thesis investigating the Leapfrog Triejoin algorithm across different data structures. It is a Cargo workspace with 7 crates. All keys are `usize` (dictionary-encoded). The codebase uses entirely safe Rust with no unsafe blocks. See `ARCHITECTURE.md` for detailed algorithmic descriptions, data flow, and Datalog query processing.
 
 ## Build Commands
 
@@ -24,6 +24,10 @@ MIRIFLAGS="-Zmiri-disable-isolation" cargo miri setup && cargo miri test  # Chec
 
 Rust **nightly** (pinned in `rust-toolchain.toml`). Required components: clippy, miri, rust-analyzer, rustfmt. The `rustfmt.toml` uses `unstable_features=true` so nightly rustfmt is required.
 
+## Development Environment
+
+A Nix flake provides the recommended dev shell: `nix develop`. It sets up nightly Rust (matching `rust-toolchain.toml`), `git-cliff`, `cargo-expand`, and configures `MIRIFLAGS` and `RUST_BACKTRACE` to match CI.
+
 ## CI Checks (PR gate)
 
 All of these must pass: `cargo test`, `cargo clippy` (warnings are errors), `cargo fmt --check`, `cargo doc` (doc warnings are errors), `cargo miri test`.
@@ -39,19 +43,20 @@ kermit-ds       → Data structures: TreeTrie (pointer-based), ColumnTrie (colum
 kermit-algos    → Join algorithms: LeapfrogJoinIter (binary), LeapfrogTriejoinIter (multi-way).
                   Generic over any TrieIterable data structure via JoinAlgo<DS> trait.
 kermit-bench    → Benchmark definitions, discovery, and caching. No internal deps.
-                  YAML-based benchmark declarations, ZivaHub download, ~/.cache/kermit/.
+                  YAML-based benchmark declarations (supports multiple named queries per benchmark),
+                  ZivaHub download, platform cache dir (~/.cache/kermit/benchmarks/ on Linux).
 kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|fetch|clean).
                   Provides DB abstraction layer (db::DB trait, DatabaseEngine).
                   All Criterion execution lives here (including SpaceMeasurement).
 ```
 
-**Dependency flow:** `kermit-iters` → `kermit-derive`, `kermit-parser` → `kermit-ds` → `kermit-algos` → `kermit` (binary). `kermit-bench` is isolated (no internal deps); `kermit` depends on it.
+**Dependency flow:** `kermit-iters` → `kermit-derive`, `kermit-parser` → `kermit-ds` → `kermit-algos` (also depends on `kermit-parser`) → `kermit` (binary). `kermit-bench` is isolated (no internal deps); `kermit` depends on it.
 
 ## Key Trait Hierarchy
 
 - **JoinIterable** (marker) → **LinearIterable** → **LinearIterator** (`key`, `next`, `seek`, `at_end`)
 - **JoinIterable** (marker) → **TrieIterable** → **TrieIterator** : LinearIterator + `open`, `up`
-- **Relation**: JoinIterable + Projectable — core data abstraction (`from_tuples`, `insert`, `header`)
+- **Relation**: JoinIterable + Projectable — core data abstraction (`new`, `from_tuples`, `insert`, `insert_all`, `header`)
 - **JoinAlgo\<DS\>**: algorithm trait decoupled from data structures
 - **HeapSize**: heap-allocated byte count for space benchmarking (`heap_size_bytes()`)
 
@@ -59,7 +64,7 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|fet
 
 Tests use macro-generated suites that combinatorially test all data structures against all algorithms:
 - `define_multiway_join_test!()` — individual parametrized test
-- `define_multiway_join_test_suite!()` — generates 6 standard join patterns (unary, triangle, chain, star, self-join, existential)
+- `define_multiway_join_test_suite!()` — generates 11 standard join patterns (unary, triangle, chain, star, self-join, existential, empty-result, single-relation, four-way-chain, wide-fanout, dead-end)
 - Uses `paste!` crate for macro hygiene
 
 Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` directories.
@@ -77,7 +82,8 @@ Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` d
 
 ## Gotchas
 
-- **Miri isolation**: CI runs miri with `MIRIFLAGS="-Zmiri-disable-isolation"`. Use the same flag locally or tests may fail differently.
+- **Miri isolation**: CI runs miri with `MIRIFLAGS="-Zmiri-disable-isolation"` and excludes `kermit` and `kermit-bench` from miri tests (Criterion and network code). Use the same flag locally or tests may fail differently.
 - **git-cliff**: `cliff.toml` configures changelog generation via [git-cliff](https://git-cliff.org/). The release workflow auto-generates changelogs from conventional commits.
 - **Space benchmarks**: `kermit/src/measurement.rs` contains `SpaceMeasurement` (custom Criterion `Measurement`) and `BytesFormatter`. Currently used only via `bench run --metrics space` which prints heap bytes to stderr. The full Criterion-based space measurement path is available but not yet wired into the CLI.
 - **CI env vars**: All CI jobs set `RUST_BACKTRACE=1`. Release workflow requires `CARGO_REGISTRY_TOKEN` secret.
+- **Error handling**: `kermit-bench` uses `thiserror`, `kermit-ds` uses custom error enums with manual `Display`/`Error` impls, and the CLI binary uses `anyhow::Result`.
