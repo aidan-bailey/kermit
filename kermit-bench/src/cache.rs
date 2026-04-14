@@ -62,10 +62,12 @@ fn download_file(url: &str, dest: &Path) -> Result<(), BenchError> {
 
     let part_path = dest.with_extension("parquet.part");
 
-    let response = reqwest::blocking::get(url).map_err(|source| BenchError::Download {
-        url: url.to_string(),
-        source,
-    })?;
+    let response = reqwest::blocking::get(url)
+        .and_then(|r| r.error_for_status())
+        .map_err(|source| BenchError::Download {
+            url: url.to_string(),
+            source,
+        })?;
 
     let bytes = response.bytes().map_err(|source| BenchError::Download {
         url: url.to_string(),

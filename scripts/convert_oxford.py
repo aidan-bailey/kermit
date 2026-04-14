@@ -156,7 +156,7 @@ def generate_yaml(benchmarks_dir: Path) -> None:
             ]
             for relation in RELATIONS:
                 lines.append(f'  - name: {relation}')
-                lines.append(f'    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"')
+                lines.append(f'    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_{relation}"')
             lines.append('queries:')
             for q in QUERIES:
                 lines.append(f'  - name: {q["name"]}')

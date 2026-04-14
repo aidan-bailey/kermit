@@ -2,21 +2,21 @@ name: oxford-zipf-s4
 description: "Oxford DSI benchmark - zipf distribution, scale 4 (8K tuples per relation)"
 relations:
   - name: P
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_P"
   - name: Q
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_Q"
   - name: R
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_R"
   - name: S
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_S"
   - name: T
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_T"
   - name: U
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_U"
   - name: V
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_V"
   - name: W
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER_W"
 queries:
   - name: binary-join
     description: "Binary intersection of P and Q on attribute A"
