@@ -10,6 +10,6 @@ pub mod discovery;
 pub mod error;
 
 pub use {
-    definition::{BenchmarkDefinition, RelationSource},
+    definition::{BenchmarkDefinition, QueryDefinition, RelationSource},
     error::BenchError,
 };

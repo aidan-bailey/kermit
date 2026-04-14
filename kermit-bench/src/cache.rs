@@ -121,7 +121,11 @@ mod tests {
                 name: "r".to_string(),
                 url: "http://x".to_string(),
             }],
-            query: "Q(X) :- r(X).".to_string(),
+            queries: vec![crate::definition::QueryDefinition {
+                name: "q".to_string(),
+                description: "test".to_string(),
+                query: "Q(X) :- r(X).".to_string(),
+            }],
         };
         assert!(!is_cached(&def).unwrap());
     }

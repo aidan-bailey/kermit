@@ -6,7 +6,7 @@ pub struct BenchmarkDefinition {
     pub name: String,
     pub description: String,
     pub relations: Vec<RelationSource>,
-    pub query: String,
+    pub queries: Vec<QueryDefinition>,
 }
 
 /// A relation source with a name and download URL.
@@ -14,6 +14,14 @@ pub struct BenchmarkDefinition {
 pub struct RelationSource {
     pub name: String,
     pub url: String,
+}
+
+/// A named query within a benchmark.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct QueryDefinition {
+    pub name: String,
+    pub description: String,
+    pub query: String,
 }
 
 impl BenchmarkDefinition {
@@ -33,11 +41,26 @@ impl BenchmarkDefinition {
             });
         }
 
-        if self.query.is_empty() {
+        if self.queries.is_empty() {
             return Err(BenchError::Invalid {
                 name: self.name.clone(),
-                reason: "query must not be empty".to_string(),
+                reason: "queries must not be empty".to_string(),
             });
+        }
+
+        for q in &self.queries {
+            if q.name.is_empty() {
+                return Err(BenchError::Invalid {
+                    name: self.name.clone(),
+                    reason: "query name must not be empty".to_string(),
+                });
+            }
+            if q.query.is_empty() {
+                return Err(BenchError::Invalid {
+                    name: self.name.clone(),
+                    reason: format!("query '{}' has empty query string", q.name),
+                });
+            }
         }
 
         let mut seen = HashSet::new();
@@ -50,6 +73,16 @@ impl BenchmarkDefinition {
             }
         }
 
+        seen.clear();
+        for q in &self.queries {
+            if !seen.insert(&q.name) {
+                return Err(BenchError::Invalid {
+                    name: self.name.clone(),
+                    reason: format!("duplicate query name: {}", q.name),
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -57,6 +90,14 @@ impl BenchmarkDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_query(name: &str, query: &str) -> QueryDefinition {
+        QueryDefinition {
+            name: name.to_string(),
+            description: format!("{name} query"),
+            query: query.to_string(),
+        }
+    }
 
     #[test]
     fn deserialize_valid_yaml() {
@@ -66,12 +107,17 @@ description: "Triangle query"
 relations:
   - name: edge
     url: "https://example.com/edge.parquet"
-query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
+queries:
+  - name: triangle
+    description: "Triangle query"
+    query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
 "#;
         let def: BenchmarkDefinition = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(def.name, "triangle");
         assert_eq!(def.relations.len(), 1);
         assert_eq!(def.relations[0].name, "edge");
+        assert_eq!(def.queries.len(), 1);
+        assert_eq!(def.queries[0].name, "triangle");
         assert!(def.validate().is_ok());
     }
 
@@ -85,10 +131,37 @@ relations:
     url: "https://example.com/edge.parquet"
   - name: node
     url: "https://example.com/node.parquet"
-query: "P(X, Z) :- edge(X, Y), node(Y), edge(Y, Z)."
+queries:
+  - name: path
+    description: "Path query"
+    query: "P(X, Z) :- edge(X, Y), node(Y), edge(Y, Z)."
 "#;
         let def: BenchmarkDefinition = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(def.relations.len(), 2);
+        assert!(def.validate().is_ok());
+    }
+
+    #[test]
+    fn deserialize_multiple_queries() {
+        let yaml = r#"
+name: graph
+description: "Graph queries"
+relations:
+  - name: edge
+    url: "https://example.com/edge.parquet"
+queries:
+  - name: triangle
+    description: "Triangle query"
+    query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
+  - name: two-hop
+    description: "Two-hop path"
+    query: "P(X, Z) :- edge(X, Y), edge(Y, Z)."
+"#;
+        let def: BenchmarkDefinition = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(def.name, "graph");
+        assert_eq!(def.queries.len(), 2);
+        assert_eq!(def.queries[0].name, "triangle");
+        assert_eq!(def.queries[1].name, "two-hop");
         assert!(def.validate().is_ok());
     }
 
@@ -97,7 +170,9 @@ query: "P(X, Z) :- edge(X, Y), node(Y), edge(Y, Z)."
         let yaml = r#"
 name: triangle
 description: "Triangle query"
-query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
+relations:
+  - name: edge
+    url: "https://example.com/edge.parquet"
 "#;
         let result: Result<BenchmarkDefinition, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err());
@@ -112,7 +187,7 @@ query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
                 name: "r".to_string(),
                 url: "http://x".to_string(),
             }],
-            query: "Q(X) :- r(X).".to_string(),
+            queries: vec![make_query("q", "Q(X) :- r(X).")],
         };
         assert!(def.validate().is_err());
     }
@@ -123,13 +198,13 @@ query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
             name: "test".to_string(),
             description: "test".to_string(),
             relations: vec![],
-            query: "Q(X) :- r(X).".to_string(),
+            queries: vec![make_query("q", "Q(X) :- r(X).")],
         };
         assert!(def.validate().is_err());
     }
 
     #[test]
-    fn validate_empty_query() {
+    fn validate_empty_queries() {
         let def = BenchmarkDefinition {
             name: "test".to_string(),
             description: "test".to_string(),
@@ -137,7 +212,35 @@ query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
                 name: "r".to_string(),
                 url: "http://x".to_string(),
             }],
-            query: String::new(),
+            queries: vec![],
+        };
+        assert!(def.validate().is_err());
+    }
+
+    #[test]
+    fn validate_empty_query_name() {
+        let def = BenchmarkDefinition {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            relations: vec![RelationSource {
+                name: "r".to_string(),
+                url: "http://x".to_string(),
+            }],
+            queries: vec![make_query("", "Q(X) :- r(X).")],
+        };
+        assert!(def.validate().is_err());
+    }
+
+    #[test]
+    fn validate_empty_query_string() {
+        let def = BenchmarkDefinition {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            relations: vec![RelationSource {
+                name: "r".to_string(),
+                url: "http://x".to_string(),
+            }],
+            queries: vec![make_query("q", "")],
         };
         assert!(def.validate().is_err());
     }
@@ -157,7 +260,24 @@ query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
                     url: "http://y".to_string(),
                 },
             ],
-            query: "Q(X) :- edge(X).".to_string(),
+            queries: vec![make_query("q", "Q(X) :- edge(X).")],
+        };
+        assert!(def.validate().is_err());
+    }
+
+    #[test]
+    fn validate_duplicate_query_names() {
+        let def = BenchmarkDefinition {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            relations: vec![RelationSource {
+                name: "r".to_string(),
+                url: "http://x".to_string(),
+            }],
+            queries: vec![
+                make_query("q", "Q(X) :- r(X)."),
+                make_query("q", "Q(Y) :- r(Y)."),
+            ],
         };
         assert!(def.validate().is_err());
     }

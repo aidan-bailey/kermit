@@ -92,13 +92,17 @@ description: "A test benchmark"
 relations:
   - name: r
     url: "https://example.com/r.parquet"
-query: "Q(X) :- r(X)."
+queries:
+  - name: default
+    description: "Default query"
+    query: "Q(X) :- r(X)."
 "#;
         std::fs::write(benchmarks_dir.join("test.yml"), yaml).unwrap();
 
         let def = load_benchmark(dir.path(), "test").unwrap();
         assert_eq!(def.name, "test");
         assert_eq!(def.relations.len(), 1);
+        assert_eq!(def.queries.len(), 1);
     }
 
     #[test]
@@ -123,7 +127,10 @@ description: "Mismatched name"
 relations:
   - name: r
     url: "https://example.com/r.parquet"
-query: "Q(X) :- r(X)."
+queries:
+  - name: default
+    description: "Default query"
+    query: "Q(X) :- r(X)."
 "#;
         std::fs::write(benchmarks_dir.join("test.yml"), yaml).unwrap();
 
@@ -155,7 +162,10 @@ description: "Benchmark {name}"
 relations:
   - name: r
     url: "https://example.com/r.parquet"
-query: "Q(X) :- r(X)."
+queries:
+  - name: default
+    description: "Default query"
+    query: "Q(X) :- r(X)."
 "#
             );
             std::fs::write(benchmarks_dir.join(format!("{name}.yml")), yaml).unwrap();
@@ -181,7 +191,10 @@ description: "A real benchmark"
 relations:
   - name: r
     url: "https://example.com/r.parquet"
-query: "Q(X) :- r(X)."
+queries:
+  - name: default
+    description: "Default query"
+    query: "Q(X) :- r(X)."
 "#;
         std::fs::write(benchmarks_dir.join("real.yml"), yaml).unwrap();
 
@@ -209,7 +222,10 @@ description: "test"
 relations:
   - name: r
     url: "https://example.com/r.parquet"
-query: "Q(X) :- r(X)."
+queries:
+  - name: default
+    description: "Default query"
+    query: "Q(X) :- r(X)."
 "#;
         std::fs::write(benchmarks_dir.join("test.yml"), yaml).unwrap();
 

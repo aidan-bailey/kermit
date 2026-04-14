@@ -130,6 +130,10 @@ enum BenchSubcommand {
         #[arg(long, conflicts_with = "name")]
         all: bool,
 
+        /// Run only the named query (omit to run all queries)
+        #[arg(short, long, value_name = "QUERY")]
+        query: Option<String>,
+
         /// Data structure
         #[arg(
             short,
@@ -297,25 +301,42 @@ where
 
 fn run_benchmark<R>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
-    metrics: &[Metric], criterion: &mut criterion::Criterion,
+    metrics: &[Metric], query_filter: Option<&str>, criterion: &mut criterion::Criterion,
 ) -> anyhow::Result<()>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
 {
-    // 1. Ensure all relation files are downloaded
+    // 1. Resolve which queries to run
+    let queries: Vec<&kermit_bench::QueryDefinition> = match query_filter {
+        | Some(name) => {
+            let q = benchmark
+                .queries
+                .iter()
+                .find(|q| q.name == name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "query '{}' not found in benchmark '{}' (available: {})",
+                        name,
+                        benchmark.name,
+                        benchmark
+                            .queries
+                            .iter()
+                            .map(|q| q.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+            vec![q]
+        },
+        | None => benchmark.queries.iter().collect(),
+    };
+
+    // 2. Ensure all relation files are downloaded
     let cached_paths = kermit_bench::cache::ensure_cached(benchmark)
         .map_err(|e| anyhow::anyhow!("Failed to fetch benchmark data: {e}"))?;
 
-    // 2. Parse the Datalog query
-    let join_query: JoinQuery = benchmark
-        .query
-        .trim()
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse query '{}': {:?}", benchmark.query, e))?;
-
     // 3. Load relations into the DB for join execution
-    let db = instantiate_database(indexstructure, algorithm);
-    let mut db = db;
+    let mut db = instantiate_database(indexstructure, algorithm);
     for path in &cached_paths {
         db.add_file(path)
             .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
@@ -330,70 +351,82 @@ where
     let ds_name = format!("{:?}", indexstructure);
     let algo_name = format!("{:?}", algorithm);
 
-    // 5. Print metadata
-    eprintln!("--- bench run metadata ---");
-    eprintln!("  benchmark:       {}", benchmark.name);
-    eprintln!("  data structure:  {}", ds_name);
-    eprintln!("  algorithm:       {}", algo_name);
-    for rel in &relations {
-        let h = rel.header();
-        eprintln!("  relation {:?}: arity {}", h.name(), h.arity());
-    }
+    for query_def in &queries {
+        // 5. Parse the Datalog query
+        let join_query: JoinQuery =
+            query_def.query.trim().parse().map_err(|e| {
+                anyhow::anyhow!("Failed to parse query '{}': {:?}", query_def.query, e)
+            })?;
 
-    // 6. Space metric
-    if metrics.contains(&Metric::Space) {
+        // 6. Print metadata
+        eprintln!("--- bench run metadata ---");
+        eprintln!("  benchmark:       {}", benchmark.name);
+        eprintln!("  query:           {}", query_def.name);
+        eprintln!("  data structure:  {}", ds_name);
+        eprintln!("  algorithm:       {}", algo_name);
         for rel in &relations {
             let h = rel.header();
-            eprintln!("  {} heap bytes: {}", h.name(), rel.heap_size_bytes());
+            eprintln!("  relation {:?}: arity {}", h.name(), h.arity());
+        }
+
+        // 7. Space metric
+        if metrics.contains(&Metric::Space) {
+            for rel in &relations {
+                let h = rel.header();
+                eprintln!("  {} heap bytes: {}", h.name(), rel.heap_size_bytes());
+            }
+        }
+
+        let has_criterion_metrics = metrics
+            .iter()
+            .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+
+        if has_criterion_metrics {
+            let group_name = format!(
+                "{}/{}/{}/{}",
+                benchmark.name, query_def.name, ds_name, algo_name
+            );
+            let mut group = criterion.benchmark_group(&group_name);
+
+            if metrics.contains(&Metric::Insertion) {
+                let tuples_and_headers: Vec<_> = relations
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.header().clone(),
+                            r.trie_iter().into_iter().collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect();
+
+                group.bench_function("insertion", |b| {
+                    b.iter_batched(
+                        || tuples_and_headers.clone(),
+                        |data| {
+                            for (header, tuples) in data {
+                                std::hint::black_box(R::from_tuples(header, tuples));
+                            }
+                        },
+                        criterion::BatchSize::SmallInput,
+                    );
+                });
+            }
+
+            if metrics.contains(&Metric::Iteration) {
+                group.bench_function("join", |b| {
+                    b.iter_batched(
+                        || join_query.clone(),
+                        |q| db.join(q),
+                        criterion::BatchSize::SmallInput,
+                    );
+                });
+            }
+
+            group.finish();
         }
     }
 
-    let has_criterion_metrics = metrics
-        .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
-
-    if has_criterion_metrics {
-        let group_name = format!("{}/{}/{}", benchmark.name, ds_name, algo_name);
-        let mut group = criterion.benchmark_group(&group_name);
-
-        if metrics.contains(&Metric::Insertion) {
-            let tuples_and_headers: Vec<_> = relations
-                .iter()
-                .map(|r| {
-                    (
-                        r.header().clone(),
-                        r.trie_iter().into_iter().collect::<Vec<_>>(),
-                    )
-                })
-                .collect();
-
-            group.bench_function("insertion", |b| {
-                b.iter_batched(
-                    || tuples_and_headers.clone(),
-                    |data| {
-                        for (header, tuples) in data {
-                            std::hint::black_box(R::from_tuples(header, tuples));
-                        }
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-        }
-
-        if metrics.contains(&Metric::Iteration) {
-            group.bench_function("join", |b| {
-                b.iter_batched(
-                    || join_query.clone(),
-                    |q| db.join(q),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-        }
-
-        group.finish();
-        criterion.final_summary();
-    }
-
+    criterion.final_summary();
     Ok(())
 }
 
@@ -548,6 +581,7 @@ fn main() -> anyhow::Result<()> {
                         | BenchSubcommand::Run {
                             name,
                             all,
+                            query,
                             indexstructure,
                             algorithm,
                             metrics,
@@ -562,6 +596,7 @@ fn main() -> anyhow::Result<()> {
                                             indexstructure,
                                             algorithm,
                                             &metrics,
+                                            query.as_deref(),
                                             &mut criterion,
                                         )?;
                                     },
@@ -571,6 +606,7 @@ fn main() -> anyhow::Result<()> {
                                             indexstructure,
                                             algorithm,
                                             &metrics,
+                                            query.as_deref(),
                                             &mut criterion,
                                         )?;
                                     },
