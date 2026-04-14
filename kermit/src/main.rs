@@ -456,7 +456,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        | Commands::Join { query_args, output } => {
+        | Commands::Join {
+            query_args,
+            output,
+        } => {
             let (db, join_query) = load_query(&query_args)?;
             let tuples = db.join(join_query);
             let writer: Box<dyn Write> = match &output {
@@ -493,7 +496,9 @@ fn main() -> anyhow::Result<()> {
                     }
                 },
 
-                | BenchSubcommand::Fetch { name } => {
+                | BenchSubcommand::Fetch {
+                    name,
+                } => {
                     let root = workspace_root();
                     let benchmarks = match &name {
                         | Some(n) => {
@@ -512,7 +517,9 @@ fn main() -> anyhow::Result<()> {
                     }
                 },
 
-                | BenchSubcommand::Clean { name } => match &name {
+                | BenchSubcommand::Clean {
+                    name,
+                } => match &name {
                     | Some(n) => {
                         kermit_bench::cache::clean_benchmark(n)
                             .map_err(|e| anyhow::anyhow!("Failed to clean {}: {e}", n))?;
@@ -532,7 +539,10 @@ fn main() -> anyhow::Result<()> {
                         .warm_up_time(Duration::from_secs(bench_args.warm_up_time));
 
                     match subcommand {
-                        | BenchSubcommand::Join { query_args, output } => {
+                        | BenchSubcommand::Join {
+                            query_args,
+                            output,
+                        } => {
                             let (db, join_query) = load_query(&query_args)?;
 
                             if let Some(path) = &output {
@@ -631,8 +641,12 @@ fn main() -> anyhow::Result<()> {
 
                         // Already handled above
                         | BenchSubcommand::List
-                        | BenchSubcommand::Fetch { .. }
-                        | BenchSubcommand::Clean { .. } => {
+                        | BenchSubcommand::Fetch {
+                            ..
+                        }
+                        | BenchSubcommand::Clean {
+                            ..
+                        } => {
                             unreachable!()
                         },
                     }
