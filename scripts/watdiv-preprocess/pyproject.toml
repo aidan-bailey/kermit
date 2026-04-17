@@ -1,0 +1,20 @@
+[project]
+name = "watdiv-preprocess"
+version = "0.1.0"
+description = "One-time preprocessor: WatDiv N-Triples + SPARQL → kermit YAML + Parquet"
+requires-python = ">=3.10"
+dependencies = [
+    "rdflib>=7.0,<8",
+    "pyarrow>=15.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+watdiv-preprocess = "watdiv_preprocess.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
