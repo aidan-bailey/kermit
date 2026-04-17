@@ -8,8 +8,12 @@
 //! `JoinAlgorithm` CLI enums to produce the right concrete combination.
 
 use {
-    kermit_algos::{JoinAlgo, JoinAlgorithm, JoinQuery, LeapfrogTriejoin},
+    kermit_algos::{
+        rewrite_atoms, JoinAlgo, JoinAlgorithm, JoinQuery, LeapfrogTriejoin, SingletonTrieIter,
+        TrieIterKind,
+    },
     kermit_ds::{ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
+    kermit_iters::TrieIterable,
     std::{collections::HashMap, path::Path},
 };
 
@@ -55,7 +59,6 @@ pub trait DB {
 pub struct DatabaseEngine<R, JA>
 where
     R: Relation,
-    JA: JoinAlgo<R>,
 {
     name: String,
     relations: HashMap<String, R>,
@@ -65,8 +68,8 @@ where
 
 impl<R, JA> DB for DatabaseEngine<R, JA>
 where
-    R: Relation,
-    JA: JoinAlgo<R>,
+    R: Relation + TrieIterable,
+    JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
 {
     fn new(name: String) -> Self
     where
@@ -99,17 +102,28 @@ where
     }
 
     fn join(&self, query: JoinQuery) -> Vec<Vec<usize>> {
-        // Build datastructure map from predicate names in the query body
-        let mut ds_map: HashMap<String, &R> = HashMap::new();
-        for pred in &query.body {
-            let r = self
-                .relations
-                .get(&pred.name)
-                .expect("missing relation in DB for predicate");
-            ds_map.entry(pred.name.clone()).or_insert(r);
+        let (rewritten, const_specs) =
+            rewrite_atoms(query).expect("malformed constant atom in query");
+
+        let mut wrappers: HashMap<String, TrieIterKind<'_, R>> = HashMap::new();
+        for pred in &rewritten.body {
+            if wrappers.contains_key(&pred.name) {
+                continue;
+            }
+            if let Some(r) = self.relations.get(&pred.name) {
+                wrappers.insert(pred.name.clone(), TrieIterKind::Relation(r));
+            }
+        }
+        for (name, id) in const_specs {
+            wrappers
+                .entry(name)
+                .or_insert_with(|| TrieIterKind::Singleton(SingletonTrieIter::new(id)));
         }
 
-        JA::join_iter(query, ds_map).collect()
+        let ds_map: HashMap<String, &TrieIterKind<'_, R>> =
+            wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+        JA::join_iter(rewritten, ds_map).collect()
     }
 
     /// Loads a relation from a file (CSV or Parquet) and adds it to the
@@ -144,12 +158,17 @@ where
 impl<R, JA> DatabaseEngine<R, JA>
 where
     R: Relation,
-    JA: JoinAlgo<R>,
 {
-    /// Inherent constructor that forwards to the [`DB`] trait's `new`.
-    ///
-    /// Useful in tests where the type parameters are already known.
-    pub fn new(name: String) -> Self { <Self as DB>::new(name) }
+    /// Inherent constructor so tests can build the engine without needing
+    /// the full [`DB`] trait bound in scope.
+    pub fn new(name: String) -> Self {
+        DatabaseEngine {
+            name,
+            relations: HashMap::new(),
+            phantom_rb: std::marker::PhantomData,
+            phantom_ja: std::marker::PhantomData,
+        }
+    }
 }
 
 /// Creates a [`DatabaseEngine`] as a `Box<dyn DB>` based on the CLI-selected
@@ -196,5 +215,24 @@ mod tests {
 
         let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
         db.join(query);
+    }
+
+    #[test]
+    fn test_join_with_constant_filter() {
+        let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
+            DatabaseEngine::new("test".to_string());
+
+        db.add_relation("p", 2);
+        db.add_keys_batch("p", vec![vec![1, 10], vec![2, 20], vec![3, 30]]);
+
+        let query: JoinQuery = "Q(X) :- p(X, c10).".parse().unwrap();
+        let result = db.join(query);
+        let mut got: Vec<_> = result.iter().map(|r| r[0]).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![1],
+            "expected only X=1 to pass the c10 filter, got {got:?}"
+        );
     }
 }
