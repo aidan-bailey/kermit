@@ -67,7 +67,7 @@ def build_dict(nt_path: Path, out_dir: Path) -> dict[str, int]:
     uris = list(uri_to_id.keys())
     table = pa.table(
         {
-            "id": pa.array(ids, type=pa.uint64()),
+            "id": pa.array(ids, type=pa.int64()),
             "uri": pa.array(uris, type=pa.string()),
         }
     )

@@ -2,11 +2,11 @@ name: watdiv-stress-mini-tiny
 description: WatDiv stress test, file watdiv-stress-mini/tiny.sparql, 4 queries
 relations:
 - name: eligibleregion
-  url: file:///tmp/watdiv-mini-out/eligibleregion.parquet
+  url: file:///fixture/eligibleregion.parquet
 - name: includes
-  url: file:///tmp/watdiv-mini-out/includes.parquet
+  url: file:///fixture/includes.parquet
 - name: parentcountry
-  url: file:///tmp/watdiv-mini-out/parentcountry.parquet
+  url: file:///fixture/parentcountry.parquet
 queries:
 - name: q0000
   description: WatDiv query q0000

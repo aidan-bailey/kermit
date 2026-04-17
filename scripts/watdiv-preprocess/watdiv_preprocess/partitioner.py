@@ -57,7 +57,7 @@ def partition_triples(
             name = f"{name}_{uri_to_id[pred_uri]}"
         used_names.add(name)
         filename_map[name] = name
-        ss = pa.array([t[0] for t in tuples], type=pa.uint64())
-        oo = pa.array([t[1] for t in tuples], type=pa.uint64())
+        ss = pa.array([t[0] for t in tuples], type=pa.int64())
+        oo = pa.array([t[1] for t in tuples], type=pa.int64())
         pq.write_table(pa.table({"s": ss, "o": oo}), out_dir / f"{name}.parquet")
     return filename_map
