@@ -17,6 +17,8 @@ pub use {join_algo::JoinAlgo, kermit_parser::JoinQuery, leapfrog_triejoin::Leapf
 /// Used as a CLI argument to select which algorithm to run.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum JoinAlgorithm {
+    /// The [Leapfrog Triejoin](https://arxiv.org/abs/1210.0481) algorithm;
+    /// see [`LeapfrogTriejoin`].
     LeapfrogTriejoin,
 }
 

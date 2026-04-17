@@ -1,3 +1,14 @@
+//! Leapfrog Triejoin — worst-case-optimal multi-way join over sorted tries.
+//!
+//! The triejoin coordinates one [`TrieIterator`] per body predicate, descending
+//! the relations in lockstep variable by variable. At each depth it delegates
+//! the inner intersection to [`LeapfrogJoinIter`]; iterators are swapped in and
+//! out of the inner join as the depth changes so that only the relations
+//! mentioning the current variable participate.
+//!
+//! See the original paper: [Leapfrog Triejoin: a worst-case optimal join
+//! algorithm](https://arxiv.org/abs/1210.0481).
+
 use {
     crate::{
         join_algo::JoinAlgo,
@@ -165,6 +176,14 @@ where
         self.leapfrog_init()
     }
 
+    /// Ascends one variable, returning all participating iterators to the
+    /// pool and restoring the leapfrog state at the parent depth.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a participating trie iterator refuses to move up while the
+    /// triejoin is at non-root depth, which would indicate a violated invariant
+    /// between the triejoin's depth tracking and the trie iterator's state.
     fn triejoin_up(&mut self) -> bool {
         if self.depth == 0 {
             return false;
