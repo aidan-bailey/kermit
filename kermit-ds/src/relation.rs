@@ -62,10 +62,20 @@ impl From<arrow::error::ArrowError> for RelationError {
 }
 
 /// Whether a relation's attributes are identified by name or by position.
+///
+/// Returned by [`RelationHeader::model_type`]. A header is [`Named`] when it
+/// carries explicit attribute names (e.g. from a CSV/Parquet schema), and
+/// [`Positional`] otherwise — typical for intermediate relations produced
+/// during query evaluation where only arity matters.
+///
+/// [`Named`]: ModelType::Named
+/// [`Positional`]: ModelType::Positional
 pub enum ModelType {
-    /// Attributes are accessed by column index only.
+    /// Attributes are accessed by column index only; attribute names are
+    /// absent.
     Positional,
-    /// Attributes have explicit string names.
+    /// Attributes have explicit string names, typically sourced from a file
+    /// header or schema.
     Named,
 }
 
@@ -122,14 +132,21 @@ impl RelationHeader {
         }
     }
 
+    /// Returns `true` if this header has an empty name (i.e. was created via
+    /// one of the `new_nameless*` constructors).
     pub fn is_nameless(&self) -> bool { self.name.is_empty() }
 
+    /// Returns the relation's name (empty string for nameless headers).
     pub fn name(&self) -> &str { &self.name }
 
+    /// Returns the attribute names. Empty for positional headers.
     pub fn attrs(&self) -> &[String] { &self.attrs }
 
+    /// Returns the arity (number of columns) of the relation.
     pub fn arity(&self) -> usize { self.arity }
 
+    /// Returns [`ModelType::Named`] when attribute names are set, otherwise
+    /// [`ModelType::Positional`].
     pub fn model_type(&self) -> ModelType {
         if self.attrs.is_empty() {
             ModelType::Positional
@@ -145,8 +162,17 @@ impl From<usize> for RelationHeader {
 
 /// A relation that can produce a new relation containing only the specified
 /// columns.
+///
+/// Projection is the π operator from relational algebra: given column indices
+/// `[c₀, c₁, …]` it yields a relation whose `i`-th column is the `cᵢ`-th
+/// column of the source. Implementations decide how to handle duplicate or
+/// reordered indices.
 pub trait Projectable {
-    /// Returns a new relation containing only the columns at the given indices.
+    /// Returns a new relation containing only the columns at the given
+    /// indices, in the order supplied.
+    ///
+    /// Implementations typically panic if any index is out of bounds for the
+    /// source relation's arity.
     fn project(&self, columns: Vec<usize>) -> Self;
 }
 
@@ -172,20 +198,44 @@ pub trait Relation: JoinIterable + Projectable {
 }
 
 /// Extension trait for `Relation` to add file reading capabilities.
+///
+/// Blanket-implemented for every `Relation`, so any type implementing
+/// [`Relation`] automatically gains [`from_csv`](Self::from_csv) and
+/// [`from_parquet`](Self::from_parquet).
 pub trait RelationFileExt: Relation {
-    /// Creates a new relation from a Parquet file with header.
+    /// Creates a new relation from a Parquet file.
     ///
-    /// This method extracts column names from the Parquet schema and the
-    /// relation name from the filename.
+    /// Column names are extracted from the Parquet schema and the relation
+    /// name is taken from the file stem. All columns must be `Int64` and
+    /// every value must be non-negative so it fits in `usize`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RelationError`] if any of the following occur:
+    /// - [`RelationError::Io`] — the file cannot be opened.
+    /// - [`RelationError::Parquet`] — the file is not a valid Parquet file or
+    ///   the reader cannot be constructed.
+    /// - [`RelationError::Arrow`] — a record batch fails to decode.
+    /// - [`RelationError::InvalidData`] — an `Int64` value cannot be
+    ///   converted to `usize` (e.g. it is negative).
     fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError>
     where
         Self: Sized;
 
     /// Creates a new relation from a CSV file.
     ///
-    /// # Note
-    /// * Each line represents a tuple, and each value in the line should be
-    ///   parsable into `Relation::KT`.
+    /// The first row is treated as a header providing attribute names; each
+    /// subsequent row is one tuple. Every field must parse as a `usize`. The
+    /// relation name is taken from the file stem.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RelationError`] if any of the following occur:
+    /// - [`RelationError::Io`] — the file cannot be opened.
+    /// - [`RelationError::Csv`] — the CSV reader cannot parse the header or a
+    ///   row (e.g. inconsistent column count).
+    /// - [`RelationError::InvalidData`] — a field cannot be parsed as a
+    ///   `usize`; the message identifies the offending row and column.
     fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError>
     where
         Self: Sized;
