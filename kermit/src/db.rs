@@ -1,3 +1,12 @@
+//! Database abstraction bridging query parsing and data structures.
+//!
+//! The [`DB`] trait erases the concrete `Relation` and `JoinAlgo` type
+//! parameters so the CLI can hold `Box<dyn DB>` regardless of which data
+//! structure or algorithm the user selects. [`DatabaseEngine`] is the sole
+//! implementation, parameterised by the chosen types, and
+//! `instantiate_database` dispatches on the `IndexStructure` /
+//! `JoinAlgorithm` CLI enums to produce the right concrete combination.
+
 use {
     kermit_algos::{JoinAlgo, JoinAlgorithm, JoinQuery, LeapfrogTriejoin},
     kermit_ds::{ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
@@ -8,20 +17,33 @@ use {
 /// and execute join queries. Erases the concrete `Relation` and `JoinAlgo`
 /// type parameters.
 pub trait DB {
+    /// Creates a new database with the given name.
     fn new(name: String) -> Self
     where
         Self: Sized;
 
+    /// Returns the database's name.
     fn name(&self) -> &String;
 
+    /// Registers a new empty relation with the given name and arity.
     fn add_relation(&mut self, name: &str, arity: usize);
 
+    /// Inserts a single tuple into the named relation.
     fn add_keys(&mut self, relation_name: &str, keys: Vec<usize>);
 
+    /// Inserts multiple tuples into the named relation.
     fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>);
 
+    /// Executes `query` against the registered relations and materialises
+    /// the result tuples.
     fn join(&self, query: kermit_algos::JoinQuery) -> Vec<Vec<usize>>;
 
+    /// Loads a relation from a file (CSV or Parquet) and registers it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `std::io::Error` if the extension is unsupported, the file
+    /// cannot be read, or the relation cannot be parsed.
     fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>;
 }
 
@@ -124,6 +146,9 @@ where
     R: Relation,
     JA: JoinAlgo<R>,
 {
+    /// Inherent constructor that forwards to the [`DB`] trait's `new`.
+    ///
+    /// Useful in tests where the type parameters are already known.
     pub fn new(name: String) -> Self { <Self as DB>::new(name) }
 }
 

@@ -1,12 +1,16 @@
 //! Library interface for the Kermit CLI.
 //!
-//! Re-exports algorithm and data structure types and provides the
-//! [`compute_join`] helper for running joins from tuple inputs.
+//! Re-exports a curated subset of algorithm and data-structure types from
+//! [`kermit_algos`] and [`kermit_ds`], plus the [`db`] module's database
+//! abstraction (`DB` trait and `DatabaseEngine`) and the [`compute_join`]
+//! helper for running joins from raw tuple inputs.
 
+/// Re-exports of join algorithms from [`kermit_algos`].
 pub mod algos {
     pub use kermit_algos::LeapfrogTriejoin;
 }
 
+/// Re-exports of relation data structures from [`kermit_ds`].
 pub mod ds {
     pub use kermit_ds::{RelationFileExt, TreeTrie};
 }
