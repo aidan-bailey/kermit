@@ -4,6 +4,7 @@
 //! which performs worst-case optimal multi-way joins over trie-structured
 //! relations. The algorithm is generic over any data structure that implements
 //! [`TrieIterable`](kermit_iters::TrieIterable).
+#![deny(missing_docs)]
 
 mod join_algo;
 mod leapfrog_join;
