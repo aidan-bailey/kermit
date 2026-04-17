@@ -10,8 +10,9 @@
 /// extend.
 ///
 /// Each iterator trait defined in this crate extends `JoinIterable`:
-/// [`LinearIterable`](crate::LinearIterable) returns a [`LinearIterator`](crate::LinearIterator)
-/// via `linear_iter`, and [`TrieIterable`](crate::TrieIterable) returns a
+/// [`LinearIterable`](crate::LinearIterable) returns a
+/// [`LinearIterator`](crate::LinearIterator) via `linear_iter`, and
+/// [`TrieIterable`](crate::TrieIterable) returns a
 /// [`TrieIterator`](crate::TrieIterator) via `trie_iter`. Data structures
 /// implementing `Relation` (in `kermit-ds`) must also implement `JoinIterable`
 /// so they can be consumed by `kermit-algos`.

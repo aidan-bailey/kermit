@@ -216,8 +216,8 @@ pub trait RelationFileExt: Relation {
     /// - [`RelationError::Parquet`] — the file is not a valid Parquet file or
     ///   the reader cannot be constructed.
     /// - [`RelationError::Arrow`] — a record batch fails to decode.
-    /// - [`RelationError::InvalidData`] — an `Int64` value cannot be
-    ///   converted to `usize` (e.g. it is negative).
+    /// - [`RelationError::InvalidData`] — an `Int64` value cannot be converted
+    ///   to `usize` (e.g. it is negative).
     fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError>
     where
         Self: Sized;

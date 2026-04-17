@@ -21,7 +21,5 @@ mod shared;
 pub use {
     ds::{ColumnTrie, IndexStructure, TreeTrie},
     heap_size::HeapSize,
-    relation::{
-        ModelType, Projectable, Relation, RelationError, RelationFileExt, RelationHeader,
-    },
+    relation::{ModelType, Projectable, Relation, RelationError, RelationFileExt, RelationHeader},
 };

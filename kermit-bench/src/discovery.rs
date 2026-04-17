@@ -18,10 +18,10 @@ use {
 /// - [`BenchError::NotFound`] — no `<name>.yml` exists under
 ///   `workspace_root/benchmarks`.
 /// - [`BenchError::Io`] — the file exists but cannot be read.
-/// - [`BenchError::Yaml`] — the file is not valid YAML or is missing
-///   required fields.
-/// - [`BenchError::Invalid`] — the YAML parses but the `name:` field does
-///   not match the filename or the definition fails
+/// - [`BenchError::Yaml`] — the file is not valid YAML or is missing required
+///   fields.
+/// - [`BenchError::Invalid`] — the YAML parses but the `name:` field does not
+///   match the filename or the definition fails
 ///   [`BenchmarkDefinition::validate`](crate::BenchmarkDefinition::validate).
 pub fn load_benchmark(
     workspace_root: &Path, name: &str,
@@ -106,8 +106,7 @@ pub fn load_all_benchmarks(workspace_root: &Path) -> Result<Vec<BenchmarkDefinit
 /// # Example
 ///
 /// ```no_run
-/// use kermit_bench::discovery::list_benchmarks;
-/// use std::path::Path;
+/// use {kermit_bench::discovery::list_benchmarks, std::path::Path};
 ///
 /// let names = list_benchmarks(Path::new(".")).unwrap();
 /// for name in names {
