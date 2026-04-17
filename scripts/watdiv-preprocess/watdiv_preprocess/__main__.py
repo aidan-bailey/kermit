@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .dict_builder import build_dict
-from .expected import write_expected
+from .expected import write_watdiv_expected
 from .partitioner import partition_triples
 from .yaml_emitter import emit_yaml
 
@@ -63,7 +63,7 @@ def main() -> int:
     print(f"[watdiv-preprocess] emitted {emitted} benchmark YAML files", file=sys.stderr)
 
     expected_path = args.output / "expected.json"
-    n_expected = write_expected(args.input, expected_path)
+    n_expected = write_watdiv_expected(args.input, expected_path)
     print(
         f"[watdiv-preprocess] wrote {n_expected} expected cardinalities to {expected_path}",
         file=sys.stderr,
