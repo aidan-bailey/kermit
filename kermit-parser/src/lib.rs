@@ -13,6 +13,34 @@
 //! ```text
 //! path(X, Z) :- edge(X, Y), edge(Y, Z).
 //! ```
+//!
+//! # Example
+//!
+//! ```
+//! use kermit_parser::{JoinQuery, Term};
+//!
+//! let query: JoinQuery = "path(X, Z) :- edge(X, Y), edge(Y, Z)."
+//!     .parse()
+//!     .expect("valid Datalog");
+//!
+//! assert_eq!(query.head.name, "path");
+//! assert_eq!(query.head.terms, vec![
+//!     Term::Var("X".into()),
+//!     Term::Var("Z".into()),
+//! ]);
+//! assert_eq!(query.body.len(), 2);
+//! assert_eq!(query.body[0].name, "edge");
+//! ```
+//!
+//! Parsing returns an error if the input is not a well-formed rule:
+//!
+//! ```
+//! use kermit_parser::JoinQuery;
+//!
+//! assert!("not a valid query".parse::<JoinQuery>().is_err());
+//! ```
+
+#![deny(missing_docs)]
 
 mod join_query;
 
@@ -107,6 +135,14 @@ fn query(input: &mut &str) -> PResult<JoinQuery> {
 impl std::str::FromStr for JoinQuery {
     type Err = ErrMode<ContextError>;
 
+    /// Parses a Datalog rule into a [`JoinQuery`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` is not a single well-formed rule of the shape
+    /// `Head(…) :- Body1(…), …, BodyN(…).` — including missing `:-`, empty
+    /// body, missing terminating `.`, trailing content after the `.`, or
+    /// identifiers that don't match the [syntax rules](crate).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut input = s;
         let result = query.parse_next(&mut input)?;
