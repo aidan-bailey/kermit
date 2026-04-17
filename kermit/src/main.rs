@@ -1,3 +1,13 @@
+//! Kermit command-line interface.
+//!
+//! Two top-level subcommands: `join` (execute a Datalog query against
+//! relation files) and `bench` (Criterion-based benchmarks, including the
+//! YAML-defined benchmarks under `benchmarks/`).
+//!
+//! Run `kermit --help` for the full help text; each `clap` `#[arg(help =
+//! …)]` string drives that help output. Benchmark YAML schema is documented
+//! in the workspace `benchmarks/README.md`.
+
 use {
     clap::{Args, Parser, Subcommand},
     kermit::db::instantiate_database,
