@@ -10,6 +10,7 @@
 //! Both implement the [`Relation`] and
 //! [`TrieIterable`](kermit_iters::TrieIterable) traits, making them
 //! interchangeable in join algorithms.
+#![deny(missing_docs)]
 
 mod ds;
 mod heap_size;

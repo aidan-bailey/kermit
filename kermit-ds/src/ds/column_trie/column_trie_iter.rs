@@ -41,6 +41,8 @@ pub struct ColumnTrieIter<'a> {
 }
 
 impl<'a> ColumnTrieIter<'a> {
+    /// Creates a new iterator positioned at the root (layer 0). Call
+    /// [`open`](TrieIterator::open) to descend to the first data layer.
     pub fn new(trie: &'a ColumnTrie) -> Self {
         ColumnTrieIter {
             interval_i: 0,

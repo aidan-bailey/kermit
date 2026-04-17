@@ -9,7 +9,9 @@ pub use {column_trie::ColumnTrie, tree_trie::TreeTrie};
 /// Used as a CLI argument to select which data structure backs the join.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum IndexStructure {
+    /// Column-oriented trie; see [`ColumnTrie`].
     ColumnTrie,
+    /// Pointer-based trie; see [`TreeTrie`].
     TreeTrie,
 }
 
