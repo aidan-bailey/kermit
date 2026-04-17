@@ -5,6 +5,8 @@
 //! abstraction (`DB` trait and `DatabaseEngine`) and the [`compute_join`]
 //! helper for running joins from raw tuple inputs.
 
+#![deny(missing_docs)]
+
 /// Re-exports of join algorithms from [`kermit_algos`].
 pub mod algos {
     pub use kermit_algos::LeapfrogTriejoin;

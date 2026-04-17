@@ -8,6 +8,8 @@
 //! …)]` string drives that help output. Benchmark YAML schema is documented
 //! in the workspace `benchmarks/README.md`.
 
+#![deny(missing_docs)]
+
 use {
     clap::{Args, Parser, Subcommand},
     kermit::db::instantiate_database,
