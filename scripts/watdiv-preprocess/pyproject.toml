@@ -13,7 +13,8 @@ dependencies = [
 test = ["pytest>=8.0"]
 
 [project.scripts]
-watdiv-preprocess = "watdiv_preprocess.__main__:main"
+watdiv-preprocess = "watdiv_preprocess.drivers.watdiv:main"
+sparql-preprocess = "watdiv_preprocess.drivers.generic:main"
 
 [build-system]
 requires = ["setuptools>=61"]
