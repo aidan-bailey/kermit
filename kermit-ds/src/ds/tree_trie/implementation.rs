@@ -71,10 +71,38 @@ impl IndexMut<usize> for TrieNode {
 
 /// A pointer-based trie that stores a relation as a tree of `TrieNode`s.
 ///
-/// Children at each level are kept in sorted order by key, enabling binary
-/// search on insertion and linear-scan iteration for the leapfrog join.
-/// Tuples are stored path-wise: a tuple `[a, b, c]` becomes the path
-/// `root → a → b → c`.
+/// Each tuple `[k₀, k₁, …, kₙ₋₁]` is encoded as a root-to-leaf path where
+/// every level corresponds to one column. Children at each level are kept in
+/// sorted order by key, so insertion uses binary search and
+/// [`TreeTrieIter`](crate::ds::TreeTrie) can seek forward without backtracking
+/// — the invariant [`LeapfrogTriejoinIter`] relies on.
+///
+/// # Invariants
+///
+/// - The depth of every root-to-leaf path equals
+///   [`RelationHeader::arity`](crate::RelationHeader::arity).
+/// - `TrieNode::children` at every level is sorted ascending by key with no
+///   duplicates among siblings.
+///
+/// # When to prefer
+///
+/// Compared to [`ColumnTrie`](crate::ds::ColumnTrie), `TreeTrie` is simpler
+/// and allocates a node per key — preferable for small relations, pedagogical
+/// use, and tests. For large relations, the column-oriented layout in
+/// [`ColumnTrie`](crate::ds::ColumnTrie) tends to be more cache-friendly. See
+/// [`ARCHITECTURE.md`](https://github.com/AlexStrickland/kermit/blob/master/ARCHITECTURE.md)
+/// for a deeper comparison.
+///
+/// # Example
+///
+/// ```
+/// use kermit_ds::{Relation, TreeTrie};
+///
+/// let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+/// assert_eq!(trie.header().arity(), 2);
+/// ```
+///
+/// [`LeapfrogTriejoinIter`]: https://docs.rs/kermit-algos
 #[derive(Clone, Debug)]
 pub struct TreeTrie {
     header: RelationHeader,
@@ -95,6 +123,16 @@ impl Relation for TreeTrie {
         }
     }
 
+    /// Builds a `TreeTrie` from a batch of tuples.
+    ///
+    /// Tuples are sorted lexicographically before insertion, which is the most
+    /// efficient input order for the sorted-children invariant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the input tuples have mixed arity, or if any tuple's arity
+    /// does not match `header.arity()` (propagated from
+    /// [`insert`](Self::insert)).
     fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<usize>>) -> Self {
         if tuples.is_empty() {
             return Self::new(header);
@@ -124,6 +162,11 @@ impl Relation for TreeTrie {
         trie
     }
 
+    /// Inserts a single tuple, preserving the sorted-children invariant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tuple.len()` does not match the arity of the relation.
     fn insert(&mut self, tuple: Vec<usize>) -> bool {
         if tuple.len() != self.header().arity() {
             panic!("Arity doesn't match.");
@@ -131,6 +174,12 @@ impl Relation for TreeTrie {
         insert_into_children(&mut self.children, tuple)
     }
 
+    /// Inserts every tuple in `tuples`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's arity does not match the relation's arity
+    /// (propagated from [`insert`](Self::insert)).
     fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool {
         for tuple in tuples {
             if !self.insert(tuple) {

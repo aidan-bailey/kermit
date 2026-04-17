@@ -51,19 +51,55 @@ impl ColumnTrieLayer {
     }
 }
 
-/// A column-oriented trie that stores a relation as parallel arrays per level.
+/// A column-oriented trie that stores a relation as parallel arrays per
+/// level.
 ///
-/// Unlike `TreeTrie`, which uses pointer-based
-/// nodes, `ColumnTrie` flattens each trie level into a `ColumnTrieLayer`
-/// with `data` and `interval` arrays. This layout is more cache-friendly for
-/// large relations and avoids per-node allocation overhead.
+/// Unlike [`TreeTrie`](crate::ds::TreeTrie), which uses pointer-based nodes,
+/// `ColumnTrie` flattens each trie level into a `ColumnTrieLayer` with
+/// `data` and `interval` arrays. This layout avoids per-node allocation
+/// overhead and is more cache-friendly for large relations, at the cost of
+/// more expensive inserts (keys in later layers must shift when earlier
+/// layers grow).
+///
+/// # Invariants
+///
+/// - `layers.len() == header.arity()`.
+/// - Each layer's `data` array is sorted ascending within every sibling
+///   interval.
+/// - `layers[i].interval.len()` equals the number of distinct keys in
+///   `layers[i-1]` (or 1 for the root layer when non-empty).
+/// - Every interval entry in layer `i` indexes into `layers[i].data` (except
+///   that the last entry may equal `data.len()`).
+///
+/// # When to prefer
+///
+/// Prefer `ColumnTrie` for large, mostly-static relations where iteration
+/// speed and compact layout matter. Prefer
+/// [`TreeTrie`](crate::ds::TreeTrie) for small inputs or when you are
+/// inserting one tuple at a time.
+///
+/// # Example
+///
+/// ```
+/// use kermit_ds::{ColumnTrie, Relation};
+///
+/// let trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+/// assert_eq!(trie.header().arity(), 2);
+/// ```
 pub struct ColumnTrie {
     header: RelationHeader,
-    /// One layer per attribute/depth in the relation.
+    /// One layer per attribute/depth in the relation; `layers[i]` holds the
+    /// keys found at column `i` of the tuples, grouped by parent.
     pub layers: Vec<ColumnTrieLayer>,
 }
 
 impl ColumnTrie {
+    /// Returns a reference to the layer at the given depth.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `layer_i >= self.layers.len()` (i.e. greater than or equal
+    /// to the relation's arity).
     pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer { &self.layers[layer_i] }
 
     /// Walks down the layer hierarchy inserting one key per level. The
@@ -217,6 +253,13 @@ impl Relation for ColumnTrie {
         }
     }
 
+    /// Inserts a single tuple.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `tuple.len()` does not match the relation's
+    /// arity. In release builds the check is elided and a mismatched tuple
+    /// will produce a logically inconsistent trie.
     fn insert(&mut self, tuple: Vec<usize>) -> bool {
         debug_assert!(
             tuple.len() == self.header().arity(),
