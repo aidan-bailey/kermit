@@ -51,6 +51,27 @@ impl BenchmarkDefinition {
     ///
     /// Returns [`BenchError::Invalid`] describing the first failing
     /// constraint.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kermit_bench::{BenchmarkDefinition, QueryDefinition, RelationSource};
+    ///
+    /// let def = BenchmarkDefinition {
+    ///     name: "triangle".into(),
+    ///     description: "Triangle query".into(),
+    ///     relations: vec![RelationSource {
+    ///         name: "edge".into(),
+    ///         url: "https://example.com/edge.parquet".into(),
+    ///     }],
+    ///     queries: vec![QueryDefinition {
+    ///         name: "triangle".into(),
+    ///         description: "triangle".into(),
+    ///         query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).".into(),
+    ///     }],
+    /// };
+    /// assert!(def.validate().is_ok());
+    /// ```
     pub fn validate(&self) -> Result<(), BenchError> {
         if self.name.is_empty() {
             return Err(BenchError::Invalid {

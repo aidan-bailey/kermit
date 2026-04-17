@@ -102,6 +102,18 @@ pub fn load_all_benchmarks(workspace_root: &Path) -> Result<Vec<BenchmarkDefinit
 /// # Errors
 ///
 /// Returns any [`BenchError`] produced by [`load_all_benchmarks`].
+///
+/// # Example
+///
+/// ```no_run
+/// use kermit_bench::discovery::list_benchmarks;
+/// use std::path::Path;
+///
+/// let names = list_benchmarks(Path::new(".")).unwrap();
+/// for name in names {
+///     println!("{name}");
+/// }
+/// ```
 pub fn list_benchmarks(workspace_root: &Path) -> Result<Vec<String>, BenchError> {
     let benchmarks = load_all_benchmarks(workspace_root)?;
     Ok(benchmarks.into_iter().map(|b| b.name).collect())
