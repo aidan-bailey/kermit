@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .dict_builder import build_dict
+from .partitioner import partition_triples
 
 
 def main() -> int:
@@ -39,6 +40,12 @@ def main() -> int:
     uri_to_id = build_dict(nt_path, args.output)
     print(
         f"[watdiv-preprocess] dictionary: {len(uri_to_id)} terms written to {args.output}",
+        file=sys.stderr,
+    )
+
+    filename_map = partition_triples(nt_path, uri_to_id, args.output)
+    print(
+        f"[watdiv-preprocess] partitioned into {len(filename_map)} predicate Parquet files",
         file=sys.stderr,
     )
     return 0
