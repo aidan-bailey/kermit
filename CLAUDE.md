@@ -45,7 +45,7 @@ kermit-algos    → Join algorithms: LeapfrogJoinIter (binary), LeapfrogTriejoin
 kermit-bench    → Benchmark definitions, discovery, and caching. No internal deps.
                   YAML-based benchmark declarations (supports multiple named queries per benchmark),
                   ZivaHub download, platform cache dir (~/.cache/kermit/benchmarks/ on Linux).
-kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|fetch|clean).
+kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|list|fetch|clean).
                   Provides DB abstraction layer (db::DB trait, DatabaseEngine).
                   All Criterion execution lives here (including SpaceMeasurement).
 ```
