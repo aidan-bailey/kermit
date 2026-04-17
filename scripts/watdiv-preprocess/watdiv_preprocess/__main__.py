@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .dict_builder import build_dict
 from .partitioner import partition_triples
+from .yaml_emitter import emit_yaml
 
 
 def main() -> int:
@@ -48,6 +49,20 @@ def main() -> int:
         f"[watdiv-preprocess] partitioned into {len(filename_map)} predicate Parquet files",
         file=sys.stderr,
     )
+
+    sparql_dirs = [
+        args.input / "watdiv-stress-100",
+        args.input / "watdiv-stress-1000",
+    ]
+    emitted = 0
+    for d in sparql_dirs:
+        if not d.is_dir():
+            continue
+        for sparql_file in sorted(d.glob("*.sparql")):
+            out = emit_yaml(sparql_file, args.output, uri_to_id, args.base_url, filename_map)
+            emitted += 1
+            print(f"[watdiv-preprocess] wrote {out}", file=sys.stderr)
+    print(f"[watdiv-preprocess] emitted {emitted} benchmark YAML files", file=sys.stderr)
     return 0
 
 
