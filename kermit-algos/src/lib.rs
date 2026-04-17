@@ -9,9 +9,13 @@
 mod join_algo;
 mod leapfrog_join;
 mod leapfrog_triejoin;
+mod singleton;
 
 use {clap::ValueEnum, std::str::FromStr};
-pub use {join_algo::JoinAlgo, kermit_parser::JoinQuery, leapfrog_triejoin::LeapfrogTriejoin};
+pub use {
+    join_algo::JoinAlgo, kermit_parser::JoinQuery, leapfrog_triejoin::LeapfrogTriejoin,
+    singleton::SingletonTrieIter,
+};
 
 /// The available join algorithm implementations.
 ///
