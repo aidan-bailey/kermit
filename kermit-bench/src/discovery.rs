@@ -1,3 +1,9 @@
+//! Discovery helpers for benchmark definitions.
+//!
+//! Reads the workspace's `benchmarks/` directory, parsing every `*.yml` /
+//! `*.yaml` file as a [`BenchmarkDefinition`]. The filename stem must match
+//! the `name:` field inside the YAML.
+
 use {
     crate::{definition::BenchmarkDefinition, error::BenchError},
     std::path::Path,
@@ -5,6 +11,18 @@ use {
 
 /// Loads a single benchmark definition by name from the `benchmarks/`
 /// directory.
+///
+/// # Errors
+///
+/// Returns a [`BenchError`] if:
+/// - [`BenchError::NotFound`] — no `<name>.yml` exists under
+///   `workspace_root/benchmarks`.
+/// - [`BenchError::Io`] — the file exists but cannot be read.
+/// - [`BenchError::Yaml`] — the file is not valid YAML or is missing
+///   required fields.
+/// - [`BenchError::Invalid`] — the YAML parses but the `name:` field does
+///   not match the filename or the definition fails
+///   [`BenchmarkDefinition::validate`](crate::BenchmarkDefinition::validate).
 pub fn load_benchmark(
     workspace_root: &Path, name: &str,
 ) -> Result<BenchmarkDefinition, BenchError> {
@@ -37,6 +55,15 @@ pub fn load_benchmark(
 }
 
 /// Loads all benchmark definitions from the `benchmarks/` directory.
+///
+/// Returns an empty vector if the directory does not exist. Entries are
+/// returned sorted by filename.
+///
+/// # Errors
+///
+/// Returns any [`BenchError`] produced by
+/// [`load_benchmark`] while reading an individual YAML file. If iteration of
+/// the directory itself fails, returns [`BenchError::Io`].
 pub fn load_all_benchmarks(workspace_root: &Path) -> Result<Vec<BenchmarkDefinition>, BenchError> {
     let dir = workspace_root.join("benchmarks");
     if !dir.exists() {
@@ -71,6 +98,10 @@ pub fn load_all_benchmarks(workspace_root: &Path) -> Result<Vec<BenchmarkDefinit
 }
 
 /// Returns the names of all available benchmarks, sorted alphabetically.
+///
+/// # Errors
+///
+/// Returns any [`BenchError`] produced by [`load_all_benchmarks`].
 pub fn list_benchmarks(workspace_root: &Path) -> Result<Vec<String>, BenchError> {
     let benchmarks = load_all_benchmarks(workspace_root)?;
     Ok(benchmarks.into_iter().map(|b| b.name).collect())

@@ -1,31 +1,56 @@
+//! YAML-schema Serde types for benchmark definitions.
+//!
+//! Each benchmark lives in a single YAML file with one [`BenchmarkDefinition`]
+//! at the top level. The schema is documented in the workspace
+//! `benchmarks/README.md`.
+
 use {crate::error::BenchError, std::collections::HashSet};
 
 /// A benchmark definition loaded from a YAML file.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct BenchmarkDefinition {
+    /// Unique benchmark name. Must match the filename stem.
     pub name: String,
+    /// Human-readable description, shown in `bench list` output.
     pub description: String,
+    /// The relations referenced by this benchmark's queries.
     pub relations: Vec<RelationSource>,
+    /// One or more named queries to run against the relations.
     pub queries: Vec<QueryDefinition>,
 }
 
 /// A relation source with a name and download URL.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct RelationSource {
+    /// Relation identifier; matched against predicate names in Datalog
+    /// queries.
     pub name: String,
+    /// HTTP(S) URL of a Parquet file containing the relation's tuples.
     pub url: String,
 }
 
 /// A named query within a benchmark.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct QueryDefinition {
+    /// Query identifier; used to select a specific query via the CLI.
     pub name: String,
+    /// Human-readable description shown in `bench list` output.
     pub description: String,
+    /// The Datalog query string (see `kermit-parser` for grammar).
     pub query: String,
 }
 
 impl BenchmarkDefinition {
     /// Validates structural invariants of the benchmark definition.
+    ///
+    /// Checks that `name`, `relations`, and `queries` are non-empty, that
+    /// every query has a non-empty `name` and `query`, and that relation
+    /// names and query names are unique within the benchmark.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchError::Invalid`] describing the first failing
+    /// constraint.
     pub fn validate(&self) -> Result<(), BenchError> {
         if self.name.is_empty() {
             return Err(BenchError::Invalid {

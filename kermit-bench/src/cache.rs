@@ -1,3 +1,13 @@
+//! On-disk cache for benchmark relation files.
+//!
+//! Relation files referenced by a [`BenchmarkDefinition`] are downloaded lazily
+//! into the platform cache directory under
+//! `<cache_dir>/kermit/benchmarks/<benchmark>/<relation>.parquet`. On Linux
+//! this resolves to `~/.cache/kermit/benchmarks/…`.
+//!
+//! [`ensure_cached`] is the entry point; [`clean_benchmark`] and [`clean_all`]
+//! remove cached files.
+
 use {
     crate::{definition::BenchmarkDefinition, error::BenchError},
     std::{
@@ -13,11 +23,21 @@ fn base_cache_dir() -> Result<PathBuf, BenchError> {
 }
 
 /// Returns the cache directory for a specific benchmark.
+///
+/// # Errors
+///
+/// Returns [`BenchError::NoCacheDir`] if the platform cache directory cannot
+/// be determined.
 pub fn cache_dir(benchmark_name: &str) -> Result<PathBuf, BenchError> {
     Ok(base_cache_dir()?.join(benchmark_name))
 }
 
 /// Returns the expected path for a cached relation file.
+///
+/// # Errors
+///
+/// Returns [`BenchError::NoCacheDir`] if the platform cache directory cannot
+/// be determined.
 pub fn relation_cache_path(
     benchmark_name: &str, relation_name: &str,
 ) -> Result<PathBuf, BenchError> {
@@ -25,6 +45,11 @@ pub fn relation_cache_path(
 }
 
 /// Returns true if all relation files for the benchmark are cached.
+///
+/// # Errors
+///
+/// Returns [`BenchError::NoCacheDir`] if the platform cache directory cannot
+/// be determined.
 pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
     for rel in &benchmark.relations {
         let path = relation_cache_path(&benchmark.name, &rel.name)?;
@@ -39,6 +64,16 @@ pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
 ///
 /// Returns paths to the cached files in the same order as the benchmark's
 /// relations list.
+///
+/// # Errors
+///
+/// Returns a [`BenchError`] if any of the following occur:
+/// - [`BenchError::NoCacheDir`] — the platform cache directory is not
+///   available.
+/// - [`BenchError::Io`] — the cache directory cannot be created, or a
+///   downloaded file cannot be written.
+/// - [`BenchError::Download`] — an HTTP error occurred while fetching a
+///   relation file.
 pub fn ensure_cached(benchmark: &BenchmarkDefinition) -> Result<Vec<PathBuf>, BenchError> {
     let mut paths = Vec::with_capacity(benchmark.relations.len());
 
@@ -81,6 +116,15 @@ fn download_file(url: &str, dest: &Path) -> Result<(), BenchError> {
 }
 
 /// Removes the cache directory for a specific benchmark.
+///
+/// A non-existent cache directory is treated as success (idempotent).
+///
+/// # Errors
+///
+/// Returns a [`BenchError`] if:
+/// - [`BenchError::NoCacheDir`] — the platform cache directory is not
+///   available.
+/// - [`BenchError::Io`] — the directory exists but cannot be removed.
 pub fn clean_benchmark(name: &str) -> Result<(), BenchError> {
     let dir = cache_dir(name)?;
     if dir.exists() {
@@ -90,6 +134,15 @@ pub fn clean_benchmark(name: &str) -> Result<(), BenchError> {
 }
 
 /// Removes the entire kermit benchmark cache.
+///
+/// A non-existent cache directory is treated as success (idempotent).
+///
+/// # Errors
+///
+/// Returns a [`BenchError`] if:
+/// - [`BenchError::NoCacheDir`] — the platform cache directory is not
+///   available.
+/// - [`BenchError::Io`] — the directory exists but cannot be removed.
 pub fn clean_all() -> Result<(), BenchError> {
     let dir = base_cache_dir()?;
     if dir.exists() {
