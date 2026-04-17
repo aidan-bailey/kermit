@@ -110,8 +110,22 @@ where
             if wrappers.contains_key(&pred.name) {
                 continue;
             }
-            if let Some(r) = self.relations.get(&pred.name) {
-                wrappers.insert(pred.name.clone(), TrieIterKind::Relation(r));
+            // Const_* predicates are synthetic — created by rewrite_atoms
+            // above and materialised from const_specs below. They aren't
+            // expected to live in self.relations.
+            if pred.name.starts_with("Const_") {
+                continue;
+            }
+            match self.relations.get(&pred.name) {
+                | Some(r) => {
+                    wrappers.insert(pred.name.clone(), TrieIterKind::Relation(r));
+                },
+                | None => panic!(
+                    "DatabaseEngine::join: query body references unknown relation {:?}; known \
+                     relations: {:?}",
+                    pred.name,
+                    self.relations.keys().collect::<Vec<_>>(),
+                ),
             }
         }
         for (name, id) in const_specs {
@@ -234,5 +248,17 @@ mod tests {
             vec![1],
             "expected only X=1 to pass the c10 filter, got {got:?}"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown relation")]
+    fn test_join_panics_on_missing_relation() {
+        let db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
+            DatabaseEngine::new("test".to_string());
+
+        // `missing` was never added; previously the body predicate was
+        // silently dropped, which could mask typos or load failures.
+        let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
+        db.join(query);
     }
 }
