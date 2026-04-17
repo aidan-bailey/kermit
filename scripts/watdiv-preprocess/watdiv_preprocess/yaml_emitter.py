@@ -45,11 +45,19 @@ def emit_yaml(
     for _, datalog in queries_datalog:
         used_predicates |= collect_predicates(datalog)
 
+    # translate_file raises TranslationError on unknown URIs, so every
+    # body predicate is guaranteed to originate from predicate_map. The
+    # assertion catches future regressions if a new source of predicate
+    # names slips in (e.g. a rule body that bypasses the translator).
     known_names = set(predicate_map.values())
+    unexpected = used_predicates - known_names
+    if unexpected:
+        raise RuntimeError(
+            f"{sparql_path}: query body references unknown predicates: {sorted(unexpected)}"
+        )
     relations = [
         {"name": p, "url": f"{base_url.rstrip('/')}/{p}.parquet"}
         for p in sorted(used_predicates)
-        if p in known_names
     ]
 
     doc = {

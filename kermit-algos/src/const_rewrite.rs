@@ -46,6 +46,18 @@ pub type ConstSpec = (String, usize);
 /// dictionary ID appears multiple times. This avoids forcing equality
 /// between unrelated body positions.
 ///
+/// # Head asymmetry
+///
+/// **Only body atoms are rewritten.** Head atoms (e.g.
+/// `Q(c5) :- p(X).`) are left unchanged. The head list describes the
+/// output shape and does not flow through the LFTJ engine the way
+/// body predicates do, so filtering there is the parser / caller's
+/// responsibility. The preprocessor emits queries of the form
+/// `Head(V0, …, Vn) :- body.` where every head term is a variable, so
+/// in practice head atoms never reach this function from the WatDiv
+/// pipeline. Keep this asymmetry in mind if authoring queries by
+/// hand: a `Term::Atom` in the head position will not be filtered.
+///
 /// # Errors
 ///
 /// Returns [`RewriteError::BadAtom`] if any atom doesn't match `c\d+`.
@@ -199,6 +211,27 @@ mod tests {
         let (out, specs) = rewrite_atoms(q).unwrap();
         assert_eq!(out.body.len(), 3);
         assert!(matches!(out.body[0].terms[1], Term::Placeholder));
+        assert_eq!(specs, vec![("Const_c7".into(), 7)]);
+    }
+
+    #[test]
+    fn head_atoms_are_not_rewritten() {
+        // Head atoms are outside this function's contract; see the
+        // module docstring. This test pins the asymmetry so a future
+        // refactor can't accidentally start rewriting head terms.
+        let q = JoinQuery {
+            head: Predicate {
+                name: "Q".into(),
+                terms: vec![Term::Atom("c5".into()), Term::Var("X".into())],
+            },
+            body: vec![Predicate {
+                name: "p".into(),
+                terms: vec![Term::Var("X".into()), Term::Atom("c7".into())],
+            }],
+        };
+        let (out, specs) = rewrite_atoms(q).unwrap();
+        assert!(matches!(out.head.terms[0], Term::Atom(ref s) if s == "c5"));
+        assert!(matches!(out.head.terms[1], Term::Var(ref n) if n == "X"));
         assert_eq!(specs, vec![("Const_c7".into(), 7)]);
     }
 }
