@@ -45,9 +45,10 @@ def main() -> int:
         file=sys.stderr,
     )
 
-    filename_map = partition_triples(nt_path, uri_to_id, args.output)
+    predicate_map = partition_triples(nt_path, uri_to_id, args.output)
     print(
-        f"[watdiv-preprocess] partitioned into {len(filename_map)} predicate Parquet files",
+        f"[watdiv-preprocess] partitioned into {len(set(predicate_map.values()))} "
+        f"predicate Parquet files",
         file=sys.stderr,
     )
 
@@ -56,7 +57,7 @@ def main() -> int:
         if not d.is_dir():
             continue
         for sparql_file in sorted(d.glob("*.sparql")):
-            out = emit_yaml(sparql_file, args.output, uri_to_id, args.base_url, filename_map)
+            out = emit_yaml(sparql_file, args.output, uri_to_id, args.base_url, predicate_map)
             emitted += 1
             print(f"[watdiv-preprocess] wrote {out}", file=sys.stderr)
     print(f"[watdiv-preprocess] emitted {emitted} benchmark YAML files", file=sys.stderr)

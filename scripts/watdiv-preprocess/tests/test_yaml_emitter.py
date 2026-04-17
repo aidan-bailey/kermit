@@ -28,9 +28,9 @@ def test_emit_yaml_structure(tmp_path: Path):
         "<http://example/q>": 2,
         "<http://example/c>": 99,
     }
-    filename_map = {"p": "p", "q": "q"}
+    predicate_map = {"<http://example/p>": "p", "<http://example/q>": "q"}
 
-    out = emit_yaml(sparql, tmp_path, uri_to_id, "https://host/dl", filename_map)
+    out = emit_yaml(sparql, tmp_path, uri_to_id, "https://host/dl", predicate_map)
     assert out.exists()
 
     doc = yaml.safe_load(out.read_text(encoding="utf-8"))

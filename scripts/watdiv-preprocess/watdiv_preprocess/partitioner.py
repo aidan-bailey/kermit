@@ -38,7 +38,13 @@ def partition_triples(
     dictionary-encoded URI relations, and SPARQL BGP queries in the WatDiv
     stress suite only reference URI-typed positions.
 
-    Returns: sanitized_predicate_name → base filename (without extension).
+    Returns a ``uri_to_predicate`` map from the full predicate URI (with
+    angle brackets, exactly as it appears in the N-Triples file) to the
+    canonical predicate name used for both the Parquet filename and the
+    Datalog identifier. Collisions between sanitized names are resolved
+    by appending ``_<dict-id>`` to all but the first occurrence, so the
+    map is the single source of truth — translator and emitter must use
+    it rather than re-running :func:`sanitize_predicate` independently.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -49,15 +55,15 @@ def partition_triples(
             continue
         buckets[p].append((uri_to_id[s], uri_to_id[o]))
 
-    filename_map: dict[str, str] = {}
+    uri_to_predicate: dict[str, str] = {}
     used_names: set[str] = set()
     for pred_uri, tuples in buckets.items():
         name = sanitize_predicate(pred_uri)
         if name in used_names:
             name = f"{name}_{uri_to_id[pred_uri]}"
         used_names.add(name)
-        filename_map[name] = name
+        uri_to_predicate[pred_uri] = name
         ss = pa.array([t[0] for t in tuples], type=pa.int64())
         oo = pa.array([t[1] for t in tuples], type=pa.int64())
         pq.write_table(pa.table({"s": ss, "o": oo}), out_dir / f"{name}.parquet")
-    return filename_map
+    return uri_to_predicate

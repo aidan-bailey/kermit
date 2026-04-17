@@ -4,8 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator
 
-from .partitioner import sanitize_predicate
-
 
 class TranslationError(Exception):
     """Raised when a SPARQL query cannot be represented as a BGP-only Datalog rule."""
@@ -22,9 +20,19 @@ def iter_sparql_queries(text: str) -> Iterator[str]:
 def translate_query(
     sparql: str,
     uri_to_id: dict[str, int],
+    predicate_map: dict[str, str],
     head_name: str,
 ) -> str:
-    """Returns a Datalog rule string. Raises TranslationError on non-BGP input."""
+    """Returns a Datalog rule string. Raises TranslationError on non-BGP input.
+
+    ``predicate_map`` maps a predicate URI (with angle brackets, e.g.
+    ``"<http://example/p>"``) to its canonical Datalog name. It is
+    produced by :func:`watdiv_preprocess.partitioner.partition_triples`
+    and must be consulted rather than re-running
+    :func:`sanitize_predicate` — the partitioner resolves sanitization
+    collisions between distinct URIs, and translating independently
+    would silently alias different predicates to the same name.
+    """
     from rdflib import URIRef
     from rdflib.plugins.sparql.algebra import translateQuery
     from rdflib.plugins.sparql.parser import parseQuery
@@ -51,7 +59,10 @@ def translate_query(
     for s, p, o in bgp.triples:
         if not isinstance(p, URIRef):
             raise TranslationError(f"non-ground predicate in BGP: {p!r}")
-        pred_name = sanitize_predicate(str(p))
+        pred_key = f"<{p}>"
+        pred_name = predicate_map.get(pred_key)
+        if pred_name is None:
+            raise TranslationError(f"predicate URI not in partition map: {p}")
         s_term, s_var = _term_to_datalog(s, uri_to_id)
         o_term, o_var = _term_to_datalog(o, uri_to_id)
         if s_var is not None:
@@ -98,6 +109,7 @@ def _var_name(raw: str) -> str:
 def translate_file(
     sparql_path: Path,
     uri_to_id: dict[str, int],
+    predicate_map: dict[str, str],
     head_prefix: str,
 ) -> list[tuple[str, str]]:
     """Translates every query in a WatDiv stress-test SPARQL file.
@@ -109,5 +121,5 @@ def translate_file(
     for idx, q in enumerate(iter_sparql_queries(text)):
         qname = f"q{idx:04d}"
         head = f"{head_prefix}_{qname}"
-        results.append((qname, translate_query(q, uri_to_id, head)))
+        results.append((qname, translate_query(q, uri_to_id, predicate_map, head)))
     return results
