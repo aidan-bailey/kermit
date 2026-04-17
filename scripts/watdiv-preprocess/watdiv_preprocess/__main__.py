@@ -5,6 +5,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from .dict_builder import build_dict
+
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
@@ -32,9 +34,11 @@ def main() -> int:
     )
     args = p.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+
+    nt_path = args.input / args.nt_name
+    uri_to_id = build_dict(nt_path, args.output)
     print(
-        f"[watdiv-preprocess] stub — input={args.input} output={args.output} "
-        f"base_url={args.base_url} nt={args.nt_name}",
+        f"[watdiv-preprocess] dictionary: {len(uri_to_id)} terms written to {args.output}",
         file=sys.stderr,
     )
     return 0
