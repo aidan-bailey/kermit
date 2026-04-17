@@ -51,12 +51,8 @@ def main() -> int:
         file=sys.stderr,
     )
 
-    sparql_dirs = [
-        args.input / "watdiv-stress-100",
-        args.input / "watdiv-stress-1000",
-    ]
     emitted = 0
-    for d in sparql_dirs:
+    for d in sorted(args.input.glob("watdiv-stress-*")):
         if not d.is_dir():
             continue
         for sparql_file in sorted(d.glob("*.sparql")):

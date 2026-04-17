@@ -1,0 +1,4 @@
+SELECT ?v0 WHERE { ?v0 <http://www.geonames.org/ontology#parentCountry> <http://db.uwaterloo.ca/~galuc/wsdbm/Country0> . }
+SELECT ?v0 WHERE { ?v0 <http://schema.org/eligibleRegion> <http://db.uwaterloo.ca/~galuc/wsdbm/Country0> . ?v0 <http://purl.org/goodrelations/includes> <http://db.uwaterloo.ca/~galuc/wsdbm/Product0> . }
+SELECT * WHERE { ?v0 <http://www.geonames.org/ontology#parentCountry> ?v1 . }
+SELECT ?v0 WHERE { <http://db.uwaterloo.ca/~galuc/wsdbm/City0> <http://www.geonames.org/ontology#parentCountry> <http://db.uwaterloo.ca/~galuc/wsdbm/Country0> . ?v0 <http://purl.org/goodrelations/includes> <http://db.uwaterloo.ca/~galuc/wsdbm/Product0> . }
