@@ -58,6 +58,12 @@ queries:
 
 See `oxford-uniform-s1.yml` for a benchmark with 8 relations and 3 queries (`binary-join`, `triangle`, `six-way`). Each query shares the same relation set, so downloading the data once amortises across all queries.
 
+## Generated benchmarks (WatDiv)
+
+`watdiv-stress-*.yml` files are **generated**, not hand-written. They come from `scripts/watdiv-preprocess/`, which translates the WatDiv stress workload (10M N-Triples + 124K SPARQL BGP queries) into kermit's Datalog + Parquet format. See `scripts/watdiv-preprocess/README.md` for the preprocessing pipeline. Do not edit these files directly — regenerate them by re-running the preprocessor.
+
+Every WatDiv query body may contain `c<dict-id>` atom terms filtering a BGP position against a constant URI. At join time, `DatabaseEngine::join` rewrites each atom into a fresh variable + synthetic `Const_c<id>` unary relation (Veldhuizen 2014 §3.4 point 4 — see `kermit-algos/src/const_rewrite.rs`).
+
 ## Caching
 
 Relation files are downloaded on first use and cached at:

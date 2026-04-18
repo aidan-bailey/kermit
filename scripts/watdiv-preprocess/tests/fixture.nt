@@ -1,0 +1,3 @@
+<http://example/a> <http://example/p> <http://example/b> .
+<http://example/b> <http://example/q> "literal" .
+<http://example/a> <http://example/p> <http://example/c> .

@@ -6,12 +6,22 @@
 //! [`TrieIterable`](kermit_iters::TrieIterable).
 #![deny(missing_docs)]
 
+mod const_rewrite;
 mod join_algo;
 mod leapfrog_join;
 mod leapfrog_triejoin;
+mod singleton;
+mod trie_iter_kind;
 
 use {clap::ValueEnum, std::str::FromStr};
-pub use {join_algo::JoinAlgo, kermit_parser::JoinQuery, leapfrog_triejoin::LeapfrogTriejoin};
+pub use {
+    const_rewrite::{rewrite_atoms, ConstSpec, RewriteError},
+    join_algo::JoinAlgo,
+    kermit_parser::JoinQuery,
+    leapfrog_triejoin::LeapfrogTriejoin,
+    singleton::SingletonTrieIter,
+    trie_iter_kind::TrieIterKind,
+};
 
 /// The available join algorithm implementations.
 ///

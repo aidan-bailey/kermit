@@ -26,3 +26,7 @@ Cargo.lock
 !kermit/tests/fixtures/*.csv
 .claude-squad/
 .worktrees/
+
+# WatDiv raw dataset — too large for the repo. Developers download it
+# manually to this path; see scripts/watdiv-preprocess/README.md.
+/watdiv-data/
