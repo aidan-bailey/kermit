@@ -34,9 +34,11 @@ def partition_triples(
 ) -> dict[str, str]:
     """Second pass over the N-Triples file, flushing per-predicate Parquet.
 
-    Literal-object triples are skipped — the kermit engine operates on
-    dictionary-encoded URI relations, and SPARQL BGP queries in the WatDiv
-    stress suite only reference URI-typed positions.
+    Literal objects are dictionary-encoded just like URIs — the kermit
+    engine joins on ``usize`` keys without distinguishing the two, and
+    WatDiv stress queries reference literal-only predicates (e.g.
+    ``ogp:title``) as projected variables, so dropping those triples
+    would leave the queries with no relation to join against.
 
     Returns a ``uri_to_predicate`` map from the full predicate URI (with
     angle brackets, exactly as it appears in the N-Triples file) to the
@@ -51,8 +53,6 @@ def partition_triples(
 
     buckets: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for s, p, o in iter_ntriples(nt_path):
-        if o.startswith('"'):
-            continue
         buckets[p].append((uri_to_id[s], uri_to_id[o]))
 
     uri_to_predicate: dict[str, str] = {}
