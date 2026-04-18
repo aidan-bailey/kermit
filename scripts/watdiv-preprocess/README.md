@@ -76,5 +76,19 @@ driver with non-argparse argument handling.
 ## Scope
 
 BGP-only SELECT queries. `FILTER`, `OPTIONAL`, `UNION`, and subqueries fail loudly.
-Literal objects in the NT input are skipped during partitioning (only URI-to-URI
-triples are emitted as Parquet).
+
+Literal objects in the NT input are dictionary-encoded and partitioned alongside
+URIs — every term position maps to a `usize` key, so predicates whose objects
+are literals (e.g. `ogp:title`) produce valid Parquet files just like URI-only
+predicates.
+
+URI constants referenced by a query but absent from the NT input do **not** fail
+loudly. The translator assigns them a fresh dictionary ID so the resulting
+Datalog rule is well-formed; the query evaluates to the empty result at run
+time because the synthetic `c<id>` never appears in any per-predicate Parquet
+(kermit's const-atom rewriter turns it into a singleton trie iterator that
+joins to nothing). This matches SPARQL semantics: a triple pattern with an
+unseen URI is a no-match, not an error. If the dictionary grew during
+translation, `dict.json` and `dict.parquet` are re-emitted at the end of the
+pipeline so the on-disk artifacts stay in sync with the `c<id>` atoms baked
+into the YAMLs.
