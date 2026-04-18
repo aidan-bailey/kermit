@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Callable, Optional
 
-from .dict_builder import build_dict
+from .dict_builder import build_dict, write_dict_files
 from .partitioner import partition_triples
 from .yaml_emitter import emit_yaml
 
@@ -75,6 +75,7 @@ def run_pipeline(
     )
 
     sparql_files_list = list(sparql_files)
+    dict_size_before = len(uri_to_id)
     for sparql_file in sparql_files_list:
         out = emit_yaml(sparql_file, output_dir, uri_to_id, base_url, predicate_map)
         print(f"[{log_prefix}] wrote {out}", file=log_stream)
@@ -82,6 +83,14 @@ def run_pipeline(
         f"[{log_prefix}] emitted {len(sparql_files_list)} benchmark YAML files",
         file=log_stream,
     )
+    if len(uri_to_id) != dict_size_before:
+        write_dict_files(uri_to_id, output_dir)
+        print(
+            f"[{log_prefix}] dictionary grew to {len(uri_to_id)} terms after "
+            f"absorbing {len(uri_to_id) - dict_size_before} query-only URIs; "
+            f"rewrote dict.json/dict.parquet",
+            file=log_stream,
+        )
 
     expected_count = 0
     if expected_writer is not None:

@@ -43,11 +43,11 @@ def build_dict(nt_path: Path, out_dir: Path) -> dict[str, int]:
     """Assigns fresh IDs to unseen terms; writes dict.json and dict.parquet.
 
     Literal objects are included in the dictionary alongside URIs so they
-    can be referenced by SPARQL constants if needed later.
+    can be referenced by SPARQL constants if needed later. Callers that
+    grow the dictionary further (e.g. the SPARQL translator's handling
+    of unseen URI constants) should call :func:`write_dict_files` again
+    so the on-disk artifacts stay in sync.
     """
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     uri_to_id: dict[str, int] = {}
 
     def intern(token: str) -> None:
@@ -58,6 +58,15 @@ def build_dict(nt_path: Path, out_dir: Path) -> dict[str, int]:
         intern(s)
         intern(p)
         intern(o)
+
+    write_dict_files(uri_to_id, out_dir)
+    return uri_to_id
+
+
+def write_dict_files(uri_to_id: dict[str, int], out_dir: Path) -> None:
+    """Writes dict.json and dict.parquet, overwriting any prior copies."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
     (out_dir / "dict.json").write_text(
         json.dumps({"uri_to_id": uri_to_id}, ensure_ascii=False),
@@ -72,4 +81,3 @@ def build_dict(nt_path: Path, out_dir: Path) -> dict[str, int]:
         }
     )
     pq.write_table(table, out_dir / "dict.parquet")
-    return uri_to_id

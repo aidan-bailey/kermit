@@ -103,12 +103,14 @@ def test_optional_rejected():
         translate_query(sparql, uri_to_id, predicate_map, "Q3")
 
 
-def test_unknown_uri_errors():
+def test_unknown_uri_added_to_dict():
     uri_to_id = {"<http://example/p>": 10}
     predicate_map = {"<http://example/p>": "p"}
     sparql = "SELECT ?x WHERE { ?x <http://example/p> <http://example/unseen> . }"
-    with pytest.raises(TranslationError, match="not in dictionary"):
-        translate_query(sparql, uri_to_id, predicate_map, "Q4")
+    rule = translate_query(sparql, uri_to_id, predicate_map, "Q4")
+    assigned = uri_to_id["<http://example/unseen>"]
+    assert assigned == 1, "fresh ID should be the next index in dict order"
+    assert f"c{assigned}" in rule, rule
 
 
 def test_literal_object_errors():
