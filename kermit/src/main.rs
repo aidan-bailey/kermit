@@ -25,9 +25,6 @@ use {
     },
 };
 
-// SpaceMeasurement infrastructure for future Criterion-based space
-// benchmarking.
-#[allow(dead_code)]
 mod measurement;
 
 #[derive(Parser)]
@@ -247,9 +244,27 @@ fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, Join
     Ok((db, join_query))
 }
 
+fn build_time_criterion(args: &BenchArgs) -> criterion::Criterion {
+    criterion::Criterion::default()
+        .sample_size(args.sample_size)
+        .measurement_time(Duration::from_secs(args.measurement_time))
+        .warm_up_time(Duration::from_secs(args.warm_up_time))
+}
+
+fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::SpaceMeasurement> {
+    // Plotters panics on zero-variance data (heap_size_bytes() is
+    // deterministic), so plots must be disabled for the space measurement.
+    criterion::Criterion::default()
+        .with_measurement(measurement::SpaceMeasurement)
+        .without_plots()
+        .sample_size(args.sample_size)
+        .measurement_time(Duration::from_secs(args.measurement_time))
+        .warm_up_time(Duration::from_secs(args.warm_up_time))
+}
+
 fn run_ds_bench<R>(
     relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric], group_name: &str,
-    criterion: &mut criterion::Criterion,
+    bench_args: &BenchArgs,
 ) -> anyhow::Result<()>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
@@ -266,7 +281,6 @@ where
         | _ => anyhow::bail!("Unsupported file extension: {extension}"),
     };
 
-    // Extract tuples for the insertion benchmark setup closure
     let tuples: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
     let header = relation.header().clone();
 
@@ -278,15 +292,12 @@ where
     eprintln!("  tuples:          {}", tuples.len());
     eprintln!("  arity:           {}", header.arity());
 
-    if metrics.contains(&Metric::Space) {
-        eprintln!("  heap bytes:      {}", relation.heap_size_bytes());
-    }
-
-    let has_criterion_metrics = metrics
+    let has_time_metrics = metrics
         .iter()
         .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
 
-    if has_criterion_metrics {
+    if has_time_metrics {
+        let mut criterion = build_time_criterion(bench_args);
         let mut group = criterion.benchmark_group(group_name);
 
         if metrics.contains(&Metric::Insertion) {
@@ -311,17 +322,38 @@ where
         criterion.final_summary();
     }
 
+    if metrics.contains(&Metric::Space) {
+        let n = tuples.len();
+        let mut criterion = build_space_criterion(bench_args);
+        let mut group = criterion.benchmark_group(group_name);
+        group.throughput(criterion::Throughput::Elements(n as u64));
+        // Reconstruct per iter so Criterion's calibration sees real work; the
+        // returned total = heap_size_bytes() * iters, so per-iter = bytes
+        // exactly (see docs/specs/space-benchmarks.md).
+        group.bench_function(format!("{ds_name}/space"), |b| {
+            b.iter_custom(|iters| {
+                let mut total = 0usize;
+                for _ in 0..iters {
+                    let r = R::from_tuples(header.clone(), tuples.clone());
+                    total = total.saturating_add(r.heap_size_bytes());
+                }
+                total
+            });
+        });
+        group.finish();
+        criterion.final_summary();
+    }
+
     Ok(())
 }
 
 fn run_benchmark<R>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
-    metrics: &[Metric], query_filter: Option<&str>, criterion: &mut criterion::Criterion,
+    metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
 ) -> anyhow::Result<()>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
 {
-    // 1. Resolve which queries to run
     let queries: Vec<&kermit_bench::QueryDefinition> = match query_filter {
         | Some(name) => {
             let q = benchmark
@@ -346,18 +378,15 @@ where
         | None => benchmark.queries.iter().collect(),
     };
 
-    // 2. Ensure all relation files are downloaded
     let cached_paths = kermit_bench::cache::ensure_cached(benchmark)
         .map_err(|e| anyhow::anyhow!("Failed to fetch benchmark data: {e}"))?;
 
-    // 3. Load relations into the DB for join execution
     let mut db = instantiate_database(indexstructure, algorithm);
     for path in &cached_paths {
         db.add_file(path)
             .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
     }
 
-    // 4. Load relations as concrete type R for insertion benchmarks
     let relations: Vec<R> = cached_paths
         .iter()
         .map(|p| R::from_parquet(p).map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}")))
@@ -366,14 +395,16 @@ where
     let ds_name = format!("{:?}", indexstructure);
     let algo_name = format!("{:?}", algorithm);
 
+    let has_time_metrics = metrics
+        .iter()
+        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+
     for query_def in &queries {
-        // 5. Parse the Datalog query
         let join_query: JoinQuery =
             query_def.query.trim().parse().map_err(|e| {
                 anyhow::anyhow!("Failed to parse query '{}': {:?}", query_def.query, e)
             })?;
 
-        // 6. Print metadata
         eprintln!("--- bench run metadata ---");
         eprintln!("  benchmark:       {}", benchmark.name);
         eprintln!("  query:           {}", query_def.name);
@@ -384,23 +415,13 @@ where
             eprintln!("  relation {:?}: arity {}", h.name(), h.arity());
         }
 
-        // 7. Space metric
-        if metrics.contains(&Metric::Space) {
-            for rel in &relations {
-                let h = rel.header();
-                eprintln!("  {} heap bytes: {}", h.name(), rel.heap_size_bytes());
-            }
-        }
+        let group_name = format!(
+            "{}/{}/{}/{}",
+            benchmark.name, query_def.name, ds_name, algo_name
+        );
 
-        let has_criterion_metrics = metrics
-            .iter()
-            .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
-
-        if has_criterion_metrics {
-            let group_name = format!(
-                "{}/{}/{}/{}",
-                benchmark.name, query_def.name, ds_name, algo_name
-            );
+        if has_time_metrics {
+            let mut criterion = build_time_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
 
             if metrics.contains(&Metric::Insertion) {
@@ -438,10 +459,35 @@ where
             }
 
             group.finish();
+            criterion.final_summary();
+        }
+
+        if metrics.contains(&Metric::Space) {
+            let mut criterion = build_space_criterion(bench_args);
+            let mut group = criterion.benchmark_group(&group_name);
+            for rel in &relations {
+                let h = rel.header().clone();
+                let rel_name = h.name().to_string();
+                let rel_tuples: Vec<Vec<usize>> = rel.trie_iter().into_iter().collect();
+                // Reconstruct per iter so Criterion's calibration sees real
+                // work and total = heap_size_bytes() * iters (per spec at
+                // docs/specs/space-benchmarks.md).
+                group.bench_function(format!("space/{}", rel_name), |b| {
+                    b.iter_custom(|iters| {
+                        let mut total = 0usize;
+                        for _ in 0..iters {
+                            let r = R::from_tuples(h.clone(), rel_tuples.clone());
+                            total = total.saturating_add(r.heap_size_bytes());
+                        }
+                        total
+                    });
+                });
+            }
+            group.finish();
+            criterion.final_summary();
         }
     }
 
-    criterion.final_summary();
     Ok(())
 }
 
@@ -468,10 +514,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        | Commands::Join {
-            query_args,
-            output,
-        } => {
+        | Commands::Join { query_args, output } => {
             let (db, join_query) = load_query(&query_args)?;
             let tuples = db.join(join_query);
             let writer: Box<dyn Write> = match &output {
@@ -484,186 +527,155 @@ fn main() -> anyhow::Result<()> {
         | Commands::Bench {
             bench_args,
             subcommand,
-        } => {
-            match subcommand {
-                | BenchSubcommand::List => {
-                    let root = workspace_root();
-                    let benchmarks = kermit_bench::discovery::load_all_benchmarks(&root)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                    if benchmarks.is_empty() {
-                        eprintln!("No benchmarks found in benchmarks/");
-                    } else {
-                        for b in &benchmarks {
-                            let cached = kermit_bench::cache::is_cached(b).unwrap_or(false);
-                            let status = if cached {
-                                "cached"
-                            } else {
-                                "not cached"
-                            };
-                            println!("{} ({}) [{}]", b.name, b.description, status);
-                            for q in &b.queries {
-                                println!("  query: {} - {}", q.name, q.description);
-                            }
+        } => match subcommand {
+            | BenchSubcommand::List => {
+                let root = workspace_root();
+                let benchmarks = kermit_bench::discovery::load_all_benchmarks(&root)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                if benchmarks.is_empty() {
+                    eprintln!("No benchmarks found in benchmarks/");
+                } else {
+                    for b in &benchmarks {
+                        let cached = kermit_bench::cache::is_cached(b).unwrap_or(false);
+                        let status = if cached {
+                            "cached"
+                        } else {
+                            "not cached"
+                        };
+                        println!("{} ({}) [{}]", b.name, b.description, status);
+                        for q in &b.queries {
+                            println!("  query: {} - {}", q.name, q.description);
                         }
                     }
-                },
+                }
+            },
 
-                | BenchSubcommand::Fetch {
-                    name,
-                } => {
-                    let root = workspace_root();
-                    let benchmarks = match &name {
-                        | Some(n) => {
-                            vec![kermit_bench::discovery::load_benchmark(&root, n)
-                                .map_err(|e| anyhow::anyhow!("{e}"))?]
-                        },
-                        | None => kermit_bench::discovery::load_all_benchmarks(&root)
-                            .map_err(|e| anyhow::anyhow!("{e}"))?,
-                    };
-                    for benchmark in &benchmarks {
-                        eprintln!("Fetching {}...", benchmark.name);
-                        kermit_bench::cache::ensure_cached(benchmark).map_err(|e| {
-                            anyhow::anyhow!("Failed to fetch {}: {e}", benchmark.name)
-                        })?;
-                        eprintln!("  Done.");
-                    }
-                },
-
-                | BenchSubcommand::Clean {
-                    name,
-                } => match &name {
+            | BenchSubcommand::Fetch { name } => {
+                let root = workspace_root();
+                let benchmarks = match &name {
                     | Some(n) => {
-                        kermit_bench::cache::clean_benchmark(n)
-                            .map_err(|e| anyhow::anyhow!("Failed to clean {}: {e}", n))?;
-                        eprintln!("Cleaned cache for benchmark '{}'", n);
+                        vec![kermit_bench::discovery::load_benchmark(&root, n)
+                            .map_err(|e| anyhow::anyhow!("{e}"))?]
                     },
-                    | None => {
-                        kermit_bench::cache::clean_all()
-                            .map_err(|e| anyhow::anyhow!("Failed to clean cache: {e}"))?;
-                        eprintln!("Cleaned all benchmark caches");
-                    },
+                    | None => kermit_bench::discovery::load_all_benchmarks(&root)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?,
+                };
+                for benchmark in &benchmarks {
+                    eprintln!("Fetching {}...", benchmark.name);
+                    kermit_bench::cache::ensure_cached(benchmark)
+                        .map_err(|e| anyhow::anyhow!("Failed to fetch {}: {e}", benchmark.name))?;
+                    eprintln!("  Done.");
+                }
+            },
+
+            | BenchSubcommand::Clean { name } => match &name {
+                | Some(n) => {
+                    kermit_bench::cache::clean_benchmark(n)
+                        .map_err(|e| anyhow::anyhow!("Failed to clean {}: {e}", n))?;
+                    eprintln!("Cleaned cache for benchmark '{}'", n);
                 },
+                | None => {
+                    kermit_bench::cache::clean_all()
+                        .map_err(|e| anyhow::anyhow!("Failed to clean cache: {e}"))?;
+                    eprintln!("Cleaned all benchmark caches");
+                },
+            },
 
-                | subcommand => {
-                    let mut criterion = criterion::Criterion::default()
-                        .sample_size(bench_args.sample_size)
-                        .measurement_time(Duration::from_secs(bench_args.measurement_time))
-                        .warm_up_time(Duration::from_secs(bench_args.warm_up_time));
+            | BenchSubcommand::Join { query_args, output } => {
+                let (db, join_query) = load_query(&query_args)?;
 
-                    match subcommand {
-                        | BenchSubcommand::Join {
-                            query_args,
-                            output,
-                        } => {
-                            let (db, join_query) = load_query(&query_args)?;
+                if let Some(path) = &output {
+                    let tuples = db.join(join_query.clone());
+                    let writer = BufWriter::new(fs::File::create(path)?);
+                    write_tuples(writer, &tuples)?;
+                }
 
-                            if let Some(path) = &output {
-                                let tuples = db.join(join_query.clone());
-                                let writer = BufWriter::new(fs::File::create(path)?);
-                                write_tuples(writer, &tuples)?;
-                            }
+                let group_name = bench_args.name.as_deref().unwrap_or("join");
+                let bench_id =
+                    format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
 
-                            let group_name = bench_args.name.as_deref().unwrap_or("join");
-                            let bench_id = format!(
-                                "{:?}/{:?}",
-                                query_args.indexstructure, query_args.algorithm
-                            );
+                eprintln!("--- bench metadata ---");
+                eprintln!("  data structure:  {:?}", query_args.indexstructure);
+                eprintln!("  algorithm:       {:?}", query_args.algorithm);
+                eprintln!("  relations:       {}", query_args.relations.len());
 
-                            eprintln!("--- bench metadata ---");
-                            eprintln!("  data structure:  {:?}", query_args.indexstructure);
-                            eprintln!("  algorithm:       {:?}", query_args.algorithm);
-                            eprintln!("  relations:       {}", query_args.relations.len());
+                let mut criterion = build_time_criterion(&bench_args);
+                let mut group = criterion.benchmark_group(group_name);
+                group.bench_function(&bench_id, |b| {
+                    b.iter_batched(
+                        || join_query.clone(),
+                        |q| db.join(q),
+                        criterion::BatchSize::SmallInput,
+                    );
+                });
+                group.finish();
+                criterion.final_summary();
+            },
 
-                            let mut group = criterion.benchmark_group(group_name);
-                            group.bench_function(&bench_id, |b| {
-                                b.iter_batched(
-                                    || join_query.clone(),
-                                    |q| db.join(q),
-                                    criterion::BatchSize::SmallInput,
-                                );
-                            });
-                            group.finish();
-                            criterion.final_summary();
-                        },
+            | BenchSubcommand::Ds {
+                relation,
+                indexstructure,
+                metrics,
+            } => {
+                let group_name = bench_args.name.as_deref().unwrap_or("ds");
 
-                        | BenchSubcommand::Ds {
-                            relation,
+                match indexstructure {
+                    | IndexStructure::TreeTrie => {
+                        run_ds_bench::<kermit_ds::TreeTrie>(
+                            &relation,
                             indexstructure,
-                            metrics,
-                        } => {
-                            let group_name = bench_args.name.as_deref().unwrap_or("ds");
-
-                            match indexstructure {
-                                | IndexStructure::TreeTrie => {
-                                    run_ds_bench::<kermit_ds::TreeTrie>(
-                                        &relation,
-                                        indexstructure,
-                                        &metrics,
-                                        group_name,
-                                        &mut criterion,
-                                    )?;
-                                },
-                                | IndexStructure::ColumnTrie => {
-                                    run_ds_bench::<kermit_ds::ColumnTrie>(
-                                        &relation,
-                                        indexstructure,
-                                        &metrics,
-                                        group_name,
-                                        &mut criterion,
-                                    )?;
-                                },
-                            }
-                        },
-
-                        | BenchSubcommand::Run {
-                            name,
-                            all,
-                            query,
+                            &metrics,
+                            group_name,
+                            &bench_args,
+                        )?;
+                    },
+                    | IndexStructure::ColumnTrie => {
+                        run_ds_bench::<kermit_ds::ColumnTrie>(
+                            &relation,
                             indexstructure,
-                            algorithm,
-                            metrics,
-                        } => {
-                            let benchmarks = resolve_benchmarks(&name, all)?;
+                            &metrics,
+                            group_name,
+                            &bench_args,
+                        )?;
+                    },
+                }
+            },
 
-                            for benchmark in &benchmarks {
-                                match indexstructure {
-                                    | IndexStructure::TreeTrie => {
-                                        run_benchmark::<kermit_ds::TreeTrie>(
-                                            benchmark,
-                                            indexstructure,
-                                            algorithm,
-                                            &metrics,
-                                            query.as_deref(),
-                                            &mut criterion,
-                                        )?;
-                                    },
-                                    | IndexStructure::ColumnTrie => {
-                                        run_benchmark::<kermit_ds::ColumnTrie>(
-                                            benchmark,
-                                            indexstructure,
-                                            algorithm,
-                                            &metrics,
-                                            query.as_deref(),
-                                            &mut criterion,
-                                        )?;
-                                    },
-                                }
-                            }
+            | BenchSubcommand::Run {
+                name,
+                all,
+                query,
+                indexstructure,
+                algorithm,
+                metrics,
+            } => {
+                let benchmarks = resolve_benchmarks(&name, all)?;
+
+                for benchmark in &benchmarks {
+                    match indexstructure {
+                        | IndexStructure::TreeTrie => {
+                            run_benchmark::<kermit_ds::TreeTrie>(
+                                benchmark,
+                                indexstructure,
+                                algorithm,
+                                &metrics,
+                                query.as_deref(),
+                                &bench_args,
+                            )?;
                         },
-
-                        // Already handled above
-                        | BenchSubcommand::List
-                        | BenchSubcommand::Fetch {
-                            ..
-                        }
-                        | BenchSubcommand::Clean {
-                            ..
-                        } => {
-                            unreachable!()
+                        | IndexStructure::ColumnTrie => {
+                            run_benchmark::<kermit_ds::ColumnTrie>(
+                                benchmark,
+                                indexstructure,
+                                algorithm,
+                                &metrics,
+                                query.as_deref(),
+                                &bench_args,
+                            )?;
                         },
                     }
-                },
-            }
+                }
+            },
         },
     }
 

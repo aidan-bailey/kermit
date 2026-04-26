@@ -3,9 +3,13 @@ use std::{
     process::Command,
 };
 
-fn fixtures_dir() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures") }
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
 
-fn kermit_bin() -> PathBuf { Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf() }
+fn kermit_bin() -> PathBuf {
+    Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf()
+}
 
 fn run_subcommand(
     subcommand: &str, relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
@@ -307,10 +311,6 @@ fn cli_bench_ds_all_metrics() {
         stderr.contains("data structure:"),
         "missing data structure in metadata"
     );
-    assert!(
-        stderr.contains("heap bytes:"),
-        "missing heap bytes in metadata"
-    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -321,28 +321,37 @@ fn cli_bench_ds_all_metrics() {
         stdout.contains("TreeTrie/iteration"),
         "stdout should contain iteration benchmark: {stdout}"
     );
+    assert!(
+        stdout.contains("TreeTrie/space"),
+        "stdout should contain space benchmark: {stdout}"
+    );
 }
 
 #[test]
 fn cli_bench_ds_space_only() {
-    let output = run_bench_ds("first.csv", "column-trie", &["--sample-size", "10"], &[
-        "-m", "space",
-    ]);
+    let output = run_bench_ds(
+        "first.csv",
+        "column-trie",
+        &["--sample-size", "10"],
+        &["-m", "space"],
+    );
     assert!(
         output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("heap bytes:"),
-        "missing heap bytes in metadata"
-    );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !stdout.contains("time:"),
-        "space-only should not have Criterion output: {stdout}"
+        stdout.contains("ColumnTrie/space"),
+        "stdout should contain space benchmark: {stdout}"
+    );
+    assert!(
+        !stdout.contains("ColumnTrie/insertion"),
+        "space-only should not have insertion benchmark: {stdout}"
+    );
+    assert!(
+        !stdout.contains("ColumnTrie/iteration"),
+        "space-only should not have iteration benchmark: {stdout}"
     );
 }
