@@ -28,7 +28,10 @@ use {
 mod bench_report;
 mod measurement;
 
-use bench_report::{write_metadata_block, MetadataLine};
+use bench_report::{
+    write_json_report, write_metadata_block, BenchKind, BenchReport, CriterionGroupRef,
+    MetadataLine, ReportMetric,
+};
 
 #[derive(Parser)]
 #[command(name = "kermit")]
@@ -91,6 +94,12 @@ struct BenchArgs {
     /// Warm-up time in seconds before sampling
     #[arg(long, value_name = "SECS", default_value = "3")]
     warm_up_time: u64,
+
+    /// Write a machine-readable JSON report of metadata and Criterion
+    /// group/function ids to this path (in addition to the human-readable
+    /// stderr metadata block and Criterion's own target/criterion/ output)
+    #[arg(long, value_name = "PATH")]
+    report_json: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -254,6 +263,15 @@ fn build_time_criterion(args: &BenchArgs) -> criterion::Criterion {
         .warm_up_time(Duration::from_secs(args.warm_up_time))
 }
 
+fn maybe_write_report(path: Option<&Path>, reports: &[BenchReport]) -> anyhow::Result<()> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let mut writer = BufWriter::new(fs::File::create(p)?);
+    write_json_report(&mut writer, reports)?;
+    Ok(())
+}
+
 fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::SpaceMeasurement> {
     // Plotters panics on zero-variance data (heap_size_bytes() is
     // deterministic), so plots must be disabled for the space measurement.
@@ -290,17 +308,16 @@ where
     let ds_name = format!("{:?}", indexstructure);
     let relation_bytes = fs::metadata(relation_path).map(|m| m.len()).unwrap_or(0);
 
-    write_metadata_block(
-        &mut io::stderr(),
-        "bench ds metadata",
-        &[
-            MetadataLine::new("data structure", &ds_name),
-            MetadataLine::new("relation", relation_path.display()),
-            MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
-            MetadataLine::new("tuples", tuples.len()),
-            MetadataLine::new("arity", header.arity()),
-        ],
-    )?;
+    let metadata = vec![
+        MetadataLine::new("data structure", &ds_name),
+        MetadataLine::new("relation", relation_path.display()),
+        MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
+        MetadataLine::new("tuples", tuples.len()),
+        MetadataLine::new("arity", header.arity()),
+    ];
+    write_metadata_block(&mut io::stderr(), "bench ds metadata", &metadata)?;
+
+    let mut criterion_groups = Vec::new();
 
     let has_time_metrics = metrics
         .iter()
@@ -313,18 +330,30 @@ where
         if metrics.contains(&Metric::Insertion) {
             let insertion_tuples = tuples.clone();
             let insertion_header = header.clone();
-            group.bench_function(format!("{ds_name}/insertion"), |b| {
+            let function = format!("{ds_name}/insertion");
+            group.bench_function(&function, |b| {
                 b.iter_batched(
                     || (insertion_header.clone(), insertion_tuples.clone()),
                     |(h, t)| R::from_tuples(h, t),
                     criterion::BatchSize::SmallInput,
                 );
             });
+            criterion_groups.push(CriterionGroupRef {
+                group: group_name.to_string(),
+                function,
+                metric: ReportMetric::Time,
+            });
         }
 
         if metrics.contains(&Metric::Iteration) {
-            group.bench_function(format!("{ds_name}/iteration"), |b| {
+            let function = format!("{ds_name}/iteration");
+            group.bench_function(&function, |b| {
                 b.iter(|| relation.trie_iter().into_iter().collect::<Vec<_>>());
+            });
+            criterion_groups.push(CriterionGroupRef {
+                group: group_name.to_string(),
+                function,
+                metric: ReportMetric::Time,
             });
         }
 
@@ -340,7 +369,8 @@ where
         // Reconstruct per iter so Criterion's calibration sees real work; the
         // returned total = heap_size_bytes() * iters, so per-iter = bytes
         // exactly (see docs/specs/space-benchmarks.md).
-        group.bench_function(format!("{ds_name}/space"), |b| {
+        let function = format!("{ds_name}/space");
+        group.bench_function(&function, |b| {
             b.iter_custom(|iters| {
                 let mut total = 0usize;
                 for _ in 0..iters {
@@ -350,9 +380,17 @@ where
                 total
             });
         });
+        criterion_groups.push(CriterionGroupRef {
+            group: group_name.to_string(),
+            function,
+            metric: ReportMetric::Space,
+        });
         group.finish();
         criterion.final_summary();
     }
+
+    let report = BenchReport::new(BenchKind::Ds, &metadata, criterion_groups);
+    maybe_write_report(bench_args.report_json.as_deref(), std::slice::from_ref(&report))?;
 
     Ok(())
 }
@@ -409,6 +447,8 @@ where
         .iter()
         .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
 
+    let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
+
     for query_def in &queries {
         let join_query: JoinQuery =
             query_def.query.trim().parse().map_err(|e| {
@@ -434,6 +474,8 @@ where
             "{}/{}/{}/{}",
             benchmark.name, query_def.name, ds_name, algo_name
         );
+
+        let mut criterion_groups: Vec<CriterionGroupRef> = Vec::new();
 
         if has_time_metrics {
             let mut criterion = build_time_criterion(bench_args);
@@ -461,6 +503,11 @@ where
                         criterion::BatchSize::SmallInput,
                     );
                 });
+                criterion_groups.push(CriterionGroupRef {
+                    group: group_name.clone(),
+                    function: "insertion".to_string(),
+                    metric: ReportMetric::Time,
+                });
             }
 
             if metrics.contains(&Metric::Iteration) {
@@ -470,6 +517,11 @@ where
                         |q| db.join(q),
                         criterion::BatchSize::SmallInput,
                     );
+                });
+                criterion_groups.push(CriterionGroupRef {
+                    group: group_name.clone(),
+                    function: "join".to_string(),
+                    metric: ReportMetric::Time,
                 });
             }
 
@@ -487,7 +539,8 @@ where
                 // Reconstruct per iter so Criterion's calibration sees real
                 // work and total = heap_size_bytes() * iters (per spec at
                 // docs/specs/space-benchmarks.md).
-                group.bench_function(format!("space/{}", rel_name), |b| {
+                let function = format!("space/{}", rel_name);
+                group.bench_function(&function, |b| {
                     b.iter_custom(|iters| {
                         let mut total = 0usize;
                         for _ in 0..iters {
@@ -497,11 +550,20 @@ where
                         total
                     });
                 });
+                criterion_groups.push(CriterionGroupRef {
+                    group: group_name.clone(),
+                    function,
+                    metric: ReportMetric::Space,
+                });
             }
             group.finish();
             criterion.final_summary();
         }
+
+        reports.push(BenchReport::new(BenchKind::Run, &lines, criterion_groups));
     }
+
+    maybe_write_report(bench_args.report_json.as_deref(), &reports)?;
 
     Ok(())
 }
@@ -605,25 +667,22 @@ fn main() -> anyhow::Result<()> {
                     write_tuples(writer, &tuples)?;
                 }
 
-                let group_name = bench_args.name.as_deref().unwrap_or("join");
+                let group_name = bench_args.name.as_deref().unwrap_or("join").to_string();
                 let bench_id =
                     format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
 
-                write_metadata_block(
-                    &mut io::stderr(),
-                    "bench metadata",
-                    &[
-                        MetadataLine::new(
-                            "data structure",
-                            format!("{:?}", query_args.indexstructure),
-                        ),
-                        MetadataLine::new("algorithm", format!("{:?}", query_args.algorithm)),
-                        MetadataLine::new("relations", query_args.relations.len()),
-                    ],
-                )?;
+                let metadata = vec![
+                    MetadataLine::new(
+                        "data structure",
+                        format!("{:?}", query_args.indexstructure),
+                    ),
+                    MetadataLine::new("algorithm", format!("{:?}", query_args.algorithm)),
+                    MetadataLine::new("relations", query_args.relations.len()),
+                ];
+                write_metadata_block(&mut io::stderr(), "bench metadata", &metadata)?;
 
                 let mut criterion = build_time_criterion(&bench_args);
-                let mut group = criterion.benchmark_group(group_name);
+                let mut group = criterion.benchmark_group(&group_name);
                 group.bench_function(&bench_id, |b| {
                     b.iter_batched(
                         || join_query.clone(),
@@ -633,6 +692,20 @@ fn main() -> anyhow::Result<()> {
                 });
                 group.finish();
                 criterion.final_summary();
+
+                let report = BenchReport::new(
+                    BenchKind::Join,
+                    &metadata,
+                    vec![CriterionGroupRef {
+                        group: group_name,
+                        function: bench_id,
+                        metric: ReportMetric::Time,
+                    }],
+                );
+                maybe_write_report(
+                    bench_args.report_json.as_deref(),
+                    std::slice::from_ref(&report),
+                )?;
             },
 
             | BenchSubcommand::Ds {

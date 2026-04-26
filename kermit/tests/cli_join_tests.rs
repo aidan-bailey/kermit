@@ -328,6 +328,65 @@ fn cli_bench_ds_all_metrics() {
 }
 
 #[test]
+fn cli_bench_ds_writes_json_report() {
+    let fixtures = fixtures_dir();
+    let tmp_report = std::env::temp_dir().join("kermit_test_report.json");
+
+    let mut cmd = Command::new(kermit_bin());
+    cmd.arg("bench")
+        .arg("--sample-size")
+        .arg("10")
+        .arg("--measurement-time")
+        .arg("1")
+        .arg("--warm-up-time")
+        .arg("1")
+        .arg("--report-json")
+        .arg(&tmp_report)
+        .arg("ds")
+        .arg("--relation")
+        .arg(fixtures.join("first.csv"))
+        .arg("--indexstructure")
+        .arg("tree-trie")
+        .arg("-m")
+        .arg("space");
+
+    let output = cmd.output().expect("failed to execute kermit binary");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let contents = std::fs::read_to_string(&tmp_report).expect("report file should exist");
+    let json: serde_json::Value =
+        serde_json::from_str(&contents).expect("report should be valid JSON");
+
+    assert!(json.is_array(), "top-level shape is always a JSON array");
+    let report = &json[0];
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["kind"], "ds");
+
+    let metadata = report["metadata"]
+        .as_array()
+        .expect("metadata should be an array");
+    assert!(metadata
+        .iter()
+        .any(|f| f["label"] == "data structure" && f["value"] == "TreeTrie"));
+    assert!(metadata
+        .iter()
+        .any(|f| f["label"] == "relation size" && f["value"].as_str().unwrap().ends_with(" B")));
+
+    let groups = report["criterion_groups"]
+        .as_array()
+        .expect("criterion_groups should be an array");
+    assert_eq!(groups.len(), 1, "space-only should yield exactly one group");
+    assert_eq!(groups[0]["function"], "TreeTrie/space");
+    assert_eq!(groups[0]["metric"], "space");
+
+    let _ = std::fs::remove_file(&tmp_report);
+}
+
+#[test]
 fn cli_bench_ds_space_only() {
     let output = run_bench_ds(
         "first.csv",
