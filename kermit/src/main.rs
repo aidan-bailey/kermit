@@ -25,7 +25,10 @@ use {
     },
 };
 
+mod bench_report;
 mod measurement;
+
+use bench_report::{write_metadata_block, MetadataLine};
 
 #[derive(Parser)]
 #[command(name = "kermit")]
@@ -285,12 +288,19 @@ where
     let header = relation.header().clone();
 
     let ds_name = format!("{:?}", indexstructure);
+    let relation_bytes = fs::metadata(relation_path).map(|m| m.len()).unwrap_or(0);
 
-    eprintln!("--- bench ds metadata ---");
-    eprintln!("  data structure:  {}", ds_name);
-    eprintln!("  relation:        {}", relation_path.display());
-    eprintln!("  tuples:          {}", tuples.len());
-    eprintln!("  arity:           {}", header.arity());
+    write_metadata_block(
+        &mut io::stderr(),
+        "bench ds metadata",
+        &[
+            MetadataLine::new("data structure", &ds_name),
+            MetadataLine::new("relation", relation_path.display()),
+            MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
+            MetadataLine::new("tuples", tuples.len()),
+            MetadataLine::new("arity", header.arity()),
+        ],
+    )?;
 
     let has_time_metrics = metrics
         .iter()
@@ -405,15 +415,20 @@ where
                 anyhow::anyhow!("Failed to parse query '{}': {:?}", query_def.query, e)
             })?;
 
-        eprintln!("--- bench run metadata ---");
-        eprintln!("  benchmark:       {}", benchmark.name);
-        eprintln!("  query:           {}", query_def.name);
-        eprintln!("  data structure:  {}", ds_name);
-        eprintln!("  algorithm:       {}", algo_name);
+        let mut lines = vec![
+            MetadataLine::new("benchmark", &benchmark.name),
+            MetadataLine::new("query", &query_def.name),
+            MetadataLine::new("data structure", &ds_name),
+            MetadataLine::new("algorithm", &algo_name),
+        ];
         for rel in &relations {
             let h = rel.header();
-            eprintln!("  relation {:?}: arity {}", h.name(), h.arity());
+            lines.push(MetadataLine::new(
+                "relation",
+                format!("{:?} (arity {})", h.name(), h.arity()),
+            ));
         }
+        write_metadata_block(&mut io::stderr(), "bench run metadata", &lines)?;
 
         let group_name = format!(
             "{}/{}/{}/{}",
@@ -594,10 +609,18 @@ fn main() -> anyhow::Result<()> {
                 let bench_id =
                     format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
 
-                eprintln!("--- bench metadata ---");
-                eprintln!("  data structure:  {:?}", query_args.indexstructure);
-                eprintln!("  algorithm:       {:?}", query_args.algorithm);
-                eprintln!("  relations:       {}", query_args.relations.len());
+                write_metadata_block(
+                    &mut io::stderr(),
+                    "bench metadata",
+                    &[
+                        MetadataLine::new(
+                            "data structure",
+                            format!("{:?}", query_args.indexstructure),
+                        ),
+                        MetadataLine::new("algorithm", format!("{:?}", query_args.algorithm)),
+                        MetadataLine::new("relations", query_args.relations.len()),
+                    ],
+                )?;
 
                 let mut criterion = build_time_criterion(&bench_args);
                 let mut group = criterion.benchmark_group(group_name);
