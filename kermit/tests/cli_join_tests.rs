@@ -38,9 +38,12 @@ fn run_join(
 
 fn parse_output(output: &std::process::Output) -> Vec<Vec<usize>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // Skip the CSV header row (first non-empty line, which holds the head's
+    // variable names) and parse the integer rows that follow.
     let mut tuples: Vec<Vec<usize>> = stdout
         .lines()
         .filter(|l| !l.is_empty())
+        .skip(1)
         .map(|line| {
             line.split(',')
                 .map(|v| v.parse::<usize>().unwrap())
@@ -148,9 +151,11 @@ fn cli_join_output_to_file() {
     );
 
     let contents = std::fs::read_to_string(&tmp_output).unwrap();
+    // First non-empty line is the header (head variable names); rows follow.
     let mut tuples: Vec<Vec<usize>> = contents
         .lines()
         .filter(|l| !l.is_empty())
+        .skip(1)
         .map(|line| {
             line.split(',')
                 .map(|v| v.parse::<usize>().unwrap())

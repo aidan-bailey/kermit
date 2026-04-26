@@ -17,6 +17,7 @@ use {
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HeapSize, IndexStructure, Relation, RelationFileExt},
     kermit_iters::TrieIterable,
+    kermit_parser::Term,
     std::{
         fs,
         io::{self, BufWriter, Write},
@@ -37,10 +38,6 @@ use bench_report::{
 #[command(name = "kermit")]
 #[command(version, about = "Relational data structures, iterators and algorithms", long_about = None)]
 struct Cli {
-    /// Verbose output
-    #[arg(short, long)]
-    verbose: bool,
-
     #[command(subcommand)]
     command: Commands,
 }
@@ -227,7 +224,28 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn write_tuples(mut writer: impl Write, tuples: &[Vec<usize>]) -> io::Result<()> {
+/// Column names derived from a query's head predicate. `Var(X)` becomes
+/// `"X"`, `Atom(c)` becomes `"c"` (constants are pre-rewritten by
+/// `rewrite_atoms` so they appear as `c<id>` in the head when present), and
+/// `Placeholder` becomes `"_"`.
+fn head_column_names(query: &JoinQuery) -> Vec<String> {
+    query
+        .head
+        .terms
+        .iter()
+        .map(|t| match t {
+            | Term::Var(name) | Term::Atom(name) => name.clone(),
+            | Term::Placeholder => "_".to_string(),
+        })
+        .collect()
+}
+
+fn write_tuples(
+    mut writer: impl Write, header: &[String], tuples: &[Vec<usize>],
+) -> io::Result<()> {
+    if !header.is_empty() {
+        writeln!(writer, "{}", header.join(","))?;
+    }
     for tuple in tuples {
         let line: String = tuple
             .iter()
@@ -470,9 +488,10 @@ where
         }
         write_metadata_block(&mut io::stderr(), "bench run metadata", &lines)?;
 
+        let prefix = bench_args.name.as_deref().unwrap_or("run");
         let group_name = format!(
-            "{}/{}/{}/{}",
-            benchmark.name, query_def.name, ds_name, algo_name
+            "{}/{}/{}/{}/{}",
+            prefix, benchmark.name, query_def.name, ds_name, algo_name
         );
 
         let mut criterion_groups: Vec<CriterionGroupRef> = Vec::new();
@@ -511,7 +530,7 @@ where
             }
 
             if metrics.contains(&Metric::Iteration) {
-                group.bench_function("join", |b| {
+                group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || join_query.clone(),
                         |q| db.join(q),
@@ -520,7 +539,7 @@ where
                 });
                 criterion_groups.push(CriterionGroupRef {
                     group: group_name.clone(),
-                    function: "join".to_string(),
+                    function: "iteration".to_string(),
                     metric: ReportMetric::Time,
                 });
             }
@@ -586,19 +605,16 @@ fn resolve_benchmarks(
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    if cli.verbose {
-        println!("Verbose mode enabled");
-    }
-
     match cli.command {
         | Commands::Join { query_args, output } => {
             let (db, join_query) = load_query(&query_args)?;
+            let header = head_column_names(&join_query);
             let tuples = db.join(join_query);
             let writer: Box<dyn Write> = match &output {
                 | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
                 | None => Box::new(BufWriter::new(io::stdout().lock())),
             };
-            write_tuples(writer, &tuples)?;
+            write_tuples(writer, &header, &tuples)?;
         },
 
         | Commands::Bench {
@@ -662,9 +678,10 @@ fn main() -> anyhow::Result<()> {
                 let (db, join_query) = load_query(&query_args)?;
 
                 if let Some(path) = &output {
+                    let header = head_column_names(&join_query);
                     let tuples = db.join(join_query.clone());
                     let writer = BufWriter::new(fs::File::create(path)?);
-                    write_tuples(writer, &tuples)?;
+                    write_tuples(writer, &header, &tuples)?;
                 }
 
                 let group_name = bench_args.name.as_deref().unwrap_or("join").to_string();
@@ -783,18 +800,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn write_tuples_formats_csv_lines() {
+    fn write_tuples_no_header_emits_only_rows() {
         let tuples = vec![vec![1, 2, 3], vec![4, 5, 6]];
         let mut buf = Vec::new();
-        write_tuples(&mut buf, &tuples).unwrap();
+        write_tuples(&mut buf, &[], &tuples).unwrap();
         assert_eq!(String::from_utf8(buf).unwrap(), "1,2,3\n4,5,6\n");
+    }
+
+    #[test]
+    fn write_tuples_with_header_emits_header_then_rows() {
+        let tuples = vec![vec![1, 2, 3], vec![4, 5, 6]];
+        let header = vec!["X".to_string(), "Y".to_string(), "Z".to_string()];
+        let mut buf = Vec::new();
+        write_tuples(&mut buf, &header, &tuples).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "X,Y,Z\n1,2,3\n4,5,6\n");
     }
 
     #[test]
     fn write_tuples_single_column() {
         let tuples = vec![vec![10], vec![20]];
         let mut buf = Vec::new();
-        write_tuples(&mut buf, &tuples).unwrap();
+        write_tuples(&mut buf, &[], &tuples).unwrap();
         assert_eq!(String::from_utf8(buf).unwrap(), "10\n20\n");
     }
 
@@ -802,7 +828,13 @@ mod tests {
     fn write_tuples_empty() {
         let tuples: Vec<Vec<usize>> = vec![];
         let mut buf = Vec::new();
-        write_tuples(&mut buf, &tuples).unwrap();
+        write_tuples(&mut buf, &[], &tuples).unwrap();
         assert_eq!(String::from_utf8(buf).unwrap(), "");
+    }
+
+    #[test]
+    fn head_column_names_extracts_variables_atoms_and_placeholders() {
+        let q: JoinQuery = "Q(X, Y, _) :- R(X, Y, Z).".parse().unwrap();
+        assert_eq!(head_column_names(&q), vec!["X", "Y", "_"]);
     }
 }
