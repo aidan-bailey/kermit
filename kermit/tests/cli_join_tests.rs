@@ -364,7 +364,7 @@ fn cli_bench_ds_writes_json_report() {
 
     assert!(json.is_array(), "top-level shape is always a JSON array");
     let report = &json[0];
-    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["schema_version"], 2);
     assert_eq!(report["kind"], "ds");
 
     let metadata = report["metadata"]
@@ -376,6 +376,16 @@ fn cli_bench_ds_writes_json_report() {
     assert!(metadata
         .iter()
         .any(|f| f["label"] == "relation size" && f["value"].as_str().unwrap().ends_with(" B")));
+
+    let axes = &report["axes"];
+    assert!(axes.is_object(), "axes should be a JSON object");
+    assert_eq!(axes["data_structure"], "TreeTrie");
+    assert!(
+        axes["relation_bytes"].is_number(),
+        "relation_bytes should be numeric, not stringified"
+    );
+    assert!(axes["tuples"].is_number(), "tuples should be numeric");
+    assert!(axes["arity"].is_number(), "arity should be numeric");
 
     let groups = report["criterion_groups"]
         .as_array()

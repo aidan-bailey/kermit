@@ -19,6 +19,7 @@ use {
     kermit_iters::TrieIterable,
     kermit_parser::Term,
     std::{
+        collections::BTreeMap,
         fs,
         io::{self, BufWriter, Write},
         path::{Path, PathBuf},
@@ -404,7 +405,17 @@ where
         criterion.final_summary();
     }
 
-    let report = BenchReport::new(BenchKind::Ds, &metadata, criterion_groups);
+    let axes = BTreeMap::from([
+        ("data_structure".to_string(), serde_json::json!(ds_name)),
+        (
+            "relation_path".to_string(),
+            serde_json::json!(relation_path.display().to_string()),
+        ),
+        ("relation_bytes".to_string(), serde_json::json!(relation_bytes)),
+        ("tuples".to_string(), serde_json::json!(tuples.len())),
+        ("arity".to_string(), serde_json::json!(header.arity())),
+    ]);
+    let report = BenchReport::new(BenchKind::Ds, &metadata, axes, criterion_groups);
     maybe_write_report(
         bench_args.report_json.as_deref(),
         std::slice::from_ref(&report),
@@ -464,6 +475,13 @@ where
     let has_time_metrics = metrics
         .iter()
         .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+
+    // Sum across relations: scaling plots key off this as the workload's
+    // total input size. One trie walk per relation is cheap vs the bench itself.
+    let total_tuples: usize = relations
+        .iter()
+        .map(|r| r.trie_iter().into_iter().count())
+        .sum();
 
     let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
 
@@ -579,7 +597,19 @@ where
             criterion.final_summary();
         }
 
-        reports.push(BenchReport::new(BenchKind::Run, &lines, criterion_groups));
+        let axes = BTreeMap::from([
+            ("benchmark".to_string(), serde_json::json!(benchmark.name)),
+            ("query".to_string(), serde_json::json!(query_def.name)),
+            ("data_structure".to_string(), serde_json::json!(ds_name)),
+            ("algorithm".to_string(), serde_json::json!(algo_name)),
+            ("tuples".to_string(), serde_json::json!(total_tuples)),
+        ]);
+        reports.push(BenchReport::new(
+            BenchKind::Run,
+            &lines,
+            axes,
+            criterion_groups,
+        ));
     }
 
     maybe_write_report(bench_args.report_json.as_deref(), &reports)?;
@@ -717,12 +747,30 @@ fn main() -> anyhow::Result<()> {
                 group.finish();
                 criterion.final_summary();
 
-                let report =
-                    BenchReport::new(BenchKind::Join, &metadata, vec![CriterionGroupRef {
+                let axes = BTreeMap::from([
+                    (
+                        "data_structure".to_string(),
+                        serde_json::json!(format!("{:?}", query_args.indexstructure)),
+                    ),
+                    (
+                        "algorithm".to_string(),
+                        serde_json::json!(format!("{:?}", query_args.algorithm)),
+                    ),
+                    (
+                        "relations".to_string(),
+                        serde_json::json!(query_args.relations.len()),
+                    ),
+                ]);
+                let report = BenchReport::new(
+                    BenchKind::Join,
+                    &metadata,
+                    axes,
+                    vec![CriterionGroupRef {
                         group: group_name,
                         function: bench_id,
                         metric: ReportMetric::Time,
-                    }]);
+                    }],
+                );
                 maybe_write_report(
                     bench_args.report_json.as_deref(),
                     std::slice::from_ref(&report),

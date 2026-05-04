@@ -17,7 +17,10 @@
 
 use {
     serde::Serialize,
-    std::io::{self, Write},
+    std::{
+        collections::BTreeMap,
+        io::{self, Write},
+    },
 };
 
 /// One labelled line in a metadata block.
@@ -62,7 +65,7 @@ pub fn write_metadata_block<W: Write>(
 
 /// Schema version for the JSON report. Bump on any breaking change to
 /// [`BenchReport`] field names or value types.
-pub const REPORT_SCHEMA_VERSION: u32 = 1;
+pub const REPORT_SCHEMA_VERSION: u32 = 2;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).
@@ -129,6 +132,11 @@ pub struct BenchReport {
     /// The metadata that was also written to stderr via
     /// [`write_metadata_block`].
     pub metadata: Vec<ReportField>,
+    /// Structured axis values for downstream tooling (e.g. plot grouping).
+    /// Conventional keys: `data_structure`, `algorithm`, `query`,
+    /// `benchmark`, `relation_path`, `relation_bytes`, `tuples`, `arity`.
+    /// `BTreeMap` so JSON output is deterministically ordered.
+    pub axes: BTreeMap<String, serde_json::Value>,
     /// One entry per Criterion `bench_function` that ran. Multiple entries
     /// occur when a single subcommand records both time and space metrics or
     /// iterates several queries / relations.
@@ -137,15 +145,17 @@ pub struct BenchReport {
 
 impl BenchReport {
     /// Construct a report from the same `&[MetadataLine]` slice that
-    /// [`write_metadata_block`] consumes, plus the list of Criterion
-    /// functions that were run.
+    /// [`write_metadata_block`] consumes, the structured `axes` map, and the
+    /// list of Criterion functions that were run.
     pub fn new(
-        kind: BenchKind, metadata: &[MetadataLine], criterion_groups: Vec<CriterionGroupRef>,
+        kind: BenchKind, metadata: &[MetadataLine],
+        axes: BTreeMap<String, serde_json::Value>, criterion_groups: Vec<CriterionGroupRef>,
     ) -> Self {
         Self {
             schema_version: REPORT_SCHEMA_VERSION,
             kind,
             metadata: metadata.iter().map(ReportField::from).collect(),
+            axes,
             criterion_groups,
         }
     }
@@ -208,23 +218,60 @@ mod tests {
             MetadataLine::new("data structure", "TreeTrie"),
             MetadataLine::new("relations", 2),
         ];
+        let axes = std::collections::BTreeMap::from([
+            ("data_structure".to_string(), serde_json::json!("TreeTrie")),
+            ("tuples".to_string(), serde_json::json!(2)),
+        ]);
         let groups = vec![CriterionGroupRef {
             group: "ds".into(),
             function: "TreeTrie/space".into(),
             metric: ReportMetric::Space,
         }];
-        let report = BenchReport::new(BenchKind::Ds, &metadata, groups);
+        let report = BenchReport::new(BenchKind::Ds, &metadata, axes, groups);
 
         let mut buf = Vec::new();
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(json.is_array());
-        assert_eq!(json[0]["schema_version"], 1);
+        assert_eq!(json[0]["schema_version"], 2);
         assert_eq!(json[0]["kind"], "ds");
         assert_eq!(json[0]["metadata"][0]["label"], "data structure");
         assert_eq!(json[0]["metadata"][0]["value"], "TreeTrie");
+        assert_eq!(json[0]["axes"]["data_structure"], "TreeTrie");
+        assert_eq!(json[0]["axes"]["tuples"], 2);
         assert_eq!(json[0]["criterion_groups"][0]["group"], "ds");
         assert_eq!(json[0]["criterion_groups"][0]["function"], "TreeTrie/space");
         assert_eq!(json[0]["criterion_groups"][0]["metric"], "space");
+    }
+
+    #[test]
+    fn axes_preserve_value_types_and_order() {
+        let axes = std::collections::BTreeMap::from([
+            ("zeta".to_string(), serde_json::json!(true)),
+            ("alpha".to_string(), serde_json::json!("hello")),
+            ("middle".to_string(), serde_json::json!(42)),
+            ("nested".to_string(), serde_json::json!({"k": [1, 2]})),
+        ]);
+        let report = BenchReport::new(BenchKind::Join, &[], axes, vec![]);
+
+        let mut buf = Vec::new();
+        write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+
+        // BTreeMap ordering => alphabetical key order in JSON for diff-friendly output.
+        let alpha_at = s.find("\"alpha\"").unwrap();
+        let middle_at = s.find("\"middle\"").unwrap();
+        let nested_at = s.find("\"nested\"").unwrap();
+        let zeta_at = s.find("\"zeta\"").unwrap();
+        assert!(alpha_at < middle_at);
+        assert!(middle_at < nested_at);
+        assert!(nested_at < zeta_at);
+
+        // Value types are preserved (string/int/bool/object), not stringified.
+        let json: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(json[0]["axes"]["alpha"], "hello");
+        assert_eq!(json[0]["axes"]["middle"], 42);
+        assert_eq!(json[0]["axes"]["zeta"], true);
+        assert_eq!(json[0]["axes"]["nested"]["k"][1], 2);
     }
 }
