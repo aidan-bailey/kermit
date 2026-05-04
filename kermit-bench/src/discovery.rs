@@ -118,6 +118,59 @@ pub fn list_benchmarks(workspace_root: &Path) -> Result<Vec<String>, BenchError>
     Ok(benchmarks.into_iter().map(|b| b.name).collect())
 }
 
+/// Loads all benchmarks from the workspace AND the cache root.
+///
+/// Workspace benchmarks live at `<workspace>/benchmarks/*.yml` (existing
+/// behavior). Cache benchmarks live at `<cache_root>/<name>/benchmark.yml`
+/// (one self-contained directory per generated benchmark). The two lists
+/// are concatenated; cache benchmarks override workspace benchmarks of the
+/// same name.
+///
+/// # Errors
+///
+/// Returns any [`BenchError`] produced while reading either root.
+pub fn load_all_benchmarks_with_cache(
+    workspace_root: &Path, cache_root: &Path,
+) -> Result<Vec<BenchmarkDefinition>, BenchError> {
+    let mut out = load_all_benchmarks(workspace_root)?;
+    let mut existing: std::collections::HashMap<String, usize> = out
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.name.clone(), i))
+        .collect();
+    if !cache_root.exists() {
+        return Ok(out);
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(cache_root)?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let yml = path.join("benchmark.yml");
+        if !yml.exists() {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&yml)?;
+        let def: BenchmarkDefinition =
+            serde_yaml::from_str(&contents).map_err(|source| BenchError::Yaml {
+                path: yml.clone(),
+                source,
+            })?;
+        def.validate()?;
+        if let Some(&idx) = existing.get(&def.name) {
+            out[idx] = def;
+        } else {
+            existing.insert(def.name.clone(), out.len());
+            out.push(def);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +326,49 @@ queries:
 
         let names = list_benchmarks(dir.path()).unwrap();
         assert_eq!(names, vec!["test"]);
+    }
+
+    #[test]
+    fn load_all_with_cache_walks_both_roots() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workspace_benchmarks = workspace.path().join("benchmarks");
+        std::fs::create_dir(&workspace_benchmarks).unwrap();
+
+        let yaml_in_workspace = r#"
+name: alpha
+description: "Workspace bench"
+relations:
+  - name: r
+    url: "https://example.com/r.parquet"
+queries:
+  - name: q
+    description: "default"
+    query: "Q(X) :- r(X)."
+"#;
+        std::fs::write(workspace_benchmarks.join("alpha.yml"), yaml_in_workspace).unwrap();
+
+        let cache_subdir = cache.path().join("beta");
+        std::fs::create_dir(&cache_subdir).unwrap();
+        let yaml_in_cache = r#"
+name: beta
+description: "Cached bench"
+relations:
+  - name: r
+    url: "file:///tmp/r.parquet"
+queries:
+  - name: q
+    description: "default"
+    query: "Q(X) :- r(X)."
+"#;
+        std::fs::write(cache_subdir.join("benchmark.yml"), yaml_in_cache).unwrap();
+
+        let names: Vec<String> = load_all_benchmarks_with_cache(workspace.path(), cache.path())
+            .unwrap()
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert!(names.contains(&"alpha".to_string()));
+        assert!(names.contains(&"beta".to_string()));
     }
 }
