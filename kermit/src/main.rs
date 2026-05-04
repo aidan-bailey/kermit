@@ -636,12 +636,26 @@ fn resolve_benchmarks(
     name: &Option<String>, all: bool,
 ) -> anyhow::Result<Vec<BenchmarkDefinition>> {
     let root = workspace_root();
+    let cache = dirs::cache_dir()
+        .map(|p| p.join("kermit").join("benchmarks"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
     if all {
-        kermit_bench::discovery::load_all_benchmarks(&root)
+        kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
             .map_err(|e| anyhow::anyhow!("Failed to load benchmarks: {e}"))
     } else if let Some(name) = name {
-        Ok(vec![kermit_bench::discovery::load_benchmark(&root, name)
-            .map_err(|e| anyhow::anyhow!("{e}"))?])
+        match kermit_bench::discovery::load_benchmark(&root, name) {
+            | Ok(b) => Ok(vec![b]),
+            | Err(_) => {
+                let yml = cache.join(name).join("benchmark.yml");
+                if !yml.exists() {
+                    anyhow::bail!("benchmark not found: {name}");
+                }
+                let contents = std::fs::read_to_string(&yml)?;
+                let def: BenchmarkDefinition = serde_yaml::from_str(&contents)?;
+                def.validate()?;
+                Ok(vec![def])
+            },
+        }
     } else {
         anyhow::bail!("Specify a benchmark name or --all")
     }
@@ -671,10 +685,14 @@ fn main() -> anyhow::Result<()> {
         } => match subcommand {
             | BenchSubcommand::List => {
                 let root = workspace_root();
-                let benchmarks = kermit_bench::discovery::load_all_benchmarks(&root)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let cache = dirs::cache_dir()
+                    .map(|p| p.join("kermit").join("benchmarks"))
+                    .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
+                let benchmarks =
+                    kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
                 if benchmarks.is_empty() {
-                    eprintln!("No benchmarks found in benchmarks/");
+                    eprintln!("No benchmarks found in benchmarks/ or cache");
                 } else {
                     for b in &benchmarks {
                         let cached = kermit_bench::cache::is_cached(b).unwrap_or(false);
@@ -695,13 +713,18 @@ fn main() -> anyhow::Result<()> {
                 name,
             } => {
                 let root = workspace_root();
+                let cache = dirs::cache_dir()
+                    .map(|p| p.join("kermit").join("benchmarks"))
+                    .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
                 let benchmarks = match &name {
                     | Some(n) => {
                         vec![kermit_bench::discovery::load_benchmark(&root, n)
                             .map_err(|e| anyhow::anyhow!("{e}"))?]
                     },
-                    | None => kermit_bench::discovery::load_all_benchmarks(&root)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?,
+                    | None => {
+                        kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
+                            .map_err(|e| anyhow::anyhow!("{e}"))?
+                    },
                 };
                 for benchmark in &benchmarks {
                     eprintln!("Fetching {}...", benchmark.name);
