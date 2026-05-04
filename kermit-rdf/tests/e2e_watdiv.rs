@@ -92,4 +92,36 @@ fn watdiv_sf1_pipeline_succeeds_and_produces_expected_artifacts() {
         meta.relation_count,
         "relation count drifted between meta and re-parse"
     );
+
+    let expected_dir = dir.path().join("expected");
+    assert!(expected_dir.exists(), "expected/ dir missing");
+    let csvs: Vec<_> = std::fs::read_dir(&expected_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("csv"))
+        .collect();
+    assert_eq!(
+        csvs.len() as u32,
+        meta.query_count,
+        "expected/*.csv count drifted from meta.query_count"
+    );
+    for csv in &csvs {
+        let text = std::fs::read_to_string(csv).unwrap();
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("cardinality"),
+            "{csv:?} missing 'cardinality' header"
+        );
+        let n: u64 = lines
+            .next()
+            .expect("missing cardinality value line")
+            .parse()
+            .unwrap_or_else(|e| panic!("non-integer cardinality in {csv:?}: {e}"));
+        assert!(
+            n < u64::MAX,
+            "cardinality should be a real count, got u64::MAX in {csv:?}"
+        );
+    }
 }

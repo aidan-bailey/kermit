@@ -137,8 +137,8 @@ stage 4: parse + dict + partition + parquet
                           →  relations/<predicate>.parquet  (one per distinct predicate)
 stage 5: parse + translate SPARQL
                           →  benchmark.yml
-stage 6: compute expected results (in-memory Datalog eval)
-                          →  expected/<query>.csv
+stage 6: read watdiv .desc cardinalities (one int per query)
+                          →  expected/<query>.csv  (single-line `cardinality\n<N>\n`)
                           →  meta.json (written last)
 ```
 
@@ -146,6 +146,14 @@ Stages 1–3 are three distinct watdiv invocations sharing one sandbox setup
 (bwrap, working-dir staging, env). Stages 4–6 are pure Rust within a single
 process. `meta.json` is written last as the "this entry is complete" marker;
 its absence indicates a partial / interrupted generation.
+
+**Stage 6 scope note:** the original spec called for in-memory Datalog
+evaluation that emits full result rows. The implementation instead reads
+watdiv's per-query `.desc` cardinality file and writes a one-line CSV
+(`cardinality\n<N>\n`). This is sufficient to validate join engines
+("does the row count match watdiv's expectation?") without re-implementing
+a Datalog interpreter inside `kermit-rdf`. Full result-row capture is
+out of scope and would belong in a future engine-agnostic verifier.
 
 ### Cache directory layout
 
@@ -383,8 +391,10 @@ impossible. They assert three structural properties instead:
 
 1. Pipeline completes without panic or returned error.
 2. Output has expected shape: `dict.parquet` non-empty; `relations/`
-   non-empty; `benchmark.yml` parses; `expected/*.csv` row counts equal what
-   the translated Datalog produces against the dict-encoded data.
+   non-empty; `benchmark.yml` parses; `expected/*.csv` files exist for the
+   queries reported in `meta.json`, parse as `cardinality\n<N>\n`, and the
+   count of CSVs equals `meta.query_count`. (Comparing those counts to a
+   live join engine is out of scope here — see "Stage 6 scope note".)
 3. Round-trip consistency: parsing the generated `.nt` + `dict` +
    `relations/` back into memory produces the same content as a fresh
    `parse(generated.nt) → dict → partition` round.

@@ -126,6 +126,12 @@ pub fn list_benchmarks(workspace_root: &Path) -> Result<Vec<String>, BenchError>
 /// are concatenated; cache benchmarks override workspace benchmarks of the
 /// same name.
 ///
+/// A cache subdirectory is only consumed if it contains both
+/// `benchmark.yml` AND `meta.json`. The `meta.json` marker proves the dir
+/// was produced by a kermit generator (e.g. `watdiv-gen`), so unrelated
+/// directories the user may have under `~/.cache/kermit/benchmarks/` are
+/// silently ignored.
+///
 /// # Errors
 ///
 /// Returns any [`BenchError`] produced while reading either root.
@@ -151,7 +157,8 @@ pub fn load_all_benchmarks_with_cache(
             continue;
         }
         let yml = path.join("benchmark.yml");
-        if !yml.exists() {
+        let meta = path.join("meta.json");
+        if !yml.exists() || !meta.exists() {
             continue;
         }
         let contents = std::fs::read_to_string(&yml)?;
@@ -362,6 +369,7 @@ queries:
     query: "Q(X) :- r(X)."
 "#;
         std::fs::write(cache_subdir.join("benchmark.yml"), yaml_in_cache).unwrap();
+        std::fs::write(cache_subdir.join("meta.json"), "{}").unwrap();
 
         let names: Vec<String> = load_all_benchmarks_with_cache(workspace.path(), cache.path())
             .unwrap()
@@ -370,5 +378,36 @@ queries:
             .collect();
         assert!(names.contains(&"alpha".to_string()));
         assert!(names.contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn cache_dir_without_meta_json_is_ignored() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        let cache_subdir = cache.path().join("orphan");
+        std::fs::create_dir(&cache_subdir).unwrap();
+        let yaml_in_cache = r#"
+name: orphan
+description: "Bench with no marker"
+relations:
+  - name: r
+    url: "file:///tmp/r.parquet"
+queries:
+  - name: q
+    description: "default"
+    query: "Q(X) :- r(X)."
+"#;
+        std::fs::write(cache_subdir.join("benchmark.yml"), yaml_in_cache).unwrap();
+
+        let names: Vec<String> = load_all_benchmarks_with_cache(workspace.path(), cache.path())
+            .unwrap()
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert!(
+            !names.contains(&"orphan".to_string()),
+            "cache dir without meta.json should be ignored, got names = {names:?}"
+        );
     }
 }

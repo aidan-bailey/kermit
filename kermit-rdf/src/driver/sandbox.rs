@@ -20,8 +20,11 @@ use {
 };
 
 /// Owns a staging temp dir for the lifetime of one generation.
+///
+/// Holds a [`tempfile::TempDir`] directly, so cleanup is guaranteed via the
+/// inner TempDir's `Drop` even if `create` returns `Err` partway through.
 pub struct TempStagingDir {
-    root: PathBuf,
+    inner: tempfile::TempDir,
 }
 
 impl TempStagingDir {
@@ -29,10 +32,10 @@ impl TempStagingDir {
     /// `vendor_files` must be a directory containing `firstnames.txt`,
     /// `lastnames.txt`, and `words`.
     pub fn create(binary_path: &Path, vendor_files: &Path) -> Result<Self, RdfError> {
-        let root = tempfile::Builder::new()
+        let inner = tempfile::Builder::new()
             .prefix("kermit-watdiv-")
-            .tempdir()?
-            .keep();
+            .tempdir()?;
+        let root = inner.path();
 
         let bin_release = root.join("bin").join("Release");
         fs::create_dir_all(&bin_release)?;
@@ -51,23 +54,21 @@ impl TempStagingDir {
         }
 
         Ok(Self {
-            root,
+            inner,
         })
     }
 
     /// Returns the staged binary path (the symlink under `bin/Release/`).
-    pub fn binary_path(&self) -> PathBuf { self.root.join("bin").join("Release").join("watdiv") }
+    pub fn binary_path(&self) -> PathBuf {
+        self.inner.path().join("bin").join("Release").join("watdiv")
+    }
 
     /// Returns the staging root.
-    pub fn root(&self) -> &Path { &self.root }
+    pub fn root(&self) -> &Path { self.inner.path() }
 
     /// Returns the staged words file, used for bind-mounting to
     /// `/usr/share/dict/words`.
-    pub fn words_path(&self) -> PathBuf { self.root.join("files").join("words") }
-}
-
-impl Drop for TempStagingDir {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.root); }
+    pub fn words_path(&self) -> PathBuf { self.inner.path().join("files").join("words") }
 }
 
 #[cfg(test)]

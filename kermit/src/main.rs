@@ -225,7 +225,9 @@ enum BenchSubcommand {
         #[arg(long, value_name = "PATH", env = "KERMIT_WATDIV_BIN")]
         watdiv_bin: Option<PathBuf>,
 
-        /// Override the cache dir parent (default: ~/.cache/kermit/benchmarks)
+        /// Override the cache dir parent (default: ~/.cache/kermit/benchmarks).
+        /// NOTE: benchmarks generated outside the default cache are NOT
+        /// auto-discovered by `bench list/fetch/run`; mainly useful for tests.
         #[arg(long, value_name = "PATH")]
         output_dir: Option<PathBuf>,
 
@@ -646,8 +648,10 @@ fn resolve_benchmarks(
         match kermit_bench::discovery::load_benchmark(&root, name) {
             | Ok(b) => Ok(vec![b]),
             | Err(_) => {
-                let yml = cache.join(name).join("benchmark.yml");
-                if !yml.exists() {
+                let dir = cache.join(name);
+                let yml = dir.join("benchmark.yml");
+                let meta = dir.join("meta.json");
+                if !yml.exists() || !meta.exists() {
                     anyhow::bail!("benchmark not found: {name}");
                 }
                 let contents = std::fs::read_to_string(&yml)?;
@@ -688,6 +692,11 @@ fn main() -> anyhow::Result<()> {
                 let cache = dirs::cache_dir()
                     .map(|p| p.join("kermit").join("benchmarks"))
                     .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
+                let workspace_names: std::collections::HashSet<String> =
+                    kermit_bench::discovery::list_benchmarks(&root)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                        .into_iter()
+                        .collect();
                 let benchmarks =
                     kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -701,7 +710,12 @@ fn main() -> anyhow::Result<()> {
                         } else {
                             "not cached"
                         };
-                        println!("{} ({}) [{}]", b.name, b.description, status);
+                        let source = if workspace_names.contains(&b.name) {
+                            "workspace"
+                        } else {
+                            "cache"
+                        };
+                        println!("{} ({}) [{source}, {status}]", b.name, b.description);
                         for q in &b.queries {
                             println!("  query: {} - {}", q.name, q.description);
                         }
@@ -712,20 +726,7 @@ fn main() -> anyhow::Result<()> {
             | BenchSubcommand::Fetch {
                 name,
             } => {
-                let root = workspace_root();
-                let cache = dirs::cache_dir()
-                    .map(|p| p.join("kermit").join("benchmarks"))
-                    .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
-                let benchmarks = match &name {
-                    | Some(n) => {
-                        vec![kermit_bench::discovery::load_benchmark(&root, n)
-                            .map_err(|e| anyhow::anyhow!("{e}"))?]
-                    },
-                    | None => {
-                        kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
-                            .map_err(|e| anyhow::anyhow!("{e}"))?
-                    },
-                };
+                let benchmarks = resolve_benchmarks(&name, name.is_none())?;
                 for benchmark in &benchmarks {
                     eprintln!("Fetching {}...", benchmark.name);
                     kermit_bench::cache::ensure_cached(benchmark)
@@ -873,10 +874,16 @@ fn main() -> anyhow::Result<()> {
                 output_dir,
                 no_bwrap,
             } => {
-                if !tag.chars().any(|c| !c.is_ascii_digit()) {
+                let bench_name = format!("watdiv-stress-{scale}-{tag}");
+                let workspace = workspace_root();
+                let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
+                    })?;
+                if workspace_names.iter().any(|n| n == &bench_name) {
                     anyhow::bail!(
-                        "--tag must contain at least one non-numeric character to avoid collision \
-                         with committed benchmark names"
+                        "--tag {tag:?} produces bench name {bench_name:?} which already exists in \
+                         the workspace; pick a different tag"
                     );
                 }
                 let vendor = vendored_watdiv_root();
@@ -884,12 +891,18 @@ fn main() -> anyhow::Result<()> {
                 if !bin.exists() {
                     anyhow::bail!("watdiv binary not found at {bin:?}");
                 }
-                let cache_parent = output_dir.unwrap_or_else(|| {
-                    dirs::cache_dir()
-                        .map(|p| p.join("kermit").join("benchmarks"))
-                        .expect("no cache dir on this platform")
-                });
-                let bench_name = format!("watdiv-stress-{scale}-{tag}");
+                let default_cache = dirs::cache_dir()
+                    .map(|p| p.join("kermit").join("benchmarks"))
+                    .expect("no cache dir on this platform");
+                let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
+                if cache_parent != default_cache {
+                    eprintln!(
+                        "[watdiv-gen] note: --output-dir is set to {}; the generated benchmark \
+                         will NOT be auto-discovered by `bench list/fetch/run` (those scan {})",
+                        cache_parent.display(),
+                        default_cache.display()
+                    );
+                }
                 let out_dir = cache_parent.join(&bench_name);
                 std::fs::create_dir_all(&out_dir)?;
 
