@@ -16,3 +16,5 @@ pub mod pipeline;
 pub mod sparql;
 pub mod value;
 pub mod yaml_emit;
+
+pub use error::RdfError;
