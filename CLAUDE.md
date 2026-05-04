@@ -26,7 +26,7 @@ Rust **nightly** (pinned in `rust-toolchain.toml`). Required components: clippy,
 
 ## Development Environment
 
-A Nix flake provides the recommended dev shell: `nix develop`. It sets up nightly Rust (matching `rust-toolchain.toml`), `git-cliff`, `cargo-expand`, and configures `MIRIFLAGS` and `RUST_BACKTRACE` to match CI.
+A Nix flake provides the recommended dev shell: `nix develop`. It sets up nightly Rust (matching `rust-toolchain.toml`), `git-cliff`, `cargo-expand`, Python 3.13, and configures `MIRIFLAGS` and `RUST_BACKTRACE` to match CI. The shell also exports an `LD_LIBRARY_PATH` covering `libstdc++.so.6` / `libz.so.1` so pip-installed wheels (numpy, matplotlib) used by `scripts/kermit-plot/` load on NixOS without manual workarounds.
 
 ## CI Checks (PR gate)
 

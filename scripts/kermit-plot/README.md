@@ -13,6 +13,11 @@ pip install -e '.[test]'
 
 This registers a single `kermit-plot` console script.
 
+On NixOS, run install and subsequent `kermit-plot` invocations from inside
+`nix develop` — the dev shell exports an `LD_LIBRARY_PATH` covering
+`libstdc++.so.6` / `libz.so.1` so numpy's C extensions load. Outside the dev
+shell, set `LD_LIBRARY_PATH=/run/current-system/sw/share/nix-ld/lib` manually.
+
 ## Workflow
 
 1. Run `kermit bench …` one or more times, varying `(data_structure,

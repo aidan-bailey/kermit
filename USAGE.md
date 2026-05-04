@@ -213,18 +213,25 @@ kermit-plot render-all bench-runs/*.json --out-dir plots/
 Shapes that lack the necessary axes (e.g. only one `tuples` value → no
 `scaling.pdf`) are skipped with an info-level log.
 
-### NixOS quirk
+### NixOS
 
 The pip-installed numpy / matplotlib wheels expect a glibc-style runtime
-loader. On NixOS, set:
+loader. The Nix dev shell handles this — `nix develop` exports an
+`LD_LIBRARY_PATH` covering `libstdc++.so.6` and `libz.so.1` so any venv
+activated inside the shell can load numpy's C extensions:
+
+```sh
+nix develop
+source venv/bin/activate
+kermit-plot render-all bench-runs/*.json --out-dir plots/
+```
+
+If you're not using `nix develop`, set the env var manually before activating
+the venv:
 
 ```sh
 export LD_LIBRARY_PATH=/run/current-system/sw/share/nix-ld/lib
 ```
-
-before running `pytest` or `kermit-plot` from the venv. This exposes the
-`nix-ld` library cache (`libstdc++.so.6`, `libz.so.1`, …) to dynamically-linked
-binaries that don't know about Nix store paths.
 
 ## End-to-end: scaling plot from scratch
 
@@ -246,10 +253,10 @@ for s in 1 2 3 4 5 6; do
   done
 done
 
-# 4. Render the scaling plot.
+# 4. Render the scaling plot. (Inside `nix develop` on NixOS — the dev
+#    shell already exports the LD_LIBRARY_PATH that numpy needs.)
 cd scripts/kermit-plot
 source venv/bin/activate
-export LD_LIBRARY_PATH=/run/current-system/sw/share/nix-ld/lib  # NixOS only
 kermit-plot scaling ../../bench-runs/triangle-*.json \
   --out ../../plots/triangle-scaling.pdf
 ```
