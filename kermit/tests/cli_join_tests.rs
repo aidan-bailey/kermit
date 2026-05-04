@@ -1,11 +1,23 @@
 use std::{
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 fn fixtures_dir() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures") }
 
 fn kermit_bin() -> PathBuf { Path::new(env!("CARGO_BIN_EXE_kermit")).to_path_buf() }
+
+static REPORT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temp_report_path(tag: &str) -> PathBuf {
+    let n = REPORT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "kermit_bench_{tag}_{}_{}.json",
+        std::process::id(),
+        n
+    ))
+}
 
 fn run_subcommand(
     subcommand: &str, relations: &[&str], query: &str, algorithm: &str, indexstructure: &str,
@@ -184,11 +196,13 @@ fn run_bench_join(
     relations: &[&str], query: &str, algorithm: &str, indexstructure: &str, bench_args: &[&str],
 ) -> std::process::Output {
     let fixtures = fixtures_dir();
+    let report_path = temp_report_path("join");
     let mut cmd = Command::new(kermit_bin());
     cmd.arg("bench");
     for arg in bench_args {
         cmd.arg(arg);
     }
+    cmd.arg("--report-json").arg(&report_path);
     cmd.arg("join");
     for rel in relations {
         cmd.arg("--relations").arg(fixtures.join(rel));
@@ -196,7 +210,9 @@ fn run_bench_join(
     cmd.arg("--query").arg(fixtures.join(query));
     cmd.arg("--algorithm").arg(algorithm);
     cmd.arg("--indexstructure").arg(indexstructure);
-    cmd.output().expect("failed to execute kermit binary")
+    let output = cmd.output().expect("failed to execute kermit binary");
+    let _ = std::fs::remove_file(&report_path);
+    output
 }
 
 #[test]
@@ -268,18 +284,22 @@ fn run_bench_ds(
     relation: &str, indexstructure: &str, bench_args: &[&str], ds_args: &[&str],
 ) -> std::process::Output {
     let fixtures = fixtures_dir();
+    let report_path = temp_report_path("ds");
     let mut cmd = Command::new(kermit_bin());
     cmd.arg("bench");
     for arg in bench_args {
         cmd.arg(arg);
     }
+    cmd.arg("--report-json").arg(&report_path);
     cmd.arg("ds");
     cmd.arg("--relation").arg(fixtures.join(relation));
     cmd.arg("--indexstructure").arg(indexstructure);
     for arg in ds_args {
         cmd.arg(arg);
     }
-    cmd.output().expect("failed to execute kermit binary")
+    let output = cmd.output().expect("failed to execute kermit binary");
+    let _ = std::fs::remove_file(&report_path);
+    output
 }
 
 #[test]
@@ -395,6 +415,64 @@ fn cli_bench_ds_writes_json_report() {
     assert_eq!(groups[0]["metric"], "space");
 
     let _ = std::fs::remove_file(&tmp_report);
+}
+
+#[test]
+fn cli_bench_ds_writes_default_report_when_path_omitted() {
+    let fixtures = fixtures_dir();
+    let tmp_cwd =
+        std::env::temp_dir().join(format!("kermit_default_report_{}", std::process::id(),));
+    let _ = std::fs::remove_dir_all(&tmp_cwd);
+    std::fs::create_dir_all(&tmp_cwd).expect("create tmp cwd");
+
+    let mut cmd = Command::new(kermit_bin());
+    cmd.current_dir(&tmp_cwd)
+        .arg("bench")
+        .arg("--sample-size")
+        .arg("10")
+        .arg("--measurement-time")
+        .arg("1")
+        .arg("--warm-up-time")
+        .arg("1")
+        .arg("ds")
+        .arg("--relation")
+        .arg(fixtures.join("first.csv"))
+        .arg("--indexstructure")
+        .arg("tree-trie")
+        .arg("-m")
+        .arg("space");
+
+    let output = cmd.output().expect("failed to execute kermit binary");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let bench_runs = tmp_cwd.join("bench-runs");
+    let entries: Vec<PathBuf> = std::fs::read_dir(&bench_runs)
+        .expect("bench-runs/ should be auto-created")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected exactly one default report; got {entries:?}"
+    );
+    let path = &entries[0];
+    let name = path.file_name().unwrap().to_string_lossy().to_string();
+    assert!(
+        name.starts_with("ds-") && name.ends_with(".json"),
+        "default name should be ds-<unix-millis>.json; got {name}"
+    );
+
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap())
+        .expect("default report should be valid JSON");
+    assert_eq!(json[0]["schema_version"], 2);
+    assert_eq!(json[0]["kind"], "ds");
+
+    let _ = std::fs::remove_dir_all(&tmp_cwd);
 }
 
 #[test]

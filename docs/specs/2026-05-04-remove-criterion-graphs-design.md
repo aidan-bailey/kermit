@@ -109,11 +109,11 @@ benches; harmless.
 
 ### 6. `.gitignore` — add `bench-runs/`
 
-The convention is to write `--report-json` outputs to `bench-runs/` at the
-workspace root before passing them to `kermit-plot`. Not enforced in code (the
-flag still takes any path), just documented in `scripts/kermit-plot/README.md`
-and gitignored to prevent accidentally checking benchmark outputs into the
-repo.
+Every `kermit bench` invocation writes a JSON report. The default path is
+`bench-runs/<kind>-<unix-millis>.json` resolved relative to the invocation's
+CWD (the directory is auto-created). `--report-json <PATH>` overrides. Because
+the default may resolve under any crate when tests/scripts run there, the
+gitignore pattern is unanchored (`bench-runs/`, not `/bench-runs/`).
 
 ## Python-side: `scripts/kermit-plot/`
 

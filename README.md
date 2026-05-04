@@ -115,14 +115,18 @@ Supported index structures: `tree-trie`, `column-trie`. Supported metrics: `inse
 
 ### JSON reports for tooling
 
-Pass `--report-json <PATH>` to any `bench` invocation to emit a machine-readable JSON summary of the run alongside the human-readable stderr output and Criterion's per-function artefacts. The schema (currently v2) is documented in `docs/specs/bench-report-schema.md`.
+Every `bench` invocation writes a machine-readable JSON summary alongside the human-readable stderr output and Criterion's per-function artefacts. The default path is `bench-runs/<kind>-<unix-millis>.json` (the directory is auto-created and gitignored at the workspace root). Pass `--report-json <PATH>` to override.
 
 ```sh
-kermit bench --report-json bench-runs/triangle-tree.json \
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin
+# → writes bench-runs/run-1714828215123.json (timestamp varies)
+
+kermit bench --report-json /tmp/triangle.json \
   run triangle -i tree-trie -a leapfrog-triejoin
+# → writes /tmp/triangle.json
 ```
 
-`bench-runs/` is gitignored at the workspace root by convention.
+The schema (currently v2) is documented in `docs/specs/bench-report-schema.md`.
 
 ## Plotting
 

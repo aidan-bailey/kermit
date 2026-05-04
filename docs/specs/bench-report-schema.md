@@ -5,10 +5,13 @@
 
 ## Top-level shape
 
-`kermit bench --report-json <PATH>` writes a JSON **array** of one or more
-`BenchReport` objects, regardless of subcommand. The array shape is uniform
-across `bench join` (one report), `bench ds` (one report), and `bench run`
-(one report per query). External tools should always parse a list.
+Every `kermit bench` invocation writes a JSON **array** of one or more
+`BenchReport` objects, regardless of subcommand. The default destination is
+`bench-runs/<kind>-<unix-millis>.json` (resolved relative to the invocation's
+CWD; the directory is auto-created). Pass `--report-json <PATH>` to override.
+The array shape is uniform across `bench join` (one report), `bench ds`
+(one report), and `bench run` (one report per query). External tools should
+always parse a list.
 
 ## `BenchReport`
 

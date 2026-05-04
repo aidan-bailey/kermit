@@ -31,6 +31,8 @@ Cargo.lock
 # manually to this path; see scripts/watdiv-preprocess/README.md.
 /watdiv-data/
 
-# Bench report JSON outputs (--report-json). Convention is to write here
-# before running scripts/kermit-plot/. Not enforced in code.
-/bench-runs/
+# Bench report JSON outputs. The default `--report-json` path is
+# `bench-runs/<kind>-<unix-millis>.json` resolved relative to the bench
+# invocation's CWD, so the directory may appear at the workspace root or
+# under any crate when tests/scripts run there.
+bench-runs/
