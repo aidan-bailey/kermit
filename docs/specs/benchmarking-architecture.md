@@ -165,6 +165,8 @@ The space metric in `bench ds` and `bench run` is wired through
 structure per iteration so Criterion's calibration sees real work; the
 returned total equals `heap_size_bytes() * iters`, giving a deterministic
 per-iter mean equal to the heap size in bytes (see
-`docs/specs/space-benchmarks.md`). Plots are disabled
-(`.without_plots()`) because Criterion's plotters backend panics on
-zero-variance data.
+`docs/specs/space-benchmarks.md`). Criterion's plot subsystem isn't
+compiled in (`kermit/Cargo.toml` opts out of default features), so the
+zero-variance signal flows through to JSON without rendering — see
+`docs/specs/2026-05-04-remove-criterion-graphs-design.md` for the
+Python plotter that consumes it.

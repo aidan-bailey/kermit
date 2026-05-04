@@ -291,11 +291,8 @@ fn maybe_write_report(path: Option<&Path>, reports: &[BenchReport]) -> anyhow::R
 }
 
 fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::SpaceMeasurement> {
-    // Plotters panics on zero-variance data (heap_size_bytes() is
-    // deterministic), so plots must be disabled for the space measurement.
     criterion::Criterion::default()
         .with_measurement(measurement::SpaceMeasurement)
-        .without_plots()
         .sample_size(args.sample_size)
         .measurement_time(Duration::from_secs(args.measurement_time))
         .warm_up_time(Duration::from_secs(args.warm_up_time))
