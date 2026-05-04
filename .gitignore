@@ -30,3 +30,4 @@ Cargo.lock
 # WatDiv raw dataset — too large for the repo. Developers download it
 # manually to this path; see scripts/watdiv-preprocess/README.md.
 /watdiv-data/
+.loom/
