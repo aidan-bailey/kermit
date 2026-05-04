@@ -7,7 +7,7 @@
 use {crate::error::BenchError, std::collections::HashSet};
 
 /// A benchmark definition loaded from a YAML file.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct BenchmarkDefinition {
     /// Unique benchmark name. Must match the filename stem.
     pub name: String,
@@ -20,7 +20,7 @@ pub struct BenchmarkDefinition {
 }
 
 /// A relation source with a name and download URL.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RelationSource {
     /// Relation identifier; matched against predicate names in Datalog
     /// queries.
@@ -30,7 +30,7 @@ pub struct RelationSource {
 }
 
 /// A named query within a benchmark.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct QueryDefinition {
     /// Query identifier; used to select a specific query via the CLI.
     pub name: String,
