@@ -235,6 +235,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "miri does not support std::fs::set_permissions on Unix"
+    )]
     fn run_data_writes_stdout_to_file() {
         let dir = tempfile::tempdir().unwrap();
         let bin = make_fake_binary(dir.path());

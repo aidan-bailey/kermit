@@ -83,6 +83,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "miri does not support fchmod via std::fs::copy")]
     fn staging_creates_expected_layout() {
         let workdir = tempfile::tempdir().unwrap();
         let bin = workdir.path().join("real_watdiv");
@@ -98,6 +99,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "miri does not support fchmod via std::fs::copy")]
     fn drop_removes_root() {
         let workdir = tempfile::tempdir().unwrap();
         let bin = workdir.path().join("real_watdiv");
