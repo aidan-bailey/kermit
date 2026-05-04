@@ -40,8 +40,15 @@ impl TempStagingDir {
         let bin_release = root.join("bin").join("Release");
         fs::create_dir_all(&bin_release)?;
         let stage_bin = bin_release.join("watdiv");
-        std::os::unix::fs::symlink(binary_path, &stage_bin).map_err(|e| {
-            RdfError::Sandbox(format!("symlink {binary_path:?} -> {stage_bin:?}: {e}"))
+        // Symlink targets resolve relative to the symlink's parent dir, not
+        // the cwd of whoever follows it — so a relative `binary_path` would
+        // dangle once we chdir into bin/Release/ to invoke it. Canonicalize
+        // first so the staged symlink is always absolute.
+        let binary_abs = binary_path
+            .canonicalize()
+            .map_err(|e| RdfError::Sandbox(format!("canonicalize {binary_path:?}: {e}")))?;
+        std::os::unix::fs::symlink(&binary_abs, &stage_bin).map_err(|e| {
+            RdfError::Sandbox(format!("symlink {binary_abs:?} -> {stage_bin:?}: {e}"))
         })?;
 
         let files_dir = root.join("files");
@@ -96,6 +103,24 @@ mod tests {
         assert!(staged.exists() || staged.symlink_metadata().is_ok());
         assert!(stage.root().join("files/firstnames.txt").exists());
         assert!(stage.root().join("files/words").exists());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "miri does not support fchmod via std::fs::copy")]
+    fn staged_symlink_target_is_absolute() {
+        let workdir = tempfile::tempdir().unwrap();
+        let bin = workdir.path().join("real_watdiv");
+        fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        let vendor = workdir.path().join("vendor");
+        make_vendor_files(&vendor);
+
+        let stage = TempStagingDir::create(&bin, &vendor).unwrap();
+        let target = fs::read_link(stage.binary_path()).unwrap();
+        assert!(
+            target.is_absolute(),
+            "staged symlink target must be absolute (got {target:?}) — relative targets dangle \
+             when followed from the staged parent dir"
+        );
     }
 
     #[test]
