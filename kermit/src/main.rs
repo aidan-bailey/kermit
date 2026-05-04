@@ -19,6 +19,7 @@ use {
     kermit_iters::TrieIterable,
     kermit_parser::Term,
     std::{
+        collections::BTreeMap,
         fs,
         io::{self, BufWriter, Write},
         path::{Path, PathBuf},
@@ -92,9 +93,9 @@ struct BenchArgs {
     #[arg(long, value_name = "SECS", default_value = "3")]
     warm_up_time: u64,
 
-    /// Write a machine-readable JSON report of metadata and Criterion
-    /// group/function ids to this path (in addition to the human-readable
-    /// stderr metadata block and Criterion's own target/criterion/ output)
+    /// Override the path of the machine-readable JSON report. Default:
+    /// `bench-runs/<kind>-<unix-millis>.json` (parent dir auto-created;
+    /// `bench-runs/` is gitignored at the workspace root).
     #[arg(long, value_name = "PATH")]
     report_json: Option<PathBuf>,
 }
@@ -281,21 +282,40 @@ fn build_time_criterion(args: &BenchArgs) -> criterion::Criterion {
         .warm_up_time(Duration::from_secs(args.warm_up_time))
 }
 
-fn maybe_write_report(path: Option<&Path>, reports: &[BenchReport]) -> anyhow::Result<()> {
-    let Some(p) = path else {
-        return Ok(());
+fn default_report_path(kind: BenchKind) -> PathBuf {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let kind_str = match kind {
+        | BenchKind::Join => "join",
+        | BenchKind::Ds => "ds",
+        | BenchKind::Run => "run",
     };
-    let mut writer = BufWriter::new(fs::File::create(p)?);
+    PathBuf::from(format!("bench-runs/{kind_str}-{now_ms}.json"))
+}
+
+fn write_bench_report(
+    override_path: Option<&Path>, kind: BenchKind, reports: &[BenchReport],
+) -> anyhow::Result<()> {
+    let path = match override_path {
+        | Some(p) => p.to_path_buf(),
+        | None => default_report_path(kind),
+    };
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut writer = BufWriter::new(fs::File::create(&path)?);
     write_json_report(&mut writer, reports)?;
+    eprintln!("Report written: {}", path.display());
     Ok(())
 }
 
 fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::SpaceMeasurement> {
-    // Plotters panics on zero-variance data (heap_size_bytes() is
-    // deterministic), so plots must be disabled for the space measurement.
     criterion::Criterion::default()
         .with_measurement(measurement::SpaceMeasurement)
-        .without_plots()
         .sample_size(args.sample_size)
         .measurement_time(Duration::from_secs(args.measurement_time))
         .warm_up_time(Duration::from_secs(args.warm_up_time))
@@ -407,9 +427,23 @@ where
         criterion.final_summary();
     }
 
-    let report = BenchReport::new(BenchKind::Ds, &metadata, criterion_groups);
-    maybe_write_report(
+    let axes = BTreeMap::from([
+        ("data_structure".to_string(), serde_json::json!(ds_name)),
+        (
+            "relation_path".to_string(),
+            serde_json::json!(relation_path.display().to_string()),
+        ),
+        (
+            "relation_bytes".to_string(),
+            serde_json::json!(relation_bytes),
+        ),
+        ("tuples".to_string(), serde_json::json!(tuples.len())),
+        ("arity".to_string(), serde_json::json!(header.arity())),
+    ]);
+    let report = BenchReport::new(BenchKind::Ds, &metadata, axes, criterion_groups);
+    write_bench_report(
         bench_args.report_json.as_deref(),
+        BenchKind::Ds,
         std::slice::from_ref(&report),
     )?;
 
@@ -467,6 +501,13 @@ where
     let has_time_metrics = metrics
         .iter()
         .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+
+    // Sum across relations: scaling plots key off this as the workload's
+    // total input size. One trie walk per relation is cheap vs the bench itself.
+    let total_tuples: usize = relations
+        .iter()
+        .map(|r| r.trie_iter().into_iter().count())
+        .sum();
 
     let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
 
@@ -582,10 +623,22 @@ where
             criterion.final_summary();
         }
 
-        reports.push(BenchReport::new(BenchKind::Run, &lines, criterion_groups));
+        let axes = BTreeMap::from([
+            ("benchmark".to_string(), serde_json::json!(benchmark.name)),
+            ("query".to_string(), serde_json::json!(query_def.name)),
+            ("data_structure".to_string(), serde_json::json!(ds_name)),
+            ("algorithm".to_string(), serde_json::json!(algo_name)),
+            ("tuples".to_string(), serde_json::json!(total_tuples)),
+        ]);
+        reports.push(BenchReport::new(
+            BenchKind::Run,
+            &lines,
+            axes,
+            criterion_groups,
+        ));
     }
 
-    maybe_write_report(bench_args.report_json.as_deref(), &reports)?;
+    write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
 
     Ok(())
 }
@@ -720,14 +773,29 @@ fn main() -> anyhow::Result<()> {
                 group.finish();
                 criterion.final_summary();
 
+                let axes = BTreeMap::from([
+                    (
+                        "data_structure".to_string(),
+                        serde_json::json!(format!("{:?}", query_args.indexstructure)),
+                    ),
+                    (
+                        "algorithm".to_string(),
+                        serde_json::json!(format!("{:?}", query_args.algorithm)),
+                    ),
+                    (
+                        "relations".to_string(),
+                        serde_json::json!(query_args.relations.len()),
+                    ),
+                ]);
                 let report =
-                    BenchReport::new(BenchKind::Join, &metadata, vec![CriterionGroupRef {
+                    BenchReport::new(BenchKind::Join, &metadata, axes, vec![CriterionGroupRef {
                         group: group_name,
                         function: bench_id,
                         metric: ReportMetric::Time,
                     }]);
-                maybe_write_report(
+                write_bench_report(
                     bench_args.report_json.as_deref(),
+                    BenchKind::Join,
                     std::slice::from_ref(&report),
                 )?;
             },

@@ -1,0 +1,23 @@
+[project]
+name = "kermit-plot"
+version = "0.1.0"
+description = "Plot kermit Criterion benchmark output for thesis figures"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+kermit-plot = "kermit_plot.drivers.main:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+kermit_plot = ["styles/*.mplstyle"]

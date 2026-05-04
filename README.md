@@ -57,24 +57,38 @@ Use `--output results.csv` to write to a file instead. Multiple relation files c
 
 ## Benchmarking
 
-All benchmarking is driven through the CLI. Three subcommands are available:
+All benchmarking is driven through the CLI. Each `bench` subcommand wraps Criterion and writes its raw measurement JSON to `target/criterion/`.
 
-### Benchmark suite (synthetic data)
+### Named benchmarks (`bench run`)
 
-Run named benchmark workloads on synthetic data:
+Run benchmarks declared in `benchmarks/*.yml`. Each YAML defines one or more named queries and the relations they need.
 
 ```sh
-kermit bench suite \
-  --benchmark exponential \
+kermit bench run triangle \
   --indexstructure tree-trie \
-  --metrics insertion iteration space
+  --algorithm leapfrog-triejoin
 ```
 
-Available benchmarks: `exponential` (k^k tuples, k=1..5), `factorial` (k! tuples, k=1..9).
+Useful flags:
+- `--query <NAME>` — run a single named query from the benchmark (default: all queries).
+- `--all` — run every benchmark in `benchmarks/`.
+- `--metrics insertion iteration space` — pick which metrics to measure (default: all three).
 
-### Data structure benchmark (file)
+Available benchmarks include `triangle`, the `oxford-uniform-s{1..6}` / `oxford-zipf-s{1..6}` Oxford DSI suites, and the `watdiv-stress-{100,1000}-{warmup,test-1..5}` WatDiv suites. Run `kermit bench list` for the full set.
 
-Benchmark a specific data structure against a data file:
+### Manage benchmark cache
+
+```sh
+kermit bench list                # list all benchmarks (and which are cached)
+kermit bench fetch [<NAME>]      # download a benchmark's data files (default: all)
+kermit bench clean [<NAME>]      # remove cached data files (default: all)
+```
+
+Data is cached in `~/.cache/kermit/benchmarks/` on Linux.
+
+### Data structure benchmark (`bench ds`)
+
+Benchmark a specific data structure against a single relation file:
 
 ```sh
 kermit bench ds \
@@ -83,7 +97,9 @@ kermit bench ds \
   --metrics insertion iteration space
 ```
 
-### Join benchmark (file)
+`--metrics` defaults to `insertion iteration space`.
+
+### Join benchmark (`bench join`)
 
 Benchmark end-to-end join execution on data files:
 
@@ -96,6 +112,36 @@ kermit bench join \
 ```
 
 Supported index structures: `tree-trie`, `column-trie`. Supported metrics: `insertion`, `iteration`, `space`.
+
+### JSON reports for tooling
+
+Every `bench` invocation writes a machine-readable JSON summary alongside the human-readable stderr output and Criterion's per-function artefacts. The default path is `bench-runs/<kind>-<unix-millis>.json` (the directory is auto-created and gitignored at the workspace root). Pass `--report-json <PATH>` to override.
+
+```sh
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin
+# → writes bench-runs/run-1714828215123.json (timestamp varies)
+
+kermit bench --report-json /tmp/triangle.json \
+  run triangle -i tree-trie -a leapfrog-triejoin
+# → writes /tmp/triangle.json
+```
+
+The schema (currently v2) is documented in `docs/specs/bench-report-schema.md`.
+
+## Plotting
+
+Criterion's auto-generated SVG/HTML output is disabled — thesis-quality plots are rendered separately by [`scripts/kermit-plot/`](scripts/kermit-plot/), a Python tool consuming `--report-json` output plus Criterion's per-function JSON artefacts.
+
+```sh
+# one-time install
+python -m venv venv && source venv/bin/activate
+pip install -e scripts/kermit-plot
+
+# render every applicable plot shape across one or many runs
+kermit-plot render-all bench-runs/*.json --out-dir plots/
+```
+
+See [`scripts/kermit-plot/README.md`](scripts/kermit-plot/README.md) for the full subcommand list (`scaling`, `bar-time`, `bar-space`, `tradeoff`, `dist`, `bar-queries`).
 
 ## Contributing
 
