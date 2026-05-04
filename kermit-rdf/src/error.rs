@@ -15,7 +15,8 @@ pub enum RdfError {
     /// The watdiv binary exited with a non-zero status.
     #[error("watdiv exited with status {status}: {stderr}")]
     BinaryFailed {
-        /// Exit status as a string ("exit code 1", "killed by signal SIGSEGV", etc.).
+        /// Exit status as a string ("exit code 1", "killed by signal SIGSEGV",
+        /// etc.).
         status: String,
         /// Captured stderr.
         stderr: String,
@@ -38,7 +39,8 @@ pub enum RdfError {
     #[error("SPARQL parse error: {0}")]
     SparqlParse(String),
 
-    /// SPARQL feature not expressible as a Datalog rule (FILTER, OPTIONAL, etc.).
+    /// SPARQL feature not expressible as a Datalog rule (FILTER, OPTIONAL,
+    /// etc.).
     #[error("unsupported SPARQL feature: {0}")]
     UnsupportedSparql(String),
 
