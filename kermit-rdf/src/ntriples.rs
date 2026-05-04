@@ -1,0 +1,1 @@
+//! Streaming N-Triples parser.

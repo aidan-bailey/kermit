@@ -1,0 +1,1 @@
+//! Triple partitioning by predicate.
