@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -31,14 +32,18 @@ class Estimate:
 
 @dataclass(frozen=True)
 class FunctionData:
-    """Parsed contents of one Criterion ``new/`` directory."""
+    """Parsed contents of one Criterion ``new/`` directory.
+
+    ``slope`` is ``None`` for measurements Criterion couldn't fit a linear
+    model to — most often deterministic / zero-variance space measurements.
+    """
 
     group: str
     function: str
     directory_name: str
     mean: Estimate
     median: Estimate
-    slope: Estimate
+    slope: Optional[Estimate]
     std_dev: Estimate
     iters: list[float]
     times: list[float]
@@ -65,14 +70,17 @@ def _estimate(node: dict) -> Estimate:
 def resolve_function_dir(criterion_root: Path, group: str, function_id: str) -> Path:
     """Resolve ``(group, function_id)`` to the ``new/`` directory on disk.
 
-    Reads each candidate subdir's ``benchmark.json:function_id`` to find the
-    one matching ``function_id``. This handles Criterion's slash-to-underscore
-    escaping correctly without needing to replicate its rules.
+    Criterion flattens slashes in the ``BenchmarkGroup`` name to underscores
+    when laying out ``target/criterion/<dirname>/`` — so a group reported as
+    ``"run/oxford-uniform-s1/triangle/TreeTrie/LeapfrogTriejoin"`` lives at
+    ``run_oxford-uniform-s1_triangle_TreeTrie_LeapfrogTriejoin`` on disk. We
+    apply the same translation here, then read each candidate subdir's
+    ``benchmark.json:function_id`` to find the one matching ``function_id``.
 
-    Raises ``FileNotFoundError`` if no subdir of ``criterion_root/<group>``
+    Raises ``FileNotFoundError`` if no subdir of the resolved group dir
     contains a ``new/benchmark.json`` whose ``function_id`` matches.
     """
-    group_dir = criterion_root / group
+    group_dir = criterion_root / group.replace("/", "_")
     if not group_dir.is_dir():
         raise FileNotFoundError(f"Criterion group dir not found: {group_dir}")
     for candidate in sorted(group_dir.iterdir()):
@@ -107,7 +115,7 @@ def load_function(criterion_root: Path, group: str, function_id: str) -> Functio
         directory_name=bench["directory_name"],
         mean=_estimate(est["mean"]),
         median=_estimate(est["median"]),
-        slope=_estimate(est["slope"]),
+        slope=_estimate(est["slope"]) if est.get("slope") is not None else None,
         std_dev=_estimate(est["std_dev"]),
         iters=[float(x) for x in sample["iters"]],
         times=[float(x) for x in sample["times"]],

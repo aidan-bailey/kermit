@@ -1,6 +1,9 @@
 """Criterion artefact parsing: directory_name resolution + per-iter math."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from kermit_plot.criterion import load_function, resolve_function_dir
@@ -36,3 +39,67 @@ def test_per_iter_times_divides_total_by_iters(fixture_tree) -> None:
 def test_unknown_function_raises(fixture_tree) -> None:
     with pytest.raises(FileNotFoundError):
         resolve_function_dir(fixture_tree["criterion_root"], "run", "Nope/never")
+
+
+def test_load_function_handles_null_slope(tmp_path: Path) -> None:
+    """Criterion writes ``"slope": null`` for deterministic / zero-variance
+    measurements (e.g. ``SpaceMeasurement`` results). Loading must not crash.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    new_dir = criterion_root / "g" / "f" / "new"
+    new_dir.mkdir(parents=True)
+    estimate = {
+        "confidence_interval": {
+            "confidence_level": 0.95,
+            "lower_bound": 8272.0,
+            "upper_bound": 8272.0,
+        },
+        "point_estimate": 8272.0,
+        "standard_error": 0.0,
+    }
+    (new_dir / "benchmark.json").write_text(
+        json.dumps({"group_id": "g", "function_id": "f", "directory_name": "g/f"})
+    )
+    (new_dir / "estimates.json").write_text(
+        json.dumps(
+            {
+                "mean": estimate,
+                "median": estimate,
+                "median_abs_dev": estimate,
+                "slope": None,
+                "std_dev": estimate,
+            }
+        )
+    )
+    (new_dir / "sample.json").write_text(
+        json.dumps({"sampling_mode": "Linear", "iters": [1.0], "times": [8272.0]})
+    )
+
+    data = load_function(criterion_root, "g", "f")
+    assert data.slope is None
+    assert data.mean.point == pytest.approx(8272.0)
+
+
+def test_resolves_group_with_slashes(tmp_path: Path) -> None:
+    """Real ``bench run`` reports use slashed group names like
+    ``run/<benchmark>/<query>/<DS>/<algo>``. Criterion flattens the slashes
+    to underscores on disk; the resolver must apply the same translation.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    group = "run/oxford-uniform-s1/triangle/TreeTrie/LeapfrogTriejoin"
+    function_id = "iteration"
+    on_disk_group = group.replace("/", "_")
+    new_dir = criterion_root / on_disk_group / function_id / "new"
+    new_dir.mkdir(parents=True)
+    (new_dir / "benchmark.json").write_text(
+        json.dumps(
+            {
+                "group_id": group,
+                "function_id": function_id,
+                "directory_name": f"{on_disk_group}/{function_id}",
+            }
+        )
+    )
+
+    resolved = resolve_function_dir(criterion_root, group, function_id)
+    assert resolved == new_dir

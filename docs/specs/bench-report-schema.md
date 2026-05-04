@@ -55,8 +55,8 @@ always parse a list.
 
 | Field      | Type                       | Description |
 |------------|----------------------------|-------------|
-| `group`    | string                     | First path segment under `target/criterion/`. Matches `criterion::BenchmarkGroup` name. |
-| `function` | string                     | Criterion `function_id` (e.g. `TreeTrie/iteration`). On disk, `/` is replaced with `_` — read each candidate subdir's `benchmark.json:directory_name` to resolve to the actual filesystem path. |
+| `group`    | string                     | The `criterion::BenchmarkGroup` name verbatim (e.g. `run/oxford-uniform-s1/triangle/TreeTrie/LeapfrogTriejoin`). On disk, Criterion flattens any `/` to `_` so this group lives at `target/criterion/run_oxford-uniform-s1_triangle_TreeTrie_LeapfrogTriejoin/`. |
+| `function` | string                     | Criterion `function_id` (e.g. `space/P` or `iteration`). On disk, `/` is again replaced with `_` — read each candidate subdir's `benchmark.json:directory_name` to resolve to the actual filesystem path. |
 | `metric`   | `"time"` \| `"space"`      | Which Criterion measurement axis this function recorded. |
 
 ## Conventional `axes` keys
@@ -84,7 +84,8 @@ semantics).
 import json, pathlib
 
 def resolve(group_ref, criterion_root="target/criterion"):
-    group_dir = pathlib.Path(criterion_root) / group_ref["group"]
+    # Criterion flattens slashes in the group name to underscores on disk.
+    group_dir = pathlib.Path(criterion_root) / group_ref["group"].replace("/", "_")
     for candidate in group_dir.iterdir():
         if not candidate.is_dir():
             continue
@@ -100,8 +101,17 @@ def resolve(group_ref, criterion_root="target/criterion"):
 
 The `directory_name` in each subdir's `benchmark.json` is the canonical
 mapping; computing it locally (slash-to-underscore replacement) works for
-common cases but Criterion's own escaping rules apply for special characters,
-so prefer reading the file.
+common cases but Criterion's own escaping rules apply for other special
+characters, so prefer reading the file when in doubt.
+
+## Null-valued estimates
+
+Criterion writes `"slope": null` for measurements where it can't fit a
+linear model — most often deterministic / zero-variance space measurements
+captured via `SpaceMeasurement`. Consumers must accept `null` for `slope`
+(and, by extension, `median_abs_dev` may report identical bounds with
+`standard_error: 0.0`). The other estimates (`mean`, `median`, `std_dev`)
+are always populated.
 
 Inside the resolved `new/` directory:
 
