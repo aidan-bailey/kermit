@@ -1,0 +1,54 @@
+# kermit-plot thesis stylesheet.
+# Apply via kermit_plot.styles.apply() — handles seaborn ordering internally.
+
+# Fonts: serif to match LaTeX body text. Listed alternates kick in if the
+# preferred family isn't installed on the rendering host.
+font.family: serif
+font.serif: Latin Modern Roman, Computer Modern Roman, DejaVu Serif, serif
+font.size: 10
+text.usetex: False
+
+# Figure sizing: thesis page is ~6.5 inches wide; 6.0 leaves margin for caption.
+figure.figsize: 6.0, 4.0
+figure.dpi: 100
+savefig.dpi: 300
+savefig.bbox: tight
+savefig.pad_inches: 0.05
+
+# Axes: subtle grid, no top/right spines, larger tick labels.
+axes.spines.top: False
+axes.spines.right: False
+axes.grid: True
+axes.grid.axis: y
+axes.axisbelow: True
+axes.labelsize: 10
+axes.titlesize: 11
+axes.titlepad: 8.0
+axes.linewidth: 0.8
+
+grid.color: 0.85
+grid.linewidth: 0.5
+grid.linestyle: -
+
+# Ticks: outward direction reads as data-pointing; small.
+xtick.direction: out
+ytick.direction: out
+xtick.labelsize: 9
+ytick.labelsize: 9
+xtick.major.width: 0.8
+ytick.major.width: 0.8
+
+# Lines and markers: thicker than matplotlib defaults; visible at thesis size.
+lines.linewidth: 1.4
+lines.markersize: 5
+
+# Error bars: visible but not dominant.
+errorbar.capsize: 3
+
+# Legend: rounded corners, no frame shadow, slightly opaque background.
+legend.frameon: True
+legend.framealpha: 0.9
+legend.fancybox: True
+legend.fontsize: 9
+legend.title_fontsize: 9
+legend.borderpad: 0.4
