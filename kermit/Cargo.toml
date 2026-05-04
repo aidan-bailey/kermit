@@ -15,9 +15,11 @@ kermit-iters = { version = "0.0.8", path = "../kermit-iters" }
 kermit-algos = { version = "0.0.10", path = "../kermit-algos" }
 kermit-bench = { version = "0.1.0", path = "../kermit-bench" }
 kermit-parser = { version = "0.0.2", path = "../kermit-parser" }
-clap = { version = "4.4", features = ["derive"] }
+kermit-rdf = { version = "0.1.0", path = "../kermit-rdf" }
+clap = { version = "4.4", features = ["derive", "env"] }
 criterion = { version = "0.7.0", features = ["html_reports"] }
 anyhow = "1.0"
+dirs = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 

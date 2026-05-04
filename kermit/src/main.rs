@@ -193,6 +193,46 @@ enum BenchSubcommand {
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
+
+    /// Generate a fresh watdiv benchmark on the fly
+    WatdivGen {
+        /// Scale factor passed to watdiv -d (>= 1)
+        #[arg(long, value_name = "N", required = true)]
+        scale: u32,
+
+        /// Tag appended to the benchmark name; must contain a non-numeric
+        /// character so it cannot collide with committed snapshot names
+        #[arg(long, value_name = "STRING", required = true)]
+        tag: String,
+
+        /// max-query-size for stress templates (default 5)
+        #[arg(long, value_name = "N", default_value = "5")]
+        max_query_size: u32,
+
+        /// concrete queries per template (default 20)
+        #[arg(long, value_name = "N", default_value = "20")]
+        query_count: u32,
+
+        /// constants per query (default 2)
+        #[arg(long, value_name = "N", default_value = "2")]
+        constants_per_query: u32,
+
+        /// allow join-vertex (default false)
+        #[arg(long)]
+        allow_join_vertex: bool,
+
+        /// Override the watdiv binary path (default: vendored)
+        #[arg(long, value_name = "PATH", env = "KERMIT_WATDIV_BIN")]
+        watdiv_bin: Option<PathBuf>,
+
+        /// Override the cache dir parent (default: ~/.cache/kermit/benchmarks)
+        #[arg(long, value_name = "PATH")]
+        output_dir: Option<PathBuf>,
+
+        /// Skip bwrap sandbox; require host /usr/share/dict/words
+        #[arg(long)]
+        no_bwrap: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -223,6 +263,8 @@ fn workspace_root() -> PathBuf {
         .expect("kermit crate must be inside workspace")
         .to_path_buf()
 }
+
+fn vendored_watdiv_root() -> PathBuf { workspace_root().join("kermit-rdf/vendor/watdiv") }
 
 /// Column names derived from a query's head predicate. `Var(X)` becomes
 /// `"X"`, `Atom(c)` becomes `"c"` (constants are pre-rewritten by
@@ -795,6 +837,68 @@ fn main() -> anyhow::Result<()> {
                         },
                     }
                 }
+            },
+
+            | BenchSubcommand::WatdivGen {
+                scale,
+                tag,
+                max_query_size,
+                query_count,
+                constants_per_query,
+                allow_join_vertex,
+                watdiv_bin,
+                output_dir,
+                no_bwrap,
+            } => {
+                if !tag.chars().any(|c| !c.is_ascii_digit()) {
+                    anyhow::bail!(
+                        "--tag must contain at least one non-numeric character to avoid collision \
+                         with committed benchmark names"
+                    );
+                }
+                let vendor = vendored_watdiv_root();
+                let bin = watdiv_bin.unwrap_or_else(|| vendor.join("bin/Release/watdiv"));
+                if !bin.exists() {
+                    anyhow::bail!("watdiv binary not found at {bin:?}");
+                }
+                let cache_parent = output_dir.unwrap_or_else(|| {
+                    dirs::cache_dir()
+                        .map(|p| p.join("kermit").join("benchmarks"))
+                        .expect("no cache dir on this platform")
+                });
+                let bench_name = format!("watdiv-stress-{scale}-{tag}");
+                let out_dir = cache_parent.join(&bench_name);
+                std::fs::create_dir_all(&out_dir)?;
+
+                let stress = kermit_rdf::driver::StressParams {
+                    max_query_size,
+                    query_count,
+                    constants_per_query,
+                    allow_join_vertex,
+                };
+                let inputs = kermit_rdf::pipeline::PipelineInputs {
+                    driver: kermit_rdf::driver::DriverInputs {
+                        watdiv_bin: &bin,
+                        vendor_files: &vendor.join("files"),
+                        model_file: &vendor.join("MODEL.txt"),
+                        scale,
+                        stress,
+                        query_count_per_template: query_count,
+                        use_bwrap: !no_bwrap,
+                    },
+                    out_dir: &out_dir,
+                    bench_name: &bench_name,
+                    tag: &tag,
+                };
+                let meta = kermit_rdf::pipeline::run_pipeline(&inputs)
+                    .map_err(|e| anyhow::anyhow!("watdiv-gen pipeline failed: {e}"))?;
+                eprintln!(
+                    "[watdiv-gen] wrote {} (triples={}, relations={}, queries={})",
+                    out_dir.display(),
+                    meta.triple_count,
+                    meta.relation_count,
+                    meta.query_count
+                );
             },
         },
     }
