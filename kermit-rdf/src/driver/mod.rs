@@ -87,8 +87,13 @@ pub fn drive(inputs: &DriverInputs) -> Result<RawArtifacts, RdfError> {
     invoke::run_data(&cfg, inputs.scale, &data_nt)?;
 
     let stress_arg = "stress-templates";
-    std::fs::create_dir_all(bin_release.join(stress_arg))?;
-    let templates = invoke::run_stress(&cfg, stress_arg, inputs.stress.query_count)?;
+    let templates = invoke::run_stress(
+        &cfg,
+        stress_arg,
+        &data_nt,
+        inputs.stress.max_query_size,
+        inputs.stress.query_count,
+    )?;
     let queries = invoke::run_queries(&cfg, &templates, inputs.query_count_per_template)?;
 
     Ok(RawArtifacts {

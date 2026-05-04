@@ -43,7 +43,13 @@ fn skip_unsupported() -> bool {
     }
     let words = vendor_words();
     let bwrap_ok = Command::new("bwrap")
-        .args(["--bind", "/", "/", "--bind"])
+        .args(["--bind", "/", "/"])
+        .args(["--tmpfs", "/usr"])
+        .args(["--ro-bind-try", "/usr/bin", "/usr/bin"])
+        .args(["--ro-bind-try", "/usr/lib", "/usr/lib"])
+        .args(["--ro-bind-try", "/usr/lib64", "/usr/lib64"])
+        .args(["--dir", "/usr/share/dict"])
+        .arg("--bind")
         .arg(&words)
         .args(["/usr/share/dict/words", "true"])
         .output()

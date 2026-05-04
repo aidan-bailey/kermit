@@ -129,15 +129,15 @@ A single `kermit bench watdiv-gen --scale N --tag T` invocation runs six
 sequential stages:
 
 ```
-stage 1: drive watdiv -d  →  data.nt
-stage 2: drive watdiv -s  →  templates/*.sparql
-stage 3: drive watdiv -q  →  queries/*.sparql
+stage 1: drive watdiv -d  →  data.nt                         (stdout dump)
+stage 2: drive watdiv -s  →  templates/template_NNNN.txt     (stdout split on `#end`)
+stage 3: drive watdiv -q  →  queries/template_NNNN.sparql    (one stdout dump per template)
 stage 4: parse + dict + partition + parquet
                           →  dict.parquet
                           →  relations/<predicate>.parquet  (one per distinct predicate)
 stage 5: parse + translate SPARQL
                           →  benchmark.yml
-stage 6: read watdiv .desc cardinalities (one int per query)
+stage 6: read watdiv .desc cardinalities (one int per query) — best-effort
                           →  expected/<query>.csv  (single-line `cardinality\n<N>\n`)
                           →  meta.json (written last)
 ```
@@ -155,6 +155,15 @@ watdiv's per-query `.desc` cardinality file and writes a one-line CSV
 a Datalog interpreter inside `kermit-rdf`. Full result-row capture is
 out of scope and would belong in a future engine-agnostic verifier.
 
+**Vendored-binary caveat:** the vendored `watdiv-upstream-2014` binary
+does NOT emit `.desc` sidecars (only `-d`, `-s`, `-q` are supported, and
+all three write only to stdout). Stage 6 is therefore best-effort: when
+no `.desc` exists next to a `.sparql`, no `expected/<query>.csv` is
+written. The translated benchmark and provenance still ship; only the
+ground-truth cardinalities are absent. Consumers that need them must
+generate them out-of-band (e.g. another SPARQL engine) or skip the
+cardinality check.
+
 ### Cache directory layout
 
 ```
@@ -162,9 +171,9 @@ out of scope and would belong in a future engine-agnostic verifier.
   meta.json                         provenance: watdiv binary sha256, scale,
                                     stress params, timestamp, kermit git SHA,
                                     names-file sha256s, model-file sha256
-  data.nt                           raw watdiv -d output
-  templates/*.sparql                raw watdiv -s output
-  queries/*.sparql                  concrete watdiv -q output
+  data.nt                           raw watdiv -d stdout
+  templates/template_NNNN.txt       raw watdiv -s stdout, split on `#end`
+  queries/template_NNNN.sparql      concrete watdiv -q stdout per template
   dict.parquet                      (id: u64, value: string)
   relations/<predicate>.parquet     per-predicate (s: u64, o: u64) tables
   benchmark.yml                     kermit-bench-loadable Datalog YAML

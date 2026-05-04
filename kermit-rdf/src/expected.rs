@@ -1,4 +1,9 @@
 //! Reads watdiv `.desc` cardinality sidecars and emits one CSV per query.
+//!
+//! The vendored watdiv binary used by this crate does not emit `.desc`
+//! sidecars, so [`write_expected_csvs`] is effectively a no-op for it
+//! (returns 0). The function is kept for forward compatibility with a
+//! future binary or external sidecar source that does provide them.
 
 use {
     crate::error::RdfError,

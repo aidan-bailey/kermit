@@ -29,10 +29,20 @@
             rustToolchain
             pkgs.git-cliff
             pkgs.cargo-expand
+            # bubblewrap sandboxes the vendored watdiv binary; required by
+            # `kermit bench watdiv-gen` and the kermit-rdf e2e test.
+            pkgs.bubblewrap
           ];
 
           MIRIFLAGS = "-Zmiri-disable-isolation";
           RUST_BACKTRACE = "1";
+
+          # The vendored watdiv binary is dynamically linked against
+          # libstdc++, which is not on a default search path on NixOS.
+          # Expose the gcc lib output so the binary can load when invoked
+          # by tests under `nix develop`. (Inherited into the bwrap
+          # namespace because bwrap propagates env by default.)
+          LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
         };
       }
     );

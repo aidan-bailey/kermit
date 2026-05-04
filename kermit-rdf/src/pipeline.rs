@@ -17,7 +17,7 @@
 
 use {
     crate::{
-        driver::{self, DriverInputs, RawArtifacts, StressParams},
+        driver::{self, invoke::split_queries, DriverInputs, RawArtifacts, StressParams},
         error::RdfError,
         expected, parquet, partition,
         sparql::translator::translate_query,
@@ -159,7 +159,9 @@ pub fn process_artifacts(
             .replace('.', "-");
         let text = fs::read_to_string(sparql_path)?;
         let stem_underscores = stem.replace('-', "_");
-        for (i, q) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        // Watdiv `-q` emits multi-line SPARQL queries separated by `#end`
+        // markers; one logical query is a multi-line block, not one line.
+        for (i, q) in split_queries(&text).iter().enumerate() {
             let qname = format!("{stem}_q{i:04}");
             let head = format!("Q_{stem_underscores}_q{i:04}");
             let dl = translate_query(q, &mut dict, &part.predicate_map, &head)?;
