@@ -32,17 +32,22 @@
             # bubblewrap sandboxes the vendored watdiv binary; required by
             # `kermit bench watdiv-gen` and the kermit-rdf e2e test.
             pkgs.bubblewrap
+            pkgs.python313
           ];
 
           MIRIFLAGS = "-Zmiri-disable-isolation";
           RUST_BACKTRACE = "1";
 
-          # The vendored watdiv binary is dynamically linked against
-          # libstdc++, which is not on a default search path on NixOS.
-          # Expose the gcc lib output so the binary can load when invoked
-          # by tests under `nix develop`. (Inherited into the bwrap
-          # namespace because bwrap propagates env by default.)
-          LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
+          # LD_LIBRARY_PATH covers two NixOS-specific dynamic-loading needs:
+          #   - the vendored watdiv binary (kermit-rdf/vendor/watdiv) dlopens
+          #     libstdc++.so.6 by bare name — required by the kermit-rdf e2e
+          #     test and `kermit bench watdiv-gen`. Inherited into the bwrap
+          #     namespace because bwrap propagates env by default.
+          #   - pip-installed Python wheels (numpy, matplotlib) used by
+          #     scripts/kermit-plot/ dlopen libstdc++.so.6 / libz.so.1.
+          shellHook = ''
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib pkgs.zlib ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          '';
         };
       }
     );

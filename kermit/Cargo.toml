@@ -17,7 +17,7 @@ kermit-bench = { version = "0.1.0", path = "../kermit-bench" }
 kermit-parser = { version = "0.0.2", path = "../kermit-parser" }
 kermit-rdf = { version = "0.1.0", path = "../kermit-rdf" }
 clap = { version = "4.4", features = ["derive", "env"] }
-criterion = { version = "0.7.0", features = ["html_reports"] }
+criterion = { version = "0.7.0", default-features = false, features = ["rayon", "cargo_bench_support"] }
 anyhow = "1.0"
 dirs = "6"
 serde = { version = "1", features = ["derive"] }
