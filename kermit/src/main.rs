@@ -408,7 +408,10 @@ where
     }
 
     let report = BenchReport::new(BenchKind::Ds, &metadata, criterion_groups);
-    maybe_write_report(bench_args.report_json.as_deref(), std::slice::from_ref(&report))?;
+    maybe_write_report(
+        bench_args.report_json.as_deref(),
+        std::slice::from_ref(&report),
+    )?;
 
     Ok(())
 }
@@ -606,7 +609,10 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        | Commands::Join { query_args, output } => {
+        | Commands::Join {
+            query_args,
+            output,
+        } => {
             let (db, join_query) = load_query(&query_args)?;
             let header = head_column_names(&join_query);
             let tuples = db.join(join_query);
@@ -643,7 +649,9 @@ fn main() -> anyhow::Result<()> {
                 }
             },
 
-            | BenchSubcommand::Fetch { name } => {
+            | BenchSubcommand::Fetch {
+                name,
+            } => {
                 let root = workspace_root();
                 let benchmarks = match &name {
                     | Some(n) => {
@@ -661,7 +669,9 @@ fn main() -> anyhow::Result<()> {
                 }
             },
 
-            | BenchSubcommand::Clean { name } => match &name {
+            | BenchSubcommand::Clean {
+                name,
+            } => match &name {
                 | Some(n) => {
                     kermit_bench::cache::clean_benchmark(n)
                         .map_err(|e| anyhow::anyhow!("Failed to clean {}: {e}", n))?;
@@ -674,7 +684,10 @@ fn main() -> anyhow::Result<()> {
                 },
             },
 
-            | BenchSubcommand::Join { query_args, output } => {
+            | BenchSubcommand::Join {
+                query_args,
+                output,
+            } => {
                 let (db, join_query) = load_query(&query_args)?;
 
                 if let Some(path) = &output {
@@ -689,10 +702,7 @@ fn main() -> anyhow::Result<()> {
                     format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
 
                 let metadata = vec![
-                    MetadataLine::new(
-                        "data structure",
-                        format!("{:?}", query_args.indexstructure),
-                    ),
+                    MetadataLine::new("data structure", format!("{:?}", query_args.indexstructure)),
                     MetadataLine::new("algorithm", format!("{:?}", query_args.algorithm)),
                     MetadataLine::new("relations", query_args.relations.len()),
                 ];
@@ -710,15 +720,12 @@ fn main() -> anyhow::Result<()> {
                 group.finish();
                 criterion.final_summary();
 
-                let report = BenchReport::new(
-                    BenchKind::Join,
-                    &metadata,
-                    vec![CriterionGroupRef {
+                let report =
+                    BenchReport::new(BenchKind::Join, &metadata, vec![CriterionGroupRef {
                         group: group_name,
                         function: bench_id,
                         metric: ReportMetric::Time,
-                    }],
-                );
+                    }]);
                 maybe_write_report(
                     bench_args.report_json.as_deref(),
                     std::slice::from_ref(&report),
