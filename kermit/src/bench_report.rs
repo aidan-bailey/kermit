@@ -148,8 +148,8 @@ impl BenchReport {
     /// [`write_metadata_block`] consumes, the structured `axes` map, and the
     /// list of Criterion functions that were run.
     pub fn new(
-        kind: BenchKind, metadata: &[MetadataLine],
-        axes: BTreeMap<String, serde_json::Value>, criterion_groups: Vec<CriterionGroupRef>,
+        kind: BenchKind, metadata: &[MetadataLine], axes: BTreeMap<String, serde_json::Value>,
+        criterion_groups: Vec<CriterionGroupRef>,
     ) -> Self {
         Self {
             schema_version: REPORT_SCHEMA_VERSION,
