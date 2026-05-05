@@ -740,8 +740,22 @@ where
 /// distinguish "not generated" (no cache subdir), "cached" (subdir exists
 /// and `meta.json` spec_hash matches the spec), and "stale" (subdir
 /// exists but the spec has drifted).
-fn describe_benchmark_status(b: &BenchmarkDefinition, cache_root: &Path) -> &'static str {
-    let Some(spec) = b.generator.as_ref() else {
+///
+/// `workspace_def`, when supplied, is the workspace YAML for this
+/// benchmark name. It must be passed for generator-driven benchmarks
+/// because the cache-side `benchmark.yml` (which `b` may have been loaded
+/// from after the discovery merge) intentionally drops the `generator`
+/// field — provenance lives in `meta.json` on the cache side. Without
+/// `workspace_def`, the function would fall into the static branch for
+/// any previously-generated benchmark and lose the `cached`/`stale`
+/// distinction.
+fn describe_benchmark_status(
+    b: &BenchmarkDefinition, workspace_def: Option<&BenchmarkDefinition>, cache_root: &Path,
+) -> &'static str {
+    let spec = workspace_def
+        .and_then(|w| w.generator.as_ref())
+        .or(b.generator.as_ref());
+    let Some(spec) = spec else {
         return if kermit_bench::cache::is_cached(b).unwrap_or(false) {
             "cached"
         } else {
@@ -825,10 +839,11 @@ fn main() -> anyhow::Result<()> {
                 let cache = dirs::cache_dir()
                     .map(|p| p.join("kermit").join("benchmarks"))
                     .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
-                let workspace_names: std::collections::HashSet<String> =
-                    kermit_bench::discovery::list_benchmarks(&root)
+                let workspace_defs: std::collections::HashMap<String, BenchmarkDefinition> =
+                    kermit_bench::discovery::load_all_benchmarks(&root)
                         .map_err(|e| anyhow::anyhow!("{e}"))?
                         .into_iter()
+                        .map(|d| (d.name.clone(), d))
                         .collect();
                 let benchmarks =
                     kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
@@ -837,8 +852,9 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("No benchmarks found in benchmarks/ or cache");
                 } else {
                     for b in &benchmarks {
-                        let status = describe_benchmark_status(b, &cache);
-                        let source = if workspace_names.contains(&b.name) {
+                        let workspace_def = workspace_defs.get(&b.name);
+                        let status = describe_benchmark_status(b, workspace_def, &cache);
+                        let source = if workspace_def.is_some() {
                             "workspace"
                         } else {
                             "cache"
@@ -1237,12 +1253,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn status_for_static_benchmark_uses_cached_or_not_cached() {
-        let dir = tempfile::tempdir().unwrap();
-        let def = BenchmarkDefinition {
-            name: "static".to_string(),
-            description: "static".to_string(),
+    fn make_static_def(name: &str) -> BenchmarkDefinition {
+        BenchmarkDefinition {
+            name: name.to_string(),
+            description: "test".to_string(),
             relations: vec![kermit_bench::RelationSource {
                 name: "edge".to_string(),
                 url: "file:///nope".to_string(),
@@ -1253,10 +1267,16 @@ mod tests {
                 query: "Q(X) :- edge(X, Y).".to_string(),
             }],
             generator: None,
-        };
+        }
+    }
+
+    #[test]
+    fn status_for_static_benchmark_uses_cached_or_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = make_static_def("static");
         // is_cached is keyed off the platform cache dir; on a tempdir we
         // expect "not cached" since we haven't downloaded anything.
-        let status = describe_benchmark_status(&def, dir.path());
+        let status = describe_benchmark_status(&def, None, dir.path());
         assert!(matches!(status, "cached" | "not cached"));
     }
 
@@ -1267,7 +1287,10 @@ mod tests {
             scale: 1,
             stress: kermit_bench::WatdivStressSpec::default(),
         });
-        assert_eq!(describe_benchmark_status(&def, dir.path()), "not generated");
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "not generated"
+        );
     }
 
     #[test]
@@ -1286,7 +1309,10 @@ mod tests {
         )
         .unwrap();
         let def = make_generator_def("watdiv-cached", spec);
-        assert_eq!(describe_benchmark_status(&def, dir.path()), "cached");
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "cached"
+        );
     }
 
     #[test]
@@ -1303,7 +1329,10 @@ mod tests {
             scale: 7,
             stress: kermit_bench::WatdivStressSpec::default(),
         });
-        assert_eq!(describe_benchmark_status(&def, dir.path()), "stale");
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "stale"
+        );
     }
 
     #[test]
@@ -1320,6 +1349,56 @@ mod tests {
             scale: 1,
             stress: kermit_bench::WatdivStressSpec::default(),
         });
-        assert_eq!(describe_benchmark_status(&def, dir.path()), "stale");
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "stale"
+        );
+    }
+
+    /// Regression test: when discovery merges a workspace generator YAML
+    /// with its cache-side artefact, the merged def has `generator: None`
+    /// (because `kermit_rdf::yaml_emit::write_benchmark_yaml` always writes
+    /// a static-shaped YAML in the cache). Without the workspace_def hint,
+    /// `describe_benchmark_status` would fall into the static branch for
+    /// any previously-generated benchmark and lose the `cached`/`stale`
+    /// signal. The `workspace_def` argument is the fix.
+    #[test]
+    fn status_uses_workspace_generator_when_merged_def_drops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = kermit_bench::GeneratorSpec::Watdiv {
+            scale: 3,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        };
+        let hash = spec.spec_hash();
+
+        // Simulate the post-merge state: the cache-side YAML is loaded
+        // (static-shaped, generator: None) but the workspace YAML has the
+        // generator block. This is exactly what `bench list` sees after
+        // calling `load_all_benchmarks_with_cache`.
+        let merged_def = make_static_def("watdiv-collision");
+        let workspace_def = make_generator_def("watdiv-collision", spec);
+
+        let subdir = dir.path().join("watdiv-collision");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 2, "spec_hash": hash}).to_string(),
+        )
+        .unwrap();
+
+        // With workspace_def threaded in, the function correctly reports
+        // `cached` for the generator-driven YAML.
+        assert_eq!(
+            describe_benchmark_status(&merged_def, Some(&workspace_def), dir.path()),
+            "cached"
+        );
+
+        // Without it, the function would fall into the static branch and
+        // emit "not cached" — proves the workspace_def path is load-bearing.
+        let static_status = describe_benchmark_status(&merged_def, None, dir.path());
+        assert_ne!(
+            static_status, "cached",
+            "without workspace_def the static path takes over and the generator status is lost"
+        );
     }
 }

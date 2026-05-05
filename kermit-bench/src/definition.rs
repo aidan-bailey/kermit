@@ -185,6 +185,7 @@ impl BenchmarkDefinition {
     ///         description: "triangle".into(),
     ///         query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).".into(),
     ///     }],
+    ///     generator: None,
     /// };
     /// assert!(def.validate().is_ok());
     /// ```
@@ -193,6 +194,20 @@ impl BenchmarkDefinition {
             return Err(BenchError::Invalid {
                 name: self.name.clone(),
                 reason: "name must not be empty".to_string(),
+            });
+        }
+
+        // The name doubles as a cache subdir component (and, for static
+        // benchmarks, a downloaded relation's parent dir). The
+        // materialization layer also calls `fs::remove_dir_all` on the
+        // cache subdir during `--force` regeneration, so the name must not
+        // be able to escape it. Restrict to portable filename characters.
+        if !is_portable_filename(&self.name) {
+            return Err(BenchError::Invalid {
+                name: self.name.clone(),
+                reason: "name may only contain ASCII alphanumerics, '.', '_', or '-' (no path \
+                         separators or '..')"
+                    .to_string(),
             });
         }
 
@@ -333,7 +348,25 @@ fn is_valid_lubm_query_name(name: &str) -> bool {
     let Some(rest) = name.strip_prefix('q') else {
         return false;
     };
+    // Reject leading zeros (`q01`) so canonical-form `q1`..`q14` is the only
+    // accepted spelling. Otherwise `u32::parse` would happily accept padded
+    // forms here that fail at materialize time when matched exactly against
+    // `lubm_query_specs()`'s canonical names.
+    if rest.len() > 1 && rest.starts_with('0') {
+        return false;
+    }
     matches!(rest.parse::<u32>(), Ok(n) if (1..=14).contains(&n))
+}
+
+/// Returns true if `name` is safe to use as a cache subdir component.
+/// Restricts to ASCII alphanumerics plus `.`, `_`, `-`. Rejects anything
+/// containing path separators (`/`, `\`) or relative-path tokens (`..`).
+fn is_portable_filename(name: &str) -> bool {
+    if name == "." || name == ".." || name.is_empty() {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 #[cfg(test)]
@@ -773,6 +806,58 @@ description: "nothing"
             stress: WatdivStressSpec::default(),
         };
         assert_ne!(a.spec_hash(), b.spec_hash());
+    }
+
+    #[test]
+    fn name_with_path_traversal_rejected() {
+        for evil in [
+            "../escape",
+            "..",
+            ".",
+            "with/slash",
+            "with\\backslash",
+            "has space",
+            "has:colon",
+        ] {
+            let def = BenchmarkDefinition {
+                name: evil.to_string(),
+                description: "x".to_string(),
+                relations: vec![RelationSource {
+                    name: "r".to_string(),
+                    url: "http://x".to_string(),
+                }],
+                queries: vec![make_query("q", "Q(X) :- r(X).")],
+                generator: None,
+            };
+            assert!(
+                def.validate().is_err(),
+                "expected rejection for name = {evil:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lubm_zero_padded_query_name_rejected() {
+        for bad in ["q01", "q014", "q00", "q001"] {
+            let def = BenchmarkDefinition {
+                name: "lubm-zero-pad".to_string(),
+                description: "x".to_string(),
+                relations: vec![],
+                queries: vec![],
+                generator: Some(GeneratorSpec::Lubm {
+                    scale: 1,
+                    seed: 0,
+                    threads: 1,
+                    start_index: 0,
+                    ontology: DEFAULT_LUBM_ONTOLOGY.to_string(),
+                    queries: Some(vec![bad.to_string()]),
+                }),
+            };
+            assert!(
+                def.validate().is_err(),
+                "expected rejection for query name = {bad:?}"
+            );
+        }
     }
 
     #[test]
