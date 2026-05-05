@@ -48,6 +48,35 @@ pub enum RdfError {
     #[error("expected-results computation failed: {0}")]
     Expected(String),
 
+    /// The LUBM-UBA jar could not be found at the resolved path.
+    #[error("LUBM-UBA jar not found at {path:?} (set --lubm-jar or KERMIT_LUBM_JAR)")]
+    LubmJarNotFound {
+        /// The path that was searched.
+        path: PathBuf,
+    },
+
+    /// The `java` executable was not found on PATH.
+    #[error("`java` not found on PATH; install JDK ≥ 7 or run inside `nix develop`")]
+    JavaNotFound,
+
+    /// The LUBM-UBA jar exited with a non-zero status.
+    #[error("LUBM-UBA exited with status {status}: {stderr}")]
+    LubmFailed {
+        /// Exit status.
+        status: String,
+        /// Captured stderr.
+        stderr: String,
+    },
+
+    /// Decompressing the gzipped NTriples output failed.
+    #[error("gunzip of {path:?} failed: {message}")]
+    Gunzip {
+        /// Source path.
+        path: PathBuf,
+        /// Underlying error message.
+        message: String,
+    },
+
     /// Underlying I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
