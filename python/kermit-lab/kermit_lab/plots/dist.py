@@ -6,50 +6,57 @@ quartiles for readability.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
 
 import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.figure import Figure
 
 from ..axis_mapping import colour_for_ds
-from ..criterion import load_function
-from ..loader import BenchReport, phase_of
+from ..loader import BenchReport
 from . import InsufficientAxesError
 
 
-def render(
-    reports: Iterable[BenchReport],
-    out_path: Path,
-    criterion_root: Path,
+def plot(
+    df: pd.DataFrame,
     *,
     phase: str = "iteration",
-) -> None:
-    """Render a violin+box plot of per-iter samples per ``(DS, algorithm)``.
+    df_samples: pd.DataFrame | None = None,
+    criterion_root: Path | str = "target/criterion",
+    out: Path | None = None,
+) -> Figure:
+    """Return a violin+box Figure of per-iter samples per ``(DS, algorithm)``.
 
-    Consumes only the time-metric Criterion group whose phase matches
-    ``phase`` (default: iteration); insertion samples come from a different
-    distribution and would muddy the violin if mixed in.
+    Loads samples via :func:`kermit_lab.load_samples` if ``df_samples`` is
+    None. Pass an existing samples frame to avoid the second disk scan.
     """
-    samples: dict[tuple[str, str], list[float]] = defaultdict(list)
-    for report in reports:
-        ds = report.axis("data_structure", "?")
-        algo = report.axis("algorithm", "?")
-        for group_ref in report.criterion_groups:
-            if group_ref.metric != "time" or phase_of(group_ref.function) != phase:
-                continue
-            data = load_function(criterion_root, group_ref.group, group_ref.function)
-            samples[(ds, algo)].extend(data.per_iter_times)
-
-    if not samples:
+    sub = df[(df.metric == "time") & (df.phase == phase)]
+    if sub.empty:
         raise InsufficientAxesError(
-            f"dist needs ≥1 time-metric phase={phase!r} Criterion group"
+            f"dist needs ≥1 time-metric phase={phase!r} row"
         )
 
-    keys = sorted(samples.keys())
-    data_lists = [samples[k] for k in keys]
+    samples_df: pd.DataFrame
+    if df_samples is None:
+        from ..frame import load_samples
+
+        samples_df = load_samples(sub.source_path.unique().tolist(), criterion_root)
+    else:
+        samples_df = df_samples
+
+    merged = samples_df.merge(
+        sub[["criterion_group", "criterion_function", "data_structure", "algorithm"]],
+        on=["criterion_group", "criterion_function"],
+    )
+    if merged.empty:
+        raise InsufficientAxesError("samples DataFrame has no overlap with summary rows")
+
+    grouped = merged.groupby(["data_structure", "algorithm"], dropna=False)
+    keys = sorted(grouped.groups.keys())
+    data_lists = [grouped.get_group(k).per_iter_ns.tolist() for k in keys]
     labels = [f"{ds}\n{algo}" for ds, algo in keys]
-    colours = [colour_for_ds(ds) for ds, _algo in keys]
+    colours = [colour_for_ds(str(ds)) for ds, _algo in keys]
 
     fig, ax = plt.subplots()
     parts = ax.violinplot(data_lists, showmeans=False, showmedians=False, showextrema=False)
@@ -68,5 +75,21 @@ def render(
     ax.set_xticklabels(labels)
     ax.set_ylabel("time per iter (ns)")
     ax.set_title("Per-iter time distribution")
-    fig.savefig(out_path)
+    if out is not None:
+        fig.savefig(out)
+    return fig
+
+
+def render(
+    reports: Iterable[BenchReport],
+    out_path: Path,
+    criterion_root: Path,
+    *,
+    phase: str = "iteration",
+) -> None:
+    """Legacy API shim — builds the DataFrame, calls :func:`plot`, closes the figure."""
+    from ..frame import _summary_from_reports
+
+    df = _summary_from_reports(list(reports), criterion_root)
+    fig = plot(df, phase=phase, criterion_root=criterion_root, out=out_path)
     plt.close(fig)

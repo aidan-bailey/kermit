@@ -36,6 +36,17 @@ _AXIS_INT_KEYS: tuple[str, ...] = (
     "relation_bytes",
 )
 
+# Fixed column order for the summary frame. Used by ``pd.DataFrame(rows,
+# columns=...)`` so the schema is consistent even when ``rows`` is empty.
+_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "kind", "metric", "phase",
+    *_AXIS_STR_KEYS,
+    *_AXIS_INT_KEYS,
+    "mean_ns", "mean_lo", "mean_hi", "mean_se",
+    "median_ns", "median_lo", "median_hi",
+    "source_path", "criterion_group", "criterion_function",
+)
+
 
 def _summary_row(
     report: BenchReport,
@@ -80,7 +91,7 @@ def _summary_from_reports(
         _summary_row(report, gref, data)
         for report, gref, data in iter_function_data(reports, Path(criterion_root))
     ]
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=list(_SUMMARY_COLUMNS))
     for key in _AXIS_INT_KEYS:
         df[key] = df[key].astype("Int64")
     return df

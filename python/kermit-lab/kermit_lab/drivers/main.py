@@ -1,7 +1,8 @@
 """``kermit-lab`` argparse dispatcher.
 
-Each plot module exports a ``render(reports, out_path, criterion_root, **kwargs)``
-function; the CLI maps subcommands to those modules and threads kwargs.
+Thin wrapper over the public Python API: ``frame.load`` builds the summary
+DataFrame once, then each subcommand calls the matching plot module's
+``plot(df, …, out=…)`` and discards the returned Figure.
 """
 from __future__ import annotations
 
@@ -10,9 +11,11 @@ import logging
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+
+from ..frame import load
 from ..loader import load_reports
-from ..plots import InsufficientAxesError
-from ..plots import bar_queries, bar_space, bar_time, dist, scaling, tradeoff
+from ..plots import InsufficientAxesError, bar_queries, bar_space, bar_time, dist, scaling, tradeoff
 from ..styles import apply as apply_style
 from . import render_all
 
@@ -110,6 +113,28 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _dispatch(args: argparse.Namespace) -> None:
+    """Build the DataFrame once, then call the matching plot module's ``plot``."""
+    df = load(args.reports, args.criterion_root)
+    log.info("loaded %d row(s) from %d file(s)", len(df), len(args.reports))
+
+    if args.command == "scaling":
+        fig = scaling.plot(df, phase=args.phase, out=args.out)
+    elif args.command == "bar-time":
+        fig = bar_time.plot(df, query=args.query, phase=args.phase, out=args.out)
+    elif args.command == "bar-space":
+        fig = bar_space.plot(df, out=args.out)
+    elif args.command == "tradeoff":
+        fig = tradeoff.plot(df, phase=args.phase, out=args.out)
+    elif args.command == "dist":
+        fig = dist.plot(df, phase=args.phase, criterion_root=args.criterion_root, out=args.out)
+    elif args.command == "bar-queries":
+        fig = bar_queries.plot(df, ds=args.ds, algo=args.algo, phase=args.phase, out=args.out)
+    else:
+        raise ValueError(f"unknown command: {args.command}")
+    plt.close(fig)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Argparse entry; dispatches to one plot module or to ``render-all``."""
     args = _build_parser().parse_args(argv)
@@ -119,12 +144,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     apply_style()
 
-    reports = load_reports(args.reports)
-    log.info("loaded %d report(s) from %d file(s)", len(reports), len(args.reports))
-
     try:
         if args.command == "render-all":
             args.out_dir.mkdir(parents=True, exist_ok=True)
+            reports = load_reports(args.reports)
+            log.info("loaded %d report(s) from %d file(s)", len(reports), len(args.reports))
             render_all.render_all(
                 reports,
                 args.out_dir,
@@ -133,31 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                 phase=args.phase,
             )
             return 0
-
-        if args.command == "scaling":
-            scaling.render(reports, args.out, args.criterion_root, phase=args.phase)
-        elif args.command == "bar-time":
-            bar_time.render(
-                reports, args.out, args.criterion_root, query=args.query, phase=args.phase
-            )
-        elif args.command == "bar-space":
-            bar_space.render(reports, args.out, args.criterion_root)
-        elif args.command == "tradeoff":
-            tradeoff.render(reports, args.out, args.criterion_root, phase=args.phase)
-        elif args.command == "dist":
-            dist.render(reports, args.out, args.criterion_root, phase=args.phase)
-        elif args.command == "bar-queries":
-            bar_queries.render(
-                reports,
-                args.out,
-                args.criterion_root,
-                ds=args.ds,
-                algo=args.algo,
-                phase=args.phase,
-            )
-        else:
-            log.error("unknown command: %s", args.command)
-            return 2
+        _dispatch(args)
     except InsufficientAxesError as e:
         log.error("%s: %s", args.command, e)
         return 3

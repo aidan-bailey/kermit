@@ -6,16 +6,64 @@ Criterion's ``mean`` point estimate (with 95% CI as error bars).
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
 
 import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.figure import Figure
 
 from ..axis_mapping import colour_for_ds, linestyle_for_algo, marker_for_algo
-from ..criterion import load_function
-from ..loader import BenchReport, phase_of
+from ..loader import BenchReport
 from . import InsufficientAxesError
+
+
+def plot(
+    df: pd.DataFrame,
+    *,
+    phase: str = "iteration",
+    out: Path | None = None,
+) -> Figure:
+    """Return a log-log scaling Figure (and optionally save to ``out``).
+
+    Filters ``df`` to time-metric rows matching ``phase`` and groups by
+    ``(data_structure, algorithm)``. Raises :class:`InsufficientAxesError` if
+    fewer than 2 distinct ``tuples`` values remain.
+    """
+    sub = df[(df.metric == "time") & (df.phase == phase) & df.tuples.notna()]
+    distinct = sorted(set(sub.tuples.dropna().tolist()))
+    if len(distinct) < 2:
+        raise InsufficientAxesError(
+            f"scaling (phase={phase}) needs ≥2 distinct 'tuples' values; got {distinct}"
+        )
+
+    fig, ax = plt.subplots()
+    for (ds, algo), grp in sub.groupby(["data_structure", "algorithm"], dropna=False):
+        grp = grp.sort_values("tuples")
+        xs = grp.tuples.tolist()
+        ys = grp.mean_ns.tolist()
+        # Clamp to ≥0: pathological CIs can fall outside the point estimate.
+        lo = [max(0.0, m - l) for m, l in zip(ys, grp.mean_lo.tolist())]
+        hi = [max(0.0, h - m) for m, h in zip(ys, grp.mean_hi.tolist())]
+        ax.errorbar(
+            xs,
+            ys,
+            yerr=[lo, hi],
+            label=f"{ds} / {algo}",
+            color=colour_for_ds(str(ds)),
+            linestyle=linestyle_for_algo(str(algo)),
+            marker=marker_for_algo(str(algo)),
+        )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("tuples")
+    ax.set_ylabel("time (ns)")
+    ax.set_title("Scaling: time vs input size")
+    ax.legend(title="DS / algorithm", loc="best")
+    if out is not None:
+        fig.savefig(out)
+    return fig
 
 
 def render(
@@ -25,65 +73,9 @@ def render(
     *,
     phase: str = "iteration",
 ) -> None:
-    """Render a log-log scaling plot to ``out_path``.
+    """Legacy API shim — builds the DataFrame, calls :func:`plot`, closes the figure."""
+    from ..frame import _summary_from_reports
 
-    Groups reports by ``(data_structure, algorithm)`` and draws one line per
-    group, x = ``axes["tuples"]``, y = ``mean.point`` of the time-metric
-    function whose phase is ``phase`` (default: iteration — the join-execution
-    phase the thesis cares about; pass ``"insertion"`` to plot construction
-    cost instead).
-
-    Raises :class:`InsufficientAxesError` if fewer than 2 distinct ``tuples``
-    values are present across the input.
-    """
-    reports = list(reports)
-    grouped: dict[tuple[str, str], list[tuple[float, float, float, float]]] = defaultdict(list)
-
-    for report in reports:
-        n = report.axis("tuples")
-        ds = report.axis("data_structure", "?")
-        algo = report.axis("algorithm", "?")
-        if n is None:
-            continue
-        for group_ref in report.criterion_groups:
-            if group_ref.metric != "time" or phase_of(group_ref.function) != phase:
-                continue
-            data = load_function(criterion_root, group_ref.group, group_ref.function)
-            grouped[(ds, algo)].append(
-                (float(n), data.mean.point, data.mean.lower, data.mean.upper)
-            )
-
-    distinct_tuples = {n for points in grouped.values() for (n, *_rest) in points}
-    if len(distinct_tuples) < 2:
-        raise InsufficientAxesError(
-            f"scaling (phase={phase}) needs ≥2 distinct 'tuples' values; got "
-            f"{sorted(distinct_tuples)}"
-        )
-
-    fig, ax = plt.subplots()
-    for (ds, algo), points in sorted(grouped.items()):
-        points.sort()
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
-        # Clamp to ≥0: pathological CIs can fall outside the point estimate.
-        # matplotlib silently flips a bar with a negative half-width.
-        lo = [max(0.0, p[1] - p[2]) for p in points]
-        hi = [max(0.0, p[3] - p[1]) for p in points]
-        ax.errorbar(
-            xs,
-            ys,
-            yerr=[lo, hi],
-            label=f"{ds} / {algo}",
-            color=colour_for_ds(ds),
-            linestyle=linestyle_for_algo(algo),
-            marker=marker_for_algo(algo),
-        )
-
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("tuples")
-    ax.set_ylabel("time (ns)")
-    ax.set_title("Scaling: time vs input size")
-    ax.legend(title="DS / algorithm", loc="best")
-    fig.savefig(out_path)
+    df = _summary_from_reports(list(reports), criterion_root)
+    fig = plot(df, phase=phase, out=out_path)
     plt.close(fig)

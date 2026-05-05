@@ -9,11 +9,54 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+from matplotlib.figure import Figure
 
 from ..axis_mapping import colour_for_ds
-from ..criterion import load_function
-from ..loader import BenchReport, phase_of
+from ..loader import BenchReport
 from . import InsufficientAxesError
+
+
+def plot(
+    df: pd.DataFrame,
+    *,
+    ds: str,
+    algo: str,
+    phase: str = "iteration",
+    out: Path | None = None,
+) -> Figure:
+    """Return a Figure of bars across ``query`` for the chosen ``(ds, algo)``."""
+    matched = df[(df.data_structure == ds) & (df.algorithm == algo)]
+    if matched.empty:
+        raise InsufficientAxesError(
+            f"no reports match data_structure={ds!r} algorithm={algo!r}"
+        )
+    sub = matched[
+        (matched.metric == "time") & (matched.phase == phase) & matched["query"].notna()
+    ]
+    if sub.empty:
+        raise InsufficientAxesError(
+            f"({ds}, {algo}) matched but no time-metric phase={phase!r} "
+            "Criterion groups carry a 'query' axis"
+        )
+
+    sub = sub.sort_values("query").reset_index(drop=True)
+    means = sub.mean_ns.to_numpy()
+    lo = np.clip(means - sub.mean_lo.to_numpy(), 0.0, None)
+    hi = np.clip(sub.mean_hi.to_numpy() - means, 0.0, None)
+    labels = sub["query"].astype(str).tolist()
+    colour = colour_for_ds(ds)
+
+    fig, ax = plt.subplots()
+    x = np.arange(len(sub))
+    ax.bar(x, means, yerr=[lo, hi], color=colour, edgecolor="black", linewidth=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=30, ha="right")
+    ax.set_ylabel("time (ns)")
+    ax.set_title(f"Query times — {ds} / {algo}")
+    if out is not None:
+        fig.savefig(out)
+    return fig
 
 
 def render(
@@ -25,52 +68,9 @@ def render(
     algo: str,
     phase: str = "iteration",
 ) -> None:
-    """Render bars across ``query`` for the chosen ``(ds, algo)``.
+    """Legacy API shim — builds the DataFrame, calls :func:`plot`, closes the figure."""
+    from ..frame import _summary_from_reports
 
-    Consumes only the time-metric Criterion group whose phase matches
-    ``phase`` (default: iteration).
-    """
-    matched = [
-        r
-        for r in reports
-        if r.axis("data_structure") == ds and r.axis("algorithm") == algo
-    ]
-    if not matched:
-        raise InsufficientAxesError(
-            f"no reports match data_structure={ds!r} algorithm={algo!r}"
-        )
-
-    bars: list[tuple[str, float, float, float]] = []
-    for report in matched:
-        query = report.axis("query")
-        if query is None:
-            continue
-        for group_ref in report.criterion_groups:
-            if group_ref.metric != "time" or phase_of(group_ref.function) != phase:
-                continue
-            data = load_function(criterion_root, group_ref.group, group_ref.function)
-            bars.append((str(query), data.mean.point, data.mean.lower, data.mean.upper))
-
-    if not bars:
-        raise InsufficientAxesError(
-            f"({ds}, {algo}) matched but no time-metric phase={phase!r} "
-            "Criterion groups carry a 'query' axis"
-        )
-
-    bars.sort()
-    labels = [b[0] for b in bars]
-    means = np.array([b[1] for b in bars])
-    # Clamp to ≥0: pathological CIs can fall outside the point estimate.
-    lo = np.clip(means - np.array([b[2] for b in bars]), 0.0, None)
-    hi = np.clip(np.array([b[3] for b in bars]) - means, 0.0, None)
-    colour = colour_for_ds(ds)
-
-    fig, ax = plt.subplots()
-    x = np.arange(len(bars))
-    ax.bar(x, means, yerr=[lo, hi], color=colour, edgecolor="black", linewidth=0.8)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha="right")
-    ax.set_ylabel("time (ns)")
-    ax.set_title(f"Query times — {ds} / {algo}")
-    fig.savefig(out_path)
+    df = _summary_from_reports(list(reports), criterion_root)
+    fig = plot(df, ds=ds, algo=algo, phase=phase, out=out_path)
     plt.close(fig)
