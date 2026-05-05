@@ -11,6 +11,7 @@ exposes them as DataFrames.
 """
 from __future__ import annotations
 
+import glob
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -97,31 +98,52 @@ def _summary_from_reports(
     return df
 
 
+def _resolve_paths(paths: Iterable[Path | str] | Path | str) -> list[Path]:
+    """Accept a single path, a glob pattern, or any iterable of paths.
+
+    A bare string containing ``*`` / ``?`` / ``[`` is expanded with
+    :func:`glob.glob`; a bare string without those characters is treated as a
+    single path. Iterables are passed through unchanged.
+    """
+    if isinstance(paths, (str, Path)):
+        s = str(paths)
+        if any(ch in s for ch in "*?["):
+            expanded = sorted(glob.glob(s))
+            if not expanded:
+                raise FileNotFoundError(f"no files match {s!r}")
+            return [Path(p) for p in expanded]
+        return [Path(s)]
+    return [Path(p) for p in paths]
+
+
 def load(
-    paths: Iterable[Path | str],
+    paths: Iterable[Path | str] | Path | str,
     criterion_root: Path | str = "target/criterion",
 ) -> pd.DataFrame:
     """Return the summary DataFrame for the given report JSON files.
 
-    One row per ``(report × criterion_group)``. Columns: ``kind``, ``metric``,
-    ``phase``, the axis columns, ``mean_*``/``median_*`` estimates, plus
+    ``paths`` accepts a single path, a glob pattern (e.g.
+    ``"bench-runs/*.json"``), or an iterable of paths. One row per
+    ``(report × criterion_group)``. Columns: ``kind``, ``metric``, ``phase``,
+    the axis columns, ``mean_*``/``median_*`` estimates, plus
     ``criterion_group`` / ``criterion_function`` join keys into
     :func:`load_samples`.
     """
-    reports = load_reports([Path(p) for p in paths])
+    reports = load_reports(_resolve_paths(paths))
     return _summary_from_reports(reports, criterion_root)
 
 
 def load_samples(
-    paths: Iterable[Path | str],
+    paths: Iterable[Path | str] | Path | str,
     criterion_root: Path | str = "target/criterion",
 ) -> pd.DataFrame:
     """Return the per-iteration samples DataFrame.
 
-    One row per Criterion sample point. Join back to :func:`load` on
-    ``(criterion_group, criterion_function)``.
+    ``paths`` accepts the same forms as :func:`load`. One row per Criterion
+    sample point. Join back to :func:`load` on ``(criterion_group,
+    criterion_function)``.
     """
-    reports = load_reports([Path(p) for p in paths])
+    reports = load_reports(_resolve_paths(paths))
     rows = [
         {
             "criterion_group": gref.group,

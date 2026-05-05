@@ -113,8 +113,14 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _dispatch(args: argparse.Namespace) -> None:
-    """Build the DataFrame once, then call the matching plot module's ``plot``."""
+def _dispatch(args: argparse.Namespace) -> int:
+    """Build the DataFrame once, then call the matching plot module's ``plot``.
+
+    Returns the process exit code: 0 on success, 2 for an unknown subcommand
+    (matches the legacy CLI's exit semantics — argparse makes this branch
+    unreachable in practice, but keep it consistent for any future caller
+    that bypasses argparse).
+    """
     df = load(args.reports, args.criterion_root)
     log.info("loaded %d row(s) from %d file(s)", len(df), len(args.reports))
 
@@ -131,8 +137,10 @@ def _dispatch(args: argparse.Namespace) -> None:
     elif args.command == "bar-queries":
         fig = bar_queries.plot(df, ds=args.ds, algo=args.algo, phase=args.phase, out=args.out)
     else:
-        raise ValueError(f"unknown command: {args.command}")
+        log.error("unknown command: %s", args.command)
+        return 2
     plt.close(fig)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -157,7 +165,9 @@ def main(argv: list[str] | None = None) -> int:
                 phase=args.phase,
             )
             return 0
-        _dispatch(args)
+        rc = _dispatch(args)
+        if rc != 0:
+            return rc
     except InsufficientAxesError as e:
         log.error("%s: %s", args.command, e)
         return 3

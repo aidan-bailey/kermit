@@ -92,3 +92,23 @@ def test_samples_join_keys_in_summary(df, samples):
     sample_keys = set(zip(samples.criterion_group, samples.criterion_function))
     summary_keys = set(zip(df.criterion_group, df.criterion_function))
     assert sample_keys.issubset(summary_keys)
+
+
+def test_load_accepts_glob_string(fixture_tree):
+    # A bare glob pattern as a single string should expand to every match,
+    # matching what every README snippet and notebook implies.
+    pattern = str(fixture_tree["reports_dir"] / "*.json")
+    df = load(pattern, fixture_tree["criterion_root"])
+    assert len(df) == 20  # same as test_load_returns_dataframe
+
+
+def test_load_raises_when_glob_matches_nothing(fixture_tree):
+    import pytest as _pytest
+    with _pytest.raises(FileNotFoundError, match="no files match"):
+        load(str(fixture_tree["reports_dir"] / "missing-*.json"), fixture_tree["criterion_root"])
+
+
+def test_load_accepts_single_path_string(fixture_tree):
+    one_path = str(fixture_tree["paths"][0])
+    df = load(one_path, fixture_tree["criterion_root"])
+    assert len(df) >= 1  # one report → ≥1 criterion_group rows
