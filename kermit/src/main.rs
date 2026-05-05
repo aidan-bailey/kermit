@@ -28,6 +28,7 @@ use {
 };
 
 mod bench_report;
+mod materialize;
 mod measurement;
 
 use bench_report::{
@@ -176,6 +177,14 @@ enum BenchSubcommand {
             default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
         )]
         metrics: Vec<Metric>,
+
+        /// Regenerate generator-driven benchmarks if their cached
+        /// `meta.json` spec_hash differs from the current YAML's params.
+        /// Without this flag, `bench run` errors out on drift instead of
+        /// silently re-running an expensive pipeline. No-op for static
+        /// benchmarks.
+        #[arg(long)]
+        force: bool,
     },
 
     /// List available benchmarks
@@ -304,18 +313,7 @@ enum Commands {
     },
 }
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("kermit crate must be inside workspace")
-        .to_path_buf()
-}
-
-fn vendored_watdiv_root() -> PathBuf { workspace_root().join("kermit-rdf/vendor/watdiv") }
-
-fn vendored_lubm_jar() -> PathBuf {
-    workspace_root().join("kermit-rdf/vendor/lubm-uba/lubm-uba.jar")
-}
+use materialize::{vendored_lubm_jar, vendored_watdiv_root, workspace_root};
 
 /// Column names derived from a query's head predicate. `Var(X)` becomes
 /// `"X"`, `Atom(c)` becomes `"c"` (constants are pre-rewritten by
@@ -735,6 +733,40 @@ where
     Ok(())
 }
 
+/// Returns the `bench list` status string for a benchmark.
+///
+/// For static benchmarks the values are "cached" / "not cached" (matching
+/// the historical behaviour). For generator-driven benchmarks the values
+/// distinguish "not generated" (no cache subdir), "cached" (subdir exists
+/// and `meta.json` spec_hash matches the spec), and "stale" (subdir
+/// exists but the spec has drifted).
+fn describe_benchmark_status(b: &BenchmarkDefinition, cache_root: &Path) -> &'static str {
+    let Some(spec) = b.generator.as_ref() else {
+        return if kermit_bench::cache::is_cached(b).unwrap_or(false) {
+            "cached"
+        } else {
+            "not cached"
+        };
+    };
+    let cache_subdir = cache_root.join(&b.name);
+    let meta_path = cache_subdir.join("meta.json");
+    if !meta_path.exists() {
+        return "not generated";
+    }
+    let Ok(contents) = fs::read_to_string(&meta_path) else {
+        return "stale";
+    };
+    let parsed: Option<serde_json::Value> = serde_json::from_str(&contents).ok();
+    let cached_hash = parsed
+        .as_ref()
+        .and_then(|v| v.get("spec_hash"))
+        .and_then(|v| v.as_str());
+    match cached_hash {
+        | Some(h) if h == spec.spec_hash() => "cached",
+        | _ => "stale",
+    }
+}
+
 fn resolve_benchmarks(
     name: &Option<String>, all: bool,
 ) -> anyhow::Result<Vec<BenchmarkDefinition>> {
@@ -805,12 +837,7 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("No benchmarks found in benchmarks/ or cache");
                 } else {
                     for b in &benchmarks {
-                        let cached = kermit_bench::cache::is_cached(b).unwrap_or(false);
-                        let status = if cached {
-                            "cached"
-                        } else {
-                            "not cached"
-                        };
+                        let status = describe_benchmark_status(b, &cache);
                         let source = if workspace_names.contains(&b.name) {
                             "workspace"
                         } else {
@@ -950,10 +977,19 @@ fn main() -> anyhow::Result<()> {
                 indexstructure,
                 algorithm,
                 metrics,
+                force,
             } => {
                 let benchmarks = resolve_benchmarks(&name, all)?;
+                let cache_root = dirs::cache_dir()
+                    .map(|p| p.join("kermit").join("benchmarks"))
+                    .ok_or_else(|| anyhow::anyhow!("no cache directory available"))?;
+                let materialized: Vec<BenchmarkDefinition> = benchmarks
+                    .into_iter()
+                    .map(|b| materialize::materialize(b, &cache_root, force))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-                for benchmark in &benchmarks {
+                for benchmark in &materialized {
                     match indexstructure {
                         | IndexStructure::TreeTrie => {
                             run_benchmark::<kermit_ds::TreeTrie>(
@@ -1041,6 +1077,7 @@ fn main() -> anyhow::Result<()> {
                     out_dir: &out_dir,
                     bench_name: &bench_name,
                     tag: &tag,
+                    spec_hash: None,
                 };
                 let meta = kermit_rdf::pipeline::run_pipeline(&inputs)
                     .map_err(|e| anyhow::anyhow!("watdiv-gen pipeline failed: {e}"))?;
@@ -1127,6 +1164,7 @@ fn main() -> anyhow::Result<()> {
                     bench_name: &bench_name,
                     tag: &tag,
                     queries: &queries,
+                    spec_hash: None,
                 };
                 let meta = kermit_rdf::lubm::pipeline::run_lubm_pipeline(&inputs)
                     .map_err(|e| anyhow::anyhow!("lubm-gen pipeline failed: {e}"))?;
@@ -1187,5 +1225,101 @@ mod tests {
     fn head_column_names_extracts_variables_atoms_and_placeholders() {
         let q: JoinQuery = "Q(X, Y, _) :- R(X, Y, Z).".parse().unwrap();
         assert_eq!(head_column_names(&q), vec!["X", "Y", "_"]);
+    }
+
+    fn make_generator_def(name: &str, spec: kermit_bench::GeneratorSpec) -> BenchmarkDefinition {
+        BenchmarkDefinition {
+            name: name.to_string(),
+            description: "test".to_string(),
+            relations: vec![],
+            queries: vec![],
+            generator: Some(spec),
+        }
+    }
+
+    #[test]
+    fn status_for_static_benchmark_uses_cached_or_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = BenchmarkDefinition {
+            name: "static".to_string(),
+            description: "static".to_string(),
+            relations: vec![kermit_bench::RelationSource {
+                name: "edge".to_string(),
+                url: "file:///nope".to_string(),
+            }],
+            queries: vec![kermit_bench::QueryDefinition {
+                name: "q".to_string(),
+                description: "q".to_string(),
+                query: "Q(X) :- edge(X, Y).".to_string(),
+            }],
+            generator: None,
+        };
+        // is_cached is keyed off the platform cache dir; on a tempdir we
+        // expect "not cached" since we haven't downloaded anything.
+        let status = describe_benchmark_status(&def, dir.path());
+        assert!(matches!(status, "cached" | "not cached"));
+    }
+
+    #[test]
+    fn status_not_generated_when_no_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = make_generator_def("watdiv-x", kermit_bench::GeneratorSpec::Watdiv {
+            scale: 1,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        });
+        assert_eq!(describe_benchmark_status(&def, dir.path()), "not generated");
+    }
+
+    #[test]
+    fn status_cached_when_meta_hash_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = kermit_bench::GeneratorSpec::Watdiv {
+            scale: 1,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        };
+        let hash = spec.spec_hash();
+        let subdir = dir.path().join("watdiv-cached");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 2, "spec_hash": hash}).to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("watdiv-cached", spec);
+        assert_eq!(describe_benchmark_status(&def, dir.path()), "cached");
+    }
+
+    #[test]
+    fn status_stale_when_meta_hash_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("watdiv-stale");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 2, "spec_hash": "old-hash"}).to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("watdiv-stale", kermit_bench::GeneratorSpec::Watdiv {
+            scale: 7,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        });
+        assert_eq!(describe_benchmark_status(&def, dir.path()), "stale");
+    }
+
+    #[test]
+    fn status_stale_for_legacy_meta_without_spec_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("watdiv-legacy");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 1, "kind": "watdiv-onthefly"}).to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("watdiv-legacy", kermit_bench::GeneratorSpec::Watdiv {
+            scale: 1,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        });
+        assert_eq!(describe_benchmark_status(&def, dir.path()), "stale");
     }
 }

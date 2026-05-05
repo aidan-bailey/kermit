@@ -38,6 +38,26 @@ against committed YAMLs at runtime.
 End-to-end runtime for LUBM(1, 0) is ~5 s (jar generation ~0.9 s, entailment
 ~3 s, partition + parquet emission ~1 s).
 
+### Declarative YAML spec (commit-and-run)
+
+Alternatively, commit a `benchmarks/<name>.yml` declaring a `generator:`
+block. `bench run <name>` materialises the data on first invocation:
+
+```yaml
+# benchmarks/lubm-1.yml
+name: lubm-1
+description: "LUBM(1, 0)"
+generator:
+  kind: lubm
+  scale: 1
+```
+
+Optional fields: `seed`, `threads`, `start_index`, `ontology`, and
+`queries: [q1, q3, q5]` to run a subset of the 14 queries (validation
+errors if any name is outside `q1..q14`). Editing the YAML's params and
+re-running errors with `SpecDrift` — pass `--force` to opt into
+regenerating. See `benchmarks/README.md` for the full schema.
+
 ## Pipeline
 
 ```

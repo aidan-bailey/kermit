@@ -66,10 +66,15 @@ pub struct LubmPipelineInputs<'a> {
     pub tag: &'a str,
     /// The 14 LUBM queries (or any other BGP-only SPARQL workload).
     pub queries: &'a [LubmQuerySpec],
+    /// Optional `spec_hash` recorded in meta.json so the materialization
+    /// layer can detect param drift on subsequent `bench run` invocations.
+    /// `None` for the imperative `bench gen` path; populated by the
+    /// declarative-YAML path.
+    pub spec_hash: Option<&'a str>,
 }
 
 /// Stats and provenance recorded into `meta.json`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Deserialize, Serialize)]
 pub struct LubmMeta {
     /// Schema version. Bump on any breaking field-name or value-type change.
     pub schema_version: u32,
@@ -105,6 +110,11 @@ pub struct LubmMeta {
     pub relation_count: u32,
     /// Number of queries written to `benchmark.yml`.
     pub query_count: u32,
+    /// Hash of the declarative `GeneratorSpec` that produced this run, when
+    /// the run was driven by a YAML spec. `None` for imperative `bench gen`
+    /// runs. Used by the materialization layer to detect param drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_hash: Option<String>,
 }
 
 fn sha256_file(path: &Path) -> Result<String, RdfError> {
@@ -265,7 +275,7 @@ pub fn process_artifacts(
     let triple_count_post_entailment = entailment_stats.output_triples as u64;
     let derived_triple_count = entailment_stats.derived_triples as u64;
     let meta = LubmMeta {
-        schema_version: 1,
+        schema_version: 2,
         kind: "lubm-onthefly".to_string(),
         scale: raw.scale,
         seed: raw.seed,
@@ -281,6 +291,7 @@ pub fn process_artifacts(
         entailment_iterations: entailment_stats.iterations,
         relation_count: part.relations.len() as u32,
         query_count: translated.len() as u32,
+        spec_hash: inputs.spec_hash.map(|s| s.to_string()),
     };
     let meta_json =
         serde_json::to_string_pretty(&meta).map_err(|e| RdfError::Expected(e.to_string()))?;

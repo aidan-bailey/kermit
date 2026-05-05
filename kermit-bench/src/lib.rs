@@ -15,6 +15,9 @@ pub mod discovery;
 pub mod error;
 
 pub use {
-    definition::{BenchmarkDefinition, QueryDefinition, RelationSource},
+    definition::{
+        BenchmarkDefinition, GeneratorSpec, QueryDefinition, RelationSource, WatdivStressSpec,
+        DEFAULT_LUBM_ONTOLOGY,
+    },
     error::BenchError,
 };

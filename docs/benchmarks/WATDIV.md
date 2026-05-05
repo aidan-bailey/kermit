@@ -14,7 +14,7 @@ the engine on a query distribution to amortise noise and stress unfamiliar
 patterns. Both flow through the same `kermit-rdf` parquet/dict artefacts
 and run via the same `kermit bench run`.
 
-## Two ways to run WatDiv
+## Three ways to run WatDiv
 
 ### A. Committed snapshots (default)
 
@@ -74,6 +74,37 @@ kermit bench watdiv-gen --scale N --tag STR \
 
 End-to-end runtime is dominated by query generation; SF=100 with default
 stress params completes in roughly 30 s on a developer laptop.
+
+### C. Declarative YAML spec (commit-and-run)
+
+A `benchmarks/<name>.yml` may declare a generator block instead of
+relations + queries. On `kermit bench run <name>`, the data is materialised
+on first invocation and cached; subsequent runs short-circuit on the cached
+`meta.json` if the spec hash matches.
+
+```yaml
+# benchmarks/watdiv-100-stress1.yml
+name: watdiv-100-stress1
+description: "WatDiv stress, scale 100"
+generator:
+  kind: watdiv
+  scale: 100
+  stress:
+    max_query_size: 5
+    query_count: 20
+    constants_per_query: 2
+    allow_join_vertex: false
+```
+
+Run with `kermit bench run watdiv-100-stress1 -i tree-trie -a leapfrog-triejoin`.
+Editing the YAML's params and re-running errors with `SpecDrift` — pass
+`--force` to opt into regenerating (a multi-minute pipeline; the gate exists
+so a typo doesn't trigger silent rebuilds). See `benchmarks/README.md` for
+the full schema.
+
+The declarative path uses the same pipeline as `bench watdiv-gen`; choice
+between B and C is between imperative ad-hoc generation (your shell history
+holds the params) and declarative reproducibility (the params live in git).
 
 ## Pipeline
 

@@ -73,6 +73,7 @@ fn full_pipeline_lubm_one_university_with_placeholder_query() {
         bench_name: "lubm-1-pipeline-test",
         tag: "pipeline-test",
         queries: &queries,
+        spec_hash: None,
     };
 
     let meta = run_lubm_pipeline(&inputs).expect("pipeline must succeed");
