@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Kermit is a Rust library for relational algebra research and benchmarking, built as a platform for a Masters thesis investigating the Leapfrog Triejoin algorithm across different data structures. It is a Cargo workspace with 7 crates. All keys are `usize` (dictionary-encoded). The codebase uses entirely safe Rust with no unsafe blocks. See `ARCHITECTURE.md` for detailed algorithmic descriptions, data flow, and Datalog query processing.
+Kermit is a Rust library for relational algebra research and benchmarking, built as a platform for a Masters thesis investigating the Leapfrog Triejoin algorithm across different data structures. It is a Cargo workspace with 8 crates. All keys are `usize` (dictionary-encoded). The codebase uses entirely safe Rust with no unsafe blocks. See `ARCHITECTURE.md` for detailed algorithmic descriptions, data flow, and Datalog query processing.
 
 ## Build Commands
 
@@ -17,6 +17,8 @@ cargo clippy --all-targets --verbose  # Lint (CI uses RUSTFLAGS=-Dwarnings)
 cargo fmt --all                 # Format (CI checks with --check)
 cargo doc --workspace           # Generate docs (CI uses RUSTDOCFLAGS=-Dwarnings)
 cargo run -- bench run triangle -i tree-trie -a leapfrog-triejoin  # Run a named benchmark
+cargo run -- bench watdiv-gen --scale 100 --tag dev                # Generate WatDiv benchmark on the fly
+cargo run -- bench lubm-gen --scale 1 --tag dev                    # Generate LUBM benchmark on the fly
 MIRIFLAGS="-Zmiri-disable-isolation" cargo miri setup && cargo miri test  # Check for UB (flag matches CI)
 ```
 
@@ -45,12 +47,24 @@ kermit-algos    → Join algorithms: LeapfrogJoinIter (binary), LeapfrogTriejoin
 kermit-bench    → Benchmark definitions, discovery, and caching. No internal deps.
                   YAML-based benchmark declarations (supports multiple named queries per benchmark),
                   ZivaHub download, platform cache dir (~/.cache/kermit/benchmarks/ on Linux).
-kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|list|fetch|clean).
+                  `discovery::load_all_benchmarks_with_cache` reads both workspace
+                  `benchmarks/*.yml` and any cache subdir containing both `benchmark.yml`
+                  AND `meta.json` (the marker that distinguishes a generator-produced bench).
+kermit-rdf      → RDF/SPARQL preprocessing pipelines for on-the-fly benchmark generation.
+                  Vendored binaries: `vendor/watdiv/` (WatDiv) + `vendor/lubm-uba/` (LUBM-UBA jar).
+                  Two pipelines: `pipeline::run_pipeline` (watdiv-onthefly) and
+                  `lubm::pipeline::run_lubm_pipeline` (lubm-onthefly, with Univ-Bench
+                  TBox forward chaining via `lubm::entailment`).
+                  Shared stages: `partition`, `parquet`, `dict`, `sparql::translator`,
+                  `yaml_emit`, `expected`. The 14 LUBM queries live at `queries/lubm/q*.sparql`
+                  and are exposed via `lubm::queries::lubm_query_specs`.
+kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|list|fetch|clean|
+                  watdiv-gen|lubm-gen).
                   Provides DB abstraction layer (db::DB trait, DatabaseEngine).
                   All Criterion execution lives here (including SpaceMeasurement).
 ```
 
-**Dependency flow:** `kermit-iters` → `kermit-derive`, `kermit-parser` → `kermit-ds` → `kermit-algos` (also depends on `kermit-parser`) → `kermit` (binary). `kermit-bench` is isolated (no internal deps); `kermit` depends on it.
+**Dependency flow:** `kermit-iters` → `kermit-derive`, `kermit-parser` → `kermit-ds` → `kermit-algos` (also depends on `kermit-parser`) → `kermit-rdf` (depends on parser, ds, bench) → `kermit` (binary). `kermit-bench` is isolated (no internal deps); `kermit` and `kermit-rdf` both depend on it.
 
 ## Key Trait Hierarchy
 
@@ -95,3 +109,5 @@ Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` d
 - **Const-view rewrite**: `DatabaseEngine::join` calls `kermit_algos::rewrite_atoms` before handing the query to `JoinAlgo::join_iter`. Each `Term::Atom("c<id>")` becomes a fresh variable plus a synthetic unary `Const_c<id>` predicate backed by `SingletonTrieIter`; LFTJ never sees atoms. Adding a new data structure does not require handling atoms, but adding a new `JoinAlgo` impl must tolerate being invoked on the rewritten query (with extra unary body predicates).
 - **WatDiv benchmark generation**: the 12 `watdiv-stress-*.yml` files are produced by `scripts/watdiv-preprocess/` (Python). Editing them by hand drifts from the preprocessor; regenerate instead. The integration test at `kermit/tests/watdiv_correctness.rs` loads a committed mini fixture — no Python required at test time. The committed YAMLs embed `c<dict-id>` atoms tied to the dictionary produced by a specific preprocessor run, so the YAMLs, `dict.parquet`, and all per-predicate `*.parquet` files must be regenerated and re-uploaded together — never mix-and-matched across runs, or constant atoms in the YAMLs will point at the wrong rows.
 - **WatDiv on-the-fly driver**: the vendored `kermit-rdf/vendor/watdiv` binary's CLI is `-d <model> <scale>`, `-s <model> <data> <max-q-size> <q-count>`, and `-q <model> <query-file> <count> <recurrence>`. **All three modes write only to stdout** — they do NOT write per-template `.txt`/`.sparql`/`.desc` files like the design doc originally implied. `kermit-rdf::driver::invoke` captures stdout and splits `-s`/`-q` output on `#end` lines (see `split_templates` / `split_queries`); the vendored binary emits no `.desc` cardinality sidecars, so `expected/*.csv` is empty for now. Two integration tests cover this: `kermit-rdf/tests/e2e_watdiv.rs` (drives the full pipeline) and `kermit/tests/cli_watdiv_gen.rs` (CLI smoke). Both auto-skip on non-Linux/non-x86_64 hosts and on hosts where bwrap can't construct the `/usr/share/dict/words` bind. On NixOS, run them inside `nix develop` so `LD_LIBRARY_PATH` exposes `libstdc++` to the binary; the flake also pulls in `pkgs.bubblewrap`.
+- **LUBM on-the-fly generation**: `bench lubm-gen --scale N --tag STR` invokes the vendored `kermit-rdf/vendor/lubm-uba/lubm-uba.jar` with `-f NTRIPLES --consolidate Maximal --compress`, gunzips the resulting `Universities.nt.gz`, then runs Univ-Bench TBox forward chaining (`kermit-rdf::lubm::entailment`) before partitioning. JDK 8 must be on PATH — the flake provides `pkgs.jdk8`; CI runners without flake need `apt-get install openjdk-8-jre` or equivalent. The jar's CLI emits two document-self triples (`<>` subject) per file that strict N-Triples parsers reject, so `lubm/driver::gunzip` line-filters them at extraction time. The 14 LUBM queries are committed verbatim at `kermit-rdf/queries/lubm/q1.sparql … q14.sparql` (paper Appendix A), embedded via `include_str!` in `lubm/queries.rs`, and exposed with LUBM(1, 0) reference cardinalities (paper Table 3). The entailment rule list in `lubm/entailment.rs` is hardcoded to Univ-Bench (subClassOf, subPropertyOf, owl:TransitiveProperty for `subOrganizationOf`, owl:inverseOf for `hasAlumnus`/`degreeFrom`, plus realisation of `Chair` from `headOf`); not a general OWL reasoner. The bit-identity invariant of `lubm-uba-rs` only applies *upstream* — kermit's pipeline rewrites the data through entailment, so the resulting `data.entailed.nt` is not byte-identical to anything the original UBA produces. SHA-256 of the jar is recorded in `meta.json` for provenance.
+- **LUBM jar regeneration**: see `kermit-rdf/vendor/lubm-uba/REGENERATE.md`. The currently vendored jar SHA-256 is the authoritative pin; rebuilding under a different JDK may shift bytes. The lubm-uba-rs `pom.xml` enforces Java 1.7 source/target, but JDK 8 is what we build with (per the lubm-uba-rs flake).
