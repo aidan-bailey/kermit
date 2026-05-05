@@ -1,7 +1,7 @@
 [project]
 name = "kermit-lab"
 version = "0.1.0"
-description = "Plot kermit Criterion benchmark output for thesis figures"
+description = "Notebook-first analysis of kermit Criterion benchmark output"
 requires-python = ">=3.10"
 dependencies = [
     "matplotlib>=3.8",

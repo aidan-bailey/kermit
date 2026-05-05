@@ -128,19 +128,22 @@ kermit bench --report-json /tmp/triangle.json \
 
 The schema (currently v2) is documented in `docs/specs/bench-report-schema.md`.
 
-## Plotting
+## Analysis and plotting
 
-Criterion's auto-generated SVG/HTML output is disabled — thesis-quality plots are rendered separately by [`python/kermit-lab/`](python/kermit-lab/), a [uv](https://docs.astral.sh/uv/)-managed Python tool consuming `--report-json` output plus Criterion's per-function JSON artefacts.
+Criterion's auto-generated SVG/HTML output is disabled. Benchmark results are explored through [`python/kermit-lab/`](python/kermit-lab/), a [uv](https://docs.astral.sh/uv/)-managed notebook-first analysis library that loads `--report-json` output plus Criterion's per-function JSON into pandas DataFrames. Six plot shapes return inline `matplotlib` Figures; pivot/comparison/stats helpers ship alongside. The CLI is preserved as a thin wrapper.
 
 ```sh
 # one-time install
 cd python/kermit-lab && uv sync
 
-# render every applicable plot shape across one or many runs
+# notebook workflow (preferred)
+uv run --with jupyter jupyter lab notebooks/
+
+# CLI shortcut for headless renders
 uv run kermit-lab render-all ../../bench-runs/*.json --out-dir ../../plots/
 ```
 
-See [`python/kermit-lab/README.md`](python/kermit-lab/README.md) for the full subcommand list (`scaling`, `bar-time`, `bar-space`, `tradeoff`, `dist`, `bar-queries`).
+See [`python/kermit-lab/README.md`](python/kermit-lab/README.md) for the public Python API (`load`, `summary`, `compare`, `bootstrap_ratio_ci`, `mannwhitney_u`) and CLI subcommands (`scaling`, `bar-time`, `bar-space`, `tradeoff`, `dist`, `bar-queries`).
 
 ## Contributing
 

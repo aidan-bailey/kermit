@@ -174,13 +174,16 @@ The shape is always a JSON array of `BenchReport` objects (one per query for
 in [`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md);
 the source of truth is `kermit/src/bench_report.rs`.
 
-## Plotting (`kermit-lab`)
+## Analysis and plotting (`kermit-lab`)
 
 The Rust CLI deliberately doesn't render plots — Criterion's auto-plots are
-disabled. Thesis-quality figures come from the Python tool at
-`python/kermit-lab/`, which consumes one or many `--report-json` outputs
-and the Criterion artefacts they reference. The project is managed with
-[uv](https://docs.astral.sh/uv/) and pins its versions in `uv.lock`.
+disabled. Benchmark exploration happens in `python/kermit-lab/`, a
+notebook-first analysis library managed with [uv](https://docs.astral.sh/uv/)
+that loads `--report-json` output and Criterion artefacts into pandas
+DataFrames. Six plot shapes return inline `matplotlib.figure.Figure`;
+`summary` / `compare` / `bootstrap_ratio_ci` / `mannwhitney_u` provide pivots
+and stats. The CLI subcommands listed below are thin wrappers over the same
+Python API.
 
 ### One-time setup
 

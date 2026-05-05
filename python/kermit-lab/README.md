@@ -1,8 +1,10 @@
 # kermit-lab
 
-Render thesis-quality plots from `kermit bench --report-json` outputs and the
-Criterion JSON artefacts they reference. Six plot shapes are shipped, plus a
-`render-all` meta-command.
+Notebook-first analysis of `kermit bench --report-json` output and the
+Criterion JSON artefacts it points at. Pandas DataFrames are the primary
+surface; six plot shapes return `matplotlib.figure.Figure` for inline
+display; pivot/comparison/stats helpers are shipped. The CLI is preserved
+as a thin wrapper for headless thesis builds.
 
 ## Install
 
@@ -23,7 +25,38 @@ On NixOS, run install and subsequent `kermit-lab` invocations from inside
 `libstdc++.so.6` / `libz.so.1` so numpy's C extensions load. Outside the dev
 shell, set `LD_LIBRARY_PATH=/run/current-system/sw/share/nix-ld/lib` manually.
 
-## Workflow
+## Notebook usage
+
+```python
+import kermit_lab as kl
+
+kl.apply_style()  # once per notebook session
+df = kl.load("bench-runs/*.json", criterion_root="target/criterion")
+
+# Plot inline — every plot returns a matplotlib.figure.Figure
+fig = kl.scaling(df)
+fig = kl.bar_queries(df, ds="TreeTrie", algo="LeapfrogTriejoin")
+
+# Slice + pivot
+kl.summary(df[df.phase == "iteration"], rows="data_structure", cols="tuples")
+
+# Pairwise speedup with deterministic envelope
+kl.compare(df, baseline="TreeTrie", target="ColumnTrie")
+
+# Bootstrap CI on raw samples
+samples = kl.load_samples("bench-runs/*.json", "target/criterion")
+lo, hi = kl.bootstrap_ratio_ci(a, b, rng=42)
+```
+
+Five worked examples ship in [`notebooks/`](notebooks/):
+
+- `01_quick_start.ipynb` — load a DataFrame and plot inline.
+- `02_scaling.ipynb` — scaling plot + pivot of mean times by DS × scale.
+- `03_compare_ds.ipynb` — `compare()` envelope + `bootstrap_ratio_ci()`.
+- `04_watdiv_queries.ipynb` — multi-query bars across WatDiv stress runs.
+- `05_distributions.ipynb` — violin plot from samples + Mann-Whitney U test.
+
+## CLI workflow
 
 1. Run `kermit bench …` one or more times, varying `(data_structure,
    algorithm, dataset)`. Pass `--report-json bench-runs/<name>.json` to each
@@ -34,15 +67,13 @@ The reports point at `target/criterion/<group>/<dir>/{base,new}/...` artefacts
 written by the same invocation. Don't `cargo clean` between bench runs and
 plot generation.
 
-## Subcommands
-
 ```
-kermit-lab scaling     <report.json>... [--out PATH] [--format {pdf,png,svg,pgf}]
-kermit-lab bar-time    <report.json>... --query QUERY [--out PATH] ...
-kermit-lab bar-space   <report.json>... [--out PATH] ...
-kermit-lab tradeoff    <report.json>... [--out PATH] ...
-kermit-lab dist        <report.json>... [--out PATH] ...
-kermit-lab bar-queries <report.json>... --ds DS --algo ALGO [--out PATH] ...
+kermit-lab scaling     <report.json>... --out PATH [--format {pdf,png,svg,pgf}]
+kermit-lab bar-time    <report.json>... --query QUERY --out PATH ...
+kermit-lab bar-space   <report.json>... --out PATH ...
+kermit-lab tradeoff    <report.json>... --out PATH ...
+kermit-lab dist        <report.json>... --out PATH ...
+kermit-lab bar-queries <report.json>... --ds DS --algo ALGO --out PATH ...
 kermit-lab render-all  <report.json>... --out-dir DIR [--format ...]
 ```
 
@@ -74,4 +105,5 @@ message rather than erroring.
 
 `kermit-lab` parses `BenchReport` JSON v2 (see
 `docs/specs/bench-report-schema.md`). The loader refuses to parse unknown
-major versions.
+major versions. The DataFrame column include-list lives in
+`kermit_lab/frame.py` — extend it when the Rust schema adds an axis key.

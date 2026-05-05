@@ -4,6 +4,17 @@
 **Status:** Implementation in progress
 **Sibling specs:** `benchmarking-architecture.md`, `space-benchmarks.md`, `bench-report-schema.md`
 
+> **2026-05-05 addendum:** the Python project shipped per this spec was later
+> renamed `kermit-plot` → `kermit-lab` and refactored notebook-first.
+> DataFrames (built by `kermit_lab.frame.load`) became the primary surface;
+> the six plot shapes now return `matplotlib.figure.Figure`; `summary` /
+> `compare` / `bootstrap_ratio_ci` / `mannwhitney_u` were added in
+> `kermit_lab.analysis`. The CLI described below is preserved as a thin
+> wrapper. Pandas + scipy joined `[project.dependencies]`; the original
+> "pandas YAGNI" call (below) was correct for the CLI-only scope but
+> inverted by the scope expansion. See the kermit-lab README for the
+> current public API.
+
 ## Problem
 
 Criterion 0.7's bundled SVG/HTML plotting layer is unsuitable for the thesis:
