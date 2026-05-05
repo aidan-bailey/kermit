@@ -388,4 +388,16 @@ mod heap_size_tests {
         let large = ColumnTrie::from_tuples(2.into(), (0..100).map(|i| vec![i, i + 1]).collect());
         assert!(large.heap_size_bytes() > small.heap_size_bytes());
     }
+
+    // `from_tuples` is a pure function of its inputs, so two builds from the
+    // same tuples must produce the same heap layout. Pinning this rules out
+    // hash-randomised allocation or capacity jitter sneaking in via a future
+    // change to the construction path.
+    #[test]
+    fn heap_size_is_deterministic_across_rebuilds() {
+        let tuples: Vec<Vec<usize>> = (0..50).map(|i| vec![i, i + 1]).collect();
+        let a = ColumnTrie::from_tuples(2.into(), tuples.clone());
+        let b = ColumnTrie::from_tuples(2.into(), tuples);
+        assert_eq!(a.heap_size_bytes(), b.heap_size_bytes());
+    }
 }
