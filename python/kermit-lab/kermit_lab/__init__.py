@@ -9,6 +9,7 @@ is a thin wrapper.
 SCHEMA_VERSION = 2
 """Highest BenchReport schema version this package can parse."""
 
+from .analysis import bootstrap_ratio_ci, compare, mannwhitney_u, summary
 from .frame import load, load_samples
 from .plots.bar_queries import plot as bar_queries
 from .plots.bar_space import plot as bar_space
@@ -24,9 +25,13 @@ __all__ = [
     "bar_queries",
     "bar_space",
     "bar_time",
+    "bootstrap_ratio_ci",
+    "compare",
     "dist",
     "load",
     "load_samples",
+    "mannwhitney_u",
     "scaling",
+    "summary",
     "tradeoff",
 ]
