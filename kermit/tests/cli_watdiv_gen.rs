@@ -1,4 +1,4 @@
-//! End-to-end CLI smoke test for `kermit bench watdiv-gen`.
+//! End-to-end CLI smoke test for `kermit bench gen watdiv`.
 //!
 //! Skipped on non-Linux/non-x86_64 hosts, hosts without `bwrap`, hosts where
 //! the vendored binary can't load (e.g. NixOS w/o libstdc++ on the FHS path),
@@ -71,7 +71,8 @@ fn watdiv_gen_sf1_smoke_test() {
     let bin = env!("CARGO_BIN_EXE_kermit");
     let status = Command::new(bin)
         .arg("bench")
-        .arg("watdiv-gen")
+        .arg("gen")
+        .arg("watdiv")
         .arg("--scale")
         .arg("1")
         .arg("--tag")
@@ -82,7 +83,7 @@ fn watdiv_gen_sf1_smoke_test() {
         .arg(out.path())
         .status()
         .expect("failed to run kermit");
-    assert!(status.success(), "watdiv-gen failed");
+    assert!(status.success(), "gen watdiv failed");
 
     let bench_dir = out.path().join("watdiv-stress-1-smoke");
     assert!(bench_dir.join("benchmark.yml").exists());

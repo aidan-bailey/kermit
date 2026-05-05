@@ -12,7 +12,7 @@ the canonical workload Veldhuizen 2014 designed Leapfrog Triejoin to dominate.
 ## Generating a benchmark
 
 ```bash
-kermit bench lubm-gen --scale N --tag STR \
+kermit bench gen lubm --scale N --tag STR \
     [--seed N=0] [--start-index N=0] \
     [--threads N=1] \
     [--lubm-jar PATH | env KERMIT_LUBM_JAR] \
@@ -213,7 +213,7 @@ that should land before relying on Q5–Q13 results from this pipeline.
 | Self-joins | Yes (e.g. `friendof(V2, V2)`) | None |
 | Result oracle | `expected.json` from upstream `.desc` sidecars | Paper Table 3, manually transcribed |
 | Reproducibility | Non-deterministic; tag-based snapshots | Deterministic per `(seed, scale)` |
-| Pipeline | `kermit bench watdiv-gen` | `kermit bench lubm-gen` |
+| Pipeline | `kermit bench gen watdiv` | `kermit bench gen lubm` |
 
 The two suites are complementary: WatDiv for distributional load, LUBM for
 named-query analysis. Both flow through the same `kermit-rdf` parquet/dict
