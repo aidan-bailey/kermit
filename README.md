@@ -130,18 +130,17 @@ The schema (currently v2) is documented in `docs/specs/bench-report-schema.md`.
 
 ## Plotting
 
-Criterion's auto-generated SVG/HTML output is disabled — thesis-quality plots are rendered separately by [`scripts/kermit-plot/`](scripts/kermit-plot/), a Python tool consuming `--report-json` output plus Criterion's per-function JSON artefacts.
+Criterion's auto-generated SVG/HTML output is disabled — thesis-quality plots are rendered separately by [`python/kermit-plot/`](python/kermit-plot/), a [uv](https://docs.astral.sh/uv/)-managed Python tool consuming `--report-json` output plus Criterion's per-function JSON artefacts.
 
 ```sh
 # one-time install
-python -m venv venv && source venv/bin/activate
-pip install -e scripts/kermit-plot
+cd python/kermit-plot && uv sync
 
 # render every applicable plot shape across one or many runs
-kermit-plot render-all bench-runs/*.json --out-dir plots/
+uv run kermit-plot render-all ../../bench-runs/*.json --out-dir ../../plots/
 ```
 
-See [`scripts/kermit-plot/README.md`](scripts/kermit-plot/README.md) for the full subcommand list (`scaling`, `bar-time`, `bar-space`, `tradeoff`, `dist`, `bar-queries`).
+See [`python/kermit-plot/README.md`](python/kermit-plot/README.md) for the full subcommand list (`scaling`, `bar-time`, `bar-space`, `tradeoff`, `dist`, `bar-queries`).
 
 ## Contributing
 

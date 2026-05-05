@@ -23,7 +23,7 @@ Criterion 0.7's bundled SVG/HTML plotting layer is unsuitable for the thesis:
 ## Decision
 
 Strip Criterion's rendering layer entirely; keep its measurement output as the
-source of truth; render plots in a separate Python tool (`scripts/kermit-plot/`)
+source of truth; render plots in a separate Python tool (`python/kermit-plot/`)
 that reads the per-function JSON Criterion writes plus the existing
 `--report-json` `BenchReport`.
 
@@ -96,7 +96,7 @@ comment. The plot subsystem doesn't exist anymore — there's nothing to disable
 Two updates:
 
 - **Replace** the "plotters panic / `.without_plots()`" workaround note with
-  a "no Criterion auto-plots" gotcha pointing at `scripts/kermit-plot/`.
+  a "no Criterion auto-plots" gotcha pointing at `python/kermit-plot/`.
 - **Update** the JSON bench reports gotcha for schema v2: document `axes`,
   conventional keys, schema doc location.
 
@@ -115,15 +115,15 @@ CWD (the directory is auto-created). `--report-json <PATH>` overrides. Because
 the default may resolve under any crate when tests/scripts run there, the
 gitignore pattern is unanchored (`bench-runs/`, not `/bench-runs/`).
 
-## Python-side: `scripts/kermit-plot/`
+## Python-side: `python/kermit-plot/`
 
-New project at `scripts/kermit-plot/`, mirroring `scripts/watdiv-preprocess/`'s
+New project at `python/kermit-plot/`, mirroring `scripts/watdiv-preprocess/`'s
 layout (pyproject + setuptools, console_scripts, pytest, editable install).
 
 ### Layout
 
 ```
-scripts/kermit-plot/
+python/kermit-plot/
 ├── pyproject.toml
 ├── README.md
 ├── kermit_plot/
@@ -206,7 +206,7 @@ directly. Re-evaluate only if shapes grow.
 2. `bench_report.rs` schema v2; thread `axes` through three call sites
    (`BenchSubcommand::Join`, `run_ds_bench`, `run_benchmark`); update tests.
 3. CLAUDE.md + `docs/specs/` (this file + `bench-report-schema.md`).
-4. `scripts/kermit-plot/` scaffold (pyproject, README, package skeleton,
+4. `python/kermit-plot/` scaffold (pyproject, README, package skeleton,
    loader/criterion/axis_mapping/style, fixtures).
 5. All six plot subcommands + `render-all` (one commit, optionally split if
    it grows).
@@ -241,7 +241,7 @@ reassess if `target/criterion/` layout differs from expectations.
    shows `benchmark.json`, `estimates.json`, `sample.json`, `tukey.json`
    under `target/criterion/{group}/{dir}/{base,new}/` — and **no** SVG/HTML
    anywhere.
-5. `pip install -e scripts/kermit-plot && pytest scripts/kermit-plot` passes
+5. `pip install -e python/kermit-plot && pytest python/kermit-plot` passes
    without running `cargo bench` (committed fixtures).
 6. `kermit-plot scaling bench-runs/*.json --out /tmp/scaling.pdf` produces a
    non-empty PDF with one line per (DS, algorithm) and a log-log axis.

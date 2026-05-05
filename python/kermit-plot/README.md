@@ -6,12 +6,17 @@ Criterion JSON artefacts they reference. Six plot shapes are shipped, plus a
 
 ## Install
 
+This project is managed with [uv](https://docs.astral.sh/uv/). From this
+directory:
+
 ```bash
-python -m venv venv && source venv/bin/activate
-pip install -e '.[test]'
+uv sync --group test     # creates .venv, installs deps + test extras
+uv run kermit-plot --help
 ```
 
-This registers a single `kermit-plot` console script.
+`uv sync` is deterministic — `uv.lock` is committed, so every contributor
+gets identical resolved versions. Activate the venv with
+`source .venv/bin/activate` if you prefer a shell over `uv run`.
 
 On NixOS, run install and subsequent `kermit-plot` invocations from inside
 `nix develop` — the dev shell exports an `LD_LIBRARY_PATH` covering
@@ -23,7 +28,7 @@ shell, set `LD_LIBRARY_PATH=/run/current-system/sw/share/nix-ld/lib` manually.
 1. Run `kermit bench …` one or more times, varying `(data_structure,
    algorithm, dataset)`. Pass `--report-json bench-runs/<name>.json` to each
    invocation. `bench-runs/` is gitignored at the workspace root.
-2. Run `kermit-plot <subcommand> bench-runs/*.json --out <path>`.
+2. Run `uv run kermit-plot <subcommand> bench-runs/*.json --out <path>`.
 
 The reports point at `target/criterion/<group>/<dir>/{base,new}/...` artefacts
 written by the same invocation. Don't `cargo clean` between bench runs and

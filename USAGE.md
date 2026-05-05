@@ -178,28 +178,30 @@ the source of truth is `kermit/src/bench_report.rs`.
 
 The Rust CLI deliberately doesn't render plots — Criterion's auto-plots are
 disabled. Thesis-quality figures come from the Python tool at
-`scripts/kermit-plot/`, which consumes one or many `--report-json` outputs
-and the Criterion artefacts they reference.
+`python/kermit-plot/`, which consumes one or many `--report-json` outputs
+and the Criterion artefacts they reference. The project is managed with
+[uv](https://docs.astral.sh/uv/) and pins its versions in `uv.lock`.
 
 ### One-time setup
 
 ```sh
-cd scripts/kermit-plot
-python -m venv venv && source venv/bin/activate
-pip install -e '.[test]'
+cd python/kermit-plot
+uv sync --group test
 ```
 
-This registers a `kermit-plot` console script.
+This creates `.venv/` with all dependencies pinned to `uv.lock`. Run the CLI
+via `uv run kermit-plot …` or activate the venv (`source .venv/bin/activate`)
+to call `kermit-plot` directly.
 
 ### Render a single shape
 
 ```sh
-kermit-plot scaling     bench-runs/*.json --out plots/scaling.pdf
-kermit-plot bar-time    bench-runs/*.json --query triangle --out plots/bar-time.pdf
-kermit-plot bar-space   bench-runs/*.json --out plots/bar-space.pdf
-kermit-plot tradeoff    bench-runs/*.json --out plots/tradeoff.pdf
-kermit-plot dist        bench-runs/*.json --out plots/dist.pdf
-kermit-plot bar-queries bench-runs/*.json --ds TreeTrie --algo LeapfrogTriejoin --out plots/bar-queries.pdf
+uv run kermit-plot scaling     bench-runs/*.json --out plots/scaling.pdf
+uv run kermit-plot bar-time    bench-runs/*.json --query triangle --out plots/bar-time.pdf
+uv run kermit-plot bar-space   bench-runs/*.json --out plots/bar-space.pdf
+uv run kermit-plot tradeoff    bench-runs/*.json --out plots/tradeoff.pdf
+uv run kermit-plot dist        bench-runs/*.json --out plots/dist.pdf
+uv run kermit-plot bar-queries bench-runs/*.json --ds TreeTrie --algo LeapfrogTriejoin --out plots/bar-queries.pdf
 ```
 
 `--format` overrides the file extension's default (`pdf`, `png`, `svg`, `pgf`).
@@ -207,7 +209,7 @@ kermit-plot bar-queries bench-runs/*.json --ds TreeTrie --algo LeapfrogTriejoin 
 ### Render every applicable shape (`render-all`)
 
 ```sh
-kermit-plot render-all bench-runs/*.json --out-dir plots/
+uv run kermit-plot render-all bench-runs/*.json --out-dir plots/
 ```
 
 Shapes that lack the necessary axes (e.g. only one `tuples` value → no
@@ -215,19 +217,19 @@ Shapes that lack the necessary axes (e.g. only one `tuples` value → no
 
 ### NixOS
 
-The pip-installed numpy / matplotlib wheels expect a glibc-style runtime
+The numpy / matplotlib wheels installed by uv expect a glibc-style runtime
 loader. The Nix dev shell handles this — `nix develop` exports an
-`LD_LIBRARY_PATH` covering `libstdc++.so.6` and `libz.so.1` so any venv
-activated inside the shell can load numpy's C extensions:
+`LD_LIBRARY_PATH` covering `libstdc++.so.6` and `libz.so.1` so the `.venv/`
+created by uv can load numpy's C extensions:
 
 ```sh
 nix develop
-source venv/bin/activate
-kermit-plot render-all bench-runs/*.json --out-dir plots/
+cd python/kermit-plot
+uv sync
+uv run kermit-plot render-all ../../bench-runs/*.json --out-dir ../../plots/
 ```
 
-If you're not using `nix develop`, set the env var manually before activating
-the venv:
+If you're not using `nix develop`, set the env var manually before invoking uv:
 
 ```sh
 export LD_LIBRARY_PATH=/run/current-system/sw/share/nix-ld/lib
@@ -255,9 +257,9 @@ done
 
 # 4. Render the scaling plot. (Inside `nix develop` on NixOS — the dev
 #    shell already exports the LD_LIBRARY_PATH that numpy needs.)
-cd scripts/kermit-plot
-source venv/bin/activate
-kermit-plot scaling ../../bench-runs/triangle-*.json \
+cd python/kermit-plot
+uv sync
+uv run kermit-plot scaling ../../bench-runs/triangle-*.json \
   --out ../../plots/triangle-scaling.pdf
 ```
 
