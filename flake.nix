@@ -32,6 +32,11 @@
             # bubblewrap sandboxes the vendored watdiv binary; required by
             # `kermit bench watdiv-gen` and the kermit-rdf e2e test.
             pkgs.bubblewrap
+            # JDK 8 runs the vendored LUBM-UBA jar; required by
+            # `kermit bench lubm-gen` and the kermit-rdf lubm e2e test.
+            # Pinned to 8 to match the build environment that produced
+            # the vendored jar — see kermit-rdf/vendor/lubm-uba/REGENERATE.md.
+            pkgs.jdk8
             pkgs.python313
           ];
 
