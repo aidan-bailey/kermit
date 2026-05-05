@@ -236,6 +236,50 @@ enum BenchSubcommand {
         #[arg(long)]
         no_bwrap: bool,
     },
+
+    /// Generate a fresh LUBM benchmark on the fly
+    LubmGen {
+        /// Number of universities to generate (`-u`); must be >= 1
+        #[arg(long, value_name = "N", required = true)]
+        scale: u32,
+
+        /// Tag appended to the benchmark name; pick a value that won't
+        /// collide with committed snapshot names
+        #[arg(long, value_name = "STRING", required = true)]
+        tag: String,
+
+        /// RNG seed (`-s`). Default 0 matches LUBM-UBA's documented default
+        #[arg(long, value_name = "N", default_value = "0")]
+        seed: u32,
+
+        /// Starting university index (`-i`)
+        #[arg(long, value_name = "N", default_value = "0")]
+        start_index: u32,
+
+        /// Worker thread count (`-t`). Default 1 for reproducibility.
+        #[arg(long, value_name = "N", default_value = "1")]
+        threads: u32,
+
+        /// Override the LUBM-UBA jar path (default: vendored)
+        #[arg(long, value_name = "PATH", env = "KERMIT_LUBM_JAR")]
+        lubm_jar: Option<PathBuf>,
+
+        /// Ontology IRI used as the base URL for generated entity IRIs.
+        /// Defaults to the canonical Univ-Bench TBox URL — override only if
+        /// you've mirrored the ontology elsewhere.
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl"
+        )]
+        ontology: String,
+
+        /// Override the cache dir parent (default: ~/.cache/kermit/benchmarks).
+        /// NOTE: benchmarks generated outside the default cache are NOT
+        /// auto-discovered by `bench list/fetch/run`; mainly useful for tests.
+        #[arg(long, value_name = "PATH")]
+        output_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -268,6 +312,10 @@ fn workspace_root() -> PathBuf {
 }
 
 fn vendored_watdiv_root() -> PathBuf { workspace_root().join("kermit-rdf/vendor/watdiv") }
+
+fn vendored_lubm_jar() -> PathBuf {
+    workspace_root().join("kermit-rdf/vendor/lubm-uba/lubm-uba.jar")
+}
 
 /// Column names derived from a query's head predicate. `Var(X)` becomes
 /// `"X"`, `Atom(c)` becomes `"c"` (constants are pre-rewritten by
@@ -1000,6 +1048,94 @@ fn main() -> anyhow::Result<()> {
                     "[watdiv-gen] wrote {} (triples={}, relations={}, queries={})",
                     out_dir.display(),
                     meta.triple_count,
+                    meta.relation_count,
+                    meta.query_count
+                );
+            },
+
+            | BenchSubcommand::LubmGen {
+                scale,
+                tag,
+                seed,
+                start_index,
+                threads,
+                lubm_jar,
+                ontology,
+                output_dir,
+            } => {
+                let bench_name = format!("lubm-{scale}-{tag}");
+                let workspace = workspace_root();
+                let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
+                    })?;
+                if workspace_names.iter().any(|n| n == &bench_name) {
+                    anyhow::bail!(
+                        "--tag {tag:?} produces bench name {bench_name:?} which already exists in \
+                         the workspace; pick a different tag"
+                    );
+                }
+                let jar = lubm_jar.unwrap_or_else(vendored_lubm_jar);
+                if !jar.exists() {
+                    anyhow::bail!(
+                        "LUBM-UBA jar not found at {jar:?}; build with `mvn package` in \
+                         lubm-uba-rs and copy to kermit-rdf/vendor/lubm-uba/, or override with \
+                         --lubm-jar / KERMIT_LUBM_JAR"
+                    );
+                }
+                let default_cache = dirs::cache_dir()
+                    .map(|p| p.join("kermit").join("benchmarks"))
+                    .expect("no cache dir on this platform");
+                let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
+                if cache_parent != default_cache {
+                    eprintln!(
+                        "[lubm-gen] note: --output-dir is set to {}; the generated benchmark will \
+                         NOT be auto-discovered by `bench list/fetch/run` (those scan {})",
+                        cache_parent.display(),
+                        default_cache.display()
+                    );
+                }
+                let out_dir = cache_parent.join(&bench_name);
+                if out_dir.exists()
+                    && std::fs::read_dir(&out_dir)
+                        .map(|mut d| d.next().is_some())
+                        .unwrap_or(false)
+                {
+                    eprintln!(
+                        "[lubm-gen] note: {} is non-empty; existing files will be overwritten",
+                        out_dir.display()
+                    );
+                }
+                std::fs::create_dir_all(&out_dir)?;
+
+                // LUBM(1, 0) cardinalities are only valid at scale 1; at
+                // other scales we still emit the queries but skip the
+                // expected.csv files to avoid misleading the cardinality
+                // test.
+                let queries = kermit_rdf::lubm::queries::lubm_query_specs(scale == 1);
+
+                let inputs = kermit_rdf::lubm::pipeline::LubmPipelineInputs {
+                    driver: kermit_rdf::lubm::driver::LubmDriverInputs {
+                        jar_path: &jar,
+                        scale,
+                        seed,
+                        start_index,
+                        threads,
+                        ontology_iri: &ontology,
+                    },
+                    out_dir: &out_dir,
+                    bench_name: &bench_name,
+                    tag: &tag,
+                    queries: &queries,
+                };
+                let meta = kermit_rdf::lubm::pipeline::run_lubm_pipeline(&inputs)
+                    .map_err(|e| anyhow::anyhow!("lubm-gen pipeline failed: {e}"))?;
+                eprintln!(
+                    "[lubm-gen] wrote {} (pre={}, post={}, derived={}, relations={}, queries={})",
+                    out_dir.display(),
+                    meta.triple_count_pre_entailment,
+                    meta.triple_count_post_entailment,
+                    meta.derived_triple_count,
                     meta.relation_count,
                     meta.query_count
                 );
