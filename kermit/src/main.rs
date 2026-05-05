@@ -505,16 +505,17 @@ where
         let mut criterion = build_space_criterion(bench_args);
         let mut group = criterion.benchmark_group(group_name);
         group.throughput(criterion::Throughput::Elements(n as u64));
-        // Reconstruct per iter so Criterion's calibration sees real work; the
-        // returned total = heap_size_bytes() * iters, so per-iter = bytes
-        // exactly (see docs/specs/space-benchmarks.md).
+        // Skip the expensive per-iter from_tuples rebuild but keep one O(N)
+        // heap_size_bytes() traversal in the loop. Criterion uses wall-clock
+        // during warm-up to pick `iters`, so a sub-microsecond closure makes
+        // it ramp `iters` toward u64::MAX and the math saturates usize.
+        // black_box prevents LICM from hoisting the call out of the loop.
         let function = format!("{ds_name}/space");
         group.bench_function(&function, |b| {
             b.iter_custom(|iters| {
                 let mut total = 0usize;
                 for _ in 0..iters {
-                    let r = R::from_tuples(header.clone(), tuples.clone());
-                    total = total.saturating_add(r.heap_size_bytes());
+                    total = total.saturating_add(std::hint::black_box(&relation).heap_size_bytes());
                 }
                 total
             });
@@ -697,19 +698,20 @@ where
             let mut criterion = build_space_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
             for rel in &relations {
-                let h = rel.header().clone();
-                let rel_name = h.name().to_string();
-                let rel_tuples: Vec<Vec<usize>> = rel.trie_iter().into_iter().collect();
-                // Reconstruct per iter so Criterion's calibration sees real
-                // work and total = heap_size_bytes() * iters (per spec at
-                // docs/specs/space-benchmarks.md).
+                let rel_name = rel.header().name().to_string();
+                // Skip the expensive per-iter from_tuples rebuild but keep one
+                // O(N) heap_size_bytes() traversal in the loop. Criterion uses
+                // wall-clock during warm-up to pick `iters`, so a sub-microsecond
+                // closure makes it ramp `iters` toward u64::MAX and the math
+                // saturates usize. black_box prevents LICM from hoisting the
+                // call out of the loop.
                 let function = format!("space/{}", rel_name);
                 group.bench_function(&function, |b| {
                     b.iter_custom(|iters| {
                         let mut total = 0usize;
                         for _ in 0..iters {
-                            let r = R::from_tuples(h.clone(), rel_tuples.clone());
-                            total = total.saturating_add(r.heap_size_bytes());
+                            total =
+                                total.saturating_add(std::hint::black_box(rel).heap_size_bytes());
                         }
                         total
                     });

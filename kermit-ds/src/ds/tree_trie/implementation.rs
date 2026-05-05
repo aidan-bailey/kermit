@@ -263,4 +263,16 @@ mod heap_size_tests {
             ]]);
         assert!(large.heap_size_bytes() > small.heap_size_bytes());
     }
+
+    // `from_tuples` is a pure function of its inputs, so two builds from the
+    // same tuples must produce the same heap layout. Pinning this rules out
+    // hash-randomised allocation or capacity jitter sneaking in via a future
+    // change to the construction path.
+    #[test]
+    fn heap_size_is_deterministic_across_rebuilds() {
+        let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]];
+        let a = TreeTrie::from_tuples(2.into(), tuples.clone());
+        let b = TreeTrie::from_tuples(2.into(), tuples);
+        assert_eq!(a.heap_size_bytes(), b.heap_size_bytes());
+    }
 }

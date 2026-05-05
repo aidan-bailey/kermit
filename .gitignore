@@ -25,6 +25,7 @@ Cargo.lock
 **/*.csv
 !kermit/tests/fixtures/*.csv
 .claude-squad/
+.claude.local.md
 .worktrees/
 
 # WatDiv raw dataset — too large for the repo. Developers download it
