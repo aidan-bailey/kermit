@@ -1,0 +1,10 @@
+name: watdiv-example
+description: "Minimal WatDiv generator example: scale 1, 2-query stress templates"
+generator:
+  kind: watdiv
+  scale: 1
+  stress:
+    max_query_size: 2
+    query_count: 2
+    constants_per_query: 1
+    allow_join_vertex: false
