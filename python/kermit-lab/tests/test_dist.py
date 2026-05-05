@@ -9,9 +9,9 @@ matplotlib.use("Agg")
 
 import pytest
 
-from kermit_plot.loader import load_reports
-from kermit_plot.plots import InsufficientAxesError
-from kermit_plot.plots import dist
+from kermit_lab.loader import load_reports
+from kermit_lab.plots import InsufficientAxesError
+from kermit_lab.plots import dist
 
 
 def test_dist_writes_file(fixture_tree, tmp_path: Path) -> None:

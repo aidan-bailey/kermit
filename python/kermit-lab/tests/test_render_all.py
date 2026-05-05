@@ -8,8 +8,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-from kermit_plot.drivers.render_all import render_all
-from kermit_plot.loader import load_reports
+from kermit_lab.drivers.render_all import render_all
+from kermit_lab.loader import load_reports
 
 
 def test_render_all_emits_all_shapes_for_full_fixture(
@@ -40,7 +40,7 @@ def test_render_all_skips_inapplicable_shapes_without_raising(
     out_dir.mkdir()
     reports = load_reports(fixture_tree["paths"])
     only_one_size = [r for r in reports if r.axis("tuples") == 100]
-    with caplog.at_level(logging.INFO, logger="kermit_plot.drivers.render_all"):
+    with caplog.at_level(logging.INFO, logger="kermit_lab.drivers.render_all"):
         render_all(only_one_size, out_dir, fixture_tree["criterion_root"], "pdf")
     files = {p.name for p in out_dir.iterdir()}
     # scaling needs ≥2 distinct tuples values — skipped.

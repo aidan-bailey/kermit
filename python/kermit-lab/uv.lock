@@ -268,7 +268,7 @@ wheels = [
 ]
 
 [[package]]
-name = "kermit-plot"
+name = "kermit-lab"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

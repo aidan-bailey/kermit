@@ -23,7 +23,7 @@ Criterion 0.7's bundled SVG/HTML plotting layer is unsuitable for the thesis:
 ## Decision
 
 Strip Criterion's rendering layer entirely; keep its measurement output as the
-source of truth; render plots in a separate Python tool (`python/kermit-plot/`)
+source of truth; render plots in a separate Python tool (`python/kermit-lab/`)
 that reads the per-function JSON Criterion writes plus the existing
 `--report-json` `BenchReport`.
 
@@ -40,7 +40,7 @@ that reads the per-function JSON Criterion writes plus the existing
                  │
                  ▼
 ┌───────────────────────────────┐
-│ kermit-plot <subcmd> *.json    │ ── thesis-quality PDF/PNG/SVG/PGF
+│ kermit-lab <subcmd> *.json    │ ── thesis-quality PDF/PNG/SVG/PGF
 └───────────────────────────────┘
 ```
 
@@ -96,7 +96,7 @@ comment. The plot subsystem doesn't exist anymore — there's nothing to disable
 Two updates:
 
 - **Replace** the "plotters panic / `.without_plots()`" workaround note with
-  a "no Criterion auto-plots" gotcha pointing at `python/kermit-plot/`.
+  a "no Criterion auto-plots" gotcha pointing at `python/kermit-lab/`.
 - **Update** the JSON bench reports gotcha for schema v2: document `axes`,
   conventional keys, schema doc location.
 
@@ -115,18 +115,18 @@ CWD (the directory is auto-created). `--report-json <PATH>` overrides. Because
 the default may resolve under any crate when tests/scripts run there, the
 gitignore pattern is unanchored (`bench-runs/`, not `/bench-runs/`).
 
-## Python-side: `python/kermit-plot/`
+## Python-side: `python/kermit-lab/`
 
-New project at `python/kermit-plot/`, mirroring `scripts/watdiv-preprocess/`'s
+New project at `python/kermit-lab/`, mirroring `scripts/watdiv-preprocess/`'s
 layout (pyproject + setuptools, console_scripts, pytest, editable install).
 
 ### Layout
 
 ```
-python/kermit-plot/
+python/kermit-lab/
 ├── pyproject.toml
 ├── README.md
-├── kermit_plot/
+├── kermit_lab/
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── loader.py             # parse BenchReport JSON; resolve directory_name
@@ -143,13 +143,13 @@ python/kermit-plot/
 ### CLI
 
 ```
-kermit-plot scaling     <report.json>... [--out PATH] [--format {pdf,png,svg,pgf}]
-kermit-plot bar-time    <report.json>... --query QUERY [--out PATH] ...
-kermit-plot bar-space   <report.json>... [--out PATH] ...
-kermit-plot tradeoff    <report.json>... [--out PATH] ...
-kermit-plot dist        <report.json>... [--out PATH] ...
-kermit-plot bar-queries <report.json>... --ds DS --algo ALGO [--out PATH] ...
-kermit-plot render-all  <report.json>... --out-dir DIR [--format ...]
+kermit-lab scaling     <report.json>... [--out PATH] [--format {pdf,png,svg,pgf}]
+kermit-lab bar-time    <report.json>... --query QUERY [--out PATH] ...
+kermit-lab bar-space   <report.json>... [--out PATH] ...
+kermit-lab tradeoff    <report.json>... [--out PATH] ...
+kermit-lab dist        <report.json>... [--out PATH] ...
+kermit-lab bar-queries <report.json>... --ds DS --algo ALGO [--out PATH] ...
+kermit-lab render-all  <report.json>... --out-dir DIR [--format ...]
 ```
 
 `render-all` emits every plot for which the input set has sufficient axes
@@ -162,7 +162,7 @@ inputs). Skipped shapes log at info level rather than erroring.
    commands, varying `(DS, algo, dataset)` between invocations.
 2. Each invocation writes both `target/criterion/{group}/{dir}/...` artefacts
    and a `BenchReport` JSON.
-3. `kermit-plot scaling bench-runs/*.json --out plots/scaling-triangle.pdf`
+3. `kermit-lab scaling bench-runs/*.json --out plots/scaling-triangle.pdf`
    loads all reports. For each `CriterionGroupRef{group, function}`, the
    loader reads `target/criterion/{group}/{directory_name}/new/` JSON, where
    `directory_name` is read from each candidate subdir's
@@ -206,7 +206,7 @@ directly. Re-evaluate only if shapes grow.
 2. `bench_report.rs` schema v2; thread `axes` through three call sites
    (`BenchSubcommand::Join`, `run_ds_bench`, `run_benchmark`); update tests.
 3. CLAUDE.md + `docs/specs/` (this file + `bench-report-schema.md`).
-4. `python/kermit-plot/` scaffold (pyproject, README, package skeleton,
+4. `python/kermit-lab/` scaffold (pyproject, README, package skeleton,
    loader/criterion/axis_mapping/style, fixtures).
 5. All six plot subcommands + `render-all` (one commit, optionally split if
    it grows).
@@ -218,7 +218,7 @@ reassess if `target/criterion/` layout differs from expectations.
 ## Out of scope (deliberate YAGNI)
 
 - pandas / DataFrame pipelines. Re-evaluate if data shapes grow.
-- Adding `kermit-plot` to CI. `watdiv-preprocess` isn't gated; this isn't
+- Adding `kermit-lab` to CI. `watdiv-preprocess` isn't gated; this isn't
   either, yet.
 - Nix flake integration for Python. Match `watdiv-preprocess`.
 - Run-aggregation registry / database. `bench-runs/*.json` directory globbing
@@ -241,11 +241,11 @@ reassess if `target/criterion/` layout differs from expectations.
    shows `benchmark.json`, `estimates.json`, `sample.json`, `tukey.json`
    under `target/criterion/{group}/{dir}/{base,new}/` — and **no** SVG/HTML
    anywhere.
-5. `pip install -e python/kermit-plot && pytest python/kermit-plot` passes
+5. `pip install -e python/kermit-lab && pytest python/kermit-lab` passes
    without running `cargo bench` (committed fixtures).
-6. `kermit-plot scaling bench-runs/*.json --out /tmp/scaling.pdf` produces a
+6. `kermit-lab scaling bench-runs/*.json --out /tmp/scaling.pdf` produces a
    non-empty PDF with one line per (DS, algorithm) and a log-log axis.
-7. `kermit-plot render-all bench-runs/*.json --out-dir /tmp/plots` produces
+7. `kermit-lab render-all bench-runs/*.json --out-dir /tmp/plots` produces
    every applicable shape's PDF; shapes lacking sufficient axes are skipped
    with an info-level log.
 8. Visual eyeball pass on each PDF: legend correctness, error-bar presence,

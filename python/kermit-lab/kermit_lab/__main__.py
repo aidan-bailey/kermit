@@ -1,4 +1,4 @@
-"""``python -m kermit_plot`` entry; delegates to the argparse driver."""
+"""``python -m kermit_lab`` entry; delegates to the argparse driver."""
 from __future__ import annotations
 
 import sys

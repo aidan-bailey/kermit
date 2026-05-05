@@ -1,6 +1,6 @@
 # Kermit Usage
 
-Practical examples for the `kermit` CLI and the companion `kermit-plot` Python
+Practical examples for the `kermit` CLI and the companion `kermit-lab` Python
 tool. All examples run from the workspace root.
 
 ## Build
@@ -174,34 +174,34 @@ The shape is always a JSON array of `BenchReport` objects (one per query for
 in [`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md);
 the source of truth is `kermit/src/bench_report.rs`.
 
-## Plotting (`kermit-plot`)
+## Plotting (`kermit-lab`)
 
 The Rust CLI deliberately doesn't render plots — Criterion's auto-plots are
 disabled. Thesis-quality figures come from the Python tool at
-`python/kermit-plot/`, which consumes one or many `--report-json` outputs
+`python/kermit-lab/`, which consumes one or many `--report-json` outputs
 and the Criterion artefacts they reference. The project is managed with
 [uv](https://docs.astral.sh/uv/) and pins its versions in `uv.lock`.
 
 ### One-time setup
 
 ```sh
-cd python/kermit-plot
+cd python/kermit-lab
 uv sync --group test
 ```
 
 This creates `.venv/` with all dependencies pinned to `uv.lock`. Run the CLI
-via `uv run kermit-plot …` or activate the venv (`source .venv/bin/activate`)
-to call `kermit-plot` directly.
+via `uv run kermit-lab …` or activate the venv (`source .venv/bin/activate`)
+to call `kermit-lab` directly.
 
 ### Render a single shape
 
 ```sh
-uv run kermit-plot scaling     bench-runs/*.json --out plots/scaling.pdf
-uv run kermit-plot bar-time    bench-runs/*.json --query triangle --out plots/bar-time.pdf
-uv run kermit-plot bar-space   bench-runs/*.json --out plots/bar-space.pdf
-uv run kermit-plot tradeoff    bench-runs/*.json --out plots/tradeoff.pdf
-uv run kermit-plot dist        bench-runs/*.json --out plots/dist.pdf
-uv run kermit-plot bar-queries bench-runs/*.json --ds TreeTrie --algo LeapfrogTriejoin --out plots/bar-queries.pdf
+uv run kermit-lab scaling     bench-runs/*.json --out plots/scaling.pdf
+uv run kermit-lab bar-time    bench-runs/*.json --query triangle --out plots/bar-time.pdf
+uv run kermit-lab bar-space   bench-runs/*.json --out plots/bar-space.pdf
+uv run kermit-lab tradeoff    bench-runs/*.json --out plots/tradeoff.pdf
+uv run kermit-lab dist        bench-runs/*.json --out plots/dist.pdf
+uv run kermit-lab bar-queries bench-runs/*.json --ds TreeTrie --algo LeapfrogTriejoin --out plots/bar-queries.pdf
 ```
 
 `--format` overrides the file extension's default (`pdf`, `png`, `svg`, `pgf`).
@@ -209,7 +209,7 @@ uv run kermit-plot bar-queries bench-runs/*.json --ds TreeTrie --algo LeapfrogTr
 ### Render every applicable shape (`render-all`)
 
 ```sh
-uv run kermit-plot render-all bench-runs/*.json --out-dir plots/
+uv run kermit-lab render-all bench-runs/*.json --out-dir plots/
 ```
 
 Shapes that lack the necessary axes (e.g. only one `tuples` value → no
@@ -224,9 +224,9 @@ created by uv can load numpy's C extensions:
 
 ```sh
 nix develop
-cd python/kermit-plot
+cd python/kermit-lab
 uv sync
-uv run kermit-plot render-all ../../bench-runs/*.json --out-dir ../../plots/
+uv run kermit-lab render-all ../../bench-runs/*.json --out-dir ../../plots/
 ```
 
 If you're not using `nix develop`, set the env var manually before invoking uv:
@@ -257,9 +257,9 @@ done
 
 # 4. Render the scaling plot. (Inside `nix develop` on NixOS — the dev
 #    shell already exports the LD_LIBRARY_PATH that numpy needs.)
-cd python/kermit-plot
+cd python/kermit-lab
 uv sync
-uv run kermit-plot scaling ../../bench-runs/triangle-*.json \
+uv run kermit-lab scaling ../../bench-runs/triangle-*.json \
   --out ../../plots/triangle-scaling.pdf
 ```
 

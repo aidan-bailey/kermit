@@ -9,9 +9,9 @@ matplotlib.use("Agg")
 
 import pytest
 
-from kermit_plot.loader import load_reports
-from kermit_plot.plots import InsufficientAxesError
-from kermit_plot.plots import bar_queries
+from kermit_lab.loader import load_reports
+from kermit_lab.plots import InsufficientAxesError
+from kermit_lab.plots import bar_queries
 
 
 def test_bar_queries_writes_file_for_known_pair(fixture_tree, tmp_path: Path) -> None:

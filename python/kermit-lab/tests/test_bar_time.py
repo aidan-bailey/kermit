@@ -9,9 +9,9 @@ matplotlib.use("Agg")
 
 import pytest
 
-from kermit_plot.loader import load_reports
-from kermit_plot.plots import InsufficientAxesError
-from kermit_plot.plots import bar_time
+from kermit_lab.loader import load_reports
+from kermit_lab.plots import InsufficientAxesError
+from kermit_lab.plots import bar_time
 
 
 def test_bar_time_writes_file_for_known_query(fixture_tree, tmp_path: Path) -> None:

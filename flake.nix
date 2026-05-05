@@ -33,7 +33,7 @@
             # `kermit bench watdiv-gen` and the kermit-rdf e2e test.
             pkgs.bubblewrap
             pkgs.python313
-            # uv manages python/kermit-plot/ — `uv sync` reads pyproject.toml
+            # uv manages python/kermit-lab/ — `uv sync` reads pyproject.toml
             # + uv.lock to materialise .venv/.
             pkgs.uv
           ];
@@ -47,7 +47,7 @@
           #     test and `kermit bench watdiv-gen`. Inherited into the bwrap
           #     namespace because bwrap propagates env by default.
           #   - the Python wheels (numpy, matplotlib) installed by uv into
-          #     python/kermit-plot/.venv/ dlopen libstdc++.so.6 / libz.so.1.
+          #     python/kermit-lab/.venv/ dlopen libstdc++.so.6 / libz.so.1.
           shellHook = ''
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib pkgs.zlib ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           '';

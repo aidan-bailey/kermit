@@ -10,7 +10,7 @@ All plot modules follow the same shape:
   :class:`InsufficientAxesError`.
 
 The orchestration (style application, figure save, format handling) lives in
-``kermit_plot.drivers.main``; plot modules only build the figure.
+``kermit_lab.drivers.main``; plot modules only build the figure.
 """
 from __future__ import annotations
 

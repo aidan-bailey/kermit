@@ -9,9 +9,9 @@ matplotlib.use("Agg")  # headless rendering for CI
 
 import pytest
 
-from kermit_plot.loader import load_reports
-from kermit_plot.plots import InsufficientAxesError
-from kermit_plot.plots import scaling
+from kermit_lab.loader import load_reports
+from kermit_lab.plots import InsufficientAxesError
+from kermit_lab.plots import scaling
 
 
 def test_scaling_writes_non_empty_file(fixture_tree, tmp_path: Path) -> None:

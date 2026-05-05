@@ -1,4 +1,4 @@
-"""``kermit-plot`` argparse dispatcher.
+"""``kermit-lab`` argparse dispatcher.
 
 Each plot module exports a ``render(reports, out_path, criterion_root, **kwargs)``
 function; the CLI maps subcommands to those modules and threads kwargs.
@@ -16,7 +16,7 @@ from ..plots import bar_queries, bar_space, bar_time, dist, scaling, tradeoff
 from ..styles import apply as apply_style
 from . import render_all
 
-log = logging.getLogger("kermit-plot")
+log = logging.getLogger("kermit-lab")
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -46,7 +46,7 @@ def _add_phase(p: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="kermit-plot",
+        prog="kermit-lab",
         description="Render thesis-quality plots from kermit BenchReport JSON.",
     )
     p.add_argument(

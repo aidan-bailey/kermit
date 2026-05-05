@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kermit_plot.loader import SchemaError, load_reports
+from kermit_lab.loader import SchemaError, load_reports
 
 
 def test_loads_array_with_one_report(tmp_path: Path) -> None:

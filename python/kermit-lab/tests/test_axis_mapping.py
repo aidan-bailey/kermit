@@ -1,7 +1,7 @@
 """Axis mapping is the single source of truth for colours/markers — tests pin its contract."""
 from __future__ import annotations
 
-from kermit_plot.axis_mapping import (
+from kermit_lab.axis_mapping import (
     DATA_STRUCTURE_COLOURS,
     WONG_PALETTE,
     colour_for_ds,

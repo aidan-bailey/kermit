@@ -57,7 +57,7 @@ def _parse_one(obj: dict, source_path: Path) -> BenchReport:
     if version > SCHEMA_VERSION:
         raise SchemaError(
             f"{source_path}: schema_version {version} > supported {SCHEMA_VERSION}; "
-            "upgrade kermit-plot or pin to an older bench output"
+            "upgrade kermit-lab or pin to an older bench output"
         )
     try:
         return BenchReport(

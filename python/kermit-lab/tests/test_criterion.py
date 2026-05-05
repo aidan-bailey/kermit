@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kermit_plot.criterion import load_function, resolve_function_dir
+from kermit_lab.criterion import load_function, resolve_function_dir
 
 
 def test_resolves_function_id_with_slashes(fixture_tree) -> None:
