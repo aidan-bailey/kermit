@@ -195,8 +195,17 @@ enum BenchSubcommand {
         name: Option<String>,
     },
 
+    /// Generate a fresh benchmark on the fly
+    Gen {
+        #[command(subcommand)]
+        subcommand: GenSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum GenSubcommand {
     /// Generate a fresh watdiv benchmark on the fly
-    WatdivGen {
+    Watdiv {
         /// Scale factor passed to watdiv -d (>= 1)
         #[arg(long, value_name = "N", required = true)]
         scale: u32,
@@ -238,7 +247,7 @@ enum BenchSubcommand {
     },
 
     /// Generate a fresh LUBM benchmark on the fly
-    LubmGen {
+    Lubm {
         /// Number of universities to generate (`-u`); must be >= 1
         #[arg(long, value_name = "N", required = true)]
         scale: u32,
@@ -979,166 +988,173 @@ fn main() -> anyhow::Result<()> {
                 }
             },
 
-            | BenchSubcommand::WatdivGen {
-                scale,
-                tag,
-                max_query_size,
-                query_count,
-                constants_per_query,
-                allow_join_vertex,
-                watdiv_bin,
-                output_dir,
-                no_bwrap,
-            } => {
-                let bench_name = format!("watdiv-stress-{scale}-{tag}");
-                let workspace = workspace_root();
-                let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
-                    .map_err(|e| {
-                        anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
-                    })?;
-                if workspace_names.iter().any(|n| n == &bench_name) {
-                    anyhow::bail!(
-                        "--tag {tag:?} produces bench name {bench_name:?} which already exists in \
-                         the workspace; pick a different tag"
-                    );
-                }
-                let vendor = vendored_watdiv_root();
-                let bin = watdiv_bin.unwrap_or_else(|| vendor.join("bin/Release/watdiv"));
-                if !bin.exists() {
-                    anyhow::bail!("watdiv binary not found at {bin:?}");
-                }
-                let default_cache = dirs::cache_dir()
-                    .map(|p| p.join("kermit").join("benchmarks"))
-                    .expect("no cache dir on this platform");
-                let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
-                if cache_parent != default_cache {
-                    eprintln!(
-                        "[watdiv-gen] note: --output-dir is set to {}; the generated benchmark \
-                         will NOT be auto-discovered by `bench list/fetch/run` (those scan {})",
-                        cache_parent.display(),
-                        default_cache.display()
-                    );
-                }
-                let out_dir = cache_parent.join(&bench_name);
-                std::fs::create_dir_all(&out_dir)?;
-
-                let stress = kermit_rdf::driver::StressParams {
+            | BenchSubcommand::Gen {
+                subcommand,
+            } => match subcommand {
+                | GenSubcommand::Watdiv {
+                    scale,
+                    tag,
                     max_query_size,
                     query_count,
                     constants_per_query,
                     allow_join_vertex,
-                };
-                let inputs = kermit_rdf::pipeline::PipelineInputs {
-                    driver: kermit_rdf::driver::DriverInputs {
-                        watdiv_bin: &bin,
-                        vendor_files: &vendor.join("files"),
-                        model_file: &vendor.join("MODEL.txt"),
-                        scale,
-                        stress,
-                        query_count_per_template: query_count,
-                        use_bwrap: !no_bwrap,
-                    },
-                    out_dir: &out_dir,
-                    bench_name: &bench_name,
-                    tag: &tag,
-                };
-                let meta = kermit_rdf::pipeline::run_pipeline(&inputs)
-                    .map_err(|e| anyhow::anyhow!("watdiv-gen pipeline failed: {e}"))?;
-                eprintln!(
-                    "[watdiv-gen] wrote {} (triples={}, relations={}, queries={})",
-                    out_dir.display(),
-                    meta.triple_count,
-                    meta.relation_count,
-                    meta.query_count
-                );
-            },
+                    watdiv_bin,
+                    output_dir,
+                    no_bwrap,
+                } => {
+                    let bench_name = format!("watdiv-stress-{scale}-{tag}");
+                    let workspace = workspace_root();
+                    let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
+                        })?;
+                    if workspace_names.iter().any(|n| n == &bench_name) {
+                        anyhow::bail!(
+                            "--tag {tag:?} produces bench name {bench_name:?} which already \
+                             exists in the workspace; pick a different tag"
+                        );
+                    }
+                    let vendor = vendored_watdiv_root();
+                    let bin = watdiv_bin.unwrap_or_else(|| vendor.join("bin/Release/watdiv"));
+                    if !bin.exists() {
+                        anyhow::bail!("watdiv binary not found at {bin:?}");
+                    }
+                    let default_cache = dirs::cache_dir()
+                        .map(|p| p.join("kermit").join("benchmarks"))
+                        .expect("no cache dir on this platform");
+                    let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
+                    if cache_parent != default_cache {
+                        eprintln!(
+                            "[gen watdiv] note: --output-dir is set to {}; the generated \
+                             benchmark will NOT be auto-discovered by `bench list/fetch/run` \
+                             (those scan {})",
+                            cache_parent.display(),
+                            default_cache.display()
+                        );
+                    }
+                    let out_dir = cache_parent.join(&bench_name);
+                    std::fs::create_dir_all(&out_dir)?;
 
-            | BenchSubcommand::LubmGen {
-                scale,
-                tag,
-                seed,
-                start_index,
-                threads,
-                lubm_jar,
-                ontology,
-                output_dir,
-            } => {
-                let bench_name = format!("lubm-{scale}-{tag}");
-                let workspace = workspace_root();
-                let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
-                    .map_err(|e| {
-                        anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
-                    })?;
-                if workspace_names.iter().any(|n| n == &bench_name) {
-                    anyhow::bail!(
-                        "--tag {tag:?} produces bench name {bench_name:?} which already exists in \
-                         the workspace; pick a different tag"
-                    );
-                }
-                let jar = lubm_jar.unwrap_or_else(vendored_lubm_jar);
-                if !jar.exists() {
-                    anyhow::bail!(
-                        "LUBM-UBA jar not found at {jar:?}; build with `mvn package` in \
-                         lubm-uba-rs and copy to kermit-rdf/vendor/lubm-uba/, or override with \
-                         --lubm-jar / KERMIT_LUBM_JAR"
-                    );
-                }
-                let default_cache = dirs::cache_dir()
-                    .map(|p| p.join("kermit").join("benchmarks"))
-                    .expect("no cache dir on this platform");
-                let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
-                if cache_parent != default_cache {
+                    let stress = kermit_rdf::driver::StressParams {
+                        max_query_size,
+                        query_count,
+                        constants_per_query,
+                        allow_join_vertex,
+                    };
+                    let inputs = kermit_rdf::pipeline::PipelineInputs {
+                        driver: kermit_rdf::driver::DriverInputs {
+                            watdiv_bin: &bin,
+                            vendor_files: &vendor.join("files"),
+                            model_file: &vendor.join("MODEL.txt"),
+                            scale,
+                            stress,
+                            query_count_per_template: query_count,
+                            use_bwrap: !no_bwrap,
+                        },
+                        out_dir: &out_dir,
+                        bench_name: &bench_name,
+                        tag: &tag,
+                    };
+                    let meta = kermit_rdf::pipeline::run_pipeline(&inputs)
+                        .map_err(|e| anyhow::anyhow!("gen watdiv pipeline failed: {e}"))?;
                     eprintln!(
-                        "[lubm-gen] note: --output-dir is set to {}; the generated benchmark will \
-                         NOT be auto-discovered by `bench list/fetch/run` (those scan {})",
-                        cache_parent.display(),
-                        default_cache.display()
+                        "[gen watdiv] wrote {} (triples={}, relations={}, queries={})",
+                        out_dir.display(),
+                        meta.triple_count,
+                        meta.relation_count,
+                        meta.query_count
                     );
-                }
-                let out_dir = cache_parent.join(&bench_name);
-                if out_dir.exists()
-                    && std::fs::read_dir(&out_dir)
-                        .map(|mut d| d.next().is_some())
-                        .unwrap_or(false)
-                {
+                },
+
+                | GenSubcommand::Lubm {
+                    scale,
+                    tag,
+                    seed,
+                    start_index,
+                    threads,
+                    lubm_jar,
+                    ontology,
+                    output_dir,
+                } => {
+                    let bench_name = format!("lubm-{scale}-{tag}");
+                    let workspace = workspace_root();
+                    let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
+                        })?;
+                    if workspace_names.iter().any(|n| n == &bench_name) {
+                        anyhow::bail!(
+                            "--tag {tag:?} produces bench name {bench_name:?} which already \
+                             exists in the workspace; pick a different tag"
+                        );
+                    }
+                    let jar = lubm_jar.unwrap_or_else(vendored_lubm_jar);
+                    if !jar.exists() {
+                        anyhow::bail!(
+                            "LUBM-UBA jar not found at {jar:?}; build with `mvn package` in \
+                             lubm-uba-rs and copy to kermit-rdf/vendor/lubm-uba/, or override \
+                             with --lubm-jar / KERMIT_LUBM_JAR"
+                        );
+                    }
+                    let default_cache = dirs::cache_dir()
+                        .map(|p| p.join("kermit").join("benchmarks"))
+                        .expect("no cache dir on this platform");
+                    let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
+                    if cache_parent != default_cache {
+                        eprintln!(
+                            "[gen lubm] note: --output-dir is set to {}; the generated \
+                             benchmark will NOT be auto-discovered by `bench list/fetch/run` \
+                             (those scan {})",
+                            cache_parent.display(),
+                            default_cache.display()
+                        );
+                    }
+                    let out_dir = cache_parent.join(&bench_name);
+                    if out_dir.exists()
+                        && std::fs::read_dir(&out_dir)
+                            .map(|mut d| d.next().is_some())
+                            .unwrap_or(false)
+                    {
+                        eprintln!(
+                            "[gen lubm] note: {} is non-empty; existing files will be overwritten",
+                            out_dir.display()
+                        );
+                    }
+                    std::fs::create_dir_all(&out_dir)?;
+
+                    // LUBM(1, 0) cardinalities are only valid at scale 1; at
+                    // other scales we still emit the queries but skip the
+                    // expected.csv files to avoid misleading the cardinality
+                    // test.
+                    let queries = kermit_rdf::lubm::queries::lubm_query_specs(scale == 1);
+
+                    let inputs = kermit_rdf::lubm::pipeline::LubmPipelineInputs {
+                        driver: kermit_rdf::lubm::driver::LubmDriverInputs {
+                            jar_path: &jar,
+                            scale,
+                            seed,
+                            start_index,
+                            threads,
+                            ontology_iri: &ontology,
+                        },
+                        out_dir: &out_dir,
+                        bench_name: &bench_name,
+                        tag: &tag,
+                        queries: &queries,
+                    };
+                    let meta = kermit_rdf::lubm::pipeline::run_lubm_pipeline(&inputs)
+                        .map_err(|e| anyhow::anyhow!("gen lubm pipeline failed: {e}"))?;
                     eprintln!(
-                        "[lubm-gen] note: {} is non-empty; existing files will be overwritten",
-                        out_dir.display()
+                        "[gen lubm] wrote {} (pre={}, post={}, derived={}, relations={}, \
+                         queries={})",
+                        out_dir.display(),
+                        meta.triple_count_pre_entailment,
+                        meta.triple_count_post_entailment,
+                        meta.derived_triple_count,
+                        meta.relation_count,
+                        meta.query_count
                     );
-                }
-                std::fs::create_dir_all(&out_dir)?;
-
-                // LUBM(1, 0) cardinalities are only valid at scale 1; at
-                // other scales we still emit the queries but skip the
-                // expected.csv files to avoid misleading the cardinality
-                // test.
-                let queries = kermit_rdf::lubm::queries::lubm_query_specs(scale == 1);
-
-                let inputs = kermit_rdf::lubm::pipeline::LubmPipelineInputs {
-                    driver: kermit_rdf::lubm::driver::LubmDriverInputs {
-                        jar_path: &jar,
-                        scale,
-                        seed,
-                        start_index,
-                        threads,
-                        ontology_iri: &ontology,
-                    },
-                    out_dir: &out_dir,
-                    bench_name: &bench_name,
-                    tag: &tag,
-                    queries: &queries,
-                };
-                let meta = kermit_rdf::lubm::pipeline::run_lubm_pipeline(&inputs)
-                    .map_err(|e| anyhow::anyhow!("lubm-gen pipeline failed: {e}"))?;
-                eprintln!(
-                    "[lubm-gen] wrote {} (pre={}, post={}, derived={}, relations={}, queries={})",
-                    out_dir.display(),
-                    meta.triple_count_pre_entailment,
-                    meta.triple_count_post_entailment,
-                    meta.derived_triple_count,
-                    meta.relation_count,
-                    meta.query_count
-                );
+                },
             },
         },
     }
