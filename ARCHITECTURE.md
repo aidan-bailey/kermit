@@ -18,8 +18,9 @@ kermit/
 ├── kermit-parser/   # Datalog query parser
 ├── kermit-ds/       # Data structures (tries, relations)
 ├── kermit-algos/    # Join algorithms
-├── kermit-bench/    # Benchmark infrastructure
-└── kermit/          # CLI and top-level integration
+├── kermit-bench/    # Benchmark definitions, discovery, caching
+├── kermit-rdf/      # RDF/SPARQL pipelines (WatDiv, LUBM generators)
+└── kermit/          # CLI binary and top-level integration
 ```
 
 ### Dependency Graph
@@ -30,15 +31,17 @@ kermit-iters ◄─── kermit-derive
      ├──────────── kermit-parser
      │                  │
      ▼                  ▼
-kermit-ds ◄─────── kermit-algos
-     │                  │
-     └────────┬─────────┘
-              ▼
-        kermit-bench
-              │
-              ▼
-           kermit
+kermit-ds ◄─────── kermit-algos       kermit-bench   (isolated)
+                        │                  │
+                        ▼                  │
+                   kermit-rdf ◄────────────┤
+                        │                  │
+                        └────────┬─────────┘
+                                 ▼
+                              kermit
 ```
+
+`kermit-bench` has no internal kermit dependencies. `kermit-rdf` depends on `kermit-parser`, `kermit-ds`, and `kermit-bench`. The `kermit` binary depends on every other crate.
 
 ## Core Abstractions
 
@@ -204,7 +207,7 @@ At depth 2 (variable C): S and T participate
 ### JoinAlgo Trait
 
 ```rust
-pub trait JoinAlgo<DS> where DS: TrieIterable {
+pub trait JoinAlgo<DS> where DS: JoinIterable {
     fn join_iter(
         query: JoinQuery,
         datastructures: HashMap<String, &DS>,
@@ -212,55 +215,85 @@ pub trait JoinAlgo<DS> where DS: TrieIterable {
 }
 ```
 
-This abstraction allows implementing different join algorithms that work with any trie-iterable data structure.
+This abstraction allows implementing different join algorithms that work with any join-iterable data structure.
+
+### Const-Rewrite
+
+Before handing a query to `JoinAlgo::join_iter`, `DatabaseEngine::join` calls `kermit_algos::rewrite_atoms` (see `kermit-algos/src/const_rewrite.rs`) to implement Veldhuizen 2014 §3.4 point 4. Each `Term::Atom("c<id>")` in the body becomes a fresh variable `K<i>` plus a synthetic unary predicate `Const_c<id>(K<i>)` appended to the body, backed by a `SingletonTrieIter`. Body atoms only — head atoms are passed through. Implication: a new `JoinAlgo` impl must tolerate seeing the rewritten query, which can carry extra unary body predicates that do not appear in the user's original Datalog source. Adding a new data structure does *not* require any atom handling — the rewrite happens above the DS layer.
 
 ## Benchmarking (`kermit-bench`)
 
-The benchmark crate provides synthetic data generation and workload definitions
-with no internal kermit dependencies:
+The benchmark crate is a leaf with no internal kermit dependencies. It defines the YAML schema, performs discovery, and manages download / cache state for relation files. Criterion execution itself lives in the `kermit` binary.
 
-- **Generation**: Tuple generators (exponential, factorial, distinct) and graph
-  model stubs (Erdos-Renyi via petgraph)
-- **Tasks**: Groupings of related benchmark workloads
-- **SubTasks**: Individual scale points with declarative generation parameters
+### YAML benchmark definitions
 
-```rust
-enum GenerationParams {
-    Exponential { k: usize },
-    Factorial { k: usize },
-    Graph(GraphModel),
-    Custom,
-}
+A benchmark is a single `benchmarks/<name>.yml` file (filename stem must equal the `name:` field). The schema is documented in `benchmarks/README.md`. Two flavours:
 
-trait BenchmarkConfig {
-    fn metadata(&self) -> &BenchmarkMetadata;
-    fn generate(&self, subtask: &SubTask) -> Vec<(usize, Vec<Vec<usize>>)>;
-}
+- **Static** — declares `relations:` (each with a download URL) and `queries:` (Datalog strings). See `benchmarks/triangle.yml`.
+- **Generator-driven** — declares a `generator: { kind: watdiv|lubm, scale: N, ... }` block instead. The relations and queries are produced on demand by a `kermit-rdf` pipeline.
+
+The two are mutually exclusive; `BenchmarkDefinition::validate` enforces the XOR plus structural invariants (non-empty name, unique relation/query names, portable filename characters, generator-specific bounds).
+
+### Discovery
+
+`discovery::load_all_benchmarks(workspace_root)` reads every `*.yml`/`*.yaml` under `benchmarks/`. `discovery::load_all_benchmarks_with_cache(workspace_root, cache_root)` additionally walks `<cache_root>/<name>/`, treating any subdirectory containing both `benchmark.yml` AND `meta.json` as a generator-produced benchmark. Cache entries override workspace entries on name collision.
+
+### Cache layout and spec-hash drift
+
+Generator-driven benchmarks materialise into:
+
 ```
+~/.cache/kermit/benchmarks/<name>/
+  meta.json        # PipelineMeta or LubmMeta with `spec_hash` field
+  benchmark.yml    # BenchmarkDefinition with file:// relation URLs
+  dict.parquet
+  <predicate>.parquet × N
+  raw/...
+  expected/...
+```
+
+`GeneratorSpec::spec_hash` is a SHA-256 over the canonical YAML serialisation of the spec. On `bench run <name>`, `kermit/src/materialize.rs::materialize` compares the cached `meta.json.spec_hash` against the current YAML's hash:
+
+- **Match** → load cache-side `benchmark.yml` and short-circuit.
+- **Mismatch** without `--force` → return `BenchError::SpecDrift` (regenerating a multi-minute pipeline silently is not desired).
+- **Mismatch** with `--force` → wipe the cache subdir and re-run the pipeline.
+
+Legacy `meta.json` files lacking `spec_hash` are treated as drift.
+
+## RDF/SPARQL Pipelines (`kermit-rdf`)
+
+`kermit-rdf` provides on-the-fly benchmark generation from RDF generators. Two pipelines:
+
+- **WatDiv** — `pipeline::run_pipeline` drives the vendored `kermit-rdf/vendor/watdiv` binary (CLI: `-d <model> <scale>` for data, `-s ... ` for stress-template queries). The binary writes only to stdout; `driver::invoke` captures it and splits on `#end` markers. The binary is gitignored — build locally; surrounding `MODEL.txt`/`files/`/`VERSION` are committed.
+- **LUBM** — `lubm::pipeline::run_lubm_pipeline` drives `vendor/lubm-uba/lubm-uba.jar` (committed, ~2.9 MB), gunzips the resulting `Universities.nt.gz`, then runs Univ-Bench TBox forward chaining via `lubm::entailment` before partitioning. Requires JDK 8 on PATH. The 14 LUBM queries are committed verbatim at `kermit-rdf/queries/lubm/q1.sparql … q14.sparql` and exposed via `lubm::queries::lubm_query_specs`.
+
+Both pipelines share post-driver stages: `partition` (split N-Triples by predicate), `parquet` (encode dict + per-predicate parquet), `dict` (string→usize), `sparql::translator` (BGP-only SPARQL → Datalog), `yaml_emit` (write the cache-side `benchmark.yml`), `expected` (cardinality CSVs). The cache-side YAML always has `generator: None` — provenance lives in `meta.json.spec_hash`.
+
+User-facing reference docs live at `docs/benchmarks/WATDIV.md` and `docs/benchmarks/LUBM.md`. Module-internal contributor notes for the LUBM driver live at `kermit-rdf/src/lubm/README.md`.
 
 ## CLI (`kermit`)
 
-The binary provides two main commands:
+The binary exposes two top-level subcommands:
 
-```bash
-# Execute a join query
-kermit join \
-  --relations data1.csv data2.csv \
-  --query query.txt \
-  --algorithm leapfrog-triejoin \
-  --indexstructure tree-trie
+- `kermit join` — execute a Datalog query against relation files and print the result tuples.
+- `kermit bench` — Criterion-driven benchmarking, with the following subcommands:
+  - `bench join` — wrap a join in Criterion timing.
+  - `bench ds` — measure insertion / iteration / heap size for a single relation file against one or more index structures.
+  - `bench run [<NAME> | --all]` — run YAML-defined benchmarks; `--metrics` selects from `insertion`, `iteration`, `space`. `--force` opts into regenerating a generator-driven benchmark when its spec hash drifts.
+  - `bench list` — list benchmarks; status distinguishes `cached` / `not cached` for static and `not generated` / `cached` / `stale` for generator-driven.
+  - `bench fetch [<NAME>]` — download relation parquets for static benchmarks.
+  - `bench clean [<NAME>]` — remove cached benchmark artefacts.
+  - `bench gen { watdiv | lubm }` — imperative on-the-fly generation, bypassing YAML; writes into the same cache layout under a user-supplied `--tag`.
 
-# Run a named benchmark suite on synthetic data
-kermit bench suite \
-  --benchmark exponential \
-  --indexstructure tree-trie \
-  --metrics insertion iteration space
+`--indexstructure` and `--algorithm` accept `all` on `bench ds` and `bench run` for Cartesian sweeps. Working examples live in `README.md` and `USAGE.md`; the YAML schema and generator-spec details live in `benchmarks/README.md`.
 
-# Benchmark a single data structure on a file
-kermit bench ds \
-  --relation data.csv \
-  --indexstructure column-trie
-```
+### Space measurement
+
+`kermit/src/measurement.rs` defines a custom Criterion `Measurement` (`SpaceMeasurement`) plus a `BytesFormatter` that picks a binary-prefixed unit (`B`/`KiB`/`MiB`/`GiB`). When `--metrics space` is requested, both `bench ds` and `bench run` route through `Criterion<SpaceMeasurement>` via `iter_custom`, producing `target/criterion/{group}/{dir}/...` JSON alongside the time metrics. The per-DS hook is the `HeapSize` trait (`heap_size_bytes()`); the closure calls it once per iter on a pre-built relation.
+
+### JSON bench reports
+
+Every `kermit bench` invocation writes a `BenchReport` JSON array to disk. The default path is `bench-runs/{kind}-{unix-millis}.json` (the directory is auto-created and gitignored at the workspace root); pass `--report-json <PATH>` to override. Each report carries `metadata` (label/value pairs mirroring stderr), `axes` (a structured map for tooling: `data_structure`, `algorithm`, `query`, `tuples`, …), and `criterion_groups` pointers resolving to per-function `target/criterion/{group}/{dir}/` artefacts. The schema is versioned by `schema_version` (currently `2`) and lives in `kermit/src/bench_report.rs`; the full key catalogue is documented in `docs/specs/bench-report-schema.md`.
 
 ## File I/O
 
@@ -278,20 +311,21 @@ All keys are `usize`. String values must be dictionary-encoded before use. This 
 
 ### New Data Structure
 
-1. Implement `Relation` trait in `kermit-ds`
-2. Implement `TrieIterable` (which requires `JoinIterable`)
-3. Create an iterator type implementing `TrieIterator`
-4. Add to `IndexStructure` enum for CLI selection
+1. Implement `Relation` + `TrieIterable` + `HeapSize` in `kermit-ds`.
+2. Provide a corresponding `TrieIterator` type.
+3. Add a variant to the `IndexStructure` enum (in `kermit-ds`) for CLI selection.
+4. Add the corresponding match arms in `instantiate_database` (`kermit/src/db.rs`) and the `run_ds_bench` / `run_benchmark` dispatch in `kermit/src/main.rs`.
 
 ### New Join Algorithm
 
-1. Implement `JoinAlgo<DS>` trait in `kermit-algos`
-2. Add to `JoinAlgorithm` enum for CLI selection
-3. The algorithm receives a `JoinQuery` and map of data structures
+1. Implement `JoinAlgo<DS>` in `kermit-algos`. The implementation must tolerate the const-rewritten query shape (extra synthetic unary body predicates).
+2. Add a variant to the `JoinAlgorithm` enum for CLI selection.
+3. Wire the new variant into `instantiate_database`.
 
 ### New Benchmark
 
-1. Create a module in `kermit-bench/src/benchmarks/`
-2. Define `BenchmarkMetadata` with tasks and subtasks using `GenerationParams`
-3. Implement `BenchmarkConfig` trait (generate method)
-4. Add to `Benchmark` enum
+1. Create `benchmarks/<name>.yml`. The schema is documented in `benchmarks/README.md`.
+   - For a static benchmark, declare `relations:` (with download URLs) and `queries:` (Datalog strings).
+   - For a generator-driven benchmark, declare `generator: { kind: watdiv | lubm, scale: N, ... }` instead.
+2. Run `kermit bench list` to verify discovery and validate the YAML.
+3. For static benchmarks, `kermit bench fetch <name>` downloads the relation parquets. For generator-driven benchmarks, `kermit bench run <name>` materialises them on first invocation.

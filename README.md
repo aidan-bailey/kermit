@@ -53,7 +53,7 @@ Output (CSV to stdout):
 2,3,4
 ```
 
-Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. Both `tree-trie` and `column-trie` index structures are supported.
+Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. Both `tree-trie` and `column-trie` index structures are supported; `bench ds` and `bench run` also accept `all` to sweep every variant.
 
 ## Benchmarking
 
@@ -61,20 +61,36 @@ All benchmarking is driven through the CLI. Each `bench` subcommand wraps Criter
 
 ### Named benchmarks (`bench run`)
 
-Run benchmarks declared in `benchmarks/*.yml`. Each YAML defines one or more named queries and the relations they need.
+Run benchmarks declared in `benchmarks/*.yml`. Each YAML defines one or more named queries and the relations they need. Some benchmarks are *declarative generators* (e.g. `watdiv-100`, `lubm-1`) — instead of pointing at downloadable files they declare a `generator:` block and `bench run` materialises the data on first invocation.
 
 ```sh
 kermit bench run triangle \
   --indexstructure tree-trie \
   --algorithm leapfrog-triejoin
+
+# Cartesian sweep: every benchmark × every index structure × every algorithm.
+kermit bench run --all -i all -a all
 ```
 
 Useful flags:
 - `--query <NAME>` — run a single named query from the benchmark (default: all queries).
 - `--all` — run every benchmark in `benchmarks/`.
+- `-i all` / `-a all` — sweep every index structure / join algorithm.
 - `--metrics insertion iteration space` — pick which metrics to measure (default: all three).
+- `--force` — regenerate a declarative-generator benchmark when its cached `meta.json` no longer matches the YAML's `spec_hash` (otherwise drift is a hard error).
 
 Available benchmarks include `triangle`, the `oxford-uniform-s{1..6}` / `oxford-zipf-s{1..6}` Oxford DSI suites, and the `watdiv-stress-{100,1000}-{warmup,test-1..5}` WatDiv suites. Run `kermit bench list` for the full set.
+
+### Generate fresh benchmarks
+
+For ad-hoc data outside the committed YAMLs, `bench gen` drives the vendored RDF generators directly:
+
+```sh
+kermit bench gen watdiv --scale 10 --tag dev   # → watdiv-stress-10-dev
+kermit bench gen lubm   --scale 1  --tag dev   # → lubm-1-dev (JDK 8 required)
+```
+
+Both write into `~/.cache/kermit/benchmarks/<name>/` and become discoverable to `bench run/list`. WatDiv requires the vendored binary (build under `kermit-rdf/vendor/watdiv/`); LUBM requires JDK 8 on PATH for the vendored jar. See [`docs/benchmarks/WATDIV.md`](docs/benchmarks/WATDIV.md), [`docs/benchmarks/LUBM.md`](docs/benchmarks/LUBM.md), and [`USAGE.md`](USAGE.md) for full flag listings.
 
 ### Manage benchmark cache
 

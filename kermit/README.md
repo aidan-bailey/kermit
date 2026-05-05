@@ -36,13 +36,17 @@ All benchmarking is driven through `kermit bench`:
 - `kermit bench join ...` — Criterion-time a single join query.
 - `kermit bench ds ...` — measure insertion, iteration, and heap-space for a specific index structure against a single relation file.
 - `kermit bench run <NAME> ...` — run one of the YAML-declared benchmarks from [`benchmarks/`](../benchmarks).
+- `kermit bench gen watdiv --scale N --tag STR ...` — synthesize a fresh WatDiv dataset and stress queries on the fly via the vendored generator.
+- `kermit bench gen lubm --scale N --tag STR ...` — synthesize a fresh LUBM dataset on the fly (requires JDK 8 on `PATH` for the vendored UBA jar).
 - `kermit bench list` — print available benchmark names.
 - `kermit bench fetch [NAME]` — pre-download the data files for a benchmark.
 - `kermit bench clean [NAME]` — remove cached data files.
 
+Every `kermit bench` invocation also writes a machine-readable JSON report. By default it lands at `bench-runs/<kind>-<unix-millis>.json` (with `<kind>` one of `join`/`ds`/`run`); pass `--report-json <PATH>` on the `bench` subcommand to override. The on-disk layout is documented in [`../docs/specs/bench-report-schema.md`](../docs/specs/bench-report-schema.md), and the source of truth for the schema is [`src/bench_report.rs`](src/bench_report.rs).
+
 On Linux the benchmark cache lives at `~/.cache/kermit/benchmarks/`.
 
-Full help: `kermit --help`, or `kermit bench <subcommand> --help`.
+Full help: `kermit --help`, or `kermit bench <subcommand> --help`. Deeper recipes live in [`../USAGE.md`](../USAGE.md).
 
 ## Adding an index structure or algorithm
 

@@ -155,6 +155,57 @@ all three. To benchmark only space:
 kermit bench run triangle -i tree-trie -a leapfrog-triejoin -m space
 ```
 
+### Sweep all index structures and algorithms
+
+`-i` and `-a` accept `all` as a value (in addition to the concrete
+variants). `bench ds` and `bench run` honour it as a Cartesian sweep over
+every index structure / join algorithm. `bench join` does *not* support
+`all` — it shares its argument struct with the one-shot `kermit join`
+command.
+
+```sh
+# Sweep both DS variants on a single benchmark + algorithm.
+kermit bench run triangle -i all -a leapfrog-triejoin
+
+# Full Cartesian sweep: every benchmark × every DS × every algorithm.
+kermit bench run --all -i all -a all
+```
+
+`-a all` currently expands to the same set as `-a leapfrog-triejoin`
+(LFTJ is the only concrete algorithm); the selector is wired up so adding
+a new `JoinAlgorithm` variant automatically joins the sweep.
+
+### Declarative generator benchmarks
+
+A benchmark YAML may declare a `generator:` block instead of `relations:`
+/ `queries:`:
+
+```yaml
+# benchmarks/watdiv-100.yml
+name: watdiv-100
+generator:
+  kind: watdiv
+  scale: 100
+```
+
+On `bench run watdiv-100`, kermit hashes the spec, looks under
+`~/.cache/kermit/benchmarks/watdiv-100/`, and either reuses the cached
+data on a `spec_hash` match or invokes the underlying `kermit-rdf`
+pipeline (the same one `bench gen watdiv|lubm` uses) on first run.
+
+If the YAML's parameters change after a benchmark has been cached, the
+next `bench run` aborts with a `SpecDrift` error rather than silently
+spending minutes regenerating a multi-gigabyte dataset. Pass `--force`
+to opt in:
+
+```sh
+kermit bench run watdiv-100 -i tree-trie -a leapfrog-triejoin --force
+```
+
+`bench list` distinguishes `not generated` / `cached` / `stale` for
+generator benchmarks (vs. `cached` / `not cached` for static ones). See
+[`benchmarks/README.md`](benchmarks/README.md) for the full schema.
+
 ### Manage cached data (`bench list` / `fetch` / `clean`)
 
 ```sh
@@ -191,6 +242,40 @@ vendored binary, `--output-dir <PATH>` to write outside the default cache
 
 On NixOS, run inside `nix develop` so the vendored binary's `libstdc++`
 loader and `bubblewrap` are on PATH.
+
+### Generate a fresh LUBM benchmark (`bench gen lubm`)
+
+Drives the vendored `lubm-uba.jar` to synthesize an RDF dataset for a
+given university scale, runs Univ-Bench TBox forward-chaining
+entailment, and emits the 14 LUBM queries (paper Appendix A). Output
+lands at `~/.cache/kermit/benchmarks/lubm-<scale>-<tag>/` where
+subsequent `bench run` invocations pick it up. Pick a `--tag` value that
+won't collide with any committed snapshot name.
+
+```sh
+kermit bench gen lubm --scale 1 --tag dev
+# → ~/.cache/kermit/benchmarks/lubm-1-dev/
+kermit bench run lubm-1-dev -i tree-trie -a leapfrog-triejoin
+```
+
+JDK 8 must be on PATH — the Nix dev shell provides `pkgs.jdk8`;
+otherwise install `openjdk-8-jre` (or equivalent). The jar emits two
+`<>` document-self triples per file that strict N-Triples parsers
+reject; the pipeline filters them out at extraction time.
+
+Tunables (all optional): `--seed N` (default 0, matches LUBM-UBA's
+documented default), `--start-index N` (default 0), `--threads N`
+(default 1, set higher to parallelise the jar at the cost of
+reproducibility), `--lubm-jar <PATH>` to override the vendored jar
+(also `KERMIT_LUBM_JAR`), `--ontology <URL>` to override the canonical
+Univ-Bench TBox URL (only useful if you've mirrored the ontology), and
+`--output-dir <PATH>` to write outside the default cache (generated
+benchmarks placed there are NOT auto-discovered by
+`bench list/fetch/run`).
+
+LUBM(1, 0) reference cardinalities (paper Table 3) are only emitted as
+`expected/*.csv` when `--scale 1`; at higher scales the queries still
+run but the cardinality assertions are skipped.
 
 ## JSON reports
 
