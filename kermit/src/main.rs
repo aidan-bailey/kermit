@@ -76,6 +76,51 @@ enum Metric {
     Space,
 }
 
+/// CLI-side selector for `--indexstructure`. Wraps [`IndexStructure`] with
+/// an `All` variant that expands to every concrete index structure, so
+/// users can sweep without enumerating each one. The underlying
+/// `IndexStructure` enum (in `kermit-ds`) stays free of CLI concerns.
+#[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
+enum IndexStructureSelector {
+    TreeTrie,
+    ColumnTrie,
+    All,
+}
+
+impl IndexStructureSelector {
+    fn expand(self) -> Vec<IndexStructure> {
+        use clap::ValueEnum;
+        match self {
+            | Self::TreeTrie => vec![IndexStructure::TreeTrie],
+            | Self::ColumnTrie => vec![IndexStructure::ColumnTrie],
+            | Self::All => IndexStructure::value_variants().to_vec(),
+        }
+    }
+}
+
+/// CLI-side selector for `--algorithm`. Wraps [`JoinAlgorithm`] with an
+/// `All` variant for sweeps. `LeapfrogTriejoin` is currently the only
+/// concrete algorithm, so `All` and `LeapfrogTriejoin` produce the same
+/// sweep today; the selector exists so adding new algorithms is purely
+/// additive — `All` resolves through `clap::ValueEnum::value_variants()`,
+/// so a new variant on `JoinAlgorithm` automatically joins the sweep
+/// without touching this match.
+#[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
+enum JoinAlgorithmSelector {
+    LeapfrogTriejoin,
+    All,
+}
+
+impl JoinAlgorithmSelector {
+    fn expand(self) -> Vec<JoinAlgorithm> {
+        use clap::ValueEnum;
+        match self {
+            | Self::LeapfrogTriejoin => vec![JoinAlgorithm::LeapfrogTriejoin],
+            | Self::All => JoinAlgorithm::value_variants().to_vec(),
+        }
+    }
+}
+
 #[derive(Args)]
 struct BenchArgs {
     /// Name for the Criterion benchmark group
@@ -103,7 +148,12 @@ struct BenchArgs {
 
 #[derive(Subcommand)]
 enum BenchSubcommand {
-    /// Benchmark a join query
+    /// Benchmark a join query.
+    ///
+    /// Note: `bench join` does not currently support `-i all` / `-a all`
+    /// because it shares its argument struct with the one-shot top-level
+    /// `kermit join` command. For sweeps, use `bench run` against a YAML
+    /// benchmark instead.
     Join {
         #[command(flatten)]
         query_args: QueryArgs,
@@ -119,7 +169,7 @@ enum BenchSubcommand {
         #[arg(short, long, value_name = "PATH", required = true)]
         relation: PathBuf,
 
-        /// Data structure
+        /// Data structure (`all` sweeps every available structure)
         #[arg(
             short,
             long,
@@ -127,7 +177,7 @@ enum BenchSubcommand {
             required = true,
             value_enum
         )]
-        indexstructure: IndexStructure,
+        indexstructure: IndexStructureSelector,
 
         /// Metrics to benchmark
         #[arg(
@@ -154,7 +204,7 @@ enum BenchSubcommand {
         #[arg(short, long, value_name = "QUERY")]
         query: Option<String>,
 
-        /// Data structure
+        /// Data structure (`all` sweeps every available structure)
         #[arg(
             short,
             long,
@@ -162,11 +212,11 @@ enum BenchSubcommand {
             required = true,
             value_enum
         )]
-        indexstructure: IndexStructure,
+        indexstructure: IndexStructureSelector,
 
-        /// Join algorithm
+        /// Join algorithm (`all` sweeps every available algorithm)
         #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
-        algorithm: JoinAlgorithm,
+        algorithm: JoinAlgorithmSelector,
 
         /// Metrics to benchmark
         #[arg(
@@ -414,7 +464,7 @@ fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::
 fn run_ds_bench<R>(
     relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric], group_name: &str,
     bench_args: &BenchArgs,
-) -> anyhow::Result<()>
+) -> anyhow::Result<BenchReport>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
 {
@@ -530,20 +580,18 @@ where
         ("tuples".to_string(), serde_json::json!(tuples.len())),
         ("arity".to_string(), serde_json::json!(header.arity())),
     ]);
-    let report = BenchReport::new(BenchKind::Ds, &metadata, axes, criterion_groups);
-    write_bench_report(
-        bench_args.report_json.as_deref(),
+    Ok(BenchReport::new(
         BenchKind::Ds,
-        std::slice::from_ref(&report),
-    )?;
-
-    Ok(())
+        &metadata,
+        axes,
+        criterion_groups,
+    ))
 }
 
 fn run_benchmark<R>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
     metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
-) -> anyhow::Result<()>
+) -> anyhow::Result<Vec<BenchReport>>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
 {
@@ -728,9 +776,7 @@ where
         ));
     }
 
-    write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
-
-    Ok(())
+    Ok(reports)
 }
 
 /// Returns the `bench list` status string for a benchmark.
@@ -963,27 +1009,27 @@ fn main() -> anyhow::Result<()> {
                 metrics,
             } => {
                 let group_name = bench_args.name.as_deref().unwrap_or("ds");
-
-                match indexstructure {
-                    | IndexStructure::TreeTrie => {
-                        run_ds_bench::<kermit_ds::TreeTrie>(
+                let mut reports: Vec<BenchReport> = Vec::new();
+                for ds in indexstructure.expand() {
+                    let report = match ds {
+                        | IndexStructure::TreeTrie => run_ds_bench::<kermit_ds::TreeTrie>(
                             &relation,
-                            indexstructure,
+                            ds,
                             &metrics,
                             group_name,
                             &bench_args,
-                        )?;
-                    },
-                    | IndexStructure::ColumnTrie => {
-                        run_ds_bench::<kermit_ds::ColumnTrie>(
+                        )?,
+                        | IndexStructure::ColumnTrie => run_ds_bench::<kermit_ds::ColumnTrie>(
                             &relation,
-                            indexstructure,
+                            ds,
                             &metrics,
                             group_name,
                             &bench_args,
-                        )?;
-                    },
+                        )?,
+                    };
+                    reports.push(report);
                 }
+                write_bench_report(bench_args.report_json.as_deref(), BenchKind::Ds, &reports)?;
             },
 
             | BenchSubcommand::Run {
@@ -1005,30 +1051,37 @@ fn main() -> anyhow::Result<()> {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+                let indexstructures = indexstructure.expand();
+                let algorithms = algorithm.expand();
+                let mut reports: Vec<BenchReport> = Vec::new();
                 for benchmark in &materialized {
-                    match indexstructure {
-                        | IndexStructure::TreeTrie => {
-                            run_benchmark::<kermit_ds::TreeTrie>(
-                                benchmark,
-                                indexstructure,
-                                algorithm,
-                                &metrics,
-                                query.as_deref(),
-                                &bench_args,
-                            )?;
-                        },
-                        | IndexStructure::ColumnTrie => {
-                            run_benchmark::<kermit_ds::ColumnTrie>(
-                                benchmark,
-                                indexstructure,
-                                algorithm,
-                                &metrics,
-                                query.as_deref(),
-                                &bench_args,
-                            )?;
-                        },
+                    for &ds in &indexstructures {
+                        for &algo in &algorithms {
+                            let mut chunk = match ds {
+                                | IndexStructure::TreeTrie => run_benchmark::<kermit_ds::TreeTrie>(
+                                    benchmark,
+                                    ds,
+                                    algo,
+                                    &metrics,
+                                    query.as_deref(),
+                                    &bench_args,
+                                )?,
+                                | IndexStructure::ColumnTrie => {
+                                    run_benchmark::<kermit_ds::ColumnTrie>(
+                                        benchmark,
+                                        ds,
+                                        algo,
+                                        &metrics,
+                                        query.as_deref(),
+                                        &bench_args,
+                                    )?
+                                },
+                            };
+                            reports.append(&mut chunk);
+                        }
                     }
                 }
+                write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
             },
 
             | BenchSubcommand::WatdivGen {
@@ -1353,6 +1406,48 @@ mod tests {
             describe_benchmark_status(&def, Some(&def), dir.path()),
             "stale"
         );
+    }
+
+    /// Pins the `IndexStructureSelector::All` expansion to every concrete
+    /// `IndexStructure` variant. Adding a new `IndexStructure` variant
+    /// (and not adding it to clap's `ValueEnum`-derived list) would
+    /// silently drop it from sweeps; this test fails as soon as the
+    /// upstream variant set changes, prompting the maintainer to verify
+    /// the new variant is reachable from the binary's match arms in
+    /// `bench run` / `bench ds`.
+    #[test]
+    fn index_structure_selector_all_covers_every_value_enum_variant() {
+        use clap::ValueEnum;
+        assert_eq!(
+            IndexStructureSelector::All.expand(),
+            IndexStructure::value_variants().to_vec()
+        );
+    }
+
+    #[test]
+    fn index_structure_selector_concrete_returns_singleton() {
+        assert_eq!(IndexStructureSelector::TreeTrie.expand(), vec![
+            IndexStructure::TreeTrie
+        ]);
+        assert_eq!(IndexStructureSelector::ColumnTrie.expand(), vec![
+            IndexStructure::ColumnTrie
+        ]);
+    }
+
+    #[test]
+    fn join_algorithm_selector_all_covers_every_value_enum_variant() {
+        use clap::ValueEnum;
+        assert_eq!(
+            JoinAlgorithmSelector::All.expand(),
+            JoinAlgorithm::value_variants().to_vec()
+        );
+    }
+
+    #[test]
+    fn join_algorithm_selector_concrete_returns_singleton() {
+        assert_eq!(JoinAlgorithmSelector::LeapfrogTriejoin.expand(), vec![
+            JoinAlgorithm::LeapfrogTriejoin
+        ]);
     }
 
     /// Regression test: when discovery merges a workspace generator YAML

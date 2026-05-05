@@ -17,6 +17,8 @@ cargo clippy --all-targets --verbose  # Lint (CI uses RUSTFLAGS=-Dwarnings)
 cargo fmt --all                 # Format (CI checks with --check)
 cargo doc --workspace           # Generate docs (CI uses RUSTDOCFLAGS=-Dwarnings)
 cargo run -- bench run triangle -i tree-trie -a leapfrog-triejoin  # Run a named benchmark
+cargo run -- bench run triangle -i all -a leapfrog-triejoin        # Sweep all index structures, one benchmark
+cargo run -- bench run --all -i all -a all                         # Full Cartesian sweep (benchmarks × structures × algorithms)
 cargo run -- bench run watdiv-100 -i tree-trie -a leapfrog-triejoin --force  # Regenerate a generator-driven YAML spec
 cargo run -- bench watdiv-gen --scale 100 --tag dev                # Generate WatDiv benchmark on the fly (imperative)
 cargo run -- bench lubm-gen --scale 1 --tag dev                    # Generate LUBM benchmark on the fly (imperative)
