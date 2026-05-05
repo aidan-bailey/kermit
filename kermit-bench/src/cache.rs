@@ -181,6 +181,7 @@ mod tests {
                 description: "test".to_string(),
                 query: "Q(X) :- r(X).".to_string(),
             }],
+            generator: None,
         };
         assert!(!is_cached(&def).unwrap());
     }

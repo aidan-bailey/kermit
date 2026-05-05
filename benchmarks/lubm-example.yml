@@ -1,0 +1,6 @@
+name: lubm-example
+description: "Minimal LUBM generator example: LUBM(1, 0), two queries"
+generator:
+  kind: lubm
+  scale: 1
+  queries: [q1, q3]

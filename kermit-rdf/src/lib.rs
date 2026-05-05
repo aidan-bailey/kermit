@@ -9,6 +9,7 @@ pub mod dict;
 pub mod driver;
 pub mod error;
 pub mod expected;
+pub mod lubm;
 pub mod ntriples;
 pub mod parquet;
 pub mod partition;

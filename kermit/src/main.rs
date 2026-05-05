@@ -28,6 +28,7 @@ use {
 };
 
 mod bench_report;
+mod materialize;
 mod measurement;
 
 use bench_report::{
@@ -75,6 +76,51 @@ enum Metric {
     Space,
 }
 
+/// CLI-side selector for `--indexstructure`. Wraps [`IndexStructure`] with
+/// an `All` variant that expands to every concrete index structure, so
+/// users can sweep without enumerating each one. The underlying
+/// `IndexStructure` enum (in `kermit-ds`) stays free of CLI concerns.
+#[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
+enum IndexStructureSelector {
+    TreeTrie,
+    ColumnTrie,
+    All,
+}
+
+impl IndexStructureSelector {
+    fn expand(self) -> Vec<IndexStructure> {
+        use clap::ValueEnum;
+        match self {
+            | Self::TreeTrie => vec![IndexStructure::TreeTrie],
+            | Self::ColumnTrie => vec![IndexStructure::ColumnTrie],
+            | Self::All => IndexStructure::value_variants().to_vec(),
+        }
+    }
+}
+
+/// CLI-side selector for `--algorithm`. Wraps [`JoinAlgorithm`] with an
+/// `All` variant for sweeps. `LeapfrogTriejoin` is currently the only
+/// concrete algorithm, so `All` and `LeapfrogTriejoin` produce the same
+/// sweep today; the selector exists so adding new algorithms is purely
+/// additive — `All` resolves through `clap::ValueEnum::value_variants()`,
+/// so a new variant on `JoinAlgorithm` automatically joins the sweep
+/// without touching this match.
+#[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
+enum JoinAlgorithmSelector {
+    LeapfrogTriejoin,
+    All,
+}
+
+impl JoinAlgorithmSelector {
+    fn expand(self) -> Vec<JoinAlgorithm> {
+        use clap::ValueEnum;
+        match self {
+            | Self::LeapfrogTriejoin => vec![JoinAlgorithm::LeapfrogTriejoin],
+            | Self::All => JoinAlgorithm::value_variants().to_vec(),
+        }
+    }
+}
+
 #[derive(Args)]
 struct BenchArgs {
     /// Name for the Criterion benchmark group
@@ -102,7 +148,12 @@ struct BenchArgs {
 
 #[derive(Subcommand)]
 enum BenchSubcommand {
-    /// Benchmark a join query
+    /// Benchmark a join query.
+    ///
+    /// Note: `bench join` does not currently support `-i all` / `-a all`
+    /// because it shares its argument struct with the one-shot top-level
+    /// `kermit join` command. For sweeps, use `bench run` against a YAML
+    /// benchmark instead.
     Join {
         #[command(flatten)]
         query_args: QueryArgs,
@@ -118,7 +169,7 @@ enum BenchSubcommand {
         #[arg(short, long, value_name = "PATH", required = true)]
         relation: PathBuf,
 
-        /// Data structure
+        /// Data structure (`all` sweeps every available structure)
         #[arg(
             short,
             long,
@@ -126,7 +177,7 @@ enum BenchSubcommand {
             required = true,
             value_enum
         )]
-        indexstructure: IndexStructure,
+        indexstructure: IndexStructureSelector,
 
         /// Metrics to benchmark
         #[arg(
@@ -153,7 +204,7 @@ enum BenchSubcommand {
         #[arg(short, long, value_name = "QUERY")]
         query: Option<String>,
 
-        /// Data structure
+        /// Data structure (`all` sweeps every available structure)
         #[arg(
             short,
             long,
@@ -161,11 +212,11 @@ enum BenchSubcommand {
             required = true,
             value_enum
         )]
-        indexstructure: IndexStructure,
+        indexstructure: IndexStructureSelector,
 
-        /// Join algorithm
+        /// Join algorithm (`all` sweeps every available algorithm)
         #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
-        algorithm: JoinAlgorithm,
+        algorithm: JoinAlgorithmSelector,
 
         /// Metrics to benchmark
         #[arg(
@@ -176,6 +227,14 @@ enum BenchSubcommand {
             default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
         )]
         metrics: Vec<Metric>,
+
+        /// Regenerate generator-driven benchmarks if their cached
+        /// `meta.json` spec_hash differs from the current YAML's params.
+        /// Without this flag, `bench run` errors out on drift instead of
+        /// silently re-running an expensive pipeline. No-op for static
+        /// benchmarks.
+        #[arg(long)]
+        force: bool,
     },
 
     /// List available benchmarks
@@ -195,8 +254,17 @@ enum BenchSubcommand {
         name: Option<String>,
     },
 
+    /// Generate a fresh benchmark on the fly
+    Gen {
+        #[command(subcommand)]
+        subcommand: GenSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum GenSubcommand {
     /// Generate a fresh watdiv benchmark on the fly
-    WatdivGen {
+    Watdiv {
         /// Scale factor passed to watdiv -d (>= 1)
         #[arg(long, value_name = "N", required = true)]
         scale: u32,
@@ -236,6 +304,50 @@ enum BenchSubcommand {
         #[arg(long)]
         no_bwrap: bool,
     },
+
+    /// Generate a fresh LUBM benchmark on the fly
+    Lubm {
+        /// Number of universities to generate (`-u`); must be >= 1
+        #[arg(long, value_name = "N", required = true)]
+        scale: u32,
+
+        /// Tag appended to the benchmark name; pick a value that won't
+        /// collide with committed snapshot names
+        #[arg(long, value_name = "STRING", required = true)]
+        tag: String,
+
+        /// RNG seed (`-s`). Default 0 matches LUBM-UBA's documented default
+        #[arg(long, value_name = "N", default_value = "0")]
+        seed: u32,
+
+        /// Starting university index (`-i`)
+        #[arg(long, value_name = "N", default_value = "0")]
+        start_index: u32,
+
+        /// Worker thread count (`-t`). Default 1 for reproducibility.
+        #[arg(long, value_name = "N", default_value = "1")]
+        threads: u32,
+
+        /// Override the LUBM-UBA jar path (default: vendored)
+        #[arg(long, value_name = "PATH", env = "KERMIT_LUBM_JAR")]
+        lubm_jar: Option<PathBuf>,
+
+        /// Ontology IRI used as the base URL for generated entity IRIs.
+        /// Defaults to the canonical Univ-Bench TBox URL — override only if
+        /// you've mirrored the ontology elsewhere.
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl"
+        )]
+        ontology: String,
+
+        /// Override the cache dir parent (default: ~/.cache/kermit/benchmarks).
+        /// NOTE: benchmarks generated outside the default cache are NOT
+        /// auto-discovered by `bench list/fetch/run`; mainly useful for tests.
+        #[arg(long, value_name = "PATH")]
+        output_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -260,14 +372,7 @@ enum Commands {
     },
 }
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("kermit crate must be inside workspace")
-        .to_path_buf()
-}
-
-fn vendored_watdiv_root() -> PathBuf { workspace_root().join("kermit-rdf/vendor/watdiv") }
+use materialize::{vendored_lubm_jar, vendored_watdiv_root, workspace_root};
 
 /// Column names derived from a query's head predicate. `Var(X)` becomes
 /// `"X"`, `Atom(c)` becomes `"c"` (constants are pre-rewritten by
@@ -368,7 +473,7 @@ fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::
 fn run_ds_bench<R>(
     relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric], group_name: &str,
     bench_args: &BenchArgs,
-) -> anyhow::Result<()>
+) -> anyhow::Result<BenchReport>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
 {
@@ -448,16 +553,17 @@ where
         let mut criterion = build_space_criterion(bench_args);
         let mut group = criterion.benchmark_group(group_name);
         group.throughput(criterion::Throughput::Elements(n as u64));
-        // Reconstruct per iter so Criterion's calibration sees real work; the
-        // returned total = heap_size_bytes() * iters, so per-iter = bytes
-        // exactly (see docs/specs/space-benchmarks.md).
+        // Skip the expensive per-iter from_tuples rebuild but keep one O(N)
+        // heap_size_bytes() traversal in the loop. Criterion uses wall-clock
+        // during warm-up to pick `iters`, so a sub-microsecond closure makes
+        // it ramp `iters` toward u64::MAX and the math saturates usize.
+        // black_box prevents LICM from hoisting the call out of the loop.
         let function = format!("{ds_name}/space");
         group.bench_function(&function, |b| {
             b.iter_custom(|iters| {
                 let mut total = 0usize;
                 for _ in 0..iters {
-                    let r = R::from_tuples(header.clone(), tuples.clone());
-                    total = total.saturating_add(r.heap_size_bytes());
+                    total = total.saturating_add(std::hint::black_box(&relation).heap_size_bytes());
                 }
                 total
             });
@@ -484,20 +590,18 @@ where
         ("tuples".to_string(), serde_json::json!(tuples.len())),
         ("arity".to_string(), serde_json::json!(header.arity())),
     ]);
-    let report = BenchReport::new(BenchKind::Ds, &metadata, axes, criterion_groups);
-    write_bench_report(
-        bench_args.report_json.as_deref(),
+    Ok(BenchReport::new(
         BenchKind::Ds,
-        std::slice::from_ref(&report),
-    )?;
-
-    Ok(())
+        &metadata,
+        axes,
+        criterion_groups,
+    ))
 }
 
 fn run_benchmark<R>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
     metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
-) -> anyhow::Result<()>
+) -> anyhow::Result<Vec<BenchReport>>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
 {
@@ -640,19 +744,20 @@ where
             let mut criterion = build_space_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
             for rel in &relations {
-                let h = rel.header().clone();
-                let rel_name = h.name().to_string();
-                let rel_tuples: Vec<Vec<usize>> = rel.trie_iter().into_iter().collect();
-                // Reconstruct per iter so Criterion's calibration sees real
-                // work and total = heap_size_bytes() * iters (per spec at
-                // docs/specs/space-benchmarks.md).
+                let rel_name = rel.header().name().to_string();
+                // Skip the expensive per-iter from_tuples rebuild but keep one
+                // O(N) heap_size_bytes() traversal in the loop. Criterion uses
+                // wall-clock during warm-up to pick `iters`, so a sub-microsecond
+                // closure makes it ramp `iters` toward u64::MAX and the math
+                // saturates usize. black_box prevents LICM from hoisting the
+                // call out of the loop.
                 let function = format!("space/{}", rel_name);
                 group.bench_function(&function, |b| {
                     b.iter_custom(|iters| {
                         let mut total = 0usize;
                         for _ in 0..iters {
-                            let r = R::from_tuples(h.clone(), rel_tuples.clone());
-                            total = total.saturating_add(r.heap_size_bytes());
+                            total =
+                                total.saturating_add(std::hint::black_box(rel).heap_size_bytes());
                         }
                         total
                     });
@@ -682,9 +787,55 @@ where
         ));
     }
 
-    write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
+    Ok(reports)
+}
 
-    Ok(())
+/// Returns the `bench list` status string for a benchmark.
+///
+/// For static benchmarks the values are "cached" / "not cached" (matching
+/// the historical behaviour). For generator-driven benchmarks the values
+/// distinguish "not generated" (no cache subdir), "cached" (subdir exists
+/// and `meta.json` spec_hash matches the spec), and "stale" (subdir
+/// exists but the spec has drifted).
+///
+/// `workspace_def`, when supplied, is the workspace YAML for this
+/// benchmark name. It must be passed for generator-driven benchmarks
+/// because the cache-side `benchmark.yml` (which `b` may have been loaded
+/// from after the discovery merge) intentionally drops the `generator`
+/// field — provenance lives in `meta.json` on the cache side. Without
+/// `workspace_def`, the function would fall into the static branch for
+/// any previously-generated benchmark and lose the `cached`/`stale`
+/// distinction.
+fn describe_benchmark_status(
+    b: &BenchmarkDefinition, workspace_def: Option<&BenchmarkDefinition>, cache_root: &Path,
+) -> &'static str {
+    let spec = workspace_def
+        .and_then(|w| w.generator.as_ref())
+        .or(b.generator.as_ref());
+    let Some(spec) = spec else {
+        return if kermit_bench::cache::is_cached(b).unwrap_or(false) {
+            "cached"
+        } else {
+            "not cached"
+        };
+    };
+    let cache_subdir = cache_root.join(&b.name);
+    let meta_path = cache_subdir.join("meta.json");
+    if !meta_path.exists() {
+        return "not generated";
+    }
+    let Ok(contents) = fs::read_to_string(&meta_path) else {
+        return "stale";
+    };
+    let parsed: Option<serde_json::Value> = serde_json::from_str(&contents).ok();
+    let cached_hash = parsed
+        .as_ref()
+        .and_then(|v| v.get("spec_hash"))
+        .and_then(|v| v.as_str());
+    match cached_hash {
+        | Some(h) if h == spec.spec_hash() => "cached",
+        | _ => "stale",
+    }
 }
 
 fn resolve_benchmarks(
@@ -745,10 +896,11 @@ fn main() -> anyhow::Result<()> {
                 let cache = dirs::cache_dir()
                     .map(|p| p.join("kermit").join("benchmarks"))
                     .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
-                let workspace_names: std::collections::HashSet<String> =
-                    kermit_bench::discovery::list_benchmarks(&root)
+                let workspace_defs: std::collections::HashMap<String, BenchmarkDefinition> =
+                    kermit_bench::discovery::load_all_benchmarks(&root)
                         .map_err(|e| anyhow::anyhow!("{e}"))?
                         .into_iter()
+                        .map(|d| (d.name.clone(), d))
                         .collect();
                 let benchmarks =
                     kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
@@ -757,13 +909,9 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("No benchmarks found in benchmarks/ or cache");
                 } else {
                     for b in &benchmarks {
-                        let cached = kermit_bench::cache::is_cached(b).unwrap_or(false);
-                        let status = if cached {
-                            "cached"
-                        } else {
-                            "not cached"
-                        };
-                        let source = if workspace_names.contains(&b.name) {
+                        let workspace_def = workspace_defs.get(&b.name);
+                        let status = describe_benchmark_status(b, workspace_def, &cache);
+                        let source = if workspace_def.is_some() {
                             "workspace"
                         } else {
                             "cache"
@@ -872,27 +1020,27 @@ fn main() -> anyhow::Result<()> {
                 metrics,
             } => {
                 let group_name = bench_args.name.as_deref().unwrap_or("ds");
-
-                match indexstructure {
-                    | IndexStructure::TreeTrie => {
-                        run_ds_bench::<kermit_ds::TreeTrie>(
+                let mut reports: Vec<BenchReport> = Vec::new();
+                for ds in indexstructure.expand() {
+                    let report = match ds {
+                        | IndexStructure::TreeTrie => run_ds_bench::<kermit_ds::TreeTrie>(
                             &relation,
-                            indexstructure,
+                            ds,
                             &metrics,
                             group_name,
                             &bench_args,
-                        )?;
-                    },
-                    | IndexStructure::ColumnTrie => {
-                        run_ds_bench::<kermit_ds::ColumnTrie>(
+                        )?,
+                        | IndexStructure::ColumnTrie => run_ds_bench::<kermit_ds::ColumnTrie>(
                             &relation,
-                            indexstructure,
+                            ds,
                             &metrics,
                             group_name,
                             &bench_args,
-                        )?;
-                    },
+                        )?,
+                    };
+                    reports.push(report);
                 }
+                write_bench_report(bench_args.report_json.as_deref(), BenchKind::Ds, &reports)?;
             },
 
             | BenchSubcommand::Run {
@@ -902,107 +1050,219 @@ fn main() -> anyhow::Result<()> {
                 indexstructure,
                 algorithm,
                 metrics,
+                force,
             } => {
                 let benchmarks = resolve_benchmarks(&name, all)?;
+                let cache_root = dirs::cache_dir()
+                    .map(|p| p.join("kermit").join("benchmarks"))
+                    .ok_or_else(|| anyhow::anyhow!("no cache directory available"))?;
+                let materialized: Vec<BenchmarkDefinition> = benchmarks
+                    .into_iter()
+                    .map(|b| materialize::materialize(b, &cache_root, force))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-                for benchmark in &benchmarks {
-                    match indexstructure {
-                        | IndexStructure::TreeTrie => {
-                            run_benchmark::<kermit_ds::TreeTrie>(
-                                benchmark,
-                                indexstructure,
-                                algorithm,
-                                &metrics,
-                                query.as_deref(),
-                                &bench_args,
-                            )?;
-                        },
-                        | IndexStructure::ColumnTrie => {
-                            run_benchmark::<kermit_ds::ColumnTrie>(
-                                benchmark,
-                                indexstructure,
-                                algorithm,
-                                &metrics,
-                                query.as_deref(),
-                                &bench_args,
-                            )?;
-                        },
+                let indexstructures = indexstructure.expand();
+                let algorithms = algorithm.expand();
+                let mut reports: Vec<BenchReport> = Vec::new();
+                for benchmark in &materialized {
+                    for &ds in &indexstructures {
+                        for &algo in &algorithms {
+                            let mut chunk = match ds {
+                                | IndexStructure::TreeTrie => run_benchmark::<kermit_ds::TreeTrie>(
+                                    benchmark,
+                                    ds,
+                                    algo,
+                                    &metrics,
+                                    query.as_deref(),
+                                    &bench_args,
+                                )?,
+                                | IndexStructure::ColumnTrie => {
+                                    run_benchmark::<kermit_ds::ColumnTrie>(
+                                        benchmark,
+                                        ds,
+                                        algo,
+                                        &metrics,
+                                        query.as_deref(),
+                                        &bench_args,
+                                    )?
+                                },
+                            };
+                            reports.append(&mut chunk);
+                        }
                     }
                 }
+                write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
             },
 
-            | BenchSubcommand::WatdivGen {
-                scale,
-                tag,
-                max_query_size,
-                query_count,
-                constants_per_query,
-                allow_join_vertex,
-                watdiv_bin,
-                output_dir,
-                no_bwrap,
-            } => {
-                let bench_name = format!("watdiv-stress-{scale}-{tag}");
-                let workspace = workspace_root();
-                let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
-                    .map_err(|e| {
-                        anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
-                    })?;
-                if workspace_names.iter().any(|n| n == &bench_name) {
-                    anyhow::bail!(
-                        "--tag {tag:?} produces bench name {bench_name:?} which already exists in \
-                         the workspace; pick a different tag"
-                    );
-                }
-                let vendor = vendored_watdiv_root();
-                let bin = watdiv_bin.unwrap_or_else(|| vendor.join("bin/Release/watdiv"));
-                if !bin.exists() {
-                    anyhow::bail!("watdiv binary not found at {bin:?}");
-                }
-                let default_cache = dirs::cache_dir()
-                    .map(|p| p.join("kermit").join("benchmarks"))
-                    .expect("no cache dir on this platform");
-                let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
-                if cache_parent != default_cache {
-                    eprintln!(
-                        "[watdiv-gen] note: --output-dir is set to {}; the generated benchmark \
-                         will NOT be auto-discovered by `bench list/fetch/run` (those scan {})",
-                        cache_parent.display(),
-                        default_cache.display()
-                    );
-                }
-                let out_dir = cache_parent.join(&bench_name);
-                std::fs::create_dir_all(&out_dir)?;
-
-                let stress = kermit_rdf::driver::StressParams {
+            | BenchSubcommand::Gen {
+                subcommand,
+            } => match subcommand {
+                | GenSubcommand::Watdiv {
+                    scale,
+                    tag,
                     max_query_size,
                     query_count,
                     constants_per_query,
                     allow_join_vertex,
-                };
-                let inputs = kermit_rdf::pipeline::PipelineInputs {
-                    driver: kermit_rdf::driver::DriverInputs {
-                        watdiv_bin: &bin,
-                        vendor_files: &vendor.join("files"),
-                        model_file: &vendor.join("MODEL.txt"),
-                        scale,
-                        stress,
-                        query_count_per_template: query_count,
-                        use_bwrap: !no_bwrap,
-                    },
-                    out_dir: &out_dir,
-                    bench_name: &bench_name,
-                    tag: &tag,
-                };
-                let meta = kermit_rdf::pipeline::run_pipeline(&inputs)
-                    .map_err(|e| anyhow::anyhow!("watdiv-gen pipeline failed: {e}"))?;
-                eprintln!(
-                    "[watdiv-gen] wrote {} (triples={}, relations={}, queries={})",
-                    out_dir.display(),
-                    meta.triple_count,
-                    meta.relation_count,
-                    meta.query_count
-                );
+                    watdiv_bin,
+                    output_dir,
+                    no_bwrap,
+                } => {
+                    let bench_name = format!("watdiv-stress-{scale}-{tag}");
+                    let workspace = workspace_root();
+                    let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
+                        })?;
+                    if workspace_names.iter().any(|n| n == &bench_name) {
+                        anyhow::bail!(
+                            "--tag {tag:?} produces bench name {bench_name:?} which already \
+                             exists in the workspace; pick a different tag"
+                        );
+                    }
+                    let vendor = vendored_watdiv_root();
+                    let bin = watdiv_bin.unwrap_or_else(|| vendor.join("bin/Release/watdiv"));
+                    if !bin.exists() {
+                        anyhow::bail!("watdiv binary not found at {bin:?}");
+                    }
+                    let default_cache = dirs::cache_dir()
+                        .map(|p| p.join("kermit").join("benchmarks"))
+                        .expect("no cache dir on this platform");
+                    let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
+                    if cache_parent != default_cache {
+                        eprintln!(
+                            "[gen watdiv] note: --output-dir is set to {}; the generated \
+                             benchmark will NOT be auto-discovered by `bench list/fetch/run` \
+                             (those scan {})",
+                            cache_parent.display(),
+                            default_cache.display()
+                        );
+                    }
+                    let out_dir = cache_parent.join(&bench_name);
+                    std::fs::create_dir_all(&out_dir)?;
+
+                    let stress = kermit_rdf::driver::StressParams {
+                        max_query_size,
+                        query_count,
+                        constants_per_query,
+                        allow_join_vertex,
+                    };
+                    let inputs = kermit_rdf::pipeline::PipelineInputs {
+                        driver: kermit_rdf::driver::DriverInputs {
+                            watdiv_bin: &bin,
+                            vendor_files: &vendor.join("files"),
+                            model_file: &vendor.join("MODEL.txt"),
+                            scale,
+                            stress,
+                            query_count_per_template: query_count,
+                            use_bwrap: !no_bwrap,
+                        },
+                        out_dir: &out_dir,
+                        bench_name: &bench_name,
+                        tag: &tag,
+                        spec_hash: None,
+                    };
+                    let meta = kermit_rdf::pipeline::run_pipeline(&inputs)
+                        .map_err(|e| anyhow::anyhow!("gen watdiv pipeline failed: {e}"))?;
+                    eprintln!(
+                        "[gen watdiv] wrote {} (triples={}, relations={}, queries={})",
+                        out_dir.display(),
+                        meta.triple_count,
+                        meta.relation_count,
+                        meta.query_count
+                    );
+                },
+
+                | GenSubcommand::Lubm {
+                    scale,
+                    tag,
+                    seed,
+                    start_index,
+                    threads,
+                    lubm_jar,
+                    ontology,
+                    output_dir,
+                } => {
+                    let bench_name = format!("lubm-{scale}-{tag}");
+                    let workspace = workspace_root();
+                    let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
+                        })?;
+                    if workspace_names.iter().any(|n| n == &bench_name) {
+                        anyhow::bail!(
+                            "--tag {tag:?} produces bench name {bench_name:?} which already \
+                             exists in the workspace; pick a different tag"
+                        );
+                    }
+                    let jar = lubm_jar.unwrap_or_else(vendored_lubm_jar);
+                    if !jar.exists() {
+                        anyhow::bail!(
+                            "LUBM-UBA jar not found at {jar:?}; build with `mvn package` in \
+                             lubm-uba-rs and copy to kermit-rdf/vendor/lubm-uba/, or override \
+                             with --lubm-jar / KERMIT_LUBM_JAR"
+                        );
+                    }
+                    let default_cache = dirs::cache_dir()
+                        .map(|p| p.join("kermit").join("benchmarks"))
+                        .expect("no cache dir on this platform");
+                    let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
+                    if cache_parent != default_cache {
+                        eprintln!(
+                            "[gen lubm] note: --output-dir is set to {}; the generated benchmark \
+                             will NOT be auto-discovered by `bench list/fetch/run` (those scan {})",
+                            cache_parent.display(),
+                            default_cache.display()
+                        );
+                    }
+                    let out_dir = cache_parent.join(&bench_name);
+                    if out_dir.exists()
+                        && std::fs::read_dir(&out_dir)
+                            .map(|mut d| d.next().is_some())
+                            .unwrap_or(false)
+                    {
+                        eprintln!(
+                            "[gen lubm] note: {} is non-empty; existing files will be overwritten",
+                            out_dir.display()
+                        );
+                    }
+                    std::fs::create_dir_all(&out_dir)?;
+
+                    // LUBM(1, 0) cardinalities are only valid at scale 1; at
+                    // other scales we still emit the queries but skip the
+                    // expected.csv files to avoid misleading the cardinality
+                    // test.
+                    let queries = kermit_rdf::lubm::queries::lubm_query_specs(scale == 1);
+
+                    let inputs = kermit_rdf::lubm::pipeline::LubmPipelineInputs {
+                        driver: kermit_rdf::lubm::driver::LubmDriverInputs {
+                            jar_path: &jar,
+                            scale,
+                            seed,
+                            start_index,
+                            threads,
+                            ontology_iri: &ontology,
+                        },
+                        out_dir: &out_dir,
+                        bench_name: &bench_name,
+                        tag: &tag,
+                        queries: &queries,
+                        spec_hash: None,
+                    };
+                    let meta = kermit_rdf::lubm::pipeline::run_lubm_pipeline(&inputs)
+                        .map_err(|e| anyhow::anyhow!("gen lubm pipeline failed: {e}"))?;
+                    eprintln!(
+                        "[gen lubm] wrote {} (pre={}, post={}, derived={}, relations={}, \
+                         queries={})",
+                        out_dir.display(),
+                        meta.triple_count_pre_entailment,
+                        meta.triple_count_post_entailment,
+                        meta.derived_triple_count,
+                        meta.relation_count,
+                        meta.query_count
+                    );
+                },
             },
         },
     }
@@ -1051,5 +1311,206 @@ mod tests {
     fn head_column_names_extracts_variables_atoms_and_placeholders() {
         let q: JoinQuery = "Q(X, Y, _) :- R(X, Y, Z).".parse().unwrap();
         assert_eq!(head_column_names(&q), vec!["X", "Y", "_"]);
+    }
+
+    fn make_generator_def(name: &str, spec: kermit_bench::GeneratorSpec) -> BenchmarkDefinition {
+        BenchmarkDefinition {
+            name: name.to_string(),
+            description: "test".to_string(),
+            relations: vec![],
+            queries: vec![],
+            generator: Some(spec),
+        }
+    }
+
+    fn make_static_def(name: &str) -> BenchmarkDefinition {
+        BenchmarkDefinition {
+            name: name.to_string(),
+            description: "test".to_string(),
+            relations: vec![kermit_bench::RelationSource {
+                name: "edge".to_string(),
+                url: "file:///nope".to_string(),
+            }],
+            queries: vec![kermit_bench::QueryDefinition {
+                name: "q".to_string(),
+                description: "q".to_string(),
+                query: "Q(X) :- edge(X, Y).".to_string(),
+            }],
+            generator: None,
+        }
+    }
+
+    #[test]
+    fn status_for_static_benchmark_uses_cached_or_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = make_static_def("static");
+        // is_cached is keyed off the platform cache dir; on a tempdir we
+        // expect "not cached" since we haven't downloaded anything.
+        let status = describe_benchmark_status(&def, None, dir.path());
+        assert!(matches!(status, "cached" | "not cached"));
+    }
+
+    #[test]
+    fn status_not_generated_when_no_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = make_generator_def("watdiv-x", kermit_bench::GeneratorSpec::Watdiv {
+            scale: 1,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        });
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "not generated"
+        );
+    }
+
+    #[test]
+    fn status_cached_when_meta_hash_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = kermit_bench::GeneratorSpec::Watdiv {
+            scale: 1,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        };
+        let hash = spec.spec_hash();
+        let subdir = dir.path().join("watdiv-cached");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 2, "spec_hash": hash}).to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("watdiv-cached", spec);
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "cached"
+        );
+    }
+
+    #[test]
+    fn status_stale_when_meta_hash_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("watdiv-stale");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 2, "spec_hash": "old-hash"}).to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("watdiv-stale", kermit_bench::GeneratorSpec::Watdiv {
+            scale: 7,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        });
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "stale"
+        );
+    }
+
+    #[test]
+    fn status_stale_for_legacy_meta_without_spec_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("watdiv-legacy");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 1, "kind": "watdiv-onthefly"}).to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("watdiv-legacy", kermit_bench::GeneratorSpec::Watdiv {
+            scale: 1,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        });
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "stale"
+        );
+    }
+
+    /// Pins the `IndexStructureSelector::All` expansion to every concrete
+    /// `IndexStructure` variant. Adding a new `IndexStructure` variant
+    /// (and not adding it to clap's `ValueEnum`-derived list) would
+    /// silently drop it from sweeps; this test fails as soon as the
+    /// upstream variant set changes, prompting the maintainer to verify
+    /// the new variant is reachable from the binary's match arms in
+    /// `bench run` / `bench ds`.
+    #[test]
+    fn index_structure_selector_all_covers_every_value_enum_variant() {
+        use clap::ValueEnum;
+        assert_eq!(
+            IndexStructureSelector::All.expand(),
+            IndexStructure::value_variants().to_vec()
+        );
+    }
+
+    #[test]
+    fn index_structure_selector_concrete_returns_singleton() {
+        assert_eq!(IndexStructureSelector::TreeTrie.expand(), vec![
+            IndexStructure::TreeTrie
+        ]);
+        assert_eq!(IndexStructureSelector::ColumnTrie.expand(), vec![
+            IndexStructure::ColumnTrie
+        ]);
+    }
+
+    #[test]
+    fn join_algorithm_selector_all_covers_every_value_enum_variant() {
+        use clap::ValueEnum;
+        assert_eq!(
+            JoinAlgorithmSelector::All.expand(),
+            JoinAlgorithm::value_variants().to_vec()
+        );
+    }
+
+    #[test]
+    fn join_algorithm_selector_concrete_returns_singleton() {
+        assert_eq!(JoinAlgorithmSelector::LeapfrogTriejoin.expand(), vec![
+            JoinAlgorithm::LeapfrogTriejoin
+        ]);
+    }
+
+    /// Regression test: when discovery merges a workspace generator YAML
+    /// with its cache-side artefact, the merged def has `generator: None`
+    /// (because `kermit_rdf::yaml_emit::write_benchmark_yaml` always writes
+    /// a static-shaped YAML in the cache). Without the workspace_def hint,
+    /// `describe_benchmark_status` would fall into the static branch for
+    /// any previously-generated benchmark and lose the `cached`/`stale`
+    /// signal. The `workspace_def` argument is the fix.
+    #[test]
+    fn status_uses_workspace_generator_when_merged_def_drops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = kermit_bench::GeneratorSpec::Watdiv {
+            scale: 3,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        };
+        let hash = spec.spec_hash();
+
+        // Simulate the post-merge state: the cache-side YAML is loaded
+        // (static-shaped, generator: None) but the workspace YAML has the
+        // generator block. This is exactly what `bench list` sees after
+        // calling `load_all_benchmarks_with_cache`.
+        let merged_def = make_static_def("watdiv-collision");
+        let workspace_def = make_generator_def("watdiv-collision", spec);
+
+        let subdir = dir.path().join("watdiv-collision");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 2, "spec_hash": hash}).to_string(),
+        )
+        .unwrap();
+
+        // With workspace_def threaded in, the function correctly reports
+        // `cached` for the generator-driven YAML.
+        assert_eq!(
+            describe_benchmark_status(&merged_def, Some(&workspace_def), dir.path()),
+            "cached"
+        );
+
+        // Without it, the function would fall into the static branch and
+        // emit "not cached" — proves the workspace_def path is load-bearing.
+        let static_status = describe_benchmark_status(&merged_def, None, dir.path());
+        assert_ne!(
+            static_status, "cached",
+            "without workspace_def the static path takes over and the generator status is lost"
+        );
     }
 }

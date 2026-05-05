@@ -15,6 +15,7 @@ kermit-ds = { version = "0.1.0", path = "../kermit-ds" }
 kermit-bench = { version = "0.1.0", path = "../kermit-bench" }
 arrow = "56.2.0"
 parquet = "56.2.0"
+flate2 = "1"
 oxrdf = "0.2"
 oxttl = "0.1"
 spargebra = "0.3"

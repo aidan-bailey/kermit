@@ -128,7 +128,7 @@ pub fn list_benchmarks(workspace_root: &Path) -> Result<Vec<String>, BenchError>
 ///
 /// A cache subdirectory is only consumed if it contains both
 /// `benchmark.yml` AND `meta.json`. The `meta.json` marker proves the dir
-/// was produced by a kermit generator (e.g. `watdiv-gen`), so unrelated
+/// was produced by a kermit generator (e.g. `bench gen watdiv`), so unrelated
 /// directories the user may have under `~/.cache/kermit/benchmarks/` are
 /// silently ignored.
 ///

@@ -44,10 +44,15 @@ pub struct PipelineInputs<'a> {
     pub bench_name: &'a str,
     /// Tag (recorded in meta.json for provenance).
     pub tag: &'a str,
+    /// Optional `spec_hash` recorded in meta.json so the materialization
+    /// layer can detect param drift on subsequent `bench run` invocations.
+    /// `None` for the imperative `bench gen` path; populated by the
+    /// declarative-YAML path.
+    pub spec_hash: Option<&'a str>,
 }
 
 /// Returns the byte counts and IDs surfaced in `meta.json`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Deserialize, Serialize)]
 pub struct PipelineMeta {
     /// Schema version (bump on breaking field-name or value-type change).
     pub schema_version: u32,
@@ -73,10 +78,15 @@ pub struct PipelineMeta {
     pub relation_count: u32,
     /// Number of queries produced.
     pub query_count: u32,
+    /// Hash of the declarative `GeneratorSpec` that produced this run, when
+    /// the run was driven by a YAML spec. `None` for imperative `bench gen`
+    /// runs. Used by the materialization layer to detect param drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_hash: Option<String>,
 }
 
 /// Stress params surfaced into meta.json.
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Deserialize, Serialize)]
 pub struct StressParamsMeta {
     /// `--max-query-size`.
     pub max_query_size: u32,
@@ -198,7 +208,7 @@ pub fn process_artifacts(
     let triple_count: u64 = part.relations.iter().map(|r| r.tuples.len() as u64).sum();
 
     let meta = PipelineMeta {
-        schema_version: 1,
+        schema_version: 2,
         kind: "watdiv-onthefly".to_string(),
         scale: inputs.driver.scale,
         tag: inputs.tag.to_string(),
@@ -210,6 +220,7 @@ pub fn process_artifacts(
         triple_count,
         relation_count: part.relations.len() as u32,
         query_count: all_queries.len() as u32,
+        spec_hash: inputs.spec_hash.map(|s| s.to_string()),
     };
     let meta_json =
         serde_json::to_string_pretty(&meta).map_err(|e| RdfError::Expected(e.to_string()))?;

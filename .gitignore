@@ -25,7 +25,9 @@ Cargo.lock
 **/*.csv
 !kermit/tests/fixtures/*.csv
 .claude-squad/
+.claude.local.md
 .worktrees/
+.serena/
 
 # WatDiv raw dataset — too large for the repo. Developers download it
 # manually to this path; see scripts/watdiv-preprocess/README.md.
@@ -38,3 +40,10 @@ Cargo.lock
 # invocation's CWD, so the directory may appear at the workspace root or
 # under any crate when tests/scripts run there.
 bench-runs/
+
+# LUBM-UBA jar default log file (`-l log.txt` is the default). Created in
+# the cwd of whoever invokes the jar — kermit's driver redirects via -l, but
+# tests and ad-hoc runs often leave one behind at the workspace root or
+# under kermit-rdf/.
+log.txt
+**/log.txt

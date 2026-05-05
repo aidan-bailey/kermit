@@ -72,6 +72,7 @@ pub fn write_benchmark_yaml(
         description: inputs.description.to_string(),
         relations,
         queries,
+        generator: None,
     };
     def.validate()
         .map_err(|e| RdfError::Expected(e.to_string()))?;

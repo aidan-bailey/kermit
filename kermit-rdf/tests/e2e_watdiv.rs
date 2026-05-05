@@ -83,6 +83,7 @@ fn watdiv_sf1_pipeline_succeeds_and_produces_expected_artifacts() {
         out_dir: dir.path(),
         bench_name: "watdiv-stress-1-e2e",
         tag: "e2e",
+        spec_hash: None,
     };
     let meta = run_pipeline(&inputs).expect("pipeline failed");
     assert!(meta.triple_count > 0, "no triples generated");

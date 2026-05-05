@@ -78,12 +78,18 @@ Parent-level options apply to all subcommands:
 
 ```sh
 kermit bench \
+  --name my-group \
   --sample-size 50 \
   --measurement-time 3 \
   --warm-up-time 2 \
   --report-json bench-runs/my-run.json \
   <subcommand> ...
 ```
+
+`-n`/`--name` controls the Criterion group name. Semantics differ by
+subcommand: for `bench join` / `bench ds` it is the full group name (defaults
+`join` / `ds`); for `bench run` it is a *prefix* on the auto-generated
+`{benchmark}/{query}/{ds}/{algo}` identity (default `run`).
 
 ### Benchmark a join (`bench join`)
 
@@ -96,6 +102,9 @@ kermit bench join \
   --algorithm leapfrog-triejoin \
   --indexstructure tree-trie
 ```
+
+Pass `-o`/`--output <PATH>` to also write the join's tuples to a CSV file
+(useful for verifying correctness alongside the benchmark).
 
 ### Benchmark a data structure (`bench ds`)
 
@@ -139,6 +148,13 @@ Run every benchmark:
 kermit bench run --all -i tree-trie -a leapfrog-triejoin
 ```
 
+`bench run` also accepts `--metrics` (same shape as `bench ds`); defaults to
+all three. To benchmark only space:
+
+```sh
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin -m space
+```
+
 ### Manage cached data (`bench list` / `fetch` / `clean`)
 
 ```sh
@@ -150,6 +166,31 @@ kermit bench clean                   # wipe all cached benchmark data
 ```
 
 Cache lives at `~/.cache/kermit/benchmarks/` on Linux.
+
+### Generate a fresh WatDiv benchmark (`bench gen watdiv`)
+
+Drives the vendored `watdiv` binary to synthesize a new RDF dataset + stress
+queries, dropped into the cache so subsequent `bench run` invocations pick it
+up. The generated benchmark is named `watdiv-stress-<scale>-<tag>`; `--tag`
+must contain a non-numeric character so it cannot collide with the committed
+snapshot names under `benchmarks/`.
+
+```sh
+kermit bench gen watdiv --scale 10 --tag dev
+# → ~/.cache/kermit/benchmarks/watdiv-stress-10-dev/
+kermit bench run watdiv-stress-10-dev -i tree-trie -a leapfrog-triejoin
+```
+
+Tunables (all optional): `--max-query-size` (default 5),
+`--query-count` per template (20), `--constants-per-query` (2),
+`--allow-join-vertex` (false), `--watdiv-bin <PATH>` to override the
+vendored binary, `--output-dir <PATH>` to write outside the default cache
+(generated benchmarks placed there are NOT auto-discovered by
+`bench list/fetch/run`), and `--no-bwrap` to skip the bwrap sandbox
+(requires host `/usr/share/dict/words`).
+
+On NixOS, run inside `nix develop` so the vendored binary's `libstdc++`
+loader and `bubblewrap` are on PATH.
 
 ## JSON reports
 
@@ -207,13 +248,19 @@ uv run kermit-lab dist        bench-runs/*.json --out plots/dist.pdf
 uv run kermit-lab bar-queries bench-runs/*.json --ds TreeTrie --algo LeapfrogTriejoin --out plots/bar-queries.pdf
 ```
 
-`--format` overrides the file extension's default (`pdf`, `png`, `svg`, `pgf`).
+The output format is determined by the `--out` suffix (`pdf`, `png`, `svg`,
+or `pgf`).
 
 ### Render every applicable shape (`render-all`)
 
 ```sh
 uv run kermit-lab render-all bench-runs/*.json --out-dir plots/
+uv run kermit-lab render-all bench-runs/*.json --out-dir plots/ --format png
 ```
+
+`render-all` does not take `--out` (it generates many files); pass
+`--format {pdf,png,svg,pgf}` to pick the output format for every emitted
+plot (default: `pdf`).
 
 Shapes that lack the necessary axes (e.g. only one `tuples` value → no
 `scaling.pdf`) are skipped with an info-level log.

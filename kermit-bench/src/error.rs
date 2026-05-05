@@ -44,4 +44,22 @@ pub enum BenchError {
     /// The platform cache directory could not be determined.
     #[error("cache directory not available")]
     NoCacheDir,
+
+    /// A generator-spec YAML's parameters disagree with the cached
+    /// `meta.json`'s `spec_hash`. Returned by the materialization layer to
+    /// prevent silently re-running an expensive pipeline.
+    #[error(
+        "spec drift for benchmark '{name}': cached spec_hash={actual_hash}, current \
+         spec_hash={expected_hash}; {hint}"
+    )]
+    SpecDrift {
+        /// Benchmark name.
+        name: String,
+        /// Spec hash computed from the workspace YAML at this invocation.
+        expected_hash: String,
+        /// Spec hash recorded in the cached `meta.json`.
+        actual_hash: String,
+        /// Resolution hint shown to the user.
+        hint: String,
+    },
 }
