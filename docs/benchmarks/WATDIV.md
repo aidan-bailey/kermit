@@ -43,14 +43,14 @@ and must be regenerated together if regeneration is needed. See
 
 ### B. On-the-fly generation
 
-`kermit bench watdiv-gen --scale N --tag STR` drives the vendored WatDiv
+`kermit bench gen watdiv --scale N --tag STR` drives the vendored WatDiv
 binary at arbitrary scale factors and stress parameters, runs the
 preprocessing pipeline in pure Rust, and writes a complete artefact set to
 the local cache. Subsequent `kermit bench run watdiv-stress-{N}-{tag}` reads
 those artefacts without re-downloading.
 
 ```bash
-kermit bench watdiv-gen --scale N --tag STR \
+kermit bench gen watdiv --scale N --tag STR \
     [--max-query-size N=5] \
     [--query-count N=20] \
     [--constants-per-query N=2] \
@@ -172,20 +172,20 @@ produce different output sizes (15.0 MB vs 15.7 MB), different triple counts
 
 This forces a particular discipline:
 
-- **Each `watdiv-gen` invocation produces a fresh, locally-owned snapshot
+- **Each `bench gen watdiv` invocation produces a fresh, locally-owned snapshot
   tagged by the user.** Re-running with the same `--tag` overwrites silently;
   re-running with a different `--tag` produces a fresh artefact set with
   unrelated data.
 - **The 12 committed `watdiv-stress-*.yml` snapshots are the canonical
   reproducible reference** — they pin specific Parquet blobs on ZivaHub.
-  `watdiv-gen` outputs are *additional* artefacts, not replacements.
+  `bench gen watdiv` outputs are *additional* artefacts, not replacements.
 - **`meta.json` records the binary's SHA-256 and ISO timestamp** to
   distinguish snapshots post-hoc, even though the underlying random data
   cannot be reproduced.
 
 For thesis claims that must reproduce later, prefer the committed snapshots.
 For research flexibility — exploring SF=2, SF=7, SF=50, or different stress
-parameters — use `watdiv-gen` and accept fingerprint drift between runs.
+parameters — use `bench gen watdiv` and accept fingerprint drift between runs.
 
 ## Sandboxing
 
@@ -224,14 +224,14 @@ recommended dev environment.
 | Reproducibility | **Non-deterministic** — tag-based snapshots | Deterministic per `(seed, scale)` |
 | Sandbox | bwrap required (or `--no-bwrap`) | None — jar is self-contained |
 | Vendored binary | gitignored; build locally | committed (~2.9 MB jar) |
-| Pipeline | `kermit bench watdiv-gen` | `kermit bench lubm-gen` |
+| Pipeline | `kermit bench gen watdiv` | `kermit bench gen lubm` |
 
 ## Tests
 
 | Test | What it validates | Gate |
 |------|------------------|------|
 | `kermit-rdf/tests/e2e_watdiv.rs` | Full pipeline against vendored binary at SF=1 | binary exists + bwrap works |
-| `kermit/tests/cli_watdiv_gen.rs` | CLI smoke for `bench watdiv-gen` | binary exists + bwrap works |
+| `kermit/tests/cli_watdiv_gen.rs` | CLI smoke for `bench gen watdiv` | binary exists + bwrap works |
 | `kermit/tests/watdiv_correctness.rs` | Loads the committed mini fixture and validates round-trip | always |
 
 The first two auto-skip on non-Linux/non-x86_64 hosts and on hosts where

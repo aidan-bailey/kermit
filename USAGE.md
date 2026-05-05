@@ -167,7 +167,7 @@ kermit bench clean                   # wipe all cached benchmark data
 
 Cache lives at `~/.cache/kermit/benchmarks/` on Linux.
 
-### Generate a fresh WatDiv benchmark (`bench watdiv-gen`)
+### Generate a fresh WatDiv benchmark (`bench gen watdiv`)
 
 Drives the vendored `watdiv` binary to synthesize a new RDF dataset + stress
 queries, dropped into the cache so subsequent `bench run` invocations pick it
@@ -176,7 +176,7 @@ must contain a non-numeric character so it cannot collide with the committed
 snapshot names under `benchmarks/`.
 
 ```sh
-kermit bench watdiv-gen --scale 10 --tag dev
+kermit bench gen watdiv --scale 10 --tag dev
 # → ~/.cache/kermit/benchmarks/watdiv-stress-10-dev/
 kermit bench run watdiv-stress-10-dev -i tree-trie -a leapfrog-triejoin
 ```
