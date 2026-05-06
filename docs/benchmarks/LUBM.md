@@ -9,7 +9,12 @@ shapes, LUBM provides 14 queries that can be named, reasoned about, and
 discussed individually — including two clean triangle joins (Q2, Q9) that are
 the canonical workload Veldhuizen 2014 designed Leapfrog Triejoin to dominate.
 
-## Generating a benchmark
+For a side-by-side comparison with other benchmarks in the suite, see
+[`README.md`](README.md#cross-benchmark-comparison).
+
+## How to run
+
+### On-the-fly generation
 
 ```bash
 kermit bench gen lubm --scale N --tag STR \
@@ -101,7 +106,29 @@ lubm-uba.jar (vendored)        kermit-rdf::lubm::driver
 ontology IRI, ISO timestamp, pre/post entailment triple counts, and
 fixed-point iteration count.
 
-## The 14 queries
+## Inference / preprocessing
+
+Hardcoded constants in `kermit-rdf/src/lubm/entailment.rs`. Sourced from the
+LUBM paper §2.1 plus the Univ-Bench class hierarchy in
+`lubm-uba-rs/Ontology.java`. Not a general OWL reasoner.
+
+| Rule kind | Examples | Required by |
+|-----------|----------|-------------|
+| subClassOf transitive closure | GraduateStudent ⊑ Student ⊑ Person; FullProfessor ⊑ Professor ⊑ Faculty ⊑ Employee ⊑ Person | Q4, Q5, Q6, Q7, Q8, Q9 |
+| subPropertyOf duplication | worksFor ⊑ memberOf; headOf ⊑ worksFor; doctoralDegreeFrom ⊑ degreeFrom | Q5, Q12, Q13 |
+| owl:TransitiveProperty | subOrganizationOf | Q11 |
+| owl:inverseOf | hasAlumnus ↔ degreeFrom | Q13 |
+| Realisation | `(?x headOf ?d) ∧ (?d a Department) → (?x a Chair)` | Q12 |
+
+Single-rule queries (Q1, Q3, Q10, Q14) and Q2 (no inference) require no
+entailment but pass through the same pipeline for uniformity.
+
+The entailment loop has a hard cap of 64 fixed-point iterations and errors
+out if convergence is not reached — a buggy rule that re-triggers itself must
+not hang silently. LUBM(1, 0) converges in 3 iterations; expansion factor is
+~26 % (103 074 input → 127 974 output triples).
+
+## Workload reference
 
 Lifted verbatim from the LUBM paper Appendix A (pp. 175–177). Committed at
 `kermit-rdf/queries/lubm/q*.sparql` and embedded via `include_str!` into
@@ -132,28 +159,6 @@ queries) and are written to `expected/q*.csv` only when `--scale 1`. At other
 scales the queries still run but expected files are omitted to avoid
 misleading the cardinality test.
 
-## Entailment rule set
-
-Hardcoded constants in `kermit-rdf/src/lubm/entailment.rs`. Sourced from LUBM
-paper §2.1 plus the Univ-Bench class hierarchy in `lubm-uba-rs/Ontology.java`.
-Not a general OWL reasoner.
-
-| Rule kind | Examples | Required by |
-|-----------|----------|-------------|
-| subClassOf transitive closure | GraduateStudent ⊑ Student ⊑ Person; FullProfessor ⊑ Professor ⊑ Faculty ⊑ Employee ⊑ Person | Q4, Q5, Q6, Q7, Q8, Q9 |
-| subPropertyOf duplication | worksFor ⊑ memberOf; headOf ⊑ worksFor; doctoralDegreeFrom ⊑ degreeFrom | Q5, Q12, Q13 |
-| owl:TransitiveProperty | subOrganizationOf | Q11 |
-| owl:inverseOf | hasAlumnus ↔ degreeFrom | Q13 |
-| Realisation | `(?x headOf ?d) ∧ (?d a Department) → (?x a Chair)` | Q12 |
-
-Single-rule queries (Q1, Q3, Q10, Q14) and Q2 (no inference) require no
-entailment but pass through the same pipeline for uniformity.
-
-The entailment loop has a hard cap of 64 fixed-point iterations and errors
-out if convergence is not reached — a buggy rule that re-triggers itself must
-not hang silently. LUBM(1, 0) converges in 3 iterations; expansion factor is
-~26 % (103 074 input → 127 974 output triples).
-
 ## Determinism
 
 LUBM-UBA's documented invariant is bit-identical output for fixed
@@ -166,23 +171,6 @@ The vendored jar's SHA-256 is recorded in `meta.json` so a regenerated bench
 is distinguishable post-hoc if the jar is rebuilt against a different JDK or
 upstream commit. There is no runtime hash check that *rejects* a mismatched
 jar (listed as future work).
-
-## Vendored jar
-
-`kermit-rdf/vendor/lubm-uba/lubm-uba.jar` (~2.9 MB). Provenance:
-
-| Field | Value |
-|-------|-------|
-| Source | <https://github.com/rvesse/lubm-uba> at branch `improved` |
-| Commit | `32f83e3b8d88550af77fa563e94039ebf4229d16` |
-| Local path | `/tb/Source/Academia/lubm-uba-rs` |
-| JDK | OpenJDK 1.8.0_472 (NixOS) |
-| Maven | Apache Maven 3.9.12 |
-| Source/target level | Java 1.7 (per upstream `pom.xml`) |
-
-Rebuild instructions: `kermit-rdf/vendor/lubm-uba/REGENERATE.md`. The upstream
-fork preserves bit-identical output relative to the original SWAT Lab UBA
-generator; do **not** modernise Java source level when rebuilding.
 
 ## Practical scale ceiling
 
@@ -197,27 +185,38 @@ iteration. Scale guidance:
 | LUBM(10, 0) | ~1.3 M | ~3 GB+ | May exceed dev RAM; not recommended |
 | LUBM(50, 0) | ~6.9 M | ~15 GB+ | Will OOM on most machines |
 
-Streaming or delta-based fixed-point is future work; the LUBM(1) cardinality
-regression test (also future work) is the load-bearing correctness check
-that should land before relying on Q5–Q13 results from this pipeline.
+Streaming or delta-based fixed-point is future work (see below).
 
-## Comparison with WatDiv
+## Vendored generator
 
-| Dimension | WatDiv | LUBM |
-|-----------|--------|------|
-| Query count per dataset | 12 400 across 12 stress files | 14 |
-| Authoring | Mechanically generated from templates | Hand-designed for specific OWL features |
-| Predicate arity | All binary | All binary + unary type lookups |
-| Inference required | None — data is pre-materialised | OWL-Lite (subClassOf, subPropertyOf, transitivity, inverseOf, realisation) |
-| Triangle queries | Incidental (e.g. q0010 sharing a country variable) | **Q2, Q9 — explicit hand-designed triangles** |
-| Self-joins | Yes (e.g. `friendof(V2, V2)`) | None |
-| Result oracle | `expected.json` from upstream `.desc` sidecars | Paper Table 3, manually transcribed |
-| Reproducibility | Non-deterministic; tag-based snapshots | Deterministic per `(seed, scale)` |
-| Pipeline | `kermit bench gen watdiv` | `kermit bench gen lubm` |
+`kermit-rdf/vendor/lubm-uba/lubm-uba.jar` (~2.9 MB, committed). Provenance:
 
-The two suites are complementary: WatDiv for distributional load, LUBM for
-named-query analysis. Both flow through the same `kermit-rdf` parquet/dict
-artefacts and run via the same `kermit bench run`.
+| Field | Value |
+|-------|-------|
+| Source | <https://github.com/rvesse/lubm-uba> at branch `improved` |
+| Commit | `32f83e3b8d88550af77fa563e94039ebf4229d16` |
+| Local path | `/tb/Source/Academia/lubm-uba-rs` |
+| JDK | OpenJDK 1.8.0_472 (NixOS) |
+| Maven | Apache Maven 3.9.12 |
+| Source/target level | Java 1.7 (per upstream `pom.xml`) |
+
+Rebuild instructions: `kermit-rdf/vendor/lubm-uba/REGENERATE.md`. The upstream
+fork preserves bit-identical output relative to the original SWAT Lab UBA
+generator; do **not** modernise Java source level when rebuilding.
+
+## Tests
+
+| Test | What it validates | Gate |
+|------|-------------------|------|
+| `kermit-rdf/tests/e2e_lubm.rs` | Vendored jar drives end-to-end and produces a non-empty `Universities.nt` matching the canonical LUBM(1, 0) triple count | `java` on PATH; not miri |
+| `kermit-rdf/tests/lubm_entailment_smoke.rs` | Univ-Bench TBox closure expands triple count and preserves all original triples on a real LUBM(1, 0) ABox | `java` on PATH; not miri |
+| `kermit-rdf/tests/lubm_translator.rs` | All 14 LUBM SPARQL queries translate to valid Datalog rules against the partitioned entailed predicate map | `java` on PATH; not miri |
+| `kermit-rdf/tests/lubm_pipeline.rs` | Full driver → entail → partition → translate → emit pipeline; on-disk output layout, `meta.json` shape, `benchmark.yml` validity | `java` on PATH; not miri |
+
+The cardinality regression test that asserts query result counts against
+`expected/q*.csv` is listed under Future work — it is the load-bearing
+correctness check that should land before relying on Q5–Q13 results from
+this pipeline.
 
 ## References
 
@@ -229,6 +228,7 @@ artefacts and run via the same `kermit bench run`.
 - Upstream UBA generator (Vesse fork): <https://github.com/rvesse/lubm-uba>
 - Module README: `kermit-rdf/src/lubm/README.md`
 - Rebuild instructions: `kermit-rdf/vendor/lubm-uba/REGENERATE.md`
+- Sibling benchmark reference: [`WATDIV.md`](WATDIV.md)
 
 ## Future work
 

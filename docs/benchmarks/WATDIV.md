@@ -14,9 +14,12 @@ the engine on a query distribution to amortise noise and stress unfamiliar
 patterns. Both flow through the same `kermit-rdf` parquet/dict artefacts
 and run via the same `kermit bench run`.
 
-## Three ways to run WatDiv
+For a side-by-side comparison with other benchmarks in the suite, see
+[`README.md`](README.md#cross-benchmark-comparison).
 
-### A. Committed snapshots (default)
+## How to run
+
+### Committed snapshots (default)
 
 12 YAML files at `benchmarks/watdiv-stress-*.yml` reference Parquet artefacts
 hosted on ZivaHub. Run with:
@@ -41,7 +44,7 @@ were produced by a single historical run of `scripts/watdiv-preprocess/`
 and must be regenerated together if regeneration is needed. See
 `scripts/watdiv-preprocess/README.md` for the regeneration workflow.
 
-### B. On-the-fly generation
+### On-the-fly generation
 
 `kermit bench gen watdiv --scale N --tag STR` drives the vendored WatDiv
 binary at arbitrary scale factors and stress parameters, runs the
@@ -72,10 +75,14 @@ kermit bench gen watdiv --scale N --tag STR \
 | `--output-dir` | `~/.cache/kermit/benchmarks` | Custom output dirs are NOT auto-discovered by `bench list/fetch/run` |
 | `--no-bwrap` | false | Skip the bubblewrap sandbox; requires host `/usr/share/dict/words` |
 
+The four stress flags (`--max-query-size`, `--query-count`,
+`--constants-per-query`, `--allow-join-vertex`) shape the workload itself;
+their semantics are described in [Workload reference](#workload-reference).
+
 End-to-end runtime is dominated by query generation; SF=100 with default
 stress params completes in roughly 30 s on a developer laptop.
 
-### C. Declarative YAML spec (commit-and-run)
+### Declarative YAML spec (commit-and-run)
 
 A `benchmarks/<name>.yml` may declare a generator block instead of
 relations + queries. On `kermit bench run <name>`, the data is materialised
@@ -102,9 +109,10 @@ Editing the YAML's params and re-running errors with `SpecDrift` — pass
 so a typo doesn't trigger silent rebuilds). See `benchmarks/README.md` for
 the full schema.
 
-The declarative path uses the same pipeline as `bench watdiv-gen`; choice
-between B and C is between imperative ad-hoc generation (your shell history
-holds the params) and declarative reproducibility (the params live in git).
+The declarative path uses the same pipeline as on-the-fly generation; the
+choice between the two is between imperative ad-hoc generation (your shell
+history holds the params) and declarative reproducibility (the params live
+in git).
 
 ## Pipeline
 
@@ -150,7 +158,7 @@ LUBM (BGP-only, rejects FILTER/OPTIONAL/UNION).
 files, and the model file. The 12 committed snapshots have a similar
 provenance record from their original Python pipeline run.
 
-## Stress mode and queries
+## Workload reference
 
 WatDiv's `-s` mode emits stress templates of the form
 `#mapping <var> <type> <constraint> #end`. The `-q` mode then instantiates
@@ -164,6 +172,11 @@ control template diversity:
 | `constants-per-query` | Number of `c<id>` constants pinning each query |
 | `allow-join-vertex` | Whether stress templates can include join vertices |
 
+These four parameters are settable on the command line via the matching
+`--max-query-size`, `--query-count`, `--constants-per-query`, and
+`--allow-join-vertex` flags, or via the `stress:` block in the declarative
+YAML spec — see [How to run](#how-to-run).
+
 Body atom count distribution from a representative SF=100 stress file (200
 queries sampled): 4 atoms (75), 6 atoms (61), 5 atoms (31), 2 atoms (21),
 3 atoms (12). Most queries are stars or snowflakes around a central
@@ -174,24 +187,6 @@ The translator emits queries of the form
 The `c<dict-id>` atoms are resolved via kermit's const-rewrite path
 (`kermit_algos::rewrite_atoms`) into singleton-trie unary predicates before
 LFTJ runs.
-
-## Vendored binary
-
-`kermit-rdf/vendor/watdiv/bin/Release/watdiv` (~448 KB, **gitignored** —
-build it locally; not committed to the repo).
-
-| Field | Value |
-|-------|-------|
-| Source | <https://github.com/dgasmith/watdiv> (upstream archived) |
-| Version tag | `watdiv-upstream-2014` (from `kermit-rdf/vendor/watdiv/VERSION`) |
-| Build | `make` in the upstream `watdiv-cpp/` (see `/tb/Source/Academia/watdiv-rs/`) |
-
-The binary itself is excluded from the repository (commit `1aaac0d`); only
-its surrounding files (`MODEL.txt`, `files/firstnames.txt`,
-`files/lastnames.txt`, `files/words`, `LICENSE`, `VERSION`) are committed.
-Builders must compile the binary locally and place it under
-`kermit-rdf/vendor/watdiv/bin/Release/watdiv` before the on-the-fly pipeline
-will run. Tests gate on `bin.exists()` and skip when the binary is absent.
 
 ## Determinism
 
@@ -218,6 +213,24 @@ For thesis claims that must reproduce later, prefer the committed snapshots.
 For research flexibility — exploring SF=2, SF=7, SF=50, or different stress
 parameters — use `bench gen watdiv` and accept fingerprint drift between runs.
 
+## Vendored generator
+
+`kermit-rdf/vendor/watdiv/bin/Release/watdiv` (~448 KB, **gitignored** —
+build it locally; not committed to the repo).
+
+| Field | Value |
+|-------|-------|
+| Source | <https://github.com/dgasmith/watdiv> (upstream archived) |
+| Version tag | `watdiv-upstream-2014` (from `kermit-rdf/vendor/watdiv/VERSION`) |
+| Build | `make` in the upstream `watdiv-cpp/` (see `/tb/Source/Academia/watdiv-rs/`) |
+
+The binary itself is excluded from the repository (commit `1aaac0d`); only
+its surrounding files (`MODEL.txt`, `files/firstnames.txt`,
+`files/lastnames.txt`, `files/words`, `LICENSE`, `VERSION`) are committed.
+Builders must compile the binary locally and place it under
+`kermit-rdf/vendor/watdiv/bin/Release/watdiv` before the on-the-fly pipeline
+will run. Tests gate on `bin.exists()` and skip when the binary is absent.
+
 ## Sandboxing
 
 The vendored watdiv binary expects `/usr/share/dict/words` at a hard-coded
@@ -240,22 +253,6 @@ on missing files.
 
 The kermit Nix flake provides `pkgs.bubblewrap` so `nix develop` is the
 recommended dev environment.
-
-## Comparison with LUBM
-
-| Dimension | WatDiv | LUBM |
-|-----------|--------|------|
-| Query count per dataset | 12 400 across 12 stress files | 14 |
-| Authoring | Mechanically generated from templates | Hand-designed for specific OWL features |
-| Predicate arity | All binary | All binary + unary type lookups |
-| Inference required | None — data is pre-materialised | OWL-Lite (subClassOf, subPropertyOf, transitivity, inverseOf, realisation) |
-| Triangle queries | Incidental (e.g. q0010 sharing a country variable) | **Q2, Q9 — explicit hand-designed triangles** |
-| Self-joins | Yes (e.g. `friendof(V2, V2)`) | None |
-| Result oracle | None — vendored binary emits no `.desc` | Paper Table 3, manually transcribed |
-| Reproducibility | **Non-deterministic** — tag-based snapshots | Deterministic per `(seed, scale)` |
-| Sandbox | bwrap required (or `--no-bwrap`) | None — jar is self-contained |
-| Vendored binary | gitignored; build locally | committed (~2.9 MB jar) |
-| Pipeline | `kermit bench gen watdiv` | `kermit bench gen lubm` |
 
 ## Tests
 
