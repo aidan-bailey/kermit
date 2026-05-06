@@ -1,4 +1,12 @@
-//! This module defines the `Relation` trait and file reading extensions.
+//! Core relation abstraction: the [`Relation`] trait that every storage
+//! backend implements (see `TreeTrie` and `ColumnTrie` in [`crate::ds`]),
+//! plus the blanket [`RelationFileExt`] for loading from CSV or Parquet.
+//!
+//! The trait exists so join algorithms in `kermit-algos` can be written
+//! generically over different trie layouts without coupling to a specific
+//! representation. All tuple values are `usize` keys — typically
+//! dictionary-encoded IDs from a separate symbol table — so a relation never
+//! stores raw strings or domain values directly.
 use {
     arrow::array::AsArray,
     kermit_iters::JoinIterable,
@@ -81,19 +89,25 @@ pub enum ModelType {
 
 /// Metadata for a relation: its name, attribute names, and arity.
 ///
-/// A header can be "positional" (no attribute names, only arity) or "named"
-/// (with explicit column names). A "nameless" header has an empty `name` field,
-/// used for intermediate/projected relations.
+/// A header is **named** when `attrs` is non-empty (then `arity ==
+/// attrs.len()`) and **positional** when `attrs` is empty (then `arity` is
+/// the only authoritative column count). Orthogonally, a header is
+/// **nameless** when its `name` is empty — used for intermediate or
+/// projected relations whose origin no longer matters.
 #[derive(Clone, Debug)]
 pub struct RelationHeader {
     name: String,
+    /// Attribute names. Empty iff this is a positional header.
     attrs: Vec<String>,
+    /// Number of columns. For named headers this equals `attrs.len()`; for
+    /// positional headers (`attrs.is_empty()`) it is the only authoritative
+    /// column count.
     arity: usize,
 }
 
 impl RelationHeader {
-    /// Creates a new `RelationHeader` with the specified name, attributes, and
-    /// arity.
+    /// Creates a named header with the given attribute names. Arity is
+    /// derived from `attrs.len()`.
     pub fn new(name: impl Into<String>, attrs: Vec<String>) -> Self {
         let arity = attrs.len();
         RelationHeader {
@@ -165,43 +179,72 @@ impl From<usize> for RelationHeader {
 ///
 /// Projection is the π operator from relational algebra: given column indices
 /// `[c₀, c₁, …]` it yields a relation whose `i`-th column is the `cᵢ`-th
-/// column of the source. Implementations decide how to handle duplicate or
-/// reordered indices.
+/// column of the source. Duplicate and reordered indices are permitted; the
+/// resulting relation has arity `columns.len()`.
 pub trait Projectable {
     /// Returns a new relation containing only the columns at the given
     /// indices, in the order supplied.
     ///
-    /// Implementations typically panic if any index is out of bounds for the
-    /// source relation's arity.
+    /// # Panics
+    ///
+    /// Panics if any element of `columns` is `>= self.header().arity()`.
     fn project(&self, columns: Vec<usize>) -> Self;
 }
 
-/// The `Relation` trait defines a relational data structure that can store and
-/// retrieve tuples of `usize` keys, and participate in join operations.
+/// A relational data structure that stores tuples of `usize` keys and can
+/// participate in joins.
+///
+/// Tuple values are `usize` keys (typically dictionary-encoded — see the
+/// module-level docs). The supertraits expose:
+///
+/// - [`JoinIterable`] — produces iterators that the join algorithms in
+///   `kermit-algos` consume. Implementors typically also implement
+///   [`TrieIterable`](kermit_iters::TrieIterable) so the iterator can be driven
+///   hierarchically.
+/// - [`Projectable`] — the relational π operator (column projection).
 pub trait Relation: JoinIterable + Projectable {
-    /// Returns the header (name, attributes, arity) of this relation.
+    /// Returns the header describing this relation's name, attributes, and
+    /// arity.
     fn header(&self) -> &RelationHeader;
 
-    /// Creates a new relation with the specified arity.
+    /// Creates an empty relation matching `header`.
     fn new(header: RelationHeader) -> Self;
 
-    /// Creates a new relation with the specified arity and given tuples.
+    /// Creates a relation populated with `tuples`, matching `header`.
+    /// Implementations may sort or deduplicate during bulk construction;
+    /// prefer this over `new` followed by repeated `insert` calls when all
+    /// tuples are known up front.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
     fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self;
 
-    /// Inserts a tuple into the relation, returning `true` if successful and
-    /// `false` if otherwise.
-    fn insert(&mut self, tuple: Vec<usize>) -> bool;
+    /// Inserts a tuple. Duplicate tuples are silently absorbed (the relation
+    /// behaves as a set).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tuple.len() != self.header().arity()`.
+    fn insert(&mut self, tuple: Vec<usize>);
 
-    /// Inserts multiple tuples into the relation, returning `true` if
-    /// successful and `false` if otherwise.
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool;
+    /// Inserts every tuple in `tuples`. Equivalent to calling
+    /// [`insert`](Self::insert) in a loop; provided so implementations can
+    /// specialise bulk insertion.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not match the relation's arity.
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>);
 }
 
-/// Extension trait for `Relation` to add file reading capabilities.
+/// Loads a [`Relation`] from a CSV or Parquet file.
 ///
-/// Blanket-implemented for every `Relation`, so any type implementing
-/// [`Relation`] automatically gains [`from_csv`](Self::from_csv) and
-/// [`from_parquet`](Self::from_parquet).
+/// Defined as an extension trait (with a blanket impl over every
+/// [`Relation`]) so file-loading is added without bloating the core trait
+/// or requiring each concrete data structure to reimplement it. Anything
+/// that implements [`Relation`] automatically gains
+/// [`from_csv`](Self::from_csv) and [`from_parquet`](Self::from_parquet).
 pub trait RelationFileExt: Relation {
     /// Creates a new relation from a Parquet file.
     ///

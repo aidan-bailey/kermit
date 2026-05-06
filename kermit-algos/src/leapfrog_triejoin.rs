@@ -34,27 +34,46 @@ pub trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 ///
 /// Coordinates multiple trie iterators (one per body predicate) to compute a
-/// multi-way join. At each variable/depth level, only the iterators that
-/// participate in that variable are active in the inner [`LeapfrogJoinIter`].
-/// Iterators are swapped in and out of the leapfrog as the depth changes.
+/// multi-way join. At each variable/depth, only the iterators that mention
+/// that variable participate in the inner [`LeapfrogJoinIter`]; iterators
+/// are swapped in and out as the depth changes.
+///
+/// # State machine
+///
+/// At any moment, every body-predicate iterator is in **exactly one** of two
+/// places:
+///
+/// - in `iterator_pool[i]` as `Some(iter)` — *idle*; not currently joining;
+/// - in `leapfrog.iterators` — *active*; participating in the inner leapfrog at
+///   the current depth.
+///
+/// `active_iter_indices` is the list of pool slots currently lent to the
+/// leapfrog (parallel to `leapfrog.iterators`, in pop order). The only
+/// function that moves iterators between the two places is
+/// [`update_iters`](Self::update_iters), called by every depth change
+/// ([`triejoin_open`](Self::triejoin_open) /
+/// [`triejoin_up`](Self::triejoin_up)). All other code reads — never moves —
+/// iterators across this boundary.
 pub struct LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    /// Number of variables in the join (determines maximum depth).
+    /// Number of variables in the join (i.e. the maximum depth).
     arity: usize,
-    /// Pool of trie iterators, indexed by body predicate position. `None` when
-    /// an iterator is currently borrowed by the leapfrog.
+    /// Pool of trie iterators, indexed by body-predicate position. The slot
+    /// is `Some` while the iterator is idle and `None` while it is borrowed
+    /// by `leapfrog`.
     iterator_pool: Vec<Option<IT>>,
-    /// Tracks which iterators (by index into `iterator_pool`) are currently in
-    /// the leapfrog, so they can be returned on depth change.
+    /// Pool indices currently lent to `leapfrog`, parallel to
+    /// `leapfrog.iterators` in pop order.
     active_iter_indices: Vec<usize>,
-    /// For each variable index, the list of iterator indices that participate
-    /// at that depth.
+    /// For each depth (`0..arity`), the pool indices of every iterator that
+    /// must participate in the leapfrog at that depth.
     variable_to_iter_map: Vec<Vec<usize>>,
-    /// Current depth in the join (0 = not yet opened, 1..arity = active).
+    /// Current depth in the join: `0` = uninitialised, `1..=arity` = active.
     depth: usize,
-    /// The inner leapfrog join operating at the current depth.
+    /// The inner leapfrog join operating at the current depth (empty at
+    /// depth 0).
     leapfrog: LeapfrogJoinIter<IT>,
 }
 
@@ -90,30 +109,45 @@ impl<IT> LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    /// Construct a new `LeapfrogTriejoinIter` with the given iterators.
+    /// Constructs a new `LeapfrogTriejoinIter`.
     ///
-    /// Q(a, b, c) = R(a, b) S(b, c), T(a, c)
-    /// variables = [a, b, c]
-    /// rel_variables = [[a, b], [b, c], [a, c]]
+    /// # Example
+    ///
+    /// For the join `Q(a, b, c) :- R(a, b), S(b, c), T(a, c)` with variables
+    /// numbered `a=0, b=1, c=2`:
+    ///
+    /// - `variable_ordering = [0, 1, 2]` — iterate `a` at depth 1, `b` at depth
+    ///   2, `c` at depth 3.
+    /// - `predicate_variables = [[0, 1], [1, 2], [0, 2]]` — `R` carries
+    ///   variables `a, b`; `S` carries `b, c`; `T` carries `a, c`.
+    /// - `iters` is one trie iterator per body predicate, in the same order as
+    ///   `predicate_variables`.
     ///
     /// # Arguments
-    /// * `variables` - The variables and their ordering.
-    /// * `rel_variables` - The variables in their relations.
-    /// * `iters` - Trie iterators.
-    pub fn new(variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, iters: Vec<IT>) -> Self {
-        // Build the variable-to-iterator lookup table. For each variable index,
-        // collect the indices (into `iters` / `rel_variables`) of every relation
-        // that mentions that variable. These indices tell the triejoin which
-        // iterators to activate in the leapfrog at each depth level.
+    ///
+    /// * `variable_ordering` — The variable IDs the join descends through, in
+    ///   order. Position `d` in this list is depth `d + 1` in the triejoin. The
+    ///   arity of the result equals `variable_ordering.len()`.
+    /// * `predicate_variables` — One entry per body predicate (in the same
+    ///   order as `iters`); each entry lists the variable IDs that predicate
+    ///   carries.
+    /// * `iters` — Trie iterators, one per body predicate.
+    pub fn new(
+        variable_ordering: Vec<usize>, predicate_variables: Vec<Vec<usize>>, iters: Vec<IT>,
+    ) -> Self {
+        // Build the variable-to-iterator lookup table. For each depth (position
+        // in `variable_ordering`), collect the indices of every body predicate
+        // that mentions that variable. The triejoin uses this on every depth
+        // change to pick which iterators belong in the active leapfrog.
         let mut variable_to_iter_map: Vec<Vec<usize>> = Vec::new();
-        for v in &variables {
-            let mut iters_at_level_v: Vec<usize> = Vec::new();
-            for (r_i, r) in rel_variables.iter().enumerate() {
-                if r.contains(v) {
-                    iters_at_level_v.push(r_i);
+        for v in &variable_ordering {
+            let mut iters_at_this_depth: Vec<usize> = Vec::new();
+            for (predicate_i, predicate_vars) in predicate_variables.iter().enumerate() {
+                if predicate_vars.contains(v) {
+                    iters_at_this_depth.push(predicate_i);
                 }
             }
-            variable_to_iter_map.push(iters_at_level_v);
+            variable_to_iter_map.push(iters_at_this_depth);
         }
 
         let iterator_pool = iters.into_iter().map(Some).collect();
@@ -122,15 +156,26 @@ where
             iterator_pool,
             active_iter_indices: Vec::new(),
             variable_to_iter_map,
-            arity: variables.len(),
+            arity: variable_ordering.len(),
             depth: 0,
             leapfrog: LeapfrogJoinIter::new(vec![]),
         }
     }
 
-    /// Swaps iterators between the pool (`self.iterator_pool`) and the active
-    /// leapfrog (`self.leapfrog`) based on which iterators participate at
-    /// the current depth.
+    /// Restores the [state-machine](Self#state-machine) invariant after a
+    /// depth change.
+    ///
+    /// Called by [`triejoin_open`](Self::triejoin_open) and
+    /// [`triejoin_up`](Self::triejoin_up). Two phases:
+    ///
+    /// 1. **Drain** the existing leapfrog: every active iterator returns to its
+    ///    pool slot via `active_iter_indices`.
+    /// 2. **Refill** for the new depth: `variable_to_iter_map[depth - 1]` names
+    ///    the pool slots whose iterators belong in the new leapfrog; each one
+    ///    is taken out of the pool and pushed into a fresh
+    ///    [`LeapfrogJoinIter`].
+    ///
+    /// At depth 0 the second phase is skipped — the leapfrog stays empty.
     fn update_iters(&mut self) {
         while let Some(i) = self.active_iter_indices.pop() {
             let iter = self
@@ -162,6 +207,15 @@ impl<IT> LeapfrogTriejoinIterator for LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
+    /// Descends one variable: takes the iterators that participate at the new
+    /// depth, opens each at the current key, and seeds the inner leapfrog.
+    ///
+    /// Returns `false` if the join is already at maximum depth, or if any
+    /// participating iterator has no children at this key (that subtree is
+    /// exhausted). On a `false` from a child `open()`, the partially-built
+    /// leapfrog is left in place but not initialised; the caller is expected
+    /// to back out via [`triejoin_up`](Self::triejoin_up) before trying
+    /// again.
     fn triejoin_open(&mut self) -> bool {
         if self.depth == self.arity {
             return false;
@@ -177,13 +231,18 @@ where
     }
 
     /// Ascends one variable, returning all participating iterators to the
-    /// pool and restoring the leapfrog state at the parent depth.
+    /// pool and rebuilding the leapfrog at the parent depth.
+    ///
+    /// Returns `false` (no-op) when already at the root.
     ///
     /// # Panics
     ///
-    /// Panics if a participating trie iterator refuses to move up while the
-    /// triejoin is at non-root depth, which would indicate a violated invariant
-    /// between the triejoin's depth tracking and the trie iterator's state.
+    /// By the LFTJ invariant, every iterator that successfully opened at the
+    /// current depth can move back up. A panic here means a participating
+    /// trie iterator violated this contract — either the triejoin's depth
+    /// tracking and the iterator's state have drifted, or the iterator's
+    /// `up` is buggy. Always a programming error, never a recoverable
+    /// runtime condition.
     fn triejoin_up(&mut self) -> bool {
         if self.depth == 0 {
             return false;
@@ -191,7 +250,7 @@ where
         for iter in &mut self.leapfrog.iterators {
             assert!(
                 iter.up(),
-                "Iterator must be able to move up from non-root depth"
+                "iterator must be able to move up from non-root depth (LFTJ invariant)"
             );
         }
         self.depth -= 1;
@@ -248,8 +307,10 @@ where
 ///
 /// Placeholders (`_`) and atoms are skipped in all passes.
 ///
-/// Returns `(variables, rel_variables)` where `variables` is `0..num_vars` and
-/// `rel_variables[i]` lists the variable indices for body predicate `i`.
+/// Returns `(variable_ordering, predicate_variables)` where
+/// `variable_ordering` is `0..num_vars` (head variables first, then
+/// body-only) and `predicate_variables[i]` lists the variable indices
+/// appearing in body predicate `i`.
 fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
     let mut var_to_index: HashMap<String, usize> = HashMap::new();
     let mut next_index: usize = 0;
@@ -280,24 +341,25 @@ fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
         }
     }
 
-    let variables: Vec<usize> = (0..var_to_index.len()).collect();
+    let variable_ordering: Vec<usize> = (0..var_to_index.len()).collect();
 
-    // Pass 3: build per-relation variable index lists. Placeholders and atoms
-    // are skipped — they occupy trie levels but don't bind a join variable.
-    let mut rel_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
+    // Pass 3: build per-predicate variable index lists. Placeholders and
+    // atoms are skipped — they occupy trie levels but don't bind a join
+    // variable.
+    let mut predicate_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
     for pred in &query.body {
-        let mut rel_vars_for_pred: Vec<usize> = Vec::new();
+        let mut vars_for_pred: Vec<usize> = Vec::new();
         for t in &pred.terms {
             if let Term::Var(ref vname) = t {
                 if let Some(idx) = var_to_index.get(vname) {
-                    rel_vars_for_pred.push(*idx);
+                    vars_for_pred.push(*idx);
                 }
             }
         }
-        rel_variables.push(rel_vars_for_pred);
+        predicate_variables.push(vars_for_pred);
     }
 
-    (variables, rel_variables)
+    (variable_ordering, predicate_variables)
 }
 
 /// Entry point for the Leapfrog Triejoin algorithm, implementing
@@ -311,7 +373,7 @@ where
     fn join_iter(
         query: JoinQuery, datastructures: HashMap<String, &DS>,
     ) -> impl Iterator<Item = Vec<usize>> {
-        let (variables, rel_variables) = build_variable_index(&query);
+        let (variable_ordering, predicate_variables) = build_variable_index(&query);
 
         let trie_iters: Vec<_> = query
             .body
@@ -324,7 +386,7 @@ where
             })
             .collect();
 
-        LeapfrogTriejoinIter::new(variables, rel_variables, trie_iters).into_iter()
+        LeapfrogTriejoinIter::new(variable_ordering, predicate_variables, trie_iters).into_iter()
     }
 }
 
@@ -341,10 +403,11 @@ mod tests {
 
     /// Collect triejoin results end-to-end via `into_iter().collect()`.
     fn triejoin_collect(
-        variables: Vec<usize>, rel_variables: Vec<Vec<usize>>, relations: Vec<&TreeTrie>,
+        variable_ordering: Vec<usize>, predicate_variables: Vec<Vec<usize>>,
+        relations: Vec<&TreeTrie>,
     ) -> Vec<Vec<usize>> {
         let iters: Vec<_> = relations.iter().map(|r| r.trie_iter()).collect();
-        LeapfrogTriejoinIter::new(variables, rel_variables, iters)
+        LeapfrogTriejoinIter::new(variable_ordering, predicate_variables, iters)
             .into_iter()
             .collect()
     }

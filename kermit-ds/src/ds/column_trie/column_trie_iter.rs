@@ -5,50 +5,53 @@ use {
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 
-/// Iterator over a [`ColumnTrie`] that traverses the trie layer by layer.
+/// Iterator over a [`ColumnTrie`].
 ///
-/// The iterator maintains a position using three coordinates:
-/// - `layer_number`: the current depth (0 = root/uninitialised, 1 = first data
-///   layer, …).
-/// - `interval_i`: index into the *current* layer's `interval` array,
-///   identifying the parent element whose children we are scanning. The
-///   interval array maps each parent element to the start offset of its
-///   children in the layer's `data` array.
-/// - `rel_data_i`: offset *within* the active `rel_data` slice (i.e. relative
-///   to the interval bounds, not a global data index).
+/// # Position model
 ///
-/// `open()` descends one layer: it computes `interval_i = parent_interval_start
-/// + rel_data_i` to find the child interval, then slices the next layer's data
-/// between that interval's start and end. `up()` reverses this by scanning the
-/// parent layer's interval array to recover the previous `interval_i` and
-/// `rel_data_i`.
+/// The iterator's position is the triple `(depth, interval_i, rel_data_i)`:
+///
+/// - `depth` — depth in the trie. `0` = root/uninitialised; `1..=arity` selects
+///   a data layer. The matching trie layer is `trie.layer(depth - 1)`.
+/// - `interval_i` — index into the current layer's `interval` array. Identifies
+///   *which parent element's children* we are scanning (the interval array maps
+///   each parent in the layer above to the start of its children in this
+///   layer's `data`).
+/// - `rel_data_i` — offset within `rel_data`, the slice of `data` carved out by
+///   the active interval. **Relative**, not a global data index.
+///
+/// `open()` descends one level: it derives the new `interval_i` from the
+/// parent's interval start plus our current relative offset, then slices
+/// the new layer's data between that interval's start and end. `up()`
+/// reverses this by searching the parent layer's interval array for the
+/// interval that owns our current global data index.
 #[derive(IntoTrieIter)]
 pub struct ColumnTrieIter<'a> {
-    /// Current depth in the trie (0 = root/uninitialised, 1..arity = data
-    /// layers).
-    layer_number: usize,
-    /// Index into the current layer's `interval` array, identifying which
+    /// Current depth in the trie. `0` = root/uninitialised; `1..=arity`
+    /// indexes into `trie.layer(depth - 1)`.
+    depth: usize,
+    /// Index into the current layer's `interval` array — selects which
     /// parent element's children we are iterating over.
     interval_i: usize,
-    /// Offset within `rel_data` — the position relative to the start of the
-    /// current interval, not a global index into the layer's data.
+    /// Offset within `rel_data` (relative to the interval start, not a
+    /// global index).
     rel_data_i: usize,
-    /// Slice of the current layer's data bounded by the active interval.
-    /// `None` when positioned at the root (layer 0).
+    /// Slice of the current layer's `data` bounded by the active interval.
+    /// `None` when positioned at the root (depth 0).
     rel_data: Option<&'a [usize]>,
     /// The trie being iterated.
     trie: &'a ColumnTrie,
 }
 
 impl<'a> ColumnTrieIter<'a> {
-    /// Creates a new iterator positioned at the root (layer 0). Call
+    /// Creates a new iterator positioned at the root (depth 0). Call
     /// [`open`](TrieIterator::open) to descend to the first data layer.
     pub fn new(trie: &'a ColumnTrie) -> Self {
         ColumnTrieIter {
             interval_i: 0,
             rel_data: None,
             rel_data_i: 0,
-            layer_number: 0,
+            depth: 0,
             trie,
         }
     }
@@ -80,8 +83,10 @@ impl LinearIterator for ColumnTrieIter<'_> {
             return false;
         }
         if let Some(data) = self.rel_data {
-            // Binary search within the remaining portion of the sorted slice
-            // to find the first key >= seek_key.
+            // `rel_data` is sorted within each interval (ColumnTrie
+            // invariant). For a sorted slice, `partition_point(|x| x <
+            // target)` returns the index of the first element ≥ target —
+            // exactly what `seek` needs.
             let remaining = &data[self.rel_data_i..];
             let offset = remaining.partition_point(|&k| k < seek_key);
             self.rel_data_i += offset;
@@ -102,94 +107,90 @@ impl LinearIterator for ColumnTrieIter<'_> {
 
 impl TrieIterator for ColumnTrieIter<'_> {
     fn open(&mut self) -> bool {
-        if self.layer_number == self.trie.header().arity() {
-            // If at leaf, return false
-            false
-        } else if self.layer_number == 0 {
-            let next_layer = self.trie.layer(0);
-            if next_layer.data.is_empty() {
-                // If the first layer is empty, we are in an empty trie and return false
+        if self.depth == self.trie.header().arity() {
+            // Already at a leaf — nothing to descend into.
+            return false;
+        }
+        if self.depth == 0 {
+            // Root → first data layer. An empty trie has an empty layer
+            // with `intervals = []`, so guard against that before computing
+            // the children slice (which would index `interval[0]`). When
+            // non-empty, the first layer has a single interval at 0 and
+            // its children-of-root slice is the entire `data` array.
+            let first_layer = self.trie.layer(0);
+            if first_layer.is_empty() {
                 return false;
             }
-            // If at root, initialize the first layer
-            self.layer_number = 1;
-            self.rel_data_i = 0;
+            self.depth = 1;
             self.interval_i = 0;
-            self.rel_data = Some(&self.trie.layer(0).data);
-            true
-        } else {
-            // Descend into the children of the element at the current position.
-            // The global data index of the current element is the interval start
-            // plus our relative offset. This becomes our interval index in the
-            // next layer, whose interval array maps each parent data element to
-            // the start of its children.
-            let curr_layer = self.trie.layer(self.layer_number - 1);
-            let prev_start_index = curr_layer.interval[self.interval_i];
-            self.interval_i = prev_start_index + self.rel_data_i;
-            // increment layer number
-            self.layer_number += 1;
-            // get new layer
-            let next_layer = self.trie.layer(self.layer_number - 1);
-            // get next start and end indices
-            let next_start_index = next_layer.interval[self.interval_i];
-            let next_end_index = if self.interval_i + 1 < next_layer.interval.len() {
-                next_layer.interval[self.interval_i + 1]
-            } else {
-                next_layer.data.len()
-            };
-            // set new relative data
-            self.rel_data = Some(&next_layer.data[next_start_index..next_end_index]);
             self.rel_data_i = 0;
-            true
+            self.rel_data = Some(first_layer.child_data(0));
+            return true;
         }
+
+        // Descend one level. The element we sit on in the current layer is
+        // at *global* data index `parent_start + rel_data_i`, where
+        // `parent_start = interval[interval_i]` of the current layer. That
+        // global index is exactly the interval index in the *child* layer:
+        // each parent data element maps to one entry in the child's
+        // interval array.
+        //
+        // Worked example. Depths 1 → 2 of:
+        //
+        //     layer 0: data=[10, 20]      interval=[0]
+        //     layer 1: data=[1, 2, 3]     interval=[0, 2]
+        //
+        // Sitting on `20` at depth 1: interval_i=0, rel_data_i=1.
+        // `parent_start = layer0.interval[0] = 0`, so the new interval_i
+        // is `0 + 1 = 1`, pointing at `interval[1] = 2` in layer 1 — the
+        // start of `20`'s children (the slice `[3]`).
+        let parent_layer = self.trie.layer(self.depth - 1);
+        let parent_start = parent_layer.intervals()[self.interval_i];
+        self.interval_i = parent_start + self.rel_data_i;
+        self.depth += 1;
+
+        let child_layer = self.trie.layer(self.depth - 1);
+        self.rel_data = Some(child_layer.child_data(self.interval_i));
+        self.rel_data_i = 0;
+        true
     }
 
     fn up(&mut self) -> bool {
-        if self.layer_number == 0 {
-            // If already at root, cannot go up
-            false
-        } else if self.layer_number == 1 {
-            // If moving to root, reset all indices
-            self.layer_number = 0;
+        if self.depth == 0 {
+            // Already at the root.
+            return false;
+        }
+        if self.depth == 1 {
+            // Returning to the root resets all coordinates.
+            self.depth = 0;
             self.interval_i = 0;
             self.rel_data_i = 0;
             self.rel_data = None;
-            true
-        } else {
-            // If moving up, decrement layer index
-            self.layer_number -= 1;
-            let layer = self.trie.layer(self.layer_number - 1);
-            // Our global data index is interval_i, so we must find the start index
-
-            // Data index of parent is equivalent to current interval index
-            let data_index = self.interval_i;
-            // We need to find the interval index of the data in the previous layer
-            // The start indexes are ordered, so we need to find the point at which the
-            // data index is less than the current start index. Then the previous index
-            // is our new interval index
-            for (i, start_index) in layer.interval.iter().enumerate() {
-                if data_index < *start_index {
-                    break;
-                } else {
-                    self.interval_i = i;
-                }
-            }
-
-            // Our new start index is at the new interval index
-            let start_index = layer.interval[self.interval_i];
-            // The end index is either the next start index, or the length of the data
-            let end_index = if self.interval_i + 1 < layer.interval.len() {
-                layer.interval[self.interval_i + 1]
-            } else {
-                layer.data.len()
-            };
-
-            // Set new relative data
-            self.rel_data = Some(&layer.data[start_index..end_index]);
-            self.rel_data_i = data_index - start_index;
-
-            true
+            return true;
         }
+
+        self.depth -= 1;
+        let parent_layer = self.trie.layer(self.depth - 1);
+
+        // The element we were sitting on at the deeper level was at *global*
+        // data index `interval_i` in the parent layer (this is the inverse
+        // of the `parent_start + rel_data_i = interval_i` derivation in
+        // `open`). To position the iterator we need to find which parent
+        // interval owns this data index — i.e. the largest `i` such that
+        // `parent.interval[i] <= data_index`. The interval array is sorted
+        // ascending and starts at 0, so this lookup always succeeds.
+        let data_index = self.interval_i;
+        for (i, &start_index) in parent_layer.intervals().iter().enumerate() {
+            if data_index < start_index {
+                break;
+            }
+            self.interval_i = i;
+        }
+
+        let parent_start = parent_layer.intervals()[self.interval_i];
+        self.rel_data = Some(parent_layer.child_data(self.interval_i));
+        self.rel_data_i = data_index - parent_start;
+        true
     }
 }
 

@@ -6,17 +6,27 @@ use {
 
 /// A [`TrieIterator`] over a [`TreeTrie`].
 ///
-/// Maintains an explicit `stack` of `(node, sibling_index)` pairs representing
-/// the path from the root to the current position. `pos` tracks the current
-/// sibling index at the deepest level.
+/// # Position model
+///
+/// `stack` holds `(node, sibling_index)` pairs from root to current depth;
+/// `stack.last()` is the node we are currently positioned on. `pos` mirrors
+/// the sibling index of the deepest stack entry — kept as a separate field
+/// so [`next`](LinearIterator::next) and [`seek`](LinearIterator::seek) can
+/// advance it without re-popping. To list the *siblings* of the current
+/// node we read the children of the parent: `stack[len - 2]` for depth ≥ 2,
+/// or [`TreeTrie::children`] for depth 1.
+///
+/// Compare to [`ColumnTrieIter`](super::super::column_trie::ColumnTrie):
+/// where `ColumnTrieIter` carries three integer coordinates over flat
+/// arrays, `TreeTrieIter` walks pointer-linked nodes via the explicit
+/// stack.
 #[derive(IntoTrieIter)]
 struct TreeTrieIter<'a> {
-    /// Current sibling index at the deepest stack level.
+    /// Sibling index of the deepest stack entry (the current position).
     pos: usize,
     /// The trie being iterated.
     trie: &'a TreeTrie,
-    /// Stack of `(current_node, sibling_index)` pairs from root to current
-    /// depth.
+    /// Path from the root to the current depth.
     stack: Vec<(&'a TrieNode, usize)>,
 }
 
@@ -66,6 +76,16 @@ impl LinearIterator for TreeTrieIter<'_> {
         None
     }
 
+    /// Advances to the least upper bound of `seek_key` among the current
+    /// siblings. Returns `false` if no key `≥ seek_key` remains.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `seek_key < self.key()`. `seek` is only valid for
+    /// **forward** moves — every iterator in the [`LinearIterator`] contract
+    /// is positioned at the start of a sorted sequence and may only advance.
+    /// The caller is responsible for ensuring this; the join algorithms in
+    /// `kermit-algos` enforce it via the leapfrog ring's invariants.
     fn seek(&mut self, seek_key: usize) -> bool {
         if self.at_end() {
             return false;
@@ -73,7 +93,7 @@ impl LinearIterator for TreeTrieIter<'_> {
 
         if let Some(current_key) = self.key() {
             if current_key > seek_key {
-                panic!("The sought key must be ≥ the key at the current position.");
+                panic!("seek_key must be ≥ the key at the current position");
             } else {
                 let siblings = self
                     .siblings()

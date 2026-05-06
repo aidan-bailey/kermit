@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.11] - 2026-05-05
+
+### Added
+
+- `const_rewrite` for paper-canonical atom filtering: rewrites `Term::Atom("c<id>")` into a fresh variable plus a synthetic unary `Const_c<id>` predicate
+- `TrieIterKind` dispatch enum to unify static and rewritten iterator sources
+- `SingletonTrieIter` to back the synthetic unary predicates produced by the const-view rewrite
+
+### Fixed
+
+- Predicate aliasing in `const_rewrite` when the same atom appears in multiple body positions
+
+### Changed
+
+- Enforce `#![deny(missing_docs)]` across the crate
+- Apply nightly rustfmt formatting pass
+- `kermit-iters` dependency to 0.0.9
+- `kermit-derive` dependency to 0.0.6
+- `kermit-parser` dependency to 0.0.3
+
 ## [0.0.10] - 2026-03-12
 
 ### Changed
