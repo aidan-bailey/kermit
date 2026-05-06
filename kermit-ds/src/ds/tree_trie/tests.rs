@@ -176,7 +176,10 @@ fn test_project_with_named_attributes() {
     // Project to columns 0 and 2 (first and third columns)
     let projected = trie.project(vec![0, 2]);
     assert_eq!(projected.header().arity(), 2);
-    assert_eq!(projected.header().attrs(), &["x".to_string(), "z".to_string()]);
+    assert_eq!(projected.header().attrs(), &[
+        "x".to_string(),
+        "z".to_string()
+    ]);
 
     // Collect all tuples from the projected relation using iterator
     let mut all_tuples: Vec<Vec<usize>> = projected.trie_iter().into_iter().collect();

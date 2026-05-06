@@ -10,7 +10,9 @@ use {
 /// new node.
 fn insert_into_children(children: &mut Vec<TrieNode>, tuple: Vec<usize>) {
     let mut key_iter = tuple.into_iter();
-    let Some(key) = key_iter.next() else { return };
+    let Some(key) = key_iter.next() else {
+        return;
+    };
 
     match children.binary_search_by(|node| node.key().cmp(&key)) {
         | Ok(pos) => {

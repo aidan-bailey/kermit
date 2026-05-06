@@ -11,15 +11,14 @@ use {
 ///
 /// The iterator's position is the triple `(depth, interval_i, rel_data_i)`:
 ///
-/// - `depth` — depth in the trie. `0` = root/uninitialised; `1..=arity`
-///   selects a data layer. The matching trie layer is
-///   `trie.layer(depth - 1)`.
-/// - `interval_i` — index into the current layer's `interval` array.
-///   Identifies *which parent element's children* we are scanning (the
-///   interval array maps each parent in the layer above to the start of its
-///   children in this layer's `data`).
-/// - `rel_data_i` — offset within `rel_data`, the slice of `data` carved out
-///   by the active interval. **Relative**, not a global data index.
+/// - `depth` — depth in the trie. `0` = root/uninitialised; `1..=arity` selects
+///   a data layer. The matching trie layer is `trie.layer(depth - 1)`.
+/// - `interval_i` — index into the current layer's `interval` array. Identifies
+///   *which parent element's children* we are scanning (the interval array maps
+///   each parent in the layer above to the start of its children in this
+///   layer's `data`).
+/// - `rel_data_i` — offset within `rel_data`, the slice of `data` carved out by
+///   the active interval. **Relative**, not a global data index.
 ///
 /// `open()` descends one level: it derives the new `interval_i` from the
 /// parent's interval start plus our current relative offset, then slices

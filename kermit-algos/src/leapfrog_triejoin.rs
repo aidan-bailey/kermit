@@ -44,8 +44,8 @@ pub trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
 /// places:
 ///
 /// - in `iterator_pool[i]` as `Some(iter)` — *idle*; not currently joining;
-/// - in `leapfrog.iterators` — *active*; participating in the inner leapfrog
-///   at the current depth.
+/// - in `leapfrog.iterators` — *active*; participating in the inner leapfrog at
+///   the current depth.
 ///
 /// `active_iter_indices` is the list of pool slots currently lent to the
 /// leapfrog (parallel to `leapfrog.iterators`, in pop order). The only
@@ -116,26 +116,24 @@ where
     /// For the join `Q(a, b, c) :- R(a, b), S(b, c), T(a, c)` with variables
     /// numbered `a=0, b=1, c=2`:
     ///
-    /// - `variable_ordering = [0, 1, 2]` — iterate `a` at depth 1, `b` at
-    ///   depth 2, `c` at depth 3.
+    /// - `variable_ordering = [0, 1, 2]` — iterate `a` at depth 1, `b` at depth
+    ///   2, `c` at depth 3.
     /// - `predicate_variables = [[0, 1], [1, 2], [0, 2]]` — `R` carries
     ///   variables `a, b`; `S` carries `b, c`; `T` carries `a, c`.
-    /// - `iters` is one trie iterator per body predicate, in the same order
-    ///   as `predicate_variables`.
+    /// - `iters` is one trie iterator per body predicate, in the same order as
+    ///   `predicate_variables`.
     ///
     /// # Arguments
     ///
-    /// * `variable_ordering` — The variable IDs the join descends through,
-    ///   in order. Position `d` in this list is depth `d + 1` in the
-    ///   triejoin. The arity of the result equals `variable_ordering.len()`.
+    /// * `variable_ordering` — The variable IDs the join descends through, in
+    ///   order. Position `d` in this list is depth `d + 1` in the triejoin. The
+    ///   arity of the result equals `variable_ordering.len()`.
     /// * `predicate_variables` — One entry per body predicate (in the same
     ///   order as `iters`); each entry lists the variable IDs that predicate
     ///   carries.
     /// * `iters` — Trie iterators, one per body predicate.
     pub fn new(
-        variable_ordering: Vec<usize>,
-        predicate_variables: Vec<Vec<usize>>,
-        iters: Vec<IT>,
+        variable_ordering: Vec<usize>, predicate_variables: Vec<Vec<usize>>, iters: Vec<IT>,
     ) -> Self {
         // Build the variable-to-iterator lookup table. For each depth (position
         // in `variable_ordering`), collect the indices of every body predicate
@@ -170,11 +168,11 @@ where
     /// Called by [`triejoin_open`](Self::triejoin_open) and
     /// [`triejoin_up`](Self::triejoin_up). Two phases:
     ///
-    /// 1. **Drain** the existing leapfrog: every active iterator returns to
-    ///    its pool slot via `active_iter_indices`.
-    /// 2. **Refill** for the new depth: `variable_to_iter_map[depth - 1]`
-    ///    names the pool slots whose iterators belong in the new leapfrog;
-    ///    each one is taken out of the pool and pushed into a fresh
+    /// 1. **Drain** the existing leapfrog: every active iterator returns to its
+    ///    pool slot via `active_iter_indices`.
+    /// 2. **Refill** for the new depth: `variable_to_iter_map[depth - 1]` names
+    ///    the pool slots whose iterators belong in the new leapfrog; each one
+    ///    is taken out of the pool and pushed into a fresh
     ///    [`LeapfrogJoinIter`].
     ///
     /// At depth 0 the second phase is skipped — the leapfrog stays empty.

@@ -199,8 +199,8 @@ pub trait Projectable {
 ///
 /// - [`JoinIterable`] — produces iterators that the join algorithms in
 ///   `kermit-algos` consume. Implementors typically also implement
-///   [`TrieIterable`](kermit_iters::TrieIterable) so the iterator can be
-///   driven hierarchically.
+///   [`TrieIterable`](kermit_iters::TrieIterable) so the iterator can be driven
+///   hierarchically.
 /// - [`Projectable`] — the relational π operator (column projection).
 pub trait Relation: JoinIterable + Projectable {
     /// Returns the header describing this relation's name, attributes, and
