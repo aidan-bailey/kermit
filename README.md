@@ -130,7 +130,7 @@ The schema (currently v2) is documented in `docs/specs/bench-report-schema.md`.
 
 ## Analysis and plotting
 
-Criterion's auto-generated SVG/HTML output is disabled. Benchmark results are explored through [`python/kermit-lab/`](python/kermit-lab/), a [uv](https://docs.astral.sh/uv/)-managed notebook-first analysis library that loads `--report-json` output plus Criterion's per-function JSON into pandas DataFrames. Six plot shapes return inline `matplotlib` Figures; pivot/comparison/stats helpers ship alongside. The CLI is preserved as a thin wrapper.
+Criterion's auto-generated SVG/HTML output is disabled. Benchmark results are explored through [`python/kermit-lab/`](python/kermit-lab/), a [uv](https://docs.astral.sh/uv/)-managed notebook-first analysis library that loads `--report-json` output plus Criterion's per-function JSON into pandas DataFrames. Six plot shapes return inline `matplotlib` Figures; pivot/comparison/stats helpers ship alongside. The CLI is preserved as a thin wrapper. Start with [`python/kermit-lab/notebooks/00_full_timeline.ipynb`](python/kermit-lab/notebooks/00_full_timeline.ipynb) for an end-to-end walkthrough that generates its own data, runs the bench sweep, and produces inline plots.
 
 ```sh
 # one-time install
