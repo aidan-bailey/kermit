@@ -11,17 +11,24 @@ use {
 /// offset of its children within this layer's `data`. The children of parent
 /// element `i` span `data[interval[i]..interval[i+1]]` (or to the end of
 /// `data` for the last parent).
+///
+/// The two backing `Vec`s are kept private so the cross-field invariants
+/// (sortedness, interval-into-data) cannot be broken by external mutation.
+/// All read access is through the methods below; mutation goes through
+/// [`insert_key_and_shift_intervals`](Self::insert_key_and_shift_intervals)
+/// and [`add_interval`](Self::add_interval).
 pub struct ColumnTrieLayer {
     /// Sorted keys at this trie depth.
-    pub data: Vec<usize>,
-    /// Maps each parent element to the start index of its children in `data`.
-    pub interval: Vec<usize>,
+    data: Vec<usize>,
+    /// Maps each parent element to the start index of its children in
+    /// `data`.
+    interval: Vec<usize>,
 }
 
 impl ColumnTrieLayer {
     /// Returns the data index range `start..end` for the children of the
     /// element at `interval_index`.
-    fn data_range(&self, interval_index: usize) -> std::ops::Range<usize> {
+    pub(super) fn data_range(&self, interval_index: usize) -> std::ops::Range<usize> {
         let start = self.interval[interval_index];
         let end = if interval_index + 1 < self.interval.len() {
             self.interval[interval_index + 1]
@@ -30,6 +37,20 @@ impl ColumnTrieLayer {
         };
         start..end
     }
+
+    /// Returns the slice of `data` containing the children of the element at
+    /// `interval_index`. Equivalent to `&self.data[self.data_range(i)]`.
+    pub(super) fn child_data(&self, interval_index: usize) -> &[usize] {
+        let range = self.data_range(interval_index);
+        &self.data[range]
+    }
+
+    /// Returns the layer's interval array. Used by the iterator to recover
+    /// the parent interval index on `up()`.
+    pub(super) fn intervals(&self) -> &[usize] { &self.interval }
+
+    /// Returns `true` if this layer holds no keys.
+    pub(super) fn is_empty(&self) -> bool { self.data.is_empty() }
 
     /// Inserts `key` at position `pos` in the data array and increments all
     /// interval entries after `interval_index` to account for the shift.
@@ -89,8 +110,12 @@ impl ColumnTrieLayer {
 pub struct ColumnTrie {
     header: RelationHeader,
     /// One layer per attribute/depth in the relation; `layers[i]` holds the
-    /// keys found at column `i` of the tuples, grouped by parent.
-    pub layers: Vec<ColumnTrieLayer>,
+    /// keys found at column `i` of the tuples, grouped by parent. Private
+    /// because the cross-layer invariants (`interval` lengths matching
+    /// parent distinct-key counts, sortedness within sibling intervals)
+    /// must not be mutated piecemeal — read access goes through
+    /// [`ColumnTrie::layer`].
+    layers: Vec<ColumnTrieLayer>,
 }
 
 impl ColumnTrie {
@@ -105,7 +130,7 @@ impl ColumnTrie {
     /// Walks down the layer hierarchy inserting one key per level. The
     /// `interval_index` tracks our position in each layer's interval array,
     /// identifying which parent group the new key belongs to.
-    fn internal_insert(&mut self, tuple: &[usize]) -> bool {
+    fn internal_insert(&mut self, tuple: &[usize]) {
         let arity = self.header().arity();
         let mut interval_index = 0;
 
@@ -130,7 +155,7 @@ impl ColumnTrie {
                     // Insert before the first larger key
                     self.layers[layer_i].insert_key_and_shift_intervals(i, k, interval_index);
                     if is_last_layer {
-                        return true;
+                        return;
                     }
                     // Inserting at layer_i creates a new child group in layer_i+1
                     self.layers[layer_i + 1].add_interval(i);
@@ -147,13 +172,12 @@ impl ColumnTrie {
                 self.layers[layer_i].insert_key_and_shift_intervals(insert_pos, k, interval_index);
             }
             if is_last_layer {
-                return true;
+                return;
             }
             // Appending at layer_i creates a new child group in layer_i+1
             self.layers[layer_i + 1].add_interval(insert_pos);
             interval_index = insert_pos;
         }
-        true
     }
 }
 
@@ -253,28 +277,24 @@ impl Relation for ColumnTrie {
         }
     }
 
-    /// Inserts a single tuple.
+    /// Inserts a single tuple. Duplicate tuples are silently absorbed.
     ///
     /// # Panics
     ///
-    /// In debug builds, panics if `tuple.len()` does not match the relation's
-    /// arity. In release builds the check is elided and a mismatched tuple
-    /// will produce a logically inconsistent trie.
-    fn insert(&mut self, tuple: Vec<usize>) -> bool {
-        debug_assert!(
-            tuple.len() == self.header().arity(),
-            "Tuple length must match the arity of the trie."
+    /// Panics if `tuple.len()` does not match the relation's arity.
+    fn insert(&mut self, tuple: Vec<usize>) {
+        assert_eq!(
+            tuple.len(),
+            self.header().arity(),
+            "tuple arity must match relation arity"
         );
-        self.internal_insert(&tuple)
+        self.internal_insert(&tuple);
     }
 
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool {
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
         for tuple in tuples {
-            if !self.insert(tuple) {
-                return false;
-            }
+            self.insert(tuple);
         }
-        true
     }
 }
 

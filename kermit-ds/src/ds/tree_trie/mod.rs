@@ -17,7 +17,7 @@ mod tests {
     fn trie_insert() {
         let mut trie = TreeTrie::new(2.into());
 
-        let _ = trie.insert(vec![1, 2]);
+        trie.insert(vec![1, 2]);
 
         assert_eq!(trie.children().len(), 1);
         // check first level child
@@ -29,7 +29,7 @@ mod tests {
         assert_eq!(child.key(), 2);
         assert_eq!(child.children().len(), 0);
 
-        let _ = trie.insert(vec![0, 2]);
+        trie.insert(vec![0, 2]);
 
         assert_eq!(trie.children().len(), 2);
         // check first level child
@@ -41,7 +41,7 @@ mod tests {
         assert_eq!(child.key(), 2);
         assert_eq!(child.children().len(), 0);
 
-        let _ = trie.insert(vec![1, 1]);
+        trie.insert(vec![1, 1]);
 
         assert_eq!(trie.children().len(), 2);
         // check first level child
@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "The sought key must be ≥ the key at the current position.")]
+    #[should_panic(expected = "seek_key must be ≥ the key at the current position")]
     fn seek_backward_panics() {
         let trie = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![3], vec![5]]);
         let mut iter = trie.trie_iter();
