@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-05-05
+
+### Added
+
+- Sweep `--indexstructure all` and `--algorithm all` selectors for full Cartesian benchmark sweeps via `bench run`
+- `bench run --all` flag to sweep across every discovered benchmark
+- Declarative-generator runner: `bench run <name>` materialises data on demand from YAMLs declaring a `generator: { kind, scale, ... }` block
+- `bench gen watdiv` and `bench gen lubm` subcommands for imperative on-the-fly generation
+- `bench fetch` and `bench clean` subcommands for managing the platform cache (`~/.cache/kermit/benchmarks/`)
+- `--report-json <PATH>` flag emitting versioned `BenchReport` arrays per invocation; defaults to `bench-runs/{kind}-{unix-millis}.json`
+- `SpaceMeasurement` Criterion `Measurement` and `BytesFormatter` for memory benchmarks; `bench ds --metrics space` and `bench run --metrics space` route through `Criterion<SpaceMeasurement>` via `iter_custom`
+- Const-view atom rewrite: `DatabaseEngine::join` now invokes `kermit_algos::rewrite_atoms` so LFTJ never sees `Term::Atom("c<id>")`
+- Integration test for WatDiv mini fixture (`kermit/tests/watdiv_correctness.rs`) and CLI smoke for `bench gen watdiv` (`kermit/tests/cli_watdiv_gen.rs`)
+- LUBM end-to-end test coverage and miri-gating on the kermit-rdf driver fs tests
+
+### Fixed
+
+- Cache spec drift detection requires explicit `--force` to opt into rebuild; legacy `meta.json` files without `spec_hash` are treated as drift
+- CLI join CSV header derived from head variable names (via `head_column_names`); test fixtures must skip the first non-empty line when parsing as integer tuples
+- `bench run` benchmark ID semantics: `--name` is now a *prefix* on the auto-generated `{benchmark}/{query}/{ds}/{algo}` identity, defaulting to `run`
+- WatDiv driver alignment with vendored binary CLI (`-d`, `-s`, `-q` modes write only to stdout; no per-template files emitted)
+
+### Changed
+
+- Restructure `bench gen` into nested subcommands (`watdiv`, `lubm`)
+- Opt out of Criterion's default features (no `plotters`, no SVG/HTML rendering); analysis lives in `python/kermit-lab/`
+- `kermit-ds` dependency to 0.1.1
+- `kermit-iters` dependency to 0.0.9
+- `kermit-algos` dependency to 0.0.11
+- `kermit-bench` dependency to 0.1.1
+- `kermit-parser` dependency to 0.0.3
+- `kermit-rdf` dependency added at 0.1.0
+
 ## [0.1.0] - 2026-03-12
 
 ### Added

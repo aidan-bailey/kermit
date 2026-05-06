@@ -10,9 +10,9 @@ readme.workspace = true
 repository.workspace = true
 
 [dependencies]
-kermit-parser = { version = "0.0.2", path = "../kermit-parser" }
-kermit-ds = { version = "0.1.0", path = "../kermit-ds" }
-kermit-bench = { version = "0.1.0", path = "../kermit-bench" }
+kermit-parser = { version = "0.0.3", path = "../kermit-parser" }
+kermit-ds = { version = "0.1.1", path = "../kermit-ds" }
+kermit-bench = { version = "0.1.1", path = "../kermit-bench" }
 arrow = "56.2.0"
 parquet = "56.2.0"
 flate2 = "1"
