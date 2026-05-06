@@ -48,8 +48,9 @@ samples = kl.load_samples("bench-runs/*.json", "target/criterion")
 lo, hi = kl.bootstrap_ratio_ci(a, b, rng=42)
 ```
 
-Five worked examples ship in [`notebooks/`](notebooks/):
+Six worked examples ship in [`notebooks/`](notebooks/):
 
+- `00_full_timeline.ipynb` — generate a LUBM-1 dataset, run the bench sweep, then load and plot. **Start here.**
 - `01_quick_start.ipynb` — load a DataFrame and plot inline.
 - `02_scaling.ipynb` — scaling plot + pivot of mean times by DS × scale.
 - `03_compare_ds.ipynb` — `compare()` envelope + `bootstrap_ratio_ci()`.
