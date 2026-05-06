@@ -66,6 +66,8 @@ pub fn rewrite_atoms(mut query: JoinQuery) -> Result<(JoinQuery, Vec<ConstSpec>)
     let mut specs: Vec<ConstSpec> = Vec::new();
     let mut new_preds: Vec<Predicate> = Vec::new();
 
+    // Body only — head atoms are intentionally not rewritten; see the
+    // "Head asymmetry" section of this function's doc-comment.
     for pred in &mut query.body {
         for term in &mut pred.terms {
             let atom = match term {

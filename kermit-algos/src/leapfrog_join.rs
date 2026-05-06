@@ -38,19 +38,22 @@ pub trait LeapfrogJoinIterator {
 /// Concrete implementation of the leapfrog join over sorted linear iterators.
 ///
 /// Coordinates `k` sorted iterators to find their common keys. The iterators
-/// are logically arranged in a ring; `p` points to the "current" iterator, and
-/// `iterator_indexes` maps logical positions to physical iterator indices
-/// (sorted by initial key during
-/// [`leapfrog_init`](LeapfrogJoinIterator::leapfrog_init)).
+/// are arranged in a logical ring whose order is determined by their current
+/// keys: `sorted_iter_perm` is a permutation of `0..k` sorted by each
+/// iterator's initial key (computed in
+/// [`leapfrog_init`](LeapfrogJoinIterator::leapfrog_init)), and `p` walks
+/// this permutation cyclically.
 pub struct LeapfrogJoinIter<IT>
 where
     IT: LinearIterator,
 {
     /// The underlying sorted iterators being joined.
     pub(crate) iterators: Vec<IT>,
-    /// Logical-to-physical index mapping, sorted by initial key value.
-    pub iterator_indexes: Vec<usize>,
-    /// Index into `iterator_indexes` for the current iterator in the ring.
+    /// Permutation of `0..k` ordering the iterators by their initial key.
+    /// The leapfrog walks this permutation cyclically (the "ring") rather
+    /// than `iterators` directly.
+    pub sorted_iter_perm: Vec<usize>,
+    /// Index into `sorted_iter_perm` for the current iterator in the ring.
     p: usize,
 }
 
@@ -61,7 +64,7 @@ where
     /// Creates a new leapfrog join over the given sorted iterators.
     pub fn new(iterators: Vec<IT>) -> Self {
         LeapfrogJoinIter {
-            iterator_indexes: (0..iterators.len()).collect(),
+            sorted_iter_perm: (0..iterators.len()).collect(),
             iterators,
             p: 0,
         }
@@ -70,7 +73,7 @@ where
     /// Returns the number of iterators being joined.
     pub fn k(&self) -> usize { self.iterators.len() }
 
-    fn mut_iter(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.iterator_indexes[i]] }
+    fn mut_iter(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.sorted_iter_perm[i]] }
 }
 
 impl<IT> LeapfrogJoinIterator for LeapfrogJoinIter<IT>
@@ -90,7 +93,7 @@ where
             }
         }
 
-        self.iterator_indexes.sort_unstable_by(|a, b| {
+        self.sorted_iter_perm.sort_unstable_by(|a, b| {
             self.iterators[*a]
                 .key()
                 .unwrap()
@@ -102,24 +105,29 @@ where
     }
 
     fn leapfrog_search(&mut self) -> bool {
-        let prime_i = if self.p == 0 {
+        // The predecessor in the ring (wraps to k-1 when p == 0). Its key is
+        // the largest one any iterator currently holds — every iterator must
+        // catch up to it for a common key to exist.
+        let prev_idx = if self.p == 0 {
             self.k() - 1
         } else {
             self.p - 1
         };
-        let mut x_prime = self.mut_iter(prime_i).key().unwrap();
+        let mut target_key = self.mut_iter(prev_idx).key().unwrap();
         loop {
-            let x = self.mut_iter(self.p).key().unwrap();
-            if x == x_prime {
+            let current_key = self.mut_iter(self.p).key().unwrap();
+            if current_key == target_key {
                 return true;
-            } else {
-                self.mut_iter(self.p).seek(x_prime);
-                if self.mut_iter(self.p).at_end() {
-                    return false;
-                }
-                x_prime = self.mut_iter(self.p).key().unwrap();
-                self.p = (self.p + 1) % self.k();
             }
+            self.mut_iter(self.p).seek(target_key);
+            if self.mut_iter(self.p).at_end() {
+                return false;
+            }
+            // Advancing the current iterator may have raised its key past the
+            // old target; that key becomes the new target for the next ring
+            // step.
+            target_key = self.mut_iter(self.p).key().unwrap();
+            self.p = (self.p + 1) % self.k();
         }
     }
 

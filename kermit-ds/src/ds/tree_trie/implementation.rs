@@ -4,33 +4,23 @@ use {
     std::ops::{Index, IndexMut},
 };
 
-/// Insert a tuple into a sorted list of children nodes, recursing for remaining
-/// keys.
-fn insert_into_children(children: &mut Vec<TrieNode>, tuple: Vec<usize>) -> bool {
-    if tuple.is_empty() {
-        return true;
-    }
-
+/// Inserts a tuple into a sorted list of children nodes, recursing for the
+/// remaining keys. Duplicate tuples are silently absorbed: when a key already
+/// exists at this level we descend into its children instead of allocating a
+/// new node.
+fn insert_into_children(children: &mut Vec<TrieNode>, tuple: Vec<usize>) {
     let mut key_iter = tuple.into_iter();
+    let Some(key) = key_iter.next() else { return };
 
-    if let Some(key) = key_iter.next() {
-        let insert_pos = children.binary_search_by(|node| node.key().cmp(&key));
-
-        match insert_pos {
-            | Ok(pos) => {
-                // Key exists, continue with its children
-                insert_into_children(children[pos].children_mut(), key_iter.collect())
-            },
-            | Err(pos) => {
-                // Key doesn't exist, insert new node
-                let mut new_node = TrieNode::new(key);
-                insert_into_children(new_node.children_mut(), key_iter.collect());
-                children.insert(pos, new_node);
-                true
-            },
-        }
-    } else {
-        true
+    match children.binary_search_by(|node| node.key().cmp(&key)) {
+        | Ok(pos) => {
+            insert_into_children(children[pos].children_mut(), key_iter.collect());
+        },
+        | Err(pos) => {
+            let mut new_node = TrieNode::new(key);
+            insert_into_children(new_node.children_mut(), key_iter.collect());
+            children.insert(pos, new_node);
+        },
     }
 }
 
@@ -155,23 +145,24 @@ impl Relation for TreeTrie {
 
         let mut trie = Self::new(header);
         for tuple in tuples {
-            if !trie.insert(tuple) {
-                panic!("Failed to build from tuples.");
-            }
+            trie.insert(tuple);
         }
         trie
     }
 
     /// Inserts a single tuple, preserving the sorted-children invariant.
+    /// Duplicate tuples are silently absorbed.
     ///
     /// # Panics
     ///
     /// Panics if `tuple.len()` does not match the arity of the relation.
-    fn insert(&mut self, tuple: Vec<usize>) -> bool {
-        if tuple.len() != self.header().arity() {
-            panic!("Arity doesn't match.");
-        }
-        insert_into_children(&mut self.children, tuple)
+    fn insert(&mut self, tuple: Vec<usize>) {
+        assert_eq!(
+            tuple.len(),
+            self.header().arity(),
+            "tuple arity must match relation arity"
+        );
+        insert_into_children(&mut self.children, tuple);
     }
 
     /// Inserts every tuple in `tuples`.
@@ -180,13 +171,10 @@ impl Relation for TreeTrie {
     ///
     /// Panics if any tuple's arity does not match the relation's arity
     /// (propagated from [`insert`](Self::insert)).
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool {
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
         for tuple in tuples {
-            if !self.insert(tuple) {
-                panic!("Failed to insert tuple.");
-            }
+            self.insert(tuple);
         }
-        true
     }
 }
 
