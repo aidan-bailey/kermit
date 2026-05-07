@@ -180,6 +180,143 @@ fn write_triple(
     writeln!(writer, "<{s}> <{p}> {} .", o.to_canonical())
 }
 
+/// Rule 1 — subClassOf: `?x rdf:type C ∧ C ⊑ D → ?x rdf:type D`.
+fn apply_subclass_rule(
+    snap: &[(String, String, RdfValue)], rdf_type: &str,
+    superclasses: &HashMap<String, HashSet<String>>, all: &mut HashSet<(String, String, RdfValue)>,
+) {
+    for (s, p, o) in snap {
+        if p != rdf_type {
+            continue;
+        }
+        let RdfValue::Iri(c) = o else {
+            continue;
+        };
+        if let Some(parents) = superclasses.get(c) {
+            for d in parents {
+                all.insert((s.clone(), rdf_type.to_string(), RdfValue::Iri(d.clone())));
+            }
+        }
+    }
+}
+
+/// Rule 2 — subPropertyOf: `?x p ?y ∧ p ⊑ q → ?x q ?y`.
+fn apply_subproperty_rule(
+    snap: &[(String, String, RdfValue)], superproperties: &HashMap<String, HashSet<String>>,
+    all: &mut HashSet<(String, String, RdfValue)>,
+) {
+    for (s, p, o) in snap {
+        if let Some(parents) = superproperties.get(p) {
+            for q in parents {
+                all.insert((s.clone(), q.clone(), o.clone()));
+            }
+        }
+    }
+}
+
+/// Rule 3 — owl:inverseOf: `?x p ?y → ?y q ?x` for each declared `(p, q)`.
+/// Skipped when `?y` is a literal — inverses on data values are nonsensical.
+fn apply_inverse_rule(
+    snap: &[(String, String, RdfValue)], inverse_pairs: &[(String, String)],
+    all: &mut HashSet<(String, String, RdfValue)>,
+) {
+    for (s, p, o) in snap {
+        for (a, b) in inverse_pairs {
+            if p != a {
+                continue;
+            }
+            let new_subject = match o {
+                | RdfValue::Iri(iri) => iri.clone(),
+                | RdfValue::BlankNode(node) => node.clone(),
+                | RdfValue::Literal(_) => continue,
+            };
+            all.insert((new_subject, b.clone(), RdfValue::Iri(s.clone())));
+        }
+    }
+}
+
+/// Rule 4 — owl:TransitiveProperty: one-step closure
+/// `?x p ?y ∧ ?y p ?z → ?x p ?z` for each transitive `p`. Reads from `all`
+/// (not the iteration snapshot) so that the outer fixed-point loop drives
+/// the multi-hop closure across iterations.
+fn apply_transitive_rule(
+    transitive: &HashSet<String>, all: &mut HashSet<(String, String, RdfValue)>,
+) {
+    for tp in transitive {
+        let edges: Vec<(String, String)> = all
+            .iter()
+            .filter_map(|(s, p, o)| {
+                if p != tp {
+                    return None;
+                }
+                if let RdfValue::Iri(oi) = o {
+                    Some((s.clone(), oi.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut by_src: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (a, b) in &edges {
+            by_src.entry(a.as_str()).or_default().push(b.as_str());
+        }
+        for (a, b) in &edges {
+            if let Some(nexts) = by_src.get(b.as_str()) {
+                for c in nexts {
+                    all.insert((a.clone(), tp.clone(), RdfValue::Iri(c.to_string())));
+                }
+            }
+        }
+    }
+}
+
+/// Rule 5 — Realisation: `?x prop ?y ∧ ?y rdf:type T → ?x rdf:type D`.
+/// Reads from `all` so derivations from earlier rules in the same
+/// iteration (e.g. a `Department` that was just derived via subClassOf)
+/// participate.
+fn apply_realisation_rule(
+    realisation: &[(String, String, String)], rdf_type: &str,
+    all: &mut HashSet<(String, String, RdfValue)>,
+) {
+    for (prop_iri, target_class, derived_class) in realisation {
+        let target_subjects: HashSet<&str> = all
+            .iter()
+            .filter_map(|(s, p, o)| {
+                if p != rdf_type {
+                    return None;
+                }
+                if let RdfValue::Iri(c) = o {
+                    if c == target_class {
+                        return Some(s.as_str());
+                    }
+                }
+                None
+            })
+            .collect();
+        let new_classifications: Vec<String> = all
+            .iter()
+            .filter_map(|(s, p, o)| {
+                if p != prop_iri {
+                    return None;
+                }
+                if let RdfValue::Iri(y) = o {
+                    if target_subjects.contains(y.as_str()) {
+                        return Some(s.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+        for x in new_classifications {
+            all.insert((
+                x,
+                rdf_type.to_string(),
+                RdfValue::Iri(derived_class.clone()),
+            ));
+        }
+    }
+}
+
 /// Forward-chains the Univ-Bench rules over `input_path` and writes the
 /// closed N-Triples to `output_path`.
 ///
@@ -230,112 +367,16 @@ pub fn entail(input_path: &Path, output_path: &Path) -> Result<EntailmentStats, 
         }
         let before = all.len();
 
-        // Snapshot current triples for derivation; we mutate `all`.
+        // Snapshot current triples; rules 1-3 derive from this fixed view
+        // while mutating `all`. Rules 4-5 re-scan `all` because they need
+        // to see derivations from earlier rules within the same iteration.
         let snap: Vec<(String, String, RdfValue)> = all.iter().cloned().collect();
 
-        // subClassOf: ?x rdf:type C → ?x rdf:type D for each D ∈ superclasses(C)
-        for (s, p, o) in &snap {
-            if p == &rdf_type {
-                if let RdfValue::Iri(c) = o {
-                    if let Some(parents) = superclasses.get(c) {
-                        for d in parents {
-                            all.insert((s.clone(), rdf_type.clone(), RdfValue::Iri(d.clone())));
-                        }
-                    }
-                }
-            }
-        }
-
-        // subPropertyOf: ?x p ?y → ?x q ?y for each q ∈ superproperties(p)
-        for (s, p, o) in &snap {
-            if let Some(parents) = superproperties.get(p) {
-                for q in parents {
-                    all.insert((s.clone(), q.clone(), o.clone()));
-                }
-            }
-        }
-
-        // owl:inverseOf: ?x p ?y → ?y q ?x  (only when ?y is an IRI/blank, not a
-        // literal)
-        for (s, p, o) in &snap {
-            for (a, b) in &inverse_pairs {
-                if p == a {
-                    let new_subject = match o {
-                        | RdfValue::Iri(iri) => iri.clone(),
-                        | RdfValue::BlankNode(b) => b.clone(),
-                        | RdfValue::Literal(_) => continue,
-                    };
-                    all.insert((new_subject, b.clone(), RdfValue::Iri(s.clone())));
-                }
-            }
-        }
-
-        // owl:TransitiveProperty: gather all (s, o) for each transitive p,
-        // compute join `(s, o) ⋈ (o, z) → (s, z)`. Stored back into `all`.
-        for tp in &transitive {
-            // Collect current edges for this property.
-            let edges: Vec<(String, String)> = all
-                .iter()
-                .filter_map(|(s, p, o)| {
-                    if p == tp {
-                        if let RdfValue::Iri(oi) = o {
-                            Some((s.clone(), oi.clone()))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            // Build adjacency for one-step join.
-            let mut by_src: HashMap<&str, Vec<&str>> = HashMap::new();
-            for (a, b) in &edges {
-                by_src.entry(a.as_str()).or_default().push(b.as_str());
-            }
-            for (a, b) in &edges {
-                if let Some(nexts) = by_src.get(b.as_str()) {
-                    for c in nexts {
-                        all.insert((a.clone(), tp.clone(), RdfValue::Iri(c.to_string())));
-                    }
-                }
-            }
-        }
-
-        // Realisation: ?x p ?y ∧ ?y rdf:type T → ?x rdf:type D
-        for (prop_iri, target_class, derived_class) in &realisation {
-            // Index ?y rdf:type target_class.
-            let target_subjects: HashSet<&str> = all
-                .iter()
-                .filter_map(|(s, p, o)| {
-                    if p == &rdf_type {
-                        if let RdfValue::Iri(c) = o {
-                            if c == target_class {
-                                return Some(s.as_str());
-                            }
-                        }
-                    }
-                    None
-                })
-                .collect();
-            // Find ?x prop_iri ?y where ?y in target_subjects.
-            let new_classifications: Vec<String> = all
-                .iter()
-                .filter_map(|(s, p, o)| {
-                    if p == prop_iri {
-                        if let RdfValue::Iri(y) = o {
-                            if target_subjects.contains(y.as_str()) {
-                                return Some(s.clone());
-                            }
-                        }
-                    }
-                    None
-                })
-                .collect();
-            for x in new_classifications {
-                all.insert((x, rdf_type.clone(), RdfValue::Iri(derived_class.clone())));
-            }
-        }
+        apply_subclass_rule(&snap, &rdf_type, &superclasses, &mut all);
+        apply_subproperty_rule(&snap, &superproperties, &mut all);
+        apply_inverse_rule(&snap, &inverse_pairs, &mut all);
+        apply_transitive_rule(&transitive, &mut all);
+        apply_realisation_rule(&realisation, &rdf_type, &mut all);
 
         if all.len() == before {
             break;
