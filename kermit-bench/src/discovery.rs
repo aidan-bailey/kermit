@@ -152,22 +152,11 @@ pub fn load_all_benchmarks_with_cache(
         .collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
-        let path = entry.path();
-        if !path.is_dir() {
+        let Some(def) = try_load_cache_subdir(&entry.path())? else {
             continue;
-        }
-        let yml = path.join("benchmark.yml");
-        let meta = path.join("meta.json");
-        if !yml.exists() || !meta.exists() {
-            continue;
-        }
-        let contents = std::fs::read_to_string(&yml)?;
-        let def: BenchmarkDefinition =
-            serde_yaml::from_str(&contents).map_err(|source| BenchError::Yaml {
-                path: yml.clone(),
-                source,
-            })?;
-        def.validate()?;
+        };
+        // Cache entries override workspace ones with the same name (e.g. a
+        // generator-produced YAML supersedes the original declaration).
         if let Some(&idx) = existing.get(&def.name) {
             out[idx] = def;
         } else {
@@ -176,6 +165,29 @@ pub fn load_all_benchmarks_with_cache(
         }
     }
     Ok(out)
+}
+
+/// Returns `Ok(Some(def))` when `path` is a kermit-produced cache subdir
+/// (contains both `benchmark.yml` and `meta.json`), `Ok(None)` when the
+/// path is not a valid cache subdir (skip silently), and `Err(_)` when the
+/// YAML is present but malformed.
+fn try_load_cache_subdir(path: &Path) -> Result<Option<BenchmarkDefinition>, BenchError> {
+    if !path.is_dir() {
+        return Ok(None);
+    }
+    let yml = path.join("benchmark.yml");
+    let meta = path.join("meta.json");
+    if !yml.exists() || !meta.exists() {
+        return Ok(None);
+    }
+    let contents = std::fs::read_to_string(&yml)?;
+    let def: BenchmarkDefinition =
+        serde_yaml::from_str(&contents).map_err(|source| BenchError::Yaml {
+            path: yml.clone(),
+            source,
+        })?;
+    def.validate()?;
+    Ok(Some(def))
 }
 
 #[cfg(test)]
