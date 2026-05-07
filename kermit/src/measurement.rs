@@ -3,6 +3,12 @@ use criterion::{
     Throughput,
 };
 
+/// Binary-prefix unit thresholds. Named so the `scale` function reads as
+/// `if typical < KIB { ... }` rather than `if typical < 1024.0 { ... }`.
+const BYTES_PER_KIB: f64 = 1024.0;
+const BYTES_PER_MIB: f64 = BYTES_PER_KIB * 1024.0;
+const BYTES_PER_GIB: f64 = BYTES_PER_MIB * 1024.0;
+
 pub struct BytesFormatter;
 
 impl BytesFormatter {
@@ -10,14 +16,14 @@ impl BytesFormatter {
     /// and return the multiplicative scale factor plus the unit string.
     /// Use [`format_bytes`] for one-shot formatting of a single byte count.
     pub fn scale(typical: f64) -> (f64, &'static str) {
-        if typical < 1024.0 {
+        if typical < BYTES_PER_KIB {
             (1.0, "B")
-        } else if typical < 1024.0 * 1024.0 {
-            (1.0 / 1024.0, "KiB")
-        } else if typical < 1024.0 * 1024.0 * 1024.0 {
-            (1.0 / (1024.0 * 1024.0), "MiB")
+        } else if typical < BYTES_PER_MIB {
+            (1.0 / BYTES_PER_KIB, "KiB")
+        } else if typical < BYTES_PER_GIB {
+            (1.0 / BYTES_PER_MIB, "MiB")
         } else {
-            (1.0 / (1024.0 * 1024.0 * 1024.0), "GiB")
+            (1.0 / BYTES_PER_GIB, "GiB")
         }
     }
 }
@@ -60,6 +66,21 @@ impl ValueFormatter for BytesFormatter {
     fn scale_for_machines(&self, _values: &mut [f64]) -> &'static str { "B" }
 }
 
+/// Custom Criterion `Measurement` that reports `heap_size_bytes()` per
+/// iteration instead of wall-clock time.
+///
+/// `start`/`end` are no-ops — the actual byte count is supplied by an
+/// `iter_custom` closure in `main.rs::run_benchmark` that calls
+/// `heap_size_bytes()` on the pre-built relation. This split exists because
+/// Criterion's `Measurement` trait separates "wall instrumentation" from "the
+/// thing being measured", and only the latter is meaningful for space.
+///
+/// **Calibration trap:** Criterion's `iter_custom` calibration uses
+/// wall-clock during warmup even for non-time `Measurement`s. A near-instant
+/// closure makes the `iters` count ramp toward `u64::MAX` and `iters * bytes`
+/// arithmetic saturate `usize`. The closure in `run_benchmark` keeps an O(N)
+/// call inside the loop (wrapped in `std::hint::black_box`) for this reason
+/// — see CLAUDE.md "Space benchmarks" gotcha.
 pub struct SpaceMeasurement;
 
 impl Measurement for SpaceMeasurement {

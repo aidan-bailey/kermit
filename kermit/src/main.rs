@@ -36,6 +36,20 @@ use bench_report::{
     MetadataLine, ReportMetric,
 };
 
+/// Default Criterion group name when `--name` is omitted on `bench run`.
+/// `bench run` treats `--name` as a *prefix* on the auto-generated
+/// `{benchmark}/{query}/{ds}/{algo}` identity (see CLAUDE.md "bench `--name`
+/// semantics").
+const DEFAULT_RUN_GROUP: &str = "run";
+
+/// Default Criterion group name for `bench join` (full group name, not a
+/// prefix).
+const DEFAULT_JOIN_GROUP: &str = "join";
+
+/// Default Criterion group name for `bench ds` (full group name, not a
+/// prefix).
+const DEFAULT_DS_GROUP: &str = "ds";
+
 #[derive(Parser)]
 #[command(name = "kermit")]
 #[command(version, about = "Relational data structures, iterators and algorithms", long_about = None)]
@@ -680,7 +694,7 @@ where
         }
         write_metadata_block(&mut io::stderr(), "bench run metadata", &lines)?;
 
-        let prefix = bench_args.name.as_deref().unwrap_or("run");
+        let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_RUN_GROUP);
         let group_name = format!(
             "{}/{}/{}/{}/{}",
             prefix, benchmark.name, query_def.name, ds_name, algo_name
@@ -964,7 +978,11 @@ fn main() -> anyhow::Result<()> {
                     write_tuples(writer, &header, &tuples)?;
                 }
 
-                let group_name = bench_args.name.as_deref().unwrap_or("join").to_string();
+                let group_name = bench_args
+                    .name
+                    .as_deref()
+                    .unwrap_or(DEFAULT_JOIN_GROUP)
+                    .to_string();
                 let bench_id =
                     format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
 
@@ -1019,7 +1037,7 @@ fn main() -> anyhow::Result<()> {
                 indexstructure,
                 metrics,
             } => {
-                let group_name = bench_args.name.as_deref().unwrap_or("ds");
+                let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
                 let mut reports: Vec<BenchReport> = Vec::new();
                 for ds in indexstructure.expand() {
                     let report = match ds {
