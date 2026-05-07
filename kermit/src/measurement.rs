@@ -4,7 +4,8 @@ use criterion::{
 };
 
 /// Binary-prefix unit thresholds. Named so the `scale` function reads as
-/// `if typical < KIB { ... }` rather than `if typical < 1024.0 { ... }`.
+/// `if typical < BYTES_PER_KIB { ... }` rather than `if typical < 1024.0
+/// { ... }`.
 const BYTES_PER_KIB: f64 = 1024.0;
 const BYTES_PER_MIB: f64 = BYTES_PER_KIB * 1024.0;
 const BYTES_PER_GIB: f64 = BYTES_PER_MIB * 1024.0;

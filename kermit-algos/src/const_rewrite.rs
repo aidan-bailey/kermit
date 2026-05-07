@@ -65,9 +65,10 @@ pub fn rewrite_atoms(mut query: JoinQuery) -> Result<(JoinQuery, Vec<ConstSpec>)
     // Fresh variables use the `K<n>` shape: `K` is just an unlikely letter
     // (no special meaning) and `<n>` is a counter. To avoid colliding with
     // user-supplied variables that already happen to be named `K0`, `K1`,
-    // …, we scan the input for the highest existing index and start the
-    // counter past it. The `fresh_var_allocation_avoids_existing_k_names`
-    // test pins this behaviour.
+    // …, we scan both the body and the head for the highest existing
+    // `K<n>` index and start the counter past it. The
+    // `fresh_var_allocation_avoids_existing_k_names` test pins this
+    // behaviour.
     let mut next_k = highest_k_index(&query).map_or(0, |n| n + 1);
     let mut specs: Vec<ConstSpec> = Vec::new();
     let mut new_preds: Vec<Predicate> = Vec::new();

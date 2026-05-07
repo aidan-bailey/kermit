@@ -64,11 +64,11 @@ where
     /// `Some` while the iterator is idle and `None` while it is borrowed by
     /// `leapfrog`.
     idle_iterators: Vec<Option<IT>>,
-    /// Pool indices currently lent to `leapfrog`, parallel to
-    /// `leapfrog.iterators` in pop order.
+    /// Indices into `idle_iterators` currently lent to `leapfrog`, parallel
+    /// to `leapfrog.iterators` in pop order.
     active_iter_indices: Vec<usize>,
-    /// For each depth (`0..arity`), the pool indices of every iterator that
-    /// must participate in the leapfrog at that depth.
+    /// For each depth (`0..arity`), the `idle_iterators` indices of every
+    /// iterator that must participate in the leapfrog at that depth.
     variable_to_iter_map: Vec<Vec<usize>>,
     /// Current depth in the join: `0` = uninitialised, `1..=arity` = active.
     depth: usize,
