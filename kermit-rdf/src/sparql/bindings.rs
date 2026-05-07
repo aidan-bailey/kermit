@@ -1,6 +1,15 @@
 //! Variable-name bookkeeping during SPARQL → Datalog translation.
 
 /// Tracks variables in their order of first appearance in a BGP.
+///
+/// **Load-bearing invariant.** This first-appearance order is what the
+/// emitted Datalog rule's head uses (e.g. `Q(X, Y, Z) :- …` where `X, Y,
+/// Z` are the first three distinct variables seen). Two BGPs that mention
+/// the same variables in different orders therefore produce different
+/// head-argument orders, so the order is stable for a given input but is
+/// **not** semantically meaningful — callers that need a specific
+/// projection must pass `projected_vars` to the translator instead of
+/// relying on first-appearance order.
 #[derive(Debug, Default)]
 pub struct VarOrder {
     seen: std::collections::HashSet<String>,
