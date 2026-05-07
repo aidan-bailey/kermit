@@ -62,7 +62,8 @@ where
 {
     name: String,
     relations: HashMap<String, R>,
-    phantom_rb: std::marker::PhantomData<R>,
+    // `JA` does not appear in any field; PhantomData satisfies the
+    // unused-type-parameter rule. `R` is already used by `relations`.
     phantom_ja: std::marker::PhantomData<JA>,
 }
 
@@ -78,7 +79,6 @@ where
         DatabaseEngine {
             name,
             relations: HashMap::new(),
-            phantom_rb: std::marker::PhantomData,
             phantom_ja: std::marker::PhantomData,
         }
     }
@@ -179,7 +179,6 @@ where
         DatabaseEngine {
             name,
             relations: HashMap::new(),
-            phantom_rb: std::marker::PhantomData,
             phantom_ja: std::marker::PhantomData,
         }
     }
