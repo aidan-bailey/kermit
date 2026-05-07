@@ -43,7 +43,7 @@ pub trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
 /// At any moment, every body-predicate iterator is in **exactly one** of two
 /// places:
 ///
-/// - in `iterator_pool[i]` as `Some(iter)` — *idle*; not currently joining;
+/// - in `idle_iterators[i]` as `Some(iter)` — *idle*; not currently joining;
 /// - in `leapfrog.iterators` — *active*; participating in the inner leapfrog at
 ///   the current depth.
 ///
@@ -60,10 +60,10 @@ where
 {
     /// Number of variables in the join (i.e. the maximum depth).
     arity: usize,
-    /// Pool of trie iterators, indexed by body-predicate position. The slot
-    /// is `Some` while the iterator is idle and `None` while it is borrowed
-    /// by `leapfrog`.
-    iterator_pool: Vec<Option<IT>>,
+    /// Idle trie iterators, indexed by body-predicate position. The slot is
+    /// `Some` while the iterator is idle and `None` while it is borrowed by
+    /// `leapfrog`.
+    idle_iterators: Vec<Option<IT>>,
     /// Pool indices currently lent to `leapfrog`, parallel to
     /// `leapfrog.iterators` in pop order.
     active_iter_indices: Vec<usize>,
@@ -150,10 +150,10 @@ where
             variable_to_iter_map.push(iters_at_this_depth);
         }
 
-        let iterator_pool = iters.into_iter().map(Some).collect();
+        let idle_iterators = iters.into_iter().map(Some).collect();
 
         LeapfrogTriejoinIter {
-            iterator_pool,
+            idle_iterators,
             active_iter_indices: Vec::new(),
             variable_to_iter_map,
             arity: variable_ordering.len(),
@@ -169,10 +169,10 @@ where
     /// [`triejoin_up`](Self::triejoin_up). Two phases:
     ///
     /// 1. **Drain** the existing leapfrog: every active iterator returns to its
-    ///    pool slot via `active_iter_indices`.
+    ///    idle slot via `active_iter_indices`.
     /// 2. **Refill** for the new depth: `variable_to_iter_map[depth - 1]` names
-    ///    the pool slots whose iterators belong in the new leapfrog; each one
-    ///    is taken out of the pool and pushed into a fresh
+    ///    the idle slots whose iterators belong in the new leapfrog; each one
+    ///    is taken out of `idle_iterators` and pushed into a fresh
     ///    [`LeapfrogJoinIter`].
     ///
     /// At depth 0 the second phase is skipped — the leapfrog stays empty.
@@ -183,7 +183,7 @@ where
                 .iterators
                 .pop()
                 .expect("There should always be an iterator here");
-            self.iterator_pool[i] = Some(iter);
+            self.idle_iterators[i] = Some(iter);
         }
 
         if self.depth == 0 {
@@ -193,7 +193,7 @@ where
         let mut next_iters =
             Vec::<IT>::with_capacity(self.variable_to_iter_map[self.depth - 1].len());
         for i in &self.variable_to_iter_map[self.depth - 1] {
-            let iter = self.iterator_pool[*i]
+            let iter = self.idle_iterators[*i]
                 .take()
                 .expect("There is an iterator here");
             next_iters.push(iter);
