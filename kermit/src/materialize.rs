@@ -28,6 +28,37 @@ use {
     },
 };
 
+/// Sentinel placeholder used in [`BenchError::SpecDrift::actual_hash`] when
+/// a legacy `meta.json` (schema_version=1) has no `spec_hash` field.
+const MISSING_SPEC_HASH: &str = "<missing>";
+
+/// Classification of a cache subdir's `meta.json` against the
+/// freshly-computed `spec_hash`.
+enum CacheState {
+    /// `meta.json` exists and its `spec_hash` matches — reuse the cache.
+    Hit,
+    /// `meta.json` exists but its `spec_hash` does not match (or is
+    /// missing, which we treat as legacy drift). Carries the cached value
+    /// for diagnostic reporting.
+    Drift(Option<String>),
+    /// No `meta.json` — first generation, or the cache was cleaned.
+    Miss,
+}
+
+/// Reads the cached `meta.json` (if any) and classifies it relative to the
+/// expected `spec_hash` for the current `GeneratorSpec`.
+fn classify_cache(meta_path: &Path, expected_hash: &str) -> Result<CacheState, BenchError> {
+    if !meta_path.exists() {
+        return Ok(CacheState::Miss);
+    }
+    let actual = read_meta_spec_hash(meta_path)?;
+    if actual.as_deref() == Some(expected_hash) {
+        Ok(CacheState::Hit)
+    } else {
+        Ok(CacheState::Drift(actual))
+    }
+}
+
 /// Resolves the workspace root by walking up from `CARGO_MANIFEST_DIR`.
 pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -65,26 +96,20 @@ pub fn materialize(
     let yml_path = cache_subdir.join("benchmark.yml");
     let expected_hash = spec.spec_hash();
 
-    if meta_path.exists() {
-        let actual_hash = read_meta_spec_hash(&meta_path)?;
-        match actual_hash {
-            | Some(actual) if actual == expected_hash => {
-                return load_cached_yaml(&yml_path);
-            },
-            | other => {
-                if !force {
-                    return Err(BenchError::SpecDrift {
-                        name: def.name.clone(),
-                        expected_hash,
-                        actual_hash: other.unwrap_or_else(|| "<missing>".to_string()),
-                        hint: "re-run with `bench run --force <name>` to regenerate, or delete \
-                               the cache subdir manually"
-                            .to_string(),
-                    });
-                }
-                fs::remove_dir_all(&cache_subdir)?;
-            },
-        }
+    match classify_cache(&meta_path, &expected_hash)? {
+        | CacheState::Hit => return load_cached_yaml(&yml_path),
+        | CacheState::Drift(actual) if !force => {
+            return Err(BenchError::SpecDrift {
+                name: def.name.clone(),
+                expected_hash,
+                actual_hash: actual.unwrap_or_else(|| MISSING_SPEC_HASH.to_string()),
+                hint: "re-run with `bench run --force <name>` to regenerate, or delete the cache \
+                       subdir manually"
+                    .to_string(),
+            });
+        },
+        | CacheState::Drift(_) => fs::remove_dir_all(&cache_subdir)?,
+        | CacheState::Miss => {},
     }
 
     fs::create_dir_all(&cache_subdir)?;
