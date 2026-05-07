@@ -73,6 +73,10 @@ where
     /// Returns the number of iterators being joined.
     pub fn k(&self) -> usize { self.iterators.len() }
 
+    /// Resolves a ring position `i` (an index into `sorted_iter_perm`) to the
+    /// corresponding underlying iterator. Centralised so the cyclic-walk call
+    /// sites read as `self.mut_iter(self.p)` rather than the double
+    /// indirection `&mut self.iterators[self.sorted_iter_perm[self.p]]`.
     fn mut_iter(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.sorted_iter_perm[i]] }
 }
 
@@ -105,9 +109,17 @@ where
     }
 
     fn leapfrog_search(&mut self) -> bool {
+        // Loop invariant: `target_key` is the largest key any iterator
+        // currently holds. The loop terminates because each `seek` either
+        // advances the current iterator's key strictly past `target_key`
+        // (raising the bar for the next ring step) or finds equality (a
+        // common key, returned immediately) or runs off the end (no common
+        // key exists). Because keys are monotone non-decreasing, the maximum
+        // can only rise finitely many times before some iterator hits its
+        // end.
+        //
         // The predecessor in the ring (wraps to k-1 when p == 0). Its key is
-        // the largest one any iterator currently holds — every iterator must
-        // catch up to it for a common key to exist.
+        // the largest one any iterator currently holds.
         let prev_idx = if self.p == 0 {
             self.k() - 1
         } else {
