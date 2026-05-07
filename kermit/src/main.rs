@@ -11,6 +11,7 @@
 #![deny(missing_docs)]
 
 use {
+    anyhow::Context,
     clap::{Args, Parser, Subcommand},
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery},
@@ -861,7 +862,7 @@ fn resolve_benchmarks(
         .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
     if all {
         kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
-            .map_err(|e| anyhow::anyhow!("Failed to load benchmarks: {e}"))
+            .context("Failed to load benchmarks")
     } else if let Some(name) = name {
         match kermit_bench::discovery::load_benchmark(&root, name) {
             | Ok(b) => Ok(vec![b]),
@@ -911,14 +912,12 @@ fn main() -> anyhow::Result<()> {
                     .map(|p| p.join("kermit").join("benchmarks"))
                     .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
                 let workspace_defs: std::collections::HashMap<String, BenchmarkDefinition> =
-                    kermit_bench::discovery::load_all_benchmarks(&root)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                    kermit_bench::discovery::load_all_benchmarks(&root)?
                         .into_iter()
                         .map(|d| (d.name.clone(), d))
                         .collect();
                 let benchmarks =
-                    kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)?;
                 if benchmarks.is_empty() {
                     eprintln!("No benchmarks found in benchmarks/ or cache");
                 } else {
@@ -1077,8 +1076,7 @@ fn main() -> anyhow::Result<()> {
                 let materialized: Vec<BenchmarkDefinition> = benchmarks
                     .into_iter()
                     .map(|b| materialize::materialize(b, &cache_root, force))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 let indexstructures = indexstructure.expand();
                 let algorithms = algorithm.expand();
