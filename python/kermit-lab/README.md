@@ -37,6 +37,9 @@ df = kl.load("bench-runs/*.json", criterion_root="target/criterion")
 fig = kl.scaling(df)
 fig = kl.bar_queries(df, ds="TreeTrie", algo="LeapfrogTriejoin")
 
+# Pass lists to stack segments per (ds, algo) at each x-position
+fig = kl.bar_queries(df, ds=["TreeTrie", "ColumnTrie"], algo="LeapfrogTriejoin")
+
 # Slice + pivot
 kl.summary(df[df.phase == "iteration"], rows="data_structure", cols="tuples")
 

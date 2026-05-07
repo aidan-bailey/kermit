@@ -83,8 +83,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_bar_queries = sub.add_parser("bar-queries", help="bar across queries")
     _add_common(p_bar_queries)
     _add_phase(p_bar_queries)
-    p_bar_queries.add_argument("--ds", required=True, help="data_structure to filter on")
-    p_bar_queries.add_argument("--algo", required=True, help="algorithm to filter on")
+    p_bar_queries.add_argument(
+        "--ds",
+        nargs="+",
+        default=None,
+        help="data_structure(s) to filter on; pass multiple to stack segments "
+        "per bar; omit to include every data_structure in the input",
+    )
+    p_bar_queries.add_argument(
+        "--algo",
+        nargs="+",
+        default=None,
+        help="algorithm(s) to filter on; pass multiple to stack segments per "
+        "bar; omit to include every algorithm in the input",
+    )
 
     p_render_all = sub.add_parser(
         "render-all",
