@@ -27,6 +27,7 @@ use {
         },
         parquet, partition,
         sparql::translator::translate_query,
+        timestamp::utc_iso8601_now,
         yaml_emit::{write_benchmark_yaml, YamlInputs},
     },
     serde::Serialize,
@@ -129,71 +130,6 @@ fn sha256_file(path: &Path) -> Result<String, RdfError> {
         h.update(&buf[..n]);
     }
     Ok(format!("{:x}", h.finalize()))
-}
-
-// Hand-rolled ISO-8601 instead of pulling in `chrono` or `time` — mirrors
-// the existing watdiv pipeline's helper at `crate::pipeline::utc_iso8601_now`
-// (which is private to that module so we can't reuse). Calendar correctness
-// around leap seconds doesn't matter for a sortable provenance string;
-// breaks at year 4801 (Gregorian leap-year edge case in the simple loop).
-fn utc_iso8601_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let days = secs / 86400;
-    let rem = secs % 86400;
-    let h = rem / 3600;
-    let m = (rem % 3600) / 60;
-    let s = rem % 60;
-    let (y, mo, d) = days_since_epoch_to_ymd(days as i64);
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
-fn days_since_epoch_to_ymd(mut days: i64) -> (i32, u32, u32) {
-    let mut y: i32 = 1970;
-    loop {
-        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-        let year_days = if leap {
-            366
-        } else {
-            365
-        };
-        if days < year_days as i64 {
-            break;
-        }
-        days -= year_days as i64;
-        y += 1;
-    }
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let months = [
-        31,
-        if leap {
-            29
-        } else {
-            28
-        },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut mo: u32 = 1;
-    for &mlen in &months {
-        if days < mlen as i64 {
-            break;
-        }
-        days -= mlen as i64;
-        mo += 1;
-    }
-    (y, mo, days as u32 + 1)
 }
 
 fn write_expected_cardinality(path: &Path, n: u64) -> Result<(), RdfError> {
@@ -308,18 +244,6 @@ pub fn run_lubm_pipeline(inputs: &LubmPipelineInputs) -> Result<LubmMeta, RdfErr
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ymd_epoch_zero_is_jan_1_1970() {
-        assert_eq!(days_since_epoch_to_ymd(0), (1970, 1, 1));
-    }
-
-    #[test]
-    fn iso_timestamp_well_formed() {
-        let s = utc_iso8601_now();
-        assert_eq!(s.len(), 20);
-        assert!(s.ends_with('Z'));
-    }
 
     #[test]
     fn write_expected_cardinality_two_lines() {
