@@ -9,12 +9,13 @@ use {
 /// # Position model
 ///
 /// `stack` holds `(node, sibling_index)` pairs from root to current depth;
-/// `stack.last()` is the node we are currently positioned on. `pos` mirrors
-/// the sibling index of the deepest stack entry — kept as a separate field
-/// so [`next`](LinearIterator::next) and [`seek`](LinearIterator::seek) can
-/// advance it without re-popping. To list the *siblings* of the current
-/// node we read the children of the parent: `stack[len - 2]` for depth ≥ 2,
-/// or [`TreeTrie::children`] for depth 1.
+/// `stack.last()` is the node we are currently positioned on.
+/// `sibling_idx` mirrors the sibling index of the deepest stack entry —
+/// kept as a separate field so [`next`](LinearIterator::next) and
+/// [`seek`](LinearIterator::seek) can advance it without re-popping. To
+/// list the *siblings* of the current node we read the children of the
+/// parent: `stack[len - 2]` for depth ≥ 2, or [`TreeTrie::children`] for
+/// depth 1.
 ///
 /// Compare to [`ColumnTrieIter`](super::super::column_trie::ColumnTrie):
 /// where `ColumnTrieIter` carries three integer coordinates over flat
@@ -23,7 +24,7 @@ use {
 #[derive(IntoTrieIter)]
 struct TreeTrieIter<'a> {
     /// Sibling index of the deepest stack entry (the current position).
-    pos: usize,
+    sibling_idx: usize,
     /// The trie being iterated.
     trie: &'a TreeTrie,
     /// Path from the root to the current depth.
@@ -33,7 +34,7 @@ struct TreeTrieIter<'a> {
 impl<'a> TreeTrieIter<'a> {
     fn new(trie: &'a TreeTrie) -> Self {
         Self {
-            pos: 0,
+            sibling_idx: 0,
             trie,
             stack: Vec::new(),
         }
@@ -59,17 +60,17 @@ impl<'a> TreeTrieIter<'a> {
 }
 
 impl LinearIterator for TreeTrieIter<'_> {
-    fn key(&self) -> Option<usize> { Some(self.siblings()?.get(self.pos)?.key()) }
+    fn key(&self) -> Option<usize> { Some(self.siblings()?.get(self.sibling_idx)?.key()) }
 
     fn next(&mut self) -> Option<usize> {
         if let Some(siblings) = self.siblings() {
             if self.at_end() {
                 return None;
             }
-            self.pos += 1;
-            if let Some(node) = siblings.get(self.pos) {
+            self.sibling_idx += 1;
+            if let Some(node) = siblings.get(self.sibling_idx) {
                 self.stack.pop();
-                self.stack.push((node, self.pos));
+                self.stack.push((node, self.sibling_idx));
                 return Some(node.key());
             }
         }
@@ -99,15 +100,16 @@ impl LinearIterator for TreeTrieIter<'_> {
                     .siblings()
                     .expect("If there exists a key, there should ALWAYS be at least one sibling");
 
-                while (!self.at_end()) && seek_key > siblings[self.pos].key() {
-                    self.pos += 1;
+                while (!self.at_end()) && seek_key > siblings[self.sibling_idx].key() {
+                    self.sibling_idx += 1;
                 }
 
                 if self.at_end() {
                     false
                 } else {
                     self.stack.pop();
-                    self.stack.push((&siblings[self.pos], self.pos));
+                    self.stack
+                        .push((&siblings[self.sibling_idx], self.sibling_idx));
                     true
                 }
             }
@@ -118,7 +120,7 @@ impl LinearIterator for TreeTrieIter<'_> {
 
     fn at_end(&self) -> bool {
         if let Some(siblings) = self.siblings() {
-            self.pos >= siblings.len()
+            self.sibling_idx >= siblings.len()
         } else {
             true
         }
@@ -130,7 +132,7 @@ impl TrieIterator for TreeTrieIter<'_> {
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
                 self.stack.push((child, 0));
-                self.pos = 0;
+                self.sibling_idx = 0;
                 true
             } else {
                 false
@@ -139,14 +141,14 @@ impl TrieIterator for TreeTrieIter<'_> {
             false
         } else {
             self.stack.push((&self.trie.children()[0], 0));
-            self.pos = 0;
+            self.sibling_idx = 0;
             true
         }
     }
 
     fn up(&mut self) -> bool {
         if self.stack.pop().is_some() {
-            self.pos = if let Some((_, i)) = self.stack.last() {
+            self.sibling_idx = if let Some((_, i)) = self.stack.last() {
                 *i
             } else {
                 0
