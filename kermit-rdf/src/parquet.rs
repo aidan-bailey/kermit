@@ -11,14 +11,23 @@ use {
     std::{path::Path, sync::Arc},
 };
 
+/// Column name for the subject term in per-predicate relation Parquet files.
+pub const SUBJECT_COL: &str = "s";
+/// Column name for the object term in per-predicate relation Parquet files.
+pub const OBJECT_COL: &str = "o";
+/// Column name for the dictionary ID column in `dict.parquet`.
+pub const DICT_ID_COL: &str = "id";
+/// Column name for the dictionary value column in `dict.parquet`.
+pub const DICT_VALUE_COL: &str = "value";
+
 /// Writes the dictionary as a 2-column Parquet file: `id: i64`, `value:
 /// string`. `value` is the canonical string form (`<iri>`, `_:bN`, `"lit"`).
 pub fn write_dict(dict: &Dictionary, out_path: &Path) -> Result<(), RdfError> {
     let ids: Vec<i64> = (0..dict.len() as i64).collect();
     let values: Vec<String> = dict.iter().map(|(_, v)| v.to_canonical()).collect();
     let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("value", DataType::Utf8, false),
+        Field::new(DICT_ID_COL, DataType::Int64, false),
+        Field::new(DICT_VALUE_COL, DataType::Utf8, false),
     ]));
     let id_arr = Arc::new(Int64Array::from(ids)) as ArrayRef;
     let val_arr = Arc::new(StringArray::from(values)) as ArrayRef;
@@ -36,8 +45,8 @@ pub fn write_relation(rel: &PartitionedRelation, out_path: &Path) -> Result<(), 
     let ss: Vec<i64> = rel.tuples.iter().map(|(s, _)| *s as i64).collect();
     let oo: Vec<i64> = rel.tuples.iter().map(|(_, o)| *o as i64).collect();
     let schema = Arc::new(Schema::new(vec![
-        Field::new("s", DataType::Int64, false),
-        Field::new("o", DataType::Int64, false),
+        Field::new(SUBJECT_COL, DataType::Int64, false),
+        Field::new(OBJECT_COL, DataType::Int64, false),
     ]));
     let s_arr = Arc::new(Int64Array::from(ss)) as ArrayRef;
     let o_arr = Arc::new(Int64Array::from(oo)) as ArrayRef;
