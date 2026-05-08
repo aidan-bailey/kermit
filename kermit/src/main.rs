@@ -486,12 +486,12 @@ fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::
 }
 
 /// Adds a single space-metric `bench_function` to `group` measuring
-/// `relation`'s heap size in bytes. Centralises the [`iter_custom`
-/// calibration trap](measurement::SpaceMeasurement) workaround: an
-/// O(N) `heap_size_bytes()` call inside the loop is required, and
-/// `black_box` is required to defeat LICM. Without these, Criterion's
-/// wall-clock warm-up makes `iters` ramp toward `u64::MAX` and the
-/// `usize` math saturates.
+/// `relation`'s heap size in bytes. Centralises the `iter_custom`
+/// calibration-trap workaround (see [`measurement::SpaceMeasurement`]
+/// docs for the full explanation): an O(N) `heap_size_bytes()` call
+/// inside the loop is required, and `black_box` is required to defeat
+/// LICM. Without these, Criterion's wall-clock warm-up makes `iters`
+/// ramp toward `u64::MAX` and the `usize` math saturates.
 ///
 /// Returns the [`CriterionGroupRef`] the caller should append to its
 /// report's `criterion_groups`.
