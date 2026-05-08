@@ -504,7 +504,7 @@ mod tests {
     fn random_inserts_round_trip_to_sorted_deduped_input() {
         // Linear-congruential PRNG so we don't add a `rand` dev-dep.
         // Seed and constants are arbitrary but fixed.
-        let mut state: u64 = 0xC0FFEE_DEAD_BEEF_u64;
+        let mut state: u64 = 0x00C0_FFEE_DEAD_BEEF_u64;
         let mut next = || {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             (state >> 33) as usize
