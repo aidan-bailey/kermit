@@ -485,6 +485,39 @@ fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::
         .warm_up_time(Duration::from_secs(args.warm_up_time))
 }
 
+/// Adds a single space-metric `bench_function` to `group` measuring
+/// `relation`'s heap size in bytes. Centralises the [`iter_custom`
+/// calibration trap](measurement::SpaceMeasurement) workaround: an
+/// O(N) `heap_size_bytes()` call inside the loop is required, and
+/// `black_box` is required to defeat LICM. Without these, Criterion's
+/// wall-clock warm-up makes `iters` ramp toward `u64::MAX` and the
+/// `usize` math saturates.
+///
+/// Returns the [`CriterionGroupRef`] the caller should append to its
+/// report's `criterion_groups`.
+fn add_space_bench<R>(
+    group: &mut criterion::BenchmarkGroup<'_, measurement::SpaceMeasurement>, group_name: &str,
+    function: String, relation: &R,
+) -> CriterionGroupRef
+where
+    R: HeapSize,
+{
+    group.bench_function(&function, |b| {
+        b.iter_custom(|iters| {
+            let mut total = 0usize;
+            for _ in 0..iters {
+                total = total.saturating_add(std::hint::black_box(relation).heap_size_bytes());
+            }
+            total
+        });
+    });
+    CriterionGroupRef {
+        group: group_name.to_string(),
+        function,
+        metric: ReportMetric::Space,
+    }
+}
+
 fn run_ds_bench<R>(
     relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric], group_name: &str,
     bench_args: &BenchArgs,
@@ -568,26 +601,8 @@ where
         let mut criterion = build_space_criterion(bench_args);
         let mut group = criterion.benchmark_group(group_name);
         group.throughput(criterion::Throughput::Elements(n as u64));
-        // Skip the expensive per-iter from_tuples rebuild but keep one O(N)
-        // heap_size_bytes() traversal in the loop. Criterion uses wall-clock
-        // during warm-up to pick `iters`, so a sub-microsecond closure makes
-        // it ramp `iters` toward u64::MAX and the math saturates usize.
-        // black_box prevents LICM from hoisting the call out of the loop.
         let function = format!("{ds_name}/space");
-        group.bench_function(&function, |b| {
-            b.iter_custom(|iters| {
-                let mut total = 0usize;
-                for _ in 0..iters {
-                    total = total.saturating_add(std::hint::black_box(&relation).heap_size_bytes());
-                }
-                total
-            });
-        });
-        criterion_groups.push(CriterionGroupRef {
-            group: group_name.to_string(),
-            function,
-            metric: ReportMetric::Space,
-        });
+        criterion_groups.push(add_space_bench(&mut group, group_name, function, &relation));
         group.finish();
         criterion.final_summary();
     }
@@ -760,28 +775,8 @@ where
             let mut group = criterion.benchmark_group(&group_name);
             for rel in &relations {
                 let rel_name = rel.header().name().to_string();
-                // Skip the expensive per-iter from_tuples rebuild but keep one
-                // O(N) heap_size_bytes() traversal in the loop. Criterion uses
-                // wall-clock during warm-up to pick `iters`, so a sub-microsecond
-                // closure makes it ramp `iters` toward u64::MAX and the math
-                // saturates usize. black_box prevents LICM from hoisting the
-                // call out of the loop.
                 let function = format!("space/{}", rel_name);
-                group.bench_function(&function, |b| {
-                    b.iter_custom(|iters| {
-                        let mut total = 0usize;
-                        for _ in 0..iters {
-                            total =
-                                total.saturating_add(std::hint::black_box(rel).heap_size_bytes());
-                        }
-                        total
-                    });
-                });
-                criterion_groups.push(CriterionGroupRef {
-                    group: group_name.clone(),
-                    function,
-                    metric: ReportMetric::Space,
-                });
+                criterion_groups.push(add_space_bench(&mut group, &group_name, function, rel));
             }
             group.finish();
             criterion.final_summary();
