@@ -149,6 +149,7 @@ impl ColumnTrie {
             // Search for the key within the current interval's data range
             for i in range.clone() {
                 if self.layers[layer_i].data[i] == k {
+                    interval_index = i;
                     continue 'layer_loop;
                 }
                 if k < self.layers[layer_i].data[i] {
@@ -378,6 +379,121 @@ mod tests {
         // Sort for comparison
         all_tuples.sort();
         assert_eq!(all_tuples, vec![vec![1, 3], vec![4, 6]]);
+    }
+
+    /// Pinning test: inserting into an empty trie creates one data slot
+    /// and one interval at the root.
+    #[test]
+    fn empty_trie_first_insert_initialises_layer() {
+        let mut trie = ColumnTrie::new(2.into());
+        trie.insert(vec![5, 7]);
+        let collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
+        assert_eq!(collected, vec![vec![5, 7]]);
+    }
+
+    /// Pinning test: a duplicate insert is a no-op (no new data, no
+    /// shifted intervals). Without this pin, an extraction that returns
+    /// the wrong "what to do next" variant could either double-insert or
+    /// crash on the inner search.
+    #[test]
+    fn duplicate_insert_is_noop() {
+        let mut trie = ColumnTrie::new(2.into());
+        trie.insert(vec![1, 2]);
+        trie.insert(vec![1, 2]);
+        let collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
+        assert_eq!(collected, vec![vec![1, 2]]);
+    }
+
+    /// Pinning test: insert-before within the first interval at layer 0.
+    /// `interval_index` stays 0 here because we're in the root.
+    #[test]
+    fn insert_before_first_key_in_first_interval() {
+        let mut trie = ColumnTrie::new(2.into());
+        trie.insert(vec![5, 50]);
+        trie.insert(vec![3, 30]);
+        let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
+        collected.sort();
+        assert_eq!(collected, vec![vec![3, 30], vec![5, 50]]);
+    }
+
+    /// Pinning test: insert-before that triggers
+    /// `insert_key_and_shift_intervals` on a NON-FIRST interval. The
+    /// shift must propagate to subsequent intervals' start positions.
+    /// This is the canonical case the audit flagged.
+    #[test]
+    fn insert_before_in_non_first_interval_shifts_subsequent_intervals() {
+        let mut trie = ColumnTrie::new(2.into());
+        // Build a trie with two top-level groups: 1 -> {10, 20} and 5 -> {50, 60}
+        trie.insert(vec![1, 10]);
+        trie.insert(vec![1, 20]);
+        trie.insert(vec![5, 50]);
+        trie.insert(vec![5, 60]);
+        // Now insert (1, 15) — slots in the middle of the first group's
+        // child interval, which must shift the second group's child
+        // interval start.
+        trie.insert(vec![1, 15]);
+        let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
+        collected.sort();
+        assert_eq!(collected, vec![
+            vec![1, 10],
+            vec![1, 15],
+            vec![1, 20],
+            vec![5, 50],
+            vec![5, 60],
+        ]);
+    }
+
+    /// Pinning test: append at the very end of the layer's `data` array
+    /// uses `data.push()` (the line-170 path) rather than
+    /// `insert_key_and_shift_intervals`. Confirms both paths produce
+    /// equivalent observable output.
+    #[test]
+    fn append_at_end_of_data_extends_data() {
+        let mut trie = ColumnTrie::new(2.into());
+        trie.insert(vec![1, 10]);
+        trie.insert(vec![2, 20]);
+        trie.insert(vec![3, 30]);
+        let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
+        collected.sort();
+        assert_eq!(collected, vec![vec![1, 10], vec![2, 20], vec![3, 30]]);
+    }
+
+    /// Pinning test: arity-1 trie exercises `is_last_layer == true` from
+    /// the very first iteration; the function must `return` from inside
+    /// the loop instead of falling through to `add_interval` on the
+    /// non-existent next layer.
+    #[test]
+    fn single_layer_trie_inserts_without_panic() {
+        let mut trie = ColumnTrie::new(1.into());
+        trie.insert(vec![3]);
+        trie.insert(vec![1]);
+        trie.insert(vec![2]);
+        let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
+        collected.sort();
+        assert_eq!(collected, vec![vec![1], vec![2], vec![3]]);
+    }
+
+    /// Pinning test: arity-3 trie with branching at every layer. Catches
+    /// regressions where a refactor mishandles the interval_index handoff
+    /// between layer N's insertion and layer N+1's `add_interval` call.
+    #[test]
+    fn arity_three_trie_with_branching_at_every_layer() {
+        let mut trie = ColumnTrie::new(3.into());
+        let tuples = vec![
+            vec![1, 10, 100],
+            vec![1, 10, 200],
+            vec![1, 20, 100],
+            vec![2, 10, 100],
+            vec![2, 30, 300],
+        ];
+        for t in &tuples {
+            trie.insert(t.clone());
+        }
+        let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
+        collected.sort();
+        let mut expected = tuples.clone();
+        expected.sort();
+        assert_eq!(collected, expected);
     }
 }
 
