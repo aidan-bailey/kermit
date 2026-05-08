@@ -495,6 +495,36 @@ mod tests {
         expected.sort();
         assert_eq!(collected, expected);
     }
+
+    /// Round-trip: insert a fixed-seed pseudorandom set of tuples and
+    /// verify `trie_iter().collect()` returns them sorted-and-deduped.
+    /// Catches structural corruption that none of the targeted tests
+    /// thought to check.
+    #[test]
+    fn random_inserts_round_trip_to_sorted_deduped_input() {
+        // Linear-congruential PRNG so we don't add a `rand` dev-dep.
+        // Seed and constants are arbitrary but fixed.
+        let mut state: u64 = 0xC0FFEE_DEAD_BEEF_u64;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 33) as usize
+        };
+        let arity = 3;
+        let n = 500;
+        let mut tuples: Vec<Vec<usize>> = (0..n)
+            .map(|_| (0..arity).map(|_| next() % 50).collect())
+            .collect();
+        let mut trie = ColumnTrie::new(arity.into());
+        for t in &tuples {
+            trie.insert(t.clone());
+        }
+        // Expected: sorted, deduped.
+        tuples.sort();
+        tuples.dedup();
+        let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
+        collected.sort();
+        assert_eq!(collected, tuples);
+    }
 }
 
 #[cfg(test)]
