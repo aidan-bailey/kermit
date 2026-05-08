@@ -128,58 +128,98 @@ impl ColumnTrie {
     pub fn layer(&self, layer_i: usize) -> &ColumnTrieLayer { &self.layers[layer_i] }
 
     /// Walks down the layer hierarchy inserting one key per level. The
-    /// `interval_index` tracks our position in each layer's interval array,
-    /// identifying which parent group the new key belongs to.
+    /// `interval_index` tracks our position in each layer's interval
+    /// array, identifying which parent group the new key belongs to.
+    ///
+    /// At each layer, [`step_layer`](Self::step_layer) decides what
+    /// happens: the duplicate case stops without recursing; the
+    /// last-layer case stops after inserting; the recurse case hands
+    /// back the new `interval_index` for the next layer.
     fn internal_insert(&mut self, tuple: &[usize]) {
         let arity = self.header().arity();
         let mut interval_index = 0;
-
-        'layer_loop: for (layer_i, &k) in tuple.iter().enumerate() {
+        for (layer_i, &k) in tuple.iter().enumerate() {
             let is_last_layer = layer_i == arity - 1;
-
-            if self.layers[layer_i].data.is_empty() {
-                self.layers[layer_i].data.push(k);
-                self.layers[layer_i].interval.push(0);
-                interval_index = 0;
-                continue;
+            match self.step_layer(layer_i, k, interval_index, is_last_layer) {
+                | LayerStep::Stop => return,
+                | LayerStep::Recurse {
+                    next_interval_index,
+                } => interval_index = next_interval_index,
             }
-
-            let range = self.layers[layer_i].data_range(interval_index);
-
-            // Search for the key within the current interval's data range
-            for i in range.clone() {
-                if self.layers[layer_i].data[i] == k {
-                    interval_index = i;
-                    continue 'layer_loop;
-                }
-                if k < self.layers[layer_i].data[i] {
-                    // Insert before the first larger key
-                    self.layers[layer_i].insert_key_and_shift_intervals(i, k, interval_index);
-                    if is_last_layer {
-                        return;
-                    }
-                    // Inserting at layer_i creates a new child group in layer_i+1
-                    self.layers[layer_i + 1].add_interval(i);
-                    interval_index = i;
-                    continue 'layer_loop;
-                }
-            }
-
-            // Key is larger than all existing keys in the interval — append
-            let insert_pos = range.end;
-            if insert_pos == self.layers[layer_i].data.len() {
-                self.layers[layer_i].data.push(k);
-            } else {
-                self.layers[layer_i].insert_key_and_shift_intervals(insert_pos, k, interval_index);
-            }
-            if is_last_layer {
-                return;
-            }
-            // Appending at layer_i creates a new child group in layer_i+1
-            self.layers[layer_i + 1].add_interval(insert_pos);
-            interval_index = insert_pos;
         }
     }
+
+    /// Inserts `k` at `layer_i` within the parent group selected by
+    /// `interval_index`. Returns [`LayerStep::Stop`] when traversal
+    /// must end (duplicate already present, or this is the last layer
+    /// and the key was placed). Returns [`LayerStep::Recurse`] with
+    /// the `interval_index` the caller should use for the next layer.
+    ///
+    /// Pre-condition: `interval_index` must be a valid index into
+    /// `self.layers[layer_i]`'s interval-bookkeeping arrays for the
+    /// parent group. Violating this panics on the inner index.
+    fn step_layer(
+        &mut self, layer_i: usize, k: usize, interval_index: usize, is_last_layer: bool,
+    ) -> LayerStep {
+        if self.layers[layer_i].data.is_empty() {
+            self.layers[layer_i].data.push(k);
+            self.layers[layer_i].interval.push(0);
+            return LayerStep::Recurse {
+                next_interval_index: 0,
+            };
+        }
+
+        let range = self.layers[layer_i].data_range(interval_index);
+
+        // Search for the key within the current interval's data range.
+        for i in range.clone() {
+            if self.layers[layer_i].data[i] == k {
+                return LayerStep::Recurse {
+                    next_interval_index: i,
+                };
+            }
+            if k < self.layers[layer_i].data[i] {
+                self.layers[layer_i].insert_key_and_shift_intervals(i, k, interval_index);
+                if is_last_layer {
+                    return LayerStep::Stop;
+                }
+                self.layers[layer_i + 1].add_interval(i);
+                return LayerStep::Recurse {
+                    next_interval_index: i,
+                };
+            }
+        }
+
+        // Key is larger than all existing keys in the interval — append.
+        let insert_pos = range.end;
+        if insert_pos == self.layers[layer_i].data.len() {
+            self.layers[layer_i].data.push(k);
+        } else {
+            self.layers[layer_i].insert_key_and_shift_intervals(insert_pos, k, interval_index);
+        }
+        if is_last_layer {
+            return LayerStep::Stop;
+        }
+        self.layers[layer_i + 1].add_interval(insert_pos);
+        LayerStep::Recurse {
+            next_interval_index: insert_pos,
+        }
+    }
+}
+
+/// Result of one layer step in [`ColumnTrie::internal_insert`]. The
+/// caller's loop branches on this instead of using a labelled
+/// `continue` from inside the inner search.
+enum LayerStep {
+    /// No further layers should be visited (duplicate found, or this
+    /// was the last layer).
+    Stop,
+    /// Recurse into the next layer with the supplied `interval_index`.
+    Recurse {
+        /// Index of the just-inserted key within `self.layers[layer_i].data`,
+        /// which becomes the parent-group key for layer `layer_i + 1`.
+        next_interval_index: usize,
+    },
 }
 
 impl fmt::Display for ColumnTrie {
@@ -506,7 +546,9 @@ mod tests {
         // Seed and constants are arbitrary but fixed.
         let mut state: u64 = 0x00C0_FFEE_DEAD_BEEF_u64;
         let mut next = || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (state >> 33) as usize
         };
         let arity = 3;
