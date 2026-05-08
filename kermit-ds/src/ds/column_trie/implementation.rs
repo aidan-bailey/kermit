@@ -132,9 +132,12 @@ impl ColumnTrie {
     /// array, identifying which parent group the new key belongs to.
     ///
     /// At each layer, [`step_layer`](Self::step_layer) decides what
-    /// happens: the duplicate case stops without recursing; the
-    /// last-layer case stops after inserting; the recurse case hands
-    /// back the new `interval_index` for the next layer.
+    /// happens: the duplicate-key case continues to the next layer at
+    /// the existing key's position (so a tuple sharing a prefix with
+    /// an already-inserted tuple still has its remaining levels
+    /// inserted under the right parent); the last-layer case stops
+    /// after placing the key; the insert / append cases hand back the
+    /// new `interval_index` for the next layer.
     fn internal_insert(&mut self, tuple: &[usize]) {
         let arity = self.header().arity();
         let mut interval_index = 0;
@@ -150,10 +153,12 @@ impl ColumnTrie {
     }
 
     /// Inserts `k` at `layer_i` within the parent group selected by
-    /// `interval_index`. Returns [`LayerStep::Stop`] when traversal
-    /// must end (duplicate already present, or this is the last layer
-    /// and the key was placed). Returns [`LayerStep::Recurse`] with
-    /// the `interval_index` the caller should use for the next layer.
+    /// `interval_index`. Returns [`LayerStep::Stop`] only when this
+    /// is the last layer and the key has been placed. Returns
+    /// [`LayerStep::Recurse`] in every other case — including when
+    /// the key is already present (the existing key's position
+    /// becomes the next layer's `interval_index`, so any remaining
+    /// tuple components are inserted under the right parent).
     ///
     /// Pre-condition: `interval_index` must be a valid index into
     /// `self.layers[layer_i]`'s interval-bookkeeping arrays for the
@@ -211,10 +216,13 @@ impl ColumnTrie {
 /// caller's loop branches on this instead of using a labelled
 /// `continue` from inside the inner search.
 enum LayerStep {
-    /// No further layers should be visited (duplicate found, or this
-    /// was the last layer).
+    /// The key was placed and this was the last layer — no further
+    /// layers should be visited.
     Stop,
-    /// Recurse into the next layer with the supplied `interval_index`.
+    /// Continue to the next layer with the supplied `interval_index`.
+    /// Used both when a fresh key was inserted (the next layer's
+    /// parent group is the new key) and when the key was already
+    /// present (the next layer's parent group is the existing key).
     Recurse {
         /// Index of the just-inserted key within `self.layers[layer_i].data`,
         /// which becomes the parent-group key for layer `layer_i + 1`.
