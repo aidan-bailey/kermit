@@ -500,3 +500,109 @@ fn cli_bench_ds_space_only() {
         "space-only should not have iteration benchmark: {stdout}"
     );
 }
+
+#[test]
+fn cli_bench_run_writes_json_report() {
+    // Pre-populate a temporary cache dir with the edge relation as parquet so
+    // `bench run triangle` never needs to download anything.
+    let tmp_cache = std::env::temp_dir().join(format!(
+        "kermit_bench_run_cache_{}",
+        std::process::id()
+    ));
+    let bench_cache = tmp_cache.join("kermit").join("benchmarks").join("triangle");
+    std::fs::create_dir_all(&bench_cache).expect("create tmp cache dir");
+    let edge_parquet = bench_cache.join("edge.parquet");
+    kermit_rdf::parquet::write_relation(
+        &kermit_rdf::partition::PartitionedRelation {
+            name: "edge".to_string(),
+            // Small triangle graph: 1→2, 2→3, 3→1 (one triangle)
+            tuples: vec![(0, 1), (1, 2), (2, 0), (0, 2), (2, 1), (1, 0)],
+        },
+        &edge_parquet,
+    )
+    .expect("write edge parquet");
+
+    let tmp_report = std::env::temp_dir().join(format!(
+        "kermit_bench_run_report_{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&tmp_report);
+
+    let mut cmd = Command::new(kermit_bin());
+    cmd.env("XDG_CACHE_HOME", &tmp_cache)
+        .arg("bench")
+        .arg("--sample-size")
+        .arg("10")
+        .arg("--measurement-time")
+        .arg("1")
+        .arg("--warm-up-time")
+        .arg("1")
+        .arg("--report-json")
+        .arg(&tmp_report)
+        .arg("run")
+        .arg("triangle")
+        .arg("-i")
+        .arg("tree-trie")
+        .arg("-a")
+        .arg("leapfrog-triejoin")
+        .arg("-m")
+        .arg("space");
+
+    let output = cmd.output().expect("failed to execute kermit binary");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let contents = std::fs::read_to_string(&tmp_report).expect("report file should exist");
+    let json: serde_json::Value =
+        serde_json::from_str(&contents).expect("report should be valid JSON");
+
+    assert!(json.is_array(), "top-level shape is always a JSON array");
+    let report = &json[0];
+    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["kind"], "run");
+
+    let metadata = report["metadata"]
+        .as_array()
+        .expect("metadata should be an array");
+    assert!(metadata
+        .iter()
+        .any(|f| f["label"] == "benchmark" && f["value"] == "triangle"));
+    assert!(metadata
+        .iter()
+        .any(|f| f["label"] == "data structure" && f["value"] == "TreeTrie"));
+    assert!(metadata
+        .iter()
+        .any(|f| f["label"] == "algorithm" && f["value"] == "LeapfrogTriejoin"));
+
+    let axes = &report["axes"];
+    assert!(axes.is_object(), "axes should be a JSON object");
+    assert_eq!(axes["benchmark"], "triangle");
+    assert_eq!(axes["data_structure"], "TreeTrie");
+    assert_eq!(axes["algorithm"], "LeapfrogTriejoin");
+    assert!(
+        axes["query"].is_string(),
+        "axes.query should be a string identifier"
+    );
+
+    let groups = report["criterion_groups"]
+        .as_array()
+        .expect("criterion_groups should be an array");
+    assert!(
+        !groups.is_empty(),
+        "space metric must produce at least one criterion group"
+    );
+    for g in groups {
+        assert_eq!(g["metric"], "space");
+        let function = g["function"].as_str().expect("function must be a string");
+        assert!(
+            function.starts_with("space/"),
+            "space functions are named space/<relation>; got {function}"
+        );
+    }
+
+    let _ = std::fs::remove_file(&tmp_report);
+    let _ = std::fs::remove_dir_all(&tmp_cache);
+}
