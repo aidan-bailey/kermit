@@ -185,15 +185,17 @@ where
 }
 
 /// Creates a [`DatabaseEngine`] as a `Box<dyn DB>` based on the CLI-selected
-/// index structure and join algorithm.
-pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm) -> Box<dyn DB> {
+/// index structure and join algorithm. `name` is exposed via [`DB::name`] —
+/// callers typically pass the benchmark or query identifier so downstream
+/// tooling can correlate engines with workloads.
+pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm, name: String) -> Box<dyn DB> {
     match (ds, ja) {
-        | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => Box::new(
-            DatabaseEngine::<TreeTrie, LeapfrogTriejoin>::new("test".to_string()),
-        ),
-        | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => Box::new(
-            DatabaseEngine::<ColumnTrie, LeapfrogTriejoin>::new("test".to_string()),
-        ),
+        | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
+            Box::new(DatabaseEngine::<TreeTrie, LeapfrogTriejoin>::new(name))
+        },
+        | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
+            Box::new(DatabaseEngine::<ColumnTrie, LeapfrogTriejoin>::new(name))
+        },
     }
 }
 

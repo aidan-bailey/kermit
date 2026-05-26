@@ -430,7 +430,7 @@ fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, Join
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", args.query, e))?;
 
-    let mut db = instantiate_database(args.indexstructure, args.algorithm);
+    let mut db = instantiate_database(args.indexstructure, args.algorithm, "join".to_string());
     for path in &args.relations {
         db.add_file(path)
             .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
@@ -677,7 +677,7 @@ where
         .map(|p| R::from_parquet(p).map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}")))
         .collect::<Result<_, _>>()?;
 
-    let mut db = instantiate_database(indexstructure, algorithm);
+    let mut db = instantiate_database(indexstructure, algorithm, benchmark.name.clone());
     for rel in &relations {
         let header = rel.header();
         let name = header.name();
