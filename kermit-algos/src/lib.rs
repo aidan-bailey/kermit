@@ -7,11 +7,8 @@
 #![deny(missing_docs)]
 
 mod const_rewrite;
-// `SingletonHashTrieIter` is reachable from outside this crate only once
-// Task 6.3 lands `HashTrieIterKind` and re-exports both types. Gate the
-// module until then.
-#[allow(dead_code)]
 mod hash_singleton;
+mod hash_trie_iter_kind;
 mod join_algo;
 mod leapfrog_join;
 mod leapfrog_triejoin;
@@ -21,6 +18,8 @@ mod trie_iter_kind;
 use {clap::ValueEnum, std::str::FromStr};
 pub use {
     const_rewrite::{rewrite_atoms, ConstSpec, RewriteError},
+    hash_singleton::SingletonHashTrieIter,
+    hash_trie_iter_kind::HashTrieIterKind,
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     leapfrog_triejoin::LeapfrogTriejoin,

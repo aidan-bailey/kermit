@@ -22,6 +22,10 @@ enum State {
 /// if it were a real hash-trie-backed relation.
 #[derive(Debug, Clone)]
 pub struct SingletonHashTrieIter {
+    // Kept as a sentinel of the constructed value; the join algorithm and
+    // `leaf_tuples` consume the cached `chain` instead. Phase 7 may grow
+    // direct uses (e.g., diagnostics) — allow until then.
+    #[allow(dead_code)]
     value: usize,
     hash: u64,
     /// Cached one-tuple chain returned by [`HashTrieIterator::leaf_tuples`]
