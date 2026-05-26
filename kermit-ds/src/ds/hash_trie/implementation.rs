@@ -5,7 +5,7 @@
 use {
     super::node::HashTrieNode,
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::JoinIterable,
+    kermit_iters::{hash_attribute, JoinIterable},
 };
 
 /// A hash trie. Each path from root to leaf corresponds to one tuple's
@@ -44,6 +44,29 @@ impl HashTrie {
     /// Crate-visible accessor for the root node. Used by `HashTrieIter`
     /// (in the same crate) to navigate the trie via shared references.
     pub(crate) fn root(&self) -> &HashTrieNode { &self.root }
+
+    /// Insert one tuple at the appropriate depth in the trie. Recursive
+    /// implementation of Algorithm 2 from the paper, line by line.
+    fn insert_at(node: &mut HashTrieNode, depth: usize, arity: usize, tuple: Vec<usize>) {
+        let key = tuple[depth];
+        let hash = hash_attribute(depth, key);
+        match node {
+            | HashTrieNode::Inner(table) => {
+                let child = table.entry_or_insert_with(hash, || {
+                    if depth + 1 == arity - 1 {
+                        HashTrieNode::new_leaf()
+                    } else {
+                        HashTrieNode::new_inner()
+                    }
+                });
+                Self::insert_at(child, depth + 1, arity, tuple);
+            },
+            | HashTrieNode::Leaf(table) => {
+                let chain = table.entry_or_insert_with(hash, Vec::new);
+                chain.push(tuple);
+            },
+        }
+    }
 }
 
 impl JoinIterable for HashTrie {}
@@ -60,7 +83,17 @@ impl Relation for HashTrie {
         unimplemented!("Task 3.4");
     }
 
-    fn insert(&mut self, _tuple: Vec<usize>) { unimplemented!("Task 3.3"); }
+    fn insert(&mut self, tuple: Vec<usize>) {
+        assert_eq!(
+            tuple.len(),
+            self.header.arity(),
+            "tuple arity {} does not match relation arity {}",
+            tuple.len(),
+            self.header.arity()
+        );
+        let arity = self.header.arity();
+        Self::insert_at(&mut self.root, 0, arity, tuple);
+    }
 
     fn insert_all(&mut self, _tuples: Vec<Vec<usize>>) { unimplemented!("Task 3.4"); }
 }
@@ -89,5 +122,65 @@ mod tests {
         let trie = HashTrie::new(1.into());
         assert_eq!(trie.header().arity(), 1);
         assert!(matches!(trie.root, HashTrieNode::Leaf(_)));
+    }
+
+    #[test]
+    fn insert_arity_1_populates_leaf() {
+        let mut trie = HashTrie::new(1.into());
+        trie.insert(vec![42]);
+        // Verify by inspecting the root: should be a Leaf with one entry.
+        match &trie.root {
+            | HashTrieNode::Leaf(table) => assert_eq!(table.len(), 1),
+            | _ => panic!("expected Leaf root"),
+        }
+    }
+
+    #[test]
+    fn insert_arity_2_builds_inner_then_leaf() {
+        let mut trie = HashTrie::new(2.into());
+        trie.insert(vec![1, 2]);
+        match &trie.root {
+            | HashTrieNode::Inner(root_table) => {
+                assert_eq!(root_table.len(), 1);
+                // Walk one level deeper and confirm it's a Leaf.
+                let mut found_leaf = false;
+                for (_, child) in root_table.iter() {
+                    assert!(matches!(child, HashTrieNode::Leaf(_)));
+                    if let HashTrieNode::Leaf(leaf_table) = child {
+                        assert_eq!(leaf_table.len(), 1);
+                        found_leaf = true;
+                    }
+                }
+                assert!(found_leaf);
+            },
+            | _ => panic!("expected Inner root"),
+        }
+    }
+
+    #[test]
+    fn insert_two_tuples_sharing_first_attribute() {
+        let mut trie = HashTrie::new(2.into());
+        trie.insert(vec![1, 2]);
+        trie.insert(vec![1, 3]);
+        // Same attr-0 value => same hash at root => same child node; child has
+        // two entries.
+        match &trie.root {
+            | HashTrieNode::Inner(root_table) => {
+                assert_eq!(root_table.len(), 1);
+                for (_, child) in root_table.iter() {
+                    if let HashTrieNode::Leaf(leaf_table) = child {
+                        assert_eq!(leaf_table.len(), 2);
+                    }
+                }
+            },
+            | _ => panic!("expected Inner root"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "tuple arity")]
+    fn insert_wrong_arity_panics() {
+        let mut trie = HashTrie::new(2.into());
+        trie.insert(vec![1]);
     }
 }
