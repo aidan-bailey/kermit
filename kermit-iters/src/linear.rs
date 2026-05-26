@@ -71,8 +71,11 @@ impl LinearIterator for VecLinearIter<'_> {
     }
 
     fn seek(&mut self, seek_key: usize) -> bool {
-        while let Some(key) = self.key() {
-            if key >= seek_key {
+        if self.index == 0 {
+            self.index = 1;
+        }
+        while !self.at_end() {
+            if self.data[self.index - 1] >= seek_key {
                 return true;
             }
             self.index += 1;
@@ -196,6 +199,25 @@ mod tests {
         assert_eq!(iter.next(), Some(7));
         assert_eq!(iter.next(), Some(9));
         assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn seek_before_first_next() {
+        // Regression: `seek` previously used `key()` as its loop condition,
+        // which returned `None` before any `next()` call — so `seek` was a
+        // silent no-op on an unstarted iterator regardless of the data.
+        let data = vec![1, 3, 5, 7];
+        let mut iter = data.linear_iter();
+        assert!(iter.seek(3));
+        assert_eq!(iter.key(), Some(3));
+    }
+
+    #[test]
+    fn seek_before_first_next_past_all() {
+        let data = vec![1, 3, 5];
+        let mut iter = data.linear_iter();
+        assert!(!iter.seek(100));
+        assert!(iter.at_end());
     }
 
     #[test]
