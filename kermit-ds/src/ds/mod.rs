@@ -1,4 +1,5 @@
 mod column_trie;
+mod hash_trie;
 mod tree_trie;
 
 use {clap::ValueEnum, std::str::FromStr};
