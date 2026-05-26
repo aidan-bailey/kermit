@@ -282,6 +282,13 @@ impl Relation for ColumnTrie {
         if tuples.is_empty() {
             Self::new(header)
         } else {
+            let arity = tuples[0].len();
+            assert_eq!(
+                arity,
+                header.arity(),
+                "from_tuples: tuple arity {arity} does not match header arity {}",
+                header.arity()
+            );
             tuples.sort_unstable_by(|a, b| {
                 for i in 0..a.len() {
                     match a[i].cmp(&b[i]) {

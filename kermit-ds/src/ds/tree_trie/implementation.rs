@@ -131,6 +131,12 @@ impl Relation for TreeTrie {
         }
 
         let arity = tuples[0].len();
+        assert_eq!(
+            arity,
+            header.arity(),
+            "from_tuples: tuple arity {arity} does not match header arity {}",
+            header.arity()
+        );
         assert!(tuples.iter().all(|tuple| tuple.len() == arity));
 
         // Sort tuples for efficient insertion
