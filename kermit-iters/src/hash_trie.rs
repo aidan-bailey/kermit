@@ -40,20 +40,19 @@ pub fn hash_attribute(depth: usize, key: usize) -> u64 {
 ///
 /// # Method semantics
 ///
-/// - [`key`](Self::key) — hash at the current bucket, or `None` if at end /
-///   not yet opened.
+/// - [`key`](Self::key) — hash at the current bucket, or `None` if at end / not
+///   yet opened.
 /// - [`next`](Self::next) — advance to the next occupied bucket; return its
 ///   hash.
-/// - [`lookup`](Self::lookup) — move to the bucket with exact hash `h`;
+/// - [`lookup`](Self::lookup) — move to the bucket with exact hash `hash`;
 ///   return whether one exists.
 /// - [`size`](Self::size) — number of occupied buckets in the current node.
-/// - [`at_end`](Self::at_end) — `true` iff positioned past the last
-///   occupied bucket.
-/// - [`open`](Self::open) — descend into the child node at the current
+/// - [`at_end`](Self::at_end) — `true` iff positioned past the last occupied
 ///   bucket.
+/// - [`open`](Self::open) — descend into the child node at the current bucket.
 /// - [`up`](Self::up) — ascend to the parent node.
-/// - [`leaf_tuples`](Self::leaf_tuples) — at the leaf level, the tuple
-///   chain at the current bucket; `None` at inner levels.
+/// - [`leaf_tuples`](Self::leaf_tuples) — at the leaf level, the tuple chain at
+///   the current bucket; `None` at inner levels.
 ///
 /// # Not a `LinearIterator`
 ///
