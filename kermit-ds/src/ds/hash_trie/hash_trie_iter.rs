@@ -147,7 +147,7 @@ impl HashTrieIterator for HashTrieIter<'_> {
         start < Self::node_capacity(child)
     }
 
-    fn up(&mut self) -> bool { unimplemented!("Task 4.4") }
+    fn up(&mut self) -> bool { self.stack.pop().is_some() }
 
     fn leaf_tuples(&self) -> Option<&[Vec<usize>]> { unimplemented!("Task 4.5") }
 }
@@ -268,5 +268,30 @@ mod tests {
         it.open();
         let h = kermit_iters::hash_attribute(0, 99);
         assert!(!it.lookup(h));
+    }
+
+    #[test]
+    fn up_returns_to_parent_depth() {
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open(); // depth 1
+        let key_at_depth_1 = it.key();
+        it.open(); // depth 2
+        assert!(it.up()); // back to depth 1
+        assert_eq!(it.key(), key_at_depth_1);
+    }
+
+    #[test]
+    fn up_returns_false_at_root() {
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let mut it = HashTrieIter::new(&trie);
+        // up() with empty stack
+        assert!(!it.up());
+        it.open();
+        // up() with stack depth 1 — pops, stack now empty; up() returns true
+        // because we did pop something
+        assert!(it.up());
+        // now stack is empty, up returns false
+        assert!(!it.up());
     }
 }
