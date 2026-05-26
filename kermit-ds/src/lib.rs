@@ -15,7 +15,6 @@
 mod ds;
 mod heap_size;
 mod relation;
-mod shared;
 
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
