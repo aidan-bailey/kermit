@@ -44,8 +44,12 @@ pub fn test_join<R, JA>(
         ds_map.insert(format!("R{}", i), rel);
     }
 
-    assert_eq!(
-        JA::join_iter(query, ds_map).collect::<Vec<Vec<usize>>>(),
-        result
-    );
+    // Multiset equality (relational algebra semantics) — sort both sides
+    // before asserting so algorithms with non-sorted output (hash-trie
+    // family) pass the same suite as sorted-output algorithms (LFTJ family).
+    let mut actual: Vec<Vec<usize>> = JA::join_iter(query, ds_map).collect();
+    actual.sort();
+    let mut expected = result;
+    expected.sort();
+    assert_eq!(actual, expected);
 }
