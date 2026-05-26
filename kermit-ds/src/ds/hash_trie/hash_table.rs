@@ -75,6 +75,30 @@ impl<V> HashTable<V> {
         }
         None
     }
+
+    /// Insert at `hash`, or return a `&mut V` to the existing entry. The
+    /// `default` closure is invoked only if the slot is currently empty.
+    ///
+    /// Resizes the table when load factor would exceed 0.7 (see [`grow`]).
+    pub fn entry_or_insert_with<F: FnOnce() -> V>(
+        &mut self, hash: u64, default: F,
+    ) -> &mut V {
+        let cap = self.buckets.len();
+        let start = self.bucket_index(hash);
+        let mut idx = start;
+        for _ in 0..cap {
+            match &self.buckets[idx] {
+                | Some(entry) if entry.hash == hash => {
+                    return self.buckets[idx].as_mut().map(|e| &mut e.value).unwrap();
+                },
+                | Some(_) => idx = (idx + 1) % cap,
+                | None => break,
+            }
+        }
+        self.buckets[idx] = Some(Entry { hash, value: default() });
+        self.len += 1;
+        self.buckets[idx].as_mut().map(|e| &mut e.value).unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -130,5 +154,37 @@ mod tests {
         // Both hash to bucket 1 (top 2 bits = 01). Linear probing finds
         // the target at slot 2.
         assert_eq!(t.get(0x4000_0000_0000_0001), Some(&2));
+    }
+
+    #[test]
+    fn entry_inserts_new_value() {
+        let mut t: HashTable<u32> = HashTable::new();
+        *t.entry_or_insert_with(0x4000_0000_0000_0000, || 99) = 99;
+        assert_eq!(t.get(0x4000_0000_0000_0000), Some(&99));
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn entry_returns_existing_value() {
+        let mut t: HashTable<u32> = HashTable::new();
+        *t.entry_or_insert_with(0x4000_0000_0000_0000, || 99) = 99;
+        let mut called = false;
+        let _ = t.entry_or_insert_with(0x4000_0000_0000_0000, || {
+            called = true;
+            0
+        });
+        assert!(!called, "default closure called for an existing entry");
+        assert_eq!(t.get(0x4000_0000_0000_0000), Some(&99));
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn entry_handles_probe_collision() {
+        let mut t: HashTable<u32> = HashTable::new();
+        *t.entry_or_insert_with(0x4000_0000_0000_0000, || 1) = 1;
+        *t.entry_or_insert_with(0x4000_0000_0000_0001, || 2) = 2;
+        assert_eq!(t.get(0x4000_0000_0000_0000), Some(&1));
+        assert_eq!(t.get(0x4000_0000_0000_0001), Some(&2));
+        assert_eq!(t.len(), 2);
     }
 }
