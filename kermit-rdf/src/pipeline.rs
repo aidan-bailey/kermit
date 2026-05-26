@@ -19,17 +19,15 @@ use {
     crate::{
         driver::{self, invoke::split_queries, DriverInputs, RawArtifacts, StressParams},
         error::RdfError,
-        expected, parquet, partition,
+        expected, parquet, partition, sha256_file,
         sparql::translator::translate_query,
         timestamp::utc_iso8601_now,
         yaml_emit::{write_benchmark_yaml, YamlInputs},
     },
     serde::Serialize,
-    sha2::{Digest, Sha256},
     std::{
         collections::HashMap,
         fs,
-        io::Read,
         path::{Path, PathBuf},
     },
 };
@@ -108,20 +106,6 @@ impl From<&StressParams> for StressParamsMeta {
             allow_join_vertex: s.allow_join_vertex,
         }
     }
-}
-
-fn sha256_file(path: &Path) -> Result<String, RdfError> {
-    let mut h = Sha256::new();
-    let mut f = fs::File::open(path)?;
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", h.finalize()))
 }
 
 /// Stages 4 + 5 + 6 of the pipeline. Public so the no-binary pipeline

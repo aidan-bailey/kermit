@@ -25,16 +25,15 @@ use {
             driver::{drive, LubmDriverInputs, LubmRawArtifacts},
             entailment::{entail, EntailmentStats},
         },
-        parquet, partition,
+        parquet, partition, sha256_file,
         sparql::translator::translate_query,
         timestamp::utc_iso8601_now,
         yaml_emit::{write_benchmark_yaml, YamlInputs},
     },
     serde::Serialize,
-    sha2::{Digest, Sha256},
     std::{
         fs,
-        io::{Read, Write},
+        io::Write,
         path::{Path, PathBuf},
     },
 };
@@ -116,20 +115,6 @@ pub struct LubmMeta {
     /// runs. Used by the materialization layer to detect param drift.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec_hash: Option<String>,
-}
-
-fn sha256_file(path: &Path) -> Result<String, RdfError> {
-    let mut h = Sha256::new();
-    let mut f = fs::File::open(path)?;
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", h.finalize()))
 }
 
 fn write_expected_cardinality(path: &Path, n: u64) -> Result<(), RdfError> {
