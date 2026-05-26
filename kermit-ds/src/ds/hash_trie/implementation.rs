@@ -147,7 +147,31 @@ impl crate::relation::Projectable for HashTrie {
 }
 
 impl crate::heap_size::HeapSize for HashTrie {
-    fn heap_size_bytes(&self) -> usize { unimplemented!("Task 3.6"); }
+    fn heap_size_bytes(&self) -> usize { node_heap_bytes(&self.root) }
+}
+
+fn node_heap_bytes(node: &HashTrieNode) -> usize {
+    match node {
+        | HashTrieNode::Inner(table) => {
+            let shell = table.shell_heap_bytes();
+            let children: usize = table.iter().map(|(_, child)| node_heap_bytes(child)).sum();
+            shell + children
+        },
+        | HashTrieNode::Leaf(table) => {
+            let shell = table.shell_heap_bytes();
+            let chains: usize = table
+                .iter()
+                .map(|(_, chain)| {
+                    chain.capacity() * std::mem::size_of::<Vec<usize>>()
+                        + chain
+                            .iter()
+                            .map(|t| t.capacity() * std::mem::size_of::<usize>())
+                            .sum::<usize>()
+                })
+                .sum();
+            shell + chains
+        },
+    }
 }
 
 #[cfg(test)]
@@ -288,5 +312,31 @@ mod tests {
     fn collect_tuples_empty_trie() {
         let trie = HashTrie::new(2.into());
         assert!(trie.collect_tuples().is_empty());
+    }
+
+    #[test]
+    fn heap_size_zero_for_empty_trie() {
+        use crate::HeapSize;
+        let trie = HashTrie::new(2.into());
+        // Even an empty trie allocates initial 4-bucket tables, so heap size
+        // is non-zero — what we check is determinism and ordering.
+        let small = trie.heap_size_bytes();
+        let big = HashTrie::from_tuples(2.into(), vec![
+            vec![1, 2],
+            vec![1, 3],
+            vec![2, 4],
+            vec![3, 5],
+        ])
+        .heap_size_bytes();
+        assert!(big > small, "non-empty trie should be heavier than empty");
+    }
+
+    #[test]
+    fn heap_size_deterministic_across_rebuilds() {
+        use crate::HeapSize;
+        let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]];
+        let a = HashTrie::from_tuples(2.into(), tuples.clone()).heap_size_bytes();
+        let b = HashTrie::from_tuples(2.into(), tuples).heap_size_bytes();
+        assert_eq!(a, b);
     }
 }

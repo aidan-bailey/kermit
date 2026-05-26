@@ -159,6 +159,12 @@ impl<V> HashTable<V> {
             .iter()
             .filter_map(|slot| slot.as_ref().map(|e| (e.hash, &e.value)))
     }
+
+    /// Bytes allocated by this table's internal `Vec`, excluding the contained
+    /// values (the caller is responsible for accumulating those).
+    pub fn shell_heap_bytes(&self) -> usize {
+        self.buckets.capacity() * std::mem::size_of::<Option<Entry<V>>>()
+    }
 }
 
 #[cfg(test)]
