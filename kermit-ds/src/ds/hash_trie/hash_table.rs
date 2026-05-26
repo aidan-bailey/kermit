@@ -151,6 +151,17 @@ impl<V> HashTable<V> {
             }
         }
     }
+
+    /// Iterate `(hash, &value)` over occupied buckets, in bucket-array order.
+    ///
+    /// Order depends on the hash values and the current capacity; it is not
+    /// insertion order. Used by `HashTrieIter::next` to walk a node's
+    /// occupied buckets in deterministic-per-trie order.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &V)> {
+        self.buckets
+            .iter()
+            .filter_map(|slot| slot.as_ref().map(|e| (e.hash, &e.value)))
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +292,31 @@ mod tests {
         for (h, v) in &inputs {
             assert_eq!(t.get(*h), Some(v));
         }
+    }
+
+    #[test]
+    fn iter_yields_all_occupied_entries() {
+        let mut t: HashTable<u32> = HashTable::new();
+        let inputs = [
+            (0x1000_0000_0000_0000_u64, 1u32),
+            (0x5000_0000_0000_0000_u64, 2u32),
+            (0x9000_0000_0000_0000_u64, 3u32),
+        ];
+        for (h, v) in &inputs {
+            *t.entry_or_insert_with(*h, || *v) = *v;
+        }
+        let mut collected: Vec<(u64, u32)> = t.iter().map(|(h, v)| (h, *v)).collect();
+        collected.sort_by_key(|&(h, _)| h);
+        assert_eq!(collected, vec![
+            (0x1000_0000_0000_0000_u64, 1),
+            (0x5000_0000_0000_0000_u64, 2),
+            (0x9000_0000_0000_0000_u64, 3),
+        ]);
+    }
+
+    #[test]
+    fn iter_empty_table_yields_nothing() {
+        let t: HashTable<u32> = HashTable::new();
+        assert_eq!(t.iter().count(), 0);
     }
 }
