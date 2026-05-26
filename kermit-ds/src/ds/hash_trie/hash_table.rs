@@ -45,6 +45,36 @@ impl<V> HashTable<V> {
         let shift = 64 - self.log2_capacity;
         (hash >> shift) as usize
     }
+
+    /// Look up a value by exact hash. Returns `None` if not found.
+    pub fn get(&self, hash: u64) -> Option<&V> {
+        let mut idx = self.bucket_index(hash);
+        let cap = self.buckets.len();
+        for _ in 0..cap {
+            match &self.buckets[idx] {
+                | None => return None,
+                | Some(entry) if entry.hash == hash => return Some(&entry.value),
+                | Some(_) => idx = (idx + 1) % cap,
+            }
+        }
+        None
+    }
+
+    /// Look up a mutable value by exact hash. Returns `None` if not found.
+    pub fn get_mut(&mut self, hash: u64) -> Option<&mut V> {
+        let mut idx = self.bucket_index(hash);
+        let cap = self.buckets.len();
+        for _ in 0..cap {
+            match &self.buckets[idx] {
+                | None => return None,
+                | Some(entry) if entry.hash == hash => {
+                    return self.buckets[idx].as_mut().map(|e| &mut e.value);
+                },
+                | Some(_) => idx = (idx + 1) % cap,
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -69,5 +99,36 @@ mod tests {
         assert_eq!(t.bucket_index(0xC000_0000_0000_0000), 3);
         // Anything below the top 2 bits collapses to the same bucket.
         assert_eq!(t.bucket_index(0x0000_0000_FFFF_FFFF), 0);
+    }
+
+    #[test]
+    fn get_returns_none_on_empty_table() {
+        let t: HashTable<u32> = HashTable::new();
+        assert!(t.get(0).is_none());
+        assert!(t.get(u64::MAX).is_none());
+    }
+
+    #[test]
+    fn get_returns_some_after_direct_insert() {
+        let mut t: HashTable<u32> = HashTable::new();
+        // Directly seat an entry for the get/probing test (entry_or_insert_with
+        // comes in the next task).
+        let idx = t.bucket_index(0x4000_0000_0000_0000);
+        t.buckets[idx] = Some(Entry { hash: 0x4000_0000_0000_0000, value: 99 });
+        t.len = 1;
+        assert_eq!(t.get(0x4000_0000_0000_0000), Some(&99));
+        assert!(t.get(0x4000_0000_0000_0001).is_none());
+    }
+
+    #[test]
+    fn get_probes_past_collision() {
+        let mut t: HashTable<u32> = HashTable::new();
+        // Force a probe: put a different hash in slot 1 and the target in slot 2.
+        t.buckets[1] = Some(Entry { hash: 0x4000_0000_0000_0000, value: 1 });
+        t.buckets[2] = Some(Entry { hash: 0x4000_0000_0000_0001, value: 2 });
+        t.len = 2;
+        // Both hash to bucket 1 (top 2 bits = 01). Linear probing finds
+        // the target at slot 2.
+        assert_eq!(t.get(0x4000_0000_0000_0001), Some(&2));
     }
 }
