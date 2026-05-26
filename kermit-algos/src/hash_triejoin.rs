@@ -110,6 +110,136 @@ fn verify_and_construct(
     Some(result.into_iter().map(Option::unwrap).collect())
 }
 
+/// Algorithm 3 from the paper. Recursively descends through attribute
+/// positions; emits all verified result tuples into `output`.
+///
+/// **Contract.** `enumerate(i, ...)` is called with each iterator in
+/// `variable_to_iter_map[i]` positioned at depth `i - 1` (or pre-root for
+/// `i == 0`). The function descends each one level (to depth `i`), scans
+/// at depth `i`, recurses on matches, then ascends back. This way the
+/// caller's stack is unchanged on return.
+fn enumerate<IT: HashTrieIterator>(
+    i: usize, arity: usize, iters: &mut [IT], predicate_variables: &[Vec<usize>],
+    variable_to_iter_map: &[Vec<usize>], output: &mut Vec<Vec<usize>>,
+) {
+    if i == arity {
+        emit_leaf(iters, predicate_variables, arity, output);
+        return;
+    }
+
+    let i_join = &variable_to_iter_map[i];
+    if i_join.is_empty() {
+        return; // no relation carries this variable
+    }
+
+    // Descend every participating iterator to depth i. Track how many we
+    // successfully opened so we can match `up` calls on early return.
+    let mut opened = 0;
+    let mut descend_ok = true;
+    for &idx in i_join {
+        if iters[idx].open() {
+            opened += 1;
+        } else {
+            descend_ok = false;
+            break;
+        }
+    }
+
+    if descend_ok {
+        let i_scan = *i_join
+            .iter()
+            .min_by_key(|&&idx| iters[idx].size())
+            .expect("i_join non-empty");
+
+        while !iters[i_scan].at_end() {
+            let h = iters[i_scan]
+                .key()
+                .expect("scan iterator not at end => key Some");
+
+            // Probe the other iterators in i_join for this hash.
+            let mut all_match = true;
+            for &idx in i_join {
+                if idx == i_scan {
+                    continue;
+                }
+                if !iters[idx].lookup(h) {
+                    all_match = false;
+                    break;
+                }
+            }
+
+            if all_match {
+                enumerate(
+                    i + 1,
+                    arity,
+                    iters,
+                    predicate_variables,
+                    variable_to_iter_map,
+                    output,
+                );
+            }
+
+            iters[i_scan].next();
+        }
+    }
+
+    // Ascend back to the parent depth, matching the descend count so
+    // partial-open failures are symmetric.
+    for &idx in &i_join[..opened] {
+        let _ = iters[idx].up();
+    }
+}
+
+/// Algorithm 3 lines 16–19. Cross-product the leaf chains of every
+/// iterator and emit each verified candidate.
+fn emit_leaf<IT: HashTrieIterator>(
+    iters: &[IT], predicate_variables: &[Vec<usize>], arity: usize,
+    output: &mut Vec<Vec<usize>>,
+) {
+    let chains: Vec<&[Vec<usize>]> = iters
+        .iter()
+        .map(|it| {
+            it.leaf_tuples()
+                .expect("at leaf level for every participating iter")
+        })
+        .collect();
+    if chains.iter().any(|c| c.is_empty()) {
+        return;
+    }
+
+    let mut cursor: Vec<usize> = vec![0; chains.len()];
+    loop {
+        let candidate: Vec<&Vec<usize>> = chains
+            .iter()
+            .zip(&cursor)
+            .map(|(c, &i)| &c[i])
+            .collect();
+        if let Some(result) = verify_and_construct(&candidate, predicate_variables, arity) {
+            output.push(result);
+        }
+        if !advance_cursor(&mut cursor, &chains) {
+            break;
+        }
+    }
+}
+
+/// Advance a mixed-base cursor over the chain lengths. Returns `false`
+/// once every position has been exhausted (overflow off the high end).
+fn advance_cursor(cursor: &mut [usize], chains: &[&[Vec<usize>]]) -> bool {
+    let mut k = 0;
+    loop {
+        if k >= cursor.len() {
+            return false;
+        }
+        cursor[k] += 1;
+        if cursor[k] < chains[k].len() {
+            return true;
+        }
+        cursor[k] = 0;
+        k += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +291,27 @@ mod tests {
         let candidate: Vec<&Vec<usize>> = vec![&r_tuple, &s_tuple];
         let pv = vec![vec![0], vec![1]];
         assert_eq!(verify_and_construct(&candidate, &pv, 2), Some(vec![1, 2]));
+    }
+
+    #[test]
+    fn enumerate_unary_intersection() {
+        use kermit_ds::{HashTrie, Relation};
+        let r = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let s = HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]);
+        let mut iters = vec![r.hash_trie_iter(), s.hash_trie_iter()];
+        // Inline the same setup the JoinAlgo entry point does.
+        let predicate_variables = vec![vec![0], vec![0]];
+        let variable_to_iter_map = vec![vec![0, 1]];
+        let mut output = Vec::new();
+        enumerate(
+            0,
+            1,
+            &mut iters,
+            &predicate_variables,
+            &variable_to_iter_map,
+            &mut output,
+        );
+        output.sort();
+        assert_eq!(output, vec![vec![2], vec![3]]);
     }
 }
