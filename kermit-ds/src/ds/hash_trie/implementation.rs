@@ -178,6 +178,12 @@ impl crate::heap_size::HeapSize for HashTrie {
     fn heap_size_bytes(&self) -> usize { node_heap_bytes(&self.root) }
 }
 
+impl kermit_iters::HashTrieIterable for HashTrie {
+    fn hash_trie_iter(&self) -> impl kermit_iters::HashTrieIterator {
+        super::hash_trie_iter::HashTrieIter::new(self)
+    }
+}
+
 fn node_heap_bytes(node: &HashTrieNode) -> usize {
     match node {
         | HashTrieNode::Inner(table) => {
@@ -387,5 +393,19 @@ mod tests {
         let mut collected = projected.collect_tuples();
         collected.sort();
         assert_eq!(collected, vec![vec![2, 1], vec![4, 3]]);
+    }
+
+    #[test]
+    fn hash_trie_iter_returns_navigable_iterator() {
+        use kermit_iters::{HashTrieIterable, HashTrieIterator};
+        let trie = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let mut it = trie.hash_trie_iter();
+        assert!(it.open());
+        let mut seen = std::collections::HashSet::new();
+        while !it.at_end() {
+            seen.insert(it.key().unwrap());
+            it.next();
+        }
+        assert_eq!(seen.len(), 3);
     }
 }
