@@ -104,7 +104,10 @@ impl Relation for HashTrie {
 
     fn new(header: RelationHeader) -> Self {
         let root = Self::make_root(header.arity());
-        Self { header, root }
+        Self {
+            header,
+            root,
+        }
     }
 
     fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
@@ -146,7 +149,10 @@ impl crate::relation::Projectable for HashTrie {
     fn project(&self, columns: Vec<usize>) -> Self {
         let arity = self.header.arity();
         for &c in &columns {
-            assert!(c < arity, "project: column index {c} out of range for arity {arity}");
+            assert!(
+                c < arity,
+                "project: column index {c} out of range for arity {arity}"
+            );
         }
         // Build the projected header. Match the convention used by
         // project_via_trie_iter in `kermit-ds/src/relation.rs`.
@@ -276,8 +282,7 @@ mod tests {
 
     #[test]
     fn from_tuples_arity_2_builds_correct_shape() {
-        let trie =
-            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         assert_eq!(trie.header().arity(), 2);
         // Same attr-0 inserts share a child; two distinct attr-0 values =>
         // two root-level entries.
@@ -316,8 +321,7 @@ mod tests {
 
     #[test]
     fn collect_tuples_recovers_input_as_multiset() {
-        let mut trie =
-            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let mut trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         let mut collected = trie.collect_tuples();
         collected.sort();
         assert_eq!(collected, vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
@@ -327,7 +331,9 @@ mod tests {
         trie.insert(vec![1, 2]);
         let mut collected = trie.collect_tuples();
         collected.sort();
-        assert_eq!(collected, vec![vec![1, 2], vec![1, 2], vec![1, 3], vec![2, 4]]);
+        assert_eq!(collected, vec![vec![1, 2], vec![1, 2], vec![1, 3], vec![
+            2, 4
+        ]]);
     }
 
     #[test]
@@ -343,12 +349,9 @@ mod tests {
         // Even an empty trie allocates initial 4-bucket tables, so heap size
         // is non-zero — what we check is determinism and ordering.
         let small = trie.heap_size_bytes();
-        let big = HashTrie::from_tuples(2.into(), vec![
-            vec![1, 2],
-            vec![1, 3],
-            vec![2, 4],
-            vec![3, 5],
-        ])
+        let big = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
+            3, 5,
+        ]])
         .heap_size_bytes();
         assert!(big > small, "non-empty trie should be heavier than empty");
     }
