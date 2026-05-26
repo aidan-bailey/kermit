@@ -111,6 +111,12 @@ impl TrieIterator for ColumnTrieIter<'_> {
             // Already at a leaf — nothing to descend into.
             return false;
         }
+        if self.depth > 0 && self.at_end() {
+            // Exhausted at this depth — `rel_data_i` points past the end of
+            // the active interval, so `parent_start + rel_data_i` would
+            // overshoot into the next parent's child slice.
+            return false;
+        }
         if self.depth == 0 {
             // Root → first data layer. An empty trie has an empty layer
             // with `intervals = []`, so guard against that before computing
