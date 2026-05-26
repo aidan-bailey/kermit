@@ -91,13 +91,26 @@ where
     }
 
     fn add_keys(&mut self, relation_name: &str, keys: Vec<usize>) {
-        self.relations.get_mut(relation_name).unwrap().insert(keys);
+        self.relations
+            .get_mut(relation_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "DB::add_keys: relation {relation_name:?} not registered; call add_relation \
+                     first"
+                )
+            })
+            .insert(keys);
     }
 
     fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>) {
         self.relations
             .get_mut(relation_name)
-            .unwrap()
+            .unwrap_or_else(|| {
+                panic!(
+                    "DB::add_keys_batch: relation {relation_name:?} not registered; call \
+                     add_relation first"
+                )
+            })
             .insert_all(keys);
     }
 
