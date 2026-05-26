@@ -9,6 +9,7 @@
 mod const_rewrite;
 mod hash_singleton;
 mod hash_trie_iter_kind;
+mod hash_triejoin;
 mod join_algo;
 mod leapfrog_join;
 mod leapfrog_triejoin;
