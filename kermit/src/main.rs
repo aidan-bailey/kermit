@@ -502,6 +502,12 @@ fn add_space_bench<R>(
 where
     R: HeapSize,
 {
+    debug_assert!(
+        std::hint::black_box(relation).heap_size_bytes() > 0,
+        "SpaceMeasurement requires O(N) work inside iter_custom; passing a zero-cost HeapSize \
+         stub re-triggers Criterion's iters-toward-u64::MAX calibration trap. See CLAUDE.md → \
+         Space benchmarks gotcha."
+    );
     group.bench_function(&function, |b| {
         b.iter_custom(|iters| {
             let mut total = 0usize;
@@ -662,16 +668,23 @@ where
     let cached_paths = kermit_bench::cache::ensure_cached(benchmark)
         .map_err(|e| anyhow::anyhow!("Failed to fetch benchmark data: {e}"))?;
 
-    let mut db = instantiate_database(indexstructure, algorithm);
-    for path in &cached_paths {
-        db.add_file(path)
-            .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
-    }
-
+    // Load each relation from disk exactly once. Populating `db` from these
+    // typed `R`s (rather than via `db.add_file` from disk) avoids a second
+    // parquet read per relation, which is the dominant cost on large
+    // workloads like WatDiv-scale-1000.
     let relations: Vec<R> = cached_paths
         .iter()
         .map(|p| R::from_parquet(p).map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}")))
         .collect::<Result<_, _>>()?;
+
+    let mut db = instantiate_database(indexstructure, algorithm);
+    for rel in &relations {
+        let header = rel.header();
+        let name = header.name();
+        let tuples: Vec<Vec<usize>> = rel.trie_iter().into_iter().collect();
+        db.add_relation(name, header.arity());
+        db.add_keys_batch(name, tuples);
+    }
 
     let ds_name = format!("{:?}", indexstructure);
     let algo_name = format!("{:?}", algorithm);
