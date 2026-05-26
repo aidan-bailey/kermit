@@ -113,6 +113,32 @@ impl IndexStructureSelector {
             | Self::TreeTrie => vec![IndexStructure::TreeTrie],
         }
     }
+
+    /// Returns whether this index-structure selector is compatible with
+    /// the given algorithm selector.
+    ///
+    /// Used to reject invalid CLI argument combinations (such as
+    /// `--indexstructure hash-trie --algorithm leapfrog-triejoin`) at
+    /// parse time, before launching any work. The `All` selector on
+    /// either side is permissive — the cross-product caller in `bench
+    /// run` filters individual `(IndexStructure, JoinAlgorithm)` pairs
+    /// at expand time.
+    fn supports_algorithm(self, algo: JoinAlgorithmSelector) -> bool {
+        match (self, algo) {
+            // `All` permits everything; the cross-product caller filters
+            // at expand time.
+            | (IndexStructureSelector::All, _) | (_, JoinAlgorithmSelector::All) => true,
+            // Hash family: hash trie pairs only with hash triejoin.
+            | (IndexStructureSelector::HashTrie, JoinAlgorithmSelector::HashTriejoin) => true,
+            // Sorted family: sorted tries pair only with leapfrog triejoin.
+            | (
+                IndexStructureSelector::TreeTrie | IndexStructureSelector::ColumnTrie,
+                JoinAlgorithmSelector::LeapfrogTriejoin,
+            ) => true,
+            // Anything else is incompatible.
+            | _ => false,
+        }
+    }
 }
 
 /// CLI-side selector for `--algorithm`. Wraps [`JoinAlgorithm`] with an
@@ -1079,6 +1105,17 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 force,
             } => {
+                // Reject incompatible (index-structure, algorithm) pairs
+                // up front. `All` on either side is permissive — the
+                // cross-product loop below already filters individual
+                // concrete pairs at dispatch time.
+                if !indexstructure.supports_algorithm(algorithm) {
+                    anyhow::bail!(
+                        "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be \
+                         joined with --algorithm {algorithm:?} (hash-trie pairs with \
+                         hash-triejoin; sorted tries pair with leapfrog-triejoin)"
+                    );
+                }
                 let benchmarks = resolve_benchmarks(&name, all)?;
                 let cache_root = kermit_bench::cache::base_cache_dir()
                     .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
@@ -1503,6 +1540,33 @@ mod tests {
         assert_eq!(JoinAlgorithmSelector::HashTriejoin.expand(), vec![
             JoinAlgorithm::HashTriejoin
         ]);
+    }
+
+    /// Pins the CLI's compatibility matrix. Hash trie pairs only with
+    /// hash triejoin; sorted tries pair only with leapfrog triejoin;
+    /// `All` on either side permits anything (the cross-product caller
+    /// filters at expand time).
+    #[test]
+    fn supports_algorithm_filters_incompatible_pairs() {
+        // `All` is unqualified-ambiguous between the two enums; use
+        // explicit aliases for clarity (and to satisfy E0659).
+        type Is = IndexStructureSelector;
+        type Ja = JoinAlgorithmSelector;
+        // Hash trie pairs only with hash triejoin.
+        assert!(Is::HashTrie.supports_algorithm(Ja::HashTriejoin));
+        assert!(!Is::HashTrie.supports_algorithm(Ja::LeapfrogTriejoin));
+        // Sorted tries pair only with LFTJ.
+        assert!(Is::TreeTrie.supports_algorithm(Ja::LeapfrogTriejoin));
+        assert!(!Is::TreeTrie.supports_algorithm(Ja::HashTriejoin));
+        assert!(Is::ColumnTrie.supports_algorithm(Ja::LeapfrogTriejoin));
+        assert!(!Is::ColumnTrie.supports_algorithm(Ja::HashTriejoin));
+        // `All` selectors are permissive on either side.
+        assert!(Is::All.supports_algorithm(Ja::All));
+        assert!(Is::All.supports_algorithm(Ja::HashTriejoin));
+        assert!(Is::All.supports_algorithm(Ja::LeapfrogTriejoin));
+        assert!(Is::HashTrie.supports_algorithm(Ja::All));
+        assert!(Is::TreeTrie.supports_algorithm(Ja::All));
+        assert!(Is::ColumnTrie.supports_algorithm(Ja::All));
     }
 
     /// Regression test: when discovery merges a workspace generator YAML
