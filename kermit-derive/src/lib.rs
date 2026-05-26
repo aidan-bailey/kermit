@@ -36,7 +36,7 @@
 use {
     proc_macro::TokenStream,
     quote::quote,
-    syn::{parse_macro_input, DeriveInput},
+    syn::{parse_macro_input, DeriveInput, GenericParam},
 };
 
 /// Derives [`IntoIterator`] for a trie-iterator struct.
@@ -44,7 +44,7 @@ use {
 /// The annotated struct must:
 /// - implement `kermit_iters::TrieIterator` (and therefore
 ///   `kermit_iters::LinearIterator`),
-/// - have a single lifetime parameter named `'a`.
+/// - have exactly one generic parameter, and it must be a lifetime named `'a`.
 ///
 /// The expanded impl wraps `self` in a `kermit_iters::TrieIteratorWrapper`,
 /// yielding each root-to-leaf path in the trie as a `Vec<usize>`.
@@ -52,6 +52,19 @@ use {
 pub fn derive_into_trie_iter(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let ident = &input.ident;
+
+    let params: Vec<_> = input.generics.params.iter().collect();
+    let valid =
+        matches!(params.as_slice(), [GenericParam::Lifetime(lt)] if lt.lifetime.ident == "a");
+    if !valid {
+        let msg = format!(
+            "#[derive(IntoTrieIter)] requires exactly one generic parameter, a lifetime named \
+             `'a`; found {} parameter(s) on `{}`",
+            params.len(),
+            ident
+        );
+        return quote! { compile_error!(#msg); }.into();
+    }
 
     let output = quote! {
 
