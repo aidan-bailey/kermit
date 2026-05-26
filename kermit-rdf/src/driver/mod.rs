@@ -13,13 +13,17 @@ use {
 /// Stress parameters that affect the watdiv `-s` invocation.
 #[derive(Debug, Clone)]
 pub struct StressParams {
-    /// `<max-query-size>` in stress templates.
+    /// `<max-query-size>` in stress templates. Forwarded to watdiv `-s`.
     pub max_query_size: u32,
-    /// `<query-count>` per template.
+    /// `<query-count>` per template. Forwarded to watdiv `-s`.
     pub query_count: u32,
-    /// `<constants-per-query>`.
+    /// `<constants-per-query>`. **NOT forwarded** to the current vendored
+    /// binary — recorded in `meta.json` for provenance only. Will be wired
+    /// up when the binary gains a matching flag.
     pub constants_per_query: u32,
-    /// `<allow-join-vertex>`.
+    /// `<allow-join-vertex>`. **NOT forwarded** to the current vendored
+    /// binary — recorded in `meta.json` for provenance only. Will be wired
+    /// up when the binary gains a matching flag.
     pub allow_join_vertex: bool,
 }
 
