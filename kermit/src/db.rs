@@ -9,11 +9,11 @@
 
 use {
     kermit_algos::{
-        rewrite_atoms, JoinAlgo, JoinAlgorithm, JoinQuery, LeapfrogTriejoin, SingletonTrieIter,
-        TrieIterKind,
+        rewrite_atoms, HashTrieIterKind, HashTriejoin, JoinAlgo, JoinAlgorithm, JoinQuery,
+        LeapfrogTriejoin, SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
     },
     kermit_ds::{ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
-    kermit_iters::TrieIterable,
+    kermit_iters::{HashTrieIterable, TrieIterable},
     std::{collections::HashMap, path::Path},
 };
 
@@ -197,6 +197,67 @@ where
     }
 }
 
+/// Hash-family join entry point. Mirror of [`DatabaseEngine::join`] for
+/// algorithms in the hash-trie family (currently [`HashTriejoin`]).
+///
+/// Lives as a free function rather than a [`DB`] trait method because
+/// Rust's coherence rules (E0119) reject a parallel `impl<R:
+/// HashTrieIterable, JA: ...> DB for DatabaseEngine<R, JA>` block that
+/// would overlap with the existing LFTJ-family impl, even though the
+/// bounds are disjoint in practice. The CLI dispatches directly to this
+/// function for hash-family algorithms, sidestepping the [`DB`] trait
+/// entirely on that path.
+///
+/// Mirrors the sorted-family body, but builds [`HashTrieIterKind`]
+/// wrappers and synthesises [`SingletonHashTrieIter`] singletons for the
+/// `Const_*` predicates introduced by [`rewrite_atoms`].
+///
+/// # Panics
+///
+/// Panics if the query references a relation name not present in
+/// `relations` (matching the behaviour of [`DatabaseEngine::join`]) or if
+/// the query contains a malformed constant atom.
+pub fn hash_join<R>(relations: &HashMap<String, R>, query: JoinQuery) -> Vec<Vec<usize>>
+where
+    R: HashTrieIterable,
+{
+    let (rewritten, const_specs) =
+        rewrite_atoms(query).expect("malformed constant atom in query");
+
+    let mut wrappers: HashMap<String, HashTrieIterKind<'_, R>> = HashMap::new();
+    for pred in &rewritten.body {
+        if wrappers.contains_key(&pred.name) {
+            continue;
+        }
+        // Const_* predicates are synthetic — created by rewrite_atoms
+        // above and materialised from const_specs below. They aren't
+        // expected to live in `relations`.
+        if pred.name.starts_with("Const_") {
+            continue;
+        }
+        match relations.get(&pred.name) {
+            | Some(r) => {
+                wrappers.insert(pred.name.clone(), HashTrieIterKind::Relation(r));
+            },
+            | None => panic!(
+                "hash_join: query body references unknown relation {:?}; known relations: {:?}",
+                pred.name,
+                relations.keys().collect::<Vec<_>>(),
+            ),
+        }
+    }
+    for (name, id) in const_specs {
+        wrappers
+            .entry(name)
+            .or_insert_with(|| HashTrieIterKind::Singleton(SingletonHashTrieIter::new(id)));
+    }
+
+    let ds_map: HashMap<String, &HashTrieIterKind<'_, R>> =
+        wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+    <HashTriejoin as JoinAlgo<HashTrieIterKind<'_, R>>>::join_iter(rewritten, ds_map).collect()
+}
+
 /// Creates a [`DatabaseEngine`] as a `Box<dyn DB>` based on the CLI-selected
 /// index structure and join algorithm. `name` is exposed via [`DB::name`] —
 /// callers typically pass the benchmark or query identifier so downstream
@@ -293,5 +354,70 @@ mod tests {
         // silently dropped, which could mask typos or load failures.
         let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
         db.join(query);
+    }
+}
+
+#[cfg(test)]
+mod hash_join_tests {
+    use {
+        super::*,
+        kermit_ds::HashTrie,
+    };
+
+    /// Pins the basic happy path: build two unary `HashTrie`s, run a
+    /// straight intersection through the free function, verify the
+    /// rewrite + dispatch + collect chain end-to-end.
+    #[test]
+    fn hash_join_unary_intersection() {
+        let mut relations: HashMap<String, HashTrie> = HashMap::new();
+        relations.insert(
+            "R".to_string(),
+            HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]),
+        );
+        relations.insert(
+            "S".to_string(),
+            HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]),
+        );
+        let q: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
+        let mut out = hash_join(&relations, q);
+        out.sort();
+        assert_eq!(out, vec![vec![2], vec![3]]);
+    }
+
+    /// `Q(X) :- R(X, c5).` — pins the const-view rewrite path through
+    /// `SingletonHashTrieIter`. The rewrite turns the atom `c5` into a
+    /// synthetic unary predicate `Const_c5` backed by a singleton, which
+    /// `hash_join` materialises into a [`HashTrieIterKind::Singleton`]
+    /// wrapper alongside the relation.
+    ///
+    /// We deliberately place the constant in the trailing column. The
+    /// hash-trie iter family descends through *physical* attribute
+    /// positions in lockstep with the algorithm's *variable* ordering;
+    /// the variable ordering is "head vars first, then any extra body
+    /// vars" (`build_variable_index`). With the constant in the last
+    /// column, the rewrite's fresh `K0` lands at the tail of the
+    /// variable ordering, which matches the trie's physical layout. The
+    /// LFTJ const test uses the same shape for the same reason.
+    ///
+    /// The algorithm emits tuples in `variable_ordering` order (all
+    /// query variables, not just head vars), so we project to the head
+    /// slot ourselves — mirroring [`tests::test_join_with_constant_filter`]
+    /// for LFTJ above.
+    #[test]
+    fn hash_join_with_constant_atom() {
+        let mut relations: HashMap<String, HashTrie> = HashMap::new();
+        relations.insert(
+            "R".to_string(),
+            HashTrie::from_tuples(2.into(), vec![vec![1, 5], vec![2, 5], vec![3, 7]]),
+        );
+        let q: JoinQuery = "Q(X) :- R(X, c5).".parse().unwrap();
+        let result = hash_join(&relations, q);
+        let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![1, 2],
+            "expected only X=1, X=2 to pass the c5 filter, got {got:?}"
+        );
     }
 }
