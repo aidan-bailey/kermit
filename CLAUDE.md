@@ -6,6 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kermit is a Rust library for relational algebra research and benchmarking, built as a platform for a Masters thesis investigating the Leapfrog Triejoin algorithm across different data structures. It is a Cargo workspace with 8 crates. All keys are `usize` (dictionary-encoded). The codebase uses entirely safe Rust with no unsafe blocks. See `ARCHITECTURE.md` for detailed algorithmic descriptions, data flow, and Datalog query processing.
 
+## Priorities
+
+This codebase is a Masters thesis research platform. The following priorities, in order, govern code changes. They override stylistic instincts when they conflict.
+
+1. **Test coverage for every algorithm × index-structure pair.** New algorithms and index structures must extend `define_multiway_join_test_suite!` (see Testing Patterns) so the 11 standard join patterns run against every combination. A change that adds a structure or algorithm without extending the suite will be rejected.
+
+2. **Human-readable implementations.** Algorithms in `kermit-algos` and structures in `kermit-ds` should read like the paper that defines them — names match the literature, control flow mirrors the published pseudocode. Optimizations that obscure this need a comment justifying the cost they save.
+
+3. **Per-component documentation.** Every algorithm has `docs/algorithms/<name>.md`; every index structure has `docs/data-structures/<name>.md`. Each doc covers representation/pseudocode, invariants, complexity of the trait methods (`insert`/`seek`/`open`/`up` for tries; `join_iter` for algorithms), and a worked micro-example. These docs are for humans — they complement, not replace, `ARCHITECTURE.md`. See `docs/algorithms/TEMPLATE.md` and `docs/data-structures/TEMPLATE.md` for the skeleton.
+
+4. **Extensibility via recognizable patterns.** Adding a new algorithm or index structure follows the exact recipe in "Extending the System" — same file paths, same trait order, same CLI wiring, same test hook. The recipe is the contract; deviations need justification.
+
+5. **Robustness.** Prefer total functions at public API boundaries. Encode invariants in types where practical (`HeapSize`, `TrieIterator`, `JoinAlgo<DS>` are precedents). Internal panics on broken invariants are acceptable — see the LFTJ `open`-after-`at_end` discipline in Gotchas.
+
+6. **Scope discipline.** When the task is "add/fix algorithm X" or "add/fix index structure Y", do not touch siblings. If you discover a bug in `TreeTrie` while adding `ColumnTrie`, file it separately. Cross-cutting refactors are a separate change with explicit scope. This rule exists because thesis benchmarks compare structures against each other — silently changing a sibling invalidates prior measurements.
+
 ## Build Commands
 
 ```bash
@@ -90,15 +106,51 @@ Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` d
 
 ## Extending the System
 
-- **New data structure**: implement `Relation` + `TrieIterable` + `HeapSize` in `kermit-ds`, create a `TrieIterator`, add to `IndexStructure` CLI enum, and add match arms in `run_ds_bench`/`run_benchmark` in `kermit/src/main.rs`.
-- **New join algorithm**: implement `JoinAlgo<DS>` in `kermit-algos`, add to `JoinAlgorithm` CLI enum.
-- **New benchmark**: add a YAML file in `benchmarks/`. For static benchmarks: declare `relations` (with download URLs) and Datalog `queries` (see `benchmarks/triangle.yml`). For declarative generators: declare a `generator: { kind: watdiv|lubm, scale: N, ... }` block — `bench run <name>` will materialise the data on demand via `kermit-rdf` (see `benchmarks/README.md` for the full schema and `kermit/src/materialize.rs` for the dispatch layer).
+These recipes are the recognizable pattern referenced in Priorities item 4. Follow them exactly when possible; the consistency itself is the deliverable.
+
+### Adding a new index structure
+
+1. **Module layout.** Create `kermit-ds/src/ds/<name>/` containing `mod.rs`, `implementation.rs`, and `<name>_iter.rs`. Existing precedents: `kermit-ds/src/ds/tree_trie/` (pointer-based), `kermit-ds/src/ds/column_trie/` (column-oriented).
+2. **Implement `Relation` + `Projectable` + `HeapSize`** for the structure in `implementation.rs`. `HeapSize::heap_size_bytes()` returns *only* heap-allocated bytes (not `size_of::<Self>`). See `kermit-ds/src/ds/tree_trie/implementation.rs`.
+3. **Implement `TrieIterator`** for the iter type in `<name>_iter.rs`. Apply `#[derive(IntoTrieIter)]` from `kermit-derive` so the `IntoIterator` + `TrieIteratorWrapper` bridge is generated for you.
+4. **Implement `TrieIterable`** for the structure (wires `trie_iter()` to your iter type). The LFTJ `open`-after-`at_end` discipline is load-bearing — see the LFTJ gotcha and the `feedback_lftj_open_after_at_end` memory.
+5. **Register the module.** Add `mod <name>;` and `pub use <name>::<Type>;` in `kermit-ds/src/ds/mod.rs`, plus a variant on the `IndexStructure` enum in that file.
+6. **Wire the CLI.** Add a variant to `IndexStructureSelector` in `kermit/src/main.rs` (around line 99) and to its `expand()` method. Add match arms in `run_ds_bench` and `run_benchmark` in the same file.
+7. **Wire the tests.** Add a `define_multiway_join_test_suite!(<Type>, LeapfrogTriejoin);` invocation in `kermit/tests/join_tests.rs` so the 11 standard join patterns run against the structure with every algorithm (Priorities item 1).
+8. **Write the doc.** Create `docs/data-structures/<name>.md` from `docs/data-structures/TEMPLATE.md` (Priorities item 3).
+
+Do **not** modify other index structures during this work (Priorities item 6).
+
+### Adding a new join algorithm
+
+1. **Module layout.** Create `kermit-algos/src/<name>.rs`. Existing precedents: `kermit-algos/src/leapfrog_join.rs` (binary intersection, internal helper) and `kermit-algos/src/leapfrog_triejoin.rs` (multi-way join, the CLI-exposed entry point).
+2. **Implement `JoinAlgo<DS>`** generic over `DS: TrieIterable`. The algorithm must tolerate const-rewritten queries (extra unary `Const_c<id>` body predicates from `kermit_algos::rewrite_atoms`) — see the const-view-rewrite gotcha.
+3. **Register the module.** Add `mod <name>;` and `pub use <name>::<Type>;` in `kermit-algos/src/lib.rs`, plus a variant on the `JoinAlgorithm` enum in that file.
+4. **Wire the CLI.** Add a variant to `JoinAlgorithmSelector` in `kermit/src/main.rs` (around line 124) and to its `expand()` method.
+5. **Wire the tests.** Existing index structures pick up your algorithm combinatorially via `define_multiway_join_test_suite!` — add a fresh invocation per index structure in `kermit/tests/join_tests.rs` (Priorities item 1).
+6. **Write the doc.** Create `docs/algorithms/<name>.md` from `docs/algorithms/TEMPLATE.md` (Priorities item 3).
+
+Do **not** modify other algorithms during this work (Priorities item 6).
+
+### Adding a new benchmark
+
+Add a YAML file in `benchmarks/`. For static benchmarks: declare `relations` (with download URLs) and Datalog `queries` (see `benchmarks/triangle.yml`). For declarative generators: declare a `generator: { kind: watdiv|lubm, scale: N, ... }` block — `bench run <name>` will materialise the data on demand via `kermit-rdf` (see `benchmarks/README.md` and `kermit/src/materialize.rs::materialize`).
 
 ## Benchmark Reference Docs
 
 - `docs/benchmarks/LUBM.md` — LUBM usage, the 14 queries with reference cardinalities, entailment rule set, scale ceiling.
 - `docs/benchmarks/WATDIV.md` — WatDiv usage, stress-template parameters, vendoring rules, non-determinism discipline.
 - `kermit-rdf/src/lubm/README.md` — module-internal contributor doc for the LUBM pipeline.
+
+## Component Reference Docs
+
+Per Priorities item 3, every algorithm and index structure has a dedicated doc.
+
+- `docs/algorithms/leapfrog-triejoin.md` — multi-way worst-case-optimal join (CLI-exposed).
+- `docs/algorithms/leapfrog-join.md` — k-way sorted intersection used internally by `LeapfrogTriejoin`.
+- `docs/data-structures/tree-trie.md` — pointer-based trie (`-i tree-trie`).
+- `docs/data-structures/column-trie.md` — column-oriented trie (`-i column-trie`).
+- `docs/algorithms/TEMPLATE.md`, `docs/data-structures/TEMPLATE.md` — skeletons for new component docs.
 
 ## Code Style
 
