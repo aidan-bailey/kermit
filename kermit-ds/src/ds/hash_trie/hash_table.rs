@@ -176,12 +176,16 @@ impl<V> HashTable<V> {
 
     /// Reference to the value at bucket `idx`, or `None` if empty.
     pub fn value_at(&self, idx: usize) -> Option<&V> {
-        self.buckets.get(idx).and_then(|slot| slot.as_ref().map(|e| &e.value))
+        self.buckets
+            .get(idx)
+            .and_then(|slot| slot.as_ref().map(|e| &e.value))
     }
 
     /// Hash at bucket `idx`, or `None` if empty.
     pub fn hash_at(&self, idx: usize) -> Option<u64> {
-        self.buckets.get(idx).and_then(|slot| slot.as_ref().map(|e| e.hash))
+        self.buckets
+            .get(idx)
+            .and_then(|slot| slot.as_ref().map(|e| e.hash))
     }
 
     /// Index of the bucket containing `hash`, or `None` if not present.

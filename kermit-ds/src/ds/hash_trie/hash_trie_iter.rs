@@ -224,13 +224,8 @@ mod tests {
         // Insert several tuples whose attribute-0 hashes are likely distinct.
         // Because we can't predict bucket order without inspecting hashes,
         // assert the *set* of yielded hashes matches the expected set.
-        let trie = HashTrie::from_tuples(1.into(), vec![
-            vec![1],
-            vec![2],
-            vec![3],
-            vec![4],
-            vec![5],
-        ]);
+        let trie =
+            HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4], vec![5]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
         let mut seen = std::collections::HashSet::new();
@@ -238,8 +233,9 @@ mod tests {
             seen.insert(it.key().unwrap());
             it.next();
         }
-        let expected: std::collections::HashSet<_> =
-            (1..=5_usize).map(|k| kermit_iters::hash_attribute(0, k)).collect();
+        let expected: std::collections::HashSet<_> = (1..=5_usize)
+            .map(|k| kermit_iters::hash_attribute(0, k))
+            .collect();
         assert_eq!(seen, expected);
     }
 
