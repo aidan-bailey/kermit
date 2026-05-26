@@ -3,16 +3,16 @@
 //! See `docs/data-structures/hash-trie.md` for the worked example, complexity
 //! table, and invariants.
 
-// `hash_table`, `node`, and `implementation` are consumed crate-internally
-// across Phase 3; `HashTrie` itself only becomes reachable from outside the
-// `hash_trie` module once Phase 5 wires it into `ds/mod.rs`. Until then,
-// rustc reports every item as dead. Gate the modules to keep CI's
-// `-Dwarnings` happy in the interim.
+// `HashTrie` is reachable from outside this module only once Phase 5 wires
+// it into `ds/mod.rs`. Until then, the type and its impls are dead-code from
+// the lint's perspective, so we gate `implementation` and the `pub use`
+// re-export until that wiring lands. `hash_table::HashTable::{get, get_mut}`
+// are reserved for Phase 4's `HashTrieIter::lookup`, so keep the same gate
+// on `hash_table` for now.
 #[allow(dead_code)]
 mod hash_table;
 #[allow(dead_code)]
 mod implementation;
-#[allow(dead_code)]
 mod node;
 
 #[allow(unused_imports)]

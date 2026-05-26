@@ -143,7 +143,29 @@ impl Relation for HashTrie {
 }
 
 impl crate::relation::Projectable for HashTrie {
-    fn project(&self, _columns: Vec<usize>) -> Self { unimplemented!("Task 3.7"); }
+    fn project(&self, columns: Vec<usize>) -> Self {
+        let arity = self.header.arity();
+        for &c in &columns {
+            assert!(c < arity, "project: column index {c} out of range for arity {arity}");
+        }
+        // Build the projected header. Match the convention used by
+        // project_via_trie_iter in `kermit-ds/src/relation.rs`.
+        let projected_attrs: Vec<String> = columns
+            .iter()
+            .filter_map(|&c| self.header.attrs().get(c).cloned())
+            .collect();
+        let new_header = if projected_attrs.is_empty() {
+            RelationHeader::new_nameless_positional(columns.len())
+        } else {
+            RelationHeader::new_nameless(projected_attrs)
+        };
+        let projected_tuples: Vec<Vec<usize>> = self
+            .collect_tuples()
+            .into_iter()
+            .map(|tuple| columns.iter().map(|&c| tuple[c]).collect())
+            .collect();
+        HashTrie::from_tuples(new_header, projected_tuples)
+    }
 }
 
 impl crate::heap_size::HeapSize for HashTrie {
@@ -338,5 +360,29 @@ mod tests {
         let a = HashTrie::from_tuples(2.into(), tuples.clone()).heap_size_bytes();
         let b = HashTrie::from_tuples(2.into(), tuples).heap_size_bytes();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn project_drops_columns() {
+        use crate::relation::Projectable;
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        // π_0 (first column only)
+        let projected = trie.project(vec![0]);
+        assert_eq!(projected.header().arity(), 1);
+        let mut collected = projected.collect_tuples();
+        collected.sort();
+        // Duplicate `1`s collapse only if from_tuples deduplicates — HashTrie
+        // is a multiset, so we expect duplicates to survive.
+        assert_eq!(collected, vec![vec![1], vec![1], vec![2]]);
+    }
+
+    #[test]
+    fn project_reorders_columns() {
+        use crate::relation::Projectable;
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
+        let projected = trie.project(vec![1, 0]);
+        let mut collected = projected.collect_tuples();
+        collected.sort();
+        assert_eq!(collected, vec![vec![2, 1], vec![4, 3]]);
     }
 }
