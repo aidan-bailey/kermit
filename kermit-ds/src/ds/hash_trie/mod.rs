@@ -8,3 +8,5 @@
 // subsequent phases; until those land, every item appears unused to clippy.
 #[allow(dead_code)]
 mod hash_table;
+#[allow(dead_code)]
+mod node;
