@@ -167,6 +167,23 @@ pub fn load_all_benchmarks_with_cache(
     Ok(out)
 }
 
+/// Loads a generator-produced benchmark from a cache subdirectory by name.
+///
+/// Returns the parsed [`BenchmarkDefinition`] when `cache_root/name` is a
+/// kermit-produced cache subdir (contains both `benchmark.yml` and
+/// `meta.json`). Returns an error otherwise.
+///
+/// # Errors
+///
+/// Returns [`BenchError`] if the cache subdir is missing or its YAML is
+/// malformed or fails validation.
+pub fn load_cached_benchmark(
+    cache_root: &Path, name: &str,
+) -> Result<BenchmarkDefinition, BenchError> {
+    let dir = cache_root.join(name);
+    try_load_cache_subdir(&dir)?.ok_or_else(|| BenchError::NotFound(name.to_string()))
+}
+
 /// Returns `Ok(Some(def))` when `path` is a kermit-produced cache subdir
 /// (contains both `benchmark.yml` and `meta.json`), `Ok(None)` when the
 /// path is not a valid cache subdir (skip silently), and `Err(_)` when the

@@ -16,8 +16,14 @@ use {
     },
 };
 
-/// Returns the base cache directory for kermit benchmarks.
-fn base_cache_dir() -> Result<PathBuf, BenchError> {
+/// Returns the base cache directory for kermit benchmarks
+/// (`$XDG_CACHE_HOME/kermit/benchmarks` on Linux).
+///
+/// # Errors
+///
+/// Returns [`BenchError::NoCacheDir`] if the platform cache directory cannot
+/// be determined.
+pub fn base_cache_dir() -> Result<PathBuf, BenchError> {
     let cache = dirs::cache_dir().ok_or(BenchError::NoCacheDir)?;
     Ok(cache.join("kermit").join("benchmarks"))
 }
