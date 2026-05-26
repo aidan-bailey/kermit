@@ -90,7 +90,27 @@ impl HashTrieIterator for HashTrieIter<'_> {
         }
     }
 
-    fn lookup(&mut self, _hash: u64) -> bool { unimplemented!("Task 4.3") }
+    fn lookup(&mut self, hash: u64) -> bool {
+        let entry = match self.stack.last_mut() {
+            | Some(e) => e,
+            | None => return false,
+        };
+        let idx = match entry.0 {
+            | HashTrieNode::Inner(t) => t.index_of(hash),
+            | HashTrieNode::Leaf(t) => t.index_of(hash),
+        };
+        match idx {
+            | Some(i) => {
+                entry.1 = i;
+                true
+            },
+            | None => {
+                // Move to past-end; the caller's loop should exit.
+                entry.1 = Self::node_capacity(entry.0);
+                false
+            },
+        }
+    }
 
     fn size(&self) -> usize {
         match self.stack.last() {
@@ -229,5 +249,24 @@ mod tests {
         it.open();
         // Three distinct attribute-0 values => three root-level buckets.
         assert_eq!(it.size(), 3);
+    }
+
+    #[test]
+    fn lookup_hits_existing_hash() {
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open();
+        let h = kermit_iters::hash_attribute(0, 3);
+        assert!(it.lookup(h));
+        assert_eq!(it.key(), Some(h));
+    }
+
+    #[test]
+    fn lookup_misses_unknown_hash() {
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open();
+        let h = kermit_iters::hash_attribute(0, 99);
+        assert!(!it.lookup(h));
     }
 }

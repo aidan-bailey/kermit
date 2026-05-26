@@ -184,6 +184,20 @@ impl<V> HashTable<V> {
         self.buckets.get(idx).and_then(|slot| slot.as_ref().map(|e| e.hash))
     }
 
+    /// Index of the bucket containing `hash`, or `None` if not present.
+    pub fn index_of(&self, hash: u64) -> Option<usize> {
+        let cap = self.buckets.len();
+        let mut idx = self.bucket_index(hash);
+        for _ in 0..cap {
+            match &self.buckets[idx] {
+                | None => return None,
+                | Some(entry) if entry.hash == hash => return Some(idx),
+                | Some(_) => idx = (idx + 1) % cap,
+            }
+        }
+        None
+    }
+
     /// Bytes allocated by this table's internal `Vec`, excluding the contained
     /// values (the caller is responsible for accumulating those).
     pub fn shell_heap_bytes(&self) -> usize {
