@@ -95,9 +95,61 @@ impl<V> HashTable<V> {
                 | None => break,
             }
         }
+        // About to insert a new entry. Check load factor first.
+        //   LF > 0.7  ⇔  (len + 1) * 10 > capacity * 7
+        if (self.len + 1) * 10 > cap * 7 {
+            self.grow();
+            let cap = self.buckets.len();
+            let mut idx = self.bucket_index(hash);
+            loop {
+                match &self.buckets[idx] {
+                    | None => {
+                        self.buckets[idx] = Some(Entry { hash, value: default() });
+                        self.len += 1;
+                        return self.buckets[idx]
+                            .as_mut()
+                            .map(|e| &mut e.value)
+                            .unwrap();
+                    },
+                    | Some(_) => idx = (idx + 1) % cap,
+                }
+            }
+        }
         self.buckets[idx] = Some(Entry { hash, value: default() });
         self.len += 1;
         self.buckets[idx].as_mut().map(|e| &mut e.value).unwrap()
+    }
+
+    /// Double capacity and rehash all entries. Called by
+    /// `entry_or_insert_with` when load factor would exceed 0.7.
+    fn grow(&mut self) {
+        self.log2_capacity += 1;
+        let new_cap = 1usize << self.log2_capacity;
+        let old_buckets = std::mem::replace(
+            &mut self.buckets,
+            (0..new_cap).map(|_| None).collect(),
+        );
+        self.len = 0;
+        for slot in old_buckets {
+            if let Some(entry) = slot {
+                self.insert_during_grow(entry);
+            }
+        }
+    }
+
+    fn insert_during_grow(&mut self, entry: Entry<V>) {
+        let cap = self.buckets.len();
+        let mut idx = self.bucket_index(entry.hash);
+        loop {
+            match &self.buckets[idx] {
+                | None => {
+                    self.buckets[idx] = Some(entry);
+                    self.len += 1;
+                    return;
+                },
+                | Some(_) => idx = (idx + 1) % cap,
+            }
+        }
     }
 }
 
@@ -186,5 +238,48 @@ mod tests {
         assert_eq!(t.get(0x4000_0000_0000_0000), Some(&1));
         assert_eq!(t.get(0x4000_0000_0000_0001), Some(&2));
         assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn resize_triggers_above_load_factor() {
+        let mut t: HashTable<u32> = HashTable::new();
+        // Capacity 4, threshold > 4 * 0.7 = 2.8. The 3rd insert should resize.
+        // Use hashes guaranteed to land in distinct buckets so we can observe
+        // capacity changes via `buckets.len()` instead of through probing.
+        let hashes = [
+            0x0000_0000_0000_0000, // bucket 0
+            0x4000_0000_0000_0000, // bucket 1
+            0x8000_0000_0000_0000, // bucket 2
+        ];
+        for (i, &h) in hashes.iter().enumerate() {
+            *t.entry_or_insert_with(h, || i as u32) = i as u32;
+        }
+        assert_eq!(t.len(), 3);
+        // After 3 inserts (LF would be 3/4 = 0.75 without resize), the table
+        // doubled to 8.
+        assert_eq!(t.buckets.len(), 8);
+        assert_eq!(t.log2_capacity, 3);
+        // All entries still reachable.
+        for &h in &hashes {
+            assert!(t.get(h).is_some(), "hash {h:#x} lost across resize");
+        }
+    }
+
+    #[test]
+    fn resize_preserves_values() {
+        let mut t: HashTable<String> = HashTable::new();
+        let inputs = [
+            (0x1000_0000_0000_0000, "a".to_string()),
+            (0x5000_0000_0000_0000, "b".to_string()),
+            (0x9000_0000_0000_0000, "c".to_string()),
+            (0xD000_0000_0000_0000, "d".to_string()),
+            (0xF000_0000_0000_0000, "e".to_string()),
+        ];
+        for (h, v) in &inputs {
+            *t.entry_or_insert_with(*h, || v.clone()) = v.clone();
+        }
+        for (h, v) in &inputs {
+            assert_eq!(t.get(*h), Some(v));
+        }
     }
 }
