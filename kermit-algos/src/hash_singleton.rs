@@ -24,6 +24,11 @@ enum State {
 pub struct SingletonHashTrieIter {
     value: usize,
     hash: u64,
+    /// Cached one-tuple chain returned by [`HashTrieIterator::leaf_tuples`]
+    /// once the iterator has been [`open`](HashTrieIterator::open)ed.
+    /// Pre-materialized in [`new`] so the trait method can hand out a
+    /// `&[Vec<usize>]` without allocating or holding interior mutability.
+    chain: Vec<Vec<usize>>,
     state: State,
 }
 
@@ -33,6 +38,7 @@ impl SingletonHashTrieIter {
         Self {
             value,
             hash: hash_attribute(0, value),
+            chain: vec![vec![value]],
             state: State::Root,
         }
     }
@@ -95,12 +101,11 @@ impl HashTrieIterator for SingletonHashTrieIter {
     }
 
     fn leaf_tuples(&self) -> Option<&[Vec<usize>]> {
-        // Singletons are conceptually unary; the "leaf tuple chain" is the
-        // single one-tuple containing `self.value`. To return a slice we'd
-        // need to store this Vec somewhere. We do that lazily — store it in
-        // the struct as an Option<Vec<Vec<usize>>>, materialised on first
-        // call. For first cut, materialize eagerly in new().
-        unimplemented!("see Task 6.2 — needs the cached chain field")
+        if self.state == State::AtValue {
+            Some(self.chain.as_slice())
+        } else {
+            None
+        }
     }
 }
 
@@ -149,5 +154,19 @@ mod tests {
         it.open();
         assert!(it.next().is_none());
         assert!(it.at_end());
+    }
+
+    #[test]
+    fn leaf_tuples_returns_singleton_chain() {
+        let mut it = SingletonHashTrieIter::new(42);
+        it.open();
+        let chain = it.leaf_tuples().expect("singleton's leaf chain after open");
+        assert_eq!(chain, &[vec![42]]);
+    }
+
+    #[test]
+    fn leaf_tuples_returns_none_before_open() {
+        let it = SingletonHashTrieIter::new(42);
+        assert!(it.leaf_tuples().is_none());
     }
 }
