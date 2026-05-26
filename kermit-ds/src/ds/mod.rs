@@ -3,7 +3,7 @@ mod hash_trie;
 mod tree_trie;
 
 use {clap::ValueEnum, std::str::FromStr};
-pub use {column_trie::ColumnTrie, tree_trie::TreeTrie};
+pub use {column_trie::ColumnTrie, hash_trie::HashTrie, tree_trie::TreeTrie};
 
 /// The available trie-based index structures for storing relations.
 ///
@@ -12,6 +12,8 @@ pub use {column_trie::ColumnTrie, tree_trie::TreeTrie};
 pub enum IndexStructure {
     /// Column-oriented trie; see [`ColumnTrie`].
     ColumnTrie,
+    /// Hash-based trie; see [`HashTrie`].
+    HashTrie,
     /// Pointer-based trie; see [`TreeTrie`].
     TreeTrie,
 }
@@ -22,6 +24,7 @@ impl FromStr for IndexStructure {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             | "column_trie" => Ok(Self::ColumnTrie),
+            | "hash_trie" => Ok(Self::HashTrie),
             | "tree_trie" => Ok(Self::TreeTrie),
             | _ => Err(format!("Invalid index structure: {}", s)),
         }

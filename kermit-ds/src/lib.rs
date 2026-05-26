@@ -18,7 +18,7 @@ mod relation;
 
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
-    ds::{ColumnTrie, IndexStructure, TreeTrie},
+    ds::{ColumnTrie, HashTrie, IndexStructure, TreeTrie},
     heap_size::HeapSize,
     relation::{ModelType, Projectable, Relation, RelationError, RelationFileExt, RelationHeader},
 };
