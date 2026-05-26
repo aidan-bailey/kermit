@@ -5,9 +5,12 @@
 //! See SIGMOD 2020 "Combining Worst-Case Optimal and Traditional Binary
 //! Join Processing" §3.2 for the conceptual interface (Table 1).
 
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
+use {
+    crate::joinable::JoinIterable,
+    std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    },
 };
 
 /// Stable, deterministic hash for a `(depth, key)` pair.
@@ -89,6 +92,19 @@ pub trait HashTrieIterator {
     /// current node is a leaf and the current bucket is occupied;
     /// otherwise `None`.
     fn leaf_tuples(&self) -> Option<&[Vec<usize>]>;
+}
+
+/// Marker for types that expose a [`HashTrieIterator`].
+///
+/// The hash-trie counterpart of [`TrieIterable`](crate::TrieIterable). Note
+/// that this trait does *not* require `IntoIterator<Item = Vec<usize>>` —
+/// hash iteration over a single relation isn't naturally tuple-shaped (the
+/// per-level key is a hash, not a value). Data structures implementing this
+/// trait typically also provide their own depth-first tuple-materialization
+/// helper for the `Projectable` impl.
+pub trait HashTrieIterable: JoinIterable {
+    /// Returns a `HashTrieIterator` over this structure.
+    fn hash_trie_iter(&self) -> impl HashTrieIterator;
 }
 
 #[cfg(test)]
