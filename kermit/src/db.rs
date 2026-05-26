@@ -209,6 +209,15 @@ pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm, name: String)
         | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
             Box::new(DatabaseEngine::<ColumnTrie, LeapfrogTriejoin>::new(name))
         },
+        // `HashTrie` is paired with `HashTriejoin` (a separate trait family
+        // — `HashTrieIterable` rather than `TrieIterable`), so it can't run
+        // through `LeapfrogTriejoin`. CLI wiring in Phase 9 introduces the
+        // matching `JoinAlgorithm::HashTriejoin` and selects the right
+        // engine instance; until then `kermit -i hash-trie` is unreachable.
+        | (IndexStructure::HashTrie, _) => unreachable!(
+            "HashTrie is not yet wired to any JoinAlgorithm in instantiate_database — phase 9 CLI \
+             wiring will add the HashTriejoin engine binding"
+        ),
     }
 }
 

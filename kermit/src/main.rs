@@ -1053,6 +1053,14 @@ fn main() -> anyhow::Result<()> {
                             group_name,
                             &bench_args,
                         )?,
+                        // Phase 5 added `IndexStructure::HashTrie` to the
+                        // enum; Phase 9 will route it to `run_ds_bench`.
+                        // Until then, selecting it from the CLI bails — the
+                        // arm exists only to keep the match exhaustive.
+                        | IndexStructure::HashTrie => anyhow::bail!(
+                            "bench ds: HashTrie is not yet runnable from the CLI (phase 9 will \
+                             wire it)"
+                        ),
                     };
                     reports.push(report);
                 }
@@ -1101,6 +1109,15 @@ fn main() -> anyhow::Result<()> {
                                         &bench_args,
                                     )?
                                 },
+                                // Phase 5 added `IndexStructure::HashTrie` to
+                                // the enum; Phase 9 will route it to
+                                // `run_benchmark`. Until then, selecting it
+                                // from the CLI bails — the arm exists only
+                                // to keep the match exhaustive.
+                                | IndexStructure::HashTrie => anyhow::bail!(
+                                    "bench run: HashTrie is not yet runnable from the CLI (phase \
+                                     9 will wire it)"
+                                ),
                             };
                             reports.append(&mut chunk);
                         }
