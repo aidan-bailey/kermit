@@ -45,6 +45,34 @@ impl HashTrie {
     /// (in the same crate) to navigate the trie via shared references.
     pub(crate) fn root(&self) -> &HashTrieNode { &self.root }
 
+    /// Walk the trie depth-first and return every materialized tuple.
+    ///
+    /// Used by [`Projectable::project`] and by tests. Allocates a fresh
+    /// `Vec<Vec<usize>>`; for large relations this is O(n · arity) in
+    /// both time and space.
+    pub(crate) fn collect_tuples(&self) -> Vec<Vec<usize>> {
+        let mut out = Vec::new();
+        Self::collect_at(&self.root, &mut out);
+        out
+    }
+
+    fn collect_at(node: &HashTrieNode, out: &mut Vec<Vec<usize>>) {
+        match node {
+            | HashTrieNode::Inner(table) => {
+                for (_, child) in table.iter() {
+                    Self::collect_at(child, out);
+                }
+            },
+            | HashTrieNode::Leaf(table) => {
+                for (_, chain) in table.iter() {
+                    for tuple in chain {
+                        out.push(tuple.clone());
+                    }
+                }
+            },
+        }
+    }
+
     /// Insert one tuple at the appropriate depth in the trie. Recursive
     /// implementation of Algorithm 2 from the paper, line by line.
     fn insert_at(node: &mut HashTrieNode, depth: usize, arity: usize, tuple: Vec<usize>) {
@@ -238,5 +266,27 @@ mod tests {
             | _ => unreachable!(),
         };
         assert_eq!(a_root_len, b_root_len);
+    }
+
+    #[test]
+    fn collect_tuples_recovers_input_as_multiset() {
+        let mut trie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let mut collected = trie.collect_tuples();
+        collected.sort();
+        assert_eq!(collected, vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+
+        // Adding a tuple with full collision-equal hash signature: same value
+        // at each attribute => same hash path => stored on the same leaf chain.
+        trie.insert(vec![1, 2]);
+        let mut collected = trie.collect_tuples();
+        collected.sort();
+        assert_eq!(collected, vec![vec![1, 2], vec![1, 2], vec![1, 3], vec![2, 4]]);
+    }
+
+    #[test]
+    fn collect_tuples_empty_trie() {
+        let trie = HashTrie::new(2.into());
+        assert!(trie.collect_tuples().is_empty());
     }
 }
