@@ -191,6 +191,38 @@ pub trait Projectable {
     fn project(&self, columns: Vec<usize>) -> Self;
 }
 
+/// Default trie-iter-based projection shared by every storage backend.
+///
+/// Materialises every tuple via the trie iterator, projects the requested
+/// columns, then rebuilds via `from_tuples`. Backends that can do better
+/// (e.g. a column-store that can keep the existing layer arrays for the
+/// requested columns) may override [`Projectable::project`] with their own
+/// implementation.
+pub(crate) fn project_via_trie_iter<R>(rel: &R, columns: Vec<usize>) -> R
+where
+    R: Relation + kermit_iters::TrieIterable,
+{
+    let current_header = rel.header();
+    let projected_attrs: Vec<String> = columns
+        .iter()
+        .filter_map(|&col_idx| current_header.attrs().get(col_idx).cloned())
+        .collect();
+
+    let new_header = if projected_attrs.is_empty() {
+        RelationHeader::new_nameless_positional(columns.len())
+    } else {
+        RelationHeader::new_nameless(projected_attrs)
+    };
+
+    let projected_tuples: Vec<Vec<usize>> = rel
+        .trie_iter()
+        .into_iter()
+        .map(|tuple| columns.iter().map(|&col_idx| tuple[col_idx]).collect())
+        .collect();
+
+    R::from_tuples(new_header, projected_tuples)
+}
+
 /// A relational data structure that stores tuples of `usize` keys and can
 /// participate in joins.
 ///
