@@ -7,6 +7,11 @@
 #![deny(missing_docs)]
 
 mod const_rewrite;
+// `SingletonHashTrieIter` is reachable from outside this crate only once
+// Task 6.3 lands `HashTrieIterKind` and re-exports both types. Gate the
+// module until then.
+#[allow(dead_code)]
+mod hash_singleton;
 mod join_algo;
 mod leapfrog_join;
 mod leapfrog_triejoin;
