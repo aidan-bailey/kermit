@@ -64,6 +64,11 @@ fn skip_if_unsupported() -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns bwrap/watdiv subprocesses via std::process::Command (the `weak!` macro \
+              inside Command::output cannot resolve symbols under miri)"
+)]
 fn watdiv_sf1_pipeline_succeeds_and_produces_expected_artifacts() {
     if skip_if_unsupported() {
         return;

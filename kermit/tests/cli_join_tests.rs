@@ -135,7 +135,15 @@ fn cli_join_missing_query_file() {
 #[test]
 fn cli_join_output_to_file() {
     let fixtures = fixtures_dir();
-    let tmp_output = std::env::temp_dir().join("kermit_test_output.csv");
+    // PID + nanos suffix so concurrent test processes don't race on the path.
+    let tmp_output = std::env::temp_dir().join(format!(
+        "kermit_test_output_{}_{}.csv",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    ));
 
     let mut cmd = Command::new(kermit_bin());
     cmd.arg("join")
