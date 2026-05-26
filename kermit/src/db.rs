@@ -221,8 +221,7 @@ pub fn hash_join<R>(relations: &HashMap<String, R>, query: JoinQuery) -> Vec<Vec
 where
     R: HashTrieIterable,
 {
-    let (rewritten, const_specs) =
-        rewrite_atoms(query).expect("malformed constant atom in query");
+    let (rewritten, const_specs) = rewrite_atoms(query).expect("malformed constant atom in query");
 
     let mut wrappers: HashMap<String, HashTrieIterKind<'_, R>> = HashMap::new();
     for pred in &rewritten.body {
@@ -262,6 +261,16 @@ where
 /// index structure and join algorithm. `name` is exposed via [`DB::name`] —
 /// callers typically pass the benchmark or query identifier so downstream
 /// tooling can correlate engines with workloads.
+///
+/// # Panics
+///
+/// Panics on incompatible `(IndexStructure, JoinAlgorithm)` pairs. The
+/// CLI is expected to reject such combinations upstream via
+/// `IndexStructureSelector::supports_algorithm`; these panics are
+/// defence-in-depth for direct programmatic callers. The hash-trie
+/// family (`HashTrie` + `HashTriejoin`) deliberately panics here too —
+/// see the function's body for the dedicated [`hash_join`] free-function
+/// path the CLI takes for that combination.
 pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm, name: String) -> Box<dyn DB> {
     match (ds, ja) {
         | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
@@ -270,23 +279,28 @@ pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm, name: String)
         | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
             Box::new(DatabaseEngine::<ColumnTrie, LeapfrogTriejoin>::new(name))
         },
-        // `HashTrie` is paired with `HashTriejoin` (a separate trait family
-        // — `HashTrieIterable` rather than `TrieIterable`), so it can't run
-        // through `LeapfrogTriejoin`. CLI wiring in Phase 9 introduces the
-        // matching `JoinAlgorithm::HashTriejoin` and selects the right
-        // engine instance; until then `kermit -i hash-trie` is unreachable.
-        | (IndexStructure::HashTrie, _) => unreachable!(
-            "HashTrie is not yet wired to any JoinAlgorithm in instantiate_database — phase 9 CLI \
-             wiring will add the HashTriejoin engine binding"
+        // The hash-trie family does not flow through the `DB` trait —
+        // `DB::join` is implementation-coupled to `TrieIterKind`, which
+        // is incompatible with `HashTrieIterable`. The CLI dispatches
+        // directly to the [`hash_join`] free function for this pair, so
+        // `instantiate_database` is never called with it from the CLI.
+        // Programmatic callers reaching this arm have a usage bug.
+        | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => panic!(
+            "instantiate_database: (HashTrie, HashTriejoin) does not go through the DB trait — \
+             use kermit::db::hash_join directly (the CLI dispatch handles this in \
+             BenchSubcommand::Run / Ds)"
         ),
-        // The inverse pairing: `HashTriejoin` requires `HashTrieIterable`,
-        // so the sorted tries (`TreeTrie`, `ColumnTrie`) can't run through
-        // it. CLI wiring in Phase 9 will reject these combinations at the
-        // selector level; the arms exist here for match exhaustiveness.
+        // Incompatible pairings: `HashTrie` only joins via `HashTriejoin`
+        // (different trait family — `HashTrieIterable` rather than
+        // `TrieIterable`), and `HashTriejoin` only consumes `HashTrie`.
+        | (IndexStructure::HashTrie, JoinAlgorithm::LeapfrogTriejoin) => panic!(
+            "incompatible pair: (HashTrie, LeapfrogTriejoin) — HashTrie can only be joined with \
+             HashTriejoin; the CLI's supports_algorithm gate should reject this upstream"
+        ),
         | (IndexStructure::TreeTrie | IndexStructure::ColumnTrie, JoinAlgorithm::HashTriejoin) => {
-            unreachable!(
-                "HashTriejoin is only valid with HashTrie — phase 9 CLI wiring will reject this \
-                 combination before reaching instantiate_database"
+            panic!(
+                "incompatible pair: ({ds:?}, HashTriejoin) — HashTriejoin can only be used with \
+                 HashTrie; the CLI's supports_algorithm gate should reject this upstream"
             )
         },
     }
@@ -359,10 +373,7 @@ mod tests {
 
 #[cfg(test)]
 mod hash_join_tests {
-    use {
-        super::*,
-        kermit_ds::HashTrie,
-    };
+    use {super::*, kermit_ds::HashTrie};
 
     /// Pins the basic happy path: build two unary `HashTrie`s, run a
     /// straight intersection through the free function, verify the
