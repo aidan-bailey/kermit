@@ -865,9 +865,8 @@ fn resolve_benchmarks(
     name: &Option<String>, all: bool,
 ) -> anyhow::Result<Vec<BenchmarkDefinition>> {
     let root = workspace_root();
-    let cache = dirs::cache_dir()
-        .map(|p| p.join("kermit").join("benchmarks"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
+    let cache =
+        kermit_bench::cache::base_cache_dir().unwrap_or_else(|_| PathBuf::from("/tmp/no-cache"));
     if all {
         kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
             .context("Failed to load benchmarks")
@@ -875,15 +874,8 @@ fn resolve_benchmarks(
         match kermit_bench::discovery::load_benchmark(&root, name) {
             | Ok(b) => Ok(vec![b]),
             | Err(_) => {
-                let dir = cache.join(name);
-                let yml = dir.join("benchmark.yml");
-                let meta = dir.join("meta.json");
-                if !yml.exists() || !meta.exists() {
-                    anyhow::bail!("benchmark not found: {name}");
-                }
-                let contents = std::fs::read_to_string(&yml)?;
-                let def: BenchmarkDefinition = serde_yaml::from_str(&contents)?;
-                def.validate()?;
+                let def = kermit_bench::discovery::load_cached_benchmark(&cache, name)
+                    .map_err(|_| anyhow::anyhow!("benchmark not found: {name}"))?;
                 Ok(vec![def])
             },
         }
@@ -916,9 +908,8 @@ fn main() -> anyhow::Result<()> {
         } => match subcommand {
             | BenchSubcommand::List => {
                 let root = workspace_root();
-                let cache = dirs::cache_dir()
-                    .map(|p| p.join("kermit").join("benchmarks"))
-                    .unwrap_or_else(|| PathBuf::from("/tmp/no-cache"));
+                let cache = kermit_bench::cache::base_cache_dir()
+                    .unwrap_or_else(|_| PathBuf::from("/tmp/no-cache"));
                 let workspace_defs: std::collections::HashMap<String, BenchmarkDefinition> =
                     kermit_bench::discovery::load_all_benchmarks(&root)?
                         .into_iter()
@@ -1078,9 +1069,8 @@ fn main() -> anyhow::Result<()> {
                 force,
             } => {
                 let benchmarks = resolve_benchmarks(&name, all)?;
-                let cache_root = dirs::cache_dir()
-                    .map(|p| p.join("kermit").join("benchmarks"))
-                    .ok_or_else(|| anyhow::anyhow!("no cache directory available"))?;
+                let cache_root = kermit_bench::cache::base_cache_dir()
+                    .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
                 let materialized: Vec<BenchmarkDefinition> = benchmarks
                     .into_iter()
                     .map(|b| materialize::materialize(b, &cache_root, force))
@@ -1150,9 +1140,8 @@ fn main() -> anyhow::Result<()> {
                     if !bin.exists() {
                         anyhow::bail!("watdiv binary not found at {bin:?}");
                     }
-                    let default_cache = dirs::cache_dir()
-                        .map(|p| p.join("kermit").join("benchmarks"))
-                        .expect("no cache dir on this platform");
+                    let default_cache = kermit_bench::cache::base_cache_dir()
+                        .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
                     let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
                     if cache_parent != default_cache {
                         eprintln!(
@@ -1228,9 +1217,8 @@ fn main() -> anyhow::Result<()> {
                              with --lubm-jar / KERMIT_LUBM_JAR"
                         );
                     }
-                    let default_cache = dirs::cache_dir()
-                        .map(|p| p.join("kermit").join("benchmarks"))
-                        .expect("no cache dir on this platform");
+                    let default_cache = kermit_bench::cache::base_cache_dir()
+                        .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
                     let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
                     if cache_parent != default_cache {
                         eprintln!(
