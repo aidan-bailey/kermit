@@ -215,7 +215,10 @@ fn apply_subproperty_rule(
 }
 
 /// Rule 3 — owl:inverseOf: `?x p ?y → ?y q ?x` for each declared `(p, q)`.
-/// Skipped when `?y` is a literal — inverses on data values are nonsensical.
+/// Skipped when `?y` is a literal or blank node — inverses on data values
+/// are nonsensical, and blank-node objects cannot round-trip through the
+/// current triple representation (subjects are untyped strings, so a blank
+/// node lifted into subject position would serialise as a malformed IRI).
 fn apply_inverse_rule(
     snap: &[(String, String, RdfValue)], inverse_pairs: &[(String, String)],
     all: &mut HashSet<(String, String, RdfValue)>,
@@ -227,8 +230,7 @@ fn apply_inverse_rule(
             }
             let new_subject = match o {
                 | RdfValue::Iri(iri) => iri.clone(),
-                | RdfValue::BlankNode(node) => node.clone(),
-                | RdfValue::Literal(_) => continue,
+                | RdfValue::BlankNode(_) | RdfValue::Literal(_) => continue,
             };
             all.insert((new_subject, b.clone(), RdfValue::Iri(s.clone())));
         }
@@ -527,6 +529,24 @@ mod tests {
             format!("{UB}degreeFrom"),
             RdfValue::Iri("http://x/u".to_string())
         )));
+    }
+
+    #[test]
+    fn inverse_rule_skips_blank_node_objects() {
+        // Regression: a blank-node object previously had its raw `_:b…` string
+        // promoted to subject position, where it would serialise as a
+        // malformed IRI and round-trip back as a different RdfValue variant
+        // than the original blank node.
+        let nt = format!("<http://x/u> <{UB}hasAlumnus> _:b42 .\n");
+        let (triples, _) = run_entailment(&nt);
+        // No inverse triple should be derived for the blank-node alumnus.
+        for (_, p, _) in &triples {
+            assert_ne!(
+                p,
+                &format!("{UB}degreeFrom"),
+                "blank-node alumnus must not produce a degreeFrom triple"
+            );
+        }
     }
 
     #[test]
