@@ -70,7 +70,12 @@ fn ensure_java() -> Result<(), RdfError> {
         .status();
     match status {
         | Ok(s) if s.success() => Ok(()),
-        | _ => Err(RdfError::JavaNotFound),
+        | Ok(s) => Err(RdfError::LubmFailed {
+            status: format!("java -version exited with {s}"),
+            stderr: String::new(),
+        }),
+        | Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(RdfError::JavaNotFound),
+        | Err(e) => Err(RdfError::Io(e)),
     }
 }
 

@@ -70,10 +70,15 @@ fn build_command(cfg: &InvokeConfig, watdiv_args: &[&str]) -> Result<Command, Rd
     }
 }
 
+fn path_arg(p: &Path) -> Result<&str, RdfError> {
+    p.to_str()
+        .ok_or_else(|| RdfError::Sandbox(format!("non-UTF-8 path: {p:?}")))
+}
+
 /// Runs `watdiv -d <model> <scale>`, writing N-Triples to `out_path`.
 pub fn run_data(cfg: &InvokeConfig, scale: u32, out_path: &Path) -> Result<(), RdfError> {
     let scale_str = scale.to_string();
-    let mut cmd = build_command(cfg, &["-d", cfg.model_file.to_str().unwrap(), &scale_str])?;
+    let mut cmd = build_command(cfg, &["-d", path_arg(cfg.model_file)?, &scale_str])?;
     let output = cmd.output()?;
     if !output.status.success() {
         return Err(RdfError::BinaryFailed {
@@ -144,11 +149,10 @@ pub fn run_stress(
 ) -> Result<Vec<PathBuf>, RdfError> {
     let max_q_str = max_query_size.to_string();
     let count_str = count.to_string();
-    let data_arg = data_nt.to_str().unwrap();
     let mut cmd = build_command(cfg, &[
         "-s",
-        cfg.model_file.to_str().unwrap(),
-        data_arg,
+        path_arg(cfg.model_file)?,
+        path_arg(data_nt)?,
         &max_q_str,
         &count_str,
     ])?;
@@ -196,8 +200,8 @@ pub fn run_queries(
         let recurrence = "1";
         let mut cmd = build_command(cfg, &[
             "-q",
-            cfg.model_file.to_str().unwrap(),
-            tpl.to_str().unwrap(),
+            path_arg(cfg.model_file)?,
+            path_arg(tpl)?,
             &count_str,
             recurrence,
         ])?;
