@@ -97,41 +97,44 @@ enum Metric {
 /// `IndexStructure` enum (in `kermit-ds`) stays free of CLI concerns.
 #[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
 enum IndexStructureSelector {
-    TreeTrie,
-    ColumnTrie,
     All,
+    ColumnTrie,
+    HashTrie,
+    TreeTrie,
 }
 
 impl IndexStructureSelector {
     fn expand(self) -> Vec<IndexStructure> {
         use clap::ValueEnum;
         match self {
-            | Self::TreeTrie => vec![IndexStructure::TreeTrie],
-            | Self::ColumnTrie => vec![IndexStructure::ColumnTrie],
             | Self::All => IndexStructure::value_variants().to_vec(),
+            | Self::ColumnTrie => vec![IndexStructure::ColumnTrie],
+            | Self::HashTrie => vec![IndexStructure::HashTrie],
+            | Self::TreeTrie => vec![IndexStructure::TreeTrie],
         }
     }
 }
 
 /// CLI-side selector for `--algorithm`. Wraps [`JoinAlgorithm`] with an
-/// `All` variant for sweeps. `LeapfrogTriejoin` is currently the only
-/// concrete algorithm, so `All` and `LeapfrogTriejoin` produce the same
-/// sweep today; the selector exists so adding new algorithms is purely
-/// additive — `All` resolves through `clap::ValueEnum::value_variants()`,
-/// so a new variant on `JoinAlgorithm` automatically joins the sweep
-/// without touching this match.
+/// `All` variant for sweeps. The selector exists so adding new algorithms
+/// is purely additive — `All` resolves through
+/// `clap::ValueEnum::value_variants()`, so a new variant on
+/// `JoinAlgorithm` automatically joins the sweep without touching this
+/// match.
 #[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
 enum JoinAlgorithmSelector {
-    LeapfrogTriejoin,
     All,
+    HashTriejoin,
+    LeapfrogTriejoin,
 }
 
 impl JoinAlgorithmSelector {
     fn expand(self) -> Vec<JoinAlgorithm> {
         use clap::ValueEnum;
         match self {
-            | Self::LeapfrogTriejoin => vec![JoinAlgorithm::LeapfrogTriejoin],
             | Self::All => JoinAlgorithm::value_variants().to_vec(),
+            | Self::HashTriejoin => vec![JoinAlgorithm::HashTriejoin],
+            | Self::LeapfrogTriejoin => vec![JoinAlgorithm::LeapfrogTriejoin],
         }
     }
 }
@@ -1478,6 +1481,9 @@ mod tests {
         assert_eq!(IndexStructureSelector::ColumnTrie.expand(), vec![
             IndexStructure::ColumnTrie
         ]);
+        assert_eq!(IndexStructureSelector::HashTrie.expand(), vec![
+            IndexStructure::HashTrie
+        ]);
     }
 
     #[test]
@@ -1493,6 +1499,9 @@ mod tests {
     fn join_algorithm_selector_concrete_returns_singleton() {
         assert_eq!(JoinAlgorithmSelector::LeapfrogTriejoin.expand(), vec![
             JoinAlgorithm::LeapfrogTriejoin
+        ]);
+        assert_eq!(JoinAlgorithmSelector::HashTriejoin.expand(), vec![
+            JoinAlgorithm::HashTriejoin
         ]);
     }
 
