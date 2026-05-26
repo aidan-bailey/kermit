@@ -64,15 +64,50 @@ impl<'a> HashTrieIter<'a> {
 }
 
 impl HashTrieIterator for HashTrieIter<'_> {
-    fn key(&self) -> Option<u64> { unimplemented!("Task 4.2") }
+    fn key(&self) -> Option<u64> {
+        let &(node, idx) = self.stack.last()?;
+        match node {
+            | HashTrieNode::Inner(t) => t.hash_at(idx),
+            | HashTrieNode::Leaf(t) => t.hash_at(idx),
+        }
+    }
 
-    fn next(&mut self) -> Option<u64> { unimplemented!("Task 4.2") }
+    fn next(&mut self) -> Option<u64> {
+        let (node, idx) = {
+            let entry = self.stack.last_mut()?;
+            let cap = Self::node_capacity(entry.0);
+            // Start from idx + 1 (paper's "advance"), find next occupied or
+            // past-end.
+            entry.1 = Self::first_occupied_from(entry.0, entry.1 + 1);
+            if entry.1 >= cap {
+                return None;
+            }
+            (entry.0, entry.1)
+        };
+        match node {
+            | HashTrieNode::Inner(t) => t.hash_at(idx),
+            | HashTrieNode::Leaf(t) => t.hash_at(idx),
+        }
+    }
 
     fn lookup(&mut self, _hash: u64) -> bool { unimplemented!("Task 4.3") }
 
-    fn size(&self) -> usize { unimplemented!("Task 4.2") }
+    fn size(&self) -> usize {
+        match self.stack.last() {
+            | Some(&(node, _)) => match node {
+                | HashTrieNode::Inner(t) => t.len(),
+                | HashTrieNode::Leaf(t) => t.len(),
+            },
+            | None => 0,
+        }
+    }
 
-    fn at_end(&self) -> bool { unimplemented!("Task 4.2") }
+    fn at_end(&self) -> bool {
+        match self.stack.last() {
+            | Some(&(node, idx)) => idx >= Self::node_capacity(node),
+            | None => true,
+        }
+    }
 
     fn open(&mut self) -> bool {
         if self.stack.is_empty() {
@@ -134,5 +169,65 @@ mod tests {
         it.open();
         // Already at leaf — can't descend further.
         assert!(!it.open());
+    }
+
+    #[test]
+    fn key_returns_hash_at_current_bucket() {
+        let trie = HashTrie::from_tuples(1.into(), vec![vec![42]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open();
+        let h = it.key().expect("key after open should be Some");
+        // Verify it matches the expected hash_attribute(0, 42).
+        assert_eq!(h, kermit_iters::hash_attribute(0, 42));
+    }
+
+    #[test]
+    fn at_end_after_advancing_past_last() {
+        let trie = HashTrie::from_tuples(1.into(), vec![vec![42]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open();
+        assert!(!it.at_end());
+        // Single tuple => one occupied bucket. next() advances past it.
+        it.next();
+        assert!(it.at_end());
+        assert!(it.key().is_none());
+    }
+
+    #[test]
+    fn next_iterates_through_all_occupied_buckets() {
+        // Insert several tuples whose attribute-0 hashes are likely distinct.
+        // Because we can't predict bucket order without inspecting hashes,
+        // assert the *set* of yielded hashes matches the expected set.
+        let trie = HashTrie::from_tuples(1.into(), vec![
+            vec![1],
+            vec![2],
+            vec![3],
+            vec![4],
+            vec![5],
+        ]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open();
+        let mut seen = std::collections::HashSet::new();
+        while !it.at_end() {
+            seen.insert(it.key().unwrap());
+            it.next();
+        }
+        let expected: std::collections::HashSet<_> =
+            (1..=5_usize).map(|k| kermit_iters::hash_attribute(0, k)).collect();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn size_at_root_returns_distinct_count() {
+        let trie = HashTrie::from_tuples(2.into(), vec![
+            vec![1, 10],
+            vec![1, 20], // same attr-0 hash as above
+            vec![2, 30],
+            vec![3, 40],
+        ]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open();
+        // Three distinct attribute-0 values => three root-level buckets.
+        assert_eq!(it.size(), 3);
     }
 }
