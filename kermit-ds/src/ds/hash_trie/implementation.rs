@@ -47,11 +47,11 @@ impl HashTrie {
 
     /// Walk the trie depth-first and return every materialized tuple.
     ///
-    /// Used by [`Projectable::project`], the CLI's `bench` machinery
-    /// (which needs to recover tuples from an already-built relation
-    /// for the insertion-benchmark closure), and tests. Allocates a
-    /// fresh `Vec<Vec<usize>>`; for large relations this is O(n ·
-    /// arity) in both time and space.
+    /// Used by [`crate::relation::Projectable::project`], the CLI's
+    /// `bench` machinery (which needs to recover tuples from an
+    /// already-built relation for the insertion-benchmark closure),
+    /// and tests. Allocates a fresh `Vec<Vec<usize>>`; for large
+    /// relations this is O(n · arity) in both time and space.
     pub fn collect_tuples(&self) -> Vec<Vec<usize>> {
         let mut out = Vec::new();
         Self::collect_at(&self.root, &mut out);
