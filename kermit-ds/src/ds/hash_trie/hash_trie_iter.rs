@@ -149,7 +149,13 @@ impl HashTrieIterator for HashTrieIter<'_> {
 
     fn up(&mut self) -> bool { self.stack.pop().is_some() }
 
-    fn leaf_tuples(&self) -> Option<&[Vec<usize>]> { unimplemented!("Task 4.5") }
+    fn leaf_tuples(&self) -> Option<&[Vec<usize>]> {
+        let &(node, idx) = self.stack.last()?;
+        match node {
+            | HashTrieNode::Leaf(t) => t.value_at(idx).map(|v| v.as_slice()),
+            | HashTrieNode::Inner(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -293,5 +299,32 @@ mod tests {
         assert!(it.up());
         // now stack is empty, up returns false
         assert!(!it.up());
+    }
+
+    #[test]
+    fn leaf_tuples_returns_none_at_inner_level() {
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open(); // at Inner level
+        assert!(it.leaf_tuples().is_none());
+    }
+
+    #[test]
+    fn leaf_tuples_returns_some_at_leaf_level() {
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open();
+        it.open();
+        let chain = it.leaf_tuples().expect("leaf_tuples Some at leaf");
+        // The chain has at least one tuple at this bucket position.
+        assert!(!chain.is_empty());
+    }
+
+    #[test]
+    fn leaf_tuples_none_when_no_leaf_in_stack() {
+        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let it = HashTrieIter::new(&trie);
+        // Pre-open — no stack entry at all.
+        assert!(it.leaf_tuples().is_none());
     }
 }
