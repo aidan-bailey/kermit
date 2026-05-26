@@ -160,6 +160,30 @@ impl<V> HashTable<V> {
             .filter_map(|slot| slot.as_ref().map(|e| (e.hash, &e.value)))
     }
 
+    /// Bucket-array capacity (always a power of two).
+    pub fn buckets_len(&self) -> usize { self.buckets.len() }
+
+    /// Find the first occupied bucket index >= `start`. Returns
+    /// `buckets_len()` if no occupied bucket exists at or after `start`.
+    pub fn next_occupied(&self, start: usize) -> usize {
+        for i in start..self.buckets.len() {
+            if self.buckets[i].is_some() {
+                return i;
+            }
+        }
+        self.buckets.len()
+    }
+
+    /// Reference to the value at bucket `idx`, or `None` if empty.
+    pub fn value_at(&self, idx: usize) -> Option<&V> {
+        self.buckets.get(idx).and_then(|slot| slot.as_ref().map(|e| &e.value))
+    }
+
+    /// Hash at bucket `idx`, or `None` if empty.
+    pub fn hash_at(&self, idx: usize) -> Option<u64> {
+        self.buckets.get(idx).and_then(|slot| slot.as_ref().map(|e| e.hash))
+    }
+
     /// Bytes allocated by this table's internal `Vec`, excluding the contained
     /// values (the caller is responsible for accumulating those).
     pub fn shell_heap_bytes(&self) -> usize {

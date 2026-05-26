@@ -12,6 +12,8 @@
 #[allow(dead_code)]
 mod hash_table;
 #[allow(dead_code)]
+mod hash_trie_iter;
+#[allow(dead_code)]
 mod implementation;
 mod node;
 
