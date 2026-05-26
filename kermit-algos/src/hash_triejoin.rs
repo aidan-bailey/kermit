@@ -26,14 +26,13 @@ fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
     let mut var_to_index: HashMap<String, usize> = HashMap::new();
     let mut next_index: usize = 0;
 
-    let register_var =
-        |name: &str, map: &mut HashMap<String, usize>, next: &mut usize| {
-            *map.entry(name.to_string()).or_insert_with(|| {
-                let idx = *next;
-                *next += 1;
-                idx
-            })
-        };
+    let register_var = |name: &str, map: &mut HashMap<String, usize>, next: &mut usize| {
+        *map.entry(name.to_string()).or_insert_with(|| {
+            let idx = *next;
+            *next += 1;
+            idx
+        })
+    };
 
     for t in &query.head.terms {
         if let Term::Var(ref vname) = t {
@@ -78,7 +77,13 @@ fn build_variable_to_iter_map(
             predicate_variables
                 .iter()
                 .enumerate()
-                .filter_map(|(i, vars)| if vars.contains(v) { Some(i) } else { None })
+                .filter_map(|(i, vars)| {
+                    if vars.contains(v) {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
                 .collect()
         })
         .collect()
@@ -193,8 +198,7 @@ fn enumerate<IT: HashTrieIterator>(
 /// Algorithm 3 lines 16–19. Cross-product the leaf chains of every
 /// iterator and emit each verified candidate.
 fn emit_leaf<IT: HashTrieIterator>(
-    iters: &[IT], predicate_variables: &[Vec<usize>], arity: usize,
-    output: &mut Vec<Vec<usize>>,
+    iters: &[IT], predicate_variables: &[Vec<usize>], arity: usize, output: &mut Vec<Vec<usize>>,
 ) {
     let chains: Vec<&[Vec<usize>]> = iters
         .iter()
@@ -209,11 +213,7 @@ fn emit_leaf<IT: HashTrieIterator>(
 
     let mut cursor: Vec<usize> = vec![0; chains.len()];
     loop {
-        let candidate: Vec<&Vec<usize>> = chains
-            .iter()
-            .zip(&cursor)
-            .map(|(c, &i)| &c[i])
-            .collect();
+        let candidate: Vec<&Vec<usize>> = chains.iter().zip(&cursor).map(|(c, &i)| &c[i]).collect();
         if let Some(result) = verify_and_construct(&candidate, predicate_variables, arity) {
             output.push(result);
         }
@@ -285,9 +285,7 @@ mod tests {
 
     #[test]
     fn variable_index_triangle() {
-        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z)."
-            .parse()
-            .unwrap();
+        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).".parse().unwrap();
         let (ordering, predicate_vars) = build_variable_index(&query);
         assert_eq!(ordering, vec![0, 1, 2]);
         assert_eq!(predicate_vars, vec![vec![0, 1], vec![1, 2], vec![0, 2]]);
@@ -309,7 +307,10 @@ mod tests {
         let s_tuple = vec![2, 3];
         let candidate: Vec<&Vec<usize>> = vec![&r_tuple, &s_tuple];
         let pv = vec![vec![0, 1], vec![1, 2]];
-        assert_eq!(verify_and_construct(&candidate, &pv, 3), Some(vec![1, 2, 3]));
+        assert_eq!(
+            verify_and_construct(&candidate, &pv, 3),
+            Some(vec![1, 2, 3])
+        );
     }
 
     #[test]
@@ -374,9 +375,7 @@ mod tests {
         let r = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3], vec![3, 1]]);
         let s = HashTrie::from_tuples(2.into(), vec![vec![2, 3], vec![3, 1], vec![1, 2]]);
         let t = HashTrie::from_tuples(2.into(), vec![vec![1, 3], vec![2, 1], vec![3, 2]]);
-        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z)."
-            .parse()
-            .unwrap();
+        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).".parse().unwrap();
         let mut ds: HashMap<String, &HashTrie> = HashMap::new();
         ds.insert("R".to_string(), &r);
         ds.insert("S".to_string(), &s);
