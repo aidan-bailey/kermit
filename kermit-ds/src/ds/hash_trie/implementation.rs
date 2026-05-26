@@ -79,8 +79,20 @@ impl Relation for HashTrie {
         Self { header, root }
     }
 
-    fn from_tuples(_header: RelationHeader, _tuples: Vec<Vec<usize>>) -> Self {
-        unimplemented!("Task 3.4");
+    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
+        let arity = header.arity();
+        let mut trie = Self::new(header);
+        for tuple in tuples {
+            assert_eq!(
+                tuple.len(),
+                arity,
+                "from_tuples: tuple arity {} does not match header arity {}",
+                tuple.len(),
+                arity,
+            );
+            Self::insert_at(&mut trie.root, 0, arity, tuple);
+        }
+        trie
     }
 
     fn insert(&mut self, tuple: Vec<usize>) {
@@ -95,7 +107,11 @@ impl Relation for HashTrie {
         Self::insert_at(&mut self.root, 0, arity, tuple);
     }
 
-    fn insert_all(&mut self, _tuples: Vec<Vec<usize>>) { unimplemented!("Task 3.4"); }
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
+        for tuple in tuples {
+            self.insert(tuple);
+        }
+    }
 }
 
 impl crate::relation::Projectable for HashTrie {
@@ -182,5 +198,45 @@ mod tests {
     fn insert_wrong_arity_panics() {
         let mut trie = HashTrie::new(2.into());
         trie.insert(vec![1]);
+    }
+
+    #[test]
+    fn from_tuples_arity_2_builds_correct_shape() {
+        let trie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        assert_eq!(trie.header().arity(), 2);
+        // Same attr-0 inserts share a child; two distinct attr-0 values =>
+        // two root-level entries.
+        match &trie.root {
+            | HashTrieNode::Inner(root_table) => assert_eq!(root_table.len(), 2),
+            | _ => panic!("expected Inner root"),
+        }
+    }
+
+    #[test]
+    fn from_tuples_empty_input() {
+        let trie = HashTrie::from_tuples(2.into(), vec![]);
+        match &trie.root {
+            | HashTrieNode::Inner(root_table) => assert_eq!(root_table.len(), 0),
+            | _ => panic!("expected Inner root"),
+        }
+    }
+
+    #[test]
+    fn insert_all_equivalent_to_from_tuples_for_multiset_view() {
+        let mut a = HashTrie::new(2.into());
+        a.insert_all(vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let b = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        // Compare via heap_size and tuple set (via Projectable when ready) —
+        // for now confirm both have populated roots with the same length.
+        let a_root_len = match &a.root {
+            | HashTrieNode::Inner(t) => t.len(),
+            | _ => unreachable!(),
+        };
+        let b_root_len = match &b.root {
+            | HashTrieNode::Inner(t) => t.len(),
+            | _ => unreachable!(),
+        };
+        assert_eq!(a_root_len, b_root_len);
     }
 }
