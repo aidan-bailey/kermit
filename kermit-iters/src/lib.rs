@@ -34,12 +34,14 @@
 
 #![deny(missing_docs)]
 
+mod hash_trie;
 mod joinable;
 mod key_type;
 mod linear;
 mod trie;
 
 pub use {
+    hash_trie::{hash_attribute, HashTrieIterable, HashTrieIterator},
     joinable::JoinIterable,
     key_type::Key,
     linear::{LinearIterable, LinearIterator},
