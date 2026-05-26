@@ -13,19 +13,26 @@ use {
     },
 };
 
-/// Stable, deterministic hash for a `(depth, key)` pair.
+/// Stable, deterministic hash for a key value.
 ///
-/// `depth` is mixed into the hash so different attribute positions hash
-/// into disjoint spaces — preventing cross-attribute aliasing when the same
-/// `usize` key happens to appear at multiple positions.
+/// `depth` is preserved in the signature for ABI compatibility but is no
+/// longer mixed into the hash. The earlier convention salted on depth as a
+/// "cross-attribute aliasing safeguard", but in this hash-trie each
+/// attribute position lives in its own hash table — a value at column 0
+/// and the same value at column 1 are in physically distinct tables, so
+/// they cannot collide regardless of hashing. Mixing depth was actively
+/// harmful for cross-relation lookups: a join variable appearing at
+/// different positions in two relations (e.g. Y at column 1 of R but
+/// column 0 of S in a triangle query) hashed differently in each, and the
+/// join algorithm's [`HashTrieIterator::lookup`] could never match.
 ///
 /// This function is the single source of truth for the kermit hash-trie
 /// hashing convention. Both `kermit_ds::HashTrie` and the algorithm-side
 /// singleton in `kermit_algos` import it; any divergence silently breaks
 /// queries with constants.
 pub fn hash_attribute(depth: usize, key: usize) -> u64 {
+    let _ = depth;
     let mut h = DefaultHasher::new();
-    depth.hash(&mut h);
     key.hash(&mut h);
     h.finish()
 }
@@ -116,10 +123,13 @@ mod tests {
     }
 
     #[test]
-    fn different_depth_different_hash() {
-        // Same key at different attribute positions hashes differently.
-        // This is the cross-attribute aliasing safeguard.
-        assert_ne!(hash_attribute(0, 42), hash_attribute(1, 42));
+    fn depth_is_ignored() {
+        // Depth is preserved in the signature for ABI compatibility but is
+        // no longer mixed into the hash; see the function-level doc. This
+        // is what makes cross-relation lookup work when the same join
+        // variable appears at different column positions in different
+        // relations.
+        assert_eq!(hash_attribute(0, 42), hash_attribute(1, 42));
     }
 
     #[test]

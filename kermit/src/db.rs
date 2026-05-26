@@ -218,6 +218,15 @@ pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm, name: String)
             "HashTrie is not yet wired to any JoinAlgorithm in instantiate_database — phase 9 CLI \
              wiring will add the HashTriejoin engine binding"
         ),
+        // The inverse pairing: `HashTriejoin` requires `HashTrieIterable`,
+        // so the sorted tries (`TreeTrie`, `ColumnTrie`) can't run through
+        // it. CLI wiring in Phase 9 will reject these combinations at the
+        // selector level; the arms exist here for match exhaustiveness.
+        | (IndexStructure::TreeTrie | IndexStructure::ColumnTrie, JoinAlgorithm::HashTriejoin) =>
+            unreachable!(
+                "HashTriejoin is only valid with HashTrie — phase 9 CLI wiring will reject this \
+                 combination before reaching instantiate_database"
+            ),
     }
 }
 

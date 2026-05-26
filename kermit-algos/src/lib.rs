@@ -21,6 +21,7 @@ pub use {
     const_rewrite::{rewrite_atoms, ConstSpec, RewriteError},
     hash_singleton::SingletonHashTrieIter,
     hash_trie_iter_kind::HashTrieIterKind,
+    hash_triejoin::HashTriejoin,
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     leapfrog_triejoin::LeapfrogTriejoin,
@@ -33,6 +34,8 @@ pub use {
 /// Used as a CLI argument to select which algorithm to run.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum JoinAlgorithm {
+    /// The Hash Trie Join algorithm (SIGMOD 2020); see [`HashTriejoin`].
+    HashTriejoin,
     /// The [Leapfrog Triejoin](https://arxiv.org/abs/1210.0481) algorithm;
     /// see [`LeapfrogTriejoin`].
     LeapfrogTriejoin,
@@ -43,6 +46,7 @@ impl FromStr for JoinAlgorithm {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            | "hash_triejoin" => Ok(Self::HashTriejoin),
             | "leapfrog_triejoin" => Ok(Self::LeapfrogTriejoin),
             | _ => Err(format!("Invalid join algorithm: {}", s)),
         }

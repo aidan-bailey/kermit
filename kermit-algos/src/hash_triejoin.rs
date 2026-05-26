@@ -240,6 +240,45 @@ fn advance_cursor(cursor: &mut [usize], chains: &[&[Vec<usize>]]) -> bool {
     }
 }
 
+/// Entry point for the hash-trie-join algorithm.
+///
+/// Implements [`JoinAlgo`] for any [`HashTrieIterable`] data structure.
+/// See the module docs for the algorithm overview.
+pub struct HashTriejoin {}
+
+impl<DS> JoinAlgo<DS> for HashTriejoin
+where
+    DS: HashTrieIterable,
+{
+    fn join_iter(
+        query: JoinQuery, datastructures: HashMap<String, &DS>,
+    ) -> impl Iterator<Item = Vec<usize>> {
+        let (variable_ordering, predicate_variables) = build_variable_index(&query);
+        let mut iters: Vec<_> = query
+            .body
+            .iter()
+            .map(|pred| {
+                datastructures
+                    .get(&pred.name)
+                    .expect("Missing datastructure for predicate name")
+                    .hash_trie_iter()
+            })
+            .collect();
+        let variable_to_iter_map =
+            build_variable_to_iter_map(&variable_ordering, &predicate_variables);
+        let mut output = Vec::new();
+        enumerate(
+            0,
+            variable_ordering.len(),
+            &mut iters,
+            &predicate_variables,
+            &variable_to_iter_map,
+            &mut output,
+        );
+        output.into_iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +352,37 @@ mod tests {
         );
         output.sort();
         assert_eq!(output, vec![vec![2], vec![3]]);
+    }
+
+    #[test]
+    fn join_algo_unary_intersection() {
+        use kermit_ds::{HashTrie, Relation};
+        let r = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let s = HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]);
+        let query: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
+        let mut ds: HashMap<String, &HashTrie> = HashMap::new();
+        ds.insert("R".to_string(), &r);
+        ds.insert("S".to_string(), &s);
+        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(query, ds).collect();
+        out.sort();
+        assert_eq!(out, vec![vec![2], vec![3]]);
+    }
+
+    #[test]
+    fn join_algo_triangle() {
+        use kermit_ds::{HashTrie, Relation};
+        let r = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3], vec![3, 1]]);
+        let s = HashTrie::from_tuples(2.into(), vec![vec![2, 3], vec![3, 1], vec![1, 2]]);
+        let t = HashTrie::from_tuples(2.into(), vec![vec![1, 3], vec![2, 1], vec![3, 2]]);
+        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z)."
+            .parse()
+            .unwrap();
+        let mut ds: HashMap<String, &HashTrie> = HashMap::new();
+        ds.insert("R".to_string(), &r);
+        ds.insert("S".to_string(), &s);
+        ds.insert("T".to_string(), &t);
+        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(query, ds).collect();
+        out.sort();
+        assert_eq!(out, vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]);
     }
 }
