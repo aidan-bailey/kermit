@@ -80,9 +80,7 @@ impl<V> HashTable<V> {
     /// `default` closure is invoked only if the slot is currently empty.
     ///
     /// Resizes the table when load factor would exceed 0.7 (see [`grow`]).
-    pub fn entry_or_insert_with<F: FnOnce() -> V>(
-        &mut self, hash: u64, default: F,
-    ) -> &mut V {
+    pub fn entry_or_insert_with<F: FnOnce() -> V>(&mut self, hash: u64, default: F) -> &mut V {
         let cap = self.buckets.len();
         let start = self.bucket_index(hash);
         let mut idx = start;
@@ -104,18 +102,21 @@ impl<V> HashTable<V> {
             loop {
                 match &self.buckets[idx] {
                     | None => {
-                        self.buckets[idx] = Some(Entry { hash, value: default() });
+                        self.buckets[idx] = Some(Entry {
+                            hash,
+                            value: default(),
+                        });
                         self.len += 1;
-                        return self.buckets[idx]
-                            .as_mut()
-                            .map(|e| &mut e.value)
-                            .unwrap();
+                        return self.buckets[idx].as_mut().map(|e| &mut e.value).unwrap();
                     },
                     | Some(_) => idx = (idx + 1) % cap,
                 }
             }
         }
-        self.buckets[idx] = Some(Entry { hash, value: default() });
+        self.buckets[idx] = Some(Entry {
+            hash,
+            value: default(),
+        });
         self.len += 1;
         self.buckets[idx].as_mut().map(|e| &mut e.value).unwrap()
     }
@@ -125,15 +126,11 @@ impl<V> HashTable<V> {
     fn grow(&mut self) {
         self.log2_capacity += 1;
         let new_cap = 1usize << self.log2_capacity;
-        let old_buckets = std::mem::replace(
-            &mut self.buckets,
-            (0..new_cap).map(|_| None).collect(),
-        );
+        let old_buckets =
+            std::mem::replace(&mut self.buckets, (0..new_cap).map(|_| None).collect());
         self.len = 0;
-        for slot in old_buckets {
-            if let Some(entry) = slot {
-                self.insert_during_grow(entry);
-            }
+        for entry in old_buckets.into_iter().flatten() {
+            self.insert_during_grow(entry);
         }
     }
 
@@ -201,7 +198,10 @@ mod tests {
         // Directly seat an entry for the get/probing test (entry_or_insert_with
         // comes in the next task).
         let idx = t.bucket_index(0x4000_0000_0000_0000);
-        t.buckets[idx] = Some(Entry { hash: 0x4000_0000_0000_0000, value: 99 });
+        t.buckets[idx] = Some(Entry {
+            hash: 0x4000_0000_0000_0000,
+            value: 99,
+        });
         t.len = 1;
         assert_eq!(t.get(0x4000_0000_0000_0000), Some(&99));
         assert!(t.get(0x4000_0000_0000_0001).is_none());
@@ -211,8 +211,14 @@ mod tests {
     fn get_probes_past_collision() {
         let mut t: HashTable<u32> = HashTable::new();
         // Force a probe: put a different hash in slot 1 and the target in slot 2.
-        t.buckets[1] = Some(Entry { hash: 0x4000_0000_0000_0000, value: 1 });
-        t.buckets[2] = Some(Entry { hash: 0x4000_0000_0000_0001, value: 2 });
+        t.buckets[1] = Some(Entry {
+            hash: 0x4000_0000_0000_0000,
+            value: 1,
+        });
+        t.buckets[2] = Some(Entry {
+            hash: 0x4000_0000_0000_0001,
+            value: 2,
+        });
         t.len = 2;
         // Both hash to bucket 1 (top 2 bits = 01). Linear probing finds
         // the target at slot 2.
