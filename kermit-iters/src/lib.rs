@@ -34,6 +34,7 @@
 
 #![deny(missing_docs)]
 
+mod hash_strategy;
 mod hash_trie;
 mod joinable;
 mod key_type;
@@ -42,6 +43,7 @@ mod optimization;
 mod trie;
 
 pub use {
+    hash_strategy::{FxHashStrategy, HashStrategy, SipHashStrategy},
     hash_trie::{hash_attribute, HashTrieIterable, HashTrieIterator},
     joinable::JoinIterable,
     key_type::Key,
