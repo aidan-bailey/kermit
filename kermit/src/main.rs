@@ -218,9 +218,7 @@ impl LayoutChoices {
     /// Returns whether the user explicitly passed `--ds-layout-hasher`.
     /// Use this in `validate_layout_choices` to reject the flag on
     /// non-HashTrie selectors.
-    fn hash_trie_hasher_explicit(&self) -> bool {
-        self.hash_trie_hasher.is_some()
-    }
+    fn hash_trie_hasher_explicit(&self) -> bool { self.hash_trie_hasher.is_some() }
 }
 
 /// Rejects `LayoutChoices` flags that are incompatible with the chosen
@@ -1093,8 +1091,7 @@ fn run_benchmark_hash<H: HashStrategy>(
     let relations: Vec<HashTrie<H>> = cached_paths
         .iter()
         .map(|p| {
-            HashTrie::<H>::from_parquet(p)
-                .map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}"))
+            HashTrie::<H>::from_parquet(p).map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}"))
         })
         .collect::<Result<_, _>>()?;
 
@@ -1833,7 +1830,10 @@ mod tests {
         let layout = LayoutChoices {
             hash_trie_hasher: Some(HasherChoice::Fxhash),
         };
-        for sel in [IndexStructureSelector::TreeTrie, IndexStructureSelector::ColumnTrie] {
+        for sel in [
+            IndexStructureSelector::TreeTrie,
+            IndexStructureSelector::ColumnTrie,
+        ] {
             let err = validate_layout_choices(sel, &layout).unwrap_err();
             let msg = err.to_string();
             assert!(
