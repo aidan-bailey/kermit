@@ -44,7 +44,7 @@ mod trie;
 
 pub use {
     hash_strategy::{FxHashStrategy, HashStrategy, SipHashStrategy},
-    hash_trie::{hash_attribute, HashTrieIterable, HashTrieIterator},
+    hash_trie::{HashTrieIterable, HashTrieIterator},
     joinable::JoinIterable,
     key_type::Key,
     linear::{LinearIterable, LinearIterator},
