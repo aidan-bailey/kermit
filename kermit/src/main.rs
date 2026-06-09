@@ -1813,6 +1813,59 @@ mod tests {
         assert_eq!(head_column_names(&q), vec!["X", "Y", "_"]);
     }
 
+    #[test]
+    fn validate_layout_choices_accepts_explicit_hasher_on_hash_trie_or_all() {
+        // The two selectors whose expand() includes a HashTrie variant
+        // (HashTrie itself, and the all-sweep) must both accept an
+        // explicit --ds-layout-hasher.
+        let layout = LayoutChoices {
+            hash_trie_hasher: Some(HasherChoice::Fxhash),
+        };
+        assert!(validate_layout_choices(IndexStructureSelector::HashTrie, &layout).is_ok());
+        assert!(validate_layout_choices(IndexStructureSelector::All, &layout).is_ok());
+    }
+
+    #[test]
+    fn validate_layout_choices_rejects_explicit_hasher_on_non_hash_trie() {
+        // Passing `--ds-layout-hasher` on a sorted-family structure is a
+        // usage error: the flag would be silently ignored, producing a
+        // report whose `ds_layout_hasher` axis disagrees with reality.
+        let layout = LayoutChoices {
+            hash_trie_hasher: Some(HasherChoice::Fxhash),
+        };
+        for sel in [IndexStructureSelector::TreeTrie, IndexStructureSelector::ColumnTrie] {
+            let err = validate_layout_choices(sel, &layout).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("--ds-layout-hasher"),
+                "error message should mention the flag for {sel:?}, got: {msg}"
+            );
+            assert!(
+                msg.contains("hash-trie"),
+                "error message should suggest the compatible selector for {sel:?}, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_layout_choices_default_layout_passes_on_any_selector() {
+        // No flag provided: validation must always pass regardless of
+        // selector. Otherwise users couldn't run TreeTrie/ColumnTrie at
+        // all without thinking about layout flags.
+        let layout = LayoutChoices::default();
+        for sel in [
+            IndexStructureSelector::All,
+            IndexStructureSelector::TreeTrie,
+            IndexStructureSelector::ColumnTrie,
+            IndexStructureSelector::HashTrie,
+        ] {
+            assert!(
+                validate_layout_choices(sel, &layout).is_ok(),
+                "default LayoutChoices should pass on {sel:?}"
+            );
+        }
+    }
+
     fn make_generator_def(name: &str, spec: kermit_bench::GeneratorSpec) -> BenchmarkDefinition {
         BenchmarkDefinition {
             name: name.to_string(),
