@@ -1,11 +1,19 @@
 //! `HashTrie`: a hash-based trie storing a relation as nested hash tables,
 //! one per attribute. Implements `Relation`, `JoinIterable`, `Projectable`,
 //! `HeapSize`, and `HashTrieIterable`.
+//!
+//! `HashTrie` is generic over a [`HashStrategy`](kermit_iters::HashStrategy)
+//! `H` (default [`SipHashStrategy`](kermit_iters::SipHashStrategy)). The
+//! strategy controls how attribute values are hashed at every level of the
+//! trie and is the layout axis emitted by
+//! [`HasOptimizationAxes`](kermit_iters::HasOptimizationAxes) under
+//! `ds_layout_hasher`.
 
 use {
     super::node::HashTrieNode,
     crate::relation::{Relation, RelationHeader},
-    kermit_iters::{hash_attribute, JoinIterable},
+    kermit_iters::{HashStrategy, JoinIterable, SipHashStrategy},
+    std::marker::PhantomData,
 };
 
 /// A hash trie. Each path from root to leaf corresponds to one tuple's
@@ -25,12 +33,19 @@ use {
 /// Use `from_tuples` (batch) or `new` followed by `insert` (incremental).
 /// Both funnel through `insert` for a single tuple, faithful to
 /// Algorithm 2 from the paper.
-pub struct HashTrie {
+///
+/// # Layout parameter
+///
+/// `H` is a [`HashStrategy`] selecting which hash function is used to
+/// convert attribute values to `u64`. Defaults to
+/// [`SipHashStrategy`] for backwards compatibility with pre-standard code.
+pub struct HashTrie<H: HashStrategy = SipHashStrategy> {
     header: RelationHeader,
     root: HashTrieNode,
+    _hasher: PhantomData<H>,
 }
 
-impl HashTrie {
+impl<H: HashStrategy> HashTrie<H> {
     /// Construct the root node appropriate for `arity` — Inner for arity ≥ 2,
     /// Leaf for arity = 1.
     fn make_root(arity: usize) -> HashTrieNode {
@@ -79,7 +94,7 @@ impl HashTrie {
     /// implementation of Algorithm 2 from the paper, line by line.
     fn insert_at(node: &mut HashTrieNode, depth: usize, arity: usize, tuple: Vec<usize>) {
         let key = tuple[depth];
-        let hash = hash_attribute(depth, key);
+        let hash = H::hash(key);
         match node {
             | HashTrieNode::Inner(table) => {
                 let child = table.entry_or_insert_with(hash, || {
@@ -99,9 +114,9 @@ impl HashTrie {
     }
 }
 
-impl JoinIterable for HashTrie {}
+impl<H: HashStrategy> JoinIterable for HashTrie<H> {}
 
-impl Relation for HashTrie {
+impl<H: HashStrategy> Relation for HashTrie<H> {
     fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
@@ -109,6 +124,7 @@ impl Relation for HashTrie {
         Self {
             header,
             root,
+            _hasher: PhantomData,
         }
     }
 
@@ -147,7 +163,7 @@ impl Relation for HashTrie {
     }
 }
 
-impl crate::relation::Projectable for HashTrie {
+impl<H: HashStrategy> crate::relation::Projectable for HashTrie<H> {
     fn project(&self, columns: Vec<usize>) -> Self {
         let arity = self.header.arity();
         for &c in &columns {
@@ -172,17 +188,17 @@ impl crate::relation::Projectable for HashTrie {
             .into_iter()
             .map(|tuple| columns.iter().map(|&c| tuple[c]).collect())
             .collect();
-        HashTrie::from_tuples(new_header, projected_tuples)
+        HashTrie::<H>::from_tuples(new_header, projected_tuples)
     }
 }
 
-impl crate::heap_size::HeapSize for HashTrie {
+impl<H: HashStrategy> crate::heap_size::HeapSize for HashTrie<H> {
     fn heap_size_bytes(&self) -> usize { node_heap_bytes(&self.root) }
 }
 
-impl kermit_iters::HashTrieIterable for HashTrie {
+impl<H: HashStrategy> kermit_iters::HashTrieIterable for HashTrie<H> {
     fn hash_trie_iter(&self) -> impl kermit_iters::HashTrieIterator {
-        super::hash_trie_iter::HashTrieIter::new(self)
+        super::hash_trie_iter::HashTrieIter::<H>::new(self)
     }
 }
 
