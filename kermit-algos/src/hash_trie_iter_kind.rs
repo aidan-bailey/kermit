@@ -122,10 +122,12 @@ mod tests {
 
     #[test]
     fn singleton_variant_delegates_key() {
+        use kermit_iters::{HashStrategy, SipHashStrategy};
+        let hash = SipHashStrategy::hash(7);
         let kind: HashTrieIterKind<HashTrie> =
-            HashTrieIterKind::Singleton(SingletonHashTrieIter::new(7));
+            HashTrieIterKind::Singleton(SingletonHashTrieIter::new(7, hash));
         let mut it = kind.hash_trie_iter();
         assert!(it.open());
-        assert_eq!(it.key(), Some(kermit_iters::hash_attribute(0, 7)));
+        assert_eq!(it.key(), Some(hash));
     }
 }

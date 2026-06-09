@@ -2,11 +2,14 @@
 //! the const-view rewrite (see [`crate::const_rewrite`]).
 //!
 //! Analogous to [`crate::singleton::SingletonTrieIter`]. Exposes the
-//! [`HashTrieIterator`] interface and hashes its single value using
-//! [`kermit_iters::hash_attribute`] so the join algorithm can intersect
-//! against `HashTrie` data without divergence.
+//! [`HashTrieIterator`] interface around a precomputed `u64` hash of its
+//! single value so the join algorithm can intersect against `HashTrie`
+//! data without divergence. The caller (`kermit::db::hash_join`) is
+//! responsible for computing the hash via the chosen
+//! [`kermit_iters::HashStrategy`] before constructing the singleton; this
+//! file does not depend on any strategy.
 
-use kermit_iters::{hash_attribute, HashTrieIterable, HashTrieIterator, JoinIterable};
+use kermit_iters::{HashTrieIterable, HashTrieIterator, JoinIterable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -38,10 +41,17 @@ pub struct SingletonHashTrieIter {
 
 impl SingletonHashTrieIter {
     /// Construct a new singleton positioned at its root (pre-`open`).
-    pub fn new(value: usize) -> Self {
+    ///
+    /// `hash` is the precomputed [`u64`] hash of `value` under whichever
+    /// [`kermit_iters::HashStrategy`] the caller uses for the matching
+    /// `HashTrie<H>`. Keeping the strategy out of this struct lets the
+    /// singleton remain `Sized` without a phantom parameter and lets a
+    /// generic caller (e.g. `hash_join<R, H>`) drive both the trie and
+    /// the singleton with the same hash function.
+    pub fn new(value: usize, hash: u64) -> Self {
         Self {
             value,
-            hash: hash_attribute(0, value),
+            hash,
             chain: vec![vec![value]],
             state: State::Root,
         }
@@ -121,40 +131,49 @@ impl HashTrieIterable for SingletonHashTrieIter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {
+        super::*,
+        kermit_iters::{HashStrategy, SipHashStrategy},
+    };
+
+    /// Pick a concrete strategy for the tests below. The struct itself is
+    /// strategy-agnostic — what matters is that we use *the same* hash for
+    /// both construction and lookup, mirroring how `hash_join<R, H>` wires
+    /// the singleton against its matching `HashTrie<H>`.
+    fn h(value: usize) -> u64 { SipHashStrategy::hash(value) }
 
     #[test]
     fn new_starts_at_root() {
-        let it = SingletonHashTrieIter::new(42);
+        let it = SingletonHashTrieIter::new(42, h(42));
         assert_eq!(it.state, State::Root);
         assert!(it.key().is_none());
     }
 
     #[test]
     fn open_advances_to_value() {
-        let mut it = SingletonHashTrieIter::new(42);
+        let mut it = SingletonHashTrieIter::new(42, h(42));
         assert!(it.open());
-        assert_eq!(it.key(), Some(hash_attribute(0, 42)));
+        assert_eq!(it.key(), Some(h(42)));
     }
 
     #[test]
     fn lookup_matching_hash_succeeds() {
-        let mut it = SingletonHashTrieIter::new(42);
+        let mut it = SingletonHashTrieIter::new(42, h(42));
         it.open();
-        assert!(it.lookup(hash_attribute(0, 42)));
+        assert!(it.lookup(h(42)));
     }
 
     #[test]
     fn lookup_other_hash_fails_and_exhausts() {
-        let mut it = SingletonHashTrieIter::new(42);
+        let mut it = SingletonHashTrieIter::new(42, h(42));
         it.open();
-        assert!(!it.lookup(hash_attribute(0, 99)));
+        assert!(!it.lookup(h(99)));
         assert!(it.at_end());
     }
 
     #[test]
     fn next_after_open_exhausts() {
-        let mut it = SingletonHashTrieIter::new(42);
+        let mut it = SingletonHashTrieIter::new(42, h(42));
         it.open();
         assert!(it.next().is_none());
         assert!(it.at_end());
@@ -162,7 +181,7 @@ mod tests {
 
     #[test]
     fn leaf_tuples_returns_singleton_chain() {
-        let mut it = SingletonHashTrieIter::new(42);
+        let mut it = SingletonHashTrieIter::new(42, h(42));
         it.open();
         let chain = it.leaf_tuples().expect("singleton's leaf chain after open");
         assert_eq!(chain, &[vec![42]]);
@@ -170,7 +189,7 @@ mod tests {
 
     #[test]
     fn leaf_tuples_returns_none_before_open() {
-        let it = SingletonHashTrieIter::new(42);
+        let it = SingletonHashTrieIter::new(42, h(42));
         assert!(it.leaf_tuples().is_none());
     }
 }

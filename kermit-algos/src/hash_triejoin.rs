@@ -336,8 +336,11 @@ mod tests {
     #[test]
     fn enumerate_unary_intersection() {
         use kermit_ds::{HashTrie, Relation};
-        let r = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
-        let s = HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]);
+        // Explicit `HashTrie` annotation pins the default `H = SipHashStrategy`
+        // since the local bindings escape into `Vec<_>` iter values that
+        // would otherwise leave `H` ambiguous.
+        let r: HashTrie = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let s: HashTrie = HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]);
         let mut iters = vec![r.hash_trie_iter(), s.hash_trie_iter()];
         // Inline the same setup the JoinAlgo entry point does.
         let predicate_variables = vec![vec![0], vec![0]];
