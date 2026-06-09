@@ -17,7 +17,9 @@ use {
     kermit_algos::{JoinAlgorithm, JoinQuery},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HashTrie, HeapSize, IndexStructure, Relation, RelationFileExt},
-    kermit_iters::{FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable},
+    kermit_iters::{
+        FxHashStrategy, HasOptimizationAxes, HashStrategy, SipHashStrategy, TrieIterable,
+    },
     kermit_parser::Term,
     std::{
         collections::{BTreeMap, HashMap},
@@ -847,7 +849,7 @@ fn run_ds_bench_hash<H: HashStrategy>(
         criterion.final_summary();
     }
 
-    let axes = BTreeMap::from([
+    let mut axes = BTreeMap::from([
         ("data_structure".to_string(), serde_json::json!(ds_name)),
         (
             "relation_path".to_string(),
@@ -860,6 +862,11 @@ fn run_ds_bench_hash<H: HashStrategy>(
         ("tuples".to_string(), serde_json::json!(tuples.len())),
         ("arity".to_string(), serde_json::json!(header.arity())),
     ]);
+    // Standard optimization axes: merge in dimensions emitted by the DS.
+    // The `ds_layout_*` / `ds_config_*` / `ds_build_mode` naming convention
+    // (see `kermit_iters::HasOptimizationAxes`) guarantees no collision
+    // with the base axes assembled above.
+    axes.extend(relation.optimization_axes());
     Ok(BenchReport::new(
         BenchKind::Ds,
         &metadata,
@@ -1205,13 +1212,22 @@ fn run_benchmark_hash<H: HashStrategy>(
             criterion.final_summary();
         }
 
-        let axes = BTreeMap::from([
+        let mut axes = BTreeMap::from([
             ("benchmark".to_string(), serde_json::json!(benchmark.name)),
             ("query".to_string(), serde_json::json!(query_def.name)),
             ("data_structure".to_string(), serde_json::json!(ds_name)),
             ("algorithm".to_string(), serde_json::json!(algo_name)),
             ("tuples".to_string(), serde_json::json!(total_tuples)),
         ]);
+        // Standard optimization axes: merge in dimensions emitted by the DS.
+        // Every `HashTrie<H>` in `named` shares the same `H`, so any
+        // value's `optimization_axes()` produces the canonical
+        // `ds_layout_*` set for this run. The `ds_*` prefix convention
+        // (see `kermit_iters::HasOptimizationAxes`) guarantees no
+        // collision with the base axes assembled above.
+        if let Some(rel) = named.values().next() {
+            axes.extend(rel.optimization_axes());
+        }
         reports.push(BenchReport::new(
             BenchKind::Run,
             &lines,
