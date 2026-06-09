@@ -230,23 +230,28 @@ fn node_heap_bytes(node: &HashTrieNode) -> usize {
 mod tests {
     use super::*;
 
+    // Test let-bindings use `HashTrie` (the bare type), which resolves
+    // through the `<H = SipHashStrategy>` default in type position. The
+    // default cannot be selected from a path expression alone, so
+    // type-annotated bindings are necessary on nightly Rust.
+
     #[test]
     fn new_arity_2_creates_inner_root() {
-        let trie = HashTrie::new(2.into());
+        let trie: HashTrie = HashTrie::new(2.into());
         assert_eq!(trie.header().arity(), 2);
         assert!(matches!(trie.root, HashTrieNode::Inner(_)));
     }
 
     #[test]
     fn new_arity_1_creates_leaf_root() {
-        let trie = HashTrie::new(1.into());
+        let trie: HashTrie = HashTrie::new(1.into());
         assert_eq!(trie.header().arity(), 1);
         assert!(matches!(trie.root, HashTrieNode::Leaf(_)));
     }
 
     #[test]
     fn insert_arity_1_populates_leaf() {
-        let mut trie = HashTrie::new(1.into());
+        let mut trie: HashTrie = HashTrie::new(1.into());
         trie.insert(vec![42]);
         // Verify by inspecting the root: should be a Leaf with one entry.
         match &trie.root {
@@ -257,7 +262,7 @@ mod tests {
 
     #[test]
     fn insert_arity_2_builds_inner_then_leaf() {
-        let mut trie = HashTrie::new(2.into());
+        let mut trie: HashTrie = HashTrie::new(2.into());
         trie.insert(vec![1, 2]);
         match &trie.root {
             | HashTrieNode::Inner(root_table) => {
@@ -279,7 +284,7 @@ mod tests {
 
     #[test]
     fn insert_two_tuples_sharing_first_attribute() {
-        let mut trie = HashTrie::new(2.into());
+        let mut trie: HashTrie = HashTrie::new(2.into());
         trie.insert(vec![1, 2]);
         trie.insert(vec![1, 3]);
         // Same attr-0 value => same hash at root => same child node; child has
@@ -300,13 +305,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "tuple arity")]
     fn insert_wrong_arity_panics() {
-        let mut trie = HashTrie::new(2.into());
+        let mut trie: HashTrie = HashTrie::new(2.into());
         trie.insert(vec![1]);
     }
 
     #[test]
     fn from_tuples_arity_2_builds_correct_shape() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let trie: HashTrie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         assert_eq!(trie.header().arity(), 2);
         // Same attr-0 inserts share a child; two distinct attr-0 values =>
         // two root-level entries.
@@ -318,7 +324,7 @@ mod tests {
 
     #[test]
     fn from_tuples_empty_input() {
-        let trie = HashTrie::from_tuples(2.into(), vec![]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![]);
         match &trie.root {
             | HashTrieNode::Inner(root_table) => assert_eq!(root_table.len(), 0),
             | _ => panic!("expected Inner root"),
@@ -327,9 +333,10 @@ mod tests {
 
     #[test]
     fn insert_all_equivalent_to_from_tuples_for_multiset_view() {
-        let mut a = HashTrie::new(2.into());
+        let mut a: HashTrie = HashTrie::new(2.into());
         a.insert_all(vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
-        let b = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let b: HashTrie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         // Compare via heap_size and tuple set (via Projectable when ready) —
         // for now confirm both have populated roots with the same length.
         let a_root_len = match &a.root {
@@ -345,7 +352,8 @@ mod tests {
 
     #[test]
     fn collect_tuples_recovers_input_as_multiset() {
-        let mut trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let mut trie: HashTrie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         let mut collected = trie.collect_tuples();
         collected.sort();
         assert_eq!(collected, vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
@@ -362,21 +370,24 @@ mod tests {
 
     #[test]
     fn collect_tuples_empty_trie() {
-        let trie = HashTrie::new(2.into());
+        let trie: HashTrie = HashTrie::new(2.into());
         assert!(trie.collect_tuples().is_empty());
     }
 
     #[test]
     fn heap_size_zero_for_empty_trie() {
         use crate::HeapSize;
-        let trie = HashTrie::new(2.into());
+        let trie: HashTrie = HashTrie::new(2.into());
         // Even an empty trie allocates initial 4-bucket tables, so heap size
         // is non-zero — what we check is determinism and ordering.
         let small = trie.heap_size_bytes();
-        let big = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
-            3, 5,
-        ]])
-        .heap_size_bytes();
+        let big_trie: HashTrie = HashTrie::from_tuples(2.into(), vec![
+            vec![1, 2],
+            vec![1, 3],
+            vec![2, 4],
+            vec![3, 5],
+        ]);
+        let big = big_trie.heap_size_bytes();
         assert!(big > small, "non-empty trie should be heavier than empty");
     }
 
@@ -384,15 +395,16 @@ mod tests {
     fn heap_size_deterministic_across_rebuilds() {
         use crate::HeapSize;
         let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]];
-        let a = HashTrie::from_tuples(2.into(), tuples.clone()).heap_size_bytes();
-        let b = HashTrie::from_tuples(2.into(), tuples).heap_size_bytes();
-        assert_eq!(a, b);
+        let trie_a: HashTrie = HashTrie::from_tuples(2.into(), tuples.clone());
+        let trie_b: HashTrie = HashTrie::from_tuples(2.into(), tuples);
+        assert_eq!(trie_a.heap_size_bytes(), trie_b.heap_size_bytes());
     }
 
     #[test]
     fn project_drops_columns() {
         use crate::relation::Projectable;
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let trie: HashTrie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         // π_0 (first column only)
         let projected = trie.project(vec![0]);
         assert_eq!(projected.header().arity(), 1);
@@ -406,7 +418,7 @@ mod tests {
     #[test]
     fn project_reorders_columns() {
         use crate::relation::Projectable;
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
         let projected = trie.project(vec![1, 0]);
         let mut collected = projected.collect_tuples();
         collected.sort();
@@ -416,7 +428,8 @@ mod tests {
     #[test]
     fn hash_trie_iter_returns_navigable_iterator() {
         use kermit_iters::{HashTrieIterable, HashTrieIterator};
-        let trie = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let trie: HashTrie =
+            HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
         let mut it = trie.hash_trie_iter();
         assert!(it.open());
         let mut seen = std::collections::HashSet::new();

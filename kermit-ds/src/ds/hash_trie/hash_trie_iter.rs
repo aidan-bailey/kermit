@@ -15,20 +15,25 @@
 
 use {
     super::{implementation::HashTrie, node::HashTrieNode},
-    kermit_iters::HashTrieIterator,
+    kermit_iters::{HashStrategy, HashTrieIterator, SipHashStrategy},
 };
 
 /// Stack-based iterator over a [`HashTrie`].
 ///
+/// Generic over the same [`HashStrategy`] `H` as the underlying
+/// [`HashTrie`]; only the borrow type carries the parameter — the
+/// node-walking helpers operate on bare `HashTrieNode`s and have no
+/// strategy-dependent behavior.
+///
 /// See the module docs for the position model.
-pub struct HashTrieIter<'a> {
+pub struct HashTrieIter<'a, H: HashStrategy = SipHashStrategy> {
     stack: Vec<(&'a HashTrieNode, usize)>,
-    trie: &'a HashTrie,
+    trie: &'a HashTrie<H>,
 }
 
-impl<'a> HashTrieIter<'a> {
+impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
     /// Construct a fresh iterator positioned before the root.
-    pub(crate) fn new(trie: &'a HashTrie) -> Self {
+    pub(crate) fn new(trie: &'a HashTrie<H>) -> Self {
         Self {
             stack: Vec::new(),
             trie,
@@ -63,7 +68,7 @@ impl<'a> HashTrieIter<'a> {
     }
 }
 
-impl HashTrieIterator for HashTrieIter<'_> {
+impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
     fn key(&self) -> Option<u64> {
         let &(node, idx) = self.stack.last()?;
         match node {
@@ -165,23 +170,27 @@ mod tests {
         crate::{ds::hash_trie::implementation::HashTrie, relation::Relation},
     };
 
+    // Tests pin `HashTrie` (no turbofish) — relying on the default
+    // `<H = SipHashStrategy>` resolved in type position via the explicit
+    // let-binding annotation.
+
     #[test]
     fn open_on_empty_trie_returns_false() {
-        let trie = HashTrie::new(2.into());
+        let trie: HashTrie = HashTrie::new(2.into());
         let mut it = HashTrieIter::new(&trie);
         assert!(!it.open());
     }
 
     #[test]
     fn open_descends_into_populated_root() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         assert!(it.open());
     }
 
     #[test]
     fn open_then_open_descends_two_levels() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         assert!(it.open()); // depth 1 (root level)
         assert!(it.open()); // depth 2 (leaf level)
@@ -189,7 +198,7 @@ mod tests {
 
     #[test]
     fn open_three_times_fails_on_arity_2() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
         it.open();
@@ -199,17 +208,17 @@ mod tests {
 
     #[test]
     fn key_returns_hash_at_current_bucket() {
-        let trie = HashTrie::from_tuples(1.into(), vec![vec![42]]);
+        let trie: HashTrie = HashTrie::from_tuples(1.into(), vec![vec![42]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
         let h = it.key().expect("key after open should be Some");
-        // Verify it matches the expected hash_attribute(0, 42).
-        assert_eq!(h, kermit_iters::hash_attribute(0, 42));
+        // Verify it matches the default-strategy (SipHash) hash of `42`.
+        assert_eq!(h, <SipHashStrategy as HashStrategy>::hash(42));
     }
 
     #[test]
     fn at_end_after_advancing_past_last() {
-        let trie = HashTrie::from_tuples(1.into(), vec![vec![42]]);
+        let trie: HashTrie = HashTrie::from_tuples(1.into(), vec![vec![42]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
         assert!(!it.at_end());
@@ -224,7 +233,7 @@ mod tests {
         // Insert several tuples whose attribute-0 hashes are likely distinct.
         // Because we can't predict bucket order without inspecting hashes,
         // assert the *set* of yielded hashes matches the expected set.
-        let trie =
+        let trie: HashTrie =
             HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3], vec![4], vec![5]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
@@ -234,14 +243,14 @@ mod tests {
             it.next();
         }
         let expected: std::collections::HashSet<_> = (1..=5_usize)
-            .map(|k| kermit_iters::hash_attribute(0, k))
+            .map(<SipHashStrategy as HashStrategy>::hash)
             .collect();
         assert_eq!(seen, expected);
     }
 
     #[test]
     fn size_at_root_returns_distinct_count() {
-        let trie = HashTrie::from_tuples(2.into(), vec![
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![
             vec![1, 10],
             vec![1, 20], // same attr-0 hash as above
             vec![2, 30],
@@ -255,26 +264,26 @@ mod tests {
 
     #[test]
     fn lookup_hits_existing_hash() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
-        let h = kermit_iters::hash_attribute(0, 3);
+        let h = <SipHashStrategy as HashStrategy>::hash(3);
         assert!(it.lookup(h));
         assert_eq!(it.key(), Some(h));
     }
 
     #[test]
     fn lookup_misses_unknown_hash() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
-        let h = kermit_iters::hash_attribute(0, 99);
+        let h = <SipHashStrategy as HashStrategy>::hash(99);
         assert!(!it.lookup(h));
     }
 
     #[test]
     fn up_returns_to_parent_depth() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         it.open(); // depth 1
         let key_at_depth_1 = it.key();
@@ -285,7 +294,7 @@ mod tests {
 
     #[test]
     fn up_returns_false_at_root() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         // up() with empty stack
         assert!(!it.up());
@@ -299,7 +308,7 @@ mod tests {
 
     #[test]
     fn leaf_tuples_returns_none_at_inner_level() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         it.open(); // at Inner level
         assert!(it.leaf_tuples().is_none());
@@ -307,7 +316,7 @@ mod tests {
 
     #[test]
     fn leaf_tuples_returns_some_at_leaf_level() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
         it.open();
@@ -318,7 +327,7 @@ mod tests {
 
     #[test]
     fn leaf_tuples_none_when_no_leaf_in_stack() {
-        let trie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let it = HashTrieIter::new(&trie);
         // Pre-open — no stack entry at all.
         assert!(it.leaf_tuples().is_none());
