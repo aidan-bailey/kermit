@@ -131,6 +131,32 @@ A `base/` directory exists alongside `new/` after the second run — it holds
 the previous run's data for Criterion's compare-against-baseline mode.
 Plotting tools should read `new/`.
 
+## Standard axis prefixes
+
+Beyond the conventional keys (`data_structure`, `algorithm`, `query`, etc.),
+the optimization standard ([`optimization-standard.md`](optimization-standard.md))
+adds three prefixes for axes that capture which optimizations were active
+during a benchmark run. These prefixes are **normative** — kermit-lab
+tooling relies on them for cross-DS comparison.
+
+- `ds_layout_<dim>` — compile-time layout choice on the data structure
+  (e.g., `ds_layout_hasher`, `ds_layout_pointer_encoding`).
+- `ds_config_<flag>` — runtime configuration flag on the data structure
+  (e.g., `ds_config_singleton_pruning`).
+- `ds_build_mode` — construction-time build mode for the data structure
+  (single key; value is a `<mode>[:<params>]` string, e.g., `parallel:8`).
+- `algo_layout_<dim>`, `algo_config_<flag>`, `algo_build_mode` — analogous
+  prefixes for algorithm-level optimizations (reserved; not yet used).
+
+When pivoting bench reports in kermit-lab, downstream code should:
+- Treat missing keys as the algorithm/DS default. For pre-standard reports
+  predating this change, back-fill `ds_layout_hasher == "sip"` (the
+  historical hash function for HashTrie).
+- Group on the relevant prefix to perform ablation analysis.
+
+Adding new keys under these prefixes does not require a `schema_version`
+bump — the `axes` field is an open map.
+
 ## Versioning policy
 
 - **Bump `schema_version`** on any breaking change: renaming a field,
