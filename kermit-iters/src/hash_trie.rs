@@ -82,4 +82,3 @@ pub trait HashTrieIterable: JoinIterable {
     /// Returns a `HashTrieIterator` over this structure.
     fn hash_trie_iter(&self) -> impl HashTrieIterator;
 }
-

@@ -7,11 +7,11 @@
 //!   Implementations are typically zero-sized marker types. Each layout
 //!   combination is a distinct monomorphized type.
 //! - **Config** (runtime): a struct of boolean/enum flags passed to a
-//!   constructor or set on a builder. Branches at hot-path call sites
-//!   read the flag values.
-//! - **BuildMode** (construction-time): a discriminated value (often an
-//!   enum) selected when constructing the DS. Affects the build process
-//!   but not in-memory representation.
+//!   constructor or set on a builder. Branches at hot-path call sites read the
+//!   flag values.
+//! - **BuildMode** (construction-time): a discriminated value (often an enum)
+//!   selected when constructing the DS. Affects the build process but not
+//!   in-memory representation.
 //!
 //! The `HasOptimizationAxes` trait is the umbrella the bench reporter
 //! consumes; it returns the structured axes for inclusion in
