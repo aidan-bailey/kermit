@@ -13,7 +13,7 @@ use {
         LeapfrogTriejoin, SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
     },
     kermit_ds::{ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
-    kermit_iters::{HashTrieIterable, TrieIterable},
+    kermit_iters::{HashStrategy, HashTrieIterable, TrieIterable},
     std::{collections::HashMap, path::Path},
 };
 
@@ -210,16 +210,27 @@ where
 ///
 /// Mirrors the sorted-family body, but builds [`HashTrieIterKind`]
 /// wrappers and synthesises [`SingletonHashTrieIter`] singletons for the
-/// `Const_*` predicates introduced by [`rewrite_atoms`].
+/// `Const_*` predicates introduced by [`rewrite_atoms`]. Constant atoms
+/// hashed for the singleton use the same [`HashStrategy`] `H` that the
+/// peer `HashTrie<H>` relations were built with, so the algorithm sees
+/// matching hashes on both sides of the intersection.
+///
+/// The second type parameter `H` selects the hash function used for
+/// any constant-atom singletons; callers must thread the same `H` used
+/// when constructing the `HashTrie<H>` relations. Rust forbids defaults
+/// on free-function type parameters (see issue #36887), so all callers
+/// must specify the strategy explicitly via turbofish — Phase 4 of the
+/// optimization-standard plan threads this through the CLI dispatch.
 ///
 /// # Panics
 ///
 /// Panics if the query references a relation name not present in
 /// `relations` (matching the behaviour of [`DatabaseEngine::join`]) or if
 /// the query contains a malformed constant atom.
-pub fn hash_join<R>(relations: &HashMap<String, R>, query: JoinQuery) -> Vec<Vec<usize>>
+pub fn hash_join<R, H>(relations: &HashMap<String, R>, query: JoinQuery) -> Vec<Vec<usize>>
 where
     R: HashTrieIterable,
+    H: HashStrategy,
 {
     let (rewritten, const_specs) = rewrite_atoms(query).expect("malformed constant atom in query");
 
@@ -246,9 +257,10 @@ where
         }
     }
     for (name, id) in const_specs {
-        wrappers
-            .entry(name)
-            .or_insert_with(|| HashTrieIterKind::Singleton(SingletonHashTrieIter::new(id)));
+        wrappers.entry(name).or_insert_with(|| {
+            let hash = H::hash(id);
+            HashTrieIterKind::Singleton(SingletonHashTrieIter::new(id, hash))
+        });
     }
 
     let ds_map: HashMap<String, &HashTrieIterKind<'_, R>> =
@@ -373,7 +385,7 @@ mod tests {
 
 #[cfg(test)]
 mod hash_join_tests {
-    use {super::*, kermit_ds::HashTrie};
+    use {super::*, kermit_ds::HashTrie, kermit_iters::SipHashStrategy};
 
     /// Pins the basic happy path: build two unary `HashTrie`s, run a
     /// straight intersection through the free function, verify the
@@ -390,7 +402,7 @@ mod hash_join_tests {
             HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]),
         );
         let q: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
-        let mut out = hash_join(&relations, q);
+        let mut out = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(&relations, q);
         out.sort();
         assert_eq!(out, vec![vec![2], vec![3]]);
     }
@@ -422,7 +434,7 @@ mod hash_join_tests {
             HashTrie::from_tuples(2.into(), vec![vec![1, 5], vec![2, 5], vec![3, 7]]),
         );
         let q: JoinQuery = "Q(X) :- R(X, c5).".parse().unwrap();
-        let result = hash_join(&relations, q);
+        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(&relations, q);
         let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
         got.sort();
         assert_eq!(
