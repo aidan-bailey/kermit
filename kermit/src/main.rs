@@ -17,7 +17,7 @@ use {
     kermit_algos::{JoinAlgorithm, JoinQuery},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HashTrie, HeapSize, IndexStructure, Relation, RelationFileExt},
-    kermit_iters::TrieIterable,
+    kermit_iters::{FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable},
     kermit_parser::Term,
     std::{
         collections::{BTreeMap, HashMap},
@@ -165,6 +165,88 @@ impl JoinAlgorithmSelector {
     }
 }
 
+/// CLI-side selector for `--ds-layout-hasher`. Picks the
+/// [`HashStrategy`](kermit_iters::HashStrategy) compile-time parameter
+/// monomorphised into `HashTrie<H>` for the run.
+///
+/// `Sip` (the default) preserves pre-Phase-1 behaviour — `HashTrie`
+/// previously had `SipHashStrategy` baked in via a generic default. `Fxhash`
+/// monomorphises against the `rustc-hash` `FxHasher`, which is typically
+/// ~10x faster per call on small integer keys but lacks SipHash's
+/// hash-DoS resistance.
+///
+/// This flag only applies when the selected index structure is `hash-trie`;
+/// `validate_layout_choices` rejects it on other index structures so users
+/// cannot silently pass it to a TreeTrie/ColumnTrie run.
+#[derive(Copy, Clone, Debug, Default, PartialEq, clap::ValueEnum)]
+enum HasherChoice {
+    /// SipHash via the standard library's `DefaultHasher`.
+    #[default]
+    Sip,
+    /// FxHash via the `rustc-hash` crate.
+    Fxhash,
+}
+
+/// Layout-axis CLI choices flattened into every subcommand whose dispatch
+/// monomorphises over a `HashTrie<H>` (currently `bench Ds` and `bench
+/// Run`). Each field is named `<axis>` and surfaces as the long flag
+/// `--ds-layout-<axis>` so the prefix matches the bench-report axis namespace
+/// described in CLAUDE.md → "JSON bench reports".
+///
+/// The `hash_trie_hasher` field is `Option<HasherChoice>` rather than a
+/// clap-defaulted `HasherChoice` so we can distinguish "not provided" from
+/// "explicitly defaulted". [`hash_trie_hasher_explicit`] consults this for
+/// the `validate_layout_choices` check that rejects
+/// `--ds-layout-hasher fxhash -i tree-trie`, while
+/// [`hash_trie_hasher_resolved`] supplies the default at dispatch time.
+#[derive(Args, Clone, Debug, Default)]
+struct LayoutChoices {
+    /// Hash function used by `HashTrie<H>` (default: `sip`). Only valid
+    /// when `--indexstructure hash-trie` is selected.
+    #[arg(long = "ds-layout-hasher", value_name = "HASHER", value_enum)]
+    hash_trie_hasher: Option<HasherChoice>,
+}
+
+impl LayoutChoices {
+    /// Returns the `HasherChoice` to monomorphise on, applying the
+    /// `HasherChoice::default()` when none was supplied on the command
+    /// line. Use this at dispatch sites.
+    fn hash_trie_hasher_resolved(&self) -> HasherChoice {
+        self.hash_trie_hasher.unwrap_or_default()
+    }
+
+    /// Returns whether the user explicitly passed `--ds-layout-hasher`.
+    /// Use this in `validate_layout_choices` to reject the flag on
+    /// non-HashTrie selectors.
+    fn hash_trie_hasher_explicit(&self) -> bool {
+        self.hash_trie_hasher.is_some()
+    }
+}
+
+/// Rejects `LayoutChoices` flags that are incompatible with the chosen
+/// `IndexStructureSelector`. Currently the only layout flag is
+/// `--ds-layout-hasher`, which is meaningful only for `hash-trie` (and for
+/// `all`, where the HashTrie sweep arm picks it up). Passing it on a
+/// non-HashTrie selector is a usage error: the flag would be silently
+/// ignored, producing a benchmark report whose `ds_layout_hasher` axis
+/// disagrees with the actual structure used.
+fn validate_layout_choices(
+    indexstructure: IndexStructureSelector, layout: &LayoutChoices,
+) -> anyhow::Result<()> {
+    if layout.hash_trie_hasher_explicit()
+        && !matches!(
+            indexstructure,
+            IndexStructureSelector::HashTrie | IndexStructureSelector::All
+        )
+    {
+        anyhow::bail!(
+            "--ds-layout-hasher is only valid with --indexstructure hash-trie (or all); got \
+             --indexstructure {indexstructure:?}"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Args)]
 struct BenchArgs {
     /// Name for the Criterion benchmark group
@@ -232,6 +314,9 @@ enum BenchSubcommand {
             default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
         )]
         metrics: Vec<Metric>,
+
+        #[command(flatten)]
+        layout: LayoutChoices,
     },
 
     /// Run a named benchmark from benchmarks/ YAML files
@@ -279,6 +364,9 @@ enum BenchSubcommand {
         /// benchmarks.
         #[arg(long)]
         force: bool,
+
+        #[command(flatten)]
+        layout: LayoutChoices,
     },
 
     /// List available benchmarks
@@ -671,7 +759,11 @@ where
 /// closures. Lives as a parallel function rather than a generic
 /// extension because `HashTrieIterable` is a distinct trait family from
 /// `TrieIterable` (see CLAUDE.md → Key Trait Hierarchy).
-fn run_ds_bench_hash(
+///
+/// Generic over `H: HashStrategy` — Rust forbids defaults on free-function
+/// type parameters, so the CLI dispatch site picks `H` by matching on
+/// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
+fn run_ds_bench_hash<H: HashStrategy>(
     relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric], group_name: &str,
     bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
@@ -679,10 +771,10 @@ fn run_ds_bench_hash(
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let relation: HashTrie = match extension.to_lowercase().as_str() {
-        | "csv" => HashTrie::from_csv(relation_path)
+    let relation: HashTrie<H> = match extension.to_lowercase().as_str() {
+        | "csv" => HashTrie::<H>::from_csv(relation_path)
             .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
-        | "parquet" => HashTrie::from_parquet(relation_path)
+        | "parquet" => HashTrie::<H>::from_parquet(relation_path)
             .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
         | _ => anyhow::bail!("Unsupported file extension: {extension}"),
     };
@@ -719,7 +811,7 @@ fn run_ds_bench_hash(
             group.bench_function(&function, |b| {
                 b.iter_batched(
                     || (insertion_header.clone(), insertion_tuples.clone()),
-                    |(h, t)| HashTrie::from_tuples(h, t),
+                    |(h, t)| HashTrie::<H>::from_tuples(h, t),
                     criterion::BatchSize::SmallInput,
                 );
             });
@@ -958,12 +1050,16 @@ where
 }
 
 /// Hash-family analogue of [`run_benchmark`]. Mirrors its structure but
-/// builds a `HashMap<String, HashTrie>` and dispatches each query
+/// builds a `HashMap<String, HashTrie<H>>` and dispatches each query
 /// through the [`hash_join`] free function rather than through the `DB`
 /// trait. The (HashTrie, HashTriejoin) pair is the only valid
 /// combination this function handles; the caller is expected to have
 /// gated on `IndexStructureSelector::supports_algorithm` upstream.
-fn run_benchmark_hash(
+///
+/// Generic over `H: HashStrategy` — Rust forbids defaults on free-function
+/// type parameters, so the CLI dispatch site picks `H` by matching on
+/// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
+fn run_benchmark_hash<H: HashStrategy>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
     metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
 ) -> anyhow::Result<Vec<BenchReport>> {
@@ -994,10 +1090,11 @@ fn run_benchmark_hash(
     let cached_paths = kermit_bench::cache::ensure_cached(benchmark)
         .map_err(|e| anyhow::anyhow!("Failed to fetch benchmark data: {e}"))?;
 
-    let relations: Vec<HashTrie> = cached_paths
+    let relations: Vec<HashTrie<H>> = cached_paths
         .iter()
         .map(|p| {
-            HashTrie::from_parquet(p).map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}"))
+            HashTrie::<H>::from_parquet(p)
+                .map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}"))
         })
         .collect::<Result<_, _>>()?;
 
@@ -1007,7 +1104,7 @@ fn run_benchmark_hash(
     // space metrics below still need the relation handles, so the
     // borrow goes through `named.values()` rather than the consumed
     // `relations` vector.
-    let mut named: HashMap<String, HashTrie> = HashMap::new();
+    let mut named: HashMap<String, HashTrie<H>> = HashMap::new();
     for rel in relations {
         named.insert(rel.header().name().to_string(), rel);
     }
@@ -1067,7 +1164,7 @@ fn run_benchmark_hash(
                         || tuples_and_headers.clone(),
                         |data| {
                             for (header, tuples) in data {
-                                std::hint::black_box(HashTrie::from_tuples(header, tuples));
+                                std::hint::black_box(HashTrie::<H>::from_tuples(header, tuples));
                             }
                         },
                         criterion::BatchSize::SmallInput,
@@ -1084,7 +1181,7 @@ fn run_benchmark_hash(
                 group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || join_query.clone(),
-                        |q| hash_join(&named, q),
+                        |q| hash_join::<HashTrie<H>, H>(&named, q),
                         criterion::BatchSize::SmallInput,
                     );
                 });
@@ -1350,7 +1447,9 @@ fn main() -> anyhow::Result<()> {
                 relation,
                 indexstructure,
                 metrics,
+                layout,
             } => {
+                validate_layout_choices(indexstructure, &layout)?;
                 let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
                 let mut reports: Vec<BenchReport> = Vec::new();
                 for ds in indexstructure.expand() {
@@ -1372,9 +1471,26 @@ fn main() -> anyhow::Result<()> {
                         // `HashTrie` lives in a parallel trait family
                         // (`HashTrieIterable`, not `TrieIterable`), so it
                         // routes through `run_ds_bench_hash` rather than
-                        // the generic `run_ds_bench<R>` above.
-                        | IndexStructure::HashTrie => {
-                            run_ds_bench_hash(&relation, ds, &metrics, group_name, &bench_args)?
+                        // the generic `run_ds_bench<R>` above. The
+                        // `H: HashStrategy` parameter is picked from the
+                        // `LayoutChoices::hash_trie_hasher_resolved()`
+                        // CLI flag (Phase 4 of the optimization-standard
+                        // plan).
+                        | IndexStructure::HashTrie => match layout.hash_trie_hasher_resolved() {
+                            | HasherChoice::Sip => run_ds_bench_hash::<SipHashStrategy>(
+                                &relation,
+                                ds,
+                                &metrics,
+                                group_name,
+                                &bench_args,
+                            )?,
+                            | HasherChoice::Fxhash => run_ds_bench_hash::<FxHashStrategy>(
+                                &relation,
+                                ds,
+                                &metrics,
+                                group_name,
+                                &bench_args,
+                            )?,
                         },
                     };
                     reports.push(report);
@@ -1390,7 +1506,9 @@ fn main() -> anyhow::Result<()> {
                 algorithm,
                 metrics,
                 force,
+                layout,
             } => {
+                validate_layout_choices(indexstructure, &layout)?;
                 // Reject incompatible (index-structure, algorithm) pairs
                 // up front. `All` on either side is permissive — the
                 // cross-product loop below already filters individual
@@ -1442,14 +1560,35 @@ fn main() -> anyhow::Result<()> {
                                 // the `DB` trait. The supports_algorithm
                                 // gate above ensures we only reach this
                                 // arm with `JoinAlgorithm::HashTriejoin`.
-                                | IndexStructure::HashTrie => run_benchmark_hash(
-                                    benchmark,
-                                    ds,
-                                    algo,
-                                    &metrics,
-                                    query.as_deref(),
-                                    &bench_args,
-                                )?,
+                                // The `H: HashStrategy` parameter is
+                                // picked from
+                                // `LayoutChoices::hash_trie_hasher_resolved()`
+                                // (Phase 4 of the optimization-standard
+                                // plan).
+                                | IndexStructure::HashTrie => {
+                                    match layout.hash_trie_hasher_resolved() {
+                                        | HasherChoice::Sip => {
+                                            run_benchmark_hash::<SipHashStrategy>(
+                                                benchmark,
+                                                ds,
+                                                algo,
+                                                &metrics,
+                                                query.as_deref(),
+                                                &bench_args,
+                                            )?
+                                        },
+                                        | HasherChoice::Fxhash => {
+                                            run_benchmark_hash::<FxHashStrategy>(
+                                                benchmark,
+                                                ds,
+                                                algo,
+                                                &metrics,
+                                                query.as_deref(),
+                                                &bench_args,
+                                            )?
+                                        },
+                                    }
+                                },
                             };
                             reports.append(&mut chunk);
                         }
