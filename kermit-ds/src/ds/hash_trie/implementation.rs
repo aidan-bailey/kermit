@@ -202,6 +202,19 @@ impl<H: HashStrategy> kermit_iters::HashTrieIterable for HashTrie<H> {
     }
 }
 
+impl<H: HashStrategy> kermit_iters::HasOptimizationAxes for HashTrie<H> {
+    /// One layout axis: `ds_layout_hasher` carrying the strategy's
+    /// `LayoutOption::NAME` (e.g. `"sip"` / `"fxhash"`).
+    fn optimization_axes(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+        let mut axes = std::collections::BTreeMap::new();
+        axes.insert(
+            "ds_layout_hasher".to_string(),
+            serde_json::Value::String(<H as kermit_iters::LayoutOption>::NAME.to_string()),
+        );
+        axes
+    }
+}
+
 fn node_heap_bytes(node: &HashTrieNode) -> usize {
     match node {
         | HashTrieNode::Inner(table) => {
@@ -335,8 +348,7 @@ mod tests {
     fn insert_all_equivalent_to_from_tuples_for_multiset_view() {
         let mut a: HashTrie = HashTrie::new(2.into());
         a.insert_all(vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
-        let b: HashTrie =
-            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let b: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         // Compare via heap_size and tuple set (via Projectable when ready) —
         // for now confirm both have populated roots with the same length.
         let a_root_len = match &a.root {
@@ -381,12 +393,10 @@ mod tests {
         // Even an empty trie allocates initial 4-bucket tables, so heap size
         // is non-zero — what we check is determinism and ordering.
         let small = trie.heap_size_bytes();
-        let big_trie: HashTrie = HashTrie::from_tuples(2.into(), vec![
-            vec![1, 2],
-            vec![1, 3],
-            vec![2, 4],
-            vec![3, 5],
-        ]);
+        let big_trie: HashTrie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
+                3, 5,
+            ]]);
         let big = big_trie.heap_size_bytes();
         assert!(big > small, "non-empty trie should be heavier than empty");
     }
@@ -428,8 +438,7 @@ mod tests {
     #[test]
     fn hash_trie_iter_returns_navigable_iterator() {
         use kermit_iters::{HashTrieIterable, HashTrieIterator};
-        let trie: HashTrie =
-            HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let trie: HashTrie = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
         let mut it = trie.hash_trie_iter();
         assert!(it.open());
         let mut seen = std::collections::HashSet::new();
@@ -438,5 +447,29 @@ mod tests {
             it.next();
         }
         assert_eq!(seen.len(), 3);
+    }
+
+    #[test]
+    fn optimization_axes_default_strategy_reports_sip() {
+        use kermit_iters::HasOptimizationAxes;
+        let trie: HashTrie = HashTrie::new(2.into());
+        let axes = trie.optimization_axes();
+        assert_eq!(axes.len(), 1);
+        assert_eq!(
+            axes.get("ds_layout_hasher"),
+            Some(&serde_json::Value::String("sip".to_string())),
+        );
+    }
+
+    #[test]
+    fn optimization_axes_fxhash_strategy_reports_fxhash() {
+        use kermit_iters::{FxHashStrategy, HasOptimizationAxes};
+        let trie: HashTrie<FxHashStrategy> = HashTrie::new(2.into());
+        let axes = trie.optimization_axes();
+        assert_eq!(axes.len(), 1);
+        assert_eq!(
+            axes.get("ds_layout_hasher"),
+            Some(&serde_json::Value::String("fxhash".to_string())),
+        );
     }
 }
