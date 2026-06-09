@@ -10,7 +10,7 @@ Kermit is a Rust library for relational algebra research and benchmarking, built
 
 This codebase is a Masters thesis research platform. The following priorities, in order, govern code changes. They override stylistic instincts when they conflict.
 
-1. **Test coverage for every algorithm × index-structure pair.** New algorithms and index structures must extend `define_multiway_join_test_suite!` (see Testing Patterns) so the 11 standard join patterns run against every combination. A change that adds a structure or algorithm without extending the suite will be rejected.
+1. **Test coverage for every algorithm × index-structure pair.** New algorithms and index structures must extend `define_multiway_join_test_suite!` (see Testing Patterns) so the 11 standard join patterns run against every combination. A change that adds a structure or algorithm without extending the suite will be rejected. Each Layout combination on a DS is a distinct test variant (e.g., `HashTrieSip`, `HashTrieFx`); each must run the 11 standard join patterns under every compatible algorithm. Config and BuildMode dimensions are tested via `define_multiway_join_test_suite_with_config!` and `define_multiway_join_test_suite_for_build_mode!` respectively. See [`docs/specs/optimization-standard.md`](docs/specs/optimization-standard.md).
 
 2. **Human-readable implementations.** Algorithms in `kermit-algos` and structures in `kermit-ds` should read like the paper that defines them — names match the literature, control flow mirrors the published pseudocode. Optimizations that obscure this need a comment justifying the cost they save.
 
@@ -131,6 +131,29 @@ Do **not** modify other index structures during this work (Priorities item 6).
 6. **Write the doc.** Create `docs/algorithms/<name>.md` from `docs/algorithms/TEMPLATE.md` (Priorities item 3).
 
 Do **not** modify other algorithms during this work (Priorities item 6).
+
+### Adding an optimization to a data structure or algorithm
+
+Optimizations fall into one of three categories — Layout, Config, or BuildMode.
+Each has a prescribed Rust shape, CLI surface, bench-axis namespace, and test
+obligation. The full recipe lives in
+[`docs/specs/optimization-standard.md`](docs/specs/optimization-standard.md);
+the short version:
+
+1. Classify the optimization into Layout (compile-time type parameter), Config
+   (runtime flag), or BuildMode (construction-time choice).
+2. Define the relevant Rust types implementing `LayoutOption`/`ConfigOption`/
+   `BuildMode` from `kermit_iters::optimization`.
+3. Extend the DS or algorithm's `HasOptimizationAxes` impl with the new
+   axis under the right prefix (`ds_layout_*` / `ds_config_*` / `ds_build_mode`).
+4. Add CLI surface (`--ds-layout-<dim>` / `--ds-config <flag>=<value>` /
+   `--ds-build <mode>`).
+5. Extend the test suite per the standard (type aliases for Layout, new
+   macro invocations for Config/BuildMode).
+6. Update the DS or algorithm's per-component doc with an "Optimizations"
+   subsection.
+
+Deviations from this recipe need explicit justification, per Priorities item 6.
 
 ### Adding a new benchmark
 
