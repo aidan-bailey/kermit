@@ -38,6 +38,7 @@ mod hash_trie;
 mod joinable;
 mod key_type;
 mod linear;
+mod optimization;
 mod trie;
 
 pub use {
@@ -45,5 +46,6 @@ pub use {
     joinable::JoinIterable,
     key_type::Key,
     linear::{LinearIterable, LinearIterator},
+    optimization::{BuildMode, ConfigOption, HasOptimizationAxes, LayoutOption},
     trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
