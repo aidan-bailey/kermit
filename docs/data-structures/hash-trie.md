@@ -96,6 +96,33 @@ Iteration walk (`hash_trie_iter()`):
 
 Avoid this structure when ordered iteration of tuples is required. Iteration order at every level depends on hash values relative to the current table capacity — not insertion order, not key order — and the order shifts when a `HashTable` resizes. This affects the order in which result tuples are produced by [`HashTriejoin`](../algorithms/hash-triejoin.md): callers that need a specific order should `ORDER BY` downstream, or prefer [`TreeTrie`](./tree-trie.md) or [`ColumnTrie`](./column-trie.md).
 
+## Optimizations
+
+Per the [optimization standard](../specs/optimization-standard.md), HashTrie's
+optimizations are classified into Layout, Config, or BuildMode.
+
+### Layout options
+
+- **Hash function** (`ds_layout_hasher`): selects the hash function used for
+  `usize` → `u64` mapping at every level of the trie.
+  - **CLI:** `-i hash-trie --ds-layout-hasher <choice>`
+  - **Choices:**
+    - `sip` (default; `std::collections::hash_map::DefaultHasher`, SipHash-1-3)
+    - `fxhash` (`rustc_hash::FxHasher`, fast non-cryptographic)
+  - **Type-level:** `HashTrie<H: HashStrategy>` where `H` is one of
+    `SipHashStrategy` or `FxHashStrategy` (in `kermit_iters::hash_strategy`).
+  - **Bench axis value:** `"sip"` or `"fxhash"`.
+
+### Config flags
+
+*None in this release.* See SIGMOD 2020 §3.3.1 for candidate future flags
+(`ds_config_singleton_pruning`, `ds_config_lazy_expansion`).
+
+### Build modes
+
+*None in this release.* See SIGMOD 2020 §3.3.2 for candidate future modes
+(`ds_build_mode = "parallel:N"`, `ds_build_mode = "radix:K"`).
+
 ## See also
 
 - Sibling docs: [`TreeTrie`](./tree-trie.md), [`ColumnTrie`](./column-trie.md).
