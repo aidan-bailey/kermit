@@ -132,7 +132,7 @@ def test_optimization_axes_become_columns(fixture_opt_tree) -> None:
 
 def test_conventional_run_has_no_opt_columns(fixture_tree) -> None:
     df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
-    assert not any(c.startswith(("ds_", "algo_")) for c in df.columns)
+    assert discover_opt_columns(df) == []
 
 
 def test_default_backfill_applied(fixture_tree) -> None:

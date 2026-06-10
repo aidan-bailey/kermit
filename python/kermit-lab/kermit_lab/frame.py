@@ -21,8 +21,8 @@ import pandas as pd
 from .criterion import FunctionData
 from .loader import BenchReport, CriterionGroupRef, iter_function_data, load_reports, phase_of
 
-# Regex that matches optimization-axis keys under the ds_*/algo_* namespaces.
-_OPT_AXIS_RE = re.compile(r"^(ds|algo)_(layout_|config_|build_mode)")
+# Matches ds_layout_*, ds_config_*, ds_build_mode, and the algo_* analogues.
+_OPT_AXIS_RE = re.compile(r"^(ds|algo)_(layout_|config_|build_mode\b)")
 
 # Explicit include-list for axis columns. Unknown axis keys in the input
 # JSON are silently dropped — when ``docs/specs/bench-report-schema.md``
@@ -117,7 +117,7 @@ def _summary_from_reports(
     optimization tail, then the stat/join columns."""
     from .defaults import apply_axis_defaults
 
-    opt_axes = _discover_opt_axes(list(reports))
+    opt_axes = _discover_opt_axes(reports)
     rows = [
         _summary_row(report, gref, data, opt_axes)
         for report, gref, data in iter_function_data(reports, Path(criterion_root))
@@ -173,6 +173,10 @@ def _samples_from_reports(
     reports: Sequence[BenchReport],
     criterion_root: Path | str,
 ) -> pd.DataFrame:
+    """Build the samples DataFrame from already-parsed reports.
+
+    Factored out so callers can reuse it without re-reading paths.
+    """
     rows = [
         {
             "criterion_group": gref.group,
