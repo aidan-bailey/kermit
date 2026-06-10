@@ -9,6 +9,8 @@ https://www.nature.com/articles/nmeth.1618 (Wong, 2011).
 """
 from __future__ import annotations
 
+import zlib
+
 # Wong / Okabe-Ito 8-colour palette.
 WONG_PALETTE: list[str] = [
     "#000000",  # black
@@ -87,22 +89,32 @@ _COMMITTED_LINESTYLES: dict[str, dict[str, str]] = {"algorithm": ALGORITHM_LINES
 
 
 def _stable(cycle: list[str], column: str, value: object) -> str:
-    return cycle[hash((column, value)) % len(cycle)]
+    """Pick a cycle entry for ``(column, value)`` deterministically.
+
+    Uses ``zlib.crc32`` (not the seed-randomised builtin ``hash``) so the
+    same input maps to the same entry across processes — reproducible figures
+    and non-flaky tests.
+    """
+    key = f"{column}\x00{value}".encode()
+    return cycle[zlib.crc32(key) % len(cycle)]
 
 
 def colour_for(column: str, value: object) -> str:
     """Colour for ``(column, value)``: committed map if known, else stable fallback.
 
-    For unknown (column, value) pairs the full WONG_PALETTE is used as the
-    fallback cycle.  Using all 8 entries (rather than the 5-entry
-    ``_UNKNOWN_COLOURS`` residual) keeps the per-column collision probability
-    low enough that the "distinct values differ" contract holds for typical
-    benchmark axes in tests.
+    Unknown (column, value) pairs draw from ``_UNKNOWN_COLOURS`` — the palette
+    residual that excludes committed data-structure colours — so a fallback
+    series can never collide with TreeTrie/ColumnTrie/HashTrie blues and reds
+    across figures. The fallback is stable and reproducible across processes
+    (``_stable`` uses a seed-independent CRC32), so the same value lands on the
+    same colour in every run.
     """
     committed = _COMMITTED_COLOURS.get(column)
     if committed is not None and value in committed:
         return committed[value]  # type: ignore[index]
-    return _stable(WONG_PALETTE, column, value)
+    if not _UNKNOWN_COLOURS:
+        return WONG_PALETTE[0]
+    return _stable(_UNKNOWN_COLOURS, column, value)
 
 
 def marker_for(column: str, value: object) -> str:
