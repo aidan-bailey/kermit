@@ -16,7 +16,10 @@ use {
     },
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
     kermit_parser::{JoinQuery, Term},
-    std::collections::HashMap,
+    std::{
+        cmp::Reverse,
+        collections::{BinaryHeap, HashMap, HashSet},
+    },
 };
 
 /// Extension of [`LeapfrogJoinIterator`] with trie navigation for the
@@ -307,10 +310,18 @@ where
 ///
 /// Placeholders (`_`) and atoms are skipped in all passes.
 ///
+/// The head-first indexing of passes 1–2 fixes the *output* column order, but
+/// it is **not** necessarily a valid descent order: LFTJ visits each
+/// relation's columns in physical storage order, so the descent must bind
+/// every relation's variables in column order. Pass 4 therefore computes a
+/// valid global attribute order via [`global_attribute_order`].
+///
 /// Returns `(variable_ordering, predicate_variables)` where
-/// `variable_ordering` is `0..num_vars` (head variables first, then
-/// body-only) and `predicate_variables[i]` lists the variable indices
-/// appearing in body predicate `i`.
+/// `variable_ordering` is a topological *descent* order (a permutation of
+/// `0..num_vars` respecting every relation's column order) and
+/// `predicate_variables[i]` lists the canonical variable indices appearing in
+/// body predicate `i`. Callers that need head-order output must permute each
+/// result tuple back from descent order (see `LeapfrogTriejoin::join_iter`).
 fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
     let mut var_to_index: HashMap<String, usize> = HashMap::new();
     let mut next_index: usize = 0;
@@ -341,8 +352,6 @@ fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
         }
     }
 
-    let variable_ordering: Vec<usize> = (0..var_to_index.len()).collect();
-
     // Pass 3: build per-predicate variable index lists. Placeholders and
     // atoms are skipped — they occupy trie levels but don't bind a join
     // variable.
@@ -359,7 +368,77 @@ fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
         predicate_variables.push(vars_for_pred);
     }
 
+    // Pass 4: derive a valid descent order from the per-predicate column
+    // constraints (see `global_attribute_order`).
+    let variable_ordering = global_attribute_order(var_to_index.len(), &predicate_variables);
+
     (variable_ordering, predicate_variables)
+}
+
+/// Computes a *global attribute order* (GAO) for the triejoin: a permutation
+/// of `0..num_vars` in which every relation's variables appear in physical
+/// column order.
+///
+/// LFTJ descends each relation one physical column per depth, so a relation
+/// `r(K, Y)` participates correctly only if its first column `K` is bound
+/// before its second column `Y`. A naive first-appearance order violates this
+/// whenever a variable is physically first but introduced late — most
+/// commonly a subject-position constant rewritten to `r(K, Y), Const(K)`,
+/// where `K` is physically first yet appears after `Y`. Such a query silently
+/// returned no results before this order was enforced.
+///
+/// Each relation contributes edges `col[i] -> col[i+1]` (a variable repeated
+/// within one predicate imposes no self-constraint); a topological sort
+/// (Kahn's algorithm, smallest canonical index first so the order is
+/// deterministic and keeps head variables early when unconstrained) yields a
+/// valid order.
+///
+/// Shared with [`crate::hash_triejoin`], which descends hash tries with the
+/// same physical-column-order requirement.
+///
+/// # Panics
+///
+/// Panics if the constraints are cyclic (e.g. `r(X, Y), s(Y, X)`): answering
+/// such a query would require a relation sorted in two different column orders
+/// at once, which a single fixed trie order cannot provide. This is strictly
+/// better than the previous silent wrong answer.
+pub(crate) fn global_attribute_order(
+    num_vars: usize, predicate_variables: &[Vec<usize>],
+) -> Vec<usize> {
+    let mut adjacency: Vec<HashSet<usize>> = vec![HashSet::new(); num_vars];
+    let mut in_degree: Vec<usize> = vec![0; num_vars];
+
+    for vars in predicate_variables {
+        for pair in vars.windows(2) {
+            let (earlier, later) = (pair[0], pair[1]);
+            if earlier != later && adjacency[earlier].insert(later) {
+                in_degree[later] += 1;
+            }
+        }
+    }
+
+    let mut ready: BinaryHeap<Reverse<usize>> = (0..num_vars)
+        .filter(|&v| in_degree[v] == 0)
+        .map(Reverse)
+        .collect();
+    let mut order = Vec::with_capacity(num_vars);
+    while let Some(Reverse(v)) = ready.pop() {
+        order.push(v);
+        for &w in &adjacency[v] {
+            in_degree[w] -= 1;
+            if in_degree[w] == 0 {
+                ready.push(Reverse(w));
+            }
+        }
+    }
+
+    assert_eq!(
+        order.len(),
+        num_vars,
+        "query imposes a cyclic global attribute order; LFTJ cannot answer it with a single trie \
+         column order per relation"
+    );
+    order
 }
 
 /// Entry point for the Leapfrog Triejoin algorithm, implementing
@@ -386,7 +465,23 @@ where
             })
             .collect();
 
-        LeapfrogTriejoinIter::new(variable_ordering, predicate_variables, trie_iters).into_iter()
+        // The triejoin descends in `variable_ordering` (a valid descent order)
+        // and yields tuples in *descent* order. Map descent position back to
+        // canonical variable index so output columns stay in head-first order
+        // regardless of the descent order chosen.
+        let arity = variable_ordering.len();
+        let mut descent_pos_of_var = vec![0usize; arity];
+        for (pos, &v) in variable_ordering.iter().enumerate() {
+            descent_pos_of_var[v] = pos;
+        }
+
+        LeapfrogTriejoinIter::new(variable_ordering, predicate_variables, trie_iters)
+            .into_iter()
+            .map(move |descent_tuple| {
+                (0..arity)
+                    .map(|v| descent_tuple[descent_pos_of_var[v]])
+                    .collect()
+            })
     }
 }
 

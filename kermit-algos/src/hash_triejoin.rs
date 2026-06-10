@@ -11,7 +11,7 @@
 //! positives at any inner level).
 
 use {
-    crate::join_algo::JoinAlgo,
+    crate::{join_algo::JoinAlgo, leapfrog_triejoin::global_attribute_order},
     kermit_iters::{HashTrieIterable, HashTrieIterator},
     kermit_parser::{JoinQuery, Term},
     std::collections::HashMap,
@@ -19,9 +19,11 @@ use {
 
 /// Indexes the variables in a query for the hash-trie-join algorithm.
 ///
-/// Duplicate of [`crate::leapfrog_triejoin::build_variable_index`] (per
-/// CLAUDE.md scope discipline — don't touch LFTJ during this work).
-/// Refactor to a shared helper is a separate follow-up.
+/// Like [`crate::leapfrog_triejoin::build_variable_index`]: head-first
+/// canonical indices fix the output column order, while the *descent* order is
+/// a valid global attribute order (shared [`global_attribute_order`] helper).
+/// The hash join descends each relation one physical column per depth, so the
+/// same subject-position-constant hazard applies.
 fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
     let mut var_to_index: HashMap<String, usize> = HashMap::new();
     let mut next_index: usize = 0;
@@ -47,8 +49,6 @@ fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
         }
     }
 
-    let variable_ordering: Vec<usize> = (0..var_to_index.len()).collect();
-
     let mut predicate_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
     for pred in &query.body {
         let mut vars_for_pred: Vec<usize> = Vec::new();
@@ -61,6 +61,8 @@ fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
         }
         predicate_variables.push(vars_for_pred);
     }
+
+    let variable_ordering = global_attribute_order(var_to_index.len(), &predicate_variables);
 
     (variable_ordering, predicate_variables)
 }
