@@ -261,3 +261,10 @@ reassess if `target/criterion/` layout differs from expectations.
    with an info-level log.
 8. Visual eyeball pass on each PDF: legend correctness, error-bar presence,
    axis scales, font consistency.
+
+> **2026-06-10 addendum:** the six fixed plot shapes were generalized into a
+> single configurable engine (`kl.plot`) plus presets, and the loader now
+> surfaces the `ds_*`/`algo_*` optimization axes it previously dropped — see
+> `docs/specs/2026-06-10-optimization-axis-graphs-design.md`. Ablation figures
+> (time vs an optimization axis) are now drawable and auto-emitted by
+> `render-all`.
