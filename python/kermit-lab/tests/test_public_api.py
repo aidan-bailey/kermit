@@ -7,7 +7,7 @@ import kermit_lab as kl
 def test_public_names() -> None:
     for name in ("plot", "scaling", "bar_time", "bar_space", "tradeoff",
                  "dist", "bar_queries", "ablation", "load", "load_samples",
-                 "colour_for", "summary"):
+                 "colour_for", "summary", "discover_opt_columns"):
         assert hasattr(kl, name), name
 
 

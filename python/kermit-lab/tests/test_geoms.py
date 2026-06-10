@@ -8,7 +8,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from kermit_lab.encoding import ResolvedSeries
-from kermit_lab.geoms import draw_bar, draw_line
+from kermit_lab.geoms import draw_bar, draw_line, draw_scatter, draw_violin
 
 
 def _series(label, colour="#000000"):
@@ -31,4 +31,27 @@ def test_draw_line_adds_lines() -> None:
     draw_line(ax, [_series("TreeTrie")], xlabel="tuples", ylabel="ns", logx=True)
     assert len(ax.lines) > 0
     assert ax.get_xscale() == "log"
+    plt.close(fig)
+
+
+def test_draw_scatter_adds_collections() -> None:
+    series = ResolvedSeries(
+        key=("TreeTrie",), label="TreeTrie", colour="#000000", marker="o", linestyle="-",
+        xs=[1.0, 2.0], ys=[10.0, 20.0], lo=[0.0, 0.0], hi=[0.0, 0.0],
+    )
+    fig, ax = plt.subplots()
+    draw_scatter(ax, [series], xlabel="x", ylabel="y")
+    assert len(ax.collections) > 0
+    plt.close(fig)
+
+
+def test_draw_violin_adds_bodies() -> None:
+    series = ResolvedSeries(
+        key=("A",), label="A", colour="#E69F00", marker="o", linestyle="-",
+        xs=["A"], ys=[0.0], lo=[0.0], hi=[0.0],
+        samples=[[1.0, 2.0, 3.0, 4.0]],
+    )
+    fig, ax = plt.subplots()
+    draw_violin(ax, [series], xlabel="x", ylabel="y")
+    assert len(ax.collections) > 0
     plt.close(fig)

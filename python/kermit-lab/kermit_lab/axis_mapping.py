@@ -45,35 +45,6 @@ ALGORITHM_MARKERS: dict[str, str] = {
 _UNKNOWN_COLOURS: list[str] = [c for c in WONG_PALETTE if c not in DATA_STRUCTURE_COLOURS.values()]
 
 
-def colour_for_ds(ds: str) -> str:
-    """Return the committed colour for ``ds``, or a stable fallback.
-
-    Stable means: the same unknown DS string maps to the same fallback colour
-    across calls within a process. We don't promise stability across the
-    palette mutating between releases — committed mappings are the contract.
-    """
-    if ds in DATA_STRUCTURE_COLOURS:
-        return DATA_STRUCTURE_COLOURS[ds]
-    if not _UNKNOWN_COLOURS:
-        return WONG_PALETTE[0]
-    return _UNKNOWN_COLOURS[hash(ds) % len(_UNKNOWN_COLOURS)]
-
-
-def linestyle_for_algo(algo: str) -> str:
-    """Return the committed linestyle for ``algo``, or ``"--"`` for unknown."""
-    return ALGORITHM_LINESTYLES.get(algo, "--")
-
-
-def marker_for_algo(algo: str) -> str:
-    """Return the committed marker for ``algo``, or ``"s"`` (square) for unknown.
-
-    The fallback is intentionally a *filled* shape: matplotlib warns when an
-    unfilled marker (``"x"``, ``"+"``) is given an ``edgecolor``, which our
-    plotting code does for visibility on light backgrounds.
-    """
-    return ALGORITHM_MARKERS.get(algo, "s")
-
-
 # ---------------------------------------------------------------------------
 # Column-aware encoding layer
 # ---------------------------------------------------------------------------

@@ -126,6 +126,10 @@ def _summary_from_reports(
     df = pd.DataFrame(rows, columns=columns)
     for key in _AXIS_INT_KEYS:
         df[key] = df[key].astype("Int64")
+    for key in opt_axes:
+        non_null = df[key].dropna()
+        if len(non_null) and non_null.map(lambda v: isinstance(v, bool)).all():
+            df[key] = df[key].astype("boolean")
     if apply_defaults:
         df = apply_axis_defaults(df)
     return df
