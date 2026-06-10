@@ -47,6 +47,7 @@ class ResolvedSeries:
 
 
 def metric_of(y: str) -> str:
+    """Validate ``y`` names a known metric ("time" or "space") and return it."""
     if y not in ("time", "space"):
         raise InsufficientAxesError(f"y must be 'time' or 'space', got {y!r}")
     return y
@@ -87,7 +88,7 @@ def facet_values(df: pd.DataFrame, amap: AestheticMap) -> list:
 
 
 def _group_cols(amap: AestheticMap) -> list[str]:
-    return [c for c in (amap.colour, amap.style) if c]
+    return list(dict.fromkeys(c for c in (amap.colour, amap.style) if c))
 
 
 def _make_series(
@@ -101,7 +102,7 @@ def _make_series(
     samples: Optional[list[list[float]]] = None,
 ) -> ResolvedSeries:
     kv = dict(zip(group_cols, keyt))
-    colour = colour_for(amap.colour, kv[amap.colour]) if amap.colour else WONG_PALETTE[5]
+    colour = colour_for(amap.colour, kv[amap.colour]) if amap.colour else WONG_PALETTE[0]
     marker = marker_for(amap.style, kv[amap.style]) if amap.style else "o"
     linestyle = linestyle_for(amap.style, kv[amap.style]) if amap.style else "-"
     label = " / ".join(str(kv[c]) for c in group_cols) if group_cols else amap.y
@@ -125,6 +126,8 @@ def resolve_scalar(cell: pd.DataFrame, amap: AestheticMap) -> list[ResolvedSerie
     for keyt, g in _grouped_items(cell, group_cols):
         g = g.sort_values(amap.x)
         xs = g[amap.x].tolist()
+        # mean_ns/lo/hi hold the metric's point estimate + CI regardless of
+        # metric (ns for time, bytes for space).
         ys = g["mean_ns"].tolist()
         lo = (g["mean_ns"] - g["mean_lo"]).clip(lower=0).tolist()
         hi = (g["mean_hi"] - g["mean_ns"]).clip(lower=0).tolist()
