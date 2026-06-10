@@ -47,6 +47,7 @@ def test_bar_queries_raises_for_unknown_pair(fixture_tree, tmp_path: Path) -> No
         )
 
 
+@pytest.mark.xfail(strict=False, reason="stacking behaviour removed in new engine; test deleted in Task 13")
 def test_bar_queries_stacks_when_multiple_ds_selected(fixture_tree) -> None:
     df = kl.load(fixture_tree["paths"], fixture_tree["criterion_root"])
     fig = kl.bar_queries(
@@ -86,6 +87,7 @@ def test_bar_queries_stacks_when_multiple_ds_selected(fixture_tree) -> None:
     assert ax.get_legend() is not None
 
 
+@pytest.mark.xfail(strict=False, reason="within-query clustering removed in new engine; test deleted in Task 13")
 def test_bar_queries_clusters_same_query_bars_together(fixture_tree) -> None:
     """Triangle's three sub-bars (sizes 10/100/1000) sit at consecutive x positions
     with the within-group step (1.0) smaller than the between-group gap (1.5)."""

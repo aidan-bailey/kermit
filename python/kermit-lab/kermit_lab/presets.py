@@ -39,9 +39,21 @@ def tradeoff(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] 
 
 
 def dist(
-    df: pd.DataFrame, *, samples: pd.DataFrame, phase: str = "iteration",
+    df: pd.DataFrame, *, samples: Optional[pd.DataFrame] = None,
+    criterion_root: Optional[Path] = None, phase: str = "iteration",
     out: Optional[Path] = None,
 ) -> Figure:
+    """Distribution (violin) of per-iter times.
+
+    Pass ``samples`` (from :func:`load_samples`) directly, or pass
+    ``criterion_root`` for backward-compat lazy loading from ``source_path``
+    entries in ``df``.
+    """
+    if samples is None:
+        from .frame import load_samples
+
+        root = criterion_root if criterion_root is not None else Path("target/criterion")
+        samples = load_samples(df["source_path"].dropna().unique().tolist(), root)
     return plot(df, kind="violin", x="data_structure", y="time", style="algorithm",
                 phase=phase, samples=samples, title="Per-iter distribution", out=out)
 
@@ -53,9 +65,9 @@ def bar_queries(
 ) -> Figure:
     flt: dict[str, object] = {}
     if ds is not None:
-        flt["data_structure"] = list(ds)
+        flt["data_structure"] = [ds] if isinstance(ds, str) else list(ds)
     if algo is not None:
-        flt["algorithm"] = list(algo)
+        flt["algorithm"] = [algo] if isinstance(algo, str) else list(algo)
     return plot(df, kind="bar", x="query", y="time", colour="data_structure",
                 style="algorithm", filter=flt, phase=phase,
                 title="Across queries", out=out)
