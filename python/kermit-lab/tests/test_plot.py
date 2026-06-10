@@ -1,4 +1,3 @@
-# tests/test_plot.py
 """kl.plot end-to-end for bar + line, including faceting and ablation axes."""
 from __future__ import annotations
 
@@ -33,9 +32,10 @@ def test_facet_makes_one_axes_per_value(fixture_tree) -> None:
     df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
     fig = plot(df, kind="bar", x="data_structure", y="time",
                colour="data_structure", facet="query")
-    # fixture_tree has queries triangle, chain, star
+    # fixture_tree has exactly 3 query values: triangle, chain, star — one
+    # facet cell per value, each with data, proving faceting happened.
     visible = [ax for ax in fig.axes if ax.get_visible() and ax.has_data()]
-    assert len(visible) >= 1
+    assert len(visible) == 3
     plt.close(fig)
 
 
@@ -62,4 +62,6 @@ def test_violin_dist(fixture_tree) -> None:
     fig = plot(df, kind="violin", x="data_structure", y="time",
                style="algorithm", samples=samples)
     assert isinstance(fig, Figure)
+    # Violin bodies render as PolyCollections — proves a violin actually drew.
+    assert any(len(ax.collections) > 0 for ax in fig.axes)
     plt.close(fig)

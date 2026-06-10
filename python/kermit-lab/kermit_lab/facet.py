@@ -1,4 +1,3 @@
-# kermit_lab/facet.py
 """Subplot-grid layout + shared, de-duplicated legend across facet cells."""
 from __future__ import annotations
 

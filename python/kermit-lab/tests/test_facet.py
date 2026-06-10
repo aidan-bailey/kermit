@@ -1,4 +1,3 @@
-# tests/test_facet.py
 """Facet grid sizing and shared-legend dedup."""
 from __future__ import annotations
 

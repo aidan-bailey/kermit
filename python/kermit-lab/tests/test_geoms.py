@@ -1,4 +1,3 @@
-# tests/test_geoms.py
 """Geom drawers add artists to an Axes."""
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# kermit_lab/geoms.py
 """Dumb geom drawers. Each consumes a list[ResolvedSeries] and draws onto an
 Axes — no statistics, no data access. Series carry precomputed y + CI.
 """
@@ -83,6 +82,7 @@ def draw_violin(ax: Axes, series: list[ResolvedSeries], *, xlabel: str, ylabel: 
             labels.append(f"{s.label}\n{x}" if s.label else str(x))
             colours.append(s.colour)
     if not datasets:
+        # Empty series list: nothing to draw (violinplot requires ≥1 dataset).
         return
     positions = list(range(1, len(datasets) + 1))
     parts = ax.violinplot(datasets, positions=positions, showmedians=True)

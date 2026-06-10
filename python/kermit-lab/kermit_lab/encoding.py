@@ -1,4 +1,3 @@
-# kermit_lab/encoding.py
 """Aesthetic map: bind visual channels to DataFrame columns, and resolve a
 filtered/grouped frame into drawable series.
 
@@ -136,9 +135,14 @@ def resolve_scalar(cell: pd.DataFrame, amap: AestheticMap) -> list[ResolvedSerie
 
 
 def resolve_tradeoff(df: pd.DataFrame, amap: AestheticMap) -> list[ResolvedSeries]:
-    """Scatter where both axes are metrics: x=space mean, y=time mean per group."""
-    keys = ["source_path", "data_structure", "algorithm"]
-    keys = [k for k in keys if k in df.columns]
+    """Scatter where both axes are metrics: x/y axes follow ``amap.x``/``amap.y``
+    (each "time" or "space"), one point per group."""
+    base_keys = ["source_path", "data_structure", "algorithm"]
+    group_cols = _group_cols(amap)
+    keys = list(dict.fromkeys(
+        [k for k in base_keys if k in df.columns]
+        + [c for c in group_cols if c in df.columns]
+    ))
     t = df[(df.metric == "time") & (df.phase == amap.phase)]
     s = df[df.metric == "space"]
     if t.empty or s.empty:
@@ -148,11 +152,10 @@ def resolve_tradeoff(df: pd.DataFrame, amap: AestheticMap) -> list[ResolvedSerie
     m = t.merge(s, on=keys, how="inner")
     if m.empty:
         raise InsufficientAxesError("no group has both a time and a space measurement")
-    group_cols = _group_cols(amap)
     series: list[ResolvedSeries] = []
     for keyt, g in _grouped_items(m, group_cols):
-        xs = g["space_mean"].tolist()
-        ys = g["time_mean"].tolist()
+        xs = g[f"{amap.x}_mean"].tolist()
+        ys = g[f"{amap.y}_mean"].tolist()
         zeros = [0.0] * len(xs)
         series.append(_make_series(keyt, group_cols, xs, ys, zeros, zeros, amap))
     return series

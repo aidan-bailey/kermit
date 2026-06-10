@@ -1,4 +1,3 @@
-# tests/test_encoding.py
 """Aesthetic-map resolution: filter, select, facet, scalar series."""
 from __future__ import annotations
 

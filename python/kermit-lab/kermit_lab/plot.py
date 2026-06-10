@@ -1,4 +1,3 @@
-# kermit_lab/plot.py
 """kl.plot — the general entry point. Maps channels to columns via AestheticMap,
 facets, dispatches to a geom drawer, applies thesis style, optionally saves.
 """
@@ -7,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping, Optional
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.figure import Figure
 
@@ -49,10 +49,8 @@ def plot(
     )
     apply_style()
 
-    # Tradeoff: both axes are metrics, single panel, no facet/phase-select.
-    if kind == "scatter" and x in ("time", "space"):
-        import matplotlib.pyplot as plt
-
+    # Tradeoff: both axes are distinct metrics, single panel, no facet/phase-select.
+    if kind == "scatter" and x in ("time", "space") and y in ("time", "space") and x != y:
         series = resolve_tradeoff(apply_filter(df, amap), amap)
         fig, ax = plt.subplots()
         draw_scatter(ax, series, xlabel=str(x), ylabel=y, logx=logx, logy=logy)
