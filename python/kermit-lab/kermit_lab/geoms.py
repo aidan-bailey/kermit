@@ -54,3 +54,42 @@ def draw_line(
         ax.set_yscale("log")
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
+
+
+def draw_scatter(
+    ax: Axes, series: list[ResolvedSeries], *, xlabel: str, ylabel: str,
+    logx: bool = False, logy: bool = False,
+) -> None:
+    """Scatter plot; honours logx/logy."""
+    for s in series:
+        ax.scatter(s.xs, s.ys, color=s.colour, marker=s.marker,
+                   edgecolor="black", label=s.label)
+    if logx:
+        ax.set_xscale("log")
+    if logy:
+        ax.set_yscale("log")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+
+
+def draw_violin(ax: Axes, series: list[ResolvedSeries], *, xlabel: str, ylabel: str) -> None:
+    """Violin plot; one violin per (series, x) group."""
+    datasets: list[list[float]] = []
+    labels: list[str] = []
+    colours: list[str] = []
+    for s in series:
+        for x, samp in zip(s.xs, s.samples or []):
+            datasets.append(samp)
+            labels.append(f"{s.label}\n{x}" if s.label else str(x))
+            colours.append(s.colour)
+    if not datasets:
+        return
+    positions = list(range(1, len(datasets) + 1))
+    parts = ax.violinplot(datasets, positions=positions, showmedians=True)
+    for body, colour in zip(parts["bodies"], colours):
+        body.set_facecolor(colour)
+        body.set_alpha(0.7)
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)

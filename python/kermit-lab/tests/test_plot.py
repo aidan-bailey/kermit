@@ -44,3 +44,22 @@ def test_writes_file(fixture_tree, tmp_path) -> None:
     out = tmp_path / "x.pdf"
     plot(df, kind="bar", x="data_structure", y="space", colour="data_structure", out=out)
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_tradeoff_scatter(fixture_tree) -> None:
+    df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    fig = plot(df, kind="scatter", x="space", y="time",
+               colour="data_structure", style="algorithm", logx=True)
+    assert isinstance(fig, Figure)
+    assert any(len(ax.collections) > 0 for ax in fig.axes)
+    plt.close(fig)
+
+
+def test_violin_dist(fixture_tree) -> None:
+    from kermit_lab.frame import load_samples
+    df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    samples = load_samples(fixture_tree["paths"], fixture_tree["criterion_root"])
+    fig = plot(df, kind="violin", x="data_structure", y="time",
+               style="algorithm", samples=samples)
+    assert isinstance(fig, Figure)
+    plt.close(fig)

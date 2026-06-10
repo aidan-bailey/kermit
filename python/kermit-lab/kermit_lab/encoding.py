@@ -133,3 +133,50 @@ def resolve_scalar(cell: pd.DataFrame, amap: AestheticMap) -> list[ResolvedSerie
         hi = (g["mean_hi"] - g["mean_ns"]).clip(lower=0).tolist()
         series.append(_make_series(keyt, group_cols, xs, ys, lo, hi, amap))
     return series
+
+
+def resolve_tradeoff(df: pd.DataFrame, amap: AestheticMap) -> list[ResolvedSeries]:
+    """Scatter where both axes are metrics: x=space mean, y=time mean per group."""
+    keys = ["source_path", "data_structure", "algorithm"]
+    keys = [k for k in keys if k in df.columns]
+    t = df[(df.metric == "time") & (df.phase == amap.phase)]
+    s = df[df.metric == "space"]
+    if t.empty or s.empty:
+        raise InsufficientAxesError("tradeoff needs both time and space rows")
+    t = t.groupby(keys, dropna=False)["mean_ns"].mean().reset_index(name="time_mean")
+    s = s.groupby(keys, dropna=False)["mean_ns"].mean().reset_index(name="space_mean")
+    m = t.merge(s, on=keys, how="inner")
+    if m.empty:
+        raise InsufficientAxesError("no group has both a time and a space measurement")
+    group_cols = _group_cols(amap)
+    series: list[ResolvedSeries] = []
+    for keyt, g in _grouped_items(m, group_cols):
+        xs = g["space_mean"].tolist()
+        ys = g["time_mean"].tolist()
+        zeros = [0.0] * len(xs)
+        series.append(_make_series(keyt, group_cols, xs, ys, zeros, zeros, amap))
+    return series
+
+
+def resolve_violin(
+    cell: pd.DataFrame, samples: pd.DataFrame, amap: AestheticMap
+) -> list[ResolvedSeries]:
+    """One violin per (colour×style group, x value) from per-iter samples."""
+    if samples is None:
+        raise InsufficientAxesError("violin requires a samples frame")
+    if amap.x is None or amap.x not in cell.columns:
+        raise InsufficientAxesError(f"x column {amap.x!r} not in frame")
+    merged = cell.merge(samples, on=["criterion_group", "criterion_function"], how="inner")
+    if merged.empty:
+        raise InsufficientAxesError("no samples joined for violin")
+    group_cols = _group_cols(amap)
+    series: list[ResolvedSeries] = []
+    for keyt, g in _grouped_items(merged, group_cols):
+        xs: list = []
+        samps: list[list[float]] = []
+        for xval, gg in g.groupby(amap.x, dropna=False):
+            xs.append(xval)
+            samps.append(gg["per_iter_ns"].tolist())
+        zeros = [0.0] * len(xs)
+        series.append(_make_series(keyt, group_cols, xs, zeros, zeros, zeros, amap, samples=samps))
+    return series
