@@ -212,11 +212,14 @@ generator; do **not** modernise Java source level when rebuilding.
 | `kermit-rdf/tests/lubm_entailment_smoke.rs` | Univ-Bench TBox closure expands triple count and preserves all original triples on a real LUBM(1, 0) ABox | `java` on PATH; not miri |
 | `kermit-rdf/tests/lubm_translator.rs` | All 14 LUBM SPARQL queries translate to valid Datalog rules against the partitioned entailed predicate map | `java` on PATH; not miri |
 | `kermit-rdf/tests/lubm_pipeline.rs` | Full driver → entail → partition → translate → emit pipeline; on-disk output layout, `meta.json` shape, `benchmark.yml` validity | `java` on PATH; not miri |
+| `kermit/tests/lubm_cardinalities.rs` | Generates LUBM(1, 0) end-to-end, runs all 14 queries through the join engine, asserts each result count matches the paper Table 3 reference | `java` on PATH; not miri |
 
-The cardinality regression test that asserts query result counts against
-`expected/q*.csv` is listed under Future work — it is the load-bearing
-correctness check that should land before relying on Q5–Q13 results from
-this pipeline.
+The cardinality regression test lives in the `kermit` crate (not `kermit-rdf`)
+because only the binary crate depends on both the LUBM pipeline and the join
+engine (`kermit-algos` + `DatabaseEngine`), mirroring `watdiv_correctness.rs`.
+It is the load-bearing correctness check for the entailment rule set and the
+const-view-rewrite join path; finding it green is the precondition for relying
+on Q5–Q13 results from this pipeline.
 
 ## References
 
@@ -232,11 +235,6 @@ this pipeline.
 
 ## Future work
 
-- **Cardinality regression test** at `kermit-rdf/tests/lubm_cardinalities.rs`:
-  generate LUBM(1, 0) end-to-end, run all 14 queries through kermit's join
-  engine, assert result counts match `expected/q*.csv`. The load-bearing
-  correctness check for the entailment rule set; the absence of this test
-  is the main outstanding risk for thesis-quality status.
 - **Streaming entailment** for LUBM scales > 5.
 - **Vendor-jar SHA-256 verification** in `lubm/driver::drive` — refuse to
   invoke a jar whose hash doesn't match the embedded constant unless

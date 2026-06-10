@@ -68,22 +68,17 @@ JDK or upstream commit.
 | `tests/lubm_entailment_smoke.rs` | Entail real LUBM(1, 0) ABox; closure expands triple count | `which java` |
 | `tests/lubm_pipeline.rs` | Full pipeline with placeholder query; meta.json/YAML shape | `which java` |
 | `tests/lubm_translator.rs` | All 14 queries translate against entailed predicate map | `which java` |
+| `kermit/tests/lubm_cardinalities.rs` | Runs all 14 queries through the join engine on a generated LUBM(1, 0); asserts counts match paper Table 3. Lives in the `kermit` crate — only it depends on both this pipeline and the join engine | `which java` |
 
 ## Future work
 
-- **Cardinality regression test** at `tests/lubm_cardinalities.rs`: actually
-  run the 14 queries through kermit's join engine on a generated LUBM(1, 0)
-  benchmark and assert results match `expected/q*.csv`. This is the load-
-  bearing correctness check for the entailment rule set; its absence is the
-  main outstanding risk for the LUBM benchmark's thesis-quality status.
 - **Streaming entailment** for LUBM scales > 5. Current implementation loads
   all triples into a `HashSet` and clones the snapshot once per fixed-point
   iteration. LUBM(1) is comfortable (~250 MB peak); LUBM(5) approaches 1.5 GB;
   LUBM(10) and above can exceed available RAM on developer machines because
   each iteration's snapshot is a full clone of the working set. **Practical
   scale ceiling for the current implementation is LUBM(5).** Streaming or
-  delta-based fixpoint would extend this; not in scope until the cardinality
-  regression test is in place.
+  delta-based fixpoint would extend this.
 - **Vendor-jar SHA-256 verification** in `lubm/driver::drive` — refuse to
   invoke a jar whose hash doesn't match the embedded constant unless
   `--lubm-jar` is explicit.
