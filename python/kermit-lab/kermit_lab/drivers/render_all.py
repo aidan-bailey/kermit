@@ -1,39 +1,33 @@
-"""``render-all`` meta-command — emit every plot shape the input set supports.
+"""``render-all`` — emit every plot shape the input set supports.
 
-Iterates the six plot modules in turn. Each ``InsufficientAxesError`` is
-demoted to an info-level log message; other exceptions propagate. This is
-intentional: a missing axis means "no plot to draw," but a corrupt JSON
-report or missing Criterion artefact should fail loudly.
+Builds the summary + samples DataFrames once, then renders the fixed shapes,
+per-query bar-time, per-(ds,algo) bar-queries, and — new — one ablation figure
+per optimization axis carrying ≥2 distinct values. ``InsufficientAxesError`` is
+demoted to an info log; other exceptions propagate. Skips are logged so
+ablation coverage is never silently truncated.
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable
 
+from .. import presets
+from ..frame import _samples_from_reports, _summary_from_reports, discover_opt_columns
 from ..loader import BenchReport
-from ..plots import InsufficientAxesError, bar_queries, bar_space, bar_time, dist, scaling, tradeoff
+from ..plots_errors import InsufficientAxesError
 
 log = logging.getLogger(__name__)
 
 
-def _candidate_queries(reports: Iterable[BenchReport]) -> list[str]:
-    qs: set[str] = set()
-    for r in reports:
-        q = r.axis("query")
-        if isinstance(q, str):
-            qs.add(q)
-    return sorted(qs)
-
-
-def _candidate_ds_algo(reports: Iterable[BenchReport]) -> list[tuple[str, str]]:
-    pairs: set[tuple[str, str]] = set()
-    for r in reports:
-        ds = r.axis("data_structure")
-        algo = r.axis("algorithm")
-        if isinstance(ds, str) and isinstance(algo, str):
-            pairs.add((ds, algo))
-    return sorted(pairs)
+def _ablation_axes(df) -> list[str]:
+    """Optimization columns with ≥2 distinct non-null values."""
+    out = []
+    for col in discover_opt_columns(df):
+        if df[col].nunique(dropna=True) >= 2:
+            out.append(col)
+        else:
+            log.info("skipped ablation %s: <2 distinct values", col)
+    return out
 
 
 def render_all(
@@ -51,6 +45,8 @@ def render_all(
     rendered into separate output sets without re-running benchmarks.
     """
     suffix = f".{fmt}"
+    df = _summary_from_reports(reports, criterion_root)
+    samples = _samples_from_reports(reports, criterion_root)
 
     def _try(label: str, fn) -> None:
         try:
@@ -59,46 +55,38 @@ def render_all(
         except InsufficientAxesError as e:
             log.info("skipped %s: %s", label, e)
 
-    _try(
-        f"scaling{suffix}",
-        lambda: scaling.render(
-            reports, out_dir / f"scaling{suffix}", criterion_root, phase=phase
-        ),
-    )
-    _try(
-        f"bar-space{suffix}",
-        lambda: bar_space.render(reports, out_dir / f"bar-space{suffix}", criterion_root),
-    )
-    _try(
-        f"tradeoff{suffix}",
-        lambda: tradeoff.render(
-            reports, out_dir / f"tradeoff{suffix}", criterion_root, phase=phase
-        ),
-    )
-    _try(
-        f"dist{suffix}",
-        lambda: dist.render(reports, out_dir / f"dist{suffix}", criterion_root, phase=phase),
-    )
-    for query in _candidate_queries(reports):
+    _try("scaling", lambda: presets.scaling(df, phase=phase, out=out_dir / f"scaling{suffix}"))
+    _try("bar-space", lambda: presets.bar_space(df, out=out_dir / f"bar-space{suffix}"))
+    _try("tradeoff", lambda: presets.tradeoff(df, phase=phase, out=out_dir / f"tradeoff{suffix}"))
+    _try("dist", lambda: presets.dist(df, samples=samples, phase=phase,
+                                      out=out_dir / f"dist{suffix}"))
+
+    queries = sorted(df["query"].dropna().unique().tolist()) if "query" in df.columns else []
+    for q in queries:
         _try(
-            f"bar-time-{query}{suffix}",
-            lambda q=query: bar_time.render(
-                reports,
-                out_dir / f"bar-time-{q}{suffix}",
-                criterion_root,
-                query=q,
-                phase=phase,
-            ),
+            f"bar-time-{q}",
+            lambda q=q: presets.bar_time(df, query=q, phase=phase,
+                                         out=out_dir / f"bar-time-{q}{suffix}"),
         )
-    for ds, algo in _candidate_ds_algo(reports):
+
+    if {"data_structure", "algorithm"} <= set(df.columns):
+        pairs = sorted(
+            df.dropna(subset=["data_structure", "algorithm"])
+            .groupby(["data_structure", "algorithm"]).groups.keys()
+        )
+        for ds, algo in pairs:
+            _try(
+                f"bar-queries-{ds}-{algo}",
+                lambda ds=ds, algo=algo: presets.bar_queries(
+                    df, ds=[ds], algo=[algo], phase=phase,
+                    out=out_dir / f"bar-queries-{ds}-{algo}{suffix}",
+                ),
+            )
+
+    for axis in _ablation_axes(df):
         _try(
-            f"bar-queries-{ds}-{algo}{suffix}",
-            lambda d=ds, a=algo: bar_queries.render(
-                reports,
-                out_dir / f"bar-queries-{d}-{a}{suffix}",
-                criterion_root,
-                ds=d,
-                algo=a,
-                phase=phase,
+            f"ablation-{axis}",
+            lambda axis=axis: presets.ablation(
+                df, axis=axis, phase=phase, out=out_dir / f"ablation-{axis}{suffix}"
             ),
         )
