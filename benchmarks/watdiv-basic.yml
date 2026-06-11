@@ -1,0 +1,5 @@
+name: watdiv-basic
+description: "WatDiv Basic Testing workload (L/S/F/C, 20 templates), generated on the fly at scale 10"
+generator:
+  kind: watdiv-basic
+  scale: 10

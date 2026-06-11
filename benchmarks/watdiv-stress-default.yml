@@ -1,0 +1,5 @@
+name: watdiv-stress-default
+description: "WatDiv stress workload at default parameters, generated on the fly at scale 10"
+generator:
+  kind: watdiv
+  scale: 10
