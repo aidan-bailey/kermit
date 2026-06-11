@@ -153,7 +153,7 @@ kl.plot(df, kind="bar", x="ds_layout_hasher", y="time",
 
 The full optimization model (Layout / Config / BuildMode, how to add one, and
 the bench-axis namespace) is in
-[`docs/optimization-standard.md`](docs/optimization-standard.md); a runnable
+[`docs/specs/optimization-standard.md`](docs/specs/optimization-standard.md); a runnable
 walkthrough is in
 [`python/kermit-lab/notebooks/06_ablation.ipynb`](python/kermit-lab/notebooks/06_ablation.ipynb).
 
@@ -198,7 +198,7 @@ clean checkout).
 | The `BenchReport` JSON schema (axes, criterion_groups) | [`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md) |
 | Measurement-pipeline internals | [`docs/specs/benchmarking-architecture.md`](docs/specs/benchmarking-architecture.md) |
 | Space measurement mechanics | [`docs/specs/space-benchmarks.md`](docs/specs/space-benchmarks.md) |
-| Optimization axes (Layout/Config/BuildMode) | [`docs/optimization-standard.md`](docs/optimization-standard.md) |
+| Optimization axes (Layout/Config/BuildMode) | [`docs/specs/optimization-standard.md`](docs/specs/optimization-standard.md) |
 | The plotting engine design | [`docs/specs/2026-06-10-optimization-axis-graphs-design.md`](docs/specs/2026-06-10-optimization-axis-graphs-design.md) |
 | Analysis/plotting API + notebooks | [`python/kermit-lab/README.md`](python/kermit-lab/README.md) |
 | Benchmark catalogue, WatDiv, LUBM | [`docs/benchmarks/README.md`](docs/benchmarks/README.md) |
