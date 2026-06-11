@@ -158,6 +158,9 @@ fn dispatch(
             scale,
             stress,
         } => run_watdiv(*scale, stress, bench_name, out_dir, spec_hash),
+        | GeneratorSpec::WatdivBasic {
+            scale,
+        } => run_watdiv_basic(*scale, bench_name, out_dir, spec_hash),
         | GeneratorSpec::Lubm {
             scale,
             seed,
@@ -212,6 +215,40 @@ fn run_watdiv(
     };
     kermit_rdf::pipeline::run_pipeline(&inputs)
         .map_err(|e| anyhow::anyhow!("watdiv pipeline failed: {e}"))?;
+    Ok(())
+}
+
+fn run_watdiv_basic(
+    scale: u32, bench_name: &str, out_dir: &Path, spec_hash: &str,
+) -> anyhow::Result<()> {
+    let vendor = vendored_watdiv_root();
+    let bin = std::env::var_os("KERMIT_WATDIV_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| vendor.join("bin/Release/watdiv"));
+    if !bin.exists() {
+        anyhow::bail!("watdiv binary not found at {bin:?}");
+    }
+    let testsuite = vendor.join("testsuite");
+    let inputs = kermit_rdf::pipeline::PipelineInputs {
+        driver: kermit_rdf::driver::DriverInputs {
+            watdiv_bin: &bin,
+            vendor_files: &vendor.join("files"),
+            model_file: &vendor.join("MODEL.txt"),
+            scale,
+            // Basic templates ignore stress params; defaults are recorded in
+            // meta.json only for provenance.
+            stress: kermit_rdf::driver::StressParams::default(),
+            // One concrete query per template -> the 20 canonical L/S/F/C queries.
+            query_count_per_template: 1,
+            use_bwrap: std::env::var_os("KERMIT_NO_BWRAP").is_none(),
+        },
+        out_dir,
+        bench_name,
+        tag: bench_name,
+        spec_hash: Some(spec_hash),
+    };
+    kermit_rdf::pipeline::run_basic_pipeline(&inputs, &testsuite)
+        .map_err(|e| anyhow::anyhow!("watdiv basic pipeline failed: {e}"))?;
     Ok(())
 }
 
