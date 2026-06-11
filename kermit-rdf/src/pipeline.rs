@@ -112,7 +112,7 @@ impl From<&StressParams> for StressParamsMeta {
 /// integration test (Task 17) can drive stages 4–6 with a hand-crafted
 /// `RawArtifacts`-equivalent.
 pub fn process_artifacts(
-    inputs: &PipelineInputs, raw: &RawArtifacts,
+    inputs: &PipelineInputs, raw: &RawArtifacts, meta_kind: &str,
 ) -> Result<PipelineMeta, RdfError> {
     fs::create_dir_all(inputs.out_dir)?;
     let raw_root = inputs.out_dir.join("raw");
@@ -194,7 +194,7 @@ pub fn process_artifacts(
 
     let meta = PipelineMeta {
         schema_version: 2,
-        kind: "watdiv-onthefly".to_string(),
+        kind: meta_kind.to_string(),
         scale: inputs.driver.scale,
         tag: inputs.tag.to_string(),
         watdiv_binary_sha256: sha256_file(inputs.driver.watdiv_bin)?,
@@ -213,8 +213,17 @@ pub fn process_artifacts(
     Ok(meta)
 }
 
-/// Top-level entry point: runs the driver and processes artifacts.
+/// Top-level entry point: runs the stress driver and processes artifacts.
 pub fn run_pipeline(inputs: &PipelineInputs) -> Result<PipelineMeta, RdfError> {
     let raw = driver::drive(&inputs.driver)?;
-    process_artifacts(inputs, &raw)
+    process_artifacts(inputs, &raw, "watdiv-onthefly")
+}
+
+/// Top-level entry point for the **Basic Testing** workload: runs the basic
+/// driver (static templates in `template_src_dir`) and processes artifacts.
+pub fn run_basic_pipeline(
+    inputs: &PipelineInputs, template_src_dir: &Path,
+) -> Result<PipelineMeta, RdfError> {
+    let raw = driver::drive_basic(&inputs.driver, template_src_dir)?;
+    process_artifacts(inputs, &raw, "watdiv-basic-onthefly")
 }
