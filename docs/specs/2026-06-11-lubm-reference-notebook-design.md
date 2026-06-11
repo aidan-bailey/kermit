@@ -34,8 +34,13 @@ explicitly in the notebook's narrative — is three *system configurations*:
 2. ColumnTrie + LeapfrogTriejoin
 3. HashTrie + HashTriejoin
 
-A single `bench run … -i all -a all` sweep produces exactly these three; the
-CLI skips incompatible pairs.
+The notebook enumerates these three explicitly — one `bench run` per
+configuration. (`-i all -a all` cannot be used: the CLI's cross-product
+expansion does not skip incompatible pairs; it panics at
+`kermit/src/db.rs:313` on `(TreeTrie, HashTriejoin)`. The `is_compatible`
+check at `kermit/src/main.rs:~134` only validates the top-level selector
+pair, not the expansion. Discovered during implementation review; the CLI
+fix is filed as a separate change per scope discipline.)
 
 ## Artifact 1: `benchmarks/lubm-reference.yml`
 
@@ -107,21 +112,27 @@ rather than pretending it is a separate command:
 - Render `~/.cache/kermit/benchmarks/lubm-reference/expected/q*.csv` as a
   pandas table of the 14 reference cardinalities (cross-referencing Phase 1).
 
-One invocation (metrics listed explicitly even though they match the default,
-because this is a reference document):
+One invocation per valid configuration (metrics listed explicitly even
+though they match the default, because this is a reference document):
 
 ```
-cargo run --release -- bench \
-  --sample-size <profile> --measurement-time <profile> --warm-up-time <profile> \
-  --report-json bench-runs/lubm-reference-sweep.json \
-  run lubm-reference -i all -a all \
-  --metrics insertion iteration space
+for (ds, algo) in [(tree-trie, leapfrog-triejoin), (column-trie, leapfrog-triejoin),
+                   (hash-trie, hash-triejoin)]:
+  cargo run --release -- bench \
+    --sample-size <profile> --measurement-time <profile> --warm-up-time <profile> \
+    --report-json bench-runs/lubm-reference-sweep-<profile>-<ds>-<algo>.json \
+    run lubm-reference -i <ds> -a <algo> \
+    --metrics insertion iteration space
 ```
+
+The per-config reports are loaded together via a glob (`kl.load` accepts
+glob patterns); each config's time and space rows share a `source_path`, so
+`kl.tradeoff`'s merge still works.
 
 This is a deliberate simplification of the approved 7-phase outline: the
-original separate time/space phases merge into one sweep because `--metrics`
-accepts all three values in a single run (`num_args = 1..`,
-`kermit/src/main.rs:308-316`), halving relation-loading overhead. Markdown
+original separate time/space phases merge into one sweep per configuration
+because `--metrics` accepts all three values in a single run
+(`num_args = 1..`, `kermit/src/main.rs:308-316`). Markdown
 explains the three metrics: insertion (build time), iteration (query
 execution time), space (`heap_size_bytes()` via the custom Criterion
 `SpaceMeasurement`).
@@ -193,8 +204,9 @@ usize keys, config-vs-config framing), and pointers to
 
 ## Acceptance criteria
 
-1. `bench run lubm-reference -i all -a all` materialises on first run and
-   produces criterion output for exactly 3 configurations × 14 queries.
+1. The three per-configuration `bench run lubm-reference` invocations
+   materialise on first run and produce criterion output for exactly
+   3 configurations × 14 queries.
 2. The notebook executes top-to-bottom under `nix develop` on a clean cache
    (quick profile) without manual intervention.
 3. The cardinality verification phase passes (all 14 match Table 3).

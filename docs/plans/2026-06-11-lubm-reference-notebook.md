@@ -18,7 +18,7 @@ Nothing else may be modified (spec "Out of scope"; CLAUDE.md Priorities item 6).
 
 - `bench fetch` does NOT materialise generator benchmarks — only the `bench run` path calls `materialize::materialize` (`kermit/src/main.rs:1541`). The first sweep run generates the data inline.
 - `--metrics` is space-separated, `num_args = 1..`, and one `bench run` invocation handles time AND space Criterion instances (`kermit/src/main.rs:975` and `:1027`). One report JSON for everything — which is exactly what `kl.tradeoff` needs (it merges time/space rows on `source_path`).
-- `-i all -a all` skips incompatible pairs via `is_compatible` (`kermit/src/main.rs:134`); `(HashTrie, HashTriejoin)` is HashTrie's only valid pairing. The sweep yields exactly 3 configurations.
+- ~~`-i all -a all` skips incompatible pairs via `is_compatible`~~ **CORRECTED during execution review:** the `is_compatible` check (`kermit/src/main.rs:134`) only validates the top-level selector pair; the `all × all` cross-product expansion does NOT skip incompatible pairs and panics at `kermit/src/db.rs:313` on `(TreeTrie, HashTriejoin)`, writing no report. The sweep must enumerate the 3 valid configurations explicitly (see "Execution corrections" below). `(HashTrie, HashTriejoin)` is HashTrie's only valid pairing.
 - Report axes carry `data_structure` as the enum Debug name (`"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`) and `algorithm` as `"LeapfrogTriejoin"` / `"HashTriejoin"`. The hasher is a separate `ds_layout_hasher` axis column (backfilled `"sip"`), NOT part of the name.
 - `kl.compare(df, baseline=…, target=…, group_by=…)` inner-joins baseline/target rows on EVERY column except `group_by`, provenance (`source_path`, `criterion_group`, `criterion_function`), and the value family (`mean_*`, `median_*`). Cross-algorithm comparisons therefore need a synthesized `config` column with `data_structure`, `algorithm`, and all opt-axis columns dropped — otherwise the join produces zero rows.
 - `kl.compare` output columns: join keys + `baseline_value/baseline_lo/baseline_hi`, `target_value/target_lo/target_hi`, `speedup`, `speedup_lo`, `speedup_hi` (`speedup = baseline / target`, >1 means target faster).
@@ -938,12 +938,12 @@ Expected: exits 0. If `jupyter execute` rejects `--timeout=-1`, drop the flag an
 - [ ] **Step 2: Check the artefacts (acceptance criteria 1, 4, 6)**
 
 ```bash
-ls bench-runs/lubm-reference-sweep-quick.json
+ls bench-runs/lubm-reference-sweep-quick-*.json   # expect 3 per-config reports
 ls target/criterion/ | grep -c "run_lubm-reference" # flattened group dirs: / → _
 cargo run --release -- bench list 2>&1 | grep -A1 lubm-reference
 ```
 
-Expected: the report JSON exists; the criterion count covers 3 configurations × 14 queries (42 group directories); `bench list` shows `lubm-reference` as `cached`.
+Expected: three per-config report JSONs exist (`…-tree-trie-leapfrog-triejoin`, `…-column-trie-leapfrog-triejoin`, `…-hash-trie-hash-triejoin`); the criterion count covers 3 configurations × 14 queries (42 group directories); `bench list` shows `lubm-reference` as `cached`.
 
 - [ ] **Step 3: Verify rerun behaviour (acceptance criterion 5)**
 
@@ -965,6 +965,21 @@ Run: `python3 -c "import json; nb=json.load(open('python/kermit-lab/notebooks/07
 Expected: `clean` (and `git status` shows no unstaged change to the notebook).
 
 ---
+
+## Execution corrections (2026-06-11)
+
+Code-quality review of the executed Tasks 2–8 reproduced a panic in the
+planned sweep: `bench run lubm-reference -i all -a all` aborts at
+`kermit/src/db.rs:313` on the first incompatible expanded pair and writes no
+report (see the corrected key-fact bullet above). The Task 2/4/5/7 heredocs
+in this document are preserved as the historical record of commits
+`722b7ab..97396a9`; a follow-up `fix(kermit-lab):` commit replaced the
+affected cells with: a `CONFIGS` list + `REPORT_GLOB` in the profile cell,
+a per-configuration sweep loop, glob-based `kl.load`/`kl.load_samples`,
+corrected Phase 2 / F4 markdown, explicit F5/T2 labels on the q9 deep dive,
+and two citation/wording fixes. Task 9's verification steps above were
+updated to match. The latent CLI panic itself is out of scope (spec: zero
+Rust changes) and filed separately.
 
 ## Self-review notes
 
