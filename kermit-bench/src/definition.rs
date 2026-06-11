@@ -303,7 +303,9 @@ fn validate_generator(bench_name: &str, spec: &GeneratorSpec) -> Result<(), Benc
                 });
             }
         },
-        | GeneratorSpec::WatdivBasic { scale } => {
+        | GeneratorSpec::WatdivBasic {
+            scale,
+        } => {
             if *scale == 0 {
                 return Err(BenchError::Invalid {
                     name: bench_name.to_string(),
@@ -887,21 +889,30 @@ generator:
         let def: BenchmarkDefinition = serde_yaml::from_str(yaml).unwrap();
         def.validate().unwrap();
         match def.generator.as_ref().unwrap() {
-            | GeneratorSpec::WatdivBasic { scale } => assert_eq!(*scale, 10),
+            | GeneratorSpec::WatdivBasic {
+                scale,
+            } => assert_eq!(*scale, 10),
             | other => panic!("expected WatdivBasic, got {other:?}"),
         }
     }
 
     #[test]
     fn watdiv_basic_scale_zero_is_invalid() {
-        let spec = GeneratorSpec::WatdivBasic { scale: 0 };
+        let spec = GeneratorSpec::WatdivBasic {
+            scale: 0,
+        };
         assert!(validate_generator("b", &spec).is_err());
     }
 
     #[test]
     fn watdiv_basic_spec_hash_differs_from_watdiv() {
-        let basic = GeneratorSpec::WatdivBasic { scale: 10 };
-        let stress = GeneratorSpec::Watdiv { scale: 10, stress: WatdivStressSpec::default() };
+        let basic = GeneratorSpec::WatdivBasic {
+            scale: 10,
+        };
+        let stress = GeneratorSpec::Watdiv {
+            scale: 10,
+            stress: WatdivStressSpec::default(),
+        };
         assert_ne!(basic.spec_hash(), stress.spec_hash());
     }
 

@@ -19,7 +19,11 @@ fn skip_if_unsupported() -> bool {
         eprintln!("skipping watdiv-basic e2e: requires linux x86_64");
         return true;
     }
-    if std::process::Command::new("bwrap").arg("--version").output().is_err() {
+    if std::process::Command::new("bwrap")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping watdiv-basic e2e: bwrap not found");
         return true;
     }
@@ -89,7 +93,10 @@ fn watdiv_basic_pipeline_produces_twenty_queries() {
     assert!(meta.triple_count > 0, "no triples generated");
     assert!(meta.relation_count > 0, "no relations partitioned");
     // 20 templates × 1 query each = 20 queries.
-    assert_eq!(meta.query_count, 20, "expected one query per L/S/F/C template");
+    assert_eq!(
+        meta.query_count, 20,
+        "expected one query per L/S/F/C template"
+    );
 
     assert!(dir.path().join("benchmark.yml").exists());
     assert!(dir.path().join("dict.parquet").exists());
