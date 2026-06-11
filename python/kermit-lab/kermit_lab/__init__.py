@@ -1,36 +1,48 @@
 """Notebook-first analysis of kermit Criterion benchmark output.
 
-Primary surface: :func:`load` and :func:`load_samples` return tidy pandas
-DataFrames. Plot functions take a DataFrame and return a
-:class:`matplotlib.figure.Figure`. The CLI in :mod:`kermit_lab.drivers.main`
-is a thin wrapper.
+Primary surface: :func:`load` / :func:`load_samples` return tidy DataFrames;
+:func:`plot` renders any aesthetic; the named presets are thin configurations
+of it. The CLI in :mod:`kermit_lab.drivers.main` is a thin wrapper.
 """
 
 SCHEMA_VERSION = 2
 """Highest BenchReport schema version this package can parse."""
 
 from .analysis import bootstrap_ratio_ci, compare, mannwhitney_u, summary
-from .frame import load, load_samples
-from .plots.bar_queries import plot as bar_queries
-from .plots.bar_space import plot as bar_space
-from .plots.bar_time import plot as bar_time
-from .plots.dist import plot as dist
-from .plots.scaling import plot as scaling
-from .plots.tradeoff import plot as tradeoff
+from .axis_mapping import colour_for, linestyle_for, marker_for
+from .frame import discover_opt_columns, load, load_samples
+from .plot import plot
+from .plots_errors import InsufficientAxesError
+from .presets import (
+    ablation,
+    bar_queries,
+    bar_space,
+    bar_time,
+    dist,
+    scaling,
+    tradeoff,
+)
 from .styles import apply as apply_style
 
 __all__ = [
     "SCHEMA_VERSION",
+    "InsufficientAxesError",
+    "ablation",
     "apply_style",
     "bar_queries",
     "bar_space",
     "bar_time",
     "bootstrap_ratio_ci",
+    "colour_for",
     "compare",
+    "discover_opt_columns",
     "dist",
+    "linestyle_for",
     "load",
     "load_samples",
     "mannwhitney_u",
+    "marker_for",
+    "plot",
     "scaling",
     "summary",
     "tradeoff",

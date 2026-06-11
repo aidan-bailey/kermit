@@ -1,4 +1,4 @@
-"""DataFrame loader tests built on the synthetic ``fixture_tree``.
+"""Loader: wildcard-wide optimization-axis ingest + samples/opt helpers.
 
 Fixture composition (see ``conftest.py``):
 - 6 ``run`` reports (TreeTrie, ColumnTrie × 3 sizes for triangle), each with 3
@@ -12,7 +12,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from kermit_lab import load, load_samples
+from kermit_lab.frame import (
+    discover_opt_columns,
+    load,
+    load_samples,
+)
 
 
 @pytest.fixture
@@ -112,3 +116,38 @@ def test_load_accepts_single_path_string(fixture_tree):
     one_path = str(fixture_tree["paths"][0])
     df = load(one_path, fixture_tree["criterion_root"])
     assert len(df) >= 1  # one report → ≥1 criterion_group rows
+
+
+# --- New Task 2 tests: optimization-axis ingest ---
+
+
+def test_optimization_axes_become_columns(fixture_opt_tree) -> None:
+    df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
+    assert "ds_layout_hasher" in df.columns
+    assert "ds_config_singleton_pruning" in df.columns
+    assert set(df["ds_layout_hasher"].dropna()) == {"sip", "fx"}
+    # config flag stays boolean-valued
+    assert set(df["ds_config_singleton_pruning"].dropna()) == {True, False}
+
+
+def test_conventional_run_has_no_opt_columns(fixture_tree) -> None:
+    df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    assert discover_opt_columns(df) == []
+
+
+def test_default_backfill_applied(fixture_tree) -> None:
+    # fixture_tree has no ds_layout_hasher; default must NOT fabricate a column.
+    df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    assert "ds_layout_hasher" not in df.columns
+
+
+def test_discover_opt_columns(fixture_opt_tree) -> None:
+    df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
+    cols = discover_opt_columns(df)
+    assert "ds_layout_hasher" in cols
+    assert "ds_config_singleton_pruning" in cols
+
+
+def test_load_samples_unchanged(fixture_tree) -> None:
+    s = load_samples(fixture_tree["paths"], fixture_tree["criterion_root"])
+    assert {"criterion_group", "criterion_function", "per_iter_ns"} <= set(s.columns)

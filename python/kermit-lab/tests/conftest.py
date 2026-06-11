@@ -228,3 +228,60 @@ def fixture_tree(tmp_path: Path) -> dict:
         "reports_dir": reports_dir,
         "paths": sorted(paths),
     }
+
+
+@pytest.fixture
+def fixture_opt_tree(tmp_path: Path) -> dict:
+    """HashTrie reports carrying optimization axes for ablation tests.
+
+    2 hashers (sip, fx) × 2 config flags (singleton_pruning true/false), one
+    query, time + space each. Gives ≥2 distinct values for both
+    ds_layout_hasher and ds_config_singleton_pruning so ablation paths fire.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for hasher in ("sip", "fx"):
+        for pruning in (True, False):
+            tag = f"{hasher}-{'on' if pruning else 'off'}"
+            iter_fn = f"HashTrie/{tag}/iteration"
+            space_fn = f"HashTrie/{tag}/space"
+            iter_point = 100.0 if hasher == "sip" else 80.0
+            space_point = 6400.0
+            iter_samples = [(i + 1, iter_point * (i + 1)) for i in range(10)]
+            space_samples = [(i + 1, space_point * (i + 1)) for i in range(10)]
+            _write_function_dir(
+                criterion_root, _FunctionSpec("run", iter_fn, "time", iter_point, iter_samples)
+            )
+            _write_function_dir(
+                criterion_root, _FunctionSpec("run", space_fn, "space", space_point, space_samples)
+            )
+            paths.append(
+                _write_report(
+                    reports_dir,
+                    f"run-HashTrie-{tag}",
+                    kind="run",
+                    axes={
+                        "benchmark": "triangle",
+                        "query": "triangle",
+                        "data_structure": "HashTrie",
+                        "algorithm": "LeapfrogTriejoin",
+                        "tuples": 100,
+                        "ds_layout_hasher": hasher,
+                        "ds_config_singleton_pruning": pruning,
+                    },
+                    metadata=[{"label": "hasher", "value": hasher}],
+                    groups=[
+                        ("run", iter_fn, "time"),
+                        ("run", space_fn, "space"),
+                    ],
+                )
+            )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }
