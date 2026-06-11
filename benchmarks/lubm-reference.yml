@@ -1,0 +1,5 @@
+name: lubm-reference
+description: "Reference comparison: LUBM(1,0), all 14 queries, all data structures"
+generator:
+  kind: lubm
+  scale: 1
