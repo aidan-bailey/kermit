@@ -306,10 +306,16 @@ The Rust CLI deliberately doesn't render plots — Criterion's auto-plots are
 disabled. Benchmark exploration happens in `python/kermit-lab/`, a
 notebook-first analysis library managed with [uv](https://docs.astral.sh/uv/)
 that loads `--report-json` output and Criterion artefacts into pandas
-DataFrames. Six plot shapes return inline `matplotlib.figure.Figure`;
+DataFrames. `kl.load` surfaces every report axis as a column — including the
+optimization axes `ds_layout_*` / `ds_config_*` / `ds_build_mode`, so any of
+them can be plotted. A general `kl.plot(df, kind=…, x=…, colour=…, facet=…)`
+engine binds any axis to any visual channel; the named shapes (`scaling`,
+`bar_time`, `bar_space`, `tradeoff`, `dist`, `bar_queries`, `ablation`) are
+presets over it, each returning an inline `matplotlib.figure.Figure`.
 `summary` / `compare` / `bootstrap_ratio_ci` / `mannwhitney_u` provide pivots
 and stats. The CLI subcommands listed below are thin wrappers over the same
-Python API.
+Python API. For *which* comparison to run and how to read the results, see
+[`BENCHMARKING.md`](BENCHMARKING.md).
 
 ### One-time setup
 
@@ -331,10 +337,30 @@ uv run kermit-lab bar-space   bench-runs/*.json --out plots/bar-space.pdf
 uv run kermit-lab tradeoff    bench-runs/*.json --out plots/tradeoff.pdf
 uv run kermit-lab dist        bench-runs/*.json --out plots/dist.pdf
 uv run kermit-lab bar-queries bench-runs/*.json --ds TreeTrie --algo LeapfrogTriejoin --out plots/bar-queries.pdf
+uv run kermit-lab ablation    bench-runs/*.json --axis ds_layout_hasher --out plots/ablation.pdf
 ```
 
 The output format is determined by the `--out` suffix (`pdf`, `png`, `svg`,
 or `pgf`).
+
+### The general `plot` subcommand
+
+The presets above are configurations of one engine. Drive it directly to bind
+any axis — including an optimization axis — to any channel:
+
+```sh
+uv run kermit-lab plot bench-runs/*.json \
+  --kind bar --y time \
+  --x ds_config_singleton_pruning \
+  --colour data_structure --facet query \
+  --out plots/ablation-pruning.pdf
+```
+
+`--kind` is one of `bar`/`line`/`scatter`/`violin`; `--x`/`--colour`/`--style`/
+`--facet` take column names (`tuples`, `data_structure`, `query`, or any
+`ds_*`/`algo_*` optimization axis), `--y` is `time` or `space`, and repeatable
+`--filter k=v` holds axes fixed. See [`BENCHMARKING.md`](BENCHMARKING.md) for
+the ablation workflow.
 
 ### Render every applicable shape (`render-all`)
 
