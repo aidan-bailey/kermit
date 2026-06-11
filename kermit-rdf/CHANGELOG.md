@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-06-11
+
+### Added
+
+- WatDiv "Basic Testing" pipeline: `run_basic_pipeline` and `drive_basic`, with vendored L/S/F/C query templates
+- LUBM cardinality regression test and a WatDiv Basic Testing end-to-end test
+
+### Changed
+
+- Parameterize `process_artifacts` over the meta kind
+- Split the LUBM entailment loop into per-rule functions; lift `sha256_file` to the crate root; name parquet column strings as constants; extract shared timestamp helpers
+- `kermit-ds` dependency to 0.2.0
+- `kermit-bench` dependency to 0.1.2
+
+### Fixed
+
+- Seed empty relations for predicates absent from the basic-workload data
+- Tighten subprocess and path error handling
+- `owl:inverseOf` entailment rule now skips blank-node objects
+
 ## [0.1.0] - 2026-05-05
 
 ### Added

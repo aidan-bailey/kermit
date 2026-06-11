@@ -1,7 +1,7 @@
 [package]
 name = "kermit-rdf"
 description = "RDF/SPARQL preprocessing pipeline for Kermit benchmarks"
-version = "0.1.0"
+version = "0.1.1"
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
@@ -11,8 +11,8 @@ repository.workspace = true
 
 [dependencies]
 kermit-parser = { version = "0.0.3", path = "../kermit-parser" }
-kermit-ds = { version = "0.1.1", path = "../kermit-ds" }
-kermit-bench = { version = "0.1.1", path = "../kermit-bench" }
+kermit-ds = { version = "0.2.0", path = "../kermit-ds" }
+kermit-bench = { version = "0.1.2", path = "../kermit-bench" }
 arrow = "56.2.0"
 parquet = "56.2.0"
 flate2 = "1"

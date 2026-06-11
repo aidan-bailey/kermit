@@ -59,10 +59,13 @@ All of these must pass: `cargo test`, `cargo clippy` (warnings are errors), `car
 kermit-iters    → Core iterator traits (LinearIterator, TrieIterator). Zero dependencies.
 kermit-derive   → Proc macros (#[derive(IntoTrieIter)]) for iterator boilerplate.
 kermit-parser   → Datalog query parser (winnow). Parses "Q(X,Z) :- R(X,Y), S(Y,Z)."
-kermit-ds       → Data structures: TreeTrie (pointer-based), ColumnTrie (column-oriented).
-                  Both implement Relation + TrieIterable traits.
-kermit-algos    → Join algorithms: LeapfrogJoinIter (binary), LeapfrogTriejoinIter (multi-way).
-                  Generic over any TrieIterable data structure via JoinAlgo<DS> trait.
+kermit-ds       → Data structures: TreeTrie (pointer-based), ColumnTrie (column-oriented),
+                  HashTrie (hash-based, generic over a HashStrategy). TreeTrie/ColumnTrie
+                  implement Relation + TrieIterable; HashTrie implements Relation +
+                  HashTrieIterable.
+kermit-algos    → Join algorithms: LeapfrogJoinIter (binary), LeapfrogTriejoinIter (multi-way),
+                  HashTriejoin (hash-based multi-way). Generic over data structures via the
+                  JoinAlgo<DS> trait.
 kermit-bench    → Benchmark definitions, discovery, and caching. No internal deps.
                   YAML-based benchmark declarations (supports multiple named queries per benchmark),
                   ZivaHub download, platform cache dir (~/.cache/kermit/benchmarks/ on Linux).
@@ -171,8 +174,10 @@ Per Priorities item 3, every algorithm and index structure has a dedicated doc.
 
 - `docs/algorithms/leapfrog-triejoin.md` — multi-way worst-case-optimal join (CLI-exposed).
 - `docs/algorithms/leapfrog-join.md` — k-way sorted intersection used internally by `LeapfrogTriejoin`.
+- `docs/algorithms/hash-triejoin.md` — hash-trie-based multi-way join (`-a hash-triejoin`).
 - `docs/data-structures/tree-trie.md` — pointer-based trie (`-i tree-trie`).
 - `docs/data-structures/column-trie.md` — column-oriented trie (`-i column-trie`).
+- `docs/data-structures/hash-trie.md` — hash-based trie (`-i hash-trie`).
 - `docs/algorithms/TEMPLATE.md`, `docs/data-structures/TEMPLATE.md` — skeletons for new component docs.
 
 ## Code Style

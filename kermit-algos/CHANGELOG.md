@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.12] - 2026-06-11
+
+### Added
+
+- `HashTriejoin` multi-way join (paper Algorithm 3), with `SingletonHashTrieIter`, leaf-level emission (`enumerate` / `emit_leaf` / `verify_and_construct`), and a `HashTrieIterKind` dispatch enum
+
+### Changed
+
+- Rename LFTJ `iterator_pool` to `idle_iterators`; clarify LFTJ naming and state machine, and document its invariants
+- Remove the dead `Node` trait and a stale commented-out test block
+- `kermit-iters` dependency to 0.0.10
+- `kermit-derive` dependency to 0.0.7
+
+### Fixed
+
+- Enforce a valid global attribute order in triejoins
+
 ## [0.0.11] - 2026-05-05
 
 ### Added

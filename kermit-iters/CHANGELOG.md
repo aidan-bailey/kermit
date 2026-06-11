@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10] - 2026-06-11
+
+### Added
+
+- `optimization` trait family (`LayoutOption` / `ConfigOption` / `BuildMode`) underpinning the optimization-standard axes
+- `HashStrategy` trait with `SipHash` and `FxHash` strategies for hash-trie keying
+- `HashTrieIterator` and `HashTrieIterable` traits, re-exported from the crate root, for the hash-trie iterator family
+
+### Changed
+
+- Add `rustc-hash` and `serde_json` dependencies
+
+### Fixed
+
+- `seek` now behaves correctly when called on an iterator before its first `next`
+
 ## [0.0.9] - 2026-05-05
 
 ### Changed

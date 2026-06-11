@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-06-11
+
+### Added
+
+- `HashTrie` and `HashTriejoin` wired into the CLI selectors and bench dispatch (`-i hash-trie`, `-a hash-triejoin`)
+- `HasherChoice` / `LayoutChoices` CLI scaffolding; bench-report `axes` now include `ds_layout_hasher`
+- `watdiv-basic` generator dispatch to `run_basic_pipeline`
+- `IndexStructureSelector::supports_algorithm` to gate incompatible structure/algorithm pairs
+
+### Changed
+
+- Make `hash_join` generic over `HashStrategy`
+- Load each parquet relation once in `run_benchmark`, avoiding redundant re-parsing
+- `kermit-ds` dependency to 0.2.0
+- `kermit-iters` dependency to 0.0.10
+- `kermit-algos` dependency to 0.0.12
+- `kermit-bench` dependency to 0.1.2
+- `kermit-rdf` dependency to 0.1.1
+
+### Fixed
+
+- Propagate cache-dir errors and dedupe cache lookups
+- Report the missing relation name in DB diagnostics
+
 ## [0.1.1] - 2026-05-05
 
 ### Added
