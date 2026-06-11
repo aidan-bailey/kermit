@@ -20,13 +20,14 @@ use {
         driver::{self, invoke::split_queries, DriverInputs, RawArtifacts, StressParams},
         error::RdfError,
         expected, parquet, partition, sha256_file,
-        sparql::translator::translate_query,
+        sparql::translator::{bgp_predicate_iris, translate_query},
         timestamp::utc_iso8601_now,
+        value::RdfValue,
         yaml_emit::{write_benchmark_yaml, YamlInputs},
     },
     serde::Serialize,
     std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         fs,
         path::{Path, PathBuf},
     },
@@ -112,7 +113,7 @@ impl From<&StressParams> for StressParamsMeta {
 /// integration test (Task 17) can drive stages 4–6 with a hand-crafted
 /// `RawArtifacts`-equivalent.
 pub fn process_artifacts(
-    inputs: &PipelineInputs, raw: &RawArtifacts, meta_kind: &str,
+    inputs: &PipelineInputs, raw: &RawArtifacts, meta_kind: &str, seed_missing_predicates: bool,
 ) -> Result<PipelineMeta, RdfError> {
     fs::create_dir_all(inputs.out_dir)?;
     let raw_root = inputs.out_dir.join("raw");
@@ -135,8 +136,44 @@ pub fn process_artifacts(
         copied_sparql_paths.push(s_dst);
     }
 
-    let part = partition::partition(raw_root.join("data.nt"))?;
+    let mut part = partition::partition(raw_root.join("data.nt"))?;
     let mut dict = part.dict;
+
+    // Basic workload: fixed templates may reference predicates absent from the
+    // (probabilistically generated) data. Seed an empty relation for each such
+    // predicate so translation yields an empty-result join instead of erroring.
+    if seed_missing_predicates {
+        let mut needed: Vec<String> = Vec::new();
+        for sparql_path in &copied_sparql_paths {
+            let text = fs::read_to_string(sparql_path)?;
+            for q in split_queries(&text) {
+                for iri in bgp_predicate_iris(&q)? {
+                    if !needed.contains(&iri) {
+                        needed.push(iri);
+                    }
+                }
+            }
+        }
+        let mut used: HashSet<String> = part.relations.iter().map(|r| r.name.clone()).collect();
+        for p_iri in needed {
+            if part.predicate_map.contains_key(&p_iri) {
+                continue;
+            }
+            let base = partition::sanitize_predicate(&p_iri);
+            let pred_id = dict.intern(RdfValue::Iri(p_iri.clone()));
+            let name = if used.contains(&base) {
+                format!("{base}_{pred_id}")
+            } else {
+                base.clone()
+            };
+            used.insert(name.clone());
+            part.predicate_map.insert(p_iri.clone(), name.clone());
+            part.relations.push(partition::PartitionedRelation {
+                name,
+                tuples: Vec::new(),
+            });
+        }
+    }
 
     for rel in &part.relations {
         let path = inputs.out_dir.join(format!("{}.parquet", rel.name));
@@ -216,7 +253,7 @@ pub fn process_artifacts(
 /// Top-level entry point: runs the stress driver and processes artifacts.
 pub fn run_pipeline(inputs: &PipelineInputs) -> Result<PipelineMeta, RdfError> {
     let raw = driver::drive(&inputs.driver)?;
-    process_artifacts(inputs, &raw, "watdiv-onthefly")
+    process_artifacts(inputs, &raw, "watdiv-onthefly", false)
 }
 
 /// Top-level entry point for the **Basic Testing** workload: runs the basic
@@ -225,5 +262,5 @@ pub fn run_basic_pipeline(
     inputs: &PipelineInputs, template_src_dir: &Path,
 ) -> Result<PipelineMeta, RdfError> {
     let raw = driver::drive_basic(&inputs.driver, template_src_dir)?;
-    process_artifacts(inputs, &raw, "watdiv-basic-onthefly")
+    process_artifacts(inputs, &raw, "watdiv-basic-onthefly", true)
 }

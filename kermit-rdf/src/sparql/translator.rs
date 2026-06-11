@@ -89,6 +89,37 @@ pub fn translate_query(
     Ok(format!("{head_name}({head_terms}) :- {body}."))
 }
 
+/// Returns the distinct ground predicate IRIs of a BGP-only SELECT query, in
+/// document order. Used by the basic pipeline to seed empty relations for
+/// predicates absent from the generated data, so `translate_query` does not
+/// hard-error on them. Rejects the same unsupported shapes as
+/// [`translate_query`]. Predicate variables are skipped (they would be
+/// rejected by `translate_query` later).
+pub fn bgp_predicate_iris(sparql: &str) -> Result<Vec<String>, RdfError> {
+    let parsed = parse_query(sparql)?;
+    let pattern = match parsed {
+        | Query::Select {
+            pattern, ..
+        } => pattern,
+        | _ => {
+            return Err(RdfError::UnsupportedSparql(
+                "only SELECT queries are supported".to_string(),
+            ));
+        },
+    };
+    let (bgp, _proj) = extract_bgp_and_projection(pattern)?;
+    let mut iris: Vec<String> = Vec::new();
+    for triple in &bgp {
+        if let NamedNodePattern::NamedNode(n) = &triple.predicate {
+            let iri = n.as_str().to_string();
+            if !iris.contains(&iri) {
+                iris.push(iri);
+            }
+        }
+    }
+    Ok(iris)
+}
+
 /// Returns `(triples, projected_vars)` where `projected_vars = None` means
 /// SELECT *.
 fn extract_bgp_and_projection(
