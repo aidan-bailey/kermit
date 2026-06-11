@@ -17,6 +17,41 @@ and run via the same `kermit bench run`.
 For a side-by-side comparison with other benchmarks in the suite, see
 [`README.md`](README.md#cross-benchmark-comparison).
 
+## Default workloads
+
+Two generator-driven benchmarks ship as runnable suites (regenerated on
+`bench run`, non-deterministic — see the non-determinism notes below):
+
+- **`watdiv-basic`** — the canonical Basic Testing query set: Linear
+  (`L1`–`L5`), Star (`S1`–`S7`), Snowflake (`F1`–`F5`), Complex (`C1`–`C3`),
+  20 templates. `generator.kind: watdiv-basic`. Runs `watdiv -d` then `-q` on
+  the vendored templates (skips `-s`), one concrete query per template.
+- **`watdiv-stress-default`** — the diversified stress workload at default
+  parameters (`generator.kind: watdiv`, default `WatdivStressSpec`),
+  complementing the frozen `watdiv-stress-{100,1000}` snapshots.
+
+Run: `cargo run -- bench run watdiv-basic -i tree-trie -a leapfrog-triejoin`.
+
+### Vendored Basic Testing templates
+
+`kermit-rdf/vendor/watdiv/testsuite/{L,S,F,C}*.txt` (20 files) are the upstream
+WatDiv Basic Testing query templates (same provenance as the vendored binary;
+see VERSION). Each is a standard `-q` template: a `#mapping` line per
+placeholder plus a BGP `SELECT`. `S1`'s `%v2%` is a subject-position
+placeholder, so the basic workload exercises the subject-position-constant
+join path.
+
+### Absent predicates in the basic workload
+
+The fixed basic templates reference predicates by the WatDiv data model, but
+WatDiv generates data probabilistically, so a referenced predicate may have
+zero instances at a given scale. The basic pipeline therefore seeds an **empty
+relation** for any query-referenced predicate absent from the generated data
+(absent predicate = empty relation = empty result), rather than failing
+translation. This keeps the workload robust and deterministic regardless of
+scale. At low scale, expect some basic queries to return 0 results because a
+relation is empty — raise the scale for more meaningful cardinalities.
+
 ## How to run
 
 ### Committed snapshots (default)
