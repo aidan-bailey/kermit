@@ -34,9 +34,9 @@
 //! are not parsed from `univ-bench.owl` at runtime — that would add a
 //! file-format dependency for ~30 axioms that haven't changed since
 //! 2005. The LUBM(1, 0) cardinality regression test
-//! (`tests/lubm_cardinalities.rs`) is the load-bearing correctness check
-//! for the rule set: missing rules manifest as result counts below the
-//! LUBM paper Table 3 reference values.
+//! (`kermit/tests/lubm_cardinalities.rs`, in the `kermit` crate) is the
+//! load-bearing correctness check for the rule set: missing rules manifest
+//! as result counts below the LUBM paper Table 3 reference values.
 
 use {
     crate::{error::RdfError, ntriples, value::RdfValue},

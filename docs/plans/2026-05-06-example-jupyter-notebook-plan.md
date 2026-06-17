@@ -17,7 +17,7 @@
 ### Files to Create
 
 ```
-python/kermit-lab/notebooks/00_full_timeline.ipynb   # the notebook (15 cells)
+python/kermit-lab/notebooks/00_full_timeline.ipynb   # the notebook (16 cells)
 ```
 
 ### Files to Modify
@@ -42,7 +42,7 @@ target/criterion/                                    # gitignored
 
 ## Cell Inventory
 
-The notebook has 15 cells across 7 phases. Tasks 1–6 add them incrementally; this section is the canonical reference.
+The notebook has 16 cells across 7 phases. Tasks 1–6 add them incrementally; this section is the canonical reference.
 
 | Cell | Type | Phase | Owner Task |
 |---|---|---|---|

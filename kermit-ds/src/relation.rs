@@ -1,5 +1,6 @@
 //! Core relation abstraction: the [`Relation`] trait that every storage
-//! backend implements (see `TreeTrie` and `ColumnTrie` in [`crate::ds`]),
+//! backend implements (see `TreeTrie`, `ColumnTrie`, and `HashTrie` in
+//! [`crate::ds`]),
 //! plus the blanket [`RelationFileExt`] for loading from CSV or Parquet.
 //!
 //! The trait exists so join algorithms in `kermit-algos` can be written

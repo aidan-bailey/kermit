@@ -35,4 +35,4 @@ A small example — three relations, ≤ four tuples each — that a reader can 
 ## See also
 
 - Cross-references to companion docs in `docs/algorithms/` or `docs/data-structures/`.
-- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this algorithm must pass all 11 patterns under every index structure (Priorities item 1).
+- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this algorithm must pass all 11 patterns under every compatible index structure (Priorities item 1).

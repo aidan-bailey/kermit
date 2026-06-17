@@ -53,7 +53,7 @@ Output (CSV to stdout):
 2,3,4
 ```
 
-Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. Both `tree-trie` and `column-trie` index structures are supported; `bench ds` and `bench run` also accept `all` to sweep every variant.
+Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. `kermit join` supports the two sorted-trie structures `tree-trie` and `column-trie` (both paired with `leapfrog-triejoin`); the third structure, `hash-trie`, is exercised via `bench run -i hash-trie -a hash-triejoin` (see [Benchmarking](#benchmarking)).
 
 ## Benchmarking
 
@@ -61,21 +61,24 @@ All benchmarking is driven through the CLI. Each `bench` subcommand wraps Criter
 
 ### Named benchmarks (`bench run`)
 
-Run benchmarks declared in `benchmarks/*.yml`. Each YAML defines one or more named queries and the relations they need. Some benchmarks are *declarative generators* (e.g. `watdiv-100`, `lubm-1`) — instead of pointing at downloadable files they declare a `generator:` block and `bench run` materialises the data on first invocation.
+Run benchmarks declared in `benchmarks/*.yml`. Each YAML defines one or more named queries and the relations they need. Some benchmarks are *declarative generators* (e.g. `watdiv-basic`, `lubm-reference`) — instead of pointing at downloadable files they declare a `generator:` block and `bench run` materialises the data on first invocation.
 
 ```sh
 kermit bench run triangle \
   --indexstructure tree-trie \
   --algorithm leapfrog-triejoin
 
-# Cartesian sweep: every benchmark × every index structure × every algorithm.
-kermit bench run --all -i all -a all
+# Sweep every benchmark for one compatible (index, algorithm) pair.
+# The three valid pairings are:
+kermit bench run --all -i tree-trie   -a leapfrog-triejoin
+kermit bench run --all -i column-trie -a leapfrog-triejoin
+kermit bench run --all -i hash-trie   -a hash-triejoin
 ```
 
 Useful flags:
 - `--query <NAME>` — run a single named query from the benchmark (default: all queries).
 - `--all` — run every benchmark in `benchmarks/`.
-- `-i all` / `-a all` — sweep every index structure / join algorithm.
+- `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the three compatible pairings above are supported; `-i all` / `-a all` does **not** yet skip incompatible combinations, so run one valid pair at a time.
 - `--metrics insertion iteration space` — pick which metrics to measure (default: all three).
 - `--force` — regenerate a declarative-generator benchmark when its cached `meta.json` no longer matches the YAML's `spec_hash` (otherwise drift is a hard error).
 
@@ -90,7 +93,7 @@ kermit bench gen watdiv --scale 10 --tag dev   # → watdiv-stress-10-dev
 kermit bench gen lubm   --scale 1  --tag dev   # → lubm-1-dev (JDK 8 required)
 ```
 
-Both write into `~/.cache/kermit/benchmarks/<name>/` and become discoverable to `bench run/list`. WatDiv requires the vendored binary (build under `kermit-rdf/vendor/watdiv/`); LUBM requires JDK 8 on PATH for the vendored jar. See [`docs/benchmarks/WATDIV.md`](docs/benchmarks/WATDIV.md), [`docs/benchmarks/LUBM.md`](docs/benchmarks/LUBM.md), and [`USAGE.md`](USAGE.md) for full flag listings.
+Both write into `~/.cache/kermit/benchmarks/<name>/` and become discoverable to `bench run/list`. WatDiv uses the committed vendored binary at `kermit-rdf/vendor/watdiv/bin/Release/watdiv`; LUBM requires JDK 8 on PATH for the vendored jar. See [`docs/benchmarks/WATDIV.md`](docs/benchmarks/WATDIV.md), [`docs/benchmarks/LUBM.md`](docs/benchmarks/LUBM.md), and [`USAGE.md`](USAGE.md) for full flag listings.
 
 ### Manage benchmark cache
 
@@ -127,7 +130,7 @@ kermit bench join \
   --indexstructure tree-trie
 ```
 
-Supported index structures: `tree-trie`, `column-trie`. Supported metrics: `insertion`, `iteration`, `space`.
+Supported index structures (for `bench join`): `tree-trie`, `column-trie` — both via `leapfrog-triejoin`. (`hash-trie` is only available through `bench run`/`bench ds`, paired with `hash-triejoin`.) Supported metrics: `insertion`, `iteration`, `space`.
 
 ### JSON reports for tooling
 
@@ -146,7 +149,7 @@ The schema (currently v2) is documented in `docs/specs/bench-report-schema.md`.
 
 ## Analysis and plotting
 
-Criterion's auto-generated SVG/HTML output is disabled. Benchmark results are explored through [`python/kermit-lab/`](python/kermit-lab/), a [uv](https://docs.astral.sh/uv/)-managed notebook-first analysis library that loads `--report-json` output plus Criterion's per-function JSON into pandas DataFrames. Six plot shapes return inline `matplotlib` Figures; pivot/comparison/stats helpers ship alongside. The CLI is preserved as a thin wrapper. Start with [`python/kermit-lab/notebooks/00_full_timeline.ipynb`](python/kermit-lab/notebooks/00_full_timeline.ipynb) for an end-to-end walkthrough that generates its own data, runs the bench sweep, and produces inline plots.
+Criterion's auto-generated SVG/HTML output is disabled. Benchmark results are explored through [`python/kermit-lab/`](python/kermit-lab/), a [uv](https://docs.astral.sh/uv/)-managed notebook-first analysis library that loads `--report-json` output plus Criterion's per-function JSON into pandas DataFrames. Seven plot shapes return inline `matplotlib` Figures; pivot/comparison/stats helpers ship alongside. The CLI is preserved as a thin wrapper. Start with [`python/kermit-lab/notebooks/00_full_timeline.ipynb`](python/kermit-lab/notebooks/00_full_timeline.ipynb) for an end-to-end walkthrough that generates its own data, runs the bench sweep, and produces inline plots.
 
 ```sh
 # one-time install
@@ -159,7 +162,7 @@ uv run --with jupyter jupyter lab notebooks/
 uv run kermit-lab render-all ../../bench-runs/*.json --out-dir ../../plots/
 ```
 
-See [`python/kermit-lab/README.md`](python/kermit-lab/README.md) for the public Python API (`load`, `summary`, `compare`, `bootstrap_ratio_ci`, `mannwhitney_u`) and CLI subcommands (`scaling`, `bar-time`, `bar-space`, `tradeoff`, `dist`, `bar-queries`).
+See [`python/kermit-lab/README.md`](python/kermit-lab/README.md) for the public Python API (`load`, `summary`, `compare`, `bootstrap_ratio_ci`, `mannwhitney_u`) and CLI subcommands (`plot`, `scaling`, `bar-time`, `bar-space`, `tradeoff`, `dist`, `bar-queries`, `ablation`, `render-all`).
 
 ## Contributing
 

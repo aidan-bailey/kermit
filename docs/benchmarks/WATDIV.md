@@ -56,8 +56,11 @@ relation is empty — raise the scale for more meaningful cardinalities.
 
 ### Committed snapshots (default)
 
-12 YAML files at `benchmarks/watdiv-stress-*.yml` reference Parquet artefacts
-hosted on ZivaHub. Run with:
+The 12 `benchmarks/watdiv-stress-{100,1000}-{warmup,test-1..5}.yml` snapshots
+reference Parquet artefacts hosted on ZivaHub. (The `watdiv-stress-*.yml` glob
+also matches `watdiv-stress-default.yml`, but that file is a declarative
+generator spec — see [Default workloads](#default-workloads) — not a ZivaHub
+snapshot.) Run with:
 
 ```bash
 kermit bench fetch watdiv-stress-100-test-1   # one-time download to cache
@@ -110,9 +113,12 @@ kermit bench gen watdiv --scale N --tag STR \
 | `--output-dir` | `~/.cache/kermit/benchmarks` | Custom output dirs are NOT auto-discovered by `bench list/fetch/run` |
 | `--no-bwrap` | false | Skip the bubblewrap sandbox; requires host `/usr/share/dict/words` |
 
-The four stress flags (`--max-query-size`, `--query-count`,
-`--constants-per-query`, `--allow-join-vertex`) shape the workload itself;
-their semantics are described in [Workload reference](#workload-reference).
+Of the four stress flags, only `--max-query-size` and `--query-count` are
+currently forwarded to the vendored binary and shape the workload;
+`--constants-per-query` and `--allow-join-vertex` are recorded in `meta.json`
+for provenance but have no effect on the generated data or queries (the
+vendored binary has no matching flag yet). Their semantics are described in
+[Workload reference](#workload-reference).
 
 End-to-end runtime is dominated by query generation; SF=100 with default
 stress params completes in roughly 30 s on a developer laptop.
@@ -156,7 +162,7 @@ watdiv binary (vendored)        kermit-rdf::driver
     │                                  │
     │ -d <model> <scale>               │ stage temp dir, bind-mount
     │ -s <model> <data> <q-size> <q-n> │ /usr/share/dict/words via bwrap
-    │ -q <model> <template> <count>    │
+    │ -q <model> <template> <count>    │ <recurrence> hard-coded to 1
     ▼                                  ▼
  stdout: triples / templates / queries (split on `#end` markers)
                                        │
@@ -202,15 +208,17 @@ control template diversity:
 
 | Parameter | Effect |
 |-----------|--------|
-| `max-query-size` | Maximum number of triple patterns per query |
-| `query-count` | Concrete queries instantiated per template |
-| `constants-per-query` | Number of `c<id>` constants pinning each query |
-| `allow-join-vertex` | Whether stress templates can include join vertices |
+| `max-query-size` | Maximum number of triple patterns per query (forwarded to `-s`) |
+| `query-count` | Concrete queries instantiated per template (forwarded to `-s`) |
+| `constants-per-query` | Intended number of `c<id>` constants pinning each query — **recorded in `meta.json` for provenance only; NOT currently forwarded to the vendored binary** (no effect on generated data/queries) |
+| `allow-join-vertex` | Intended toggle for whether stress templates can include join vertices — **recorded in `meta.json` for provenance only; NOT currently forwarded to the vendored binary** (no effect on generated data/queries) |
 
-These four parameters are settable on the command line via the matching
+All four parameters are settable on the command line via the matching
 `--max-query-size`, `--query-count`, `--constants-per-query`, and
 `--allow-join-vertex` flags, or via the `stress:` block in the declarative
-YAML spec — see [How to run](#how-to-run).
+YAML spec — see [How to run](#how-to-run). Only the first two currently affect
+the binary; the other two are persisted for provenance and will be wired up if
+the vendored binary gains a matching flag.
 
 Body atom count distribution from a representative SF=100 stress file (200
 queries sampled): 4 atoms (75), 6 atoms (61), 5 atoms (31), 2 atoms (21),
@@ -250,21 +258,20 @@ parameters — use `bench gen watdiv` and accept fingerprint drift between runs.
 
 ## Vendored generator
 
-`kermit-rdf/vendor/watdiv/bin/Release/watdiv` (~448 KB, **gitignored** —
-build it locally; not committed to the repo).
+`kermit-rdf/vendor/watdiv/bin/Release/watdiv` (~360 KB, committed/vendored —
+ships with the repo, like the LUBM jar).
 
 | Field | Value |
 |-------|-------|
 | Source | <https://github.com/dgasmith/watdiv> (upstream archived) |
 | Version tag | `watdiv-upstream-2014` (from `kermit-rdf/vendor/watdiv/VERSION`) |
-| Build | `make` in the upstream `watdiv-cpp/` (see `/tb/Source/Academia/watdiv-rs/`) |
+| Build | `make` in the upstream tree (see Source URL above) |
 
-The binary itself is excluded from the repository (commit `1aaac0d`); only
-its surrounding files (`MODEL.txt`, `files/firstnames.txt`,
-`files/lastnames.txt`, `files/words`, `LICENSE`, `VERSION`) are committed.
-Builders must compile the binary locally and place it under
-`kermit-rdf/vendor/watdiv/bin/Release/watdiv` before the on-the-fly pipeline
-will run. Tests gate on `bin.exists()` and skip when the binary is absent.
+The binary is committed alongside its surrounding files (`MODEL.txt`,
+`files/firstnames.txt`, `files/lastnames.txt`, `files/words`, `LICENSE`,
+`VERSION`), so the on-the-fly pipeline runs against a fresh clone with no local
+build step. Tests still gate on `bin.exists()` and skip when the binary is
+absent (e.g. on unsupported platforms).
 
 ## Sandboxing
 

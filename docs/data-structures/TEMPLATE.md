@@ -33,6 +33,8 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | `TrieIterator::up()` | O(…) | | |
 | `HeapSize::heap_size_bytes()` | O(…) | | |
 
+The `TrieIterator::*` rows fit the sorted tries (`TreeTrie`, `ColumnTrie`). Hash-based structures expose the separate `HashTrieIterator` trait instead — document `HashTrieIterator::key/next/lookup/size/open/up/leaf_tuples` (no `seek`; hash navigation is exact-match) in their place (see `docs/data-structures/hash-trie.md`).
+
 Call out any known suboptimal asymptotic (e.g. linear-scan where a binary search is possible) so a future reader can tell intent from oversight.
 
 ## Worked micro-example
@@ -46,5 +48,5 @@ A short paragraph. Workload shapes where this structure shines vs. siblings. Wor
 ## See also
 
 - Sibling docs in `docs/data-structures/`.
-- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this structure must pass all 11 patterns under every algorithm (Priorities item 1).
+- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this structure must pass all 11 patterns under every compatible algorithm (Priorities item 1).
 - Algorithm doc(s) that consume the `TrieIterable` contract.

@@ -6,10 +6,11 @@ Depends on [`kermit-parser`](../kermit-parser), [`kermit-ds`](../kermit-ds), and
 
 ## Pipelines
 
-- [`pipeline::run_pipeline`](src/pipeline.rs) — WatDiv. Inputs: a [`PipelineInputs`](src/pipeline.rs) wrapping the vendored binary path, model file, scale, and stress params. Output: cache subdirectory with `meta.json` (`kind = "watdiv-onthefly"`), `benchmark.yml`, dict, per-predicate Parquet, and the raw `data.nt` / `templates/` / `queries/` carbon copies.
+- [`pipeline::run_pipeline`](src/pipeline.rs) — WatDiv. Inputs: a [`PipelineInputs`](src/pipeline.rs) wrapping the vendored binary path, model file, scale, and stress params. Output: cache subdirectory with `meta.json` (`kind = "watdiv-onthefly"`), `benchmark.yml`, dict, per-predicate Parquet, and a `raw/` directory holding `data.nt`, `templates/`, and `queries/` carbon copies.
+- [`pipeline::run_basic_pipeline`](src/pipeline.rs) — WatDiv Basic Testing. Inputs: the same [`PipelineInputs`](src/pipeline.rs) plus the `testsuite/` template directory (no stress params). Drives the basic workload over the 20 canonical L/S/F/C templates and processes artifacts the same way. Output meta has `kind = "watdiv-basic-onthefly"`.
 - [`lubm::pipeline::run_lubm_pipeline`](src/lubm/pipeline.rs) — LUBM. Inputs: a [`LubmPipelineInputs`](src/lubm/pipeline.rs) wrapping the vendored jar, scale (universities), seed, and the 14 query specs. Drives the jar, gunzips its output, runs Univ-Bench TBox forward chaining via [`lubm::entailment::entail`](src/lubm/entailment.rs), then partitions the entailed file. Output meta has `kind = "lubm-onthefly"`.
 
-Both record a [`spec_hash`](src/pipeline.rs) into `meta.json` when invoked from a declarative YAML so the materialization layer can detect param drift.
+All three record a [`spec_hash`](src/pipeline.rs) into `meta.json` when invoked from a declarative YAML so the materialization layer can detect param drift.
 
 ## Shared stages
 
@@ -24,7 +25,7 @@ Both record a [`spec_hash`](src/pipeline.rs) into `meta.json` when invoked from 
 ## Vendor directories
 
 - [`vendor/lubm-uba/lubm-uba.jar`](vendor/lubm-uba/) — committed (~2.9 MB). Requires a JDK 8 runtime on PATH at generation time. SHA-256 is recorded in `meta.json` for provenance and the jar's regeneration procedure lives at [`vendor/lubm-uba/REGENERATE.md`](vendor/lubm-uba/REGENERATE.md).
-- [`vendor/watdiv/`](vendor/watdiv/) — `MODEL.txt`, `files/`, `LICENSE`, and `VERSION` are committed. The binary at `bin/Release/watdiv` is **gitignored** and must be built locally; its SHA-256 is recorded in `meta.json` per generation.
+- [`vendor/watdiv/`](vendor/watdiv/) — `MODEL.txt`, `files/`, `LICENSE`, `VERSION`, and `testsuite/` (the 20 WatDiv Basic Testing query templates L1-L5, S1-S7, F1-F5, C1-C3 consumed by `run_basic_pipeline`) are committed. The binary at `bin/Release/watdiv` is also committed (vendored, ~360 KB) like the LUBM jar; its SHA-256 is recorded in `meta.json` per generation. (Re-vendoring it from source is only needed when refreshing the binary, not when consuming the repo.)
 
 ## LUBM queries
 

@@ -8,7 +8,10 @@ Core iterator traits for the Kermit workspace. This crate has zero internal depe
 - [`TrieIterator`](src/trie.rs) — extends `LinearIterator` with `open` (descend to child level) and `up` (ascend to parent). The fundamental abstraction consumed by Leapfrog Triejoin.
 - [`LinearIterable`](src/linear.rs) / [`TrieIterable`](src/trie.rs) — traits implemented by data structures that can produce such iterators.
 - [`TrieIteratorWrapper`](src/trie.rs) — adapts any `TrieIterator` into a standard `Iterator<Item = Vec<usize>>` via depth-first traversal, optionally filtered by arity.
-- [`JoinIterable`](src/joinable.rs) — marker trait that both iterator traits extend; unifies types consumable by `kermit-algos`.
+- [`HashTrieIterator`](src/hash_trie.rs) / [`HashTrieIterable`](src/hash_trie.rs) — the hash-trie iterator family. `HashTrieIterator` is a separate trait (not a `LinearIterator` extension) because hash navigation is exact-match, not least-upper-bound; it backs the `HashTriejoin` algorithm in `kermit-algos`.
+- [`HashStrategy`](src/hash_strategy.rs) (with [`FxHashStrategy`](src/hash_strategy.rs) / [`SipHashStrategy`](src/hash_strategy.rs)) — compile-time choice of hash function for `HashTrie`'s `usize → u64` mapping.
+- [`LayoutOption`](src/optimization.rs) / [`ConfigOption`](src/optimization.rs) / [`BuildMode`](src/optimization.rs) / [`HasOptimizationAxes`](src/optimization.rs) — the optimization vocabulary: the Layout/Config/BuildMode axes a data structure or algorithm declares, surfaced into bench-report axes. See [`docs/specs/optimization-standard.md`](../docs/specs/optimization-standard.md).
+- [`JoinIterable`](src/joinable.rs) — marker trait that the iterable producer traits (`LinearIterable`, `TrieIterable`, `HashTrieIterable`) extend; unifies types consumable by `kermit-algos`.
 - [`Key`](src/key_type.rs) — canonical `usize` key alias used throughout the workspace.
 
 ## Design rationale

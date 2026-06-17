@@ -1570,11 +1570,20 @@ fn main() -> anyhow::Result<()> {
                                 // family (`HashTrieIterable`, not
                                 // `TrieIterable`); it joins via the
                                 // `hash_join` free function rather than
-                                // the `DB` trait. The supports_algorithm
-                                // gate above ensures we only reach this
-                                // arm with `JoinAlgorithm::HashTriejoin`.
-                                // The `H: HashStrategy` parameter is
-                                // picked from
+                                // the `DB` trait. NOTE: the
+                                // supports_algorithm gate above does NOT
+                                // guarantee `algo == HashTriejoin` here —
+                                // it is permissive whenever either
+                                // selector is `All`, and the cross-product
+                                // loop does not filter incompatible
+                                // concrete pairs. So with e.g.
+                                // `-i all -a leapfrog-triejoin` this arm is
+                                // reached with `algo == LeapfrogTriejoin`,
+                                // still running `hash_join` but stamping
+                                // the report with the wrong algorithm. This
+                                // mislabelling is a known issue tracked
+                                // separately. The `H: HashStrategy`
+                                // parameter is picked from
                                 // `LayoutChoices::hash_trie_hasher_resolved()`
                                 // (Phase 4 of the optimization-standard
                                 // plan).

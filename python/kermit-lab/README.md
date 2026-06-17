@@ -80,7 +80,7 @@ samples = kl.load_samples("bench-runs/*.json", "target/criterion")
 lo, hi = kl.bootstrap_ratio_ci(a, b, rng=42)
 ```
 
-Six worked examples ship in [`notebooks/`](notebooks/):
+Eight worked examples ship in [`notebooks/`](notebooks/):
 
 - `00_full_timeline.ipynb` — generate a LUBM-1 dataset, run the bench sweep, then load and plot. **Start here.**
 - `01_quick_start.ipynb` — load a DataFrame and plot inline.
@@ -88,6 +88,8 @@ Six worked examples ship in [`notebooks/`](notebooks/):
 - `03_compare_ds.ipynb` — `compare()` envelope + `bootstrap_ratio_ci()`.
 - `04_watdiv_queries.ipynb` — multi-query bars across WatDiv stress runs.
 - `05_distributions.ipynb` — violin plot from samples + Mann-Whitney U test.
+- `06_ablation.ipynb` — plotting optimization axes (`ds_layout_*`/`ds_config_*`/`ds_build_mode`).
+- `07_lubm_reference_comparison.ipynb` — reference end-to-end comparison of all three index structures on LUBM(1, 0).
 
 ## CLI workflow
 

@@ -27,7 +27,7 @@ These were made interactively during brainstorming:
 
 `HashTrie` implements `HashTrieIterable`, not `TrieIterable`, so it cannot run
 LeapfrogTriejoin; `(HashTrie, HashTriejoin)` is the only valid pairing
-(`is_compatible`, `kermit/src/main.rs:134`). The honest framing — stated
+(`supports_algorithm`, `kermit/src/main.rs:128`). The honest framing — stated
 explicitly in the notebook's narrative — is three *system configurations*:
 
 1. TreeTrie + LeapfrogTriejoin
@@ -37,8 +37,8 @@ explicitly in the notebook's narrative — is three *system configurations*:
 The notebook enumerates these three explicitly — one `bench run` per
 configuration. (`-i all -a all` cannot be used: the CLI's cross-product
 expansion does not skip incompatible pairs; it panics at
-`kermit/src/db.rs:313` on `(TreeTrie, HashTriejoin)`. The `is_compatible`
-check at `kermit/src/main.rs:~134` only validates the top-level selector
+`kermit/src/db.rs:313` on `(TreeTrie, HashTriejoin)`. The `supports_algorithm`
+check at `kermit/src/main.rs:128` only validates the top-level selector
 pair, not the expansion. Discovered during implementation review; the CLI
 fix is filed as a separate change per scope discipline.)
 

@@ -60,9 +60,13 @@ kermit join … --output results.csv
 
 ### Pick the index structure
 
-`--indexstructure` accepts `tree-trie` (pointer-based) or `column-trie`
-(column-oriented). Both implement the same `Relation` + `TrieIterable` traits
+`--indexstructure` accepts `tree-trie` (pointer-based), `column-trie`
+(column-oriented), or `hash-trie` (hash-based). The two sorted tries implement
+the same `Relation` + `TrieIterable` traits, pair with `-a leapfrog-triejoin`,
 and are interchangeable from the CLI's perspective; benchmark to pick one.
+`hash-trie` lives in a different trait family (`HashTrieIterable`) and pairs
+only with `-a hash-triejoin`. The one-shot `kermit join` / `bench join` LFTJ
+path supports only the two sorted tries (`tree-trie`, `column-trie`).
 
 ## Benchmarks
 
@@ -158,22 +162,37 @@ kermit bench run triangle -i tree-trie -a leapfrog-triejoin -m space
 ### Sweep all index structures and algorithms
 
 `-i` and `-a` accept `all` as a value (in addition to the concrete
-variants). `bench ds` and `bench run` honour it as a Cartesian sweep over
-every index structure / join algorithm. `bench join` does *not* support
-`all` — it shares its argument struct with the one-shot `kermit join`
-command.
+variants). `bench ds` honours `-i all` as a sweep over every index
+structure (it has no algorithm axis). `bench run` takes the Cartesian
+product of both axes, but see the caveat below — the product is *not*
+filtered for compatible (index structure, algorithm) pairs. `bench join`
+does *not* support `all` — it shares its argument struct with the one-shot
+`kermit join` command.
 
 ```sh
-# Sweep both DS variants on a single benchmark + algorithm.
-kermit bench run triangle -i all -a leapfrog-triejoin
-
-# Full Cartesian sweep: every benchmark × every DS × every algorithm.
-kermit bench run --all -i all -a all
+# Sweep the two sorted-family DS variants on a single benchmark + algorithm.
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin
+kermit bench run triangle -i column-trie -a leapfrog-triejoin
 ```
 
-`-a all` currently expands to the same set as `-a leapfrog-triejoin`
-(LFTJ is the only concrete algorithm); the selector is wired up so adding
-a new `JoinAlgorithm` variant automatically joins the sweep.
+`-i all` expands to all three index structures (`column-trie`, `hash-trie`,
+`tree-trie`) and `-a all` expands to both concrete algorithms (`hash-triejoin`,
+`leapfrog-triejoin`); the selectors are wired up so adding a new `IndexStructure`
+or `JoinAlgorithm` variant automatically joins the sweep. **However, the
+cross-product currently does *not* filter incompatible pairs**, so the only
+benchmark runs that are both valid and correctly labelled are the three matched
+configurations:
+
+```sh
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin
+kermit bench run triangle -i column-trie -a leapfrog-triejoin
+kermit bench run triangle -i hash-trie -a hash-triejoin
+```
+
+Avoid `-i all -a all` (it panics on the first incompatible pair, e.g.
+`(column-trie, hash-triejoin)`) and `-i all -a leapfrog-triejoin` (it reaches
+the `(hash-trie, leapfrog-triejoin)` arm, which silently runs hash-triejoin yet
+labels the report's algorithm axis `LeapfrogTriejoin`).
 
 ### Declarative generator benchmarks
 
@@ -406,7 +425,9 @@ alias kermit=./target/release/kermit
 # 2. Fetch the Oxford uniform suite (six scale points).
 for s in 1 2 3 4 5 6; do kermit bench fetch oxford-uniform-s$s; done
 
-# 3. Run the triangle query at each scale, against both DS implementations.
+# 3. Run the triangle query at each scale, against the two sorted-family DS
+#    implementations (tree-trie and column-trie); hash-trie is omitted because
+#    it requires hash-triejoin rather than leapfrog-triejoin.
 for s in 1 2 3 4 5 6; do
   for ds in tree-trie column-trie; do
     kermit bench run oxford-uniform-s$s \

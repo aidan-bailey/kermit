@@ -92,7 +92,8 @@ fn build_variable_to_iter_map(
 }
 
 /// Verify a candidate result tuple's join condition and construct the
-/// output tuple in `variable_ordering` order. Returns `None` if any
+/// output tuple in canonical (head-first) variable-index order (i.e. indexed
+/// by the variable indices in `predicate_variables`). Returns `None` if any
 /// variable mentioned by two or more predicates has inconsistent values
 /// in the candidate (a hash false positive).
 ///

@@ -35,22 +35,26 @@ paper Table 3 reference values.
 
 | Rule kind | Examples | Used by |
 |-----------|----------|---------|
-| subClassOf transitive closure | GraduateStudent ⊑ Student ⊑ Person; FullProfessor ⊑ Professor ⊑ Faculty ⊑ Employee ⊑ Person | Q4, Q5, Q6, Q7, Q8, Q9 |
+| subClassOf transitive closure | GraduateStudent ⊑ Student ⊑ Person; FullProfessor ⊑ Professor ⊑ Faculty ⊑ Employee ⊑ Person; Article ⊑ Publication | Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q13 |
 | subPropertyOf duplication | worksFor ⊑ memberOf; headOf ⊑ worksFor; doctoralDegreeFrom ⊑ degreeFrom | Q5, Q12, Q13 |
 | owl:TransitiveProperty | subOrganizationOf | Q11 |
 | owl:inverseOf | hasAlumnus ↔ degreeFrom | Q13 |
 | Realisation | `(?x headOf ?d) ∧ (?d a Department) → (?x a Chair)` | Q12 |
 
-Single-rule queries (Q1, Q3, Q10, Q14) and Q2 (no inference) work without
-any entailment but pass through the same pipeline for uniformity.
+Q1 and Q14 (leaf classes GraduateStudent / UndergraduateStudent, which UBA
+asserts directly) and Q2 (no inference) work without any entailment but pass
+through the same pipeline for uniformity.
 
 ## Determinism
 
 LUBM-UBA's documented invariant is bit-identical output for fixed `(seed, N)`
-across thread counts. We pin `--threads 1` by default for absolute
-reproducibility — multi-threaded runs change file emission ordering even when
-the byte-level content is the same. Override with `--threads N` if you want to
-stress-test on multi-core hardware.
+across thread counts. Because `driver.rs` always passes `--consolidate Maximal`,
+the jar routes through `SingleFileConsolidator` and emits exactly one
+`Universities.nt.gz` regardless of `--threads`. We still pin `--threads 1` by
+default for absolute reproducibility — multi-threaded runs can change triple
+ordering *within* that single file even when its byte-level content is
+otherwise the same. Override with `--threads N` if you want to stress-test on
+multi-core hardware.
 
 The jar SHA-256 is recorded in `meta.json` so a regenerated bench is
 distinguishable from a snapshot if anyone rebuilds the jar with a different

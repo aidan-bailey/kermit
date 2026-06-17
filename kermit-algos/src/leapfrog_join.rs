@@ -84,6 +84,14 @@ impl<IT> LeapfrogJoinIterator for LeapfrogJoinIter<IT>
 where
     IT: LinearIterator,
 {
+    /// Returns the current common key, or `None` if the join is exhausted.
+    ///
+    /// Unlike the cyclic-walk sites (which go through `mut_iter` and thus
+    /// `sorted_iter_perm`), this indexes `iterators` by `p` directly. That is
+    /// sound because `key()` is only consulted after `leapfrog_init` /
+    /// `leapfrog_search` has returned `true`, at which point every active
+    /// iterator holds the same key, so `iterators[p]` and
+    /// `iterators[sorted_iter_perm[p]]` resolve to identical values.
     fn key(&self) -> Option<usize> { self.iterators[self.p].key() }
 
     fn leapfrog_init(&mut self) -> bool {

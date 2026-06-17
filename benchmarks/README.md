@@ -7,6 +7,7 @@ This directory holds YAML benchmark definitions consumed by the `kermit bench` C
 - One benchmark per `*.yml` file. The filename stem must match the `name` field exactly (enforced by `kermit_bench::discovery::load_benchmark`).
 - `triangle.yml` is the minimal working example.
 - `oxford-uniform-s*.yml` and `oxford-zipf-s*.yml` are realistic multi-relation benchmarks from the Oxford DSI dataset.
+- `watdiv-example.yml`, `watdiv-basic.yml`, `lubm-example.yml`, and `lubm-reference.yml` are generator-driven examples illustrating the generator schema below; `watdiv-stress-default.yml` is a declarative generator spec (distinct from the frozen `watdiv-stress-*` snapshots covered later).
 
 ## Schema
 
@@ -39,7 +40,7 @@ A `generator:` block replaces `relations` and `queries`. On `bench run <name>`, 
 
 | Field                       | Type               | Required | Description |
 |-----------------------------|--------------------|----------|-------------|
-| `generator.kind`            | `watdiv` \| `lubm` | yes      | Selects the underlying `kermit-rdf` pipeline. |
+| `generator.kind`            | `watdiv` \| `watdiv-basic` \| `lubm` | yes      | Selects the underlying `kermit-rdf` pipeline. |
 | `generator.scale`           | u32 (≥ 1)          | yes      | Scale factor (`watdiv -d <N>` or `lubm-uba -u <N>`). |
 
 WatDiv-specific fields (under `generator:` when `kind: watdiv`):
@@ -50,6 +51,8 @@ WatDiv-specific fields (under `generator:` when `kind: watdiv`):
 | `generator.stress.query_count`     | u32    | 20      | `<query-count>` per stress template. |
 | `generator.stress.constants_per_query` | u32 | 2     | `<constants-per-query>`. |
 | `generator.stress.allow_join_vertex` | bool | false   | `<allow-join-vertex>`. |
+
+When `kind: watdiv-basic`, the generator runs the WatDiv Basic Testing workload — the 20 canonical L/S/F/C query templates (`kermit_rdf::pipeline::run_basic_pipeline`). The templates are fixed, so there is no `stress` block; `scale` is the only field. See `benchmarks/watdiv-basic.yml`.
 
 LUBM-specific fields (under `generator:` when `kind: lubm`):
 
@@ -72,7 +75,7 @@ Head(Var1, Var2, …) :- Body1(…), Body2(…), …, BodyN(…).
 ```
 
 - Variables are upper-case identifiers (`X`, `Var1`).
-- Atoms are lower-case or numeric literals (match the `Term::Atom` variant).
+- Atoms are identifiers starting with a lower-case letter (e.g. `alice`, `edge`); they map to the `Term::Atom` variant. Numeric/constant literals are not accepted by the parser (the WatDiv `c<id>` constants are an atom-name convention, not numeric tokens).
 - `_` is a placeholder for an unused position.
 - A query is terminated with a period.
 - Body predicate names must match a `relations[].name` declared above.

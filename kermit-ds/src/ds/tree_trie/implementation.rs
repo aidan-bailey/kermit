@@ -66,7 +66,7 @@ impl IndexMut<usize> for TrieNode {
 /// Each tuple `[k₀, k₁, …, kₙ₋₁]` is encoded as a root-to-leaf path where
 /// every level corresponds to one column. Children at each level are kept in
 /// sorted order by key, so insertion uses binary search and
-/// [`TreeTrieIter`](crate::ds::TreeTrie) can seek forward without backtracking
+/// `TreeTrieIter` can seek forward without backtracking
 /// — the invariant [`LeapfrogTriejoinIter`] relies on.
 ///
 /// # Invariants
@@ -82,7 +82,7 @@ impl IndexMut<usize> for TrieNode {
 /// and allocates a node per key — preferable for small relations, pedagogical
 /// use, and tests. For large relations, the column-oriented layout in
 /// [`ColumnTrie`](crate::ds::ColumnTrie) tends to be more cache-friendly. See
-/// [`ARCHITECTURE.md`](https://github.com/AlexStrickland/kermit/blob/master/ARCHITECTURE.md)
+/// [`ARCHITECTURE.md`](https://github.com/aidan-bailey/kermit/blob/master/ARCHITECTURE.md)
 /// for a deeper comparison.
 ///
 /// # Example

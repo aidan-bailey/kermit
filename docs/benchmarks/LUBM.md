@@ -132,8 +132,11 @@ not hang silently. LUBM(1, 0) converges in 3 iterations; expansion factor is
 
 Lifted verbatim from the LUBM paper Appendix A (pp. 175–177). Committed at
 `kermit-rdf/queries/lubm/q*.sparql` and embedded via `include_str!` into
-`kermit-rdf::lubm::queries`. URIs reference `Department0.University0.edu`,
-which exists in any LUBM(N ≥ 1) by the data generator's deterministic
+`kermit-rdf::lubm::queries`. Where queries pin a scale-specific entity they
+reference the 0-indexed URIs `http://www.University0.edu` (Q8, Q11, Q12, Q13)
+or `http://www.Department0.University0.edu` (Q1, Q3, Q4, Q5, Q7, Q10) — the
+remaining queries (Q2, Q6, Q9, Q14) reference no scale-specific entity at all.
+Both URI forms exist in any LUBM(N ≥ 1) by the data generator's deterministic
 0-indexed naming, so queries are universal across all scales.
 
 | # | Shape | Pre-materialisation needed | LUBM(1, 0) cardinality |
@@ -181,9 +184,9 @@ iteration. Scale guidance:
 | Scale | Triples (post-entailment) | Peak memory | Notes |
 |-------|---------------------------|-------------|-------|
 | LUBM(1, 0) | ~128 K | ~250 MB | Comfortable; smoke-tested |
-| LUBM(5, 0) | ~640 K | ~1.5 GB | Approaching practical ceiling |
-| LUBM(10, 0) | ~1.3 M | ~3 GB+ | May exceed dev RAM; not recommended |
-| LUBM(50, 0) | ~6.9 M | ~15 GB+ | Will OOM on most machines |
+| LUBM(5, 0) | ~640 K | ~350 MB | Comfortable |
+| LUBM(10, 0) | ~1.3 M | ~500 MB | Approaching practical ceiling |
+| LUBM(50, 0) | ~6.9 M | ~1 GB | Practical ceiling; estimate matches the `entailment.rs` memory model |
 
 Streaming or delta-based fixed-point is future work (see below).
 

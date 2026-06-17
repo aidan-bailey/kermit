@@ -166,9 +166,15 @@ pub struct QueryDefinition {
 impl BenchmarkDefinition {
     /// Validates structural invariants of the benchmark definition.
     ///
-    /// Checks that `name`, `relations`, and `queries` are non-empty, that
-    /// every query has a non-empty `name` and `query`, and that relation
-    /// names and query names are unique within the benchmark.
+    /// Requires the benchmark to declare *either* `relations`+`queries`
+    /// (static) *or* a `generator` (generated); the two are mutually
+    /// exclusive. `name` must be non-empty and a portable filename (ASCII
+    /// alphanumerics plus `.`, `_`, `-`, and never a path separator or `..`).
+    /// For static benchmarks, `relations` and `queries` must be non-empty,
+    /// every query must have a non-empty `name` and `query`, and relation
+    /// names and query names must be unique within the benchmark. For
+    /// generated benchmarks, the spec is checked by `validate_generator`
+    /// (scale must be >= 1, etc.).
     ///
     /// # Errors
     ///

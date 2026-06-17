@@ -23,7 +23,7 @@ operational rows describe how it actually runs.
 
 | Dimension | LUBM | WatDiv |
 |---|---|---|
-| Query count per dataset | 14 | 12 400 across 12 stress files |
+| Query count per dataset | 14 | ~12 400 per stress file (12 committed files) |
 | Authoring | Hand-designed for specific OWL features | Mechanically generated from templates |
 | Predicate arity | All binary + unary type lookups | All binary |
 | Inference required | OWL-Lite (subClassOf, subPropertyOf, transitivity, inverseOf, realisation) | None — data is pre-materialised |
@@ -32,7 +32,7 @@ operational rows describe how it actually runs.
 | Result oracle | Paper Table 3, manually transcribed | None — vendored binary emits no `.desc` |
 | Reproducibility | Deterministic per `(seed, scale)` | Non-deterministic; tag-based snapshots |
 | Sandbox | — | bwrap required (or `--no-bwrap`) |
-| Vendored asset | Committed (~2.9 MB jar) | Gitignored; build locally |
+| Vendored asset | Committed (~2.9 MB jar) | Committed (~360 KB binary) |
 | Pipeline command | `kermit bench gen lubm` | `kermit bench gen watdiv` |
 
 Cell conventions: `—` for "inapplicable"; `None` when the value is genuinely

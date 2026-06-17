@@ -1,8 +1,9 @@
-//! RDF/SPARQL preprocessing pipeline for Kermit benchmarks.
+//! RDF/SPARQL preprocessing pipelines for Kermit benchmarks.
 //!
-//! Drives the upstream WatDiv binary, parses its N-Triples + SPARQL output,
-//! produces a kermit-runnable benchmark artifact set (dict + per-predicate
-//! Parquet, BenchmarkDefinition YAML, expected cardinalities).
+//! Drives the upstream WatDiv binary and the LUBM-UBA jar (the latter with
+//! Univ-Bench TBox entailment, see [`lubm`]), parses their N-Triples + SPARQL
+//! output, and produces a kermit-runnable benchmark artifact set (dict +
+//! per-predicate Parquet, BenchmarkDefinition YAML, expected cardinalities).
 #![deny(missing_docs)]
 
 pub mod dict;

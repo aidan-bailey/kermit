@@ -5,9 +5,9 @@ summary frame (one row per report+function), ``load_samples()`` returns the
 per-iteration samples frame. Both are tidy long-form — call ``.groupby``,
 ``.pivot_table``, ``.query`` directly.
 
-The dataclasses in :mod:`.loader` and :mod:`.criterion` are still the
-internal currency (plot modules build on them); ``frame`` is the layer that
-exposes them as DataFrames.
+The dataclasses in :mod:`.loader` and :mod:`.criterion` are the internal
+currency of the loading layer; ``frame`` exposes them as DataFrames, which
+the plot modules consume.
 """
 from __future__ import annotations
 

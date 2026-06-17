@@ -11,7 +11,7 @@
 //!   <predicate>.parquet × N
 //!   raw/data.nt
 //!   raw/templates/*.txt
-//!   raw/queries/*.sparql + *.desc
+//!   raw/queries/*.sparql (+ *.desc only if the binary emits them — the vendored one does not)
 //!   expected/<query>.csv
 //! ```
 

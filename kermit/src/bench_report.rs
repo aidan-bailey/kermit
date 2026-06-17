@@ -12,8 +12,14 @@
 //! When `--report-json <path>` is set on the `bench` subcommand, the same
 //! metadata plus pointers into Criterion's output directory are serialised
 //! to `path` as a [`BenchReport`] (see [`write_json_report`]). External
-//! tooling can then parse the JSON to correlate stderr metadata with
-//! `target/criterion/{group}/{function}/` artefacts produced by Criterion.
+//! tooling can then parse the JSON to correlate stderr metadata with the
+//! Criterion artefacts under `target/criterion/`. Both `group` and `function`
+//! are logical identities that may contain `/`; on disk Criterion flattens
+//! `/`→`_` and nests the estimate files under a `new/` (or `base/`) subdir, so
+//! resolve via each candidate subdir's `benchmark.json:directory_name` rather
+//! than concatenating the strings — see
+//! `docs/specs/bench-report-schema.md` §"Resolving a `CriterionGroupRef` to
+//! filesystem paths".
 
 use {
     serde::Serialize,
@@ -109,14 +115,18 @@ impl From<&MetadataLine> for ReportField {
 }
 
 /// A pointer into the Criterion artefacts directory, identifying one
-/// benchmark function. Together with `target/criterion/` this resolves to
-/// `target/criterion/{group}/{function}/estimates.json` and friends.
+/// benchmark function. `group` and `function` are the logical Criterion
+/// identities; both may contain `/`. On disk Criterion flattens `/`→`_` and
+/// nests the estimate files under a `new/` (or `base/`) subdir, so resolve via
+/// each candidate subdir's `benchmark.json:directory_name` rather than
+/// concatenating these strings — see
+/// `docs/specs/bench-report-schema.md` §"Resolving a `CriterionGroupRef` to
+/// filesystem paths".
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct CriterionGroupRef {
-    /// Criterion `benchmark_group` name (first path segment under
-    /// `target/criterion/`).
+    /// Criterion `benchmark_group` name.
     pub group: String,
-    /// Criterion `bench_function` id (second path segment).
+    /// Criterion `bench_function` id.
     pub function: String,
     /// Which measurement axis this function records.
     pub metric: ReportMetric,

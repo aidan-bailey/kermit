@@ -2,14 +2,26 @@
 
 **Date:** 2026-03-16
 
+Space benchmarking is implemented entirely in the CLI: `kermit bench ds
+<relation> -i <ds> --metrics space` (and `kermit bench run <name> --metrics
+space`), routed through `kermit::measurement::SpaceMeasurement`. There is no
+standalone benchmark binary; this spec describes the Criterion artefacts those
+commands write. See [`bench-report-schema.md`](bench-report-schema.md) for the
+machine-readable report that points at these artefacts.
+
+> **Historical note.** An earlier design proposed a standalone `kermit-ds`
+> benchmark binary with `Exponential`/`Factorial` tuple generators. That binary
+> was never built; the `bench ds`/`bench run --metrics space` CLI path
+> superseded it. Function IDs of the form `Space/Exponential/...` do not exist.
+
 ## Directory Layout
 
 Criterion writes output to `target/criterion/` with the following structure:
 
 ```
 target/criterion/
-├── {group}/                          # e.g. TreeTrie, ColumnTrie
-│   └── {benchmark}/                  # e.g. Space_Exponential_3_27
+├── {group}/                          # bench ds: "ds" (overridable via --name)
+│   └── {directory_name}/             # e.g. TreeTrie_space
 │       ├── new/                      # latest run
 │       │   ├── estimates.json
 │       │   ├── sample.json
@@ -24,10 +36,15 @@ target/criterion/
 │           └── estimates.json
 ```
 
-**Group** is the data structure name (`TreeTrie`, `ColumnTrie`).
+**Group** is the Criterion group name. For `bench ds` it defaults to `ds`
+(overridable via `--name`); for `bench run` it is
+`{prefix}/{benchmark}/{query}/{ds}/{algo}` (prefix defaults to `run`).
 
-**Benchmark** is the function ID with `/` replaced by `_`
-(e.g. `Space/Exponential/3/27` → `Space_Exponential_3_27`).
+**directory_name** is the function ID with `/` replaced by `_`. The space
+function ID is `{IndexStructure}/space` — the `IndexStructure` Debug string is
+one of `ColumnTrie`, `HashTrie`, `TreeTrie` — so e.g. `TreeTrie/space` becomes
+`TreeTrie_space` on disk. Read the canonical segment from each subdir's
+`benchmark.json:directory_name` rather than computing it.
 
 On each run, the previous `new/` is rotated to `base/` and a `change/`
 directory is created with regression estimates.
@@ -38,24 +55,24 @@ Identifies the benchmark. This is the primary metadata file.
 
 ```json
 {
-    "group_id": "TreeTrie",
-    "function_id": "Space/Exponential/3/27",
+    "group_id": "ds",
+    "function_id": "TreeTrie/space",
     "value_str": null,
     "throughput": {
         "Elements": 27
     },
-    "full_id": "TreeTrie/Space/Exponential/3/27",
-    "directory_name": "TreeTrie/Space_Exponential_3_27",
-    "title": "TreeTrie/Space/Exponential/3/27"
+    "full_id": "ds/TreeTrie/space",
+    "directory_name": "ds/TreeTrie_space",
+    "title": "ds/TreeTrie/space"
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `group_id` | string | Benchmark group name (data structure) |
-| `function_id` | string | Benchmark function name within the group |
+| `group_id` | string | Benchmark group name (`ds` for `bench ds`; the data structure is the function prefix) |
+| `function_id` | string | Benchmark function name within the group (`{IndexStructure}/space`) |
 | `value_str` | string \| null | Optional parameter string (unused) |
-| `throughput` | object \| null | Throughput config; `{"Elements": n}` where `n` is tuple count |
+| `throughput` | object \| null | Throughput config; `{"Elements": n}` where `n` is the tuple count of the benchmarked relation (the `27` above is illustrative) |
 | `full_id` | string | `{group_id}/{function_id}` |
 | `directory_name` | string | Filesystem path segment (slashes replaced with underscores) |
 | `title` | string | Display name (same as `full_id`) |
@@ -170,8 +187,8 @@ Criterion uses this name regardless of the `Measurement` type.
 The per-iteration value is `times[i] / iters[i]`. For space benchmarks this
 quotient is constant across all samples (e.g. `54525952 / 32768 = 1664`).
 
-The number of entries equals the configured `sample_size` (10 for space
-benchmarks, minus the warm-up sample).
+The number of entries equals the configured `sample_size` (set via
+`--sample-size`, default 100, minimum 10), minus the warm-up sample.
 
 ## tukey.json
 
@@ -224,24 +241,16 @@ Only `mean` and `median` are present (no `slope`, `std_dev`, or
 
 ## Benchmark ID Mapping
 
-The benchmark function ID `Space/{Generator}/{param}/{n}` maps to the
-filesystem as `Space_{Generator}_{param}_{n}`.
+Each benchmarked data structure produces exactly one space function, with ID
+`{IndexStructure}/space`, which maps to the filesystem as `{IndexStructure}_space`.
+The `IndexStructure` Debug string is one of `ColumnTrie`, `HashTrie`, `TreeTrie`.
 
 | Function ID | Directory | Tuple count |
 |-------------|-----------|-------------|
-| `Space/Exponential/1/1` | `Space_Exponential_1_1` | 1 |
-| `Space/Exponential/2/4` | `Space_Exponential_2_4` | 4 |
-| `Space/Exponential/3/27` | `Space_Exponential_3_27` | 27 |
-| `Space/Exponential/4/256` | `Space_Exponential_4_256` | 256 |
-| `Space/Exponential/5/3125` | `Space_Exponential_5_3125` | 3125 |
-| `Space/Factorial/1/1` | `Space_Factorial_1_1` | 1 |
-| `Space/Factorial/2/2` | `Space_Factorial_2_2` | 2 |
-| `Space/Factorial/3/6` | `Space_Factorial_3_6` | 6 |
-| `Space/Factorial/4/24` | `Space_Factorial_4_24` | 24 |
-| `Space/Factorial/5/120` | `Space_Factorial_5_120` | 120 |
-| `Space/Factorial/6/720` | `Space_Factorial_6_720` | 720 |
-| `Space/Factorial/7/5040` | `Space_Factorial_7_5040` | 5040 |
-| `Space/Factorial/8/40320` | `Space_Factorial_8_40320` | 40320 |
-| `Space/Factorial/9/362880` | `Space_Factorial_9_362880` | 362880 |
+| `ColumnTrie/space` | `ColumnTrie_space` | tuple count of the benchmarked relation |
+| `HashTrie/space` | `HashTrie_space` | tuple count of the benchmarked relation |
+| `TreeTrie/space` | `TreeTrie_space` | tuple count of the benchmarked relation |
 
-Groups: `TreeTrie`, `ColumnTrie` (28 benchmark directories total).
+One `{IndexStructure}/space` function is produced per data structure
+benchmarked. Under `bench ds` these all land in the `ds` group; under
+`bench run` the group is `{prefix}/{benchmark}/{query}/{ds}/{algo}`.

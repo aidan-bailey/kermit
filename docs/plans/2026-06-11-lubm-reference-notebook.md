@@ -340,6 +340,12 @@ git commit -m "feat(kermit-lab): reference notebook — correctness phase"
 
 ### Task 4: Phase 2 — benchmark sweep cells (materialises on first run)
 
+> **[Execution correction]** The Phase 2 cell heredoc below is preserved as the
+> historical record and still contains the false claim that `-a all` skips
+> incompatible pairs (line 376). It does not — see the struck-through key fact
+> above and the "Execution corrections (2026-06-11)" section at the end of this
+> document for the panic and the per-configuration sweep that replaced it.
+
 **Files:**
 - Modify: `python/kermit-lab/notebooks/07_lubm_reference_comparison.ipynb` (append 6 cells)
 

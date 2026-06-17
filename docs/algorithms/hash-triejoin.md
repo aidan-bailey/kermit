@@ -94,7 +94,7 @@ Trace:
 
 Output (sorted): `[[1, 2, 3], [1, 2, 4]]`.
 
-Corresponding test case: `join_algo_triangle` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash_triejoin.rs).
+Related test: `join_algo_triangle` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash_triejoin.rs) exercises this same triangle-query path under `HashTriejoin` (with different sample data).
 
 ## See also
 

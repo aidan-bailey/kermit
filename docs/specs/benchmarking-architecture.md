@@ -6,8 +6,8 @@
 ## Overview
 
 All benchmarking in Kermit is driven through the CLI binary. There is a
-single entry point (`kermit bench`) with three measurement subcommands and
-three management subcommands:
+single entry point (`kermit bench`) with three measurement subcommands,
+three management subcommands, and one generation subcommand:
 
 - **`bench join`** — Criterion benchmarks on user-supplied data files.
 - **`bench ds`** — Criterion benchmarks on a single data structure from a
@@ -17,6 +17,8 @@ three management subcommands:
 - **`bench list`** — Print all named workloads and their cache status.
 - **`bench fetch`** — Pre-fetch (download) one or all workloads.
 - **`bench clean`** — Remove cached workload data.
+- **`bench gen [watdiv|lubm]`** — Generate a fresh benchmark on the fly
+  (materialises generator-driven data via `kermit-rdf`).
 
 ```
 benchmarks/*.yml (named workloads, ZivaHub URLs)
@@ -25,6 +27,7 @@ benchmarks/*.yml (named workloads, ZivaHub URLs)
 kermit bench run            Criterion on a YAML-defined workload (CLI)
 kermit bench join           Criterion on user-supplied data (CLI)
 kermit bench ds             Criterion on single DS from file (CLI)
+kermit bench gen [watdiv|lubm]  Materialise a generator benchmark (CLI)
 ```
 
 ## Common arguments (`BenchArgs`)
@@ -37,7 +40,7 @@ All `bench` subcommands accept:
 | `--sample-size` | 100 | Criterion sample count (min 10) |
 | `--measurement-time` | 5s | Measurement time per sample |
 | `--warm-up-time` | 3s | Warm-up before sampling |
-| `--report-json` | none | Write a machine-readable JSON report to this path |
+| `--report-json` | `bench-runs/{kind}-{unix-millis}.json` | Override the path of the always-emitted machine-readable JSON report |
 
 For `bench join` and `bench ds`, `--name` is the full Criterion group name
 (`join`/`ds` if unset). For `bench run`, `--name` is a *prefix* on the
@@ -89,22 +92,30 @@ that named query within the workload), `--indexstructure`, `--algorithm`,
 `--metrics` (defaults to all three).
 
 **Flow:**
-1. Resolve workload(s) via `kermit_bench::discovery::load_benchmark` or
-   `load_all_benchmarks`.
-2. For each workload, ensure relation files are cached locally
+1. Resolve workload(s) via `resolve_benchmarks`, which uses
+   `kermit_bench::discovery::load_all_benchmarks_with_cache` (for `--all`),
+   `load_benchmark`, and `load_cached_benchmark`.
+2. Materialise each workload via `materialize::materialize` — for
+   generator-driven (watdiv/lubm) benchmarks this generates the data on
+   demand and enforces spec-hash drift detection (erroring unless
+   `--force`); static workloads pass through unchanged.
+3. For each workload, ensure relation files are cached locally
    (`kermit_bench::cache::ensure_cached`, downloading from the URLs in the
    YAML when missing).
-3. Load relations into a `DatabaseEngine` and as raw `R` values for the
+4. Load relations into a `DatabaseEngine` and as raw `R` values for the
    space metric.
-4. For each query in the workload (filtered by `--query` if set), run the
+5. For each query in the workload (filtered by `--query` if set), run the
    chosen metrics. `Insertion` and `Iteration` go through wall-clock
    Criterion; `Space` goes through `SpaceMeasurement`.
 
 **Function names:** `insertion`, `iteration`, and `space/{relation_name}`.
-The `iteration` function name is shared with `bench ds`'s iteration metric
-so external tooling can correlate `Metric::Iteration` outputs across
-subcommands; the underlying work differs (trie traversal vs. join
-execution), but both record wall-clock time.
+Note that `bench run`'s `iteration` function is the bare string `iteration`,
+whereas `bench ds` prefixes the structure name (`{ds_name}/iteration`), so
+the two are *not* identical and a naive string match would not correlate
+them. External tooling should key off the JSON report's `metric` field
+(`ReportMetric::Time`) rather than the function string; the underlying work
+also differs (trie traversal vs. join execution), though both record
+wall-clock time.
 
 ## YAML workload definitions
 
@@ -114,13 +125,17 @@ one or more named queries (Datalog `Head :- Body, ... .` strings). Cached
 relation files live under the platform cache dir
 (`~/.cache/kermit/benchmarks/` on Linux).
 
-The `kermit-bench` crate is a thin layer over this:
+The `kermit-bench` crate handles static-YAML workloads as well as
+declarative generator declarations and their spec-hash drift detection:
 
 ```
 kermit-bench/src/
 ├── lib.rs
-├── definition.rs    BenchmarkDefinition, QueryDefinition, RelationSource
-├── discovery.rs     load_benchmark, load_all_benchmarks
+├── definition.rs    BenchmarkDefinition (with generator: Option<GeneratorSpec>),
+│                    QueryDefinition, RelationSource, GeneratorSpec,
+│                    WatdivStressSpec, spec_hash(), validate()
+├── discovery.rs     load_benchmark, load_all_benchmarks, list_benchmarks,
+│                    load_all_benchmarks_with_cache, load_cached_benchmark
 ├── cache.rs         ensure_cached, is_cached, clean_benchmark, clean_all
 └── error.rs         BenchError (thiserror)
 ```
@@ -142,8 +157,11 @@ Each `bench` subcommand emits three independent output streams:
    directory tree (HTML reports, JSON estimates, raw samples).
 
 3. **JSON report (`--report-json <path>`)** — a machine-readable
-   `BenchReport` describing the same metadata plus pointers into the
-   Criterion artefact tree (`group`, `function`, `metric`). Always emitted
+   `BenchReport` describing the same metadata, a structured `axes` map of
+   axis values for downstream tooling (conventional keys: `data_structure`,
+   `algorithm`, `query`, `benchmark`, `relation_path`, `relation_bytes`,
+   `tuples`, `arity`), plus pointers into the Criterion artefact tree
+   (`group`, `function`, `metric`). Always emitted
    as a JSON array (single-element for `bench join`/`bench ds`,
    multi-element for `bench run` with multiple queries) so downstream
    tooling has one parser shape. The schema is versioned via

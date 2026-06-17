@@ -31,7 +31,7 @@ kermit-iters ◄─── kermit-derive
      ├──────────── kermit-parser
      │                  │
      ▼                  ▼
-kermit-ds ◄─────── kermit-algos       kermit-bench   (isolated)
+kermit-ds          kermit-algos       kermit-bench   (isolated)
                         │                  │
                         ▼                  │
                    kermit-rdf ◄────────────┤
@@ -41,7 +41,7 @@ kermit-ds ◄─────── kermit-algos       kermit-bench   (isolated)
                               kermit
 ```
 
-`kermit-bench` has no internal kermit dependencies. `kermit-rdf` depends on `kermit-parser`, `kermit-ds`, and `kermit-bench`. The `kermit` binary depends on every other crate.
+`kermit-bench` has no internal kermit dependencies. `kermit-algos` is decoupled from the data structures at runtime (per Design Goal #1): it is generic over `DS: TrieIterable` and pulls in `kermit-ds` only as a `[dev-dependencies]` entry for its own tests, so no production `kermit-algos → kermit-ds` edge is drawn above. `kermit-rdf` depends on `kermit-parser`, `kermit-ds`, and `kermit-bench`. The `kermit` binary directly depends on every sibling crate except the proc-macro crate `kermit-derive`, which it pulls in transitively via `kermit-ds`.
 
 ## Core Abstractions
 
@@ -100,8 +100,8 @@ pub trait Relation: JoinIterable + Projectable {
     fn header(&self) -> &RelationHeader;
     fn new(header: RelationHeader) -> Self;
     fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self;
-    fn insert(&mut self, tuple: Vec<usize>) -> bool;
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) -> bool;
+    fn insert(&mut self, tuple: Vec<usize>);
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>);
 }
 ```
 
@@ -264,7 +264,7 @@ Legacy `meta.json` files lacking `spec_hash` are treated as drift.
 
 `kermit-rdf` provides on-the-fly benchmark generation from RDF generators. Two pipelines:
 
-- **WatDiv** — `pipeline::run_pipeline` drives the vendored `kermit-rdf/vendor/watdiv` binary (CLI: `-d <model> <scale>` for data, `-s ... ` for stress-template queries). The binary writes only to stdout; `driver::invoke` captures it and splits on `#end` markers. The binary is gitignored — build locally; surrounding `MODEL.txt`/`files/`/`VERSION` are committed.
+- **WatDiv** — `pipeline::run_pipeline` drives the vendored `kermit-rdf/vendor/watdiv` binary (CLI: `-d <model> <scale>` for data, `-s ... ` for stress-template queries). The binary writes only to stdout; `driver::invoke` captures it and splits on `#end` markers. The binary is committed (vendored, ~360 KB at `bin/Release/watdiv`, force-added past the inert `**/watdiv` ignore rule); `MODEL.txt`/`files/`/`VERSION` are committed alongside it.
 - **LUBM** — `lubm::pipeline::run_lubm_pipeline` drives `vendor/lubm-uba/lubm-uba.jar` (committed, ~2.9 MB), gunzips the resulting `Universities.nt.gz`, then runs Univ-Bench TBox forward chaining via `lubm::entailment` before partitioning. Requires JDK 8 on PATH. The 14 LUBM queries are committed verbatim at `kermit-rdf/queries/lubm/q1.sparql … q14.sparql` and exposed via `lubm::queries::lubm_query_specs`.
 
 Both pipelines share post-driver stages: `partition` (split N-Triples by predicate), `parquet` (encode dict + per-predicate parquet), `dict` (string→usize), `sparql::translator` (BGP-only SPARQL → Datalog), `yaml_emit` (write the cache-side `benchmark.yml`), `expected` (cardinality CSVs). The cache-side YAML always has `generator: None` — provenance lives in `meta.json.spec_hash`.

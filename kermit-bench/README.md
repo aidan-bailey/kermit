@@ -5,7 +5,7 @@ Benchmark definitions, discovery, and caching for the Kermit workspace. Reads YA
 ## Modules
 
 - [`definition`](src/definition.rs) — Serde types for the YAML schema (`BenchmarkDefinition`, `RelationSource`, `QueryDefinition`, `GeneratorSpec`, `WatdivStressSpec`, `DEFAULT_LUBM_ONTOLOGY`) and [`BenchmarkDefinition::validate`]. `GeneratorSpec::spec_hash` produces the canonical SHA-256 used by drift detection.
-- [`discovery`](src/discovery.rs) — loads definitions: `load_benchmark`, `load_all_benchmarks`, `load_all_benchmarks_with_cache`, `list_benchmarks`.
+- [`discovery`](src/discovery.rs) — loads definitions: `load_benchmark`, `load_all_benchmarks`, `load_all_benchmarks_with_cache`, `load_cached_benchmark`, `list_benchmarks`.
 - [`cache`](src/cache.rs) — `ensure_cached`, `is_cached`, `clean_benchmark`, `clean_all`, plus path helpers (`cache_dir`, `relation_cache_path`).
 - [`error`](src/error.rs) — the `BenchError` enum, including `SpecDrift` raised by the materialization layer.
 

@@ -154,7 +154,7 @@ impl std::str::FromStr for JoinQuery {
     }
 }
 
-// ---------- demo ----------
+// ---------- tests ----------
 
 #[cfg(test)]
 mod tests {

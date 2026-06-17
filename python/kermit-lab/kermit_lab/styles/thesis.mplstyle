@@ -1,5 +1,5 @@
-# kermit-plot thesis stylesheet.
-# Apply via kermit_plot.styles.apply() — handles seaborn ordering internally.
+# kermit-lab thesis stylesheet.
+# Apply via kermit_lab.styles.apply() — handles seaborn ordering internally.
 
 # Fonts: serif to match LaTeX body text. Listed alternates kick in if the
 # preferred family isn't installed on the rendering host.

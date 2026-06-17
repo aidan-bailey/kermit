@@ -99,7 +99,7 @@ def resolve_function_dir(criterion_root: Path, group: str, function_id: str) -> 
 
 
 def load_function(criterion_root: Path, group: str, function_id: str) -> FunctionData:
-    """Load the four JSON files for one Criterion function into ``FunctionData``."""
+    """Load the three JSON files for one Criterion function into ``FunctionData``."""
     new_dir = resolve_function_dir(criterion_root, group, function_id)
 
     with (new_dir / "benchmark.json").open() as f:

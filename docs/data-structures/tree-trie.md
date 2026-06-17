@@ -36,7 +36,7 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 
 | Operation | Time | Space | Notes |
 |---|---|---|---|
-| `insert(tuple)` | O(a · log b) | O(a) | binary search at each level; absorbs duplicates |
+| `insert(tuple)` | O(a · log b + b) | O(a) | binary search locates the slot at each level (a · log b); a diverging key shifts trailing siblings once at the divergence level via `Vec::insert` (b); absorbs duplicates |
 | `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort lexicographically, then insert |
 | `TrieIterator::key()` | O(1) | | slice index |
 | `TrieIterator::next()` | O(1) | | `sibling_idx += 1` |

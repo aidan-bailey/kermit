@@ -35,8 +35,10 @@ comparative figures the thesis needs are assembled *across* runs in
 
 ## What you can measure
 
-Every `bench` subcommand accepts `--metrics`, defaulting to all three. They
-fall into two families.
+`bench ds` and `bench run` accept `--metrics`, defaulting to all three
+(`insertion`, `iteration`, `space`). They fall into two families. (`bench join`
+is time-only and has no `--metrics` flag — it times the full query each
+iteration.)
 
 ### Time — two phases
 
