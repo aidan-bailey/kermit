@@ -116,6 +116,8 @@ pub struct ColumnTrie {
     /// must not be mutated piecemeal — read access goes through
     /// [`ColumnTrie::layer`].
     layers: Vec<ColumnTrieLayer>,
+    /// Number of distinct tuples stored; maintained by `insert`.
+    tuple_count: usize,
 }
 
 impl ColumnTrie {
@@ -138,18 +140,28 @@ impl ColumnTrie {
     /// inserted under the right parent); the last-layer case stops
     /// after placing the key; the insert / append cases hand back the
     /// new `interval_index` for the next layer.
-    fn internal_insert(&mut self, tuple: &[usize]) {
+    ///
+    /// Returns `true` iff the tuple was not already present — i.e. at
+    /// least one layer took an insert/append/empty-push branch rather
+    /// than the equality branch. A duplicate tuple matches an existing
+    /// key at every layer and this returns `false`.
+    fn internal_insert(&mut self, tuple: &[usize]) -> bool {
         let arity = self.header().arity();
         let mut interval_index = 0;
+        let mut all_matched = true;
         for (layer_i, &k) in tuple.iter().enumerate() {
             let is_last_layer = layer_i == arity - 1;
-            match self.step_layer(layer_i, k, interval_index, is_last_layer) {
-                | LayerStep::Stop => return,
+            let (step, matched_existing) =
+                self.step_layer(layer_i, k, interval_index, is_last_layer);
+            all_matched &= matched_existing;
+            match step {
+                | LayerStep::Stop => return !all_matched,
                 | LayerStep::Recurse {
                     next_interval_index,
                 } => interval_index = next_interval_index,
             }
         }
+        !all_matched
     }
 
     /// Inserts `k` at `layer_i` within the parent group selected by
@@ -160,18 +172,25 @@ impl ColumnTrie {
     /// becomes the next layer's `interval_index`, so any remaining
     /// tuple components are inserted under the right parent).
     ///
+    /// The second tuple element is `true` iff the key was already
+    /// present in the parent group (the equality branch fired), and
+    /// `false` for every insert / append / empty-push branch.
+    ///
     /// Pre-condition: `interval_index` must be a valid index into
     /// `self.layers[layer_i]`'s interval-bookkeeping arrays for the
     /// parent group. Violating this panics on the inner index.
     fn step_layer(
         &mut self, layer_i: usize, k: usize, interval_index: usize, is_last_layer: bool,
-    ) -> LayerStep {
+    ) -> (LayerStep, bool) {
         if self.layers[layer_i].data.is_empty() {
             self.layers[layer_i].data.push(k);
             self.layers[layer_i].interval.push(0);
-            return LayerStep::Recurse {
-                next_interval_index: 0,
-            };
+            return (
+                LayerStep::Recurse {
+                    next_interval_index: 0,
+                },
+                false,
+            );
         }
 
         let range = self.layers[layer_i].data_range(interval_index);
@@ -179,19 +198,25 @@ impl ColumnTrie {
         // Search for the key within the current interval's data range.
         for i in range.clone() {
             if self.layers[layer_i].data[i] == k {
-                return LayerStep::Recurse {
-                    next_interval_index: i,
-                };
+                return (
+                    LayerStep::Recurse {
+                        next_interval_index: i,
+                    },
+                    true,
+                );
             }
             if k < self.layers[layer_i].data[i] {
                 self.layers[layer_i].insert_key_and_shift_intervals(i, k, interval_index);
                 if is_last_layer {
-                    return LayerStep::Stop;
+                    return (LayerStep::Stop, false);
                 }
                 self.layers[layer_i + 1].add_interval(i);
-                return LayerStep::Recurse {
-                    next_interval_index: i,
-                };
+                return (
+                    LayerStep::Recurse {
+                        next_interval_index: i,
+                    },
+                    false,
+                );
             }
         }
 
@@ -203,12 +228,15 @@ impl ColumnTrie {
             self.layers[layer_i].insert_key_and_shift_intervals(insert_pos, k, interval_index);
         }
         if is_last_layer {
-            return LayerStep::Stop;
+            return (LayerStep::Stop, false);
         }
         self.layers[layer_i + 1].add_interval(insert_pos);
-        LayerStep::Recurse {
-            next_interval_index: insert_pos,
-        }
+        (
+            LayerStep::Recurse {
+                next_interval_index: insert_pos,
+            },
+            false,
+        )
     }
 }
 
@@ -275,6 +303,7 @@ impl Relation for ColumnTrie {
                 })
                 .collect::<Vec<_>>(),
             header,
+            tuple_count: 0,
         }
     }
 
@@ -319,7 +348,9 @@ impl Relation for ColumnTrie {
             self.header().arity(),
             "tuple arity must match relation arity"
         );
-        self.internal_insert(&tuple);
+        if self.internal_insert(&tuple) {
+            self.tuple_count += 1;
+        }
     }
 
     fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
@@ -342,6 +373,10 @@ impl crate::heap_size::HeapSize for ColumnTrie {
             .sum();
         layers_vec_bytes + layer_contents_bytes
     }
+}
+
+impl crate::cardinality::Cardinality for ColumnTrie {
+    fn tuple_count(&self) -> usize { self.tuple_count }
 }
 
 #[cfg(test)]
@@ -556,6 +591,35 @@ mod tests {
         let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
         collected.sort();
         assert_eq!(collected, tuples);
+    }
+}
+
+#[cfg(test)]
+mod cardinality_tests {
+    use {super::*, crate::cardinality::Cardinality, kermit_iters::TrieIterable};
+
+    #[test]
+    fn empty_relation_has_zero_tuples() {
+        let trie = ColumnTrie::new(2.into());
+        assert_eq!(trie.tuple_count(), 0);
+    }
+
+    #[test]
+    fn tuple_count_matches_iteration_count() {
+        let trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        assert_eq!(trie.tuple_count(), 3);
+        assert_eq!(trie.trie_iter().into_iter().count(), 3);
+    }
+
+    #[test]
+    fn duplicate_insert_does_not_inflate_count() {
+        let mut trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        trie.insert(vec![1, 2]); // exact duplicate — absorbed
+        assert_eq!(trie.tuple_count(), 1);
+        trie.insert(vec![1, 3]); // shared prefix, new tuple
+        assert_eq!(trie.tuple_count(), 2);
+        trie.insert(vec![0, 9]); // insert-before-existing path
+        assert_eq!(trie.tuple_count(), 3);
     }
 }
 
