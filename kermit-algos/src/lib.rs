@@ -13,6 +13,7 @@ mod hash_triejoin;
 mod join_algo;
 mod leapfrog_join;
 mod leapfrog_triejoin;
+mod optimiser;
 mod singleton;
 mod trie_iter_kind;
 
@@ -25,6 +26,7 @@ pub use {
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     leapfrog_triejoin::LeapfrogTriejoin,
+    optimiser::{analyse, QueryAnalysis},
     singleton::SingletonTrieIter,
     trie_iter_kind::TrieIterKind,
 };
