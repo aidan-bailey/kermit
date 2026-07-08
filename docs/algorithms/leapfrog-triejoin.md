@@ -72,7 +72,7 @@ Variable ordering `[a, b, c]`:
 2. **Depth 2 (`b`).** `R` and `S` carry `b`. With `a = 7` fixed, `R(7, …)` exposes `b = 4`; `S` starts at `b = 4`. Intersection on `b`: `{4}`.
 3. **Depth 3 (`c`).** `S` and `T` carry `c`. With `b = 4` fixed, `S(4, …) = {1, 4, 5, 9}`. With `a = 7` fixed, `T(7, …) = {2, 3, 5}`. Intersection: `{5}`.
 
-Result tuple: `(7, 4, 5)`. This is the test [`triangle_join_collect`](../../kermit-algos/src/leapfrog_triejoin.rs#L671).
+Result tuple: `(7, 4, 5)`. This is the test [`triangle_join_collect`](../../kermit-algos/src/leapfrog_triejoin.rs#L530).
 
 ## See also
 

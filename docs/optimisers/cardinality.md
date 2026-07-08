@@ -1,5 +1,7 @@
 # Cardinality Optimiser
 
+> **Status:** stable · **CLI:** `--optimiser cardinality` · **Implementation:** [`kermit_algos::optimiser::cardinality`](../../kermit-algos/src/optimiser/cardinality.rs)
+
 Smallest-relation-first: among the variables whose column-order
 constraints are satisfied, bind next the one appearing in the smallest
 relation. A variable occurring in a small relation can take only few
@@ -40,10 +42,17 @@ Canonical indices: `A = 0`, `B = 1`, `C = 2`. Constraint edges: `0 -> 1`
 3. Emit `1`.
 
 `variable_ordering = [0, 2, 1]` — the small relation's variable is bound
-before the large one's, unlike the lexicographic order `[0, 1, 2]`.
+before the large one's, unlike the [lexicographic](./lexicographic.md)
+order `[0, 1, 2]`.
 
 ## CLI
 
     kermit bench run triangle -i tree-trie -a leapfrog-triejoin --optimiser cardinality
 
 Bench-report axis: `optimiser: "cardinality"`.
+
+## See also
+
+- [`LexicographicOptimiser`](./lexicographic.md) — the stats-free sibling policy and default; use it as the control arm when ablating this one.
+- [`LeapfrogTriejoin`](../algorithms/leapfrog-triejoin.md), [`HashTriejoin`](../algorithms/hash-triejoin.md) — the algorithms that execute the produced `QueryPlan`.
+- [`docs/specs/optimization-standard.md`](../specs/optimization-standard.md) — the optimiser is a first-class benchmark dimension with its own `optimiser` report axis, distinct from the `ds_layout_*`/`algo_*` optimization axes.

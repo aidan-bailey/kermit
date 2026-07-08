@@ -1,5 +1,7 @@
 # <Optimiser Name>
 
+> **Status:** [stable | experimental] · **CLI:** `--optimiser <name>` · **Implementation:** [`kermit_algos::optimiser::<module>`](../../kermit-algos/src/optimiser/<file>.rs)
+
 One-paragraph summary: what ordering policy this optimiser implements and
 when to prefer it.
 
@@ -30,3 +32,9 @@ resulting `variable_ordering`, step by step.
     kermit bench run <bench> -i <ds> -a <algo> --optimiser <name>
 
 Bench-report axis: `optimiser: "<name>"`.
+
+## See also
+
+- Cross-references to the sibling optimiser docs in `docs/optimisers/`.
+- [`LeapfrogTriejoin`](../algorithms/leapfrog-triejoin.md), [`HashTriejoin`](../algorithms/hash-triejoin.md) — the algorithms that execute the produced `QueryPlan`.
+- [`docs/specs/optimization-standard.md`](../specs/optimization-standard.md) — the optimiser is a first-class benchmark dimension with its own `optimiser` report axis, distinct from the `ds_layout_*`/`algo_*` optimization axes.

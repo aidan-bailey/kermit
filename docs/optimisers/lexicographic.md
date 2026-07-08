@@ -1,11 +1,14 @@
 # Lexicographic Optimiser
 
+> **Status:** stable · **CLI:** `--optimiser lexicographic` (default) · **Implementation:** [`kermit_algos::optimiser::lexicographic`](../../kermit-algos/src/optimiser/lexicographic.rs)
+
 The default ordering policy: among the variables whose column-order
 constraints are satisfied, always bind the one with the smallest canonical
 index next. Reproduces, bit for bit, the ordering kermit hardcoded before
 query optimisers existed (`global_attribute_order`), so benchmarks planned
 with it are directly comparable with pre-optimiser measurements. Prefer it
-as the control arm of optimiser ablations and whenever no statistics are
+as the control arm of optimiser ablations (e.g. against the
+[cardinality optimiser](./cardinality.md)) and whenever no statistics are
 available.
 
 ## Ranking function
@@ -42,3 +45,9 @@ though the head variable is canonically smaller.
 
 Bench-report axis: `optimiser: "lexicographic"` (also the default when the
 flag is omitted).
+
+## See also
+
+- [`CardinalityOptimiser`](./cardinality.md) — the statistics-driven sibling policy; this optimiser is its control arm in ablations.
+- [`LeapfrogTriejoin`](../algorithms/leapfrog-triejoin.md), [`HashTriejoin`](../algorithms/hash-triejoin.md) — the algorithms that execute the produced `QueryPlan`.
+- [`docs/specs/optimization-standard.md`](../specs/optimization-standard.md) — the optimiser is a first-class benchmark dimension with its own `optimiser` report axis, distinct from the `ds_layout_*`/`algo_*` optimization axes.
