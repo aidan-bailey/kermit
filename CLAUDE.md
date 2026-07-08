@@ -66,7 +66,9 @@ kermit-ds       → Data structures: TreeTrie (pointer-based), ColumnTrie (colum
                   HashTrieIterable.
 kermit-algos    → Join algorithms: LeapfrogJoinIter (binary), LeapfrogTriejoinIter (multi-way),
                   HashTriejoin (hash-based multi-way). Generic over data structures via the
-                  JoinAlgo<DS> trait.
+                  JoinAlgo<DS> trait. Also hosts query optimisers (optimiser/ module):
+                  QueryOptimiser implementations plan the variable ordering (QueryPlan) that
+                  JoinAlgo::join_iter executes.
 kermit-bench    → Benchmark definitions, discovery, and caching. No internal deps.
                   YAML-based benchmark declarations (supports multiple named queries per benchmark),
                   ZivaHub download, platform cache dir (~/.cache/kermit/benchmarks/ on Linux).
@@ -99,6 +101,8 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|lis
 - **Relation**: JoinIterable + Projectable — core data abstraction (`new`, `from_tuples`, `insert`, `insert_all`, `header`)
 - **JoinAlgo\<DS\>**: algorithm trait decoupled from data structures
 - **HeapSize**: heap-allocated byte count for space benchmarking (`heap_size_bytes()`)
+- **QueryOptimiser**: plans a `QueryPlan` (the LFTJ global attribute order) from a query + `CatalogStats`; consumed by `JoinAlgo::join_iter`. Implementations: `LexicographicOptimiser` (default), `CardinalityOptimiser`.
+- **Cardinality**: stored-tuple count for optimiser statistics (`tuple_count()`; `HashTrie` counts multiset size)
 
 ## Testing Patterns
 
@@ -121,7 +125,7 @@ These recipes are the recognizable pattern referenced in Priorities item 4. Foll
 4. **Implement `TrieIterable`** for the structure (wires `trie_iter()` to your iter type). The LFTJ `open`-after-`at_end` discipline is load-bearing — see the LFTJ gotcha and the `feedback_lftj_open_after_at_end` memory.
 5. **Register the module.** Add `mod <name>;` and `pub use <name>::<Type>;` in `kermit-ds/src/ds/mod.rs`, plus a variant on the `IndexStructure` enum in that file.
 6. **Wire the CLI.** Add a variant to `IndexStructureSelector` in `kermit/src/main.rs` (around line 99) and to its `expand()` method. Add match arms in `run_ds_bench` and `run_benchmark` in the same file.
-7. **Wire the tests.** Add a `define_multiway_join_test_suite!(<Type>, LeapfrogTriejoin);` invocation in `kermit/tests/join_tests.rs` so the 11 standard join patterns run against the structure with every algorithm (Priorities item 1).
+7. **Wire the tests.** Add a `define_multiway_join_test_suite!(<Type>, LeapfrogTriejoin, LexicographicOptimiser);` invocation in `kermit/tests/join_tests.rs` so the 11 standard join patterns run against the structure with every algorithm (Priorities item 1); add a second invocation with `CardinalityOptimiser` so both optimisers are covered.
 8. **Write the doc.** Create `docs/data-structures/<name>.md` from `docs/data-structures/TEMPLATE.md` (Priorities item 3).
 
 Do **not** modify other index structures during this work (Priorities item 6).
@@ -132,10 +136,21 @@ Do **not** modify other index structures during this work (Priorities item 6).
 2. **Implement `JoinAlgo<DS>`** generic over `DS: TrieIterable`. The algorithm must tolerate const-rewritten queries (extra unary `Const_c<id>` body predicates from `kermit_algos::rewrite_atoms`) — see the const-view-rewrite gotcha.
 3. **Register the module.** Add `mod <name>;` and `pub use <name>::<Type>;` in `kermit-algos/src/lib.rs`, plus a variant on the `JoinAlgorithm` enum in that file.
 4. **Wire the CLI.** Add a variant to `JoinAlgorithmSelector` in `kermit/src/main.rs` (around line 153) and to its `expand()` method.
-5. **Wire the tests.** Existing index structures pick up your algorithm combinatorially via `define_multiway_join_test_suite!` — add a fresh invocation per index structure in `kermit/tests/join_tests.rs` (Priorities item 1).
+5. **Wire the tests.** Existing index structures pick up your algorithm combinatorially via `define_multiway_join_test_suite!` — add a fresh invocation per index structure in `kermit/tests/join_tests.rs`, e.g. `define_multiway_join_test_suite!(<DS>, <YourAlgo>, LexicographicOptimiser);` plus a second invocation with `CardinalityOptimiser` (Priorities item 1).
 6. **Write the doc.** Create `docs/algorithms/<name>.md` from `docs/algorithms/TEMPLATE.md` (Priorities item 3).
 
 Do **not** modify other algorithms during this work (Priorities item 6).
+
+### Adding a new query optimiser
+
+1. **Module layout.** Create `kermit-algos/src/optimiser/<name>.rs`. Existing precedents: `lexicographic.rs` (stats-free default) and `cardinality.rs` (smallest-relation-first).
+2. **Implement `QueryOptimiser`.** Build the ordering with `topological_order(num_vars, predicate_variables, rank)` from the shared `ordering` module — ranking only chooses among Kahn-ready variables, so your plan is valid by construction. Consume statistics via `CatalogStats`; treat missing entries as "assume large". The canonical-index tie-break comes from `topological_order`'s heap key, so plans stay deterministic without policy effort.
+3. **Register the module.** Add `mod <name>;` and the re-export in `kermit-algos/src/optimiser/mod.rs`, plus the crate-root re-export in `kermit-algos/src/lib.rs`.
+4. **Wire the CLI.** Add a variant to the `Optimiser` enum in `kermit-algos/src/lib.rs` (with `instantiate()` and `axis_value()` arms; the `axis_values_match_clap_value_names` guard test pins axis naming). The `--optimiser` flag on `join`, `bench join`, and `bench run` picks it up via `ValueEnum`.
+5. **Wire the tests.** Add a `define_multiway_join_test_suite!(<DS>, <Algo>, <YourOptimiser>);` invocation per valid (DS, algorithm) pair in `kermit/tests/join_tests.rs` (Priorities item 1) plus unit tests for the ranking itself in your module.
+6. **Write the doc.** Create `docs/optimisers/<name>.md` from `docs/optimisers/TEMPLATE.md` (Priorities item 3).
+
+Do **not** modify other optimisers, algorithms, or index structures during this work (Priorities item 6).
 
 ### Adding an optimization to a data structure or algorithm
 
@@ -181,6 +196,9 @@ Per Priorities item 3, every algorithm and index structure has a dedicated doc.
 - `docs/data-structures/column-trie.md` — column-oriented trie (`-i column-trie`).
 - `docs/data-structures/hash-trie.md` — hash-based trie (`-i hash-trie`).
 - `docs/algorithms/TEMPLATE.md`, `docs/data-structures/TEMPLATE.md` — skeletons for new component docs.
+- `docs/optimisers/lexicographic.md` — default variable-ordering policy (`--optimiser lexicographic`).
+- `docs/optimisers/cardinality.md` — smallest-relation-first policy (`--optimiser cardinality`).
+- `docs/optimisers/TEMPLATE.md` — skeleton for new optimiser docs.
 
 ## Code Style
 
@@ -194,7 +212,7 @@ Per Priorities item 3, every algorithm and index structure has a dedicated doc.
 - **NEVER run `cargo fmt` outside `nix develop`**: `rustfmt.toml` uses nightly-only settings, and stable rustfmt rewrites ~30+ files (collapses match patterns, expands single-line fns) instead of just printing warnings. Use `nix develop --command cargo fmt --all`. `cargo +nightly fmt --all` works only with rustup nightly (NixOS hosts typically don't have it).
 - **Space benchmarks**: `kermit/src/measurement.rs` contains `SpaceMeasurement` (custom Criterion `Measurement`) and `BytesFormatter`. Both `bench ds --metrics space` and `bench run --metrics space` route through `Criterion<SpaceMeasurement>` via `iter_custom`, producing `target/criterion/` output alongside the time metrics. The closure calls `heap_size_bytes()` per iter on the pre-built relation (wrapped in `std::hint::black_box` to defeat LICM); result is deterministic — per-iter mean equals `heap_size_bytes()` exactly. **Trap:** `iter_custom` calibration uses wall-clock during warmup even for non-time `Measurement`s; a near-instant closure makes Criterion ramp `iters` toward `u64::MAX` and `iters * bytes` arithmetic saturates `usize`. Keep at least one O(N) call inside the loop; don't precompute and multiply.
 - **No Criterion auto-plots**: `kermit/Cargo.toml` opts out of Criterion's default features (`default-features = false, features = ["rayon", "cargo_bench_support"]`) so the `plotters` dep is excluded entirely. Result: no SVG/HTML rendering, and the zero-variance panic that `SpaceMeasurement` used to trigger no longer applies. Measurement JSON (`estimates.json`, `sample.json`, `benchmark.json`, `tukey.json`) is still written per-function under `target/criterion/{group}/{directory_name}/{base,new}/`. Analysis and plotting live in `python/kermit-lab/` (uv-managed notebook-first library: `kl.load()` returns a pandas DataFrame including the `ds_*`/`algo_*` optimization axes; `kl.plot(df, kind=…, x=…, colour=…, facet=…)` is the general engine and `kl.scaling()`/`kl.bar_time()`/`kl.ablation()`/etc. are presets over it, each returning `matplotlib.figure.Figure`; `kl.summary`/`compare`/`bootstrap_ratio_ci`/`mannwhitney_u` for pivots/stats). The CLI is a thin wrapper. See `docs/specs/2026-05-04-remove-criterion-graphs-design.md`.
-- **JSON bench reports**: every `kermit bench` invocation writes a machine-readable report. Default path is `bench-runs/{kind}-{unix-millis}.json` (`bench-runs/` is auto-created and gitignored at the workspace root); `--report-json <PATH>` overrides. Output is always a JSON array of `BenchReport` objects (one per query for `bench run`, exactly one for `bench join` / `bench ds`). Each object carries `metadata` (label/value pairs mirroring stderr), `axes` (a `BTreeMap<String, serde_json::Value>` of structured axis values for tooling — conventional keys: `data_structure`, `algorithm`, `query`, `benchmark`, `relation_path`, `relation_bytes`, `tuples`, `arity`, `relations`), and `criterion_groups` pointers resolving to `target/criterion/{group}/{directory_name}/`. The on-disk `directory_name` replaces `/` in `function_id` with `_` — read it from each subdir's `benchmark.json:directory_name` rather than computing it. Schema is versioned via `schema_version` (currently `2`) and lives in `kermit/src/bench_report.rs`; full key catalogue in `docs/specs/bench-report-schema.md`. Bump the version on any breaking field-name or value-type change.
+- **JSON bench reports**: every `kermit bench` invocation writes a machine-readable report. Default path is `bench-runs/{kind}-{unix-millis}.json` (`bench-runs/` is auto-created and gitignored at the workspace root); `--report-json <PATH>` overrides. Output is always a JSON array of `BenchReport` objects (one per query for `bench run`, exactly one for `bench join` / `bench ds`). Each object carries `metadata` (label/value pairs mirroring stderr), `axes` (a `BTreeMap<String, serde_json::Value>` of structured axis values for tooling — conventional keys: `data_structure`, `algorithm`, `optimiser`, `query`, `benchmark`, `relation_path`, `relation_bytes`, `tuples`, `arity`, `relations`), and `criterion_groups` pointers resolving to `target/criterion/{group}/{directory_name}/`. The on-disk `directory_name` replaces `/` in `function_id` with `_` — read it from each subdir's `benchmark.json:directory_name` rather than computing it. Schema is versioned via `schema_version` (currently `2`) and lives in `kermit/src/bench_report.rs`; full key catalogue in `docs/specs/bench-report-schema.md`. Bump the version on any breaking field-name or value-type change.
 - **bench `--name` semantics**: For `bench join` and `bench ds`, `--name` is the full Criterion group name (defaults `join`/`ds`). For `bench run` it is a *prefix* on the auto-generated `{benchmark}/{query}/{ds}/{algo}` identity (defaulting to `run`), so workload identity stays in `target/criterion/{group}/`.
 - **`bench run -i all` / `-a all` is broken — enumerate valid pairs**: the cross-product loop (`kermit/src/main.rs` ~1547) does **not** filter incompatible (structure, algorithm) pairs, and the up-front `supports_algorithm` gate is permissive whenever either selector is `All`. `-a all` panics on e.g. `(TreeTrie, HashTriejoin)` (`kermit/src/db.rs` ~308) and writes no report. Worse, `-i all -a leapfrog-triejoin` does **not** panic — it reaches the `HashTrie` arm, runs `hash_join` regardless of the algorithm, and stamps the report's algorithm axis `LeapfrogTriejoin` (silent mislabel; `run_benchmark_hash` ~1117/1188). Only three pairs are valid — `(tree-trie|column-trie, leapfrog-triejoin)` and `(hash-trie, hash-triejoin)` — so sweep by running one `bench run` per pair. Filtering the loop is a filed known-issue.
 - **CLI join CSV header**: `kermit join` and `kermit bench join --output` prepend a CSV header row built from the head's variable names (via `head_column_names` in `kermit/src/main.rs`). Tests or scripts that parse this output as integer tuples must skip the first non-empty line.

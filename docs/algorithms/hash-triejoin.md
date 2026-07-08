@@ -44,6 +44,7 @@ Rust mapping:
 - **`I_scan` choice is local to each level.** The argmin is recomputed at every depth; the choice doesn't affect correctness, only the cost of probing the other iterators.
 - **Hash collision rejection is at the leaves.** Inner-level `lookup(h)` may succeed on a false-positive hash match. The leaf-level `verify_and_construct` is the only place where actual key equality is enforced — every result tuple emerges from there.
 - **Singleton iterators participate normally.** The const-view rewrite produces synthetic unary predicates backed by `SingletonHashTrieIter`. These satisfy `HashTrieIterator`'s contract via the [`HashTrieIterKind::Singleton`](../../kermit-algos/src/hash_trie_iter_kind.rs) variant.
+- **Variable ordering arrives as a plan, not a self-computed order.** `join_iter` no longer derives the descent order itself (the earlier per-algorithm `build_variable_index`/`global_attribute_order` helper has been deleted); it receives a `QueryPlan` produced ahead of time by a [`QueryOptimiser`](../optimisers/), validates it with [`QueryPlan::validate`](../../kermit-algos/src/optimiser/plan.rs), and panics on an invalid plan. The default [`LexicographicOptimiser`](../optimisers/lexicographic.md) reproduces the previously hardcoded Kahn's-with-smallest-index order, so documented behaviour is unchanged by default. LFTJ shares the exact same `QueryPlan` contract.
 
 ## Complexity
 
@@ -100,4 +101,5 @@ Related test: `join_algo_triangle` in [`kermit-algos/src/hash_triejoin.rs`](../.
 
 - [`HashTrie`](../data-structures/hash-trie.md) — the only data structure this algorithm consumes.
 - [`LeapfrogTriejoin`](./leapfrog-triejoin.md) — sibling worst-case-optimal algorithm using sorted (LFTJ) intersection.
+- [`docs/optimisers/`](../optimisers/) — the `QueryOptimiser` implementations that plan the `QueryPlan` this algorithm executes.
 - `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this algorithm must pass all 11 patterns under `HashTrie` (Priorities item 1).

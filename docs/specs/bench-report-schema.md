@@ -71,6 +71,7 @@ semantics).
 |------------------|--------------------------|------------------|-------|
 | `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`. Matches the `IndexStructure` `Debug` repr. |
 | `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`. Matches the `JoinAlgorithm` `Debug` repr. |
+| `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
 | `query`          | `run`                    | string           | Query name from the YAML `queries:` list (e.g. `"triangle"`). |
 | `benchmark`      | `run`                    | string           | YAML benchmark name (e.g. `"triangle"`, `"watdiv-stress-c1"`). |
 | `relation_path`  | `ds`                     | string           | The single relation file passed to `bench ds`. Workspace-relative if invoked from the workspace root. |
@@ -174,3 +175,4 @@ bump — the `axes` field is an open map.
 |---------|------------|--------|
 | 1       | 2026-04-19 | Initial schema (`schema_version`, `kind`, `metadata`, `criterion_groups`). |
 | 2       | 2026-05-04 | Added structured `axes: BTreeMap<String, serde_json::Value>` for downstream tooling. `metadata` retained as the human-readable surface. |
+| 2 (no bump) | 2026-07-08 | Added the `optimiser` conventional `axes` key (query optimiser that planned the join's variable ordering). Additive — `axes` is an open map, so `schema_version` stays `2`. |

@@ -44,7 +44,7 @@ A **Layout** option changes the type of the data structure itself. Each combinat
 | Switching at runtime | Impossible (it's compile-time) |
 | Bench axis key | `ds_layout_<dim>` |
 | Examples (potential) | Hasher choice ✓, pointer encoding, key type (`u32` vs `u64`) |
-| Test obligation | Type alias per combination + `define_multiway_join_test_suite!(<alias>, <Algo>)` for each |
+| Test obligation | Type alias per combination + `define_multiway_join_test_suite!(<alias>, <Algo>, <Optimiser>)` for each |
 
 ### Config — *changes a runtime flag*
 
@@ -343,7 +343,7 @@ Use the prescribed (but not-yet-implemented) `define_multiway_join_test_suite_wi
 type HashTrieSipNoSP = HashTrie<SipHashStrategy>;  // default config (no pruning)
 type HashTrieSipSP   = HashTrie<SipHashStrategy>;  // would need a wrapper that injects config
 
-define_multiway_join_test_suite!(HashTrieSipNoSP, HashTriejoin);
+define_multiway_join_test_suite!(HashTrieSipNoSP, HashTriejoin, LexicographicOptimiser);
 // ... etc
 ```
 

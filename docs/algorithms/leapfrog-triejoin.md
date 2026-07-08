@@ -10,7 +10,7 @@ LFTJ's running time is bounded by the AGM bound — the theoretical worst-case o
 
 ## Pseudocode
 
-Variables `v_1, …, v_n` are joined in the order chosen by `build_variable_index`. At depth `d` the algorithm uses [`LeapfrogJoin`](./leapfrog-join.md) over only the iterators whose relation mentions `v_d`.
+Variables `v_1, …, v_n` are joined in the order given by the `QueryPlan`'s `variable_ordering` — produced by a [`QueryOptimiser`](../optimisers/) before `join_iter` runs, not computed by the algorithm itself. At depth `d` the algorithm uses [`LeapfrogJoin`](./leapfrog-join.md) over only the iterators whose relation mentions `v_d`.
 
 ```
 triejoin_open():       # descend
@@ -28,7 +28,7 @@ triejoin_up():         # ascend
 # TrieIteratorWrapper, which walks the depth in DFS order.
 ```
 
-Source mapping: [`triejoin_open`](../../kermit-algos/src/leapfrog_triejoin.rs) (line 222), [`triejoin_up`](../../kermit-algos/src/leapfrog_triejoin.rs) (line 249), [`update_iters`](../../kermit-algos/src/leapfrog_triejoin.rs) (line 182), variable indexing in [`build_variable_index`](../../kermit-algos/src/leapfrog_triejoin.rs) (line 325).
+Source mapping: [`triejoin_open`](../../kermit-algos/src/leapfrog_triejoin.rs) (line 220), [`triejoin_up`](../../kermit-algos/src/leapfrog_triejoin.rs) (line 247), [`update_iters`](../../kermit-algos/src/leapfrog_triejoin.rs) (line 180), plan validation and variable ordering in [`join_iter`](../../kermit-algos/src/leapfrog_triejoin.rs) (line 306).
 
 ## State machine
 
@@ -44,7 +44,7 @@ Every body-predicate iterator is in **exactly one** of two places at any moment:
 - **Iterator depth tracks triejoin depth.** Every iterator in `leapfrog.iterators` has had `open()` called the same number of times as the triejoin's `depth`. `up()` on an active iterator must succeed; if it returns `false` the triejoin asserts and panics ([leapfrog_triejoin.rs:254](../../kermit-algos/src/leapfrog_triejoin.rs)) — this is always a programming error, not a recoverable runtime condition.
 - **`open()` is called even after `at_end()` returns true.** This is **not** a bug. LFTJ uses the `at_end` → `open` sequence to descend past a stale stack top, relying on the index structure's `open()` to push a *child of the current node* rather than positioning on the sibling. Index structures with a different `open` semantics will silently break LFTJ. See the LFTJ gotcha in `CLAUDE.md`.
 - **Const rewrite tolerance.** `DatabaseEngine::join` rewrites every `Term::Atom("c<id>")` into a fresh variable plus a synthetic unary `Const_c<id>` predicate (see [const_rewrite.rs](../../kermit-algos/src/const_rewrite.rs) and the const-view-rewrite gotcha). LFTJ never sees atoms; new algorithms must also tolerate the rewritten form.
-- **Valid global attribute order (GAO).** The descent order must bind every relation's variables in physical column order, because each iterator descends one stored column per `open()`. `build_variable_index` derives a valid order by topologically sorting the per-relation column constraints ([`global_attribute_order`](../../kermit-algos/src/leapfrog_triejoin.rs)); `join_iter` then permutes each result tuple back to head-first order so output columns are independent of the descent order. A naive first-appearance order silently broke subject-position constants — `p(c, X)` rewrites to `p(K, X), Const(K)` where `K` is physically first but appears last — yielding 0 results; this is guarded by `kermit/tests/subject_position_constant.rs` and the LUBM cardinality test. A cyclic constraint set (e.g. `r(X, Y), s(Y, X)`) cannot be answered with a single trie order per relation and panics. The hash-trie join shares the same helper and requirement.
+- **Valid global attribute order (GAO).** The descent order must bind every relation's variables in physical column order, because each iterator descends one stored column per `open()`. The ordering arrives as a `QueryPlan` produced by a [`QueryOptimiser`](../optimisers/) (previously it was computed in-algorithm by a now-deleted `build_variable_index`/`global_attribute_order` pair); `join_iter` validates it with [`QueryPlan::validate`](../../kermit-algos/src/optimiser/plan.rs) and panics on an invalid plan, then permutes each result tuple back to head-first order so output columns are independent of the descent order. The default [`LexicographicOptimiser`](../optimisers/lexicographic.md) reproduces the previously hardcoded Kahn's-with-smallest-index order, so documented behaviour is unchanged by default. A naive first-appearance order silently broke subject-position constants — `p(c, X)` rewrites to `p(K, X), Const(K)` where `K` is physically first but appears last — yielding 0 results; this is guarded by `kermit/tests/subject_position_constant.rs` and the LUBM cardinality test. A cyclic constraint set (e.g. `r(X, Y), s(Y, X)`) cannot be answered with a single trie order per relation and panics (in [`topological_order`](../../kermit-algos/src/optimiser/ordering.rs), called from the optimiser's `plan()`, not from `join_iter`). The hash-trie join shares the same `QueryPlan` contract.
 
 ## Complexity
 
@@ -78,4 +78,5 @@ Result tuple: `(7, 4, 5)`. This is the test [`triangle_join_collect`](../../kerm
 
 - [`LeapfrogJoin`](./leapfrog-join.md) — the inner k-way intersection used at every depth.
 - [`TreeTrie`](../data-structures/tree-trie.md), [`ColumnTrie`](../data-structures/column-trie.md) — index structures that satisfy the `TrieIterable` contract.
+- [`docs/optimisers/`](../optimisers/) — the `QueryOptimiser` implementations that plan the `QueryPlan` this algorithm executes.
 - `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — the 11 standard patterns LFTJ is tested against under every index structure (Priorities item 1).

@@ -190,7 +190,7 @@ This "leapfrog" pattern avoids examining every element—iterators jump past non
 
 `LeapfrogTriejoinIter` extends leapfrog join to work with trie iterators for multi-way joins. It coordinates multiple trie iterators, one per relation:
 
-1. **Variable Ordering**: Variables are numbered by first appearance in head, then body
+1. **Variable Numbering**: Canonical variable indices are assigned by first appearance in head, then body (`kermit_algos::analyse`). The actual descent order — which may differ from this numbering — is chosen by the query's `QueryOptimiser` and delivered as a `QueryPlan` (see "Query Planning" below).
 2. **Iterator Assignment**: Each variable level knows which relation iterators participate
 3. **Level-by-Level Join**: At each trie depth, a leapfrog join finds matching keys
 4. **Navigation**: `triejoin_open()` descends all participating iterators; `triejoin_up()` ascends
@@ -209,17 +209,22 @@ At depth 2 (variable C): S and T participate
 ```rust
 pub trait JoinAlgo<DS> where DS: JoinIterable {
     fn join_iter(
+        plan: &QueryPlan,
         query: JoinQuery,
         datastructures: HashMap<String, &DS>,
     ) -> impl Iterator<Item = Vec<usize>>;
 }
 ```
 
-This abstraction allows implementing different join algorithms that work with any join-iterable data structure.
+This abstraction allows implementing different join algorithms that work with any join-iterable data structure. `plan` supplies the variable descent order (see "Query Planning" below); implementations validate it against the query with `QueryPlan::validate` and panic if it is inconsistent.
 
 ### Const-Rewrite
 
 Before handing a query to `JoinAlgo::join_iter`, `DatabaseEngine::join` calls `kermit_algos::rewrite_atoms` (see `kermit-algos/src/const_rewrite.rs`) to implement Veldhuizen 2014 §3.4 point 4. Each `Term::Atom("c<id>")` in the body becomes a fresh variable `K<i>` plus a synthetic unary predicate `Const_c<id>(K<i>)` appended to the body, backed by a `SingletonTrieIter`. Body atoms only — head atoms are passed through. Implication: a new `JoinAlgo` impl must tolerate seeing the rewritten query, which can carry extra unary body predicates that do not appear in the user's original Datalog source. Adding a new data structure does *not* require any atom handling — the rewrite happens above the DS layer.
+
+### Query Planning
+
+Between the const-view rewrite and execution, the engine plans the join: it gathers per-relation tuple counts (`Cardinality::tuple_count`) into `CatalogStats` and asks its `QueryOptimiser` for a `QueryPlan` — the global attribute order the algorithm will descend. The space of valid plans is exactly the set of topological orders of the column-order constraint DAG; provided optimisers rank candidates inside Kahn's algorithm and are valid by construction, and `join_iter` asserts `QueryPlan::validate` defensively. `LexicographicOptimiser` (default) reproduces the historical hardcoded order; `CardinalityOptimiser` prefers variables from small relations (`--optimiser cardinality`).
 
 ## Benchmarking (`kermit-bench`)
 
