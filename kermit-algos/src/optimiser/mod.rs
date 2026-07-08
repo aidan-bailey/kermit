@@ -8,5 +8,11 @@
 //! canonical variable numbering.
 
 mod analysis;
+mod ordering;
+mod plan;
 
-pub use analysis::{analyse, QueryAnalysis};
+pub use {
+    analysis::{analyse, QueryAnalysis},
+    ordering::topological_order,
+    plan::{PlanError, QueryPlan},
+};

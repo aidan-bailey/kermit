@@ -26,7 +26,7 @@ pub use {
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     leapfrog_triejoin::LeapfrogTriejoin,
-    optimiser::{analyse, QueryAnalysis},
+    optimiser::{analyse, topological_order, PlanError, QueryAnalysis, QueryPlan},
     singleton::SingletonTrieIter,
     trie_iter_kind::TrieIterKind,
 };
