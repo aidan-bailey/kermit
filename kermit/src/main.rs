@@ -14,7 +14,7 @@ use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
     kermit::db::{hash_join, instantiate_database},
-    kermit_algos::{JoinAlgorithm, JoinQuery, LexicographicOptimiser},
+    kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HashTrie, HeapSize, IndexStructure, Relation, RelationFileExt},
     kermit_iters::{
@@ -84,6 +84,11 @@ struct QueryArgs {
         value_enum
     )]
     indexstructure: IndexStructure,
+
+    /// Query optimiser (plans the join's variable ordering). Long-only:
+    /// `-o` belongs to `--output`.
+    #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
+    optimiser: Optimiser,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
@@ -347,6 +352,10 @@ enum BenchSubcommand {
         #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
         algorithm: JoinAlgorithmSelector,
 
+        /// Query optimiser (plans the join's variable ordering)
+        #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
+        optimiser: Optimiser,
+
         /// Metrics to benchmark
         #[arg(
             short,
@@ -550,7 +559,7 @@ fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, Join
     let mut db = instantiate_database(
         args.indexstructure,
         args.algorithm,
-        Box::new(LexicographicOptimiser),
+        args.optimiser.instantiate(),
         "join".to_string(),
     );
     for path in &args.relations {
@@ -882,7 +891,7 @@ fn run_ds_bench_hash<H: HashStrategy>(
 
 fn run_benchmark<R>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
-    metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
+    optimiser: Optimiser, metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
 ) -> anyhow::Result<Vec<BenchReport>>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
@@ -926,7 +935,7 @@ where
     let mut db = instantiate_database(
         indexstructure,
         algorithm,
-        Box::new(LexicographicOptimiser),
+        optimiser.instantiate(),
         benchmark.name.clone(),
     );
     for rel in &relations {
@@ -1051,6 +1060,10 @@ where
             ("query".to_string(), serde_json::json!(query_def.name)),
             ("data_structure".to_string(), serde_json::json!(ds_name)),
             ("algorithm".to_string(), serde_json::json!(algo_name)),
+            (
+                "optimiser".to_string(),
+                serde_json::json!(optimiser.axis_value()),
+            ),
             ("tuples".to_string(), serde_json::json!(total_tuples)),
         ]);
         reports.push(BenchReport::new(
@@ -1076,7 +1089,7 @@ where
 /// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
 fn run_benchmark_hash<H: HashStrategy>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
-    metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
+    optimiser: Optimiser, metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
 ) -> anyhow::Result<Vec<BenchReport>> {
     let queries: Vec<&kermit_bench::QueryDefinition> = match query_filter {
         | Some(name) => {
@@ -1131,6 +1144,8 @@ fn run_benchmark_hash<H: HashStrategy>(
         .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
 
     let total_tuples: usize = named.values().map(|r| r.collect_tuples().len()).sum();
+
+    let planned = optimiser.instantiate();
 
     let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
 
@@ -1195,7 +1210,7 @@ fn run_benchmark_hash<H: HashStrategy>(
                 group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || join_query.clone(),
-                        |q| hash_join::<HashTrie<H>, H>(&named, q, &LexicographicOptimiser),
+                        |q| hash_join::<HashTrie<H>, H>(&named, q, planned.as_ref()),
                         criterion::BatchSize::SmallInput,
                     );
                 });
@@ -1227,6 +1242,10 @@ fn run_benchmark_hash<H: HashStrategy>(
             ("query".to_string(), serde_json::json!(query_def.name)),
             ("data_structure".to_string(), serde_json::json!(ds_name)),
             ("algorithm".to_string(), serde_json::json!(algo_name)),
+            (
+                "optimiser".to_string(),
+                serde_json::json!(optimiser.axis_value()),
+            ),
             ("tuples".to_string(), serde_json::json!(total_tuples)),
         ]);
         // Standard optimization axes: merge in dimensions emitted by the DS.
@@ -1449,6 +1468,10 @@ fn main() -> anyhow::Result<()> {
                         serde_json::json!(format!("{:?}", query_args.algorithm)),
                     ),
                     (
+                        "optimiser".to_string(),
+                        serde_json::json!(query_args.optimiser.axis_value()),
+                    ),
+                    (
                         "relations".to_string(),
                         serde_json::json!(query_args.relations.len()),
                     ),
@@ -1527,6 +1550,7 @@ fn main() -> anyhow::Result<()> {
                 query,
                 indexstructure,
                 algorithm,
+                optimiser,
                 metrics,
                 force,
                 layout,
@@ -1562,6 +1586,7 @@ fn main() -> anyhow::Result<()> {
                                     benchmark,
                                     ds,
                                     algo,
+                                    optimiser,
                                     &metrics,
                                     query.as_deref(),
                                     &bench_args,
@@ -1571,6 +1596,7 @@ fn main() -> anyhow::Result<()> {
                                         benchmark,
                                         ds,
                                         algo,
+                                        optimiser,
                                         &metrics,
                                         query.as_deref(),
                                         &bench_args,
@@ -1604,6 +1630,7 @@ fn main() -> anyhow::Result<()> {
                                                 benchmark,
                                                 ds,
                                                 algo,
+                                                optimiser,
                                                 &metrics,
                                                 query.as_deref(),
                                                 &bench_args,
@@ -1614,6 +1641,7 @@ fn main() -> anyhow::Result<()> {
                                                 benchmark,
                                                 ds,
                                                 algo,
+                                                optimiser,
                                                 &metrics,
                                                 query.as_deref(),
                                                 &bench_args,
