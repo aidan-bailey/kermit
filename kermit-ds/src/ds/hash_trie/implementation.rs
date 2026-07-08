@@ -42,6 +42,9 @@ use {
 pub struct HashTrie<H: HashStrategy = SipHashStrategy> {
     header: RelationHeader,
     root: HashTrieNode,
+    /// Number of stored tuples (multiset: duplicates count); maintained
+    /// by `insert` and `from_tuples`.
+    tuple_count: usize,
     _hasher: PhantomData<H>,
 }
 
@@ -124,6 +127,7 @@ impl<H: HashStrategy> Relation for HashTrie<H> {
         Self {
             header,
             root,
+            tuple_count: 0,
             _hasher: PhantomData,
         }
     }
@@ -140,6 +144,7 @@ impl<H: HashStrategy> Relation for HashTrie<H> {
                 arity,
             );
             Self::insert_at(&mut trie.root, 0, arity, tuple);
+            trie.tuple_count += 1;
         }
         trie
     }
@@ -154,6 +159,7 @@ impl<H: HashStrategy> Relation for HashTrie<H> {
         );
         let arity = self.header.arity();
         Self::insert_at(&mut self.root, 0, arity, tuple);
+        self.tuple_count += 1;
     }
 
     fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
@@ -194,6 +200,10 @@ impl<H: HashStrategy> crate::relation::Projectable for HashTrie<H> {
 
 impl<H: HashStrategy> crate::heap_size::HeapSize for HashTrie<H> {
     fn heap_size_bytes(&self) -> usize { node_heap_bytes(&self.root) }
+}
+
+impl<H: HashStrategy> crate::cardinality::Cardinality for HashTrie<H> {
+    fn tuple_count(&self) -> usize { self.tuple_count }
 }
 
 impl<H: HashStrategy> kermit_iters::HashTrieIterable for HashTrie<H> {
@@ -471,5 +481,35 @@ mod tests {
             axes.get("ds_layout_hasher"),
             Some(&serde_json::Value::String("fxhash".to_string())),
         );
+    }
+}
+
+#[cfg(test)]
+mod cardinality_tests {
+    use {super::*, crate::cardinality::Cardinality};
+
+    #[test]
+    fn empty_relation_has_zero_tuples() {
+        let trie: HashTrie = HashTrie::new(2.into());
+        assert_eq!(trie.tuple_count(), 0);
+    }
+
+    #[test]
+    fn tuple_count_matches_collect_tuples_len() {
+        let trie: HashTrie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        assert_eq!(trie.tuple_count(), 3);
+        assert_eq!(trie.collect_tuples().len(), 3);
+    }
+
+    #[test]
+    fn duplicate_insert_counts_multiset_semantics() {
+        // HashTrie is deliberately a multiset: duplicates append to leaf
+        // chains (equality is deferred to the join algorithm), so the
+        // count includes them — matching what iteration yields.
+        let mut trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        trie.insert(vec![1, 2]);
+        assert_eq!(trie.tuple_count(), 2);
+        assert_eq!(trie.collect_tuples().len(), 2);
     }
 }
