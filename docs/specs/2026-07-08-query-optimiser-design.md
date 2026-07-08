@@ -93,19 +93,32 @@ the shared ordering machinery and still fires.
 
 ### Statistics seam
 
-New one-method trait in `kermit-iters` (precedent: `HeapSize`):
+New one-method trait in `kermit-ds/src/cardinality.rs`, exactly mirroring
+`HeapSize` (`kermit-ds/src/heap_size.rs`: standalone trait, not a
+`Relation` supertrait, per-DS impls co-located in each
+`implementation.rs`):
 
 ```rust
 pub trait Cardinality {
-    /// Number of distinct tuples stored.
+    /// Number of stored tuples — the count a full trie iteration yields.
     fn tuple_count(&self) -> usize;
 }
 ```
 
-Implemented by `TreeTrie`, `ColumnTrie`, `HashTrie` via an O(1) counter
-maintained on insert (incremented only when the inserted tuple was actually
-new — duplicate inserts must not inflate the count). Touching all three DSs
-is in-scope for this change: the seam is the feature.
+The contract is *stored* tuples, not *distinct* tuples: `TreeTrie` and
+`ColumnTrie` have set semantics (duplicate inserts are no-ops, so stored =
+distinct), while `HashTrie` is deliberately a multiset (duplicates append
+to leaf chains; key equality is deferred to the join algorithm), so its
+count includes duplicates. For a size-ranking heuristic both are equally
+good signals, and the uniform contract is testable everywhere as
+`tuple_count() == full-iteration count`.
+
+Implemented via an O(1) counter maintained on insert: `TreeTrie` and
+`ColumnTrie` increment only when the insert path reports the tuple was
+genuinely new (both paths can detect this at the last trie level);
+`HashTrie` increments unconditionally. Projection rebuilds through
+`from_tuples`, so counters recompute naturally. Touching all three DSs is
+in-scope for this change: the seam is the feature.
 
 The optimiser never sees data structures. `DatabaseEngine::join` (and
 `hash_join`) gather counts into plain data:
@@ -179,7 +192,9 @@ passed through — not matched on. The `hash_join` free function gains an
 - **Unit tests:** planner determinism; cardinality ordering given literal
   `CatalogStats`; `plan.validate()` rejects a column-order-violating
   permutation; const-singletons rank as size 1; cyclic-GAO panic still
-  fires; `tuple_count` unaffected by duplicate inserts (per DS).
+  fires; `tuple_count` matches full-iteration count per DS (duplicate
+  inserts don't inflate it for `TreeTrie`/`ColumnTrie`; they do count for
+  the multiset `HashTrie`).
 - **CLI test:** `--optimiser cardinality` lands in the report JSON
   (mirroring `kermit/tests/cli_hash_trie_hasher_choice.rs`).
 
