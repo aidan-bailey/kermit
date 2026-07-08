@@ -10,12 +10,14 @@
 //! [`QueryPlan::validate`].
 
 mod analysis;
+mod cardinality;
 mod lexicographic;
 mod ordering;
 mod plan;
 
 pub use {
     analysis::{analyse, QueryAnalysis},
+    cardinality::CardinalityOptimiser,
     lexicographic::LexicographicOptimiser,
     ordering::topological_order,
     plan::{PlanError, QueryPlan},

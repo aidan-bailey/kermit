@@ -29,8 +29,8 @@ pub use {
     kermit_parser::JoinQuery,
     leapfrog_triejoin::LeapfrogTriejoin,
     optimiser::{
-        analyse, topological_order, CatalogStats, LexicographicOptimiser, PlanError, QueryAnalysis,
-        QueryOptimiser, QueryPlan, RelationStats,
+        analyse, topological_order, CardinalityOptimiser, CatalogStats, LexicographicOptimiser,
+        PlanError, QueryAnalysis, QueryOptimiser, QueryPlan, RelationStats,
     },
     singleton::SingletonTrieIter,
     trie_iter_kind::TrieIterKind,
