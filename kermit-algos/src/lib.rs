@@ -93,3 +93,18 @@ impl Optimiser {
         }
     }
 }
+
+#[cfg(test)]
+mod optimiser_enum_tests {
+    use super::*;
+
+    /// Pins `axis_value` to clap's derived kebab-case value name, so a
+    /// variant rename cannot silently desync the CLI value from the
+    /// bench-report `optimiser` axis.
+    #[test]
+    fn axis_values_match_clap_value_names() {
+        for v in Optimiser::value_variants() {
+            assert_eq!(v.axis_value(), v.to_possible_value().unwrap().get_name());
+        }
+    }
+}

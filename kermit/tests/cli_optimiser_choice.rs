@@ -1,7 +1,10 @@
 //! CLI smoke tests: `--optimiser` selection lands in the bench-report
 //! `optimiser` axis, defaulting to `lexicographic`.
 
-use std::{fs, path::PathBuf, process::Command};
+use {
+    std::{fs, path::PathBuf, process::Command},
+    tempfile::NamedTempFile,
+};
 
 fn kermit_bin() -> &'static str { env!("CARGO_BIN_EXE_kermit") }
 
@@ -10,11 +13,9 @@ fn fixtures_dir() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("t
 fn edge_fixture() -> PathBuf { fixtures_dir().join("edge.csv") }
 
 /// Runs `bench join` against the edge fixture with `extra_args` appended,
-/// returning the parsed report array. `tag` keeps concurrent tests' temp
-/// files apart.
-fn run_bench_join(tag: &str, extra_args: &[&str]) -> Vec<serde_json::Value> {
-    let pid = std::process::id();
-    let report_path = std::env::temp_dir().join(format!("kermit-optimiser-{tag}-{pid}.json"));
+/// returning the parsed report array.
+fn run_bench_join(extra_args: &[&str]) -> Vec<serde_json::Value> {
+    let report = NamedTempFile::new().expect("failed to create temp report file");
 
     let mut cmd = Command::new(kermit_bin());
     cmd.args([
@@ -26,7 +27,7 @@ fn run_bench_join(tag: &str, extra_args: &[&str]) -> Vec<serde_json::Value> {
         "--warm-up-time",
         "1",
         "--report-json",
-        report_path.to_str().unwrap(),
+        report.path().to_str().unwrap(),
         "join",
         "--relations",
         edge_fixture().to_str().unwrap(),
@@ -46,20 +47,25 @@ fn run_bench_join(tag: &str, extra_args: &[&str]) -> Vec<serde_json::Value> {
     );
 
     let reports: Vec<serde_json::Value> =
-        serde_json::from_str(&fs::read_to_string(&report_path).unwrap()).unwrap();
-    let _ = fs::remove_file(&report_path);
+        serde_json::from_str(&fs::read_to_string(report.path()).unwrap()).unwrap();
     assert!(!reports.is_empty(), "report array should not be empty");
     reports
 }
 
 #[test]
 fn cli_bench_join_with_cardinality_optimiser_records_axis() {
-    let reports = run_bench_join("cardinality", &["--optimiser", "cardinality"]);
+    let reports = run_bench_join(&["--optimiser", "cardinality"]);
     assert_eq!(reports[0]["axes"]["optimiser"], "cardinality");
+    // Sibling axis guard: the optimiser entry must extend the axes map,
+    // not displace existing keys.
+    assert_eq!(reports[0]["axes"]["algorithm"], "LeapfrogTriejoin");
 }
 
 #[test]
 fn cli_bench_join_default_optimiser_is_lexicographic() {
-    let reports = run_bench_join("default", &[]);
+    let reports = run_bench_join(&[]);
     assert_eq!(reports[0]["axes"]["optimiser"], "lexicographic");
+    // Sibling axis guard: the optimiser entry must extend the axes map,
+    // not displace existing keys.
+    assert_eq!(reports[0]["axes"]["data_structure"], "TreeTrie");
 }

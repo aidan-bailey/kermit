@@ -353,6 +353,7 @@ enum BenchSubcommand {
         algorithm: JoinAlgorithmSelector,
 
         /// Query optimiser (plans the join's variable ordering)
+        // Long-only for parity with the join surfaces (where -o is --output).
         #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
         optimiser: Optimiser,
 
@@ -1145,7 +1146,7 @@ fn run_benchmark_hash<H: HashStrategy>(
 
     let total_tuples: usize = named.values().map(|r| r.collect_tuples().len()).sum();
 
-    let planned = optimiser.instantiate();
+    let optimiser_impl = optimiser.instantiate();
 
     let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
 
@@ -1210,7 +1211,7 @@ fn run_benchmark_hash<H: HashStrategy>(
                 group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || join_query.clone(),
-                        |q| hash_join::<HashTrie<H>, H>(&named, q, planned.as_ref()),
+                        |q| hash_join::<HashTrie<H>, H>(&named, q, optimiser_impl.as_ref()),
                         criterion::BatchSize::SmallInput,
                     );
                 });
