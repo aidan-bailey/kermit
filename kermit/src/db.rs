@@ -155,6 +155,8 @@ where
         let ds_map: HashMap<String, &TrieIterKind<'_, R>> =
             wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
 
+        // Stats + planning run per join — inside benchmarks' measured region —
+        // so this stays O(#predicates) on top of O(1) tuple_count() reads.
         let stats = CatalogStats::for_query(&rewritten, |name| {
             self.relations.get(name).map(Cardinality::tuple_count)
         });
@@ -292,6 +294,8 @@ where
     let ds_map: HashMap<String, &HashTrieIterKind<'_, R>> =
         wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
 
+    // Stats + planning run per join — inside benchmarks' measured region —
+    // so this stays O(#predicates) on top of O(1) tuple_count() reads.
     let stats = CatalogStats::for_query(&rewritten, |name| {
         relations.get(name).map(Cardinality::tuple_count)
     });
@@ -452,14 +456,14 @@ mod hash_join_tests {
     /// wrapper alongside the relation.
     ///
     /// We deliberately place the constant in the trailing column. The
-    /// hash-trie iter family descends through *physical* attribute
-    /// positions in lockstep with the algorithm's *variable* ordering;
-    /// the variable ordering is "head vars first, then any extra body
-    /// vars" (the optimiser's `analyse` numbering). With the constant in the
-    /// last
-    /// column, the rewrite's fresh `K0` lands at the tail of the
-    /// variable ordering, which matches the trie's physical layout. The
-    /// LFTJ const test uses the same shape for the same reason.
+    /// hash-trie iter family descends through *physical* attribute positions
+    /// in lockstep with the plan's *variable* ordering. `analyse` assigns the
+    /// canonical numbering ("head vars first, then any extra body vars");
+    /// the descent ordering is whatever the optimiser's plan returns, and for
+    /// this trailing-constant shape the lexicographic plan coincides with the
+    /// canonical numbering. The rewrite's fresh `K0` therefore lands at the
+    /// tail of the variable ordering, matching the trie's physical layout.
+    /// The LFTJ const test uses the same shape for the same reason.
     ///
     /// The algorithm emits tuples in `variable_ordering` order (all
     /// query variables, not just head vars), so we project to the head
