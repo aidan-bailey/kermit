@@ -20,7 +20,8 @@ use std::{
 /// smallest key is emitted next, with the canonical index as the final
 /// deterministic tie-break. Because candidates are restricted to the ready
 /// set, **any** rank function yields a valid order — an ordering policy
-/// can be slow, never wrong.
+/// can be slow, never wrong. `rank` is evaluated once per variable, as it
+/// becomes ready — cheap enough for expensive statistics-driven policies.
 ///
 /// # Panics
 ///

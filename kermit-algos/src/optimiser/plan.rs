@@ -131,6 +131,15 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_variable_is_not_a_permutation() {
+        // Correct length, all distinct, but 5 is not a variable of the query.
+        let plan = QueryPlan {
+            variable_ordering: vec![0, 1, 5],
+        };
+        assert_eq!(plan.validate(&triangle()), Err(PlanError::NotAPermutation));
+    }
+
+    #[test]
     fn column_order_violation_is_rejected() {
         // Ordering Y before X violates R(X, Y)'s physical column order.
         let plan = QueryPlan {
