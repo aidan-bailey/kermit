@@ -32,7 +32,7 @@ impl QueryOptimiser for CardinalityOptimiser {
             variable_ordering: topological_order(
                 analysis.num_vars,
                 &analysis.predicate_variables,
-                |v| (min_size[v], v),
+                |v| min_size[v],
             ),
         }
     }
@@ -81,6 +81,22 @@ mod tests {
     fn equal_sizes_fall_back_to_canonical_order() {
         let q: JoinQuery = "Q(X, Y) :- R(X), S(Y).".parse().unwrap();
         let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, &[("R", 10), ("S", 10)]));
+        assert_eq!(plan.variable_ordering, vec![0, 1]);
+    }
+
+    #[test]
+    fn shared_variable_ranks_by_its_smallest_relation() {
+        // X appears in both Big and Small; the min fold ranks X by
+        // Small (2), beating Y's 5 — regardless of which mentioning
+        // predicate comes first in the body. A max / first-wins /
+        // last-wins bug would order Y first in one of the two shapes.
+        let q: JoinQuery = "Q(X, Y) :- Big(X), Small(X), Other(Y).".parse().unwrap();
+        let sizes: &[(&str, usize)] = &[("Big", 1000), ("Small", 2), ("Other", 5)];
+        let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, sizes));
+        assert_eq!(plan.variable_ordering, vec![0, 1]);
+
+        let q: JoinQuery = "Q(X, Y) :- Small(X), Big(X), Other(Y).".parse().unwrap();
+        let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, sizes));
         assert_eq!(plan.variable_ordering, vec![0, 1]);
     }
 
