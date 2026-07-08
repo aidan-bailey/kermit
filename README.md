@@ -55,6 +55,8 @@ Output (CSV to stdout):
 
 Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. `kermit join` supports the two sorted-trie structures `tree-trie` and `column-trie` (both paired with `leapfrog-triejoin`); the third structure, `hash-trie`, is exercised via `bench run -i hash-trie -a hash-triejoin` (see [Benchmarking](#benchmarking)).
 
+An optional `--optimiser <lexicographic|cardinality>` flag picks the query optimiser that plans the join's variable ordering (default: `lexicographic`, which reproduces the historical ordering; `cardinality` binds variables from the smallest relations first). See [`docs/optimisers/`](docs/optimisers/).
+
 ## Benchmarking
 
 All benchmarking is driven through the CLI. Each `bench` subcommand wraps Criterion and writes its raw measurement JSON to `target/criterion/`.
@@ -80,6 +82,7 @@ Useful flags:
 - `--all` — run every benchmark in `benchmarks/`.
 - `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the three compatible pairings above are supported; `-i all` / `-a all` does **not** yet skip incompatible combinations, so run one valid pair at a time.
 - `--metrics insertion iteration space` — pick which metrics to measure (default: all three).
+- `--optimiser <lexicographic|cardinality>` — pick the query optimiser planning each join's variable ordering (default: `lexicographic`). The choice is recorded in the JSON report's `optimiser` axis, making optimiser comparisons a third benchmark dimension alongside `-i`/`-a`.
 - `--force` — regenerate a declarative-generator benchmark when its cached `meta.json` no longer matches the YAML's `spec_hash` (otherwise drift is a hard error).
 
 Available benchmarks include `triangle`, the `oxford-uniform-s{1..6}` / `oxford-zipf-s{1..6}` Oxford DSI suites, and the `watdiv-stress-{100,1000}-{warmup,test-1..5}` WatDiv suites. Run `kermit bench list` for the full set.

@@ -53,8 +53,10 @@ unset) so the workload identity remains in the Criterion path.
 Benchmarks end-to-end join execution time on real data.
 
 **Arguments:** `--relations` (file paths), `--query` (.dl file),
-`--algorithm`, `--indexstructure`, optional `--output` (writes one run's
-results as CSV with a header row of head variable names).
+`--algorithm`, `--indexstructure`, optional `--optimiser` (query optimiser
+planning the variable ordering; defaults to `lexicographic`), optional
+`--output` (writes one run's results as CSV with a header row of head
+variable names).
 
 **Flow:**
 1. Load relation files (CSV or Parquet) into a `DatabaseEngine` via
@@ -89,7 +91,8 @@ Benchmarks a named YAML workload from `benchmarks/`.
 
 **Arguments:** positional `name` or `--all`, optional `--query` (run only
 that named query within the workload), `--indexstructure`, `--algorithm`,
-`--metrics` (defaults to all three).
+optional `--optimiser` (defaults to `lexicographic`; no `all` sweep —
+enumerate values per run), `--metrics` (defaults to all three).
 
 **Flow:**
 1. Resolve workload(s) via `resolve_benchmarks`, which uses
@@ -159,8 +162,10 @@ Each `bench` subcommand emits three independent output streams:
 3. **JSON report (`--report-json <path>`)** — a machine-readable
    `BenchReport` describing the same metadata, a structured `axes` map of
    axis values for downstream tooling (conventional keys: `data_structure`,
-   `algorithm`, `query`, `benchmark`, `relation_path`, `relation_bytes`,
-   `tuples`, `arity`), plus pointers into the Criterion artefact tree
+   `algorithm`, `optimiser`, `query`, `benchmark`, `relation_path`,
+   `relation_bytes`, `tuples`, `arity`; `optimiser` is emitted by
+   `bench join` and `bench run` only — `bench ds` performs no join), plus
+   pointers into the Criterion artefact tree
    (`group`, `function`, `metric`). Always emitted
    as a JSON array (single-element for `bench join`/`bench ds`,
    multi-element for `bench run` with multiple queries) so downstream

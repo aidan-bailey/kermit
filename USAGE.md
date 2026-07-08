@@ -68,6 +68,22 @@ and are interchangeable from the CLI's perspective; benchmark to pick one.
 only with `-a hash-triejoin`. The one-shot `kermit join` / `bench join` LFTJ
 path supports only the two sorted tries (`tree-trie`, `column-trie`).
 
+### Pick the query optimiser
+
+`--optimiser` selects the policy that plans the join's variable ordering
+(the global attribute order the algorithm descends). It accepts
+`lexicographic` (the default — reproduces the historical hardcoded
+ordering) or `cardinality` (binds variables from the smallest relations
+first). Long-only: `-o` belongs to `--output`.
+
+```sh
+kermit join … --optimiser cardinality
+```
+
+Every valid ordering yields the same result tuples; the optimiser affects
+only execution order and therefore runtime. See
+[`docs/optimisers/`](docs/optimisers/) for the per-policy docs.
+
 ## Benchmarks
 
 Every `bench` subcommand wraps Criterion. Each invocation writes:
@@ -108,7 +124,9 @@ kermit bench join \
 ```
 
 Pass `-o`/`--output <PATH>` to also write the join's tuples to a CSV file
-(useful for verifying correctness alongside the benchmark).
+(useful for verifying correctness alongside the benchmark). `--optimiser
+<lexicographic|cardinality>` picks the query optimiser (default:
+`lexicographic`); the choice lands in the JSON report's `optimiser` axis.
 
 ### Benchmark a data structure (`bench ds`)
 
@@ -157,6 +175,15 @@ all three. To benchmark only space:
 
 ```sh
 kermit bench run triangle -i tree-trie -a leapfrog-triejoin -m space
+```
+
+It also accepts `--optimiser <lexicographic|cardinality>` (default:
+`lexicographic`), stamped into each report's `optimiser` axis — sweep it the
+same way as the DS/algorithm axes to compare ordering policies:
+
+```sh
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin --optimiser lexicographic
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin --optimiser cardinality
 ```
 
 ### Sweep all index structures and algorithms
