@@ -25,7 +25,8 @@ pub struct QueryAnalysis {
 ///
 /// Two passes assign canonical indices: head variables first (so output
 /// tuple order matches the head declaration), then body-only variables in
-/// first-appearance order. A third pass collects per-predicate variable
+/// first-appearance order. Specifically, the j-th distinct head variable
+/// receives canonical index j. A third pass collects per-predicate variable
 /// index lists. Placeholders (`_`) and atoms are skipped in all passes —
 /// they occupy trie levels but don't bind a join variable.
 ///
@@ -113,5 +114,14 @@ mod tests {
         let analysis = analyse(&query);
         assert_eq!(analysis.num_vars, 1);
         assert_eq!(analysis.predicate_variables, vec![vec![0], vec![0]]);
+    }
+
+    #[test]
+    fn repeated_variable_within_one_predicate() {
+        // The same canonical index appears twice in the predicate's list.
+        let query: JoinQuery = "Q(X) :- R(X, X).".parse().unwrap();
+        let analysis = analyse(&query);
+        assert_eq!(analysis.num_vars, 1);
+        assert_eq!(analysis.predicate_variables, vec![vec![0, 0]]);
     }
 }
