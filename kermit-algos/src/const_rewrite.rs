@@ -10,6 +10,16 @@ use {
     std::fmt,
 };
 
+/// Prefix of the synthetic predicate names introduced by
+/// [`rewrite_atoms`] (e.g. `Const_c42`). Load-bearing beyond this
+/// module: `CatalogStats::for_query` recognises const-view
+/// singletons by this prefix.
+pub const CONST_PREDICATE_PREFIX: &str = "Const_";
+
+/// Returns `true` iff `name` names a synthetic const-view predicate
+/// introduced by [`rewrite_atoms`].
+pub fn is_const_predicate(name: &str) -> bool { name.starts_with(CONST_PREDICATE_PREFIX) }
+
 /// Error returned by [`rewrite_atoms`] when an atom does not match the
 /// expected `c<digits>` shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +95,7 @@ pub fn rewrite_atoms(mut query: JoinQuery) -> Result<(JoinQuery, Vec<ConstSpec>)
             let fresh = format!("K{next_k}");
             next_k += 1;
             *term = Term::Var(fresh.clone());
-            let const_name = format!("Const_{atom}");
+            let const_name = format!("{CONST_PREDICATE_PREFIX}{atom}");
             new_preds.push(Predicate {
                 name: const_name.clone(),
                 terms: vec![Term::Var(fresh)],

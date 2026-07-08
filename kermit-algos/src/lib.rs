@@ -19,7 +19,9 @@ mod trie_iter_kind;
 
 use {clap::ValueEnum, std::str::FromStr};
 pub use {
-    const_rewrite::{rewrite_atoms, ConstSpec, RewriteError},
+    const_rewrite::{
+        is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
+    },
     hash_singleton::SingletonHashTrieIter,
     hash_trie_iter_kind::HashTrieIterKind,
     hash_triejoin::HashTriejoin,

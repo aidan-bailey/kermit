@@ -64,7 +64,7 @@ impl CatalogStats {
             if stats.relations.contains_key(&pred.name) {
                 continue;
             }
-            if pred.name.starts_with("Const_") {
+            if crate::const_rewrite::is_const_predicate(&pred.name) {
                 stats.insert(pred.name.clone(), RelationStats {
                     tuples: 1,
                     arity: 1,
@@ -86,7 +86,10 @@ impl CatalogStats {
 /// exact query the executor will run, including synthetic `Const_*`
 /// predicates) and produce a [`QueryPlan`] the executor consumes. Object
 /// safe: the engine holds `Box<dyn QueryOptimiser>` so the choice is a
-/// runtime decision.
+/// runtime decision. The returned plan must order variables consistently
+/// with every relation's physical column order (any [`topological_order`]
+/// output qualifies); executors assert [`QueryPlan::validate`] and panic
+/// on violation.
 pub trait QueryOptimiser {
     /// Produces a plan for `query` given per-relation `stats`.
     fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan;
@@ -113,5 +116,18 @@ mod tests {
         let q: JoinQuery = "Q(X) :- R(X), Mystery(X).".parse().unwrap();
         let stats = CatalogStats::for_query(&q, |name| (name == "R").then_some(7));
         assert_eq!(stats.tuples("Mystery"), None);
+    }
+
+    #[test]
+    fn for_query_looks_up_each_relation_once() {
+        use std::cell::Cell;
+        let q: JoinQuery = "Q(X, Z) :- R(X, Y), R(Y, Z).".parse().unwrap();
+        let lookups = Cell::new(0);
+        let stats = CatalogStats::for_query(&q, |name| {
+            lookups.set(lookups.get() + 1);
+            (name == "R").then_some(9)
+        });
+        assert_eq!(stats.tuples("R"), Some(9));
+        assert_eq!(lookups.get(), 1);
     }
 }
