@@ -4,6 +4,7 @@ macro_rules! define_multiway_join_test {
         $test_name:ident,
         $relation_type:ident,
         $join_algorithm:ty,
+        $optimiser:ty,
         [ $( $input:expr ),+ $(,)? ],
         $join_vars:expr,
         $projection:expr,
@@ -16,7 +17,7 @@ macro_rules! define_multiway_join_test {
 
             $debugger
 
-            $crate::common::utils::test_join::<$relation_type, $join_algorithm>(
+            $crate::common::utils::test_join::<$relation_type, $join_algorithm, $optimiser>(
                 inputs,
                 $join_vars.to_vec(),
                 $projection.to_vec(),
@@ -28,12 +29,13 @@ macro_rules! define_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_unary_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<simple_multiwayjoin_ $relation_type:lower _ $join_algorithm:lower>],
+            [<simple_multiwayjoin_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1], vec![2], vec![3]],
                 vec![vec![1], vec![2], vec![3]]
@@ -49,12 +51,13 @@ macro_rules! define_unary_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_triangle_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<triangle_ $relation_type:lower _ $join_algorithm:lower>],
+            [<triangle_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 2], vec![2, 3], vec![3, 1]],
                 vec![vec![2, 3], vec![3, 1], vec![1, 2]],
@@ -71,12 +74,13 @@ macro_rules! define_triangle_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_chain_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<chain_ $relation_type:lower _ $join_algorithm:lower>],
+            [<chain_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 2], vec![2, 3]],
                 vec![vec![2, 4], vec![3, 5]],
@@ -93,12 +97,13 @@ macro_rules! define_chain_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_star_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<star_ $relation_type:lower _ $join_algorithm:lower>],
+            [<star_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 10], vec![2, 20]],
                 vec![vec![1, 100], vec![2, 200]]
@@ -114,12 +119,13 @@ macro_rules! define_star_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_self_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<selfjoin_ $relation_type:lower _ $join_algorithm:lower>],
+            [<selfjoin_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 2], vec![2, 3], vec![3, 4]],
                 vec![vec![2, 3], vec![3, 4], vec![4, 5]]
@@ -135,12 +141,13 @@ macro_rules! define_self_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_existential_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<existential_ $relation_type:lower _ $join_algorithm:lower>],
+            [<existential_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1], vec![2], vec![3]],
                 vec![vec![2], vec![3], vec![4]]
@@ -156,12 +163,13 @@ macro_rules! define_existential_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_empty_result_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<empty_result_ $relation_type:lower _ $join_algorithm:lower>],
+            [<empty_result_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 2], vec![3, 4]],
                 vec![vec![5, 6], vec![7, 8]]
@@ -177,12 +185,13 @@ macro_rules! define_empty_result_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_single_relation_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<single_relation_ $relation_type:lower _ $join_algorithm:lower>],
+            [<single_relation_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 2], vec![3, 4], vec![5, 6]]
             ],
@@ -197,12 +206,13 @@ macro_rules! define_single_relation_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_four_way_chain_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<four_way_chain_ $relation_type:lower _ $join_algorithm:lower>],
+            [<four_way_chain_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 2]],
                 vec![vec![2, 3]],
@@ -220,12 +230,13 @@ macro_rules! define_four_way_chain_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_wide_fanout_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<wide_fanout_ $relation_type:lower _ $join_algorithm:lower>],
+            [<wide_fanout_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 2], vec![1, 3], vec![1, 4]],
                 vec![vec![1, 10], vec![1, 20]]
@@ -245,12 +256,13 @@ macro_rules! define_wide_fanout_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_dead_end_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
-            [<dead_end_ $relation_type:lower _ $join_algorithm:lower>],
+            [<dead_end_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
+            $optimiser,
             [
                 vec![vec![1, 2], vec![2, 3], vec![3, 4]],
                 vec![vec![2, 3], vec![3, 4]]
@@ -269,64 +281,22 @@ macro_rules! define_multiway_join_test_suite {
     (
         $(
             $relation_type:ident,
-            $join_algorithm:ty
+            $join_algorithm:ty,
+            $optimiser:ty
         ),+
     ) => {
         $(
-                $crate::define_unary_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_triangle_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_chain_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_star_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_self_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_existential_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_empty_result_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_single_relation_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_four_way_chain_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_wide_fanout_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
-
-                $crate::define_dead_end_multiway_join_test!(
-                    $relation_type,
-                    $join_algorithm
-                );
+                $crate::define_unary_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_triangle_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_chain_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_star_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_self_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_existential_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_empty_result_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_single_relation_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_four_way_chain_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_wide_fanout_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
         )+
     };
 }
