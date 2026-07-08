@@ -144,6 +144,9 @@ impl<H: HashStrategy> Relation for HashTrie<H> {
                 arity,
             );
             Self::insert_at(&mut trie.root, 0, arity, tuple);
+            // from_tuples bypasses insert(), so count here. If this loop is
+            // ever refactored to route through insert(), drop this increment
+            // or the counter double-counts.
             trie.tuple_count += 1;
         }
         trie
@@ -509,6 +512,16 @@ mod cardinality_tests {
         // count includes them — matching what iteration yields.
         let mut trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         trie.insert(vec![1, 2]);
+        assert_eq!(trie.tuple_count(), 2);
+        assert_eq!(trie.collect_tuples().len(), 2);
+    }
+
+    #[test]
+    fn from_tuples_with_duplicates_counts_multiset_semantics() {
+        // Same multiset guarantee, but pinned on the batch-construction
+        // path: from_tuples maintains the counter itself (it bypasses
+        // insert()), so duplicates must count there too.
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 2]]);
         assert_eq!(trie.tuple_count(), 2);
         assert_eq!(trie.collect_tuples().len(), 2);
     }
