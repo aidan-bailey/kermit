@@ -7,21 +7,22 @@ use {
 /// Inserts a tuple into a sorted list of children nodes, recursing for the
 /// remaining keys. Duplicate tuples are silently absorbed: when a key already
 /// exists at this level we descend into its children instead of allocating a
-/// new node.
-fn insert_into_children(children: &mut Vec<TrieNode>, tuple: Vec<usize>) {
+/// new node. Returns `true` iff the tuple was not already present (some
+/// level created a new node).
+fn insert_into_children(children: &mut Vec<TrieNode>, tuple: Vec<usize>) -> bool {
     let mut key_iter = tuple.into_iter();
     let Some(key) = key_iter.next() else {
-        return;
+        // Exhausted every key along an already-existing path — duplicate.
+        return false;
     };
 
     match children.binary_search_by(|node| node.key().cmp(&key)) {
-        | Ok(pos) => {
-            insert_into_children(children[pos].children_mut(), key_iter.collect());
-        },
+        | Ok(pos) => insert_into_children(children[pos].children_mut(), key_iter.collect()),
         | Err(pos) => {
             let mut new_node = TrieNode::new(key);
             insert_into_children(new_node.children_mut(), key_iter.collect());
             children.insert(pos, new_node);
+            true
         },
     }
 }
@@ -99,6 +100,8 @@ impl IndexMut<usize> for TrieNode {
 pub struct TreeTrie {
     header: RelationHeader,
     children: Vec<TrieNode>,
+    /// Number of distinct tuples stored; maintained by `insert`.
+    tuple_count: usize,
 }
 
 impl TreeTrie {
@@ -112,6 +115,7 @@ impl Relation for TreeTrie {
         Self {
             header,
             children: vec![],
+            tuple_count: 0,
         }
     }
 
@@ -170,7 +174,9 @@ impl Relation for TreeTrie {
             self.header().arity(),
             "tuple arity must match relation arity"
         );
-        insert_into_children(&mut self.children, tuple);
+        if insert_into_children(&mut self.children, tuple) {
+            self.tuple_count += 1;
+        }
     }
 
     /// Inserts every tuple in `tuples`.
@@ -204,6 +210,10 @@ impl crate::heap_size::HeapSize for TreeTrie {
         let root_capacity_bytes = self.children().capacity() * std::mem::size_of::<TrieNode>();
         root_capacity_bytes + self.children().iter().map(node_heap_bytes).sum::<usize>()
     }
+}
+
+impl crate::cardinality::Cardinality for TreeTrie {
+    fn tuple_count(&self) -> usize { self.tuple_count }
 }
 
 #[cfg(test)]
@@ -245,5 +255,32 @@ mod heap_size_tests {
         let a = TreeTrie::from_tuples(2.into(), tuples.clone());
         let b = TreeTrie::from_tuples(2.into(), tuples);
         assert_eq!(a.heap_size_bytes(), b.heap_size_bytes());
+    }
+}
+
+#[cfg(test)]
+mod cardinality_tests {
+    use {super::*, crate::cardinality::Cardinality, kermit_iters::TrieIterable};
+
+    #[test]
+    fn empty_relation_has_zero_tuples() {
+        let trie = TreeTrie::new(2.into());
+        assert_eq!(trie.tuple_count(), 0);
+    }
+
+    #[test]
+    fn tuple_count_matches_iteration_count() {
+        let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        assert_eq!(trie.tuple_count(), 3);
+        assert_eq!(trie.trie_iter().into_iter().count(), 3);
+    }
+
+    #[test]
+    fn duplicate_insert_does_not_inflate_count() {
+        let mut trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        trie.insert(vec![1, 2]); // exact duplicate — absorbed
+        assert_eq!(trie.tuple_count(), 1);
+        trie.insert(vec![1, 3]); // shares prefix, genuinely new
+        assert_eq!(trie.tuple_count(), 2);
     }
 }

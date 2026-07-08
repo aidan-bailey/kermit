@@ -16,12 +16,14 @@
 //! instead — algorithms select the matching iterable trait.
 #![deny(missing_docs)]
 
+mod cardinality;
 mod ds;
 mod heap_size;
 mod relation;
 
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
+    cardinality::Cardinality,
     ds::{ColumnTrie, HashTrie, IndexStructure, TreeTrie},
     heap_size::HeapSize,
     relation::{ModelType, Projectable, Relation, RelationError, RelationFileExt, RelationHeader},
