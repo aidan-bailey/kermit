@@ -13,13 +13,11 @@ use {
     crate::{
         join_algo::JoinAlgo,
         leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
+        optimiser::{analyse, QueryPlan},
     },
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
-    kermit_parser::{JoinQuery, Term},
-    std::{
-        cmp::Reverse,
-        collections::{BinaryHeap, HashMap, HashSet},
-    },
+    kermit_parser::JoinQuery,
+    std::collections::HashMap,
 };
 
 /// Extension of [`LeapfrogJoinIterator`] with trie navigation for the
@@ -297,150 +295,6 @@ where
     }
 }
 
-/// Indexes the variables in a [`JoinQuery`] for the triejoin algorithm.
-///
-/// Performs three passes over the query:
-/// 1. Register head variables — assigns each unique name a numeric index,
-///    starting from 0. Head variables come first so the output tuple order
-///    matches the head declaration.
-/// 2. Register body-only variables — any variable not already seen in the head
-///    gets the next available index.
-/// 3. Build per-relation variable index lists — for each body predicate,
-///    collect the indices of the variables it contains.
-///
-/// Placeholders (`_`) and atoms are skipped in all passes.
-///
-/// The head-first indexing of passes 1–2 fixes the *output* column order, but
-/// it is **not** necessarily a valid descent order: LFTJ visits each
-/// relation's columns in physical storage order, so the descent must bind
-/// every relation's variables in column order. Pass 4 therefore computes a
-/// valid global attribute order via [`global_attribute_order`].
-///
-/// Returns `(variable_ordering, predicate_variables)` where
-/// `variable_ordering` is a topological *descent* order (a permutation of
-/// `0..num_vars` respecting every relation's column order) and
-/// `predicate_variables[i]` lists the canonical variable indices appearing in
-/// body predicate `i`. Callers that need head-order output must permute each
-/// result tuple back from descent order (see `LeapfrogTriejoin::join_iter`).
-fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
-    let mut var_to_index: HashMap<String, usize> = HashMap::new();
-    let mut next_index: usize = 0;
-
-    // Helper: assigns a fresh index to a variable name on first sight,
-    // returns the existing index on subsequent encounters.
-    let register_var = |name: &str, map: &mut HashMap<String, usize>, next: &mut usize| {
-        *map.entry(name.to_string()).or_insert_with(|| {
-            let idx = *next;
-            *next += 1;
-            idx
-        })
-    };
-
-    // Pass 1: head variables — establishes output tuple ordering.
-    for t in &query.head.terms {
-        if let Term::Var(ref vname) = t {
-            let _ = register_var(vname, &mut var_to_index, &mut next_index);
-        }
-    }
-
-    // Pass 2: body-only variables — any variable not already seen in the head.
-    for pred in &query.body {
-        for t in &pred.terms {
-            if let Term::Var(ref vname) = t {
-                let _ = register_var(vname, &mut var_to_index, &mut next_index);
-            }
-        }
-    }
-
-    // Pass 3: build per-predicate variable index lists. Placeholders and
-    // atoms are skipped — they occupy trie levels but don't bind a join
-    // variable.
-    let mut predicate_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
-    for pred in &query.body {
-        let mut vars_for_pred: Vec<usize> = Vec::new();
-        for t in &pred.terms {
-            if let Term::Var(ref vname) = t {
-                if let Some(idx) = var_to_index.get(vname) {
-                    vars_for_pred.push(*idx);
-                }
-            }
-        }
-        predicate_variables.push(vars_for_pred);
-    }
-
-    // Pass 4: derive a valid descent order from the per-predicate column
-    // constraints (see `global_attribute_order`).
-    let variable_ordering = global_attribute_order(var_to_index.len(), &predicate_variables);
-
-    (variable_ordering, predicate_variables)
-}
-
-/// Computes a *global attribute order* (GAO) for the triejoin: a permutation
-/// of `0..num_vars` in which every relation's variables appear in physical
-/// column order.
-///
-/// LFTJ descends each relation one physical column per depth, so a relation
-/// `r(K, Y)` participates correctly only if its first column `K` is bound
-/// before its second column `Y`. A naive first-appearance order violates this
-/// whenever a variable is physically first but introduced late — most
-/// commonly a subject-position constant rewritten to `r(K, Y), Const(K)`,
-/// where `K` is physically first yet appears after `Y`. Such a query silently
-/// returned no results before this order was enforced.
-///
-/// Each relation contributes edges `col[i] -> col[i+1]` (a variable repeated
-/// within one predicate imposes no self-constraint); a topological sort
-/// (Kahn's algorithm, smallest canonical index first so the order is
-/// deterministic and keeps head variables early when unconstrained) yields a
-/// valid order.
-///
-/// Shared with [`crate::hash_triejoin`], which descends hash tries with the
-/// same physical-column-order requirement.
-///
-/// # Panics
-///
-/// Panics if the constraints are cyclic (e.g. `r(X, Y), s(Y, X)`): answering
-/// such a query would require a relation sorted in two different column orders
-/// at once, which a single fixed trie order cannot provide. This is strictly
-/// better than the previous silent wrong answer.
-pub(crate) fn global_attribute_order(
-    num_vars: usize, predicate_variables: &[Vec<usize>],
-) -> Vec<usize> {
-    let mut adjacency: Vec<HashSet<usize>> = vec![HashSet::new(); num_vars];
-    let mut in_degree: Vec<usize> = vec![0; num_vars];
-
-    for vars in predicate_variables {
-        for pair in vars.windows(2) {
-            let (earlier, later) = (pair[0], pair[1]);
-            if earlier != later && adjacency[earlier].insert(later) {
-                in_degree[later] += 1;
-            }
-        }
-    }
-
-    let mut ready: BinaryHeap<Reverse<usize>> = (0..num_vars)
-        .filter(|&v| in_degree[v] == 0)
-        .map(Reverse)
-        .collect();
-    let mut order = Vec::with_capacity(num_vars);
-    while let Some(Reverse(v)) = ready.pop() {
-        order.push(v);
-        for &w in &adjacency[v] {
-            in_degree[w] -= 1;
-            if in_degree[w] == 0 {
-                ready.push(Reverse(w));
-            }
-        }
-    }
-
-    assert_eq!(
-        order.len(),
-        num_vars,
-        "query imposes a cyclic global attribute order; LFTJ cannot answer it with a single trie \
-         column order per relation"
-    );
-    order
-}
-
 /// Entry point for the Leapfrog Triejoin algorithm, implementing
 /// [`JoinAlgo`](crate::JoinAlgo) for any [`TrieIterable`] data structure.
 pub struct LeapfrogTriejoin {}
@@ -450,9 +304,14 @@ where
     DS: TrieIterable,
 {
     fn join_iter(
-        query: JoinQuery, datastructures: HashMap<String, &DS>,
+        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>,
     ) -> impl Iterator<Item = Vec<usize>> {
-        let (variable_ordering, predicate_variables) = build_variable_index(&query);
+        let analysis = analyse(&query);
+        if let Err(e) = plan.validate(&analysis) {
+            panic!("LeapfrogTriejoin::join_iter: invalid query plan: {e}");
+        }
+        let variable_ordering = plan.variable_ordering.clone();
+        let predicate_variables = analysis.predicate_variables;
 
         let trie_iters: Vec<_> = query
             .body

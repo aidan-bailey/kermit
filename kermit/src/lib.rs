@@ -20,7 +20,7 @@ pub mod ds {
 pub mod db;
 
 use {
-    kermit_algos::{JoinAlgo, JoinQuery},
+    kermit_algos::{CatalogStats, JoinAlgo, JoinQuery, LexicographicOptimiser, QueryOptimiser},
     kermit_ds::Relation,
     std::collections::HashMap,
 };
@@ -75,5 +75,8 @@ where
         ds_map.insert(format!("R{}", i), rel);
     }
 
-    JA::join_iter(query, ds_map).collect()
+    // Synthetic queries carry no constants and this helper predates
+    // statistics, so plan with the stats-free default policy.
+    let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+    JA::join_iter(&plan, query, ds_map).collect()
 }

@@ -4,7 +4,7 @@
 //! A constant in a binary predicate's *first* (subject) attribute — e.g.
 //! `Q(X) :- edge(c1, X).` ("successors of node 1") — must return the same
 //! answer as the symmetric object-position query. This exercises
-//! `rewrite_atoms` → `build_variable_index` → join end-to-end via the real
+//! `rewrite_atoms` → optimiser planning → join end-to-end via the real
 //! engine wiring (`DatabaseEngine::join` for LFTJ, `hash_join` for the hash
 //! family), the only paths where the global attribute order is *derived* from
 //! the query — the macro-generated join suites supply a valid order by hand
@@ -14,12 +14,12 @@
 //! physical column per depth, so the global variable order must bind every
 //! relation's variables in physical column order. A subject-position constant
 //! introduces a fresh variable that is physically first but appears late,
-//! inverting that order and silently yielding 0 results until
-//! `global_attribute_order` enforces a valid descent order.
+//! inverting that order and silently yielding 0 results until the optimiser's
+//! `topological_order` enforces a valid descent order.
 
 use {
     kermit::db::{hash_join, DatabaseEngine, DB},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin},
+    kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{HashTrie, Relation, TreeTrie},
     kermit_iters::SipHashStrategy,
     std::collections::HashMap,
@@ -48,7 +48,7 @@ fn lftj(query: &str) -> Vec<Vec<usize>> {
 
 fn hash(query: &str) -> Vec<Vec<usize>> {
     let q: JoinQuery = query.parse().expect("parse");
-    hash_join::<HashTrieSip, SipHashStrategy>(&edge_rels(), q)
+    hash_join::<HashTrieSip, SipHashStrategy>(&edge_rels(), q, &LexicographicOptimiser)
 }
 
 /// First column (the head variable `X`) of every result tuple, sorted.

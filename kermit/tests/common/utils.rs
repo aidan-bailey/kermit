@@ -1,5 +1,5 @@
 use {
-    kermit_algos::{JoinAlgo, JoinQuery},
+    kermit_algos::{CatalogStats, JoinAlgo, JoinQuery, LexicographicOptimiser, QueryOptimiser},
     kermit_ds::Relation,
     std::collections::HashMap,
 };
@@ -47,7 +47,8 @@ pub fn test_join<R, JA>(
     // Multiset equality (relational algebra semantics) — sort both sides
     // before asserting so algorithms with non-sorted output (hash-trie
     // family) pass the same suite as sorted-output algorithms (LFTJ family).
-    let mut actual: Vec<Vec<usize>> = JA::join_iter(query, ds_map).collect();
+    let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+    let mut actual: Vec<Vec<usize>> = JA::join_iter(&plan, query, ds_map).collect();
     actual.sort();
     let mut expected = result;
     expected.sort();

@@ -14,7 +14,7 @@ use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
     kermit::db::{hash_join, instantiate_database},
-    kermit_algos::{JoinAlgorithm, JoinQuery},
+    kermit_algos::{JoinAlgorithm, JoinQuery, LexicographicOptimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HashTrie, HeapSize, IndexStructure, Relation, RelationFileExt},
     kermit_iters::{
@@ -547,7 +547,12 @@ fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, Join
         .parse()
         .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", args.query, e))?;
 
-    let mut db = instantiate_database(args.indexstructure, args.algorithm, "join".to_string());
+    let mut db = instantiate_database(
+        args.indexstructure,
+        args.algorithm,
+        Box::new(LexicographicOptimiser),
+        "join".to_string(),
+    );
     for path in &args.relations {
         db.add_file(path)
             .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
@@ -918,7 +923,12 @@ where
         .map(|p| R::from_parquet(p).map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}")))
         .collect::<Result<_, _>>()?;
 
-    let mut db = instantiate_database(indexstructure, algorithm, benchmark.name.clone());
+    let mut db = instantiate_database(
+        indexstructure,
+        algorithm,
+        Box::new(LexicographicOptimiser),
+        benchmark.name.clone(),
+    );
     for rel in &relations {
         let header = rel.header();
         let name = header.name();
@@ -1185,7 +1195,7 @@ fn run_benchmark_hash<H: HashStrategy>(
                 group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || join_query.clone(),
-                        |q| hash_join::<HashTrie<H>, H>(&named, q),
+                        |q| hash_join::<HashTrie<H>, H>(&named, q, &LexicographicOptimiser),
                         criterion::BatchSize::SmallInput,
                     );
                 });

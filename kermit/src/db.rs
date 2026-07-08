@@ -9,10 +9,11 @@
 
 use {
     kermit_algos::{
-        rewrite_atoms, HashTrieIterKind, HashTriejoin, JoinAlgo, JoinAlgorithm, JoinQuery,
-        LeapfrogTriejoin, SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
+        is_const_predicate, rewrite_atoms, CatalogStats, HashTrieIterKind, HashTriejoin, JoinAlgo,
+        JoinAlgorithm, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
+        SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
     },
-    kermit_ds::{ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
+    kermit_ds::{Cardinality, ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
     kermit_iters::{HashStrategy, HashTrieIterable, TrieIterable},
     std::{collections::HashMap, path::Path},
 };
@@ -62,6 +63,9 @@ where
 {
     name: String,
     relations: HashMap<String, R>,
+    /// Plans each join's variable ordering. Defaults to
+    /// [`LexicographicOptimiser`]; see [`DatabaseEngine::with_optimiser`].
+    optimiser: Box<dyn QueryOptimiser>,
     // `JA` does not appear in any field; PhantomData satisfies the
     // unused-type-parameter rule. `R` is already used by `relations`.
     phantom_ja: std::marker::PhantomData<JA>,
@@ -69,7 +73,7 @@ where
 
 impl<R, JA> DB for DatabaseEngine<R, JA>
 where
-    R: Relation + TrieIterable,
+    R: Relation + TrieIterable + Cardinality,
     JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
 {
     fn new(name: String) -> Self
@@ -79,6 +83,7 @@ where
         DatabaseEngine {
             name,
             relations: HashMap::new(),
+            optimiser: Box::new(LexicographicOptimiser),
             phantom_ja: std::marker::PhantomData,
         }
     }
@@ -126,7 +131,7 @@ where
             // Const_* predicates are synthetic — created by rewrite_atoms
             // above and materialised from const_specs below. They aren't
             // expected to live in self.relations.
-            if pred.name.starts_with("Const_") {
+            if is_const_predicate(&pred.name) {
                 continue;
             }
             match self.relations.get(&pred.name) {
@@ -150,7 +155,12 @@ where
         let ds_map: HashMap<String, &TrieIterKind<'_, R>> =
             wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
 
-        JA::join_iter(rewritten, ds_map).collect()
+        let stats = CatalogStats::for_query(&rewritten, |name| {
+            self.relations.get(name).map(Cardinality::tuple_count)
+        });
+        let plan = self.optimiser.plan(&rewritten, &stats);
+
+        JA::join_iter(&plan, rewritten, ds_map).collect()
     }
 
     /// Loads a relation from a file (CSV or Parquet) and adds it to the
@@ -192,6 +202,17 @@ where
         DatabaseEngine {
             name,
             relations: HashMap::new(),
+            optimiser: Box::new(LexicographicOptimiser),
+            phantom_ja: std::marker::PhantomData,
+        }
+    }
+
+    /// Like [`DatabaseEngine::new`] but with an explicit query optimiser.
+    pub fn with_optimiser(name: String, optimiser: Box<dyn QueryOptimiser>) -> Self {
+        DatabaseEngine {
+            name,
+            relations: HashMap::new(),
+            optimiser,
             phantom_ja: std::marker::PhantomData,
         }
     }
@@ -222,14 +243,19 @@ where
 /// must specify the strategy explicitly via turbofish — Phase 4 of the
 /// optimization-standard plan threads this through the CLI dispatch.
 ///
+/// `optimiser` plans the variable ordering; pass `&LexicographicOptimiser`
+/// for the historical default.
+///
 /// # Panics
 ///
 /// Panics if the query references a relation name not present in
 /// `relations` (matching the behaviour of [`DatabaseEngine::join`]) or if
 /// the query contains a malformed constant atom.
-pub fn hash_join<R, H>(relations: &HashMap<String, R>, query: JoinQuery) -> Vec<Vec<usize>>
+pub fn hash_join<R, H>(
+    relations: &HashMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+) -> Vec<Vec<usize>>
 where
-    R: HashTrieIterable,
+    R: HashTrieIterable + Cardinality,
     H: HashStrategy,
 {
     let (rewritten, const_specs) = rewrite_atoms(query).expect("malformed constant atom in query");
@@ -242,7 +268,7 @@ where
         // Const_* predicates are synthetic — created by rewrite_atoms
         // above and materialised from const_specs below. They aren't
         // expected to live in `relations`.
-        if pred.name.starts_with("Const_") {
+        if is_const_predicate(&pred.name) {
             continue;
         }
         match relations.get(&pred.name) {
@@ -266,7 +292,13 @@ where
     let ds_map: HashMap<String, &HashTrieIterKind<'_, R>> =
         wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
 
-    <HashTriejoin as JoinAlgo<HashTrieIterKind<'_, R>>>::join_iter(rewritten, ds_map).collect()
+    let stats = CatalogStats::for_query(&rewritten, |name| {
+        relations.get(name).map(Cardinality::tuple_count)
+    });
+    let plan = optimiser.plan(&rewritten, &stats);
+
+    <HashTriejoin as JoinAlgo<HashTrieIterKind<'_, R>>>::join_iter(&plan, rewritten, ds_map)
+        .collect()
 }
 
 /// Creates a [`DatabaseEngine`] as a `Box<dyn DB>` based on the CLI-selected
@@ -283,14 +315,16 @@ where
 /// family (`HashTrie` + `HashTriejoin`) deliberately panics here too —
 /// see the function's body for the dedicated [`hash_join`] free-function
 /// path the CLI takes for that combination.
-pub fn instantiate_database(ds: IndexStructure, ja: JoinAlgorithm, name: String) -> Box<dyn DB> {
+pub fn instantiate_database(
+    ds: IndexStructure, ja: JoinAlgorithm, optimiser: Box<dyn QueryOptimiser>, name: String,
+) -> Box<dyn DB> {
     match (ds, ja) {
         | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(DatabaseEngine::<TreeTrie, LeapfrogTriejoin>::new(name))
+            Box::new(DatabaseEngine::<TreeTrie, LeapfrogTriejoin>::with_optimiser(name, optimiser))
         },
-        | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(DatabaseEngine::<ColumnTrie, LeapfrogTriejoin>::new(name))
-        },
+        | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => Box::new(
+            DatabaseEngine::<ColumnTrie, LeapfrogTriejoin>::with_optimiser(name, optimiser),
+        ),
         // The hash-trie family does not flow through the `DB` trait —
         // `DB::join` is implementation-coupled to `TrieIterKind`, which
         // is incompatible with `HashTrieIterable`. The CLI dispatches
@@ -402,7 +436,11 @@ mod hash_join_tests {
             HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]),
         );
         let q: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
-        let mut out = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(&relations, q);
+        let mut out = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+            &relations,
+            q,
+            &LexicographicOptimiser,
+        );
         out.sort();
         assert_eq!(out, vec![vec![2], vec![3]]);
     }
@@ -417,7 +455,8 @@ mod hash_join_tests {
     /// hash-trie iter family descends through *physical* attribute
     /// positions in lockstep with the algorithm's *variable* ordering;
     /// the variable ordering is "head vars first, then any extra body
-    /// vars" (`build_variable_index`). With the constant in the last
+    /// vars" (the optimiser's `analyse` numbering). With the constant in the
+    /// last
     /// column, the rewrite's fresh `K0` lands at the tail of the
     /// variable ordering, which matches the trie's physical layout. The
     /// LFTJ const test uses the same shape for the same reason.
@@ -434,7 +473,11 @@ mod hash_join_tests {
             HashTrie::from_tuples(2.into(), vec![vec![1, 5], vec![2, 5], vec![3, 7]]),
         );
         let q: JoinQuery = "Q(X) :- R(X, c5).".parse().unwrap();
-        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(&relations, q);
+        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+            &relations,
+            q,
+            &LexicographicOptimiser,
+        );
         let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
         got.sort();
         assert_eq!(

@@ -11,61 +11,14 @@
 //! positives at any inner level).
 
 use {
-    crate::{join_algo::JoinAlgo, leapfrog_triejoin::global_attribute_order},
+    crate::{
+        join_algo::JoinAlgo,
+        optimiser::{analyse, QueryPlan},
+    },
     kermit_iters::{HashTrieIterable, HashTrieIterator},
-    kermit_parser::{JoinQuery, Term},
+    kermit_parser::JoinQuery,
     std::collections::HashMap,
 };
-
-/// Indexes the variables in a query for the hash-trie-join algorithm.
-///
-/// Like [`crate::leapfrog_triejoin::build_variable_index`]: head-first
-/// canonical indices fix the output column order, while the *descent* order is
-/// a valid global attribute order (shared [`global_attribute_order`] helper).
-/// The hash join descends each relation one physical column per depth, so the
-/// same subject-position-constant hazard applies.
-fn build_variable_index(query: &JoinQuery) -> (Vec<usize>, Vec<Vec<usize>>) {
-    let mut var_to_index: HashMap<String, usize> = HashMap::new();
-    let mut next_index: usize = 0;
-
-    let register_var = |name: &str, map: &mut HashMap<String, usize>, next: &mut usize| {
-        *map.entry(name.to_string()).or_insert_with(|| {
-            let idx = *next;
-            *next += 1;
-            idx
-        })
-    };
-
-    for t in &query.head.terms {
-        if let Term::Var(ref vname) = t {
-            let _ = register_var(vname, &mut var_to_index, &mut next_index);
-        }
-    }
-    for pred in &query.body {
-        for t in &pred.terms {
-            if let Term::Var(ref vname) = t {
-                let _ = register_var(vname, &mut var_to_index, &mut next_index);
-            }
-        }
-    }
-
-    let mut predicate_variables: Vec<Vec<usize>> = Vec::with_capacity(query.body.len());
-    for pred in &query.body {
-        let mut vars_for_pred: Vec<usize> = Vec::new();
-        for t in &pred.terms {
-            if let Term::Var(ref vname) = t {
-                if let Some(idx) = var_to_index.get(vname) {
-                    vars_for_pred.push(*idx);
-                }
-            }
-        }
-        predicate_variables.push(vars_for_pred);
-    }
-
-    let variable_ordering = global_attribute_order(var_to_index.len(), &predicate_variables);
-
-    (variable_ordering, predicate_variables)
-}
 
 /// Build `variable_to_iter_map[i] = predicate indices that carry the i-th
 /// variable in `variable_ordering`. Identical shape to LFTJ's inline
@@ -254,9 +207,14 @@ where
     DS: HashTrieIterable,
 {
     fn join_iter(
-        query: JoinQuery, datastructures: HashMap<String, &DS>,
+        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>,
     ) -> impl Iterator<Item = Vec<usize>> {
-        let (variable_ordering, predicate_variables) = build_variable_index(&query);
+        let analysis = analyse(&query);
+        if let Err(e) = plan.validate(&analysis) {
+            panic!("HashTriejoin::join_iter: invalid query plan: {e}");
+        }
+        let variable_ordering = &plan.variable_ordering;
+        let predicate_variables = analysis.predicate_variables;
         let mut iters: Vec<_> = query
             .body
             .iter()
@@ -268,7 +226,7 @@ where
             })
             .collect();
         let variable_to_iter_map =
-            build_variable_to_iter_map(&variable_ordering, &predicate_variables);
+            build_variable_to_iter_map(variable_ordering, &predicate_variables);
         let mut output = Vec::new();
         enumerate(
             0,
@@ -284,15 +242,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn variable_index_triangle() {
-        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).".parse().unwrap();
-        let (ordering, predicate_vars) = build_variable_index(&query);
-        assert_eq!(ordering, vec![0, 1, 2]);
-        assert_eq!(predicate_vars, vec![vec![0, 1], vec![1, 2], vec![0, 2]]);
-    }
+    use {
+        super::*,
+        crate::optimiser::{CatalogStats, LexicographicOptimiser, QueryOptimiser},
+    };
 
     #[test]
     fn variable_to_iter_map_triangle() {
@@ -370,7 +323,8 @@ mod tests {
         let mut ds: HashMap<String, &HashTrie> = HashMap::new();
         ds.insert("R".to_string(), &r);
         ds.insert("S".to_string(), &s);
-        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(query, ds).collect();
+        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
         out.sort();
         assert_eq!(out, vec![vec![2], vec![3]]);
     }
@@ -386,7 +340,8 @@ mod tests {
         ds.insert("R".to_string(), &r);
         ds.insert("S".to_string(), &s);
         ds.insert("T".to_string(), &t);
-        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(query, ds).collect();
+        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
         out.sort();
         assert_eq!(out, vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]);
     }
