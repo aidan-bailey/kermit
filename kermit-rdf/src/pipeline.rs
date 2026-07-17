@@ -17,7 +17,8 @@
 
 use {
     crate::{
-        driver::{self, invoke::split_queries, DriverInputs, RawArtifacts, StressParams},
+        dict::Dictionary,
+        driver::{self, invoke::split_on_end_markers, DriverInputs, RawArtifacts, StressParams},
         error::RdfError,
         expected, parquet, partition, sha256_file,
         sparql::translator::{bgp_predicate_iris, translate_query},
@@ -109,12 +110,81 @@ impl From<&StressParams> for StressParamsMeta {
     }
 }
 
+/// Which WatDiv workload `process_artifacts` is finishing. Carries both the
+/// `meta.json` `kind` discriminator and the decision of whether to seed empty
+/// relations for query predicates missing from the generated data, replacing
+/// the opaque `(&str, bool)` pair the callers used to pass.
+pub enum Workload {
+    /// Stress workload (`run_pipeline`): watdiv `-s` templates; no seeding.
+    Stress,
+    /// Basic Testing workload (`run_basic_pipeline`): static templates; seeds
+    /// empty relations for predicates the generated data lacks.
+    Basic,
+}
+
+impl Workload {
+    /// The `meta.json` `kind` string recorded for this workload.
+    fn meta_kind(&self) -> &str {
+        match self {
+            | Workload::Stress => "watdiv-onthefly",
+            | Workload::Basic => "watdiv-basic-onthefly",
+        }
+    }
+
+    /// Whether `process_artifacts` seeds empty relations for query predicates
+    /// absent from the generated data.
+    fn seeds_missing_predicates(&self) -> bool { matches!(self, Workload::Basic) }
+}
+
+/// Basic workload: fixed templates may reference predicates absent from the
+/// (probabilistically generated) data. Seed an empty relation into `relations`
+/// (and `predicate_map`/`dict`) for each such predicate so translation yields
+/// an empty-result join instead of erroring. Mirrors the naming convention
+/// used by `partition::partition` for collision-free relation names.
+fn seed_missing_predicates(
+    relations: &mut Vec<partition::PartitionedRelation>,
+    predicate_map: &mut HashMap<String, String>, dict: &mut Dictionary, sparql_paths: &[PathBuf],
+) -> Result<(), RdfError> {
+    let mut needed: Vec<String> = Vec::new();
+    for sparql_path in sparql_paths {
+        let text = fs::read_to_string(sparql_path)?;
+        for q in split_on_end_markers(&text) {
+            for iri in bgp_predicate_iris(&q)? {
+                if !needed.contains(&iri) {
+                    needed.push(iri);
+                }
+            }
+        }
+    }
+    let mut used: HashSet<String> = relations.iter().map(|r| r.name.clone()).collect();
+    for p_iri in needed {
+        if predicate_map.contains_key(&p_iri) {
+            continue;
+        }
+        let base = partition::sanitize_predicate(&p_iri);
+        let pred_id = dict.intern(RdfValue::Iri(p_iri.clone()));
+        let name = if used.contains(&base) {
+            format!("{base}_{pred_id}")
+        } else {
+            base.clone()
+        };
+        used.insert(name.clone());
+        predicate_map.insert(p_iri.clone(), name.clone());
+        relations.push(partition::PartitionedRelation {
+            name,
+            tuples: Vec::new(),
+        });
+    }
+    Ok(())
+}
+
 /// Stages 4 + 5 + 6 of the pipeline. Public so the no-binary pipeline
 /// integration test (Task 17) can drive stages 4–6 with a hand-crafted
 /// `RawArtifacts`-equivalent.
 pub fn process_artifacts(
-    inputs: &PipelineInputs, raw: &RawArtifacts, meta_kind: &str, seed_missing_predicates: bool,
+    inputs: &PipelineInputs, raw: &RawArtifacts, workload: Workload,
 ) -> Result<PipelineMeta, RdfError> {
+    // Stage A: copy the raw driver artifacts into `<out_dir>/raw/`.
     fs::create_dir_all(inputs.out_dir)?;
     let raw_root = inputs.out_dir.join("raw");
     fs::create_dir_all(raw_root.join("templates"))?;
@@ -136,43 +206,17 @@ pub fn process_artifacts(
         copied_sparql_paths.push(s_dst);
     }
 
+    // Stage B: partition the N-Triples into per-predicate relations, seeding
+    // empty relations for query predicates the data lacks (Basic workload).
     let mut part = partition::partition(raw_root.join("data.nt"))?;
     let mut dict = part.dict;
-
-    // Basic workload: fixed templates may reference predicates absent from the
-    // (probabilistically generated) data. Seed an empty relation for each such
-    // predicate so translation yields an empty-result join instead of erroring.
-    if seed_missing_predicates {
-        let mut needed: Vec<String> = Vec::new();
-        for sparql_path in &copied_sparql_paths {
-            let text = fs::read_to_string(sparql_path)?;
-            for q in split_queries(&text) {
-                for iri in bgp_predicate_iris(&q)? {
-                    if !needed.contains(&iri) {
-                        needed.push(iri);
-                    }
-                }
-            }
-        }
-        let mut used: HashSet<String> = part.relations.iter().map(|r| r.name.clone()).collect();
-        for p_iri in needed {
-            if part.predicate_map.contains_key(&p_iri) {
-                continue;
-            }
-            let base = partition::sanitize_predicate(&p_iri);
-            let pred_id = dict.intern(RdfValue::Iri(p_iri.clone()));
-            let name = if used.contains(&base) {
-                format!("{base}_{pred_id}")
-            } else {
-                base.clone()
-            };
-            used.insert(name.clone());
-            part.predicate_map.insert(p_iri.clone(), name.clone());
-            part.relations.push(partition::PartitionedRelation {
-                name,
-                tuples: Vec::new(),
-            });
-        }
+    if workload.seeds_missing_predicates() {
+        seed_missing_predicates(
+            &mut part.relations,
+            &mut part.predicate_map,
+            &mut dict,
+            &copied_sparql_paths,
+        )?;
     }
 
     for rel in &part.relations {
@@ -182,6 +226,7 @@ pub fn process_artifacts(
 
     let all_predicates: Vec<String> = part.relations.iter().map(|r| r.name.clone()).collect();
 
+    // Stage C: translate each concrete SPARQL query to Datalog.
     let mut all_queries: Vec<(String, String)> = Vec::new();
     for sparql_path in &copied_sparql_paths {
         let stem = sparql_path
@@ -193,7 +238,7 @@ pub fn process_artifacts(
         let stem_underscores = stem.replace('-', "_");
         // Watdiv `-q` emits multi-line SPARQL queries separated by `#end`
         // markers; one logical query is a multi-line block, not one line.
-        for (i, q) in split_queries(&text).iter().enumerate() {
+        for (i, q) in split_on_end_markers(&text).iter().enumerate() {
             let qname = format!("{stem}_q{i:04}");
             let head = format!("Q_{stem_underscores}_q{i:04}");
             let dl = translate_query(q, &mut dict, &part.predicate_map, &head)?;
@@ -201,9 +246,11 @@ pub fn process_artifacts(
         }
     }
 
+    // Stage D: write dict (after the translator may have grown it).
     let dict_path = inputs.out_dir.join("dict.parquet");
     parquet::write_dict(&dict, &dict_path)?;
 
+    // Stage E: emit benchmark.yml.
     let base_url = format!("file://{}", inputs.out_dir.canonicalize()?.display());
     let description = format!(
         "WatDiv on-the-fly generation, scale {}, tag {}",
@@ -218,9 +265,11 @@ pub fn process_artifacts(
     };
     write_benchmark_yaml(&yaml, inputs.out_dir)?;
 
+    // Stage F: expected cardinalities (only if the binary emitted `.desc`s).
     let expected_dir = inputs.out_dir.join("expected");
     expected::write_expected_csvs(&copied_sparql_paths, &expected_dir)?;
 
+    // Stage G: meta.json.
     let mut names_hashes = HashMap::new();
     for n in ["firstnames.txt", "lastnames.txt"] {
         let p = inputs.driver.vendor_files.join(n);
@@ -231,7 +280,7 @@ pub fn process_artifacts(
 
     let meta = PipelineMeta {
         schema_version: 2,
-        kind: meta_kind.to_string(),
+        kind: workload.meta_kind().to_string(),
         scale: inputs.driver.scale,
         tag: inputs.tag.to_string(),
         watdiv_binary_sha256: sha256_file(inputs.driver.watdiv_bin)?,
@@ -253,7 +302,7 @@ pub fn process_artifacts(
 /// Top-level entry point: runs the stress driver and processes artifacts.
 pub fn run_pipeline(inputs: &PipelineInputs) -> Result<PipelineMeta, RdfError> {
     let raw = driver::drive(&inputs.driver)?;
-    process_artifacts(inputs, &raw, "watdiv-onthefly", false)
+    process_artifacts(inputs, &raw, Workload::Stress)
 }
 
 /// Top-level entry point for the **Basic Testing** workload: runs the basic
@@ -262,5 +311,5 @@ pub fn run_basic_pipeline(
     inputs: &PipelineInputs, template_src_dir: &Path,
 ) -> Result<PipelineMeta, RdfError> {
     let raw = driver::drive_basic(&inputs.driver, template_src_dir)?;
-    process_artifacts(inputs, &raw, "watdiv-basic-onthefly", true)
+    process_artifacts(inputs, &raw, Workload::Basic)
 }

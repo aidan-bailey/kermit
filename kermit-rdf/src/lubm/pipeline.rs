@@ -21,6 +21,7 @@
 use {
     crate::{
         error::RdfError,
+        expected::write_cardinality_csv,
         lubm::{
             driver::{drive, LubmDriverInputs, LubmRawArtifacts},
             entailment::{entail, EntailmentStats},
@@ -33,7 +34,6 @@ use {
     serde::Serialize,
     std::{
         fs,
-        io::Write,
         path::{Path, PathBuf},
     },
 };
@@ -117,13 +117,6 @@ pub struct LubmMeta {
     pub spec_hash: Option<String>,
 }
 
-fn write_expected_cardinality(path: &Path, n: u64) -> Result<(), RdfError> {
-    let mut f = fs::File::create(path)?;
-    writeln!(f, "cardinality")?;
-    writeln!(f, "{n}")?;
-    Ok(())
-}
-
 /// Stages 4–6 of the pipeline (entailment, partition, translate, emit).
 /// Public so tests can drive these without invoking the jar.
 pub fn process_artifacts(
@@ -187,7 +180,7 @@ pub fn process_artifacts(
     fs::create_dir_all(&expected_dir)?;
     for spec in inputs.queries {
         if let Some(n) = spec.expected_cardinality {
-            write_expected_cardinality(&expected_dir.join(format!("{}.csv", spec.name)), n)?;
+            write_cardinality_csv(&expected_dir.join(format!("{}.csv", spec.name)), n)?;
         }
     }
 
@@ -234,7 +227,7 @@ mod tests {
     fn write_expected_cardinality_two_lines() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("q.csv");
-        write_expected_cardinality(&p, 42).unwrap();
+        write_cardinality_csv(&p, 42).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert_eq!(text, "cardinality\n42\n");
     }

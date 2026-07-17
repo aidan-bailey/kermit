@@ -80,53 +80,22 @@ pub struct RawArtifacts {
     pub stage: sandbox::TempStagingDir,
 }
 
-/// Runs watdiv end-to-end and returns paths to the raw outputs.
-pub fn drive(inputs: &DriverInputs) -> Result<RawArtifacts, RdfError> {
-    if !inputs.watdiv_bin.exists() {
-        return Err(RdfError::BinaryNotFound {
-            path: inputs.watdiv_bin.to_path_buf(),
-        });
-    }
-    let stage = sandbox::TempStagingDir::create(inputs.watdiv_bin, inputs.vendor_files)?;
-    let cfg = invoke::InvokeConfig {
-        stage: &stage,
-        model_file: inputs.model_file,
-        use_bwrap: inputs.use_bwrap,
-    };
-
-    let bin_release = stage.binary_path().parent().unwrap().to_path_buf();
-    let data_nt = bin_release.join("data.nt");
-    invoke::run_data(&cfg, inputs.scale, &data_nt)?;
-
-    let stress_arg = "stress-templates";
-    let templates = invoke::run_stress(
-        &cfg,
-        stress_arg,
-        &data_nt,
-        inputs.stress.max_query_size,
-        inputs.stress.query_count,
-    )?;
-    let queries = invoke::run_queries(&cfg, &templates, inputs.query_count_per_template)?;
-
-    Ok(RawArtifacts {
-        data_nt,
-        templates,
-        queries,
-        stage,
-    })
-}
-
-/// Like [`drive`], but for the **Basic Testing** workload: runs `-d`, then
-/// feeds the static templates in `template_src_dir` (the vendored
-/// `testsuite/*.txt`) directly to `-q`, skipping the `-s` stress step.
+/// Shared driver skeleton for the WatDiv workloads. Handles the invariant
+/// steps — binary-existence check, staging-dir + [`invoke::InvokeConfig`]
+/// setup, the `-d` data generation, the `-q` query generation, and the
+/// [`RawArtifacts`] assembly — and delegates only the template-production
+/// step (`-s` stress vs. static-template copy) to `produce_templates`.
 ///
-/// The templates are copied into the staging dir first so the `-q` `.sparql`
-/// outputs land in the stage rather than polluting the read-only vendored
-/// source. `inputs.stress` is ignored (Basic templates carry their own
-/// `#mapping` lines); it is retained only so `process_artifacts` can record
-/// provenance.
-pub fn drive_basic(
-    inputs: &DriverInputs, template_src_dir: &Path,
+/// `produce_templates` receives the invocation config, the `bin/Release`
+/// directory the binary runs in, and the generated `data.nt` path, and
+/// returns the template paths to feed to `-q`.
+fn drive_common(
+    inputs: &DriverInputs,
+    produce_templates: impl FnOnce(
+        &invoke::InvokeConfig,
+        &Path,
+        &Path,
+    ) -> Result<Vec<PathBuf>, RdfError>,
 ) -> Result<RawArtifacts, RdfError> {
     if !inputs.watdiv_bin.exists() {
         return Err(RdfError::BinaryNotFound {
@@ -144,25 +113,7 @@ pub fn drive_basic(
     let data_nt = bin_release.join("data.nt");
     invoke::run_data(&cfg, inputs.scale, &data_nt)?;
 
-    let tpl_dir = bin_release.join("basic-templates");
-    std::fs::create_dir_all(&tpl_dir)?;
-    let mut sources: Vec<PathBuf> = std::fs::read_dir(template_src_dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("txt"))
-        .collect();
-    sources.sort();
-    if sources.is_empty() {
-        return Err(RdfError::Sandbox(format!(
-            "no .txt templates found in {template_src_dir:?}"
-        )));
-    }
-    let mut templates = Vec::with_capacity(sources.len());
-    for src in &sources {
-        let dst = tpl_dir.join(src.file_name().unwrap());
-        std::fs::copy(src, &dst)?;
-        templates.push(dst);
-    }
-
+    let templates = produce_templates(&cfg, &bin_release, &data_nt)?;
     let queries = invoke::run_queries(&cfg, &templates, inputs.query_count_per_template)?;
 
     Ok(RawArtifacts {
@@ -170,5 +121,54 @@ pub fn drive_basic(
         templates,
         queries,
         stage,
+    })
+}
+
+/// Runs watdiv end-to-end and returns paths to the raw outputs.
+pub fn drive(inputs: &DriverInputs) -> Result<RawArtifacts, RdfError> {
+    drive_common(inputs, |cfg, _bin_release, data_nt| {
+        let stress_arg = "stress-templates";
+        invoke::run_stress(
+            cfg,
+            stress_arg,
+            data_nt,
+            inputs.stress.max_query_size,
+            inputs.stress.query_count,
+        )
+    })
+}
+
+/// Like [`drive`], but for the **Basic Testing** workload: runs `-d`, then
+/// feeds the static templates in `template_src_dir` (the vendored
+/// `testsuite/*.txt`) directly to `-q`, skipping the `-s` stress step.
+///
+/// The templates are copied into the staging dir first so the `-q` `.sparql`
+/// outputs land in the stage rather than polluting the read-only vendored
+/// source. `inputs.stress` is ignored (Basic templates carry their own
+/// `#mapping` lines); it is retained only so `process_artifacts` can record
+/// provenance.
+pub fn drive_basic(
+    inputs: &DriverInputs, template_src_dir: &Path,
+) -> Result<RawArtifacts, RdfError> {
+    drive_common(inputs, |_cfg, bin_release, _data_nt| {
+        let tpl_dir = bin_release.join("basic-templates");
+        std::fs::create_dir_all(&tpl_dir)?;
+        let mut sources: Vec<PathBuf> = std::fs::read_dir(template_src_dir)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("txt"))
+            .collect();
+        sources.sort();
+        if sources.is_empty() {
+            return Err(RdfError::Sandbox(format!(
+                "no .txt templates found in {template_src_dir:?}"
+            )));
+        }
+        let mut templates = Vec::with_capacity(sources.len());
+        for src in &sources {
+            let dst = tpl_dir.join(src.file_name().unwrap());
+            std::fs::copy(src, &dst)?;
+            templates.push(dst);
+        }
+        Ok(templates)
     })
 }

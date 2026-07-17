@@ -90,38 +90,22 @@ pub fn run_data(cfg: &InvokeConfig, scale: u32, out_path: &Path) -> Result<(), R
     Ok(())
 }
 
-/// Splits a watdiv `-s` stdout dump into individual `#mapping…#end` template
-/// blocks. Each returned string is one template, with the trailing `#end`
-/// marker stripped (so it can be passed back to `-q` as a single-template
-/// query file by re-appending `#end`).
-fn split_templates(stress_stdout: &str) -> Vec<String> {
+/// Splits a watdiv stdout dump into the blocks delimited by `#end` marker
+/// lines. Used for both `-s` output (each block is a `#mapping…` stress
+/// template) and `-q` output (each block is a concrete SPARQL query).
+///
+/// A line is a marker iff it trims to exactly `#end`; marker lines are
+/// consumed as separators and never appear in the returned blocks. Blocks
+/// that are blank (empty after trimming) are dropped — including a trailing
+/// block after the final `#end`. Non-blank lines are joined with `\n` and
+/// every returned block ends in a trailing `\n`.
+///
+/// Note: callers that need each block to be a self-contained watdiv query
+/// file must re-append the `#end` marker themselves (see [`run_stress`]).
+pub(crate) fn split_on_end_markers(output: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
-    for line in stress_stdout.lines() {
-        if line.trim() == "#end" {
-            if !current.trim().is_empty() {
-                out.push(std::mem::take(&mut current));
-            } else {
-                current.clear();
-            }
-        } else {
-            current.push_str(line);
-            current.push('\n');
-        }
-    }
-    if !current.trim().is_empty() {
-        out.push(current);
-    }
-    out
-}
-
-/// Splits a watdiv `-q` stdout dump (concrete queries) into individual
-/// SPARQL queries. Queries are separated by `#end` markers; each returned
-/// string is a complete SPARQL query (no `#end`).
-pub(crate) fn split_queries(query_stdout: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for line in query_stdout.lines() {
+    for line in output.lines() {
         if line.trim() == "#end" {
             if !current.trim().is_empty() {
                 out.push(std::mem::take(&mut current));
@@ -164,7 +148,7 @@ pub fn run_stress(
         });
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let blocks = split_templates(&stdout);
+    let blocks = split_on_end_markers(&stdout);
     let bin_release = cfg.stage.binary_path().parent().unwrap().to_path_buf();
     let dir = bin_release.join(stress_dir_arg);
     std::fs::create_dir_all(&dir)?;
@@ -266,11 +250,11 @@ mod tests {
     }
 
     #[test]
-    fn split_templates_handles_two_blocks() {
+    fn split_on_end_markers_handles_two_template_blocks() {
         let raw = "#mapping v0 wsdbm:City uniform\nSELECT ?v1 WHERE { %v0% gn:parentCountry ?v1 . \
                    }\n#end\n#mapping v1 wsdbm:Review uniform\nSELECT ?v0 WHERE { ?v0 \
                    rev:hasReview %v1% . }\n#end\n";
-        let blocks = split_templates(raw);
+        let blocks = split_on_end_markers(raw);
         assert_eq!(blocks.len(), 2);
         assert!(blocks[0].contains("wsdbm:City"));
         assert!(blocks[1].contains("wsdbm:Review"));
@@ -278,19 +262,19 @@ mod tests {
     }
 
     #[test]
-    fn split_queries_handles_multiline_select() {
+    fn split_on_end_markers_handles_multiline_query() {
         let raw = "SELECT ?v0 WHERE {\n\t?v0 <p> <o> .\n}\n#end\nSELECT ?v1 WHERE {\n\t<s> <p> \
                    ?v1 .\n}\n#end\n";
-        let qs = split_queries(raw);
+        let qs = split_on_end_markers(raw);
         assert_eq!(qs.len(), 2);
         assert!(qs[0].starts_with("SELECT ?v0"));
         assert!(qs[1].starts_with("SELECT ?v1"));
     }
 
     #[test]
-    fn split_queries_drops_trailing_empty_block() {
+    fn split_on_end_markers_drops_trailing_empty_block() {
         let raw = "SELECT ?v0 WHERE { ?v0 <p> <o> . }\n#end\n\n";
-        let qs = split_queries(raw);
+        let qs = split_on_end_markers(raw);
         assert_eq!(qs.len(), 1);
     }
 }

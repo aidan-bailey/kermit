@@ -13,6 +13,17 @@ use {
     },
 };
 
+/// Writes a single-value cardinality CSV at `path`: the header line
+/// `cardinality` followed by `n`, each terminated by `\n` (exact bytes:
+/// `cardinality\n<n>\n`). Shared by the WatDiv `.desc`-driven path here and
+/// the LUBM per-query path in `crate::lubm::pipeline`.
+pub fn write_cardinality_csv(path: &Path, n: u64) -> Result<(), RdfError> {
+    let mut f = std::fs::File::create(path)?;
+    writeln!(f, "cardinality")?;
+    writeln!(f, "{n}")?;
+    Ok(())
+}
+
 /// Reads a `.desc` file (one integer per non-blank line) and returns the
 /// list.
 pub fn parse_desc(desc_path: &Path) -> Result<Vec<u64>, RdfError> {
@@ -54,9 +65,7 @@ pub fn write_expected_csvs(sparql_files: &[PathBuf], out_dir: &Path) -> Result<u
         for (i, n) in nums.iter().enumerate() {
             let qname = format!("{stem}_q{i:04}");
             let csv_path = out_dir.join(format!("{qname}.csv"));
-            let mut f = std::fs::File::create(&csv_path)?;
-            writeln!(f, "cardinality")?;
-            writeln!(f, "{n}")?;
+            write_cardinality_csv(&csv_path, *n)?;
             written += 1;
         }
     }
