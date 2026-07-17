@@ -1361,6 +1361,476 @@ fn resolve_benchmarks(
     }
 }
 
+/// Handler for the top-level `kermit join` subcommand: run one join query
+/// and write its tuples to `output` (or stdout when `None`).
+fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()> {
+    let (db, join_query) = load_query(&query_args)?;
+    let header = head_column_names(&join_query);
+    let tuples = db.join(join_query);
+    let writer: Box<dyn Write> = match &output {
+        | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
+        | None => Box::new(BufWriter::new(io::stdout().lock())),
+    };
+    write_tuples(writer, &header, &tuples)?;
+    Ok(())
+}
+
+/// Handler for `bench list`: print every discoverable benchmark with its
+/// source (workspace/cache) and cache status.
+fn run_list() -> anyhow::Result<()> {
+    let root = workspace_root();
+    let cache =
+        kermit_bench::cache::base_cache_dir().unwrap_or_else(|_| PathBuf::from(NO_CACHE_FALLBACK));
+    let workspace_defs: std::collections::HashMap<String, BenchmarkDefinition> =
+        kermit_bench::discovery::load_all_benchmarks(&root)?
+            .into_iter()
+            .map(|d| (d.name.clone(), d))
+            .collect();
+    let benchmarks = kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)?;
+    if benchmarks.is_empty() {
+        eprintln!("No benchmarks found in benchmarks/ or cache");
+    } else {
+        for b in &benchmarks {
+            let workspace_def = workspace_defs.get(&b.name);
+            let status = describe_benchmark_status(b, workspace_def, &cache);
+            let source = if workspace_def.is_some() {
+                "workspace"
+            } else {
+                "cache"
+            };
+            println!("{} ({}) [{source}, {status}]", b.name, b.description);
+            for q in &b.queries {
+                println!("  query: {} - {}", q.name, q.description);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handler for `bench fetch`: download the data files for the named
+/// benchmark, or every benchmark when `name` is `None`.
+fn run_fetch(name: Option<String>) -> anyhow::Result<()> {
+    let benchmarks = resolve_benchmarks(&name, name.is_none())?;
+    for benchmark in &benchmarks {
+        eprintln!("Fetching {}...", benchmark.name);
+        kermit_bench::cache::ensure_cached(benchmark)
+            .map_err(|e| anyhow::anyhow!("Failed to fetch {}: {e}", benchmark.name))?;
+        eprintln!("  Done.");
+    }
+    Ok(())
+}
+
+/// Handler for `bench clean`: remove cached data for the named benchmark,
+/// or every cached benchmark when `name` is `None`.
+fn run_clean(name: Option<String>) -> anyhow::Result<()> {
+    match &name {
+        | Some(n) => {
+            kermit_bench::cache::clean_benchmark(n)
+                .map_err(|e| anyhow::anyhow!("Failed to clean {}: {e}", n))?;
+            eprintln!("Cleaned cache for benchmark '{}'", n);
+        },
+        | None => {
+            kermit_bench::cache::clean_all()
+                .map_err(|e| anyhow::anyhow!("Failed to clean cache: {e}"))?;
+            eprintln!("Cleaned all benchmark caches");
+        },
+    }
+    Ok(())
+}
+
+/// Handler for `bench join`: benchmark a single join query (optionally
+/// dumping its result to `output`) and write the report.
+fn run_bench_join(
+    bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let (db, join_query) = load_query(&query_args)?;
+
+    if let Some(path) = &output {
+        let header = head_column_names(&join_query);
+        let tuples = db.join(join_query.clone());
+        let writer = BufWriter::new(fs::File::create(path)?);
+        write_tuples(writer, &header, &tuples)?;
+    }
+
+    let group_name = bench_args
+        .name
+        .as_deref()
+        .unwrap_or(DEFAULT_JOIN_GROUP)
+        .to_string();
+    let bench_id = format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
+
+    let metadata = vec![
+        MetadataLine::new("data structure", format!("{:?}", query_args.indexstructure)),
+        MetadataLine::new("algorithm", format!("{:?}", query_args.algorithm)),
+        MetadataLine::new("relations", query_args.relations.len()),
+    ];
+    write_metadata_block(&mut io::stderr(), "bench metadata", &metadata)?;
+
+    let mut criterion = build_time_criterion(bench_args);
+    let mut group = criterion.benchmark_group(&group_name);
+    group.bench_function(&bench_id, |b| {
+        b.iter_batched(
+            || join_query.clone(),
+            |q| db.join(q),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+    criterion.final_summary();
+
+    let axes = BTreeMap::from([
+        (
+            "data_structure".to_string(),
+            serde_json::json!(format!("{:?}", query_args.indexstructure)),
+        ),
+        (
+            "algorithm".to_string(),
+            serde_json::json!(format!("{:?}", query_args.algorithm)),
+        ),
+        (
+            "optimiser".to_string(),
+            serde_json::json!(query_args.optimiser.axis_value()),
+        ),
+        (
+            "relations".to_string(),
+            serde_json::json!(query_args.relations.len()),
+        ),
+    ]);
+    let report = BenchReport::new(BenchKind::Join, &metadata, axes, vec![CriterionGroupRef {
+        group: group_name,
+        function: bench_id,
+        metric: ReportMetric::Time,
+    }]);
+    write_bench_report(
+        bench_args.report_json.as_deref(),
+        BenchKind::Join,
+        std::slice::from_ref(&report),
+    )?;
+    Ok(())
+}
+
+/// Dispatches a single `bench ds` measurement to the correct concrete
+/// `run_ds_bench`/`run_ds_bench_hash` monomorphisation for `ds`.
+///
+/// `HashTrie` lives in a parallel trait family (`HashTrieIterable`, not
+/// `TrieIterable`), so it routes through `run_ds_bench_hash` rather than the
+/// generic `run_ds_bench<R>`. The `H: HashStrategy` parameter is picked from
+/// the `--ds-layout-hasher` CLI flag (`hasher`).
+fn dispatch_ds_bench(
+    ds: IndexStructure, hasher: HasherChoice, relation: &Path, metrics: &[Metric],
+    group_name: &str, bench_args: &BenchArgs,
+) -> anyhow::Result<BenchReport> {
+    match ds {
+        | IndexStructure::TreeTrie => {
+            run_ds_bench::<kermit_ds::TreeTrie>(relation, ds, metrics, group_name, bench_args)
+        },
+        | IndexStructure::ColumnTrie => {
+            run_ds_bench::<kermit_ds::ColumnTrie>(relation, ds, metrics, group_name, bench_args)
+        },
+        | IndexStructure::HashTrie => match hasher {
+            | HasherChoice::Sip => {
+                run_ds_bench_hash::<SipHashStrategy>(relation, ds, metrics, group_name, bench_args)
+            },
+            | HasherChoice::Fxhash => {
+                run_ds_bench_hash::<FxHashStrategy>(relation, ds, metrics, group_name, bench_args)
+            },
+        },
+    }
+}
+
+/// Handler for `bench ds`: benchmark one or more index structures over a
+/// single relation file and write the reports.
+fn run_ds_bench_command(
+    bench_args: &BenchArgs, relation: PathBuf, indexstructure: IndexStructureSelector,
+    metrics: Vec<Metric>, layout: LayoutChoices,
+) -> anyhow::Result<()> {
+    validate_layout_choices(indexstructure, &layout)?;
+    let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
+    let mut reports: Vec<BenchReport> = Vec::new();
+    for ds in indexstructure.expand() {
+        let report = dispatch_ds_bench(
+            ds,
+            layout.hash_trie_hasher_resolved(),
+            &relation,
+            &metrics,
+            group_name,
+            bench_args,
+        )?;
+        reports.push(report);
+    }
+    write_bench_report(bench_args.report_json.as_deref(), BenchKind::Ds, &reports)?;
+    Ok(())
+}
+
+/// Dispatches a single `bench run` cell to the correct concrete
+/// `run_benchmark`/`run_benchmark_hash` monomorphisation for `ds`.
+///
+/// `HashTrie` lives in a parallel trait family (`HashTrieIterable`, not
+/// `TrieIterable`); it joins via the `hash_join` free function rather than the
+/// `DB` trait. NOTE: the caller's `supports_algorithm` gate does NOT guarantee
+/// `algo == HashTriejoin` here — it is permissive whenever either selector is
+/// `All`, and the cross-product loop does not filter incompatible concrete
+/// pairs. So with e.g. `-i all -a leapfrog-triejoin` this arm is reached with
+/// `algo == LeapfrogTriejoin`, still running `hash_join` but stamping the
+/// report with the wrong algorithm. This mislabelling is a known issue tracked
+/// separately. The `H: HashStrategy` parameter is picked from the
+/// `--ds-layout-hasher` CLI flag (`hasher`).
+#[allow(clippy::too_many_arguments)]
+fn dispatch_run_bench(
+    ds: IndexStructure, hasher: HasherChoice, benchmark: &BenchmarkDefinition, algo: JoinAlgorithm,
+    optimiser: Optimiser, metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
+) -> anyhow::Result<Vec<BenchReport>> {
+    match ds {
+        | IndexStructure::TreeTrie => run_benchmark::<kermit_ds::TreeTrie>(
+            benchmark,
+            ds,
+            algo,
+            optimiser,
+            metrics,
+            query_filter,
+            bench_args,
+        ),
+        | IndexStructure::ColumnTrie => run_benchmark::<kermit_ds::ColumnTrie>(
+            benchmark,
+            ds,
+            algo,
+            optimiser,
+            metrics,
+            query_filter,
+            bench_args,
+        ),
+        | IndexStructure::HashTrie => match hasher {
+            | HasherChoice::Sip => run_benchmark_hash::<SipHashStrategy>(
+                benchmark,
+                ds,
+                algo,
+                optimiser,
+                metrics,
+                query_filter,
+                bench_args,
+            ),
+            | HasherChoice::Fxhash => run_benchmark_hash::<FxHashStrategy>(
+                benchmark,
+                ds,
+                algo,
+                optimiser,
+                metrics,
+                query_filter,
+                bench_args,
+            ),
+        },
+    }
+}
+
+/// Handler for `bench run`: materialise the selected benchmarks and sweep
+/// the requested (index-structure, algorithm) cross-product, writing the
+/// aggregated reports.
+///
+/// The cross-product loop does **not** filter incompatible (structure,
+/// algorithm) pairs when either selector is `All` — this is a known,
+/// documented issue (see the `dispatch_run_bench` note and CLAUDE.md). The
+/// loop is preserved verbatim here.
+#[allow(clippy::too_many_arguments)]
+fn run_bench_run_command(
+    bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
+    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, optimiser: Optimiser,
+    metrics: Vec<Metric>, force: bool, layout: LayoutChoices,
+) -> anyhow::Result<()> {
+    validate_layout_choices(indexstructure, &layout)?;
+    // Reject incompatible (index-structure, algorithm) pairs up front. `All`
+    // on either side is permissive — the cross-product loop below already
+    // filters individual concrete pairs at dispatch time.
+    if !indexstructure.supports_algorithm(algorithm) {
+        anyhow::bail!(
+            "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \
+             with --algorithm {algorithm:?} (hash-trie pairs with hash-triejoin; sorted tries \
+             pair with leapfrog-triejoin)"
+        );
+    }
+    let benchmarks = resolve_benchmarks(&name, all)?;
+    let cache_root = kermit_bench::cache::base_cache_dir()
+        .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
+    let materialized: Vec<BenchmarkDefinition> = benchmarks
+        .into_iter()
+        .map(|b| materialize::materialize(b, &cache_root, force))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let indexstructures = indexstructure.expand();
+    let algorithms = algorithm.expand();
+    let mut reports: Vec<BenchReport> = Vec::new();
+    for benchmark in &materialized {
+        for &ds in &indexstructures {
+            for &algo in &algorithms {
+                let mut cell_reports = dispatch_run_bench(
+                    ds,
+                    layout.hash_trie_hasher_resolved(),
+                    benchmark,
+                    algo,
+                    optimiser,
+                    &metrics,
+                    query.as_deref(),
+                    bench_args,
+                )?;
+                reports.append(&mut cell_reports);
+            }
+        }
+    }
+    write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
+    Ok(())
+}
+
+/// Handler for `bench gen watdiv`: materialise a fresh WatDiv benchmark on
+/// the fly via the `kermit-rdf` pipeline.
+#[allow(clippy::too_many_arguments)]
+fn run_gen_watdiv(
+    scale: u32, tag: String, max_query_size: u32, query_count: u32, constants_per_query: u32,
+    allow_join_vertex: bool, watdiv_bin: Option<PathBuf>, output_dir: Option<PathBuf>,
+    no_bwrap: bool,
+) -> anyhow::Result<()> {
+    let bench_name = format!("watdiv-stress-{scale}-{tag}");
+    let workspace = workspace_root();
+    let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
+        .map_err(|e| anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}"))?;
+    if workspace_names.iter().any(|n| n == &bench_name) {
+        anyhow::bail!(
+            "--tag {tag:?} produces bench name {bench_name:?} which already exists in the \
+             workspace; pick a different tag"
+        );
+    }
+    let vendor = vendored_watdiv_root();
+    let bin = watdiv_bin.unwrap_or_else(|| vendor.join("bin/Release/watdiv"));
+    if !bin.exists() {
+        anyhow::bail!("watdiv binary not found at {bin:?}");
+    }
+    let default_cache = kermit_bench::cache::base_cache_dir()
+        .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
+    let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
+    if cache_parent != default_cache {
+        eprintln!(
+            "[gen watdiv] note: --output-dir is set to {}; the generated benchmark will NOT be \
+             auto-discovered by `bench list/fetch/run` (those scan {})",
+            cache_parent.display(),
+            default_cache.display()
+        );
+    }
+    let out_dir = cache_parent.join(&bench_name);
+    std::fs::create_dir_all(&out_dir)?;
+
+    let stress = kermit_rdf::driver::StressParams {
+        max_query_size,
+        query_count,
+        constants_per_query,
+        allow_join_vertex,
+    };
+    let inputs = kermit_rdf::pipeline::PipelineInputs {
+        driver: kermit_rdf::driver::DriverInputs {
+            watdiv_bin: &bin,
+            vendor_files: &vendor.join("files"),
+            model_file: &vendor.join("MODEL.txt"),
+            scale,
+            stress,
+            query_count_per_template: query_count,
+            use_bwrap: !no_bwrap,
+        },
+        out_dir: &out_dir,
+        bench_name: &bench_name,
+        tag: &tag,
+        spec_hash: None,
+    };
+    let meta = kermit_rdf::pipeline::run_pipeline(&inputs)
+        .map_err(|e| anyhow::anyhow!("gen watdiv pipeline failed: {e}"))?;
+    eprintln!(
+        "[gen watdiv] wrote {} (triples={}, relations={}, queries={})",
+        out_dir.display(),
+        meta.triple_count,
+        meta.relation_count,
+        meta.query_count
+    );
+    Ok(())
+}
+
+/// Handler for `bench gen lubm`: materialise a fresh LUBM benchmark on the
+/// fly via the `kermit-rdf` LUBM pipeline.
+#[allow(clippy::too_many_arguments)]
+fn run_gen_lubm(
+    scale: u32, tag: String, seed: u32, start_index: u32, threads: u32, lubm_jar: Option<PathBuf>,
+    ontology: String, output_dir: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let bench_name = format!("lubm-{scale}-{tag}");
+    let workspace = workspace_root();
+    let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
+        .map_err(|e| anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}"))?;
+    if workspace_names.iter().any(|n| n == &bench_name) {
+        anyhow::bail!(
+            "--tag {tag:?} produces bench name {bench_name:?} which already exists in the \
+             workspace; pick a different tag"
+        );
+    }
+    let jar = lubm_jar.unwrap_or_else(vendored_lubm_jar);
+    if !jar.exists() {
+        anyhow::bail!(
+            "LUBM-UBA jar not found at {jar:?}; build with `mvn package` in lubm-uba-rs and copy \
+             to kermit-rdf/vendor/lubm-uba/, or override with --lubm-jar / KERMIT_LUBM_JAR"
+        );
+    }
+    let default_cache = kermit_bench::cache::base_cache_dir()
+        .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
+    let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
+    if cache_parent != default_cache {
+        eprintln!(
+            "[gen lubm] note: --output-dir is set to {}; the generated benchmark will NOT be \
+             auto-discovered by `bench list/fetch/run` (those scan {})",
+            cache_parent.display(),
+            default_cache.display()
+        );
+    }
+    let out_dir = cache_parent.join(&bench_name);
+    if out_dir.exists()
+        && std::fs::read_dir(&out_dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    {
+        eprintln!(
+            "[gen lubm] note: {} is non-empty; existing files will be overwritten",
+            out_dir.display()
+        );
+    }
+    std::fs::create_dir_all(&out_dir)?;
+
+    // LUBM(1, 0) cardinalities are only valid at scale 1; at other scales we
+    // still emit the queries but skip the expected.csv files to avoid
+    // misleading the cardinality test.
+    let queries = kermit_rdf::lubm::queries::lubm_query_specs(scale == 1);
+
+    let inputs = kermit_rdf::lubm::pipeline::LubmPipelineInputs {
+        driver: kermit_rdf::lubm::driver::LubmDriverInputs {
+            jar_path: &jar,
+            scale,
+            seed,
+            start_index,
+            threads,
+            ontology_iri: &ontology,
+        },
+        out_dir: &out_dir,
+        bench_name: &bench_name,
+        tag: &tag,
+        queries: &queries,
+        spec_hash: None,
+    };
+    let meta = kermit_rdf::lubm::pipeline::run_lubm_pipeline(&inputs)
+        .map_err(|e| anyhow::anyhow!("gen lubm pipeline failed: {e}"))?;
+    eprintln!(
+        "[gen lubm] wrote {} (pre={}, post={}, derived={}, relations={}, queries={})",
+        out_dir.display(),
+        meta.triple_count_pre_entailment,
+        meta.triple_count_post_entailment,
+        meta.derived_triple_count,
+        meta.relation_count,
+        meta.query_count
+    );
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -1368,203 +1838,33 @@ fn main() -> anyhow::Result<()> {
         | Commands::Join {
             query_args,
             output,
-        } => {
-            let (db, join_query) = load_query(&query_args)?;
-            let header = head_column_names(&join_query);
-            let tuples = db.join(join_query);
-            let writer: Box<dyn Write> = match &output {
-                | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
-                | None => Box::new(BufWriter::new(io::stdout().lock())),
-            };
-            write_tuples(writer, &header, &tuples)?;
-        },
+        } => run_join(query_args, output)?,
 
         | Commands::Bench {
             bench_args,
             subcommand,
         } => match subcommand {
-            | BenchSubcommand::List => {
-                let root = workspace_root();
-                let cache = kermit_bench::cache::base_cache_dir()
-                    .unwrap_or_else(|_| PathBuf::from(NO_CACHE_FALLBACK));
-                let workspace_defs: std::collections::HashMap<String, BenchmarkDefinition> =
-                    kermit_bench::discovery::load_all_benchmarks(&root)?
-                        .into_iter()
-                        .map(|d| (d.name.clone(), d))
-                        .collect();
-                let benchmarks =
-                    kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)?;
-                if benchmarks.is_empty() {
-                    eprintln!("No benchmarks found in benchmarks/ or cache");
-                } else {
-                    for b in &benchmarks {
-                        let workspace_def = workspace_defs.get(&b.name);
-                        let status = describe_benchmark_status(b, workspace_def, &cache);
-                        let source = if workspace_def.is_some() {
-                            "workspace"
-                        } else {
-                            "cache"
-                        };
-                        println!("{} ({}) [{source}, {status}]", b.name, b.description);
-                        for q in &b.queries {
-                            println!("  query: {} - {}", q.name, q.description);
-                        }
-                    }
-                }
-            },
+            | BenchSubcommand::List => run_list()?,
 
             | BenchSubcommand::Fetch {
                 name,
-            } => {
-                let benchmarks = resolve_benchmarks(&name, name.is_none())?;
-                for benchmark in &benchmarks {
-                    eprintln!("Fetching {}...", benchmark.name);
-                    kermit_bench::cache::ensure_cached(benchmark)
-                        .map_err(|e| anyhow::anyhow!("Failed to fetch {}: {e}", benchmark.name))?;
-                    eprintln!("  Done.");
-                }
-            },
+            } => run_fetch(name)?,
 
             | BenchSubcommand::Clean {
                 name,
-            } => match &name {
-                | Some(n) => {
-                    kermit_bench::cache::clean_benchmark(n)
-                        .map_err(|e| anyhow::anyhow!("Failed to clean {}: {e}", n))?;
-                    eprintln!("Cleaned cache for benchmark '{}'", n);
-                },
-                | None => {
-                    kermit_bench::cache::clean_all()
-                        .map_err(|e| anyhow::anyhow!("Failed to clean cache: {e}"))?;
-                    eprintln!("Cleaned all benchmark caches");
-                },
-            },
+            } => run_clean(name)?,
 
             | BenchSubcommand::Join {
                 query_args,
                 output,
-            } => {
-                let (db, join_query) = load_query(&query_args)?;
-
-                if let Some(path) = &output {
-                    let header = head_column_names(&join_query);
-                    let tuples = db.join(join_query.clone());
-                    let writer = BufWriter::new(fs::File::create(path)?);
-                    write_tuples(writer, &header, &tuples)?;
-                }
-
-                let group_name = bench_args
-                    .name
-                    .as_deref()
-                    .unwrap_or(DEFAULT_JOIN_GROUP)
-                    .to_string();
-                let bench_id =
-                    format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
-
-                let metadata = vec![
-                    MetadataLine::new("data structure", format!("{:?}", query_args.indexstructure)),
-                    MetadataLine::new("algorithm", format!("{:?}", query_args.algorithm)),
-                    MetadataLine::new("relations", query_args.relations.len()),
-                ];
-                write_metadata_block(&mut io::stderr(), "bench metadata", &metadata)?;
-
-                let mut criterion = build_time_criterion(&bench_args);
-                let mut group = criterion.benchmark_group(&group_name);
-                group.bench_function(&bench_id, |b| {
-                    b.iter_batched(
-                        || join_query.clone(),
-                        |q| db.join(q),
-                        criterion::BatchSize::SmallInput,
-                    );
-                });
-                group.finish();
-                criterion.final_summary();
-
-                let axes = BTreeMap::from([
-                    (
-                        "data_structure".to_string(),
-                        serde_json::json!(format!("{:?}", query_args.indexstructure)),
-                    ),
-                    (
-                        "algorithm".to_string(),
-                        serde_json::json!(format!("{:?}", query_args.algorithm)),
-                    ),
-                    (
-                        "optimiser".to_string(),
-                        serde_json::json!(query_args.optimiser.axis_value()),
-                    ),
-                    (
-                        "relations".to_string(),
-                        serde_json::json!(query_args.relations.len()),
-                    ),
-                ]);
-                let report =
-                    BenchReport::new(BenchKind::Join, &metadata, axes, vec![CriterionGroupRef {
-                        group: group_name,
-                        function: bench_id,
-                        metric: ReportMetric::Time,
-                    }]);
-                write_bench_report(
-                    bench_args.report_json.as_deref(),
-                    BenchKind::Join,
-                    std::slice::from_ref(&report),
-                )?;
-            },
+            } => run_bench_join(&bench_args, query_args, output)?,
 
             | BenchSubcommand::Ds {
                 relation,
                 indexstructure,
                 metrics,
                 layout,
-            } => {
-                validate_layout_choices(indexstructure, &layout)?;
-                let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
-                let mut reports: Vec<BenchReport> = Vec::new();
-                for ds in indexstructure.expand() {
-                    let report = match ds {
-                        | IndexStructure::TreeTrie => run_ds_bench::<kermit_ds::TreeTrie>(
-                            &relation,
-                            ds,
-                            &metrics,
-                            group_name,
-                            &bench_args,
-                        )?,
-                        | IndexStructure::ColumnTrie => run_ds_bench::<kermit_ds::ColumnTrie>(
-                            &relation,
-                            ds,
-                            &metrics,
-                            group_name,
-                            &bench_args,
-                        )?,
-                        // `HashTrie` lives in a parallel trait family
-                        // (`HashTrieIterable`, not `TrieIterable`), so it
-                        // routes through `run_ds_bench_hash` rather than
-                        // the generic `run_ds_bench<R>` above. The
-                        // `H: HashStrategy` parameter is picked from the
-                        // `LayoutChoices::hash_trie_hasher_resolved()`
-                        // CLI flag (Phase 4 of the optimization-standard
-                        // plan).
-                        | IndexStructure::HashTrie => match layout.hash_trie_hasher_resolved() {
-                            | HasherChoice::Sip => run_ds_bench_hash::<SipHashStrategy>(
-                                &relation,
-                                ds,
-                                &metrics,
-                                group_name,
-                                &bench_args,
-                            )?,
-                            | HasherChoice::Fxhash => run_ds_bench_hash::<FxHashStrategy>(
-                                &relation,
-                                ds,
-                                &metrics,
-                                group_name,
-                                &bench_args,
-                            )?,
-                        },
-                    };
-                    reports.push(report);
-                }
-                write_bench_report(bench_args.report_json.as_deref(), BenchKind::Ds, &reports)?;
-            },
+            } => run_ds_bench_command(&bench_args, relation, indexstructure, metrics, layout)?,
 
             | BenchSubcommand::Run {
                 name,
@@ -1576,108 +1876,18 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 force,
                 layout,
-            } => {
-                validate_layout_choices(indexstructure, &layout)?;
-                // Reject incompatible (index-structure, algorithm) pairs
-                // up front. `All` on either side is permissive — the
-                // cross-product loop below already filters individual
-                // concrete pairs at dispatch time.
-                if !indexstructure.supports_algorithm(algorithm) {
-                    anyhow::bail!(
-                        "incompatible CLI selection: --indexstructure {indexstructure:?} cannot \
-                         be joined with --algorithm {algorithm:?} (hash-trie pairs with \
-                         hash-triejoin; sorted tries pair with leapfrog-triejoin)"
-                    );
-                }
-                let benchmarks = resolve_benchmarks(&name, all)?;
-                let cache_root = kermit_bench::cache::base_cache_dir()
-                    .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
-                let materialized: Vec<BenchmarkDefinition> = benchmarks
-                    .into_iter()
-                    .map(|b| materialize::materialize(b, &cache_root, force))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                let indexstructures = indexstructure.expand();
-                let algorithms = algorithm.expand();
-                let mut reports: Vec<BenchReport> = Vec::new();
-                for benchmark in &materialized {
-                    for &ds in &indexstructures {
-                        for &algo in &algorithms {
-                            let mut cell_reports = match ds {
-                                | IndexStructure::TreeTrie => run_benchmark::<kermit_ds::TreeTrie>(
-                                    benchmark,
-                                    ds,
-                                    algo,
-                                    optimiser,
-                                    &metrics,
-                                    query.as_deref(),
-                                    &bench_args,
-                                )?,
-                                | IndexStructure::ColumnTrie => {
-                                    run_benchmark::<kermit_ds::ColumnTrie>(
-                                        benchmark,
-                                        ds,
-                                        algo,
-                                        optimiser,
-                                        &metrics,
-                                        query.as_deref(),
-                                        &bench_args,
-                                    )?
-                                },
-                                // `HashTrie` lives in a parallel trait
-                                // family (`HashTrieIterable`, not
-                                // `TrieIterable`); it joins via the
-                                // `hash_join` free function rather than
-                                // the `DB` trait. NOTE: the
-                                // supports_algorithm gate above does NOT
-                                // guarantee `algo == HashTriejoin` here —
-                                // it is permissive whenever either
-                                // selector is `All`, and the cross-product
-                                // loop does not filter incompatible
-                                // concrete pairs. So with e.g.
-                                // `-i all -a leapfrog-triejoin` this arm is
-                                // reached with `algo == LeapfrogTriejoin`,
-                                // still running `hash_join` but stamping
-                                // the report with the wrong algorithm. This
-                                // mislabelling is a known issue tracked
-                                // separately. The `H: HashStrategy`
-                                // parameter is picked from
-                                // `LayoutChoices::hash_trie_hasher_resolved()`
-                                // (Phase 4 of the optimization-standard
-                                // plan).
-                                | IndexStructure::HashTrie => {
-                                    match layout.hash_trie_hasher_resolved() {
-                                        | HasherChoice::Sip => {
-                                            run_benchmark_hash::<SipHashStrategy>(
-                                                benchmark,
-                                                ds,
-                                                algo,
-                                                optimiser,
-                                                &metrics,
-                                                query.as_deref(),
-                                                &bench_args,
-                                            )?
-                                        },
-                                        | HasherChoice::Fxhash => {
-                                            run_benchmark_hash::<FxHashStrategy>(
-                                                benchmark,
-                                                ds,
-                                                algo,
-                                                optimiser,
-                                                &metrics,
-                                                query.as_deref(),
-                                                &bench_args,
-                                            )?
-                                        },
-                                    }
-                                },
-                            };
-                            reports.append(&mut cell_reports);
-                        }
-                    }
-                }
-                write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
-            },
+            } => run_bench_run_command(
+                &bench_args,
+                name,
+                all,
+                query,
+                indexstructure,
+                algorithm,
+                optimiser,
+                metrics,
+                force,
+                layout,
+            )?,
 
             | BenchSubcommand::Gen {
                 subcommand,
@@ -1692,70 +1902,17 @@ fn main() -> anyhow::Result<()> {
                     watdiv_bin,
                     output_dir,
                     no_bwrap,
-                } => {
-                    let bench_name = format!("watdiv-stress-{scale}-{tag}");
-                    let workspace = workspace_root();
-                    let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
-                        })?;
-                    if workspace_names.iter().any(|n| n == &bench_name) {
-                        anyhow::bail!(
-                            "--tag {tag:?} produces bench name {bench_name:?} which already \
-                             exists in the workspace; pick a different tag"
-                        );
-                    }
-                    let vendor = vendored_watdiv_root();
-                    let bin = watdiv_bin.unwrap_or_else(|| vendor.join("bin/Release/watdiv"));
-                    if !bin.exists() {
-                        anyhow::bail!("watdiv binary not found at {bin:?}");
-                    }
-                    let default_cache = kermit_bench::cache::base_cache_dir()
-                        .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
-                    let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
-                    if cache_parent != default_cache {
-                        eprintln!(
-                            "[gen watdiv] note: --output-dir is set to {}; the generated \
-                             benchmark will NOT be auto-discovered by `bench list/fetch/run` \
-                             (those scan {})",
-                            cache_parent.display(),
-                            default_cache.display()
-                        );
-                    }
-                    let out_dir = cache_parent.join(&bench_name);
-                    std::fs::create_dir_all(&out_dir)?;
-
-                    let stress = kermit_rdf::driver::StressParams {
-                        max_query_size,
-                        query_count,
-                        constants_per_query,
-                        allow_join_vertex,
-                    };
-                    let inputs = kermit_rdf::pipeline::PipelineInputs {
-                        driver: kermit_rdf::driver::DriverInputs {
-                            watdiv_bin: &bin,
-                            vendor_files: &vendor.join("files"),
-                            model_file: &vendor.join("MODEL.txt"),
-                            scale,
-                            stress,
-                            query_count_per_template: query_count,
-                            use_bwrap: !no_bwrap,
-                        },
-                        out_dir: &out_dir,
-                        bench_name: &bench_name,
-                        tag: &tag,
-                        spec_hash: None,
-                    };
-                    let meta = kermit_rdf::pipeline::run_pipeline(&inputs)
-                        .map_err(|e| anyhow::anyhow!("gen watdiv pipeline failed: {e}"))?;
-                    eprintln!(
-                        "[gen watdiv] wrote {} (triples={}, relations={}, queries={})",
-                        out_dir.display(),
-                        meta.triple_count,
-                        meta.relation_count,
-                        meta.query_count
-                    );
-                },
+                } => run_gen_watdiv(
+                    scale,
+                    tag,
+                    max_query_size,
+                    query_count,
+                    constants_per_query,
+                    allow_join_vertex,
+                    watdiv_bin,
+                    output_dir,
+                    no_bwrap,
+                )?,
 
                 | GenSubcommand::Lubm {
                     scale,
@@ -1766,85 +1923,16 @@ fn main() -> anyhow::Result<()> {
                     lubm_jar,
                     ontology,
                     output_dir,
-                } => {
-                    let bench_name = format!("lubm-{scale}-{tag}");
-                    let workspace = workspace_root();
-                    let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace)
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}")
-                        })?;
-                    if workspace_names.iter().any(|n| n == &bench_name) {
-                        anyhow::bail!(
-                            "--tag {tag:?} produces bench name {bench_name:?} which already \
-                             exists in the workspace; pick a different tag"
-                        );
-                    }
-                    let jar = lubm_jar.unwrap_or_else(vendored_lubm_jar);
-                    if !jar.exists() {
-                        anyhow::bail!(
-                            "LUBM-UBA jar not found at {jar:?}; build with `mvn package` in \
-                             lubm-uba-rs and copy to kermit-rdf/vendor/lubm-uba/, or override \
-                             with --lubm-jar / KERMIT_LUBM_JAR"
-                        );
-                    }
-                    let default_cache = kermit_bench::cache::base_cache_dir()
-                        .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
-                    let cache_parent = output_dir.unwrap_or_else(|| default_cache.clone());
-                    if cache_parent != default_cache {
-                        eprintln!(
-                            "[gen lubm] note: --output-dir is set to {}; the generated benchmark \
-                             will NOT be auto-discovered by `bench list/fetch/run` (those scan {})",
-                            cache_parent.display(),
-                            default_cache.display()
-                        );
-                    }
-                    let out_dir = cache_parent.join(&bench_name);
-                    if out_dir.exists()
-                        && std::fs::read_dir(&out_dir)
-                            .map(|mut d| d.next().is_some())
-                            .unwrap_or(false)
-                    {
-                        eprintln!(
-                            "[gen lubm] note: {} is non-empty; existing files will be overwritten",
-                            out_dir.display()
-                        );
-                    }
-                    std::fs::create_dir_all(&out_dir)?;
-
-                    // LUBM(1, 0) cardinalities are only valid at scale 1; at
-                    // other scales we still emit the queries but skip the
-                    // expected.csv files to avoid misleading the cardinality
-                    // test.
-                    let queries = kermit_rdf::lubm::queries::lubm_query_specs(scale == 1);
-
-                    let inputs = kermit_rdf::lubm::pipeline::LubmPipelineInputs {
-                        driver: kermit_rdf::lubm::driver::LubmDriverInputs {
-                            jar_path: &jar,
-                            scale,
-                            seed,
-                            start_index,
-                            threads,
-                            ontology_iri: &ontology,
-                        },
-                        out_dir: &out_dir,
-                        bench_name: &bench_name,
-                        tag: &tag,
-                        queries: &queries,
-                        spec_hash: None,
-                    };
-                    let meta = kermit_rdf::lubm::pipeline::run_lubm_pipeline(&inputs)
-                        .map_err(|e| anyhow::anyhow!("gen lubm pipeline failed: {e}"))?;
-                    eprintln!(
-                        "[gen lubm] wrote {} (pre={}, post={}, derived={}, relations={}, \
-                         queries={})",
-                        out_dir.display(),
-                        meta.triple_count_pre_entailment,
-                        meta.triple_count_post_entailment,
-                        meta.derived_triple_count,
-                        meta.relation_count,
-                        meta.query_count
-                    );
-                },
+                } => run_gen_lubm(
+                    scale,
+                    tag,
+                    seed,
+                    start_index,
+                    threads,
+                    lubm_jar,
+                    ontology,
+                    output_dir,
+                )?,
             },
         },
     }
