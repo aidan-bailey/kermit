@@ -67,6 +67,9 @@ impl ColumnTrieLayer {
         if i == self.interval.len() {
             self.interval.push(self.data.len());
         } else {
+            // A freshly-branched parent starts with an empty child interval, so
+            // it shares its successor's start offset until keys are inserted
+            // under it — hence duplicating `interval[i]` at position `i`.
             self.interval.insert(i, self.interval[i]);
         }
     }
@@ -318,6 +321,8 @@ impl Relation for ColumnTrie {
                 "from_tuples: tuple arity {arity} does not match header arity {}",
                 header.arity()
             );
+            // Reproduces the derived `Vec<usize>` lexicographic order (kept
+            // hand-rolled here rather than `sort_unstable()`).
             tuples.sort_unstable_by(|a, b| {
                 for i in 0..a.len() {
                     match a[i].cmp(&b[i]) {

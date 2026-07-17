@@ -47,6 +47,19 @@ pub trait LinearIterable: JoinIterable {
 impl JoinIterable for Vec<usize> {}
 
 /// A linear iterator for vectors.
+///
+/// # Index invariant
+/// `index` is a **1-based** cursor into `data`, sitting one past the element it
+/// points at:
+/// - `index == 0` is the initial "before the first item" state — `key()`
+///   returns `None`, and the first `next()` moves to `index == 1`.
+/// - `index` in `1..=data.len()` points **at** `data[index - 1]`, which `key()`
+///   returns.
+/// - `index > data.len()` is the end state — `at_end()` is `true` and `key()`
+///   returns `None`.
+///
+/// The `index - 1` read offset is why the "before first" (`0`) and "at end"
+/// (`> data.len()`) sentinels sit one outside the `1..=data.len()` valid range.
 struct VecLinearIter<'a> {
     data: &'a [usize],
     index: usize,

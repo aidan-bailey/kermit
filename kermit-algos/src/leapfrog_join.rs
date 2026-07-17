@@ -54,6 +54,9 @@ where
     /// than `iterators` directly.
     pub sorted_iter_perm: Vec<usize>,
     /// Index into `sorted_iter_perm` for the current iterator in the ring.
+    /// This is the paper's ring position: the paper's `Iter[p]` corresponds
+    /// to `iterators[sorted_iter_perm[p]]` here (resolved via `mut_iter`), not
+    /// to `iterators[p]`. The one exception is `key()` — see its note.
     p: usize,
 }
 
@@ -77,6 +80,9 @@ where
     /// corresponding underlying iterator. Centralised so the cyclic-walk call
     /// sites read as `self.mut_iter(self.p)` rather than the double
     /// indirection `&mut self.iterators[self.sorted_iter_perm[self.p]]`.
+    ///
+    /// This is the paper-to-code index mapping: the paper's `Iter[p]` is
+    /// `iterators[sorted_iter_perm[p]]`, i.e. `mut_iter(p)`.
     fn mut_iter(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.sorted_iter_perm[i]] }
 }
 
@@ -86,18 +92,28 @@ where
 {
     /// Returns the current common key, or `None` if the join is exhausted.
     ///
-    /// Unlike the cyclic-walk sites (which go through `mut_iter` and thus
-    /// `sorted_iter_perm`), this indexes `iterators` by `p` directly. That is
-    /// sound because `key()` is only consulted after `leapfrog_init` /
-    /// `leapfrog_search` has returned `true`, at which point every active
-    /// iterator holds the same key, so `iterators[p]` and
+    /// Convention note: `p` is a ring position, so the paper's `Iter[p]` is
+    /// `iterators[sorted_iter_perm[p]]` (what `mut_iter(p)` returns and what
+    /// every cyclic-walk site uses). This method deliberately indexes
+    /// `iterators[p]` *directly* instead — the one site that skips the
+    /// `sorted_iter_perm` indirection.
+    ///
+    /// That shortcut is sound because `key()` is only consulted after
+    /// `leapfrog_init` / `leapfrog_search` has returned `true`, at which point
+    /// every active iterator holds the same key, so `iterators[p]` and
     /// `iterators[sorted_iter_perm[p]]` resolve to identical values.
     fn key(&self) -> Option<usize> { self.iterators[self.p].key() }
 
     fn leapfrog_init(&mut self) -> bool {
         for iter in &mut self.iterators {
             if iter.key().is_none() {
-                iter.next(); // Move to the first key if not already set.
+                // Relies on the LinearIterator convention that a fresh,
+                // unpositioned iterator (one whose `key()` is `None` because it
+                // sits *before* its first element, not because it is at the
+                // end) yields its first key on `next()`. So here `next()` means
+                // "reach the first key", not "advance past the current key" as
+                // it does everywhere else in this file.
+                iter.next();
             }
             if iter.at_end() {
                 return false; // If iterator is at the end, no common key can be

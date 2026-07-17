@@ -143,7 +143,9 @@ impl Relation for TreeTrie {
         );
         assert!(tuples.iter().all(|tuple| tuple.len() == arity));
 
-        // Sort tuples for efficient insertion
+        // Sort tuples for efficient insertion. Reproduces the derived
+        // `Vec<usize>` lexicographic order (kept hand-rolled here rather than
+        // `sort_unstable()`).
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
                 match a[i].cmp(&b[i]) {

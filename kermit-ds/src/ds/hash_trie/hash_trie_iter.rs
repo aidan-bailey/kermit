@@ -135,6 +135,10 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
     }
 
     fn open(&mut self) -> bool {
+        // No `at_end` guard (unlike `ColumnTrieIter::open`): the stack top holds
+        // a resolved node, so we descend via `current_inner_child()` (a concrete
+        // child ref) — a past-end bucket yields `None` and open returns false,
+        // with no offset arithmetic to overshoot.
         if self.stack.is_empty() {
             // Descend into the root via the crate-visible accessor.
             let root = self.trie.root();

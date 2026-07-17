@@ -43,9 +43,10 @@ pub fn partition<P: AsRef<Path>>(nt_path: P) -> Result<Partitioned, RdfError> {
     for triple in ntriples::iter_path(nt_path)? {
         let (s_iri, p_iri, o) = triple?;
         let s_id = dict.intern(RdfValue::Iri(s_iri));
-        let p_id = dict.intern(RdfValue::Iri(p_iri.clone()));
+        // Intern the predicate here for its dictionary side effect; the ID is
+        // retrieved again during naming.
+        dict.intern(RdfValue::Iri(p_iri.clone()));
         let o_id = dict.intern(o);
-        let _ = p_id;
         if !buckets.contains_key(&p_iri) {
             insertion_order.push(p_iri.clone());
         }

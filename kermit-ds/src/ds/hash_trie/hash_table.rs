@@ -9,6 +9,12 @@
 //!
 //! Internal to the `hash_trie` module. Not exposed outside the crate.
 
+/// Maximum load factor before the table doubles, expressed as the exact
+/// fraction `LOAD_FACTOR_NUM / LOAD_FACTOR_DEN` = 7/10 = 0.7. Integer
+/// arithmetic keeps the resize test exact (no float rounding).
+const LOAD_FACTOR_NUM: usize = 7;
+const LOAD_FACTOR_DEN: usize = 10;
+
 /// A bucket entry stores the full 64-bit hash (for collision disambiguation
 /// during linear probing) and the value.
 pub(crate) struct Entry<V> {
@@ -93,9 +99,11 @@ impl<V> HashTable<V> {
                 | None => break,
             }
         }
-        // About to insert a new entry. Check load factor first.
-        //   LF > 0.7  ⇔  (len + 1) * 10 > capacity * 7
-        if (self.len + 1) * 10 > cap * 7 {
+        // About to insert a new entry. Check load factor first: resize when
+        // the load factor would exceed 0.7.
+        //   LF > 0.7  ⇔  (len + 1) / capacity > NUM / DEN
+        //            ⇔  (len + 1) * DEN > capacity * NUM
+        if (self.len + 1) * LOAD_FACTOR_DEN > cap * LOAD_FACTOR_NUM {
             self.grow();
             let cap = self.buckets.len();
             let mut idx = self.bucket_index(hash);

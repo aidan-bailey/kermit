@@ -30,9 +30,17 @@ pub struct StressParams {
 impl Default for StressParams {
     fn default() -> Self {
         Self {
+            // Largest basic-graph-pattern size (join arity) watdiv `-s` is
+            // allowed to emit per stress template.
             max_query_size: 5,
+            // How many concrete queries watdiv instantiates from each stress
+            // template.
             query_count: 20,
+            // Number of bound constants substituted into each generated query.
+            // Not forwarded to the current vendored binary (see field doc).
             constants_per_query: 2,
+            // Whether generated patterns may share a join vertex. Not forwarded
+            // to the current vendored binary (see field doc).
             allow_join_vertex: false,
         }
     }

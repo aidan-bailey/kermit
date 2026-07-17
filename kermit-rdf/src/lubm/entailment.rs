@@ -140,38 +140,44 @@ fn ub(local: &str) -> String { format!("{UB}{local}") }
 /// Naive fixed point: |nodes|² edges in the worst case, which for
 /// Univ-Bench is ~30² = 900 — trivial.
 fn transitive_closure(edges: &[(&str, &str)]) -> HashMap<String, HashSet<String>> {
-    let mut sup: HashMap<String, HashSet<String>> = HashMap::new();
+    // `ancestors` maps each node to the set of all nodes reachable by
+    // following parent edges (its transitive ancestors).
+    let mut ancestors: HashMap<String, HashSet<String>> = HashMap::new();
     for (child, parent) in edges {
-        sup.entry(ub(child)).or_default().insert(ub(parent));
+        ancestors.entry(ub(child)).or_default().insert(ub(parent));
         // Ensure the parent appears as a key so iteration sees it.
-        sup.entry(ub(parent)).or_default();
+        ancestors.entry(ub(parent)).or_default();
     }
     let mut changed = true;
     while changed {
         changed = false;
-        let snap: Vec<(String, Vec<String>)> = sup
+        let snapshot: Vec<(String, Vec<String>)> = ancestors
             .iter()
-            .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+            .map(|(node, node_ancestors)| (node.clone(), node_ancestors.iter().cloned().collect()))
             .collect();
-        for (node, parents) in snap {
+        for (node, node_ancestors) in snapshot {
             let mut to_add: Vec<String> = Vec::new();
-            for p in &parents {
-                if let Some(grand) = sup.get(p) {
-                    for g in grand {
-                        if !sup.get(&node).map(|s| s.contains(g)).unwrap_or(false) {
-                            to_add.push(g.clone());
+            for parent in &node_ancestors {
+                if let Some(ancestors_of_parent) = ancestors.get(parent) {
+                    for ancestor in ancestors_of_parent {
+                        if !ancestors
+                            .get(&node)
+                            .map(|s| s.contains(ancestor))
+                            .unwrap_or(false)
+                        {
+                            to_add.push(ancestor.clone());
                         }
                     }
                 }
             }
-            for g in to_add {
-                if sup.entry(node.clone()).or_default().insert(g) {
+            for ancestor in to_add {
+                if ancestors.entry(node.clone()).or_default().insert(ancestor) {
                     changed = true;
                 }
             }
         }
     }
-    sup
+    ancestors
 }
 
 fn write_triple(
@@ -181,11 +187,14 @@ fn write_triple(
 }
 
 /// Rule 1 — subClassOf: `?x rdf:type C ∧ C ⊑ D → ?x rdf:type D`.
+/// Reads from the frozen iteration snapshot (`frozen`) while inserting into
+/// the working set (`working`).
 fn apply_subclass_rule(
-    snap: &[(String, String, RdfValue)], rdf_type: &str,
-    superclasses: &HashMap<String, HashSet<String>>, all: &mut HashSet<(String, String, RdfValue)>,
+    frozen: &[(String, String, RdfValue)], rdf_type: &str,
+    superclasses: &HashMap<String, HashSet<String>>,
+    working: &mut HashSet<(String, String, RdfValue)>,
 ) {
-    for (s, p, o) in snap {
+    for (s, p, o) in frozen {
         if p != rdf_type {
             continue;
         }
@@ -194,21 +203,23 @@ fn apply_subclass_rule(
         };
         if let Some(parents) = superclasses.get(c) {
             for d in parents {
-                all.insert((s.clone(), rdf_type.to_string(), RdfValue::Iri(d.clone())));
+                working.insert((s.clone(), rdf_type.to_string(), RdfValue::Iri(d.clone())));
             }
         }
     }
 }
 
 /// Rule 2 — subPropertyOf: `?x p ?y ∧ p ⊑ q → ?x q ?y`.
+/// Reads from the frozen iteration snapshot (`frozen`) while inserting into
+/// the working set (`working`).
 fn apply_subproperty_rule(
-    snap: &[(String, String, RdfValue)], superproperties: &HashMap<String, HashSet<String>>,
-    all: &mut HashSet<(String, String, RdfValue)>,
+    frozen: &[(String, String, RdfValue)], superproperties: &HashMap<String, HashSet<String>>,
+    working: &mut HashSet<(String, String, RdfValue)>,
 ) {
-    for (s, p, o) in snap {
+    for (s, p, o) in frozen {
         if let Some(parents) = superproperties.get(p) {
             for q in parents {
-                all.insert((s.clone(), q.clone(), o.clone()));
+                working.insert((s.clone(), q.clone(), o.clone()));
             }
         }
     }
@@ -219,11 +230,13 @@ fn apply_subproperty_rule(
 /// are nonsensical, and blank-node objects cannot round-trip through the
 /// current triple representation (subjects are untyped strings, so a blank
 /// node lifted into subject position would serialise as a malformed IRI).
+/// Reads from the frozen iteration snapshot (`frozen`) while inserting into
+/// the working set (`working`).
 fn apply_inverse_rule(
-    snap: &[(String, String, RdfValue)], inverse_pairs: &[(String, String)],
-    all: &mut HashSet<(String, String, RdfValue)>,
+    frozen: &[(String, String, RdfValue)], inverse_pairs: &[(String, String)],
+    working: &mut HashSet<(String, String, RdfValue)>,
 ) {
-    for (s, p, o) in snap {
+    for (s, p, o) in frozen {
         for (a, b) in inverse_pairs {
             if p != a {
                 continue;
@@ -232,20 +245,20 @@ fn apply_inverse_rule(
                 | RdfValue::Iri(iri) => iri.clone(),
                 | RdfValue::BlankNode(_) | RdfValue::Literal(_) => continue,
             };
-            all.insert((new_subject, b.clone(), RdfValue::Iri(s.clone())));
+            working.insert((new_subject, b.clone(), RdfValue::Iri(s.clone())));
         }
     }
 }
 
 /// Rule 4 — owl:TransitiveProperty: one-step closure
-/// `?x p ?y ∧ ?y p ?z → ?x p ?z` for each transitive `p`. Reads from `all`
-/// (not the iteration snapshot) so that the outer fixed-point loop drives
-/// the multi-hop closure across iterations.
+/// `?x p ?y ∧ ?y p ?z → ?x p ?z` for each transitive `p`. Reads from the
+/// working set (`working`, not the iteration snapshot) so that the outer
+/// fixed-point loop drives the multi-hop closure across iterations.
 fn apply_transitive_rule(
-    transitive: &HashSet<String>, all: &mut HashSet<(String, String, RdfValue)>,
+    transitive: &HashSet<String>, working: &mut HashSet<(String, String, RdfValue)>,
 ) {
     for tp in transitive {
-        let edges: Vec<(String, String)> = all
+        let edges: Vec<(String, String)> = working
             .iter()
             .filter_map(|(s, p, o)| {
                 if p != tp {
@@ -265,7 +278,7 @@ fn apply_transitive_rule(
         for (a, b) in &edges {
             if let Some(nexts) = by_src.get(b.as_str()) {
                 for c in nexts {
-                    all.insert((a.clone(), tp.clone(), RdfValue::Iri(c.to_string())));
+                    working.insert((a.clone(), tp.clone(), RdfValue::Iri(c.to_string())));
                 }
             }
         }
@@ -273,15 +286,15 @@ fn apply_transitive_rule(
 }
 
 /// Rule 5 — Realisation: `?x prop ?y ∧ ?y rdf:type T → ?x rdf:type D`.
-/// Reads from `all` so derivations from earlier rules in the same
-/// iteration (e.g. a `Department` that was just derived via subClassOf)
-/// participate.
+/// Reads from the working set (`working`) so derivations from earlier rules
+/// in the same iteration (e.g. a `Department` that was just derived via
+/// subClassOf) participate.
 fn apply_realisation_rule(
     realisation: &[(String, String, String)], rdf_type: &str,
-    all: &mut HashSet<(String, String, RdfValue)>,
+    working: &mut HashSet<(String, String, RdfValue)>,
 ) {
     for (prop_iri, target_class, derived_class) in realisation {
-        let target_subjects: HashSet<&str> = all
+        let target_subjects: HashSet<&str> = working
             .iter()
             .filter_map(|(s, p, o)| {
                 if p != rdf_type {
@@ -295,7 +308,7 @@ fn apply_realisation_rule(
                 None
             })
             .collect();
-        let new_classifications: Vec<String> = all
+        let new_classifications: Vec<String> = working
             .iter()
             .filter_map(|(s, p, o)| {
                 if p != prop_iri {
@@ -310,7 +323,7 @@ fn apply_realisation_rule(
             })
             .collect();
         for x in new_classifications {
-            all.insert((
+            working.insert((
                 x,
                 rdf_type.to_string(),
                 RdfValue::Iri(derived_class.clone()),
@@ -341,7 +354,8 @@ pub fn entail(input_path: &Path, output_path: &Path) -> Result<EntailmentStats, 
         .collect();
     let rdf_type = RDF_TYPE.to_string();
 
-    let mut all: HashSet<(String, String, RdfValue)> = HashSet::new();
+    // `working` is the growing set of triples the fixed point mutates in place.
+    let mut working: HashSet<(String, String, RdfValue)> = HashSet::new();
     let mut input_count: usize = 0;
     for triple in ntriples::iter_path(input_path)? {
         let (s, p, o) = triple?;
@@ -354,10 +368,10 @@ pub fn entail(input_path: &Path, output_path: &Path) -> Result<EntailmentStats, 
         if s.is_empty() {
             continue;
         }
-        all.insert((s, p, o));
+        working.insert((s, p, o));
     }
 
-    let original_size = all.len();
+    let original_size = working.len();
     let mut iterations: u32 = 0;
     loop {
         iterations += 1;
@@ -367,20 +381,30 @@ pub fn entail(input_path: &Path, output_path: &Path) -> Result<EntailmentStats, 
                  probably triggers a cycle"
             )));
         }
-        let before = all.len();
+        let before = working.len();
 
-        // Snapshot current triples; rules 1-3 derive from this fixed view
-        // while mutating `all`. Rules 4-5 re-scan `all` because they need
-        // to see derivations from earlier rules within the same iteration.
-        let snap: Vec<(String, String, RdfValue)> = all.iter().cloned().collect();
+        // Two read conventions are in play, and the asymmetry is deliberate:
+        //
+        // - `frozen` is a snapshot of `working` taken at the top of each iteration.
+        //   Rules 1-3 (`apply_subclass_rule`, `apply_subproperty_rule`,
+        //   `apply_inverse_rule`) derive from this fixed view while inserting into
+        //   `working`. Reading a stable snapshot keeps their output independent of
+        //   intra-iteration ordering — they never observe a triple another rule derived
+        //   in the same pass.
+        // - Rules 4-5 (`apply_transitive_rule`, `apply_realisation_rule`) instead
+        //   re-scan the live `working` set, because they must see derivations produced
+        //   earlier in the same iteration (e.g. a `Department` typing just derived via
+        //   subClassOf feeds realisation of `Chair`). The outer fixed-point loop still
+        //   guarantees eventual convergence either way.
+        let frozen: Vec<(String, String, RdfValue)> = working.iter().cloned().collect();
 
-        apply_subclass_rule(&snap, &rdf_type, &superclasses, &mut all);
-        apply_subproperty_rule(&snap, &superproperties, &mut all);
-        apply_inverse_rule(&snap, &inverse_pairs, &mut all);
-        apply_transitive_rule(&transitive, &mut all);
-        apply_realisation_rule(&realisation, &rdf_type, &mut all);
+        apply_subclass_rule(&frozen, &rdf_type, &superclasses, &mut working);
+        apply_subproperty_rule(&frozen, &superproperties, &mut working);
+        apply_inverse_rule(&frozen, &inverse_pairs, &mut working);
+        apply_transitive_rule(&transitive, &mut working);
+        apply_realisation_rule(&realisation, &rdf_type, &mut working);
 
-        if all.len() == before {
+        if working.len() == before {
             break;
         }
     }
@@ -388,7 +412,7 @@ pub fn entail(input_path: &Path, output_path: &Path) -> Result<EntailmentStats, 
     let out = std::fs::File::create(output_path)?;
     let mut writer = BufWriter::new(out);
     let mut output_count = 0;
-    for (s, p, o) in &all {
+    for (s, p, o) in &working {
         write_triple(&mut writer, s, p, o)?;
         output_count += 1;
     }

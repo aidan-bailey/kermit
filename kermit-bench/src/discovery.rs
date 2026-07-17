@@ -27,7 +27,7 @@ pub fn load_benchmark(
     workspace_root: &Path, name: &str,
 ) -> Result<BenchmarkDefinition, BenchError> {
     let path = workspace_root
-        .join("benchmarks")
+        .join(crate::BENCHMARKS_DIR)
         .join(format!("{name}.yml"));
     if !path.exists() {
         return Err(BenchError::NotFound(name.to_string()));
@@ -65,7 +65,7 @@ pub fn load_benchmark(
 /// [`load_benchmark`] while reading an individual YAML file. If iteration of
 /// the directory itself fails, returns [`BenchError::Io`].
 pub fn load_all_benchmarks(workspace_root: &Path) -> Result<Vec<BenchmarkDefinition>, BenchError> {
-    let dir = workspace_root.join("benchmarks");
+    let dir = workspace_root.join(crate::BENCHMARKS_DIR);
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -192,8 +192,8 @@ fn try_load_cache_subdir(path: &Path) -> Result<Option<BenchmarkDefinition>, Ben
     if !path.is_dir() {
         return Ok(None);
     }
-    let yml = path.join("benchmark.yml");
-    let meta = path.join("meta.json");
+    let yml = path.join(crate::CACHE_MANIFEST);
+    let meta = path.join(crate::CACHE_MARKER);
     if !yml.exists() || !meta.exists() {
         return Ok(None);
     }

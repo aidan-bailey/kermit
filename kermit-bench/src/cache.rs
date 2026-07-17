@@ -25,7 +25,7 @@ use {
 /// be determined.
 pub fn base_cache_dir() -> Result<PathBuf, BenchError> {
     let cache = dirs::cache_dir().ok_or(BenchError::NoCacheDir)?;
-    Ok(cache.join("kermit").join("benchmarks"))
+    Ok(cache.join("kermit").join(crate::BENCHMARKS_DIR))
 }
 
 /// Returns the cache directory for a specific benchmark.
@@ -101,6 +101,9 @@ fn download_file(url: &str, dest: &Path) -> Result<(), BenchError> {
         fs::create_dir_all(parent)?;
     }
 
+    // Atomic-download staging: write bytes to a `.part` sibling, then rename it
+    // onto `dest` only on success, so a crashed download never leaves a
+    // truncated file at the real cache path.
     let part_path = dest.with_extension("parquet.part");
 
     let response = reqwest::blocking::get(url)

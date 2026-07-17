@@ -9,19 +9,36 @@ pub trait TrieIterator: LinearIterator {
     /// repositions at said iterator and returns `true`, otherwise returns
     /// `false`.
     ///
+    /// # Position
+    /// On success the cursor descends one level and lands **at the first
+    /// child**, with `key()` already returning that child's key — no `next()`
+    /// call is needed first. This is deliberately *not* the "before the first
+    /// item" state that [`LinearIterator`] starts in; the wrapper's `down`
+    /// depends on it, calling `key()` directly after `open()`. On failure the
+    /// position is unchanged.
+    ///
     /// # Note
-    /// If the iterator is positioned at the end, then this proceeds as if
-    /// the iterator is positioned one step backwards.
+    /// If `open()` is called while `at_end()` is `true` (the cursor sits one
+    /// past the last sibling, so `key()` is `None`), it proceeds as if the
+    /// cursor were still on the last sibling — one step back from the end —
+    /// descending into that node's children rather than failing.
     fn open(&mut self) -> bool;
 
     /// If there is a parent iterator at the iterator's current position,
     /// repositions at said iterator and returns `true`, otherwise returns
     /// `false`.
     ///
-    /// # Note
+    /// # Position
+    /// On success the cursor ascends one level and lands back on the node it
+    /// previously descended from, with `key()` again returning that node's
+    /// key. Ascending from the top level empties the path and returns to the
+    /// unopened state where `key()` is `None`. On failure (no parent level to
+    /// ascend to) the position is unchanged.
     ///
-    /// If the iterator is positioned at the end, then this proceeds as if
-    /// the iterator is positioned one step backwards.
+    /// # Note
+    /// If `up()` is called while `at_end()` is `true`, it proceeds regardless
+    /// of the end state — as if the cursor were on the last sibling, one step
+    /// back from the end — ascending to the parent rather than failing.
     fn up(&mut self) -> bool;
 }
 
@@ -98,7 +115,7 @@ where
     /// Advances to the next sibling at the current depth, updating the stack.
     /// Returns `false` if there are no more siblings or the iterator is
     /// exhausted.
-    fn next_wrapper(&mut self) -> bool {
+    fn next_sibling(&mut self) -> bool {
         if self.iter.at_end() {
             false
         } else if let Some(key) = self.iter.next() {
@@ -111,7 +128,7 @@ where
     }
 
     /// Produces the next complete tuple by advancing through the trie in
-    /// depth-first order. Backtracks via `up`/`next_wrapper` when a leaf is
+    /// depth-first order. Backtracks via `up`/`next_sibling` when a leaf is
     /// reached, then descends again via `down` until the next leaf. Returns
     /// `None` when the entire trie has been exhausted.
     fn next(&mut self) -> Option<Vec<usize>> {
@@ -119,7 +136,7 @@ where
             // Phase 1: Backtrack — advance to the next sibling, moving up
             // through ancestors until one has a remaining sibling.
             if !self.stack.is_empty() {
-                while !self.next_wrapper() {
+                while !self.next_sibling() {
                     if !self.up() {
                         return None;
                     }

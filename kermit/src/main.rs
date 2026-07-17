@@ -53,6 +53,11 @@ const DEFAULT_JOIN_GROUP: &str = "join";
 /// prefix).
 const DEFAULT_DS_GROUP: &str = "ds";
 
+/// Sentinel cache path used only when the platform cache dir cannot be
+/// resolved (`base_cache_dir` errors). Discovery against this path finds no
+/// cached benchmarks, so behaviour degrades to "workspace benchmarks only".
+const NO_CACHE_FALLBACK: &str = "/tmp/no-cache";
+
 #[derive(Parser)]
 #[command(name = "kermit")]
 #[command(version, about = "Relational data structures, iterators and algorithms", long_about = None)]
@@ -969,7 +974,7 @@ where
                 anyhow::anyhow!("Failed to parse query '{}': {:?}", query_def.query, e)
             })?;
 
-        let mut lines = vec![
+        let mut metadata = vec![
             MetadataLine::new("benchmark", &benchmark.name),
             MetadataLine::new("query", &query_def.name),
             MetadataLine::new("data structure", &ds_name),
@@ -977,12 +982,12 @@ where
         ];
         for rel in &relations {
             let h = rel.header();
-            lines.push(MetadataLine::new(
+            metadata.push(MetadataLine::new(
                 "relation",
                 format!("{:?} (arity {})", h.name(), h.arity()),
             ));
         }
-        write_metadata_block(&mut io::stderr(), "bench run metadata", &lines)?;
+        write_metadata_block(&mut io::stderr(), "bench run metadata", &metadata)?;
 
         let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_RUN_GROUP);
         let group_name = format!(
@@ -1069,7 +1074,7 @@ where
         ]);
         reports.push(BenchReport::new(
             BenchKind::Run,
-            &lines,
+            &metadata,
             axes,
             criterion_groups,
         ));
@@ -1130,13 +1135,20 @@ fn run_benchmark_hash<H: HashStrategy>(
     // `hash_join` borrows from this map per query invocation so each
     // Criterion iteration doesn't re-allocate wrappers. Insertion /
     // space metrics below still need the relation handles, so the
-    // borrow goes through `named.values()` rather than the consumed
-    // `relations` vector.
-    let mut named: HashMap<String, HashTrie<H>> = HashMap::new();
+    // borrow goes through `relations_by_name.values()` rather than the
+    // consumed `relations` vector.
+    let mut relations_by_name: HashMap<String, HashTrie<H>> = HashMap::new();
     for rel in relations {
-        named.insert(rel.header().name().to_string(), rel);
+        relations_by_name.insert(rel.header().name().to_string(), rel);
     }
 
+    // `ds_name`/`algo_name` are `Debug`-derived strings for the DS and
+    // algorithm enums. These are a STABLE external contract, not throwaway
+    // debug output: they become the report's identity axes and the on-disk
+    // `target/criterion/{group}` names (the group_name below embeds them).
+    // Changing the `Debug` output would silently repartition prior
+    // benchmark measurements. See the same pattern in `run_benchmark`,
+    // `run_ds_bench`, and the `bench join` arm.
     let ds_name = format!("{:?}", indexstructure);
     let algo_name = format!("{:?}", algorithm);
 
@@ -1144,7 +1156,10 @@ fn run_benchmark_hash<H: HashStrategy>(
         .iter()
         .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
 
-    let total_tuples: usize = named.values().map(|r| r.collect_tuples().len()).sum();
+    let total_tuples: usize = relations_by_name
+        .values()
+        .map(|r| r.collect_tuples().len())
+        .sum();
 
     let optimiser_impl = optimiser.instantiate();
 
@@ -1156,20 +1171,20 @@ fn run_benchmark_hash<H: HashStrategy>(
                 anyhow::anyhow!("Failed to parse query '{}': {:?}", query_def.query, e)
             })?;
 
-        let mut lines = vec![
+        let mut metadata = vec![
             MetadataLine::new("benchmark", &benchmark.name),
             MetadataLine::new("query", &query_def.name),
             MetadataLine::new("data structure", &ds_name),
             MetadataLine::new("algorithm", &algo_name),
         ];
-        for rel in named.values() {
+        for rel in relations_by_name.values() {
             let h = rel.header();
-            lines.push(MetadataLine::new(
+            metadata.push(MetadataLine::new(
                 "relation",
                 format!("{:?} (arity {})", h.name(), h.arity()),
             ));
         }
-        write_metadata_block(&mut io::stderr(), "bench run metadata", &lines)?;
+        write_metadata_block(&mut io::stderr(), "bench run metadata", &metadata)?;
 
         let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_RUN_GROUP);
         let group_name = format!(
@@ -1184,7 +1199,7 @@ fn run_benchmark_hash<H: HashStrategy>(
             let mut group = criterion.benchmark_group(&group_name);
 
             if metrics.contains(&Metric::Insertion) {
-                let tuples_and_headers: Vec<_> = named
+                let tuples_and_headers: Vec<_> = relations_by_name
                     .values()
                     .map(|r| (r.header().clone(), r.collect_tuples()))
                     .collect();
@@ -1211,7 +1226,13 @@ fn run_benchmark_hash<H: HashStrategy>(
                 group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || join_query.clone(),
-                        |q| hash_join::<HashTrie<H>, H>(&named, q, optimiser_impl.as_ref()),
+                        |q| {
+                            hash_join::<HashTrie<H>, H>(
+                                &relations_by_name,
+                                q,
+                                optimiser_impl.as_ref(),
+                            )
+                        },
                         criterion::BatchSize::SmallInput,
                     );
                 });
@@ -1229,7 +1250,7 @@ fn run_benchmark_hash<H: HashStrategy>(
         if metrics.contains(&Metric::Space) {
             let mut criterion = build_space_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
-            for rel in named.values() {
+            for rel in relations_by_name.values() {
                 let rel_name = rel.header().name().to_string();
                 let function = format!("space/{}", rel_name);
                 criterion_groups.push(add_space_bench(&mut group, &group_name, function, rel));
@@ -1250,17 +1271,17 @@ fn run_benchmark_hash<H: HashStrategy>(
             ("tuples".to_string(), serde_json::json!(total_tuples)),
         ]);
         // Standard optimization axes: merge in dimensions emitted by the DS.
-        // Every `HashTrie<H>` in `named` shares the same `H`, so any
-        // value's `optimization_axes()` produces the canonical
+        // Every `HashTrie<H>` in `relations_by_name` shares the same `H`, so
+        // any value's `optimization_axes()` produces the canonical
         // `ds_layout_*` set for this run. The `ds_*` prefix convention
         // (see `kermit_iters::HasOptimizationAxes`) guarantees no
         // collision with the base axes assembled above.
-        if let Some(rel) = named.values().next() {
+        if let Some(rel) = relations_by_name.values().next() {
             axes.extend(rel.optimization_axes());
         }
         reports.push(BenchReport::new(
             BenchKind::Run,
-            &lines,
+            &metadata,
             axes,
             criterion_groups,
         ));
@@ -1322,7 +1343,7 @@ fn resolve_benchmarks(
 ) -> anyhow::Result<Vec<BenchmarkDefinition>> {
     let root = workspace_root();
     let cache =
-        kermit_bench::cache::base_cache_dir().unwrap_or_else(|_| PathBuf::from("/tmp/no-cache"));
+        kermit_bench::cache::base_cache_dir().unwrap_or_else(|_| PathBuf::from(NO_CACHE_FALLBACK));
     if all {
         kermit_bench::discovery::load_all_benchmarks_with_cache(&root, &cache)
             .context("Failed to load benchmarks")
@@ -1365,7 +1386,7 @@ fn main() -> anyhow::Result<()> {
             | BenchSubcommand::List => {
                 let root = workspace_root();
                 let cache = kermit_bench::cache::base_cache_dir()
-                    .unwrap_or_else(|_| PathBuf::from("/tmp/no-cache"));
+                    .unwrap_or_else(|_| PathBuf::from(NO_CACHE_FALLBACK));
                 let workspace_defs: std::collections::HashMap<String, BenchmarkDefinition> =
                     kermit_bench::discovery::load_all_benchmarks(&root)?
                         .into_iter()
@@ -1582,7 +1603,7 @@ fn main() -> anyhow::Result<()> {
                 for benchmark in &materialized {
                     for &ds in &indexstructures {
                         for &algo in &algorithms {
-                            let mut chunk = match ds {
+                            let mut cell_reports = match ds {
                                 | IndexStructure::TreeTrie => run_benchmark::<kermit_ds::TreeTrie>(
                                     benchmark,
                                     ds,
@@ -1651,7 +1672,7 @@ fn main() -> anyhow::Result<()> {
                                     }
                                 },
                             };
-                            reports.append(&mut chunk);
+                            reports.append(&mut cell_reports);
                         }
                     }
                 }

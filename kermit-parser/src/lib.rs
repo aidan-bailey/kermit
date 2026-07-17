@@ -65,8 +65,22 @@ fn ident(input: &mut &str) -> PResult<String> {
     take_while(1.., |c: char| c.is_ascii_alphabetic()).parse_next(input)?;
     take_while(0.., |c: char| c.is_ascii_alphanumeric() || c == '_').parse_next(input)?;
     let end = *input;
+    // winnow advances `*input` past the bytes it consumes, so `start` and `end`
+    // point into the same buffer; the pre/post length delta is exactly the
+    // consumed identifier span.
     let len = start.len() - end.len();
     Ok(start[..len].to_string())
+}
+
+/// Returns true when `input` begins with a lone `_` not followed by an
+/// identifier character (an anonymous placeholder, not a `_`-prefixed name).
+fn is_bare_underscore(input: &str) -> bool {
+    input.starts_with('_')
+        && (input.len() == 1
+            || !input
+                .chars()
+                .nth(1)
+                .is_some_and(|c| c.is_ascii_alphanumeric()))
 }
 
 fn comma(input: &mut &str) -> PResult<char> { delimited(ws, ',', ws).parse_next(input) }
@@ -75,13 +89,7 @@ fn dot(input: &mut &str) -> PResult<char> { delimited(ws, '.', ws).parse_next(in
 
 // ---------- term / predicate ----------
 fn term(input: &mut &str) -> PResult<Term> {
-    if input.starts_with('_')
-        && (input.len() == 1
-            || !input
-                .chars()
-                .nth(1)
-                .is_some_and(|c| c.is_ascii_alphanumeric()))
-    {
+    if is_bare_underscore(input) {
         let _ = '_'.parse_next(input)?;
         return Ok(Term::Placeholder);
     }

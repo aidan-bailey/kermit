@@ -6,7 +6,7 @@
 //! output staging — no `bwrap` involvement.
 //!
 //! Pipeline stages 4–6 (partition, parquet, translate) run after entailment
-//! and live in `crate::pipeline`.
+//! and live in `crate::lubm::pipeline::process_artifacts`.
 
 pub mod driver;
 pub mod entailment;

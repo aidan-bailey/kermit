@@ -88,8 +88,8 @@ fn enumerate<IT: HashTrieIterator>(
         return;
     }
 
-    let i_join = &variable_to_iter_map[i];
-    if i_join.is_empty() {
+    let participating = &variable_to_iter_map[i];
+    if participating.is_empty() {
         return; // no relation carries this variable
     }
 
@@ -97,7 +97,7 @@ fn enumerate<IT: HashTrieIterator>(
     // successfully opened so we can match `up` calls on early return.
     let mut opened = 0;
     let mut descend_ok = true;
-    for &idx in i_join {
+    for &idx in participating {
         if iters[idx].open() {
             opened += 1;
         } else {
@@ -107,23 +107,23 @@ fn enumerate<IT: HashTrieIterator>(
     }
 
     if descend_ok {
-        let i_scan = *i_join
+        let scan_idx = *participating
             .iter()
             .min_by_key(|&&idx| iters[idx].size())
-            .expect("i_join non-empty");
+            .expect("participating non-empty");
 
-        while !iters[i_scan].at_end() {
-            let h = iters[i_scan]
+        while !iters[scan_idx].at_end() {
+            let scan_hash = iters[scan_idx]
                 .key()
                 .expect("scan iterator not at end => key Some");
 
-            // Probe the other iterators in i_join for this hash.
+            // Probe the other participating iterators for this hash.
             let mut all_match = true;
-            for &idx in i_join {
-                if idx == i_scan {
+            for &idx in participating {
+                if idx == scan_idx {
                     continue;
                 }
-                if !iters[idx].lookup(h) {
+                if !iters[idx].lookup(scan_hash) {
                     all_match = false;
                     break;
                 }
@@ -140,13 +140,13 @@ fn enumerate<IT: HashTrieIterator>(
                 );
             }
 
-            iters[i_scan].next();
+            iters[scan_idx].next();
         }
     }
 
     // Ascend back to the parent depth, matching the descend count so
     // partial-open failures are symmetric.
-    for &idx in &i_join[..opened] {
+    for &idx in &participating[..opened] {
         let _ = iters[idx].up();
     }
 }

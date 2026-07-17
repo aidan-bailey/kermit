@@ -6,6 +6,10 @@
 
 use {crate::error::BenchError, std::collections::HashSet};
 
+/// Number of canonical LUBM queries (`q1`..`q14`, paper Appendix A). The domain
+/// constant lives here so the accepted range and its error messages agree.
+const LUBM_QUERY_COUNT: u32 = 14;
+
 /// A benchmark definition loaded from a YAML file.
 ///
 /// A benchmark is either *static* — `relations` and `queries` are populated
@@ -341,9 +345,10 @@ fn validate_generator(bench_name: &str, spec: &GeneratorSpec) -> Result<(), Benc
                 if qs.is_empty() {
                     return Err(BenchError::Invalid {
                         name: bench_name.to_string(),
-                        reason: "lubm generator queries list must be non-empty if provided (omit \
-                                 to run all 14)"
-                            .to_string(),
+                        reason: format!(
+                            "lubm generator queries list must be non-empty if provided (omit to \
+                             run all {LUBM_QUERY_COUNT})"
+                        ),
                     });
                 }
                 let mut seen = HashSet::new();
@@ -351,7 +356,9 @@ fn validate_generator(bench_name: &str, spec: &GeneratorSpec) -> Result<(), Benc
                     if !is_valid_lubm_query_name(q) {
                         return Err(BenchError::Invalid {
                             name: bench_name.to_string(),
-                            reason: format!("lubm generator query '{q}' is not one of q1..q14"),
+                            reason: format!(
+                                "lubm generator query '{q}' is not one of q1..q{LUBM_QUERY_COUNT}"
+                            ),
                         });
                     }
                     if !seen.insert(q) {
@@ -378,7 +385,7 @@ fn is_valid_lubm_query_name(name: &str) -> bool {
     if rest.len() > 1 && rest.starts_with('0') {
         return false;
     }
-    matches!(rest.parse::<u32>(), Ok(n) if (1..=14).contains(&n))
+    matches!(rest.parse::<u32>(), Ok(n) if (1..=LUBM_QUERY_COUNT).contains(&n))
 }
 
 /// Returns true if `name` is safe to use as a cache subdir component.
