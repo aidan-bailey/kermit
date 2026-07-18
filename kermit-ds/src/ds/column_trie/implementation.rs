@@ -144,27 +144,30 @@ impl ColumnTrie {
     /// after placing the key; the insert / append cases hand back the
     /// new `interval_index` for the next layer.
     ///
-    /// Returns `true` iff the tuple was not already present — i.e. at
-    /// least one layer took an insert/append/empty-push branch rather
-    /// than the equality branch. A duplicate tuple matches an existing
-    /// key at every layer and this returns `false`.
+    /// Returns `true` iff the tuple was newly inserted — i.e. at least one
+    /// layer took an insert/append/empty-push branch rather than the equality
+    /// branch. A duplicate tuple matches an existing key at every layer and
+    /// this returns `false`.
     fn internal_insert(&mut self, tuple: &[usize]) -> bool {
         let arity = self.header().arity();
         let mut interval_index = 0;
-        let mut all_matched = true;
+        // Set once any layer places a key rather than matching an existing
+        // one. Tracked positively (vs. accumulating "all matched" and negating)
+        // so the return value reads directly.
+        let mut created = false;
         for (layer_i, &k) in tuple.iter().enumerate() {
             let is_last_layer = layer_i == arity - 1;
             let (step, matched_existing) =
                 self.step_layer(layer_i, k, interval_index, is_last_layer);
-            all_matched &= matched_existing;
+            created |= !matched_existing;
             match step {
-                | LayerStep::Stop => return !all_matched,
+                | LayerStep::Stop => return created,
                 | LayerStep::Recurse {
                     next_interval_index,
                 } => interval_index = next_interval_index,
             }
         }
-        !all_matched
+        created
     }
 
     /// Inserts `k` at `layer_i` within the parent group selected by
@@ -255,8 +258,9 @@ enum LayerStep {
     /// parent group is the new key) and when the key was already
     /// present (the next layer's parent group is the existing key).
     Recurse {
-        /// Index of the just-inserted key within `self.layers[layer_i].data`,
-        /// which becomes the parent-group key for layer `layer_i + 1`.
+        /// Index within `self.layers[layer_i].data` of the key — whether
+        /// freshly inserted or matched as already present — that becomes the
+        /// parent-group key for layer `layer_i + 1`.
         next_interval_index: usize,
     },
 }

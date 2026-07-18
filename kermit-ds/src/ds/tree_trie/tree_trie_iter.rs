@@ -9,13 +9,18 @@ use {
 /// # Position model
 ///
 /// `stack` holds `(node, sibling_index)` pairs from root to current depth;
-/// `stack.last()` is the node we are currently positioned on.
-/// `sibling_idx` mirrors the sibling index of the deepest stack entry —
-/// kept as a separate field so [`next`](LinearIterator::next) and
-/// [`seek`](LinearIterator::seek) can advance it without re-popping. To
-/// list the *siblings* of the current node we read the children of the
-/// parent: `stack[len - 2]` for depth ≥ 2, or [`TreeTrie::children`] for
-/// depth 1.
+/// `stack.last()` is the node we are currently positioned on. To list the
+/// *siblings* of the current node we read the children of the parent:
+/// `stack[len - 2]` for depth ≥ 2, or [`TreeTrie::children`] for depth 1.
+///
+/// `sibling_idx` is the authoritative cursor within the current sibling
+/// list. It is **not** redundant with the deepest stack entry's index: when
+/// the cursor advances past the last sibling, `sibling_idx` becomes
+/// `siblings.len()` (past-end) while the stack entry keeps pointing at the
+/// last *valid* node — so [`open`](TrieIterator::open) still descends into
+/// that node's children after [`at_end`](LinearIterator::at_end), the
+/// descent LFTJ relies on. Folding the cursor into the stack entry would
+/// lose that past-end state.
 ///
 /// Compare to [`ColumnTrieIter`](super::super::column_trie::ColumnTrie):
 /// where `ColumnTrieIter` carries three integer coordinates over flat
@@ -23,7 +28,9 @@ use {
 /// stack.
 #[derive(IntoTrieIter)]
 struct TreeTrieIter<'a> {
-    /// Sibling index of the deepest stack entry (the current position).
+    /// Cursor within the current sibling list; may sit one past the last
+    /// sibling (past-end). See the type-level docs for why this is not the
+    /// same as the deepest stack entry's index.
     sibling_idx: usize,
     /// The trie being iterated.
     trie: &'a TreeTrie,
@@ -69,8 +76,13 @@ impl LinearIterator for TreeTrieIter<'_> {
             }
             self.sibling_idx += 1;
             if let Some(node) = siblings.get(self.sibling_idx) {
-                self.stack.pop();
-                self.stack.push((node, self.sibling_idx));
+                // Update the deepest stack entry in place — same node/index the
+                // pop-then-push idiom produced, without the churn.
+                let top = self
+                    .stack
+                    .last_mut()
+                    .expect("stack non-empty when siblings() is Some");
+                *top = (node, self.sibling_idx);
                 return Some(node.key());
             }
         }
@@ -107,9 +119,12 @@ impl LinearIterator for TreeTrieIter<'_> {
                 if self.at_end() {
                     false
                 } else {
-                    self.stack.pop();
-                    self.stack
-                        .push((&siblings[self.sibling_idx], self.sibling_idx));
+                    // Update the deepest stack entry in place (see `next`).
+                    let top = self
+                        .stack
+                        .last_mut()
+                        .expect("stack non-empty when siblings() is Some");
+                    *top = (&siblings[self.sibling_idx], self.sibling_idx);
                     true
                 }
             }

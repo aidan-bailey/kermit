@@ -74,7 +74,7 @@ impl<V> HashTable<V> {
             match &self.buckets[idx] {
                 | None => return None,
                 | Some(entry) if entry.hash == hash => {
-                    return self.buckets[idx].as_mut().map(|e| &mut e.value);
+                    return self.value_at_mut(idx);
                 },
                 | Some(_) => idx = (idx + 1) % cap,
             }
@@ -90,10 +90,15 @@ impl<V> HashTable<V> {
         let cap = self.buckets.len();
         let start = self.bucket_index(hash);
         let mut idx = start;
+        // Pre-resize probe: this loop must both detect an *existing* entry
+        // (return it, no insert) and locate the first empty slot. It is
+        // bounded by `cap` for safety, though the 0.7 load factor guarantees
+        // an empty bucket exists. Breaking on `None` leaves `idx` at that
+        // empty slot.
         for _ in 0..cap {
             match &self.buckets[idx] {
                 | Some(entry) if entry.hash == hash => {
-                    return self.buckets[idx].as_mut().map(|e| &mut e.value).unwrap();
+                    return self.value_at_mut(idx).unwrap();
                 },
                 | Some(_) => idx = (idx + 1) % cap,
                 | None => break,
@@ -107,6 +112,10 @@ impl<V> HashTable<V> {
             self.grow();
             let cap = self.buckets.len();
             let mut idx = self.bucket_index(hash);
+            // Post-resize probe: reaching here proves the hash is absent (the
+            // loop above broke on `None`), so this only needs to find an empty
+            // slot — no equality check. Unbounded because the just-doubled
+            // table certainly has room.
             loop {
                 match &self.buckets[idx] {
                     | None => {
@@ -115,7 +124,7 @@ impl<V> HashTable<V> {
                             value: default(),
                         });
                         self.len += 1;
-                        return self.buckets[idx].as_mut().map(|e| &mut e.value).unwrap();
+                        return self.value_at_mut(idx).unwrap();
                     },
                     | Some(_) => idx = (idx + 1) % cap,
                 }
@@ -126,7 +135,7 @@ impl<V> HashTable<V> {
             value: default(),
         });
         self.len += 1;
-        self.buckets[idx].as_mut().map(|e| &mut e.value).unwrap()
+        self.value_at_mut(idx).unwrap()
     }
 
     /// Double capacity and rehash all entries. Called by
@@ -187,6 +196,11 @@ impl<V> HashTable<V> {
         self.buckets
             .get(idx)
             .and_then(|slot| slot.as_ref().map(|e| &e.value))
+    }
+
+    /// Mutable reference to the value at bucket `idx`, or `None` if empty.
+    fn value_at_mut(&mut self, idx: usize) -> Option<&mut V> {
+        self.buckets[idx].as_mut().map(|e| &mut e.value)
     }
 
     /// Hash at bucket `idx`, or `None` if empty.

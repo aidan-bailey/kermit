@@ -49,8 +49,16 @@ pub struct HashTrie<H: HashStrategy = SipHashStrategy> {
 }
 
 impl<H: HashStrategy> HashTrie<H> {
+    /// Whether a node at `depth` is the leaf level, i.e. the last attribute.
+    /// Written `depth + 1 == arity` rather than `depth == arity - 1` to avoid
+    /// the `usize` underflow at `arity == 0`.
+    fn is_leaf_depth(depth: usize, arity: usize) -> bool { depth + 1 == arity }
+
     /// Construct the root node appropriate for `arity` — Inner for arity ≥ 2,
-    /// Leaf for arity = 1.
+    /// Leaf for arity = 1. (The root sits at depth 0, so it is a leaf exactly
+    /// when `is_leaf_depth(0, arity)`; `arity <= 1` matches that for every
+    /// supported arity and additionally treats the unsupported nullary case
+    /// as a leaf.)
     fn make_root(arity: usize) -> HashTrieNode {
         if arity <= 1 {
             HashTrieNode::new_leaf()
@@ -101,7 +109,9 @@ impl<H: HashStrategy> HashTrie<H> {
         match node {
             | HashTrieNode::Inner(table) => {
                 let child = table.entry_or_insert_with(hash, || {
-                    if depth + 1 == arity - 1 {
+                    // The child lives at `depth + 1`; it is the leaf when that
+                    // is the last attribute.
+                    if Self::is_leaf_depth(depth + 1, arity) {
                         HashTrieNode::new_leaf()
                     } else {
                         HashTrieNode::new_inner()

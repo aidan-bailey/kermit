@@ -189,14 +189,14 @@ impl TrieIterator for ColumnTrieIter<'_> {
         // `open`). To position the iterator we need to find which parent
         // interval owns this data index — i.e. the largest `i` such that
         // `parent.interval[i] <= data_index`. The interval array is sorted
-        // ascending and starts at 0, so this lookup always succeeds.
+        // ascending and starts at 0, so `partition_point` counts the entries
+        // `<= data_index` (at least one, since `interval[0] == 0`) and the
+        // owning index is that count minus one.
         let data_index = self.interval_i;
-        for (i, &start_index) in parent_layer.intervals().iter().enumerate() {
-            if data_index < start_index {
-                break;
-            }
-            self.interval_i = i;
-        }
+        self.interval_i = parent_layer
+            .intervals()
+            .partition_point(|&start_index| start_index <= data_index)
+            - 1;
 
         let parent_start = parent_layer.intervals()[self.interval_i];
         self.interval_slice = Some(parent_layer.child_data(self.interval_i));

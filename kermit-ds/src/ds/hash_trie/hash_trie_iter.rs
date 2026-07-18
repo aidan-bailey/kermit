@@ -40,23 +40,6 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
         }
     }
 
-    /// Return the bucket-array length for a node (used for at-end checks).
-    fn node_capacity(node: &HashTrieNode) -> usize {
-        match node {
-            | HashTrieNode::Inner(t) => t.buckets_len(),
-            | HashTrieNode::Leaf(t) => t.buckets_len(),
-        }
-    }
-
-    /// Find the first occupied bucket index in a node, starting from
-    /// `start`. Returns the index, or `node.capacity()` if none exists.
-    fn first_occupied_from(node: &HashTrieNode, start: usize) -> usize {
-        match node {
-            | HashTrieNode::Inner(t) => t.next_occupied(start),
-            | HashTrieNode::Leaf(t) => t.next_occupied(start),
-        }
-    }
-
     /// Return the current bucket's child node, if any. Only meaningful when
     /// the deepest node is `Inner` and its bucket index is occupied.
     fn current_inner_child(&self) -> Option<&'a HashTrieNode> {
@@ -71,28 +54,22 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
 impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
     fn key(&self) -> Option<u64> {
         let &(node, idx) = self.stack.last()?;
-        match node {
-            | HashTrieNode::Inner(t) => t.hash_at(idx),
-            | HashTrieNode::Leaf(t) => t.hash_at(idx),
-        }
+        node.hash_at(idx)
     }
 
     fn next(&mut self) -> Option<u64> {
         let (node, idx) = {
             let entry = self.stack.last_mut()?;
-            let cap = Self::node_capacity(entry.0);
+            let cap = entry.0.buckets_len();
             // Start from idx + 1 (paper's "advance"), find next occupied or
             // past-end.
-            entry.1 = Self::first_occupied_from(entry.0, entry.1 + 1);
+            entry.1 = entry.0.next_occupied(entry.1 + 1);
             if entry.1 >= cap {
                 return None;
             }
             (entry.0, entry.1)
         };
-        match node {
-            | HashTrieNode::Inner(t) => t.hash_at(idx),
-            | HashTrieNode::Leaf(t) => t.hash_at(idx),
-        }
+        node.hash_at(idx)
     }
 
     fn lookup(&mut self, hash: u64) -> bool {
@@ -100,18 +77,14 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
             | Some(e) => e,
             | None => return false,
         };
-        let idx = match entry.0 {
-            | HashTrieNode::Inner(t) => t.index_of(hash),
-            | HashTrieNode::Leaf(t) => t.index_of(hash),
-        };
-        match idx {
+        match entry.0.index_of(hash) {
             | Some(i) => {
                 entry.1 = i;
                 true
             },
             | None => {
                 // Move to past-end; the caller's loop should exit.
-                entry.1 = Self::node_capacity(entry.0);
+                entry.1 = entry.0.buckets_len();
                 false
             },
         }
@@ -119,17 +92,14 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
 
     fn size(&self) -> usize {
         match self.stack.last() {
-            | Some(&(node, _)) => match node {
-                | HashTrieNode::Inner(t) => t.len(),
-                | HashTrieNode::Leaf(t) => t.len(),
-            },
+            | Some(&(node, _)) => node.len(),
             | None => 0,
         }
     }
 
     fn at_end(&self) -> bool {
         match self.stack.last() {
-            | Some(&(node, idx)) => idx >= Self::node_capacity(node),
+            | Some(&(node, idx)) => idx >= node.buckets_len(),
             | None => true,
         }
     }
@@ -142,18 +112,18 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
         if self.stack.is_empty() {
             // Descend into the root via the crate-visible accessor.
             let root = self.trie.root();
-            let start = Self::first_occupied_from(root, 0);
+            let start = root.next_occupied(0);
             self.stack.push((root, start));
-            return start < Self::node_capacity(root);
+            return start < root.buckets_len();
         }
         // Descend into the child node at the current bucket.
         let child = match self.current_inner_child() {
             | Some(c) => c,
             | None => return false, // already at leaf or current bucket empty
         };
-        let start = Self::first_occupied_from(child, 0);
+        let start = child.next_occupied(0);
         self.stack.push((child, start));
-        start < Self::node_capacity(child)
+        start < child.buckets_len()
     }
 
     fn up(&mut self) -> bool { self.stack.pop().is_some() }
