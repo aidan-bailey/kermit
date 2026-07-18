@@ -55,6 +55,18 @@ pub trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
 /// ([`triejoin_open`](Self::triejoin_open) /
 /// [`triejoin_up`](Self::triejoin_up)). All other code reads — never moves —
 /// iterators across this boundary.
+///
+/// ## Why this deviates from the paper
+///
+/// Veldhuizen's pseudocode keeps one persistent leapfrog per level over
+/// freely-aliased iterator arrays; a depth change just switches which array
+/// is consulted. Safe Rust cannot alias owned iterators across levels, so
+/// this implementation instead encodes "which iterators participate at the
+/// current depth" by *moving* them between the idle pool and the inner
+/// [`LeapfrogJoinIter`] (which owns its `Vec` of iterators). The observable
+/// join semantics are identical; the cost is a drain/refill and a fresh
+/// inner leapfrog per depth change, accepted to keep the implementation in
+/// safe, ownership-idiomatic Rust.
 pub struct LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
@@ -221,6 +233,12 @@ where
         if self.depth == self.arity {
             return false;
         }
+        // Deviation from the paper's `triejoin-open` (open iterators first,
+        // then increment depth): here the iterators participating at the new
+        // depth are *selected* by `update_iters`, which is keyed on the new
+        // depth — so the increment and swap must come before the opens can
+        // happen at all. See the state-machine note on the struct for why
+        // participation is per-depth rather than the paper's all-iterators.
         self.depth += 1;
         self.update_iters();
         for iter in &mut self.leapfrog.iterators {
