@@ -145,6 +145,15 @@ kermit bench ds \
 kermit bench ds -r data.csv -i column-trie -m space
 ```
 
+The opt-in `end-to-end` metric (not in the default set) times one build plus
+K full-trie iterations in a single Criterion body; K comes from
+`--queries-per-build` (default 1) and is stamped into the report's
+`queries_per_build` axis:
+
+```sh
+kermit bench ds -r data.csv -i tree-trie -m end-to-end --queries-per-build 4
+```
+
 ### Run a named benchmark (`bench run`)
 
 Each YAML in `benchmarks/` declares one or more named queries plus the
@@ -175,6 +184,18 @@ all three. To benchmark only space:
 
 ```sh
 kermit bench run triangle -i tree-trie -a leapfrog-triejoin -m space
+```
+
+The opt-in `end-to-end` metric times one database build **plus K query
+executions** per Criterion sample (`T = build + K × query`, fresh build every
+sample). K comes from `--queries-per-build` (default 1) and lands in the
+report's `queries_per_build` axis — see `BENCHMARKING.md` § "What you can
+measure" for when to use it and why it is not the sum of `insertion` and
+`iteration`:
+
+```sh
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin \
+  -m end-to-end --queries-per-build 4
 ```
 
 It also accepts `--optimiser <lexicographic|cardinality>` (default:

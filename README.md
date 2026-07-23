@@ -81,7 +81,8 @@ Useful flags:
 - `--query <NAME>` — run a single named query from the benchmark (default: all queries).
 - `--all` — run every benchmark in `benchmarks/`.
 - `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the three compatible pairings above are supported; `-i all` / `-a all` does **not** yet skip incompatible combinations, so run one valid pair at a time.
-- `--metrics insertion iteration space` — pick which metrics to measure (default: all three).
+- `--metrics insertion iteration space` — pick which metrics to measure (default: all three). The opt-in `end-to-end` metric times one database build plus K query executions per Criterion sample (`T = build + K × query`); it is never in the default set.
+- `--queries-per-build <K>` — K for the `end-to-end` metric (default 1); recorded in the report's `queries_per_build` axis. Ignored by other metrics.
 - `--optimiser <lexicographic|cardinality>` — pick the query optimiser planning each join's variable ordering (default: `lexicographic`). The choice is recorded in the JSON report's `optimiser` axis, making optimiser comparisons a third benchmark dimension alongside `-i`/`-a`.
 - `--force` — regenerate a declarative-generator benchmark when its cached `meta.json` no longer matches the YAML's `spec_hash` (otherwise drift is a hard error).
 
@@ -119,11 +120,11 @@ kermit bench ds \
   --metrics insertion iteration space
 ```
 
-`--metrics` defaults to `insertion iteration space`.
+`--metrics` defaults to `insertion iteration space`; the opt-in `end-to-end` metric (with `--queries-per-build <K>`) times one build plus K full-trie iterations per Criterion sample.
 
 ### Join benchmark (`bench join`)
 
-Benchmark end-to-end join execution on data files:
+Benchmark join execution (query only, against a pre-built database) on data files:
 
 ```sh
 kermit bench join \
@@ -133,7 +134,7 @@ kermit bench join \
   --indexstructure tree-trie
 ```
 
-Supported index structures (for `bench join`): `tree-trie`, `column-trie` — both via `leapfrog-triejoin`. (`hash-trie` is only available through `bench run`/`bench ds`, paired with `hash-triejoin`.) Supported metrics: `insertion`, `iteration`, `space`.
+Supported index structures (for `bench join`): `tree-trie`, `column-trie` — both via `leapfrog-triejoin`. (`hash-trie` is only available through `bench run`/`bench ds`, paired with `hash-triejoin`.) Supported metrics (on `bench ds`/`bench run`): `insertion`, `iteration`, `space`, plus the opt-in `end-to-end`.
 
 ### JSON reports for tooling
 

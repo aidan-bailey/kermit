@@ -30,6 +30,7 @@ _OPT_AXIS_RE = re.compile(r"^(ds|algo)_(layout_|config_|build_mode\b)")
 _AXIS_STR_KEYS: tuple[str, ...] = (
     "data_structure",
     "algorithm",
+    "optimiser",
     "query",
     "benchmark",
     "relation_path",
@@ -39,6 +40,7 @@ _AXIS_INT_KEYS: tuple[str, ...] = (
     "arity",
     "relations",
     "relation_bytes",
+    "queries_per_build",
 )
 
 # Fixed core columns (ordered). Optimization-axis tail and stat columns are

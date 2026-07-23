@@ -151,3 +151,37 @@ def test_discover_opt_columns(fixture_opt_tree) -> None:
 def test_load_samples_unchanged(fixture_tree) -> None:
     s = load_samples(fixture_tree["paths"], fixture_tree["criterion_root"])
     assert {"criterion_group", "criterion_function", "per_iter_ns"} <= set(s.columns)
+
+
+# --- end-to-end metric: phase + queries_per_build/optimiser axes ---
+
+
+def test_end_to_end_phase_populated(fixture_end_to_end_tree) -> None:
+    df = load(fixture_end_to_end_tree["paths"], fixture_end_to_end_tree["criterion_root"])
+    # Every fixture function ends in the end_to_end token, so no NA phases.
+    assert set(df.phase.dropna().unique()) == {"end_to_end"}
+    assert not df.phase.isna().any()
+
+
+def test_queries_per_build_column(fixture_end_to_end_tree) -> None:
+    df = load(fixture_end_to_end_tree["paths"], fixture_end_to_end_tree["criterion_root"])
+    assert "queries_per_build" in df.columns
+    assert str(df.queries_per_build.dtype) == "Int64"
+    assert set(df.queries_per_build.dropna().unique()) == {1, 4}
+
+
+def test_optimiser_axis_reaches_frame(fixture_end_to_end_tree) -> None:
+    # The optimiser axis has been written by the Rust side since 93be8f5;
+    # it must surface as a string column, not be silently dropped.
+    df = load(fixture_end_to_end_tree["paths"], fixture_end_to_end_tree["criterion_root"])
+    assert "optimiser" in df.columns
+    assert set(df.optimiser.dropna().unique()) == {"lexicographic"}
+
+
+def test_queries_per_build_na_for_legacy_reports(fixture_tree) -> None:
+    # Reports that predate the end-to-end metric carry no queries_per_build
+    # axis; the column must still exist (NA-filled), so old and new report
+    # sets concatenate cleanly in one frame.
+    df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    assert "queries_per_build" in df.columns
+    assert df.queries_per_build.isna().all()

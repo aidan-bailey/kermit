@@ -101,6 +101,12 @@ enum Metric {
     Insertion,
     Iteration,
     Space,
+    /// Build + K × query in one timed body (`T = build + K × query`), with
+    /// K set by `--queries-per-build`. Deliberately NOT in the `--metrics`
+    /// default set: a fresh build per Criterion sample
+    /// (`BatchSize::PerIteration`) is expensive, and existing invocations
+    /// must keep their historical measurement surface.
+    EndToEnd,
 }
 
 /// CLI-side selector for `--indexstructure`. Wraps [`IndexStructure`] with
@@ -299,7 +305,8 @@ enum BenchSubcommand {
         output: Option<PathBuf>,
     },
 
-    /// Benchmark an index structure (insertion, iteration, space)
+    /// Benchmark an index structure (insertion, iteration, space,
+    /// end-to-end)
     Ds {
         /// Input relation data path (single file)
         #[arg(short, long, value_name = "PATH", required = true)]
@@ -315,7 +322,8 @@ enum BenchSubcommand {
         )]
         indexstructure: IndexStructureSelector,
 
-        /// Metrics to benchmark
+        /// Metrics to benchmark (`end-to-end` is opt-in, not in the default
+        /// set)
         #[arg(
             short,
             long,
@@ -324,6 +332,12 @@ enum BenchSubcommand {
             default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
         )]
         metrics: Vec<Metric>,
+
+        /// Full-trie iterations per build in the `end-to-end` metric's
+        /// timed body (T = build + K × iteration). Ignored by other
+        /// metrics.
+        #[arg(long, value_name = "K", default_value = "1", value_parser = clap::value_parser!(u32).range(1..))]
+        queries_per_build: u32,
 
         #[command(flatten)]
         layout: LayoutChoices,
@@ -362,7 +376,8 @@ enum BenchSubcommand {
         #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
         optimiser: Optimiser,
 
-        /// Metrics to benchmark
+        /// Metrics to benchmark (`end-to-end` is opt-in, not in the default
+        /// set)
         #[arg(
             short,
             long,
@@ -371,6 +386,11 @@ enum BenchSubcommand {
             default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
         )]
         metrics: Vec<Metric>,
+
+        /// Query executions per database build in the `end-to-end` metric's
+        /// timed body (T = build + K × query). Ignored by other metrics.
+        #[arg(long, value_name = "K", default_value = "1", value_parser = clap::value_parser!(u32).range(1..))]
+        queries_per_build: u32,
 
         /// Regenerate generator-driven benchmarks if their cached
         /// `meta.json` spec_hash differs from the current YAML's params.
@@ -662,8 +682,8 @@ where
 }
 
 fn run_ds_bench<R>(
-    relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric], group_name: &str,
-    bench_args: &BenchArgs,
+    relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric],
+    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
@@ -686,20 +706,23 @@ where
     let ds_name = format!("{:?}", indexstructure);
     let relation_bytes = fs::metadata(relation_path).map(|m| m.len()).unwrap_or(0);
 
-    let metadata = vec![
+    let mut metadata = vec![
         MetadataLine::new("data structure", &ds_name),
         MetadataLine::new("relation", relation_path.display()),
         MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
         MetadataLine::new("tuples", tuples.len()),
         MetadataLine::new("arity", header.arity()),
     ];
+    if metrics.contains(&Metric::EndToEnd) {
+        metadata.push(MetadataLine::new("queries per build", queries_per_build));
+    }
     write_metadata_block(&mut io::stderr(), "bench ds metadata", &metadata)?;
 
     let mut criterion_groups = Vec::new();
 
     let has_time_metrics = metrics
         .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
 
     if has_time_metrics {
         let mut criterion = build_time_criterion(bench_args);
@@ -735,117 +758,24 @@ where
             });
         }
 
-        group.finish();
-        criterion.final_summary();
-    }
-
-    if metrics.contains(&Metric::Space) {
-        let n = tuples.len();
-        let mut criterion = build_space_criterion(bench_args);
-        let mut group = criterion.benchmark_group(group_name);
-        group.throughput(criterion::Throughput::Elements(n as u64));
-        let function = format!("{ds_name}/space");
-        criterion_groups.push(add_space_bench(&mut group, group_name, function, &relation));
-        group.finish();
-        criterion.final_summary();
-    }
-
-    let axes = BTreeMap::from([
-        ("data_structure".to_string(), serde_json::json!(ds_name)),
-        (
-            "relation_path".to_string(),
-            serde_json::json!(relation_path.display().to_string()),
-        ),
-        (
-            "relation_bytes".to_string(),
-            serde_json::json!(relation_bytes),
-        ),
-        ("tuples".to_string(), serde_json::json!(tuples.len())),
-        ("arity".to_string(), serde_json::json!(header.arity())),
-    ]);
-    Ok(BenchReport::new(
-        BenchKind::Ds,
-        &metadata,
-        axes,
-        criterion_groups,
-    ))
-}
-
-/// Hash-family analogue of [`run_ds_bench`]. Mirrors its structure but
-/// uses [`HashTrie::collect_tuples`] to recover the tuple vector from
-/// the loaded relation (the hash-trie iter family yields hashes, not
-/// raw values, so the standard `trie_iter()` path doesn't apply) and
-/// times the same `from_tuples` insertion / `collect_tuples` iteration
-/// closures. Lives as a parallel function rather than a generic
-/// extension because `HashTrieIterable` is a distinct trait family from
-/// `TrieIterable` (see CLAUDE.md → Key Trait Hierarchy).
-///
-/// Generic over `H: HashStrategy` — Rust forbids defaults on free-function
-/// type parameters, so the CLI dispatch site picks `H` by matching on
-/// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
-fn run_ds_bench_hash<H: HashStrategy>(
-    relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric], group_name: &str,
-    bench_args: &BenchArgs,
-) -> anyhow::Result<BenchReport> {
-    let extension = relation_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let relation: HashTrie<H> = match extension.to_lowercase().as_str() {
-        | "csv" => HashTrie::<H>::from_csv(relation_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
-        | "parquet" => HashTrie::<H>::from_parquet(relation_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
-        | _ => anyhow::bail!("Unsupported file extension: {extension}"),
-    };
-
-    let tuples: Vec<Vec<usize>> = relation.collect_tuples();
-    let header = relation.header().clone();
-
-    let ds_name = format!("{:?}", indexstructure);
-    let relation_bytes = fs::metadata(relation_path).map(|m| m.len()).unwrap_or(0);
-
-    let metadata = vec![
-        MetadataLine::new("data structure", &ds_name),
-        MetadataLine::new("relation", relation_path.display()),
-        MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
-        MetadataLine::new("tuples", tuples.len()),
-        MetadataLine::new("arity", header.arity()),
-    ];
-    write_metadata_block(&mut io::stderr(), "bench ds metadata", &metadata)?;
-
-    let mut criterion_groups = Vec::new();
-
-    let has_time_metrics = metrics
-        .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
-
-    if has_time_metrics {
-        let mut criterion = build_time_criterion(bench_args);
-        let mut group = criterion.benchmark_group(group_name);
-
-        if metrics.contains(&Metric::Insertion) {
-            let insertion_tuples = tuples.clone();
-            let insertion_header = header.clone();
-            let function = format!("{ds_name}/insertion");
+        if metrics.contains(&Metric::EndToEnd) {
+            let e2e_tuples = tuples.clone();
+            let e2e_header = header.clone();
+            let function = format!("{ds_name}/end_to_end");
+            // PerIteration: a fresh build per sample is the point of this
+            // metric — batching would amortise away the construction cost
+            // whose interaction with traversal is under measurement.
             group.bench_function(&function, |b| {
                 b.iter_batched(
-                    || (insertion_header.clone(), insertion_tuples.clone()),
-                    |(h, t)| HashTrie::<H>::from_tuples(h, t),
-                    criterion::BatchSize::SmallInput,
+                    || (e2e_header.clone(), e2e_tuples.clone()),
+                    |(h, t)| {
+                        let built = R::from_tuples(h, t);
+                        for _ in 0..queries_per_build {
+                            std::hint::black_box(built.trie_iter().into_iter().collect::<Vec<_>>());
+                        }
+                    },
+                    criterion::BatchSize::PerIteration,
                 );
-            });
-            criterion_groups.push(CriterionGroupRef {
-                group: group_name.to_string(),
-                function,
-                metric: ReportMetric::Time,
-            });
-        }
-
-        if metrics.contains(&Metric::Iteration) {
-            let function = format!("{ds_name}/iteration");
-            group.bench_function(&function, |b| {
-                b.iter(|| relation.collect_tuples());
             });
             criterion_groups.push(CriterionGroupRef {
                 group: group_name.to_string(),
@@ -882,6 +812,170 @@ fn run_ds_bench_hash<H: HashStrategy>(
         ("tuples".to_string(), serde_json::json!(tuples.len())),
         ("arity".to_string(), serde_json::json!(header.arity())),
     ]);
+    // Only meaningful when the end-to-end metric ran; omitting it otherwise
+    // keeps historical invocations' reports unchanged.
+    if metrics.contains(&Metric::EndToEnd) {
+        axes.insert(
+            "queries_per_build".to_string(),
+            serde_json::json!(queries_per_build),
+        );
+    }
+    Ok(BenchReport::new(
+        BenchKind::Ds,
+        &metadata,
+        axes,
+        criterion_groups,
+    ))
+}
+
+/// Hash-family analogue of [`run_ds_bench`]. Mirrors its structure but
+/// uses [`HashTrie::collect_tuples`] to recover the tuple vector from
+/// the loaded relation (the hash-trie iter family yields hashes, not
+/// raw values, so the standard `trie_iter()` path doesn't apply) and
+/// times the same `from_tuples` insertion / `collect_tuples` iteration
+/// closures. Lives as a parallel function rather than a generic
+/// extension because `HashTrieIterable` is a distinct trait family from
+/// `TrieIterable` (see CLAUDE.md → Key Trait Hierarchy).
+///
+/// Generic over `H: HashStrategy` — Rust forbids defaults on free-function
+/// type parameters, so the CLI dispatch site picks `H` by matching on
+/// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
+fn run_ds_bench_hash<H: HashStrategy>(
+    relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric],
+    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
+) -> anyhow::Result<BenchReport> {
+    let extension = relation_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let relation: HashTrie<H> = match extension.to_lowercase().as_str() {
+        | "csv" => HashTrie::<H>::from_csv(relation_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
+        | "parquet" => HashTrie::<H>::from_parquet(relation_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
+        | _ => anyhow::bail!("Unsupported file extension: {extension}"),
+    };
+
+    let tuples: Vec<Vec<usize>> = relation.collect_tuples();
+    let header = relation.header().clone();
+
+    let ds_name = format!("{:?}", indexstructure);
+    let relation_bytes = fs::metadata(relation_path).map(|m| m.len()).unwrap_or(0);
+
+    let mut metadata = vec![
+        MetadataLine::new("data structure", &ds_name),
+        MetadataLine::new("relation", relation_path.display()),
+        MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
+        MetadataLine::new("tuples", tuples.len()),
+        MetadataLine::new("arity", header.arity()),
+    ];
+    if metrics.contains(&Metric::EndToEnd) {
+        metadata.push(MetadataLine::new("queries per build", queries_per_build));
+    }
+    write_metadata_block(&mut io::stderr(), "bench ds metadata", &metadata)?;
+
+    let mut criterion_groups = Vec::new();
+
+    let has_time_metrics = metrics
+        .iter()
+        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
+
+    if has_time_metrics {
+        let mut criterion = build_time_criterion(bench_args);
+        let mut group = criterion.benchmark_group(group_name);
+
+        if metrics.contains(&Metric::Insertion) {
+            let insertion_tuples = tuples.clone();
+            let insertion_header = header.clone();
+            let function = format!("{ds_name}/insertion");
+            group.bench_function(&function, |b| {
+                b.iter_batched(
+                    || (insertion_header.clone(), insertion_tuples.clone()),
+                    |(h, t)| HashTrie::<H>::from_tuples(h, t),
+                    criterion::BatchSize::SmallInput,
+                );
+            });
+            criterion_groups.push(CriterionGroupRef {
+                group: group_name.to_string(),
+                function,
+                metric: ReportMetric::Time,
+            });
+        }
+
+        if metrics.contains(&Metric::Iteration) {
+            let function = format!("{ds_name}/iteration");
+            group.bench_function(&function, |b| {
+                b.iter(|| relation.collect_tuples());
+            });
+            criterion_groups.push(CriterionGroupRef {
+                group: group_name.to_string(),
+                function,
+                metric: ReportMetric::Time,
+            });
+        }
+
+        if metrics.contains(&Metric::EndToEnd) {
+            let e2e_tuples = tuples.clone();
+            let e2e_header = header.clone();
+            let function = format!("{ds_name}/end_to_end");
+            // PerIteration: a fresh build per sample is the point of this
+            // metric — batching would amortise away the construction cost
+            // whose interaction with traversal is under measurement.
+            group.bench_function(&function, |b| {
+                b.iter_batched(
+                    || (e2e_header.clone(), e2e_tuples.clone()),
+                    |(h, t)| {
+                        let built = HashTrie::<H>::from_tuples(h, t);
+                        for _ in 0..queries_per_build {
+                            std::hint::black_box(built.collect_tuples());
+                        }
+                    },
+                    criterion::BatchSize::PerIteration,
+                );
+            });
+            criterion_groups.push(CriterionGroupRef {
+                group: group_name.to_string(),
+                function,
+                metric: ReportMetric::Time,
+            });
+        }
+
+        group.finish();
+        criterion.final_summary();
+    }
+
+    if metrics.contains(&Metric::Space) {
+        let n = tuples.len();
+        let mut criterion = build_space_criterion(bench_args);
+        let mut group = criterion.benchmark_group(group_name);
+        group.throughput(criterion::Throughput::Elements(n as u64));
+        let function = format!("{ds_name}/space");
+        criterion_groups.push(add_space_bench(&mut group, group_name, function, &relation));
+        group.finish();
+        criterion.final_summary();
+    }
+
+    let mut axes = BTreeMap::from([
+        ("data_structure".to_string(), serde_json::json!(ds_name)),
+        (
+            "relation_path".to_string(),
+            serde_json::json!(relation_path.display().to_string()),
+        ),
+        (
+            "relation_bytes".to_string(),
+            serde_json::json!(relation_bytes),
+        ),
+        ("tuples".to_string(), serde_json::json!(tuples.len())),
+        ("arity".to_string(), serde_json::json!(header.arity())),
+    ]);
+    // Only meaningful when the end-to-end metric ran; omitting it otherwise
+    // keeps historical invocations' reports unchanged.
+    if metrics.contains(&Metric::EndToEnd) {
+        axes.insert(
+            "queries_per_build".to_string(),
+            serde_json::json!(queries_per_build),
+        );
+    }
     // Standard optimization axes: merge in dimensions emitted by the DS.
     // The `ds_layout_*` / `ds_config_*` / `ds_build_mode` naming convention
     // (see `kermit_iters::HasOptimizationAxes`) guarantees no collision
@@ -895,9 +989,11 @@ fn run_ds_bench_hash<H: HashStrategy>(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_benchmark<R>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
-    optimiser: Optimiser, metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
+    optimiser: Optimiser, metrics: &[Metric], queries_per_build: u32, query_filter: Option<&str>,
+    bench_args: &BenchArgs,
 ) -> anyhow::Result<Vec<BenchReport>>
 where
     R: Relation + TrieIterable + HeapSize + 'static,
@@ -957,7 +1053,7 @@ where
 
     let has_time_metrics = metrics
         .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
 
     // Sum across relations: scaling plots key off this as the workload's
     // total input size. One trie walk per relation is cheap vs the bench itself.
@@ -980,6 +1076,9 @@ where
             MetadataLine::new("data structure", &ds_name),
             MetadataLine::new("algorithm", &algo_name),
         ];
+        if metrics.contains(&Metric::EndToEnd) {
+            metadata.push(MetadataLine::new("queries per build", queries_per_build));
+        }
         for rel in &relations {
             let h = rel.header();
             metadata.push(MetadataLine::new(
@@ -1045,6 +1144,60 @@ where
                 });
             }
 
+            if metrics.contains(&Metric::EndToEnd) {
+                // Snapshot each relation's identity + tuples once. The timed
+                // body rebuilds the database through the same DB-trait path
+                // the untimed build above used (`add_relation` +
+                // `add_keys_batch`), so the build term is the one the
+                // `iteration` metric's database actually paid — NOT the
+                // presorting `from_tuples` path the `insertion` metric times.
+                let build_inputs: Vec<(String, usize, Vec<Vec<usize>>)> = relations
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.header().name().to_string(),
+                            r.header().arity(),
+                            r.trie_iter().into_iter().collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect();
+
+                // PerIteration: a fresh build per sample is the point of this
+                // metric — batching would amortise away the construction cost
+                // whose interaction with query traversal is under measurement.
+                group.bench_function("end_to_end", |b| {
+                    b.iter_batched(
+                        || {
+                            (build_inputs.clone(), vec![
+                                join_query.clone();
+                                queries_per_build as usize
+                            ])
+                        },
+                        |(inputs, queries)| {
+                            let mut fresh_db = instantiate_database(
+                                indexstructure,
+                                algorithm,
+                                optimiser.instantiate(),
+                                benchmark.name.clone(),
+                            );
+                            for (name, arity, tuples) in inputs {
+                                fresh_db.add_relation(&name, arity);
+                                fresh_db.add_keys_batch(&name, tuples);
+                            }
+                            for q in queries {
+                                std::hint::black_box(fresh_db.join(q));
+                            }
+                        },
+                        criterion::BatchSize::PerIteration,
+                    );
+                });
+                criterion_groups.push(CriterionGroupRef {
+                    group: group_name.clone(),
+                    function: "end_to_end".to_string(),
+                    metric: ReportMetric::Time,
+                });
+            }
+
             group.finish();
             criterion.final_summary();
         }
@@ -1061,7 +1214,7 @@ where
             criterion.final_summary();
         }
 
-        let axes = BTreeMap::from([
+        let mut axes = BTreeMap::from([
             ("benchmark".to_string(), serde_json::json!(benchmark.name)),
             ("query".to_string(), serde_json::json!(query_def.name)),
             ("data_structure".to_string(), serde_json::json!(ds_name)),
@@ -1072,6 +1225,14 @@ where
             ),
             ("tuples".to_string(), serde_json::json!(total_tuples)),
         ]);
+        // Only meaningful when the end-to-end metric ran; omitting it
+        // otherwise keeps historical invocations' reports unchanged.
+        if metrics.contains(&Metric::EndToEnd) {
+            axes.insert(
+                "queries_per_build".to_string(),
+                serde_json::json!(queries_per_build),
+            );
+        }
         reports.push(BenchReport::new(
             BenchKind::Run,
             &metadata,
@@ -1093,9 +1254,11 @@ where
 /// Generic over `H: HashStrategy` — Rust forbids defaults on free-function
 /// type parameters, so the CLI dispatch site picks `H` by matching on
 /// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
+#[allow(clippy::too_many_arguments)]
 fn run_benchmark_hash<H: HashStrategy>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
-    optimiser: Optimiser, metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
+    optimiser: Optimiser, metrics: &[Metric], queries_per_build: u32, query_filter: Option<&str>,
+    bench_args: &BenchArgs,
 ) -> anyhow::Result<Vec<BenchReport>> {
     let queries: Vec<&kermit_bench::QueryDefinition> = match query_filter {
         | Some(name) => {
@@ -1154,7 +1317,7 @@ fn run_benchmark_hash<H: HashStrategy>(
 
     let has_time_metrics = metrics
         .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration));
+        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
 
     let total_tuples: usize = relations_by_name
         .values()
@@ -1177,6 +1340,9 @@ fn run_benchmark_hash<H: HashStrategy>(
             MetadataLine::new("data structure", &ds_name),
             MetadataLine::new("algorithm", &algo_name),
         ];
+        if metrics.contains(&Metric::EndToEnd) {
+            metadata.push(MetadataLine::new("queries per build", queries_per_build));
+        }
         for rel in relations_by_name.values() {
             let h = rel.header();
             metadata.push(MetadataLine::new(
@@ -1243,6 +1409,53 @@ fn run_benchmark_hash<H: HashStrategy>(
                 });
             }
 
+            if metrics.contains(&Metric::EndToEnd) {
+                // Snapshot each relation's header + tuples once. The hash
+                // family has no DB-trait path — the CLI's real pipeline is a
+                // keyed map handed to the `hash_join` free function — so the
+                // timed body rebuilds exactly that map via `from_tuples`.
+                let build_inputs: Vec<_> = relations_by_name
+                    .values()
+                    .map(|r| (r.header().clone(), r.collect_tuples()))
+                    .collect();
+
+                // PerIteration: a fresh build per sample is the point of this
+                // metric — batching would amortise away the construction cost
+                // whose interaction with query traversal is under measurement.
+                group.bench_function("end_to_end", |b| {
+                    b.iter_batched(
+                        || {
+                            (build_inputs.clone(), vec![
+                                join_query.clone();
+                                queries_per_build as usize
+                            ])
+                        },
+                        |(inputs, queries)| {
+                            let mut fresh_relations: HashMap<String, HashTrie<H>> = HashMap::new();
+                            for (header, tuples) in inputs {
+                                fresh_relations.insert(
+                                    header.name().to_string(),
+                                    HashTrie::<H>::from_tuples(header, tuples),
+                                );
+                            }
+                            for q in queries {
+                                std::hint::black_box(hash_join::<HashTrie<H>, H>(
+                                    &fresh_relations,
+                                    q,
+                                    optimiser_impl.as_ref(),
+                                ));
+                            }
+                        },
+                        criterion::BatchSize::PerIteration,
+                    );
+                });
+                criterion_groups.push(CriterionGroupRef {
+                    group: group_name.clone(),
+                    function: "end_to_end".to_string(),
+                    metric: ReportMetric::Time,
+                });
+            }
+
             group.finish();
             criterion.final_summary();
         }
@@ -1270,6 +1483,14 @@ fn run_benchmark_hash<H: HashStrategy>(
             ),
             ("tuples".to_string(), serde_json::json!(total_tuples)),
         ]);
+        // Only meaningful when the end-to-end metric ran; omitting it
+        // otherwise keeps historical invocations' reports unchanged.
+        if metrics.contains(&Metric::EndToEnd) {
+            axes.insert(
+                "queries_per_build".to_string(),
+                serde_json::json!(queries_per_build),
+            );
+        }
         // Standard optimization axes: merge in dimensions emitted by the DS.
         // Every `HashTrie<H>` in `relations_by_name` shares the same `H`, so
         // any value's `optimization_axes()` produces the canonical
@@ -1518,22 +1739,42 @@ fn run_bench_join(
 /// the `--ds-layout-hasher` CLI flag (`hasher`).
 fn dispatch_ds_bench(
     ds: IndexStructure, hasher: HasherChoice, relation: &Path, metrics: &[Metric],
-    group_name: &str, bench_args: &BenchArgs,
+    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
     match ds {
-        | IndexStructure::TreeTrie => {
-            run_ds_bench::<kermit_ds::TreeTrie>(relation, ds, metrics, group_name, bench_args)
-        },
-        | IndexStructure::ColumnTrie => {
-            run_ds_bench::<kermit_ds::ColumnTrie>(relation, ds, metrics, group_name, bench_args)
-        },
+        | IndexStructure::TreeTrie => run_ds_bench::<kermit_ds::TreeTrie>(
+            relation,
+            ds,
+            metrics,
+            queries_per_build,
+            group_name,
+            bench_args,
+        ),
+        | IndexStructure::ColumnTrie => run_ds_bench::<kermit_ds::ColumnTrie>(
+            relation,
+            ds,
+            metrics,
+            queries_per_build,
+            group_name,
+            bench_args,
+        ),
         | IndexStructure::HashTrie => match hasher {
-            | HasherChoice::Sip => {
-                run_ds_bench_hash::<SipHashStrategy>(relation, ds, metrics, group_name, bench_args)
-            },
-            | HasherChoice::Fxhash => {
-                run_ds_bench_hash::<FxHashStrategy>(relation, ds, metrics, group_name, bench_args)
-            },
+            | HasherChoice::Sip => run_ds_bench_hash::<SipHashStrategy>(
+                relation,
+                ds,
+                metrics,
+                queries_per_build,
+                group_name,
+                bench_args,
+            ),
+            | HasherChoice::Fxhash => run_ds_bench_hash::<FxHashStrategy>(
+                relation,
+                ds,
+                metrics,
+                queries_per_build,
+                group_name,
+                bench_args,
+            ),
         },
     }
 }
@@ -1542,7 +1783,7 @@ fn dispatch_ds_bench(
 /// single relation file and write the reports.
 fn run_ds_bench_command(
     bench_args: &BenchArgs, relation: PathBuf, indexstructure: IndexStructureSelector,
-    metrics: Vec<Metric>, layout: LayoutChoices,
+    metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices,
 ) -> anyhow::Result<()> {
     validate_layout_choices(indexstructure, &layout)?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
@@ -1553,6 +1794,7 @@ fn run_ds_bench_command(
             layout.hash_trie_hasher_resolved(),
             &relation,
             &metrics,
+            queries_per_build,
             group_name,
             bench_args,
         )?;
@@ -1578,7 +1820,8 @@ fn run_ds_bench_command(
 #[allow(clippy::too_many_arguments)]
 fn dispatch_run_bench(
     ds: IndexStructure, hasher: HasherChoice, benchmark: &BenchmarkDefinition, algo: JoinAlgorithm,
-    optimiser: Optimiser, metrics: &[Metric], query_filter: Option<&str>, bench_args: &BenchArgs,
+    optimiser: Optimiser, metrics: &[Metric], queries_per_build: u32, query_filter: Option<&str>,
+    bench_args: &BenchArgs,
 ) -> anyhow::Result<Vec<BenchReport>> {
     match ds {
         | IndexStructure::TreeTrie => run_benchmark::<kermit_ds::TreeTrie>(
@@ -1587,6 +1830,7 @@ fn dispatch_run_bench(
             algo,
             optimiser,
             metrics,
+            queries_per_build,
             query_filter,
             bench_args,
         ),
@@ -1596,6 +1840,7 @@ fn dispatch_run_bench(
             algo,
             optimiser,
             metrics,
+            queries_per_build,
             query_filter,
             bench_args,
         ),
@@ -1606,6 +1851,7 @@ fn dispatch_run_bench(
                 algo,
                 optimiser,
                 metrics,
+                queries_per_build,
                 query_filter,
                 bench_args,
             ),
@@ -1615,6 +1861,7 @@ fn dispatch_run_bench(
                 algo,
                 optimiser,
                 metrics,
+                queries_per_build,
                 query_filter,
                 bench_args,
             ),
@@ -1634,7 +1881,7 @@ fn dispatch_run_bench(
 fn run_bench_run_command(
     bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, optimiser: Optimiser,
-    metrics: Vec<Metric>, force: bool, layout: LayoutChoices,
+    metrics: Vec<Metric>, queries_per_build: u32, force: bool, layout: LayoutChoices,
 ) -> anyhow::Result<()> {
     validate_layout_choices(indexstructure, &layout)?;
     // Reject incompatible (index-structure, algorithm) pairs up front. `All`
@@ -1668,6 +1915,7 @@ fn run_bench_run_command(
                     algo,
                     optimiser,
                     &metrics,
+                    queries_per_build,
                     query.as_deref(),
                     bench_args,
                 )?;
@@ -1863,8 +2111,16 @@ fn main() -> anyhow::Result<()> {
                 relation,
                 indexstructure,
                 metrics,
+                queries_per_build,
                 layout,
-            } => run_ds_bench_command(&bench_args, relation, indexstructure, metrics, layout)?,
+            } => run_ds_bench_command(
+                &bench_args,
+                relation,
+                indexstructure,
+                metrics,
+                queries_per_build,
+                layout,
+            )?,
 
             | BenchSubcommand::Run {
                 name,
@@ -1874,6 +2130,7 @@ fn main() -> anyhow::Result<()> {
                 algorithm,
                 optimiser,
                 metrics,
+                queries_per_build,
                 force,
                 layout,
             } => run_bench_run_command(
@@ -1885,6 +2142,7 @@ fn main() -> anyhow::Result<()> {
                 algorithm,
                 optimiser,
                 metrics,
+                queries_per_build,
                 force,
                 layout,
             )?,

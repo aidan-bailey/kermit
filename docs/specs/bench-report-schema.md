@@ -79,6 +79,7 @@ semantics).
 | `tuples`         | `ds`, `run`              | number (usize)   | `ds`: tuples in the single relation. `run`: total summed across all of the benchmark's relations (workload input size). |
 | `arity`          | `ds`                     | number (usize)   | Relation arity. |
 | `relations`      | `join`                   | number (usize)   | Count of relation files passed to `bench join`. |
+| `queries_per_build` | `ds`, `run`           | number (u32)     | K for the `end-to-end` metric (`T = build + K × query`), from `--queries-per-build` (default 1). Emitted **only** when `--metrics` includes `end-to-end`, so historical invocations' reports are byte-identical. K never appears in the Criterion function id — the id is the bare `end_to_end` token (prefixed `{ds}/` for `bench ds`). |
 
 ## Resolving a `CriterionGroupRef` to filesystem paths
 
@@ -176,3 +177,4 @@ bump — the `axes` field is an open map.
 | 1       | 2026-04-19 | Initial schema (`schema_version`, `kind`, `metadata`, `criterion_groups`). |
 | 2       | 2026-05-04 | Added structured `axes: BTreeMap<String, serde_json::Value>` for downstream tooling. `metadata` retained as the human-readable surface. |
 | 2 (no bump) | 2026-07-08 | Added the `optimiser` conventional `axes` key (query optimiser that planned the join's variable ordering). Additive — `axes` is an open map, so `schema_version` stays `2`. |
+| 2 (no bump) | 2026-07-23 | Added the `queries_per_build` conventional `axes` key and the `end_to_end` time-metric function id (`--metrics end-to-end`). Additive — the key only appears when the metric is requested, so `schema_version` stays `2`. |

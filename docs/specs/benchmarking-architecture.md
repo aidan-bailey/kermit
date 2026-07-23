@@ -72,7 +72,8 @@ variable names).
 Benchmarks a single data structure on a single relation file.
 
 **Arguments:** `--relation` (single CSV/Parquet file), `--indexstructure`,
-`--metrics` (defaults to all three).
+`--metrics` (defaults to `insertion iteration space`; `end-to-end` is
+opt-in), `--queries-per-build` (K for the `end-to-end` metric, default 1).
 
 **Metrics:**
 
@@ -80,10 +81,13 @@ Benchmarks a single data structure on a single relation file.
 |--------|--------------|
 | `Insertion` | `R::from_tuples(header, tuples)` via Criterion `iter_batched` |
 | `Iteration` | `relation.trie_iter().into_iter().collect()` via Criterion `iter` |
+| `EndToEnd` | `R::from_tuples` then K full-trie iterations, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
 | `Space` | `R::from_tuples(...).heap_size_bytes()` via Criterion `iter_custom` with `SpaceMeasurement` |
 
 Each metric becomes a separate Criterion `bench_function`:
-`{ds_name}/insertion`, `{ds_name}/iteration`, `{ds_name}/space`.
+`{ds_name}/insertion`, `{ds_name}/iteration`, `{ds_name}/end_to_end`,
+`{ds_name}/space`. K is stamped into the report's `queries_per_build` axis
+(only when the metric is requested), never into the function id.
 
 ## `kermit bench run`
 
@@ -92,7 +96,9 @@ Benchmarks a named YAML workload from `benchmarks/`.
 **Arguments:** positional `name` or `--all`, optional `--query` (run only
 that named query within the workload), `--indexstructure`, `--algorithm`,
 optional `--optimiser` (defaults to `lexicographic`; no `all` sweep —
-enumerate values per run), `--metrics` (defaults to all three).
+enumerate values per run), `--metrics` (defaults to `insertion iteration
+space`; `end-to-end` is opt-in), `--queries-per-build` (K for the
+`end-to-end` metric, default 1).
 
 **Flow:**
 1. Resolve workload(s) via `resolve_benchmarks`, which uses
@@ -108,17 +114,31 @@ enumerate values per run), `--metrics` (defaults to all three).
 4. Load relations into a `DatabaseEngine` and as raw `R` values for the
    space metric.
 5. For each query in the workload (filtered by `--query` if set), run the
-   chosen metrics. `Insertion` and `Iteration` go through wall-clock
-   Criterion; `Space` goes through `SpaceMeasurement`.
+   chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
+   wall-clock Criterion; `Space` goes through `SpaceMeasurement`.
 
-**Function names:** `insertion`, `iteration`, and `space/{relation_name}`.
-Note that `bench run`'s `iteration` function is the bare string `iteration`,
-whereas `bench ds` prefixes the structure name (`{ds_name}/iteration`), so
-the two are *not* identical and a naive string match would not correlate
-them. External tooling should key off the JSON report's `metric` field
+`EndToEnd` is the only metric whose timed body spans the build→query
+boundary: each Criterion sample constructs a fresh database from the
+pre-loaded tuples **through the same pipeline as the untimed step-4 build**
+(`instantiate_database` + `add_relation` + `add_keys_batch` for the sorted
+family; a fresh `HashMap<String, HashTrie<H>>` via `from_tuples` handed to
+`hash_join` for the hash family) and then executes the query K times
+(`--queries-per-build`). `BatchSize::PerIteration` is deliberate — batching
+would amortise away the per-build cost the metric exists to measure. Because
+the sorted-family build path is `insert_all` (input order), the build term is
+*not* comparable with the `Insertion` metric, which times the presorting
+`from_tuples` path.
+
+**Function names:** `insertion`, `iteration`, `end_to_end`, and
+`space/{relation_name}`.
+Note that `bench run`'s time functions are the bare strings, whereas
+`bench ds` prefixes the structure name (`{ds_name}/iteration`), so the two
+are *not* identical and a naive string match would not correlate them.
+External tooling should key off the JSON report's `metric` field
 (`ReportMetric::Time`) rather than the function string; the underlying work
 also differs (trie traversal vs. join execution), though both record
-wall-clock time.
+wall-clock time. (`kermit-lab`'s `phase_of` relies on every time function id
+*ending* with its phase token — keep that invariant when adding phases.)
 
 ## YAML workload definitions
 

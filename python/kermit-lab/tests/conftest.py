@@ -231,6 +231,59 @@ def fixture_tree(tmp_path: Path) -> dict:
 
 
 @pytest.fixture
+def fixture_end_to_end_tree(tmp_path: Path) -> dict:
+    """Reports carrying the ``end_to_end`` phase plus the ``queries_per_build``
+    and ``optimiser`` axes.
+
+    2 DS × 2 K values × 2 sizes, one ``end_to_end`` criterion function each.
+    The function id ends with the bare phase token (K lives in the axes, not
+    the id) — mirroring what ``bench run --metrics end-to-end`` emits.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for ds in ("TreeTrie", "ColumnTrie"):
+        for k in (1, 4):
+            for n in (10, 100):
+                function = f"{ds}/triangle/{n}/k{k}/end_to_end"
+                point = 400.0 * n + 100.0 * n * k  # build + k × query, ns
+                fn_samples = [(i + 1, point * (i + 1)) for i in range(10)]
+                _write_function_dir(
+                    criterion_root,
+                    _FunctionSpec("run", function, "time", point, fn_samples),
+                )
+                paths.append(
+                    _write_report(
+                        reports_dir,
+                        f"run-{ds}-e2e-k{k}-{n}",
+                        kind="run",
+                        axes={
+                            "benchmark": "triangle",
+                            "query": "triangle",
+                            "data_structure": ds,
+                            "algorithm": "LeapfrogTriejoin",
+                            "optimiser": "lexicographic",
+                            "tuples": n,
+                            "queries_per_build": k,
+                        },
+                        metadata=[
+                            {"label": "data structure", "value": ds},
+                            {"label": "queries per build", "value": str(k)},
+                        ],
+                        groups=[("run", function, "time")],
+                    )
+                )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }
+
+
+@pytest.fixture
 def fixture_opt_tree(tmp_path: Path) -> dict:
     """HashTrie reports carrying optimization axes for ablation tests.
 

@@ -92,17 +92,20 @@ def load_reports(paths: Iterable[Path]) -> list[BenchReport]:
     return out
 
 
-TIME_PHASES: tuple[str, ...] = ("insertion", "iteration")
+TIME_PHASES: tuple[str, ...] = ("insertion", "iteration", "end_to_end")
 
 
 def phase_of(function_id: str) -> str | None:
-    """Return ``"insertion"`` / ``"iteration"`` if ``function_id`` encodes one.
+    """Return the time phase (``"insertion"`` / ``"iteration"`` /
+    ``"end_to_end"``) if ``function_id`` encodes one.
 
-    `bench ds` writes ``"{ds}/insertion"`` / ``"{ds}/iteration"``; `bench run`
-    writes the bare ``"insertion"`` / ``"iteration"``. Both end with the
-    phase token, so a final-segment check covers both. Space-metric
-    functions (``"space/{rel}"`` etc.) return None and are filtered out
-    by callers that only consume time-metric phases.
+    `bench ds` writes ``"{ds}/<phase>"``; `bench run` writes the bare
+    ``"<phase>"``. Both end with the phase token, so a final-segment check
+    covers both. (``end_to_end`` carries its K in the report's
+    ``queries_per_build`` axis, never in the function id, so the
+    final-segment rule holds for it too.) Space-metric functions
+    (``"space/{rel}"`` etc.) return None and are filtered out by callers
+    that only consume time-metric phases.
     """
     last = function_id.rsplit("/", 1)[-1]
     return last if last in TIME_PHASES else None

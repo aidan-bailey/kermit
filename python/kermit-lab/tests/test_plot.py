@@ -28,6 +28,19 @@ def test_bar_ablation_on_config_axis(fixture_opt_tree) -> None:
     plt.close(fig)
 
 
+def test_line_end_to_end_faceted_by_queries_per_build(fixture_end_to_end_tree) -> None:
+    # The acceptance shape for the end-to-end metric: T(scale, k) curves,
+    # one facet cell per K.
+    df = load(fixture_end_to_end_tree["paths"], fixture_end_to_end_tree["criterion_root"])
+    fig = plot(df, kind="line", x="tuples", y="time",
+               colour="data_structure", facet="queries_per_build", phase="end_to_end")
+    assert isinstance(fig, Figure)
+    # Fixture has K ∈ {1, 4} → exactly two populated facet cells.
+    visible = [ax for ax in fig.axes if ax.get_visible() and ax.has_data()]
+    assert len(visible) == 2
+    plt.close(fig)
+
+
 def test_facet_makes_one_axes_per_value(fixture_tree) -> None:
     df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
     fig = plot(df, kind="bar", x="data_structure", y="time",

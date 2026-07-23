@@ -102,6 +102,25 @@ def test_rejects_non_array_top_level(tmp_path: Path) -> None:
         load_reports([p])
 
 
+def test_phase_of_recognises_end_to_end() -> None:
+    from kermit_lab.loader import phase_of
+
+    # `bench run` writes the bare token; `bench ds` prefixes the DS name.
+    assert phase_of("end_to_end") == "end_to_end"
+    assert phase_of("TreeTrie/end_to_end") == "end_to_end"
+    # K is an axis, never a function-id segment — a trailing k-token must
+    # NOT parse as a phase.
+    assert phase_of("end_to_end/k4") is None
+
+
+def test_phase_of_existing_phases_unchanged() -> None:
+    from kermit_lab.loader import phase_of
+
+    assert phase_of("insertion") == "insertion"
+    assert phase_of("TreeTrie/iteration") == "iteration"
+    assert phase_of("space/edge") is None
+
+
 def test_axes_preserve_value_types(tmp_path: Path) -> None:
     p = tmp_path / "r.json"
     p.write_text(

@@ -35,24 +35,45 @@ comparative figures the thesis needs are assembled *across* runs in
 
 ## What you can measure
 
-`bench ds` and `bench run` accept `--metrics`, defaulting to all three
-(`insertion`, `iteration`, `space`). They fall into two families. (`bench join`
-is time-only and has no `--metrics` flag — it times the full query each
-iteration.)
+`bench ds` and `bench run` accept `--metrics`, defaulting to `insertion`,
+`iteration`, and `space` (the opt-in `end-to-end` phase is *not* in the
+default set). They fall into two families. (`bench join` is time-only and has
+no `--metrics` flag — it times the full query each iteration.)
 
-### Time — two phases
+### Time — three phases
 
-Time is split into two phases because they stress different things and a single
+Time is split into phases because they stress different things and a single
 "total" number hides which one dominates:
 
 | Phase | `--metrics` | What it times | When it matters |
 | --- | --- | --- | --- |
-| **Insertion** | `insertion` | Building the index from the input tuples (`insert`/`insert_all`) | Construction-heavy workloads; one-shot queries; comparing build cost of structures |
+| **Insertion** | `insertion` | Building the index from the input tuples (`from_tuples`, which presorts) | Construction-heavy workloads; one-shot queries; comparing build cost of structures |
 | **Iteration** | `iteration` | Running the join itself (`open`/`up`/`seek`/`next` traversal) | The worst-case-optimal join's actual cost; the headline number for query performance |
+| **End-to-end** | `end-to-end` | One database build **plus K query executions** in a single timed body (`T = build + K × query`, K from `--queries-per-build`, default 1) | Amortisation/crossover questions: which structure wins depends on how many queries run per build |
+
+The end-to-end phase exists because summing `insertion + K × iteration` after
+the fact assumes the phases are independent — precisely the assumption a
+build-then-query crossover study is testing (e.g. cache effects across the
+build→query boundary). Each Criterion sample therefore performs a *fresh*
+build (`BatchSize::PerIteration`) followed by K joins. Two caveats:
+
+- In `bench run`, the timed build goes through the real query pipeline
+  (`add_relation` + `add_keys_batch`, tuples in input order) — **not** the
+  presorting `from_tuples` path the `insertion` phase times. End-to-end
+  numbers are internally comparable across structures, but their build term
+  is not the `insertion` number.
+- K is recorded in the report's `queries_per_build` axis (and surfaces as a
+  DataFrame column), never in the Criterion function id.
 
 In `kermit-lab`, pick a phase with the `phase=` argument (default
 `"iteration"`, the join-execution phase). A scaling or bar plot mixes phases
-only if you ask it to — each figure is one phase.
+only if you ask it to — each figure is one phase. A crossover figure facets
+end-to-end curves by K:
+
+```python
+kl.plot(df, kind="line", x="tuples", y="time",
+        colour="data_structure", facet="queries_per_build", phase="end_to_end")
+```
 
 ### Space — deterministic by construction
 
