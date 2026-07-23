@@ -138,9 +138,9 @@ load them together:
 ```sh
 # two runs, same workload, different hasher → one ablation dataset
 kermit bench --report-json bench-runs/tri-sip.json \
-  run triangle -i hash-trie -a leapfrog-triejoin --ds-layout-hasher sip   --metrics iteration
+  run triangle -i hash-trie -a hash-triejoin --ds-layout-hasher sip    --metrics iteration
 kermit bench --report-json bench-runs/tri-fx.json \
-  run triangle -i hash-trie -a leapfrog-triejoin --ds-layout-hasher fxhash --metrics iteration
+  run triangle -i hash-trie -a hash-triejoin --ds-layout-hasher fxhash --metrics iteration
 ```
 
 ```python
