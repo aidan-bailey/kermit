@@ -512,28 +512,17 @@ fn cli_bench_ds_space_only() {
 
 #[test]
 fn cli_bench_run_writes_json_report() {
-    // Pre-populate a temporary cache dir with the edge relation as parquet so
-    // `bench run triangle` never needs to download anything.
+    // `triangle` declares its edge relation with `path:`, so the committed
+    // CSV is read in place and nothing is ever downloaded. The cache is still
+    // redirected to a temporary directory to keep the test hermetic against
+    // anything else that might write there.
     let n = CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp_cache = std::env::temp_dir().join(format!(
         "kermit_bench_run_cache_{}_{}",
         std::process::id(),
         n
     ));
-    let bench_cache = tmp_cache.join("kermit").join("benchmarks").join("triangle");
-    std::fs::create_dir_all(&bench_cache).expect("create tmp cache dir");
-    let edge_parquet = bench_cache.join("edge.parquet");
-    kermit_rdf::parquet::write_relation(
-        &kermit_rdf::partition::PartitionedRelation {
-            name: "edge".to_string(),
-            // Complete directed graph on 3 nodes (6 edges; 0↔1, 0↔2, 1↔2).
-            // Six tuples is small enough to bench fast; non-trivial enough
-            // for the triangle benchmark to produce a non-empty result.
-            tuples: vec![(0, 1), (1, 2), (2, 0), (0, 2), (2, 1), (1, 0)],
-        },
-        &edge_parquet,
-    )
-    .expect("write edge parquet");
+    std::fs::create_dir_all(&tmp_cache).expect("create tmp cache dir");
 
     let tmp_report = temp_report_path("run");
     let _ = std::fs::remove_file(&tmp_report);
@@ -596,13 +585,12 @@ fn cli_bench_run_writes_json_report() {
         axes["query"].is_string(),
         "axes.query should be a string identifier"
     );
-    // Tuple count assertion proves the pre-populated cache was actually
-    // used. If the XDG_CACHE_HOME redirect silently broke and the binary
-    // somehow obtained the relation from elsewhere (e.g. a real download
-    // succeeding), the count would not match our 6-tuple fixture.
+    // Tuple count pins the committed fixture: `benchmarks/data/triangle/
+    // edge.csv` holds 8 edges. If path resolution silently broke and the
+    // relation came from anywhere else, the count would not match.
     assert_eq!(
-        axes["tuples"], 6,
-        "should reflect the 6-tuple synthetic fixture",
+        axes["tuples"], 8,
+        "should reflect the committed 8-edge triangle fixture",
     );
 
     let groups = report["criterion_groups"]

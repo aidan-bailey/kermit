@@ -1,9 +1,10 @@
 //! On-disk cache for benchmark relation files.
 //!
-//! Relation files referenced by a [`BenchmarkDefinition`] are downloaded lazily
-//! into the platform cache directory under
+//! Relation files referenced by a [`BenchmarkDefinition`] via `url` are
+//! downloaded lazily into the platform cache directory under
 //! `<cache_dir>/kermit/benchmarks/<benchmark>/<relation>.parquet`. On Linux
-//! this resolves to `~/.cache/kermit/benchmarks/…`.
+//! this resolves to `~/.cache/kermit/benchmarks/…`. Relations referenced via
+//! `path` are committed in the workspace and bypass the cache entirely.
 //!
 //! [`ensure_cached`] is the entry point; [`clean_benchmark`] and [`clean_all`]
 //! remove cached files.
@@ -11,7 +12,7 @@
 use {
     crate::{definition::BenchmarkDefinition, error::BenchError},
     std::{
-        fs,
+        fs, io,
         path::{Path, PathBuf},
     },
 };
@@ -56,8 +57,14 @@ pub fn relation_cache_path(
 ///
 /// Returns [`BenchError::NoCacheDir`] if the platform cache directory cannot
 /// be determined.
+/// Relations committed in the repository are always "cached" — they are never
+/// fetched and occupy no cache entry — so a benchmark built entirely from
+/// local paths reports cached without touching the cache directory.
 pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
     for rel in &benchmark.relations {
+        if rel.is_local() {
+            continue;
+        }
         let path = relation_cache_path(&benchmark.name, &rel.name)?;
         if !path.exists() {
             return Ok(false);
@@ -66,28 +73,52 @@ pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
     Ok(true)
 }
 
-/// Ensures all relations for a benchmark are downloaded and cached.
+/// Resolves every relation of a benchmark to a readable file, fetching the
+/// ones that declare a `url` and are not yet cached.
 ///
-/// Returns paths to the cached files in the same order as the benchmark's
-/// relations list.
+/// Returns paths in the same order as the benchmark's relations list. A
+/// relation declaring `path` resolves to `workspace_root/<path>` and is never
+/// downloaded, copied, or cached — the committed file is read in place, so a
+/// benchmark built from local paths runs offline and on a cold cache.
 ///
 /// # Errors
 ///
 /// Returns a [`BenchError`] if any of the following occur:
 /// - [`BenchError::NoCacheDir`] — the platform cache directory is not
 ///   available.
-/// - [`BenchError::Io`] — the cache directory cannot be created, or a
-///   downloaded file cannot be written.
+/// - [`BenchError::Io`] — the cache directory cannot be created, a downloaded
+///   file cannot be written, or a declared local path does not exist.
 /// - [`BenchError::Download`] — an HTTP error occurred while fetching a
 ///   relation file.
-pub fn ensure_cached(benchmark: &BenchmarkDefinition) -> Result<Vec<PathBuf>, BenchError> {
+pub fn ensure_cached(
+    benchmark: &BenchmarkDefinition, workspace_root: &Path,
+) -> Result<Vec<PathBuf>, BenchError> {
     let mut paths = Vec::with_capacity(benchmark.relations.len());
 
     for rel in &benchmark.relations {
+        if let Some(local) = &rel.path {
+            let path = workspace_root.join(local);
+            if !path.exists() {
+                return Err(BenchError::Io(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "benchmark '{}' declares relation '{}' at '{}', which does not exist",
+                        benchmark.name,
+                        rel.name,
+                        path.display()
+                    ),
+                )));
+            }
+            paths.push(path);
+            continue;
+        }
+
         let path = relation_cache_path(&benchmark.name, &rel.name)?;
         if !path.exists() {
-            eprintln!("  downloading {} from {}...", rel.name, rel.url);
-            download_file(&rel.url, &path)?;
+            // `validate` guarantees the XOR, so a non-local relation has a url.
+            let url = rel.url.as_deref().unwrap_or_default();
+            eprintln!("  downloading {} from {url}...", rel.name);
+            download_file(url, &path)?;
         }
         paths.push(path);
     }
@@ -183,7 +214,8 @@ mod tests {
             description: String::new(),
             relations: vec![crate::definition::RelationSource {
                 name: "r".to_string(),
-                url: "http://x".to_string(),
+                url: Some("http://x".to_string()),
+                path: None,
             }],
             queries: vec![crate::definition::QueryDefinition {
                 name: "q".to_string(),

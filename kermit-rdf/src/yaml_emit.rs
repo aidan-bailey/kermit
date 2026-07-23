@@ -55,7 +55,14 @@ pub fn write_benchmark_yaml(
         .iter()
         .map(|name| RelationSource {
             name: (*name).clone(),
-            url: format!("{}/{}.parquet", inputs.base_url.trim_end_matches('/'), name),
+            // Generated benchmarks always emit fetchable URLs; `path` is for
+            // relations committed by hand alongside their YAML.
+            url: Some(format!(
+                "{}/{}.parquet",
+                inputs.base_url.trim_end_matches('/'),
+                name
+            )),
+            path: None,
         })
         .collect();
     let queries: Vec<QueryDefinition> = inputs

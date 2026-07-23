@@ -1,0 +1,32 @@
+# Edge relation for the `triangle` benchmark — a hand-built sanity workload.
+#
+# A directed graph on five vertices, small enough to verify the join result by
+# hand. The file stem (`edge`) is the relation name: the CSV loader takes the
+# relation's name from the filename and its attribute names from this header.
+#
+#   1 --> 2 --> 3
+#   |  \  |     ^
+#   |   \ v     |
+#   +--> 4 <----+           (drawn loosely; the edge list below is definitive)
+#   |    |
+#   +--> 5 <---+
+#
+# The query is  T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).
+# so a match needs all three of X->Y, Y->Z and X->Z. Four exist:
+#
+#   (1, 2, 3)   1->2, 2->3, 1->3
+#   (1, 2, 4)   1->2, 2->4, 1->4
+#   (1, 3, 5)   1->3, 3->5, 1->5
+#   (1, 4, 5)   1->4, 4->5, 1->5
+#
+# Near-misses that keep the example honest: 2->3->5 and 2->4->5 both close the
+# first two edges but lack the chord 2->5, so neither is a match.
+src,dst
+1,2
+1,3
+1,4
+1,5
+2,3
+2,4
+3,5
+4,5

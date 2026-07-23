@@ -990,6 +990,30 @@ fn run_ds_bench_hash<H: HashStrategy>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Loads a relation file, choosing the reader from the file extension.
+///
+/// `bench ds` takes an explicit `--relation` path and has always accepted both
+/// CSV and Parquet. `bench run` previously assumed Parquet, which held while
+/// every relation arrived through the download cache. A benchmark may now
+/// commit its relation file instead (`path:` in the YAML), and a small worked
+/// example is far more useful as readable CSV, so both routes dispatch alike.
+fn load_relation_file<R>(path: &Path) -> anyhow::Result<R>
+where
+    R: Relation,
+{
+    let extension = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match extension.as_str() {
+        | "csv" => R::from_csv(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
+        | "parquet" =>
+            R::from_parquet(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
+        | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
+    }
+}
+
 fn run_benchmark<R>(
     benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
     optimiser: Optimiser, metrics: &[Metric], queries_per_build: u32, query_filter: Option<&str>,
@@ -1022,7 +1046,7 @@ where
         | None => benchmark.queries.iter().collect(),
     };
 
-    let cached_paths = kermit_bench::cache::ensure_cached(benchmark)
+    let cached_paths = kermit_bench::cache::ensure_cached(benchmark, &workspace_root())
         .map_err(|e| anyhow::anyhow!("Failed to fetch benchmark data: {e}"))?;
 
     // Load each relation from disk exactly once. Populating `db` from these
@@ -1031,7 +1055,7 @@ where
     // workloads like WatDiv-scale-1000.
     let relations: Vec<R> = cached_paths
         .iter()
-        .map(|p| R::from_parquet(p).map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}")))
+        .map(|p| load_relation_file::<R>(p))
         .collect::<Result<_, _>>()?;
 
     let mut db = instantiate_database(
@@ -1284,14 +1308,12 @@ fn run_benchmark_hash<H: HashStrategy>(
         | None => benchmark.queries.iter().collect(),
     };
 
-    let cached_paths = kermit_bench::cache::ensure_cached(benchmark)
+    let cached_paths = kermit_bench::cache::ensure_cached(benchmark, &workspace_root())
         .map_err(|e| anyhow::anyhow!("Failed to fetch benchmark data: {e}"))?;
 
     let relations: Vec<HashTrie<H>> = cached_paths
         .iter()
-        .map(|p| {
-            HashTrie::<H>::from_parquet(p).map_err(|e| anyhow::anyhow!("Failed to load {p:?}: {e}"))
-        })
+        .map(|p| load_relation_file::<HashTrie<H>>(p))
         .collect::<Result<_, _>>()?;
 
     // Move every loaded relation into a keyed map by its declared name.
@@ -1634,7 +1656,7 @@ fn run_fetch(name: Option<String>) -> anyhow::Result<()> {
     let benchmarks = resolve_benchmarks(&name, name.is_none())?;
     for benchmark in &benchmarks {
         eprintln!("Fetching {}...", benchmark.name);
-        kermit_bench::cache::ensure_cached(benchmark)
+        kermit_bench::cache::ensure_cached(benchmark, &workspace_root())
             .map_err(|e| anyhow::anyhow!("Failed to fetch {}: {e}", benchmark.name))?;
         eprintln!("  Done.");
     }
@@ -2313,7 +2335,8 @@ mod tests {
             description: "test".to_string(),
             relations: vec![kermit_bench::RelationSource {
                 name: "edge".to_string(),
-                url: "file:///nope".to_string(),
+                url: Some("https://example.invalid/nope".to_string()),
+                path: None,
             }],
             queries: vec![kermit_bench::QueryDefinition {
                 name: "q".to_string(),

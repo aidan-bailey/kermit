@@ -4,7 +4,13 @@
 //! at the top level. The schema is documented in the workspace
 //! `benchmarks/README.md`.
 
-use {crate::error::BenchError, std::collections::HashSet};
+use {
+    crate::error::BenchError,
+    std::{
+        collections::HashSet,
+        path::{Component, Path},
+    },
+};
 
 /// Number of canonical LUBM queries (`q1`..`q14`, paper Appendix A). The domain
 /// constant lives here so the accepted range and its error messages agree.
@@ -146,14 +152,34 @@ impl GeneratorSpec {
     }
 }
 
-/// A relation source with a name and download URL.
+/// Where a relation's tuples come from: either a download URL or a file
+/// committed alongside the benchmark.
+///
+/// Exactly one of `url` and `path` must be set;
+/// [`BenchmarkDefinition::validate`] enforces the XOR. `url` suits large or
+/// externally-hosted datasets, which are fetched once into the cache; `path`
+/// suits small worked examples that should be readable in the repository and
+/// runnable with no network (see `benchmarks/triangle.yml`).
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RelationSource {
     /// Relation identifier; matched against predicate names in Datalog
     /// queries.
     pub name: String,
     /// HTTP(S) URL of a Parquet file containing the relation's tuples.
-    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Workspace-relative path to a committed CSV or Parquet file. The file
+    /// stem must equal `name`, because the loaders take the relation's name
+    /// from the filename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl RelationSource {
+    /// Whether this relation is committed in the repository rather than
+    /// fetched. Local relations need no cache entry and no network.
+    #[must_use]
+    pub fn is_local(&self) -> bool { self.path.is_some() }
 }
 
 /// A named query within a benchmark.
@@ -195,7 +221,8 @@ impl BenchmarkDefinition {
     ///     description: "Triangle query".into(),
     ///     relations: vec![RelationSource {
     ///         name: "edge".into(),
-    ///         url: "https://example.com/edge.parquet".into(),
+    ///         url: Some("https://example.com/edge.parquet".into()),
+    ///         path: None,
     ///     }],
     ///     queries: vec![QueryDefinition {
     ///         name: "triangle".into(),
@@ -285,6 +312,7 @@ impl BenchmarkDefinition {
                     reason: format!("duplicate relation name: {}", rel.name),
                 });
             }
+            self.validate_relation_source(rel)?;
         }
 
         seen.clear();
@@ -295,6 +323,56 @@ impl BenchmarkDefinition {
                     reason: format!("duplicate query name: {}", q.name),
                 });
             }
+        }
+
+        Ok(())
+    }
+
+    /// Enforces the `url` XOR `path` rule and the constraints a committed
+    /// `path` must satisfy.
+    ///
+    /// A local path is resolved against the workspace root, so it must stay
+    /// inside the workspace: absolute paths and `..` components are rejected.
+    /// The file stem must equal the relation's `name`, because `from_csv` /
+    /// `from_parquet` derive the relation name from the filename — a mismatch
+    /// would load a relation the benchmark's queries cannot refer to.
+    fn validate_relation_source(&self, rel: &RelationSource) -> Result<(), BenchError> {
+        let invalid = |reason: String| BenchError::Invalid {
+            name: self.name.clone(),
+            reason,
+        };
+
+        let path = match (&rel.url, &rel.path) {
+            | (Some(_), Some(_)) => {
+                return Err(invalid(format!(
+                    "relation '{}' sets both `url` and `path`; pick one",
+                    rel.name
+                )));
+            },
+            | (None, None) => {
+                return Err(invalid(format!(
+                    "relation '{}' must set either `url` (fetched) or `path` (committed)",
+                    rel.name
+                )));
+            },
+            | (Some(_), None) => return Ok(()),
+            | (None, Some(path)) => Path::new(path),
+        };
+
+        if path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
+            return Err(invalid(format!(
+                "relation '{}' path must be workspace-relative and must not contain '..'",
+                rel.name
+            )));
+        }
+
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        if stem != rel.name {
+            return Err(invalid(format!(
+                "relation '{}' path has file stem '{stem}'; the loaders take the relation name from \
+                 the filename, so the stem must match the relation name",
+                rel.name
+            )));
         }
 
         Ok(())
@@ -431,6 +509,78 @@ queries:
         assert_eq!(def.queries.len(), 1);
         assert_eq!(def.queries[0].name, "triangle");
         assert!(def.validate().is_ok());
+        assert!(!def.relations[0].is_local());
+    }
+
+    /// The committed-relation form used by `benchmarks/triangle.yml`: a
+    /// workspace-relative `path` in place of `url`, needing no network.
+    #[test]
+    fn deserialize_committed_path_relation() {
+        let yaml = r#"
+name: triangle
+description: "Triangle query over a committed edge relation"
+relations:
+  - name: edge
+    path: "benchmarks/data/triangle/edge.csv"
+queries:
+  - name: triangle
+    description: "Triangle query"
+    query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
+"#;
+        let def: BenchmarkDefinition = serde_yaml::from_str(yaml).unwrap();
+        assert!(def.validate().is_ok());
+        assert!(def.relations[0].is_local());
+        assert!(def.relations[0].url.is_none());
+    }
+
+    fn relation_yaml(relation_fields: &str) -> String {
+        format!(
+            r#"
+name: triangle
+description: "Triangle query"
+relations:
+  - name: edge
+{relation_fields}
+queries:
+  - name: triangle
+    description: "Triangle query"
+    query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
+"#
+        )
+    }
+
+    #[test]
+    fn relation_must_set_exactly_one_source() {
+        // Neither.
+        let def: BenchmarkDefinition = serde_yaml::from_str(&relation_yaml("")).unwrap();
+        assert!(def.validate().is_err());
+
+        // Both.
+        let yaml = relation_yaml("    url: \"https://example.com/edge.parquet\"\n    path: \"benchmarks/data/triangle/edge.csv\"");
+        let def: BenchmarkDefinition = serde_yaml::from_str(&yaml).unwrap();
+        assert!(def.validate().is_err());
+    }
+
+    /// A local path is joined onto the workspace root, so it must not be able
+    /// to address anything outside the workspace.
+    #[test]
+    fn relation_path_must_stay_inside_the_workspace() {
+        for bad in ["/etc/edge.csv", "../../elsewhere/edge.csv"] {
+            let def: BenchmarkDefinition =
+                serde_yaml::from_str(&relation_yaml(&format!("    path: \"{bad}\""))).unwrap();
+            assert!(def.validate().is_err(), "should reject path {bad}");
+        }
+    }
+
+    /// The CSV/Parquet loaders take the relation name from the filename, so a
+    /// stem that disagrees with `name` would load a relation the queries
+    /// cannot reference.
+    #[test]
+    fn relation_path_stem_must_match_relation_name() {
+        let def: BenchmarkDefinition =
+            serde_yaml::from_str(&relation_yaml("    path: \"benchmarks/data/triangle/edges.csv\""))
+                .unwrap();
+        assert!(def.validate().is_err());
     }
 
     #[test]
@@ -484,7 +634,8 @@ queries:
             description: "test".to_string(),
             relations: vec![RelationSource {
                 name: "r".to_string(),
-                url: "http://x".to_string(),
+                url: Some("http://x".to_string()),
+                path: None,
             }],
             queries: vec![make_query("q", "Q(X) :- r(X).")],
             generator: None,
@@ -511,7 +662,8 @@ queries:
             description: "test".to_string(),
             relations: vec![RelationSource {
                 name: "r".to_string(),
-                url: "http://x".to_string(),
+                url: Some("http://x".to_string()),
+                path: None,
             }],
             queries: vec![],
             generator: None,
@@ -526,7 +678,8 @@ queries:
             description: "test".to_string(),
             relations: vec![RelationSource {
                 name: "r".to_string(),
-                url: "http://x".to_string(),
+                url: Some("http://x".to_string()),
+                path: None,
             }],
             queries: vec![make_query("", "Q(X) :- r(X).")],
             generator: None,
@@ -541,7 +694,8 @@ queries:
             description: "test".to_string(),
             relations: vec![RelationSource {
                 name: "r".to_string(),
-                url: "http://x".to_string(),
+                url: Some("http://x".to_string()),
+                path: None,
             }],
             queries: vec![make_query("q", "")],
             generator: None,
@@ -557,11 +711,13 @@ queries:
             relations: vec![
                 RelationSource {
                     name: "edge".to_string(),
-                    url: "http://x".to_string(),
+                    url: Some("http://x".to_string()),
+                    path: None,
                 },
                 RelationSource {
                     name: "edge".to_string(),
-                    url: "http://y".to_string(),
+                    url: Some("http://y".to_string()),
+                    path: None,
                 },
             ],
             queries: vec![make_query("q", "Q(X) :- edge(X).")],
@@ -577,7 +733,8 @@ queries:
             description: "test".to_string(),
             relations: vec![RelationSource {
                 name: "r".to_string(),
-                url: "http://x".to_string(),
+                url: Some("http://x".to_string()),
+                path: None,
             }],
             queries: vec![
                 make_query("q", "Q(X) :- r(X)."),
@@ -854,7 +1011,8 @@ description: "nothing"
                 description: "x".to_string(),
                 relations: vec![RelationSource {
                     name: "r".to_string(),
-                    url: "http://x".to_string(),
+                    url: Some("http://x".to_string()),
+                    path: None,
                 }],
                 queries: vec![make_query("q", "Q(X) :- r(X).")],
                 generator: None,

@@ -314,7 +314,8 @@ mod tests {
             description: "static".to_string(),
             relations: vec![RelationSource {
                 name: "edge".to_string(),
-                url: "file:///tmp/x.parquet".to_string(),
+                url: Some("https://example.invalid/x.parquet".to_string()),
+                path: None,
             }],
             queries: vec![QueryDefinition {
                 name: "q".to_string(),

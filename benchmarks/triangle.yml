@@ -1,9 +1,12 @@
 name: triangle
-description: "Triangle query over edge relation"
+description: "Triangle query over a small committed edge relation (sanity workload)"
 relations:
+  # Committed in the repository rather than fetched: this is a worked example,
+  # so it should be readable in-tree and runnable offline on a cold cache.
+  # `path` is workspace-relative and its file stem must match `name`.
   - name: edge
-    url: "https://zivahub.uct.ac.za/ndownloader/files/PLACEHOLDER"
+    path: "benchmarks/data/triangle/edge.csv"
 queries:
   - name: triangle
-    description: "Three-way cyclic join"
+    description: "Three-way cyclic join; four matches over the committed graph"
     query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."

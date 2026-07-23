@@ -24,6 +24,10 @@ Cargo.lock
 **/*.pdf
 **/*.csv
 !kermit/tests/fixtures/*.csv
+# Committed benchmark relations (`path:` in a benchmark YAML). These are
+# deliberately small worked examples that must ship with the repository —
+# without them the benchmarks referencing them cannot run.
+!benchmarks/data/**/*.csv
 .claude-squad/
 .claude.local.md
 .worktrees/
