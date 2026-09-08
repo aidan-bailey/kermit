@@ -248,8 +248,29 @@ table each).
    directions: 0.5 buys −33 % insertion and level iteration for +13 %
    space; 0.9 buys −5 % space for +43 % insertion and +2–4 % iteration.
 
-Not measured here: the `ds_layout_hasher × ds_layout_pruning` and
-`ds_layout_hasher × ds_config_load_factor` pivots under FxHash.
+**FxHash pivots** (same protocol, commit `703b021`, one binary, SipHash
+`off` as the in-binary reference):
+
+| Configuration | binary-join iteration | triangle iteration | triangle insertion | space R (arity 3) | space U (arity 2) |
+|---|---|---|---|---|---|
+| sip, off | 56.4–59.9 µs | 2.07–2.08 ms | (4.30 ms above) | 931 KiB | 52 KiB |
+| fxhash, off | 56.2–57.4 µs | 2.09–2.12 ms | 4.20 ms | 931 KiB | 52 KiB |
+| fxhash, pruning on | 61.9–63.4 µs | 1.87–1.90 ms | 3.89 ms | 409 KiB (−56 %) | 40 KiB (−22 %) |
+| fxhash, load-factor 0.5 | 57.0–57.6 µs | 2.07–2.11 ms | 2.85 ms | 1.06 MiB (+13 %) | 52 KiB |
+| fxhash, load-factor 0.9 | 56.5–57.1 µs | 2.17–2.18 ms | 6.04 ms | 886 KiB (−5 %) | 43 KiB (−17 %) |
+
+- The Section 2 hypothesis holds for `triangle`: pruning is worth −3 %
+  iteration under SipHash but **−11 %** under FxHash, because a pruned
+  level replaces a table probe with one hash call and FxHash's is ~1 ns.
+  On `binary-join` (one level, no fan-out) pruning costs +8–10 % under
+  either hasher.
+- The load factor is *not* more sensitive under FxHash on this uniform
+  data: 0.9 costs +3 % iteration and +44 % insertion, 0.5 buys −32 %
+  insertion, the same shape as SipHash. The structured-key sensitivity
+  remains a hypothesis for a skewed workload (LUBM/WatDiv).
+- Hasher choice alone is a wash on join iteration here (FxHash ≈ SipHash
+  with pruning off); its effect shows up in insertion (−2 %) and in how
+  much pruning helps.
 
 ### Out of scope for the amendment
 

@@ -146,7 +146,9 @@ optimizations are classified into Layout, Config, or BuildMode.
     `off_frame_is_the_bare_table_pair`); measured at parity with the
     pre-pruning baseline on `oxford-uniform-s3` (byte-identical space,
     iteration inside the TreeTrie control's spread); see the design spec's
-    Amendment 1 § D acceptance record.
+    Amendment 1 § D acceptance record. Under `fxhash` the pruning-on join
+    iteration gain on `triangle` grows from −3 % to −11 % (one cheap hash
+    replaces a probe per pruned level).
   - **Test aliases:** `HashTrieSipPruned` and `HashTrieFxPruned` at the
     join layer; all three pruned aliases — those two plus the colliding
     `HashTrieMod10Pruned` — at the DS layer.
