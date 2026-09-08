@@ -520,9 +520,12 @@ pub struct SingletonPruning;  // LayoutOption::NAME = "on"
 
 `HashTrieNode<P>` then carries `Singleton(P::Payload)` and the iterator's
 frame enum carries `Singleton(P::Frame<'a>)`. Under `NoPruning` neither
-variant can be constructed, so the enums have the layouts they had before
-the dimension existed and every arm handling them is dead code — the
-non-user tax is zero, which is the whole point of choosing Layout. Gate the
+variant can be constructed and every arm handling them is dead code.
+rustc omits uninhabited variants when it computes a layout, so in practice
+the enums are laid out as they were before the dimension existed — an
+optimisation rustc performs, not a language guarantee, so pin it with size
+tests (below). The non-user tax is zero, which is the whole point of
+choosing Layout. Gate the
 build-time branches on `P::ENABLED`, a `const` the compiler folds.
 
 ### 2. Thread the parameter and emit the axis
@@ -565,10 +568,14 @@ define_multiway_join_test_suite!(HashTrieSipPruned, HashTriejoin, CardinalityOpt
 ```
 
 The DS-level `hash_trie_test_suite!` and `parquet_test_suite!` take the same
-aliases. Add a compile-time guard that the off instantiation did not grow —
+aliases. Add two `#[test]` size assertions — a growth guard,
 `size_of::<HashTrieNode<NoPruning>>() == size_of::<HashTrieNode<SingletonPruning>>()`
-— and a CLI smoke test that the flag lands in the report
-(`kermit/tests/cli_hash_trie_layout_pruning.rs`).
+(`node_does_not_grow_under_the_pruning_policy` in `implementation.rs`),
+and the actual elision witness,
+`size_of::<Frame<NoPruning>>() == size_of::<(&HashTrieNode<NoPruning>, usize)>()`
+(`off_frame_is_the_bare_table_pair` in `hash_trie_iter.rs`), which shows the
+off frame really is the pre-pruning pair — plus a CLI smoke test that the
+flag lands in the report (`kermit/tests/cli_hash_trie_layout_pruning.rs`).
 
 ---
 
@@ -627,7 +634,7 @@ Lift it to a Layout type parameter — a marker per value, as `PruningPolicy` do
 
 ### Q: What if my optimization spans categories?
 
-Example: a hash function choice (Layout) plus a tuning parameter (Config), like "use FxHash with seed N." Decompose along the shape/value line: the hash function family is a shape, so Layout (`FxHashStrategy`); the seed is a value read where a constant sat, so Config (`HashTrieConfig::fx_seed: Option<u64>`). Both axes are emitted; `kermit-lab` can pivot on either or both.
+Example: a hash function choice (Layout) plus a tuning parameter (Config), like "use FxHash with seed N." Decompose along the shape/value line: the hash function family is a shape, so Layout (`FxHashStrategy`); the seed is a value read where a constant sat, so Config (hypothetically, `HashTrieConfig::fx_seed: Option<u64>` — no seed axis exists today). Both axes are emitted; `kermit-lab` can pivot on either or both.
 
 ### Q: What about algorithm optimizations?
 

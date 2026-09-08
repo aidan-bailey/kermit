@@ -8,9 +8,11 @@
 
 ```rust
 HashTrie<H: HashStrategy, P: PruningPolicy> {
-    header: RelationHeader,
-    root:   HashTrieNode<P>,
-    config: HashTrieConfig,
+    header:      RelationHeader,
+    root:        HashTrieNode<P>,
+    tuple_count: usize,             // multiset size, for Cardinality
+    config:      HashTrieConfig,
+    _layout:     PhantomData<(H, P)>,
 }
 
 enum HashTrieNode<P: PruningPolicy> {
@@ -28,7 +30,7 @@ struct HashTable<V> {
 struct Entry<V> { hash: u64, value: V }
 ```
 
-The `Singleton` payload is the second Layout parameter's associated type: `Vec<usize>` under `SingletonPruning`, and the uninhabited `Never` under the default `NoPruning` — so with pruning off the variant cannot be constructed, the enum has the two-variant layout it had before pruning existed, and every `Singleton` arm is dead code the compiler drops. See [Layout options](#layout-options).
+The `Singleton` payload is the second Layout parameter's associated type: `Vec<usize>` under `SingletonPruning`, and the uninhabited `Never` under the default `NoPruning` — so with pruning off the variant cannot be constructed and every `Singleton` arm is dead code the compiler drops. rustc omits uninhabited variants when it computes a layout, so in practice the enum is laid out exactly as it was before pruning existed — an optimisation rustc performs, not a language guarantee, which is why the two size tests `node_does_not_grow_under_the_pruning_policy` (in `implementation.rs`) and `off_frame_is_the_bare_table_pair` (in `hash_trie_iter.rs`) pin it. See [Layout options](#layout-options).
 
 Bucket index: `hash >> (64 - log2_capacity)` (high `log2_capacity` bits). Collisions are resolved by linear probing within the bucket array. Each occupied bucket stores the full 64-bit hash for disambiguation during probes.
 
@@ -139,16 +141,22 @@ optimizations are classified into Layout, Config, or BuildMode.
     [`pruning.rs`](../../kermit-ds/src/ds/hash_trie/pruning.rs)).
     `P::Payload` is what `HashTrieNode::Singleton` holds: `Vec<usize>` when
     on, the uninhabited `Never` when off. The `off` instantiation compiles
-    to the pre-pruning code; the measured parity is recorded in the design
-    spec's Amendment 1 acceptance record.
-  - **Test aliases:** `HashTrieSipPruned`, `HashTrieFxPruned` at the join
-    layer, plus `HashTrieMod10Pruned` at the DS layer.
+    to the pre-pruning code (pinned by
+    `node_does_not_grow_under_the_pruning_policy` and
+    `off_frame_is_the_bare_table_pair`); the parity measurement lands in
+    the design spec's Amendment 1 § D once the acceptance run completes.
+  - **Test aliases:** `HashTrieSipPruned` and `HashTrieFxPruned` at the
+    join layer; all three pruned aliases — those two plus the colliding
+    `HashTrieMod10Pruned` — at the DS layer.
   - **Bench axis value:** `"off"` or `"on"`.
   - **Measured effect** (`oxford-uniform-s3`, SipHash, 2026-09-08, measured
     while pruning was still a Config): space of the arity-3 relations
     −56 % and of the arity-2 relations −22 % (unary relations unchanged, as
-    they have no level to prune); insertion ≈ 9 % faster; join iteration
-    roughly level with pruning off. Whether pruning helps more under
+    they have no level to prune); insertion ≈ 9 % faster. Join iteration
+    lands between the two pruning-off numbers: triangle ≈ 1.92 ms against
+    2.24 ms with pruning off on the same branch (the pre-pruning baseline
+    was ≈ 1.86 ms), and binary-join level with pruning off. Whether pruning
+    helps more under
     `fxhash` (one cheap hash per pruned level instead of a probe) is still
     untested; use the `ds_layout_hasher × ds_layout_pruning` pivot in
     kermit-lab.
@@ -205,4 +213,4 @@ optimizations are classified into Layout, Config, or BuildMode.
 - Sibling docs: [`TreeTrie`](./tree-trie.md), [`ColumnTrie`](./column-trie.md).
 - [`HashTriejoin`](../algorithms/hash-triejoin.md) — the only algorithm that consumes this structure.
 - `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; every Layout combination of `HashTrie` (`HashTrieSip`, `HashTrieFx`, `HashTrieSipPruned`, `HashTrieFxPruned`) must pass all 11 patterns under `HashTriejoin`, with both optimisers (Priorities item 1).
-- `hash_trie_test_suite!` and `parquet_test_suite!` ([`kermit-ds/tests/common/macros.rs`](../../kermit-ds/tests/common/macros.rs)) — the layer below the join: `HashTrieIterator` contract (`open`/`next`/`lookup`/`up`/`size`/`leaf_tuples`), construction round-trips via `collect_tuples()`, and Parquet loading. `HashTrie` cannot use `relation_trie_test_suite!` (it is `HashTrieIterable`, not `TrieIterable`), so this hash-family suite mirrors it; each Layout alias runs it — `HashTrieSip`, `HashTrieFx` and the colliding `HashTrieMod10`, and each again with pruning on (`HashTrieSipPruned`, `HashTrieFxPruned`, `HashTrieMod10Pruned`) so the iterator contract holds on emulated levels too — plus `HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>` for the Config axis. At the join layer, `define_multiway_join_test_suite_with_config!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) runs the same 11 patterns under the `HalfFull` load-factor provider.
+- `hash_trie_test_suite!` and `parquet_test_suite!` ([`kermit-ds/tests/common/macros.rs`](../../kermit-ds/tests/common/macros.rs)) — the layer below the join: `HashTrieIterator` contract (`open`/`next`/`lookup`/`up`/`size`/`leaf_tuples`), construction round-trips via `collect_tuples()`, and Parquet loading. `HashTrie` cannot use `relation_trie_test_suite!` (it is `HashTrieIterable`, not `TrieIterable`), so this hash-family suite mirrors it; each Layout alias runs it — `HashTrieSip`, `HashTrieFx` and the colliding `HashTrieMod10`, and each again with pruning on (`HashTrieSipPruned`, `HashTrieFxPruned`, `HashTrieMod10Pruned`) so the iterator contract holds on emulated levels too — plus `HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>` and `HashTrieMod10Dense` for the Config axis. At the join layer, `define_multiway_join_test_suite_with_config!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) runs the same 11 patterns under the `HalfFull` load-factor provider.
