@@ -314,6 +314,102 @@ mod tests {
         assert_eq!(output, vec![vec![2], vec![3]]);
     }
 
+    // ------------------------------------------------------------------
+    // Real hash collisions.
+    //
+    // The `verify_*` tests above feed hand-built candidates. These build
+    // real `HashTrie`s under a strategy that *guarantees* collisions, so the
+    // false positive travels the actual path: bucket index, linear probe,
+    // inner-level `lookup`, leaf chain, `emit_leaf` cross product, and only
+    // then `verify_and_construct`.
+    // ------------------------------------------------------------------
+
+    /// `hash(k) = k mod 10`: keys congruent modulo 10 collide at every
+    /// level. A twin lives in `kermit-ds/tests/hash_trie_tests.rs`; neither
+    /// crate exposes a colliding strategy publicly.
+    #[derive(Copy, Clone, Default, Debug)]
+    struct Mod10HashStrategy;
+
+    impl kermit_iters::LayoutOption for Mod10HashStrategy {
+        const NAME: &'static str = "mod10";
+    }
+
+    impl kermit_iters::HashStrategy for Mod10HashStrategy {
+        fn hash(key: usize) -> u64 { (key % 10) as u64 }
+    }
+
+    type CollidingHashTrie = kermit_ds::HashTrie<Mod10HashStrategy>;
+
+    #[test]
+    fn verify_rejects_real_inner_level_collision() {
+        use kermit_ds::Relation;
+        // R(X, Y) = {(1, 2)}, S(Y, Z) = {(12, 3)}. h(2) == h(12), so the
+        // Y-level probe of S succeeds although 2 != 12.
+        let r = CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let s = CollidingHashTrie::from_tuples(2.into(), vec![vec![12, 3]]);
+        let mut r_it = r.hash_trie_iter();
+        let mut s_it = s.hash_trie_iter();
+
+        // Walk the iterators exactly as `enumerate` would for X, Y, Z.
+        assert!(r_it.open()); // X level of R
+        assert!(r_it.open()); // Y level of R (its leaf)
+        assert!(s_it.open()); // Y level of S (its root)
+        let y_hash = r_it.key().expect("R positioned on its Y bucket");
+        assert!(
+            s_it.lookup(y_hash),
+            "the inner-level probe must hit: the collision is real"
+        );
+        assert!(s_it.open()); // Z level of S (its leaf)
+
+        // Both chains hold one tuple; together they form the only candidate.
+        let r_chain = r_it.leaf_tuples().expect("R at leaf");
+        let s_chain = s_it.leaf_tuples().expect("S at leaf");
+        assert_eq!(r_chain.to_vec(), vec![vec![1, 2]]);
+        assert_eq!(s_chain.to_vec(), vec![vec![12, 3]]);
+        let candidate: Vec<&Vec<usize>> = vec![&r_chain[0], &s_chain[0]];
+        let pv = vec![vec![0, 1], vec![1, 2]];
+        assert_eq!(
+            verify_and_construct(&candidate, &pv, 3),
+            None,
+            "Y = 2 in R but 12 in S: the leaf-level check must reject it"
+        );
+    }
+
+    #[test]
+    fn join_algo_drops_inner_level_collision_false_positive() {
+        use kermit_ds::Relation;
+        // R(X, Y) = {(1, 2)}, S(Y, Z) = {(12, 3), (2, 5)}. The Y-level probe
+        // matches both S tuples (h(2) == h(12)); only (2, 5) truly joins.
+        let r = CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let s = CollidingHashTrie::from_tuples(2.into(), vec![vec![12, 3], vec![2, 5]]);
+        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z).".parse().unwrap();
+        let mut ds: HashMap<String, &CollidingHashTrie> = HashMap::new();
+        ds.insert("R".to_string(), &r);
+        ds.insert("S".to_string(), &s);
+        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
+        out.sort();
+        assert_eq!(out, vec![vec![1, 2, 5]]);
+    }
+
+    #[test]
+    fn join_algo_drops_leaf_chain_collision_false_positive() {
+        use kermit_ds::Relation;
+        // R(X) = {1, 11}, S(X) = {11}. Both R tuples share one leaf chain
+        // with S's, so `emit_leaf` cross-products (1, 11) and (11, 11);
+        // only the latter survives verification.
+        let r = CollidingHashTrie::from_tuples(1.into(), vec![vec![1], vec![11]]);
+        let s = CollidingHashTrie::from_tuples(1.into(), vec![vec![11]]);
+        let query: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
+        let mut ds: HashMap<String, &CollidingHashTrie> = HashMap::new();
+        ds.insert("R".to_string(), &r);
+        ds.insert("S".to_string(), &s);
+        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
+        out.sort();
+        assert_eq!(out, vec![vec![11]]);
+    }
+
     #[test]
     fn join_algo_unary_intersection() {
         use kermit_ds::{HashTrie, Relation};

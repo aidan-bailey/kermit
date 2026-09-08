@@ -109,6 +109,8 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|lis
 Tests use macro-generated suites that combinatorially test all data structures against all algorithms:
 - `define_multiway_join_test!()` — individual parametrized test
 - `define_multiway_join_test_suite!()` — generates 11 standard join patterns (unary, triangle, chain, star, self-join, existential, empty-result, single-relation, four-way-chain, wide-fanout, dead-end)
+- `relation_trie_test_suite!()` / `parquet_test_suite!()` (`kermit-ds/tests/common/macros.rs`) — the layer below the join for `TrieIterable` structures: iterator contract (traversal + seek), construction, and Parquet round-trip
+- `hash_trie_test_suite!(Type, Strategy)` / `parquet_test_suite!(Type, collector)` — the same layer for `HashTrieIterable` structures (`open`/`next`/`lookup`/`up`/`size`/`leaf_tuples`; round-trips via `collect_tuples()`). The two iterator families are deliberately separate traits, so a hash-family structure cannot reuse the sorted-trie suite — invoke the hash-family one per Layout alias instead (see `kermit-ds/tests/hash_trie_tests.rs`)
 - Uses `paste!` crate for macro hygiene
 
 Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` directories.
@@ -125,7 +127,7 @@ These recipes are the recognizable pattern referenced in Priorities item 4. Foll
 4. **Implement `TrieIterable`** for the structure (wires `trie_iter()` to your iter type). The LFTJ `open`-after-`at_end` discipline is load-bearing — see the LFTJ gotcha and the `feedback_lftj_open_after_at_end` memory.
 5. **Register the module.** Add `mod <name>;` and `pub use <name>::<Type>;` in `kermit-ds/src/ds/mod.rs`, plus a variant on the `IndexStructure` enum in that file.
 6. **Wire the CLI.** Add a variant to `IndexStructureSelector` in `kermit/src/main.rs` (around line 99) and to its `expand()` method. Add match arms in `run_ds_bench` and `run_benchmark` in the same file.
-7. **Wire the tests.** Add a `define_multiway_join_test_suite!(<Type>, LeapfrogTriejoin, LexicographicOptimiser);` invocation in `kermit/tests/join_tests.rs` so the 11 standard join patterns run against the structure with every algorithm (Priorities item 1); add a second invocation with `CardinalityOptimiser` so both optimisers are covered.
+7. **Wire the tests.** Add a `define_multiway_join_test_suite!(<Type>, LeapfrogTriejoin, LexicographicOptimiser);` invocation in `kermit/tests/join_tests.rs` so the 11 standard join patterns run against the structure with every algorithm (Priorities item 1); add a second invocation with `CardinalityOptimiser` so both optimisers are covered. Also add the structure to the `kermit-ds` contract suites: `relation_trie_test_suite!(<Type>)` in `kermit-ds/tests/trie_tests.rs` and `parquet_test_suite!(<Type>)` in `kermit-ds/tests/parquet_tests.rs` for a `TrieIterable` structure, or `hash_trie_test_suite!(<Alias>, <Strategy>)` in `kermit-ds/tests/hash_trie_tests.rs` plus `parquet_test_suite!(<Alias>, <collector>)` for a `HashTrieIterable` one (one invocation per Layout alias).
 8. **Write the doc.** Create `docs/data-structures/<name>.md` from `docs/data-structures/TEMPLATE.md` (Priorities item 3).
 
 Do **not** modify other index structures during this work (Priorities item 6).
