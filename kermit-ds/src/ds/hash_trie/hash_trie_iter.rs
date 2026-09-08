@@ -14,9 +14,11 @@
 //! of the past-end bucket index.
 //!
 //! On every `open`, we descend either into the root (when the stack is
-//! empty) or into the child of the current bucket, then advance to the
-//! first occupied bucket within that node. If the node has no occupied
-//! buckets, the new frame sits past-end and `at_end` returns true.
+//! empty) or into the child of the current bucket. In the table case we
+//! then advance to the first occupied bucket within that node; if the node
+//! has no occupied buckets, the new frame sits past-end and `at_end`
+//! returns true. A singleton frame needs no such advance — its single
+//! entry is ready as soon as the frame is built.
 
 use {
     super::{implementation::HashTrie, node::HashTrieNode},
@@ -31,6 +33,8 @@ enum Frame<'a> {
     /// Level `depth` of a pruned subtrie holding `tuple`.
     /// `hash == H::hash(tuple[depth])`.
     Singleton {
+        /// `&Vec<usize>`, not `&[usize]`, so `leaf_tuples` can hand back a
+        /// `&[Vec<usize>]` via `slice::from_ref`.
         tuple: &'a Vec<usize>,
         depth: usize,
         hash: u64,
@@ -51,8 +55,9 @@ impl Frame<'_> {
 enum Descent<'a> {
     /// A table node to descend into.
     Node(&'a HashTrieNode),
-    /// Stay inside a pruned subtrie: emulate `depth + 1` for `tuple`.
-    Deeper { tuple: &'a Vec<usize>, depth: usize },
+    /// Stay inside a pruned subtrie: emulate the next level down for
+    /// `tuple`. The depth is the one `open` already computed.
+    Deeper(&'a Vec<usize>),
     /// Nothing below (leaf level, empty bucket, or exhausted).
     Blocked,
 }
@@ -94,6 +99,11 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
     }
 
     fn singleton_frame(tuple: &'a Vec<usize>, depth: usize) -> Frame<'a> {
+        debug_assert!(
+            depth < tuple.len(),
+            "singleton frame at depth {depth} below a {}-attribute tuple",
+            tuple.len()
+        );
         Frame::Singleton {
             tuple,
             depth,
@@ -104,9 +114,9 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
 
     /// Where `open` would go from the current position.
     ///
-    /// Matches on `*node` and reborrows the singleton's `tuple` so the
-    /// returned references carry the trie lifetime `'a`, not the shorter
-    /// borrow of `self.stack`.
+    /// Matches on `*node` and copies the singleton's `tuple` reference out
+    /// of the frame so the returned references carry the trie lifetime
+    /// `'a`, not the shorter borrow of `self.stack`.
     fn descent(&self) -> Descent<'a> {
         match self.stack.last() {
             | None => Descent::Node(self.trie.root()),
@@ -115,7 +125,11 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
                     | Some(child) => Descent::Node(child),
                     | None => Descent::Blocked, // current bucket empty / past-end
                 },
-                | HashTrieNode::Leaf(_) | HashTrieNode::Singleton(_) => Descent::Blocked,
+                | HashTrieNode::Leaf(_) => Descent::Blocked,
+                | HashTrieNode::Singleton(_) => unreachable!(
+                    "Table frame holds a Singleton; frame_for routes pruned subtries to \
+                     Frame::Singleton"
+                ),
             },
             | Some(Frame::Singleton {
                 tuple,
@@ -126,10 +140,7 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
                 if *exhausted || depth + 1 >= self.arity() {
                     Descent::Blocked
                 } else {
-                    Descent::Deeper {
-                        tuple,
-                        depth: *depth,
-                    }
+                    Descent::Deeper(tuple)
                 }
             },
         }
@@ -201,12 +212,12 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
 
     fn open(&mut self) -> bool {
         // No `at_end` guard (unlike `ColumnTrieIter::open`): the stack top
-        // holds a resolved node, so a past-end bucket yields `Blocked` and
+        // holds a resolved frame, so a past-end bucket yields `Blocked` and
         // open returns false, with no offset arithmetic to overshoot.
         let depth = self.stack.len();
         let frame = match self.descent() {
             | Descent::Node(child) => Self::frame_for(child, depth),
-            | Descent::Deeper { tuple, depth: d } => Self::singleton_frame(tuple, d + 1),
+            | Descent::Deeper(tuple) => Self::singleton_frame(tuple, depth),
             | Descent::Blocked => return false,
         };
         let opened = !frame.at_end();
@@ -220,7 +231,11 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
         match self.stack.last()? {
             | Frame::Table { node, idx } => match *node {
                 | HashTrieNode::Leaf(t) => t.value_at(*idx).map(|v| v.as_slice()),
-                | HashTrieNode::Inner(_) | HashTrieNode::Singleton(_) => None,
+                | HashTrieNode::Inner(_) => None,
+                | HashTrieNode::Singleton(_) => unreachable!(
+                    "Table frame holds a Singleton; frame_for routes pruned subtries to \
+                     Frame::Singleton"
+                ),
             },
             | Frame::Singleton {
                 tuple,
@@ -509,5 +524,64 @@ mod tests {
         a.sort();
         b.sort();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn size_is_one_on_a_leaf_depth_singleton_frame() {
+        let trie: HashTrie = HashTrie::from_tuples_with_config(2.into(), PRUNE, vec![vec![1, 2]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open();
+        it.open(); // singleton frame at leaf depth
+        assert_eq!(it.size(), 1);
+        assert_eq!(it.leaf_tuples(), Some(&[vec![1, 2]][..]));
+    }
+
+    #[test]
+    fn lookup_hit_on_inner_singleton_then_open_reaches_the_leaf() {
+        let trie: HashTrie = HashTrie::from_tuples_with_config(3.into(), PRUNE, vec![vec![1, 2, 3]]);
+        let mut it = HashTrieIter::new(&trie);
+        it.open(); // root table
+        it.open(); // singleton frame at depth 1 (inner)
+        assert!(it.lookup(h(2)));
+        assert!(it.open()); // singleton frame at depth 2 (leaf)
+        assert_eq!(it.key(), Some(h(3)));
+        assert_eq!(it.leaf_tuples(), Some(&[vec![1, 2, 3]][..]));
+    }
+
+    #[test]
+    fn pruned_and_plain_iterators_answer_lookups_identically() {
+        /// Probes every present hash at this level, plus one absent hash,
+        /// recording `(lookup result, key())` and descending on hits.
+        fn probe(
+            it: &mut dyn HashTrieIterator, arity: usize, depth: usize, out: &mut Vec<(bool, Option<u64>)>,
+        ) {
+            let mut present = Vec::new();
+            while let Some(k) = it.key() {
+                present.push(k);
+                it.next();
+            }
+            present.sort();
+            for probe_hash in present.into_iter().chain([h(999)]) {
+                let hit = it.lookup(probe_hash);
+                out.push((hit, it.key()));
+                if hit && depth + 1 < arity {
+                    assert!(it.open());
+                    probe(it, arity, depth + 1, out);
+                    it.up();
+                }
+            }
+        }
+        let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
+        let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
+        let compact: HashTrie = HashTrie::from_tuples_with_config(3.into(), PRUNE, tuples);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        let mut ia = HashTrieIter::new(&plain);
+        let mut ib = HashTrieIter::new(&compact);
+        assert!(ia.open());
+        assert!(ib.open());
+        probe(&mut ia, 3, 0, &mut a);
+        probe(&mut ib, 3, 0, &mut b);
+        assert_eq!(a, b);
+        assert!(!a.is_empty());
     }
 }
