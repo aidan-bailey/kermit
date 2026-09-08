@@ -5,7 +5,7 @@
 //!
 //! `bench run` is exercised for both trait families — (tree-trie,
 //! leapfrog-triejoin) through `run_benchmark<R>` and (hash-trie,
-//! hash-triejoin) through `run_benchmark_hash<H>` — against a fake
+//! hash-triejoin) through `run_benchmark<F: ExecutionFamily>` with `HashHtj<H, P>` — against a fake
 //! benchmark cache built from the committed watdiv-mini fixture, so no
 //! network access is needed. `bench ds` is exercised directly against the
 //! `edge.csv` fixture.

@@ -757,7 +757,7 @@ fn run_ds_bench<F: RelationFamily>(
 /// returns one report per query.
 ///
 /// Generic over the [`ExecutionFamily`] so the sorted family
-/// (`TrieLftj<R>`) and the hash family (`HashHtj<H>`) share one body:
+/// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P>`) share one body:
 /// query selection, relation loading, metadata, Criterion group wiring and
 /// report assembly are identical, and the report's `data_structure` /
 /// `algorithm` axes come from `family.execution()` — the same value that
