@@ -1182,8 +1182,14 @@ fn run_benchmark<F: ExecutionFamily>(
                     b.iter_batched(
                         || build_inputs.clone(),
                         |data| {
+                            // Times the per-relation construction only —
+                            // `family.build_relation` rather than the whole
+                            // engine build, which `end_to_end` covers — and
+                            // goes through the family so the build honours
+                            // the same configuration the report's
+                            // `ds_config_*` axes name.
                             for (header, tuples) in data {
-                                std::hint::black_box(F::Rel::from_tuples(header, tuples));
+                                std::hint::black_box(family.build_relation(header, tuples));
                             }
                         },
                         criterion::BatchSize::SmallInput,

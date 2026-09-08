@@ -199,6 +199,14 @@ pub trait ExecutionFamily {
     /// `data_structure` / `algorithm` axes.
     fn execution(&self) -> Execution;
 
+    /// Builds one relation from a `(header, tuples)` snapshot, honouring
+    /// the family's configuration. Every relation-building path in the
+    /// family routes through this one site, so a measurement can never
+    /// build a relation the report's `ds_config_*` axes fail to describe.
+    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self::Rel {
+        Self::Rel::from_tuples(header, tuples)
+    }
+
     /// Loads one relation file into `Self::Rel`, honouring the family's
     /// configuration. The default is the plain [`RelationFileExt`] path.
     ///
@@ -356,6 +364,10 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
         }
     }
 
+    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H> {
+        HashTrie::<H>::from_tuples_with_config(header, self.config, tuples)
+    }
+
     fn load(&self, path: &Path) -> anyhow::Result<HashTrie<H>> {
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
         let (header, tuples) = match extension.to_lowercase().as_str() {
@@ -364,11 +376,7 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
             | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
         }
         .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))?;
-        Ok(HashTrie::<H>::from_tuples_with_config(
-            header,
-            self.config,
-            tuples,
-        ))
+        Ok(self.build_relation(header, tuples))
     }
 
     fn tuples(rel: &HashTrie<H>) -> Vec<Vec<usize>> { rel.collect_tuples() }
@@ -386,10 +394,8 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
         inputs
             .into_iter()
             .map(|(header, tuples)| {
-                (
-                    header.name().to_string(),
-                    HashTrie::<H>::from_tuples_with_config(header, self.config, tuples),
-                )
+                let name = header.name().to_string();
+                (name, self.build_relation(header, tuples))
             })
             .collect()
     }
@@ -546,6 +552,30 @@ mod tests {
         let rel = &engine["r"];
         assert_eq!(
             HashHtj::<kermit_iters::SipHashStrategy>::optimization_axes(rel)
+                .get("ds_config_singleton_pruning"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    /// The per-relation `insertion` metric builds through
+    /// [`ExecutionFamily::build_relation`], so it must honour the config
+    /// too — otherwise it would time an unconfigured build under a report
+    /// labelled with the configured axes.
+    #[test]
+    fn hash_family_build_relation_honours_its_config() {
+        let config = HashTrieConfig {
+            singleton_pruning: true,
+        };
+        let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
+            HasherChoice::Sip,
+            config,
+            Optimiser::Lexicographic,
+        );
+        let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
+        let rel = family.build_relation(header, vec![vec![1, 2]]);
+        assert_eq!(*rel.config(), config);
+        assert_eq!(
+            HashHtj::<kermit_iters::SipHashStrategy>::optimization_axes(&rel)
                 .get("ds_config_singleton_pruning"),
             Some(&serde_json::Value::Bool(true))
         );
