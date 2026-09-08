@@ -2,16 +2,16 @@
 
 Top-level crate of the Kermit workspace. Ships two things:
 
-- a small **library** surface re-exporting the most useful types from [`kermit-algos`](../kermit-algos) and [`kermit-ds`](../kermit-ds), plus the [`DB`](src/db.rs) trait that bridges a parsed Datalog query to an indexed relation store.
+- a small **library** surface re-exporting the most useful types from [`kermit-algos`](../kermit-algos) and [`kermit-ds`](../kermit-ds), plus the [`db`](src/db.rs) join entry points that bridge a parsed Datalog query to a relation store.
 - the **`kermit` CLI** — a `clap`-based binary with two top-level subcommands (`join` and `bench`), backed by [Criterion](https://github.com/bheisler/criterion.rs) for benchmark execution.
 
 See the workspace [`README.md`](../README.md) for a broader introduction and the [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the design rationale.
 
 ## Library surface
 
-- [`db::DB`](src/db.rs) — object-safe trait erasing the concrete `Relation` / `JoinAlgo` types so the CLI can hold `Box<dyn DB>`.
-- [`db::DatabaseEngine`](src/db.rs) — the sole implementation, parameterised by the chosen data structure and join algorithm.
-- [`db::instantiate_database`](src/db.rs) — dispatches on the CLI enums (`IndexStructure`, `JoinAlgorithm`) to construct a `Box<dyn DB>`.
+- [`db::lftj_join`](src/db.rs) — sorted-family join over a `BTreeMap<String, R>` of `TrieIterable` relations, generic in the algorithm.
+- [`db::hash_join`](src/db.rs) — hash-family join over a `BTreeMap<String, HashTrie<H>>` under `HashTriejoin`.
+- [`db::JoinFamily`](src/db.rs) — the trait both share, abstracting how a family wraps a relation and a constant for its algorithm.
 - [`compute_join`](src/lib.rs) — helper that builds relations from raw tuple vectors and runs a join end-to-end.
 - `algos::LeapfrogTriejoin` and `ds::{RelationFileExt, TreeTrie}` re-exports for downstream consumers.
 
@@ -51,4 +51,4 @@ Full help: `kermit --help`, or `kermit bench <subcommand> --help`. Deeper recipe
 ## Adding an index structure or algorithm
 
 - **New data structure** — add the type in [`kermit-ds`](../kermit-ds), extend `IndexStructure`, and wire up `run_ds_bench` / `run_benchmark` in [`src/main.rs`](src/main.rs).
-- **New join algorithm** — add the type in [`kermit-algos`](../kermit-algos), extend `JoinAlgorithm`, and add a match arm in [`db::instantiate_database`](src/db.rs).
+- **New join algorithm** — add the type in [`kermit-algos`](../kermit-algos), extend `JoinAlgorithm`, and add its cell to `Execution::for_pair` in `src/execution.rs` (the compiler then flags every dispatch `match` to extend).

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-08
+
+### Changed
+
+- **Breaking:** the `db` module's `DB` trait, `DatabaseEngine`, and
+  `instantiate_database` are removed. Each iterator family now has one free
+  join function over a `BTreeMap<String, R>` relation store: the new
+  `lftj_join<R, JA>` beside `hash_join<R, H>` (whose map type changes from
+  `HashMap` to `BTreeMap`). Both share one body via the new `JoinFamily`
+  trait, so the const-view rewrite / statistics / planning prologue is no
+  longer duplicated per family.
+- `kermit join` and `bench join` dispatch through the same `Execution` cells
+  as `bench run`: `-i hash-trie -a hash-triejoin` now works (with
+  `--ds-layout-hasher`), and an incompatible pair is a usage error rather
+  than a panic.
+- `TrieLftj::Engine` is a `BTreeMap<String, R>` like the hash family's,
+  halving relation memory in the sorted bench path; per-relation report
+  ordering is now deterministic for both families.
+
+### Removed
+
+- Incremental insertion (`add_relation` / `add_keys` / `add_keys_batch`);
+  build relations with `Relation::from_tuples` or `RelationFileExt` instead.
+
 ## [0.1.2] - 2026-06-11
 
 ### Added

@@ -65,8 +65,9 @@ kermit join … --output results.csv
 the same `Relation` + `TrieIterable` traits, pair with `-a leapfrog-triejoin`,
 and are interchangeable from the CLI's perspective; benchmark to pick one.
 `hash-trie` lives in a different trait family (`HashTrieIterable`) and pairs
-only with `-a hash-triejoin`. The one-shot `kermit join` / `bench join` LFTJ
-path supports only the two sorted tries (`tree-trie`, `column-trie`).
+only with `-a hash-triejoin`. Every command, including the one-shot
+`kermit join` / `bench join`, accepts all three valid pairs; an incompatible
+pair is rejected as a usage error.
 
 ### Pick the query optimiser
 
