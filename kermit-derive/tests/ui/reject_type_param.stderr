@@ -1,0 +1,7 @@
+error: #[derive(IntoTrieIter)] requires exactly one generic parameter, a lifetime named `'a`; found 2 parameter(s) on `WithTypeParam`
+ --> tests/ui/reject_type_param.rs:4:10
+  |
+4 | #[derive(IntoTrieIter)]
+  |          ^^^^^^^^^^^^
+  |
+  = note: this error originates in the derive macro `IntoTrieIter` (in Nightly builds, run with -Z macro-backtrace for more info)

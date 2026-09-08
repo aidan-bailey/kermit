@@ -53,7 +53,39 @@ use winnow::{
     Parser,
 };
 
-type PResult<T> = Result<T, winnow::error::ErrMode<ContextError>>;
+type PResult<T> = Result<T, ErrMode<ContextError>>;
+
+/// Error returned when a string is not a well-formed Datalog rule.
+///
+/// This is the crate's only error type and deliberately does not expose the
+/// underlying parser library's error, so upgrading or swapping the parser
+/// combinator crate is not a breaking change for downstream crates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    /// The input could not be parsed as a rule. Carries the parser's own
+    /// description of the failure.
+    Syntax(String),
+    /// A complete rule was parsed but non-whitespace input remained after
+    /// the terminating `.`. Carries the unparsed tail.
+    TrailingInput(String),
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            | ParseError::Syntax(detail) => write!(f, "invalid Datalog rule: {detail}"),
+            | ParseError::TrailingInput(tail) => {
+                write!(f, "unexpected input after rule: {tail:?}")
+            },
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+impl From<ErrMode<ContextError>> for ParseError {
+    fn from(err: ErrMode<ContextError>) -> Self { ParseError::Syntax(err.to_string()) }
+}
 
 fn ws(input: &mut &str) -> PResult<()> {
     let _: &str = multispace0.parse_next(input)?;
@@ -141,7 +173,7 @@ fn query(input: &mut &str) -> PResult<JoinQuery> {
 }
 
 impl std::str::FromStr for JoinQuery {
-    type Err = ErrMode<ContextError>;
+    type Err = ParseError;
 
     /// Parses a Datalog rule into a [`JoinQuery`].
     ///
@@ -150,13 +182,14 @@ impl std::str::FromStr for JoinQuery {
     /// Returns an error if `s` is not a single well-formed rule of the shape
     /// `Head(…) :- Body1(…), …, BodyN(…).` — including missing `:-`, empty
     /// body, missing terminating `.`, trailing content after the `.`, or
-    /// identifiers that don't match the [syntax rules](crate).
+    /// identifiers that don't match the [syntax rules](crate). See
+    /// [`ParseError`] for the two failure shapes.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut input = s;
         let result = query.parse_next(&mut input)?;
         ws.parse_next(&mut input)?;
         if !input.is_empty() {
-            return Err(ErrMode::Backtrack(ContextError::new()));
+            return Err(ParseError::TrailingInput(input.to_string()));
         }
         Ok(result)
     }
@@ -278,6 +311,20 @@ mod tests {
             let result: Result<JoinQuery, _> = input.parse();
             assert!(result.is_err(), "{label} should fail to parse");
         }
+    }
+
+    #[test]
+    fn test_error_variants() {
+        assert!(matches!(
+            "P(X) :- Q(X)".parse::<JoinQuery>(),
+            Err(ParseError::Syntax(_))
+        ));
+        assert_eq!(
+            "P(X) :- Q(X). GARBAGE".parse::<JoinQuery>(),
+            Err(ParseError::TrailingInput("GARBAGE".to_string()))
+        );
+        let err = "P(X) :- Q(X). GARBAGE".parse::<JoinQuery>().unwrap_err();
+        assert_eq!(err.to_string(), "unexpected input after rule: \"GARBAGE\"");
     }
 
     #[test]

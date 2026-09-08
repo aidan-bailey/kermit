@@ -1,0 +1,7 @@
+error: #[derive(IntoTrieIter)] requires exactly one generic parameter, a lifetime named `'a`; found 0 parameter(s) on `NoLifetime`
+ --> tests/ui/reject_no_lifetime.rs:4:10
+  |
+4 | #[derive(IntoTrieIter)]
+  |          ^^^^^^^^^^^^
+  |
+  = note: this error originates in the derive macro `IntoTrieIter` (in Nightly builds, run with -Z macro-backtrace for more info)

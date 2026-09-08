@@ -19,3 +19,4 @@ proc-macro2 = "1"
 
 [dev-dependencies]
 kermit-iters = { path = "../kermit-iters" }
+trybuild = "1"
