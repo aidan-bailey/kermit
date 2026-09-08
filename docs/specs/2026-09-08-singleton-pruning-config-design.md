@@ -1,6 +1,8 @@
 # Singleton Pruning as the First Config Consumer
 
-**Status:** Approved design, not yet implemented.
+**Status:** Sections 1–6 are implemented on `aidanb/optimisations`
+(commits `77dffa2`..`f17c812`). **Amendment 1** below supersedes the
+classification of pruning and is not yet implemented; read it first.
 **Resolves:** [#58](https://github.com/aidan-bailey/kermit/issues/58) — the optimization standard has one adopter; Config and BuildMode are unexercised.
 **Paper:** SIGMOD 2020 "Combining Worst-Case Optimal and Traditional Binary Join Processing", §3.3.1, Figure 5.
 
@@ -25,6 +27,211 @@ with the first BuildMode consumer.
 | Config injection channel | Additive `ConfigurableRelation` trait + `Configured<R, P>` wrapper | Extending the core `Relation` trait (touches every sibling for one adopter); lifting config to a type parameter (turns Config into Layout) |
 | Algorithm awareness | Pruning is transparent through `HashTrieIterator`; `HashTriejoin` untouched | Paper-faithful skip-levels short-circuit (changes trait + algorithm; deferred as the first `algo_config_*` candidate) |
 | Singleton definition | Exactly one tuple (paper-faithful); duplicates and collisions unprune | One hash path (invariant would move with the Layout parameter) |
+| *(Amendment 1)* Category of pruning | **Layout** (`HashTrie<H, P>`; the off instantiation compiles to the pre-pruning code) | Keep as Config and accept ~10 % on every pruning-off run; reshape the iterator frame to recover ~5 % |
+| *(Amendment 1)* First Config consumer | **Load-factor cap** (`ds_config_load_factor`, default 0.7) | Initial-capacity hint; hash seed (both remain candidates) |
+
+---
+
+## Amendment 1 (2026-09-08): pruning is a Layout; the load-factor cap is the Config
+
+### Why
+
+The acceptance check in Section 5 failed: with pruning *off*, hash-join
+iteration on `oxford-uniform-s3` is ~10 % slower than the pre-pruning
+`HashTrie` (Section 2, "Measured"). Isolating builds attribute ~4 % to the
+third `HashTrieNode` variant and ~5–6 % to the two-variant iterator frame.
+That is the signature of a *shape* knob encoded as a *value* knob: every
+non-user pays for the branches that make the shape possible.
+
+Applying the standard's own aspect table to pruning's nature, not to our
+code: it is fixed at construction (no runtime switching), it changes which
+nodes exist (a representation invariant), and its results differ from the
+default (so not a BuildMode). The paper's Figure 5 presents it as a
+physical layout alongside pointer tagging. It is a Layout. The standard's
+Config example was wrong, and its other example (lazy expansion) is wrong
+for the same reason: an unexpanded node is a node state and needs a cell in
+the node type that eager tries would carry for nothing.
+
+The discriminating rule this amendment adopts, to be written into the
+standard:
+
+- **Layout** = a *shape*: which variants, encodings, or hash functions
+  exist. Zero cost for non-users, by monomorphisation.
+- **Config** = a *value* read on a path the code already takes: a
+  threshold, a capacity, a seed. Replacing a constant adds no branch.
+- **BuildMode** = a *process* yielding the same shape.
+
+Under that rule none of the paper's seven optimisations is a Config. The
+honest Config consumers on `HashTrie` are its tuning constants; the
+load-factor cap (a compile-time 7/10 in `hash_table.rs`) is the smallest.
+
+### A. Pruning as a second Layout dimension
+
+**Type.** `HashTrie<H: HashStrategy = SipHashStrategy, P: PruningPolicy = NoPruning>`.
+`PruningPolicy: LayoutOption` with two zero-sized implementors,
+`NoPruning` (`NAME = "off"`) and `SingletonPruning` (`NAME = "on"`). Axis
+`ds_layout_pruning: "off" | "on"`; kermit-lab back-fills `"off"`.
+
+**Zero cost for `NoPruning`, by construction.** The policy carries the
+singleton payload as an associated type, and the off policy's payload is
+uninhabited:
+
+```rust
+pub trait PruningPolicy: LayoutOption {
+    /// What a `HashTrieNode::Singleton` holds. `Vec<usize>` when pruning
+    /// is on; an uninhabited type when it is off, so every `Singleton`
+    /// arm is dead code in that instantiation.
+    type Payload: SingletonPayload;
+    const ENABLED: bool;
+}
+
+pub trait SingletonPayload {
+    fn from_tuple(tuple: Vec<usize>) -> Self;
+    fn tuple(&self) -> &Vec<usize>;
+    fn into_tuple(self) -> Vec<usize>;
+}
+
+pub enum Never {}   // impl SingletonPayload for Never { … match *self {} … }
+```
+
+`HashTrieNode<P>` becomes `Inner(HashTable<HashTrieNode<P>>) | Leaf(…) | Singleton(P::Payload)`.
+With `P = NoPruning` the `Singleton` arm in every accessor is
+`| Singleton(never) => match *never {}` and the enum has two inhabited
+variants, so the accessor matches and the enum layout are exactly the
+pre-pruning ones. `insert_at` gates the prune/unprune paths on
+`P::ENABLED`, a `const` the compiler folds. The iterator's frame does the
+same: `Frame::Singleton(P::Frame)` with `NoPruning::Frame = Never`, so the
+off iterator's frame collapses to the old `(node, idx)` pair. `Singleton`
+frames for `SingletonPruning` keep Section 2's one-entry-table emulation.
+
+**Invariant** is unchanged: with `SingletonPruning`, a child is `Singleton`
+iff exactly one tuple lives below it; with `NoPruning` no `Singleton` can
+be constructed (its payload has no values).
+
+**What carries over from Sections 1–2 unchanged:** the prune and unprune
+logic in `insert_at`, `new_table`, `collect_at`, `node_heap_bytes`, the
+`Descent` model, all emulation semantics, and every pruning test (they move
+to the `SingletonPruning` alias). The `#[cold]`/`#[inline]` attributes from
+`94fcc5e` stay; they are harmless and protect the on instantiation.
+
+**CLI.** `LayoutChoices` gains `--ds-layout-pruning <off|on>` (a
+`PruningChoice` `ValueEnum`, default `off`), rejected on non-hash-trie
+selectors by `validate_layout_choices` like the hasher flag.
+`Execution::HashHtj { hasher, pruning, config }`; `dispatch_run_bench` and
+`dispatch_ds_bench` monomorphise over the 2 × 2 (hasher × pruning) cells.
+This is the first real test of the design doc's claim that one flag per
+Layout dimension scales; if the four-arm match repeats itself, a small
+`for_each_hash_trie_layout!` macro that expands the product is the
+expected shape, not a runtime enum.
+
+**Tests.** Four Layout aliases (`HashTrieSip`, `HashTrieFx`,
+`HashTrieSipPruned = HashTrie<SipHashStrategy, SingletonPruning>`,
+`HashTrieFxPruned`) each run `define_multiway_join_test_suite!` under both
+optimisers, replacing the four `with_config` invocations for pruning. The
+DS-level suites run on all four plus `HashTrieMod10Pruned`. Add a
+compile-time guard that `size_of::<HashTrieNode<NoPruning>>()` equals
+`size_of::<HashTrieNode<SingletonPruning>>()` (a `Vec` payload is smaller
+than a `HashTable`, so the enum must not grow) and a
+unit test that `NoPruning` never produces a `Singleton` (the invariant
+walker with `prune = false`, retained).
+
+**CLI smoke test.** `cli_hash_trie_layout_pruning.rs` (mirror of the hasher
+smoke test): `--ds-layout-pruning on` records `ds_layout_pruning: "on"`,
+absent records `"off"`, and the flag is rejected on `tree-trie`.
+
+### B. Load-factor cap as the first Config consumer
+
+**Value.** `HashTrieConfig { load_factor: LoadFactor }` replaces
+`singleton_pruning`. `LoadFactor` is an exact fraction with a percent
+denominator (`LoadFactor::percent(70)`, default), validated to `1..=99`,
+so the resize test stays integer arithmetic exactly as today. Axis
+`ds_config_load_factor`: the JSON number `0.7`; kermit-lab back-fills
+`0.7`.
+
+**Where it is read.** The existing comparison in
+`HashTable::entry_or_insert_with`, `(len + 1) * DEN > cap * NUM`, with
+`NUM`/`DEN` supplied by the caller instead of two `const`s. The cap is
+passed down from `HashTrie` (which holds the config) through `insert_at`
+into the table call; no per-table storage, so space is unchanged and the
+insert path gains no branch. This is the property that makes it a Config:
+non-users pay nothing, verified by the acceptance check below.
+
+**CLI.** `--ds-config load-factor=<0.01..0.99>`; `singleton-pruning` is
+removed from `HASH_TRIE_KEYS`. A value outside the open unit interval is a
+usage error naming the range.
+
+**Tests.** `define_config_provider!(LoadFactor50, …)` and `LoadFactor90`;
+`define_multiway_join_test_suite_with_config!` on `HashTrieSip` and
+`HashTrieFx` under both optimisers with `LoadFactor50` (the baseline
+`Configured` runs stay for the default). DS-level suites on
+`Configured<HashTrieSip, LoadFactor90>` (dense tables stress the probe
+loops). Unit tests: a table resizes exactly when `(len + 1)` crosses the
+configured cap (parametrised over 50, 70, 90); `heap_size_bytes` is
+monotone non-increasing in the cap for a fixed tuple set; the CLI rejects
+`0`, `1`, `1.5`, and `abc`. The `cli_hash_trie_config_choice.rs` smoke test
+switches to `load-factor=0.5` and asserts the axis value `0.5`.
+
+**Expected thesis result.** Space and iteration move in opposite
+directions along this axis, and FxHash's poorer distribution on structured
+keys should make it more sensitive to a high cap than SipHash — the first
+2 × 2 (`ds_layout_hasher × ds_config_load_factor`) where the two metrics
+disagree.
+
+### C. Migration from the landed implementation
+
+Keep unchanged: `ConfigurableRelation`, `Configured<R, P>`,
+`define_config_provider!`, `define_multiway_join_test_suite_with_config!`,
+`ConfigChoices` and its validation, `ExecutionFamily::build_relation` /
+`load`, `read_csv` / `read_parquet`, the report-discipline tests.
+
+Change: `HashTrieConfig`'s field; `HashTrie`, `HashTrieNode`,
+`HashTrieIter` gain `P`; `hash_trie/mod.rs` exports the policy markers;
+`kermit_iters::hash_strategy` gains nothing (the policy lives beside
+`HashTrie` in `kermit-ds`, since only it has a meaning there — note this
+differs from `HashStrategy`, which lives in `kermit-iters` because
+`SingletonHashTrieIter` needs it); `LayoutChoices`, `Execution`, both
+dispatchers; all pruning tests re-homed to the Layout alias; the
+`with_config` invocations re-pointed at the load factor; kermit-lab
+defaults (`ds_layout_pruning: "off"`, `ds_config_load_factor: 0.7`; delete
+`ds_config_singleton_pruning`); the synthetic fixture axis in
+`python/kermit-lab/tests` renamed to `ds_config_load_factor` so the
+examples name a real axis.
+
+Docs: `docs/data-structures/hash-trie.md` moves pruning under Layout
+options and adds the load factor under Config flags;
+`docs/specs/optimization-standard.md` adopts the shape/value/process rule,
+corrects both Config examples, and updates its tables and walkthrough;
+`CLAUDE.md`'s optimisation recipe cites the rule; the #58 comment is
+amended with the reclassification.
+
+### D. Acceptance
+
+Same protocol as Section 2's measurements (`oxford-uniform-s3`,
+`iteration`, three interleaved rounds against `9c67ee5`, TreeTrie control),
+recorded in the spec:
+
+1. `HashTrie<Sip, NoPruning>` with the default load factor is within the
+   control's spread of the baseline on `binary-join` and `triangle`. This
+   is the claim the amendment exists to make true; if it fails, the
+   uninhabited-payload encoding did not collapse and the plan stops.
+2. `HashTrie<Sip, SingletonPruning>` reproduces Section 2's pruning-on
+   numbers (space −56 % / −22 %, insertion ~−9 %).
+3. `load-factor=0.7` is indistinguishable from the constant; `0.5` and
+   `0.9` move space and iteration in opposite directions.
+
+### Out of scope for the amendment
+
+Unchanged from the original list, plus: any other tuning value (initial
+capacity, seed) and any change to how `Configured` or the CLI config
+parser work.
+
+---
+
+## Sections 1–6: the implemented Config design (superseded in part)
+
+The sections below record what landed. Section 3's `HashTrieConfig`
+field and every `ds_config_singleton_pruning` reference are superseded by
+Amendment 1; everything else stands.
 
 ## Section 1: the data structure
 
@@ -146,22 +353,12 @@ between the two pruning-off numbers: triangle ~1.92 ms against the
 branch's 2.24 ms and the baseline's 1.86 ms in the first run; binary-join
 is level with pruning-off on this branch.
 
-**Decision point.** The acceptance check in Section 5 said an overhead
-outside Criterion noise means the design is revisited before merge. The
-remaining 10 % is inherent to the chosen shape (a runtime Config with a
-transparent iterator) rather than to an implementation slip. Options,
-none taken in this change:
-
-1. Accept: within-binary ablations (`ds_config_singleton_pruning`
-   true vs false) are unaffected; only cross-commit comparisons of the
-   pruning-off HashTrie shift by ~10 %.
-2. Recover the ~5 % iterator share by replacing the `Frame` enum with a
-   table-shaped frame that the singleton case populates (a `(node, idx)`
-   pair plus a side hash), at the cost of the clean one-entry-table
-   emulation.
-3. Recover all of it by lifting pruning to a Layout parameter
-   (`HashTrie<H, Pruning>`), which the standard advises against and which
-   would make the node type monomorphic per configuration.
+**Decision.** The acceptance check in Section 5 said an overhead outside
+Criterion noise means the design is revisited before merge. The remaining
+10 % is inherent to encoding a shape as a runtime value. Resolved by
+**Amendment 1**: pruning becomes a Layout dimension whose off
+instantiation compiles to the pre-pruning code, and the load-factor cap
+becomes the Config consumer.
 
 The Sip-vs-Fx hypothesis (pruning helps more under FxHash) is still
 untested; it needs the 2×2 pivot in kermit-lab.
@@ -347,7 +544,7 @@ merge.
 *Outcome:* the interval excluded 1 (see Section 2, "Measured"); `triangle`
 alone was too small to trust (8 tuples, ~1.6 µs per join), so the
 measurement moved to `oxford-uniform-s3` with a TreeTrie control. The
-decision is recorded in Section 2 and left to the branch owner.
+resolution is Amendment 1.
 
 ### kermit-lab
 
