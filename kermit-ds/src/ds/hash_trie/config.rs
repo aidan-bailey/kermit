@@ -67,9 +67,6 @@ impl Default for LoadFactor {
 /// `docs/specs/optimization-standard.md`.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HashTrieConfig {
-    /// Singleton pruning. *Superseded*: becomes the `P` Layout parameter in
-    /// the next change and is removed from this struct.
-    pub singleton_pruning: bool,
     /// Occupancy cap before a level's table doubles. Bench axis
     /// `ds_config_load_factor` (e.g. `0.7`).
     pub load_factor: LoadFactor,
@@ -77,33 +74,13 @@ pub struct HashTrieConfig {
 
 impl ConfigOption for HashTrieConfig {
     fn axes(&self) -> Vec<(&'static str, Value)> {
-        vec![
-            ("singleton_pruning", Value::Bool(self.singleton_pruning)),
-            ("load_factor", Value::from(self.load_factor.as_f64())),
-        ]
+        vec![("load_factor", Value::from(self.load_factor.as_f64()))]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_config_has_pruning_off() {
-        assert!(!HashTrieConfig::default().singleton_pruning);
-    }
-
-    #[test]
-    fn axes_report_singleton_pruning_suffix_and_value() {
-        let on = HashTrieConfig {
-            singleton_pruning: true,
-            ..HashTrieConfig::default()
-        };
-        assert!(on.axes().contains(&("singleton_pruning", Value::Bool(true))));
-        assert!(HashTrieConfig::default()
-            .axes()
-            .contains(&("singleton_pruning", Value::Bool(false))));
-    }
 
     #[test]
     fn default_load_factor_is_seventy_percent() {
@@ -126,7 +103,6 @@ mod tests {
     fn axes_report_load_factor_as_a_number() {
         let cfg = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
-            ..HashTrieConfig::default()
         };
         assert!(cfg
             .axes()

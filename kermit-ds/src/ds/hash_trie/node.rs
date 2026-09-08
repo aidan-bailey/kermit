@@ -9,12 +9,14 @@
 //! No runtime check polices the depth rule — `HashTrie::insert_at`
 //! constructs the right variant based on the caller's known arity.
 
-use super::hash_table::HashTable;
+use super::{hash_table::HashTable, pruning::PruningPolicy};
 
-/// A node in a hash trie.
-pub(crate) enum HashTrieNode {
+/// A node in a hash trie, parameterised by the pruning policy so that the
+/// `Singleton` variant is uninhabited (and costs nothing) under
+/// `NoPruning`.
+pub(crate) enum HashTrieNode<P: PruningPolicy> {
     /// Inner level: hash table whose values are child nodes.
-    Inner(HashTable<HashTrieNode>),
+    Inner(HashTable<HashTrieNode<P>>),
     /// Leaf level: hash table whose values are tuple chains. Each chain
     /// holds the full materialized tuples whose attribute hashes match the
     /// path of hashes from the root to this bucket.
@@ -22,10 +24,14 @@ pub(crate) enum HashTrieNode {
     /// Pruned subtrie: exactly one tuple lives below this point, so the
     /// remaining levels are not materialised. The iterator emulates them
     /// from the tuple (see `hash_trie_iter.rs`). Never the root.
-    Singleton(Vec<usize>),
+    ///
+    /// Holds `P::Payload`: the tuple when pruning is on, the uninhabited
+    /// `Never` when it is off, which makes this variant unconstructible
+    /// and removes it from the enum's layout.
+    Singleton(P::Payload),
 }
 
-impl HashTrieNode {
+impl<P: PruningPolicy> HashTrieNode<P> {
     pub(crate) fn new_inner() -> Self { HashTrieNode::Inner(HashTable::new()) }
 
     pub(crate) fn new_leaf() -> Self { HashTrieNode::Leaf(HashTable::new()) }

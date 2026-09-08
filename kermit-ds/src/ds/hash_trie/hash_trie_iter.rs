@@ -8,10 +8,11 @@
 //! (pre-root).
 //!
 //! A [`Frame::Table`] is `(node, bucket_index)` on an `Inner` / `Leaf`
-//! node. A [`Frame::Singleton`] emulates the one-entry table a pruned level
-//! would have held (see `node.rs`): its key is `H::hash(tuple[depth])`,
-//! computed once when the frame is pushed, and `exhausted` plays the role
-//! of the past-end bucket index.
+//! node. A [`Frame::Singleton`] carries the singleton frame type the
+//! pruning policy `P` chooses: under `SingletonPruning` it emulates the
+//! one-entry table a pruned level would have held (see `pruning.rs`), and
+//! under `NoPruning` it is uninhabited, so the variant vanishes and a
+//! frame is exactly the `(node, bucket_index)` pair.
 //!
 //! On every `open`, we descend either into the root (when the stack is
 //! empty) or into the child of the current bucket. In the table case we
@@ -21,45 +22,44 @@
 //! entry is ready as soon as the frame is built.
 
 use {
-    super::{implementation::HashTrie, node::HashTrieNode},
+    super::{
+        implementation::HashTrie,
+        node::HashTrieNode,
+        pruning::{NoPruning, PruningPolicy, SingletonFrame, SingletonPayload},
+    },
     crate::relation::Relation,
     kermit_iters::{HashStrategy, HashTrieIterator, SipHashStrategy},
 };
 
 /// One opened level of the trie.
-enum Frame<'a> {
+enum Frame<'a, P: PruningPolicy> {
     /// A bucket within an `Inner` or `Leaf` node — never a `Singleton`.
-    Table { node: &'a HashTrieNode, idx: usize },
-    /// Level `depth` of a pruned subtrie holding `tuple`.
-    /// `hash == H::hash(tuple[depth])`.
-    Singleton {
-        /// `&Vec<usize>`, not `&[usize]`, so `leaf_tuples` can hand back a
-        /// `&[Vec<usize>]` via `slice::from_ref`.
-        tuple: &'a Vec<usize>,
-        depth: usize,
-        hash: u64,
-        exhausted: bool,
+    Table {
+        node: &'a HashTrieNode<P>,
+        idx: usize,
     },
+    /// Level `depth` of a pruned subtrie; the frame type is `P::Frame`,
+    /// which is `Never` under `NoPruning`, so this variant is uninhabited
+    /// there and the enum is the bare table pair.
+    Singleton(P::Frame<'a>),
 }
 
-impl Frame<'_> {
+impl<P: PruningPolicy> Frame<'_, P> {
     fn at_end(&self) -> bool {
         match self {
             | Frame::Table {
                 node,
                 idx,
             } => *idx >= node.buckets_len(),
-            | Frame::Singleton {
-                exhausted, ..
-            } => *exhausted,
+            | Frame::Singleton(s) => s.at_end(),
         }
     }
 }
 
 /// What `open` found below the current position.
-enum Descent<'a> {
+enum Descent<'a, P: PruningPolicy> {
     /// A table node to descend into.
-    Node(&'a HashTrieNode),
+    Node(&'a HashTrieNode<P>),
     /// Stay inside a pruned subtrie: emulate the next level down for
     /// `tuple`. The depth is the one `open` already computed.
     Deeper(&'a Vec<usize>),
@@ -75,14 +75,14 @@ enum Descent<'a> {
 /// table would have stored.
 ///
 /// See the module docs for the position model.
-pub struct HashTrieIter<'a, H: HashStrategy = SipHashStrategy> {
-    stack: Vec<Frame<'a>>,
-    trie: &'a HashTrie<H>,
+pub struct HashTrieIter<'a, H: HashStrategy = SipHashStrategy, P: PruningPolicy = NoPruning> {
+    stack: Vec<Frame<'a, P>>,
+    trie: &'a HashTrie<H, P>,
 }
 
-impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
+impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
     /// Construct a fresh iterator positioned before the root.
-    pub(crate) fn new(trie: &'a HashTrie<H>) -> Self {
+    pub(crate) fn new(trie: &'a HashTrie<H, P>) -> Self {
         Self {
             stack: Vec::new(),
             trie,
@@ -93,9 +93,9 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
 
     /// The frame that opening `child` at `depth` produces, positioned on
     /// its first entry (or past-end if it has none).
-    fn frame_for(child: &'a HashTrieNode, depth: usize) -> Frame<'a> {
+    fn frame_for(child: &'a HashTrieNode<P>, depth: usize) -> Frame<'a, P> {
         match child {
-            | HashTrieNode::Singleton(tuple) => Self::singleton_frame(tuple, depth),
+            | HashTrieNode::Singleton(payload) => Self::singleton_frame(payload.tuple(), depth),
             | table => Frame::Table {
                 node: table,
                 idx: table.next_occupied(0),
@@ -103,18 +103,9 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
         }
     }
 
-    fn singleton_frame(tuple: &'a Vec<usize>, depth: usize) -> Frame<'a> {
-        debug_assert!(
-            depth < tuple.len(),
-            "singleton frame at depth {depth} below a {}-attribute tuple",
-            tuple.len()
-        );
-        Frame::Singleton {
-            tuple,
-            depth,
-            hash: H::hash(tuple[depth]),
-            exhausted: false,
-        }
+    #[allow(clippy::ptr_arg)]
+    fn singleton_frame(tuple: &'a Vec<usize>, depth: usize) -> Frame<'a, P> {
+        Frame::Singleton(P::Frame::new(tuple, depth, H::hash(tuple[depth])))
     }
 
     /// Where `open` would go from the current position.
@@ -122,7 +113,7 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
     /// Matches on `*node` and copies the singleton's `tuple` reference out
     /// of the frame so the returned references carry the trie lifetime
     /// `'a`, not the shorter borrow of `self.stack`.
-    fn descent(&self) -> Descent<'a> {
+    fn descent(&self) -> Descent<'a, P> {
         match self.stack.last() {
             | None => Descent::Node(self.trie.root()),
             | Some(Frame::Table {
@@ -139,34 +130,25 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
                      Frame::Singleton"
                 ),
             },
-            | Some(Frame::Singleton {
-                tuple,
-                depth,
-                exhausted,
-                ..
-            }) => {
-                if *exhausted || depth + 1 >= self.arity() {
+            | Some(Frame::Singleton(s)) => {
+                if s.at_end() || s.depth() + 1 >= self.arity() {
                     Descent::Blocked
                 } else {
-                    Descent::Deeper(tuple)
+                    Descent::Deeper(s.tuple())
                 }
             },
         }
     }
 }
 
-impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
+impl<H: HashStrategy, P: PruningPolicy> HashTrieIterator for HashTrieIter<'_, H, P> {
     fn key(&self) -> Option<u64> {
         match self.stack.last()? {
             | Frame::Table {
                 node,
                 idx,
             } => node.hash_at(*idx),
-            | Frame::Singleton {
-                hash,
-                exhausted,
-                ..
-            } => (!exhausted).then_some(*hash),
+            | Frame::Singleton(s) => s.key(),
         }
     }
 
@@ -184,10 +166,8 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
                 }
                 node.hash_at(*idx)
             },
-            | Frame::Singleton {
-                exhausted, ..
-            } => {
-                *exhausted = true;
+            | Frame::Singleton(s) => {
+                s.exhaust();
                 None
             },
         }
@@ -212,14 +192,7 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
                     false
                 },
             },
-            | Frame::Singleton {
-                hash: own,
-                exhausted,
-                ..
-            } => {
-                *exhausted = hash != *own;
-                !*exhausted
-            },
+            | Frame::Singleton(s) => s.lookup(hash),
         }
     }
 
@@ -228,9 +201,7 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
             | Some(Frame::Table {
                 node, ..
             }) => node.len(),
-            | Some(Frame::Singleton {
-                ..
-            }) => 1,
+            | Some(Frame::Singleton(_)) => 1,
             | None => 0,
         }
     }
@@ -267,12 +238,8 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
                      Frame::Singleton"
                 ),
             },
-            | Frame::Singleton {
-                tuple,
-                depth,
-                exhausted,
-                ..
-            } => (!exhausted && depth + 1 == self.arity()).then(|| std::slice::from_ref(*tuple)),
+            | Frame::Singleton(s) => (!s.at_end() && s.depth() + 1 == self.arity())
+                .then(|| std::slice::from_ref(s.tuple())),
         }
     }
 }
@@ -449,19 +416,26 @@ mod tests {
 
     // ── Singleton emulation ────────────────────────────────────────────
 
-    use crate::{ds::hash_trie::config::HashTrieConfig, relation::ConfigurableRelation};
+    use crate::ds::hash_trie::pruning::SingletonPruning;
 
-    const PRUNE: HashTrieConfig = HashTrieConfig {
-        singleton_pruning: true,
-        load_factor: crate::ds::hash_trie::config::LoadFactor::DEFAULT,
-    };
+    /// The pruned Layout of the default hasher.
+    type Pruned = HashTrie<SipHashStrategy, SingletonPruning>;
 
     fn h(k: usize) -> u64 { <SipHashStrategy as HashStrategy>::hash(k) }
 
     #[test]
+    fn off_frame_is_the_bare_table_pair() {
+        // The `NoPruning` frame collapses to one inhabited variant, so the
+        // stack entry is exactly the pre-pruning `(node, idx)` pair.
+        assert_eq!(
+            std::mem::size_of::<Frame<'static, NoPruning>>(),
+            std::mem::size_of::<(&'static HashTrieNode<NoPruning>, usize)>()
+        );
+    }
+
+    #[test]
     fn singleton_frames_emulate_one_entry_tables_down_to_the_leaf() {
-        let trie: HashTrie =
-            HashTrie::from_tuples_with_config(3.into(), PRUNE, vec![vec![1, 2, 3]]);
+        let trie = Pruned::from_tuples(3.into(), vec![vec![1, 2, 3]]);
         let mut it = HashTrieIter::new(&trie);
         assert!(it.open()); // root table, bucket for hash(1)
         assert_eq!(it.key(), Some(h(1)));
@@ -484,7 +458,7 @@ mod tests {
 
     #[test]
     fn singleton_next_exhausts_and_open_on_exhausted_fails() {
-        let trie: HashTrie = HashTrie::from_tuples_with_config(2.into(), PRUNE, vec![vec![1, 2]]);
+        let trie = Pruned::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
         it.open();
@@ -497,7 +471,7 @@ mod tests {
 
     #[test]
     fn singleton_lookup_hit_positions_and_miss_exhausts() {
-        let trie: HashTrie = HashTrie::from_tuples_with_config(2.into(), PRUNE, vec![vec![1, 2]]);
+        let trie = Pruned::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
         it.open();
@@ -510,8 +484,7 @@ mod tests {
 
     #[test]
     fn open_from_table_into_singleton_child() {
-        let trie: HashTrie =
-            HashTrie::from_tuples_with_config(2.into(), PRUNE, vec![vec![1, 2], vec![3, 4]]);
+        let trie = Pruned::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
         let mut it = HashTrieIter::new(&trie);
         assert!(it.open());
         let mut leaves = Vec::new();
@@ -546,7 +519,7 @@ mod tests {
         }
         let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
         let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
-        let compact: HashTrie = HashTrie::from_tuples_with_config(3.into(), PRUNE, tuples);
+        let compact = Pruned::from_tuples(3.into(), tuples);
         let (mut a, mut b) = (Vec::new(), Vec::new());
         let mut ia = HashTrieIter::new(&plain);
         let mut ib = HashTrieIter::new(&compact);
@@ -561,7 +534,7 @@ mod tests {
 
     #[test]
     fn size_is_one_on_a_leaf_depth_singleton_frame() {
-        let trie: HashTrie = HashTrie::from_tuples_with_config(2.into(), PRUNE, vec![vec![1, 2]]);
+        let trie = Pruned::from_tuples(2.into(), vec![vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
         it.open();
         it.open(); // singleton frame at leaf depth
@@ -571,8 +544,7 @@ mod tests {
 
     #[test]
     fn lookup_hit_on_inner_singleton_then_open_reaches_the_leaf() {
-        let trie: HashTrie =
-            HashTrie::from_tuples_with_config(3.into(), PRUNE, vec![vec![1, 2, 3]]);
+        let trie = Pruned::from_tuples(3.into(), vec![vec![1, 2, 3]]);
         let mut it = HashTrieIter::new(&trie);
         it.open(); // root table
         it.open(); // singleton frame at depth 1 (inner)
@@ -608,7 +580,7 @@ mod tests {
         }
         let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
         let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
-        let compact: HashTrie = HashTrie::from_tuples_with_config(3.into(), PRUNE, tuples);
+        let compact = Pruned::from_tuples(3.into(), tuples);
         let (mut a, mut b) = (Vec::new(), Vec::new());
         let mut ia = HashTrieIter::new(&plain);
         let mut ib = HashTrieIter::new(&compact);
@@ -620,3 +592,4 @@ mod tests {
         assert!(!a.is_empty());
     }
 }
+

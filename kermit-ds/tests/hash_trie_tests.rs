@@ -9,7 +9,9 @@
 //! exercised with clustered buckets and shared leaf chains.
 
 use {
-    kermit_ds::{define_config_provider, Configured, HashTrie, HashTrieConfig},
+    kermit_ds::{
+        define_config_provider, Configured, HashTrie, HashTrieConfig, LoadFactor, SingletonPruning,
+    },
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
 mod common;
@@ -41,20 +43,22 @@ impl HashStrategy for Mod10HashStrategy {
 
 type HashTrieMod10 = HashTrie<Mod10HashStrategy>;
 
-// ── Config variant: singleton pruning on ────────────────────────────────
+// ── Layout variant: singleton pruning on ────────────────────────────────
 //
-// Each Layout alias also runs under the one Config flag, so the iterator
+// Each hasher alias also runs with the pruning Layout on, so the iterator
 // contract holds on emulated (pruned) levels as well as materialised ones.
 // `Mod10` is the important case: full-collision tuples must unprune into a
 // shared leaf chain.
-define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
-    singleton_pruning: true,
-    ..HashTrieConfig::default()
+type HashTrieSipPruned = HashTrie<SipHashStrategy, SingletonPruning>;
+type HashTrieFxPruned = HashTrie<FxHashStrategy, SingletonPruning>;
+type HashTrieMod10Pruned = HashTrie<Mod10HashStrategy, SingletonPruning>;
+
+// ── Config variant: a dense load factor ─────────────────────────────────
+define_config_provider!(NinetyPercent, HashTrieConfig, HashTrieConfig {
+    load_factor: LoadFactor::percent(90).unwrap(),
 });
 
-type HashTrieSipPruned = Configured<HashTrieSip, PruningOn>;
-type HashTrieFxPruned = Configured<HashTrieFx, PruningOn>;
-type HashTrieMod10Pruned = Configured<HashTrieMod10, PruningOn>;
+type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;
 
 hash_trie_test_suite!(HashTrieSip, SipHashStrategy);
 
@@ -70,6 +74,8 @@ hash_trie_test_suite!(HashTrieSipPruned, SipHashStrategy);
 hash_trie_test_suite!(HashTrieFxPruned, FxHashStrategy);
 
 hash_trie_test_suite!(HashTrieMod10Pruned, Mod10HashStrategy);
+
+hash_trie_test_suite!(HashTrieSipDense, SipHashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"

@@ -39,20 +39,19 @@ pub trait ConfigProvider<C> {
 /// use {
 ///     kermit_ds::{
 ///         define_config_provider, ConfigurableRelation, Configured, HashTrie, HashTrieConfig,
-///         Relation,
+///         LoadFactor, Relation,
 ///     },
 ///     kermit_iters::SipHashStrategy,
 /// };
 ///
-/// define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
-///     singleton_pruning: true,
-///     ..HashTrieConfig::default()
+/// define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
+///     load_factor: LoadFactor::percent(50).unwrap(),
 /// });
 ///
-/// type HashTrieSipPruned = Configured<HashTrie<SipHashStrategy>, PruningOn>;
+/// type HashTrieSipHalfFull = Configured<HashTrie<SipHashStrategy>, HalfFull>;
 ///
-/// let r = HashTrieSipPruned::from_tuples(2.into(), vec![vec![1, 2]]);
-/// assert!(r.config().singleton_pruning);
+/// let r = HashTrieSipHalfFull::from_tuples(2.into(), vec![vec![1, 2]]);
+/// assert_eq!(r.config().load_factor, LoadFactor::percent(50).unwrap());
 /// ```
 #[macro_export]
 macro_rules! define_config_provider {
@@ -157,31 +156,30 @@ mod tests {
     use {
         super::*,
         crate::{
-            ds::{HashTrie, HashTrieConfig},
+            ds::{HashTrie, HashTrieConfig, LoadFactor},
             relation::{ConfigurableRelation, Projectable, Relation},
         },
         kermit_iters::{HasOptimizationAxes, HashTrieIterable, HashTrieIterator, SipHashStrategy},
     };
 
-    crate::define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
-        singleton_pruning: true,
-        ..HashTrieConfig::default()
+    crate::define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
+        load_factor: LoadFactor::percent(50).unwrap(),
     });
 
-    type Pruned = Configured<HashTrie<SipHashStrategy>, PruningOn>;
+    type HalfFullTrie = Configured<HashTrie<SipHashStrategy>, HalfFull>;
 
     #[test]
     fn constructors_inject_the_provider_config() {
-        let a = Pruned::new(2.into());
-        assert!(a.config().singleton_pruning);
-        let b = Pruned::from_tuples(2.into(), vec![vec![1, 2]]);
-        assert!(b.config().singleton_pruning);
+        let a = HalfFullTrie::new(2.into());
+        assert_eq!(a.config().load_factor, LoadFactor::percent(50).unwrap());
+        let b = HalfFullTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        assert_eq!(b.config().load_factor, LoadFactor::percent(50).unwrap());
         assert_eq!(b.collect_tuples(), vec![vec![1, 2]]);
     }
 
     #[test]
     fn delegated_traits_reach_the_inner_relation() {
-        let r = Pruned::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
+        let r = HalfFullTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
         assert_eq!(r.header().arity(), 2);
         assert_eq!(crate::Cardinality::tuple_count(&r), 2);
         assert!(crate::HeapSize::heap_size_bytes(&r) > 0);
@@ -189,16 +187,16 @@ mod tests {
         assert!(it.open());
         assert_eq!(it.size(), 2);
         assert_eq!(
-            r.optimization_axes().get("ds_config_singleton_pruning"),
-            Some(&serde_json::Value::Bool(true))
+            r.optimization_axes().get("ds_config_load_factor"),
+            Some(&serde_json::Value::from(0.5_f64))
         );
         let p = r.project(vec![0]);
-        assert!(p.config().singleton_pruning);
+        assert_eq!(p.config().load_factor, LoadFactor::percent(50).unwrap());
     }
 
     #[test]
     fn inserts_reach_the_inner_relation() {
-        let mut r = Pruned::new(2.into());
+        let mut r = HalfFullTrie::new(2.into());
         r.insert(vec![1, 2]);
         r.insert_all(vec![vec![3, 4]]);
         let mut tuples = r.collect_tuples();
