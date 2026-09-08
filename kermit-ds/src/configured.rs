@@ -56,11 +56,8 @@ pub trait ConfigProvider<C> {
 #[macro_export]
 macro_rules! define_config_provider {
     ($name:ident, $config:ty, $value:expr $(,)?) => {
-        #[doc = concat!(
-                    "`ConfigProvider` marker supplying a fixed `",
-                    stringify!($config),
-                    "` value.",
-                )]
+        /// `ConfigProvider` marker declared by `define_config_provider!`;
+        /// supplies one fixed configuration value.
         #[derive(Copy, Clone, Debug, Default)]
         pub struct $name;
 
