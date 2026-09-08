@@ -22,7 +22,7 @@
 //! runner in `main.rs` is generic over it.
 
 use {
-    crate::{HasherChoice, PruningChoice},
+    crate::options::{HasherChoice, PruningChoice},
     kermit::db::{hash_join, DatabaseEngine, DB},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_ds::{
