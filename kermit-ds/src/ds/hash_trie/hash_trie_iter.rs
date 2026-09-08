@@ -47,6 +47,12 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
         match node {
             | HashTrieNode::Inner(t) => t.value_at(idx),
             | HashTrieNode::Leaf(_) => None,
+            // Pruned subtries are not navigable yet: the singleton stack
+            // frame lands with the iterator work, and no pruned trie is
+            // handed to this iterator today.
+            | HashTrieNode::Singleton(_) => unreachable!(
+                "HashTrieIter does not yet support pruned subtries (singleton frames)"
+            ),
         }
     }
 }
@@ -133,6 +139,12 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
         match node {
             | HashTrieNode::Leaf(t) => t.value_at(idx).map(|v| v.as_slice()),
             | HashTrieNode::Inner(_) => None,
+            // Pruned subtries are not navigable yet: the singleton stack
+            // frame lands with the iterator work, and no pruned trie is
+            // handed to this iterator today.
+            | HashTrieNode::Singleton(_) => unreachable!(
+                "HashTrieIter does not yet support pruned subtries (singleton frames)"
+            ),
         }
     }
 }

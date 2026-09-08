@@ -31,6 +31,10 @@ use {
 /// - Inner nodes exist at depths `0..arity-1`; the leaf node at depth
 ///   `arity-1`.
 /// - For arity = 0: undefined behavior (no nullary relations supported).
+/// - With `config.singleton_pruning` on, a child node is `Singleton` iff
+///   exactly one tuple lives below it (order-independent). With it off,
+///   no `Singleton` exists and the structure is identical to pre-pruning
+///   builds.
 ///
 /// # Construction
 ///
@@ -107,30 +111,64 @@ impl<H: HashStrategy> HashTrie<H> {
                     }
                 }
             },
+            | HashTrieNode::Singleton(tuple) => out.push(tuple.clone()),
         }
     }
 
     /// Insert one tuple at the appropriate depth in the trie. Recursive
-    /// implementation of Algorithm 2 from the paper, line by line.
-    fn insert_at(node: &mut HashTrieNode, depth: usize, arity: usize, tuple: Vec<usize>) {
+    /// implementation of Algorithm 2 from the paper, line by line, plus the
+    /// singleton-pruning extension of §3.3.1 (Figure 5) when `prune` is on.
+    fn insert_at(
+        node: &mut HashTrieNode, depth: usize, arity: usize, tuple: Vec<usize>, prune: bool,
+    ) {
         let key = tuple[depth];
         let hash = H::hash(key);
         match node {
             | HashTrieNode::Inner(table) => {
+                if prune && table.get(hash).is_none() {
+                    // Fresh bucket: the subtrie below holds exactly one tuple,
+                    // so store the tuple itself instead of one table per
+                    // remaining level.
+                    table.entry_or_insert_with(hash, || HashTrieNode::Singleton(tuple));
+                    return;
+                }
+                let child_is_leaf = Self::is_leaf_depth(depth + 1, arity);
                 let child = table.entry_or_insert_with(hash, || {
                     // The child lives at `depth + 1`; it is the leaf when that
                     // is the last attribute.
-                    if Self::is_leaf_depth(depth + 1, arity) {
+                    if child_is_leaf {
                         HashTrieNode::new_leaf()
                     } else {
                         HashTrieNode::new_inner()
                     }
                 });
-                Self::insert_at(child, depth + 1, arity, tuple);
+                if matches!(child, HashTrieNode::Singleton(_)) {
+                    // Unprune: a second tuple has arrived, so the subtrie no
+                    // longer holds exactly one. Expand it back into a table
+                    // and re-insert the evicted tuple ahead of the new one;
+                    // the recursion re-prunes wherever the two diverge.
+                    let table_node = if child_is_leaf {
+                        HashTrieNode::new_leaf()
+                    } else {
+                        HashTrieNode::new_inner()
+                    };
+                    let HashTrieNode::Singleton(evicted) = std::mem::replace(child, table_node)
+                    else {
+                        unreachable!("matched Singleton above")
+                    };
+                    Self::insert_at(child, depth + 1, arity, evicted, prune);
+                }
+                Self::insert_at(child, depth + 1, arity, tuple, prune);
             },
             | HashTrieNode::Leaf(table) => {
                 let chain = table.entry_or_insert_with(hash, Vec::new);
                 chain.push(tuple);
+            },
+            | HashTrieNode::Singleton(_) => {
+                unreachable!(
+                    "insert_at descends through Inner/Leaf only; singletons are unpruned by the \
+                     parent"
+                )
             },
         }
     }
@@ -156,7 +194,7 @@ impl<H: HashStrategy> Relation for HashTrie<H> {
             self.header.arity()
         );
         let arity = self.header.arity();
-        Self::insert_at(&mut self.root, 0, arity, tuple);
+        Self::insert_at(&mut self.root, 0, arity, tuple, self.config.singleton_pruning);
         self.tuple_count += 1;
     }
 
@@ -194,7 +232,7 @@ impl<H: HashStrategy> ConfigurableRelation for HashTrie<H> {
                 tuple.len(),
                 arity,
             );
-            Self::insert_at(&mut trie.root, 0, arity, tuple);
+            Self::insert_at(&mut trie.root, 0, arity, tuple, config.singleton_pruning);
             // from_tuples bypasses insert(), so count here. If this loop is
             // ever refactored to route through insert(), drop this increment
             // or the counter double-counts.
@@ -287,6 +325,7 @@ fn node_heap_bytes(node: &HashTrieNode) -> usize {
                 .sum();
             shell + chains
         },
+        | HashTrieNode::Singleton(tuple) => tuple.capacity() * std::mem::size_of::<usize>(),
     }
 }
 
@@ -605,6 +644,144 @@ mod tests {
         let _: HashTrie = HashTrie::from_tuples_with_config(2.into(), HashTrieConfig::default(), vec![
             vec![1],
         ]);
+    }
+
+    // ── Singleton pruning ──────────────────────────────────────────────
+
+    const PRUNE: HashTrieConfig = HashTrieConfig {
+        singleton_pruning: true,
+    };
+
+    fn pruned(arity: usize, tuples: Vec<Vec<usize>>) -> HashTrie {
+        HashTrie::from_tuples_with_config(arity.into(), PRUNE, tuples)
+    }
+
+    /// Walks `node`, asserting the pruning invariant at every inner bucket
+    /// and returning the number of tuples stored below `node`.
+    ///
+    /// Invariant: under pruning a child is `Singleton` iff exactly one
+    /// tuple lives below it; without pruning no `Singleton` exists.
+    fn check_pruning_invariant(node: &HashTrieNode, prune: bool) -> usize {
+        match node {
+            | HashTrieNode::Singleton(_) => {
+                assert!(prune, "Singleton found with pruning off");
+                1
+            },
+            | HashTrieNode::Leaf(table) => table.iter().map(|(_, chain)| chain.len()).sum(),
+            | HashTrieNode::Inner(table) => table
+                .iter()
+                .map(|(_, child)| {
+                    let below = check_pruning_invariant(child, prune);
+                    if prune {
+                        assert_eq!(
+                            matches!(child, HashTrieNode::Singleton(_)),
+                            below == 1,
+                            "child holding {below} tuple(s) has wrong pruning state"
+                        );
+                    }
+                    below
+                })
+                .sum(),
+        }
+    }
+
+    #[test]
+    fn pruning_off_never_creates_singletons() {
+        let trie: HashTrie =
+            HashTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![1, 2, 4], vec![5, 6, 7]]);
+        assert_eq!(check_pruning_invariant(&trie.root, false), 3);
+    }
+
+    #[test]
+    fn pruning_on_single_tuple_subtries_are_singletons() {
+        let trie = pruned(3, vec![vec![1, 2, 3], vec![5, 6, 7]]);
+        assert_eq!(check_pruning_invariant(&trie.root, true), 2);
+        match &trie.root {
+            | HashTrieNode::Inner(t) => {
+                assert_eq!(t.len(), 2);
+                for (_, child) in t.iter() {
+                    assert!(matches!(child, HashTrieNode::Singleton(_)));
+                }
+            },
+            | _ => panic!("expected Inner root"),
+        }
+    }
+
+    #[test]
+    fn unprune_when_second_tuple_diverges_one_level_down() {
+        let trie = pruned(3, vec![vec![1, 2, 3], vec![1, 4, 5]]);
+        assert_eq!(check_pruning_invariant(&trie.root, true), 2);
+        let mut got = trie.collect_tuples();
+        got.sort();
+        assert_eq!(got, vec![vec![1, 2, 3], vec![1, 4, 5]]);
+    }
+
+    #[test]
+    fn unprune_when_second_tuple_shares_hashes_to_the_leaf() {
+        let trie = pruned(3, vec![vec![1, 2, 3], vec![1, 2, 4]]);
+        assert_eq!(check_pruning_invariant(&trie.root, true), 2);
+        let mut got = trie.collect_tuples();
+        got.sort();
+        assert_eq!(got, vec![vec![1, 2, 3], vec![1, 2, 4]]);
+    }
+
+    #[test]
+    fn unprune_on_exact_duplicate_keeps_multiset() {
+        let trie = pruned(2, vec![vec![1, 2], vec![1, 2]]);
+        assert_eq!(check_pruning_invariant(&trie.root, true), 2);
+        let mut got = trie.collect_tuples();
+        got.sort();
+        assert_eq!(got, vec![vec![1, 2], vec![1, 2]]);
+    }
+
+    #[test]
+    fn incremental_insert_unprunes_like_bulk_build() {
+        let mut trie: HashTrie = HashTrie::with_config(3.into(), PRUNE);
+        trie.insert(vec![1, 2, 3]);
+        assert_eq!(check_pruning_invariant(&trie.root, true), 1);
+        trie.insert(vec![1, 2, 4]);
+        assert_eq!(check_pruning_invariant(&trie.root, true), 2);
+        trie.insert(vec![9, 9, 9]);
+        assert_eq!(check_pruning_invariant(&trie.root, true), 3);
+        assert_eq!(trie.tuple_count, 3);
+    }
+
+    #[test]
+    fn pruned_shape_is_insertion_order_independent() {
+        use crate::heap_size::HeapSize;
+        let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
+        let forward = pruned(3, tuples.clone());
+        let backward = pruned(3, tuples.into_iter().rev().collect());
+        assert_eq!(forward.heap_size_bytes(), backward.heap_size_bytes());
+        let (mut a, mut b) = (forward.collect_tuples(), backward.collect_tuples());
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn pruning_shrinks_heap_size_for_sparse_fanout() {
+        use crate::heap_size::HeapSize;
+        let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i, i + 1000, i + 2000]).collect();
+        let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
+        let compact = pruned(3, tuples);
+        assert!(
+            compact.heap_size_bytes() < plain.heap_size_bytes(),
+            "pruned {} >= plain {}",
+            compact.heap_size_bytes(),
+            plain.heap_size_bytes()
+        );
+    }
+
+    #[test]
+    fn pruned_and_plain_collect_the_same_tuples() {
+        let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
+        let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
+        let compact = pruned(3, tuples);
+        let (mut a, mut b) = (plain.collect_tuples(), compact.collect_tuples());
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
     }
 }
 
