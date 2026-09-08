@@ -17,3 +17,10 @@ def test_ignores_absent_columns() -> None:
     df = pd.DataFrame({"unrelated": [pd.NA]})
     out = apply_axis_defaults(df)
     assert out["unrelated"].isna().all()  # no crash, untouched
+
+
+def test_singleton_pruning_defaults_to_false() -> None:
+    df = pd.DataFrame({"ds_config_singleton_pruning": [pd.NA, True]})
+    out = apply_axis_defaults(df)
+    assert out["ds_config_singleton_pruning"].tolist() == [False, True]
+    assert AXIS_DEFAULTS["ds_config_singleton_pruning"] is False
