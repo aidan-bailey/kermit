@@ -49,6 +49,7 @@ type HashTrieMod10 = HashTrie<Mod10HashStrategy>;
 // shared leaf chain.
 define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
     singleton_pruning: true,
+    ..HashTrieConfig::default()
 });
 
 type HashTrieSipPruned = Configured<HashTrieSip, PruningOn>;

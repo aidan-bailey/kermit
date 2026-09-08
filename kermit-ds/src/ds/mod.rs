@@ -9,7 +9,10 @@ mod tree_trie;
 use {clap::ValueEnum, std::str::FromStr};
 pub use {
     column_trie::ColumnTrie,
-    hash_trie::{HashTrie, HashTrieConfig, NoPruning, PruningPolicy, SingletonPruning},
+    hash_trie::{
+        HashTrie, HashTrieConfig, InvalidLoadFactor, LoadFactor, NoPruning, PruningPolicy,
+        SingletonPruning,
+    },
     tree_trie::TreeTrie,
 };
 

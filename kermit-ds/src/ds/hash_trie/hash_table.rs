@@ -9,11 +9,7 @@
 //!
 //! Internal to the `hash_trie` module. Not exposed outside the crate.
 
-/// Maximum load factor before the table doubles, expressed as the exact
-/// fraction `LOAD_FACTOR_NUM / LOAD_FACTOR_DEN` = 7/10 = 0.7. Integer
-/// arithmetic keeps the resize test exact (no float rounding).
-const LOAD_FACTOR_NUM: usize = 7;
-const LOAD_FACTOR_DEN: usize = 10;
+use super::config::LoadFactor;
 
 /// A bucket entry stores the full 64-bit hash (for collision disambiguation
 /// during linear probing) and the value.
@@ -25,8 +21,8 @@ pub(crate) struct Entry<V> {
 /// Open-addressing hash table.
 ///
 /// Capacity is always `2^log2_capacity`. The initial capacity is 4
-/// (`log2_capacity = 2`). The table grows by doubling when load factor
-/// exceeds 0.7.
+/// (`log2_capacity = 2`). The table grows by doubling when occupancy
+/// exceeds the configured load factor, 70 % by default.
 pub(crate) struct HashTable<V> {
     log2_capacity: u32,
     len: usize,
@@ -85,14 +81,18 @@ impl<V> HashTable<V> {
     /// Insert at `hash`, or return a `&mut V` to the existing entry. The
     /// `default` closure is invoked only if the slot is currently empty.
     ///
-    /// Resizes the table when load factor would exceed 0.7 (see [`grow`]).
-    pub fn entry_or_insert_with<F: FnOnce() -> V>(&mut self, hash: u64, default: F) -> &mut V {
+    /// Resizes the table when the occupancy would exceed `load_factor`
+    /// (see [`Self::grow`]). The cap is a parameter rather than a field so
+    /// that varying it costs no space per table.
+    pub fn entry_or_insert_with<F: FnOnce() -> V>(
+        &mut self, hash: u64, load_factor: LoadFactor, default: F,
+    ) -> &mut V {
         let cap = self.buckets.len();
         let start = self.bucket_index(hash);
         let mut idx = start;
         // Pre-resize probe: this loop must both detect an *existing* entry
         // (return it, no insert) and locate the first empty slot. It is
-        // bounded by `cap` for safety, though the 0.7 load factor guarantees
+        // bounded by `cap` for safety, though the load-factor cap guarantees
         // an empty bucket exists. Breaking on `None` leaves `idx` at that
         // empty slot.
         for _ in 0..cap {
@@ -104,11 +104,10 @@ impl<V> HashTable<V> {
                 | None => break,
             }
         }
-        // About to insert a new entry. Check load factor first: resize when
-        // the load factor would exceed 0.7.
-        //   LF > 0.7  ⇔  (len + 1) / capacity > NUM / DEN
-        //            ⇔  (len + 1) * DEN > capacity * NUM
-        if (self.len + 1) * LOAD_FACTOR_DEN > cap * LOAD_FACTOR_NUM {
+        // About to insert a new entry. Check the cap first:
+        //   LF > p/100  ⇔  (len + 1) / capacity > p / 100
+        //              ⇔  (len + 1) * 100 > capacity * p
+        if (self.len + 1) * load_factor.denominator() > cap * load_factor.numerator() {
             self.grow();
             let cap = self.buckets.len();
             let mut idx = self.bucket_index(hash);
@@ -139,7 +138,8 @@ impl<V> HashTable<V> {
     }
 
     /// Double capacity and rehash all entries. Called by
-    /// `entry_or_insert_with` when load factor would exceed 0.7.
+    /// `entry_or_insert_with` when occupancy would exceed the caller's
+    /// load-factor cap.
     fn grow(&mut self) {
         self.log2_capacity += 1;
         let new_cap = 1usize << self.log2_capacity;
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn entry_inserts_new_value() {
         let mut t: HashTable<u32> = HashTable::new();
-        *t.entry_or_insert_with(0x4000_0000_0000_0000, || 99) = 99;
+        *t.entry_or_insert_with(0x4000_0000_0000_0000, LoadFactor::default(), || 99) = 99;
         assert_eq!(t.get(0x4000_0000_0000_0000), Some(&99));
         assert_eq!(t.len(), 1);
     }
@@ -306,9 +306,9 @@ mod tests {
     #[test]
     fn entry_returns_existing_value() {
         let mut t: HashTable<u32> = HashTable::new();
-        *t.entry_or_insert_with(0x4000_0000_0000_0000, || 99) = 99;
+        *t.entry_or_insert_with(0x4000_0000_0000_0000, LoadFactor::default(), || 99) = 99;
         let mut called = false;
-        let _ = t.entry_or_insert_with(0x4000_0000_0000_0000, || {
+        let _ = t.entry_or_insert_with(0x4000_0000_0000_0000, LoadFactor::default(), || {
             called = true;
             0
         });
@@ -320,8 +320,8 @@ mod tests {
     #[test]
     fn entry_handles_probe_collision() {
         let mut t: HashTable<u32> = HashTable::new();
-        *t.entry_or_insert_with(0x4000_0000_0000_0000, || 1) = 1;
-        *t.entry_or_insert_with(0x4000_0000_0000_0001, || 2) = 2;
+        *t.entry_or_insert_with(0x4000_0000_0000_0000, LoadFactor::default(), || 1) = 1;
+        *t.entry_or_insert_with(0x4000_0000_0000_0001, LoadFactor::default(), || 2) = 2;
         assert_eq!(t.get(0x4000_0000_0000_0000), Some(&1));
         assert_eq!(t.get(0x4000_0000_0000_0001), Some(&2));
         assert_eq!(t.len(), 2);
@@ -339,7 +339,7 @@ mod tests {
             0x8000_0000_0000_0000, // bucket 2
         ];
         for (i, &h) in hashes.iter().enumerate() {
-            *t.entry_or_insert_with(h, || i as u32) = i as u32;
+            *t.entry_or_insert_with(h, LoadFactor::default(), || i as u32) = i as u32;
         }
         assert_eq!(t.len(), 3);
         // After 3 inserts (LF would be 3/4 = 0.75 without resize), the table
@@ -363,7 +363,7 @@ mod tests {
             (0xF000_0000_0000_0000, "e".to_string()),
         ];
         for (h, v) in &inputs {
-            *t.entry_or_insert_with(*h, || v.clone()) = v.clone();
+            *t.entry_or_insert_with(*h, LoadFactor::default(), || v.clone()) = v.clone();
         }
         for (h, v) in &inputs {
             assert_eq!(t.get(*h), Some(v));
@@ -379,7 +379,7 @@ mod tests {
             (0x9000_0000_0000_0000_u64, 3u32),
         ];
         for (h, v) in &inputs {
-            *t.entry_or_insert_with(*h, || *v) = *v;
+            *t.entry_or_insert_with(*h, LoadFactor::default(), || *v) = *v;
         }
         let mut collected: Vec<(u64, u32)> = t.iter().map(|(h, v)| (h, *v)).collect();
         collected.sort_by_key(|&(h, _)| h);
@@ -394,5 +394,36 @@ mod tests {
     fn iter_empty_table_yields_nothing() {
         let t: HashTable<u32> = HashTable::new();
         assert_eq!(t.iter().count(), 0);
+    }
+
+    /// With cap `p`%, the table doubles exactly on the insert that would
+    /// push `(len + 1) / capacity` above `p / 100`.
+    #[test]
+    fn resizes_exactly_at_the_configured_cap() {
+        for percent in [50u8, 70, 90] {
+            let lf = LoadFactor::percent(percent).unwrap();
+            let mut t: HashTable<usize> = HashTable::new();
+            let mut last_cap = t.buckets_len();
+            let mut hash: u64 = 1;
+            for _ in 0..64 {
+                let before_len = t.len();
+                t.entry_or_insert_with(hash, lf, || 0);
+                if t.buckets_len() != last_cap {
+                    // Doubled on this insert: the *previous* occupancy plus one
+                    // must have exceeded the cap for the old capacity.
+                    assert!(
+                        (before_len + 1) * 100 > last_cap * usize::from(percent),
+                        "{percent}%: grew early at len {before_len}, cap {last_cap}"
+                    );
+                    last_cap = t.buckets_len();
+                } else {
+                    assert!(
+                        (before_len + 1) * 100 <= last_cap * usize::from(percent),
+                        "{percent}%: should have grown at len {before_len}, cap {last_cap}"
+                    );
+                }
+                hash = hash.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+            }
+        }
     }
 }

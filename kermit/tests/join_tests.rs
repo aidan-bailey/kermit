@@ -27,6 +27,7 @@ define_multiway_join_test_suite!(HashTrieFx, HashTriejoin, CardinalityOptimiser)
 // obligation (baseline + ≥1 alternate per flag).
 define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
     singleton_pruning: true,
+    ..HashTrieConfig::default()
 });
 
 define_multiway_join_test_suite_with_config!(

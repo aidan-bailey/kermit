@@ -517,6 +517,7 @@ mod tests {
         );
         let config = HashTrieConfig {
             singleton_pruning: true,
+            ..HashTrieConfig::default()
         };
         let hash = HashHtj::<kermit_iters::FxHashStrategy>::new(
             HasherChoice::Fxhash,
@@ -536,6 +537,7 @@ mod tests {
     fn hash_family_builds_relations_with_its_config() {
         let config = HashTrieConfig {
             singleton_pruning: true,
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
             HasherChoice::Sip,
@@ -558,6 +560,7 @@ mod tests {
     fn hash_family_load_honours_its_config() {
         let config = HashTrieConfig {
             singleton_pruning: true,
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
             HasherChoice::Sip,
@@ -584,6 +587,7 @@ mod tests {
     fn hash_family_build_relation_honours_its_config() {
         let config = HashTrieConfig {
             singleton_pruning: true,
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
             HasherChoice::Sip,

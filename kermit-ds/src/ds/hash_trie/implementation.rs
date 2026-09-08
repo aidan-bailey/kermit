@@ -14,7 +14,10 @@
 //! [`ConfigurableRelation`](crate::relation::ConfigurableRelation).
 
 use {
-    super::{config::HashTrieConfig, node::HashTrieNode},
+    super::{
+        config::{HashTrieConfig, LoadFactor},
+        node::HashTrieNode,
+    },
     crate::relation::{ConfigurableRelation, Relation, RelationHeader},
     kermit_iters::{ConfigOption, HashStrategy, JoinIterable, SipHashStrategy},
     std::marker::PhantomData,
@@ -124,6 +127,7 @@ impl<H: HashStrategy> HashTrie<H> {
     /// only the incoming tuple to keep descending.
     fn insert_at(
         node: &mut HashTrieNode, depth: usize, arity: usize, tuple: Vec<usize>, prune: bool,
+        load_factor: LoadFactor,
     ) {
         let key = tuple[depth];
         let hash = H::hash(key);
@@ -135,14 +139,15 @@ impl<H: HashStrategy> HashTrie<H> {
                     // remaining level. The closure always runs — absence was
                     // just proven — so this is two O(1) probes, kept over a
                     // special-cased insert for readability.
-                    table.entry_or_insert_with(hash, || HashTrieNode::Singleton(tuple));
+                    table.entry_or_insert_with(hash, load_factor, || HashTrieNode::Singleton(tuple));
                     return;
                 }
                 // The child lives at `depth + 1`; it is the leaf when that is
                 // the last attribute.
                 let child_is_leaf = Self::is_leaf_depth(depth + 1, arity);
-                let child =
-                    table.entry_or_insert_with(hash, || HashTrieNode::new_table(child_is_leaf));
+                let child = table.entry_or_insert_with(hash, load_factor, || {
+                    HashTrieNode::new_table(child_is_leaf)
+                });
                 if matches!(child, HashTrieNode::Singleton(_)) {
                     // Unprune: a second tuple has arrived, so the subtrie no
                     // longer holds exactly one. Swap in the table this level
@@ -154,12 +159,12 @@ impl<H: HashStrategy> HashTrie<H> {
                     else {
                         unreachable!("matched Singleton above")
                     };
-                    Self::insert_at(child, depth + 1, arity, evicted, prune);
+                    Self::insert_at(child, depth + 1, arity, evicted, prune, load_factor);
                 }
-                Self::insert_at(child, depth + 1, arity, tuple, prune);
+                Self::insert_at(child, depth + 1, arity, tuple, prune, load_factor);
             },
             | HashTrieNode::Leaf(table) => {
-                let chain = table.entry_or_insert_with(hash, Vec::new);
+                let chain = table.entry_or_insert_with(hash, load_factor, Vec::new);
                 chain.push(tuple);
             },
             | HashTrieNode::Singleton(_) => {
@@ -198,6 +203,7 @@ impl<H: HashStrategy> Relation for HashTrie<H> {
             arity,
             tuple,
             self.config.singleton_pruning,
+            self.config.load_factor,
         );
         self.tuple_count += 1;
     }
@@ -236,7 +242,14 @@ impl<H: HashStrategy> ConfigurableRelation for HashTrie<H> {
                 tuple.len(),
                 arity,
             );
-            Self::insert_at(&mut trie.root, 0, arity, tuple, config.singleton_pruning);
+            Self::insert_at(
+                &mut trie.root,
+                0,
+                arity,
+                tuple,
+                config.singleton_pruning,
+                config.load_factor,
+            );
             // from_tuples bypasses insert(), so count here. If this loop is
             // ever refactored to route through insert(), drop this increment
             // or the counter double-counts.
@@ -551,6 +564,7 @@ mod tests {
         let mut keys: Vec<&str> = axes.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, vec![
+            "ds_config_load_factor",
             "ds_config_singleton_pruning",
             "ds_layout_hasher"
         ]);
@@ -568,6 +582,7 @@ mod tests {
         let mut keys: Vec<&str> = axes.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, vec![
+            "ds_config_load_factor",
             "ds_config_singleton_pruning",
             "ds_layout_hasher"
         ]);
@@ -582,6 +597,7 @@ mod tests {
         use crate::relation::ConfigurableRelation;
         let on = HashTrieConfig {
             singleton_pruning: true,
+            ..HashTrieConfig::default()
         };
         let trie: HashTrie = HashTrie::with_config(2.into(), on);
         assert_eq!(*trie.config(), on);
@@ -594,6 +610,7 @@ mod tests {
         use crate::relation::{ConfigurableRelation, Projectable};
         let on = HashTrieConfig {
             singleton_pruning: true,
+            ..HashTrieConfig::default()
         };
         let trie: HashTrie =
             HashTrie::from_tuples_with_config(2.into(), on, vec![vec![1, 2], vec![3, 4]]);
@@ -609,12 +626,17 @@ mod tests {
         use {crate::relation::ConfigurableRelation, kermit_iters::HasOptimizationAxes};
         let on = HashTrieConfig {
             singleton_pruning: true,
+            ..HashTrieConfig::default()
         };
         let trie: HashTrie = HashTrie::with_config(2.into(), on);
         let axes = trie.optimization_axes();
         assert_eq!(
             axes.get("ds_config_singleton_pruning"),
             Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            axes.get("ds_config_load_factor"),
+            Some(&serde_json::Value::from(0.7_f64))
         );
         assert_eq!(
             axes.get("ds_layout_hasher"),
@@ -639,6 +661,7 @@ mod tests {
         use crate::relation::ConfigurableRelation;
         let on = HashTrieConfig {
             singleton_pruning: true,
+            ..HashTrieConfig::default()
         };
         let mut trie: HashTrie = HashTrie::with_config(2.into(), on);
         trie.insert(vec![1, 2]);
@@ -659,6 +682,7 @@ mod tests {
 
     const PRUNE: HashTrieConfig = HashTrieConfig {
         singleton_pruning: true,
+        load_factor: LoadFactor::DEFAULT,
     };
 
     fn pruned(arity: usize, tuples: Vec<Vec<usize>>) -> HashTrie {

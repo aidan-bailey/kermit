@@ -31,6 +31,7 @@ parquet_test_suite!(HashTrieFx, sorted_tuples);
 // still yield every stored tuple.
 define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
     singleton_pruning: true,
+    ..HashTrieConfig::default()
 });
 
 type HashTrieSipPruned = Configured<HashTrieSip, PruningOn>;

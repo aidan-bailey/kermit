@@ -2115,7 +2115,8 @@ mod tests {
             ds_config: vec!["singleton-pruning=true".into()],
         };
         assert_eq!(on.hash_trie_config_resolved().unwrap(), HashTrieConfig {
-            singleton_pruning: true
+            singleton_pruning: true,
+            ..HashTrieConfig::default()
         });
         let off = ConfigChoices {
             ds_config: vec!["singleton-pruning=false".into()],

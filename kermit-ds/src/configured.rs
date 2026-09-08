@@ -46,6 +46,7 @@ pub trait ConfigProvider<C> {
 ///
 /// define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
 ///     singleton_pruning: true,
+///     ..HashTrieConfig::default()
 /// });
 ///
 /// type HashTrieSipPruned = Configured<HashTrie<SipHashStrategy>, PruningOn>;
@@ -164,6 +165,7 @@ mod tests {
 
     crate::define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
         singleton_pruning: true,
+        ..HashTrieConfig::default()
     });
 
     type Pruned = Configured<HashTrie<SipHashStrategy>, PruningOn>;

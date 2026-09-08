@@ -27,8 +27,8 @@ pub use {
     cardinality::Cardinality,
     configured::{ConfigProvider, Configured},
     ds::{
-        ColumnTrie, HashTrie, HashTrieConfig, IndexStructure, NoPruning, PruningPolicy,
-        SingletonPruning, TreeTrie,
+        ColumnTrie, HashTrie, HashTrieConfig, IndexStructure, InvalidLoadFactor, LoadFactor,
+        NoPruning, PruningPolicy, SingletonPruning, TreeTrie,
     },
     heap_size::HeapSize,
     relation::{

@@ -453,6 +453,7 @@ mod tests {
 
     const PRUNE: HashTrieConfig = HashTrieConfig {
         singleton_pruning: true,
+        load_factor: crate::ds::hash_trie::config::LoadFactor::DEFAULT,
     };
 
     fn h(k: usize) -> u64 { <SipHashStrategy as HashStrategy>::hash(k) }

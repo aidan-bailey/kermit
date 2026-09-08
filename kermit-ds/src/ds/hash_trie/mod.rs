@@ -17,7 +17,7 @@ mod node;
 mod pruning;
 
 pub use {
-    config::HashTrieConfig,
+    config::{HashTrieConfig, InvalidLoadFactor, LoadFactor},
     implementation::HashTrie,
     pruning::{NoPruning, PruningPolicy, SingletonPruning},
 };
