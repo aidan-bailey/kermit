@@ -29,7 +29,7 @@ pub use {
     ds::{ColumnTrie, HashTrie, HashTrieConfig, IndexStructure, TreeTrie},
     heap_size::HeapSize,
     relation::{
-        ConfigurableRelation, ModelType, Projectable, Relation, RelationError, RelationFileExt,
-        RelationHeader,
+        read_csv, read_parquet, ConfigurableRelation, ModelType, Projectable, Relation,
+        RelationError, RelationFileExt, RelationHeader,
     },
 };
