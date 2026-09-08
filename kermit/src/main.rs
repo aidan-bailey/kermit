@@ -16,7 +16,10 @@ use {
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HashTrie, HashTrieConfig, HeapSize, IndexStructure, Relation, RelationFileExt},
+    kermit_ds::{
+        ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize, IndexStructure, Relation,
+        RelationFileExt,
+    },
     kermit_iters::{
         FxHashStrategy, HasOptimizationAxes, HashStrategy, SipHashStrategy, TrieIterable,
     },
@@ -241,6 +244,72 @@ fn validate_layout_choices(
     Ok(())
 }
 
+/// Config-axis CLI choices, flattened beside [`LayoutChoices`] into `bench
+/// ds` and `bench run`. One flag, `--ds-config`, takes comma-separated
+/// `key=value` pairs (the shape prescribed by
+/// `docs/specs/optimization-standard.md`); the keys are resolved per index
+/// structure by [`hash_trie_config_resolved`](Self::hash_trie_config_resolved).
+#[derive(Args, Clone, Debug, Default)]
+struct ConfigChoices {
+    /// Runtime flags for the selected index structure, as `key=value`
+    /// pairs. `HashTrie` accepts `singleton-pruning=true|false`. Only valid
+    /// with `--indexstructure hash-trie` (or `all`).
+    #[arg(long = "ds-config", value_name = "KEY=VALUE,...", value_delimiter = ',')]
+    ds_config: Vec<String>,
+}
+
+impl ConfigChoices {
+    /// The `--ds-config` keys `HashTrie` accepts, named in the usage error
+    /// raised for any other key.
+    const HASH_TRIE_KEYS: &'static [&'static str] = &["singleton-pruning"];
+
+    /// Whether the user passed any `--ds-config` pair.
+    fn explicit(&self) -> bool { !self.ds_config.is_empty() }
+
+    /// Resolves the pairs into a [`HashTrieConfig`], starting from the
+    /// default. Unknown keys and malformed values are usage errors.
+    fn hash_trie_config_resolved(&self) -> anyhow::Result<HashTrieConfig> {
+        let mut config = HashTrieConfig::default();
+        for pair in &self.ds_config {
+            let (key, value) = pair.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("--ds-config expects key=value pairs; got {pair:?}")
+            })?;
+            match key {
+                | "singleton-pruning" => {
+                    config.singleton_pruning = value.parse::<bool>().map_err(|_| {
+                        anyhow::anyhow!("--ds-config {key}: expected true or false, got {value:?}")
+                    })?;
+                },
+                | other => anyhow::bail!(
+                    "--ds-config: unknown key {other:?} for hash-trie; accepted keys: {}",
+                    Self::HASH_TRIE_KEYS.join(", ")
+                ),
+            }
+        }
+        Ok(config)
+    }
+}
+
+/// Rejects `--ds-config` on index structures that have no Config axis, so
+/// a report can never carry a `ds_config_*` axis the structure ignored.
+/// Same discipline as [`validate_layout_choices`].
+fn validate_config_choices(
+    indexstructure: IndexStructureSelector, config: &ConfigChoices,
+) -> anyhow::Result<()> {
+    if config.explicit()
+        && !matches!(
+            indexstructure,
+            IndexStructureSelector::HashTrie | IndexStructureSelector::All
+        )
+    {
+        anyhow::bail!(
+            "--ds-config is only valid with --indexstructure hash-trie (or all); got \
+             --indexstructure {indexstructure:?}"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Args)]
 struct BenchArgs {
     /// Name for the Criterion benchmark group
@@ -319,6 +388,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         layout: LayoutChoices,
+
+        #[command(flatten)]
+        config: ConfigChoices,
     },
 
     /// Run a named benchmark from benchmarks/ YAML files
@@ -380,6 +452,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         layout: LayoutChoices,
+
+        #[command(flatten)]
+        config: ConfigChoices,
     },
 
     /// List available benchmarks
@@ -820,19 +895,19 @@ where
 /// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
 fn run_ds_bench_hash<H: HashStrategy>(
     relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric],
-    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
+    queries_per_build: u32, config: HashTrieConfig, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
     let extension = relation_path
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let relation: HashTrie<H> = match extension.to_lowercase().as_str() {
-        | "csv" => HashTrie::<H>::from_csv(relation_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
-        | "parquet" => HashTrie::<H>::from_parquet(relation_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
+    let (header, tuples) = match extension.to_lowercase().as_str() {
+        | "csv" => kermit_ds::read_csv(relation_path),
+        | "parquet" => kermit_ds::read_parquet(relation_path),
         | _ => anyhow::bail!("Unsupported file extension: {extension}"),
-    };
+    }
+    .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?;
+    let relation: HashTrie<H> = HashTrie::<H>::from_tuples_with_config(header, config, tuples);
 
     let tuples: Vec<Vec<usize>> = relation.collect_tuples();
     let header = relation.header().clone();
@@ -869,7 +944,7 @@ fn run_ds_bench_hash<H: HashStrategy>(
             group.bench_function(&function, |b| {
                 b.iter_batched(
                     || (insertion_header.clone(), insertion_tuples.clone()),
-                    |(h, t)| HashTrie::<H>::from_tuples(h, t),
+                    |(h, t)| HashTrie::<H>::from_tuples_with_config(h, config, t),
                     criterion::BatchSize::SmallInput,
                 );
             });
@@ -903,7 +978,7 @@ fn run_ds_bench_hash<H: HashStrategy>(
                 b.iter_batched(
                     || (e2e_header.clone(), e2e_tuples.clone()),
                     |(h, t)| {
-                        let built = HashTrie::<H>::from_tuples(h, t);
+                        let built = HashTrie::<H>::from_tuples_with_config(h, config, t);
                         for _ in 0..queries_per_build {
                             std::hint::black_box(built.collect_tuples());
                         }
@@ -1438,9 +1513,10 @@ fn run_bench_join(
 /// `TrieIterable`), so it routes through `run_ds_bench_hash` rather than the
 /// generic `run_ds_bench<R>`. The `H: HashStrategy` parameter is picked from
 /// the `--ds-layout-hasher` CLI flag (`hasher`).
+#[allow(clippy::too_many_arguments)]
 fn dispatch_ds_bench(
-    ds: IndexStructure, hasher: HasherChoice, relation: &Path, metrics: &[Metric],
-    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
+    ds: IndexStructure, hasher: HasherChoice, config: HashTrieConfig, relation: &Path,
+    metrics: &[Metric], queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
     match ds {
         | IndexStructure::TreeTrie => run_ds_bench::<kermit_ds::TreeTrie>(
@@ -1465,6 +1541,7 @@ fn dispatch_ds_bench(
                 ds,
                 metrics,
                 queries_per_build,
+                config,
                 group_name,
                 bench_args,
             ),
@@ -1473,6 +1550,7 @@ fn dispatch_ds_bench(
                 ds,
                 metrics,
                 queries_per_build,
+                config,
                 group_name,
                 bench_args,
             ),
@@ -1482,17 +1560,21 @@ fn dispatch_ds_bench(
 
 /// Handler for `bench ds`: benchmark one or more index structures over a
 /// single relation file and write the reports.
+#[allow(clippy::too_many_arguments)]
 fn run_ds_bench_command(
     bench_args: &BenchArgs, relation: PathBuf, indexstructure: IndexStructureSelector,
-    metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices,
+    metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices, config: ConfigChoices,
 ) -> anyhow::Result<()> {
     validate_layout_choices(indexstructure, &layout)?;
+    validate_config_choices(indexstructure, &config)?;
+    let hash_trie_config = config.hash_trie_config_resolved()?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
     let mut reports: Vec<BenchReport> = Vec::new();
     for ds in indexstructure.expand() {
         let report = dispatch_ds_bench(
             ds,
             layout.hash_trie_hasher_resolved(),
+            hash_trie_config,
             &relation,
             &metrics,
             queries_per_build,
@@ -1596,13 +1678,16 @@ fn run_bench_run_command(
     bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, optimiser: Optimiser,
     metrics: Vec<Metric>, queries_per_build: u32, force: bool, layout: LayoutChoices,
+    config: ConfigChoices,
 ) -> anyhow::Result<()> {
     validate_layout_choices(indexstructure, &layout)?;
+    validate_config_choices(indexstructure, &config)?;
+    let hash_trie_config = config.hash_trie_config_resolved()?;
     let cells = resolve_sweep(
         indexstructure,
         algorithm,
         layout.hash_trie_hasher_resolved(),
-        HashTrieConfig::default(),
+        hash_trie_config,
     )?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
@@ -1817,6 +1902,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 layout,
+                config,
             } => run_ds_bench_command(
                 &bench_args,
                 relation,
@@ -1824,6 +1910,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 layout,
+                config,
             )?,
 
             | BenchSubcommand::Run {
@@ -1837,6 +1924,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 force,
                 layout,
+                config,
             } => run_bench_run_command(
                 &bench_args,
                 name,
@@ -1849,6 +1937,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 force,
                 layout,
+                config,
             )?,
 
             | BenchSubcommand::Gen {
@@ -1999,6 +2088,71 @@ mod tests {
                 "default LayoutChoices should pass on {sel:?}"
             );
         }
+    }
+
+    #[test]
+    fn config_choices_parse_singleton_pruning() {
+        let on = ConfigChoices {
+            ds_config: vec!["singleton-pruning=true".into()],
+        };
+        assert_eq!(on.hash_trie_config_resolved().unwrap(), HashTrieConfig {
+            singleton_pruning: true
+        });
+        let off = ConfigChoices {
+            ds_config: vec!["singleton-pruning=false".into()],
+        };
+        assert_eq!(
+            off.hash_trie_config_resolved().unwrap(),
+            HashTrieConfig::default()
+        );
+        assert_eq!(
+            ConfigChoices::default().hash_trie_config_resolved().unwrap(),
+            HashTrieConfig::default()
+        );
+    }
+
+    #[test]
+    fn config_choices_reject_unknown_key_and_bad_value() {
+        let unknown = ConfigChoices {
+            ds_config: vec!["lazy-expansion=true".into()],
+        };
+        let msg = unknown.hash_trie_config_resolved().unwrap_err().to_string();
+        assert!(msg.contains("lazy-expansion"), "{msg}");
+        assert!(
+            msg.contains("singleton-pruning"),
+            "should list accepted keys: {msg}"
+        );
+
+        let bad = ConfigChoices {
+            ds_config: vec!["singleton-pruning=yes".into()],
+        };
+        let msg = bad.hash_trie_config_resolved().unwrap_err().to_string();
+        assert!(msg.contains("yes"), "{msg}");
+
+        let malformed = ConfigChoices {
+            ds_config: vec!["singleton-pruning".into()],
+        };
+        assert!(malformed.hash_trie_config_resolved().is_err());
+    }
+
+    #[test]
+    fn validate_config_choices_rejects_flag_on_non_hash_trie() {
+        let config = ConfigChoices {
+            ds_config: vec!["singleton-pruning=true".into()],
+        };
+        assert!(validate_config_choices(IndexStructureSelector::HashTrie, &config).is_ok());
+        assert!(validate_config_choices(IndexStructureSelector::All, &config).is_ok());
+        for sel in [
+            IndexStructureSelector::TreeTrie,
+            IndexStructureSelector::ColumnTrie,
+        ] {
+            let msg = validate_config_choices(sel, &config).unwrap_err().to_string();
+            assert!(msg.contains("--ds-config"), "{msg}");
+        }
+        assert!(
+            validate_config_choices(IndexStructureSelector::TreeTrie, &ConfigChoices::default())
+                .is_ok()
+        );
     }
 
     fn make_generator_def(name: &str, spec: kermit_bench::GeneratorSpec) -> BenchmarkDefinition {
