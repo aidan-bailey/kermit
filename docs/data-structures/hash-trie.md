@@ -60,7 +60,7 @@ Let `n` = tuple count, `a` = arity, `b` = max chain length at a leaf bucket.
 | `HashTrieIterator::leaf_tuples()` | O(1) | | slice of the current bucket's tuple chain |
 | `HeapSize::heap_size_bytes()` | O(node count) | | walks the trie recursively summing `HashTable` shell + tuple-chain bytes |
 
-The "amortized O(1)" claims assume good hash distribution (no chronic clustering on linear probes). For pathologically bad inputs (e.g., all keys hashing to the same bucket), `lookup` degrades to O(capacity). Per CLAUDE.md Priorities item 2, swapping out the hash function for a fast non-cryptographic alternative (ahash, fxhash) is a deferred optimization documented in the spec.
+The "amortized O(1)" claims assume good hash distribution (no chronic clustering on linear probes). For pathologically bad inputs (e.g., all keys hashing to the same bucket), `lookup` degrades to O(capacity). The hash function is a Layout choice, not a fixed cost: `fxhash` (`FxHashStrategy`) is implemented and selectable with `--ds-layout-hasher fxhash` — see [Layout options](#layout-options). Other non-cryptographic alternatives (`ahash`, AquaHash) remain unimplemented.
 
 ## Worked micro-example
 
@@ -81,14 +81,16 @@ HashTrie {
 }
 ```
 
+That is the unpruned shape (`singleton_pruning` off, the default). With pruning on, the child for `1` holds two tuples and stays a `Leaf` table, while the child for `2` holds exactly one and collapses to `Singleton([2, 4])` — so step 6 below pushes a `Singleton` frame instead of a `Table` frame, and its `key()` / `leaf_tuples()` answers are unchanged.
+
 Iteration walk (`hash_trie_iter()`):
 
-1. `open()` → stack: `[(root, i₁)]`. `key()` returns `h(1)`.
-2. `open()` → stack: `[(root, i₁), (child_for_1, j₁)]`. `key()` returns `h(2)`. `leaf_tuples()` returns `&[[1, 2]]`.
-3. `next()` → stack deepest: `(child_for_1, j₂)`. `key()` returns `h(3)`. `leaf_tuples()` returns `&[[1, 3]]`.
-4. `next()` → at end at depth 2. `up()` → stack: `[(root, i₁)]`.
-5. `next()` → stack: `[(root, i₂)]`. `key()` returns `h(2)`.
-6. `open()` → stack deepest: `(child_for_2, j₃)`. `key()` returns `h(4)`. `leaf_tuples()` returns `&[[2, 4]]`.
+1. `open()` → stack: `[Table(root, i₁)]`. `key()` returns `h(1)`.
+2. `open()` → stack: `[Table(root, i₁), Table(child_for_1, j₁)]`. `key()` returns `h(2)`. `leaf_tuples()` returns `&[[1, 2]]`.
+3. `next()` → stack deepest: `Table(child_for_1, j₂)`. `key()` returns `h(3)`. `leaf_tuples()` returns `&[[1, 3]]`.
+4. `next()` → at end at depth 2. `up()` → stack: `[Table(root, i₁)]`.
+5. `next()` → stack: `[Table(root, i₂)]`. `key()` returns `h(2)`.
+6. `open()` → stack deepest: `Table(child_for_2, j₃)`. `key()` returns `h(4)`. `leaf_tuples()` returns `&[[2, 4]]`. (Pruning on: a `Singleton` frame at depth 1 over `[2, 4]`, with the same `key()` and `leaf_tuples()`.)
 7. `up()`, `up()`, `next()` → empty stack. Done.
 
 ## When to prefer this structure

@@ -59,7 +59,7 @@ A **Config** option is a boolean (or enum) field on a config struct that's read 
 | Type system enforcement | Weaker (any config is type-compatible with any other) |
 | Switching at runtime | Yes (just change the flag) |
 | Bench axis key | `ds_config_<flag>` |
-| Examples (potential) | Singleton pruning, lazy expansion, load-factor tuning |
+| Examples (potential) | Singleton pruning ✓, lazy expansion, load-factor tuning |
 | Test obligation | Baseline + ≥1 alternate per flag via `define_multiway_join_test_suite_with_config!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) |
 
 ### BuildMode — *changes how the structure is built*
@@ -119,7 +119,8 @@ Error: --ds-layout-hasher is only valid with --indexstructure hash-trie (or all)
 
 ## What the bench report looks like
 
-The optimization choices flow into the existing `axes` field of `BenchReport`. Here's what you see today for a HashTrie + FxHash run:
+The optimization choices flow into the existing `axes` field of `BenchReport`. Here's what you see today for a HashTrie + FxHash run (HashTrie always emits
+its Config axis, so `ds_config_singleton_pruning` appears even at its default):
 
 ```json
 [
@@ -128,6 +129,7 @@ The optimization choices flow into the existing `axes` field of `BenchReport`. H
     "kind": "ds",
     "axes": {
       "data_structure": "HashTrie",
+      "ds_config_singleton_pruning": false,
       "ds_layout_hasher": "fxhash",
       "arity": 2,
       "relation_bytes": 24,
@@ -141,7 +143,7 @@ The optimization choices flow into the existing `axes` field of `BenchReport`. H
 ]
 ```
 
-The new key `ds_layout_hasher` sits alongside the existing axes. The convention is:
+The keys `ds_layout_hasher` and `ds_config_singleton_pruning` sit alongside the existing axes. The convention is:
 
 | Prefix | Used for | Example |
 |---|---|---|
@@ -241,18 +243,9 @@ pub trait HasOptimizationAxes {
 }
 ```
 
-Usage (HashTrie's actual impl):
-```rust
-impl<H: HashStrategy> HasOptimizationAxes for HashTrie<H> {
-    fn optimization_axes(&self) -> BTreeMap<String, Value> {
-        let mut axes = BTreeMap::new();
-        axes.insert("ds_layout_hasher".to_string(), H::NAME.into());
-        axes
-    }
-}
-```
-
-With the singleton-pruning Config landed, the impl composes both prefixes:
+Usage (`HashTrie`'s actual impl, in
+[`kermit-ds/src/ds/hash_trie/implementation.rs`](../../kermit-ds/src/ds/hash_trie/implementation.rs) —
+one Layout axis plus one `ds_config_*` axis per config flag):
 ```rust
 impl<H: HashStrategy> HasOptimizationAxes for HashTrie<H> {
     fn optimization_axes(&self) -> BTreeMap<String, Value> {
@@ -294,7 +287,7 @@ Suppose you want to add singleton pruning as a Config flag on HashTrie. The reci
 
 ### 1. Classify
 
-Singleton pruning is a runtime toggle (the iterator checks `if self.config.singleton_pruning { ... }`). It doesn't change the type, doesn't change the build process. **Category: Config.**
+Singleton pruning is a runtime flag, read at build time by `HashTrie::insert_at`; the iterator then branches on the node variant it finds, not on the config struct. It doesn't change the type, and it needs no per-mode constructor. **Category: Config.**
 
 ### 2. Define the config struct
 
@@ -303,7 +296,7 @@ In `kermit-ds/src/ds/hash_trie/config.rs`:
 ```rust
 use kermit_iters::ConfigOption;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HashTrieConfig {
     pub singleton_pruning: bool,
 }
@@ -385,12 +378,14 @@ Update `docs/data-structures/hash-trie.md` § Optimizations § Config flags to l
 
 ### 9. Verify the bench report
 
+`--report-json` is a `bench`-level flag, so it precedes the subcommand:
+
 ```bash
-kermit bench ds -i hash-trie --ds-config singleton-pruning=true \
-    --relation kermit/tests/fixtures/edge.csv \
-    --report-json /tmp/sp.json
+kermit bench --report-json /tmp/sp.json ds -i hash-trie \
+    --ds-config singleton-pruning=true \
+    --relation kermit/tests/fixtures/edge.csv -m space
 jq '.[0].axes' /tmp/sp.json
-# Should include "ds_config_singleton_pruning": true
+#   "ds_config_singleton_pruning": true,
 ```
 
 ---
@@ -499,6 +494,7 @@ This is semantically correct — pre-standard runs were SipHash-only.
 | First Config consumer (singleton pruning) | [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs) |
 | Config-injection seam (`ConfigurableRelation`) | [`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs) |
 | `Configured` / `ConfigProvider` / `define_config_provider!` | [`kermit-ds/src/configured.rs`](../../kermit-ds/src/configured.rs) |
+| Config-aware construction in `bench run` | [`kermit/src/execution.rs`](../../kermit/src/execution.rs) — `ExecutionFamily::build_relation`, with `load` defaulting to read-then-`build_relation` |
 | Config join test macro | [`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs) (search `with_config`) |
 | Per-DS catalog | [`docs/data-structures/hash-trie.md`](../data-structures/hash-trie.md) § Optimizations |
 | Schema axis prefixes | [`docs/specs/bench-report-schema.md`](bench-report-schema.md) § Standard axis prefixes |
