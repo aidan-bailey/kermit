@@ -16,7 +16,7 @@ use {
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HashTrie, HeapSize, IndexStructure, Relation, RelationFileExt},
+    kermit_ds::{HashTrie, HashTrieConfig, HeapSize, IndexStructure, Relation, RelationFileExt},
     kermit_iters::{
         FxHashStrategy, HasOptimizationAxes, HashStrategy, SipHashStrategy, TrieIterable,
     },
@@ -968,31 +968,6 @@ fn run_ds_bench_hash<H: HashStrategy>(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Loads a relation file, choosing the reader from the file extension.
-///
-/// `bench ds` takes an explicit `--relation` path and has always accepted both
-/// CSV and Parquet. `bench run` previously assumed Parquet, which held while
-/// every relation arrived through the download cache. A benchmark may now
-/// commit its relation file instead (`path:` in the YAML), and a small worked
-/// example is far more useful as readable CSV, so both routes dispatch alike.
-fn load_relation_file<R>(path: &Path) -> anyhow::Result<R>
-where
-    R: Relation,
-{
-    let extension = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    match extension.as_str() {
-        | "csv" => R::from_csv(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
-        | "parquet" => {
-            R::from_parquet(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))
-        },
-        | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
-    }
-}
-
 /// Runs every selected query of `benchmark` on one execution cell and
 /// returns one report per query.
 ///
@@ -1038,7 +1013,7 @@ fn run_benchmark<F: ExecutionFamily>(
     // engine from these typed relations rather than re-reading the files.
     let relations: Vec<F::Rel> = cached_paths
         .iter()
-        .map(|p| load_relation_file::<F::Rel>(p))
+        .map(|p| family.load(p))
         .collect::<Result<_, _>>()?;
     let engine = family.build(relations);
     let relations = F::relations(&engine);
@@ -1557,8 +1532,11 @@ fn dispatch_run_bench(
             query_filter,
             bench_args,
         ),
-        | Execution::HashHtj(hasher @ HasherChoice::Sip) => run_benchmark(
-            &HashHtj::<SipHashStrategy>::new(hasher, optimiser),
+        | Execution::HashHtj {
+            hasher: hasher @ HasherChoice::Sip,
+            config,
+        } => run_benchmark(
+            &HashHtj::<SipHashStrategy>::new(hasher, config, optimiser),
             benchmark,
             optimiser,
             metrics,
@@ -1566,8 +1544,11 @@ fn dispatch_run_bench(
             query_filter,
             bench_args,
         ),
-        | Execution::HashHtj(hasher @ HasherChoice::Fxhash) => run_benchmark(
-            &HashHtj::<FxHashStrategy>::new(hasher, optimiser),
+        | Execution::HashHtj {
+            hasher: hasher @ HasherChoice::Fxhash,
+            config,
+        } => run_benchmark(
+            &HashHtj::<FxHashStrategy>::new(hasher, config, optimiser),
             benchmark,
             optimiser,
             metrics,
@@ -1586,8 +1567,14 @@ fn dispatch_run_bench(
 /// is nothing left to run and that is a usage error.
 fn resolve_sweep(
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, hasher: HasherChoice,
+    config: HashTrieConfig,
 ) -> anyhow::Result<Vec<Execution>> {
-    let sweep = Sweep::expand(&indexstructure.expand(), &algorithm.expand(), hasher);
+    let sweep = Sweep::expand(
+        &indexstructure.expand(),
+        &algorithm.expand(),
+        hasher,
+        config,
+    );
     if sweep.cells.is_empty() {
         anyhow::bail!(
             "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \
@@ -1615,6 +1602,7 @@ fn run_bench_run_command(
         indexstructure,
         algorithm,
         layout.hash_trie_hasher_resolved(),
+        HashTrieConfig::default(),
     )?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()

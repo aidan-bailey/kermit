@@ -26,13 +26,14 @@ use {
     kermit::db::{hash_join, DatabaseEngine, DB},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_ds::{
-        Cardinality, ColumnTrie, HashTrie, HeapSize, IndexStructure, Relation, RelationFileExt,
-        RelationHeader, TreeTrie,
+        Cardinality, ColumnTrie, ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize,
+        IndexStructure, Relation, RelationFileExt, RelationHeader, TreeTrie,
     },
     kermit_iters::{HasOptimizationAxes, HashStrategy, TrieIterable},
     std::{
         collections::{BTreeMap, HashMap},
         marker::PhantomData,
+        path::Path,
     },
 };
 
@@ -88,16 +89,22 @@ impl SortedTrieRelation for ColumnTrie {
 pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through the `DB` trait.
     TrieLftj(SortedTrie),
-    /// `HashTrie<H>` joined by Hash Triejoin through
-    /// [`hash_join`], with `H` chosen by `--ds-layout-hasher`.
-    HashHtj(HasherChoice),
+    /// `HashTrie<H>` joined by Hash Triejoin through [`hash_join`], with
+    /// `H` chosen by `--ds-layout-hasher` and the runtime flags by
+    /// `--ds-config`.
+    HashHtj {
+        /// The `--ds-layout-hasher` choice `H` was monomorphised from.
+        hasher: HasherChoice,
+        /// The `--ds-config` runtime flags every relation is built with.
+        config: HashTrieConfig,
+    },
 }
 
 impl Execution {
     /// The only way to obtain an `Execution` from a concrete pair. Returns
     /// `None` for the three incompatible pairs, which the sweep skips.
     pub fn for_pair(
-        ds: IndexStructure, algo: JoinAlgorithm, hasher: HasherChoice,
+        ds: IndexStructure, algo: JoinAlgorithm, hasher: HasherChoice, config: HashTrieConfig,
     ) -> Option<Execution> {
         match (ds, algo) {
             | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
@@ -107,7 +114,10 @@ impl Execution {
                 Some(Execution::TrieLftj(SortedTrie::ColumnTrie))
             },
             | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => {
-                Some(Execution::HashHtj(hasher))
+                Some(Execution::HashHtj {
+                    hasher,
+                    config,
+                })
             },
             | (
                 IndexStructure::TreeTrie | IndexStructure::ColumnTrie,
@@ -121,7 +131,7 @@ impl Execution {
     pub fn index_structure(self) -> IndexStructure {
         match self {
             | Self::TrieLftj(sorted) => sorted.index_structure(),
-            | Self::HashHtj(_) => IndexStructure::HashTrie,
+            | Self::HashHtj { .. } => IndexStructure::HashTrie,
         }
     }
 
@@ -129,7 +139,7 @@ impl Execution {
     pub fn algorithm(self) -> JoinAlgorithm {
         match self {
             | Self::TrieLftj(_) => JoinAlgorithm::LeapfrogTriejoin,
-            | Self::HashHtj(_) => JoinAlgorithm::HashTriejoin,
+            | Self::HashHtj { .. } => JoinAlgorithm::HashTriejoin,
         }
     }
 }
@@ -147,16 +157,17 @@ pub struct Sweep {
 
 impl Sweep {
     /// Expands the cross product of `structures × algorithms` into valid
-    /// cells, partitioning off the incompatible pairs. `hasher` is
-    /// attached to every `HashTrie` cell.
+    /// cells, partitioning off the incompatible pairs. `hasher` and
+    /// `config` are attached to every `HashTrie` cell.
     pub fn expand(
         structures: &[IndexStructure], algorithms: &[JoinAlgorithm], hasher: HasherChoice,
+        config: HashTrieConfig,
     ) -> Sweep {
         let mut cells = Vec::new();
         let mut skipped = Vec::new();
         for &ds in structures {
             for &algo in algorithms {
-                match Execution::for_pair(ds, algo, hasher) {
+                match Execution::for_pair(ds, algo, hasher, config) {
                     | Some(cell) => cells.push(cell),
                     | None => skipped.push((ds, algo)),
                 }
@@ -187,6 +198,24 @@ pub trait ExecutionFamily {
     /// The cell this family instance runs; source of the report's
     /// `data_structure` / `algorithm` axes.
     fn execution(&self) -> Execution;
+
+    /// Loads one relation file into `Self::Rel`, honouring the family's
+    /// configuration. The default is the plain [`RelationFileExt`] path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the extension is neither `csv` nor `parquet`,
+    /// or if the reader fails.
+    fn load(&self, path: &Path) -> anyhow::Result<Self::Rel> {
+        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        match extension.to_lowercase().as_str() {
+            | "csv" => Self::Rel::from_csv(path)
+                .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
+            | "parquet" => Self::Rel::from_parquet(path)
+                .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
+            | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
+        }
+    }
 
     /// Every stored tuple of `rel`, in the structure's native iteration
     /// order.
@@ -295,17 +324,19 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
 /// Hash family: `HashTrie<H>` under Hash Triejoin through [`hash_join`].
 pub struct HashHtj<H> {
     hasher: HasherChoice,
+    config: HashTrieConfig,
     optimiser: Box<dyn kermit_algos::QueryOptimiser>,
     _strategy: PhantomData<H>,
 }
 
 impl<H> HashHtj<H> {
     /// Creates the family for the `--ds-layout-hasher` choice `hasher`
-    /// (which must be the choice `H` was monomorphised from) planned by
-    /// `optimiser`.
-    pub fn new(hasher: HasherChoice, optimiser: Optimiser) -> Self {
+    /// (which must be the choice `H` was monomorphised from) and the
+    /// `--ds-config` flags `config`, planned by `optimiser`.
+    pub fn new(hasher: HasherChoice, config: HashTrieConfig, optimiser: Optimiser) -> Self {
         Self {
             hasher,
+            config,
             optimiser: optimiser.instantiate(),
             _strategy: PhantomData,
         }
@@ -318,7 +349,27 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
     type Engine = HashMap<String, HashTrie<H>>;
     type Rel = HashTrie<H>;
 
-    fn execution(&self) -> Execution { Execution::HashHtj(self.hasher) }
+    fn execution(&self) -> Execution {
+        Execution::HashHtj {
+            hasher: self.hasher,
+            config: self.config,
+        }
+    }
+
+    fn load(&self, path: &Path) -> anyhow::Result<HashTrie<H>> {
+        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let (header, tuples) = match extension.to_lowercase().as_str() {
+            | "csv" => kermit_ds::read_csv(path),
+            | "parquet" => kermit_ds::read_parquet(path),
+            | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
+        }
+        .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))?;
+        Ok(HashTrie::<H>::from_tuples_with_config(
+            header,
+            self.config,
+            tuples,
+        ))
+    }
 
     fn tuples(rel: &HashTrie<H>) -> Vec<Vec<usize>> { rel.collect_tuples() }
 
@@ -337,7 +388,7 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
             .map(|(header, tuples)| {
                 (
                     header.name().to_string(),
-                    HashTrie::<H>::from_tuples(header, tuples),
+                    HashTrie::<H>::from_tuples_with_config(header, self.config, tuples),
                 )
             })
             .collect()
@@ -366,7 +417,12 @@ mod tests {
     /// skips the other three — the `-i all -a all` acceptance criterion.
     #[test]
     fn sweep_of_full_cross_product_yields_exactly_three_cells() {
-        let sweep = Sweep::expand(&all_structures(), &all_algorithms(), HasherChoice::Sip);
+        let sweep = Sweep::expand(
+            &all_structures(),
+            &all_algorithms(),
+            HasherChoice::Sip,
+            HashTrieConfig::default(),
+        );
         assert_eq!(sweep.cells.len(), 3, "{sweep:?}");
         assert_eq!(sweep.skipped.len(), 3, "{sweep:?}");
         let ran: Vec<(IndexStructure, JoinAlgorithm)> = sweep
@@ -387,6 +443,7 @@ mod tests {
             &all_structures(),
             &[JoinAlgorithm::LeapfrogTriejoin],
             HasherChoice::Sip,
+            HashTrieConfig::default(),
         );
         assert!(sweep
             .cells
@@ -406,6 +463,7 @@ mod tests {
             &[IndexStructure::HashTrie],
             &[JoinAlgorithm::LeapfrogTriejoin],
             HasherChoice::Sip,
+            HashTrieConfig::default(),
         );
         assert!(sweep.cells.is_empty());
         assert_eq!(sweep.skipped.len(), 1);
@@ -417,7 +475,12 @@ mod tests {
     fn execution_axes_round_trip_through_for_pair() {
         for ds in all_structures() {
             for algo in all_algorithms() {
-                if let Some(cell) = Execution::for_pair(ds, algo, HasherChoice::Fxhash) {
+                if let Some(cell) = Execution::for_pair(
+                    ds,
+                    algo,
+                    HasherChoice::Fxhash,
+                    HashTrieConfig::default(),
+                ) {
                     assert_eq!(cell.index_structure(), ds);
                     assert_eq!(cell.algorithm(), algo);
                 }
@@ -427,9 +490,13 @@ mod tests {
             Execution::for_pair(
                 IndexStructure::HashTrie,
                 JoinAlgorithm::HashTriejoin,
-                HasherChoice::Fxhash
+                HasherChoice::Fxhash,
+                HashTrieConfig::default(),
             ),
-            Some(Execution::HashHtj(HasherChoice::Fxhash))
+            Some(Execution::HashHtj {
+                hasher: HasherChoice::Fxhash,
+                config: HashTrieConfig::default(),
+            })
         );
     }
 
@@ -444,11 +511,43 @@ mod tests {
             column.execution(),
             Execution::TrieLftj(SortedTrie::ColumnTrie)
         );
+        let config = HashTrieConfig {
+            singleton_pruning: true,
+        };
         let hash = HashHtj::<kermit_iters::FxHashStrategy>::new(
             HasherChoice::Fxhash,
+            config,
             Optimiser::Lexicographic,
         );
-        assert_eq!(hash.execution(), Execution::HashHtj(HasherChoice::Fxhash));
+        assert_eq!(
+            hash.execution(),
+            Execution::HashHtj {
+                hasher: HasherChoice::Fxhash,
+                config,
+            }
+        );
         assert_eq!(hash.execution().algorithm(), JoinAlgorithm::HashTriejoin);
+    }
+
+    /// The config reaches the relations the family builds, so the report's
+    /// `ds_config_*` axes describe the structure that actually ran.
+    #[test]
+    fn hash_family_builds_relations_with_its_config() {
+        let config = HashTrieConfig {
+            singleton_pruning: true,
+        };
+        let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
+            HasherChoice::Sip,
+            config,
+            Optimiser::Lexicographic,
+        );
+        let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
+        let engine = family.build_from_tuples(vec![(header, vec![vec![1, 2]])]);
+        let rel = &engine["r"];
+        assert_eq!(
+            HashHtj::<kermit_iters::SipHashStrategy>::optimization_axes(rel)
+                .get("ds_config_singleton_pruning"),
+            Some(&serde_json::Value::Bool(true))
+        );
     }
 }
