@@ -300,3 +300,46 @@ macro_rules! define_multiway_join_test_suite {
         )+
     };
 }
+
+/// The Config-axis counterpart of [`define_multiway_join_test_suite!`]
+/// prescribed by `docs/specs/optimization-standard.md`.
+///
+/// Declares `type <Relation><Provider> = Configured<Relation, Provider>;`
+/// inside a uniquely named module and runs the 11 standard join patterns
+/// against it. `Provider` is a marker declared with
+/// `kermit_ds::define_config_provider!`.
+///
+/// ```ignore
+/// define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig { singleton_pruning: true });
+/// define_multiway_join_test_suite_with_config!(HashTrieSip, HashTriejoin, LexicographicOptimiser, PruningOn);
+/// // → tests named e.g. `triangle_hashtriesippruningon_hashtriejoin_lexicographicoptimiser`
+/// ```
+#[macro_export]
+macro_rules! define_multiway_join_test_suite_with_config {
+    (
+        $(
+            $relation_type:ident,
+            $join_algorithm:ident,
+            $optimiser:ident,
+            $provider:ident
+        ),+
+    ) => {
+        $(
+            paste::paste! {
+                // Each invocation gets its own module so the alias can be
+                // declared once per (relation, algorithm, optimiser, provider)
+                // without colliding with a sibling invocation's alias.
+                mod [<with_config_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower _ $provider:lower>] {
+                    use super::*;
+
+                    type [<$relation_type $provider>] =
+                        kermit_ds::Configured<$relation_type, $provider>;
+
+                    $crate::define_multiway_join_test_suite!(
+                        [<$relation_type $provider>], $join_algorithm, $optimiser
+                    );
+                }
+            }
+        )+
+    };
+}
