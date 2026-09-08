@@ -46,6 +46,8 @@ impl HashTrieNode {
     /// The table accessors below are only meaningful on `Inner` / `Leaf`.
     /// `HashTrieIter` never places a `Singleton` in a table frame, so
     /// reaching this is a broken internal invariant, not a user error.
+    #[cold]
+    #[inline(never)]
     fn singleton_is_not_a_table() -> ! {
         panic!("HashTrieNode table accessor called on a Singleton (pruned subtrie)")
     }
@@ -58,6 +60,7 @@ impl HashTrieNode {
     // table to forward to.
 
     /// Bucket-array length of this node's table (a power of two).
+    #[inline]
     pub(crate) fn buckets_len(&self) -> usize {
         match self {
             | HashTrieNode::Inner(t) => t.buckets_len(),
@@ -68,6 +71,7 @@ impl HashTrieNode {
 
     /// First occupied bucket index at or after `start`; `buckets_len()` if
     /// none exists at or after `start`.
+    #[inline]
     pub(crate) fn next_occupied(&self, start: usize) -> usize {
         match self {
             | HashTrieNode::Inner(t) => t.next_occupied(start),
@@ -77,6 +81,7 @@ impl HashTrieNode {
     }
 
     /// Hash stored at bucket `idx`, or `None` if the bucket is empty.
+    #[inline]
     pub(crate) fn hash_at(&self, idx: usize) -> Option<u64> {
         match self {
             | HashTrieNode::Inner(t) => t.hash_at(idx),
@@ -86,6 +91,7 @@ impl HashTrieNode {
     }
 
     /// Index of the bucket containing `hash`, or `None` if absent.
+    #[inline]
     pub(crate) fn index_of(&self, hash: u64) -> Option<usize> {
         match self {
             | HashTrieNode::Inner(t) => t.index_of(hash),
@@ -95,6 +101,7 @@ impl HashTrieNode {
     }
 
     /// Number of occupied buckets (distinct hashes) at this node.
+    #[inline]
     pub(crate) fn len(&self) -> usize {
         match self {
             | HashTrieNode::Inner(t) => t.len(),
