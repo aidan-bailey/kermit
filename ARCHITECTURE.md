@@ -85,9 +85,9 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 | Algorithm | `LeapfrogTriejoin` | `HashTriejoin` |
 | `Projectable` | `project_via_trie_iter` (shared helper) | hand-rolled on `HashTrie` |
 | Engine | `DB` trait / `DatabaseEngine` | `hash_join` free function |
-| Bench cell | `Execution::TrieLftj(SortedTrie)` / `TrieLftj<R>` | `Execution::HashHtj(HasherChoice)` / `HashHtj<H>` |
+| Bench cell | `Execution::TrieLftj(SortedTrie)` / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, config }` / `HashHtj<H, P>` (labels derived from `H`/`P`) |
 | `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
-| `bench ds` dispatch | one generic `run_ds_bench<F: RelationFamily>` over `SortedTrieFamily<R>` | the same `run_ds_bench<F>` over `HashTrieFamily<H>` |
+| `bench ds` dispatch | one generic `run_ds_bench<F: RelationFamily>` over `SortedTrieFamily<R>` | the same `run_ds_bench<F>` over `HashTrieFamily<H, P>` |
 
 Only three `(index structure, algorithm)` pairs are valid: `(TreeTrie, LeapfrogTriejoin)`, `(ColumnTrie, LeapfrogTriejoin)`, and `(HashTrie, HashTriejoin)`. The type system enforces this at every layer, the CLI included: user strings are resolved into two independent enums, but `Execution::for_pair` is the only bridge from that pair back to a runnable cell — see "Selector dispatch" under CLI.
 
@@ -405,11 +405,11 @@ The hash family cannot be a second `DB` implementation: an `impl<R: HashTrieIter
 
 `bench ds` and `bench run` accept `all` for `--indexstructure` and `--algorithm`, expanding to a Cartesian sweep.
 
-For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(TreeTrie | ColumnTrie)` and `HashHtj(hasher)` — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the three incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
+For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(TreeTrie | ColumnTrie)` and `HashHtj { hasher, pruning, config }` — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the three incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
 
 Consequently `-i all -a all` runs exactly the three valid cells, announcing each skipped pair on stderr, while a single explicitly-named incompatible pair leaves nothing to run and is reported as a usage error. Because the report's `data_structure` and `algorithm` axes are both derived from `ExecutionFamily::execution()`, a report cannot name an algorithm it did not run (issue #56).
 
-`bench ds` selects a structure but no algorithm, so it names its cell through the total `Execution::for_structure` (every structure has exactly one compatible algorithm) and runs the same kind of generic runner, `run_ds_bench<F: RelationFamily>`. `RelationFamily` is the relation-facing supertrait of `ExecutionFamily` (load, tuples, axes, cell label); `bench ds` instantiates the structure-only markers `SortedTrieFamily<R>` / `HashTrieFamily<H>`, which implement the supertrait alone and so cannot join. The join families `TrieLftj<R>` / `HashHtj<H>` embed those markers and delegate, so the two commands cannot disagree about a structure (issue #61).
+`bench ds` selects a structure but no algorithm, so it names its cell through the total `Execution::for_structure` (every structure has exactly one compatible algorithm) and runs the same kind of generic runner, `run_ds_bench<F: RelationFamily>`. `RelationFamily` is the relation-facing supertrait of `ExecutionFamily` (load, tuples, axes, cell label); `bench ds` instantiates the structure-only markers `SortedTrieFamily<R>` / `HashTrieFamily<H, P>`, which implement the supertrait alone and so cannot join. The join families `TrieLftj<R>` / `HashHtj<H, P>` embed those markers and delegate, so the two commands cannot disagree about a structure (issue #61). `HashTrieFamily<H, P>` is also where the `--ds-config` values live, so the `insertion` and `end_to_end` closures build through `RelationFamily::build_relation` and measure the structure the report's `ds_config_*` axes describe.
 
 ### Space measurement
 

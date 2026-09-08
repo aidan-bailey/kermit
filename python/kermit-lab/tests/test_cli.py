@@ -17,7 +17,7 @@ def test_general_plot_subcommand(fixture_opt_tree, tmp_path: Path) -> None:
         "--criterion-root", str(fixture_opt_tree["criterion_root"]),
         "--out", str(out),
         "--kind", "bar", "--y", "time",
-        "--x", "ds_config_singleton_pruning",
+        "--x", "ds_config_load_factor",
         "--colour", "data_structure",
     ])
     assert rc == 0

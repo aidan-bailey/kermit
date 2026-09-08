@@ -22,7 +22,7 @@ def test_line_scaling_returns_figure(fixture_tree) -> None:
 
 def test_bar_ablation_on_config_axis(fixture_opt_tree) -> None:
     df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
-    fig = plot(df, kind="bar", x="ds_config_singleton_pruning", y="time",
+    fig = plot(df, kind="bar", x="ds_config_load_factor", y="time",
                colour="data_structure")
     assert isinstance(fig, Figure)
     plt.close(fig)

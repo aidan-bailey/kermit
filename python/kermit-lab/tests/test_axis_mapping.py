@@ -23,5 +23,5 @@ def test_unknown_value_is_stable() -> None:
 
 def test_marker_and_linestyle_fallback() -> None:
     assert marker_for("algorithm", "LeapfrogTriejoin") == "o"
-    assert isinstance(marker_for("ds_config_singleton_pruning", True), str)
+    assert isinstance(marker_for("ds_config_load_factor", 0.5), str)
     assert isinstance(linestyle_for("algorithm", "Unknown"), str)

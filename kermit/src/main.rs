@@ -16,8 +16,7 @@ use {
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HeapSize, IndexStructure, Relation, RelationFileExt},
-    kermit_iters::{FxHashStrategy, SipHashStrategy},
+    kermit_ds::{HashTrieConfig, HeapSize, IndexStructure, Relation},
     kermit_parser::Term,
     std::{
         collections::BTreeMap,
@@ -32,6 +31,7 @@ mod bench_report;
 mod execution;
 mod materialize;
 mod measurement;
+mod options;
 
 use {
     bench_report::{
@@ -41,6 +41,10 @@ use {
     execution::{
         Execution, ExecutionFamily, HashHtj, HashTrieFamily, RelationFamily, SortedTrie,
         SortedTrieFamily, Sweep, TrieLftj,
+    },
+    options::{
+        validate_config_choices, validate_layout_choices, with_hash_trie_layout, ConfigChoices,
+        HasherChoice, LayoutChoices, PruningChoice,
     },
 };
 
@@ -162,86 +166,6 @@ impl JoinAlgorithmSelector {
     }
 }
 
-/// CLI-side selector for `--ds-layout-hasher`. Picks the
-/// [`HashStrategy`](kermit_iters::HashStrategy) compile-time parameter
-/// monomorphised into `HashTrie<H>` for the run.
-///
-/// `Sip` (the default) preserves pre-Phase-1 behaviour — `HashTrie`
-/// previously had `SipHashStrategy` baked in via a generic default. `Fxhash`
-/// monomorphises against the `rustc-hash` `FxHasher`, which is typically
-/// ~10x faster per call on small integer keys but lacks SipHash's
-/// hash-DoS resistance.
-///
-/// This flag only applies when the selected index structure is `hash-trie`;
-/// `validate_layout_choices` rejects it on other index structures so users
-/// cannot silently pass it to a TreeTrie/ColumnTrie run.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-enum HasherChoice {
-    /// SipHash via the standard library's `DefaultHasher`.
-    #[default]
-    Sip,
-    /// FxHash via the `rustc-hash` crate.
-    Fxhash,
-}
-
-/// Layout-axis CLI choices flattened into every subcommand whose dispatch
-/// monomorphises over a `HashTrie<H>` (currently `bench Ds` and `bench
-/// Run`). Each field is named `<axis>` and surfaces as the long flag
-/// `--ds-layout-<axis>` so the prefix matches the bench-report axis namespace
-/// described in CLAUDE.md → "JSON bench reports".
-///
-/// The `hash_trie_hasher` field is `Option<HasherChoice>` rather than a
-/// clap-defaulted `HasherChoice` so we can distinguish "not provided" from
-/// "explicitly defaulted". [`hash_trie_hasher_explicit`] consults this for
-/// the `validate_layout_choices` check that rejects
-/// `--ds-layout-hasher fxhash -i tree-trie`, while
-/// [`hash_trie_hasher_resolved`] supplies the default at dispatch time.
-#[derive(Args, Clone, Debug, Default)]
-struct LayoutChoices {
-    /// Hash function used by `HashTrie<H>` (default: `sip`). Only valid
-    /// when `--indexstructure hash-trie` is selected.
-    #[arg(long = "ds-layout-hasher", value_name = "HASHER", value_enum)]
-    hash_trie_hasher: Option<HasherChoice>,
-}
-
-impl LayoutChoices {
-    /// Returns the `HasherChoice` to monomorphise on, applying the
-    /// `HasherChoice::default()` when none was supplied on the command
-    /// line. Use this at dispatch sites.
-    fn hash_trie_hasher_resolved(&self) -> HasherChoice {
-        self.hash_trie_hasher.unwrap_or_default()
-    }
-
-    /// Returns whether the user explicitly passed `--ds-layout-hasher`.
-    /// Use this in `validate_layout_choices` to reject the flag on
-    /// non-HashTrie selectors.
-    fn hash_trie_hasher_explicit(&self) -> bool { self.hash_trie_hasher.is_some() }
-}
-
-/// Rejects `LayoutChoices` flags that are incompatible with the chosen
-/// `IndexStructureSelector`. Currently the only layout flag is
-/// `--ds-layout-hasher`, which is meaningful only for `hash-trie` (and for
-/// `all`, where the HashTrie sweep arm picks it up). Passing it on a
-/// non-HashTrie selector is a usage error: the flag would be silently
-/// ignored, producing a benchmark report whose `ds_layout_hasher` axis
-/// disagrees with the actual structure used.
-fn validate_layout_choices(
-    indexstructure: IndexStructureSelector, layout: &LayoutChoices,
-) -> anyhow::Result<()> {
-    if layout.hash_trie_hasher_explicit()
-        && !matches!(
-            indexstructure,
-            IndexStructureSelector::HashTrie | IndexStructureSelector::All
-        )
-    {
-        anyhow::bail!(
-            "--ds-layout-hasher is only valid with --indexstructure hash-trie (or all); got \
-             --indexstructure {indexstructure:?}"
-        );
-    }
-    Ok(())
-}
-
 #[derive(Args)]
 struct BenchArgs {
     /// Name for the Criterion benchmark group
@@ -320,6 +244,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         layout: LayoutChoices,
+
+        #[command(flatten)]
+        config: ConfigChoices,
     },
 
     /// Run a named benchmark from benchmarks/ YAML files
@@ -381,6 +308,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         layout: LayoutChoices,
+
+        #[command(flatten)]
+        config: ConfigChoices,
     },
 
     /// List available benchmarks
@@ -663,20 +593,29 @@ where
 /// Benchmarks one index structure over one relation file.
 ///
 /// Generic over the [`RelationFamily`] so the sorted family
-/// (`SortedTrieFamily<R>`) and the hash family (`HashTrieFamily<H>`) share
-/// one body, as [`run_benchmark`] does for `bench run` (issue #61 closed
-/// the last hand-mirrored pair). The family supplies the three points
-/// where the bodies used to diverge: the relation type to load (`F::Rel`),
-/// how to recover its tuples (`F::tuples` — `trie_iter()` for sorted
-/// tries, `collect_tuples()` for the hash trie, whose iterator yields
-/// hashes), and its optimization axes. `bench ds` involves no join, which
-/// the bound states: a `RelationFamily` has no engine to build or query.
+/// (`SortedTrieFamily<R>`) and the hash family (`HashTrieFamily<H, P>`)
+/// share one body, as [`run_benchmark`] does for `bench run` (issue #61
+/// closed the last hand-mirrored pair). The family supplies the four
+/// points where the bodies used to diverge: the relation type to load
+/// (`F::Rel`), how to *build* one from a `(header, tuples)` snapshot
+/// honouring the family's `--ds-config` values
+/// ([`RelationFamily::build_relation`], and [`RelationFamily::load`] on
+/// top of it), how to recover its tuples (`F::tuples` — `trie_iter()` for
+/// sorted tries, `collect_tuples()` for the hash trie, whose iterator
+/// yields hashes), and its optimization axes. `bench ds` involves no join,
+/// which the bound states: a `RelationFamily` has no engine to build or
+/// query.
 fn run_ds_bench<F: RelationFamily>(
     family: &F, relation_path: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
     bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    let relation: F::Rel = load_relation_file(relation_path)?;
+    let relation: F::Rel = family.load(relation_path)?;
 
+    // Read the tuples back off the built relation rather than off the
+    // reader: singleton pruning does not change iteration order (a
+    // one-tuple subtrie yields the same sequence either way), so the
+    // insertion / end-to-end closures below are fed identical input
+    // whichever Layout ran.
     let tuples: Vec<Vec<usize>> = F::tuples(&relation);
     let header = relation.header().clone();
 
@@ -716,7 +655,7 @@ fn run_ds_bench<F: RelationFamily>(
             group.bench_function(&function, |b| {
                 b.iter_batched(
                     || (insertion_header.clone(), insertion_tuples.clone()),
-                    |(h, t)| F::Rel::from_tuples(h, t),
+                    |(h, t)| family.build_relation(h, t),
                     criterion::BatchSize::SmallInput,
                 );
             });
@@ -750,7 +689,7 @@ fn run_ds_bench<F: RelationFamily>(
                 b.iter_batched(
                     || (e2e_header.clone(), e2e_tuples.clone()),
                     |(h, t)| {
-                        let built = F::Rel::from_tuples(h, t);
+                        let built = family.build_relation(h, t);
                         for _ in 0..queries_per_build {
                             std::hint::black_box(F::tuples(&built));
                         }
@@ -814,37 +753,11 @@ fn run_ds_bench<F: RelationFamily>(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
-/// Loads a relation file, choosing the reader from the file extension.
-///
-/// `bench ds` takes an explicit `--relation` path and has always accepted both
-/// CSV and Parquet. `bench run` previously assumed Parquet, which held while
-/// every relation arrived through the download cache. A benchmark may now
-/// commit its relation file instead (`path:` in the YAML), and a small worked
-/// example is far more useful as readable CSV, so both routes dispatch alike.
-fn load_relation_file<R>(path: &Path) -> anyhow::Result<R>
-where
-    R: Relation,
-{
-    let extension = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    match extension.as_str() {
-        | "csv" => R::from_csv(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
-        | "parquet" => {
-            R::from_parquet(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))
-        },
-        | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
-    }
-}
-
 /// Runs every selected query of `benchmark` on one execution cell and
 /// returns one report per query.
 ///
 /// Generic over the [`ExecutionFamily`] so the sorted family
-/// (`TrieLftj<R>`) and the hash family (`HashHtj<H>`) share one body:
+/// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P>`) share one body:
 /// query selection, relation loading, metadata, Criterion group wiring and
 /// report assembly are identical, and the report's `data_structure` /
 /// `algorithm` axes come from `family.execution()` — the same value that
@@ -885,7 +798,7 @@ fn run_benchmark<F: ExecutionFamily>(
     // engine from these typed relations rather than re-reading the files.
     let relations: Vec<F::Rel> = cached_paths
         .iter()
-        .map(|p| load_relation_file::<F::Rel>(p))
+        .map(|p| family.load(p))
         .collect::<Result<_, _>>()?;
     let engine = family.build(relations);
     let relations = F::relations(&engine);
@@ -979,8 +892,14 @@ fn run_benchmark<F: ExecutionFamily>(
                     b.iter_batched(
                         || build_inputs.clone(),
                         |data| {
+                            // Times the per-relation construction only —
+                            // `family.build_relation` rather than the whole
+                            // engine build, which `end_to_end` covers — and
+                            // goes through the family so the build honours
+                            // the same configuration the report's
+                            // `ds_config_*` axes name.
                             for (header, tuples) in data {
-                                std::hint::black_box(F::Rel::from_tuples(header, tuples));
+                                std::hint::black_box(family.build_relation(header, tuples));
                             }
                         },
                         criterion::BatchSize::SmallInput,
@@ -1305,13 +1224,18 @@ fn run_bench_join(
 
 /// Runs one `bench ds` measurement by monomorphising [`run_ds_bench`]
 /// over the [`RelationFamily`] that [`Execution::for_structure`] names
-/// for `ds`. The `H: HashStrategy` parameter is picked from the
-/// `--ds-layout-hasher` CLI flag (`hasher`).
+/// for `ds`. The hash cell's `H` / `P` Layout parameters are picked from
+/// the `--ds-layout-hasher` / `--ds-layout-pruning` CLI flags by
+/// `with_hash_trie_layout!` — the one place that product is expanded —
+/// and the `--ds-config` values ride along on the family, so the relation
+/// this measures is the one the report's `ds_*` axes describe.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_ds_bench(
-    ds: IndexStructure, hasher: HasherChoice, relation: &Path, metrics: &[Metric],
-    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
+    ds: IndexStructure, hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig,
+    relation: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
+    bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    match Execution::for_structure(ds, hasher) {
+    match Execution::for_structure(ds, hasher, pruning, config) {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_ds_bench(
             &SortedTrieFamily::<kermit_ds::TreeTrie>::new(),
             relation,
@@ -1328,38 +1252,39 @@ fn dispatch_ds_bench(
             group_name,
             bench_args,
         ),
-        | Execution::HashHtj(hasher @ HasherChoice::Sip) => run_ds_bench(
-            &HashTrieFamily::<SipHashStrategy>::new(hasher),
+        | Execution::HashHtj {
+            hasher,
+            pruning,
+            config,
+        } => with_hash_trie_layout!(hasher, pruning, |H, P| run_ds_bench(
+            &HashTrieFamily::<H, P>::new(config),
             relation,
             metrics,
             queries_per_build,
             group_name,
             bench_args,
-        ),
-        | Execution::HashHtj(hasher @ HasherChoice::Fxhash) => run_ds_bench(
-            &HashTrieFamily::<FxHashStrategy>::new(hasher),
-            relation,
-            metrics,
-            queries_per_build,
-            group_name,
-            bench_args,
-        ),
+        )),
     }
 }
 
 /// Handler for `bench ds`: benchmark one or more index structures over a
 /// single relation file and write the reports.
+#[allow(clippy::too_many_arguments)]
 fn run_ds_bench_command(
     bench_args: &BenchArgs, relation: PathBuf, indexstructure: IndexStructureSelector,
-    metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices,
+    metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices, config: ConfigChoices,
 ) -> anyhow::Result<()> {
     validate_layout_choices(indexstructure, &layout)?;
+    validate_config_choices(indexstructure, &config)?;
+    let hash_trie_config = config.hash_trie_config_resolved()?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
     let mut reports: Vec<BenchReport> = Vec::new();
     for ds in indexstructure.expand() {
         let report = dispatch_ds_bench(
             ds,
             layout.hash_trie_hasher_resolved(),
+            layout.hash_trie_pruning_resolved(),
+            hash_trie_config,
             &relation,
             &metrics,
             queries_per_build,
@@ -1399,24 +1324,19 @@ fn dispatch_run_bench(
             query_filter,
             bench_args,
         ),
-        | Execution::HashHtj(hasher @ HasherChoice::Sip) => run_benchmark(
-            &HashHtj::<SipHashStrategy>::new(hasher, optimiser),
+        | Execution::HashHtj {
+            hasher,
+            pruning,
+            config,
+        } => with_hash_trie_layout!(hasher, pruning, |H, P| run_benchmark(
+            &HashHtj::<H, P>::new(config, optimiser),
             benchmark,
             optimiser,
             metrics,
             queries_per_build,
             query_filter,
             bench_args,
-        ),
-        | Execution::HashHtj(hasher @ HasherChoice::Fxhash) => run_benchmark(
-            &HashHtj::<FxHashStrategy>::new(hasher, optimiser),
-            benchmark,
-            optimiser,
-            metrics,
-            queries_per_build,
-            query_filter,
-            bench_args,
-        ),
+        )),
     }
 }
 
@@ -1428,8 +1348,15 @@ fn dispatch_run_bench(
 /// is nothing left to run and that is a usage error.
 fn resolve_sweep(
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, hasher: HasherChoice,
+    pruning: PruningChoice, config: HashTrieConfig,
 ) -> anyhow::Result<Vec<Execution>> {
-    let sweep = Sweep::expand(&indexstructure.expand(), &algorithm.expand(), hasher);
+    let sweep = Sweep::expand(
+        &indexstructure.expand(),
+        &algorithm.expand(),
+        hasher,
+        pruning,
+        config,
+    );
     if sweep.cells.is_empty() {
         anyhow::bail!(
             "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \
@@ -1451,12 +1378,17 @@ fn run_bench_run_command(
     bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, optimiser: Optimiser,
     metrics: Vec<Metric>, queries_per_build: u32, force: bool, layout: LayoutChoices,
+    config: ConfigChoices,
 ) -> anyhow::Result<()> {
     validate_layout_choices(indexstructure, &layout)?;
+    validate_config_choices(indexstructure, &config)?;
+    let hash_trie_config = config.hash_trie_config_resolved()?;
     let cells = resolve_sweep(
         indexstructure,
         algorithm,
         layout.hash_trie_hasher_resolved(),
+        layout.hash_trie_pruning_resolved(),
+        hash_trie_config,
     )?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
@@ -1671,6 +1603,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 layout,
+                config,
             } => run_ds_bench_command(
                 &bench_args,
                 relation,
@@ -1678,6 +1611,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 layout,
+                config,
             )?,
 
             | BenchSubcommand::Run {
@@ -1691,6 +1625,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 force,
                 layout,
+                config,
             } => run_bench_run_command(
                 &bench_args,
                 name,
@@ -1703,6 +1638,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 force,
                 layout,
+                config,
             )?,
 
             | BenchSubcommand::Gen {
@@ -1797,62 +1733,6 @@ mod tests {
     fn head_column_names_extracts_variables_atoms_and_placeholders() {
         let q: JoinQuery = "Q(X, Y, _) :- R(X, Y, Z).".parse().unwrap();
         assert_eq!(head_column_names(&q), vec!["X", "Y", "_"]);
-    }
-
-    #[test]
-    fn validate_layout_choices_accepts_explicit_hasher_on_hash_trie_or_all() {
-        // The two selectors whose expand() includes a HashTrie variant
-        // (HashTrie itself, and the all-sweep) must both accept an
-        // explicit --ds-layout-hasher.
-        let layout = LayoutChoices {
-            hash_trie_hasher: Some(HasherChoice::Fxhash),
-        };
-        assert!(validate_layout_choices(IndexStructureSelector::HashTrie, &layout).is_ok());
-        assert!(validate_layout_choices(IndexStructureSelector::All, &layout).is_ok());
-    }
-
-    #[test]
-    fn validate_layout_choices_rejects_explicit_hasher_on_non_hash_trie() {
-        // Passing `--ds-layout-hasher` on a sorted-family structure is a
-        // usage error: the flag would be silently ignored, producing a
-        // report whose `ds_layout_hasher` axis disagrees with reality.
-        let layout = LayoutChoices {
-            hash_trie_hasher: Some(HasherChoice::Fxhash),
-        };
-        for sel in [
-            IndexStructureSelector::TreeTrie,
-            IndexStructureSelector::ColumnTrie,
-        ] {
-            let err = validate_layout_choices(sel, &layout).unwrap_err();
-            let msg = err.to_string();
-            assert!(
-                msg.contains("--ds-layout-hasher"),
-                "error message should mention the flag for {sel:?}, got: {msg}"
-            );
-            assert!(
-                msg.contains("hash-trie"),
-                "error message should suggest the compatible selector for {sel:?}, got: {msg}"
-            );
-        }
-    }
-
-    #[test]
-    fn validate_layout_choices_default_layout_passes_on_any_selector() {
-        // No flag provided: validation must always pass regardless of
-        // selector. Otherwise users couldn't run TreeTrie/ColumnTrie at
-        // all without thinking about layout flags.
-        let layout = LayoutChoices::default();
-        for sel in [
-            IndexStructureSelector::All,
-            IndexStructureSelector::TreeTrie,
-            IndexStructureSelector::ColumnTrie,
-            IndexStructureSelector::HashTrie,
-        ] {
-            assert!(
-                validate_layout_choices(sel, &layout).is_ok(),
-                "default LayoutChoices should pass on {sel:?}"
-            );
-        }
     }
 
     fn make_generator_def(name: &str, spec: kermit_bench::GeneratorSpec) -> BenchmarkDefinition {

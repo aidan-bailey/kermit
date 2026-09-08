@@ -287,9 +287,9 @@ def fixture_end_to_end_tree(tmp_path: Path) -> dict:
 def fixture_opt_tree(tmp_path: Path) -> dict:
     """HashTrie reports carrying optimization axes for ablation tests.
 
-    2 hashers (sip, fx) × 2 config flags (singleton_pruning true/false), one
+    2 hashers (sip, fx) × 2 load factors (0.5, 0.7), one
     query, time + space each. Gives ≥2 distinct values for both
-    ds_layout_hasher and ds_config_singleton_pruning so ablation paths fire.
+    ds_layout_hasher and ds_config_load_factor so ablation paths fire.
     """
     criterion_root = tmp_path / "target" / "criterion"
     reports_dir = tmp_path / "reports"
@@ -298,8 +298,8 @@ def fixture_opt_tree(tmp_path: Path) -> dict:
 
     paths: list[Path] = []
     for hasher in ("sip", "fx"):
-        for pruning in (True, False):
-            tag = f"{hasher}-{'on' if pruning else 'off'}"
+        for load_factor in (0.5, 0.7):
+            tag = f"{hasher}-lf{int(load_factor * 100)}"
             iter_fn = f"HashTrie/{tag}/iteration"
             space_fn = f"HashTrie/{tag}/space"
             iter_point = 100.0 if hasher == "sip" else 80.0
@@ -324,7 +324,7 @@ def fixture_opt_tree(tmp_path: Path) -> dict:
                         "algorithm": "LeapfrogTriejoin",
                         "tuples": 100,
                         "ds_layout_hasher": hasher,
-                        "ds_config_singleton_pruning": pruning,
+                        "ds_config_load_factor": load_factor,
                     },
                     metadata=[{"label": "hasher", "value": hasher}],
                     groups=[

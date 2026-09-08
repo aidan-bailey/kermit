@@ -17,6 +17,7 @@
 #![deny(missing_docs)]
 
 mod cardinality;
+mod configured;
 mod ds;
 mod heap_size;
 mod relation;
@@ -24,7 +25,14 @@ mod relation;
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
     cardinality::Cardinality,
-    ds::{ColumnTrie, HashTrie, IndexStructure, TreeTrie},
+    configured::{ConfigProvider, Configured},
+    ds::{
+        ColumnTrie, HashTrie, HashTrieConfig, IndexStructure, InvalidLoadFactor, LoadFactor,
+        NoPruning, PruningPolicy, SingletonPruning, TreeTrie,
+    },
     heap_size::HeapSize,
-    relation::{ModelType, Projectable, Relation, RelationError, RelationFileExt, RelationHeader},
+    relation::{
+        read_csv, read_parquet, ConfigurableRelation, ModelType, Projectable, Relation,
+        RelationError, RelationFileExt, RelationHeader,
+    },
 };

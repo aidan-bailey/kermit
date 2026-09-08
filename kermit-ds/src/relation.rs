@@ -271,6 +271,42 @@ pub trait Relation: JoinIterable + Projectable {
     fn insert_all(&mut self, tuples: Vec<Vec<usize>>);
 }
 
+/// A [`Relation`] with runtime configuration — the Config category of the
+/// optimization standard (`docs/specs/optimization-standard.md`).
+///
+/// `Relation::new` / `Relation::from_tuples` have no parameter through which
+/// a config value could travel, so this extension trait adds the
+/// config-carrying constructors. A data structure implementing this should
+/// make `Relation::new` equivalent to `with_config(header,
+/// Self::Config::default())`, so plain-trait construction is unchanged from
+/// pre-config behaviour. Wrapper types that exist to inject a configuration
+/// (see `Configured` in `configured.rs`, added later) deliberately override
+/// this.
+///
+/// Only structures with a Config axis implement this; structures without
+/// one are not required to.
+pub trait ConfigurableRelation: Relation {
+    /// The runtime flags this structure reads.
+    type Config: kermit_iters::ConfigOption;
+
+    /// Creates an empty relation matching `header` that will honour
+    /// `config` for every subsequent insert.
+    fn with_config(header: RelationHeader, config: Self::Config) -> Self;
+
+    /// Creates a relation populated with `tuples` under `config`. Same
+    /// contract as [`Relation::from_tuples`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
+    fn from_tuples_with_config(
+        header: RelationHeader, config: Self::Config, tuples: Vec<Vec<usize>>,
+    ) -> Self;
+
+    /// The configuration this relation was built with.
+    fn config(&self) -> &Self::Config;
+}
+
 /// Loads a [`Relation`] from a CSV or Parquet file.
 ///
 /// Defined as an extension trait (with a blanket impl over every
@@ -317,6 +353,128 @@ pub trait RelationFileExt: Relation {
         Self: Sized;
 }
 
+/// Extracts the relation name from a file path: the file stem (filename
+/// without extension), or an empty string if it cannot be determined.
+fn file_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Reads a CSV file into a header (attribute names from the header row,
+/// relation name from the file stem) and its tuples. Shared by
+/// [`RelationFileExt::from_csv`] and by callers that need to build with a
+/// non-default configuration
+/// ([`ConfigurableRelation::from_tuples_with_config`]).
+///
+/// # Errors
+///
+/// Same conditions as [`RelationFileExt::from_csv`].
+pub fn read_csv<P: AsRef<Path>>(
+    filepath: P,
+) -> Result<(RelationHeader, Vec<Vec<usize>>), RelationError> {
+    let path = filepath.as_ref();
+    let file = File::open(path)?;
+
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .delimiter(b',')
+        .double_quote(false)
+        .escape(Some(b'\\'))
+        .flexible(false)
+        .comment(Some(b'#'))
+        .from_reader(file);
+
+    // Extract column names from CSV header
+    let attrs: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
+
+    // Create header from the CSV header with the extracted name
+    let header = RelationHeader::new(file_stem(path), attrs);
+
+    let mut tuples = Vec::new();
+    for (row_idx, result) in rdr.records().enumerate() {
+        let record = result?;
+        let mut tuple: Vec<usize> = Vec::with_capacity(record.len());
+        for (col_idx, field) in record.iter().enumerate() {
+            let value = field.parse::<usize>().map_err(|_| {
+                RelationError::InvalidData(format!(
+                    "row {row_idx}, column {col_idx}: cannot parse {:?} as usize",
+                    field,
+                ))
+            })?;
+            tuple.push(value);
+        }
+        tuples.push(tuple);
+    }
+    Ok((header, tuples))
+}
+
+/// Reads a Parquet file into a header (column names from the schema,
+/// relation name from the file stem) and its tuples. Counterpart of
+/// [`read_csv`]. Shared by [`RelationFileExt::from_parquet`] and by callers
+/// that need to build with a non-default configuration
+/// ([`ConfigurableRelation::from_tuples_with_config`]).
+///
+/// # Errors
+///
+/// Same conditions as [`RelationFileExt::from_parquet`].
+pub fn read_parquet<P: AsRef<Path>>(
+    filepath: P,
+) -> Result<(RelationHeader, Vec<Vec<usize>>), RelationError> {
+    let path = filepath.as_ref();
+    let file = File::open(path)?;
+
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+
+    // Extract schema to get column names
+    let schema = builder.schema();
+    let attrs: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+
+    // Create header from the parquet schema with the extracted name
+    let header = RelationHeader::new(file_stem(path), attrs);
+
+    // Build the reader
+    let reader = builder.build()?;
+
+    // Collect all tuples first for efficient construction
+    let mut tuples = Vec::new();
+
+    // Read all record batches and collect tuples
+    for batch_result in reader {
+        let batch = batch_result?;
+
+        let num_rows = batch.num_rows();
+        let num_cols = batch.num_columns();
+
+        // Convert columnar data to row format (tuples)
+        for row_idx in 0..num_rows {
+            let mut tuple: Vec<usize> = Vec::with_capacity(num_cols);
+
+            for col_idx in 0..num_cols {
+                let column = batch.column(col_idx);
+                let int_array = column.as_primitive::<arrow::datatypes::Int64Type>();
+
+                if let Ok(value) = usize::try_from(int_array.value(row_idx)) {
+                    tuple.push(value);
+                } else {
+                    return Err(RelationError::InvalidData(
+                        "failed to convert Parquet value to usize".into(),
+                    ));
+                }
+            }
+
+            tuples.push(tuple);
+        }
+    }
+
+    Ok((header, tuples))
+}
+
 /// Blanket implementation of `RelationFileExt` for any type that
 /// implements `Relation`.
 impl<R> RelationFileExt for R
@@ -324,107 +482,13 @@ where
     R: Relation,
 {
     fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError> {
-        let path = filepath.as_ref();
-        let file = File::open(path)?;
-
-        let mut rdr = csv::ReaderBuilder::new()
-            .has_headers(true)
-            .delimiter(b',')
-            .double_quote(false)
-            .escape(Some(b'\\'))
-            .flexible(false)
-            .comment(Some(b'#'))
-            .from_reader(file);
-
-        // Extract column names from CSV header
-        let attrs: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
-
-        // Extract relation name from filename (without extension)
-        let relation_name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Create header from the CSV header with the extracted name
-        let header = RelationHeader::new(relation_name, attrs);
-
-        let mut tuples = Vec::new();
-        for (row_idx, result) in rdr.records().enumerate() {
-            let record = result?;
-            let mut tuple: Vec<usize> = Vec::with_capacity(record.len());
-            for (col_idx, field) in record.iter().enumerate() {
-                let value = field.parse::<usize>().map_err(|_| {
-                    RelationError::InvalidData(format!(
-                        "row {row_idx}, column {col_idx}: cannot parse {:?} as usize",
-                        field,
-                    ))
-                })?;
-                tuple.push(value);
-            }
-            tuples.push(tuple);
-        }
+        let (header, tuples) = read_csv(filepath)?;
+        // Use from_tuples for efficient construction (sorts before insertion)
         Ok(R::from_tuples(header, tuples))
     }
 
     fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError> {
-        let path = filepath.as_ref();
-        let file = File::open(path)?;
-
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-
-        // Extract schema to get column names
-        let schema = builder.schema();
-        let attrs: Vec<String> = schema
-            .fields()
-            .iter()
-            .map(|field| field.name().clone())
-            .collect();
-
-        // Extract relation name from filename (without extension)
-        let relation_name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Create header from the parquet schema with the extracted name
-        let header = RelationHeader::new(relation_name, attrs);
-
-        // Build the reader
-        let reader = builder.build()?;
-
-        // Collect all tuples first for efficient construction
-        let mut tuples = Vec::new();
-
-        // Read all record batches and collect tuples
-        for batch_result in reader {
-            let batch = batch_result?;
-
-            let num_rows = batch.num_rows();
-            let num_cols = batch.num_columns();
-
-            // Convert columnar data to row format (tuples)
-            for row_idx in 0..num_rows {
-                let mut tuple: Vec<usize> = Vec::with_capacity(num_cols);
-
-                for col_idx in 0..num_cols {
-                    let column = batch.column(col_idx);
-                    let int_array = column.as_primitive::<arrow::datatypes::Int64Type>();
-
-                    if let Ok(value) = usize::try_from(int_array.value(row_idx)) {
-                        tuple.push(value);
-                    } else {
-                        return Err(RelationError::InvalidData(
-                            "failed to convert Parquet value to usize".into(),
-                        ));
-                    }
-                }
-
-                tuples.push(tuple);
-            }
-        }
-
+        let (header, tuples) = read_parquet(filepath)?;
         // Use from_tuples for efficient construction (sorts before insertion)
         Ok(R::from_tuples(header, tuples))
     }
@@ -544,5 +608,16 @@ mod tests {
         );
 
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn read_csv_returns_header_and_tuples() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.csv");
+        std::fs::write(&path, "a,b\n1,2\n3,4\n").unwrap();
+        let (header, tuples) = read_csv(&path).unwrap();
+        assert_eq!(header.name(), "edge");
+        assert_eq!(header.arity(), 2);
+        assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);
     }
 }

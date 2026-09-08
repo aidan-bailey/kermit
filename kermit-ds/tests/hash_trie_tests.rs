@@ -9,7 +9,9 @@
 //! exercised with clustered buckets and shared leaf chains.
 
 use {
-    kermit_ds::HashTrie,
+    kermit_ds::{
+        define_config_provider, Configured, HashTrie, HashTrieConfig, LoadFactor, SingletonPruning,
+    },
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
 mod common;
@@ -41,6 +43,26 @@ impl HashStrategy for Mod10HashStrategy {
 
 type HashTrieMod10 = HashTrie<Mod10HashStrategy>;
 
+// ── Layout variant: singleton pruning on ────────────────────────────────
+//
+// Each hasher alias also runs with the pruning Layout on, so the iterator
+// contract holds on emulated (pruned) levels as well as materialised ones.
+// `Mod10` is the important case: full-collision tuples must unprune into a
+// shared leaf chain.
+type HashTrieSipPruned = HashTrie<SipHashStrategy, SingletonPruning>;
+type HashTrieFxPruned = HashTrie<FxHashStrategy, SingletonPruning>;
+type HashTrieMod10Pruned = HashTrie<Mod10HashStrategy, SingletonPruning>;
+
+// ── Config variant: a dense load factor ─────────────────────────────────
+define_config_provider!(NinetyPercent, HashTrieConfig, HashTrieConfig {
+    load_factor: LoadFactor::percent(90).unwrap(),
+});
+
+type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;
+// A dense table under the colliding strategy: every hash lands in bucket 0
+// and resolves by probing, so a 90 % cap stresses the probe loops hardest.
+type HashTrieMod10Dense = Configured<HashTrieMod10, NinetyPercent>;
+
 hash_trie_test_suite!(HashTrieSip, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieFx, FxHashStrategy);
@@ -49,6 +71,16 @@ hash_trie_test_suite!(HashTrieFx, FxHashStrategy);
 // suite must hold when unrelated keys *would* collide — every bucket here is
 // reached by linear probing from bucket 0.
 hash_trie_test_suite!(HashTrieMod10, Mod10HashStrategy);
+
+hash_trie_test_suite!(HashTrieSipPruned, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieFxPruned, FxHashStrategy);
+
+hash_trie_test_suite!(HashTrieMod10Pruned, Mod10HashStrategy);
+
+hash_trie_test_suite!(HashTrieSipDense, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieMod10Dense, Mod10HashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"
@@ -146,5 +178,22 @@ mod hash_trie_collisions {
         let mut expected = tuples;
         expected.sort();
         assert_eq!(collected, expected);
+    }
+
+    /// Under pruning, two tuples that collide on every attribute start as
+    /// one `Singleton` and must unprune into a shared leaf chain of two —
+    /// the same shape the unpruned trie builds, so `verify_and_construct`
+    /// still sees both candidates.
+    #[test]
+    fn full_collision_unprunes_into_shared_leaf_chain() {
+        let trie = HashTrieMod10Pruned::from_tuples(2.into(), vec![vec![1, 2], vec![11, 12]]);
+        let mut it = trie.hash_trie_iter();
+        assert!(it.open());
+        assert_eq!(it.size(), 1, "both tuples share hash(1) == hash(11)");
+        assert!(it.open());
+        assert_eq!(it.size(), 1, "both tuples share hash(2) == hash(12)");
+        let mut chain = it.leaf_tuples().expect("leaf chain").to_vec();
+        chain.sort();
+        assert_eq!(chain, vec![vec![1, 2], vec![11, 12]]);
     }
 }

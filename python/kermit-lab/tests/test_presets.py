@@ -51,5 +51,5 @@ def test_bar_queries(fixture_tree) -> None:
 
 def test_ablation(fixture_opt_tree) -> None:
     df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
-    assert isinstance(presets.ablation(df, axis="ds_config_singleton_pruning"), Figure)
+    assert isinstance(presets.ablation(df, axis="ds_config_load_factor"), Figure)
     plt.close("all")
