@@ -143,9 +143,9 @@ during a benchmark run. These prefixes are **normative** — kermit-lab
 tooling relies on them for cross-DS comparison.
 
 - `ds_layout_<dim>` — compile-time layout choice on the data structure
-  (e.g., `ds_layout_hasher`, `ds_layout_pointer_encoding`).
-- `ds_config_<flag>` — runtime configuration flag on the data structure
-  (e.g., `ds_config_singleton_pruning`).
+  (e.g., `ds_layout_hasher`, `ds_layout_pruning`, `ds_layout_pointer_encoding`).
+- `ds_config_<flag>` — runtime configuration value on the data structure
+  (e.g., `ds_config_load_factor`).
 - `ds_build_mode` — construction-time build mode for the data structure
   (single key; value is a `<mode>[:<params>]` string, e.g., `parallel:8`).
 - `algo_layout_<dim>`, `algo_config_<flag>`, `algo_build_mode` — analogous
@@ -154,7 +154,8 @@ tooling relies on them for cross-DS comparison.
 When pivoting bench reports in kermit-lab, downstream code should:
 - Treat missing keys as the algorithm/DS default. For pre-standard reports
   predating this change, back-fill `ds_layout_hasher == "sip"` (the
-  historical hash function for HashTrie).
+  historical hash function for HashTrie), `ds_layout_pruning == "off"`, and
+  `ds_config_load_factor == 0.7` (the historical constant).
 - Group on the relevant prefix to perform ablation analysis.
 
 Adding new keys under these prefixes does not require a `schema_version`

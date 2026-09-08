@@ -1,8 +1,10 @@
 # Singleton Pruning as the First Config Consumer
 
 **Status:** Sections 1–6 are implemented on `aidanb/optimisations`
-(commits `77dffa2`..`f17c812`). **Amendment 1** below supersedes the
-classification of pruning and is not yet implemented; read it first.
+(commits `77dffa2`..`f17c812`). **Amendment 1 implemented** (commits
+`d711043`..`185b386` plus the docs commit); acceptance record pending
+Task 9/10 of `docs/plans/2026-09-08-pruning-layout-load-factor-config.md`.
+Amendment 1 supersedes the classification of pruning; read it first.
 **Resolves:** [#58](https://github.com/aidan-bailey/kermit/issues/58) — the optimization standard has one adopter; Config and BuildMode are unexercised.
 **Paper:** SIGMOD 2020 "Combining Worst-Case Optimal and Traditional Binary Join Processing", §3.3.1, Figure 5.
 
