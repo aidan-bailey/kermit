@@ -1,4 +1,4 @@
-//! Execution cells for `bench run`.
+//! Execution cells for `bench run` and `bench ds`.
 //!
 //! The CLI exposes an index structure (`-i`) and a join algorithm (`-a`)
 //! as two independent selectors, but only three of the six concrete
@@ -114,6 +114,19 @@ impl Execution {
                 JoinAlgorithm::HashTriejoin,
             )
             | (IndexStructure::HashTrie, JoinAlgorithm::LeapfrogTriejoin) => None,
+        }
+    }
+
+    /// The cell for a structure selected on its own, as `bench ds` does
+    /// (it takes no `--algorithm` flag). Every structure has exactly one
+    /// compatible algorithm, so this is total: it is
+    /// [`Execution::for_pair`] with that algorithm filled in, and the two
+    /// are pinned to agree by `for_structure_agrees_with_for_pair`.
+    pub fn for_structure(ds: IndexStructure, hasher: HasherChoice) -> Execution {
+        match ds {
+            | IndexStructure::TreeTrie => Execution::TrieLftj(SortedTrie::TreeTrie),
+            | IndexStructure::ColumnTrie => Execution::TrieLftj(SortedTrie::ColumnTrie),
+            | IndexStructure::HashTrie => Execution::HashHtj(hasher),
         }
     }
 
@@ -431,6 +444,23 @@ mod tests {
             ),
             Some(Execution::HashHtj(HasherChoice::Fxhash))
         );
+    }
+
+    /// `for_structure` must name the one cell `for_pair` accepts for that
+    /// structure — otherwise `bench ds` and `bench run` could disagree on
+    /// which family a structure belongs to.
+    #[test]
+    fn for_structure_agrees_with_for_pair() {
+        for ds in all_structures() {
+            for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
+                let cell = Execution::for_structure(ds, hasher);
+                assert_eq!(cell.index_structure(), ds);
+                assert_eq!(
+                    Execution::for_pair(ds, cell.algorithm(), hasher),
+                    Some(cell)
+                );
+            }
+        }
     }
 
     /// The family's reported execution comes from its type, so the label

@@ -87,7 +87,7 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 | Engine | `DB` trait / `DatabaseEngine` | `hash_join` free function |
 | Bench cell | `Execution::TrieLftj(SortedTrie)` / `TrieLftj<R>` | `Execution::HashHtj(HasherChoice)` / `HashHtj<H>` |
 | `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
-| `bench ds` dispatch | `run_ds_bench` | `run_ds_bench_hash` |
+| `bench ds` dispatch | one generic `run_ds_bench<F: ExecutionFamily>` | the same `run_ds_bench<F>` |
 
 Only three `(index structure, algorithm)` pairs are valid: `(TreeTrie, LeapfrogTriejoin)`, `(ColumnTrie, LeapfrogTriejoin)`, and `(HashTrie, HashTriejoin)`. The type system enforces this at every layer, the CLI included: user strings are resolved into two independent enums, but `Execution::for_pair` is the only bridge from that pair back to a runnable cell — see "Selector dispatch" under CLI.
 
@@ -409,7 +409,7 @@ For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/s
 
 Consequently `-i all -a all` runs exactly the three valid cells, announcing each skipped pair on stderr, while a single explicitly-named incompatible pair leaves nothing to run and is reported as a usage error. Because the report's `data_structure` and `algorithm` axes are both derived from `ExecutionFamily::execution()`, a report cannot name an algorithm it did not run (issue #56).
 
-`bench ds` keeps its own `run_ds_bench` / `run_ds_bench_hash` split: no algorithm is involved there, so there is no pair to mislabel.
+`bench ds` selects a structure but no algorithm, so it names its cell through the total `Execution::for_structure` (every structure has exactly one compatible algorithm) and runs the same kind of generic runner, `run_ds_bench<F: ExecutionFamily>`. The family's join side is inert there; only `F::Rel`, `F::tuples` and `F::optimization_axes` are used (issue #61).
 
 ### Space measurement
 
