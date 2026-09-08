@@ -26,7 +26,10 @@ mod relation;
 pub use {
     cardinality::Cardinality,
     configured::{ConfigProvider, Configured},
-    ds::{ColumnTrie, HashTrie, HashTrieConfig, IndexStructure, TreeTrie},
+    ds::{
+        ColumnTrie, HashTrie, HashTrieConfig, IndexStructure, NoPruning, PruningPolicy,
+        SingletonPruning, TreeTrie,
+    },
     heap_size::HeapSize,
     relation::{
         read_csv, read_parquet, ConfigurableRelation, ModelType, Projectable, Relation,

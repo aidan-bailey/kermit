@@ -14,5 +14,10 @@ mod hash_table;
 mod hash_trie_iter;
 mod implementation;
 mod node;
+mod pruning;
 
-pub use {config::HashTrieConfig, implementation::HashTrie};
+pub use {
+    config::HashTrieConfig,
+    implementation::HashTrie,
+    pruning::{NoPruning, PruningPolicy, SingletonPruning},
+};
