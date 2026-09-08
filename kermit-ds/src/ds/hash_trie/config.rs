@@ -25,7 +25,7 @@ impl ConfigOption for HashTrieConfig {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, kermit_iters::ConfigOption, serde_json::Value};
+    use super::*;
 
     #[test]
     fn default_config_has_pruning_off() {

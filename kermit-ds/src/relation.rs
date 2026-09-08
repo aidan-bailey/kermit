@@ -276,9 +276,12 @@ pub trait Relation: JoinIterable + Projectable {
 ///
 /// `Relation::new` / `Relation::from_tuples` have no parameter through which
 /// a config value could travel, so this extension trait adds the
-/// config-carrying constructors. Implementors route `Relation::new` through
-/// [`with_config`](Self::with_config) with `Self::Config::default()`, so a
-/// relation built through the plain trait is the default configuration.
+/// config-carrying constructors. A data structure implementing this should
+/// make `Relation::new` equivalent to `with_config(header,
+/// Self::Config::default())`, so plain-trait construction is unchanged from
+/// pre-config behaviour. Wrapper types that exist to inject a configuration
+/// (see `Configured` in `configured.rs`, added later) deliberately override
+/// this.
 ///
 /// Only structures with a Config axis implement this; structures without
 /// one are not required to.

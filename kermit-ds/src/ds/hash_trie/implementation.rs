@@ -36,7 +36,10 @@ use {
 ///
 /// Use `from_tuples` (batch) or `new` followed by `insert` (incremental).
 /// Both funnel through `insert` for a single tuple, faithful to
-/// Algorithm 2 from the paper.
+/// Algorithm 2 from the paper. `with_config` / `from_tuples_with_config`
+/// (via [`ConfigurableRelation`](crate::relation::ConfigurableRelation)) are
+/// the config-carrying constructors; `new` / `from_tuples` are thin wrappers
+/// over them that supply the default configuration.
 ///
 /// # Layout parameter
 ///
@@ -502,7 +505,9 @@ mod tests {
         use kermit_iters::HasOptimizationAxes;
         let trie: HashTrie = HashTrie::new(2.into());
         let axes = trie.optimization_axes();
-        assert_eq!(axes.len(), 2);
+        let mut keys: Vec<&str> = axes.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["ds_config_singleton_pruning", "ds_layout_hasher"]);
         assert_eq!(
             axes.get("ds_layout_hasher"),
             Some(&serde_json::Value::String("sip".to_string())),
@@ -514,7 +519,9 @@ mod tests {
         use kermit_iters::{FxHashStrategy, HasOptimizationAxes};
         let trie: HashTrie<FxHashStrategy> = HashTrie::new(2.into());
         let axes = trie.optimization_axes();
-        assert_eq!(axes.len(), 2);
+        let mut keys: Vec<&str> = axes.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["ds_config_singleton_pruning", "ds_layout_hasher"]);
         assert_eq!(
             axes.get("ds_layout_hasher"),
             Some(&serde_json::Value::String("fxhash".to_string())),
@@ -569,6 +576,35 @@ mod tests {
             plain.optimization_axes().get("ds_config_singleton_pruning"),
             Some(&serde_json::Value::Bool(false))
         );
+    }
+
+    #[test]
+    fn from_tuples_uses_default_config() {
+        use crate::relation::ConfigurableRelation;
+        let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        assert_eq!(*trie.config(), HashTrieConfig::default());
+    }
+
+    #[test]
+    fn config_survives_insert_and_insert_all() {
+        use crate::relation::ConfigurableRelation;
+        let on = HashTrieConfig {
+            singleton_pruning: true,
+        };
+        let mut trie: HashTrie = HashTrie::with_config(2.into(), on);
+        trie.insert(vec![1, 2]);
+        assert_eq!(*trie.config(), on);
+        trie.insert_all(vec![vec![3, 4], vec![5, 6]]);
+        assert_eq!(*trie.config(), on);
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity")]
+    fn from_tuples_with_config_wrong_arity_panics() {
+        use crate::relation::ConfigurableRelation;
+        let _: HashTrie = HashTrie::from_tuples_with_config(2.into(), HashTrieConfig::default(), vec![
+            vec![1],
+        ]);
     }
 }
 
