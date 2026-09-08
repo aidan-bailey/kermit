@@ -13,7 +13,7 @@
 use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
-    kermit::db::{hash_join, instantiate_database},
+    kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HashTrie, HeapSize, IndexStructure, Relation, RelationFileExt},
@@ -22,7 +22,7 @@ use {
     },
     kermit_parser::Term,
     std::{
-        collections::{BTreeMap, HashMap},
+        collections::BTreeMap,
         fs,
         io::{self, BufWriter, Write},
         path::{Path, PathBuf},
@@ -31,12 +31,16 @@ use {
 };
 
 mod bench_report;
+mod execution;
 mod materialize;
 mod measurement;
 
-use bench_report::{
-    write_json_report, write_metadata_block, BenchKind, BenchReport, CriterionGroupRef,
-    MetadataLine, ReportMetric,
+use {
+    bench_report::{
+        write_json_report, write_metadata_block, BenchKind, BenchReport, CriterionGroupRef,
+        MetadataLine, ReportMetric,
+    },
+    execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
 };
 
 /// Default Criterion group name when `--name` is omitted on `bench run`.
@@ -131,32 +135,6 @@ impl IndexStructureSelector {
             | Self::TreeTrie => vec![IndexStructure::TreeTrie],
         }
     }
-
-    /// Returns whether this index-structure selector is compatible with
-    /// the given algorithm selector.
-    ///
-    /// Used to reject invalid CLI argument combinations (such as
-    /// `--indexstructure hash-trie --algorithm leapfrog-triejoin`) at
-    /// parse time, before launching any work. The `All` selector on
-    /// either side is permissive — the cross-product caller in `bench
-    /// run` filters individual `(IndexStructure, JoinAlgorithm)` pairs
-    /// at expand time.
-    fn supports_algorithm(self, algo: JoinAlgorithmSelector) -> bool {
-        match (self, algo) {
-            // `All` permits everything; the cross-product caller filters
-            // at expand time.
-            | (IndexStructureSelector::All, _) | (_, JoinAlgorithmSelector::All) => true,
-            // Hash family: hash trie pairs only with hash triejoin.
-            | (IndexStructureSelector::HashTrie, JoinAlgorithmSelector::HashTriejoin) => true,
-            // Sorted family: sorted tries pair only with leapfrog triejoin.
-            | (
-                IndexStructureSelector::TreeTrie | IndexStructureSelector::ColumnTrie,
-                JoinAlgorithmSelector::LeapfrogTriejoin,
-            ) => true,
-            // Anything else is incompatible.
-            | _ => false,
-        }
-    }
 }
 
 /// CLI-side selector for `--algorithm`. Wraps [`JoinAlgorithm`] with an
@@ -196,7 +174,7 @@ impl JoinAlgorithmSelector {
 /// This flag only applies when the selected index structure is `hash-trie`;
 /// `validate_layout_choices` rejects it on other index structures so users
 /// cannot silently pass it to a TreeTrie/ColumnTrie run.
-#[derive(Copy, Clone, Debug, Default, PartialEq, clap::ValueEnum)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 enum HasherChoice {
     /// SipHash via the standard library's `DefaultHasher`.
     #[default]
@@ -1008,20 +986,27 @@ where
         .to_lowercase();
     match extension.as_str() {
         | "csv" => R::from_csv(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
-        | "parquet" =>
-            R::from_parquet(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
+        | "parquet" => {
+            R::from_parquet(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))
+        },
         | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
     }
 }
 
-fn run_benchmark<R>(
-    benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
-    optimiser: Optimiser, metrics: &[Metric], queries_per_build: u32, query_filter: Option<&str>,
-    bench_args: &BenchArgs,
-) -> anyhow::Result<Vec<BenchReport>>
-where
-    R: Relation + TrieIterable + HeapSize + 'static,
-{
+/// Runs every selected query of `benchmark` on one execution cell and
+/// returns one report per query.
+///
+/// Generic over the [`ExecutionFamily`] so the sorted family
+/// (`TrieLftj<R>`) and the hash family (`HashHtj<H>`) share one body:
+/// query selection, relation loading, metadata, Criterion group wiring and
+/// report assembly are identical, and the report's `data_structure` /
+/// `algorithm` axes come from `family.execution()` — the same value that
+/// picked the code path — so a report can never name an algorithm it did
+/// not run (issue #56).
+fn run_benchmark<F: ExecutionFamily>(
+    family: &F, benchmark: &BenchmarkDefinition, optimiser: Optimiser, metrics: &[Metric],
+    queries_per_build: u32, query_filter: Option<&str>, bench_args: &BenchArgs,
+) -> anyhow::Result<Vec<BenchReport>> {
     let queries: Vec<&kermit_bench::QueryDefinition> = match query_filter {
         | Some(name) => {
             let q = benchmark
@@ -1049,42 +1034,43 @@ where
     let cached_paths = kermit_bench::cache::ensure_cached(benchmark, &workspace_root())
         .map_err(|e| anyhow::anyhow!("Failed to fetch benchmark data: {e}"))?;
 
-    // Load each relation from disk exactly once. Populating `db` from these
-    // typed `R`s (rather than via `db.add_file` from disk) avoids a second
-    // parquet read per relation, which is the dominant cost on large
-    // workloads like WatDiv-scale-1000.
-    let relations: Vec<R> = cached_paths
+    // Load each relation from disk exactly once; the family builds its
+    // engine from these typed relations rather than re-reading the files.
+    let relations: Vec<F::Rel> = cached_paths
         .iter()
-        .map(|p| load_relation_file::<R>(p))
+        .map(|p| load_relation_file::<F::Rel>(p))
         .collect::<Result<_, _>>()?;
+    let engine = family.build(relations);
+    let relations = F::relations(&engine);
 
-    let mut db = instantiate_database(
-        indexstructure,
-        algorithm,
-        optimiser.instantiate(),
-        benchmark.name.clone(),
-    );
-    for rel in &relations {
-        let header = rel.header();
-        let name = header.name();
-        let tuples: Vec<Vec<usize>> = rel.trie_iter().into_iter().collect();
-        db.add_relation(name, header.arity());
-        db.add_keys_batch(name, tuples);
-    }
-
-    let ds_name = format!("{:?}", indexstructure);
-    let algo_name = format!("{:?}", algorithm);
+    // `ds_name`/`algo_name` are `Debug`-derived strings for the DS and
+    // algorithm enums. These are a STABLE external contract, not throwaway
+    // debug output: they become the report's identity axes and the on-disk
+    // `target/criterion/{group}` names (the group_name below embeds them).
+    // Changing the `Debug` output would silently repartition prior
+    // benchmark measurements. See the same pattern in `run_ds_bench` and
+    // the `bench join` arm.
+    let execution = family.execution();
+    let ds_name = format!("{:?}", execution.index_structure());
+    let algo_name = format!("{:?}", execution.algorithm());
 
     let has_time_metrics = metrics
         .iter()
         .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
 
     // Sum across relations: scaling plots key off this as the workload's
-    // total input size. One trie walk per relation is cheap vs the bench itself.
-    let total_tuples: usize = relations
-        .iter()
-        .map(|r| r.trie_iter().into_iter().count())
-        .sum();
+    // total input size. One walk per relation is cheap vs the bench itself.
+    let total_tuples: usize = relations.iter().map(|r| F::tuple_count(r)).sum();
+
+    // Standard optimization axes: merge in dimensions emitted by the DS.
+    // Every relation in this run shares the same type, so any one of them
+    // produces the canonical `ds_layout_*` set. The `ds_*` prefix convention
+    // (see `kermit_iters::HasOptimizationAxes`) guarantees no collision with
+    // the base axes assembled per query below.
+    let optimization_axes = relations
+        .first()
+        .map(|r| F::optimization_axes(r))
+        .unwrap_or_default();
 
     let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
 
@@ -1124,23 +1110,29 @@ where
             let mut criterion = build_time_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
 
-            if metrics.contains(&Metric::Insertion) {
-                let tuples_and_headers: Vec<_> = relations
+            // Snapshot each relation's header + tuples once; both the
+            // `insertion` and `end_to_end` bodies rebuild from these. Skipped
+            // for an `iteration`-only run, where it would be a dead copy of
+            // the whole workload.
+            let build_inputs: Vec<(kermit_ds::RelationHeader, Vec<Vec<usize>>)> = if metrics
+                .iter()
+                .any(|m| matches!(m, Metric::Insertion | Metric::EndToEnd))
+            {
+                relations
                     .iter()
-                    .map(|r| {
-                        (
-                            r.header().clone(),
-                            r.trie_iter().into_iter().collect::<Vec<_>>(),
-                        )
-                    })
-                    .collect();
+                    .map(|r| (r.header().clone(), F::tuples(r)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
+            if metrics.contains(&Metric::Insertion) {
                 group.bench_function("insertion", |b| {
                     b.iter_batched(
-                        || tuples_and_headers.clone(),
+                        || build_inputs.clone(),
                         |data| {
                             for (header, tuples) in data {
-                                std::hint::black_box(R::from_tuples(header, tuples));
+                                std::hint::black_box(F::Rel::from_tuples(header, tuples));
                             }
                         },
                         criterion::BatchSize::SmallInput,
@@ -1157,7 +1149,7 @@ where
                 group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || join_query.clone(),
-                        |q| db.join(q),
+                        |q| family.join(&engine, q),
                         criterion::BatchSize::SmallInput,
                     );
                 });
@@ -1169,23 +1161,12 @@ where
             }
 
             if metrics.contains(&Metric::EndToEnd) {
-                // Snapshot each relation's identity + tuples once. The timed
-                // body rebuilds the database through the same DB-trait path
-                // the untimed build above used (`add_relation` +
-                // `add_keys_batch`), so the build term is the one the
-                // `iteration` metric's database actually paid — NOT the
-                // presorting `from_tuples` path the `insertion` metric times.
-                let build_inputs: Vec<(String, usize, Vec<Vec<usize>>)> = relations
-                    .iter()
-                    .map(|r| {
-                        (
-                            r.header().name().to_string(),
-                            r.header().arity(),
-                            r.trie_iter().into_iter().collect::<Vec<_>>(),
-                        )
-                    })
-                    .collect();
-
+                // The timed body rebuilds the engine through the same path
+                // the untimed `family.build` above used, so the build term
+                // is the one the `iteration` metric's engine actually paid —
+                // NOT the presorting `from_tuples` path the `insertion`
+                // metric times.
+                //
                 // PerIteration: a fresh build per sample is the point of this
                 // metric — batching would amortise away the construction cost
                 // whose interaction with query traversal is under measurement.
@@ -1198,18 +1179,9 @@ where
                             ])
                         },
                         |(inputs, queries)| {
-                            let mut fresh_db = instantiate_database(
-                                indexstructure,
-                                algorithm,
-                                optimiser.instantiate(),
-                                benchmark.name.clone(),
-                            );
-                            for (name, arity, tuples) in inputs {
-                                fresh_db.add_relation(&name, arity);
-                                fresh_db.add_keys_batch(&name, tuples);
-                            }
+                            let fresh = family.build_from_tuples(inputs);
                             for q in queries {
-                                std::hint::black_box(fresh_db.join(q));
+                                std::hint::black_box(family.join(&fresh, q));
                             }
                         },
                         criterion::BatchSize::PerIteration,
@@ -1232,7 +1204,7 @@ where
             for rel in &relations {
                 let rel_name = rel.header().name().to_string();
                 let function = format!("space/{}", rel_name);
-                criterion_groups.push(add_space_bench(&mut group, &group_name, function, rel));
+                criterion_groups.push(add_space_bench(&mut group, &group_name, function, *rel));
             }
             group.finish();
             criterion.final_summary();
@@ -1257,271 +1229,7 @@ where
                 serde_json::json!(queries_per_build),
             );
         }
-        reports.push(BenchReport::new(
-            BenchKind::Run,
-            &metadata,
-            axes,
-            criterion_groups,
-        ));
-    }
-
-    Ok(reports)
-}
-
-/// Hash-family analogue of [`run_benchmark`]. Mirrors its structure but
-/// builds a `HashMap<String, HashTrie<H>>` and dispatches each query
-/// through the [`hash_join`] free function rather than through the `DB`
-/// trait. The (HashTrie, HashTriejoin) pair is the only valid
-/// combination this function handles; the caller is expected to have
-/// gated on `IndexStructureSelector::supports_algorithm` upstream.
-///
-/// Generic over `H: HashStrategy` — Rust forbids defaults on free-function
-/// type parameters, so the CLI dispatch site picks `H` by matching on
-/// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
-#[allow(clippy::too_many_arguments)]
-fn run_benchmark_hash<H: HashStrategy>(
-    benchmark: &BenchmarkDefinition, indexstructure: IndexStructure, algorithm: JoinAlgorithm,
-    optimiser: Optimiser, metrics: &[Metric], queries_per_build: u32, query_filter: Option<&str>,
-    bench_args: &BenchArgs,
-) -> anyhow::Result<Vec<BenchReport>> {
-    let queries: Vec<&kermit_bench::QueryDefinition> = match query_filter {
-        | Some(name) => {
-            let q = benchmark
-                .queries
-                .iter()
-                .find(|q| q.name == name)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "query '{}' not found in benchmark '{}' (available: {})",
-                        name,
-                        benchmark.name,
-                        benchmark
-                            .queries
-                            .iter()
-                            .map(|q| q.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                })?;
-            vec![q]
-        },
-        | None => benchmark.queries.iter().collect(),
-    };
-
-    let cached_paths = kermit_bench::cache::ensure_cached(benchmark, &workspace_root())
-        .map_err(|e| anyhow::anyhow!("Failed to fetch benchmark data: {e}"))?;
-
-    let relations: Vec<HashTrie<H>> = cached_paths
-        .iter()
-        .map(|p| load_relation_file::<HashTrie<H>>(p))
-        .collect::<Result<_, _>>()?;
-
-    // Move every loaded relation into a keyed map by its declared name.
-    // `hash_join` borrows from this map per query invocation so each
-    // Criterion iteration doesn't re-allocate wrappers. Insertion /
-    // space metrics below still need the relation handles, so the
-    // borrow goes through `relations_by_name.values()` rather than the
-    // consumed `relations` vector.
-    let mut relations_by_name: HashMap<String, HashTrie<H>> = HashMap::new();
-    for rel in relations {
-        relations_by_name.insert(rel.header().name().to_string(), rel);
-    }
-
-    // `ds_name`/`algo_name` are `Debug`-derived strings for the DS and
-    // algorithm enums. These are a STABLE external contract, not throwaway
-    // debug output: they become the report's identity axes and the on-disk
-    // `target/criterion/{group}` names (the group_name below embeds them).
-    // Changing the `Debug` output would silently repartition prior
-    // benchmark measurements. See the same pattern in `run_benchmark`,
-    // `run_ds_bench`, and the `bench join` arm.
-    let ds_name = format!("{:?}", indexstructure);
-    let algo_name = format!("{:?}", algorithm);
-
-    let has_time_metrics = metrics
-        .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
-
-    let total_tuples: usize = relations_by_name
-        .values()
-        .map(|r| r.collect_tuples().len())
-        .sum();
-
-    let optimiser_impl = optimiser.instantiate();
-
-    let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
-
-    for query_def in &queries {
-        let join_query: JoinQuery =
-            query_def.query.trim().parse().map_err(|e| {
-                anyhow::anyhow!("Failed to parse query '{}': {:?}", query_def.query, e)
-            })?;
-
-        let mut metadata = vec![
-            MetadataLine::new("benchmark", &benchmark.name),
-            MetadataLine::new("query", &query_def.name),
-            MetadataLine::new("data structure", &ds_name),
-            MetadataLine::new("algorithm", &algo_name),
-        ];
-        if metrics.contains(&Metric::EndToEnd) {
-            metadata.push(MetadataLine::new("queries per build", queries_per_build));
-        }
-        for rel in relations_by_name.values() {
-            let h = rel.header();
-            metadata.push(MetadataLine::new(
-                "relation",
-                format!("{:?} (arity {})", h.name(), h.arity()),
-            ));
-        }
-        write_metadata_block(&mut io::stderr(), "bench run metadata", &metadata)?;
-
-        let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_RUN_GROUP);
-        let group_name = format!(
-            "{}/{}/{}/{}/{}",
-            prefix, benchmark.name, query_def.name, ds_name, algo_name
-        );
-
-        let mut criterion_groups: Vec<CriterionGroupRef> = Vec::new();
-
-        if has_time_metrics {
-            let mut criterion = build_time_criterion(bench_args);
-            let mut group = criterion.benchmark_group(&group_name);
-
-            if metrics.contains(&Metric::Insertion) {
-                let tuples_and_headers: Vec<_> = relations_by_name
-                    .values()
-                    .map(|r| (r.header().clone(), r.collect_tuples()))
-                    .collect();
-
-                group.bench_function("insertion", |b| {
-                    b.iter_batched(
-                        || tuples_and_headers.clone(),
-                        |data| {
-                            for (header, tuples) in data {
-                                std::hint::black_box(HashTrie::<H>::from_tuples(header, tuples));
-                            }
-                        },
-                        criterion::BatchSize::SmallInput,
-                    );
-                });
-                criterion_groups.push(CriterionGroupRef {
-                    group: group_name.clone(),
-                    function: "insertion".to_string(),
-                    metric: ReportMetric::Time,
-                });
-            }
-
-            if metrics.contains(&Metric::Iteration) {
-                group.bench_function("iteration", |b| {
-                    b.iter_batched(
-                        || join_query.clone(),
-                        |q| {
-                            hash_join::<HashTrie<H>, H>(
-                                &relations_by_name,
-                                q,
-                                optimiser_impl.as_ref(),
-                            )
-                        },
-                        criterion::BatchSize::SmallInput,
-                    );
-                });
-                criterion_groups.push(CriterionGroupRef {
-                    group: group_name.clone(),
-                    function: "iteration".to_string(),
-                    metric: ReportMetric::Time,
-                });
-            }
-
-            if metrics.contains(&Metric::EndToEnd) {
-                // Snapshot each relation's header + tuples once. The hash
-                // family has no DB-trait path — the CLI's real pipeline is a
-                // keyed map handed to the `hash_join` free function — so the
-                // timed body rebuilds exactly that map via `from_tuples`.
-                let build_inputs: Vec<_> = relations_by_name
-                    .values()
-                    .map(|r| (r.header().clone(), r.collect_tuples()))
-                    .collect();
-
-                // PerIteration: a fresh build per sample is the point of this
-                // metric — batching would amortise away the construction cost
-                // whose interaction with query traversal is under measurement.
-                group.bench_function("end_to_end", |b| {
-                    b.iter_batched(
-                        || {
-                            (build_inputs.clone(), vec![
-                                join_query.clone();
-                                queries_per_build as usize
-                            ])
-                        },
-                        |(inputs, queries)| {
-                            let mut fresh_relations: HashMap<String, HashTrie<H>> = HashMap::new();
-                            for (header, tuples) in inputs {
-                                fresh_relations.insert(
-                                    header.name().to_string(),
-                                    HashTrie::<H>::from_tuples(header, tuples),
-                                );
-                            }
-                            for q in queries {
-                                std::hint::black_box(hash_join::<HashTrie<H>, H>(
-                                    &fresh_relations,
-                                    q,
-                                    optimiser_impl.as_ref(),
-                                ));
-                            }
-                        },
-                        criterion::BatchSize::PerIteration,
-                    );
-                });
-                criterion_groups.push(CriterionGroupRef {
-                    group: group_name.clone(),
-                    function: "end_to_end".to_string(),
-                    metric: ReportMetric::Time,
-                });
-            }
-
-            group.finish();
-            criterion.final_summary();
-        }
-
-        if metrics.contains(&Metric::Space) {
-            let mut criterion = build_space_criterion(bench_args);
-            let mut group = criterion.benchmark_group(&group_name);
-            for rel in relations_by_name.values() {
-                let rel_name = rel.header().name().to_string();
-                let function = format!("space/{}", rel_name);
-                criterion_groups.push(add_space_bench(&mut group, &group_name, function, rel));
-            }
-            group.finish();
-            criterion.final_summary();
-        }
-
-        let mut axes = BTreeMap::from([
-            ("benchmark".to_string(), serde_json::json!(benchmark.name)),
-            ("query".to_string(), serde_json::json!(query_def.name)),
-            ("data_structure".to_string(), serde_json::json!(ds_name)),
-            ("algorithm".to_string(), serde_json::json!(algo_name)),
-            (
-                "optimiser".to_string(),
-                serde_json::json!(optimiser.axis_value()),
-            ),
-            ("tuples".to_string(), serde_json::json!(total_tuples)),
-        ]);
-        // Only meaningful when the end-to-end metric ran; omitting it
-        // otherwise keeps historical invocations' reports unchanged.
-        if metrics.contains(&Metric::EndToEnd) {
-            axes.insert(
-                "queries_per_build".to_string(),
-                serde_json::json!(queries_per_build),
-            );
-        }
-        // Standard optimization axes: merge in dimensions emitted by the DS.
-        // Every `HashTrie<H>` in `relations_by_name` shares the same `H`, so
-        // any value's `optimization_axes()` produces the canonical
-        // `ds_layout_*` set for this run. The `ds_*` prefix convention
-        // (see `kermit_iters::HasOptimizationAxes`) guarantees no
-        // collision with the base axes assembled above.
-        if let Some(rel) = relations_by_name.values().next() {
-            axes.extend(rel.optimization_axes());
-        }
+        axes.extend(optimization_axes.clone());
         reports.push(BenchReport::new(
             BenchKind::Run,
             &metadata,
@@ -1826,79 +1534,80 @@ fn run_ds_bench_command(
     Ok(())
 }
 
-/// Dispatches a single `bench run` cell to the correct concrete
-/// `run_benchmark`/`run_benchmark_hash` monomorphisation for `ds`.
-///
-/// `HashTrie` lives in a parallel trait family (`HashTrieIterable`, not
-/// `TrieIterable`); it joins via the `hash_join` free function rather than the
-/// `DB` trait. NOTE: the caller's `supports_algorithm` gate does NOT guarantee
-/// `algo == HashTriejoin` here — it is permissive whenever either selector is
-/// `All`, and the cross-product loop does not filter incompatible concrete
-/// pairs. So with e.g. `-i all -a leapfrog-triejoin` this arm is reached with
-/// `algo == LeapfrogTriejoin`, still running `hash_join` but stamping the
-/// report with the wrong algorithm. This mislabelling is a known issue tracked
-/// separately. The `H: HashStrategy` parameter is picked from the
-/// `--ds-layout-hasher` CLI flag (`hasher`).
-#[allow(clippy::too_many_arguments)]
+/// Runs one `bench run` cell by monomorphising [`run_benchmark`] over the
+/// [`ExecutionFamily`] the cell names. There is no separate algorithm
+/// parameter to ignore: the `Execution` fixes both halves of the pair.
 fn dispatch_run_bench(
-    ds: IndexStructure, hasher: HasherChoice, benchmark: &BenchmarkDefinition, algo: JoinAlgorithm,
-    optimiser: Optimiser, metrics: &[Metric], queries_per_build: u32, query_filter: Option<&str>,
-    bench_args: &BenchArgs,
+    cell: Execution, benchmark: &BenchmarkDefinition, optimiser: Optimiser, metrics: &[Metric],
+    queries_per_build: u32, query_filter: Option<&str>, bench_args: &BenchArgs,
 ) -> anyhow::Result<Vec<BenchReport>> {
-    match ds {
-        | IndexStructure::TreeTrie => run_benchmark::<kermit_ds::TreeTrie>(
+    let name = benchmark.name.clone();
+    match cell {
+        | Execution::TrieLftj(SortedTrie::TreeTrie) => run_benchmark(
+            &TrieLftj::<kermit_ds::TreeTrie>::new(optimiser, name),
             benchmark,
-            ds,
-            algo,
             optimiser,
             metrics,
             queries_per_build,
             query_filter,
             bench_args,
         ),
-        | IndexStructure::ColumnTrie => run_benchmark::<kermit_ds::ColumnTrie>(
+        | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_benchmark(
+            &TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser, name),
             benchmark,
-            ds,
-            algo,
             optimiser,
             metrics,
             queries_per_build,
             query_filter,
             bench_args,
         ),
-        | IndexStructure::HashTrie => match hasher {
-            | HasherChoice::Sip => run_benchmark_hash::<SipHashStrategy>(
-                benchmark,
-                ds,
-                algo,
-                optimiser,
-                metrics,
-                queries_per_build,
-                query_filter,
-                bench_args,
-            ),
-            | HasherChoice::Fxhash => run_benchmark_hash::<FxHashStrategy>(
-                benchmark,
-                ds,
-                algo,
-                optimiser,
-                metrics,
-                queries_per_build,
-                query_filter,
-                bench_args,
-            ),
-        },
+        | Execution::HashHtj(hasher @ HasherChoice::Sip) => run_benchmark(
+            &HashHtj::<SipHashStrategy>::new(hasher, optimiser),
+            benchmark,
+            optimiser,
+            metrics,
+            queries_per_build,
+            query_filter,
+            bench_args,
+        ),
+        | Execution::HashHtj(hasher @ HasherChoice::Fxhash) => run_benchmark(
+            &HashHtj::<FxHashStrategy>::new(hasher, optimiser),
+            benchmark,
+            optimiser,
+            metrics,
+            queries_per_build,
+            query_filter,
+            bench_args,
+        ),
     }
 }
 
-/// Handler for `bench run`: materialise the selected benchmarks and sweep
-/// the requested (index-structure, algorithm) cross-product, writing the
-/// aggregated reports.
+/// Expands the `-i` / `-a` selectors into the valid execution cells.
 ///
-/// The cross-product loop does **not** filter incompatible (structure,
-/// algorithm) pairs when either selector is `All` — this is a known,
-/// documented issue (see the `dispatch_run_bench` note and CLAUDE.md). The
-/// loop is preserved verbatim here.
+/// Incompatible concrete pairs are dropped: with `all` on either side they
+/// are announced on stderr and skipped, so `-i all -a all` runs exactly the
+/// three valid cells; when the user named a single incompatible pair there
+/// is nothing left to run and that is a usage error.
+fn resolve_sweep(
+    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, hasher: HasherChoice,
+) -> anyhow::Result<Vec<Execution>> {
+    let sweep = Sweep::expand(&indexstructure.expand(), &algorithm.expand(), hasher);
+    if sweep.cells.is_empty() {
+        anyhow::bail!(
+            "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \
+             with --algorithm {algorithm:?} (hash-trie pairs with hash-triejoin; sorted tries \
+             pair with leapfrog-triejoin)"
+        );
+    }
+    for (ds, algo) in &sweep.skipped {
+        eprintln!("bench run: skipping incompatible pair ({ds:?}, {algo:?})");
+    }
+    Ok(sweep.cells)
+}
+
+/// Handler for `bench run`: materialise the selected benchmarks and run
+/// every valid (index-structure, algorithm) cell of the requested sweep,
+/// writing the aggregated reports.
 #[allow(clippy::too_many_arguments)]
 fn run_bench_run_command(
     bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
@@ -1906,16 +1615,11 @@ fn run_bench_run_command(
     metrics: Vec<Metric>, queries_per_build: u32, force: bool, layout: LayoutChoices,
 ) -> anyhow::Result<()> {
     validate_layout_choices(indexstructure, &layout)?;
-    // Reject incompatible (index-structure, algorithm) pairs up front. `All`
-    // on either side is permissive — the cross-product loop below already
-    // filters individual concrete pairs at dispatch time.
-    if !indexstructure.supports_algorithm(algorithm) {
-        anyhow::bail!(
-            "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \
-             with --algorithm {algorithm:?} (hash-trie pairs with hash-triejoin; sorted tries \
-             pair with leapfrog-triejoin)"
-        );
-    }
+    let cells = resolve_sweep(
+        indexstructure,
+        algorithm,
+        layout.hash_trie_hasher_resolved(),
+    )?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
         .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
@@ -1924,25 +1628,19 @@ fn run_bench_run_command(
         .map(|b| materialize::materialize(b, &cache_root, force))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let indexstructures = indexstructure.expand();
-    let algorithms = algorithm.expand();
     let mut reports: Vec<BenchReport> = Vec::new();
     for benchmark in &materialized {
-        for &ds in &indexstructures {
-            for &algo in &algorithms {
-                let mut cell_reports = dispatch_run_bench(
-                    ds,
-                    layout.hash_trie_hasher_resolved(),
-                    benchmark,
-                    algo,
-                    optimiser,
-                    &metrics,
-                    queries_per_build,
-                    query.as_deref(),
-                    bench_args,
-                )?;
-                reports.append(&mut cell_reports);
-            }
+        for &cell in &cells {
+            let mut cell_reports = dispatch_run_bench(
+                cell,
+                benchmark,
+                optimiser,
+                &metrics,
+                queries_per_build,
+                query.as_deref(),
+                bench_args,
+            )?;
+            reports.append(&mut cell_reports);
         }
     }
     write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
@@ -2478,33 +2176,6 @@ mod tests {
         assert_eq!(JoinAlgorithmSelector::HashTriejoin.expand(), vec![
             JoinAlgorithm::HashTriejoin
         ]);
-    }
-
-    /// Pins the CLI's compatibility matrix. Hash trie pairs only with
-    /// hash triejoin; sorted tries pair only with leapfrog triejoin;
-    /// `All` on either side permits anything (the cross-product caller
-    /// filters at expand time).
-    #[test]
-    fn supports_algorithm_filters_incompatible_pairs() {
-        // `All` is unqualified-ambiguous between the two enums; use
-        // explicit aliases for clarity (and to satisfy E0659).
-        type Is = IndexStructureSelector;
-        type Ja = JoinAlgorithmSelector;
-        // Hash trie pairs only with hash triejoin.
-        assert!(Is::HashTrie.supports_algorithm(Ja::HashTriejoin));
-        assert!(!Is::HashTrie.supports_algorithm(Ja::LeapfrogTriejoin));
-        // Sorted tries pair only with LFTJ.
-        assert!(Is::TreeTrie.supports_algorithm(Ja::LeapfrogTriejoin));
-        assert!(!Is::TreeTrie.supports_algorithm(Ja::HashTriejoin));
-        assert!(Is::ColumnTrie.supports_algorithm(Ja::LeapfrogTriejoin));
-        assert!(!Is::ColumnTrie.supports_algorithm(Ja::HashTriejoin));
-        // `All` selectors are permissive on either side.
-        assert!(Is::All.supports_algorithm(Ja::All));
-        assert!(Is::All.supports_algorithm(Ja::HashTriejoin));
-        assert!(Is::All.supports_algorithm(Ja::LeapfrogTriejoin));
-        assert!(Is::HashTrie.supports_algorithm(Ja::All));
-        assert!(Is::TreeTrie.supports_algorithm(Ja::All));
-        assert!(Is::ColumnTrie.supports_algorithm(Ja::All));
     }
 
     /// Regression test: when discovery merges a workspace generator YAML

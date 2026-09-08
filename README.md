@@ -70,17 +70,17 @@ kermit bench run triangle \
   --indexstructure tree-trie \
   --algorithm leapfrog-triejoin
 
-# Sweep every benchmark for one compatible (index, algorithm) pair.
-# The three valid pairings are:
-kermit bench run --all -i tree-trie   -a leapfrog-triejoin
-kermit bench run --all -i column-trie -a leapfrog-triejoin
-kermit bench run --all -i hash-trie   -a hash-triejoin
+# Sweep every benchmark over every compatible (index, algorithm) cell.
+# Only three pairings are valid — (tree-trie|column-trie, leapfrog-triejoin)
+# and (hash-trie, hash-triejoin) — and `all` on either side skips the
+# incompatible ones, announcing each skip on stderr.
+kermit bench run --all -i all -a all
 ```
 
 Useful flags:
 - `--query <NAME>` — run a single named query from the benchmark (default: all queries).
 - `--all` — run every benchmark in `benchmarks/`.
-- `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the three compatible pairings above are supported; `-i all` / `-a all` does **not** yet skip incompatible combinations, so run one valid pair at a time.
+- `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the three compatible pairings above are supported; `all` on either side expands to the valid cells and skips the rest, while naming a single incompatible pair is a usage error.
 - `--metrics insertion iteration space` — pick which metrics to measure (default: all three). The opt-in `end-to-end` metric times one database build plus K query executions per Criterion sample (`T = build + K × query`); it is never in the default set.
 - `--queries-per-build <K>` — K for the `end-to-end` metric (default 1); recorded in the report's `queries_per_build` axis. Ignored by other metrics.
 - `--optimiser <lexicographic|cardinality>` — pick the query optimiser planning each join's variable ordering (default: `lexicographic`). The choice is recorded in the JSON report's `optimiser` axis, making optimiser comparisons a third benchmark dimension alongside `-i`/`-a`.

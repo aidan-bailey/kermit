@@ -313,8 +313,8 @@ where
 /// # Panics
 ///
 /// Panics on incompatible `(IndexStructure, JoinAlgorithm)` pairs. The
-/// CLI is expected to reject such combinations upstream via
-/// `IndexStructureSelector::supports_algorithm`; these panics are
+/// CLI never reaches them — `bench run` only constructs valid cells via
+/// `Execution::for_pair` in `kermit/src/execution.rs` — so these panics are
 /// defence-in-depth for direct programmatic callers. The hash-trie
 /// family (`HashTrie` + `HashTriejoin`) deliberately panics here too —
 /// see the function's body for the dedicated [`hash_join`] free-function
@@ -345,12 +345,12 @@ pub fn instantiate_database(
         // `TrieIterable`), and `HashTriejoin` only consumes `HashTrie`.
         | (IndexStructure::HashTrie, JoinAlgorithm::LeapfrogTriejoin) => panic!(
             "incompatible pair: (HashTrie, LeapfrogTriejoin) — HashTrie can only be joined with \
-             HashTriejoin; the CLI's supports_algorithm gate should reject this upstream"
+             HashTriejoin; the CLI's Execution::for_pair should never produce this pair"
         ),
         | (IndexStructure::TreeTrie | IndexStructure::ColumnTrie, JoinAlgorithm::HashTriejoin) => {
             panic!(
                 "incompatible pair: ({ds:?}, HashTriejoin) — HashTriejoin can only be used with \
-                 HashTrie; the CLI's supports_algorithm gate should reject this upstream"
+                 HashTrie; the CLI's Execution::for_pair should never produce this pair"
             )
         },
     }
