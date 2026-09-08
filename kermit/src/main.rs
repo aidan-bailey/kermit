@@ -203,17 +203,17 @@ enum PruningChoice {
 }
 
 /// Layout-axis CLI choices flattened into every subcommand whose dispatch
-/// monomorphises over a `HashTrie<H>` (currently `bench Ds` and `bench
+/// monomorphises over a `HashTrie<H, P>` (currently `bench Ds` and `bench
 /// Run`). Each field is named `<axis>` and surfaces as the long flag
 /// `--ds-layout-<axis>` so the prefix matches the bench-report axis namespace
 /// described in CLAUDE.md → "JSON bench reports".
 ///
-/// The `hash_trie_hasher` field is `Option<HasherChoice>` rather than a
-/// clap-defaulted `HasherChoice` so we can distinguish "not provided" from
-/// "explicitly defaulted". [`hash_trie_hasher_explicit`] consults this for
-/// the `validate_layout_choices` check that rejects
-/// `--ds-layout-hasher fxhash -i tree-trie`, while
-/// [`hash_trie_hasher_resolved`] supplies the default at dispatch time.
+/// Every field is an `Option<…>` rather than a clap-defaulted value so we
+/// can distinguish "not provided" from "explicitly defaulted". The
+/// `*_explicit` accessors consult that for the `validate_layout_choices`
+/// checks that reject e.g. `--ds-layout-hasher fxhash -i tree-trie` or
+/// `--ds-layout-pruning on -i tree-trie`, while the `*_resolved` accessors
+/// supply the default at dispatch time.
 #[derive(Args, Clone, Debug, Default)]
 struct LayoutChoices {
     /// Hash function used by `HashTrie<H, P>` (default: `sip`). Only valid
@@ -260,17 +260,16 @@ impl LayoutChoices {
 fn validate_layout_choices(
     indexstructure: IndexStructureSelector, layout: &LayoutChoices,
 ) -> anyhow::Result<()> {
+    let applies = matches!(
+        indexstructure,
+        IndexStructureSelector::HashTrie | IndexStructureSelector::All
+    );
     let explicit: &[(&str, bool)] = &[
         ("--ds-layout-hasher", layout.hash_trie_hasher_explicit()),
         ("--ds-layout-pruning", layout.hash_trie_pruning_explicit()),
     ];
     for (flag, given) in explicit {
-        if *given
-            && !matches!(
-                indexstructure,
-                IndexStructureSelector::HashTrie | IndexStructureSelector::All
-            )
-        {
+        if *given && !applies {
             anyhow::bail!(
                 "{flag} is only valid with --indexstructure hash-trie (or all); got \
                  --indexstructure {indexstructure:?}"
@@ -281,8 +280,21 @@ fn validate_layout_choices(
 }
 
 /// Monomorphises `$body` over the `HashTrie` Layout cell selected at
-/// runtime. Both dispatchers use it, so the product of Layout dimensions
-/// lives in one place: adding a dimension means adding arms here only.
+/// runtime.
+///
+/// Both dispatchers (`dispatch_ds_bench` and `dispatch_run_bench`) go
+/// through here, so the Layout product is written out once rather than
+/// twice. It is not free of the product, though: the arms *are* the cells,
+/// so a third Layout dimension doubles them (2^n in general) and also costs
+/// a `LayoutChoices` field plus one entry in each of `Execution::HashHtj`,
+/// `Execution::for_pair`, `Sweep::expand`, `HashHtj`, and the two command
+/// entry points (`run_ds_bench_command`, `run_bench_run_command`). Before a
+/// fourth dimension, reach for a nested macro that expands one dimension at
+/// a time, or a builder — not another hand-written 16-arm match.
+///
+/// Hygiene contract: the identifiers named in the closure-like pattern
+/// become *type aliases* scoped to the whole arm, so `$body` must not need
+/// a different type of either name.
 macro_rules! with_hash_trie_layout {
     ($hasher:expr, $pruning:expr, |$H:ident, $P:ident| $body:expr) => {
         match ($hasher, $pruning) {

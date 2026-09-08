@@ -103,6 +103,9 @@ impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
         }
     }
 
+    // `&'a Vec`, not `&'a [usize]`: `SingletonFrame::new` stores the borrow
+    // and hands it back from `tuple()`, which feeds `leaf_tuples`'
+    // `&[Vec<usize>]` via `slice::from_ref`.
     #[allow(clippy::ptr_arg)]
     fn singleton_frame(tuple: &'a Vec<usize>, depth: usize) -> Frame<'a, P> {
         Frame::Singleton(P::Frame::new(tuple, depth, H::hash(tuple[depth])))
@@ -131,7 +134,9 @@ impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
                 ),
             },
             | Some(Frame::Singleton(s)) => {
-                if s.at_end() || s.depth() + 1 >= self.arity() {
+                // The top frame stands at depth `stack.len() - 1`, so the
+                // level below it exists only while `stack.len() < arity`.
+                if s.at_end() || self.stack.len() >= self.arity() {
                     Descent::Blocked
                 } else {
                     Descent::Deeper(s.tuple())
@@ -238,7 +243,9 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrieIterator for HashTrieIter<'_, H,
                      Frame::Singleton"
                 ),
             },
-            | Frame::Singleton(s) => (!s.at_end() && s.depth() + 1 == self.arity())
+            // The top frame stands at depth `stack.len() - 1`, so it is the
+            // leaf level exactly when `stack.len() == arity`.
+            | Frame::Singleton(s) => (!s.at_end() && self.stack.len() == self.arity())
                 .then(|| std::slice::from_ref(s.tuple())),
         }
     }

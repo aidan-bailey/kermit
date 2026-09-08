@@ -33,8 +33,6 @@ pub trait SingletonFrame<'a>: Sized {
     // `slice::from_ref`.
     #[allow(clippy::ptr_arg)]
     fn new(tuple: &'a Vec<usize>, depth: usize, hash: u64) -> Self;
-    /// The trie level this frame stands in for.
-    fn depth(&self) -> usize;
     /// The tuple stored below the pruned node.
     fn tuple(&self) -> &'a Vec<usize>;
     /// `Some(hash)` unless exhausted.
@@ -48,6 +46,15 @@ pub trait SingletonFrame<'a>: Sized {
 }
 
 /// Compile-time pruning policy of a [`HashTrie`](super::HashTrie).
+///
+/// The two associated types and the constant must agree: `ENABLED == false`
+/// requires `Payload` and `Frame` to be uninhabited (so no `Singleton` node
+/// or frame can exist), and `ENABLED == true` requires them inhabited (so
+/// the prune and unprune paths can actually store a tuple). Nothing in the
+/// type system enforces that pairing, which is why the implementor set is
+/// closed by design: `SingletonPayload` and `SingletonFrame` live in
+/// this private module, so [`NoPruning`] and [`SingletonPruning`] are the
+/// only policies that can ever exist and the pairing is checked once, here.
 pub trait PruningPolicy: LayoutOption + Copy + Default + 'static {
     /// What a `HashTrieNode::Singleton` holds under this policy.
     type Payload: SingletonPayload;
@@ -58,8 +65,13 @@ pub trait PruningPolicy: LayoutOption + Copy + Default + 'static {
     const ENABLED: bool;
 }
 
-/// An uninhabited type. A `Singleton(Never)` variant can never be built, so
-/// the enum containing it has the layout of the enum without it.
+/// An uninhabited type. A `Singleton(Never)` variant can never be built,
+/// and rustc's layout computation omits uninhabited variants, so in
+/// practice the enum containing it is laid out as the enum without it.
+/// That is an optimisation, not a language guarantee — the two size tests
+/// pin it: `node_does_not_grow_under_the_pruning_policy` (in
+/// `implementation.rs`) and `off_frame_is_the_bare_table_pair` (in
+/// `hash_trie_iter.rs`).
 #[derive(Copy, Clone, Debug)]
 pub enum Never {}
 
@@ -77,8 +89,6 @@ impl<'a> SingletonFrame<'a> for Never {
     fn new(_tuple: &'a Vec<usize>, _depth: usize, _hash: u64) -> Self {
         unreachable!("NoPruning never pushes a singleton frame")
     }
-
-    fn depth(&self) -> usize { match *self {} }
 
     fn tuple(&self) -> &'a Vec<usize> { match *self {} }
 
@@ -99,14 +109,16 @@ impl SingletonPayload for Vec<usize> {
     fn into_tuple(self) -> Vec<usize> { self }
 }
 
-/// Level `depth` of a pruned subtrie holding `tuple`; `exhausted` plays the
-/// role of a table frame's past-end bucket index.
+/// One emulated level of a pruned subtrie holding `tuple`; `exhausted`
+/// plays the role of a table frame's past-end bucket index.
+///
+/// The level itself is not stored: a frame's depth is its position in the
+/// iterator's stack, which `HashTrieIter` reads off `stack.len()`.
 #[derive(Debug)]
 pub struct SingletonFrameOn<'a> {
     // `&Vec`, not `&[usize]`: `leaf_tuples` returns `&[Vec<usize>]` via
     // `slice::from_ref`.
     tuple: &'a Vec<usize>,
-    depth: usize,
     hash: u64,
     exhausted: bool,
 }
@@ -120,13 +132,10 @@ impl<'a> SingletonFrame<'a> for SingletonFrameOn<'a> {
         );
         Self {
             tuple,
-            depth,
             hash,
             exhausted: false,
         }
     }
-
-    fn depth(&self) -> usize { self.depth }
 
     fn tuple(&self) -> &'a Vec<usize> { self.tuple }
 
@@ -142,7 +151,9 @@ impl<'a> SingletonFrame<'a> for SingletonFrameOn<'a> {
     fn at_end(&self) -> bool { self.exhausted }
 }
 
-/// Pruning off: the pre-pruning `HashTrie`, bit for bit. Bench axis value
+/// Pruning off: `HashTrie` compiles to the pre-pruning code path, because
+/// both the `Singleton` node payload and the singleton frame are
+/// uninhabited here and every arm handling them is dead. Bench axis value
 /// `"off"`. The default `P`.
 #[derive(Copy, Clone, Default, Debug)]
 pub struct NoPruning;
@@ -209,7 +220,6 @@ mod tests {
     fn frame_emulates_a_one_entry_table() {
         let tuple = vec![7, 8, 9];
         let mut f = <SingletonFrameOn<'_> as SingletonFrame<'_>>::new(&tuple, 1, 0xBEEF);
-        assert_eq!(f.depth(), 1);
         assert_eq!(f.key(), Some(0xBEEF));
         assert!(!f.at_end());
         assert!(!f.lookup(0xDEAD));
@@ -220,5 +230,12 @@ mod tests {
         f.exhaust();
         assert!(f.at_end());
         assert_eq!(f.tuple(), &tuple);
+    }
+
+    #[test]
+    fn frame_is_a_borrow_a_hash_and_a_flag() {
+        // The emulated level is the frame's position in the iterator stack,
+        // not a stored field: a pointer, a `u64` and a `bool`, no more.
+        assert_eq!(std::mem::size_of::<SingletonFrameOn<'static>>(), 24);
     }
 }

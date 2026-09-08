@@ -59,6 +59,9 @@ define_config_provider!(NinetyPercent, HashTrieConfig, HashTrieConfig {
 });
 
 type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;
+// A dense table under the colliding strategy: every hash lands in bucket 0
+// and resolves by probing, so a 90 % cap stresses the probe loops hardest.
+type HashTrieMod10Dense = Configured<HashTrieMod10, NinetyPercent>;
 
 hash_trie_test_suite!(HashTrieSip, SipHashStrategy);
 
@@ -76,6 +79,8 @@ hash_trie_test_suite!(HashTrieFxPruned, FxHashStrategy);
 hash_trie_test_suite!(HashTrieMod10Pruned, Mod10HashStrategy);
 
 hash_trie_test_suite!(HashTrieSipDense, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieMod10Dense, Mod10HashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"

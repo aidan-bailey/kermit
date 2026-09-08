@@ -840,8 +840,13 @@ mod tests {
         );
     }
 
+    /// A growth guard, not the elision witness: the `Vec` payload is
+    /// smaller than either table variant, so the pruned node was never
+    /// going to be the larger of the two. What pins the claim that
+    /// `NoPruning` costs nothing is `off_frame_is_the_bare_table_pair` in
+    /// `hash_trie_iter.rs`.
     #[test]
-    fn node_size_is_independent_of_the_pruning_policy() {
+    fn node_does_not_grow_under_the_pruning_policy() {
         assert_eq!(
             std::mem::size_of::<HashTrieNode<NoPruning>>(),
             std::mem::size_of::<HashTrieNode<SingletonPruning>>()

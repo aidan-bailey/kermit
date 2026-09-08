@@ -1,7 +1,8 @@
 //! CLI smoke test: `bench ds` with `--ds-config load-factor=0.5` records
-//! the Config axis, and the flag is rejected where it cannot apply. Mirrors `cli_hash_trie_hasher_choice.rs` for the Config category
-//! of the optimization standard: CLI parser -> `ConfigChoices` ->
-//! `run_ds_bench_hash::<H>` -> `HashTrie::from_tuples_with_config` ->
+//! the Config axis, and the flag is rejected where it cannot apply.
+//! Mirrors `cli_hash_trie_hasher_choice.rs` for the Config category of the
+//! optimization standard: CLI parser -> `ConfigChoices` ->
+//! `run_ds_bench_hash::<H, P>` -> `HashTrie::from_tuples_with_config` ->
 //! `HasOptimizationAxes::optimization_axes()` -> `BenchReport.axes` -> JSON.
 
 use {

@@ -26,8 +26,12 @@ pub(crate) enum HashTrieNode<P: PruningPolicy> {
     /// from the tuple (see `hash_trie_iter.rs`). Never the root.
     ///
     /// Holds `P::Payload`: the tuple when pruning is on, the uninhabited
-    /// `Never` when it is off, which makes this variant unconstructible
-    /// and removes it from the enum's layout.
+    /// `Never` when it is off. rustc's layout omits uninhabited variants,
+    /// so under `NoPruning` this variant costs nothing and every arm
+    /// handling it compiles to the pre-pruning code path. The two size
+    /// tests pin that: `node_does_not_grow_under_the_pruning_policy`
+    /// (`implementation.rs`) and `off_frame_is_the_bare_table_pair`
+    /// (`hash_trie_iter.rs`).
     Singleton(P::Payload),
 }
 
