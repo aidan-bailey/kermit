@@ -124,10 +124,10 @@ def test_load_accepts_single_path_string(fixture_tree):
 def test_optimization_axes_become_columns(fixture_opt_tree) -> None:
     df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
     assert "ds_layout_hasher" in df.columns
-    assert "ds_config_singleton_pruning" in df.columns
+    assert "ds_config_load_factor" in df.columns
     assert set(df["ds_layout_hasher"].dropna()) == {"sip", "fx"}
-    # config flag stays boolean-valued
-    assert set(df["ds_config_singleton_pruning"].dropna()) == {True, False}
+    # config value stays float-valued
+    assert set(df["ds_config_load_factor"].dropna()) == {0.5, 0.7}
 
 
 def test_conventional_run_has_no_opt_columns(fixture_tree) -> None:
@@ -145,7 +145,7 @@ def test_discover_opt_columns(fixture_opt_tree) -> None:
     df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
     cols = discover_opt_columns(df)
     assert "ds_layout_hasher" in cols
-    assert "ds_config_singleton_pruning" in cols
+    assert "ds_config_load_factor" in cols
 
 
 def test_load_samples_unchanged(fixture_tree) -> None:

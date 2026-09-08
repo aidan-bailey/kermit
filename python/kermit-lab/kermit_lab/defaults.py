@@ -15,7 +15,8 @@ import pandas as pd
 # axis column name -> value to substitute for NaN.
 AXIS_DEFAULTS: dict[str, object] = {
     "ds_layout_hasher": "sip",  # HashTrie's historical hash function
-    "ds_config_singleton_pruning": False,  # pre-Config reports never pruned
+    "ds_layout_pruning": "off",  # pre-Layout reports never pruned
+    "ds_config_load_factor": 0.7,  # pre-Config reports used the historical load factor
 }
 
 

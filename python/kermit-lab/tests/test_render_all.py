@@ -28,5 +28,5 @@ def test_emits_ablation_for_opt_axis(fixture_opt_tree, tmp_path: Path) -> None:
     out.mkdir()
     render_all(reports, out, fixture_opt_tree["criterion_root"], "pdf")
     names = {p.name for p in out.iterdir()}
-    assert any("ablation-ds_config_singleton_pruning" in n for n in names)
+    assert any("ablation-ds_config_load_factor" in n for n in names)
     assert any("ablation-ds_layout_hasher" in n for n in names)
