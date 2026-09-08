@@ -41,6 +41,15 @@ cargo run -- bench gen lubm --scale 1 --tag dev                    # Generate LU
 MIRIFLAGS="-Zmiri-disable-isolation" cargo miri setup && cargo miri test  # Check for UB (flag matches CI)
 ```
 
+Analysis lives in Python, not Cargo — run these from `python/kermit-lab/`:
+
+```bash
+uv sync --group test                                        # create .venv, install deps + test extras
+uv run kermit-lab --help                                    # thin CLI over kl.load / kl.plot
+uv run kermit-lab <subcommand> bench-runs/*.json --out <path>
+uv run pytest                                               # kermit-lab's own tests
+```
+
 ## Toolchain
 
 Rust **nightly** (pinned in `rust-toolchain.toml`). Required components: clippy, miri, rust-analyzer, rustfmt. The `rustfmt.toml` uses `unstable_features=true` so nightly rustfmt is required.
@@ -95,12 +104,15 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|lis
                   All Criterion execution lives here (including SpaceMeasurement).
 ```
 
-**Dependency flow:** `kermit-iters` → `kermit-derive`; `kermit-iters`/`kermit-derive` → `kermit-ds` → `kermit-algos` (which also depends on `kermit-parser`) → `kermit-rdf` (depends on parser, ds, bench) → `kermit` (binary). `kermit-parser` is otherwise a standalone leaf (no internal deps), consumed by `kermit-algos` and `kermit-rdf`. `kermit-bench` is isolated (no internal deps); `kermit` and `kermit-rdf` both depend on it.
+**Dependency flow:** `kermit-iters`/`kermit-derive` → `kermit-ds`; `kermit-iters`/`kermit-derive`/`kermit-parser` → `kermit-algos`; `kermit-bench` → `kermit-rdf`; everything → `kermit` (binary). Three crates are leaves with no internal deps: `kermit-iters`, `kermit-parser`, `kermit-bench`. `kermit-parser` is consumed by `kermit-algos` only. `kermit-algos` pulls `kermit-ds` in as a dev-dependency only, so there is no production edge between them.
+
+> `kermit-rdf` depends on `kermit-bench` **only** — deliberately. Its link to the query layer is textual, not structural: `sparql::translator` emits a Datalog *string* into the generated `benchmark.yml`, parsed by `kermit-parser` later (in the binary, at bench-run time). It never constructs a relation, so it needs no `kermit-ds`. Don't re-add either dependency to satisfy a type — if you find yourself wanting one, the pipeline boundary has probably moved.
 
 ## Key Trait Hierarchy
 
 - **JoinIterable** (marker) → **LinearIterable** → **LinearIterator** (`key`, `next`, `seek`, `at_end`)
 - **JoinIterable** (marker) → **TrieIterable** → **TrieIterator** : LinearIterator + `open`, `up`
+- **JoinIterable** (marker) → **HashTrieIterable** → **HashTrieIterator** (`u64` hash keys, exact-match `lookup`, plus `size`, `open`, `up`, `leaf_tuples`) — a **parallel family, not a `TrieIterator` subtrait**. `LinearIterator::seek` is least-upper-bound and needs sorted data; hash navigation is exact-match, so the contracts cannot merge (rationale in `kermit-iters/src/hash_trie.rs`, citing SIGMOD 2020). The fork propagates up the whole stack — separate algorithm, separate engine path (`hash_join` vs the `DB` trait), separate bench dispatch, separate test suites — and leaves exactly 3 valid `(structure, algorithm)` pairs.
 - **Relation**: JoinIterable + Projectable — core data abstraction (`new`, `from_tuples`, `insert`, `insert_all`, `header`)
 - **JoinAlgo\<DS\>**: algorithm trait decoupled from data structures
 - **HeapSize**: heap-allocated byte count for space benchmarking (`heap_size_bytes()`)
@@ -128,6 +140,7 @@ These recipes are the recognizable pattern referenced in Priorities item 4. Foll
 2. **Implement `Relation` + `Projectable` + `HeapSize`** for the structure in `implementation.rs`. `HeapSize::heap_size_bytes()` returns *only* heap-allocated bytes (not `size_of::<Self>`). See `kermit-ds/src/ds/tree_trie/implementation.rs`.
 3. **Implement `TrieIterator`** for the iter type in `<name>_iter.rs`. Apply `#[derive(IntoTrieIter)]` from `kermit-derive` so the `IntoIterator` + `TrieIteratorWrapper` bridge is generated for you.
 4. **Implement `TrieIterable`** for the structure (wires `trie_iter()` to your iter type). The LFTJ `open`-after-`at_end` discipline is load-bearing — see the LFTJ gotcha and the `feedback_lftj_open_after_at_end` memory.
+   For a **hash-family** structure, implement `HashTrieIterator` + `HashTrieIterable` instead (`#[derive(IntoTrieIter)]` does not apply). Be aware that the shared helpers `project_via_trie_iter` and `TrieIteratorWrapper` are `TrieIterable`-only, so you must supply your own equivalents, and that the test suites fork too — reach for `hash_trie_test_suite!`, not `relation_trie_test_suite!`; see the test-macro gotcha.
 5. **Register the module.** Add `mod <name>;` and `pub use <name>::<Type>;` in `kermit-ds/src/ds/mod.rs`, plus a variant on the `IndexStructure` enum in that file.
 6. **Wire the CLI.** Add a variant to `IndexStructureSelector` in `kermit/src/main.rs` and to its `expand()` method. For a sorted (`TrieIterable`) structure, add a `SortedTrie` variant plus a `SortedTrieRelation` impl in `kermit/src/execution.rs` and a match arm in `Execution::for_pair`; then add arms in `dispatch_run_bench` and `dispatch_ds_bench` in `main.rs`. A structure in a new trait family needs its own `ExecutionFamily` impl.
 7. **Wire the tests.** Add a `define_multiway_join_test_suite!(<Type>, LeapfrogTriejoin, LexicographicOptimiser);` invocation in `kermit/tests/join_tests.rs` so the 11 standard join patterns run against the structure with every algorithm (Priorities item 1); add a second invocation with `CardinalityOptimiser` so both optimisers are covered.
@@ -138,9 +151,9 @@ Do **not** modify other index structures during this work (Priorities item 6).
 ### Adding a new join algorithm
 
 1. **Module layout.** Create `kermit-algos/src/<name>.rs`. Existing precedents: `kermit-algos/src/leapfrog_join.rs` (binary intersection, internal helper) and `kermit-algos/src/leapfrog_triejoin.rs` (multi-way join, the CLI-exposed entry point).
-2. **Implement `JoinAlgo<DS>`** generic over `DS: TrieIterable`. The algorithm must tolerate const-rewritten queries (extra unary `Const_c<id>` body predicates from `kermit_algos::rewrite_atoms`) — see the const-view-rewrite gotcha.
+2. **Implement `JoinAlgo<DS>`**, narrowing `DS` to the iterator family you actually traverse — `TrieIterable` (as `LeapfrogTriejoin` does) or `HashTrieIterable` (as `HashTriejoin` does). The trait's own bound is the weak `JoinIterable` marker. The algorithm must tolerate const-rewritten queries (extra unary `Const_c<id>` body predicates from `kermit_algos::rewrite_atoms`) — see the const-view-rewrite gotcha — and must validate the incoming `QueryPlan`.
 3. **Register the module.** Add `mod <name>;` and `pub use <name>::<Type>;` in `kermit-algos/src/lib.rs`, plus a variant on the `JoinAlgorithm` enum in that file.
-4. **Wire the CLI.** Add a variant to `JoinAlgorithmSelector` in `kermit/src/main.rs` and to its `expand()` method, then add the algorithm's valid cells to `Execution` / `Execution::for_pair` in `kermit/src/execution.rs` (the compiler flags the incomplete match) and a `dispatch_run_bench` arm.
+4. **Wire the CLI.** Add a variant to `JoinAlgorithmSelector` in `kermit/src/main.rs` and to its `expand()` method, then add the algorithm's valid cells to `Execution` / `Execution::for_pair` in `kermit/src/execution.rs` (the compiler flags the incomplete match) and a `dispatch_run_bench` arm. A **sorted-family** algorithm is also reachable through `instantiate_database` (`kermit/src/db.rs`), which still backs `kermit join`; a **hash-family** algorithm needs its own execution path instead, as `hash_join` is for `HashTriejoin` — a second `DB` impl overlaps the existing one and fails coherence (E0119).
 5. **Wire the tests.** Existing index structures pick up your algorithm combinatorially via `define_multiway_join_test_suite!` — add a fresh invocation per index structure in `kermit/tests/join_tests.rs`, e.g. `define_multiway_join_test_suite!(<DS>, <YourAlgo>, LexicographicOptimiser);` plus a second invocation with `CardinalityOptimiser` (Priorities item 1).
 6. **Write the doc.** Create `docs/algorithms/<name>.md` from `docs/algorithms/TEMPLATE.md` (Priorities item 3).
 
@@ -220,6 +233,7 @@ Per Priorities item 3, every algorithm and index structure has a dedicated doc.
 - **JSON bench reports**: every `kermit bench` invocation writes a machine-readable report. Default path is `bench-runs/{kind}-{unix-millis}.json` (`bench-runs/` is auto-created and gitignored at the workspace root); `--report-json <PATH>` overrides. Output is always a JSON array of `BenchReport` objects (one per query for `bench run`, exactly one for `bench join` / `bench ds`). Each object carries `metadata` (label/value pairs mirroring stderr), `axes` (a `BTreeMap<String, serde_json::Value>` of structured axis values for tooling — conventional keys: `data_structure`, `algorithm`, `optimiser`, `query`, `benchmark`, `relation_path`, `relation_bytes`, `tuples`, `arity`, `relations`), and `criterion_groups` pointers resolving to `target/criterion/{group}/{directory_name}/`. The on-disk `directory_name` replaces `/` in `function_id` with `_` — read it from each subdir's `benchmark.json:directory_name` rather than computing it. Schema is versioned via `schema_version` (currently `2`) and lives in `kermit/src/bench_report.rs`; full key catalogue in `docs/specs/bench-report-schema.md`. Bump the version on any breaking field-name or value-type change.
 - **bench `--name` semantics**: For `bench join` and `bench ds`, `--name` is the full Criterion group name (defaults `join`/`ds`). For `bench run` it is a *prefix* on the auto-generated `{benchmark}/{query}/{ds}/{algo}` identity (defaulting to `run`), so workload identity stays in `target/criterion/{group}/`.
 - **`bench run` sweeps are cells, not pairs**: `kermit/src/execution.rs` defines `Execution` — an enum whose variants *are* the three valid (structure, algorithm) cells (`TrieLftj(TreeTrie|ColumnTrie)`, `HashHtj(hasher)`). `Sweep::expand` turns the `-i`/`-a` selectors into cells and a `skipped` list; `-i all -a all` runs exactly the 3 valid cells (skips announced on stderr), and a single explicit incompatible pair is a usage error. One generic `run_benchmark<F: ExecutionFamily>` in `main.rs` serves both trait families; the report's `data_structure`/`algorithm` axes come from `F::execution()`, so a report cannot name an algorithm it did not run (issue #56). `bench ds` still has its own `run_ds_bench`/`run_ds_bench_hash` pair (no algorithm involved, so no mislabel risk).
+- **Two iterator families, two test-macro families**: `relation_trie_test_suite!`, `trie_traversal_tests!` and `trie_seek_tests!` (`kermit-ds/tests/common/macros.rs`) all bound on `TrieIterable`/`TrieIterator`, so a hash-family structure cannot be plugged into them. Use `hash_trie_test_suite!(Type, Strategy)` instead — `kermit-ds/tests/hash_trie_tests.rs` covers `HashTrieSip`/`HashTrieFx` — together with the `collect_tuples()`-driven `parquet_test_suite!(Type, collector)` arm. Adding a hash-family structure means invoking the hash-family suite once per Layout alias, not extending the sorted-trie macros.
 - **CLI join CSV header**: `kermit join` and `kermit bench join --output` prepend a CSV header row built from the head's variable names (via `head_column_names` in `kermit/src/main.rs`). Tests or scripts that parse this output as integer tuples must skip the first non-empty line.
 - **CI env vars**: All CI jobs set `RUST_BACKTRACE=1`. Release workflow requires `CARGO_REGISTRY_TOKEN` secret.
 - **Error handling**: `kermit-bench` uses `thiserror`, `kermit-ds` uses custom error enums with manual `Display`/`Error` impls, and the CLI binary uses `anyhow::Result`.

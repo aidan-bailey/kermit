@@ -2,7 +2,7 @@
 
 RDF/SPARQL preprocessing for on-the-fly benchmark generation. Drives the vendored WatDiv binary or LUBM-UBA jar, parses the resulting N-Triples + SPARQL output, and emits a kermit-runnable artifact set: a string-to-`usize` dictionary, per-predicate Parquet relations, a [`BenchmarkDefinition`](../kermit-bench/src/definition.rs) YAML, and (where source cardinalities are available) `expected/<query>.csv` sidecars. The output directory is then consumed by [`kermit-bench`](../kermit-bench) exactly like a hand-authored static benchmark.
 
-Depends on [`kermit-parser`](../kermit-parser), [`kermit-ds`](../kermit-ds), and [`kermit-bench`](../kermit-bench). Consumed by the [`kermit`](../kermit) binary, which dispatches to this crate from `bench gen watdiv|lubm` (imperative) and the declarative `generator:` block in benchmark YAMLs (via `kermit/src/materialize.rs`).
+Depends on [`kermit-bench`](../kermit-bench) only — the pipeline emits a Datalog *string* into the benchmark YAML rather than building a [`kermit-parser`](../kermit-parser) AST, and never constructs a relation, so there is no dependency on [`kermit-ds`](../kermit-ds) either. That string is parsed later, by the binary, when the benchmark is run. Consumed by the [`kermit`](../kermit) binary, which dispatches to this crate from `bench gen watdiv|lubm` (imperative) and the declarative `generator:` block in benchmark YAMLs (via `kermit/src/materialize.rs`).
 
 ## Pipelines
 

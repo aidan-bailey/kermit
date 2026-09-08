@@ -5,9 +5,11 @@ Kermit is a Rust library for relational algebra research and benchmarking. It wa
 ## Design Goals
 
 1. **Algorithm-Data Structure Decoupling**: Join algorithms should work with any data structure that implements the required iterator traits
-2. **Extensibility**: New data structures and algorithms can be added without modifying existing code
+2. **Extensibility**: New data structures and algorithms should be added by following a fixed recipe rather than by reworking existing components
 3. **Benchmarking**: First-class support for performance comparison across implementations
 4. **Safety**: Entirely safe Rust with no unsafe blocks
+
+Goal 2 is about *recognisable, additive* extension, not zero edits. Adding a component does require touching a known set of registration points — the `IndexStructure` / `JoinAlgorithm` / `Optimiser` enums, the CLI selectors and dispatch, and the test suites. Those sites are enumerated under "Adding New Components"; the contract is that the list does not grow and that siblings are left alone.
 
 ## Workspace Structure
 
@@ -17,31 +19,37 @@ kermit/
 ├── kermit-derive/   # Proc macros for iterator boilerplate
 ├── kermit-parser/   # Datalog query parser
 ├── kermit-ds/       # Data structures (tries, relations)
-├── kermit-algos/    # Join algorithms
+├── kermit-algos/    # Join algorithms + query optimisers
 ├── kermit-bench/    # Benchmark definitions, discovery, caching
 ├── kermit-rdf/      # RDF/SPARQL pipelines (WatDiv, LUBM generators)
-└── kermit/          # CLI binary and top-level integration
+├── kermit/          # CLI binary and top-level integration
+└── python/
+    └── kermit-lab/  # Analysis library over the JSON bench reports (not a Cargo member)
 ```
 
 ### Dependency Graph
 
+Arrows read "depends on". Only production (`[dependencies]`) edges are listed.
+
 ```
-kermit-iters ◄─── kermit-derive
-     │
-     ├──────────── kermit-parser
-     │                  │
-     ▼                  ▼
-kermit-ds          kermit-algos       kermit-bench   (isolated)
-                        │                  │
-                        ▼                  │
-                   kermit-rdf ◄────────────┤
-                        │                  │
-                        └────────┬─────────┘
-                                 ▼
-                              kermit
+kermit         ──▶ kermit-iters, kermit-ds, kermit-algos,
+                   kermit-parser, kermit-bench, kermit-rdf
+kermit-rdf     ──▶ kermit-bench
+kermit-algos   ──▶ kermit-iters, kermit-derive, kermit-parser
+kermit-ds      ──▶ kermit-iters, kermit-derive
+kermit-derive  ──▶ (none)
+kermit-parser  ──▶ (none)
+kermit-bench   ──▶ (none)
+kermit-iters   ──▶ (none)
 ```
 
-`kermit-bench` has no internal kermit dependencies. `kermit-algos` is decoupled from the data structures at runtime (per Design Goal #1): it is generic over `DS: TrieIterable` and pulls in `kermit-ds` only as a `[dev-dependencies]` entry for its own tests, so no production `kermit-algos → kermit-ds` edge is drawn above. `kermit-rdf` depends on `kermit-parser`, `kermit-ds`, and `kermit-bench`. The `kermit` binary directly depends on every sibling crate except the proc-macro crate `kermit-derive`, which it pulls in transitively via `kermit-ds`.
+Three crates are leaves with no internal dependencies: `kermit-iters`, `kermit-parser`, and `kermit-bench`.
+
+`kermit-algos` is decoupled from the data structures (per Design Goal #1). The `JoinAlgo<DS>` trait is generic over `DS: JoinIterable`; each implementation narrows that bound to the iterator family it needs (`TrieIterable` or `HashTrieIterable`, see "Two Iterator Families" below). `kermit-ds` appears only as a `[dev-dependencies]` entry for the crate's own tests, so there is no production `kermit-algos → kermit-ds` edge.
+
+`kermit-derive` is a proc-macro crate; its `kermit-iters` dependency is dev-only, used by its integration tests. The `kermit` binary depends on every sibling except `kermit-derive`, which it pulls in transitively via `kermit-ds`.
+
+`kermit-rdf` depends on `kermit-bench` alone. Its coupling to the query layer is deliberately textual, not structural: `sparql::translator` emits a Datalog *string* into the generated `benchmark.yml`, and that string is parsed by `kermit-parser` later, in the binary, when the benchmark is actually run. The pipeline also never constructs a relation, so it has no need of `kermit-ds`. (Both crates were declared in its manifest for a period without ever being referenced; the entries were removed.)
 
 ## Core Abstractions
 
@@ -50,12 +58,36 @@ kermit-ds          kermit-algos       kermit-bench   (isolated)
 The foundation of Kermit is a hierarchy of iterator traits that abstract over how data structures are traversed:
 
 ```
-JoinIterable (marker trait)
+JoinIterable (marker trait, no methods)
      │
-     ├── LinearIterable ──► LinearIterator
+     ├── LinearIterable ───► LinearIterator
      │
-     └── TrieIterable ────► TrieIterator : LinearIterator
+     ├── TrieIterable ─────► TrieIterator : LinearIterator
+     │                         (sorted keys, least-upper-bound `seek`)
+     │
+     └── HashTrieIterable ─► HashTrieIterator
+                               (hashed keys, exact-match `lookup`)
 ```
+
+#### Two Iterator Families
+
+`TrieIterator` and `HashTrieIterator` are **parallel families, not a hierarchy**. They share only the empty `JoinIterable` marker.
+
+The split is deliberate. `LinearIterator::seek` has least-upper-bound semantics, which requires sorted data; hash navigation is exact-match. The two contracts cannot be satisfied by one trait, so `HashTrieIterator` is a fork rather than an extension (see the rationale in `kermit-iters/src/hash_trie.rs`, citing the SIGMOD 2020 hash-trie-join paper).
+
+The consequence is that the fork propagates up every layer of the stack, and each layer must be split by hand:
+
+| Layer | Sorted family | Hash family |
+|---|---|---|
+| Iterator | `TrieIterator` | `HashTrieIterator` |
+| Iterable | `TrieIterable` | `HashTrieIterable` |
+| Structure | `TreeTrie`, `ColumnTrie` | `HashTrie<H>` |
+| Algorithm | `LeapfrogTriejoin` | `HashTriejoin` |
+| `Projectable` | `project_via_trie_iter` (shared helper) | hand-rolled on `HashTrie` |
+| Engine | `DB` trait / `DatabaseEngine` | `hash_join` free function |
+| Bench dispatch | `run_ds_bench`, `run_benchmark` | `run_ds_bench_hash`, `run_benchmark_hash` |
+
+Only three `(index structure, algorithm)` pairs are valid: `(TreeTrie, LeapfrogTriejoin)`, `(ColumnTrie, LeapfrogTriejoin)`, and `(HashTrie, HashTriejoin)`. The type system enforces this at every layer *except* the CLI, where user strings are resolved into two independent enums — see "Selector dispatch" under CLI.
 
 #### LinearIterator
 
@@ -85,9 +117,28 @@ pub trait TrieIterator: LinearIterator {
 
 This enables depth-first traversal of trie structures, which is essential for multi-way joins where we need to explore matching prefixes across multiple relations.
 
+#### HashTrieIterator
+
+The hash-family counterpart. Keys are `u64` hashes rather than `usize` values, positioning is exact-match, and `size` exposes the bucket count so the join can scan the smallest table:
+
+```rust
+pub trait HashTrieIterator {
+    fn key(&self) -> Option<u64>;
+    fn next(&mut self) -> Option<u64>;
+    fn lookup(&mut self, hash: u64) -> bool; // exact-match, not upper-bound
+    fn size(&self) -> usize;                 // bucket count at current node
+    fn at_end(&self) -> bool;
+    fn open(&mut self) -> bool;
+    fn up(&mut self) -> bool;
+    fn leaf_tuples(&self) -> Option<&[Vec<usize>]>;
+}
+```
+
+Because a per-level key is a hash rather than a value, `HashTrieIterable` does *not* require `IntoIterator<Item = Vec<usize>>` the way `TrieIterable` does — hash traversal is not naturally tuple-shaped. `HashTrie` exposes `collect_tuples()` for materialisation instead, and hashing means a descent can produce false positives, so the join must verify shared variables against the real tuples at the leaf.
+
 #### TrieIteratorWrapper
 
-Converts any `TrieIterator` into a standard Rust `Iterator<Item = Vec<usize>>` that yields complete tuples. It handles the stack management for depth-first traversal automatically.
+Converts any `TrieIterator` into a standard Rust `Iterator<Item = Vec<usize>>` that yields complete tuples. It handles the stack management for depth-first traversal automatically. `#[derive(IntoTrieIter)]` (from `kermit-derive`) generates the `IntoIterator` impl that wraps an iterator type in it. There is no hash-family equivalent, per the note above.
 
 ### Data Structures (`kermit-ds`)
 
@@ -122,6 +173,7 @@ struct TrieNode {
 struct TreeTrie {
     header: RelationHeader,
     children: Vec<TrieNode>,
+    tuple_count: usize, // distinct tuples; backs `Cardinality`
 }
 ```
 
@@ -140,10 +192,36 @@ struct ColumnTrieLayer {
 struct ColumnTrie {
     header: RelationHeader,
     layers: Vec<ColumnTrieLayer>,
+    tuple_count: usize,
 }
 ```
 
-For a 3-ary relation, there are 3 layers. The `interval` array maps each key in layer N to the range of its children in layer N+1. This representation is more cache-friendly for large datasets.
+For a 3-ary relation, there are 3 layers. The `interval` array maps each key in layer N to the range of its children in layer N+1. This representation is more cache-friendly for large datasets. The trade-off is insertion cost: inserting a key in an early layer shifts every subsequent interval offset.
+
+#### HashTrie
+
+A hash-based trie, generic over a `HashStrategy` layout parameter. Each level is an open-addressing hash table keyed on the hash of that attribute's value:
+
+```rust
+struct HashTrie<H: HashStrategy = SipHashStrategy> {
+    header: RelationHeader,
+    root: HashTrieNode,
+    tuple_count: usize,     // multiset: duplicates count
+    _hasher: PhantomData<H>,
+}
+
+enum HashTrieNode {
+    Inner(HashTable<HashTrieNode>),    // child nodes
+    Leaf(HashTable<Vec<Vec<usize>>>),  // full materialised tuple chains
+}
+```
+
+Tables use linear probing with power-of-two capacity, doubling above a 0.7 load factor. Two differences from the sorted tries matter:
+
+- **Multiset semantics.** Tuples with identical hash signatures chain in the same leaf bucket rather than deduplicating, so `Cardinality::tuple_count` counts multiset size where `TreeTrie` and `ColumnTrie` count distinct tuples.
+- **Leaves hold whole tuples.** Because inner levels store only hashes, the real values are needed at the leaf to reject hash collisions.
+
+`H` is the crate's only optimization axis: `SipHashStrategy` (default) and `FxHashStrategy` are zero-sized types implementing both `HashStrategy` and `LayoutOption`, and `HashTrie<H>` is the sole `HasOptimizationAxes` implementor in the workspace, reporting `ds_layout_hasher`.
 
 ### Query Representation (`kermit-parser`)
 
@@ -204,6 +282,20 @@ At depth 0 (variable A): R and T participate
 At depth 1 (variable B): R and S participate
 At depth 2 (variable C): S and T participate
 
+Note one documented deviation from the paper: Veldhuizen keeps one persistent leapfrog per level over freely-aliased iterator arrays. Safe Rust cannot alias owned iterators across levels, so `LeapfrogTriejoinIter` instead *moves* iterators between an idle pool and the inner `LeapfrogJoinIter` on every depth change. Observable semantics are preserved; the cost is a drain/refill per `open`/`up`. The rationale is recorded in the module docs of `kermit-algos/src/leapfrog_triejoin.rs`.
+
+### Hash Triejoin
+
+`HashTriejoin` implements Algorithm 3 of the SIGMOD 2020 hash-trie-join paper, over the `HashTrieIterable` family. Unlike `LeapfrogTriejoin` it is not an iterator type — it is a recursive `enumerate` over attribute positions:
+
+1. **Descend**: open every iterator participating at this attribute position.
+2. **Choose a driver**: pick the iterator with the smallest hash table (`argmin size`) and scan it.
+3. **Probe**: `lookup` that hash in every other participating iterator; recurse on a match.
+4. **Emit**: at the leaf, cross-product the participating tuple chains, then **verify shared variables against the real tuple values** — hashing can produce false positives at any inner level, so equality must be re-checked before a tuple is emitted.
+5. **Ascend**: `up` exactly as many times as the descent opened, including on partial-open failure.
+
+One behavioural asymmetry is worth knowing: `HashTriejoin::join_iter` fully materialises its results into a `Vec` before returning `impl Iterator`, whereas `LeapfrogTriejoin` returns a genuinely lazy iterator chain. This does not currently affect benchmarks, because `DB::join` returns `Vec<Vec<usize>>` and normalises both — but it means LFTJ's laziness is never exploited by the CLI, and any future time-to-first-tuple metric would be comparing unlike things.
+
 ### JoinAlgo Trait
 
 ```rust
@@ -217,6 +309,15 @@ pub trait JoinAlgo<DS> where DS: JoinIterable {
 ```
 
 This abstraction allows implementing different join algorithms that work with any join-iterable data structure. `plan` supplies the variable descent order (see "Query Planning" below); implementations validate it against the query with `QueryPlan::validate` and panic if it is inconsistent.
+
+The trait bound is the weak `JoinIterable` marker; each implementation narrows it to the family it can actually traverse:
+
+```rust
+impl<DS: TrieIterable>     JoinAlgo<DS> for LeapfrogTriejoin { … }
+impl<DS: HashTrieIterable> JoinAlgo<DS> for HashTriejoin     { … }
+```
+
+That is what makes `(HashTrie, LeapfrogTriejoin)` a compile error rather than a runtime concern — everywhere except the CLI, which erases both sides into enums.
 
 ### Const-Rewrite
 
@@ -290,7 +391,24 @@ The binary exposes two top-level subcommands:
   - `bench clean [<NAME>]` — remove cached benchmark artefacts.
   - `bench gen { watdiv | lubm }` — imperative on-the-fly generation, bypassing YAML; writes into the same cache layout under a user-supplied `--tag`.
 
-`--indexstructure` and `--algorithm` accept `all` on `bench ds` and `bench run` for Cartesian sweeps. Working examples live in `README.md` and `USAGE.md`; the YAML schema and generator-spec details live in `benchmarks/README.md`.
+Working examples live in `README.md` and `USAGE.md`; the YAML schema and generator-spec details live in `benchmarks/README.md`.
+
+### Database layer
+
+`kermit/src/db.rs` defines the object-safe `DB` trait and its sole implementor `DatabaseEngine<R, JA>`, generic over the sorted-trie family (`R: Relation + TrieIterable + Cardinality`). `DB::join` runs the const-rewrite, plans the query, and returns `Vec<Vec<usize>>`.
+
+The hash family cannot be a second `DB` implementation: an `impl<R: HashTrieIterable, …> DB for DatabaseEngine<R, JA>` overlaps the existing one and Rust's coherence rules reject it (E0119). The hash path is therefore the free function `hash_join<R, H>` instead, and `instantiate_database` panics on every pair that does not belong to the sorted family — including the *valid* `(HashTrie, HashTriejoin)` pair, which the CLI routes to `hash_join` directly and never through this factory.
+
+### Selector dispatch
+
+`bench ds` and `bench run` accept `all` for `--indexstructure` and `--algorithm`, expanding to a Cartesian sweep.
+
+> **Known issue — the sweep does not filter invalid pairs.** `IndexStructureSelector::supports_algorithm` returns `true` unconditionally whenever either selector is `All`, deferring the check to a cross-product loop that never performs it. `dispatch_run_bench` then routes on the index structure alone and passes the algorithm through untouched. Two consequences:
+>
+> - `(TreeTrie | ColumnTrie, HashTriejoin)` **panics** in `instantiate_database`. Loud, and no report is written.
+> - `(HashTrie, LeapfrogTriejoin)` **silently mislabels**: it runs `hash_join` regardless, then stamps the JSON report's `algorithm` axis with `LeapfrogTriejoin`.
+>
+> So `bench run -i all -a leapfrog-triejoin` produces a plausible-looking report attributing HashTriejoin's measurements to LeapfrogTriejoin. **Until this is fixed, sweep by running one `bench run` per valid pair** rather than using `all`. Tracked as a known issue; see also the note in `CLAUDE.md`.
 
 ### Space measurement
 
@@ -299,6 +417,16 @@ The binary exposes two top-level subcommands:
 ### JSON bench reports
 
 Every `kermit bench` invocation writes a `BenchReport` JSON array to disk. The default path is `bench-runs/{kind}-{unix-millis}.json` (the directory is auto-created and gitignored at the workspace root); pass `--report-json <PATH>` to override. Each report carries `metadata` (label/value pairs mirroring stderr), `axes` (a structured map for tooling: `data_structure`, `algorithm`, `query`, `tuples`, …), and `criterion_groups` pointers resolving to per-function `target/criterion/{group}/{dir}/` artefacts. The schema is versioned by `schema_version` (currently `2`) and lives in `kermit/src/bench_report.rs`; the full key catalogue is documented in `docs/specs/bench-report-schema.md`.
+
+## Analysis (`python/kermit-lab`)
+
+`python/kermit-lab/` is a uv-managed Python package for notebook-first analysis of benchmark output. It is not a Cargo workspace member and shares no code with the Rust side — **the only coupling is the on-disk data contract**:
+
+- `kl.load("bench-runs/*.json")` parses `BenchReport` arrays into a pandas `DataFrame`, including the `ds_*` / `algo_*` optimization axes. It checks `schema_version` on load and raises `SchemaError` if a report is newer than the package understands.
+- Each `criterion_groups` pointer is then resolved into `target/criterion/{group}/{directory_name}/new/*.json`, matching on `benchmark.json`'s `function_id` rather than recomputing Criterion's name escaping.
+- `kl.plot(df, kind=…, x=…, colour=…, facet=…)` is the general engine; `kl.scaling()`, `kl.bar_time()`, `kl.ablation()` and friends are presets over it, each returning a `matplotlib.figure.Figure`. `kl.summary` / `compare` / `bootstrap_ratio_ci` / `mannwhitney_u` cover pivots and statistics.
+
+Because the boundary is a versioned file format rather than a binding, analysis code and notebooks stay valid across Rust revisions. Bump `schema_version` in `bench_report.rs` on any breaking field-name or value-type change, and update `SCHEMA_VERSION` in `kermit_lab` to match.
 
 ## File I/O
 
@@ -314,18 +442,33 @@ All keys are `usize`. String values must be dictionary-encoded before use. This 
 
 ## Adding New Components
 
+These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, including exact file paths and the rules on scope discipline.
+
 ### New Data Structure
 
-1. Implement `Relation` + `TrieIterable` + `HeapSize` in `kermit-ds`.
-2. Provide a corresponding `TrieIterator` type.
-3. Add a variant to the `IndexStructure` enum (in `kermit-ds`) for CLI selection.
-4. Add the corresponding match arms in `instantiate_database` (`kermit/src/db.rs`) and the `run_ds_bench` / `run_benchmark` dispatch in `kermit/src/main.rs`.
+1. Create `kermit-ds/src/ds/<name>/` with `mod.rs`, `implementation.rs`, `<name>_iter.rs`.
+2. Implement `Relation` + `Projectable` + `HeapSize` + `Cardinality` on the structure. `HeapSize::heap_size_bytes` returns heap bytes only, excluding `size_of::<Self>`.
+3. Implement the iterator. For the sorted family that is `TrieIterator` plus `#[derive(IntoTrieIter)]`, then `TrieIterable` on the structure. For the hash family it is `HashTrieIterator` and `HashTrieIterable` — and note that the shared helpers (`project_via_trie_iter`, `TrieIteratorWrapper`, the `kermit-ds` macro test suites) are all `TrieIterable`-only, so a hash-family structure must supply its own equivalents.
+4. Register the module and add a variant to `IndexStructure` in `kermit-ds/src/ds/mod.rs`.
+5. Wire the CLI: a variant on `IndexStructureSelector` and its `expand()`, plus match arms in `run_ds_bench` / `run_benchmark` dispatch (`kermit/src/main.rs`) and `instantiate_database` (`kermit/src/db.rs`) for a sorted-family structure.
+6. **Wire the tests.** Add `define_multiway_join_test_suite!(<Type>, <Algo>, LexicographicOptimiser)` and a second invocation with `CardinalityOptimiser` in `kermit/tests/join_tests.rs`, so all 11 standard join patterns run against the structure. Each distinct layout combination is its own suite invocation (e.g. `HashTrieSip`, `HashTrieFx`).
+7. **Write the doc** at `docs/data-structures/<name>.md` from the template.
 
 ### New Join Algorithm
 
-1. Implement `JoinAlgo<DS>` in `kermit-algos`. The implementation must tolerate the const-rewritten query shape (extra synthetic unary body predicates).
-2. Add a variant to the `JoinAlgorithm` enum for CLI selection.
-3. Wire the new variant into `instantiate_database`.
+1. Create `kermit-algos/src/<name>.rs` and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable` or `HashTrieIterable`. The implementation must tolerate the const-rewritten query shape (extra synthetic unary body predicates) and must validate the incoming `QueryPlan`.
+2. Register the module and add a variant to the `JoinAlgorithm` enum in `kermit-algos/src/lib.rs`.
+3. Wire the CLI: a variant on `JoinAlgorithmSelector` and its `expand()`. A sorted-family algorithm is also wired into `instantiate_database`; a hash-family algorithm needs its own execution path instead, as `hash_join` is for `HashTriejoin` (see "Database layer").
+4. **Wire the tests.** Add a `define_multiway_join_test_suite!` invocation per compatible index structure × optimiser.
+5. **Write the doc** at `docs/algorithms/<name>.md` from the template.
+
+### New Query Optimiser
+
+1. Create `kermit-algos/src/optimiser/<name>.rs` and implement `QueryOptimiser`.
+2. Build the ordering with the shared `ordering::topological_order(num_vars, predicate_variables, rank)`. Because ranking only ever chooses among Kahn-ready variables, any rank function yields a valid plan — a policy can be slow, never wrong. Consume statistics via `CatalogStats`, treating a missing entry as "assume large".
+3. Register the module and add a variant to the `Optimiser` enum, with `instantiate()` and `axis_value()` arms. The `axis_values_match_clap_value_names` guard test pins axis naming.
+4. **Wire the tests.** A `define_multiway_join_test_suite!` invocation per valid (structure, algorithm) pair, plus unit tests for the ranking itself.
+5. **Write the doc** at `docs/optimisers/<name>.md` from the template.
 
 ### New Benchmark
 
