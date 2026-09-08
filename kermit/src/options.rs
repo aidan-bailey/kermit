@@ -85,13 +85,21 @@ impl PruningChoice {
 ///
 /// # Panics
 ///
-/// Panics if `H` has no corresponding CLI choice. That is a programming
-/// error — a new marker must be given a [`HasherChoice`] variant — and the
-/// round-trip test over `HasherChoice::value_variants()` catches it.
+/// Panics if `H`'s layout name has no [`HasherChoice`], which is a
+/// programming error: a new [`HashStrategy`] marker must be given a CLI
+/// choice. Note what the round-trip test does *not* cover — it sweeps
+/// `HasherChoice::value_variants()`, so it catches a CLI variant missing
+/// from `from_layout_name`'s table, but a marker type with no variant at
+/// all is invisible to it and only panics once something instantiates
+/// `hasher_of` over it.
 pub(crate) fn hasher_of<H: HashStrategy>() -> HasherChoice {
     let name = <H as LayoutOption>::NAME;
-    HasherChoice::from_layout_name(name)
-        .unwrap_or_else(|| panic!("no --ds-layout-hasher choice for hash strategy {name:?}"))
+    HasherChoice::from_layout_name(name).unwrap_or_else(|| {
+        panic!(
+            "no --ds-layout-hasher choice for hash strategy {name:?} ({})",
+            std::any::type_name::<H>()
+        )
+    })
 }
 
 /// The `--ds-layout-pruning` label of the [`PruningPolicy`] a code path was
@@ -99,11 +107,16 @@ pub(crate) fn hasher_of<H: HashStrategy>() -> HasherChoice {
 ///
 /// # Panics
 ///
-/// Panics if `P` has no corresponding CLI choice; see [`hasher_of`].
+/// Panics if `P`'s layout name has no [`PruningChoice`], with the same
+/// caveat about what the round-trip test covers; see [`hasher_of`].
 pub(crate) fn pruning_of<P: PruningPolicy>() -> PruningChoice {
     let name = <P as LayoutOption>::NAME;
-    PruningChoice::from_layout_name(name)
-        .unwrap_or_else(|| panic!("no --ds-layout-pruning choice for pruning policy {name:?}"))
+    PruningChoice::from_layout_name(name).unwrap_or_else(|| {
+        panic!(
+            "no --ds-layout-pruning choice for pruning policy {name:?} ({})",
+            std::any::type_name::<P>()
+        )
+    })
 }
 
 /// Layout-axis CLI choices flattened into every subcommand whose dispatch
@@ -187,9 +200,9 @@ pub(crate) fn validate_layout_choices(
 /// runtime.
 ///
 /// Both dispatchers (`dispatch_ds_bench` and `dispatch_run_bench`, in
-/// `main.rs`) go
-/// through here, so the Layout product is written out once rather than
-/// twice. It is not free of the product, though: the arms *are* the cells,
+/// `main.rs`) go through here, so the Layout product is written out once
+/// rather than twice. It is not free of the product, though: the arms
+/// *are* the cells,
 /// so a third Layout dimension doubles them (2^n in general) and also costs
 /// a `LayoutChoices` field plus one entry in each of `Execution::HashHtj`,
 /// `Execution::for_pair`, `Sweep::expand`, `HashHtj`, and the two command
@@ -207,32 +220,32 @@ macro_rules! with_hash_trie_layout {
                 $crate::options::HasherChoice::Sip,
                 $crate::options::PruningChoice::Off,
             ) => {
-                type $H = kermit_iters::SipHashStrategy;
-                type $P = kermit_ds::NoPruning;
+                type $H = ::kermit_iters::SipHashStrategy;
+                type $P = ::kermit_ds::NoPruning;
                 $body
             },
             | (
                 $crate::options::HasherChoice::Sip,
                 $crate::options::PruningChoice::On,
             ) => {
-                type $H = kermit_iters::SipHashStrategy;
-                type $P = kermit_ds::SingletonPruning;
+                type $H = ::kermit_iters::SipHashStrategy;
+                type $P = ::kermit_ds::SingletonPruning;
                 $body
             },
             | (
                 $crate::options::HasherChoice::Fxhash,
                 $crate::options::PruningChoice::Off,
             ) => {
-                type $H = kermit_iters::FxHashStrategy;
-                type $P = kermit_ds::NoPruning;
+                type $H = ::kermit_iters::FxHashStrategy;
+                type $P = ::kermit_ds::NoPruning;
                 $body
             },
             | (
                 $crate::options::HasherChoice::Fxhash,
                 $crate::options::PruningChoice::On,
             ) => {
-                type $H = kermit_iters::FxHashStrategy;
-                type $P = kermit_ds::SingletonPruning;
+                type $H = ::kermit_iters::FxHashStrategy;
+                type $P = ::kermit_ds::SingletonPruning;
                 $body
             },
         }
@@ -370,6 +383,27 @@ mod tests {
         }
         assert_eq!(hasher_of::<SipHashStrategy>(), HasherChoice::Sip);
         assert_eq!(hasher_of::<FxHashStrategy>(), HasherChoice::Fxhash);
+    }
+
+    /// Every `with_hash_trie_layout!` arm binds the marker pair its
+    /// `(HasherChoice, PruningChoice)` pattern names. Reading the labels
+    /// back out of the aliases the macro defines pins the four pairings
+    /// against `hasher_of`/`pruning_of`, so a transposed arm fails here
+    /// rather than silently mislabelling a bench report.
+    #[test]
+    fn layout_macro_binds_the_marker_pair_its_arm_names() {
+        for (hasher, pruning) in [
+            (HasherChoice::Sip, PruningChoice::Off),
+            (HasherChoice::Sip, PruningChoice::On),
+            (HasherChoice::Fxhash, PruningChoice::Off),
+            (HasherChoice::Fxhash, PruningChoice::On),
+        ] {
+            let bound = with_hash_trie_layout!(hasher, pruning, |H, P| (
+                hasher_of::<H>(),
+                pruning_of::<P>()
+            ));
+            assert_eq!(bound, (hasher, pruning));
+        }
     }
 
     /// The same round trip for `--ds-layout-pruning` and `PruningPolicy`.

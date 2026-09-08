@@ -95,10 +95,14 @@ pub enum Execution {
     /// with `H` chosen by `--ds-layout-hasher`, `P` by
     /// `--ds-layout-pruning`, and the runtime values by `--ds-config`.
     HashHtj {
-        /// The `--ds-layout-hasher` choice, derived from the `H` the
-        /// runner monomorphised over.
+        /// The `--ds-layout-hasher` choice. Built by
+        /// [`Execution::for_pair`] it is the *request* — the CLI choice
+        /// that will pick the `H` to monomorphise over; reported by
+        /// [`HashHtj::execution`] it is re-derived from that `H`, so the
+        /// two agree by construction rather than by discipline.
         hasher: HasherChoice,
-        /// The `--ds-layout-pruning` choice, derived from `P`.
+        /// The `--ds-layout-pruning` choice, in the same two roles: the
+        /// request that selects `P`, and the label re-derived from `P`.
         pruning: PruningChoice,
         /// The `--ds-config` runtime values every relation is built with.
         config: HashTrieConfig,
