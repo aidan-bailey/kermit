@@ -1,10 +1,8 @@
 # Singleton Pruning as the First Config Consumer
 
-**Status:** Sections 1–6 are implemented on `aidanb/optimisations`
-(commits `77dffa2`..`f17c812`). **Amendment 1 implemented** (commits
-`d711043`..`185b386` plus the docs commit); acceptance record pending
-Task 9/10 of `docs/plans/2026-09-08-pruning-layout-load-factor-config.md`.
-Amendment 1 supersedes the classification of pruning; read it first.
+**Status:** Amendment 1 implemented (commits `d711043`..`86c18c6`); acceptance
+run recorded in Amendment 1 § D below. Sections 1–6 record the superseded
+first implementation.
 **Resolves:** [#58](https://github.com/aidan-bailey/kermit/issues/58) — the optimization standard has one adopter; Config and BuildMode are unexercised.
 **Paper:** SIGMOD 2020 "Combining Worst-Case Optimal and Traditional Binary Join Processing", §3.3.1, Figure 5.
 
@@ -220,6 +218,38 @@ recorded in the spec:
    numbers (space −56 % / −22 %, insertion ~−9 %).
 3. `load-factor=0.7` is indistinguishable from the constant; `0.5` and
    `0.9` move space and iteration in opposite directions.
+
+### Amendment 1 acceptance record (2026-09-08)
+
+Protocol as in Section 2: `oxford-uniform-s3`, three interleaved rounds of
+the pre-pruning baseline `9c67ee5` against commit `17486ba` (release
+builds, direct binaries, foreground), TreeTrie/LFTJ on both binaries as the
+control (flat: 36.1 µs vs 36.1 µs on `binary-join`).
+
+| Configuration | binary-join iteration | triangle iteration | triangle insertion | space R/S/T (arity 3) | space U/V/W (arity 2) |
+|---|---|---|---|---|---|
+| baseline `9c67ee5` | 58.4–59.4 µs | 2.06–2.08 ms | 4.36 ms | 931–935 KiB | 51–52 KiB |
+| `--ds-layout-pruning off` (default) | 57.3–60.5 µs | 2.07–2.08 ms | 4.30 ms | identical | identical |
+| `--ds-layout-pruning on` | 61.9–64.7 µs | 2.00–2.01 ms | 3.99 ms | 409–410 KiB (−56 %) | 40–41 KiB (−22 %) |
+| `--ds-config load-factor=0.5` | 57.1–59.8 µs | 2.03–2.04 ms | 2.94 ms | 1.05–1.06 MiB (+13 %) | 52 KiB |
+| `--ds-config load-factor=0.9` | 58.5–63.6 µs | 2.09–2.13 ms | 6.24 ms | 882–886 KiB (−5 %) | 42–43 KiB (−17 %) |
+
+Unary P/Q are unchanged under every configuration (no level to prune, one
+table each).
+
+1. **Parity (criterion 1): passed.** The `off` instantiation is inside the
+   control's spread of the baseline on both queries and byte-identical in
+   space; the 10 % overhead of the Config encoding is gone.
+2. **Pruning on (criterion 2): passed.** Space and insertion reproduce
+   Section 2's numbers. Iteration is ~3 % faster than baseline on
+   `triangle` and ~8 % slower on `binary-join` (one probe per pruned level
+   replaced by one SipHash call on a query with almost no fan-out).
+3. **Load factor (criterion 3): passed.** Space and time move in opposite
+   directions: 0.5 buys −33 % insertion and level iteration for +13 %
+   space; 0.9 buys −5 % space for +43 % insertion and +2–4 % iteration.
+
+Not measured here: the `ds_layout_hasher × ds_layout_pruning` and
+`ds_layout_hasher × ds_config_load_factor` pivots under FxHash.
 
 ### Out of scope for the amendment
 

@@ -143,8 +143,10 @@ optimizations are classified into Layout, Config, or BuildMode.
     on, the uninhabited `Never` when off. The `off` instantiation compiles
     to the pre-pruning code (pinned by
     `node_does_not_grow_under_the_pruning_policy` and
-    `off_frame_is_the_bare_table_pair`); the parity measurement lands in
-    the design spec's Amendment 1 § D once the acceptance run completes.
+    `off_frame_is_the_bare_table_pair`); measured at parity with the
+    pre-pruning baseline on `oxford-uniform-s3` (byte-identical space,
+    iteration inside the TreeTrie control's spread); see the design spec's
+    Amendment 1 § D acceptance record.
   - **Test aliases:** `HashTrieSipPruned` and `HashTrieFxPruned` at the
     join layer; all three pruned aliases — those two plus the colliding
     `HashTrieMod10Pruned` — at the DS layer.
