@@ -1,7 +1,8 @@
-//! End-to-end pipeline orchestrator.
+//! WatDiv end-to-end pipeline.
 //!
-//! Runs the driver to produce raw watdiv artifacts, then runs stages 4–6
-//! in pure Rust to produce the final benchmark cache directory:
+//! Runs the driver to produce raw watdiv artifacts, then hands them to the
+//! shared [`generator::process_artifacts`] orchestrator, which produces the
+//! final benchmark cache directory:
 //!
 //! ```text
 //! <out_dir>/
@@ -14,17 +15,23 @@
 //!   raw/queries/*.sparql (+ *.desc only if the binary emits them — the vendored one does not)
 //!   expected/<query>.csv
 //! ```
+//!
+//! This module supplies only the WatDiv-specific hooks of the
+//! [`Generator`] trait: staging the binary's artifacts, seeding relations
+//! the basic workload's fixed templates reference, splitting the `-q`
+//! output on `#end` markers, and the `watdiv-*` provenance fields.
 
 use {
     crate::{
         dict::Dictionary,
         driver::{self, invoke::split_on_end_markers, DriverInputs, RawArtifacts, StressParams},
         error::RdfError,
-        expected, parquet, partition, sha256_file,
+        expected,
+        generator::{self, Generator, GeneratorMeta, Provenance, Target},
+        partition::{self, Partitioned},
+        sha256_file,
         sparql::translator::{bgp_predicate_iris, translate_query},
-        timestamp::utc_iso8601_now,
         value::RdfValue,
-        yaml_emit::{write_benchmark_yaml, YamlInputs},
     },
     serde::Serialize,
     std::{
@@ -86,6 +93,22 @@ pub struct PipelineMeta {
     pub spec_hash: Option<String>,
 }
 
+impl GeneratorMeta for PipelineMeta {
+    fn schema_version(&self) -> u32 { self.schema_version }
+
+    fn kind(&self) -> &str { &self.kind }
+
+    fn tag(&self) -> &str { &self.tag }
+
+    fn generated_at_utc(&self) -> &str { &self.generated_at_utc }
+
+    fn relation_count(&self) -> u32 { self.relation_count }
+
+    fn query_count(&self) -> u32 { self.query_count }
+
+    fn spec_hash(&self) -> Option<&str> { self.spec_hash.as_deref() }
+}
+
 /// Stress params surfaced into meta.json.
 #[derive(Debug, serde::Deserialize, Serialize)]
 pub struct StressParamsMeta {
@@ -137,13 +160,12 @@ impl Workload {
 }
 
 /// Basic workload: fixed templates may reference predicates absent from the
-/// (probabilistically generated) data. Seed an empty relation into `relations`
-/// (and `predicate_map`/`dict`) for each such predicate so translation yields
-/// an empty-result join instead of erroring. Mirrors the naming convention
-/// used by `partition::partition` for collision-free relation names.
+/// (probabilistically generated) data. Seed an empty relation into `part`
+/// for each such predicate so translation yields an empty-result join
+/// instead of erroring. Mirrors the naming convention used by
+/// `partition::partition` for collision-free relation names.
 fn seed_missing_predicates(
-    relations: &mut Vec<partition::PartitionedRelation>,
-    predicate_map: &mut HashMap<String, String>, dict: &mut Dictionary, sparql_paths: &[PathBuf],
+    part: &mut Partitioned, sparql_paths: &[PathBuf],
 ) -> Result<(), RdfError> {
     let mut needed: Vec<String> = Vec::new();
     for sparql_path in sparql_paths {
@@ -156,21 +178,21 @@ fn seed_missing_predicates(
             }
         }
     }
-    let mut used: HashSet<String> = relations.iter().map(|r| r.name.clone()).collect();
+    let mut used: HashSet<String> = part.relations.iter().map(|r| r.name.clone()).collect();
     for p_iri in needed {
-        if predicate_map.contains_key(&p_iri) {
+        if part.predicate_map.contains_key(&p_iri) {
             continue;
         }
         let base = partition::sanitize_predicate(&p_iri);
-        let pred_id = dict.intern(RdfValue::Iri(p_iri.clone()));
+        let pred_id = part.dict.intern(RdfValue::Iri(p_iri.clone()));
         let name = if used.contains(&base) {
             format!("{base}_{pred_id}")
         } else {
             base.clone()
         };
         used.insert(name.clone());
-        predicate_map.insert(p_iri.clone(), name.clone());
-        relations.push(partition::PartitionedRelation {
+        part.predicate_map.insert(p_iri.clone(), name.clone());
+        part.relations.push(partition::PartitionedRelation {
             name,
             tuples: Vec::new(),
         });
@@ -178,125 +200,150 @@ fn seed_missing_predicates(
     Ok(())
 }
 
-/// Stages 4 + 5 + 6 of the pipeline. Public so the no-binary pipeline
-/// integration test (Task 17) can drive stages 4–6 with a hand-crafted
+/// The WatDiv view of the shared [`Generator`] contract: a set of pipeline
+/// inputs plus the workload that decides `kind` and seeding.
+struct WatdivGenerator<'a> {
+    inputs: &'a PipelineInputs<'a>,
+    workload: Workload,
+}
+
+/// What [`WatdivGenerator::stage_raw`] leaves behind for later hooks: the
+/// `.sparql` files as copied under `<out_dir>/raw/queries/`.
+struct WatdivStaged {
+    copied_sparql_paths: Vec<PathBuf>,
+}
+
+impl Generator for WatdivGenerator<'_> {
+    type Meta = PipelineMeta;
+    type Raw = RawArtifacts;
+    type Staged = WatdivStaged;
+
+    fn target(&self) -> Target<'_> {
+        Target {
+            out_dir: self.inputs.out_dir,
+            bench_name: self.inputs.bench_name,
+            tag: self.inputs.tag,
+            spec_hash: self.inputs.spec_hash,
+        }
+    }
+
+    fn stage_raw(
+        &self, raw: &RawArtifacts, raw_root: &Path,
+    ) -> Result<(PathBuf, WatdivStaged), RdfError> {
+        fs::create_dir_all(raw_root.join("templates"))?;
+        fs::create_dir_all(raw_root.join("queries"))?;
+
+        let data_nt = raw_root.join("data.nt");
+        fs::copy(&raw.data_nt, &data_nt)?;
+        for tpl in &raw.templates {
+            let dst = raw_root.join("templates").join(tpl.file_name().unwrap());
+            fs::copy(tpl, dst)?;
+        }
+        let mut copied_sparql_paths: Vec<PathBuf> = Vec::new();
+        for (sparql, desc) in &raw.queries {
+            let s_dst = raw_root.join("queries").join(sparql.file_name().unwrap());
+            fs::copy(sparql, &s_dst)?;
+            if desc.exists() {
+                let d_dst = raw_root.join("queries").join(desc.file_name().unwrap());
+                fs::copy(desc, d_dst)?;
+            }
+            copied_sparql_paths.push(s_dst);
+        }
+        Ok((data_nt, WatdivStaged {
+            copied_sparql_paths,
+        }))
+    }
+
+    fn seed_relations(
+        &self, staged: &WatdivStaged, part: &mut Partitioned,
+    ) -> Result<(), RdfError> {
+        if self.workload.seeds_missing_predicates() {
+            seed_missing_predicates(part, &staged.copied_sparql_paths)?;
+        }
+        Ok(())
+    }
+
+    fn translate_queries(
+        &self, staged: &WatdivStaged, dict: &mut Dictionary,
+        predicate_map: &HashMap<String, String>,
+    ) -> Result<Vec<(String, String)>, RdfError> {
+        let mut all_queries: Vec<(String, String)> = Vec::new();
+        for sparql_path in &staged.copied_sparql_paths {
+            let stem = sparql_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("q")
+                .replace('.', "-");
+            let text = fs::read_to_string(sparql_path)?;
+            let stem_underscores = stem.replace('-', "_");
+            // Watdiv `-q` emits multi-line SPARQL queries separated by `#end`
+            // markers; one logical query is a multi-line block, not one line.
+            for (i, q) in split_on_end_markers(&text).iter().enumerate() {
+                let qname = format!("{stem}_q{i:04}");
+                let head = format!("Q_{stem_underscores}_q{i:04}");
+                let dl = translate_query(q, dict, predicate_map, &head)?;
+                all_queries.push((qname, dl));
+            }
+        }
+        Ok(all_queries)
+    }
+
+    fn description(&self, _raw: &RawArtifacts) -> String {
+        format!(
+            "WatDiv on-the-fly generation, scale {}, tag {}",
+            self.inputs.driver.scale, self.inputs.tag
+        )
+    }
+
+    /// Only if the binary emitted `.desc` sidecars (the vendored one does not).
+    fn write_expected(&self, staged: &WatdivStaged, expected_dir: &Path) -> Result<(), RdfError> {
+        expected::write_expected_csvs(&staged.copied_sparql_paths, expected_dir)?;
+        Ok(())
+    }
+
+    fn build_meta(
+        &self, _raw: &RawArtifacts, _staged: &WatdivStaged, part: &Partitioned,
+        provenance: Provenance,
+    ) -> Result<PipelineMeta, RdfError> {
+        let driver = &self.inputs.driver;
+        let mut names_hashes = HashMap::new();
+        for n in ["firstnames.txt", "lastnames.txt"] {
+            let p = driver.vendor_files.join(n);
+            names_hashes.insert(n.to_string(), sha256_file(&p)?);
+        }
+        let triple_count: u64 = part.relations.iter().map(|r| r.tuples.len() as u64).sum();
+
+        Ok(PipelineMeta {
+            schema_version: provenance.schema_version,
+            kind: self.workload.meta_kind().to_string(),
+            scale: driver.scale,
+            tag: provenance.tag,
+            watdiv_binary_sha256: sha256_file(driver.watdiv_bin)?,
+            names_files_sha256: names_hashes,
+            model_file_sha256: sha256_file(driver.model_file)?,
+            stress_params: StressParamsMeta::from(&driver.stress),
+            generated_at_utc: provenance.generated_at_utc,
+            triple_count,
+            relation_count: provenance.relation_count,
+            query_count: provenance.query_count,
+            spec_hash: provenance.spec_hash,
+        })
+    }
+}
+
+/// Post-driver stages of the pipeline. Public so the no-binary pipeline
+/// integration test can drive them with a hand-crafted
 /// `RawArtifacts`-equivalent.
 pub fn process_artifacts(
     inputs: &PipelineInputs, raw: &RawArtifacts, workload: Workload,
 ) -> Result<PipelineMeta, RdfError> {
-    // Stage A: copy the raw driver artifacts into `<out_dir>/raw/`.
-    fs::create_dir_all(inputs.out_dir)?;
-    let raw_root = inputs.out_dir.join("raw");
-    fs::create_dir_all(raw_root.join("templates"))?;
-    fs::create_dir_all(raw_root.join("queries"))?;
-
-    fs::copy(&raw.data_nt, raw_root.join("data.nt"))?;
-    for tpl in &raw.templates {
-        let dst = raw_root.join("templates").join(tpl.file_name().unwrap());
-        fs::copy(tpl, dst)?;
-    }
-    let mut copied_sparql_paths: Vec<PathBuf> = Vec::new();
-    for (sparql, desc) in &raw.queries {
-        let s_dst = raw_root.join("queries").join(sparql.file_name().unwrap());
-        fs::copy(sparql, &s_dst)?;
-        if desc.exists() {
-            let d_dst = raw_root.join("queries").join(desc.file_name().unwrap());
-            fs::copy(desc, d_dst)?;
-        }
-        copied_sparql_paths.push(s_dst);
-    }
-
-    // Stage B: partition the N-Triples into per-predicate relations, seeding
-    // empty relations for query predicates the data lacks (Basic workload).
-    let mut part = partition::partition(raw_root.join("data.nt"))?;
-    let mut dict = part.dict;
-    if workload.seeds_missing_predicates() {
-        seed_missing_predicates(
-            &mut part.relations,
-            &mut part.predicate_map,
-            &mut dict,
-            &copied_sparql_paths,
-        )?;
-    }
-
-    for rel in &part.relations {
-        let path = inputs.out_dir.join(format!("{}.parquet", rel.name));
-        parquet::write_relation(rel, &path)?;
-    }
-
-    let all_predicates: Vec<String> = part.relations.iter().map(|r| r.name.clone()).collect();
-
-    // Stage C: translate each concrete SPARQL query to Datalog.
-    let mut all_queries: Vec<(String, String)> = Vec::new();
-    for sparql_path in &copied_sparql_paths {
-        let stem = sparql_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("q")
-            .replace('.', "-");
-        let text = fs::read_to_string(sparql_path)?;
-        let stem_underscores = stem.replace('-', "_");
-        // Watdiv `-q` emits multi-line SPARQL queries separated by `#end`
-        // markers; one logical query is a multi-line block, not one line.
-        for (i, q) in split_on_end_markers(&text).iter().enumerate() {
-            let qname = format!("{stem}_q{i:04}");
-            let head = format!("Q_{stem_underscores}_q{i:04}");
-            let dl = translate_query(q, &mut dict, &part.predicate_map, &head)?;
-            all_queries.push((qname, dl));
-        }
-    }
-
-    // Stage D: write dict (after the translator may have grown it).
-    let dict_path = inputs.out_dir.join("dict.parquet");
-    parquet::write_dict(&dict, &dict_path)?;
-
-    // Stage E: emit benchmark.yml.
-    let base_url = format!("file://{}", inputs.out_dir.canonicalize()?.display());
-    let description = format!(
-        "WatDiv on-the-fly generation, scale {}, tag {}",
-        inputs.driver.scale, inputs.tag
-    );
-    let yaml = YamlInputs {
-        name: inputs.bench_name,
-        description: &description,
-        queries: all_queries.clone(),
-        all_predicates: &all_predicates,
-        base_url: &base_url,
-    };
-    write_benchmark_yaml(&yaml, inputs.out_dir)?;
-
-    // Stage F: expected cardinalities (only if the binary emitted `.desc`s).
-    let expected_dir = inputs.out_dir.join("expected");
-    expected::write_expected_csvs(&copied_sparql_paths, &expected_dir)?;
-
-    // Stage G: meta.json.
-    let mut names_hashes = HashMap::new();
-    for n in ["firstnames.txt", "lastnames.txt"] {
-        let p = inputs.driver.vendor_files.join(n);
-        names_hashes.insert(n.to_string(), sha256_file(&p)?);
-    }
-
-    let triple_count: u64 = part.relations.iter().map(|r| r.tuples.len() as u64).sum();
-
-    let meta = PipelineMeta {
-        schema_version: 2,
-        kind: workload.meta_kind().to_string(),
-        scale: inputs.driver.scale,
-        tag: inputs.tag.to_string(),
-        watdiv_binary_sha256: sha256_file(inputs.driver.watdiv_bin)?,
-        names_files_sha256: names_hashes,
-        model_file_sha256: sha256_file(inputs.driver.model_file)?,
-        stress_params: StressParamsMeta::from(&inputs.driver.stress),
-        generated_at_utc: utc_iso8601_now(),
-        triple_count,
-        relation_count: part.relations.len() as u32,
-        query_count: all_queries.len() as u32,
-        spec_hash: inputs.spec_hash.map(|s| s.to_string()),
-    };
-    let meta_json =
-        serde_json::to_string_pretty(&meta).map_err(|e| RdfError::Expected(e.to_string()))?;
-    fs::write(inputs.out_dir.join("meta.json"), meta_json)?;
-    Ok(meta)
+    generator::process_artifacts(
+        &WatdivGenerator {
+            inputs,
+            workload,
+        },
+        raw,
+    )
 }
 
 /// Top-level entry point: runs the stress driver and processes artifacts.

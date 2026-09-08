@@ -22,6 +22,7 @@
 
 use {
     kermit_bench::{BenchError, BenchmarkDefinition, GeneratorSpec, WatdivStressSpec},
+    kermit_rdf::generator::MetaHeader,
     std::{
         fs,
         path::{Path, PathBuf},
@@ -133,19 +134,15 @@ fn load_cached_yaml(yml_path: &Path) -> Result<BenchmarkDefinition, BenchError> 
 }
 
 /// Reads the optional `spec_hash` field from a `meta.json` produced by
-/// either the watdiv or lubm pipeline. Returns `Ok(None)` for legacy
+/// any `kermit-rdf` generator. Returns `Ok(None)` for legacy
 /// (schema_version=1) meta files that pre-date the field.
 fn read_meta_spec_hash(meta_path: &Path) -> Result<Option<String>, BenchError> {
-    let contents = fs::read_to_string(meta_path)?;
-    let value: serde_json::Value =
-        serde_json::from_str(&contents).map_err(|e| BenchError::Invalid {
-            name: meta_path.display().to_string(),
-            reason: format!("failed to parse meta.json: {e}"),
-        })?;
-    Ok(value
-        .get("spec_hash")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string()))
+    let out_dir = meta_path.parent().unwrap_or(meta_path);
+    let header = MetaHeader::read(out_dir).map_err(|e| BenchError::Invalid {
+        name: meta_path.display().to_string(),
+        reason: format!("failed to parse meta.json: {e}"),
+    })?;
+    Ok(header.spec_hash)
 }
 
 /// Routes a `GeneratorSpec` to the appropriate `kermit-rdf` pipeline,

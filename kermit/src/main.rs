@@ -1567,14 +1567,9 @@ fn describe_benchmark_status(
     if !meta_path.exists() {
         return "not generated";
     }
-    let Ok(contents) = fs::read_to_string(&meta_path) else {
-        return "stale";
-    };
-    let parsed: Option<serde_json::Value> = serde_json::from_str(&contents).ok();
-    let cached_hash = parsed
-        .as_ref()
-        .and_then(|v| v.get("spec_hash"))
-        .and_then(|v| v.as_str());
+    let cached_hash = kermit_rdf::generator::MetaHeader::read(&cache_subdir)
+        .ok()
+        .and_then(|h| h.spec_hash);
     match cached_hash {
         | Some(h) if h == spec.spec_hash() => "cached",
         | _ => "stale",
@@ -2382,7 +2377,8 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
         fs::write(
             subdir.join("meta.json"),
-            serde_json::json!({"schema_version": 2, "spec_hash": hash}).to_string(),
+            serde_json::json!({"schema_version": 2, "kind": "watdiv-onthefly", "spec_hash": hash})
+                .to_string(),
         )
         .unwrap();
         let def = make_generator_def("watdiv-cached", spec);
@@ -2399,7 +2395,12 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
         fs::write(
             subdir.join("meta.json"),
-            serde_json::json!({"schema_version": 2, "spec_hash": "old-hash"}).to_string(),
+            serde_json::json!({
+                "schema_version": 2,
+                "kind": "watdiv-onthefly",
+                "spec_hash": "old-hash"
+            })
+            .to_string(),
         )
         .unwrap();
         let def = make_generator_def("watdiv-stale", kermit_bench::GeneratorSpec::Watdiv {
@@ -2534,7 +2535,8 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
         fs::write(
             subdir.join("meta.json"),
-            serde_json::json!({"schema_version": 2, "spec_hash": hash}).to_string(),
+            serde_json::json!({"schema_version": 2, "kind": "watdiv-onthefly", "spec_hash": hash})
+                .to_string(),
         )
         .unwrap();
 

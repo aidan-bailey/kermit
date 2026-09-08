@@ -82,9 +82,13 @@ kermit-rdf      → RDF/SPARQL preprocessing pipelines for on-the-fly benchmark 
                   `MODEL.txt`/`files/`/`VERSION` are committed too).
                   Two pipelines: `pipeline::run_pipeline` (watdiv-onthefly) and
                   `lubm::pipeline::run_lubm_pipeline` (lubm-onthefly, with Univ-Bench
-                  TBox forward chaining via `lubm::entailment`).
-                  Shared stages: `partition`, `parquet`, `dict`, `sparql::translator`,
-                  `yaml_emit`, `expected`. The 14 LUBM queries live at `queries/lubm/q*.sparql`
+                  TBox forward chaining via `lubm::entailment`). Both are thin
+                  `generator::Generator` impls over the one shared post-driver
+                  orchestrator `generator::process_artifacts`; a third generator
+                  implements the trait rather than copying the sequence.
+                  Shared stages: `generator`, `partition`, `parquet`, `dict`,
+                  `sparql::translator`, `yaml_emit`, `expected`.
+                  The 14 LUBM queries live at `queries/lubm/q*.sparql`
                   and are exposed via `lubm::queries::lubm_query_specs`.
 kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|list|fetch|clean|
                   gen [watdiv|lubm]).

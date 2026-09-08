@@ -1,8 +1,10 @@
 //! End-to-end LUBM benchmark generation pipeline.
 //!
-//! Mirrors `crate::pipeline::run_pipeline` (the WatDiv path) at the module
-//! level, but with a different driver, an entailment pre-step, and
-//! hand-written queries instead of templates from the binary.
+//! Shares the post-driver orchestration with the WatDiv path through
+//! [`crate::generator::process_artifacts`]; this module supplies only what
+//! differs: the LUBM-UBA jar driver, an entailment pre-step, hand-written
+//! queries instead of templates from a binary, and the `lubm-*`
+//! provenance fields.
 //!
 //! ## Output layout
 //!
@@ -20,19 +22,21 @@
 
 use {
     crate::{
+        dict::Dictionary,
         error::RdfError,
         expected::write_cardinality_csv,
+        generator::{self, Generator, GeneratorMeta, Provenance, Target},
         lubm::{
             driver::{drive, LubmDriverInputs, LubmRawArtifacts},
             entailment::{entail, EntailmentStats},
         },
-        parquet, partition, sha256_file,
+        partition::Partitioned,
+        sha256_file,
         sparql::translator::translate_query,
-        timestamp::utc_iso8601_now,
-        yaml_emit::{write_benchmark_yaml, YamlInputs},
     },
     serde::Serialize,
     std::{
+        collections::HashMap,
         fs,
         path::{Path, PathBuf},
     },
@@ -117,103 +121,139 @@ pub struct LubmMeta {
     pub spec_hash: Option<String>,
 }
 
-/// Stages 4–6 of the pipeline (entailment, partition, translate, emit).
-/// Public so tests can drive these without invoking the jar.
-pub fn process_artifacts(
-    inputs: &LubmPipelineInputs, raw: &LubmRawArtifacts,
-) -> Result<LubmMeta, RdfError> {
-    fs::create_dir_all(inputs.out_dir)?;
-    let raw_root = inputs.out_dir.join("raw");
-    fs::create_dir_all(raw_root.join("queries"))?;
+impl GeneratorMeta for LubmMeta {
+    fn schema_version(&self) -> u32 { self.schema_version }
 
-    let raw_data_nt = raw_root.join("data.nt");
-    fs::copy(&raw.data_nt, &raw_data_nt)?;
+    fn kind(&self) -> &str { &self.kind }
 
-    // Stage A: entail.
-    let entailed_nt = raw_root.join("data.entailed.nt");
-    let entailment_stats: EntailmentStats = entail(&raw_data_nt, &entailed_nt)?;
+    fn tag(&self) -> &str { &self.tag }
 
-    // Stage B: partition the entailed file.
-    let part = partition::partition(&entailed_nt)?;
-    let mut dict = part.dict;
-    for rel in &part.relations {
-        let path = inputs.out_dir.join(format!("{}.parquet", rel.name));
-        parquet::write_relation(rel, &path)?;
-    }
-    let all_predicates: Vec<String> = part.relations.iter().map(|r| r.name.clone()).collect();
+    fn generated_at_utc(&self) -> &str { &self.generated_at_utc }
 
-    // Stage C: copy queries + translate to Datalog.
-    let mut translated: Vec<(String, String)> = Vec::new();
-    let mut sparql_paths: Vec<PathBuf> = Vec::new();
-    for spec in inputs.queries {
-        let sparql_path = raw_root
-            .join("queries")
-            .join(format!("{}.sparql", spec.name));
-        fs::write(&sparql_path, &spec.sparql)?;
-        sparql_paths.push(sparql_path);
-        let head = format!("Q_{}", spec.name);
-        let dl = translate_query(&spec.sparql, &mut dict, &part.predicate_map, &head)?;
-        translated.push((spec.name.clone(), dl));
-    }
+    fn relation_count(&self) -> u32 { self.relation_count }
 
-    // Stage D: write dict (after translator may have grown it for unseen URIs).
-    let dict_path = inputs.out_dir.join("dict.parquet");
-    parquet::write_dict(&dict, &dict_path)?;
+    fn query_count(&self) -> u32 { self.query_count }
 
-    // Stage E: emit benchmark.yml.
-    let base_url = format!("file://{}", inputs.out_dir.canonicalize()?.display());
-    let description = format!(
-        "Lehigh University Benchmark, on-the-fly: scale={}, seed={}, tag={}",
-        raw.scale, raw.seed, inputs.tag
-    );
-    let yaml = YamlInputs {
-        name: inputs.bench_name,
-        description: &description,
-        queries: translated.clone(),
-        all_predicates: &all_predicates,
-        base_url: &base_url,
-    };
-    write_benchmark_yaml(&yaml, inputs.out_dir)?;
+    fn spec_hash(&self) -> Option<&str> { self.spec_hash.as_deref() }
+}
 
-    // Stage F: expected cardinalities (if provided in spec).
-    let expected_dir = inputs.out_dir.join("expected");
-    fs::create_dir_all(&expected_dir)?;
-    for spec in inputs.queries {
-        if let Some(n) = spec.expected_cardinality {
-            write_cardinality_csv(&expected_dir.join(format!("{}.csv", spec.name)), n)?;
+/// The LUBM view of the shared [`Generator`] contract.
+struct LubmGenerator<'a> {
+    inputs: &'a LubmPipelineInputs<'a>,
+}
+
+/// What [`LubmGenerator::stage_raw`] leaves behind: the entailment
+/// statistics that `meta.json` records.
+struct LubmStaged {
+    entailment_stats: EntailmentStats,
+}
+
+impl Generator for LubmGenerator<'_> {
+    type Meta = LubmMeta;
+    type Raw = LubmRawArtifacts;
+    type Staged = LubmStaged;
+
+    fn target(&self) -> Target<'_> {
+        Target {
+            out_dir: self.inputs.out_dir,
+            bench_name: self.inputs.bench_name,
+            tag: self.inputs.tag,
+            spec_hash: self.inputs.spec_hash,
         }
     }
 
-    // Stage G: meta.json.
-    let triple_count_pre_entailment = entailment_stats.input_triples as u64;
-    let triple_count_post_entailment = entailment_stats.output_triples as u64;
-    let derived_triple_count = entailment_stats.derived_triples as u64;
-    let meta = LubmMeta {
-        schema_version: 2,
-        kind: "lubm-onthefly".to_string(),
-        scale: raw.scale,
-        seed: raw.seed,
-        start_index: raw.start_index,
-        threads: inputs.driver.threads,
-        tag: inputs.tag.to_string(),
-        lubm_jar_sha256: sha256_file(inputs.driver.jar_path)?,
-        ontology_iri: raw.ontology_iri.clone(),
-        generated_at_utc: utc_iso8601_now(),
-        triple_count_pre_entailment,
-        triple_count_post_entailment,
-        derived_triple_count,
-        entailment_iterations: entailment_stats.iterations,
-        relation_count: part.relations.len() as u32,
-        query_count: translated.len() as u32,
-        spec_hash: inputs.spec_hash.map(|s| s.to_string()),
-    };
-    let meta_json =
-        serde_json::to_string_pretty(&meta).map_err(|e| RdfError::Expected(e.to_string()))?;
-    fs::write(inputs.out_dir.join("meta.json"), meta_json)?;
-    Ok(meta)
+    /// Copies the jar output and the hand-written queries verbatim, then
+    /// entails the data; the orchestrator partitions the entailed file.
+    fn stage_raw(
+        &self, raw: &LubmRawArtifacts, raw_root: &Path,
+    ) -> Result<(PathBuf, LubmStaged), RdfError> {
+        let queries_dir = raw_root.join("queries");
+        fs::create_dir_all(&queries_dir)?;
+        for spec in self.inputs.queries {
+            fs::write(
+                queries_dir.join(format!("{}.sparql", spec.name)),
+                &spec.sparql,
+            )?;
+        }
+        let raw_data_nt = raw_root.join("data.nt");
+        fs::copy(&raw.data_nt, &raw_data_nt)?;
+        let entailed_nt = raw_root.join("data.entailed.nt");
+        let entailment_stats = entail(&raw_data_nt, &entailed_nt)?;
+        Ok((entailed_nt, LubmStaged {
+            entailment_stats,
+        }))
+    }
+
+    fn translate_queries(
+        &self, _staged: &LubmStaged, dict: &mut Dictionary, predicate_map: &HashMap<String, String>,
+    ) -> Result<Vec<(String, String)>, RdfError> {
+        let mut translated: Vec<(String, String)> = Vec::new();
+        for spec in self.inputs.queries {
+            let head = format!("Q_{}", spec.name);
+            let dl = translate_query(&spec.sparql, dict, predicate_map, &head)?;
+            translated.push((spec.name.clone(), dl));
+        }
+        Ok(translated)
+    }
+
+    fn description(&self, raw: &LubmRawArtifacts) -> String {
+        format!(
+            "Lehigh University Benchmark, on-the-fly: scale={}, seed={}, tag={}",
+            raw.scale, raw.seed, self.inputs.tag
+        )
+    }
+
+    /// One CSV per query that carries an expected cardinality.
+    fn write_expected(&self, _staged: &LubmStaged, expected_dir: &Path) -> Result<(), RdfError> {
+        for spec in self.inputs.queries {
+            if let Some(n) = spec.expected_cardinality {
+                write_cardinality_csv(&expected_dir.join(format!("{}.csv", spec.name)), n)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn build_meta(
+        &self, raw: &LubmRawArtifacts, staged: &LubmStaged, _part: &Partitioned,
+        provenance: Provenance,
+    ) -> Result<LubmMeta, RdfError> {
+        let stats = &staged.entailment_stats;
+        Ok(LubmMeta {
+            schema_version: provenance.schema_version,
+            kind: "lubm-onthefly".to_string(),
+            scale: raw.scale,
+            seed: raw.seed,
+            start_index: raw.start_index,
+            threads: self.inputs.driver.threads,
+            tag: provenance.tag,
+            lubm_jar_sha256: sha256_file(self.inputs.driver.jar_path)?,
+            ontology_iri: raw.ontology_iri.clone(),
+            generated_at_utc: provenance.generated_at_utc,
+            triple_count_pre_entailment: stats.input_triples as u64,
+            triple_count_post_entailment: stats.output_triples as u64,
+            derived_triple_count: stats.derived_triples as u64,
+            entailment_iterations: stats.iterations,
+            relation_count: provenance.relation_count,
+            query_count: provenance.query_count,
+            spec_hash: provenance.spec_hash,
+        })
+    }
 }
 
-/// Top-level entry point: drives the LUBM-UBA jar, then runs stages A–G.
+/// Post-driver stages of the pipeline (entailment, partition, translate,
+/// emit). Public so tests can drive these without invoking the jar.
+pub fn process_artifacts(
+    inputs: &LubmPipelineInputs, raw: &LubmRawArtifacts,
+) -> Result<LubmMeta, RdfError> {
+    generator::process_artifacts(
+        &LubmGenerator {
+            inputs,
+        },
+        raw,
+    )
+}
+
+/// Top-level entry point: drives the LUBM-UBA jar, then processes artifacts.
 pub fn run_lubm_pipeline(inputs: &LubmPipelineInputs) -> Result<LubmMeta, RdfError> {
     let raw = drive(&inputs.driver)?;
     process_artifacts(inputs, &raw)
