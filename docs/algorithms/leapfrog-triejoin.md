@@ -80,4 +80,4 @@ Result tuple: `(7, 4, 5)`. This is the test [`triangle_join_collect`](../../kerm
 - [`LeapfrogJoin`](./leapfrog-join.md) — the inner k-way intersection used at every depth.
 - [`TreeTrie`](../data-structures/tree-trie.md), [`ColumnTrie`](../data-structures/column-trie.md) — index structures that satisfy the `TrieIterable` contract.
 - [`docs/optimisers/`](../optimisers/) — the `QueryOptimiser` implementations that plan the `QueryPlan` this algorithm executes.
-- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — the 11 standard patterns LFTJ is tested against under every index structure (Priorities item 1).
+- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — the 12 standard patterns LFTJ is tested against under every index structure (Priorities item 1).

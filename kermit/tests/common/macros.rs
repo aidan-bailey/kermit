@@ -276,6 +276,44 @@ macro_rules! define_dead_end_multiway_join_test {
     };
 }
 
+/// A chain whose *first* branch dead-ends at descent depth 3, with a valid
+/// branch after it.
+///
+/// The existing `dead_end` pattern fails at depth 2, where a desync between a
+/// join's depth and the tuple stack in `TrieIteratorWrapper` self-heals
+/// (popping the emptied stack is a no-op). Only a failure at depth 3 or
+/// deeper, with a surviving prefix still to enumerate, loses answers — see
+/// the "A failed descent is atomic" invariant in
+/// `docs/algorithms/leapfrog-triejoin.md`.
+///
+/// `Q(V0, V1, V2, V3) :- A(V0, V1), B(V1, V2), C(V2, V3).`
+/// `V1 = 2` reaches `V2 = 5`, which `C` cannot extend — a dead end two
+/// variables deep. The answer lives on the sibling branch `V1 = 3`, so an
+/// implementation that mishandles the failed descent drops it and returns
+/// nothing.
+#[macro_export]
+macro_rules! define_deep_dead_end_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<deep_dead_end_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
+            $relation_type,
+            $join_algorithm,
+            $optimiser,
+            [
+                vec![vec![1, 2], vec![1, 3]],
+                vec![vec![2, 5], vec![3, 6]],
+                vec![vec![6, 7]]
+            ],
+            vec![0, 1, 2, 3],
+            vec![vec![0, 1], vec![1, 2], vec![2, 3]],
+            vec![vec![1, 3, 6, 7]],
+            {print!("");}
+        );
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! define_multiway_join_test_suite {
     (
@@ -297,6 +335,7 @@ macro_rules! define_multiway_join_test_suite {
                 $crate::define_four_way_chain_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
                 $crate::define_wide_fanout_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
                 $crate::define_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_deep_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
         )+
     };
 }
