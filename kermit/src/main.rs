@@ -17,8 +17,8 @@ use {
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize, IndexStructure, Relation,
-        RelationFileExt,
+        ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize, IndexStructure, LoadFactor,
+        Relation, RelationFileExt,
     },
     kermit_iters::{
         FxHashStrategy, HasOptimizationAxes, HashStrategy, SipHashStrategy, TrieIterable,
@@ -252,8 +252,9 @@ fn validate_layout_choices(
 #[derive(Args, Clone, Debug, Default)]
 struct ConfigChoices {
     /// Runtime flags for the selected index structure, as `key=value`
-    /// pairs. `HashTrie` accepts `singleton-pruning=true|false`. Only valid
-    /// with `--indexstructure hash-trie` (or `all`).
+    /// pairs. `HashTrie` accepts `singleton-pruning=true|false` and
+    /// `load-factor=<decimal in (0, 1)>`. Only valid with
+    /// `--indexstructure hash-trie` (or `all`).
     #[arg(
         long = "ds-config",
         value_name = "KEY=VALUE,...",
@@ -265,7 +266,7 @@ struct ConfigChoices {
 impl ConfigChoices {
     /// The `--ds-config` keys `HashTrie` accepts, named in the usage error
     /// raised for any other key.
-    const HASH_TRIE_KEYS: &'static [&'static str] = &["singleton-pruning"];
+    const HASH_TRIE_KEYS: &'static [&'static str] = &["singleton-pruning", "load-factor"];
 
     /// Whether the user passed any `--ds-config` pair.
     fn explicit(&self) -> bool { !self.ds_config.is_empty() }
@@ -290,6 +291,10 @@ impl ConfigChoices {
                         anyhow::anyhow!("--ds-config {key}: expected true or false, got {value:?}")
                     })?;
                 },
+                | "load-factor" => {
+                    config.load_factor = parse_load_factor(value)
+                        .map_err(|why| anyhow::anyhow!("--ds-config {key}: {why}"))?;
+                },
                 | other => anyhow::bail!(
                     "--ds-config: unknown key {other:?} for hash-trie; accepted keys: {}",
                     Self::HASH_TRIE_KEYS.join(", ")
@@ -298,6 +303,25 @@ impl ConfigChoices {
         }
         Ok(config)
     }
+}
+
+/// Parses `--ds-config load-factor=<decimal>`: a value in (0, 1) with at
+/// most two decimal places, mapped onto `LoadFactor`'s exact percent.
+fn parse_load_factor(value: &str) -> Result<LoadFactor, String> {
+    let v: f64 = value
+        .parse()
+        .map_err(|_| format!("expected a decimal in (0, 1), got {value:?}"))?;
+    if !v.is_finite() || v <= 0.0 || v >= 1.0 {
+        return Err(format!("expected a decimal in (0, 1), got {value:?}"));
+    }
+    let scaled = v * 100.0;
+    let percent = scaled.round();
+    if (scaled - percent).abs() > 1e-9 {
+        return Err(format!("at most two decimal places are supported, got {value:?}"));
+    }
+    // 0 < v < 1 and integral*100 ⇒ 1..=99; `percent` cannot fail here, but
+    // keep the constructor's check as the single source of the range.
+    LoadFactor::percent(percent as u8).map_err(|e| e.to_string())
 }
 
 /// Rejects `--ds-config` on index structures that have no Config axis, so
@@ -2134,6 +2158,38 @@ mod tests {
     }
 
     #[test]
+    fn config_choices_parse_load_factor() {
+        let half = ConfigChoices {
+            ds_config: vec!["load-factor=0.5".into()],
+        };
+        assert_eq!(
+            half.hash_trie_config_resolved().unwrap().load_factor,
+            LoadFactor::percent(50).unwrap()
+        );
+        assert_eq!(
+            ConfigChoices::default()
+                .hash_trie_config_resolved()
+                .unwrap()
+                .load_factor,
+            LoadFactor::default()
+        );
+    }
+
+    #[test]
+    fn config_choices_reject_bad_load_factors() {
+        for bad in ["0", "1", "1.5", "-0.2", "0.555", "abc"] {
+            let choices = ConfigChoices {
+                ds_config: vec![format!("load-factor={bad}")],
+            };
+            let msg = choices
+                .hash_trie_config_resolved()
+                .unwrap_err()
+                .to_string();
+            assert!(msg.contains("load-factor"), "{bad}: {msg}");
+        }
+    }
+
+    #[test]
     fn config_choices_reject_unknown_key_and_bad_value() {
         let unknown = ConfigChoices {
             ds_config: vec!["lazy-expansion=true".into()],
@@ -2173,9 +2229,15 @@ mod tests {
     /// `HASH_TRIE_KEYS` cannot drift from the `match` that consumes it.
     #[test]
     fn every_advertised_hash_trie_key_is_accepted() {
-        for key in ConfigChoices::HASH_TRIE_KEYS {
+        const SAMPLE: &[(&str, &str)] =
+            &[("singleton-pruning", "true"), ("load-factor", "0.5")];
+        assert_eq!(
+            SAMPLE.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            ConfigChoices::HASH_TRIE_KEYS
+        );
+        for (key, value) in SAMPLE {
             let choices = ConfigChoices {
-                ds_config: vec![format!("{key}=true")],
+                ds_config: vec![format!("{key}={value}")],
             };
             assert!(
                 choices.hash_trie_config_resolved().is_ok(),
