@@ -30,14 +30,26 @@ define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
 });
 
 define_multiway_join_test_suite_with_config!(
-    HashTrieSip, HashTriejoin, LexicographicOptimiser, PruningOn
+    HashTrieSip,
+    HashTriejoin,
+    LexicographicOptimiser,
+    PruningOn
 );
 define_multiway_join_test_suite_with_config!(
-    HashTrieSip, HashTriejoin, CardinalityOptimiser, PruningOn
+    HashTrieSip,
+    HashTriejoin,
+    CardinalityOptimiser,
+    PruningOn
 );
 define_multiway_join_test_suite_with_config!(
-    HashTrieFx, HashTriejoin, LexicographicOptimiser, PruningOn
+    HashTrieFx,
+    HashTriejoin,
+    LexicographicOptimiser,
+    PruningOn
 );
 define_multiway_join_test_suite_with_config!(
-    HashTrieFx, HashTriejoin, CardinalityOptimiser, PruningOn
+    HashTrieFx,
+    HashTriejoin,
+    CardinalityOptimiser,
+    PruningOn
 );

@@ -38,9 +38,9 @@ mod tests {
             singleton_pruning: true,
         };
         assert_eq!(on.axes(), vec![("singleton_pruning", Value::Bool(true))]);
-        assert_eq!(
-            HashTrieConfig::default().axes(),
-            vec![("singleton_pruning", Value::Bool(false))]
-        );
+        assert_eq!(HashTrieConfig::default().axes(), vec![(
+            "singleton_pruning",
+            Value::Bool(false)
+        )]);
     }
 }

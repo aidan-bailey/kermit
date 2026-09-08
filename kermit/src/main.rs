@@ -254,7 +254,11 @@ struct ConfigChoices {
     /// Runtime flags for the selected index structure, as `key=value`
     /// pairs. `HashTrie` accepts `singleton-pruning=true|false`. Only valid
     /// with `--indexstructure hash-trie` (or `all`).
-    #[arg(long = "ds-config", value_name = "KEY=VALUE,...", value_delimiter = ',')]
+    #[arg(
+        long = "ds-config",
+        value_name = "KEY=VALUE,...",
+        value_delimiter = ','
+    )]
     ds_config: Vec<String>,
 }
 
@@ -2121,7 +2125,9 @@ mod tests {
             HashTrieConfig::default()
         );
         assert_eq!(
-            ConfigChoices::default().hash_trie_config_resolved().unwrap(),
+            ConfigChoices::default()
+                .hash_trie_config_resolved()
+                .unwrap(),
             HashTrieConfig::default()
         );
     }
@@ -2155,7 +2161,10 @@ mod tests {
                 "singleton-pruning=false".into(),
             ],
         };
-        let msg = repeated.hash_trie_config_resolved().unwrap_err().to_string();
+        let msg = repeated
+            .hash_trie_config_resolved()
+            .unwrap_err()
+            .to_string();
         assert!(msg.contains("more than once"), "{msg}");
     }
 
@@ -2185,13 +2194,16 @@ mod tests {
             IndexStructureSelector::TreeTrie,
             IndexStructureSelector::ColumnTrie,
         ] {
-            let msg = validate_config_choices(sel, &config).unwrap_err().to_string();
+            let msg = validate_config_choices(sel, &config)
+                .unwrap_err()
+                .to_string();
             assert!(msg.contains("--ds-config"), "{msg}");
         }
-        assert!(
-            validate_config_choices(IndexStructureSelector::TreeTrie, &ConfigChoices::default())
-                .is_ok()
-        );
+        assert!(validate_config_choices(
+            IndexStructureSelector::TreeTrie,
+            &ConfigChoices::default()
+        )
+        .is_ok());
     }
 
     fn make_generator_def(name: &str, spec: kermit_bench::GeneratorSpec) -> BenchmarkDefinition {

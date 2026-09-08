@@ -115,12 +115,10 @@ impl Execution {
             | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
                 Some(Execution::TrieLftj(SortedTrie::ColumnTrie))
             },
-            | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => {
-                Some(Execution::HashHtj {
-                    hasher,
-                    config,
-                })
-            },
+            | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => Some(Execution::HashHtj {
+                hasher,
+                config,
+            }),
             | (
                 IndexStructure::TreeTrie | IndexStructure::ColumnTrie,
                 JoinAlgorithm::HashTriejoin,
@@ -133,7 +131,9 @@ impl Execution {
     pub fn index_structure(self) -> IndexStructure {
         match self {
             | Self::TrieLftj(sorted) => sorted.index_structure(),
-            | Self::HashHtj { .. } => IndexStructure::HashTrie,
+            | Self::HashHtj {
+                ..
+            } => IndexStructure::HashTrie,
         }
     }
 
@@ -141,7 +141,9 @@ impl Execution {
     pub fn algorithm(self) -> JoinAlgorithm {
         match self {
             | Self::TrieLftj(_) => JoinAlgorithm::LeapfrogTriejoin,
-            | Self::HashHtj { .. } => JoinAlgorithm::HashTriejoin,
+            | Self::HashHtj {
+                ..
+            } => JoinAlgorithm::HashTriejoin,
         }
     }
 }
@@ -480,12 +482,9 @@ mod tests {
     fn execution_axes_round_trip_through_for_pair() {
         for ds in all_structures() {
             for algo in all_algorithms() {
-                if let Some(cell) = Execution::for_pair(
-                    ds,
-                    algo,
-                    HasherChoice::Fxhash,
-                    HashTrieConfig::default(),
-                ) {
+                if let Some(cell) =
+                    Execution::for_pair(ds, algo, HasherChoice::Fxhash, HashTrieConfig::default())
+                {
                     assert_eq!(cell.index_structure(), ds);
                     assert_eq!(cell.algorithm(), algo);
                 }
@@ -524,13 +523,10 @@ mod tests {
             config,
             Optimiser::Lexicographic,
         );
-        assert_eq!(
-            hash.execution(),
-            Execution::HashHtj {
-                hasher: HasherChoice::Fxhash,
-                config,
-            }
-        );
+        assert_eq!(hash.execution(), Execution::HashHtj {
+            hasher: HasherChoice::Fxhash,
+            config,
+        });
         assert_eq!(hash.execution().algorithm(), JoinAlgorithm::HashTriejoin);
     }
 

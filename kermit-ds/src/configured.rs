@@ -2,9 +2,9 @@
 //! the type level.
 //!
 //! Test suites in this workspace are macro-generated and name a relation by
-//! a single type identifier (`define_multiway_join_test_suite!(HashTrieSip, …)`).
-//! A Config value has no type-level identity, so `Configured<R, P>` pairs a
-//! relation `R` with a zero-sized marker `P: ConfigProvider<R::Config>` that
+//! a single type identifier (`define_multiway_join_test_suite!(HashTrieSip,
+//! …)`). A Config value has no type-level identity, so `Configured<R, P>` pairs
+//! a relation `R` with a zero-sized marker `P: ConfigProvider<R::Config>` that
 //! supplies the value. The wrapper delegates every trait to `R`; only the
 //! two constructors differ, routing through `P::config()`.
 //!
@@ -57,10 +57,10 @@ pub trait ConfigProvider<C> {
 macro_rules! define_config_provider {
     ($name:ident, $config:ty, $value:expr $(,)?) => {
         #[doc = concat!(
-            "`ConfigProvider` marker supplying a fixed `",
-            stringify!($config),
-            "` value.",
-        )]
+                    "`ConfigProvider` marker supplying a fixed `",
+                    stringify!($config),
+                    "` value.",
+                )]
         #[derive(Copy, Clone, Debug, Default)]
         pub struct $name;
 

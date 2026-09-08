@@ -32,9 +32,8 @@ use {
 ///   `arity-1`.
 /// - For arity = 0: undefined behavior (no nullary relations supported).
 /// - With `config.singleton_pruning` on, a child node is `Singleton` iff
-///   exactly one tuple lives below it (order-independent). With it off,
-///   no `Singleton` exists and the structure is identical to pre-pruning
-///   builds.
+///   exactly one tuple lives below it (order-independent). With it off, no
+///   `Singleton` exists and the structure is identical to pre-pruning builds.
 ///
 /// # Construction
 ///
@@ -193,7 +192,13 @@ impl<H: HashStrategy> Relation for HashTrie<H> {
             self.header.arity()
         );
         let arity = self.header.arity();
-        Self::insert_at(&mut self.root, 0, arity, tuple, self.config.singleton_pruning);
+        Self::insert_at(
+            &mut self.root,
+            0,
+            arity,
+            tuple,
+            self.config.singleton_pruning,
+        );
         self.tuple_count += 1;
     }
 
@@ -545,7 +550,10 @@ mod tests {
         let axes = trie.optimization_axes();
         let mut keys: Vec<&str> = axes.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, vec!["ds_config_singleton_pruning", "ds_layout_hasher"]);
+        assert_eq!(keys, vec![
+            "ds_config_singleton_pruning",
+            "ds_layout_hasher"
+        ]);
         assert_eq!(
             axes.get("ds_layout_hasher"),
             Some(&serde_json::Value::String("sip".to_string())),
@@ -559,7 +567,10 @@ mod tests {
         let axes = trie.optimization_axes();
         let mut keys: Vec<&str> = axes.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, vec!["ds_config_singleton_pruning", "ds_layout_hasher"]);
+        assert_eq!(keys, vec![
+            "ds_config_singleton_pruning",
+            "ds_layout_hasher"
+        ]);
         assert_eq!(
             axes.get("ds_layout_hasher"),
             Some(&serde_json::Value::String("fxhash".to_string())),
@@ -640,9 +651,8 @@ mod tests {
     #[should_panic(expected = "from_tuples: tuple arity")]
     fn from_tuples_with_config_wrong_arity_panics() {
         use crate::relation::ConfigurableRelation;
-        let _: HashTrie = HashTrie::from_tuples_with_config(2.into(), HashTrieConfig::default(), vec![
-            vec![1],
-        ]);
+        let _: HashTrie =
+            HashTrie::from_tuples_with_config(2.into(), HashTrieConfig::default(), vec![vec![1]]);
     }
 
     // ── Singleton pruning ──────────────────────────────────────────────
@@ -674,7 +684,9 @@ mod tests {
     /// sequence of bucket hashes taken from the root down to `node`, so a
     /// `Singleton` reached here must hash to every one of them — that is
     /// what pins it to the right *place*, not merely the right count.
-    fn check_pruning_invariant_at(node: &HashTrieNode, prune: bool, prefix: &mut Vec<u64>) -> usize {
+    fn check_pruning_invariant_at(
+        node: &HashTrieNode, prune: bool, prefix: &mut Vec<u64>,
+    ) -> usize {
         match node {
             | HashTrieNode::Singleton(tuple) => {
                 assert!(prune, "Singleton found with pruning off");

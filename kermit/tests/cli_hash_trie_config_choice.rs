@@ -58,7 +58,11 @@ fn axes_of(report: &NamedTempFile) -> serde_json::Value {
 #[test]
 fn cli_bench_ds_with_singleton_pruning_records_axis_true() {
     let (output, report) = run_bench_ds("hash-trie", &["--ds-config", "singleton-pruning=true"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let axes = axes_of(&report);
     assert_eq!(axes["ds_config_singleton_pruning"], true, "{axes}");
     assert_eq!(axes["ds_layout_hasher"], "sip", "{axes}");
@@ -67,7 +71,11 @@ fn cli_bench_ds_with_singleton_pruning_records_axis_true() {
 #[test]
 fn cli_bench_ds_default_config_records_axis_false() {
     let (output, report) = run_bench_ds("hash-trie", &[]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(axes_of(&report)["ds_config_singleton_pruning"], false);
 }
 

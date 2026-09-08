@@ -45,8 +45,13 @@ enum Frame<'a> {
 impl Frame<'_> {
     fn at_end(&self) -> bool {
         match self {
-            | Frame::Table { node, idx } => *idx >= node.buckets_len(),
-            | Frame::Singleton { exhausted, .. } => *exhausted,
+            | Frame::Table {
+                node,
+                idx,
+            } => *idx >= node.buckets_len(),
+            | Frame::Singleton {
+                exhausted, ..
+            } => *exhausted,
         }
     }
 }
@@ -120,7 +125,10 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
     fn descent(&self) -> Descent<'a> {
         match self.stack.last() {
             | None => Descent::Node(self.trie.root()),
-            | Some(Frame::Table { node, idx }) => match *node {
+            | Some(Frame::Table {
+                node,
+                idx,
+            }) => match *node {
                 | HashTrieNode::Inner(t) => match t.value_at(*idx) {
                     | Some(child) => Descent::Node(child),
                     | None => Descent::Blocked, // current bucket empty / past-end
@@ -150,14 +158,24 @@ impl<'a, H: HashStrategy> HashTrieIter<'a, H> {
 impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
     fn key(&self) -> Option<u64> {
         match self.stack.last()? {
-            | Frame::Table { node, idx } => node.hash_at(*idx),
-            | Frame::Singleton { hash, exhausted, .. } => (!exhausted).then_some(*hash),
+            | Frame::Table {
+                node,
+                idx,
+            } => node.hash_at(*idx),
+            | Frame::Singleton {
+                hash,
+                exhausted,
+                ..
+            } => (!exhausted).then_some(*hash),
         }
     }
 
     fn next(&mut self) -> Option<u64> {
         match self.stack.last_mut()? {
-            | Frame::Table { node, idx } => {
+            | Frame::Table {
+                node,
+                idx,
+            } => {
                 // Start from idx + 1 (paper's "advance"), find next occupied
                 // or past-end.
                 *idx = node.next_occupied(*idx + 1);
@@ -166,7 +184,9 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
                 }
                 node.hash_at(*idx)
             },
-            | Frame::Singleton { exhausted, .. } => {
+            | Frame::Singleton {
+                exhausted, ..
+            } => {
                 *exhausted = true;
                 None
             },
@@ -178,7 +198,10 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
             return false;
         };
         match frame {
-            | Frame::Table { node, idx } => match node.index_of(hash) {
+            | Frame::Table {
+                node,
+                idx,
+            } => match node.index_of(hash) {
                 | Some(i) => {
                     *idx = i;
                     true
@@ -202,8 +225,12 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
 
     fn size(&self) -> usize {
         match self.stack.last() {
-            | Some(Frame::Table { node, .. }) => node.len(),
-            | Some(Frame::Singleton { .. }) => 1,
+            | Some(Frame::Table {
+                node, ..
+            }) => node.len(),
+            | Some(Frame::Singleton {
+                ..
+            }) => 1,
             | None => 0,
         }
     }
@@ -229,7 +256,10 @@ impl<H: HashStrategy> HashTrieIterator for HashTrieIter<'_, H> {
 
     fn leaf_tuples(&self) -> Option<&[Vec<usize>]> {
         match self.stack.last()? {
-            | Frame::Table { node, idx } => match *node {
+            | Frame::Table {
+                node,
+                idx,
+            } => match *node {
                 | HashTrieNode::Leaf(t) => t.value_at(*idx).map(|v| v.as_slice()),
                 | HashTrieNode::Inner(_) => None,
                 | HashTrieNode::Singleton(_) => unreachable!(
@@ -429,7 +459,8 @@ mod tests {
 
     #[test]
     fn singleton_frames_emulate_one_entry_tables_down_to_the_leaf() {
-        let trie: HashTrie = HashTrie::from_tuples_with_config(3.into(), PRUNE, vec![vec![1, 2, 3]]);
+        let trie: HashTrie =
+            HashTrie::from_tuples_with_config(3.into(), PRUNE, vec![vec![1, 2, 3]]);
         let mut it = HashTrieIter::new(&trie);
         assert!(it.open()); // root table, bucket for hash(1)
         assert_eq!(it.key(), Some(h(1)));
@@ -496,7 +527,8 @@ mod tests {
     #[test]
     fn pruned_and_plain_iterators_yield_identical_hash_paths() {
         fn walk(
-            it: &mut dyn HashTrieIterator, arity: usize, path: &mut Vec<u64>, out: &mut Vec<Vec<u64>>,
+            it: &mut dyn HashTrieIterator, arity: usize, path: &mut Vec<u64>,
+            out: &mut Vec<Vec<u64>>,
         ) {
             while let Some(k) = it.key() {
                 path.push(k);
@@ -538,7 +570,8 @@ mod tests {
 
     #[test]
     fn lookup_hit_on_inner_singleton_then_open_reaches_the_leaf() {
-        let trie: HashTrie = HashTrie::from_tuples_with_config(3.into(), PRUNE, vec![vec![1, 2, 3]]);
+        let trie: HashTrie =
+            HashTrie::from_tuples_with_config(3.into(), PRUNE, vec![vec![1, 2, 3]]);
         let mut it = HashTrieIter::new(&trie);
         it.open(); // root table
         it.open(); // singleton frame at depth 1 (inner)
@@ -553,7 +586,8 @@ mod tests {
         /// Probes every present hash at this level, plus one absent hash,
         /// recording `(lookup result, key())` and descending on hits.
         fn probe(
-            it: &mut dyn HashTrieIterator, arity: usize, depth: usize, out: &mut Vec<(bool, Option<u64>)>,
+            it: &mut dyn HashTrieIterator, arity: usize, depth: usize,
+            out: &mut Vec<(bool, Option<u64>)>,
         ) {
             let mut present = Vec::new();
             while let Some(k) = it.key() {

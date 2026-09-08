@@ -1,5 +1,7 @@
 use {
-    kermit_ds::{define_config_provider, ColumnTrie, Configured, HashTrie, HashTrieConfig, TreeTrie},
+    kermit_ds::{
+        define_config_provider, ColumnTrie, Configured, HashTrie, HashTrieConfig, TreeTrie,
+    },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
 mod common;
