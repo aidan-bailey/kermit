@@ -37,10 +37,10 @@ use {
 /// - Inner nodes exist at depths `0..arity-1`; the leaf node at depth
 ///   `arity-1`.
 /// - For arity = 0: undefined behavior (no nullary relations supported).
-/// - With `SingletonPruning`, a child node is `Singleton` iff exactly one
-///   tuple lives below it (order-independent). Under `NoPruning` no
-///   `Singleton` can be constructed — its payload is uninhabited — and the
-///   structure is identical to pre-pruning builds.
+/// - With `SingletonPruning`, a child node is `Singleton` iff exactly one tuple
+///   lives below it (order-independent). Under `NoPruning` no `Singleton` can
+///   be constructed — its payload is uninhabited — and the structure is
+///   identical to pre-pruning builds.
 ///
 /// # Construction
 ///

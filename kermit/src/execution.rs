@@ -360,8 +360,7 @@ impl<H, P> HashHtj<H, P> {
     /// the choices `H` and `P` were monomorphised from) and the
     /// `--ds-config` values `config`, planned by `optimiser`.
     pub fn new(
-        hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig,
-        optimiser: Optimiser,
+        hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig, optimiser: Optimiser,
     ) -> Self {
         Self {
             hasher,

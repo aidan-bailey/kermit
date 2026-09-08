@@ -296,7 +296,7 @@ fn validate_layout_choices(
 /// become *type aliases* scoped to the whole arm, so `$body` must not need
 /// a different type of either name.
 macro_rules! with_hash_trie_layout {
-    ($hasher:expr, $pruning:expr, |$H:ident, $P:ident| $body:expr) => {
+    ($hasher:expr, $pruning:expr, | $H:ident, $P:ident | $body:expr) => {
         match ($hasher, $pruning) {
             | (HasherChoice::Sip, PruningChoice::Off) => {
                 type $H = SipHashStrategy;
@@ -390,7 +390,9 @@ fn parse_load_factor(value: &str) -> Result<LoadFactor, String> {
     let scaled = v * 100.0;
     let percent = scaled.round();
     if (scaled - percent).abs() > 1e-9 {
-        return Err(format!("at most two decimal places are supported, got {value:?}"));
+        return Err(format!(
+            "at most two decimal places are supported, got {value:?}"
+        ));
     }
     // `percent` is 1..=99 for every value a user would type; the
     // constructor stays the single source of the range and catches the
@@ -2189,7 +2191,9 @@ mod tests {
             IndexStructureSelector::TreeTrie,
             IndexStructureSelector::ColumnTrie,
         ] {
-            let msg = validate_layout_choices(sel, &layout).unwrap_err().to_string();
+            let msg = validate_layout_choices(sel, &layout)
+                .unwrap_err()
+                .to_string();
             assert!(
                 msg.contains("--ds-layout-pruning"),
                 "error message should mention the flag for {sel:?}, got: {msg}"
@@ -2254,10 +2258,7 @@ mod tests {
             let choices = ConfigChoices {
                 ds_config: vec![format!("load-factor={bad}")],
             };
-            let msg = choices
-                .hash_trie_config_resolved()
-                .unwrap_err()
-                .to_string();
+            let msg = choices.hash_trie_config_resolved().unwrap_err().to_string();
             assert!(msg.contains("load-factor"), "{bad}: {msg}");
         }
     }

@@ -76,13 +76,21 @@ fn cli_bench_ds_rejects_unknown_config_key() {
 #[test]
 fn cli_bench_ds_with_load_factor_records_axis() {
     let (output, report) = run_bench_ds("hash-trie", &["--ds-config", "load-factor=0.5"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(axes_of(&report)["ds_config_load_factor"], 0.5);
 }
 
 #[test]
 fn cli_bench_ds_default_load_factor_is_seventy_percent() {
     let (output, report) = run_bench_ds("hash-trie", &[]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(axes_of(&report)["ds_config_load_factor"], 0.7);
 }

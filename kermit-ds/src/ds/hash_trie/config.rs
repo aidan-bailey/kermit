@@ -25,13 +25,13 @@ impl fmt::Display for InvalidLoadFactor {
 impl std::error::Error for InvalidLoadFactor {}
 
 impl LoadFactor {
-    /// The pre-Config constant: 70 %.
-    pub const DEFAULT_PERCENT: u8 = 70;
     /// The default cap as a constant, for `const` contexts where
     /// [`Default::default`] is unavailable.
     pub const DEFAULT: Self = Self {
         percent: Self::DEFAULT_PERCENT,
     };
+    /// The pre-Config constant: 70 %.
+    pub const DEFAULT_PERCENT: u8 = 70;
 
     /// A cap of `percent` %, which must lie in `1..=99`.
     pub fn percent(percent: u8) -> Result<Self, InvalidLoadFactor> {
@@ -104,8 +104,6 @@ mod tests {
         let cfg = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
         };
-        assert!(cfg
-            .axes()
-            .contains(&("load_factor", Value::from(0.5_f64))));
+        assert!(cfg.axes().contains(&("load_factor", Value::from(0.5_f64))));
     }
 }

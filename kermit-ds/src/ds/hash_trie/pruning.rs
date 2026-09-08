@@ -1,4 +1,5 @@
-//! Pruning policy — the second Layout dimension of [`HashTrie`](super::HashTrie).
+//! Pruning policy — the second Layout dimension of
+//! [`HashTrie`](super::HashTrie).
 //!
 //! Singleton pruning (SIGMOD 2020 §3.3.1, Figure 5) stores a subtrie that
 //! holds exactly one tuple as that tuple instead of one hash table per

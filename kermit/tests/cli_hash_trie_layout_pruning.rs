@@ -55,7 +55,11 @@ fn axes_of(report: &NamedTempFile) -> serde_json::Value {
 #[test]
 fn cli_bench_ds_with_pruning_on_records_axis() {
     let (output, report) = run_bench_ds("hash-trie", &["--ds-layout-pruning", "on"]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let axes = axes_of(&report);
     assert_eq!(axes["ds_layout_pruning"], "on", "{axes}");
     assert_eq!(axes["ds_layout_hasher"], "sip", "{axes}");
@@ -64,7 +68,11 @@ fn cli_bench_ds_with_pruning_on_records_axis() {
 #[test]
 fn cli_bench_ds_default_pruning_is_off() {
     let (output, report) = run_bench_ds("hash-trie", &[]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(axes_of(&report)["ds_layout_pruning"], "off");
 }
 
@@ -82,13 +90,36 @@ fn cli_bench_run_sweep_carries_pruning_only_to_hash_trie_cells() {
     // sorted cells have no pruning axis and the hash cell reports "on".
     let report = NamedTempFile::new().expect("failed to create temp report file");
     let output = Command::new(kermit_bin())
-        .args(["bench", "--sample-size", "10", "--measurement-time", "1", "--warm-up-time", "1"])
+        .args([
+            "bench",
+            "--sample-size",
+            "10",
+            "--measurement-time",
+            "1",
+            "--warm-up-time",
+            "1",
+        ])
         .arg("--report-json")
         .arg(report.path())
-        .args(["run", "triangle", "-i", "all", "-a", "all", "-m", "space", "--ds-layout-pruning", "on"])
+        .args([
+            "run",
+            "triangle",
+            "-i",
+            "all",
+            "-a",
+            "all",
+            "-m",
+            "space",
+            "--ds-layout-pruning",
+            "on",
+        ])
         .output()
         .expect("failed to execute kermit binary");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let text = std::fs::read_to_string(report.path()).expect("report file should exist");
     let reports: Vec<serde_json::Value> =
         serde_json::from_str(&text).expect("report should be valid JSON array");
