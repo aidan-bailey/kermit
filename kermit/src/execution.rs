@@ -22,7 +22,7 @@
 //! runner in `main.rs` is generic over it.
 
 use {
-    crate::options::{HasherChoice, PruningChoice},
+    crate::options::{hasher_of, pruning_of, HasherChoice, PruningChoice},
     kermit::db::{hash_join, DatabaseEngine, DB},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_ds::{
@@ -95,9 +95,10 @@ pub enum Execution {
     /// with `H` chosen by `--ds-layout-hasher`, `P` by
     /// `--ds-layout-pruning`, and the runtime values by `--ds-config`.
     HashHtj {
-        /// The `--ds-layout-hasher` choice `H` was monomorphised from.
+        /// The `--ds-layout-hasher` choice, derived from the `H` the
+        /// runner monomorphised over.
         hasher: HasherChoice,
-        /// The `--ds-layout-pruning` choice `P` was monomorphised from.
+        /// The `--ds-layout-pruning` choice, derived from `P`.
         pruning: PruningChoice,
         /// The `--ds-config` runtime values every relation is built with.
         config: HashTrieConfig,
@@ -347,24 +348,19 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
 
 /// Hash family: `HashTrie<H, P>` under Hash Triejoin through [`hash_join`].
 pub struct HashHtj<H, P> {
-    hasher: HasherChoice,
-    pruning: PruningChoice,
     config: HashTrieConfig,
     optimiser: Box<dyn kermit_algos::QueryOptimiser>,
     _layout: PhantomData<(H, P)>,
 }
 
 impl<H, P> HashHtj<H, P> {
-    /// Creates the family for the `--ds-layout-hasher` /
-    /// `--ds-layout-pruning` choices `hasher` and `pruning` (which must be
-    /// the choices `H` and `P` were monomorphised from) and the
-    /// `--ds-config` values `config`, planned by `optimiser`.
-    pub fn new(
-        hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig, optimiser: Optimiser,
-    ) -> Self {
+    /// Creates the family for the `--ds-config` values `config`, planned
+    /// by `optimiser`. The `--ds-layout-hasher` / `--ds-layout-pruning`
+    /// labels are *not* parameters: [`execution`](Self::execution) derives
+    /// them from `H` and `P`, so a report cannot name a Layout the family
+    /// was not monomorphised over.
+    pub fn new(config: HashTrieConfig, optimiser: Optimiser) -> Self {
         Self {
-            hasher,
-            pruning,
             config,
             optimiser: optimiser.instantiate(),
             _layout: PhantomData,
@@ -380,8 +376,8 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H,
 
     fn execution(&self) -> Execution {
         Execution::HashHtj {
-            hasher: self.hasher,
-            pruning: self.pruning,
+            hasher: hasher_of::<H>(),
+            pruning: pruning_of::<P>(),
             config: self.config,
         }
     }
@@ -541,18 +537,55 @@ mod tests {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let hash = HashHtj::<kermit_iters::FxHashStrategy, NoPruning>::new(
-            HasherChoice::Fxhash,
-            PruningChoice::Off,
+        let hash = HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning>::new(
             config,
             Optimiser::Lexicographic,
         );
+        // No Layout value was passed to `new`: both labels come from the
+        // type parameters, so the report cannot disagree with the code
+        // path that ran.
         assert_eq!(hash.execution(), Execution::HashHtj {
             hasher: HasherChoice::Fxhash,
-            pruning: PruningChoice::Off,
+            pruning: PruningChoice::On,
             config,
         });
         assert_eq!(hash.execution().algorithm(), JoinAlgorithm::HashTriejoin);
+    }
+
+    /// All four `HashTrie` Layout instantiations report the labels their
+    /// type parameters imply — the `with_hash_trie_layout!` table read
+    /// back out of the monomorphised families.
+    #[test]
+    fn hash_family_labels_are_derived_from_its_layout_types() {
+        use kermit_iters::{FxHashStrategy, SipHashStrategy};
+        fn labels<H: HashStrategy + 'static, P: PruningPolicy>() -> (HasherChoice, PruningChoice) {
+            match HashHtj::<H, P>::new(HashTrieConfig::default(), Optimiser::Lexicographic)
+                .execution()
+            {
+                | Execution::HashHtj {
+                    hasher,
+                    pruning,
+                    ..
+                } => (hasher, pruning),
+                | other => panic!("hash family reported {other:?}"),
+            }
+        }
+        assert_eq!(labels::<SipHashStrategy, NoPruning>(), (
+            HasherChoice::Sip,
+            PruningChoice::Off
+        ));
+        assert_eq!(labels::<SipHashStrategy, SingletonPruning>(), (
+            HasherChoice::Sip,
+            PruningChoice::On
+        ));
+        assert_eq!(labels::<FxHashStrategy, NoPruning>(), (
+            HasherChoice::Fxhash,
+            PruningChoice::Off
+        ));
+        assert_eq!(labels::<FxHashStrategy, SingletonPruning>(), (
+            HasherChoice::Fxhash,
+            PruningChoice::On
+        ));
     }
 
     /// The config reaches the relations the family builds, so the report's
@@ -563,8 +596,6 @@ mod tests {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
-            HasherChoice::Sip,
-            PruningChoice::Off,
             config,
             Optimiser::Lexicographic,
         );
@@ -586,8 +617,6 @@ mod tests {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
-            HasherChoice::Sip,
-            PruningChoice::Off,
             config,
             Optimiser::Lexicographic,
         );
@@ -613,8 +642,6 @@ mod tests {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
-            HasherChoice::Sip,
-            PruningChoice::Off,
             config,
             Optimiser::Lexicographic,
         );
@@ -633,8 +660,6 @@ mod tests {
     #[test]
     fn pruned_family_reports_the_pruning_layout() {
         let family = HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning>::new(
-            HasherChoice::Sip,
-            PruningChoice::On,
             HashTrieConfig::default(),
             Optimiser::Lexicographic,
         );

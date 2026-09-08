@@ -1479,7 +1479,7 @@ fn dispatch_run_bench(
             pruning,
             config,
         } => with_hash_trie_layout!(hasher, pruning, |H, P| run_benchmark(
-            &HashHtj::<H, P>::new(hasher, pruning, config, optimiser),
+            &HashHtj::<H, P>::new(config, optimiser),
             benchmark,
             optimiser,
             metrics,

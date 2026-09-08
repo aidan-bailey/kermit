@@ -5,7 +5,8 @@
 use {
     crate::IndexStructureSelector,
     clap::Args,
-    kermit_ds::{HashTrieConfig, LoadFactor},
+    kermit_ds::{HashTrieConfig, LoadFactor, PruningPolicy},
+    kermit_iters::{HashStrategy, LayoutOption},
 };
 
 /// CLI-side selector for `--ds-layout-hasher`. Picks the
@@ -30,6 +31,24 @@ pub(crate) enum HasherChoice {
     Fxhash,
 }
 
+impl HasherChoice {
+    /// The choice that monomorphises to the [`HashStrategy`] marker whose
+    /// [`LayoutOption::NAME`] is `name`, or `None` if no CLI choice does.
+    ///
+    /// This is the inverse of the `with_hash_trie_layout!` table, and lets
+    /// a monomorphised code path recover its own CLI label from its type
+    /// parameter instead of being handed one. The
+    /// `hasher_choices_round_trip_through_layout_names` test pins the two
+    /// tables against each other.
+    pub(crate) fn from_layout_name(name: &str) -> Option<Self> {
+        match name {
+            | "sip" => Some(Self::Sip),
+            | "fxhash" => Some(Self::Fxhash),
+            | _ => None,
+        }
+    }
+}
+
 /// CLI-side selector for `--ds-layout-pruning`: the `PruningPolicy`
 /// monomorphised into `HashTrie<H, P>`. `Off` is the pre-pruning structure —
 /// its `Singleton` node variant and iterator frame are uninhabited, so the
@@ -44,6 +63,47 @@ pub(crate) enum PruningChoice {
     Off,
     /// Singleton pruning (`SingletonPruning`).
     On,
+}
+
+impl PruningChoice {
+    /// The choice that monomorphises to the [`PruningPolicy`] marker whose
+    /// [`LayoutOption::NAME`] is `name`, or `None` if no CLI choice does.
+    /// The counterpart of [`HasherChoice::from_layout_name`].
+    pub(crate) fn from_layout_name(name: &str) -> Option<Self> {
+        match name {
+            | "off" => Some(Self::Off),
+            | "on" => Some(Self::On),
+            | _ => None,
+        }
+    }
+}
+
+/// The `--ds-layout-hasher` label of the [`HashStrategy`] a code path was
+/// monomorphised over, so a report's `ds_layout_hasher` axis is derived
+/// from the type that actually ran rather than from a separately threaded
+/// value that could disagree with it.
+///
+/// # Panics
+///
+/// Panics if `H` has no corresponding CLI choice. That is a programming
+/// error — a new marker must be given a [`HasherChoice`] variant — and the
+/// round-trip test over `HasherChoice::value_variants()` catches it.
+pub(crate) fn hasher_of<H: HashStrategy>() -> HasherChoice {
+    let name = <H as LayoutOption>::NAME;
+    HasherChoice::from_layout_name(name)
+        .unwrap_or_else(|| panic!("no --ds-layout-hasher choice for hash strategy {name:?}"))
+}
+
+/// The `--ds-layout-pruning` label of the [`PruningPolicy`] a code path was
+/// monomorphised over. The counterpart of [`hasher_of`].
+///
+/// # Panics
+///
+/// Panics if `P` has no corresponding CLI choice; see [`hasher_of`].
+pub(crate) fn pruning_of<P: PruningPolicy>() -> PruningChoice {
+    let name = <P as LayoutOption>::NAME;
+    PruningChoice::from_layout_name(name)
+        .unwrap_or_else(|| panic!("no --ds-layout-pruning choice for pruning policy {name:?}"))
 }
 
 /// Layout-axis CLI choices flattened into every subcommand whose dispatch
@@ -281,7 +341,57 @@ pub(crate) fn validate_config_choices(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {
+        super::*,
+        clap::ValueEnum,
+        kermit_ds::{NoPruning, SingletonPruning},
+        kermit_iters::{FxHashStrategy, SipHashStrategy},
+    };
+
+    /// Every `--ds-layout-hasher` choice names exactly one `HashStrategy`
+    /// marker and is recovered from it. The table is explicit so a new
+    /// variant fails the `value_variants()` sweep until it is listed here
+    /// (and therefore until `from_layout_name` handles it).
+    #[test]
+    fn hasher_choices_round_trip_through_layout_names() {
+        const TABLE: &[(HasherChoice, &str)] = &[
+            (HasherChoice::Sip, <SipHashStrategy as LayoutOption>::NAME),
+            (
+                HasherChoice::Fxhash,
+                <FxHashStrategy as LayoutOption>::NAME,
+            ),
+        ];
+        for choice in HasherChoice::value_variants() {
+            let (_, name) = TABLE
+                .iter()
+                .find(|(listed, _)| listed == choice)
+                .unwrap_or_else(|| panic!("{choice:?} is missing from the round-trip table"));
+            assert_eq!(HasherChoice::from_layout_name(name), Some(*choice));
+        }
+        assert_eq!(hasher_of::<SipHashStrategy>(), HasherChoice::Sip);
+        assert_eq!(hasher_of::<FxHashStrategy>(), HasherChoice::Fxhash);
+    }
+
+    /// The same round trip for `--ds-layout-pruning` and `PruningPolicy`.
+    #[test]
+    fn pruning_choices_round_trip_through_layout_names() {
+        const TABLE: &[(PruningChoice, &str)] = &[
+            (PruningChoice::Off, <NoPruning as LayoutOption>::NAME),
+            (
+                PruningChoice::On,
+                <SingletonPruning as LayoutOption>::NAME,
+            ),
+        ];
+        for choice in PruningChoice::value_variants() {
+            let (_, name) = TABLE
+                .iter()
+                .find(|(listed, _)| listed == choice)
+                .unwrap_or_else(|| panic!("{choice:?} is missing from the round-trip table"));
+            assert_eq!(PruningChoice::from_layout_name(name), Some(*choice));
+        }
+        assert_eq!(pruning_of::<NoPruning>(), PruningChoice::Off);
+        assert_eq!(pruning_of::<SingletonPruning>(), PruningChoice::On);
+    }
 
     #[test]
     fn validate_layout_choices_accepts_explicit_hasher_on_hash_trie_or_all() {
