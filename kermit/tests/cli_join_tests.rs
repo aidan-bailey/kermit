@@ -45,6 +45,58 @@ fn run_join(
     run_subcommand("join", relations, query, algorithm, indexstructure, &[])
 }
 
+/// The hash cell is reachable from `kermit join`: same answer as the
+/// sorted cells, via `hash_join` rather than `lftj_join`.
+#[test]
+fn cli_join_intersection_hash_trie() {
+    let output = run_join(
+        &["first.csv", "second.csv"],
+        "intersect_query.dl",
+        "hash-triejoin",
+        "hash-trie",
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(parse_output(&output), vec![vec![2], vec![3]]);
+}
+
+/// `--ds-layout-hasher` threads through to the hash cell on `kermit join`.
+#[test]
+fn cli_join_hash_trie_fxhash_layout() {
+    let output = run_subcommand(
+        "join",
+        &["first.csv", "second.csv"],
+        "intersect_query.dl",
+        "hash-triejoin",
+        "hash-trie",
+        &["--ds-layout-hasher", "fxhash"],
+    );
+    assert!(output.status.success());
+    assert_eq!(parse_output(&output), vec![vec![2], vec![3]]);
+}
+
+/// An incompatible (structure, algorithm) pair is a clean usage error, not
+/// a panic.
+#[test]
+fn cli_join_incompatible_pair_is_usage_error() {
+    let output = run_join(
+        &["first.csv", "second.csv"],
+        "intersect_query.dl",
+        "leapfrog-triejoin",
+        "hash-trie",
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("incompatible selection"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "stderr: {stderr}");
+}
+
 fn parse_output(output: &std::process::Output) -> Vec<Vec<usize>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Skip the CSV header row (first non-empty line, which holds the head's

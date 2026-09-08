@@ -5,11 +5,11 @@
 //! `(IndexStructure, JoinAlgorithm)` pairs are meaningful: the sorted
 //! tries pair with [`LeapfrogTriejoin`](kermit_algos::LeapfrogTriejoin)
 //! and the hash trie pairs with
-//! [`HashTriejoin`](kermit_algos::HashTriejoin). The two families cannot
-//! share a `DB` impl (`TrieIterable` vs `HashTrieIterable` — coherence
-//! forbids one blanket impl spanning both), so historically the CLI carried
-//! two hand-reconciled copies of the benchmark runner, each taking the
-//! structure and the algorithm as *separate* parameters. That separation
+//! [`HashTriejoin`](kermit_algos::HashTriejoin). The two families run
+//! through separate join entry points ([`lftj_join`] vs [`hash_join`]),
+//! and historically the CLI carried two hand-reconciled copies of the
+//! benchmark runner, each taking the structure and the algorithm as
+//! *separate* parameters. That separation
 //! is what let `-i all -a leapfrog-triejoin` run `hash_join` on the
 //! `HashTrie` cell and stamp the report `LeapfrogTriejoin` (issue #56).
 //!
@@ -24,21 +24,18 @@
 
 use {
     crate::HasherChoice,
-    kermit::db::{hash_join, DatabaseEngine, DB},
-    kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser},
+    kermit::db::{hash_join, lftj_join},
+    kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser, QueryOptimiser},
     kermit_ds::{
         Cardinality, ColumnTrie, HashTrie, HeapSize, IndexStructure, Relation, RelationFileExt,
         RelationHeader, TreeTrie,
     },
     kermit_iters::{HasOptimizationAxes, HashStrategy, TrieIterable},
-    std::{
-        collections::{BTreeMap, HashMap},
-        marker::PhantomData,
-    },
+    std::{collections::BTreeMap, marker::PhantomData},
 };
 
 /// The sorted-family index structures: every `IndexStructure` that
-/// implements `TrieIterable` and therefore joins through the `DB` trait
+/// implements `TrieIterable` and therefore joins through [`lftj_join`]
 /// under Leapfrog Triejoin.
 ///
 /// A dedicated enum (rather than reusing [`IndexStructure`]) keeps
@@ -87,7 +84,7 @@ impl SortedTrieRelation for ColumnTrie {
 /// cannot describe a combination the CLI is unable to run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Execution {
-    /// A sorted trie joined by Leapfrog Triejoin through the `DB` trait.
+    /// A sorted trie joined by Leapfrog Triejoin through [`lftj_join`].
     TrieLftj(SortedTrie),
     /// `HashTrie<H>` joined by Hash Triejoin through
     /// [`hash_join`], with `H` chosen by `--ds-layout-hasher`.
@@ -303,32 +300,20 @@ impl<H: HashStrategy + 'static> RelationFamily for HashTrieFamily<H> {
     }
 }
 
-/// Sorted family: `R` under Leapfrog Triejoin through the `DB` trait.
+/// Sorted family: `R` under Leapfrog Triejoin through [`lftj_join`].
 pub struct TrieLftj<R> {
     structure: SortedTrieFamily<R>,
-    optimiser: Optimiser,
-    /// Passed to the engine as [`DB::name`]; callers use the benchmark
-    /// name so downstream tooling can correlate engines with workloads.
-    engine_name: String,
+    optimiser: Box<dyn QueryOptimiser>,
 }
 
 impl<R> TrieLftj<R> {
-    /// Creates the family for benchmark `engine_name` planned by `optimiser`.
-    pub fn new(optimiser: Optimiser, engine_name: String) -> Self {
+    /// Creates the family planned by `optimiser`.
+    pub fn new(optimiser: Optimiser) -> Self {
         Self {
             structure: SortedTrieFamily::new(),
-            optimiser,
-            engine_name,
+            optimiser: optimiser.instantiate(),
         }
     }
-}
-
-/// The sorted family's engine: the `DB` plus the loaded relations it was
-/// built from. `relations` is empty for engines produced by
-/// [`ExecutionFamily::build_from_tuples`], which only ever serve `join`.
-pub struct TrieLftjEngine<R: Relation> {
-    db: DatabaseEngine<R, LeapfrogTriejoin>,
-    relations: Vec<R>,
 }
 
 impl<R: SortedTrieRelation + 'static> RelationFamily for TrieLftj<R> {
@@ -346,40 +331,27 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for TrieLftj<R> {
 }
 
 impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
-    type Engine = TrieLftjEngine<R>;
+    /// Relations keyed by name — the shape [`lftj_join`] borrows per query.
+    type Engine = BTreeMap<String, R>;
 
     fn build(&self, relations: Vec<R>) -> Self::Engine {
-        // Populate the DB through `add_relation` + `add_keys_batch` rather
-        // than `db.add_file`, which would re-read every parquet — the
-        // dominant cost on large workloads like WatDiv-scale-1000.
-        let inputs = relations
-            .iter()
-            .map(|r| (r.header().clone(), Self::tuples(r)))
-            .collect();
-        let mut engine = self.build_from_tuples(inputs);
-        engine.relations = relations;
-        engine
+        relations
+            .into_iter()
+            .map(|r| (r.header().name().to_string(), r))
+            .collect()
     }
 
     fn build_from_tuples(&self, inputs: Vec<(RelationHeader, Vec<Vec<usize>>)>) -> Self::Engine {
-        let mut db = DatabaseEngine::<R, LeapfrogTriejoin>::with_optimiser(
-            self.engine_name.clone(),
-            self.optimiser.instantiate(),
-        );
-        for (header, tuples) in inputs {
-            db.add_relation(header.name(), header.arity());
-            db.add_keys_batch(header.name(), tuples);
-        }
-        TrieLftjEngine {
-            db,
-            relations: Vec::new(),
-        }
+        inputs
+            .into_iter()
+            .map(|(header, tuples)| (header.name().to_string(), R::from_tuples(header, tuples)))
+            .collect()
     }
 
-    fn relations(engine: &Self::Engine) -> Vec<&R> { engine.relations.iter().collect() }
+    fn relations(engine: &Self::Engine) -> Vec<&R> { engine.values().collect() }
 
     fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>> {
-        engine.db.join(query)
+        lftj_join::<R, LeapfrogTriejoin>(engine, query, self.optimiser.as_ref())
     }
 }
 
@@ -418,7 +390,7 @@ impl<H: HashStrategy + 'static> RelationFamily for HashHtj<H> {
 impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
     /// Relations keyed by name — the shape [`hash_join`] borrows per query
     /// so a Criterion iteration allocates no wrappers.
-    type Engine = HashMap<String, HashTrie<H>>;
+    type Engine = BTreeMap<String, HashTrie<H>>;
 
     fn build(&self, relations: Vec<HashTrie<H>>) -> Self::Engine {
         relations
@@ -548,11 +520,11 @@ mod tests {
     fn structure_markers_agree_with_join_families() {
         assert_eq!(
             SortedTrieFamily::<TreeTrie>::new().execution(),
-            TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic, "t".into()).execution()
+            TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic).execution()
         );
         assert_eq!(
             SortedTrieFamily::<ColumnTrie>::new().execution(),
-            TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic, "t".into()).execution()
+            TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic).execution()
         );
         assert_eq!(
             HashTrieFamily::<kermit_iters::FxHashStrategy>::new(HasherChoice::Fxhash).execution(),
@@ -568,9 +540,9 @@ mod tests {
     /// can never disagree with the code path that ran.
     #[test]
     fn families_report_their_own_execution() {
-        let tree = TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic, "t".into());
+        let tree = TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic);
         assert_eq!(tree.execution(), Execution::TrieLftj(SortedTrie::TreeTrie));
-        let column = TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic, "t".into());
+        let column = TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic);
         assert_eq!(
             column.execution(),
             Execution::TrieLftj(SortedTrie::ColumnTrie)
