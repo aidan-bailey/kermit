@@ -216,34 +216,22 @@ pub(crate) fn validate_layout_choices(
 macro_rules! with_hash_trie_layout {
     ($hasher:expr, $pruning:expr, | $H:ident, $P:ident | $body:expr) => {
         match ($hasher, $pruning) {
-            | (
-                $crate::options::HasherChoice::Sip,
-                $crate::options::PruningChoice::Off,
-            ) => {
+            | ($crate::options::HasherChoice::Sip, $crate::options::PruningChoice::Off) => {
                 type $H = ::kermit_iters::SipHashStrategy;
                 type $P = ::kermit_ds::NoPruning;
                 $body
             },
-            | (
-                $crate::options::HasherChoice::Sip,
-                $crate::options::PruningChoice::On,
-            ) => {
+            | ($crate::options::HasherChoice::Sip, $crate::options::PruningChoice::On) => {
                 type $H = ::kermit_iters::SipHashStrategy;
                 type $P = ::kermit_ds::SingletonPruning;
                 $body
             },
-            | (
-                $crate::options::HasherChoice::Fxhash,
-                $crate::options::PruningChoice::Off,
-            ) => {
+            | ($crate::options::HasherChoice::Fxhash, $crate::options::PruningChoice::Off) => {
                 type $H = ::kermit_iters::FxHashStrategy;
                 type $P = ::kermit_ds::NoPruning;
                 $body
             },
-            | (
-                $crate::options::HasherChoice::Fxhash,
-                $crate::options::PruningChoice::On,
-            ) => {
+            | ($crate::options::HasherChoice::Fxhash, $crate::options::PruningChoice::On) => {
                 type $H = ::kermit_iters::FxHashStrategy;
                 type $P = ::kermit_ds::SingletonPruning;
                 $body
@@ -369,10 +357,7 @@ mod tests {
     fn hasher_choices_round_trip_through_layout_names() {
         const TABLE: &[(HasherChoice, &str)] = &[
             (HasherChoice::Sip, <SipHashStrategy as LayoutOption>::NAME),
-            (
-                HasherChoice::Fxhash,
-                <FxHashStrategy as LayoutOption>::NAME,
-            ),
+            (HasherChoice::Fxhash, <FxHashStrategy as LayoutOption>::NAME),
         ];
         for choice in HasherChoice::value_variants() {
             let (_, name) = TABLE
@@ -411,10 +396,7 @@ mod tests {
     fn pruning_choices_round_trip_through_layout_names() {
         const TABLE: &[(PruningChoice, &str)] = &[
             (PruningChoice::Off, <NoPruning as LayoutOption>::NAME),
-            (
-                PruningChoice::On,
-                <SingletonPruning as LayoutOption>::NAME,
-            ),
+            (PruningChoice::On, <SingletonPruning as LayoutOption>::NAME),
         ];
         for choice in PruningChoice::value_variants() {
             let (_, name) = TABLE

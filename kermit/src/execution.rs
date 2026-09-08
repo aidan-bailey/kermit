@@ -574,22 +574,22 @@ mod tests {
                 | other => panic!("hash family reported {other:?}"),
             }
         }
-        assert_eq!(labels::<SipHashStrategy, NoPruning>(), (
-            HasherChoice::Sip,
-            PruningChoice::Off
-        ));
-        assert_eq!(labels::<SipHashStrategy, SingletonPruning>(), (
-            HasherChoice::Sip,
-            PruningChoice::On
-        ));
-        assert_eq!(labels::<FxHashStrategy, NoPruning>(), (
-            HasherChoice::Fxhash,
-            PruningChoice::Off
-        ));
-        assert_eq!(labels::<FxHashStrategy, SingletonPruning>(), (
-            HasherChoice::Fxhash,
-            PruningChoice::On
-        ));
+        assert_eq!(
+            labels::<SipHashStrategy, NoPruning>(),
+            (HasherChoice::Sip, PruningChoice::Off)
+        );
+        assert_eq!(
+            labels::<SipHashStrategy, SingletonPruning>(),
+            (HasherChoice::Sip, PruningChoice::On)
+        );
+        assert_eq!(
+            labels::<FxHashStrategy, NoPruning>(),
+            (HasherChoice::Fxhash, PruningChoice::Off)
+        );
+        assert_eq!(
+            labels::<FxHashStrategy, SingletonPruning>(),
+            (HasherChoice::Fxhash, PruningChoice::On)
+        );
     }
 
     /// The config reaches the relations the family builds, so the report's

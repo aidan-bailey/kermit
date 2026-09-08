@@ -42,19 +42,16 @@ fn cli_bench_ds_rejects_pruning_flag_on_tree_trie() {
 fn cli_bench_run_sweep_carries_pruning_only_to_hash_trie_cells() {
     // `-i all -a all --ds-layout-pruning on` runs the three valid cells; the
     // sorted cells have no pruning axis and the hash cell reports "on".
-    let (output, report) = bench_run(
-        "triangle",
-        &[
-            "-i",
-            "all",
-            "-a",
-            "all",
-            "-m",
-            "space",
-            "--ds-layout-pruning",
-            "on",
-        ],
-    );
+    let (output, report) = bench_run("triangle", &[
+        "-i",
+        "all",
+        "-a",
+        "all",
+        "-m",
+        "space",
+        "--ds-layout-pruning",
+        "on",
+    ]);
     assert!(
         output.status.success(),
         "{}",
