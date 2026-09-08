@@ -85,9 +85,11 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 | Algorithm | `LeapfrogTriejoin` | `HashTriejoin` |
 | `Projectable` | `project_via_trie_iter` (shared helper) | hand-rolled on `HashTrie` |
 | Engine | `DB` trait / `DatabaseEngine` | `hash_join` free function |
-| Bench dispatch | `run_ds_bench`, `run_benchmark` | `run_ds_bench_hash`, `run_benchmark_hash` |
+| Bench cell | `Execution::TrieLftj(SortedTrie)` / `TrieLftj<R>` | `Execution::HashHtj(HasherChoice)` / `HashHtj<H>` |
+| `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
+| `bench ds` dispatch | `run_ds_bench` | `run_ds_bench_hash` |
 
-Only three `(index structure, algorithm)` pairs are valid: `(TreeTrie, LeapfrogTriejoin)`, `(ColumnTrie, LeapfrogTriejoin)`, and `(HashTrie, HashTriejoin)`. The type system enforces this at every layer *except* the CLI, where user strings are resolved into two independent enums — see "Selector dispatch" under CLI.
+Only three `(index structure, algorithm)` pairs are valid: `(TreeTrie, LeapfrogTriejoin)`, `(ColumnTrie, LeapfrogTriejoin)`, and `(HashTrie, HashTriejoin)`. The type system enforces this at every layer, the CLI included: user strings are resolved into two independent enums, but `Execution::for_pair` is the only bridge from that pair back to a runnable cell — see "Selector dispatch" under CLI.
 
 #### LinearIterator
 
@@ -403,12 +405,11 @@ The hash family cannot be a second `DB` implementation: an `impl<R: HashTrieIter
 
 `bench ds` and `bench run` accept `all` for `--indexstructure` and `--algorithm`, expanding to a Cartesian sweep.
 
-> **Known issue — the sweep does not filter invalid pairs.** `IndexStructureSelector::supports_algorithm` returns `true` unconditionally whenever either selector is `All`, deferring the check to a cross-product loop that never performs it. `dispatch_run_bench` then routes on the index structure alone and passes the algorithm through untouched. Two consequences:
->
-> - `(TreeTrie | ColumnTrie, HashTriejoin)` **panics** in `instantiate_database`. Loud, and no report is written.
-> - `(HashTrie, LeapfrogTriejoin)` **silently mislabels**: it runs `hash_join` regardless, then stamps the JSON report's `algorithm` axis with `LeapfrogTriejoin`.
->
-> So `bench run -i all -a leapfrog-triejoin` produces a plausible-looking report attributing HashTriejoin's measurements to LeapfrogTriejoin. **Until this is fixed, sweep by running one `bench run` per valid pair** rather than using `all`. Tracked as a known issue; see also the note in `CLAUDE.md`.
+For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(TreeTrie | ColumnTrie)` and `HashHtj(hasher)` — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the three incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
+
+Consequently `-i all -a all` runs exactly the three valid cells, announcing each skipped pair on stderr, while a single explicitly-named incompatible pair leaves nothing to run and is reported as a usage error. Because the report's `data_structure` and `algorithm` axes are both derived from `ExecutionFamily::execution()`, a report cannot name an algorithm it did not run (issue #56).
+
+`bench ds` keeps its own `run_ds_bench` / `run_ds_bench_hash` split: no algorithm is involved there, so there is no pair to mislabel.
 
 ### Space measurement
 
@@ -448,9 +449,9 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 
 1. Create `kermit-ds/src/ds/<name>/` with `mod.rs`, `implementation.rs`, `<name>_iter.rs`.
 2. Implement `Relation` + `Projectable` + `HeapSize` + `Cardinality` on the structure. `HeapSize::heap_size_bytes` returns heap bytes only, excluding `size_of::<Self>`.
-3. Implement the iterator. For the sorted family that is `TrieIterator` plus `#[derive(IntoTrieIter)]`, then `TrieIterable` on the structure. For the hash family it is `HashTrieIterator` and `HashTrieIterable` — and note that the shared helpers (`project_via_trie_iter`, `TrieIteratorWrapper`, the `kermit-ds` macro test suites) are all `TrieIterable`-only, so a hash-family structure must supply its own equivalents.
+3. Implement the iterator. For the sorted family that is `TrieIterator` plus `#[derive(IntoTrieIter)]`, then `TrieIterable` on the structure. For the hash family it is `HashTrieIterator` and `HashTrieIterable` — and note that the shared helpers `project_via_trie_iter` and `TrieIteratorWrapper` are `TrieIterable`-only, so a hash-family structure must supply its own equivalents. The `kermit-ds` test macros fork along the same seam: `hash_trie_test_suite!` covers the hash family, `relation_trie_test_suite!` the sorted one.
 4. Register the module and add a variant to `IndexStructure` in `kermit-ds/src/ds/mod.rs`.
-5. Wire the CLI: a variant on `IndexStructureSelector` and its `expand()`, plus match arms in `run_ds_bench` / `run_benchmark` dispatch (`kermit/src/main.rs`) and `instantiate_database` (`kermit/src/db.rs`) for a sorted-family structure.
+5. Wire the CLI: a variant on `IndexStructureSelector` and its `expand()`. A sorted-family structure also needs a `SortedTrie` variant plus a `SortedTrieRelation` impl and an `Execution::for_pair` arm (`kermit/src/execution.rs`), an `instantiate_database` arm (`kermit/src/db.rs`), and arms in `dispatch_run_bench` / `dispatch_ds_bench` (`kermit/src/main.rs`). A structure in a new trait family needs its own `ExecutionFamily` impl.
 6. **Wire the tests.** Add `define_multiway_join_test_suite!(<Type>, <Algo>, LexicographicOptimiser)` and a second invocation with `CardinalityOptimiser` in `kermit/tests/join_tests.rs`, so all 11 standard join patterns run against the structure. Each distinct layout combination is its own suite invocation (e.g. `HashTrieSip`, `HashTrieFx`).
 7. **Write the doc** at `docs/data-structures/<name>.md` from the template.
 
@@ -458,7 +459,7 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 
 1. Create `kermit-algos/src/<name>.rs` and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable` or `HashTrieIterable`. The implementation must tolerate the const-rewritten query shape (extra synthetic unary body predicates) and must validate the incoming `QueryPlan`.
 2. Register the module and add a variant to the `JoinAlgorithm` enum in `kermit-algos/src/lib.rs`.
-3. Wire the CLI: a variant on `JoinAlgorithmSelector` and its `expand()`. A sorted-family algorithm is also wired into `instantiate_database`; a hash-family algorithm needs its own execution path instead, as `hash_join` is for `HashTriejoin` (see "Database layer").
+3. Wire the CLI: a variant on `JoinAlgorithmSelector` and its `expand()`, plus the algorithm's valid cells in `Execution` / `Execution::for_pair` (the compiler flags the incomplete match) and a `dispatch_run_bench` arm. A sorted-family algorithm is also reachable through `instantiate_database`, which still backs `kermit join`; a hash-family algorithm needs its own execution path instead, as `hash_join` is for `HashTriejoin` (see "Database layer").
 4. **Wire the tests.** Add a `define_multiway_join_test_suite!` invocation per compatible index structure × optimiser.
 5. **Write the doc** at `docs/algorithms/<name>.md` from the template.
 
