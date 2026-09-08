@@ -271,6 +271,39 @@ pub trait Relation: JoinIterable + Projectable {
     fn insert_all(&mut self, tuples: Vec<Vec<usize>>);
 }
 
+/// A [`Relation`] with runtime configuration — the Config category of the
+/// optimization standard (`docs/specs/optimization-standard.md`).
+///
+/// `Relation::new` / `Relation::from_tuples` have no parameter through which
+/// a config value could travel, so this extension trait adds the
+/// config-carrying constructors. Implementors route `Relation::new` through
+/// [`with_config`](Self::with_config) with `Self::Config::default()`, so a
+/// relation built through the plain trait is the default configuration.
+///
+/// Only structures with a Config axis implement this; structures without
+/// one are not required to.
+pub trait ConfigurableRelation: Relation {
+    /// The runtime flags this structure reads.
+    type Config: kermit_iters::ConfigOption;
+
+    /// Creates an empty relation matching `header` that will honour
+    /// `config` for every subsequent insert.
+    fn with_config(header: RelationHeader, config: Self::Config) -> Self;
+
+    /// Creates a relation populated with `tuples` under `config`. Same
+    /// contract as [`Relation::from_tuples`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
+    fn from_tuples_with_config(
+        header: RelationHeader, config: Self::Config, tuples: Vec<Vec<usize>>,
+    ) -> Self;
+
+    /// The configuration this relation was built with.
+    fn config(&self) -> &Self::Config;
+}
+
 /// Loads a [`Relation`] from a CSV or Parquet file.
 ///
 /// Defined as an extension trait (with a blanket impl over every

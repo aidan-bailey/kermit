@@ -8,11 +8,15 @@
 //! trie and is the layout axis emitted by
 //! [`HasOptimizationAxes`](kermit_iters::HasOptimizationAxes) under
 //! `ds_layout_hasher`.
+//!
+//! Runtime flags live in [`HashTrieConfig`] (the Config axis, emitted as
+//! `ds_config_<flag>`); they reach the trie through
+//! [`ConfigurableRelation`](crate::relation::ConfigurableRelation).
 
 use {
-    super::node::HashTrieNode,
-    crate::relation::{Relation, RelationHeader},
-    kermit_iters::{HashStrategy, JoinIterable, SipHashStrategy},
+    super::{config::HashTrieConfig, node::HashTrieNode},
+    crate::relation::{ConfigurableRelation, Relation, RelationHeader},
+    kermit_iters::{ConfigOption, HashStrategy, JoinIterable, SipHashStrategy},
     std::marker::PhantomData,
 };
 
@@ -45,6 +49,8 @@ pub struct HashTrie<H: HashStrategy = SipHashStrategy> {
     /// Number of stored tuples (multiset: duplicates count); maintained
     /// by `insert` and `from_tuples`.
     tuple_count: usize,
+    /// Runtime flags, fixed at construction; read by `insert_at`.
+    config: HashTrieConfig,
     _hasher: PhantomData<H>,
 }
 
@@ -132,34 +138,10 @@ impl<H: HashStrategy> JoinIterable for HashTrie<H> {}
 impl<H: HashStrategy> Relation for HashTrie<H> {
     fn header(&self) -> &RelationHeader { &self.header }
 
-    fn new(header: RelationHeader) -> Self {
-        let root = Self::make_root(header.arity());
-        Self {
-            header,
-            root,
-            tuple_count: 0,
-            _hasher: PhantomData,
-        }
-    }
+    fn new(header: RelationHeader) -> Self { Self::with_config(header, HashTrieConfig::default()) }
 
     fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
-        let arity = header.arity();
-        let mut trie = Self::new(header);
-        for tuple in tuples {
-            assert_eq!(
-                tuple.len(),
-                arity,
-                "from_tuples: tuple arity {} does not match header arity {}",
-                tuple.len(),
-                arity,
-            );
-            Self::insert_at(&mut trie.root, 0, arity, tuple);
-            // from_tuples bypasses insert(), so count here. If this loop is
-            // ever refactored to route through insert(), drop this increment
-            // or the counter double-counts.
-            trie.tuple_count += 1;
-        }
-        trie
+        Self::from_tuples_with_config(header, HashTrieConfig::default(), tuples)
     }
 
     fn insert(&mut self, tuple: Vec<usize>) {
@@ -180,6 +162,45 @@ impl<H: HashStrategy> Relation for HashTrie<H> {
             self.insert(tuple);
         }
     }
+}
+
+impl<H: HashStrategy> ConfigurableRelation for HashTrie<H> {
+    type Config = HashTrieConfig;
+
+    fn with_config(header: RelationHeader, config: HashTrieConfig) -> Self {
+        let root = Self::make_root(header.arity());
+        Self {
+            header,
+            root,
+            tuple_count: 0,
+            config,
+            _hasher: PhantomData,
+        }
+    }
+
+    fn from_tuples_with_config(
+        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        let arity = header.arity();
+        let mut trie = Self::with_config(header, config);
+        for tuple in tuples {
+            assert_eq!(
+                tuple.len(),
+                arity,
+                "from_tuples: tuple arity {} does not match header arity {}",
+                tuple.len(),
+                arity,
+            );
+            Self::insert_at(&mut trie.root, 0, arity, tuple);
+            // from_tuples bypasses insert(), so count here. If this loop is
+            // ever refactored to route through insert(), drop this increment
+            // or the counter double-counts.
+            trie.tuple_count += 1;
+        }
+        trie
+    }
+
+    fn config(&self) -> &HashTrieConfig { &self.config }
 }
 
 impl<H: HashStrategy> crate::relation::Projectable for HashTrie<H> {
@@ -207,7 +228,7 @@ impl<H: HashStrategy> crate::relation::Projectable for HashTrie<H> {
             .into_iter()
             .map(|tuple| columns.iter().map(|&c| tuple[c]).collect())
             .collect();
-        HashTrie::<H>::from_tuples(new_header, projected_tuples)
+        HashTrie::<H>::from_tuples_with_config(new_header, self.config, projected_tuples)
     }
 }
 
@@ -226,14 +247,18 @@ impl<H: HashStrategy> kermit_iters::HashTrieIterable for HashTrie<H> {
 }
 
 impl<H: HashStrategy> kermit_iters::HasOptimizationAxes for HashTrie<H> {
-    /// One layout axis: `ds_layout_hasher` carrying the strategy's
-    /// `LayoutOption::NAME` (e.g. `"sip"` / `"fxhash"`).
+    /// The layout axis `ds_layout_hasher` (the strategy's
+    /// `LayoutOption::NAME`, e.g. `"sip"` / `"fxhash"`) plus one
+    /// `ds_config_<flag>` axis per [`HashTrieConfig`] flag.
     fn optimization_axes(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
         let mut axes = std::collections::BTreeMap::new();
         axes.insert(
             "ds_layout_hasher".to_string(),
             serde_json::Value::String(<H as kermit_iters::LayoutOption>::NAME.to_string()),
         );
+        for (suffix, value) in self.config.axes() {
+            axes.insert(format!("ds_config_{suffix}"), value);
+        }
         axes
     }
 }
@@ -477,7 +502,7 @@ mod tests {
         use kermit_iters::HasOptimizationAxes;
         let trie: HashTrie = HashTrie::new(2.into());
         let axes = trie.optimization_axes();
-        assert_eq!(axes.len(), 1);
+        assert_eq!(axes.len(), 2);
         assert_eq!(
             axes.get("ds_layout_hasher"),
             Some(&serde_json::Value::String("sip".to_string())),
@@ -489,10 +514,60 @@ mod tests {
         use kermit_iters::{FxHashStrategy, HasOptimizationAxes};
         let trie: HashTrie<FxHashStrategy> = HashTrie::new(2.into());
         let axes = trie.optimization_axes();
-        assert_eq!(axes.len(), 1);
+        assert_eq!(axes.len(), 2);
         assert_eq!(
             axes.get("ds_layout_hasher"),
             Some(&serde_json::Value::String("fxhash".to_string())),
+        );
+    }
+
+    #[test]
+    fn with_config_stores_config_and_new_uses_default() {
+        use crate::relation::ConfigurableRelation;
+        let on = HashTrieConfig {
+            singleton_pruning: true,
+        };
+        let trie: HashTrie = HashTrie::with_config(2.into(), on);
+        assert_eq!(*trie.config(), on);
+        let plain: HashTrie = HashTrie::new(2.into());
+        assert_eq!(*plain.config(), HashTrieConfig::default());
+    }
+
+    #[test]
+    fn project_preserves_config() {
+        use crate::relation::{ConfigurableRelation, Projectable};
+        let on = HashTrieConfig {
+            singleton_pruning: true,
+        };
+        let trie: HashTrie =
+            HashTrie::from_tuples_with_config(2.into(), on, vec![vec![1, 2], vec![3, 4]]);
+        let projected = trie.project(vec![1]);
+        assert_eq!(*projected.config(), on);
+        let mut got = projected.collect_tuples();
+        got.sort();
+        assert_eq!(got, vec![vec![2], vec![4]]);
+    }
+
+    #[test]
+    fn optimization_axes_include_config_flag() {
+        use {crate::relation::ConfigurableRelation, kermit_iters::HasOptimizationAxes};
+        let on = HashTrieConfig {
+            singleton_pruning: true,
+        };
+        let trie: HashTrie = HashTrie::with_config(2.into(), on);
+        let axes = trie.optimization_axes();
+        assert_eq!(
+            axes.get("ds_config_singleton_pruning"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            axes.get("ds_layout_hasher"),
+            Some(&serde_json::Value::String("sip".into()))
+        );
+        let plain: HashTrie = HashTrie::new(2.into());
+        assert_eq!(
+            plain.optimization_axes().get("ds_config_singleton_pruning"),
+            Some(&serde_json::Value::Bool(false))
         );
     }
 }

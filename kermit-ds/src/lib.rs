@@ -26,5 +26,8 @@ pub use {
     cardinality::Cardinality,
     ds::{ColumnTrie, HashTrie, HashTrieConfig, IndexStructure, TreeTrie},
     heap_size::HeapSize,
-    relation::{ModelType, Projectable, Relation, RelationError, RelationFileExt, RelationHeader},
+    relation::{
+        ConfigurableRelation, ModelType, Projectable, Relation, RelationError, RelationFileExt,
+        RelationHeader,
+    },
 };
