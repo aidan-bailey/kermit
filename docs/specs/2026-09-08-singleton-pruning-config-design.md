@@ -232,7 +232,7 @@ selector (other than `all`) is a usage error via `validate_config_choices`,
 mirroring `validate_layout_choices`. A report can never carry a config axis
 for a structure that ignored it.
 
-Wired on `bench run`, `bench ds`, and `bench join`.
+Wired on `bench run` and `bench ds`, the two subcommands that carry `--ds-layout-hasher`; `join` / `bench join` take neither flag family.
 
 ### Dispatch
 

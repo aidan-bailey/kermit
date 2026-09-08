@@ -15,6 +15,7 @@ HashTrie {
 enum HashTrieNode {
     Inner(HashTable<HashTrieNode>),     // depths 0..arity-1
     Leaf(HashTable<Vec<Vec<usize>>>),   // depth arity-1
+    Singleton(Vec<usize>),              // pruned subtrie (config.singleton_pruning), depths 1..arity
 }
 
 struct HashTable<V> {
@@ -28,7 +29,7 @@ struct Entry<V> { hash: u64, value: V }
 
 Bucket index: `hash >> (64 - log2_capacity)` (high `log2_capacity` bits). Collisions are resolved by linear probing within the bucket array. Each occupied bucket stores the full 64-bit hash for disambiguation during probes.
 
-The iterator `HashTrieIter` carries a `Vec<(&HashTrieNode, usize)>` stack from the root to the current depth. The deepest entry is the iterator's current position.
+The iterator `HashTrieIter` carries a stack of frames from the root to the current depth. A table frame is `Table { node, idx }` — a bucket within an `Inner` or `Leaf` node; a singleton frame is `Singleton { tuple, depth, hash, exhausted }` and emulates the one-entry table a pruned level would have held, hashing `tuple[depth]` once when the frame is pushed. The deepest frame is the iterator's current position; `HashTrieIter::descent` decides what `open()` descends into (`Descent::Node`, `Descent::Deeper`, or `Descent::Blocked`), so a `Singleton` is never placed in a table frame.
 
 Compared to [`TreeTrie`](./tree-trie.md) and [`ColumnTrie`](./column-trie.md), this structure trades sorted-order navigation for constant-time hash lookup. The cost: hash collisions can produce false-positive intersections at inner levels, which the join algorithm verifies at the leaf via [`verify_and_construct`](../algorithms/hash-triejoin.md).
 
@@ -39,6 +40,7 @@ Compared to [`TreeTrie`](./tree-trie.md) and [`ColumnTrie`](./column-trie.md), t
 - **Multiset semantics.** Duplicate tuples are preserved (added to the same leaf chain) rather than absorbed. This is a deliberate divergence from `TreeTrie`'s set behavior, motivated by the paper's "bag semantics" treatment in §3.2.4. Future enhancement: optional deduplication via a `with_set_semantics` flag.
 - **Load factor cap.** Each `HashTable` resizes (doubles) when an insert would push load factor above 0.7. After resize, all entries are rehashed.
 - **Leaf chains preserve hash collisions.** Two tuples with identical hash signatures (collisions on every attribute) end up in the same leaf chain. Verification at join time (paper §3.2.3 line 18) distinguishes true matches from false positives. Pinned by the `hash_trie_collisions` tests in [`kermit-ds/tests/hash_trie_tests.rs`](../../kermit-ds/tests/hash_trie_tests.rs), which build the trie under a test-only `hash(k) = k mod 10` strategy so the collisions are real rather than simulated.
+- **Pruned iff exactly one tuple.** With `HashTrieConfig::singleton_pruning` on, a child node is `Singleton` iff exactly one tuple lives below it; the shape is insertion-order independent, and a second tuple (including a duplicate or a full hash collision) unprunes the node back into tables. With the flag off, no `Singleton` exists and the structure is identical to pre-pruning builds. Pinned by `check_pruning_invariant` in the [`implementation.rs`](../../kermit-ds/src/ds/hash_trie/implementation.rs) tests.
 
 ## Complexity
 
@@ -53,6 +55,7 @@ Let `n` = tuple count, `a` = arity, `b` = max chain length at a leaf bucket.
 | `HashTrieIterator::lookup(h)` | O(1) expected | | linear probe; O(capacity) worst case |
 | `HashTrieIterator::size()` | O(1) | | `HashTable::len()` |
 | `HashTrieIterator::open()` | O(1) amortized | | pushes a new stack entry, finds first occupied bucket |
+| `HashTrieIterator::open()` into a pruned level | O(1) | | pushes a `Singleton` frame; no table probe, one `H::hash` of the next attribute |
 | `HashTrieIterator::up()` | O(1) | | pops the stack |
 | `HashTrieIterator::leaf_tuples()` | O(1) | | slice of the current bucket's tuple chain |
 | `HeapSize::heap_size_bytes()` | O(node count) | | walks the trie recursively summing `HashTable` shell + tuple-chain bytes |
@@ -115,8 +118,34 @@ optimizations are classified into Layout, Config, or BuildMode.
 
 ### Config flags
 
-*None in this release.* See SIGMOD 2020 §3.3.1 for candidate future flags
-(`ds_config_singleton_pruning`, `ds_config_lazy_expansion`).
+- **Singleton pruning** (`ds_config_singleton_pruning`): stores a subtrie
+  that holds exactly one tuple as that tuple (paper §3.3.1, Figure 5)
+  instead of one hash table per remaining level. Build-time decision;
+  the iterator emulates the pruned levels transparently, so
+  [`HashTriejoin`](../algorithms/hash-triejoin.md) is unchanged.
+  - **CLI:** `-i hash-trie --ds-config singleton-pruning=true` (on `bench ds`
+    and `bench run`, the two subcommands that also carry
+    `--ds-layout-hasher`).
+  - **Default:** `false` (byte-for-byte the pre-pruning structure).
+  - **Rust:** `HashTrie::from_tuples_with_config(header, HashTrieConfig { singleton_pruning: true }, tuples)`
+    via [`ConfigurableRelation`](../../kermit-ds/src/relation.rs); tests lift
+    the value to a type with `Configured<HashTrie<H>, PruningOn>`.
+  - **Bench axis value:** `true` / `false`.
+  - **Expected effect:** space strictly smaller on sparse fan-out. Time
+    trades one table probe per pruned level for one `H::hash`; expected to
+    win under `fxhash` and be roughly neutral under `sip`. Test the
+    hypothesis with the `ds_layout_hasher × ds_config_singleton_pruning`
+    pivot in kermit-lab.
+
+### Deferred follow-ups
+
+- **Skip-levels short-circuit.** The paper's join verifies a singleton
+  against the current bindings and skips the remaining levels. That is an
+  algorithm-side change (`HashTrieIterator` would expose the singleton and
+  `HashTriejoin` would branch on it) and the natural first consumer of the
+  reserved `algo_config_*` prefix.
+- Lazy child expansion (`ds_config_lazy_expansion`) needs interior
+  mutability through `&self` probes; not started.
 
 ### Build modes
 
@@ -128,4 +157,4 @@ optimizations are classified into Layout, Config, or BuildMode.
 - Sibling docs: [`TreeTrie`](./tree-trie.md), [`ColumnTrie`](./column-trie.md).
 - [`HashTriejoin`](../algorithms/hash-triejoin.md) — the only algorithm that consumes this structure.
 - `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; `HashTrie` must pass all 11 patterns under `HashTriejoin` (Priorities item 1).
-- `hash_trie_test_suite!` and `parquet_test_suite!` ([`kermit-ds/tests/common/macros.rs`](../../kermit-ds/tests/common/macros.rs)) — the layer below the join: `HashTrieIterator` contract (`open`/`next`/`lookup`/`up`/`size`/`leaf_tuples`), construction round-trips via `collect_tuples()`, and Parquet loading. `HashTrie` cannot use `relation_trie_test_suite!` (it is `HashTrieIterable`, not `TrieIterable`), so this hash-family suite mirrors it; each Layout alias (`HashTrieSip`, `HashTrieFx`) runs it, plus the colliding `HashTrieMod10`.
+- `hash_trie_test_suite!` and `parquet_test_suite!` ([`kermit-ds/tests/common/macros.rs`](../../kermit-ds/tests/common/macros.rs)) — the layer below the join: `HashTrieIterator` contract (`open`/`next`/`lookup`/`up`/`size`/`leaf_tuples`), construction round-trips via `collect_tuples()`, and Parquet loading. `HashTrie` cannot use `relation_trie_test_suite!` (it is `HashTrieIterable`, not `TrieIterable`), so this hash-family suite mirrors it; each Layout alias (`HashTrieSip`, `HashTrieFx`) runs it, plus the colliding `HashTrieMod10`, and each again as a pruned `Configured<_, PruningOn>` alias so the iterator contract holds on emulated levels too. At the join layer, `define_multiway_join_test_suite_with_config!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) runs the same 11 patterns on the pruned aliases.

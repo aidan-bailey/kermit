@@ -50,7 +50,7 @@ A **Layout** option changes the type of the data structure itself. Each combinat
 
 A **Config** option is a boolean (or enum) field on a config struct that's read at hot-path call sites. One type covers all configurations; the cost is per-call branch evaluation.
 
-> **Concrete example (hypothetical, not yet implemented).** Singleton pruning. The trait method `HashTrieIter::open` would read `self.config.singleton_pruning` and either descend into a child hash table (normal) or follow a direct pointer to the tuple (pruned).
+> **Concrete example (implemented).** Singleton pruning. `HashTrie::insert_at` reads `config.singleton_pruning` and either allocates a child hash table (normal) or stores the single tuple in place as a `Singleton` node (pruned). The iterator then branches on the node variant it finds, not on the config struct.
 
 | Aspect | Config |
 |---|---|
@@ -60,7 +60,7 @@ A **Config** option is a boolean (or enum) field on a config struct that's read 
 | Switching at runtime | Yes (just change the flag) |
 | Bench axis key | `ds_config_<flag>` |
 | Examples (potential) | Singleton pruning, lazy expansion, load-factor tuning |
-| Test obligation | Baseline + ≥1 alternate per flag via `define_multiway_join_test_suite_with_config!` (macro lands with the first Config consumer) |
+| Test obligation | Baseline + ≥1 alternate per flag via `define_multiway_join_test_suite_with_config!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) |
 
 ### BuildMode — *changes how the structure is built*
 
@@ -82,23 +82,27 @@ A **BuildMode** changes the construction process but leaves the resulting in-mem
 
 ## What this looks like at the CLI
 
-Today (only the hasher Layout is implemented):
+Today (the hasher Layout and the singleton-pruning Config are implemented):
 
 ```bash
-# Default — Sip
+# Default — Sip, no pruning
 kermit bench run triangle -i hash-trie -a hash-triejoin
 
 # Pick FxHash
 kermit bench run triangle -i hash-trie -a hash-triejoin --ds-layout-hasher fxhash
-```
 
-Hypothetically (when Config / BuildMode get consumers):
-
-```bash
-# All three categories on one invocation
+# Both implemented categories on one invocation
 kermit bench run triangle -i hash-trie -a hash-triejoin \
     --ds-layout-hasher fxhash \
-    --ds-config singleton-pruning=true,lazy-expansion=true \
+    --ds-config singleton-pruning=true
+```
+
+Hypothetically (when BuildMode gets a consumer):
+
+```bash
+kermit bench run triangle -i hash-trie -a hash-triejoin \
+    --ds-layout-hasher fxhash \
+    --ds-config singleton-pruning=true \
     --ds-build parallel:8
 ```
 
@@ -184,20 +188,16 @@ pub trait ConfigOption: Default + Clone {
 }
 ```
 
-Usage (hypothetical):
+Usage (`HashTrie`'s actual config, in [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs)):
 ```rust
-#[derive(Default, Clone)]
-struct HashTrieConfig {
-    singleton_pruning: bool,
-    lazy_expansion: bool,
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HashTrieConfig {
+    pub singleton_pruning: bool,
 }
 
 impl ConfigOption for HashTrieConfig {
-    fn axes(&self) -> Vec<(&'static str, serde_json::Value)> {
-        vec![
-            ("singleton_pruning", self.singleton_pruning.into()),
-            ("lazy_expansion",    self.lazy_expansion.into()),
-        ]
+    fn axes(&self) -> Vec<(&'static str, Value)> {
+        vec![("singleton_pruning", Value::Bool(self.singleton_pruning))]
     }
 }
 ```
@@ -252,7 +252,7 @@ impl<H: HashStrategy> HasOptimizationAxes for HashTrie<H> {
 }
 ```
 
-When HashTrie gains Config flags later, this impl grows:
+With the singleton-pruning Config landed, the impl composes both prefixes:
 ```rust
 impl<H: HashStrategy> HasOptimizationAxes for HashTrie<H> {
     fn optimization_axes(&self) -> BTreeMap<String, Value> {
@@ -267,6 +267,24 @@ impl<H: HashStrategy> HasOptimizationAxes for HashTrie<H> {
 ```
 
 The composition is mechanical — the trait family does the heavy lifting.
+
+### `ConfigurableRelation` and `Configured<R, P>` (kermit-ds)
+
+`Relation::new` / `from_tuples` have no parameter for a config value, so
+`kermit_ds::ConfigurableRelation` ([`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs))
+adds `with_config` / `from_tuples_with_config` / `config()`. Only structures
+with a Config axis implement it — today just `HashTrie<H>`, whose
+`Relation::new` / `from_tuples` delegate to it with
+`HashTrieConfig::default()`.
+
+`kermit_ds::Configured<R, P>` ([`kermit-ds/src/configured.rs`](../../kermit-ds/src/configured.rs))
+wraps an `R: ConfigurableRelation` with a zero-sized
+`P: ConfigProvider<R::Config>` so macro suites can name a configured relation
+as one type; declare `P` with `kermit_ds::define_config_provider!`. The
+wrapper deliberately does **not** implement `ConfigurableRelation` itself:
+its config-carrying constructors would take an arbitrary value that `P`
+cannot vouch for. The data structure never sees the marker — its config stays
+a runtime value, which is what makes it Config rather than Layout.
 
 ---
 
@@ -310,11 +328,14 @@ pub struct HashTrie<H: HashStrategy = SipHashStrategy> {
 }
 ```
 
-Add a constructor variant `with_config(header, config)` and have `new(header)` call it with `HashTrieConfig::default()`.
+Implement `ConfigurableRelation` (`kermit-ds/src/relation.rs`) for it —
+`with_config(header, config)` and `from_tuples_with_config(header, config, tuples)` —
+and have `Relation::new` / `Relation::from_tuples` call them with
+`HashTrieConfig::default()`, so existing behaviour is unchanged.
 
 ### 4. Wire the algorithm to read the flag
 
-Inside `HashTrie::insert_at` (or wherever the pruning logic lives), branch on `self.config.singleton_pruning`. The check is a runtime branch; LLVM will hoist or eliminate it depending on context.
+Inside `HashTrie::insert_at` (or wherever the pruning logic lives), branch on the config flag. The check is a runtime branch; LLVM will hoist or eliminate it depending on context.
 
 ### 5. Extend `HasOptimizationAxes`
 
@@ -333,19 +354,30 @@ impl<H: HashStrategy> HasOptimizationAxes for HashTrie<H> {
 
 ### 6. Add CLI surface
 
-In `kermit/src/main.rs`, extend `LayoutChoices` (or introduce a parallel `ConfigChoices`) with a `--ds-config` flag accepting a comma-separated key=value string. Parse it into a `HashTrieConfig` in the bench dispatch.
+In `kermit/src/main.rs`, `ConfigChoices` sits beside `LayoutChoices` as a
+flattened clap group carrying `--ds-config`, a comma-separated key=value
+string parsed into a `HashTrieConfig`. `validate_config_choices` (mirroring
+`validate_layout_choices`) rejects the flag on an index structure with no
+Config axis, so a report can never carry a `ds_config_*` axis the structure
+ignored. Both groups are wired on `bench ds` and `bench run`.
 
 ### 7. Add tests
 
-Use the prescribed (but not-yet-implemented) `define_multiway_join_test_suite_with_config!` macro variant. For now, write per-config tests by hand:
+Use `define_multiway_join_test_suite_with_config!` (`kermit/tests/common/macros.rs`).
+It declares the `Configured<Relation, Provider>` alias inside a module of its
+own and runs the 11 standard join patterns on it:
 
 ```rust
-type HashTrieSipNoSP = HashTrie<SipHashStrategy>;  // default config (no pruning)
-type HashTrieSipSP   = HashTrie<SipHashStrategy>;  // would need a wrapper that injects config
+use kermit_ds::{define_config_provider, HashTrieConfig};
 
-define_multiway_join_test_suite!(HashTrieSipNoSP, HashTriejoin, LexicographicOptimiser);
-// ... etc
+define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig { singleton_pruning: true });
+define_multiway_join_test_suite_with_config!(HashTrieSip, HashTriejoin, LexicographicOptimiser, PruningOn);
 ```
+
+The existing pruning-off invocations stay as the baseline. The DS-level
+suites run on `Configured<HashTrieSip, PruningOn>` aliases too —
+`hash_trie_test_suite!` in `kermit-ds/tests/hash_trie_tests.rs` and
+`parquet_test_suite!` in `kermit-ds/tests/parquet_tests.rs`.
 
 ### 8. Document
 
@@ -357,7 +389,7 @@ Update `docs/data-structures/hash-trie.md` § Optimizations § Config flags to l
 kermit bench ds -i hash-trie --ds-config singleton-pruning=true \
     --relation kermit/tests/fixtures/edge.csv \
     --report-json /tmp/sp.json
-cat /tmp/sp.json | jq '.[0].axes'
+jq '.[0].axes' /tmp/sp.json
 # Should include "ds_config_singleton_pruning": true
 ```
 
@@ -463,7 +495,11 @@ This is semantically correct — pre-standard runs were SipHash-only.
 | HashTrie's `HasOptimizationAxes` impl | [`kermit-ds/src/ds/hash_trie/implementation.rs`](../../kermit-ds/src/ds/hash_trie/implementation.rs) |
 | CLI dispatch monomorphizing on `H` | [`kermit/src/main.rs`](../../kermit/src/main.rs) (search `run_*_hash<H`) |
 | Bench-report axes merge | [`kermit/src/main.rs`](../../kermit/src/main.rs) (search `optimization_axes`) |
-| CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs) |
+| CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs) |
+| First Config consumer (singleton pruning) | [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs) |
+| Config-injection seam (`ConfigurableRelation`) | [`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs) |
+| `Configured` / `ConfigProvider` / `define_config_provider!` | [`kermit-ds/src/configured.rs`](../../kermit-ds/src/configured.rs) |
+| Config join test macro | [`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs) (search `with_config`) |
 | Per-DS catalog | [`docs/data-structures/hash-trie.md`](../data-structures/hash-trie.md) § Optimizations |
 | Schema axis prefixes | [`docs/specs/bench-report-schema.md`](bench-report-schema.md) § Standard axis prefixes |
 | Contributor recipe | [`CLAUDE.md`](../../CLAUDE.md) § "Adding an optimization to a data structure or algorithm" |
@@ -472,13 +508,21 @@ This is semantically correct — pre-standard runs were SipHash-only.
 
 ## What's implemented today, what's available
 
-Today, only **one** optimization is implemented: HashTrie's hasher choice (Sip vs Fx), in the Layout category.
+Two optimizations are implemented:
+
+| Optimization | Category | Where | Paper § |
+|---|---|---|---|
+| Hasher choice (Sip vs Fx) | Layout | `ds_layout_hasher` | §3.3.1 |
+| Singleton pruning | Config | `ds_config_singleton_pruning` | §3.3.1, Fig 5 |
+
+The BuildMode category still has no consumer, so
+`define_multiway_join_test_suite_for_build_mode!` lands with the first
+BuildMode consumer.
 
 Available to add (each a separate brainstorming → planning → implementation cycle):
 
 | Optimization | Category | Effort | Paper § |
 |---|---|---|---|
-| Singleton pruning | Config | Small | §3.3.1, Fig 5 |
 | Lazy child expansion | Config | Small | §3.3.1, Fig 6 |
 | Pointer tagging | Layout | Medium | §3.3.1, Fig 4 |
 | Radix partitioning | BuildMode | Medium | §3.3.2 |
