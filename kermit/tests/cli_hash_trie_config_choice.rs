@@ -1,6 +1,5 @@
-//! CLI smoke test: `bench ds` with `--ds-config singleton-pruning=true`
-//! records the Config axis, and the flag is rejected where it cannot
-//! apply. Mirrors `cli_hash_trie_hasher_choice.rs` for the Config category
+//! CLI smoke test: `bench ds` with `--ds-config load-factor=0.5` records
+//! the Config axis, and the flag is rejected where it cannot apply. Mirrors `cli_hash_trie_hasher_choice.rs` for the Config category
 //! of the optimization standard: CLI parser -> `ConfigChoices` ->
 //! `run_ds_bench_hash::<H>` -> `HashTrie::from_tuples_with_config` ->
 //! `HasOptimizationAxes::optimization_axes()` -> `BenchReport.axes` -> JSON.
@@ -56,32 +55,8 @@ fn axes_of(report: &NamedTempFile) -> serde_json::Value {
 }
 
 #[test]
-fn cli_bench_ds_with_singleton_pruning_records_axis_true() {
-    let (output, report) = run_bench_ds("hash-trie", &["--ds-config", "singleton-pruning=true"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let axes = axes_of(&report);
-    assert_eq!(axes["ds_config_singleton_pruning"], true, "{axes}");
-    assert_eq!(axes["ds_layout_hasher"], "sip", "{axes}");
-}
-
-#[test]
-fn cli_bench_ds_default_config_records_axis_false() {
-    let (output, report) = run_bench_ds("hash-trie", &[]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(axes_of(&report)["ds_config_singleton_pruning"], false);
-}
-
-#[test]
 fn cli_bench_ds_rejects_ds_config_on_tree_trie() {
-    let (output, _) = run_bench_ds("tree-trie", &["--ds-config", "singleton-pruning=true"]);
+    let (output, _) = run_bench_ds("tree-trie", &["--ds-config", "load-factor=0.5"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--ds-config"), "{stderr}");
@@ -89,10 +64,12 @@ fn cli_bench_ds_rejects_ds_config_on_tree_trie() {
 
 #[test]
 fn cli_bench_ds_rejects_unknown_config_key() {
-    let (output, _) = run_bench_ds("hash-trie", &["--ds-config", "lazy-expansion=true"]);
+    // `singleton-pruning` is a Layout flag now, so `--ds-config` must
+    // reject it rather than silently accepting a stale key.
+    let (output, _) = run_bench_ds("hash-trie", &["--ds-config", "singleton-pruning=true"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("lazy-expansion"), "{stderr}");
+    assert!(stderr.contains("singleton-pruning"), "{stderr}");
 }
 
 #[test]

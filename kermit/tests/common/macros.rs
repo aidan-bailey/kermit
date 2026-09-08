@@ -310,9 +310,9 @@ macro_rules! define_multiway_join_test_suite {
 /// `kermit_ds::define_config_provider!`.
 ///
 /// ```ignore
-/// define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig { singleton_pruning: true });
-/// define_multiway_join_test_suite_with_config!(HashTrieSip, HashTriejoin, LexicographicOptimiser, PruningOn);
-/// // → tests named e.g. `triangle_hashtriesippruningon_hashtriejoin_lexicographicoptimiser`
+/// define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig { load_factor: LoadFactor::percent(50).unwrap() });
+/// define_multiway_join_test_suite_with_config!(HashTrieSip, HashTriejoin, LexicographicOptimiser, HalfFull);
+/// // → tests named e.g. `triangle_hashtriesiphalffull_hashtriejoin_lexicographicoptimiser`
 /// ```
 #[macro_export]
 macro_rules! define_multiway_join_test_suite_with_config {

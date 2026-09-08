@@ -18,7 +18,7 @@ use {
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
         ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize, IndexStructure, LoadFactor,
-        Relation, RelationFileExt,
+        NoPruning, PruningPolicy, Relation, RelationFileExt, SingletonPruning,
     },
     kermit_iters::{
         FxHashStrategy, HasOptimizationAxes, HashStrategy, SipHashStrategy, TrieIterable,
@@ -186,6 +186,22 @@ enum HasherChoice {
     Fxhash,
 }
 
+/// CLI-side selector for `--ds-layout-pruning`: the `PruningPolicy`
+/// monomorphised into `HashTrie<H, P>`. `Off` is the pre-pruning structure —
+/// its `Singleton` node variant and iterator frame are uninhabited, so the
+/// instantiation compiles to the code that existed before pruning landed.
+///
+/// Like [`HasherChoice`], this flag only applies when the selected index
+/// structure is `hash-trie`; `validate_layout_choices` rejects it elsewhere.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum PruningChoice {
+    /// No pruning (`NoPruning`), the default.
+    #[default]
+    Off,
+    /// Singleton pruning (`SingletonPruning`).
+    On,
+}
+
 /// Layout-axis CLI choices flattened into every subcommand whose dispatch
 /// monomorphises over a `HashTrie<H>` (currently `bench Ds` and `bench
 /// Run`). Each field is named `<axis>` and surfaces as the long flag
@@ -200,10 +216,14 @@ enum HasherChoice {
 /// [`hash_trie_hasher_resolved`] supplies the default at dispatch time.
 #[derive(Args, Clone, Debug, Default)]
 struct LayoutChoices {
-    /// Hash function used by `HashTrie<H>` (default: `sip`). Only valid
+    /// Hash function used by `HashTrie<H, P>` (default: `sip`). Only valid
     /// when `--indexstructure hash-trie` is selected.
     #[arg(long = "ds-layout-hasher", value_name = "HASHER", value_enum)]
     hash_trie_hasher: Option<HasherChoice>,
+    /// Singleton pruning Layout of `HashTrie<H, P>` (default: `off`). Only
+    /// valid when `--indexstructure hash-trie` is selected.
+    #[arg(long = "ds-layout-pruning", value_name = "PRUNING", value_enum)]
+    hash_trie_pruning: Option<PruningChoice>,
 }
 
 impl LayoutChoices {
@@ -218,30 +238,76 @@ impl LayoutChoices {
     /// Use this in `validate_layout_choices` to reject the flag on
     /// non-HashTrie selectors.
     fn hash_trie_hasher_explicit(&self) -> bool { self.hash_trie_hasher.is_some() }
+
+    /// Returns the `PruningChoice` to monomorphise on, applying the
+    /// `PruningChoice::default()` when none was supplied on the command
+    /// line. Use this at dispatch sites.
+    fn hash_trie_pruning_resolved(&self) -> PruningChoice {
+        self.hash_trie_pruning.unwrap_or_default()
+    }
+
+    /// Returns whether the user explicitly passed `--ds-layout-pruning`.
+    fn hash_trie_pruning_explicit(&self) -> bool { self.hash_trie_pruning.is_some() }
 }
 
 /// Rejects `LayoutChoices` flags that are incompatible with the chosen
-/// `IndexStructureSelector`. Currently the only layout flag is
-/// `--ds-layout-hasher`, which is meaningful only for `hash-trie` (and for
-/// `all`, where the HashTrie sweep arm picks it up). Passing it on a
+/// `IndexStructureSelector`. Both layout flags (`--ds-layout-hasher` and
+/// `--ds-layout-pruning`) are meaningful only for `hash-trie` (and for
+/// `all`, where the HashTrie sweep arm picks them up). Passing one on a
 /// non-HashTrie selector is a usage error: the flag would be silently
-/// ignored, producing a benchmark report whose `ds_layout_hasher` axis
+/// ignored, producing a benchmark report whose `ds_layout_*` axis
 /// disagrees with the actual structure used.
 fn validate_layout_choices(
     indexstructure: IndexStructureSelector, layout: &LayoutChoices,
 ) -> anyhow::Result<()> {
-    if layout.hash_trie_hasher_explicit()
-        && !matches!(
-            indexstructure,
-            IndexStructureSelector::HashTrie | IndexStructureSelector::All
-        )
-    {
-        anyhow::bail!(
-            "--ds-layout-hasher is only valid with --indexstructure hash-trie (or all); got \
-             --indexstructure {indexstructure:?}"
-        );
+    let explicit: &[(&str, bool)] = &[
+        ("--ds-layout-hasher", layout.hash_trie_hasher_explicit()),
+        ("--ds-layout-pruning", layout.hash_trie_pruning_explicit()),
+    ];
+    for (flag, given) in explicit {
+        if *given
+            && !matches!(
+                indexstructure,
+                IndexStructureSelector::HashTrie | IndexStructureSelector::All
+            )
+        {
+            anyhow::bail!(
+                "{flag} is only valid with --indexstructure hash-trie (or all); got \
+                 --indexstructure {indexstructure:?}"
+            );
+        }
     }
     Ok(())
+}
+
+/// Monomorphises `$body` over the `HashTrie` Layout cell selected at
+/// runtime. Both dispatchers use it, so the product of Layout dimensions
+/// lives in one place: adding a dimension means adding arms here only.
+macro_rules! with_hash_trie_layout {
+    ($hasher:expr, $pruning:expr, |$H:ident, $P:ident| $body:expr) => {
+        match ($hasher, $pruning) {
+            | (HasherChoice::Sip, PruningChoice::Off) => {
+                type $H = SipHashStrategy;
+                type $P = NoPruning;
+                $body
+            },
+            | (HasherChoice::Sip, PruningChoice::On) => {
+                type $H = SipHashStrategy;
+                type $P = SingletonPruning;
+                $body
+            },
+            | (HasherChoice::Fxhash, PruningChoice::Off) => {
+                type $H = FxHashStrategy;
+                type $P = NoPruning;
+                $body
+            },
+            | (HasherChoice::Fxhash, PruningChoice::On) => {
+                type $H = FxHashStrategy;
+                type $P = SingletonPruning;
+                $body
+            },
+        }
+    };
 }
 
 /// Config-axis CLI choices, flattened beside [`LayoutChoices`] into `bench
@@ -251,9 +317,9 @@ fn validate_layout_choices(
 /// structure by [`hash_trie_config_resolved`](Self::hash_trie_config_resolved).
 #[derive(Args, Clone, Debug, Default)]
 struct ConfigChoices {
-    /// Runtime flags for the selected index structure, as `key=value`
-    /// pairs. `HashTrie` accepts `singleton-pruning=true|false` and
-    /// `load-factor=<decimal in (0, 1)>`. Only valid with
+    /// Runtime values for the selected index structure, as `key=value`
+    /// pairs. `HashTrie` accepts `load-factor=<decimal in (0, 1)>`. Only
+    /// valid with
     /// `--indexstructure hash-trie` (or `all`).
     #[arg(
         long = "ds-config",
@@ -266,7 +332,7 @@ struct ConfigChoices {
 impl ConfigChoices {
     /// The `--ds-config` keys `HashTrie` accepts, named in the usage error
     /// raised for any other key.
-    const HASH_TRIE_KEYS: &'static [&'static str] = &["singleton-pruning", "load-factor"];
+    const HASH_TRIE_KEYS: &'static [&'static str] = &["load-factor"];
 
     /// Whether the user passed any `--ds-config` pair.
     fn explicit(&self) -> bool { !self.ds_config.is_empty() }
@@ -286,11 +352,6 @@ impl ConfigChoices {
             }
             // keep in sync with HASH_TRIE_KEYS
             match key {
-                | "singleton-pruning" => {
-                    config.singleton_pruning = value.parse::<bool>().map_err(|_| {
-                        anyhow::anyhow!("--ds-config {key}: expected true or false, got {value:?}")
-                    })?;
-                },
                 | "load-factor" => {
                     config.load_factor = parse_load_factor(value)
                         .map_err(|why| anyhow::anyhow!("--ds-config {key}: {why}"))?;
@@ -319,8 +380,9 @@ fn parse_load_factor(value: &str) -> Result<LoadFactor, String> {
     if (scaled - percent).abs() > 1e-9 {
         return Err(format!("at most two decimal places are supported, got {value:?}"));
     }
-    // 0 < v < 1 and integral*100 ⇒ 1..=99; `percent` cannot fail here, but
-    // keep the constructor's check as the single source of the range.
+    // `percent` is 1..=99 for every value a user would type; the
+    // constructor stays the single source of the range and catches the
+    // float edge case (the largest double below 1 rounds to 100).
     LoadFactor::percent(percent as u8).map_err(|e| e.to_string())
 }
 
@@ -924,10 +986,10 @@ where
 /// extension because `HashTrieIterable` is a distinct trait family from
 /// `TrieIterable` (see CLAUDE.md → Key Trait Hierarchy).
 ///
-/// Generic over `H: HashStrategy` — Rust forbids defaults on free-function
-/// type parameters, so the CLI dispatch site picks `H` by matching on
-/// `LayoutChoices::hash_trie_hasher_resolved()` (Phase 4).
-fn run_ds_bench_hash<H: HashStrategy>(
+/// Generic over `H: HashStrategy` and `P: PruningPolicy` — Rust forbids
+/// defaults on free-function type parameters, so the CLI dispatch site
+/// picks both from `LayoutChoices` via `with_hash_trie_layout!`.
+fn run_ds_bench_hash<H: HashStrategy, P: PruningPolicy>(
     relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric],
     queries_per_build: u32, config: HashTrieConfig, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
@@ -941,12 +1003,13 @@ fn run_ds_bench_hash<H: HashStrategy>(
         | _ => anyhow::bail!("Unsupported file extension: {extension}"),
     }
     .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?;
-    let relation: HashTrie<H> = HashTrie::<H>::from_tuples_with_config(header, config, tuples);
+    let relation: HashTrie<H, P> =
+        HashTrie::<H, P>::from_tuples_with_config(header, config, tuples);
 
-    // Re-read the tuples off the configured relation: singleton pruning
-    // does not change iteration order (a one-tuple subtrie yields the same
-    // sequence either way), so the insertion / end-to-end closures below
-    // are fed identical input whether the flag is on or off.
+    // Re-read the tuples off the built relation: singleton pruning does not
+    // change iteration order (a one-tuple subtrie yields the same sequence
+    // either way), so the insertion / end-to-end closures below are fed
+    // identical input whichever Layout ran.
     let tuples: Vec<Vec<usize>> = relation.collect_tuples();
     let header = relation.header().clone();
 
@@ -982,7 +1045,7 @@ fn run_ds_bench_hash<H: HashStrategy>(
             group.bench_function(&function, |b| {
                 b.iter_batched(
                     || (insertion_header.clone(), insertion_tuples.clone()),
-                    |(h, t)| HashTrie::<H>::from_tuples_with_config(h, config, t),
+                    |(h, t)| HashTrie::<H, P>::from_tuples_with_config(h, config, t),
                     criterion::BatchSize::SmallInput,
                 );
             });
@@ -1016,7 +1079,7 @@ fn run_ds_bench_hash<H: HashStrategy>(
                 b.iter_batched(
                     || (e2e_header.clone(), e2e_tuples.clone()),
                     |(h, t)| {
-                        let built = HashTrie::<H>::from_tuples_with_config(h, config, t);
+                        let built = HashTrie::<H, P>::from_tuples_with_config(h, config, t);
                         for _ in 0..queries_per_build {
                             std::hint::black_box(built.collect_tuples());
                         }
@@ -1554,12 +1617,13 @@ fn run_bench_join(
 ///
 /// `HashTrie` lives in a parallel trait family (`HashTrieIterable`, not
 /// `TrieIterable`), so it routes through `run_ds_bench_hash` rather than the
-/// generic `run_ds_bench<R>`. The `H: HashStrategy` parameter is picked from
-/// the `--ds-layout-hasher` CLI flag (`hasher`).
+/// generic `run_ds_bench<R>`. The `H` / `P` Layout parameters are picked
+/// from the `--ds-layout-hasher` / `--ds-layout-pruning` CLI flags.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_ds_bench(
-    ds: IndexStructure, hasher: HasherChoice, config: HashTrieConfig, relation: &Path,
-    metrics: &[Metric], queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
+    ds: IndexStructure, hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig,
+    relation: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
+    bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
     match ds {
         | IndexStructure::TreeTrie => run_ds_bench::<kermit_ds::TreeTrie>(
@@ -1578,8 +1642,8 @@ fn dispatch_ds_bench(
             group_name,
             bench_args,
         ),
-        | IndexStructure::HashTrie => match hasher {
-            | HasherChoice::Sip => run_ds_bench_hash::<SipHashStrategy>(
+        | IndexStructure::HashTrie => with_hash_trie_layout!(hasher, pruning, |H, P| {
+            run_ds_bench_hash::<H, P>(
                 relation,
                 ds,
                 metrics,
@@ -1587,17 +1651,8 @@ fn dispatch_ds_bench(
                 config,
                 group_name,
                 bench_args,
-            ),
-            | HasherChoice::Fxhash => run_ds_bench_hash::<FxHashStrategy>(
-                relation,
-                ds,
-                metrics,
-                queries_per_build,
-                config,
-                group_name,
-                bench_args,
-            ),
-        },
+            )
+        }),
     }
 }
 
@@ -1617,6 +1672,7 @@ fn run_ds_bench_command(
         let report = dispatch_ds_bench(
             ds,
             layout.hash_trie_hasher_resolved(),
+            layout.hash_trie_pruning_resolved(),
             hash_trie_config,
             &relation,
             &metrics,
@@ -1658,29 +1714,18 @@ fn dispatch_run_bench(
             bench_args,
         ),
         | Execution::HashHtj {
-            hasher: hasher @ HasherChoice::Sip,
+            hasher,
+            pruning,
             config,
-        } => run_benchmark(
-            &HashHtj::<SipHashStrategy>::new(hasher, config, optimiser),
+        } => with_hash_trie_layout!(hasher, pruning, |H, P| run_benchmark(
+            &HashHtj::<H, P>::new(hasher, pruning, config, optimiser),
             benchmark,
             optimiser,
             metrics,
             queries_per_build,
             query_filter,
             bench_args,
-        ),
-        | Execution::HashHtj {
-            hasher: hasher @ HasherChoice::Fxhash,
-            config,
-        } => run_benchmark(
-            &HashHtj::<FxHashStrategy>::new(hasher, config, optimiser),
-            benchmark,
-            optimiser,
-            metrics,
-            queries_per_build,
-            query_filter,
-            bench_args,
-        ),
+        )),
     }
 }
 
@@ -1692,12 +1737,13 @@ fn dispatch_run_bench(
 /// is nothing left to run and that is a usage error.
 fn resolve_sweep(
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, hasher: HasherChoice,
-    config: HashTrieConfig,
+    pruning: PruningChoice, config: HashTrieConfig,
 ) -> anyhow::Result<Vec<Execution>> {
     let sweep = Sweep::expand(
         &indexstructure.expand(),
         &algorithm.expand(),
         hasher,
+        pruning,
         config,
     );
     if sweep.cells.is_empty() {
@@ -1730,6 +1776,7 @@ fn run_bench_run_command(
         indexstructure,
         algorithm,
         layout.hash_trie_hasher_resolved(),
+        layout.hash_trie_pruning_resolved(),
         hash_trie_config,
     )?;
     let benchmarks = resolve_benchmarks(&name, all)?;
@@ -2084,6 +2131,7 @@ mod tests {
         // explicit --ds-layout-hasher.
         let layout = LayoutChoices {
             hash_trie_hasher: Some(HasherChoice::Fxhash),
+            ..LayoutChoices::default()
         };
         assert!(validate_layout_choices(IndexStructureSelector::HashTrie, &layout).is_ok());
         assert!(validate_layout_choices(IndexStructureSelector::All, &layout).is_ok());
@@ -2096,6 +2144,7 @@ mod tests {
         // report whose `ds_layout_hasher` axis disagrees with reality.
         let layout = LayoutChoices {
             hash_trie_hasher: Some(HasherChoice::Fxhash),
+            ..LayoutChoices::default()
         };
         for sel in [
             IndexStructureSelector::TreeTrie,
@@ -2115,6 +2164,42 @@ mod tests {
     }
 
     #[test]
+    fn validate_layout_choices_rejects_explicit_pruning_on_non_hash_trie() {
+        // Same discipline as the hasher flag: a `ds_layout_pruning` axis
+        // must never describe a structure that has no such Layout.
+        let layout = LayoutChoices {
+            hash_trie_pruning: Some(PruningChoice::On),
+            ..LayoutChoices::default()
+        };
+        assert!(validate_layout_choices(IndexStructureSelector::HashTrie, &layout).is_ok());
+        assert!(validate_layout_choices(IndexStructureSelector::All, &layout).is_ok());
+        for sel in [
+            IndexStructureSelector::TreeTrie,
+            IndexStructureSelector::ColumnTrie,
+        ] {
+            let msg = validate_layout_choices(sel, &layout).unwrap_err().to_string();
+            assert!(
+                msg.contains("--ds-layout-pruning"),
+                "error message should mention the flag for {sel:?}, got: {msg}"
+            );
+            assert!(
+                msg.contains("hash-trie"),
+                "error message should suggest the compatible selector for {sel:?}, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn pruning_choice_default_is_off() {
+        assert_eq!(PruningChoice::default(), PruningChoice::Off);
+        assert_eq!(
+            LayoutChoices::default().hash_trie_pruning_resolved(),
+            PruningChoice::Off
+        );
+        assert!(!LayoutChoices::default().hash_trie_pruning_explicit());
+    }
+
+    #[test]
     fn validate_layout_choices_default_layout_passes_on_any_selector() {
         // No flag provided: validation must always pass regardless of
         // selector. Otherwise users couldn't run TreeTrie/ColumnTrie at
@@ -2131,30 +2216,6 @@ mod tests {
                 "default LayoutChoices should pass on {sel:?}"
             );
         }
-    }
-
-    #[test]
-    fn config_choices_parse_singleton_pruning() {
-        let on = ConfigChoices {
-            ds_config: vec!["singleton-pruning=true".into()],
-        };
-        assert_eq!(on.hash_trie_config_resolved().unwrap(), HashTrieConfig {
-            singleton_pruning: true,
-            ..HashTrieConfig::default()
-        });
-        let off = ConfigChoices {
-            ds_config: vec!["singleton-pruning=false".into()],
-        };
-        assert_eq!(
-            off.hash_trie_config_resolved().unwrap(),
-            HashTrieConfig::default()
-        );
-        assert_eq!(
-            ConfigChoices::default()
-                .hash_trie_config_resolved()
-                .unwrap(),
-            HashTrieConfig::default()
-        );
     }
 
     #[test]
@@ -2191,32 +2252,31 @@ mod tests {
 
     #[test]
     fn config_choices_reject_unknown_key_and_bad_value() {
+        // `singleton-pruning` is now a Layout flag, so it is exactly the
+        // kind of key `--ds-config` must reject.
         let unknown = ConfigChoices {
-            ds_config: vec!["lazy-expansion=true".into()],
+            ds_config: vec!["singleton-pruning=true".into()],
         };
         let msg = unknown.hash_trie_config_resolved().unwrap_err().to_string();
-        assert!(msg.contains("lazy-expansion"), "{msg}");
+        assert!(msg.contains("singleton-pruning"), "{msg}");
         assert!(
-            msg.contains("singleton-pruning"),
+            msg.contains("load-factor"),
             "should list accepted keys: {msg}"
         );
 
         let bad = ConfigChoices {
-            ds_config: vec!["singleton-pruning=yes".into()],
+            ds_config: vec!["load-factor=yes".into()],
         };
         let msg = bad.hash_trie_config_resolved().unwrap_err().to_string();
         assert!(msg.contains("yes"), "{msg}");
 
         let malformed = ConfigChoices {
-            ds_config: vec!["singleton-pruning".into()],
+            ds_config: vec!["load-factor".into()],
         };
         assert!(malformed.hash_trie_config_resolved().is_err());
 
         let repeated = ConfigChoices {
-            ds_config: vec![
-                "singleton-pruning=true".into(),
-                "singleton-pruning=false".into(),
-            ],
+            ds_config: vec!["load-factor=0.5".into(), "load-factor=0.9".into()],
         };
         let msg = repeated
             .hash_trie_config_resolved()
@@ -2229,8 +2289,7 @@ mod tests {
     /// `HASH_TRIE_KEYS` cannot drift from the `match` that consumes it.
     #[test]
     fn every_advertised_hash_trie_key_is_accepted() {
-        const SAMPLE: &[(&str, &str)] =
-            &[("singleton-pruning", "true"), ("load-factor", "0.5")];
+        const SAMPLE: &[(&str, &str)] = &[("load-factor", "0.5")];
         assert_eq!(
             SAMPLE.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
             ConfigChoices::HASH_TRIE_KEYS
@@ -2249,7 +2308,7 @@ mod tests {
     #[test]
     fn validate_config_choices_rejects_flag_on_non_hash_trie() {
         let config = ConfigChoices {
-            ds_config: vec!["singleton-pruning=true".into()],
+            ds_config: vec!["load-factor=0.5".into()],
         };
         assert!(validate_config_choices(IndexStructureSelector::HashTrie, &config).is_ok());
         assert!(validate_config_choices(IndexStructureSelector::All, &config).is_ok());

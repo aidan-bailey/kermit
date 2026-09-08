@@ -22,12 +22,12 @@
 //! runner in `main.rs` is generic over it.
 
 use {
-    crate::HasherChoice,
+    crate::{HasherChoice, PruningChoice},
     kermit::db::{hash_join, DatabaseEngine, DB},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_ds::{
         Cardinality, ColumnTrie, ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize,
-        IndexStructure, Relation, RelationFileExt, RelationHeader, TreeTrie,
+        IndexStructure, PruningPolicy, Relation, RelationFileExt, RelationHeader, TreeTrie,
     },
     kermit_iters::{HasOptimizationAxes, HashStrategy, TrieIterable},
     std::{
@@ -91,13 +91,15 @@ impl SortedTrieRelation for ColumnTrie {
 pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through the `DB` trait.
     TrieLftj(SortedTrie),
-    /// `HashTrie<H>` joined by Hash Triejoin through [`hash_join`], with
-    /// `H` chosen by `--ds-layout-hasher` and the runtime flags by
-    /// `--ds-config`.
+    /// `HashTrie<H, P>` joined by Hash Triejoin through [`hash_join`],
+    /// with `H` chosen by `--ds-layout-hasher`, `P` by
+    /// `--ds-layout-pruning`, and the runtime values by `--ds-config`.
     HashHtj {
         /// The `--ds-layout-hasher` choice `H` was monomorphised from.
         hasher: HasherChoice,
-        /// The `--ds-config` runtime flags every relation is built with.
+        /// The `--ds-layout-pruning` choice `P` was monomorphised from.
+        pruning: PruningChoice,
+        /// The `--ds-config` runtime values every relation is built with.
         config: HashTrieConfig,
     },
 }
@@ -106,7 +108,8 @@ impl Execution {
     /// The only way to obtain an `Execution` from a concrete pair. Returns
     /// `None` for the three incompatible pairs, which the sweep skips.
     pub fn for_pair(
-        ds: IndexStructure, algo: JoinAlgorithm, hasher: HasherChoice, config: HashTrieConfig,
+        ds: IndexStructure, algo: JoinAlgorithm, hasher: HasherChoice, pruning: PruningChoice,
+        config: HashTrieConfig,
     ) -> Option<Execution> {
         match (ds, algo) {
             | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
@@ -117,6 +120,7 @@ impl Execution {
             },
             | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => Some(Execution::HashHtj {
                 hasher,
+                pruning,
                 config,
             }),
             | (
@@ -161,17 +165,17 @@ pub struct Sweep {
 
 impl Sweep {
     /// Expands the cross product of `structures × algorithms` into valid
-    /// cells, partitioning off the incompatible pairs. `hasher` and
-    /// `config` are attached to every `HashTrie` cell.
+    /// cells, partitioning off the incompatible pairs. `hasher`,
+    /// `pruning` and `config` are attached to every `HashTrie` cell.
     pub fn expand(
         structures: &[IndexStructure], algorithms: &[JoinAlgorithm], hasher: HasherChoice,
-        config: HashTrieConfig,
+        pruning: PruningChoice, config: HashTrieConfig,
     ) -> Sweep {
         let mut cells = Vec::new();
         let mut skipped = Vec::new();
         for &ds in structures {
             for &algo in algorithms {
-                match Execution::for_pair(ds, algo, hasher, config) {
+                match Execution::for_pair(ds, algo, hasher, pruning, config) {
                     | Some(cell) => cells.push(cell),
                     | None => skipped.push((ds, algo)),
                 }
@@ -341,50 +345,57 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
     fn optimization_axes(_rel: &R) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
-/// Hash family: `HashTrie<H>` under Hash Triejoin through [`hash_join`].
-pub struct HashHtj<H> {
+/// Hash family: `HashTrie<H, P>` under Hash Triejoin through [`hash_join`].
+pub struct HashHtj<H, P> {
     hasher: HasherChoice,
+    pruning: PruningChoice,
     config: HashTrieConfig,
     optimiser: Box<dyn kermit_algos::QueryOptimiser>,
-    _strategy: PhantomData<H>,
+    _layout: PhantomData<(H, P)>,
 }
 
-impl<H> HashHtj<H> {
-    /// Creates the family for the `--ds-layout-hasher` choice `hasher`
-    /// (which must be the choice `H` was monomorphised from) and the
-    /// `--ds-config` flags `config`, planned by `optimiser`.
-    pub fn new(hasher: HasherChoice, config: HashTrieConfig, optimiser: Optimiser) -> Self {
+impl<H, P> HashHtj<H, P> {
+    /// Creates the family for the `--ds-layout-hasher` /
+    /// `--ds-layout-pruning` choices `hasher` and `pruning` (which must be
+    /// the choices `H` and `P` were monomorphised from) and the
+    /// `--ds-config` values `config`, planned by `optimiser`.
+    pub fn new(
+        hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig,
+        optimiser: Optimiser,
+    ) -> Self {
         Self {
             hasher,
+            pruning,
             config,
             optimiser: optimiser.instantiate(),
-            _strategy: PhantomData,
+            _layout: PhantomData,
         }
     }
 }
 
-impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
+impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H, P> {
     /// Relations keyed by name — the shape [`hash_join`] borrows per query
     /// so a Criterion iteration allocates no wrappers.
-    type Engine = HashMap<String, HashTrie<H>>;
-    type Rel = HashTrie<H>;
+    type Engine = HashMap<String, HashTrie<H, P>>;
+    type Rel = HashTrie<H, P>;
 
     fn execution(&self) -> Execution {
         Execution::HashHtj {
             hasher: self.hasher,
+            pruning: self.pruning,
             config: self.config,
         }
     }
 
-    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H> {
-        HashTrie::<H>::from_tuples_with_config(header, self.config, tuples)
+    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H, P> {
+        HashTrie::<H, P>::from_tuples_with_config(header, self.config, tuples)
     }
 
-    fn tuples(rel: &HashTrie<H>) -> Vec<Vec<usize>> { rel.collect_tuples() }
+    fn tuples(rel: &HashTrie<H, P>) -> Vec<Vec<usize>> { rel.collect_tuples() }
 
-    fn tuple_count(rel: &HashTrie<H>) -> usize { rel.collect_tuples().len() }
+    fn tuple_count(rel: &HashTrie<H, P>) -> usize { rel.collect_tuples().len() }
 
-    fn build(&self, relations: Vec<HashTrie<H>>) -> Self::Engine {
+    fn build(&self, relations: Vec<HashTrie<H, P>>) -> Self::Engine {
         relations
             .into_iter()
             .map(|r| (r.header().name().to_string(), r))
@@ -401,20 +412,24 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
             .collect()
     }
 
-    fn relations(engine: &Self::Engine) -> Vec<&HashTrie<H>> { engine.values().collect() }
+    fn relations(engine: &Self::Engine) -> Vec<&HashTrie<H, P>> { engine.values().collect() }
 
     fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>> {
-        hash_join::<HashTrie<H>, H>(engine, query, self.optimiser.as_ref())
+        hash_join::<HashTrie<H, P>, H>(engine, query, self.optimiser.as_ref())
     }
 
-    fn optimization_axes(rel: &HashTrie<H>) -> BTreeMap<String, serde_json::Value> {
+    fn optimization_axes(rel: &HashTrie<H, P>) -> BTreeMap<String, serde_json::Value> {
         rel.optimization_axes()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use {super::*, clap::ValueEnum};
+    use {
+        super::*,
+        clap::ValueEnum,
+        kermit_ds::{NoPruning, SingletonPruning},
+    };
 
     fn all_structures() -> Vec<IndexStructure> { IndexStructure::value_variants().to_vec() }
 
@@ -428,6 +443,7 @@ mod tests {
             &all_structures(),
             &all_algorithms(),
             HasherChoice::Sip,
+            PruningChoice::Off,
             HashTrieConfig::default(),
         );
         assert_eq!(sweep.cells.len(), 3, "{sweep:?}");
@@ -450,6 +466,7 @@ mod tests {
             &all_structures(),
             &[JoinAlgorithm::LeapfrogTriejoin],
             HasherChoice::Sip,
+            PruningChoice::Off,
             HashTrieConfig::default(),
         );
         assert!(sweep
@@ -470,6 +487,7 @@ mod tests {
             &[IndexStructure::HashTrie],
             &[JoinAlgorithm::LeapfrogTriejoin],
             HasherChoice::Sip,
+            PruningChoice::Off,
             HashTrieConfig::default(),
         );
         assert!(sweep.cells.is_empty());
@@ -482,9 +500,13 @@ mod tests {
     fn execution_axes_round_trip_through_for_pair() {
         for ds in all_structures() {
             for algo in all_algorithms() {
-                if let Some(cell) =
-                    Execution::for_pair(ds, algo, HasherChoice::Fxhash, HashTrieConfig::default())
-                {
+                if let Some(cell) = Execution::for_pair(
+                    ds,
+                    algo,
+                    HasherChoice::Fxhash,
+                    PruningChoice::Off,
+                    HashTrieConfig::default(),
+                ) {
                     assert_eq!(cell.index_structure(), ds);
                     assert_eq!(cell.algorithm(), algo);
                 }
@@ -495,10 +517,12 @@ mod tests {
                 IndexStructure::HashTrie,
                 JoinAlgorithm::HashTriejoin,
                 HasherChoice::Fxhash,
+                PruningChoice::Off,
                 HashTrieConfig::default(),
             ),
             Some(Execution::HashHtj {
                 hasher: HasherChoice::Fxhash,
+                pruning: PruningChoice::Off,
                 config: HashTrieConfig::default(),
             })
         );
@@ -516,16 +540,17 @@ mod tests {
             Execution::TrieLftj(SortedTrie::ColumnTrie)
         );
         let config = HashTrieConfig {
-            singleton_pruning: true,
-            ..HashTrieConfig::default()
+            load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let hash = HashHtj::<kermit_iters::FxHashStrategy>::new(
+        let hash = HashHtj::<kermit_iters::FxHashStrategy, NoPruning>::new(
             HasherChoice::Fxhash,
+            PruningChoice::Off,
             config,
             Optimiser::Lexicographic,
         );
         assert_eq!(hash.execution(), Execution::HashHtj {
             hasher: HasherChoice::Fxhash,
+            pruning: PruningChoice::Off,
             config,
         });
         assert_eq!(hash.execution().algorithm(), JoinAlgorithm::HashTriejoin);
@@ -536,11 +561,11 @@ mod tests {
     #[test]
     fn hash_family_builds_relations_with_its_config() {
         let config = HashTrieConfig {
-            singleton_pruning: true,
-            ..HashTrieConfig::default()
+            load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
+        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
             HasherChoice::Sip,
+            PruningChoice::Off,
             config,
             Optimiser::Lexicographic,
         );
@@ -548,9 +573,9 @@ mod tests {
         let engine = family.build_from_tuples(vec![(header, vec![vec![1, 2]])]);
         let rel = &engine["r"];
         assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy>::optimization_axes(rel)
-                .get("ds_config_singleton_pruning"),
-            Some(&serde_json::Value::Bool(true))
+            HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::optimization_axes(rel)
+                .get("ds_config_load_factor"),
+            Some(&serde_json::Value::from(0.5_f64))
         );
     }
 
@@ -559,11 +584,11 @@ mod tests {
     #[test]
     fn hash_family_load_honours_its_config() {
         let config = HashTrieConfig {
-            singleton_pruning: true,
-            ..HashTrieConfig::default()
+            load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
+        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
             HasherChoice::Sip,
+            PruningChoice::Off,
             config,
             Optimiser::Lexicographic,
         );
@@ -571,11 +596,11 @@ mod tests {
         let path = dir.path().join("r.csv");
         std::fs::write(&path, "a,b\n1,2\n").expect("write csv");
         let rel = family.load(&path).expect("load");
-        assert!(rel.config().singleton_pruning);
+        assert_eq!(*rel.config(), config);
         assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy>::optimization_axes(&rel)
-                .get("ds_config_singleton_pruning"),
-            Some(&serde_json::Value::Bool(true))
+            HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::optimization_axes(&rel)
+                .get("ds_config_load_factor"),
+            Some(&serde_json::Value::from(0.5_f64))
         );
     }
 
@@ -586,11 +611,11 @@ mod tests {
     #[test]
     fn hash_family_build_relation_honours_its_config() {
         let config = HashTrieConfig {
-            singleton_pruning: true,
-            ..HashTrieConfig::default()
+            load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
+        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
             HasherChoice::Sip,
+            PruningChoice::Off,
             config,
             Optimiser::Lexicographic,
         );
@@ -598,9 +623,28 @@ mod tests {
         let rel = family.build_relation(header, vec![vec![1, 2]]);
         assert_eq!(*rel.config(), config);
         assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy>::optimization_axes(&rel)
-                .get("ds_config_singleton_pruning"),
-            Some(&serde_json::Value::Bool(true))
+            HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::optimization_axes(&rel)
+                .get("ds_config_load_factor"),
+            Some(&serde_json::Value::from(0.5_f64))
+        );
+    }
+
+    /// The pruning Layout reaches the relations the family builds, so a
+    /// report's `ds_layout_pruning` axis describes the structure that ran.
+    #[test]
+    fn pruned_family_reports_the_pruning_layout() {
+        let family = HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning>::new(
+            HasherChoice::Sip,
+            PruningChoice::On,
+            HashTrieConfig::default(),
+            Optimiser::Lexicographic,
+        );
+        let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
+        let rel = family.build_relation(header, vec![vec![1, 2]]);
+        assert_eq!(
+            HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning>::optimization_axes(&rel)
+                .get("ds_layout_pruning"),
+            Some(&serde_json::Value::String("on".into()))
         );
     }
 }
