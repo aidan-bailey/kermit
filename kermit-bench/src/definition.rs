@@ -366,11 +366,14 @@ impl BenchmarkDefinition {
             )));
         }
 
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
         if stem != rel.name {
             return Err(invalid(format!(
-                "relation '{}' path has file stem '{stem}'; the loaders take the relation name from \
-                 the filename, so the stem must match the relation name",
+                "relation '{}' path has file stem '{stem}'; the loaders take the relation name \
+                 from the filename, so the stem must match the relation name",
                 rel.name
             )));
         }
@@ -556,7 +559,10 @@ queries:
         assert!(def.validate().is_err());
 
         // Both.
-        let yaml = relation_yaml("    url: \"https://example.com/edge.parquet\"\n    path: \"benchmarks/data/triangle/edge.csv\"");
+        let yaml = relation_yaml(
+            "    url: \"https://example.com/edge.parquet\"\n    path: \
+             \"benchmarks/data/triangle/edge.csv\"",
+        );
         let def: BenchmarkDefinition = serde_yaml::from_str(&yaml).unwrap();
         assert!(def.validate().is_err());
     }
@@ -577,9 +583,10 @@ queries:
     /// cannot reference.
     #[test]
     fn relation_path_stem_must_match_relation_name() {
-        let def: BenchmarkDefinition =
-            serde_yaml::from_str(&relation_yaml("    path: \"benchmarks/data/triangle/edges.csv\""))
-                .unwrap();
+        let def: BenchmarkDefinition = serde_yaml::from_str(&relation_yaml(
+            "    path: \"benchmarks/data/triangle/edges.csv\"",
+        ))
+        .unwrap();
         assert!(def.validate().is_err());
     }
 

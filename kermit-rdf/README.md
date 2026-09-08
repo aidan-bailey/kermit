@@ -10,10 +10,11 @@ Depends on [`kermit-parser`](../kermit-parser), [`kermit-ds`](../kermit-ds), and
 - [`pipeline::run_basic_pipeline`](src/pipeline.rs) — WatDiv Basic Testing. Inputs: the same [`PipelineInputs`](src/pipeline.rs) plus the `testsuite/` template directory (no stress params). Drives the basic workload over the 20 canonical L/S/F/C templates and processes artifacts the same way. Output meta has `kind = "watdiv-basic-onthefly"`.
 - [`lubm::pipeline::run_lubm_pipeline`](src/lubm/pipeline.rs) — LUBM. Inputs: a [`LubmPipelineInputs`](src/lubm/pipeline.rs) wrapping the vendored jar, scale (universities), seed, and the 14 query specs. Drives the jar, gunzips its output, runs Univ-Bench TBox forward chaining via [`lubm::entailment::entail`](src/lubm/entailment.rs), then partitions the entailed file. Output meta has `kind = "lubm-onthefly"`.
 
-All three record a [`spec_hash`](src/pipeline.rs) into `meta.json` when invoked from a declarative YAML so the materialization layer can detect param drift.
+All three hand their driver output to one shared orchestrator, [`generator::process_artifacts`](src/generator.rs), which sequences the post-driver stages (partition → Parquet → translate → dict → `benchmark.yml` → `expected/` → `meta.json`). A pipeline implements the [`Generator`](src/generator.rs) trait to supply only what differs: how its raw artifacts are staged (LUBM entails here), where its SPARQL comes from, and its tool-specific `meta.json` fields. All three record a [`spec_hash`](src/generator.rs) into `meta.json` when invoked from a declarative YAML so the materialization layer can detect param drift; [`generator::MetaHeader`](src/generator.rs) reads that kind-agnostic subset back.
 
 ## Shared stages
 
+- [`generator`](src/generator.rs) — the `Generator` trait, the `process_artifacts` orchestrator, and the `GeneratorMeta`/`MetaHeader` `meta.json` contract shared by every pipeline.
 - [`ntriples`](src/ntriples.rs) — streaming N-Triples parser over `oxttl`, yields `(subject, predicate, object)` with O(1) memory in file size.
 - [`partition`](src/partition.rs) — sanitizes predicate URIs and partitions the triple stream into per-predicate `(subject_id, object_id)` relations.
 - [`dict`](src/dict.rs) — bidirectional `RdfValue ↔ usize` dictionary, deterministic in insertion order.

@@ -81,9 +81,13 @@ kermit-rdf      → RDF/SPARQL preprocessing pipelines for on-the-fly benchmark 
                   `MODEL.txt`/`files/`/`VERSION` are committed too).
                   Two pipelines: `pipeline::run_pipeline` (watdiv-onthefly) and
                   `lubm::pipeline::run_lubm_pipeline` (lubm-onthefly, with Univ-Bench
-                  TBox forward chaining via `lubm::entailment`).
-                  Shared stages: `partition`, `parquet`, `dict`, `sparql::translator`,
-                  `yaml_emit`, `expected`. The 14 LUBM queries live at `queries/lubm/q*.sparql`
+                  TBox forward chaining via `lubm::entailment`). Both are thin
+                  `generator::Generator` impls over the one shared post-driver
+                  orchestrator `generator::process_artifacts`; a third generator
+                  implements the trait rather than copying the sequence.
+                  Shared stages: `generator`, `partition`, `parquet`, `dict`,
+                  `sparql::translator`, `yaml_emit`, `expected`.
+                  The 14 LUBM queries live at `queries/lubm/q*.sparql`
                   and are exposed via `lubm::queries::lubm_query_specs`.
 kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|list|fetch|clean|
                   gen [watdiv|lubm]).
@@ -108,6 +112,8 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|lis
 Tests use macro-generated suites that combinatorially test all data structures against all algorithms:
 - `define_multiway_join_test!()` — individual parametrized test
 - `define_multiway_join_test_suite!()` — generates 11 standard join patterns (unary, triangle, chain, star, self-join, existential, empty-result, single-relation, four-way-chain, wide-fanout, dead-end)
+- `relation_trie_test_suite!()` / `parquet_test_suite!()` (`kermit-ds/tests/common/macros.rs`) — the layer below the join for `TrieIterable` structures: iterator contract (traversal + seek), construction, and Parquet round-trip
+- `hash_trie_test_suite!(Type, Strategy)` / `parquet_test_suite!(Type, collector)` — the same layer for `HashTrieIterable` structures (`open`/`next`/`lookup`/`up`/`size`/`leaf_tuples`; round-trips via `collect_tuples()`). The two iterator families are deliberately separate traits, so a hash-family structure cannot reuse the sorted-trie suite — invoke the hash-family one per Layout alias instead (see `kermit-ds/tests/hash_trie_tests.rs`)
 - Uses `paste!` crate for macro hygiene
 
 Unit tests live inline in `#[cfg(test)]` blocks. Integration tests in `tests/` directories.

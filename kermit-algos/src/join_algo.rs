@@ -16,6 +16,17 @@ where
     /// for this exact `query` (after any const-view rewrite). Returns an
     /// iterator over the resulting join.
     ///
+    /// # Laziness is not part of the contract
+    ///
+    /// The `impl Iterator` return type says nothing about *when* work
+    /// happens. [`LeapfrogTriejoin`](crate::LeapfrogTriejoin) yields tuples
+    /// lazily, one per `next()`, whereas
+    /// [`HashTriejoin`](crate::HashTriejoin) materialises the whole result
+    /// into a `Vec` before returning its iterator. Callers that measure
+    /// throughput over the full result (the current `DB::join` path) see no
+    /// difference; a time-to-first-tuple or peak-memory metric would, and
+    /// must not assume every implementation streams.
+    ///
     /// # Panics
     ///
     /// Implementations panic if `plan` fails

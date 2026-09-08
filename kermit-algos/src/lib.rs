@@ -17,6 +17,11 @@ mod optimiser;
 mod singleton;
 mod trie_iter_kind;
 
+// `clap::ValueEnum` is derived here, in a library crate, on purpose: it keeps
+// the registry enums beside the implementations they name, so adding an
+// algorithm or optimiser touches one file for both the type and its CLI
+// spelling. The cost is `clap` in this crate's dependency tree. Decided in
+// aidan-bailey/kermit#60 (item 5).
 use {clap::ValueEnum, std::str::FromStr};
 pub use {
     const_rewrite::{

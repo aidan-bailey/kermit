@@ -512,17 +512,45 @@ macro_rules! relation_trie_test_suite {
     };
 }
 
+/// Parquet round-trip suite.
+///
+/// `parquet_test_suite!(Type)` materialises the loaded relation through
+/// `TrieIterable::trie_iter()` (sorted tries yield tuples in sorted order, and
+/// every fixture below is ascending, so the comparison is exact).
+///
+/// `parquet_test_suite!(Type, collector)` takes an explicit
+/// `fn(&Type) -> Vec<Vec<usize>>` for structures without a tuple-shaped
+/// iterator — `HashTrie` passes a closure over `collect_tuples()` that sorts
+/// the (hash-ordered) result.
+///
+/// `Type` is resolved via `use super::*`, so aliases such as `HashTrieSip`
+/// work as long as the invoking file brings them into scope.
 #[macro_export]
 macro_rules! parquet_test_suite {
     ($relation_type:ident) => {
+        $crate::parquet_test_suite!($relation_type, |relation: &$relation_type| {
+            use kermit_iters::TrieIterable;
+            relation
+                .trie_iter()
+                .into_iter()
+                .collect::<Vec<Vec<usize>>>()
+        });
+    };
+    ($relation_type:ident, $collect:expr) => {
         paste::paste! {
             #[cfg(test)]
             mod [<parquet_ $relation_type:lower>] {
 
                 use {
-                    kermit_ds::{$relation_type, Relation, RelationFileExt},
-                    kermit_iters::TrieIterable,
+                    super::*,
+                    kermit_ds::{Relation, RelationFileExt},
                 };
+
+                /// Tuples of a loaded relation, in the order the fixture
+                /// `data` is written in (ascending).
+                fn tuples_of(relation: &$relation_type) -> Vec<Vec<usize>> {
+                    ($collect)(relation)
+                }
 
                 fn write_parquet(
                     path: &std::path::PathBuf, attributes: &[String],
@@ -588,8 +616,7 @@ macro_rules! parquet_test_suite {
 
                     let relation =
                         $relation_type::from_parquet(&path).unwrap();
-                    let result: Vec<Vec<usize>> =
-                        relation.trie_iter().into_iter().collect();
+                    let result: Vec<Vec<usize>> = tuples_of(&relation);
                     assert_eq!(result, data);
 
                     assert_eq!(
@@ -625,8 +652,7 @@ macro_rules! parquet_test_suite {
 
                     let relation =
                         $relation_type::from_parquet(&path).unwrap();
-                    let result: Vec<Vec<usize>> =
-                        relation.trie_iter().into_iter().collect();
+                    let result: Vec<Vec<usize>> = tuples_of(&relation);
                     assert_eq!(result, data);
 
                     assert_eq!(relation.header().attrs(), &attributes);
@@ -651,8 +677,7 @@ macro_rules! parquet_test_suite {
 
                     let relation =
                         $relation_type::from_parquet(&path).unwrap();
-                    let result: Vec<Vec<usize>> =
-                        relation.trie_iter().into_iter().collect();
+                    let result: Vec<Vec<usize>> = tuples_of(&relation);
                     assert_eq!(result, data);
 
                     assert_eq!(relation.header().attrs(), &attributes);
@@ -682,8 +707,7 @@ macro_rules! parquet_test_suite {
 
                     let relation =
                         $relation_type::from_parquet(&path).unwrap();
-                    let result: Vec<Vec<usize>> =
-                        relation.trie_iter().into_iter().collect();
+                    let result: Vec<Vec<usize>> = tuples_of(&relation);
                     assert_eq!(result, data);
 
                     assert_eq!(relation.header().attrs(), &attributes);
@@ -709,8 +733,7 @@ macro_rules! parquet_test_suite {
 
                     let relation =
                         $relation_type::from_parquet(&path).unwrap();
-                    let result: Vec<Vec<usize>> =
-                        relation.trie_iter().into_iter().collect();
+                    let result: Vec<Vec<usize>> = tuples_of(&relation);
                     assert_eq!(result, data);
 
                     assert_eq!(relation.header().attrs(), &attributes);
@@ -752,8 +775,7 @@ macro_rules! parquet_test_suite {
                     );
                     assert_eq!(relation.header().attrs()[2], "salary");
 
-                    let result: Vec<Vec<usize>> =
-                        relation.trie_iter().into_iter().collect();
+                    let result: Vec<Vec<usize>> = tuples_of(&relation);
                     assert_eq!(result, data);
 
                     std::fs::remove_file(path).ok();
@@ -784,8 +806,7 @@ macro_rules! parquet_test_suite {
 
                     let relation =
                         $relation_type::from_parquet(&path).unwrap();
-                    let result: Vec<Vec<usize>> =
-                        relation.trie_iter().into_iter().collect();
+                    let result: Vec<Vec<usize>> = tuples_of(&relation);
                     assert_eq!(result.len(), data.len());
                     assert_eq!(result, data);
 
@@ -794,6 +815,742 @@ macro_rules! parquet_test_suite {
 
                     std::fs::remove_file(path).ok();
                 }
+            }
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Hash-family suites.
+//
+// `HashTrie` implements `HashTrieIterable`, a deliberately separate family from
+// `TrieIterable` (exact-match `lookup` instead of least-upper-bound `seek`, and
+// hashes instead of sorted keys), so it cannot be passed to the suites above.
+// The macros below mirror `relation_construction_tests!`,
+// `trie_traversal_tests!`, and `trie_seek_tests!` for that family.
+//
+// Bucket order inside a node depends on the hash values and the table
+// capacity, so unlike the sorted suites these tests never assume which key
+// `next()` yields first. They compare *sets* of hashes (computed with the same
+// `HashStrategy` the relation was built with) and use `lookup` whenever a
+// specific bucket must be reached.
+// ---------------------------------------------------------------------------
+
+#[macro_export]
+macro_rules! hash_trie_test {
+    (
+        $test_name:ident,
+        $relation_type:ident,
+        $arity:expr,
+        [ $( $input:expr ),* $(,)? ],
+        $code:expr
+    ) => {
+        #[test]
+        fn $test_name() {
+            use {
+                kermit_ds::Relation,
+                kermit_iters::{HashTrieIterable, HashTrieIterator},
+            };
+            // The arity is explicit (rather than inferred from the first
+            // tuple) because `HashTrie` does not support nullary relations, so
+            // the empty case still needs a real arity.
+            let inputs: Vec<Vec<usize>> = vec![$($input.to_vec()),*];
+            let relation = $relation_type::from_tuples(($arity as usize).into(), inputs);
+            $code(&mut relation.hash_trie_iter());
+        }
+    };
+}
+
+/// Helpers shared by the traversal and lookup modules. Invoked inside each
+/// generated module so that every sub-suite stays usable on its own (and so
+/// that nothing is defined where it would go unused).
+#[macro_export]
+macro_rules! hash_trie_test_helpers {
+    ($strategy:ty) => {
+        /// Hash of `key` under the strategy the relation under test was built
+        /// with — the value `HashTrieIterator::key` reports for that key.
+        fn h(key: usize) -> u64 { <$strategy as kermit_iters::HashStrategy>::hash(key) }
+
+        /// Hashes of `values`, sorted, for order-independent comparison.
+        fn hashes_of(values: &[usize]) -> Vec<u64> {
+            let mut hashes: Vec<u64> = values.iter().map(|&k| h(k)).collect();
+            hashes.sort_unstable();
+            hashes
+        }
+
+        /// A leaf chain as a sorted `Vec`, for comparison against literals.
+        fn sorted(chain: &[Vec<usize>]) -> Vec<Vec<usize>> {
+            let mut tuples = chain.to_vec();
+            tuples.sort();
+            tuples
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! hash_trie_construction_tests {
+    ($relation_type:ident) => {
+        mod construction {
+
+            use super::*;
+
+            fn assert_round_trip(arity: usize, tuples: Vec<Vec<usize>>) {
+                use kermit_ds::Relation;
+                let relation = $relation_type::from_tuples(arity.into(), tuples.clone());
+                // `HashTrie` has no tuple-shaped iterator; `collect_tuples`
+                // is its depth-first materialisation. Order is
+                // hash-dependent, so compare as sorted multisets.
+                let mut collected = relation.collect_tuples();
+                collected.sort();
+                let mut expected = tuples;
+                expected.sort();
+                assert_eq!(collected, expected);
+            }
+
+            #[test]
+            fn empty() { assert_round_trip(2, vec![]); }
+
+            #[test]
+            fn unary() { assert_round_trip(1, vec![vec![1], vec![2], vec![3]]); }
+
+            #[test]
+            fn binary() { assert_round_trip(2, vec![vec![1, 2], vec![3, 4]]); }
+
+            #[test]
+            fn ternary() { assert_round_trip(3, vec![vec![1, 2, 3], vec![4, 5, 6]]); }
+
+            #[test]
+            fn duplicates_are_preserved() {
+                // Multiset semantics: duplicate tuples join the same leaf
+                // chain rather than being absorbed (unlike `TreeTrie`).
+                assert_round_trip(2, vec![vec![1, 2], vec![1, 2], vec![1, 3]]);
+            }
+
+            #[test]
+            fn insert_matches_from_tuples() {
+                use kermit_ds::Relation;
+                let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4]];
+                let batch = $relation_type::from_tuples(2.into(), tuples.clone());
+                let mut incremental = $relation_type::new(2.into());
+                incremental.insert_all(tuples);
+                let mut a = batch.collect_tuples();
+                let mut b = incremental.collect_tuples();
+                a.sort();
+                b.sort();
+                assert_eq!(a, b);
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! hash_trie_traversal_tests {
+    ($relation_type:ident, $strategy:ty) => {
+        mod hash_trie_traversal {
+
+            use super::*;
+
+            $crate::hash_trie_test_helpers!($strategy);
+
+            /// Walk `next()` from the current bucket to the end of the
+            /// current node and return every hash visited (current bucket
+            /// included), sorted. Leaves the iterator at end.
+            fn remaining_keys(iter: &mut dyn kermit_iters::HashTrieIterator) -> Vec<u64> {
+                let mut keys = Vec::new();
+                while let Some(key) = iter.key() {
+                    keys.push(key);
+                    iter.next();
+                }
+                keys.sort_unstable();
+                keys
+            }
+
+            $crate::hash_trie_test!(
+                empty,
+                $relation_type,
+                2,
+                [],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Before open: nothing to see, nothing to navigate.
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+                    assert_eq!(iter.size(), 0);
+                    assert!(iter.next().is_none());
+                    assert!(!iter.lookup(h(1)));
+                    assert!(iter.leaf_tuples().is_none());
+                    assert!(!iter.up());
+
+                    // open() enters the root node but finds no occupied bucket.
+                    assert!(!iter.open());
+                    assert!(iter.at_end());
+                    assert!(iter.key().is_none());
+                    assert_eq!(iter.size(), 0);
+                    assert!(iter.next().is_none());
+                    assert!(!iter.lookup(h(1)));
+                    assert!(iter.leaf_tuples().is_none());
+                    assert!(!iter.open()); // a past-end bucket has no child
+
+                    // Unlike `TrieIterator`, a failed open() still entered the
+                    // (empty) root node, so one up() leaves it; a second is a
+                    // no-op at the pre-root position.
+                    assert!(iter.up());
+                    assert!(!iter.up());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                single,
+                $relation_type,
+                1,
+                [vec![1]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Before open: no key, at end
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+
+                    // Open root → h(1) (leaf)
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert!(!iter.at_end());
+                    assert_eq!(iter.size(), 1);
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1]]));
+                    assert!(!iter.open()); // leaf, no children
+
+                    // Exhaust siblings → at end
+                    assert!(iter.next().is_none());
+                    assert!(iter.at_end());
+                    assert!(iter.key().is_none());
+                    assert!(iter.leaf_tuples().is_none());
+
+                    // Navigate back up
+                    assert!(iter.up());
+                    assert!(!iter.up()); // already at root
+                }
+            );
+
+            $crate::hash_trie_test!(
+                siblings,
+                $relation_type,
+                1,
+                [vec![1], vec![2], vec![3]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Before open: no key, at end
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+
+                    // Open root → some leaf bucket
+                    assert!(iter.open());
+                    assert!(!iter.at_end());
+                    assert_eq!(iter.size(), 3);
+
+                    // Walk the siblings. Their order is hash-dependent, so
+                    // check each bucket is self-consistent (its chain holds
+                    // exactly the tuple whose value hashes to the bucket's
+                    // key) and that the set of keys is what we expect.
+                    let mut seen = Vec::new();
+                    while let Some(key) = iter.key() {
+                        let chain = iter.leaf_tuples().expect("leaf level");
+                        assert_eq!(chain.len(), 1);
+                        assert_eq!(h(chain[0][0]), key);
+                        assert!(!iter.open()); // every bucket here is a leaf
+                        seen.push(key);
+                        iter.next();
+                    }
+                    seen.sort_unstable();
+                    assert_eq!(seen, hashes_of(&[1, 2, 3]));
+
+                    // Exhausted → at end
+                    assert!(iter.at_end());
+                    assert!(iter.key().is_none());
+                    assert!(iter.next().is_none());
+
+                    // Navigate back up
+                    assert!(iter.up());
+                    assert!(!iter.up());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                shared,
+                $relation_type,
+                2,
+                [vec![1, 2], vec![1, 3]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Descend: root → h(1); one bucket, inner level.
+                    assert!(iter.open());
+                    assert_eq!(iter.size(), 1);
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert!(iter.leaf_tuples().is_none());
+
+                    // Under the shared prefix: buckets h(2) and h(3).
+                    assert!(iter.open());
+                    assert_eq!(iter.size(), 2);
+                    assert_eq!(remaining_keys(iter), hashes_of(&[2, 3]));
+
+                    // lookup() reaches each leaf bucket deterministically.
+                    assert!(iter.lookup(h(2)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2]]));
+                    assert!(iter.lookup(h(3)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 3]]));
+
+                    // Navigate back up through both levels
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert!(iter.up());
+                    assert!(!iter.up());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                deep,
+                $relation_type,
+                3,
+                [vec![1, 2, 3]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Descend: root → h(1) → h(2) → h(3)
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert_eq!(iter.size(), 1);
+                    assert!(iter.leaf_tuples().is_none());
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(2)));
+                    assert!(iter.leaf_tuples().is_none());
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(3)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2, 3]]));
+                    assert!(!iter.open()); // leaf
+
+                    // Ascend: h(3) → h(2) → h(1) → root
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(2)));
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert!(iter.up());
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+                    assert!(!iter.up());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                linear,
+                $relation_type,
+                1,
+                [vec![1], vec![2], vec![3]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Before open: no key, at end
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+
+                    // Open root; every bucket is a leaf
+                    assert!(iter.open());
+                    assert!(!iter.open());
+                    assert!(!iter.at_end());
+                    assert_eq!(iter.size(), 3);
+                    assert_eq!(remaining_keys(iter), hashes_of(&[1, 2, 3]));
+
+                    // Exhausted → at end; nothing to descend into
+                    assert!(iter.at_end());
+                    assert!(iter.key().is_none());
+                    assert!(iter.next().is_none());
+                    assert!(!iter.open());
+
+                    // Navigate back up to root
+                    assert!(iter.up());
+                    assert!(!iter.up());
+                    assert!(iter.key().is_none());
+                    assert!(iter.next().is_none());
+
+                    // Re-open: should restart at the first occupied bucket
+                    assert!(iter.open());
+                    assert!(!iter.at_end());
+                    assert_eq!(iter.size(), 3);
+                    assert_eq!(remaining_keys(iter), hashes_of(&[1, 2, 3]));
+                }
+            );
+
+            $crate::hash_trie_test!(
+                open,
+                $relation_type,
+                3,
+                [vec![1, 2, 3]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(2)));
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(3)));
+                    assert!(!iter.open());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                hard,
+                $relation_type,
+                3,
+                [vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Begin at root
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+
+                    // Open root → {h(1), h(7)}
+                    assert!(iter.open());
+                    assert_eq!(iter.size(), 2);
+                    assert_eq!(remaining_keys(iter), hashes_of(&[1, 7]));
+
+                    // lookup h(1), open → {h(2), h(5)}
+                    assert!(iter.lookup(h(1)));
+                    assert!(iter.open());
+                    assert_eq!(iter.size(), 2);
+                    assert_eq!(remaining_keys(iter), hashes_of(&[2, 5]));
+
+                    // lookup h(2), open → {h(3), h(4)}
+                    assert!(iter.lookup(h(2)));
+                    assert!(iter.open());
+                    assert_eq!(iter.size(), 2);
+                    assert_eq!(remaining_keys(iter), hashes_of(&[3, 4]));
+
+                    // Each leaf under [1, 2] holds exactly its tuple
+                    assert!(iter.lookup(h(3)));
+                    assert!(!iter.open()); // 3 is a leaf
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2, 3]]));
+                    assert!(iter.lookup(h(4)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2, 4]]));
+
+                    // up() → [1, 2]
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(2)));
+
+                    // lookup h(5) (sibling of 2 under [1]), open → h(6)
+                    assert!(iter.lookup(h(5)));
+                    assert!(iter.open());
+                    assert_eq!(iter.size(), 1);
+                    assert_eq!(iter.key(), Some(h(6)));
+                    assert!(!iter.open()); // 6 is a leaf
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 5, 6]]));
+
+                    // up() → 5, up() → 1
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(5)));
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(1)));
+
+                    // lookup h(7) → open → h(8) → open → h(9)
+                    assert!(iter.lookup(h(7)));
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(8)));
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(9)));
+                    assert!(!iter.open()); // 9 is a leaf
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![7, 8, 9]]));
+
+                    // up() → 8, up() → 7, up() → root
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(8)));
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(7)));
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), None);
+
+                    // Now should be at end
+                    assert!(iter.at_end());
+                    assert!(iter.next().is_none());
+                    assert!(!iter.up());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                duplicates,
+                $relation_type,
+                2,
+                [vec![1, 2], vec![1, 2], vec![1, 3]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Multiset semantics: identical tuples share one leaf
+                    // bucket, so size() counts distinct hashes, not tuples.
+                    assert!(iter.open());
+                    assert_eq!(iter.size(), 1);
+                    assert!(iter.open());
+                    assert_eq!(iter.size(), 2);
+                    assert!(iter.lookup(h(2)));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 2], vec![1, 2]])
+                    );
+                    assert!(iter.lookup(h(3)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 3]]));
+                }
+            );
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! hash_trie_lookup_tests {
+    ($relation_type:ident, $strategy:ty) => {
+        mod hash_trie_lookup {
+
+            use super::*;
+
+            $crate::hash_trie_test_helpers!($strategy);
+
+            $crate::hash_trie_test!(
+                lookup_exact,
+                $relation_type,
+                1,
+                [vec![1], vec![3], vec![5], vec![7], vec![9]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    assert!(iter.lookup(h(5)));
+                    assert_eq!(iter.key(), Some(h(5)));
+                    assert!(!iter.at_end());
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![5]]));
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_absent_moves_past_end,
+                $relation_type,
+                1,
+                [vec![1], vec![3], vec![5], vec![7], vec![9]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Exact-match semantics: where `seek(4)` would land on 5,
+                    // `lookup(h(4))` misses and parks the iterator past end.
+                    assert!(iter.open());
+                    assert!(!iter.lookup(h(4)));
+                    assert!(iter.at_end());
+                    assert!(iter.key().is_none());
+                    assert!(iter.leaf_tuples().is_none());
+                    assert!(iter.next().is_none());
+                    assert!(!iter.open());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_to_current,
+                $relation_type,
+                1,
+                [vec![1], vec![3], vec![5]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    let current = iter.key().expect("open lands on a bucket");
+                    assert!(iter.lookup(current));
+                    assert_eq!(iter.key(), Some(current));
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_then_next,
+                $relation_type,
+                1,
+                [vec![1], vec![3], vec![5], vec![7], vec![9]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // next() after lookup() continues the bucket scan from the
+                    // found bucket: every key it yields is a distinct member
+                    // of this node, and the scan ends at end.
+                    assert!(iter.open());
+                    assert!(iter.lookup(h(5)));
+                    let expected = hashes_of(&[1, 3, 5, 7, 9]);
+                    let mut visited = vec![h(5)];
+                    while let Some(key) = iter.next() {
+                        assert!(expected.contains(&key));
+                        assert!(!visited.contains(&key), "bucket visited twice");
+                        visited.push(key);
+                    }
+                    assert!(iter.at_end());
+                    assert!(iter.key().is_none());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_at_depth,
+                $relation_type,
+                2,
+                [vec![1, 2], vec![1, 5], vec![1, 8]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert!(iter.open());
+                    assert!(iter.lookup(h(5)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 5]]));
+                    assert!(iter.lookup(h(8)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 8]]));
+                    // Backwards repositioning is fine: lookup is not monotone.
+                    assert!(iter.lookup(h(2)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2]]));
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_absent_at_depth,
+                $relation_type,
+                2,
+                [vec![1, 2], vec![1, 5], vec![1, 8]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    assert!(iter.open());
+                    assert!(!iter.lookup(h(3)));
+                    assert!(iter.at_end());
+                    // A miss at depth 1 leaves the parent position untouched.
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert!(!iter.at_end());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_multiple,
+                $relation_type,
+                1,
+                [vec![1], vec![3], vec![5], vec![7], vec![9]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    assert!(iter.lookup(h(3)));
+                    assert_eq!(iter.key(), Some(h(3)));
+                    assert!(iter.lookup(h(7)));
+                    assert_eq!(iter.key(), Some(h(7)));
+                    assert!(iter.lookup(h(9)));
+                    assert_eq!(iter.key(), Some(h(9)));
+                    assert!(!iter.lookup(h(10)));
+                    assert!(iter.at_end());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_recovers_from_at_end,
+                $relation_type,
+                1,
+                [vec![1], vec![3], vec![5]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    // Exhaust all siblings
+                    while iter.next().is_some() {}
+                    assert!(iter.at_end());
+                    // Unlike `seek()` at end (which returns false), lookup()
+                    // is a fresh probe of the node and repositions freely.
+                    assert!(iter.lookup(h(1)));
+                    assert!(!iter.at_end());
+                    assert_eq!(iter.key(), Some(h(1)));
+                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1]]));
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_after_repeated_next_past_end,
+                $relation_type,
+                1,
+                [vec![1], vec![3]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    while iter.next().is_some() {}
+                    // Redundant next() calls past end
+                    assert_eq!(iter.next(), None);
+                    assert_eq!(iter.next(), None);
+                    // at_end() must remain true despite repeated next() calls
+                    assert!(iter.at_end());
+                    // lookup() must not panic — and still finds the bucket
+                    assert!(iter.lookup(h(3)));
+                    assert_eq!(iter.key(), Some(h(3)));
+                    assert!(!iter.lookup(h(4)));
+                    assert!(iter.at_end());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_before_open_returns_false,
+                $relation_type,
+                1,
+                [vec![1], vec![3]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // No node has been entered yet, so there is nothing to
+                    // probe.
+                    assert!(!iter.lookup(h(1)));
+                    assert!(iter.at_end());
+                    assert!(iter.key().is_none());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_does_not_change_depth,
+                $relation_type,
+                2,
+                [vec![1, 2], vec![3, 4]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    assert!(iter.lookup(h(3)));
+                    assert!(iter.open());
+                    assert_eq!(iter.key(), Some(h(4)));
+                    assert!(iter.lookup(h(4)));
+                    // Still at depth 1: one up() returns to the root level.
+                    assert!(iter.up());
+                    assert_eq!(iter.key(), Some(h(3)));
+                    assert!(iter.up());
+                    assert!(!iter.up());
+                }
+            );
+
+            $crate::hash_trie_test!(
+                lookup_is_scoped_to_the_current_node,
+                $relation_type,
+                2,
+                [vec![1, 2], vec![3, 4]],
+                |iter: &mut dyn HashTrieIterator| {
+                    // Attribute positions live in physically distinct tables
+                    // (see the "hash function consistency" invariant), so a
+                    // value stored only at depth 1 is invisible at depth 0 —
+                    // and vice versa.
+                    assert!(iter.open());
+                    assert!(!iter.lookup(h(2)));
+                    assert!(!iter.lookup(h(4)));
+                    assert!(iter.lookup(h(1)));
+                    assert!(iter.open());
+                    assert!(!iter.lookup(h(1)));
+                    assert!(!iter.lookup(h(4)));
+                    assert!(iter.lookup(h(2)));
+                }
+            );
+
+            $crate::hash_trie_test!(
+                open_after_lookup_miss_returns_false,
+                $relation_type,
+                2,
+                [vec![1, 2]],
+                |iter: &mut dyn HashTrieIterator| {
+                    assert!(iter.open());
+                    assert!(!iter.lookup(h(9)));
+                    // Past end: nothing to descend into, and the failed open
+                    // leaves the stack untouched.
+                    assert!(!iter.open());
+                    assert!(iter.up());
+                    assert!(!iter.up());
+                }
+            );
+        }
+    };
+}
+
+/// Hash-family counterpart of `relation_trie_test_suite!`. Takes the relation
+/// type (typically a `HashTrie<H>` alias such as `HashTrieSip`) together with
+/// the `HashStrategy` it was instantiated with, so the generated tests can
+/// compute the hashes `HashTrieIterator::key` will report.
+#[macro_export]
+macro_rules! hash_trie_test_suite {
+    ($relation_type:ident, $strategy:ty) => {
+        paste::paste! {
+            #[cfg(test)]
+            mod [<$relation_type:lower>] {
+
+                use super::*;
+
+                $crate::hash_trie_construction_tests!($relation_type);
+
+                $crate::hash_trie_traversal_tests!($relation_type, $strategy);
+
+                $crate::hash_trie_lookup_tests!($relation_type, $strategy);
+
             }
         }
     };

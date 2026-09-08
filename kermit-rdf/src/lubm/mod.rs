@@ -5,8 +5,10 @@
 //! bind-mounted host files, so the sandbox is just a temp directory for
 //! output staging — no `bwrap` involvement.
 //!
-//! Pipeline stages 4–6 (partition, parquet, translate) run after entailment
-//! and live in `crate::lubm::pipeline::process_artifacts`.
+//! The post-driver stages (partition, parquet, translate, emit) are the
+//! shared `crate::generator::process_artifacts` orchestrator;
+//! `crate::lubm::pipeline` supplies the LUBM-specific hooks (entailment as
+//! the staging step, the hand-written queries, `LubmMeta`).
 
 pub mod driver;
 pub mod entailment;
