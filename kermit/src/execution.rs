@@ -17,9 +17,10 @@
 //! [`Execution`] enum whose variants *are* the valid cells. A report's
 //! `data_structure` / `algorithm` axes are derived from the `Execution`
 //! that actually ran, so no code path can label a measurement with an
-//! algorithm it did not execute. [`ExecutionFamily`] captures the handful
-//! of operations that differ between the two families; the benchmark
-//! runner in `main.rs` is generic over it.
+//! algorithm it did not execute. [`RelationFamily`] captures the handful
+//! of relation-level operations that differ between the two families and
+//! [`ExecutionFamily`] the join-level ones on top; `bench ds` and
+//! `bench run` in `main.rs` are generic over one each.
 
 use {
     crate::HasherChoice,
@@ -182,20 +183,19 @@ impl Sweep {
     }
 }
 
-/// The operations that differ between the sorted and hash join families.
-/// Everything else in a `bench run` cell — query parsing, metadata,
-/// Criterion group wiring, report assembly — is shared by the generic
-/// runner in `main.rs`.
+/// The relation-facing half of a family: how to load a structure's
+/// relations, recover their tuples and label them. This is everything
+/// `bench ds` needs — it measures a structure on its own, joins nothing,
+/// and so bounds on this trait alone. The join-facing half is
+/// [`ExecutionFamily`], a subtrait.
 ///
-/// Both `build` paths must construct the engine the same way: the
-/// `end_to_end` metric times [`ExecutionFamily::build_from_tuples`] and
-/// reports it as the cost of the build that the `iteration` metric's
-/// engine paid via [`ExecutionFamily::build`].
-pub trait ExecutionFamily {
+/// Implemented by the two marker types [`SortedTrieFamily`] and
+/// [`HashTrieFamily`], which `bench ds` constructs directly, and by the
+/// join families [`TrieLftj`] / [`HashHtj`], which delegate to an embedded
+/// marker so the two paths cannot disagree about a structure.
+pub trait RelationFamily {
     /// The relation type loaded from the benchmark's relation files.
     type Rel: Relation + RelationFileExt + HeapSize + 'static;
-    /// The built, queryable form of a set of relations.
-    type Engine;
 
     /// The cell this family instance runs; source of the report's
     /// `data_structure` / `algorithm` axes.
@@ -208,6 +208,24 @@ pub trait ExecutionFamily {
     /// Number of stored tuples in `rel`. Must agree with
     /// `Self::tuples(rel).len()` but should avoid materialising the tuples.
     fn tuple_count(rel: &Self::Rel) -> usize;
+
+    /// The `ds_*` optimization axes emitted by the relation type, merged
+    /// into the report's axes. Empty for structures without any.
+    fn optimization_axes(rel: &Self::Rel) -> BTreeMap<String, serde_json::Value>;
+}
+
+/// The join-facing half of a family: building an engine over loaded
+/// relations and querying it. Everything else in a `bench run` cell —
+/// query parsing, metadata, Criterion group wiring, report assembly — is
+/// shared by the generic runner in `main.rs`.
+///
+/// Both `build` paths must construct the engine the same way: the
+/// `end_to_end` metric times [`ExecutionFamily::build_from_tuples`] and
+/// reports it as the cost of the build that the `iteration` metric's
+/// engine paid via [`ExecutionFamily::build`].
+pub trait ExecutionFamily: RelationFamily {
+    /// The built, queryable form of a set of relations.
+    type Engine;
 
     /// Builds the engine from freshly loaded relations, retaining them for
     /// the per-relation metrics (`insertion`, `space`).
@@ -224,28 +242,83 @@ pub trait ExecutionFamily {
 
     /// Runs `query` against `engine`.
     fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>>;
+}
 
-    /// The `ds_*` optimization axes emitted by the relation type, merged
-    /// into the report's axes. Empty for structures without any.
-    fn optimization_axes(rel: &Self::Rel) -> BTreeMap<String, serde_json::Value>;
+/// The sorted-family structure `R` on its own: what `bench ds -i tree-trie`
+/// / `-i column-trie` measures. Carries no optimiser or engine, so it
+/// cannot join — the type says what `bench ds` does.
+pub struct SortedTrieFamily<R>(PhantomData<R>);
+
+impl<R> SortedTrieFamily<R> {
+    /// The family for `R`.
+    pub fn new() -> Self { Self(PhantomData) }
+}
+
+impl<R> Default for SortedTrieFamily<R> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
+    type Rel = R;
+
+    fn execution(&self) -> Execution { Execution::TrieLftj(R::KIND) }
+
+    fn tuples(rel: &R) -> Vec<Vec<usize>> { rel.trie_iter().into_iter().collect() }
+
+    fn tuple_count(rel: &R) -> usize { rel.trie_iter().into_iter().count() }
+
+    fn optimization_axes(_rel: &R) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+}
+
+/// `HashTrie<H>` on its own: what `bench ds -i hash-trie` measures. Only
+/// the `--ds-layout-hasher` choice rides along, for the report's
+/// `ds_layout_hasher` axis.
+pub struct HashTrieFamily<H> {
+    hasher: HasherChoice,
+    _strategy: PhantomData<H>,
+}
+
+impl<H> HashTrieFamily<H> {
+    /// The family for the `--ds-layout-hasher` choice `hasher` (which must
+    /// be the choice `H` was monomorphised from).
+    pub fn new(hasher: HasherChoice) -> Self {
+        Self {
+            hasher,
+            _strategy: PhantomData,
+        }
+    }
+}
+
+impl<H: HashStrategy + 'static> RelationFamily for HashTrieFamily<H> {
+    type Rel = HashTrie<H>;
+
+    fn execution(&self) -> Execution { Execution::HashHtj(self.hasher) }
+
+    fn tuples(rel: &HashTrie<H>) -> Vec<Vec<usize>> { rel.collect_tuples() }
+
+    fn tuple_count(rel: &HashTrie<H>) -> usize { rel.collect_tuples().len() }
+
+    fn optimization_axes(rel: &HashTrie<H>) -> BTreeMap<String, serde_json::Value> {
+        rel.optimization_axes()
+    }
 }
 
 /// Sorted family: `R` under Leapfrog Triejoin through the `DB` trait.
 pub struct TrieLftj<R> {
+    structure: SortedTrieFamily<R>,
     optimiser: Optimiser,
     /// Passed to the engine as [`DB::name`]; callers use the benchmark
     /// name so downstream tooling can correlate engines with workloads.
     engine_name: String,
-    _relation: PhantomData<R>,
 }
 
 impl<R> TrieLftj<R> {
     /// Creates the family for benchmark `engine_name` planned by `optimiser`.
     pub fn new(optimiser: Optimiser, engine_name: String) -> Self {
         Self {
+            structure: SortedTrieFamily::new(),
             optimiser,
             engine_name,
-            _relation: PhantomData,
         }
     }
 }
@@ -258,15 +331,22 @@ pub struct TrieLftjEngine<R: Relation> {
     relations: Vec<R>,
 }
 
-impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
-    type Engine = TrieLftjEngine<R>;
+impl<R: SortedTrieRelation + 'static> RelationFamily for TrieLftj<R> {
     type Rel = R;
 
-    fn execution(&self) -> Execution { Execution::TrieLftj(R::KIND) }
+    fn execution(&self) -> Execution { self.structure.execution() }
 
-    fn tuples(rel: &R) -> Vec<Vec<usize>> { rel.trie_iter().into_iter().collect() }
+    fn tuples(rel: &R) -> Vec<Vec<usize>> { SortedTrieFamily::<R>::tuples(rel) }
 
-    fn tuple_count(rel: &R) -> usize { rel.trie_iter().into_iter().count() }
+    fn tuple_count(rel: &R) -> usize { SortedTrieFamily::<R>::tuple_count(rel) }
+
+    fn optimization_axes(rel: &R) -> BTreeMap<String, serde_json::Value> {
+        SortedTrieFamily::<R>::optimization_axes(rel)
+    }
+}
+
+impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
+    type Engine = TrieLftjEngine<R>;
 
     fn build(&self, relations: Vec<R>) -> Self::Engine {
         // Populate the DB through `add_relation` + `add_keys_batch` rather
@@ -301,15 +381,12 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
     fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>> {
         engine.db.join(query)
     }
-
-    fn optimization_axes(_rel: &R) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
 /// Hash family: `HashTrie<H>` under Hash Triejoin through [`hash_join`].
 pub struct HashHtj<H> {
-    hasher: HasherChoice,
+    structure: HashTrieFamily<H>,
     optimiser: Box<dyn kermit_algos::QueryOptimiser>,
-    _strategy: PhantomData<H>,
 }
 
 impl<H> HashHtj<H> {
@@ -318,10 +395,23 @@ impl<H> HashHtj<H> {
     /// `optimiser`.
     pub fn new(hasher: HasherChoice, optimiser: Optimiser) -> Self {
         Self {
-            hasher,
+            structure: HashTrieFamily::new(hasher),
             optimiser: optimiser.instantiate(),
-            _strategy: PhantomData,
         }
+    }
+}
+
+impl<H: HashStrategy + 'static> RelationFamily for HashHtj<H> {
+    type Rel = HashTrie<H>;
+
+    fn execution(&self) -> Execution { self.structure.execution() }
+
+    fn tuples(rel: &HashTrie<H>) -> Vec<Vec<usize>> { HashTrieFamily::<H>::tuples(rel) }
+
+    fn tuple_count(rel: &HashTrie<H>) -> usize { HashTrieFamily::<H>::tuple_count(rel) }
+
+    fn optimization_axes(rel: &HashTrie<H>) -> BTreeMap<String, serde_json::Value> {
+        HashTrieFamily::<H>::optimization_axes(rel)
     }
 }
 
@@ -329,13 +419,6 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
     /// Relations keyed by name — the shape [`hash_join`] borrows per query
     /// so a Criterion iteration allocates no wrappers.
     type Engine = HashMap<String, HashTrie<H>>;
-    type Rel = HashTrie<H>;
-
-    fn execution(&self) -> Execution { Execution::HashHtj(self.hasher) }
-
-    fn tuples(rel: &HashTrie<H>) -> Vec<Vec<usize>> { rel.collect_tuples() }
-
-    fn tuple_count(rel: &HashTrie<H>) -> usize { rel.collect_tuples().len() }
 
     fn build(&self, relations: Vec<HashTrie<H>>) -> Self::Engine {
         relations
@@ -360,10 +443,6 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
 
     fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>> {
         hash_join::<HashTrie<H>, H>(engine, query, self.optimiser.as_ref())
-    }
-
-    fn optimization_axes(rel: &HashTrie<H>) -> BTreeMap<String, serde_json::Value> {
-        rel.optimization_axes()
     }
 }
 
@@ -461,6 +540,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The structure-only markers `bench ds` uses must report the same
+    /// cell as the join families `bench run` uses for the same structure.
+    #[test]
+    fn structure_markers_agree_with_join_families() {
+        assert_eq!(
+            SortedTrieFamily::<TreeTrie>::new().execution(),
+            TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic, "t".into()).execution()
+        );
+        assert_eq!(
+            SortedTrieFamily::<ColumnTrie>::new().execution(),
+            TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic, "t".into()).execution()
+        );
+        assert_eq!(
+            HashTrieFamily::<kermit_iters::FxHashStrategy>::new(HasherChoice::Fxhash).execution(),
+            HashHtj::<kermit_iters::FxHashStrategy>::new(
+                HasherChoice::Fxhash,
+                Optimiser::Lexicographic
+            )
+            .execution()
+        );
     }
 
     /// The family's reported execution comes from its type, so the label

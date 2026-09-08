@@ -38,7 +38,10 @@ use {
         write_json_report, write_metadata_block, BenchKind, BenchReport, CriterionGroupRef,
         MetadataLine, ReportMetric,
     },
-    execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
+    execution::{
+        Execution, ExecutionFamily, HashHtj, HashTrieFamily, RelationFamily, SortedTrie,
+        SortedTrieFamily, Sweep, TrieLftj,
+    },
 };
 
 /// Default Criterion group name when `--name` is omitted on `bench run`.
@@ -659,16 +662,16 @@ where
 
 /// Benchmarks one index structure over one relation file.
 ///
-/// Generic over the [`ExecutionFamily`] so the sorted family
-/// (`TrieLftj<R>`) and the hash family (`HashHtj<H>`) share one body, as
-/// [`run_benchmark`] does for `bench run` (issue #61 closed the last
-/// hand-mirrored pair). The family supplies the three points where the
-/// bodies used to diverge: the relation type to load (`F::Rel`), how to
-/// recover its tuples (`F::tuples` — `trie_iter()` for sorted tries,
-/// `collect_tuples()` for the hash trie, whose iterator yields hashes),
-/// and its optimization axes. `bench ds` involves no join, so the
-/// family's engine and optimiser are never touched here.
-fn run_ds_bench<F: ExecutionFamily>(
+/// Generic over the [`RelationFamily`] so the sorted family
+/// (`SortedTrieFamily<R>`) and the hash family (`HashTrieFamily<H>`) share
+/// one body, as [`run_benchmark`] does for `bench run` (issue #61 closed
+/// the last hand-mirrored pair). The family supplies the three points
+/// where the bodies used to diverge: the relation type to load (`F::Rel`),
+/// how to recover its tuples (`F::tuples` — `trie_iter()` for sorted
+/// tries, `collect_tuples()` for the hash trie, whose iterator yields
+/// hashes), and its optimization axes. `bench ds` involves no join, which
+/// the bound states: a `RelationFamily` has no engine to build or query.
+fn run_ds_bench<F: RelationFamily>(
     family: &F, relation_path: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
     bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
@@ -1301,20 +1304,16 @@ fn run_bench_join(
 }
 
 /// Runs one `bench ds` measurement by monomorphising [`run_ds_bench`]
-/// over the [`ExecutionFamily`] that [`Execution::for_structure`] names
-/// for `ds`. `bench ds` selects no algorithm, so the family's join side is
-/// inert: the sorted family's optimiser and engine name, and the hash
-/// family's optimiser, are placeholders that `run_ds_bench` never reads.
-/// The `H: HashStrategy` parameter is picked from the `--ds-layout-hasher`
-/// CLI flag (`hasher`).
+/// over the [`RelationFamily`] that [`Execution::for_structure`] names
+/// for `ds`. The `H: HashStrategy` parameter is picked from the
+/// `--ds-layout-hasher` CLI flag (`hasher`).
 fn dispatch_ds_bench(
     ds: IndexStructure, hasher: HasherChoice, relation: &Path, metrics: &[Metric],
     queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    let optimiser = Optimiser::Lexicographic;
     match Execution::for_structure(ds, hasher) {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_ds_bench(
-            &TrieLftj::<kermit_ds::TreeTrie>::new(optimiser, group_name.to_string()),
+            &SortedTrieFamily::<kermit_ds::TreeTrie>::new(),
             relation,
             metrics,
             queries_per_build,
@@ -1322,7 +1321,7 @@ fn dispatch_ds_bench(
             bench_args,
         ),
         | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_ds_bench(
-            &TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser, group_name.to_string()),
+            &SortedTrieFamily::<kermit_ds::ColumnTrie>::new(),
             relation,
             metrics,
             queries_per_build,
@@ -1330,7 +1329,7 @@ fn dispatch_ds_bench(
             bench_args,
         ),
         | Execution::HashHtj(hasher @ HasherChoice::Sip) => run_ds_bench(
-            &HashHtj::<SipHashStrategy>::new(hasher, optimiser),
+            &HashTrieFamily::<SipHashStrategy>::new(hasher),
             relation,
             metrics,
             queries_per_build,
@@ -1338,7 +1337,7 @@ fn dispatch_ds_bench(
             bench_args,
         ),
         | Execution::HashHtj(hasher @ HasherChoice::Fxhash) => run_ds_bench(
-            &HashHtj::<FxHashStrategy>::new(hasher, optimiser),
+            &HashTrieFamily::<FxHashStrategy>::new(hasher),
             relation,
             metrics,
             queries_per_build,
