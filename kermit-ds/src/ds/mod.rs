@@ -7,7 +7,11 @@ mod tree_trie;
 // touches one file for both the type and its CLI spelling. The cost is `clap`
 // in this crate's dependency tree. Decided in aidan-bailey/kermit#60 (item 5).
 use {clap::ValueEnum, std::str::FromStr};
-pub use {column_trie::ColumnTrie, hash_trie::HashTrie, tree_trie::TreeTrie};
+pub use {
+    column_trie::ColumnTrie,
+    hash_trie::{HashTrie, HashTrieConfig},
+    tree_trie::TreeTrie,
+};
 
 /// The available trie-based index structures for storing relations.
 ///
