@@ -111,24 +111,60 @@ iterator's type parameter.
 `HashTriejoin`, `SingletonHashTrieIter`, and the `HashTrieIterator` trait
 are untouched.
 
-### Performance expectations
+### Performance expectations (predicted) and measurements (actual)
 
-**Pruning off** (default; every existing benchmark): one predictable branch
-per inserted attribute; one extra predictable branch per iterator call (the
-frame match, on top of the node-variant match that already exists); stack
-entry grows from 16 to ~32 bytes. Expected to be inside Criterion noise.
+**Predicted, pruning off**: one predictable branch per inserted attribute
+and one extra predictable branch per iterator call; expected to be inside
+Criterion noise.
 
-**Pruning on**: space is a clear win (one `Vec<usize>` replaces one hash
-table per remaining level). Time trades a table probe per level for one
-`H::hash` per level. Hypothesis, testable via the 2×2
-`ds_layout_hasher × ds_config_singleton_pruning` pivot: pruning wins
-outright under FxHash (~1 ns hash) and is roughly a wash on time under
-SipHash (tens of ns, comparable to a cache miss) while still winning on
-space.
+**Measured, pruning off** (2026-09-08, `oxford-uniform-s3`, `iteration`
+metric, three interleaved rounds of the parent commit `9c67ee5` against
+the implementation; TreeTrie/LFTJ on the same two binaries as a control
+was flat at ~37 µs both sides):
 
-A variant that stores the remaining-level hashes alongside the tuple would
-remove the hash cost but spend space to buy time and blur the ablation. Not
-done here; measure the plain version first.
+| Query | baseline | this branch | overhead |
+|---|---|---|---|
+| binary-join | ~59.7 µs | ~65.5 µs | +10 % |
+| triangle | ~2.10 ms | ~2.33 ms | +10 % |
+
+The prediction was wrong at this scale: the whole join costs ~15 ns per
+tuple, so one extra predictable branch per iterator call is visible. Two
+isolating builds attribute the 10 % as roughly **4 % to the third
+`HashTrieNode` variant** (three-arm accessor matches; the pre-Task-4
+iterator on top of the new node type measures ~+4 %) and **5–6 % to the
+two-variant `Frame` in `HashTrieIter`**. Before commit `94fcc5e` the total
+was 15–22 %: the diverging panic helper in the accessors had stopped LLVM
+inlining them into the probe loops; `#[cold]` on the helper and
+`#[inline]` on the accessors recovered the rest. Insertion and space are
+unchanged with pruning off.
+
+**Measured, pruning on** (same protocol): space of the arity-3 relations
+R/S/T falls from ~934 KiB to ~409 KiB (−56 %) and of the arity-2 U/V/W
+from ~52 KiB to ~41 KiB (−22 %); unary P/Q are unchanged (no level to
+prune). Insertion is ~8–10 % faster (4.5 → 4.05 ms). Iteration lands
+between the two pruning-off numbers: triangle ~1.92 ms against the
+branch's 2.24 ms and the baseline's 1.86 ms in the first run; binary-join
+is level with pruning-off on this branch.
+
+**Decision point.** The acceptance check in Section 5 said an overhead
+outside Criterion noise means the design is revisited before merge. The
+remaining 10 % is inherent to the chosen shape (a runtime Config with a
+transparent iterator) rather than to an implementation slip. Options,
+none taken in this change:
+
+1. Accept: within-binary ablations (`ds_config_singleton_pruning`
+   true vs false) are unaffected; only cross-commit comparisons of the
+   pruning-off HashTrie shift by ~10 %.
+2. Recover the ~5 % iterator share by replacing the `Frame` enum with a
+   table-shaped frame that the singleton case populates (a `(node, idx)`
+   pair plus a side hash), at the cost of the clean one-entry-table
+   emulation.
+3. Recover all of it by lifting pruning to a Layout parameter
+   (`HashTrie<H, Pruning>`), which the standard advises against and which
+   would make the node type monomorphic per configuration.
+
+The Sip-vs-Fx hypothesis (pruning helps more under FxHash) is still
+untested; it needs the 2×2 pivot in kermit-lab.
 
 ## Section 3: config plumbing
 
@@ -307,6 +343,11 @@ config on the parent commit and on the implementation commit. Compare with
 `kl.bootstrap_ratio_ci`. Expected: the interval includes 1. If it excludes
 1, Section 2's overhead claim is wrong and the design is revisited before
 merge.
+
+*Outcome:* the interval excluded 1 (see Section 2, "Measured"); `triangle`
+alone was too small to trust (8 tuples, ~1.6 µs per join), so the
+measurement moved to `oxford-uniform-s3` with a TreeTrie control. The
+decision is recorded in Section 2 and left to the branch owner.
 
 ### kermit-lab
 

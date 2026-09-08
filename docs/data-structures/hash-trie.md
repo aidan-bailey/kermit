@@ -133,11 +133,16 @@ optimizations are classified into Layout, Config, or BuildMode.
     via [`ConfigurableRelation`](../../kermit-ds/src/relation.rs); tests lift
     the value to a type with `Configured<HashTrie<H>, PruningOn>`.
   - **Bench axis value:** `true` / `false`.
-  - **Expected effect:** space strictly smaller on sparse fan-out. Time
-    trades one table probe per pruned level for one `H::hash`; expected to
-    win under `fxhash` and be roughly neutral under `sip`. Test the
-    hypothesis with the `ds_layout_hasher × ds_config_singleton_pruning`
-    pivot in kermit-lab.
+  - **Measured effect** (`oxford-uniform-s3`, SipHash, 2026-09-08): space of
+    the arity-3 relations −56 % and of the arity-2 relations −22 % (unary
+    relations unchanged); insertion ~8–10 % faster; join iteration roughly
+    level with pruning off. Supporting the `Singleton` variant costs the
+    pruning-*off* configuration about 10 % on join iteration relative to
+    the pre-pruning `HashTrie` (about 4 % from the third node variant, the
+    rest from the two-variant iterator frame); insertion and space are
+    unchanged. Whether pruning helps more under `fxhash` (one cheap hash
+    per pruned level instead of a probe) is still untested; use the
+    `ds_layout_hasher × ds_config_singleton_pruning` pivot in kermit-lab.
 
 ### Deferred follow-ups
 
