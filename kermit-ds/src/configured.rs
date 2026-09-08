@@ -35,13 +35,27 @@ pub trait ConfigProvider<C> {
 
 /// Declares a [`ConfigProvider`] marker type.
 ///
-/// ```ignore
-/// define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig { singleton_pruning: true });
+/// ```
+/// use {
+///     kermit_ds::{
+///         define_config_provider, ConfigurableRelation, Configured, HashTrie, HashTrieConfig,
+///         Relation,
+///     },
+///     kermit_iters::SipHashStrategy,
+/// };
+///
+/// define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
+///     singleton_pruning: true,
+/// });
+///
 /// type HashTrieSipPruned = Configured<HashTrie<SipHashStrategy>, PruningOn>;
+///
+/// let r = HashTrieSipPruned::from_tuples(2.into(), vec![vec![1, 2]]);
+/// assert!(r.config().singleton_pruning);
 /// ```
 #[macro_export]
 macro_rules! define_config_provider {
-    ($name:ident, $config:ty, $value:expr) => {
+    ($name:ident, $config:ty, $value:expr $(,)?) => {
         #[doc = concat!(
             "`ConfigProvider` marker supplying a fixed `",
             stringify!($config),
@@ -61,10 +75,13 @@ macro_rules! define_config_provider {
 /// Derefs to `R`, so inherent methods (`HashTrie::collect_tuples`) are
 /// reachable; the trait impls below forward to `R`'s.
 ///
-/// `config()` reports the inner relation's runtime config. It equals
-/// `P::config()` only because `wrap` is private and the two `Relation`
-/// constructors are the sole entry points — keep it that way, or the
-/// type-level marker and the value can drift apart.
+/// `config()` (reached by auto-deref to `R`) reports the inner relation's
+/// runtime config. It equals `P::config()` because `wrap` is private and
+/// [`Relation::new`] / [`Relation::from_tuples`] are the only constructors —
+/// keep it that way, or the type-level marker and the value can drift apart.
+/// In particular, `Configured` deliberately does **not** implement
+/// [`ConfigurableRelation`]: its config-carrying constructors take an
+/// arbitrary value that `P` cannot vouch for.
 pub struct Configured<R, P> {
     inner: R,
     _provider: PhantomData<P>,
@@ -91,6 +108,9 @@ impl<R, P> Deref for Configured<R, P> {
 impl<R: JoinIterable, P> JoinIterable for Configured<R, P> {}
 
 impl<R: Projectable, P> Projectable for Configured<R, P> {
+    // Rewrapping keeps `P` honest only because `R::project` preserves the
+    // inner config (as `HashTrie` does); a structure whose `project` rebuilds
+    // via plain `from_tuples` would silently downgrade to the default config.
     fn project(&self, columns: Vec<usize>) -> Self { Self::wrap(self.inner.project(columns)) }
 }
 
@@ -110,26 +130,6 @@ where
     fn insert(&mut self, tuple: Vec<usize>) { self.inner.insert(tuple) }
 
     fn insert_all(&mut self, tuples: Vec<Vec<usize>>) { self.inner.insert_all(tuples) }
-}
-
-impl<R, P> ConfigurableRelation for Configured<R, P>
-where
-    R: ConfigurableRelation,
-    P: ConfigProvider<R::Config>,
-{
-    type Config = R::Config;
-
-    fn with_config(header: RelationHeader, config: R::Config) -> Self {
-        Self::wrap(R::with_config(header, config))
-    }
-
-    fn from_tuples_with_config(
-        header: RelationHeader, config: R::Config, tuples: Vec<Vec<usize>>,
-    ) -> Self {
-        Self::wrap(R::from_tuples_with_config(header, config, tuples))
-    }
-
-    fn config(&self) -> &R::Config { self.inner.config() }
 }
 
 impl<R: HeapSize, P> HeapSize for Configured<R, P> {
@@ -195,5 +195,16 @@ mod tests {
         );
         let p = r.project(vec![0]);
         assert!(p.config().singleton_pruning);
+    }
+
+    #[test]
+    fn inserts_reach_the_inner_relation() {
+        let mut r = Pruned::new(2.into());
+        r.insert(vec![1, 2]);
+        r.insert_all(vec![vec![3, 4]]);
+        let mut tuples = r.collect_tuples();
+        tuples.sort();
+        assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(crate::Cardinality::tuple_count(&r), 2);
     }
 }
