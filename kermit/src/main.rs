@@ -267,13 +267,19 @@ impl ConfigChoices {
     fn explicit(&self) -> bool { !self.ds_config.is_empty() }
 
     /// Resolves the pairs into a [`HashTrieConfig`], starting from the
-    /// default. Unknown keys and malformed values are usage errors.
+    /// default. Unknown keys, repeated keys and malformed values are
+    /// usage errors.
     fn hash_trie_config_resolved(&self) -> anyhow::Result<HashTrieConfig> {
         let mut config = HashTrieConfig::default();
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for pair in &self.ds_config {
             let (key, value) = pair.split_once('=').ok_or_else(|| {
                 anyhow::anyhow!("--ds-config expects key=value pairs; got {pair:?}")
             })?;
+            if !seen.insert(key) {
+                anyhow::bail!("--ds-config: key {key:?} given more than once");
+            }
+            // keep in sync with HASH_TRIE_KEYS
             match key {
                 | "singleton-pruning" => {
                     config.singleton_pruning = value.parse::<bool>().map_err(|_| {
@@ -909,6 +915,10 @@ fn run_ds_bench_hash<H: HashStrategy>(
     .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?;
     let relation: HashTrie<H> = HashTrie::<H>::from_tuples_with_config(header, config, tuples);
 
+    // Re-read the tuples off the configured relation: singleton pruning
+    // does not change iteration order (a one-tuple subtrie yields the same
+    // sequence either way), so the insertion / end-to-end closures below
+    // are fed identical input whether the flag is on or off.
     let tuples: Vec<Vec<usize>> = relation.collect_tuples();
     let header = relation.header().clone();
 
@@ -1042,7 +1052,6 @@ fn run_ds_bench_hash<H: HashStrategy>(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Runs every selected query of `benchmark` on one execution cell and
 /// returns one report per query.
 ///
@@ -2139,6 +2148,30 @@ mod tests {
             ds_config: vec!["singleton-pruning".into()],
         };
         assert!(malformed.hash_trie_config_resolved().is_err());
+
+        let repeated = ConfigChoices {
+            ds_config: vec![
+                "singleton-pruning=true".into(),
+                "singleton-pruning=false".into(),
+            ],
+        };
+        let msg = repeated.hash_trie_config_resolved().unwrap_err().to_string();
+        assert!(msg.contains("more than once"), "{msg}");
+    }
+
+    /// Every key the error message advertises must actually resolve, so
+    /// `HASH_TRIE_KEYS` cannot drift from the `match` that consumes it.
+    #[test]
+    fn every_advertised_hash_trie_key_is_accepted() {
+        for key in ConfigChoices::HASH_TRIE_KEYS {
+            let choices = ConfigChoices {
+                ds_config: vec![format!("{key}=true")],
+            };
+            assert!(
+                choices.hash_trie_config_resolved().is_ok(),
+                "advertised key {key:?} was rejected"
+            );
+        }
     }
 
     #[test]

@@ -85,6 +85,8 @@ impl SortedTrieRelation for ColumnTrie {
 /// One valid `(index structure, join algorithm)` cell of a `bench run`
 /// sweep. Each variant fixes *both* halves of the pair, so an `Execution`
 /// cannot describe a combination the CLI is unable to run.
+// `Copy` relies on `HashTrieConfig: Copy`; a future Config carrying heap
+// data would have to drop it here and clone the cells instead.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through the `DB` trait.
@@ -191,7 +193,7 @@ impl Sweep {
 /// engine paid via [`ExecutionFamily::build`].
 pub trait ExecutionFamily {
     /// The relation type loaded from the benchmark's relation files.
-    type Rel: Relation + RelationFileExt + HeapSize + 'static;
+    type Rel: Relation + HeapSize + 'static;
     /// The built, queryable form of a set of relations.
     type Engine;
 
@@ -200,15 +202,23 @@ pub trait ExecutionFamily {
     fn execution(&self) -> Execution;
 
     /// Builds one relation from a `(header, tuples)` snapshot, honouring
-    /// the family's configuration. Every relation-building path in the
-    /// family routes through this one site, so a measurement can never
+    /// the family's configuration.
+    ///
+    /// Every relation the family builds *from a tuple snapshot* routes
+    /// through this one site — the `insertion` metric, [`load`](Self::load)
+    /// and `HashHtj::build_from_tuples` — so such a measurement can never
     /// build a relation the report's `ds_config_*` axes fail to describe.
+    /// `TrieLftj::build_from_tuples` is the exception: it populates a
+    /// `DatabaseEngine` through `add_keys_batch` instead, so giving a
+    /// sorted structure a Config axis means routing that path here too.
     fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self::Rel {
         Self::Rel::from_tuples(header, tuples)
     }
 
     /// Loads one relation file into `Self::Rel`, honouring the family's
-    /// configuration. The default is the plain [`RelationFileExt`] path.
+    /// configuration: the reader is chosen by extension and the relation
+    /// is built through [`build_relation`](Self::build_relation), so no
+    /// family needs to override this to pick up its own configuration.
     ///
     /// # Errors
     ///
@@ -216,13 +226,13 @@ pub trait ExecutionFamily {
     /// or if the reader fails.
     fn load(&self, path: &Path) -> anyhow::Result<Self::Rel> {
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        match extension.to_lowercase().as_str() {
-            | "csv" => Self::Rel::from_csv(path)
-                .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
-            | "parquet" => Self::Rel::from_parquet(path)
-                .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
+        let (header, tuples) = match extension.to_lowercase().as_str() {
+            | "csv" => kermit_ds::read_csv(path),
+            | "parquet" => kermit_ds::read_parquet(path),
             | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
         }
+        .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))?;
+        Ok(self.build_relation(header, tuples))
     }
 
     /// Every stored tuple of `rel`, in the structure's native iteration
@@ -366,17 +376,6 @@ impl<H: HashStrategy + 'static> ExecutionFamily for HashHtj<H> {
 
     fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H> {
         HashTrie::<H>::from_tuples_with_config(header, self.config, tuples)
-    }
-
-    fn load(&self, path: &Path) -> anyhow::Result<HashTrie<H>> {
-        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        let (header, tuples) = match extension.to_lowercase().as_str() {
-            | "csv" => kermit_ds::read_csv(path),
-            | "parquet" => kermit_ds::read_parquet(path),
-            | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
-        }
-        .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))?;
-        Ok(self.build_relation(header, tuples))
     }
 
     fn tuples(rel: &HashTrie<H>) -> Vec<Vec<usize>> { rel.collect_tuples() }
@@ -552,6 +551,30 @@ mod tests {
         let rel = &engine["r"];
         assert_eq!(
             HashHtj::<kermit_iters::SipHashStrategy>::optimization_axes(rel)
+                .get("ds_config_singleton_pruning"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    /// `load` builds through `build_relation`, so a relation read off
+    /// disk carries the family's configuration too.
+    #[test]
+    fn hash_family_load_honours_its_config() {
+        let config = HashTrieConfig {
+            singleton_pruning: true,
+        };
+        let family = HashHtj::<kermit_iters::SipHashStrategy>::new(
+            HasherChoice::Sip,
+            config,
+            Optimiser::Lexicographic,
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("r.csv");
+        std::fs::write(&path, "a,b\n1,2\n").expect("write csv");
+        let rel = family.load(&path).expect("load");
+        assert!(rel.config().singleton_pruning);
+        assert_eq!(
+            HashHtj::<kermit_iters::SipHashStrategy>::optimization_axes(&rel)
                 .get("ds_config_singleton_pruning"),
             Some(&serde_json::Value::Bool(true))
         );
