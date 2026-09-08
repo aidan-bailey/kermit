@@ -16,11 +16,7 @@ use {
     kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{
-        ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy,
-        Relation, RelationFileExt,
-    },
-    kermit_iters::{HasOptimizationAxes, HashStrategy, TrieIterable},
+    kermit_ds::{HashTrieConfig, HeapSize, IndexStructure, Relation},
     kermit_parser::Term,
     std::{
         collections::BTreeMap,
@@ -42,7 +38,10 @@ use {
         write_json_report, write_metadata_block, BenchKind, BenchReport, CriterionGroupRef,
         MetadataLine, ReportMetric,
     },
-    execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
+    execution::{
+        Execution, ExecutionFamily, HashHtj, HashTrieFamily, RelationFamily, SortedTrie,
+        SortedTrieFamily, Sweep, TrieLftj,
+    },
     options::{
         validate_config_choices, validate_layout_choices, with_hash_trie_layout, ConfigChoices,
         HasherChoice, LayoutChoices, PruningChoice,
@@ -591,190 +590,40 @@ where
     }
 }
 
-fn run_ds_bench<R>(
-    relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric],
-    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
-) -> anyhow::Result<BenchReport>
-where
-    R: Relation + TrieIterable + HeapSize + 'static,
-{
-    let extension = relation_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let relation: R = match extension.to_lowercase().as_str() {
-        | "csv" => R::from_csv(relation_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
-        | "parquet" => R::from_parquet(relation_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?,
-        | _ => anyhow::bail!("Unsupported file extension: {extension}"),
-    };
-
-    let tuples: Vec<Vec<usize>> = relation.trie_iter().into_iter().collect();
-    let header = relation.header().clone();
-
-    let ds_name = format!("{:?}", indexstructure);
-    let relation_bytes = fs::metadata(relation_path).map(|m| m.len()).unwrap_or(0);
-
-    let mut metadata = vec![
-        MetadataLine::new("data structure", &ds_name),
-        MetadataLine::new("relation", relation_path.display()),
-        MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
-        MetadataLine::new("tuples", tuples.len()),
-        MetadataLine::new("arity", header.arity()),
-    ];
-    if metrics.contains(&Metric::EndToEnd) {
-        metadata.push(MetadataLine::new("queries per build", queries_per_build));
-    }
-    write_metadata_block(&mut io::stderr(), "bench ds metadata", &metadata)?;
-
-    let mut criterion_groups = Vec::new();
-
-    let has_time_metrics = metrics
-        .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
-
-    if has_time_metrics {
-        let mut criterion = build_time_criterion(bench_args);
-        let mut group = criterion.benchmark_group(group_name);
-
-        if metrics.contains(&Metric::Insertion) {
-            let insertion_tuples = tuples.clone();
-            let insertion_header = header.clone();
-            let function = format!("{ds_name}/insertion");
-            group.bench_function(&function, |b| {
-                b.iter_batched(
-                    || (insertion_header.clone(), insertion_tuples.clone()),
-                    |(h, t)| R::from_tuples(h, t),
-                    criterion::BatchSize::SmallInput,
-                );
-            });
-            criterion_groups.push(CriterionGroupRef {
-                group: group_name.to_string(),
-                function,
-                metric: ReportMetric::Time,
-            });
-        }
-
-        if metrics.contains(&Metric::Iteration) {
-            let function = format!("{ds_name}/iteration");
-            group.bench_function(&function, |b| {
-                b.iter(|| relation.trie_iter().into_iter().collect::<Vec<_>>());
-            });
-            criterion_groups.push(CriterionGroupRef {
-                group: group_name.to_string(),
-                function,
-                metric: ReportMetric::Time,
-            });
-        }
-
-        if metrics.contains(&Metric::EndToEnd) {
-            let e2e_tuples = tuples.clone();
-            let e2e_header = header.clone();
-            let function = format!("{ds_name}/end_to_end");
-            // PerIteration: a fresh build per sample is the point of this
-            // metric — batching would amortise away the construction cost
-            // whose interaction with traversal is under measurement.
-            group.bench_function(&function, |b| {
-                b.iter_batched(
-                    || (e2e_header.clone(), e2e_tuples.clone()),
-                    |(h, t)| {
-                        let built = R::from_tuples(h, t);
-                        for _ in 0..queries_per_build {
-                            std::hint::black_box(built.trie_iter().into_iter().collect::<Vec<_>>());
-                        }
-                    },
-                    criterion::BatchSize::PerIteration,
-                );
-            });
-            criterion_groups.push(CriterionGroupRef {
-                group: group_name.to_string(),
-                function,
-                metric: ReportMetric::Time,
-            });
-        }
-
-        group.finish();
-        criterion.final_summary();
-    }
-
-    if metrics.contains(&Metric::Space) {
-        let n = tuples.len();
-        let mut criterion = build_space_criterion(bench_args);
-        let mut group = criterion.benchmark_group(group_name);
-        group.throughput(criterion::Throughput::Elements(n as u64));
-        let function = format!("{ds_name}/space");
-        criterion_groups.push(add_space_bench(&mut group, group_name, function, &relation));
-        group.finish();
-        criterion.final_summary();
-    }
-
-    let mut axes = BTreeMap::from([
-        ("data_structure".to_string(), serde_json::json!(ds_name)),
-        (
-            "relation_path".to_string(),
-            serde_json::json!(relation_path.display().to_string()),
-        ),
-        (
-            "relation_bytes".to_string(),
-            serde_json::json!(relation_bytes),
-        ),
-        ("tuples".to_string(), serde_json::json!(tuples.len())),
-        ("arity".to_string(), serde_json::json!(header.arity())),
-    ]);
-    // Only meaningful when the end-to-end metric ran; omitting it otherwise
-    // keeps historical invocations' reports unchanged.
-    if metrics.contains(&Metric::EndToEnd) {
-        axes.insert(
-            "queries_per_build".to_string(),
-            serde_json::json!(queries_per_build),
-        );
-    }
-    Ok(BenchReport::new(
-        BenchKind::Ds,
-        &metadata,
-        axes,
-        criterion_groups,
-    ))
-}
-
-/// Hash-family analogue of [`run_ds_bench`]. Mirrors its structure but
-/// uses [`HashTrie::collect_tuples`] to recover the tuple vector from
-/// the loaded relation (the hash-trie iter family yields hashes, not
-/// raw values, so the standard `trie_iter()` path doesn't apply) and
-/// times the same `from_tuples` insertion / `collect_tuples` iteration
-/// closures. Lives as a parallel function rather than a generic
-/// extension because `HashTrieIterable` is a distinct trait family from
-/// `TrieIterable` (see CLAUDE.md → Key Trait Hierarchy).
+/// Benchmarks one index structure over one relation file.
 ///
-/// Generic over `H: HashStrategy` and `P: PruningPolicy` — Rust forbids
-/// defaults on free-function type parameters, so the CLI dispatch site
-/// picks both from `LayoutChoices` via `with_hash_trie_layout!`.
-fn run_ds_bench_hash<H: HashStrategy, P: PruningPolicy>(
-    relation_path: &Path, indexstructure: IndexStructure, metrics: &[Metric],
-    queries_per_build: u32, config: HashTrieConfig, group_name: &str, bench_args: &BenchArgs,
+/// Generic over the [`RelationFamily`] so the sorted family
+/// (`SortedTrieFamily<R>`) and the hash family (`HashTrieFamily<H, P>`)
+/// share one body, as [`run_benchmark`] does for `bench run` (issue #61
+/// closed the last hand-mirrored pair). The family supplies the four
+/// points where the bodies used to diverge: the relation type to load
+/// (`F::Rel`), how to *build* one from a `(header, tuples)` snapshot
+/// honouring the family's `--ds-config` values
+/// ([`RelationFamily::build_relation`], and [`RelationFamily::load`] on
+/// top of it), how to recover its tuples (`F::tuples` — `trie_iter()` for
+/// sorted tries, `collect_tuples()` for the hash trie, whose iterator
+/// yields hashes), and its optimization axes. `bench ds` involves no join,
+/// which the bound states: a `RelationFamily` has no engine to build or
+/// query.
+fn run_ds_bench<F: RelationFamily>(
+    family: &F, relation_path: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
+    bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    let extension = relation_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let (header, tuples) = match extension.to_lowercase().as_str() {
-        | "csv" => kermit_ds::read_csv(relation_path),
-        | "parquet" => kermit_ds::read_parquet(relation_path),
-        | _ => anyhow::bail!("Unsupported file extension: {extension}"),
-    }
-    .map_err(|e| anyhow::anyhow!("Failed to load relation: {e}"))?;
-    let relation: HashTrie<H, P> =
-        HashTrie::<H, P>::from_tuples_with_config(header, config, tuples);
+    let relation: F::Rel = family.load(relation_path)?;
 
-    // Re-read the tuples off the built relation: singleton pruning does not
-    // change iteration order (a one-tuple subtrie yields the same sequence
-    // either way), so the insertion / end-to-end closures below are fed
-    // identical input whichever Layout ran.
-    let tuples: Vec<Vec<usize>> = relation.collect_tuples();
+    // Read the tuples back off the built relation rather than off the
+    // reader: singleton pruning does not change iteration order (a
+    // one-tuple subtrie yields the same sequence either way), so the
+    // insertion / end-to-end closures below are fed identical input
+    // whichever Layout ran.
+    let tuples: Vec<Vec<usize>> = F::tuples(&relation);
     let header = relation.header().clone();
 
-    let ds_name = format!("{:?}", indexstructure);
+    // Stable external contract, not debug output: this string becomes the
+    // report's `data_structure` axis and the `{ds_name}/<metric>` Criterion
+    // function ids under `target/criterion/{group}/`. It is derived from
+    // the family's own `Execution`, the value that picked the code path.
+    let ds_name = format!("{:?}", family.execution().index_structure());
     let relation_bytes = fs::metadata(relation_path).map(|m| m.len()).unwrap_or(0);
 
     let mut metadata = vec![
@@ -806,7 +655,7 @@ fn run_ds_bench_hash<H: HashStrategy, P: PruningPolicy>(
             group.bench_function(&function, |b| {
                 b.iter_batched(
                     || (insertion_header.clone(), insertion_tuples.clone()),
-                    |(h, t)| HashTrie::<H, P>::from_tuples_with_config(h, config, t),
+                    |(h, t)| family.build_relation(h, t),
                     criterion::BatchSize::SmallInput,
                 );
             });
@@ -820,7 +669,7 @@ fn run_ds_bench_hash<H: HashStrategy, P: PruningPolicy>(
         if metrics.contains(&Metric::Iteration) {
             let function = format!("{ds_name}/iteration");
             group.bench_function(&function, |b| {
-                b.iter(|| relation.collect_tuples());
+                b.iter(|| F::tuples(&relation));
             });
             criterion_groups.push(CriterionGroupRef {
                 group: group_name.to_string(),
@@ -840,9 +689,9 @@ fn run_ds_bench_hash<H: HashStrategy, P: PruningPolicy>(
                 b.iter_batched(
                     || (e2e_header.clone(), e2e_tuples.clone()),
                     |(h, t)| {
-                        let built = HashTrie::<H, P>::from_tuples_with_config(h, config, t);
+                        let built = family.build_relation(h, t);
                         for _ in 0..queries_per_build {
-                            std::hint::black_box(built.collect_tuples());
+                            std::hint::black_box(F::tuples(&built));
                         }
                     },
                     criterion::BatchSize::PerIteration,
@@ -894,8 +743,8 @@ fn run_ds_bench_hash<H: HashStrategy, P: PruningPolicy>(
     // Standard optimization axes: merge in dimensions emitted by the DS.
     // The `ds_layout_*` / `ds_config_*` / `ds_build_mode` naming convention
     // (see `kermit_iters::HasOptimizationAxes`) guarantees no collision
-    // with the base axes assembled above.
-    axes.extend(relation.optimization_axes());
+    // with the base axes assembled above. Empty for the sorted tries.
+    axes.extend(F::optimization_axes(&relation));
     Ok(BenchReport::new(
         BenchKind::Ds,
         &metadata,
@@ -1373,47 +1222,48 @@ fn run_bench_join(
     Ok(())
 }
 
-/// Dispatches a single `bench ds` measurement to the correct concrete
-/// `run_ds_bench`/`run_ds_bench_hash` monomorphisation for `ds`.
-///
-/// `HashTrie` lives in a parallel trait family (`HashTrieIterable`, not
-/// `TrieIterable`), so it routes through `run_ds_bench_hash` rather than the
-/// generic `run_ds_bench<R>`. The `H` / `P` Layout parameters are picked
-/// from the `--ds-layout-hasher` / `--ds-layout-pruning` CLI flags.
+/// Runs one `bench ds` measurement by monomorphising [`run_ds_bench`]
+/// over the [`RelationFamily`] that [`Execution::for_structure`] names
+/// for `ds`. The hash cell's `H` / `P` Layout parameters are picked from
+/// the `--ds-layout-hasher` / `--ds-layout-pruning` CLI flags by
+/// `with_hash_trie_layout!` — the one place that product is expanded —
+/// and the `--ds-config` values ride along on the family, so the relation
+/// this measures is the one the report's `ds_*` axes describe.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_ds_bench(
     ds: IndexStructure, hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig,
     relation: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
     bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    match ds {
-        | IndexStructure::TreeTrie => run_ds_bench::<kermit_ds::TreeTrie>(
+    match Execution::for_structure(ds, hasher, pruning, config) {
+        | Execution::TrieLftj(SortedTrie::TreeTrie) => run_ds_bench(
+            &SortedTrieFamily::<kermit_ds::TreeTrie>::new(),
             relation,
-            ds,
             metrics,
             queries_per_build,
             group_name,
             bench_args,
         ),
-        | IndexStructure::ColumnTrie => run_ds_bench::<kermit_ds::ColumnTrie>(
+        | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_ds_bench(
+            &SortedTrieFamily::<kermit_ds::ColumnTrie>::new(),
             relation,
-            ds,
             metrics,
             queries_per_build,
             group_name,
             bench_args,
         ),
-        | IndexStructure::HashTrie => with_hash_trie_layout!(hasher, pruning, |H, P| {
-            run_ds_bench_hash::<H, P>(
-                relation,
-                ds,
-                metrics,
-                queries_per_build,
-                config,
-                group_name,
-                bench_args,
-            )
-        }),
+        | Execution::HashHtj {
+            hasher,
+            pruning,
+            config,
+        } => with_hash_trie_layout!(hasher, pruning, |H, P| run_ds_bench(
+            &HashTrieFamily::<H, P>::new(config),
+            relation,
+            metrics,
+            queries_per_build,
+            group_name,
+            bench_args,
+        )),
     }
 }
 

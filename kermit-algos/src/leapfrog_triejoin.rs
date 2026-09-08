@@ -214,6 +214,24 @@ where
         }
         self.leapfrog = LeapfrogJoinIter::new(next_iters);
     }
+
+    /// Undoes a descent that could not be completed, restoring the parent
+    /// depth exactly as [`triejoin_up`](Self::triejoin_up) would.
+    ///
+    /// Only the first `opened` iterators actually descended:
+    /// [`TrieIterator::open`] leaves the position unchanged when it returns
+    /// `false`, and the iterators after the refusing one were never asked.
+    /// Ascending the others would drift them a level above the join.
+    fn abandon_descent(&mut self, opened: usize) {
+        for iter in self.leapfrog.iterators.iter_mut().take(opened) {
+            assert!(
+                iter.up(),
+                "iterator that descended must be able to move back up (LFTJ invariant)"
+            );
+        }
+        self.depth -= 1;
+        self.update_iters();
+    }
 }
 
 impl<IT> LeapfrogTriejoinIterator for LeapfrogTriejoinIter<IT>
@@ -223,12 +241,18 @@ where
     /// Descends one variable: takes the iterators that participate at the new
     /// depth, opens each at the current key, and seeds the inner leapfrog.
     ///
-    /// Returns `false` if the join is already at maximum depth, or if any
+    /// Returns `false` if the join is already at maximum depth, if a
     /// participating iterator has no children at this key (that subtree is
-    /// exhausted). On a `false` from a child `open()`, the partially-built
-    /// leapfrog is left in place but not initialised; the caller is expected
-    /// to back out via [`triejoin_up`](Self::triejoin_up) before trying
-    /// again.
+    /// exhausted), or if the leapfrog finds no common key at the new depth.
+    ///
+    /// A `false` return leaves the triejoin exactly where it started: the
+    /// depth, the participating iterators and the inner leapfrog are all
+    /// restored to the parent level, so the caller may advance or ascend
+    /// there without backing out first. That honours [`TrieIterator::open`]'s
+    /// contract that a failed open leaves the position unchanged, which
+    /// [`TrieIteratorWrapper`] depends on — it pushes nothing when `open`
+    /// fails, and would otherwise run one level out of step with the join,
+    /// overwriting the wrong key on its tuple stack.
     fn triejoin_open(&mut self) -> bool {
         if self.depth == self.arity {
             return false;
@@ -241,12 +265,18 @@ where
         // participation is per-depth rather than the paper's all-iterators.
         self.depth += 1;
         self.update_iters();
+        let mut opened = 0;
         for iter in &mut self.leapfrog.iterators {
             if !iter.open() {
-                return false;
+                break;
             }
+            opened += 1;
         }
-        self.leapfrog_init()
+        if opened == self.leapfrog.iterators.len() && self.leapfrog_init() {
+            return true;
+        }
+        self.abandon_descent(opened);
+        false
     }
 
     /// Ascends one variable, returning all participating iterators to the
@@ -674,6 +704,93 @@ mod tests {
                 vec![&r, &s, &t],
             ),
             vec![vec![1, 2, 4, 6], vec![2, 3, 5, 7]],
+        );
+    }
+
+    /// Like `triejoin_collect`, but maps each tuple from descent order back
+    /// to canonical variable order (as `join_iter` does) and sorts, so
+    /// results from different variable orderings are directly comparable.
+    fn triejoin_canonical(
+        variable_ordering: Vec<usize>, predicate_variables: Vec<Vec<usize>>,
+        relations: Vec<&TreeTrie>,
+    ) -> Vec<Vec<usize>> {
+        let arity = variable_ordering.len();
+        let mut descent_pos_of_var = vec![0usize; arity];
+        for (pos, &v) in variable_ordering.iter().enumerate() {
+            descent_pos_of_var[v] = pos;
+        }
+        let mut tuples: Vec<Vec<usize>> =
+            triejoin_collect(variable_ordering, predicate_variables, relations)
+                .into_iter()
+                .map(|t| (0..arity).map(|v| t[descent_pos_of_var[v]]).collect())
+                .collect();
+        tuples.sort();
+        tuples
+    }
+
+    #[test]
+    fn valid_orderings_agree_when_a_deep_open_fails() {
+        // Regression (LUBM q7 shape, minimised to 9 tuples). A descent that
+        // fails at depth >= 3 used to leave `depth` incremented, desyncing
+        // the triejoin from the tuple stack in `TrieIteratorWrapper` and
+        // silently dropping every answer under some valid orderings.
+        //
+        // Q(X, Y) :- type(X, K0), type(Y, K1), takescourse(X, Y),
+        //            teacherof(K2, Y), c21(K0), c141(K1), c1688(K2).
+        // Variables: X=0, Y=1, K0=2, K1=3, K2=4.
+        let type_rel = TreeTrie::from_tuples(2.into(), vec![
+            vec![8433, 21],
+            vec![8433, 83],
+            vec![8435, 21],
+            vec![8514, 141],
+        ]);
+        let takescourse =
+            TreeTrie::from_tuples(2.into(), vec![vec![8433, 5687], vec![8433, 13069], vec![
+                8435, 8514,
+            ]]);
+        let teacherof = TreeTrie::from_tuples(2.into(), vec![vec![1688, 8009], vec![1688, 8514]]);
+        let c21 = TreeTrie::from_tuples(1.into(), vec![vec![21]]);
+        let c141 = TreeTrie::from_tuples(1.into(), vec![vec![141]]);
+        let c1688 = TreeTrie::from_tuples(1.into(), vec![vec![1688]]);
+
+        let predicate_variables = vec![
+            vec![0, 2],
+            vec![1, 3],
+            vec![0, 1],
+            vec![4, 1],
+            vec![2],
+            vec![3],
+            vec![4],
+        ];
+        let relations = vec![
+            &type_rel,
+            &type_rel,
+            &takescourse,
+            &teacherof,
+            &c21,
+            &c141,
+            &c1688,
+        ];
+
+        // The only answer: X=8435 takes course Y=8514, taught by 1688.
+        let expected = vec![vec![8435, 8514, 21, 141, 1688]];
+
+        // Lexicographic order: its first failed descent lands at depth 2.
+        assert_eq!(
+            triejoin_canonical(
+                vec![0, 2, 4, 1, 3],
+                predicate_variables.clone(),
+                relations.clone(),
+            ),
+            expected,
+            "lexicographic ordering"
+        );
+        // Cardinality order: binds the constant first, so the first failed
+        // descent lands at depth 3 — the case that used to return nothing.
+        assert_eq!(
+            triejoin_canonical(vec![4, 0, 2, 1, 3], predicate_variables, relations),
+            expected,
+            "cardinality ordering"
         );
     }
 }

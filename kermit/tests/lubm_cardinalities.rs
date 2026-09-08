@@ -18,7 +18,9 @@
 
 use {
     kermit::db::{DatabaseEngine, DB},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin},
+    kermit_algos::{
+        CardinalityOptimiser, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
+    },
     kermit_bench::BenchmarkDefinition,
     kermit_ds::TreeTrie,
     kermit_rdf::lubm::{
@@ -26,7 +28,11 @@ use {
         pipeline::{run_lubm_pipeline, LubmPipelineInputs},
         queries::lubm_query_specs,
     },
-    std::{collections::HashMap, path::PathBuf, process::Command},
+    std::{
+        collections::HashMap,
+        path::{Path, PathBuf},
+        process::Command,
+    },
 };
 
 fn java_available() -> bool {
@@ -43,6 +49,42 @@ fn java_available() -> bool {
 /// from the `kermit` crate's manifest dir, so reach across the workspace.
 fn vendored_jar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kermit-rdf/vendor/lubm-uba/lubm-uba.jar")
+}
+
+/// Loads the generated relations into a fresh engine planned by `optimiser`,
+/// runs every query, and returns one line per query whose result count
+/// differs from the paper's reference cardinality.
+fn cardinality_mismatches(
+    bench: &BenchmarkDefinition, dir: &Path, optimiser_name: &str,
+    optimiser: Box<dyn QueryOptimiser>, expected: &HashMap<String, u64>,
+) -> Vec<String> {
+    let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
+        DatabaseEngine::with_optimiser(bench.name.clone(), optimiser);
+    for rel in &bench.relations {
+        let path = dir.join(format!("{}.parquet", rel.name));
+        db.add_file(&path)
+            .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
+    }
+
+    // Collect every divergence so one run surfaces the complete picture
+    // rather than failing on the first mismatch.
+    let mut mismatches = Vec::new();
+    for q in &bench.queries {
+        let want = *expected
+            .get(&q.name)
+            .unwrap_or_else(|| panic!("no reference cardinality for query {}", q.name));
+
+        let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
+        let got = db.join(parsed).len() as u64;
+
+        if got != want {
+            mismatches.push(format!(
+                "  [{optimiser_name}] {}: got {got}, expected {want}\n    query: {}",
+                q.name, q.query
+            ));
+        }
+    }
+    mismatches
 }
 
 #[test]
@@ -95,38 +137,36 @@ fn lubm_one_university_query_cardinalities_match_paper() {
         .expect("emitted benchmark.yml missing");
     let bench: BenchmarkDefinition = serde_yaml::from_str(&yaml).expect("benchmark.yml malformed");
 
-    let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
-        DatabaseEngine::new(bench.name.clone());
-    for rel in &bench.relations {
-        let path = out.path().join(format!("{}.parquet", rel.name));
-        db.add_file(&path)
-            .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
-    }
+    // Every optimiser must reproduce the reference cardinalities: the plan
+    // it picks changes the join's descent order, never its answer. This is
+    // the only test with real, deeply-pruning data, so it is where executor
+    // bugs that just one variable ordering exposes actually surface — a
+    // failed descent at depth 3 or deeper once silently dropped every answer
+    // to q7 under `cardinality` while `lexicographic` stayed correct. Add a
+    // row here whenever an optimiser is added.
+    let optimisers: Vec<(&str, Box<dyn QueryOptimiser>)> = vec![
+        ("lexicographic", Box::new(LexicographicOptimiser)),
+        ("cardinality", Box::new(CardinalityOptimiser)),
+    ];
+    let optimiser_count = optimisers.len();
 
-    // Run every query, collecting all divergences so one run surfaces the
-    // complete picture rather than failing on the first mismatch.
     let mut mismatches: Vec<String> = Vec::new();
-    for q in &bench.queries {
-        let want = *expected
-            .get(&q.name)
-            .unwrap_or_else(|| panic!("no reference cardinality for query {}", q.name));
-
-        let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = db.join(parsed).len() as u64;
-
-        if got != want {
-            mismatches.push(format!(
-                "  {}: got {got}, expected {want}\n    query: {}",
-                q.name, q.query
-            ));
-        }
+    for (name, optimiser) in optimisers {
+        mismatches.extend(cardinality_mismatches(
+            &bench,
+            out.path(),
+            name,
+            optimiser,
+            &expected,
+        ));
     }
 
     assert!(
         mismatches.is_empty(),
-        "LUBM(1, 0) cardinality mismatches ({} of {} queries):\n{}",
+        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers):\n{}",
         mismatches.len(),
         bench.queries.len(),
+        optimiser_count,
         mismatches.join("\n"),
     );
 }

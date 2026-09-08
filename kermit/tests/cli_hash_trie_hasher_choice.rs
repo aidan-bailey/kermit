@@ -4,8 +4,9 @@
 //!
 //! These tests exercise the end-to-end chain set up by Phases 1-5 of the
 //! optimization-standard plan: CLI parser -> `LayoutChoices` ->
-//! `run_ds_bench_hash::<H>` dispatch -> `HashTrie<H>` ->
-//! `HasOptimizationAxes::optimization_axes()` -> `BenchReport.axes` ->
+//! `Execution::for_structure` -> `run_ds_bench::<HashTrieFamily<H>>` ->
+//! `HashTrie<H>`
+//! -> `HasOptimizationAxes::optimization_axes()` -> `BenchReport.axes` ->
 //! JSON on disk.
 
 mod common;
