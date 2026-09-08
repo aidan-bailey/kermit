@@ -118,6 +118,11 @@ impl<H: HashStrategy> HashTrie<H> {
     /// Insert one tuple at the appropriate depth in the trie. Recursive
     /// implementation of Algorithm 2 from the paper, line by line, plus the
     /// singleton-pruning extension of §3.3.1 (Figure 5) when `prune` is on.
+    ///
+    /// An unprune costs a single extra O(arity) chain, not a fan-out: the
+    /// evicted tuple's re-insert lands in a fresh bucket at the level where
+    /// the two tuples diverge and stops there as a new `Singleton`, leaving
+    /// only the incoming tuple to keep descending.
     fn insert_at(
         node: &mut HashTrieNode, depth: usize, arity: usize, tuple: Vec<usize>, prune: bool,
     ) {
@@ -128,31 +133,25 @@ impl<H: HashStrategy> HashTrie<H> {
                 if prune && table.get(hash).is_none() {
                     // Fresh bucket: the subtrie below holds exactly one tuple,
                     // so store the tuple itself instead of one table per
-                    // remaining level.
+                    // remaining level. The closure always runs — absence was
+                    // just proven — so this is two O(1) probes, kept over a
+                    // special-cased insert for readability.
                     table.entry_or_insert_with(hash, || HashTrieNode::Singleton(tuple));
                     return;
                 }
+                // The child lives at `depth + 1`; it is the leaf when that is
+                // the last attribute.
                 let child_is_leaf = Self::is_leaf_depth(depth + 1, arity);
-                let child = table.entry_or_insert_with(hash, || {
-                    // The child lives at `depth + 1`; it is the leaf when that
-                    // is the last attribute.
-                    if child_is_leaf {
-                        HashTrieNode::new_leaf()
-                    } else {
-                        HashTrieNode::new_inner()
-                    }
-                });
+                let child =
+                    table.entry_or_insert_with(hash, || HashTrieNode::new_table(child_is_leaf));
                 if matches!(child, HashTrieNode::Singleton(_)) {
                     // Unprune: a second tuple has arrived, so the subtrie no
-                    // longer holds exactly one. Expand it back into a table
-                    // and re-insert the evicted tuple ahead of the new one;
-                    // the recursion re-prunes wherever the two diverge.
-                    let table_node = if child_is_leaf {
-                        HashTrieNode::new_leaf()
-                    } else {
-                        HashTrieNode::new_inner()
-                    };
-                    let HashTrieNode::Singleton(evicted) = std::mem::replace(child, table_node)
+                    // longer holds exactly one. Swap in the table this level
+                    // would have had and re-insert the evicted tuple ahead of
+                    // the new one; the recursion re-prunes wherever the two
+                    // diverge.
+                    let replacement = HashTrieNode::new_table(child_is_leaf);
+                    let HashTrieNode::Singleton(evicted) = std::mem::replace(child, replacement)
                     else {
                         unreachable!("matched Singleton above")
                     };
@@ -656,22 +655,45 @@ mod tests {
         HashTrie::from_tuples_with_config(arity.into(), PRUNE, tuples)
     }
 
-    /// Walks `node`, asserting the pruning invariant at every inner bucket
-    /// and returning the number of tuples stored below `node`.
+    /// Walks `root`, asserting the pruning invariant at every inner bucket
+    /// and returning the number of tuples stored below it.
     ///
     /// Invariant: under pruning a child is `Singleton` iff exactly one
-    /// tuple lives below it; without pruning no `Singleton` exists.
-    fn check_pruning_invariant(node: &HashTrieNode, prune: bool) -> usize {
+    /// tuple lives below it; without pruning no `Singleton` exists. The
+    /// root is never a `Singleton`, and a `Singleton` sits under the
+    /// buckets its own tuple hashes to.
+    fn check_pruning_invariant(root: &HashTrieNode, prune: bool) -> usize {
+        assert!(
+            !matches!(root, HashTrieNode::Singleton(_)),
+            "the root is never a Singleton"
+        );
+        check_pruning_invariant_at(root, prune, &mut Vec::new())
+    }
+
+    /// Recursive half of [`check_pruning_invariant`]. `prefix` is the
+    /// sequence of bucket hashes taken from the root down to `node`, so a
+    /// `Singleton` reached here must hash to every one of them — that is
+    /// what pins it to the right *place*, not merely the right count.
+    fn check_pruning_invariant_at(node: &HashTrieNode, prune: bool, prefix: &mut Vec<u64>) -> usize {
         match node {
-            | HashTrieNode::Singleton(_) => {
+            | HashTrieNode::Singleton(tuple) => {
                 assert!(prune, "Singleton found with pruning off");
+                for (d, &expected) in prefix.iter().enumerate() {
+                    assert_eq!(
+                        <SipHashStrategy as HashStrategy>::hash(tuple[d]),
+                        expected,
+                        "Singleton {tuple:?} is misplaced at depth {d}"
+                    );
+                }
                 1
             },
             | HashTrieNode::Leaf(table) => table.iter().map(|(_, chain)| chain.len()).sum(),
             | HashTrieNode::Inner(table) => table
                 .iter()
-                .map(|(_, child)| {
-                    let below = check_pruning_invariant(child, prune);
+                .map(|(hash, child)| {
+                    prefix.push(hash);
+                    let below = check_pruning_invariant_at(child, prune, prefix);
+                    prefix.pop();
                     if prune {
                         assert_eq!(
                             matches!(child, HashTrieNode::Singleton(_)),
@@ -705,6 +727,18 @@ mod tests {
             },
             | _ => panic!("expected Inner root"),
         }
+    }
+
+    #[test]
+    fn pruning_arity_1_has_no_singletons() {
+        // The root is the only node an arity-1 trie has, and the root is
+        // never pruned — tuples land straight in leaf chains.
+        let trie = pruned(1, vec![vec![1], vec![2]]);
+        assert_eq!(check_pruning_invariant(&trie.root, true), 2);
+        assert!(matches!(trie.root, HashTrieNode::Leaf(_)));
+        let mut got = trie.collect_tuples();
+        got.sort();
+        assert_eq!(got, vec![vec![1], vec![2]]);
     }
 
     #[test]
@@ -747,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn pruned_shape_is_insertion_order_independent() {
+    fn pruned_build_is_insertion_order_independent() {
         use crate::heap_size::HeapSize;
         let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
         let forward = pruned(3, tuples.clone());

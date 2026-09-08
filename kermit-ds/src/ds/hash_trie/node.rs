@@ -30,6 +30,19 @@ impl HashTrieNode {
 
     pub(crate) fn new_leaf() -> Self { HashTrieNode::Leaf(HashTable::new()) }
 
+    /// The empty table a level must hold: `Leaf` at the last attribute,
+    /// `Inner` above it. Used both when a bucket is first populated and
+    /// when a `Singleton` is unpruned back into the table that level would
+    /// otherwise have held. Callers decide `is_leaf` — `HashTrie` knows the
+    /// arity, this type does not.
+    pub(crate) fn new_table(is_leaf: bool) -> Self {
+        if is_leaf {
+            HashTrieNode::new_leaf()
+        } else {
+            HashTrieNode::new_inner()
+        }
+    }
+
     /// The table accessors below are only meaningful on `Inner` / `Leaf`.
     /// `HashTrieIter` never places a `Singleton` in a table frame, so
     /// reaching this is a broken internal invariant, not a user error.
