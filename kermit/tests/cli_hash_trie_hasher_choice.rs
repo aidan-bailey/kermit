@@ -8,54 +8,24 @@
 //! `HasOptimizationAxes::optimization_axes()` -> `BenchReport.axes` ->
 //! JSON on disk.
 
-use {
-    std::{path::PathBuf, process::Command},
-    tempfile::NamedTempFile,
-};
+mod common;
 
-fn kermit_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_kermit")) }
+use common::cli::bench_ds;
 
-fn edge_fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/edge.csv")
-}
-
-/// Run `bench ds` against `edge.csv` with the hash-trie + space metric
-/// (space is the cheapest of the three to keep wall-clock minimal) and
-/// return the parsed JSON report array. `extra_ds_args` is appended after
-/// the standard `--relation` / `--indexstructure` so callers can inject
-/// `--ds-layout-hasher fxhash` (or omit it for the default).
+/// Runs `bench ds` against `edge.csv` with the hash-trie + space metric and
+/// returns the parsed JSON report array, asserting the command succeeded.
+/// `extra_ds_args` is appended after the standard `--relation` /
+/// `--indexstructure` so callers can inject `--ds-layout-hasher fxhash` (or
+/// omit it for the default).
 fn run_bench_ds_hash(extra_ds_args: &[&str]) -> Vec<serde_json::Value> {
-    let report = NamedTempFile::new().expect("failed to create temp report file");
-    let mut cmd = Command::new(kermit_bin());
-    cmd.arg("bench")
-        .arg("--sample-size")
-        .arg("10")
-        .arg("--measurement-time")
-        .arg("1")
-        .arg("--warm-up-time")
-        .arg("1")
-        .arg("--report-json")
-        .arg(report.path())
-        .arg("ds")
-        .arg("--relation")
-        .arg(edge_fixture())
-        .arg("--indexstructure")
-        .arg("hash-trie")
-        .arg("-m")
-        .arg("space");
-    for arg in extra_ds_args {
-        cmd.arg(arg);
-    }
-    let output = cmd.output().expect("failed to execute kermit binary");
+    let (output, report) = bench_ds("hash-trie", extra_ds_args);
     assert!(
         output.status.success(),
         "bench ds command failed; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let text = std::fs::read_to_string(report.path()).expect("report file should exist");
-    let reports: Vec<serde_json::Value> =
-        serde_json::from_str(&text).expect("report should be valid JSON array");
+    let reports = common::cli::reports_of(&report);
     assert!(
         !reports.is_empty(),
         "bench-runs JSON was empty (expected at least one report)"
