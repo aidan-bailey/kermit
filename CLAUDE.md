@@ -198,8 +198,11 @@ the short version:
 3. Extend the DS or algorithm's `HasOptimizationAxes` impl with the new
    axis under the right prefix (`ds_layout_*` / `ds_config_*` / `ds_build_mode`).
 4. Add CLI surface (`--ds-layout-<dim>` / `--ds-config <flag>=<value>[,...]` /
-   `--ds-build <mode>`). `validate_config_choices` rejects `--ds-config` on
-   structures without a Config axis.
+   `--ds-build <mode>`). The option groups, their validators, and the
+   `with_hash_trie_layout!` product macro live in `kermit/src/options.rs`;
+   `validate_config_choices` rejects `--ds-config` on structures without a
+   Config axis, and `HashHtj` derives its report labels from its Layout
+   types (`hasher_of::<H>()` / `pruning_of::<P>()`), never from the flags.
 5. Extend the test suite per the standard (type aliases for Layout, new
    macro invocations for Config/BuildMode).
 6. Update the DS or algorithm's per-component doc with an "Optimizations"

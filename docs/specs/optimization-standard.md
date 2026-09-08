@@ -440,7 +440,7 @@ impl<H: HashStrategy, P: PruningPolicy> HasOptimizationAxes for HashTrie<H, P> {
 
 ### 6. Add CLI surface
 
-In `kermit/src/main.rs`, `ConfigChoices` sits beside `LayoutChoices` as a
+In `kermit/src/options.rs`, `ConfigChoices` sits beside `LayoutChoices` as a
 flattened clap group carrying `--ds-config`, a comma-separated key=value
 string parsed into a `HashTrieConfig`. Add the key to `HASH_TRIE_KEYS`
 (`["load-factor"]`) and a match arm that parses the value — `parse_load_factor`
@@ -540,7 +540,7 @@ its `HasOptimizationAxes` impl emits `ds_layout_pruning` from
 `ValueEnum`, default `off`), listed in `validate_layout_choices` so it is
 rejected on non-`hash-trie` selectors. Dispatch does **not** repeat the
 product: `with_hash_trie_layout!(hasher, pruning, |H, P| …)` in
-`kermit/src/main.rs` expands the hasher × pruning cells once, and both
+`kermit/src/options.rs` expands the hasher × pruning cells once, and both
 `dispatch_run_bench` and `dispatch_ds_bench` call it. **Adding a third
 Layout dimension means adding arms to that macro and nowhere else** — do
 not reach for a runtime enum inside the structure, which would reintroduce
@@ -682,7 +682,7 @@ This is semantically correct — pre-standard runs were SipHash-only. `kermit_la
 | First Layout consumer (hasher choice) | [`kermit-iters/src/hash_strategy.rs`](../../kermit-iters/src/hash_strategy.rs) |
 | Second Layout consumer (pruning policy) | [`kermit-ds/src/ds/hash_trie/pruning.rs`](../../kermit-ds/src/ds/hash_trie/pruning.rs) |
 | HashTrie's `HasOptimizationAxes` impl | [`kermit-ds/src/ds/hash_trie/implementation.rs`](../../kermit-ds/src/ds/hash_trie/implementation.rs) |
-| CLI dispatch monomorphizing on the Layout cell | [`kermit/src/main.rs`](../../kermit/src/main.rs) (search `with_hash_trie_layout!` — the one place Layout dimensions multiply) |
+| CLI dispatch monomorphizing on the Layout cell | [`kermit/src/options.rs`](../../kermit/src/options.rs) (`with_hash_trie_layout!` — the one place Layout dimensions multiply) |
 | Bench-report axes merge | [`kermit/src/main.rs`](../../kermit/src/main.rs) (search `optimization_axes`) |
 | CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_layout_pruning.rs`](../../kermit/tests/cli_hash_trie_layout_pruning.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs) |
 | First Config consumer (load-factor cap) | [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs) |
