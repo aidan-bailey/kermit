@@ -5,6 +5,8 @@
 **Sibling specs:** `2026-05-04-remove-criterion-graphs-design.md`,
 `bench-report-schema.md`, `optimization-standard.md`
 
+**Superseded in part (2026-09-08):** singleton pruning was reclassified from Config to Layout and the `ds_config_singleton_pruning` axis never shipped; the live axes are `ds_layout_pruning` and `ds_config_load_factor`. See `optimization-standard.md` § How to classify and the 2026-09-08 design's Amendment 1. Examples below have been updated to the live axis names; the design reasoning is left as written.
+
 ## Problem
 
 `kermit bench` deliberately produces no graphs; rendering lives in
@@ -93,7 +95,7 @@ dumb per-geom drawers.
 
 ```
 AestheticMap:
-    x:      column name        e.g. "tuples", "ds_config_singleton_pruning"
+    x:      column name        e.g. "tuples", "ds_config_load_factor"
     y:      "time" | "space"   selects metric; value = mean_ns, CI = mean_lo/mean_hi
     colour: column | None      e.g. "data_structure"
     style:  column | None      linestyle/marker channel, e.g. "algorithm"
@@ -122,7 +124,7 @@ raised when a bound column is absent or under-populated (e.g. `scaling` needs
 
 ```python
 # General entry point (1:1 with the CLI --kind flag):
-kl.plot(df, kind="bar", x="ds_config_singleton_pruning",
+kl.plot(df, kind="bar", x="ds_config_load_factor",
         y="time", colour="data_structure", facet="query")   # the ablation figure
 
 # Presets fill an AestheticMap and call plot():
@@ -148,7 +150,7 @@ core (fixed, ordered as today):
 
 optimization tail (discovered union across all reports, sorted, appended):
     any axes key matching  ^(ds|algo)_(layout_|config_|build_mode)
-    e.g. ds_layout_hasher, ds_config_singleton_pruning, ds_build_mode
+    e.g. ds_layout_hasher, ds_config_load_factor, ds_build_mode
 
 then: mean_*, median_*, source_path, criterion_group, criterion_function
 ```
@@ -204,7 +206,7 @@ as conveniences routing through `presets.py`.
 ```
 kermit-lab plot reports.json -o fig.pdf \
     --kind bar --y time \
-    --x ds_config_singleton_pruning \
+    --x ds_config_load_factor \
     --colour data_structure --facet query \
     --filter benchmark=triangle
 

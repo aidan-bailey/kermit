@@ -4,6 +4,8 @@
 **Status:** Design
 **Predecessor:** [`2026-05-26-hash-triejoin-design.md`](2026-05-26-hash-triejoin-design.md) introduced HashTrie; the spec there explicitly deferred all paper-side optimizations to a follow-up.
 
+**Superseded in part (2026-09-08):** singleton pruning was reclassified from Config to Layout and the `ds_config_singleton_pruning` axis never shipped; the live axes are `ds_layout_pruning` and `ds_config_load_factor`. See `optimization-standard.md` § How to classify and the 2026-09-08 design's Amendment 1. Examples below have been updated to the live axis names; the design reasoning is left as written.
+
 ## 1. Goal
 
 Establish a kermit-wide standard for adding optimizations to data structures and algorithms — vocabulary, Rust shapes, CLI surface, bench-report axes, and test obligations.
@@ -305,7 +307,7 @@ Total test count after this change: **44** in `join_tests` (11 patterns × 4 DS/
 define_multiway_join_test_suite_with_config!(
     HashTrieSip, HashTriejoin,
     ("baseline",         HashTrieConfig::default()),
-    ("singleton-pruning", HashTrieConfig { singleton_pruning: true, ..Default::default() }),
+    ("load-factor",       HashTrieConfig { load_factor: LoadFactor::percent(50), ..Default::default() }),
 );
 ```
 
