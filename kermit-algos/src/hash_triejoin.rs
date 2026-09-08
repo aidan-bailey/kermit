@@ -227,6 +227,8 @@ where
             .collect();
         let variable_to_iter_map =
             build_variable_to_iter_map(variable_ordering, &predicate_variables);
+        // The result is fully materialised before any tuple is yielded; see
+        // the "Laziness is not part of the contract" note on `JoinAlgo`.
         let mut output = Vec::new();
         enumerate(
             0,
@@ -301,6 +303,8 @@ mod tests {
         // Inline the same setup the JoinAlgo entry point does.
         let predicate_variables = vec![vec![0], vec![0]];
         let variable_to_iter_map = vec![vec![0, 1]];
+        // The result is fully materialised before any tuple is yielded; see
+        // the "Laziness is not part of the contract" note on `JoinAlgo`.
         let mut output = Vec::new();
         enumerate(
             0,

@@ -1008,8 +1008,9 @@ where
         .to_lowercase();
     match extension.as_str() {
         | "csv" => R::from_csv(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
-        | "parquet" =>
-            R::from_parquet(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}")),
+        | "parquet" => {
+            R::from_parquet(path).map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))
+        },
         | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
     }
 }
@@ -1089,10 +1090,11 @@ where
     let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
 
     for query_def in &queries {
-        let join_query: JoinQuery =
-            query_def.query.trim().parse().map_err(|e| {
-                anyhow::anyhow!("Failed to parse query '{}': {:?}", query_def.query, e)
-            })?;
+        let join_query: JoinQuery = query_def
+            .query
+            .trim()
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse query '{}': {e}", query_def.query))?;
 
         let mut metadata = vec![
             MetadataLine::new("benchmark", &benchmark.name),
@@ -1351,10 +1353,11 @@ fn run_benchmark_hash<H: HashStrategy>(
     let mut reports: Vec<BenchReport> = Vec::with_capacity(queries.len());
 
     for query_def in &queries {
-        let join_query: JoinQuery =
-            query_def.query.trim().parse().map_err(|e| {
-                anyhow::anyhow!("Failed to parse query '{}': {:?}", query_def.query, e)
-            })?;
+        let join_query: JoinQuery = query_def
+            .query
+            .trim()
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse query '{}': {e}", query_def.query))?;
 
         let mut metadata = vec![
             MetadataLine::new("benchmark", &benchmark.name),
