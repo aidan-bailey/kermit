@@ -9,7 +9,7 @@
 //! exercised with clustered buckets and shared leaf chains.
 
 use {
-    kermit_ds::HashTrie,
+    kermit_ds::{define_config_provider, Configured, HashTrie, HashTrieConfig},
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
 mod common;
@@ -41,6 +41,20 @@ impl HashStrategy for Mod10HashStrategy {
 
 type HashTrieMod10 = HashTrie<Mod10HashStrategy>;
 
+// ── Config variant: singleton pruning on ────────────────────────────────
+//
+// Each Layout alias also runs under the one Config flag, so the iterator
+// contract holds on emulated (pruned) levels as well as materialised ones.
+// `Mod10` is the important case: full-collision tuples must unprune into a
+// shared leaf chain.
+define_config_provider!(PruningOn, HashTrieConfig, HashTrieConfig {
+    singleton_pruning: true,
+});
+
+type HashTrieSipPruned = Configured<HashTrieSip, PruningOn>;
+type HashTrieFxPruned = Configured<HashTrieFx, PruningOn>;
+type HashTrieMod10Pruned = Configured<HashTrieMod10, PruningOn>;
+
 hash_trie_test_suite!(HashTrieSip, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieFx, FxHashStrategy);
@@ -49,6 +63,12 @@ hash_trie_test_suite!(HashTrieFx, FxHashStrategy);
 // suite must hold when unrelated keys *would* collide — every bucket here is
 // reached by linear probing from bucket 0.
 hash_trie_test_suite!(HashTrieMod10, Mod10HashStrategy);
+
+hash_trie_test_suite!(HashTrieSipPruned, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieFxPruned, FxHashStrategy);
+
+hash_trie_test_suite!(HashTrieMod10Pruned, Mod10HashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"
@@ -146,5 +166,22 @@ mod hash_trie_collisions {
         let mut expected = tuples;
         expected.sort();
         assert_eq!(collected, expected);
+    }
+
+    /// Under pruning, two tuples that collide on every attribute start as
+    /// one `Singleton` and must unprune into a shared leaf chain of two —
+    /// the same shape the unpruned trie builds, so `verify_and_construct`
+    /// still sees both candidates.
+    #[test]
+    fn full_collision_unprunes_into_shared_leaf_chain() {
+        let trie = HashTrieMod10Pruned::from_tuples(2.into(), vec![vec![1, 2], vec![11, 12]]);
+        let mut it = trie.hash_trie_iter();
+        assert!(it.open());
+        assert_eq!(it.size(), 1, "both tuples share hash(1) == hash(11)");
+        assert!(it.open());
+        assert_eq!(it.size(), 1, "both tuples share hash(2) == hash(12)");
+        let mut chain = it.leaf_tuples().expect("leaf chain").to_vec();
+        chain.sort();
+        assert_eq!(chain, vec![vec![1, 2], vec![11, 12]]);
     }
 }
