@@ -159,7 +159,7 @@ impl GeneratorSpec {
 /// `format!("{:x}", ..)` produced — the digests are persisted (in `meta.json`,
 /// and compared by `spec_hash` drift detection), so the encoding must not
 /// shift under a dependency bump.
-fn hex_digest(bytes: &[u8]) -> String {
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -189,6 +189,10 @@ pub struct RelationSource {
     /// from the filename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Optional SHA-256 of the relation file, 64 lowercase hex characters.
+    /// Checked after a download and by `bench fetch`; never on `bench run`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 impl RelationSource {
@@ -243,6 +247,7 @@ impl BenchmarkDefinition {
     ///         name: "edge".into(),
     ///         url: Some("https://example.com/edge.parquet".into()),
     ///         path: None,
+    ///         sha256: None,
     ///     }],
     ///     queries: vec![QueryDefinition {
     ///         name: "triangle".into(),
@@ -362,6 +367,19 @@ impl BenchmarkDefinition {
             name: self.name.clone(),
             reason,
         };
+
+        if let Some(digest) = &rel.sha256 {
+            let well_formed = digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+            if !well_formed {
+                return Err(invalid(format!(
+                    "relation '{}' sha256 must be 64 lowercase hex characters",
+                    rel.name
+                )));
+            }
+        }
 
         let path = match (&rel.url, &rel.path) {
             | (Some(_), Some(_)) => {
@@ -511,6 +529,41 @@ mod tests {
             description: format!("{name} query"),
             query: query.to_string(),
             expected: None,
+        }
+    }
+
+    /// A minimal valid static definition: one fetched relation, one query.
+    fn valid_static_definition() -> BenchmarkDefinition {
+        BenchmarkDefinition {
+            name: "static".to_string(),
+            description: "static".to_string(),
+            relations: vec![RelationSource {
+                name: "r".to_string(),
+                url: Some("http://x".to_string()),
+                path: None,
+                sha256: None,
+            }],
+            queries: vec![make_query("q", "Q(X) :- r(X).")],
+            generator: None,
+        }
+    }
+
+    #[test]
+    fn relation_sha256_must_be_64_lowercase_hex() {
+        let good = "a".repeat(64);
+        let upper = "A".repeat(64);
+        let short = "a".repeat(63);
+        let non_hex = "g".repeat(64);
+        let cases: [(&str, bool); 4] = [
+            (&good, true),
+            (&upper, false),
+            (&short, false),
+            (&non_hex, false),
+        ];
+        for (digest, ok) in cases {
+            let mut def = valid_static_definition();
+            def.relations[0].sha256 = Some(digest.to_string());
+            assert_eq!(def.validate().is_ok(), ok, "{digest}");
         }
     }
 
@@ -689,6 +742,7 @@ queries:
                 name: "r".to_string(),
                 url: Some("http://x".to_string()),
                 path: None,
+                sha256: None,
             }],
             queries: vec![make_query("q", "Q(X) :- r(X).")],
             generator: None,
@@ -717,6 +771,7 @@ queries:
                 name: "r".to_string(),
                 url: Some("http://x".to_string()),
                 path: None,
+                sha256: None,
             }],
             queries: vec![],
             generator: None,
@@ -733,6 +788,7 @@ queries:
                 name: "r".to_string(),
                 url: Some("http://x".to_string()),
                 path: None,
+                sha256: None,
             }],
             queries: vec![make_query("", "Q(X) :- r(X).")],
             generator: None,
@@ -749,6 +805,7 @@ queries:
                 name: "r".to_string(),
                 url: Some("http://x".to_string()),
                 path: None,
+                sha256: None,
             }],
             queries: vec![make_query("q", "")],
             generator: None,
@@ -766,11 +823,13 @@ queries:
                     name: "edge".to_string(),
                     url: Some("http://x".to_string()),
                     path: None,
+                    sha256: None,
                 },
                 RelationSource {
                     name: "edge".to_string(),
                     url: Some("http://y".to_string()),
                     path: None,
+                    sha256: None,
                 },
             ],
             queries: vec![make_query("q", "Q(X) :- edge(X).")],
@@ -788,6 +847,7 @@ queries:
                 name: "r".to_string(),
                 url: Some("http://x".to_string()),
                 path: None,
+                sha256: None,
             }],
             queries: vec![
                 make_query("q", "Q(X) :- r(X)."),
@@ -1066,6 +1126,7 @@ description: "nothing"
                     name: "r".to_string(),
                     url: Some("http://x".to_string()),
                     path: None,
+                    sha256: None,
                 }],
                 queries: vec![make_query("q", "Q(X) :- r(X).")],
                 generator: None,

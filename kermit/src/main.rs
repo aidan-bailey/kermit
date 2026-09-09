@@ -1236,6 +1236,7 @@ mod tests {
                 name: "edge".to_string(),
                 url: Some("https://example.invalid/nope".to_string()),
                 path: None,
+                sha256: None,
             }],
             queries: vec![kermit_bench::QueryDefinition {
                 name: "q".to_string(),

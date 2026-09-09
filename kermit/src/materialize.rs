@@ -388,6 +388,7 @@ mod tests {
                 name: "edge".to_string(),
                 url: Some("https://example.invalid/x.parquet".to_string()),
                 path: None,
+                sha256: None,
             }],
             queries: vec![QueryDefinition {
                 name: "q".to_string(),

@@ -63,6 +63,9 @@ pub fn write_benchmark_yaml(
                 name
             )),
             path: None,
+            // The generator does not compute digests; provenance lives in
+            // `meta.json`.
+            sha256: None,
         })
         .collect();
     let queries: Vec<QueryDefinition> = inputs

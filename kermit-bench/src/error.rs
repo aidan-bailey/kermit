@@ -62,4 +62,21 @@ pub enum BenchError {
         /// Resolution hint shown to the user.
         hint: String,
     },
+
+    /// A relation file's contents do not match the `sha256` its benchmark
+    /// declares.
+    #[error(
+        "integrity check failed for relation '{relation}' from {location}: expected sha256 \
+         {expected}, got {actual}"
+    )]
+    Integrity {
+        /// Relation name as declared in the YAML.
+        relation: String,
+        /// The URL it was downloaded from, or the local path that was hashed.
+        location: String,
+        /// Digest declared in the YAML.
+        expected: String,
+        /// Digest computed from the bytes.
+        actual: String,
+    },
 }

@@ -147,6 +147,7 @@ mod tests {
                 name: "edge".to_string(),
                 url: None,
                 path: Some("data/edge.csv".to_string()),
+                sha256: None,
             }],
             queries: vec![
                 QueryDefinition {
