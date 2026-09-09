@@ -7,6 +7,7 @@ use {
         driver::{DriverInputs, StressParams},
         pipeline::{run_pipeline, PipelineInputs},
     },
+    parquet::file::reader::FileReader,
     std::path::PathBuf,
 };
 
@@ -98,12 +99,22 @@ fn watdiv_sf1_pipeline_succeeds_and_produces_expected_artifacts() {
     assert!(dir.path().join("dict.parquet").exists());
     assert!(dir.path().join("meta.json").exists());
 
+    // Seeded relations (query predicates that drew zero triples) exist in
+    // the output but not in raw/data.nt, so the re-parse is a lower bound.
     let part = kermit_rdf::partition::partition(dir.path().join("raw/data.nt")).unwrap();
-    assert_eq!(
-        part.relations.len() as u32,
+    assert!(
+        meta.relation_count >= part.relations.len() as u32,
+        "meta.relation_count ({}) below re-parsed relation count ({})",
         meta.relation_count,
-        "relation count drifted between meta and re-parse"
+        part.relations.len()
     );
+    for rel in &part.relations {
+        assert!(
+            dir.path().join(format!("{}.parquet", rel.name)).exists(),
+            "re-parsed relation {} has no Parquet file",
+            rel.name
+        );
+    }
 
     let expected_dir = dir.path().join("expected");
     assert!(expected_dir.exists(), "expected/ dir missing");
@@ -138,6 +149,57 @@ fn watdiv_sf1_pipeline_succeeds_and_produces_expected_artifacts() {
         assert!(
             n < u64::MAX,
             "cardinality should be a real count, got u64::MAX in {csv:?}"
+        );
+    }
+
+    // Every relation the emitted YAML declares must be backed by a Parquet
+    // file, including relations seeded empty for absent predicates. The
+    // reverse check (no Parquet without a YAML entry) is deliberately absent:
+    // Parquet is written for every partitioned predicate, while the YAML
+    // lists only the predicates the queries use.
+    let yaml = std::fs::read_to_string(dir.path().join("benchmark.yml")).unwrap();
+    let def: kermit_bench::BenchmarkDefinition = serde_yaml::from_str(&yaml).unwrap();
+    assert!(
+        !def.relations.is_empty(),
+        "benchmark.yml declares no relations"
+    );
+    for rel in &def.relations {
+        let url = rel
+            .url
+            .as_deref()
+            .expect("generated relations always carry a URL");
+        let parquet = std::path::Path::new(url.strip_prefix("file://").expect("file:// URL"));
+        assert!(
+            parquet.exists(),
+            "relation {} URL {url} does not resolve",
+            rel.name
+        );
+        assert!(
+            rel.path.is_none(),
+            "generated relation {} must not carry a path",
+            rel.name
+        );
+    }
+
+    // Seeded relations are those the YAML declares but the raw data lacks.
+    // Not asserted non-empty: whether any query predicate draws zero triples
+    // is a property of the randomly seeded WatDiv dataset, not the pipeline.
+    let parsed: std::collections::HashSet<&str> =
+        part.relations.iter().map(|r| r.name.as_str()).collect();
+    let seeded: Vec<&str> = def
+        .relations
+        .iter()
+        .map(|r| r.name.as_str())
+        .filter(|n| !parsed.contains(n))
+        .collect();
+    eprintln!("seeded relations ({}): {seeded:?}", seeded.len());
+    for name in &seeded {
+        let f = std::fs::File::open(dir.path().join(format!("{name}.parquet"))).unwrap();
+        let rdr = parquet::file::reader::SerializedFileReader::new(f).unwrap();
+        assert_eq!(
+            rdr.metadata().file_metadata().num_rows(),
+            0,
+            "seeded relation {name} should be empty"
         );
     }
 }
