@@ -565,7 +565,8 @@ mod tests {
     #[test]
     fn no_match_at_shared_variable() {
         // R(a,b) ⋈ S(a,c) where a values are disjoint — mismatch at the
-        // depth where both relations participate, producing correct empty result
+        // depth where both relations participate, producing correct empty
+        // result
         let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let s = TreeTrie::from_tuples(2.into(), vec![vec![3, 4]]);
         assert_eq!(
@@ -611,7 +612,8 @@ mod tests {
 
     #[test]
     fn self_join() {
-        // R(a,b) ⋈ R(b,c) — self-join where every a value has a matching b chain
+        // R(a,b) ⋈ R(b,c) — self-join where every a value has a matching b
+        // chain
         let r1 = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 1]]);
         let r2 = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 1]]);
         assert_eq!(
@@ -666,9 +668,10 @@ mod tests {
     #[test]
     fn binary_no_match_regression() {
         // Regression: R(a,b) ⋈ S(b,c) where b values are disjoint.
-        // Previously emitted partial tuple [1] because triejoin_open incremented
-        // depth before validating the leapfrog at depth 2 (variable b), and
-        // TrieIteratorWrapper returned the incomplete stack.
+        // Previously emitted partial tuple [1] because triejoin_open
+        // incremented depth before validating the leapfrog at depth 2
+        // (variable b), and TrieIteratorWrapper returned the incomplete
+        // stack.
         let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let s = TreeTrie::from_tuples(2.into(), vec![vec![3, 4]]);
         assert_eq!(

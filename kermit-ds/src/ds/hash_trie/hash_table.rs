@@ -183,12 +183,13 @@ impl<V> HashTable<V> {
     /// Find the first occupied bucket index >= `start`. Returns
     /// `buckets_len()` if no occupied bucket exists at or after `start`.
     pub fn next_occupied(&self, start: usize) -> usize {
-        for i in start..self.buckets.len() {
-            if self.buckets[i].is_some() {
-                return i;
-            }
-        }
-        self.buckets.len()
+        // `get` rather than a `[start..]` slice so an out-of-range `start`
+        // returns `buckets_len()` like the empty-range case, instead of
+        // panicking.
+        self.buckets
+            .get(start..)
+            .and_then(|tail| tail.iter().position(Option::is_some))
+            .map_or(self.buckets.len(), |offset| start + offset)
     }
 
     /// Reference to the value at bucket `idx`, or `None` if empty.
@@ -280,7 +281,8 @@ mod tests {
     #[test]
     fn get_probes_past_collision() {
         let mut t: HashTable<u32> = HashTable::new();
-        // Force a probe: put a different hash in slot 1 and the target in slot 2.
+        // Force a probe: put a different hash in slot 1 and the target in slot
+        // 2.
         t.buckets[1] = Some(Entry {
             hash: 0x4000_0000_0000_0000,
             value: 1,

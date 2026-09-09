@@ -144,9 +144,10 @@ impl LinearIterator for TreeTrieIter<'_> {
 
 impl TrieIterator for TreeTrieIter<'_> {
     fn open(&mut self) -> bool {
-        // No `at_end` guard (unlike `ColumnTrieIter::open`): the stack top holds
-        // the resolved current node, so we descend into its children directly
-        // rather than by offset arithmetic that could overshoot a sibling slice.
+        // No `at_end` guard (unlike `ColumnTrieIter::open`): the stack top
+        // holds the resolved current node, so we descend into its
+        // children directly rather than by offset arithmetic that could
+        // overshoot a sibling slice.
         if let Some((node, _)) = self.stack.last() {
             if let Some(child) = node.children().first() {
                 self.stack.push((child, 0));

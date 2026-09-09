@@ -497,7 +497,8 @@ mod tests {
     #[test]
     fn insert_before_in_non_first_interval_shifts_subsequent_intervals() {
         let mut trie = ColumnTrie::new(2.into());
-        // Build a trie with two top-level groups: 1 -> {10, 20} and 5 -> {50, 60}
+        // Build a trie with two top-level groups: 1 -> {10, 20} and 5 -> {50,
+        // 60}
         trie.insert(vec![1, 10]);
         trie.insert(vec![1, 20]);
         trie.insert(vec![5, 50]);
@@ -642,7 +643,8 @@ mod heap_size_tests {
     #[test]
     fn empty_column_trie_heap_size() {
         let trie = ColumnTrie::new(2.into());
-        // Layers Vec is allocated with arity capacity, but data/interval Vecs are empty
+        // Layers Vec is allocated with arity capacity, but data/interval Vecs
+        // are empty
         let expected = trie.layers.capacity() * std::mem::size_of::<ColumnTrieLayer>();
         assert_eq!(trie.heap_size_bytes(), expected);
     }

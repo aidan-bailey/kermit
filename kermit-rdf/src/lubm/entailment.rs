@@ -385,17 +385,19 @@ pub fn entail(input_path: &Path, output_path: &Path) -> Result<EntailmentStats, 
 
         // Two read conventions are in play, and the asymmetry is deliberate:
         //
-        // - `frozen` is a snapshot of `working` taken at the top of each iteration.
-        //   Rules 1-3 (`apply_subclass_rule`, `apply_subproperty_rule`,
-        //   `apply_inverse_rule`) derive from this fixed view while inserting into
-        //   `working`. Reading a stable snapshot keeps their output independent of
-        //   intra-iteration ordering — they never observe a triple another rule derived
-        //   in the same pass.
-        // - Rules 4-5 (`apply_transitive_rule`, `apply_realisation_rule`) instead
-        //   re-scan the live `working` set, because they must see derivations produced
-        //   earlier in the same iteration (e.g. a `Department` typing just derived via
-        //   subClassOf feeds realisation of `Chair`). The outer fixed-point loop still
-        //   guarantees eventual convergence either way.
+        // - `frozen` is a snapshot of `working` taken at the top of each
+        //   iteration. Rules 1-3 (`apply_subclass_rule`,
+        //   `apply_subproperty_rule`, `apply_inverse_rule`) derive from this
+        //   fixed view while inserting into `working`. Reading a stable
+        //   snapshot keeps their output independent of intra-iteration ordering
+        //   — they never observe a triple another rule derived in the same
+        //   pass.
+        // - Rules 4-5 (`apply_transitive_rule`, `apply_realisation_rule`)
+        //   instead re-scan the live `working` set, because they must see
+        //   derivations produced earlier in the same iteration (e.g. a
+        //   `Department` typing just derived via subClassOf feeds realisation
+        //   of `Chair`). The outer fixed-point loop still guarantees eventual
+        //   convergence either way.
         let frozen: Vec<(String, String, RdfValue)> = working.iter().cloned().collect();
 
         apply_subclass_rule(&frozen, &rdf_type, &superclasses, &mut working);

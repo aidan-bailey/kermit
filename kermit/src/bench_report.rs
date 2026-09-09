@@ -268,7 +268,8 @@ mod tests {
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
         let s = String::from_utf8(buf).unwrap();
 
-        // BTreeMap ordering => alphabetical key order in JSON for diff-friendly output.
+        // BTreeMap ordering => alphabetical key order in JSON for diff-friendly
+        // output.
         let alpha_at = s.find("\"alpha\"").unwrap();
         let middle_at = s.find("\"middle\"").unwrap();
         let nested_at = s.find("\"nested\"").unwrap();
