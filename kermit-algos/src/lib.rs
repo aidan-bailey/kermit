@@ -65,6 +65,21 @@ impl FromStr for JoinAlgorithm {
     }
 }
 
+impl JoinAlgorithm {
+    /// The bench-report axis value for this algorithm (the `algorithm`
+    /// key) and the label embedded in Criterion group names. This is a
+    /// stable external contract: it names on-disk `target/criterion/`
+    /// directories, so existing measurements are repartitioned if it
+    /// changes. Equal to the `Debug` representation for historical
+    /// continuity.
+    pub fn axis_value(self) -> &'static str {
+        match self {
+            | Self::HashTriejoin => "HashTriejoin",
+            | Self::LeapfrogTriejoin => "LeapfrogTriejoin",
+        }
+    }
+}
+
 /// The available query optimisers.
 ///
 /// Used as a CLI argument to select which [`QueryOptimiser`] plans the
@@ -95,6 +110,30 @@ impl Optimiser {
         match self {
             | Self::Lexicographic => "lexicographic",
             | Self::Cardinality => "cardinality",
+        }
+    }
+}
+
+#[cfg(test)]
+mod join_algorithm_tests {
+    use {super::*, clap::ValueEnum};
+
+    /// Pins every label to a literal. These strings name
+    /// `target/criterion/{group}` directories and the report's `algorithm`
+    /// axis, so a change here repartitions every measurement taken so far.
+    #[test]
+    fn axis_values_are_pinned() {
+        assert_eq!(JoinAlgorithm::HashTriejoin.axis_value(), "HashTriejoin");
+        assert_eq!(JoinAlgorithm::LeapfrogTriejoin.axis_value(), "LeapfrogTriejoin");
+    }
+
+    /// The label used to be `format!("{:?}")`; keeping them equal preserves
+    /// historical Criterion directory names. Diverge only with a deliberate
+    /// decision about old measurements.
+    #[test]
+    fn axis_values_match_debug_repr() {
+        for v in JoinAlgorithm::value_variants() {
+            assert_eq!(v.axis_value(), format!("{v:?}"));
         }
     }
 }
