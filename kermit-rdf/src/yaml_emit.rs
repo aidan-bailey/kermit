@@ -72,6 +72,7 @@ pub fn write_benchmark_yaml(
             name: qname.clone(),
             description: format!("query {qname}"),
             query: dl.clone(),
+            expected: None,
         })
         .collect();
     let def = BenchmarkDefinition {

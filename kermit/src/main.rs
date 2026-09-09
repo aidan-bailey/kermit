@@ -1231,6 +1231,7 @@ mod tests {
                 name: "q".to_string(),
                 description: "q".to_string(),
                 query: "Q(X) :- edge(X, Y).".to_string(),
+                expected: None,
             }],
             generator: None,
         }

@@ -207,6 +207,10 @@ pub struct QueryDefinition {
     pub description: String,
     /// The Datalog query string (see `kermit-parser` for grammar).
     pub query: String,
+    /// Expected number of result tuples, when known. Read by `bench run
+    /// --verify`; absent means "unknown", not "zero".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<u64>,
 }
 
 impl BenchmarkDefinition {
@@ -244,6 +248,7 @@ impl BenchmarkDefinition {
     ///         name: "triangle".into(),
     ///         description: "triangle".into(),
     ///         query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).".into(),
+    ///         expected: None,
     ///     }],
     ///     generator: None,
     /// };
@@ -505,7 +510,32 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} query"),
             query: query.to_string(),
+            expected: None,
         }
+    }
+
+    #[test]
+    fn query_expected_round_trips_through_yaml() {
+        let mut q = make_query("t", "Q(X) :- r(X).");
+        q.expected = Some(7);
+        let yaml = serde_yaml::to_string(&q).unwrap();
+        assert!(yaml.contains("expected: 7"), "{yaml}");
+        let back: QueryDefinition = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back.expected, Some(7));
+    }
+
+    #[test]
+    fn query_without_expected_serialises_without_the_key() {
+        let q = make_query("t", "Q(X) :- r(X).");
+        let yaml = serde_yaml::to_string(&q).unwrap();
+        assert!(!yaml.contains("expected"), "{yaml}");
+    }
+
+    #[test]
+    fn legacy_query_yaml_without_expected_deserialises_to_none() {
+        let back: QueryDefinition =
+            serde_yaml::from_str("name: t\ndescription: d\nquery: 'Q(X) :- r(X).'\n").unwrap();
+        assert_eq!(back.expected, None);
     }
 
     #[test]

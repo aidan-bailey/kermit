@@ -148,11 +148,13 @@ mod tests {
                     name: "pair".to_string(),
                     description: "pair".to_string(),
                     query: "Q(X, Y) :- edge(X, Y).".to_string(),
+                    expected: None,
                 },
                 QueryDefinition {
                     name: "path".to_string(),
                     description: "path".to_string(),
                     query: "Q(X, Z) :- edge(X, Y), edge(Y, Z).".to_string(),
+                    expected: None,
                 },
             ],
             generator: None,

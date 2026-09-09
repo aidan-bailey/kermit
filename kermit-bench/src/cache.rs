@@ -221,6 +221,7 @@ mod tests {
                 name: "q".to_string(),
                 description: "test".to_string(),
                 query: "Q(X) :- r(X).".to_string(),
+                expected: None,
             }],
             generator: None,
         };
