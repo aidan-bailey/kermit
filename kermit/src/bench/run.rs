@@ -18,10 +18,30 @@ use {
     std::{collections::BTreeMap, io},
 };
 
+/// Everything a measured join needs besides the cell and the workload:
+/// what kind of report to stamp, how to name the Criterion group, which
+/// optimiser plans the queries, and what to measure. One value is built
+/// per subcommand invocation and shared by every cell it runs.
+#[derive(Clone, Copy)]
+pub(crate) struct RunSettings<'a> {
+    /// The report's `kind` field (`Run` for `bench run`, `Join` for
+    /// `bench join`); the group naming is the same for both.
+    pub kind: BenchKind,
+    /// First segment of the Criterion group
+    /// (`{prefix}/{workload}/{query}/{ds}/{algo}`), from `--name` or the
+    /// subcommand's default.
+    pub prefix: &'a str,
+    pub optimiser: Optimiser,
+    pub metrics: &'a [Metric],
+    /// K in the `end_to_end` metric's `T = build + K × query`.
+    pub queries_per_build: u32,
+    /// Criterion sample/measurement/warm-up settings.
+    pub bench_args: &'a BenchArgs,
+}
+
 /// Runs every query of `workload` on one execution cell and returns one
-/// report per query, each stamped with `kind`. `prefix` is the first
-/// segment of the Criterion group (`{prefix}/{workload}/{query}/{ds}/{algo}`),
-/// resolved by the caller from `--name` or the subcommand's default.
+/// report per query, each stamped with `settings.kind` and grouped under
+/// `settings.prefix`.
 ///
 /// Generic over the [`ExecutionFamily`] so the sorted family
 /// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P>`) share one body:
@@ -30,11 +50,17 @@ use {
 /// come from `family.execution()` — the same value that picked the code
 /// path — so a report can never name an algorithm it did not run (issue
 /// #56).
-#[allow(clippy::too_many_arguments)]
 fn run_benchmark<F: ExecutionFamily>(
-    family: &F, kind: BenchKind, workload: &Workload, prefix: &str, optimiser: Optimiser,
-    metrics: &[Metric], queries_per_build: u32, bench_args: &BenchArgs,
+    family: &F, workload: &Workload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
+    let RunSettings {
+        kind,
+        prefix,
+        optimiser,
+        metrics,
+        queries_per_build,
+        bench_args,
+    } = settings;
     // Load each relation from disk exactly once; the family builds its
     // engine from these typed relations rather than re-reading the files.
     let relations: Vec<F::Rel> = workload
@@ -238,31 +264,20 @@ fn run_benchmark<F: ExecutionFamily>(
 /// Runs one `bench run` cell by monomorphising [`run_benchmark`] over the
 /// [`ExecutionFamily`] the cell names. There is no separate algorithm
 /// parameter to ignore: the `Execution` fixes both halves of the pair.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_run_bench(
-    cell: Execution, kind: BenchKind, workload: &Workload, prefix: &str, optimiser: Optimiser,
-    metrics: &[Metric], queries_per_build: u32, bench_args: &BenchArgs,
+    cell: Execution, workload: &Workload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
+    let optimiser = settings.optimiser;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_benchmark(
             &TrieLftj::<kermit_ds::TreeTrie>::new(optimiser),
-            kind,
             workload,
-            prefix,
-            optimiser,
-            metrics,
-            queries_per_build,
-            bench_args,
+            settings,
         ),
         | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_benchmark(
             &TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser),
-            kind,
             workload,
-            prefix,
-            optimiser,
-            metrics,
-            queries_per_build,
-            bench_args,
+            settings,
         ),
         | Execution::HashHtj {
             hasher,
@@ -270,13 +285,8 @@ pub(crate) fn dispatch_run_bench(
             config,
         } => with_hash_trie_layout!(hasher, pruning, |H, P| run_benchmark(
             &HashHtj::<H, P>::new(config, optimiser),
-            kind,
             workload,
-            prefix,
-            optimiser,
-            metrics,
-            queries_per_build,
-            bench_args,
+            settings,
         )),
     }
 }

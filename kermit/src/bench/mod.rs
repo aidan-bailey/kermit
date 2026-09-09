@@ -27,7 +27,7 @@ pub mod workload;
 pub use workload::{NamedQuery, Workload};
 pub(crate) use {
     ds::dispatch_ds_bench,
-    run::{dispatch_run_bench, resolve_sweep},
+    run::{dispatch_run_bench, resolve_sweep, RunSettings},
 };
 
 /// A measurement `bench ds` / `bench run` can record.

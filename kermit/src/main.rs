@@ -35,7 +35,7 @@ mod options;
 use {
     bench::{
         build_time_criterion, dispatch_ds_bench, dispatch_run_bench, resolve_sweep, Metric,
-        Workload,
+        RunSettings, Workload,
     },
     bench_report::{
         write_metadata_block, BenchKind, BenchReport, CriterionGroupRef, MetadataLine,
@@ -830,6 +830,14 @@ fn run_bench_run_command(
         .collect::<Result<Vec<_>, _>>()?;
 
     let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_RUN_GROUP);
+    let settings = RunSettings {
+        kind: BenchKind::Run,
+        prefix,
+        optimiser,
+        metrics: &metrics,
+        queries_per_build,
+        bench_args,
+    };
     // Opened before the loop so every finished cell is on disk before the
     // next one starts; a crash mid-sweep keeps the completed cells.
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Run)?;
@@ -843,24 +851,16 @@ fn run_bench_run_command(
                 )
             })?;
         for &cell in &cells {
-            let cell_reports = dispatch_run_bench(
-                cell,
-                BenchKind::Run,
-                &workload,
-                prefix,
-                optimiser,
-                &metrics,
-                queries_per_build,
-                bench_args,
-            )
-            .with_context(|| {
-                format!(
-                    "bench run failed on benchmark '{}' cell {:?}; partial report retained at {}",
-                    benchmark.name,
-                    cell,
-                    sink.path().display()
-                )
-            })?;
+            let cell_reports =
+                dispatch_run_bench(cell, &workload, settings).with_context(|| {
+                    format!(
+                        "bench run failed on benchmark '{}' cell {:?}; partial report retained at \
+                         {}",
+                        benchmark.name,
+                        cell,
+                        sink.path().display()
+                    )
+                })?;
             sink.push(cell_reports)?;
         }
     }
