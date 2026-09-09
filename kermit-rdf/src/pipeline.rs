@@ -17,9 +17,9 @@
 //! ```
 //!
 //! This module supplies only the WatDiv-specific hooks of the
-//! [`Generator`] trait: staging the binary's artifacts, seeding relations
-//! the basic workload's fixed templates reference, splitting the `-q`
-//! output on `#end` markers, and the `watdiv-*` provenance fields.
+//! [`Generator`] trait: staging the binary's artifacts, seeding empty
+//! relations for query predicates the generated data lacks, splitting the
+//! `-q` output on `#end` markers, and the `watdiv-*` provenance fields.
 
 use {
     crate::{
@@ -133,15 +133,12 @@ impl From<&StressParams> for StressParamsMeta {
     }
 }
 
-/// Which WatDiv workload `process_artifacts` is finishing. Carries both the
-/// `meta.json` `kind` discriminator and the decision of whether to seed empty
-/// relations for query predicates missing from the generated data, replacing
-/// the opaque `(&str, bool)` pair the callers used to pass.
+/// Which WatDiv workload `process_artifacts` is finishing. Selects the
+/// `meta.json` `kind` discriminator.
 pub enum Workload {
-    /// Stress workload (`run_pipeline`): watdiv `-s` templates; no seeding.
+    /// Stress workload (`run_pipeline`): watdiv `-s` templates.
     Stress,
-    /// Basic Testing workload (`run_basic_pipeline`): static templates; seeds
-    /// empty relations for predicates the generated data lacks.
+    /// Basic Testing workload (`run_basic_pipeline`): static templates.
     Basic,
 }
 
@@ -153,14 +150,12 @@ impl Workload {
             | Workload::Basic => "watdiv-basic-onthefly",
         }
     }
-
-    /// Whether `process_artifacts` seeds empty relations for query predicates
-    /// absent from the generated data.
-    fn seeds_missing_predicates(&self) -> bool { matches!(self, Workload::Basic) }
 }
 
-/// Basic workload: fixed templates may reference predicates absent from the
-/// (probabilistically generated) data. Seed an empty relation into `part`
+/// WatDiv draws data (`-d`) and queries (`-s`/`-q`) as independent samples
+/// of the model, so any workload can reference a predicate that drew zero
+/// triples (rare predicates sit in `<pgroup>` blocks with p < 1 over small
+/// entity populations; see issue #63). Seed an empty relation into `part`
 /// for each such predicate so translation yields an empty-result join
 /// instead of erroring. Mirrors the naming convention used by
 /// `partition::partition` for collision-free relation names.
@@ -201,7 +196,7 @@ fn seed_missing_predicates(
 }
 
 /// The WatDiv view of the shared [`Generator`] contract: a set of pipeline
-/// inputs plus the workload that decides `kind` and seeding.
+/// inputs plus the workload that decides `kind`.
 struct WatdivGenerator<'a> {
     inputs: &'a PipelineInputs<'a>,
     workload: Workload,
@@ -257,10 +252,7 @@ impl Generator for WatdivGenerator<'_> {
     fn seed_relations(
         &self, staged: &WatdivStaged, part: &mut Partitioned,
     ) -> Result<(), RdfError> {
-        if self.workload.seeds_missing_predicates() {
-            seed_missing_predicates(part, &staged.copied_sparql_paths)?;
-        }
-        Ok(())
+        seed_missing_predicates(part, &staged.copied_sparql_paths)
     }
 
     fn translate_queries(
@@ -363,11 +355,7 @@ pub fn run_basic_pipeline(
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        crate::partition::PartitionedRelation,
-        std::io::Write,
-    };
+    use {super::*, crate::partition::PartitionedRelation};
 
     /// A `Partitioned` holding one relation, `title`, for `http://a/title`,
     /// as `partition::partition` would build it from data containing that
@@ -389,8 +377,7 @@ mod tests {
     /// Writes `text` to `<dir>/<name>` and returns its path.
     fn write_sparql(dir: &Path, name: &str, text: &str) -> PathBuf {
         let path = dir.join(name);
-        let mut f = fs::File::create(&path).unwrap();
-        f.write_all(text.as_bytes()).unwrap();
+        fs::write(&path, text).unwrap();
         path
     }
 
@@ -441,5 +428,71 @@ mod tests {
 
         // Exactly the two absent IRIs were interned.
         assert_eq!(part.dict.len(), dict_len_before + 2);
+    }
+
+    /// Builds a `WatdivGenerator` for `workload` whose driver paths are never
+    /// touched; `seed_relations` reads only `staged`.
+    fn generator_for<'a>(
+        inputs: &'a PipelineInputs<'a>, workload: Workload,
+    ) -> WatdivGenerator<'a> {
+        WatdivGenerator {
+            inputs,
+            workload,
+        }
+    }
+
+    #[test]
+    fn every_workload_seeds_absent_query_predicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let sparql = write_sparql(
+            dir.path(),
+            "q.sparql",
+            "SELECT ?s ?r WHERE { ?s <http://x/rare> ?r . }\n#end\n",
+        );
+        let unused = Path::new("unused");
+        let inputs = PipelineInputs {
+            driver: DriverInputs {
+                watdiv_bin: unused,
+                vendor_files: unused,
+                model_file: unused,
+                scale: 1,
+                stress: StressParams::default(),
+                query_count_per_template: 1,
+                use_bwrap: false,
+            },
+            out_dir: dir.path(),
+            bench_name: "unit",
+            tag: "unit",
+            spec_hash: None,
+        };
+        let staged = WatdivStaged {
+            copied_sparql_paths: vec![sparql],
+        };
+
+        for workload in [Workload::Stress, Workload::Basic] {
+            let label = match workload {
+                | Workload::Stress => "stress",
+                | Workload::Basic => "basic",
+            };
+            let mut part = partitioned_with_title();
+
+            generator_for(&inputs, workload)
+                .seed_relations(&staged, &mut part)
+                .unwrap();
+
+            let name = part.predicate_map.get("http://x/rare").unwrap_or_else(|| {
+                panic!("{label} workload must seed absent query predicates (issue #63)")
+            });
+            assert_eq!(part.relations.len(), 2, "{label}: one relation seeded");
+            let rel = part
+                .relations
+                .iter()
+                .find(|r| &r.name == name)
+                .unwrap_or_else(|| panic!("{label}: no relation named {name}"));
+            assert!(
+                rel.tuples.is_empty(),
+                "{label}: {name} must be seeded empty"
+            );
+        }
     }
 }

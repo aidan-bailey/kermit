@@ -90,9 +90,9 @@ pub fn translate_query(
 }
 
 /// Returns the distinct ground predicate IRIs of a BGP-only SELECT query, in
-/// document order. Used by the basic pipeline to seed empty relations for
-/// predicates absent from the generated data, so `translate_query` does not
-/// hard-error on them. Rejects the same unsupported shapes as
+/// document order. Used by the WatDiv pipeline to seed empty relations for
+/// query predicates absent from the generated data, so `translate_query`
+/// does not hard-error on them. Rejects the same unsupported shapes as
 /// [`translate_query`]. Predicate variables are skipped (they would be
 /// rejected by `translate_query` later).
 pub fn bgp_predicate_iris(sparql: &str) -> Result<Vec<String>, RdfError> {
