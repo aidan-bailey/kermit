@@ -9,6 +9,10 @@
 //! gives us a single place to integrate [`crate::measurement::format_bytes`]
 //! for byte-valued fields.
 //!
+//! The report is written through [`ReportSink`], which rewrites it
+//! atomically after every cell so an interrupted `bench run` sweep keeps
+//! its finished cells.
+//!
 //! When `--report-json <path>` is set on the `bench` subcommand, the same
 //! metadata plus pointers into Criterion's output directory are serialised
 //! to `path` as a [`BenchReport`] (see [`write_json_report`]). External
@@ -25,7 +29,9 @@ use {
     serde::Serialize,
     std::{
         collections::BTreeMap,
-        io::{self, Write},
+        fs,
+        io::{self, BufWriter, Write},
+        path::{Path, PathBuf},
     },
 };
 
@@ -179,6 +185,89 @@ pub fn write_json_report<W: Write>(w: &mut W, reports: &[BenchReport]) -> io::Re
     writeln!(w)
 }
 
+/// Crash-safe writer for the JSON report of one `bench` invocation.
+///
+/// `bench run` produces reports one cell at a time, and a sweep can run
+/// for hours. The sink rewrites the complete array after every
+/// [`push`](Self::push) — to a `.part` sibling, then renamed into place —
+/// so at any instant the file on disk is a valid JSON array holding every
+/// cell that has finished. An interrupted sweep therefore keeps its
+/// completed cells; only the cell in flight is lost.
+///
+/// `bench join` and `bench ds` produce a single report and use the same
+/// sink so all three subcommands share one output path.
+pub struct ReportSink {
+    path: PathBuf,
+    reports: Vec<BenchReport>,
+}
+
+#[allow(dead_code)] // wired in by the bench handlers in the next commit
+impl ReportSink {
+    /// Resolves the target path — `override_path` if given, otherwise
+    /// [`default_path`](Self::default_path) — and creates its parent
+    /// directory. Nothing is written until the first `push` or `finish`.
+    pub fn open(override_path: Option<&Path>, kind: BenchKind) -> io::Result<Self> {
+        let path = match override_path {
+            | Some(p) => p.to_path_buf(),
+            | None => Self::default_path(kind),
+        };
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+        Ok(Self {
+            path,
+            reports: Vec::new(),
+        })
+    }
+
+    /// The default report path: `bench-runs/{kind}-{unix-millis}.json`
+    /// relative to the current directory (`bench-runs/` is gitignored at
+    /// the workspace root).
+    pub fn default_path(kind: BenchKind) -> PathBuf {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let kind_str = match kind {
+            | BenchKind::Join => "join",
+            | BenchKind::Ds => "ds",
+            | BenchKind::Run => "run",
+        };
+        PathBuf::from(format!("bench-runs/{kind_str}-{now_ms}.json"))
+    }
+
+    /// Appends `reports` and rewrites the whole file atomically.
+    pub fn push(&mut self, reports: Vec<BenchReport>) -> io::Result<()> {
+        self.reports.extend(reports);
+        self.write_atomically()
+    }
+
+    /// Writes the file (even if nothing was pushed, so an empty sweep
+    /// still yields `[]`), announces the path on stderr, and returns it.
+    pub fn finish(self) -> io::Result<PathBuf> {
+        self.write_atomically()?;
+        eprintln!("Report written: {}", self.path.display());
+        Ok(self.path)
+    }
+
+    /// Serialises to `<path>.part` and renames over `<path>`, the same
+    /// staging discipline `kermit-bench`'s downloader uses, so a crash
+    /// mid-write can never leave a truncated report.
+    fn write_atomically(&self) -> io::Result<()> {
+        let mut part = self.path.clone().into_os_string();
+        part.push(".part");
+        let part = PathBuf::from(part);
+        {
+            let mut writer = BufWriter::new(fs::File::create(&part)?);
+            write_json_report(&mut writer, &self.reports)?;
+            writer.flush()?;
+        }
+        fs::rename(&part, &self.path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +373,58 @@ mod tests {
         assert_eq!(json[0]["axes"]["middle"], 42);
         assert_eq!(json[0]["axes"]["zeta"], true);
         assert_eq!(json[0]["axes"]["nested"]["k"][1], 2);
+    }
+
+    fn report(kind: BenchKind, tag: &str) -> BenchReport {
+        let axes = std::collections::BTreeMap::from([("tag".to_string(), serde_json::json!(tag))]);
+        BenchReport::new(kind, &[], axes, vec![])
+    }
+
+    fn read_tags(path: &std::path::Path) -> Vec<String> {
+        let text = std::fs::read_to_string(path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        json.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["axes"]["tag"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn sink_finish_without_push_writes_empty_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/run.json");
+        let sink = ReportSink::open(Some(&path), BenchKind::Run).unwrap();
+        let written = sink.finish().unwrap();
+        assert_eq!(written, path);
+        assert_eq!(read_tags(&path), Vec::<String>::new());
+    }
+
+    #[test]
+    fn sink_push_is_visible_on_disk_before_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.json");
+        let mut sink = ReportSink::open(Some(&path), BenchKind::Run).unwrap();
+        sink.push(vec![report(BenchKind::Run, "cell-1")]).unwrap();
+        // The file already holds the first cell and no staging file remains.
+        assert_eq!(read_tags(&path), vec!["cell-1"]);
+        assert!(!dir.path().join("run.json.part").exists());
+        sink.push(vec![
+            report(BenchKind::Run, "cell-2a"),
+            report(BenchKind::Run, "cell-2b"),
+        ])
+        .unwrap();
+        assert_eq!(read_tags(&path), vec!["cell-1", "cell-2a", "cell-2b"]);
+        sink.finish().unwrap();
+        assert_eq!(read_tags(&path), vec!["cell-1", "cell-2a", "cell-2b"]);
+    }
+
+    #[test]
+    fn sink_default_path_uses_kind_and_bench_runs_dir() {
+        let path = ReportSink::default_path(BenchKind::Ds);
+        assert_eq!(path.parent().unwrap(), std::path::Path::new("bench-runs"));
+        let file = path.file_name().unwrap().to_str().unwrap();
+        assert!(file.starts_with("ds-"), "{file}");
+        assert!(file.ends_with(".json"), "{file}");
     }
 }
