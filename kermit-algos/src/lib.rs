@@ -116,7 +116,7 @@ impl Optimiser {
 
 #[cfg(test)]
 mod join_algorithm_tests {
-    use {super::*, clap::ValueEnum};
+    use super::*;
 
     /// Pins every label to a literal. These strings name
     /// `target/criterion/{group}` directories and the report's `algorithm`
@@ -124,7 +124,10 @@ mod join_algorithm_tests {
     #[test]
     fn axis_values_are_pinned() {
         assert_eq!(JoinAlgorithm::HashTriejoin.axis_value(), "HashTriejoin");
-        assert_eq!(JoinAlgorithm::LeapfrogTriejoin.axis_value(), "LeapfrogTriejoin");
+        assert_eq!(
+            JoinAlgorithm::LeapfrogTriejoin.axis_value(),
+            "LeapfrogTriejoin"
+        );
     }
 
     /// The label used to be `format!("{:?}")`; keeping them equal preserves

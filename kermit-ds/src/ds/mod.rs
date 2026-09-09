@@ -60,7 +60,7 @@ impl IndexStructure {
 
 #[cfg(test)]
 mod index_structure_tests {
-    use {super::*, clap::ValueEnum};
+    use super::*;
 
     /// Pins every label to a literal. These strings name
     /// `target/criterion/{group}` directories and the report's
