@@ -274,6 +274,33 @@ impl ReportSink {
 mod tests {
     use super::*;
 
+    /// The Python analysis layer keeps its own copy of the schema version.
+    /// Embedding its module at compile time makes a mismatch a `cargo test`
+    /// failure rather than a notebook surprise.
+    const KERMIT_LAB_INIT: &str = include_str!("../../python/kermit-lab/kermit_lab/__init__.py");
+
+    fn python_schema_version(source: &str) -> Option<u32> {
+        source
+            .lines()
+            .find_map(|l| l.strip_prefix("SCHEMA_VERSION = "))
+            .and_then(|v| v.trim().parse().ok())
+    }
+
+    #[test]
+    fn python_schema_version_matches_rust() {
+        assert_eq!(
+            python_schema_version(KERMIT_LAB_INIT),
+            Some(REPORT_SCHEMA_VERSION),
+            "python/kermit-lab/kermit_lab/__init__.py SCHEMA_VERSION must equal \
+             kermit/src/bench_report.rs REPORT_SCHEMA_VERSION; bump both together"
+        );
+    }
+
+    #[test]
+    fn python_schema_version_parser_rejects_a_file_without_the_line() {
+        assert_eq!(python_schema_version("# nothing here\nX = 2\n"), None);
+    }
+
     #[test]
     fn metadata_block_aligns_labels() {
         let lines = vec![
