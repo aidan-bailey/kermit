@@ -13,6 +13,7 @@ pub struct NamedQuery {
     /// The name that becomes the report's `query` axis and the
     /// `{query}` segment of the Criterion group.
     pub name: String,
+    /// The parsed query.
     pub query: JoinQuery,
 }
 
@@ -24,7 +25,10 @@ pub struct Workload {
     /// The benchmark name (the report's `benchmark` axis), or
     /// [`Workload::ADHOC`] for a `bench join` invocation.
     pub name: String,
+    /// Relation files, stored as given; nothing here checks they exist —
+    /// the family's `load` does.
     pub relation_paths: Vec<PathBuf>,
+    /// The queries to run, in report order.
     pub queries: Vec<NamedQuery>,
 }
 
