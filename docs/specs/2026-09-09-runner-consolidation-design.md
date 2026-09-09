@@ -149,7 +149,7 @@ old count axis) is dropped — it duplicated what the metadata lists.
 - **CLI, new**: `bench join -i hash-trie -a hash-triejoin --ds-layout-hasher fxhash
   --ds-config load-factor=0.5` reports `ds_layout_hasher`,
   `ds_layout_pruning`, `ds_config_load_factor`, `benchmark: "adhoc"`,
-  `query: "intersect_query"`, and three `criterion_groups` entries whose
+  `query: "intersect_query"`, and four `criterion_groups` entries whose
   functions are `insertion`, `iteration`, `space/first`, `space/second` (the
   two fixture relations) — mirroring the
   hash-trie `bench ds` tests in `kermit/tests/common/cli.rs`.
