@@ -360,3 +360,86 @@ pub fn run_basic_pipeline(
     let raw = driver::drive_basic(&inputs.driver, template_src_dir)?;
     process_artifacts(inputs, &raw, Workload::Basic)
 }
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        crate::partition::PartitionedRelation,
+        std::io::Write,
+    };
+
+    /// A `Partitioned` holding one relation, `title`, for `http://a/title`,
+    /// as `partition::partition` would build it from data containing that
+    /// predicate.
+    fn partitioned_with_title() -> Partitioned {
+        let mut part = Partitioned::default();
+        let s = part.dict.intern(RdfValue::Iri("http://a/s1".into()));
+        part.dict.intern(RdfValue::Iri("http://a/title".into()));
+        let o = part.dict.intern(RdfValue::Iri("http://a/o1".into()));
+        part.relations.push(PartitionedRelation {
+            name: "title".into(),
+            tuples: vec![(s, o)],
+        });
+        part.predicate_map
+            .insert("http://a/title".into(), "title".into());
+        part
+    }
+
+    /// Writes `text` to `<dir>/<name>` and returns its path.
+    fn write_sparql(dir: &Path, name: &str, text: &str) -> PathBuf {
+        let path = dir.join(name);
+        let mut f = fs::File::create(&path).unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn seed_missing_predicates_adds_empty_relations_for_absent_query_predicates() {
+        let dir = tempfile::tempdir().unwrap();
+        // One present predicate, one absent predicate, and one absent
+        // predicate whose sanitised base (`title`) collides with the
+        // present relation's name.
+        let sparql = write_sparql(
+            dir.path(),
+            "q.sparql",
+            "SELECT ?s ?o WHERE {\n\
+             \t?s <http://a/title> ?o .\n\
+             \t?s <http://x/rare> ?r .\n\
+             \t?s <http://b/title> ?t .\n\
+             }\n#end\n",
+        );
+        let mut part = partitioned_with_title();
+        let dict_len_before = part.dict.len();
+
+        seed_missing_predicates(&mut part, &[sparql]).unwrap();
+
+        // The present relation is untouched.
+        assert_eq!(part.relations[0].name, "title");
+        assert_eq!(part.relations[0].tuples.len(), 1);
+        assert_eq!(part.predicate_map["http://a/title"], "title");
+
+        // Both absent predicates now have an empty relation and a map entry.
+        assert_eq!(part.relations.len(), 3, "two relations seeded");
+        assert_eq!(part.predicate_map.len(), 3);
+        let rare = &part.predicate_map["http://x/rare"];
+        assert_eq!(rare, "rare");
+        let collided = &part.predicate_map["http://b/title"];
+        let collided_id = part
+            .dict
+            .lookup(&RdfValue::Iri("http://b/title".into()))
+            .expect("absent predicate interned into the dictionary");
+        assert_eq!(collided, &format!("title_{collided_id}"));
+        for name in [rare, collided] {
+            let rel = part
+                .relations
+                .iter()
+                .find(|r| &r.name == name)
+                .unwrap_or_else(|| panic!("no relation named {name}"));
+            assert!(rel.tuples.is_empty(), "{name} must be seeded empty");
+        }
+
+        // Exactly the two absent IRIs were interned.
+        assert_eq!(part.dict.len(), dict_len_before + 2);
+    }
+}
