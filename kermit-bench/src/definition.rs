@@ -148,9 +148,26 @@ impl GeneratorSpec {
         let yaml = serde_yaml::to_string(self).expect("GeneratorSpec serializes to YAML");
         let mut h = Sha256::new();
         h.update(yaml.as_bytes());
-        format!("{:x}", h.finalize())
+        hex_digest(&h.finalize())
     }
 }
+
+/// Lowercase, zero-padded hex encoding of a digest.
+///
+/// sha2 0.11 returns a `hybrid_array::Array` from `finalize`, which no longer
+/// implements `LowerHex`. This reproduces the exact string the previous
+/// `format!("{:x}", ..)` produced — the digests are persisted (in `meta.json`,
+/// and compared by `spec_hash` drift detection), so the encoding must not
+/// shift under a dependency bump.
+fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        write!(out, "{b:02x}").expect("writing to a String never fails");
+    }
+    out
+}
+
 
 /// Where a relation's tuples come from: either a download URL or a file
 /// committed alongside the benchmark.
@@ -1113,5 +1130,25 @@ generator:
             queries: Some(vec!["q1".to_string(), "q2".to_string()]),
         };
         assert_ne!(a.spec_hash(), b.spec_hash());
+    }
+}
+
+#[cfg(test)]
+mod hex_digest_tests {
+    use super::*;
+
+    /// Pins the encoding against the NIST SHA-256 vector for `"abc"`. The
+    /// digests this crate emits are written into `meta.json` and compared on
+    /// later runs, so a formatting change here would read as spec drift on
+    /// every already-cached benchmark.
+    #[test]
+    fn hex_digest_matches_the_nist_abc_vector() {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"abc");
+        assert_eq!(
+            hex_digest(&h.finalize()),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }
