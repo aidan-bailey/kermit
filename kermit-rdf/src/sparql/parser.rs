@@ -1,12 +1,14 @@
-//! Thin wrapper around `spargebra::Query::parse`.
+//! Thin wrapper around `spargebra::SparqlParser`.
 
-use {crate::error::RdfError, spargebra::Query};
+use {crate::error::RdfError, spargebra::{Query, SparqlParser}};
 
 /// Parses a SPARQL query string into a `spargebra::Query` AST.
 ///
 /// All errors from `spargebra` are mapped to [`RdfError::SparqlParse`].
 pub fn parse_query(text: &str) -> Result<Query, RdfError> {
-    Query::parse(text, None).map_err(|e| RdfError::SparqlParse(e.to_string()))
+    SparqlParser::new()
+        .parse_query(text)
+        .map_err(|e| RdfError::SparqlParse(e.to_string()))
 }
 
 #[cfg(test)]
