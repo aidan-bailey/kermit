@@ -35,6 +35,9 @@ pub(crate) struct RunSettings<'a> {
     pub metrics: &'a [Metric],
     /// K in the `end_to_end` metric's `T = build + K × query`.
     pub queries_per_build: u32,
+    /// Run each query once before timing and compare its tuple count with
+    /// the workload's `expected`; a mismatch aborts.
+    pub verify: bool,
     /// Criterion sample/measurement/warm-up settings.
     pub bench_args: &'a BenchArgs,
 }
@@ -49,7 +52,8 @@ pub(crate) struct RunSettings<'a> {
 /// are identical, and the report's `data_structure` / `algorithm` axes
 /// come from `family.execution()` — the same value that picked the code
 /// path — so a report can never name an algorithm it did not run (issue
-/// #56).
+/// #56). With `settings.verify`, each query with an `expected` count is
+/// executed once before timing and a mismatch aborts.
 fn run_benchmark<F: ExecutionFamily>(
     family: &F, workload: &Workload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
@@ -59,6 +63,7 @@ fn run_benchmark<F: ExecutionFamily>(
         optimiser,
         metrics,
         queries_per_build,
+        verify,
         bench_args,
     } = settings;
     // Load each relation from disk exactly once; the family builds its
@@ -106,6 +111,41 @@ fn run_benchmark<F: ExecutionFamily>(
             MetadataLine::new("data structure", ds_name),
             MetadataLine::new("algorithm", algo_name),
         ];
+        // Correctness gate: with `--verify`, run the query once (untimed)
+        // and compare the answer count before spending any measurement time
+        // on it. A mismatch aborts so a wrong answer can never yield a
+        // plausible timing.
+        let verified = if verify {
+            match query_def.expected {
+                | Some(expected) => {
+                    let actual = family.join(&engine, query_def.query.clone()).len() as u64;
+                    if actual != expected {
+                        anyhow::bail!(
+                            "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
+                             tuples, expected {}",
+                            workload.name,
+                            query_def.name,
+                            ds_name,
+                            algo_name,
+                            actual,
+                            expected
+                        );
+                    }
+                    metadata.push(MetadataLine::new("verified", "yes"));
+                    true
+                },
+                | None => {
+                    eprintln!(
+                        "bench run: no expected cardinality for query '{}' in benchmark '{}'; not \
+                         verified",
+                        query_def.name, workload.name
+                    );
+                    false
+                },
+            }
+        } else {
+            false
+        };
         if metrics.contains(&Metric::EndToEnd) {
             metadata.push(MetadataLine::new("queries per build", queries_per_build));
         }
@@ -255,6 +295,9 @@ fn run_benchmark<F: ExecutionFamily>(
             );
         }
         axes.extend(optimization_axes.clone());
+        if verified {
+            axes.insert("verified".to_string(), serde_json::json!(true));
+        }
         reports.push(BenchReport::new(kind, &metadata, axes, criterion_groups));
     }
 

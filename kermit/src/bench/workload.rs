@@ -15,6 +15,9 @@ pub struct NamedQuery {
     pub name: String,
     /// The parsed query.
     pub query: JoinQuery,
+    /// Expected result cardinality, when the definition declares one; read
+    /// only under `--verify`.
+    pub expected: Option<u64>,
 }
 
 /// What the generic runner measures: relation files (already cached or
@@ -79,6 +82,7 @@ impl Workload {
                 Ok(NamedQuery {
                     name: q.name.clone(),
                     query,
+                    expected: q.expected,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -115,6 +119,7 @@ impl Workload {
             queries: vec![NamedQuery {
                 name,
                 query,
+                expected: None,
             }],
         })
     }
@@ -148,7 +153,7 @@ mod tests {
                     name: "pair".to_string(),
                     description: "pair".to_string(),
                     query: "Q(X, Y) :- edge(X, Y).".to_string(),
-                    expected: None,
+                    expected: Some(2),
                 },
                 QueryDefinition {
                     name: "path".to_string(),
@@ -170,6 +175,8 @@ mod tests {
         assert_eq!(w.relation_paths, vec![root.path().join("data/edge.csv")]);
         let names: Vec<&str> = w.queries.iter().map(|q| q.name.as_str()).collect();
         assert_eq!(names, ["pair", "path"]);
+        assert_eq!(w.queries[0].expected, Some(2));
+        assert_eq!(w.queries[1].expected, None);
     }
 
     #[test]
@@ -203,6 +210,7 @@ mod tests {
         assert_eq!(w.relation_paths, rels);
         assert_eq!(w.queries.len(), 1);
         assert_eq!(w.queries[0].name, "triangle");
+        assert!(w.queries[0].expected.is_none());
     }
 
     #[test]

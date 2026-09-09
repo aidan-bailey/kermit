@@ -10,3 +10,4 @@ queries:
   - name: triangle
     description: "Three-way cyclic join; four matches over the committed graph"
     query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
+    expected: 4

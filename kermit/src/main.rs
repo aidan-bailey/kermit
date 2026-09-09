@@ -319,6 +319,12 @@ enum BenchSubcommand {
         #[arg(long)]
         force: bool,
 
+        /// Run each query once before timing and check its result count
+        /// against the benchmark's `expected` value; a mismatch aborts.
+        /// Queries without `expected` are noted and skipped.
+        #[arg(long)]
+        verify: bool,
+
         #[command(flatten)]
         layout: LayoutChoices,
 
@@ -774,6 +780,7 @@ fn run_bench_join(
         optimiser: query_args.optimiser,
         metrics,
         queries_per_build,
+        verify: false,
         bench_args,
     };
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
@@ -820,7 +827,7 @@ fn run_ds_bench_command(
 fn run_bench_run_command(
     bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, optimiser: Optimiser,
-    metrics: Vec<Metric>, queries_per_build: u32, force: bool, layout: LayoutChoices,
+    metrics: Vec<Metric>, queries_per_build: u32, force: bool, verify: bool, layout: LayoutChoices,
     config: ConfigChoices,
 ) -> anyhow::Result<()> {
     validate_layout_choices(indexstructure, &layout)?;
@@ -848,6 +855,7 @@ fn run_bench_run_command(
         optimiser,
         metrics: &metrics,
         queries_per_build,
+        verify,
         bench_args,
     };
     // Opened before the loop so every finished cell is on disk before the
@@ -1097,6 +1105,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 force,
+                verify,
                 layout,
                 config,
             } => run_bench_run_command(
@@ -1110,6 +1119,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 force,
+                verify,
                 layout,
                 config,
             )?,
