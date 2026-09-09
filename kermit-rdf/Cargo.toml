@@ -11,8 +11,8 @@ repository.workspace = true
 
 [dependencies]
 kermit-bench = { version = "0.1.2", path = "../kermit-bench" }
-arrow = "56.2.0"
-parquet = "56.2.0"
+arrow = "59.3.0"
+parquet = "59.3.0"
 flate2 = "1"
 oxrdf = "0.2"
 oxttl = "0.1"
