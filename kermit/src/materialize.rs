@@ -60,12 +60,76 @@ fn classify_cache(meta_path: &Path, expected_hash: &str) -> Result<CacheState, B
     }
 }
 
-/// Resolves the workspace root by walking up from `CARGO_MANIFEST_DIR`.
+/// Environment variable that pins the workspace root, bypassing the
+/// walk-up. Useful for tests and for running an installed binary against a
+/// checkout that is not the current directory.
+const WORKSPACE_ENV: &str = "KERMIT_WORKSPACE";
+
+/// Resolves the workspace root at runtime.
+///
+/// Order: the [`WORKSPACE_ENV`] override if set and non-empty; otherwise
+/// the nearest ancestor of the current directory (inclusive) whose
+/// `Cargo.toml` declares a `[workspace]` table; otherwise the compile-time
+/// parent of `CARGO_MANIFEST_DIR`, announced on stderr because it means the
+/// binary is reading `benchmarks/` from the tree it was built in rather
+/// than the one it is running in.
 pub(crate) fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let compile_time = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("kermit crate must be inside workspace")
-        .to_path_buf()
+        .to_path_buf();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| compile_time.clone());
+    let env_override = std::env::var(WORKSPACE_ENV).ok();
+    let (resolved, source) = resolve_workspace_root(env_override.as_deref(), &cwd, &compile_time);
+    if source == RootSource::CompileTime {
+        eprintln!(
+            "kermit: no workspace Cargo.toml above {}; using compile-time root {}",
+            cwd.display(),
+            compile_time.display()
+        );
+    }
+    resolved
+}
+
+/// Which rule of [`resolve_workspace_root`] produced the root. Reported so
+/// [`workspace_root`] can warn only when the compile-time path was used.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum RootSource {
+    /// [`WORKSPACE_ENV`] was set and non-empty.
+    Env,
+    /// A `Cargo.toml` with a `[workspace]` table was found above `cwd`.
+    WalkUp,
+    /// Neither applied; the compile-time parent of `CARGO_MANIFEST_DIR`.
+    CompileTime,
+}
+
+/// Pure resolution used by [`workspace_root`]: `env_override` is the raw
+/// [`WORKSPACE_ENV`] value, `cwd` the directory to walk up from, and
+/// `fallback` the compile-time root. Takes its inputs as arguments so it
+/// can be tested without touching the process environment or directory.
+fn resolve_workspace_root(
+    env_override: Option<&str>, cwd: &Path, fallback: &Path,
+) -> (PathBuf, RootSource) {
+    if let Some(explicit) = env_override.filter(|s| !s.is_empty()) {
+        return (PathBuf::from(explicit), RootSource::Env);
+    }
+    match find_workspace_manifest(cwd) {
+        | Some(root) => (root, RootSource::WalkUp),
+        | None => (fallback.to_path_buf(), RootSource::CompileTime),
+    }
+}
+
+/// Walks up from `start` (inclusive) and returns the first directory whose
+/// `Cargo.toml` contains a `[workspace]` table header. A substring test is
+/// enough here: a member crate's manifest has no such header, and a
+/// manifest that only mentions `[workspace]` in a comment is not worth a
+/// TOML dependency.
+fn find_workspace_manifest(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|dir| {
+        let manifest = dir.join("Cargo.toml");
+        let text = fs::read_to_string(&manifest).ok()?;
+        text.contains("[workspace]").then(|| dir.to_path_buf())
+    })
 }
 
 /// Path to the vendored watdiv source root
@@ -446,5 +510,59 @@ queries:
         };
         let err = materialize(def, dir.path(), false).unwrap_err();
         assert!(matches!(err, BenchError::SpecDrift { .. }));
+    }
+
+    fn workspace_tree() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp.path().join("a/b")).unwrap();
+        // A member crate manifest with no [workspace] table must be skipped.
+        fs::write(tmp.path().join("a/Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
+        tmp
+    }
+
+    #[test]
+    fn workspace_root_walks_up_to_the_workspace_manifest() {
+        let tmp = workspace_tree();
+        let fallback = Path::new("/fallback");
+        let (got, source) = resolve_workspace_root(None, &tmp.path().join("a/b"), fallback);
+        assert_eq!(got, tmp.path());
+        assert_eq!(source, RootSource::WalkUp);
+    }
+
+    #[test]
+    fn workspace_root_env_override_wins() {
+        let tmp = workspace_tree();
+        let fallback = Path::new("/fallback");
+        let (got, source) = resolve_workspace_root(
+            Some("/explicit/workspace"),
+            &tmp.path().join("a/b"),
+            fallback,
+        );
+        assert_eq!(got, Path::new("/explicit/workspace"));
+        assert_eq!(source, RootSource::Env);
+    }
+
+    #[test]
+    fn workspace_root_empty_env_override_is_ignored() {
+        let tmp = workspace_tree();
+        let fallback = Path::new("/fallback");
+        let (got, source) = resolve_workspace_root(Some(""), &tmp.path().join("a/b"), fallback);
+        assert_eq!(got, tmp.path());
+        assert_eq!(source, RootSource::WalkUp);
+    }
+
+    #[test]
+    fn workspace_root_falls_back_when_no_manifest_is_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("x/y")).unwrap();
+        let fallback = Path::new("/fallback");
+        let (got, source) = resolve_workspace_root(None, &tmp.path().join("x/y"), fallback);
+        assert_eq!(got, fallback);
+        assert_eq!(source, RootSource::CompileTime);
     }
 }
