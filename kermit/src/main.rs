@@ -687,15 +687,16 @@ fn run_ds_bench<F: RelationFamily>(
     let tuples: Vec<Vec<usize>> = F::tuples(&relation);
     let header = relation.header().clone();
 
-    // Stable external contract, not debug output: this string becomes the
-    // report's `data_structure` axis and the `{ds_name}/<metric>` Criterion
-    // function ids under `target/criterion/{group}/`. It is derived from
-    // the family's own `Execution`, the value that picked the code path.
-    let ds_name = format!("{:?}", family.execution().index_structure());
+    // This string becomes the report's `data_structure` axis and the
+    // `{ds_name}/<metric>` Criterion function ids under
+    // `target/criterion/{group}/`. It is derived from the family's own
+    // `Execution`, the value that picked the code path; the label itself is
+    // pinned by `IndexStructure::axis_value`.
+    let ds_name = family.execution().index_structure().axis_value();
     let relation_bytes = fs::metadata(relation_path).map(|m| m.len()).unwrap_or(0);
 
     let mut metadata = vec![
-        MetadataLine::new("data structure", &ds_name),
+        MetadataLine::new("data structure", ds_name),
         MetadataLine::new("relation", relation_path.display()),
         MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
         MetadataLine::new("tuples", tuples.len()),
@@ -871,16 +872,13 @@ fn run_benchmark<F: ExecutionFamily>(
     let engine = family.build(relations);
     let relations = F::relations(&engine);
 
-    // `ds_name`/`algo_name` are `Debug`-derived strings for the DS and
-    // algorithm enums. These are a STABLE external contract, not throwaway
-    // debug output: they become the report's identity axes and the on-disk
-    // `target/criterion/{group}` names (the group_name below embeds them).
-    // Changing the `Debug` output would silently repartition prior
-    // benchmark measurements. See the same pattern in `run_ds_bench` and
-    // the `bench join` arm.
+    // `ds_name`/`algo_name` become the report's identity axes and the
+    // on-disk `target/criterion/{group}` names (the group_name below embeds
+    // them). The labels are pinned by `IndexStructure::axis_value` and
+    // `JoinAlgorithm::axis_value`; see the tests there before changing one.
     let execution = family.execution();
-    let ds_name = format!("{:?}", execution.index_structure());
-    let algo_name = format!("{:?}", execution.algorithm());
+    let ds_name = execution.index_structure().axis_value();
+    let algo_name = execution.algorithm().axis_value();
 
     let has_time_metrics = metrics
         .iter()
@@ -912,8 +910,8 @@ fn run_benchmark<F: ExecutionFamily>(
         let mut metadata = vec![
             MetadataLine::new("benchmark", &benchmark.name),
             MetadataLine::new("query", &query_def.name),
-            MetadataLine::new("data structure", &ds_name),
-            MetadataLine::new("algorithm", &algo_name),
+            MetadataLine::new("data structure", ds_name),
+            MetadataLine::new("algorithm", algo_name),
         ];
         if metrics.contains(&Metric::EndToEnd) {
             metadata.push(MetadataLine::new("queries per build", queries_per_build));
@@ -1240,11 +1238,13 @@ fn run_bench_join(
         .as_deref()
         .unwrap_or(DEFAULT_JOIN_GROUP)
         .to_string();
-    let bench_id = format!("{:?}/{:?}", query_args.indexstructure, query_args.algorithm);
+    let ds_name = query_args.indexstructure.axis_value();
+    let algo_name = query_args.algorithm.axis_value();
+    let bench_id = format!("{ds_name}/{algo_name}");
 
     let metadata = vec![
-        MetadataLine::new("data structure", format!("{:?}", query_args.indexstructure)),
-        MetadataLine::new("algorithm", format!("{:?}", query_args.algorithm)),
+        MetadataLine::new("data structure", ds_name),
+        MetadataLine::new("algorithm", algo_name),
         MetadataLine::new("relations", query_args.relations.len()),
     ];
     write_metadata_block(&mut io::stderr(), "bench metadata", &metadata)?;
@@ -1262,14 +1262,8 @@ fn run_bench_join(
     criterion.final_summary();
 
     let axes = BTreeMap::from([
-        (
-            "data_structure".to_string(),
-            serde_json::json!(format!("{:?}", query_args.indexstructure)),
-        ),
-        (
-            "algorithm".to_string(),
-            serde_json::json!(format!("{:?}", query_args.algorithm)),
-        ),
+        ("data_structure".to_string(), serde_json::json!(ds_name)),
+        ("algorithm".to_string(), serde_json::json!(algo_name)),
         (
             "optimiser".to_string(),
             serde_json::json!(query_args.optimiser.axis_value()),

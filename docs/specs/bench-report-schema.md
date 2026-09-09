@@ -69,8 +69,8 @@ semantics).
 
 | Key              | Populated by             | JSON type        | Notes |
 |------------------|--------------------------|------------------|-------|
-| `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`. Matches the `IndexStructure` `Debug` repr. |
-| `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`. Matches the `JoinAlgorithm` `Debug` repr. |
+| `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`. The `IndexStructure::axis_value` string. |
+| `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`. The `JoinAlgorithm::axis_value` string. |
 | `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
 | `query`          | `run`                    | string           | Query name from the YAML `queries:` list (e.g. `"triangle"`). |
 | `benchmark`      | `run`                    | string           | YAML benchmark name (e.g. `"triangle"`, `"watdiv-stress-c1"`). |
