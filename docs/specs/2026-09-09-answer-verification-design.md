@@ -1,10 +1,11 @@
-# Answer Verification
+# Answer Verification, Rust–Python Contract, and Download Integrity
 
 **Date:** 2026-09-09
 **Status:** Approved design, not yet implemented
-**Scope:** Sub-project C of the benchmarking-flow improvement series
-(A: sweep hardening — landed; B: runner consolidation — landed;
-C: answer verification; D: Rust–Python contract; E: download integrity).
+**Scope:** Sub-projects C, D and E of the benchmarking-flow improvement
+series (A: sweep hardening — landed; B: runner consolidation — landed).
+Sections 1–6 are C; Part D and Part E follow. One plan implements all three,
+ordered C → D → E because D's contract test exercises C's `verified` axis.
 
 ## Motivation
 
@@ -186,3 +187,168 @@ Full gate inside `nix develop` (fmt check, clippy `-Dwarnings`, doc
 iteration --verify` (three passes, three `verified: true` axes) and a fake
 `expected: 5` on a scratch copy of `triangle.yml` under `KERMIT_WORKSPACE`
 to see the failure message by eye.
+
+---
+
+# Part D — Rust–Python contract
+
+## Motivation
+
+The report schema is held together by two hand-duplicated constants
+(`REPORT_SCHEMA_VERSION` in `kermit/src/bench_report.rs`, `SCHEMA_VERSION` in
+`python/kermit-lab/kermit_lab/__init__.py`), a hand-maintained axis
+include-list in `frame.py` that silently drops unknown keys, and no test that
+feeds real binary output into `kermit-lab`. CI never runs the Python tests.
+The Criterion 0.8 bump was validated by eye for exactly this reason. Part C
+adds a `verified` axis that `frame.py` would drop today.
+
+## D.1 Schema-version pin (Rust side, no Python needed)
+
+A unit test in `kermit/src/bench_report.rs` embeds the Python module at
+compile time and asserts the two constants agree:
+
+```rust
+const KERMIT_LAB_INIT: &str = include_str!("../../python/kermit-lab/kermit_lab/__init__.py");
+// parse the line `SCHEMA_VERSION = <n>`, assert n == REPORT_SCHEMA_VERSION
+```
+
+`include_str!` makes the Python file a build input of the test, so the pin
+runs in every `cargo test` with no Python toolchain. The message on failure
+names both files.
+
+## D.2 `verified` reaches the DataFrame
+
+`frame.py` gains `_AXIS_BOOL_KEYS = ("verified",)`, included in
+`_SUMMARY_COLUMNS_CORE` after the int keys and cast with
+`.astype("boolean")` (nullable; absent → `<NA>`), mirroring how bool-valued
+`ds_config_*` flags are already handled. `bench-report-schema.md`'s table is
+the source of truth the comment in `frame.py` already points at.
+
+## D.3 Contract test (real binary → `kermit-lab`)
+
+`python/kermit-lab/tests/test_contract.py`, skipped unless `KERMIT_BIN` names
+a built `kermit` binary:
+
+1. `bench ds` on `kermit/tests/fixtures/edge.csv` with `-i tree-trie -m space`,
+   run with `cwd` = a temp dir and `--report-json` inside it; then
+   `kl.load(report, criterion_root=<tmp>/target/criterion)` yields exactly one
+   row with `kind == "ds"`, `metric == "space"`, `data_structure == "TreeTrie"`,
+   `mean_ns > 0`.
+2. `bench run triangle -i tree-trie -a leapfrog-triejoin -m iteration --verify`,
+   run with `cwd` = the workspace root (so discovery finds `benchmarks/` and
+   Criterion writes under `<root>/target/criterion`); the loaded frame has one
+   row with `benchmark == "triangle"`, `query == "triangle"`, `verified` is
+   `True`.
+
+Both cases use `--sample-size 10 --measurement-time 1 --warm-up-time 1`.
+This is the only test that would catch a Criterion JSON-layout change or a
+Rust-side key rename.
+
+## D.4 CI
+
+A `python` job in both `.github/workflows/pr.yml` and `build.yml`: checkout,
+nightly toolchain + `Swatinem/rust-cache`, `cargo build -p kermit`,
+`astral-sh/setup-uv` (pinned by commit SHA like the other actions), then in
+`python/kermit-lab`: `uv sync --group test` and
+`KERMIT_BIN=$GITHUB_WORKSPACE/target/debug/kermit uv run pytest`. The
+`triangle` benchmark is committed, so the contract test needs no network.
+
+## D.5 Tests
+
+- Rust: the D.1 pin (and a negative check that the parser rejects a file
+  without the line, so a moved constant cannot silently pass).
+- Python: `test_frame.py` gains cases for `verified` present (`True`), absent
+  (`<NA>`), and dtype `boolean`; `test_contract.py` as above (skips locally
+  without `KERMIT_BIN`; the plan runs it once locally with the env var set).
+
+## D.6 Docs
+
+`python/kermit-lab/README.md` (running the contract test; `verified` column),
+`CLAUDE.md` (JSON-report gotcha: the schema-version pin and the CI Python
+job; CI-checks list), `docs/specs/bench-report-schema.md` (note that
+`frame.py` must be extended for new non-`ds_*`/`algo_*` keys — already there —
+plus the `verified` row from Part C).
+
+## Out of scope (D)
+
+Making `kermit-lab` a workspace-level check inside `cargo test`; testing
+plots; Python packaging or version bumps.
+
+---
+
+# Part E — Download integrity
+
+## Motivation
+
+`kermit-bench/src/cache.rs::download_file` trusts whatever a URL serves and
+never re-checks a cached file. A relation that changed upstream, or was
+truncated on disk after the atomic rename, is used silently.
+
+## Decision
+
+Verify on download and on `bench fetch`; never on `bench run`. Cold-cache
+cost is paid once; hot runs are unchanged; `bench fetch` is the explicit
+"make sure my data is intact" command.
+
+## E.1 Schema
+
+`RelationSource` gains `sha256: Option<String>` (`#[serde(default,
+skip_serializing_if = "Option::is_none")]`). `validate()` requires, when
+present, exactly 64 lowercase hex characters. It is allowed with either
+`url` or `path` (a committed file can be pinned too).
+
+`benchmarks/triangle.yml`'s `edge` relation gets the digest of the committed
+`benchmarks/data/triangle/edge.csv`. Oxford YAMLs stay unpinned: their URLs
+are placeholders, so there is no hosted file to pin. Generator-emitted YAMLs
+stay unpinned: their `file://` relations are covered by `meta.json`'s
+`spec_hash`.
+
+## E.2 `kermit-bench`
+
+- `pub fn sha256_hex(path: &Path) -> Result<String, BenchError>` (streaming,
+  reusing the `sha2` dependency and the existing `hex_digest` helper made
+  `pub(crate)`).
+- `download_file` gains `expected: Option<&str>`: after writing the `.part`
+  file it hashes it; on mismatch it deletes the `.part` and returns
+  `BenchError::Integrity { relation, location, expected, actual }` (new
+  variant, `Display`: "integrity check failed for relation '…' from …:
+  expected sha256 …, got …"). Only on match does it rename into place.
+- `pub fn verify_integrity(benchmark, workspace_root) -> Result<usize, BenchError>`
+  re-hashes every relation that declares `sha256` (cached `url:` files and
+  `path:` files alike) and returns how many it checked; the first mismatch
+  is the same `Integrity` error.
+- `ensure_cached` passes each relation's `sha256` into `download_file`; it
+  does not hash files that already exist.
+
+## E.3 CLI
+
+`run_fetch` calls `ensure_cached` then `verify_integrity` and prints
+`  Verified <n> relation(s).` (or `  No integrity hashes declared.` when
+`n == 0`). No new flags.
+
+## E.4 Tests
+
+- `kermit-bench` unit: `sha256_hex` on a temp file matches a known vector;
+  `validate()` rejects uppercase, short, and non-hex digests and accepts a
+  valid one; `verify_integrity` on a temp workspace with a `path:` relation
+  passes with the right digest, fails with the `Integrity` error on a wrong
+  one, and returns 0 when nothing is declared; the digest check used by
+  `download_file` is factored into a pure `check_digest(bytes, expected)`
+  tested directly (no network in tests).
+- `kermit` CLI (`kermit/tests/cli_bench_fetch_integrity.rs`, fake cache like
+  `cli_bench_run_sweep.rs`): a cache-side YAML whose relation declares the
+  correct digest of the copied fixture parquet → `bench fetch <name>` exits 0
+  and prints `Verified 1 relation(s)`; a wrong digest → non-zero exit and
+  stderr contains `integrity check failed` with both digests.
+- Gate: `bench fetch triangle` prints `Verified 1 relation(s)`.
+
+## E.5 Docs
+
+`benchmarks/README.md` (schema: `sha256`, how to compute it with
+`sha256sum`), `USAGE.md` (`bench fetch` verifies), `CLAUDE.md` (cache gotcha:
+verification policy), `docs/specs/benchmarking-architecture.md` (`bench fetch`).
+
+## Out of scope (E)
+
+Hashing on `bench run`; a flag to print digests for unpinned relations;
+pinning oxford or generated benchmarks; any change to `kermit-rdf`.
