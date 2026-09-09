@@ -103,7 +103,7 @@ Both write into `~/.cache/kermit/benchmarks/<name>/` and become discoverable to 
 
 ```sh
 kermit bench list                # list all benchmarks (and which are cached)
-kermit bench fetch [<NAME>]      # download a benchmark's data files (default: all)
+kermit bench fetch [<NAME>]      # download a benchmark's data files (default: all) and verify any declared `sha256` digests
 kermit bench clean [<NAME>]      # remove cached data files (default: all)
 ```
 

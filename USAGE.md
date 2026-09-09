@@ -313,7 +313,7 @@ Cache lives at `~/.cache/kermit/benchmarks/` on Linux.
 YAML (cached downloads and committed `path:` files alike) and reports
 `Verified N relation(s).`, or `No integrity hashes declared.` when the
 benchmark pins nothing. A download whose digest does not match is rejected
-before anything is written to the cache. `bench run` never hashes.
+before anything is written to the cache. `bench run` never hashes relation files.
 
 ### Generate a fresh WatDiv benchmark (`bench gen watdiv`)
 
