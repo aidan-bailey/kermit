@@ -1,6 +1,9 @@
 //! Thin wrapper around `spargebra::SparqlParser`.
 
-use {crate::error::RdfError, spargebra::{Query, SparqlParser}};
+use {
+    crate::error::RdfError,
+    spargebra::{Query, SparqlParser},
+};
 
 /// Parses a SPARQL query string into a `spargebra::Query` AST.
 ///

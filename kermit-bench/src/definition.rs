@@ -168,7 +168,6 @@ fn hex_digest(bytes: &[u8]) -> String {
     out
 }
 
-
 /// Where a relation's tuples come from: either a download URL or a file
 /// committed alongside the benchmark.
 ///
@@ -1131,11 +1130,6 @@ generator:
         };
         assert_ne!(a.spec_hash(), b.spec_hash());
     }
-}
-
-#[cfg(test)]
-mod hex_digest_tests {
-    use super::*;
 
     /// Pins the encoding against the NIST SHA-256 vector for `"abc"`. The
     /// digests this crate emits are written into `meta.json` and compared on
