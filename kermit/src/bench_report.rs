@@ -201,7 +201,6 @@ pub struct ReportSink {
     reports: Vec<BenchReport>,
 }
 
-#[allow(dead_code)] // wired in by the bench handlers in the next commit
 impl ReportSink {
     /// Resolves the target path — `override_path` if given, otherwise
     /// [`default_path`](Self::default_path) — and creates its parent

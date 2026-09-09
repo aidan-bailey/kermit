@@ -34,8 +34,8 @@ mod options;
 
 use {
     bench_report::{
-        write_json_report, write_metadata_block, BenchKind, BenchReport, CriterionGroupRef,
-        MetadataLine, ReportMetric,
+        write_metadata_block, BenchKind, BenchReport, CriterionGroupRef, MetadataLine,
+        ReportMetric, ReportSink,
     },
     execution::{
         Execution, ExecutionFamily, HashHtj, HashTrieFamily, RelationFamily, SortedTrie,
@@ -578,37 +578,6 @@ fn build_time_criterion(args: &BenchArgs) -> criterion::Criterion {
         .sample_size(args.sample_size)
         .measurement_time(Duration::from_secs(args.measurement_time))
         .warm_up_time(Duration::from_secs(args.warm_up_time))
-}
-
-fn default_report_path(kind: BenchKind) -> PathBuf {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let kind_str = match kind {
-        | BenchKind::Join => "join",
-        | BenchKind::Ds => "ds",
-        | BenchKind::Run => "run",
-    };
-    PathBuf::from(format!("bench-runs/{kind_str}-{now_ms}.json"))
-}
-
-fn write_bench_report(
-    override_path: Option<&Path>, kind: BenchKind, reports: &[BenchReport],
-) -> anyhow::Result<()> {
-    let path = match override_path {
-        | Some(p) => p.to_path_buf(),
-        | None => default_report_path(kind),
-    };
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    let mut writer = BufWriter::new(fs::File::create(&path)?);
-    write_json_report(&mut writer, reports)?;
-    eprintln!("Report written: {}", path.display());
-    Ok(())
 }
 
 fn build_space_criterion(args: &BenchArgs) -> criterion::Criterion<measurement::SpaceMeasurement> {
@@ -1278,11 +1247,9 @@ fn run_bench_join(
         function: bench_id,
         metric: ReportMetric::Time,
     }]);
-    write_bench_report(
-        bench_args.report_json.as_deref(),
-        BenchKind::Join,
-        std::slice::from_ref(&report),
-    )?;
+    let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
+    sink.push(vec![report])?;
+    sink.finish()?;
     Ok(())
 }
 
@@ -1342,7 +1309,7 @@ fn run_ds_bench_command(
     validate_config_choices(indexstructure, &config)?;
     let hash_trie_config = config.hash_trie_config_resolved()?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
-    let mut reports: Vec<BenchReport> = Vec::new();
+    let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Ds)?;
     for ds in indexstructure.expand() {
         let report = dispatch_ds_bench(
             ds,
@@ -1355,9 +1322,9 @@ fn run_ds_bench_command(
             group_name,
             bench_args,
         )?;
-        reports.push(report);
+        sink.push(vec![report])?;
     }
-    write_bench_report(bench_args.report_json.as_deref(), BenchKind::Ds, &reports)?;
+    sink.finish()?;
     Ok(())
 }
 
@@ -1461,10 +1428,12 @@ fn run_bench_run_command(
         .map(|b| materialize::materialize(b, &cache_root, force))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut reports: Vec<BenchReport> = Vec::new();
+    // Opened before the loop so every finished cell is on disk before the
+    // next one starts; a crash mid-sweep keeps the completed cells.
+    let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Run)?;
     for benchmark in &materialized {
         for &cell in &cells {
-            let mut cell_reports = dispatch_run_bench(
+            let cell_reports = dispatch_run_bench(
                 cell,
                 benchmark,
                 optimiser,
@@ -1473,10 +1442,10 @@ fn run_bench_run_command(
                 query.as_deref(),
                 bench_args,
             )?;
-            reports.append(&mut cell_reports);
+            sink.push(cell_reports)?;
         }
     }
-    write_bench_report(bench_args.report_json.as_deref(), BenchKind::Run, &reports)?;
+    sink.finish()?;
     Ok(())
 }
 
