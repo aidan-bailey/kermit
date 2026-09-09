@@ -1,7 +1,7 @@
 # Sweep Hardening
 
 **Date:** 2026-09-09
-**Status:** Approved design, not yet implemented
+**Status:** Implemented 2026-09-09
 **Scope:** Sub-project A of the benchmarking-flow improvement series
 (A: sweep hardening, B: runner consolidation, C: answer verification,
 D: Rust–Python contract, E: download integrity).
@@ -126,6 +126,11 @@ guarding against.
   since Rust tests run in parallel.
 - Existing CLI tests run from the crate directory and reach the workspace
   through step 2; no change.
+- Implementation note: resolution was split into a pure
+  `resolve_workspace_root(env_override, cwd, fallback)` returning the path
+  and a `RootSource`, so the tests pass their inputs explicitly and no mutex
+  on the process environment is needed. `workspace_root()` memoises the
+  result in a `OnceLock` so the fallback note prints at most once.
 
 ## 3. Stable identity labels
 
