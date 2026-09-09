@@ -707,14 +707,22 @@ fn run_list() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Handler for `bench fetch`: download the data files for the named
-/// benchmark, or every benchmark when `name` is `None`.
+/// Handler for `bench fetch`: cache every relation of the named benchmark
+/// (or all of them) and re-hash the ones that declare a `sha256`.
 fn run_fetch(name: Option<String>) -> anyhow::Result<()> {
     let benchmarks = resolve_benchmarks(&name, name.is_none())?;
+    let root = workspace_root();
     for benchmark in &benchmarks {
         eprintln!("Fetching {}...", benchmark.name);
-        kermit_bench::cache::ensure_cached(benchmark, &workspace_root())
+        kermit_bench::cache::ensure_cached(benchmark, &root)
             .map_err(|e| anyhow::anyhow!("Failed to fetch {}: {e}", benchmark.name))?;
+        let checked = kermit_bench::cache::verify_integrity(benchmark, &root)
+            .map_err(|e| anyhow::anyhow!("Failed to verify {}: {e}", benchmark.name))?;
+        if checked == 0 {
+            eprintln!("  No integrity hashes declared.");
+        } else {
+            eprintln!("  Verified {checked} relation(s).");
+        }
         eprintln!("  Done.");
     }
     Ok(())

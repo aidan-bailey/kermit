@@ -13,7 +13,10 @@
 //! remove cached files.
 
 use {
-    crate::{definition::BenchmarkDefinition, error::BenchError},
+    crate::{
+        definition::{BenchmarkDefinition, RelationSource},
+        error::BenchError,
+    },
     std::{
         fs, io,
         path::{Path, PathBuf},
@@ -125,7 +128,7 @@ pub fn ensure_cached(
             eprintln!("  downloading {} from {url}...", rel.name);
             // A declared digest is checked before the file reaches its cache
             // path.
-            download_file(url, &path, &rel.name, rel.sha256.as_deref())?;
+            download_file(url, &path, rel)?;
         }
         paths.push(path);
     }
@@ -206,10 +209,8 @@ pub fn verify_integrity(
 }
 
 /// Downloads a file from a URL to the given destination path, checking it
-/// against `expected` (a declared `sha256`) before anything is written.
-fn download_file(
-    url: &str, dest: &Path, relation: &str, expected: Option<&str>,
-) -> Result<(), BenchError> {
+/// against `rel`'s declared `sha256` (if any) before anything is written.
+fn download_file(url: &str, dest: &Path, rel: &RelationSource) -> Result<(), BenchError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -231,10 +232,10 @@ fn download_file(
         source,
     })?;
 
-    if let Some(expected) = expected {
+    if let Some(expected) = rel.sha256.as_deref() {
         if let Err(actual) = check_digest(&bytes, expected) {
             return Err(BenchError::Integrity {
-                relation: relation.to_string(),
+                relation: rel.name.clone(),
                 location: url.to_string(),
                 expected: expected.to_string(),
                 actual,

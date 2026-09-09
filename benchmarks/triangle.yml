@@ -6,6 +6,7 @@ relations:
   # `path` is workspace-relative and its file stem must match `name`.
   - name: edge
     path: "benchmarks/data/triangle/edge.csv"
+    sha256: "942b63a8faab8c2241f1df373bde53b8dc629e992be4a8eee5b1e9514d84862e"
 queries:
   - name: triangle
     description: "Three-way cyclic join; four matches over the committed graph"
