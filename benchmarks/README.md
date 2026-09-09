@@ -155,9 +155,18 @@ generator:
   queries: [q1, q3, q5]
 ```
 
-## Frozen WatDiv snapshots (`watdiv-stress-*.yml`)
+## Frozen snapshots and the `scripts/` preprocessors
 
-The committed `watdiv-stress-*.yml` files are **frozen snapshots**, not declarative specs. They were produced by `scripts/watdiv-preprocess/` (Python) before the on-the-fly path existed. Do not edit them by hand — regenerate via the preprocessor. The on-the-fly path (`generator: { kind: watdiv, ... }`) supersedes this for new workloads.
+Two families of committed YAMLs are **frozen snapshots**, not declarative specs. Each was produced by a one-shot Python preprocessor under `scripts/`, and the data it references was uploaded to ZivaHub afterwards — the YAMLs only carry the URLs:
+
+| Committed YAMLs | Producer | Hosted data |
+| --- | --- | --- |
+| `watdiv-stress-{100,1000}-{warmup,test-1..5}.yml` | `scripts/watdiv-preprocess/` | `dict.parquet` + one `<predicate>.parquet` per relation |
+| `oxford-{uniform,zipf}-s{1..6}.yml` | `scripts/convert_oxford.py` | one `<relation>.parquet` per Oxford DSI `.tbl` |
+
+`scripts/` is retained **only** so these bundles can be regenerated. Nothing in the Rust workspace reproduces them: `kermit-rdf` supersedes the WatDiv preprocessor for *new* workloads (`generator: { kind: watdiv, ... }`), but it writes `file://` URLs into the local cache rather than the hosted snapshot, and the Oxford converter has no Rust counterpart at all. Do not delete the directory as part of a Python cleanup, and do not edit the snapshot YAMLs by hand — regenerate them via the matching script.
+
+The WatDiv snapshots must be regenerated as a unit: the `c<dict-id>` atoms in their query bodies (below) are tied to the dictionary of one specific preprocessor run, so the YAMLs, `dict.parquet`, and all `<predicate>.parquet` files must be rebuilt and re-uploaded together; mixing files from different runs makes constant atoms point at the wrong rows. The preprocessor is also the only source of WatDiv expected cardinalities: it harvests the `.desc` sidecars of the original WatDiv distribution, which the binary vendored by `kermit-rdf` does not emit.
 
 Every WatDiv query body may contain `c<dict-id>` atom terms filtering a BGP position against a constant URI. At join time, the join entry point (`lftj_join` / `hash_join`) rewrites each atom into a fresh variable + synthetic `Const_c<id>` unary relation (Veldhuizen 2014 §3.4 point 4 — see `kermit-algos/src/const_rewrite.rs`).
 
