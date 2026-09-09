@@ -39,6 +39,7 @@ def test_summary_columns_present(df):
         "kind", "metric", "phase",
         "data_structure", "algorithm", "query", "benchmark", "relation_path",
         "tuples", "arity", "relations", "relation_bytes",
+        "verified",
         "mean_ns", "mean_lo", "mean_hi", "mean_se",
         "median_ns", "median_lo", "median_hi",
         "source_path", "criterion_group", "criterion_function",
@@ -185,3 +186,12 @@ def test_queries_per_build_na_for_legacy_reports(fixture_tree) -> None:
     df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
     assert "queries_per_build" in df.columns
     assert df.queries_per_build.isna().all()
+
+
+def test_verified_column_is_nullable_boolean(verified_tree):
+    df = load(verified_tree["paths"], verified_tree["criterion_root"])
+    assert "verified" in df.columns
+    assert str(df["verified"].dtype) == "boolean"
+    by_group = df.set_index("criterion_group")["verified"]
+    assert bool(by_group["run/triangle/triangle/TreeTrie/LeapfrogTriejoin/v"]) is True
+    assert pd.isna(by_group["run/triangle/triangle/TreeTrie/LeapfrogTriejoin/nv"])

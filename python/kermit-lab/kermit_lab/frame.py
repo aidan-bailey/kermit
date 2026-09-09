@@ -24,9 +24,10 @@ from .loader import BenchReport, CriterionGroupRef, iter_function_data, load_rep
 # Matches ds_layout_*, ds_config_*, ds_build_mode, and the algo_* analogues.
 _OPT_AXIS_RE = re.compile(r"^(ds|algo)_(layout_|config_|build_mode\b)")
 
-# Explicit include-list for axis columns. Unknown axis keys in the input
-# JSON are silently dropped — when ``docs/specs/bench-report-schema.md``
-# adds a new key, extend the matching tuple here.
+# Explicit include-list for axis columns: the three tuples below (str /
+# int / bool) are the whole list. Unknown axis keys in the input JSON are
+# silently dropped — when ``docs/specs/bench-report-schema.md`` adds a new
+# key, extend the tuple matching its type here.
 _AXIS_STR_KEYS: tuple[str, ...] = (
     "data_structure",
     "algorithm",
@@ -42,6 +43,9 @@ _AXIS_INT_KEYS: tuple[str, ...] = (
     "relation_bytes",
     "queries_per_build",
 )
+_AXIS_BOOL_KEYS: tuple[str, ...] = (
+    "verified",
+)
 
 # Fixed core columns (ordered). Optimization-axis tail and stat columns are
 # appended dynamically in ``_summary_from_reports``.
@@ -49,6 +53,7 @@ _SUMMARY_COLUMNS_CORE: tuple[str, ...] = (
     "kind", "metric", "phase",
     *_AXIS_STR_KEYS,
     *_AXIS_INT_KEYS,
+    *_AXIS_BOOL_KEYS,
 )
 _SUMMARY_COLUMNS_STATS: tuple[str, ...] = (
     "mean_ns", "mean_lo", "mean_hi", "mean_se",
@@ -75,6 +80,9 @@ def _summary_row(
     for key in _AXIS_INT_KEYS:
         v = report.axis(key)
         row[key] = v if isinstance(v, int) and not isinstance(v, bool) else pd.NA
+    for key in _AXIS_BOOL_KEYS:
+        v = report.axis(key)
+        row[key] = v if isinstance(v, bool) else pd.NA
     for key in opt_axes:
         v = report.axis(key)
         # Keep native type (str / bool / int); only None becomes NA. Booleans
@@ -128,6 +136,8 @@ def _summary_from_reports(
     df = pd.DataFrame(rows, columns=columns)
     for key in _AXIS_INT_KEYS:
         df[key] = df[key].astype("Int64")
+    for key in _AXIS_BOOL_KEYS:
+        df[key] = df[key].astype("boolean")
     for key in opt_axes:
         non_null = df[key].dropna()
         if len(non_null) and non_null.map(lambda v: isinstance(v, bool)).all():

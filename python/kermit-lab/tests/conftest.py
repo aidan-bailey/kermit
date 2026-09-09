@@ -25,9 +25,16 @@ class _FunctionSpec:
 
 
 def _write_function_dir(criterion_root: Path, spec: _FunctionSpec) -> None:
-    """Mirror Criterion's on-disk layout for one function under ``new/``."""
+    """Mirror Criterion's on-disk layout for one function under ``new/``.
+
+    Criterion flattens slashes to underscores in both the group and function
+    directory names (``kermit_lab.criterion.resolve_function_dir`` undoes the
+    group half), so a group such as ``run/triangle/triangle/TreeTrie/...``
+    lands in one flat directory rather than a nested tree.
+    """
+    group_dirname = spec.group.replace("/", "_")
     dirname = spec.function.replace("/", "_")
-    new_dir = criterion_root / spec.group / dirname / "new"
+    new_dir = criterion_root / group_dirname / dirname / "new"
     new_dir.mkdir(parents=True, exist_ok=True)
 
     (new_dir / "benchmark.json").write_text(
@@ -38,7 +45,7 @@ def _write_function_dir(criterion_root: Path, spec: _FunctionSpec) -> None:
                 "value_str": None,
                 "throughput": None,
                 "full_id": f"{spec.group}/{spec.function}",
-                "directory_name": f"{spec.group}/{dirname}",
+                "directory_name": f"{group_dirname}/{dirname}",
                 "title": f"{spec.group}/{spec.function}",
             }
         )
@@ -228,6 +235,44 @@ def fixture_tree(tmp_path: Path) -> dict:
         "reports_dir": reports_dir,
         "paths": sorted(paths),
     }
+
+
+@pytest.fixture
+def verified_tree(tmp_path: Path) -> dict:
+    """Two ``run`` reports on one query: one carries ``verified: true``, one
+    has no ``verified`` key at all (a run without --verify)."""
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for tag, axes_extra in (("v", {"verified": True}), ("nv", {})):
+        group = f"run/triangle/triangle/TreeTrie/LeapfrogTriejoin/{tag}"
+        samples = [(i + 1, 1000.0 * (i + 1)) for i in range(10)]
+        _write_function_dir(
+            criterion_root,
+            _FunctionSpec(group, "iteration", "time", 1000.0, samples),
+        )
+        paths.append(
+            _write_report(
+                reports_dir,
+                f"run-{tag}",
+                kind="run",
+                axes={
+                    "benchmark": "triangle",
+                    "query": "triangle",
+                    "data_structure": "TreeTrie",
+                    "algorithm": "LeapfrogTriejoin",
+                    "optimiser": "lexicographic",
+                    "tuples": 12,
+                    **axes_extra,
+                },
+                metadata=[],
+                groups=[(group, "iteration", "time")],
+            )
+        )
+    return {"paths": paths, "criterion_root": criterion_root}
 
 
 @pytest.fixture

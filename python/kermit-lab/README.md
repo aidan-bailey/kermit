@@ -131,6 +131,16 @@ including one ablation figure per optimization axis (`ds_layout_*`,
 lack the necessary axes are skipped with an info-level log message rather than
 erroring.
 
+## Contract test
+
+`tests/test_contract.py` runs the real `kermit` binary and loads its output.
+It is skipped unless `KERMIT_BIN` points at a built binary:
+
+    cargo build -p kermit
+    KERMIT_BIN=$PWD/target/debug/kermit uv run --project python/kermit-lab pytest
+
+CI runs it on every pull request.
+
 ## Style
 
 - Wong / Okabe-Ito 8-colour palette (colour-blind safe). See
@@ -150,4 +160,6 @@ major versions. Fixed axis columns (`data_structure`, `algorithm`, `query`,
 `tuples`, etc.) are listed in `kermit_lab/frame.py`; optimization axes
 (`ds_layout_*`, `ds_config_*`, `ds_build_mode`) are discovered dynamically
 from the reports and added as additional DataFrame columns. Use
-`kl.discover_opt_columns(df)` to enumerate them.
+`kl.discover_opt_columns(df)` to enumerate them. `verified` (nullable
+boolean) is present when `bench run --verify` checked the query's answer
+count.
