@@ -50,7 +50,9 @@ group — the full name becomes
 
 ## `kermit bench join`
 
-Benchmarks end-to-end join execution time on real data.
+Benchmarks a Datalog query over ad-hoc relation files with the same metrics
+as `bench run` (`insertion`, `iteration`, `space` by default; `end-to-end`
+opt-in).
 
 **Arguments:** `--relations` (file paths), `--query` (.dl file),
 `--algorithm`, `--indexstructure`, optional `--optimiser` (query optimiser
@@ -121,7 +123,8 @@ space`; `end-to-end` is opt-in), `--queries-per-build` (K for the
    chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
    wall-clock Criterion; `Space` goes through `SpaceMeasurement`.
 
-The runner itself (`run_benchmark` / `ExecutionFamily::build`) lives in
+The runner itself (`run_benchmark`, which calls `ExecutionFamily::build` from
+`kermit/src/execution.rs`) lives in
 `kermit/src/bench/run.rs` and takes a `Workload` built by
 `Workload::from_definition`, which performs the `ensure_cached` step and the
 query parsing described in step 3 and the per-query loop above.
@@ -185,7 +188,8 @@ Each `bench` subcommand emits three independent output streams:
    `measurement::format_bytes` for B/KiB/MiB/GiB scaling.
 
 2. **Criterion artefacts** — the usual `target/criterion/{group}/{function}/`
-   directory tree (HTML reports, JSON estimates, raw samples).
+   directory tree (JSON estimates and raw samples; no HTML, since
+   Criterion's plotting is compiled out).
 
 3. **JSON report (`--report-json <path>`)** — a machine-readable
    `BenchReport` describing the same metadata, a structured `axes` map of

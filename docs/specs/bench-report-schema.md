@@ -79,7 +79,7 @@ semantics).
 | `tuples`         | `ds`, `join`, `run`      | number (usize)   | `ds`: tuples in the single relation. `join`, `run`: total summed across all of the benchmark's relations (workload input size). |
 | `arity`          | `ds`                     | number (usize)   | Relation arity. |
 | `relations`      | *(removed 2026-09-09)*   | —                | `bench join` used to emit its relation count; it now reports `tuples` like `bench run`. Old reports may still carry it. |
-| `queries_per_build` | `ds`, `run`           | number (u32)     | K for the `end-to-end` metric (`T = build + K × query`), from `--queries-per-build` (default 1). Emitted **only** when `--metrics` includes `end-to-end`, so historical invocations' reports are byte-identical. K never appears in the Criterion function id — the id is the bare `end_to_end` token (prefixed `{ds}/` for `bench ds`). |
+| `queries_per_build` | `ds`, `join`, `run`   | number (u32)     | K for the `end-to-end` metric (`T = build + K × query`), from `--queries-per-build` (default 1). Emitted **only** when `--metrics` includes `end-to-end`, so historical invocations' reports are byte-identical. K never appears in the Criterion function id — the id is the bare `end_to_end` token (prefixed `{ds}/` for `bench ds`). |
 
 ## Resolving a `CriterionGroupRef` to filesystem paths
 

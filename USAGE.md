@@ -116,7 +116,7 @@ subcommand: for `bench ds` it is the full group name (default `ds`); for
 
 ### Benchmark a join (`bench join`)
 
-End-to-end timing of a Datalog query against a chosen DS + algorithm:
+Benchmark a Datalog query over ad-hoc relation files against a chosen DS + algorithm:
 
 ```sh
 kermit bench join \
@@ -133,7 +133,8 @@ Pass `-o`/`--output <PATH>` to also write the join's tuples to a CSV file
 
 `bench join` runs through the same runner as `bench run`: it records the
 `insertion`, `iteration` and `space/<relation>` metrics by default (`-m`
-selects; `end-to-end` is opt-in with `--queries-per-build K`), accepts
+selects; `end-to-end` is opt-in, with `--queries-per-build K` setting its K,
+default 1), accepts
 `--ds-config` alongside the `--ds-layout-*` flags, and writes its Criterion
 output under `{--name|join}/adhoc/{query-file-stem}/{ds}/{algo}`. The
 report's `benchmark` axis is `adhoc` and `query` is the query file's stem.
