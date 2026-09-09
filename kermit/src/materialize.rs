@@ -26,6 +26,7 @@ use {
     std::{
         fs,
         path::{Path, PathBuf},
+        sync::OnceLock,
     },
 };
 
@@ -72,23 +73,29 @@ const WORKSPACE_ENV: &str = "KERMIT_WORKSPACE";
 /// `Cargo.toml` declares a `[workspace]` table; otherwise the compile-time
 /// parent of `CARGO_MANIFEST_DIR`, announced on stderr because it means the
 /// binary is reading `benchmarks/` from the tree it was built in rather
-/// than the one it is running in.
+/// than the one it is running in. Resolved once per process and cached, so
+/// the fallback note prints at most once.
 pub(crate) fn workspace_root() -> PathBuf {
-    let compile_time = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("kermit crate must be inside workspace")
-        .to_path_buf();
-    let cwd = std::env::current_dir().unwrap_or_else(|_| compile_time.clone());
-    let env_override = std::env::var(WORKSPACE_ENV).ok();
-    let (resolved, source) = resolve_workspace_root(env_override.as_deref(), &cwd, &compile_time);
-    if source == RootSource::CompileTime {
-        eprintln!(
-            "kermit: no workspace Cargo.toml above {}; using compile-time root {}",
-            cwd.display(),
-            compile_time.display()
-        );
-    }
-    resolved
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let compile_time = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("kermit crate must be inside workspace")
+            .to_path_buf();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| compile_time.clone());
+        let env_override = std::env::var(WORKSPACE_ENV).ok();
+        let (resolved, source) =
+            resolve_workspace_root(env_override.as_deref(), &cwd, &compile_time);
+        if source == RootSource::CompileTime {
+            eprintln!(
+                "kermit: no workspace Cargo.toml above {}; using compile-time root {}",
+                cwd.display(),
+                compile_time.display()
+            );
+        }
+        resolved
+    })
+    .clone()
 }
 
 /// Which rule of [`resolve_workspace_root`] produced the root. Reported so
@@ -127,6 +134,8 @@ fn resolve_workspace_root(
 fn find_workspace_manifest(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|dir| {
         let manifest = dir.join("Cargo.toml");
+        // An unreadable Cargo.toml (missing, permissions, non-UTF8) is
+        // deliberately treated as "no match, keep walking" via `.ok()?`.
         let text = fs::read_to_string(&manifest).ok()?;
         text.contains("[workspace]").then(|| dir.to_path_buf())
     })
