@@ -11,7 +11,7 @@ WatDiv pipeline at the crate root.
 | `sandbox.rs` | RAII temp dir for one generation. Simpler than the watdiv sandbox — no `bwrap`, no symlink-layout requirements. |
 | `entailment.rs` | Univ-Bench TBox forward chainer. Hardcoded rule constants for the axioms relevant to the 14 LUBM queries. |
 | `queries.rs` | Static `(name, sparql, expected_cardinality)` triples for Q1–Q14, embedded via `include_str!` from `kermit-rdf/queries/lubm/`. |
-| `pipeline.rs` | End-to-end orchestrator: drive → entail → partition → translate → emit YAML/dict/expected/meta. |
+| `pipeline.rs` | End-to-end orchestrator: drive → entail → partition → translate → emit YAML (with expected cardinalities)/dict/meta. |
 
 ## Output (`~/.cache/kermit/benchmarks/lubm-{scale}-{tag}/`)
 
@@ -23,7 +23,6 @@ dict.parquet              Shared URI/literal → usize dictionary
 raw/data.nt               Gunzipped jar output, document-self stripped
 raw/data.entailed.nt      Post-Univ-Bench-TBox closure; this is what partition reads
 raw/queries/q*.sparql     The 14 hand-written LUBM queries verbatim
-expected/q*.csv           Reference cardinalities (LUBM(1, 0) only; paper Table 3)
 ```
 
 ## Entailment rule set (authoritative list)

@@ -336,7 +336,9 @@ fn run_lubm(
              to kermit-rdf/vendor/lubm-uba/, or override with KERMIT_LUBM_JAR"
         );
     }
-    let all_queries = kermit_rdf::lubm::queries::lubm_query_specs(scale == 1);
+    let all_queries = kermit_rdf::lubm::queries::lubm_query_specs(
+        kermit_rdf::lubm::queries::lubm_reference_applies(scale, seed, start_index),
+    );
     let queries: Vec<kermit_rdf::lubm::pipeline::LubmQuerySpec> = match query_subset {
         | Some(names) => {
             let mut selected = Vec::with_capacity(names.len());

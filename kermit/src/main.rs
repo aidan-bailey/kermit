@@ -998,10 +998,10 @@ fn run_gen_lubm(
     }
     std::fs::create_dir_all(&out_dir)?;
 
-    // LUBM(1, 0) cardinalities are only valid at scale 1; at other scales we
-    // still emit the queries but skip the expected.csv files to avoid
-    // misleading the cardinality test.
-    let queries = kermit_rdf::lubm::queries::lubm_query_specs(scale == 1);
+    // Reference cardinalities are only attached for LUBM(1, 0).
+    let queries = kermit_rdf::lubm::queries::lubm_query_specs(
+        kermit_rdf::lubm::queries::lubm_reference_applies(scale, seed, start_index),
+    );
 
     let inputs = kermit_rdf::lubm::pipeline::LubmPipelineInputs {
         driver: kermit_rdf::lubm::driver::LubmDriverInputs {

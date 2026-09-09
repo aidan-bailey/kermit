@@ -1,7 +1,7 @@
 //! Emits a kermit `BenchmarkDefinition` YAML for a generated artifact set.
 
 use {
-    crate::error::RdfError,
+    crate::{error::RdfError, generator::TranslatedQuery},
     kermit_bench::{BenchmarkDefinition, QueryDefinition, RelationSource},
     std::{collections::HashSet, path::Path},
 };
@@ -12,8 +12,8 @@ pub struct YamlInputs<'a> {
     pub name: &'a str,
     /// Human-readable description.
     pub description: &'a str,
-    /// All translated queries as `(query_name, datalog)` pairs.
-    pub queries: Vec<(String, String)>,
+    /// All translated queries, each with its optional expected cardinality.
+    pub queries: Vec<TranslatedQuery>,
     /// All known predicate names (canonical Datalog names).
     pub all_predicates: &'a [String],
     /// Base URL for relation parquet files (use `file:///abs/path/to/dir`
@@ -23,11 +23,11 @@ pub struct YamlInputs<'a> {
 }
 
 /// Returns the predicate names referenced in any query body.
-fn collect_used_predicates(queries: &[(String, String)]) -> HashSet<String> {
+fn collect_used_predicates(queries: &[TranslatedQuery]) -> HashSet<String> {
     let pat = regex_lite::Regex::new(r"([a-z][a-z0-9_]*)\(").unwrap();
     let mut used = HashSet::new();
-    for (_, dl) in queries {
-        if let Some((_, body)) = dl.split_once(":-") {
+    for q in queries {
+        if let Some((_, body)) = q.datalog.split_once(":-") {
             for cap in pat.captures_iter(body) {
                 used.insert(cap[1].to_string());
             }
@@ -68,11 +68,11 @@ pub fn write_benchmark_yaml(
     let queries: Vec<QueryDefinition> = inputs
         .queries
         .iter()
-        .map(|(qname, dl)| QueryDefinition {
-            name: qname.clone(),
-            description: format!("query {qname}"),
-            query: dl.clone(),
-            expected: None,
+        .map(|q| QueryDefinition {
+            name: q.name.clone(),
+            description: format!("query {}", q.name),
+            query: q.datalog.clone(),
+            expected: q.expected,
         })
         .collect();
     let def = BenchmarkDefinition {
@@ -99,7 +99,11 @@ mod tests {
         let inputs = YamlInputs {
             name: "test",
             description: "test bench",
-            queries: vec![("q0000".into(), "Q_q0000(X) :- follows(X, Y).".into())],
+            queries: vec![TranslatedQuery {
+                name: "q0000".into(),
+                datalog: "Q_q0000(X) :- follows(X, Y).".into(),
+                expected: None,
+            }],
             all_predicates: &["follows".to_string(), "likes".to_string()],
             base_url: "file:///tmp/x",
         };
@@ -110,12 +114,46 @@ mod tests {
     }
 
     #[test]
+    fn expected_cardinality_is_written_only_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let preds = vec!["r".to_string()];
+        let inputs = YamlInputs {
+            name: "t",
+            description: "d",
+            queries: vec![
+                TranslatedQuery {
+                    name: "with".to_string(),
+                    datalog: "Q_with(X) :- r(X, X).".to_string(),
+                    expected: Some(3),
+                },
+                TranslatedQuery {
+                    name: "without".to_string(),
+                    datalog: "Q_without(X) :- r(X, X).".to_string(),
+                    expected: None,
+                },
+            ],
+            all_predicates: &preds,
+            base_url: "file:///x",
+        };
+        write_benchmark_yaml(&inputs, dir.path()).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("benchmark.yml")).unwrap();
+        assert_eq!(text.matches("expected: 3").count(), 1, "{text}");
+        let def: kermit_bench::BenchmarkDefinition = serde_yaml::from_str(&text).unwrap();
+        assert_eq!(def.queries[0].expected, Some(3));
+        assert_eq!(def.queries[1].expected, None);
+    }
+
+    #[test]
     fn unknown_predicate_in_body_errors() {
         let dir = tempfile::tempdir().unwrap();
         let inputs = YamlInputs {
             name: "test",
             description: "test bench",
-            queries: vec![("q0000".into(), "Q_q0000(X) :- ghost(X, Y).".into())],
+            queries: vec![TranslatedQuery {
+                name: "q0000".into(),
+                datalog: "Q_q0000(X) :- ghost(X, Y).".into(),
+                expected: None,
+            }],
             all_predicates: &["follows".to_string()],
             base_url: "file:///tmp/x",
         };

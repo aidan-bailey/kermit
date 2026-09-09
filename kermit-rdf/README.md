@@ -1,6 +1,6 @@
 # kermit-rdf
 
-RDF/SPARQL preprocessing for on-the-fly benchmark generation. Drives the vendored WatDiv binary or LUBM-UBA jar, parses the resulting N-Triples + SPARQL output, and emits a kermit-runnable artifact set: a string-to-`usize` dictionary, per-predicate Parquet relations, a [`BenchmarkDefinition`](../kermit-bench/src/definition.rs) YAML, and (where source cardinalities are available) `expected/<query>.csv` sidecars. The output directory is then consumed by [`kermit-bench`](../kermit-bench) exactly like a hand-authored static benchmark.
+RDF/SPARQL preprocessing for on-the-fly benchmark generation. Drives the vendored WatDiv binary or LUBM-UBA jar, parses the resulting N-Triples + SPARQL output, and emits a kermit-runnable artifact set: a string-to-`usize` dictionary, per-predicate Parquet relations, and a [`BenchmarkDefinition`](../kermit-bench/src/definition.rs) YAML whose queries carry an `expected` cardinality where the source knows it (LUBM(1, 0) only). The output directory is then consumed by [`kermit-bench`](../kermit-bench) exactly like a hand-authored static benchmark.
 
 Depends on [`kermit-bench`](../kermit-bench) only — the pipeline emits a Datalog *string* into the benchmark YAML rather than building a [`kermit-parser`](../kermit-parser) AST, and never constructs a relation, so there is no dependency on [`kermit-ds`](../kermit-ds) either. That string is parsed later, by the binary, when the benchmark is run. Consumed by the [`kermit`](../kermit) binary, which dispatches to this crate from `bench gen watdiv|lubm` (imperative) and the declarative `generator:` block in benchmark YAMLs (via `kermit/src/materialize.rs`).
 
@@ -10,7 +10,7 @@ Depends on [`kermit-bench`](../kermit-bench) only — the pipeline emits a Datal
 - [`pipeline::run_basic_pipeline`](src/pipeline.rs) — WatDiv Basic Testing. Inputs: the same [`PipelineInputs`](src/pipeline.rs) plus the `testsuite/` template directory (no stress params). Drives the basic workload over the 20 canonical L/S/F/C templates and processes artifacts the same way. Output meta has `kind = "watdiv-basic-onthefly"`.
 - [`lubm::pipeline::run_lubm_pipeline`](src/lubm/pipeline.rs) — LUBM. Inputs: a [`LubmPipelineInputs`](src/lubm/pipeline.rs) wrapping the vendored jar, scale (universities), seed, and the 14 query specs. Drives the jar, gunzips its output, runs Univ-Bench TBox forward chaining via [`lubm::entailment::entail`](src/lubm/entailment.rs), then partitions the entailed file. Output meta has `kind = "lubm-onthefly"`.
 
-All three hand their driver output to one shared orchestrator, [`generator::process_artifacts`](src/generator.rs), which sequences the post-driver stages (partition → Parquet → translate → dict → `benchmark.yml` → `expected/` → `meta.json`). A pipeline implements the [`Generator`](src/generator.rs) trait to supply only what differs: how its raw artifacts are staged (LUBM entails here), where its SPARQL comes from, and its tool-specific `meta.json` fields. All three record a [`spec_hash`](src/generator.rs) into `meta.json` when invoked from a declarative YAML so the materialization layer can detect param drift; [`generator::MetaHeader`](src/generator.rs) reads that kind-agnostic subset back.
+All three hand their driver output to one shared orchestrator, [`generator::process_artifacts`](src/generator.rs), which sequences the post-driver stages (partition → Parquet → translate → dict → `benchmark.yml` → `meta.json`). A pipeline implements the [`Generator`](src/generator.rs) trait to supply only what differs: how its raw artifacts are staged (LUBM entails here), where its SPARQL comes from, and its tool-specific `meta.json` fields. All three record a [`spec_hash`](src/generator.rs) into `meta.json` when invoked from a declarative YAML so the materialization layer can detect param drift; [`generator::MetaHeader`](src/generator.rs) reads that kind-agnostic subset back.
 
 ## Shared stages
 
@@ -21,7 +21,6 @@ All three hand their driver output to one shared orchestrator, [`generator::proc
 - [`parquet`](src/parquet.rs) — Arrow-backed writers for the dictionary and per-predicate relation tables.
 - [`sparql::translator`](src/sparql/translator.rs) — translates BGP-only SPARQL `SELECT` queries to Datalog atoms keyed by the partitioned predicate map.
 - [`yaml_emit`](src/yaml_emit.rs) — writes the [`BenchmarkDefinition`](../kermit-bench/src/definition.rs) YAML pointing at the emitted Parquet files.
-- [`expected`](src/expected.rs) — reads watdiv `.desc` cardinality sidecars and emits `expected/<query>.csv`. The vendored watdiv binary does not emit `.desc` files, so this is effectively a no-op for it; LUBM writes its CSVs directly from `LubmQuerySpec::expected_cardinality`.
 
 ## Vendor directories
 

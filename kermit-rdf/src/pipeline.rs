@@ -13,7 +13,6 @@
 //!   raw/data.nt
 //!   raw/templates/*.txt
 //!   raw/queries/*.sparql (+ *.desc only if the binary emits them — the vendored one does not)
-//!   expected/<query>.csv
 //! ```
 //!
 //! This module supplies only the WatDiv-specific hooks of the
@@ -26,8 +25,7 @@ use {
         dict::Dictionary,
         driver::{self, invoke::split_on_end_markers, DriverInputs, RawArtifacts, StressParams},
         error::RdfError,
-        expected,
-        generator::{self, Generator, GeneratorMeta, Provenance, Target},
+        generator::{self, Generator, GeneratorMeta, Provenance, Target, TranslatedQuery},
         partition::{self, Partitioned},
         sha256_file,
         sparql::translator::{bgp_predicate_iris, translate_query},
@@ -258,8 +256,8 @@ impl Generator for WatdivGenerator<'_> {
     fn translate_queries(
         &self, staged: &WatdivStaged, dict: &mut Dictionary,
         predicate_map: &HashMap<String, String>,
-    ) -> Result<Vec<(String, String)>, RdfError> {
-        let mut all_queries: Vec<(String, String)> = Vec::new();
+    ) -> Result<Vec<TranslatedQuery>, RdfError> {
+        let mut all_queries: Vec<TranslatedQuery> = Vec::new();
         for sparql_path in &staged.copied_sparql_paths {
             let stem = sparql_path
                 .file_stem()
@@ -274,7 +272,11 @@ impl Generator for WatdivGenerator<'_> {
                 let qname = format!("{stem}_q{i:04}");
                 let head = format!("Q_{stem_underscores}_q{i:04}");
                 let dl = translate_query(q, dict, predicate_map, &head)?;
-                all_queries.push((qname, dl));
+                all_queries.push(TranslatedQuery {
+                    name: qname,
+                    datalog: dl,
+                    expected: None,
+                });
             }
         }
         Ok(all_queries)
@@ -285,12 +287,6 @@ impl Generator for WatdivGenerator<'_> {
             "WatDiv on-the-fly generation, scale {}, tag {}",
             self.inputs.driver.scale, self.inputs.tag
         )
-    }
-
-    /// Only if the binary emitted `.desc` sidecars (the vendored one does not).
-    fn write_expected(&self, staged: &WatdivStaged, expected_dir: &Path) -> Result<(), RdfError> {
-        expected::write_expected_csvs(&staged.copied_sparql_paths, expected_dir)?;
-        Ok(())
     }
 
     fn build_meta(

@@ -3,13 +3,13 @@
 //! Drives the upstream WatDiv binary and the LUBM-UBA jar (the latter with
 //! Univ-Bench TBox entailment, see [`lubm`]), parses their N-Triples + SPARQL
 //! output, and produces a kermit-runnable benchmark artifact set (dict +
-//! per-predicate Parquet, BenchmarkDefinition YAML, expected cardinalities).
+//! per-predicate Parquet, BenchmarkDefinition YAML carrying any known expected
+//! cardinalities).
 #![deny(missing_docs)]
 
 pub mod dict;
 pub mod driver;
 pub mod error;
-pub mod expected;
 pub mod generator;
 pub mod lubm;
 pub mod ntriples;

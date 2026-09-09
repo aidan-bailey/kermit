@@ -4,9 +4,9 @@
 //! external tool, but once raw N-Triples and SPARQL exist the remaining work
 //! is identical: partition the triples into per-predicate relations, write
 //! them as Parquet, translate the queries to Datalog, write the dictionary,
-//! emit `benchmark.yml`, write expected cardinalities, and record
-//! `meta.json`. [`process_artifacts`] owns that sequence once; a generator
-//! supplies only the parts that differ through the [`Generator`] trait.
+//! emit `benchmark.yml`, and record `meta.json`. [`process_artifacts`] owns
+//! that sequence once; a generator supplies only the parts that differ through
+//! the [`Generator`] trait.
 //!
 //! ```text
 //!            driver (per generator)
@@ -17,10 +17,9 @@
 //!  │ partition      → relations + dict         │  partition::partition
 //!  │ seed_relations → (optional) empty rels    │  Generator::seed_relations
 //!  │ write_relation → <out>/<pred>.parquet     │  parquet::write_relation
-//!  │ translate      → [(name, datalog)]        │  Generator::translate_queries
+//!  │ translate      → [TranslatedQuery]        │  Generator::translate_queries
 //!  │ write_dict     → <out>/dict.parquet       │  parquet::write_dict
 //!  │ emit YAML      → <out>/benchmark.yml      │  yaml_emit::write_benchmark_yaml
-//!  │ write_expected → <out>/expected/*.csv     │  Generator::write_expected
 //!  │ build_meta     → <out>/meta.json          │  Generator::build_meta + write_meta_json
 //!  └───────────────────────────────────────────┘
 //! ```
@@ -150,6 +149,18 @@ pub fn read_meta_json<M: GeneratorMeta>(out_dir: &Path) -> Result<M, RdfError> {
     serde_json::from_str(&text).map_err(|e| RdfError::Expected(e.to_string()))
 }
 
+/// One translated query for `benchmark.yml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranslatedQuery {
+    /// Query name (`q1`, `tiny_q0002`, …); the YAML `name`.
+    pub name: String,
+    /// The Datalog rule text.
+    pub datalog: String,
+    /// Expected result cardinality when the generator knows it (LUBM(1, 0)
+    /// from the paper's Table 3); `None` otherwise.
+    pub expected: Option<u64>,
+}
+
 /// The generator-specific parts of the post-driver pipeline. Implement this
 /// for a `(inputs, workload)` view of a pipeline and hand it to
 /// [`process_artifacts`]; see `crate::pipeline` (WatDiv) and
@@ -184,19 +195,15 @@ pub trait Generator {
         Ok(())
     }
 
-    /// Produces `(query_name, datalog)` pairs for `benchmark.yml`, growing
-    /// `dict` for constants the data never mentioned.
+    /// Produces the queries for `benchmark.yml`, growing `dict` for
+    /// constants the data never mentioned.
     fn translate_queries(
         &self, staged: &Self::Staged, dict: &mut Dictionary,
         predicate_map: &HashMap<String, String>,
-    ) -> Result<Vec<(String, String)>, RdfError>;
+    ) -> Result<Vec<TranslatedQuery>, RdfError>;
 
     /// Human-readable `description` for `benchmark.yml`.
     fn description(&self, raw: &Self::Raw) -> String;
-
-    /// Writes `expected/<query>.csv` cardinalities into `expected_dir`
-    /// (already created). May write nothing.
-    fn write_expected(&self, staged: &Self::Staged, expected_dir: &Path) -> Result<(), RdfError>;
 
     /// Assembles this generator's `meta.json` from the tool-specific inputs
     /// plus the shared `provenance` the orchestrator computed.
@@ -246,12 +253,7 @@ pub fn process_artifacts<G: Generator>(generator: &G, raw: &G::Raw) -> Result<G:
     };
     write_benchmark_yaml(&yaml, out_dir)?;
 
-    // Stage F: expected cardinalities.
-    let expected_dir = out_dir.join("expected");
-    fs::create_dir_all(&expected_dir)?;
-    generator.write_expected(&staged, &expected_dir)?;
-
-    // Stage G: meta.json.
+    // Stage F: meta.json.
     let provenance = Provenance {
         schema_version: META_SCHEMA_VERSION,
         tag: target.tag.to_string(),
@@ -267,10 +269,7 @@ pub fn process_artifacts<G: Generator>(generator: &G, raw: &G::Raw) -> Result<G:
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        crate::{expected::write_cardinality_csv, sparql::translator::translate_query},
-    };
+    use {super::*, crate::sparql::translator::translate_query};
 
     /// A minimal generator over hand-written N-Triples and one SPARQL query,
     /// exercising every hook without an external tool.
@@ -330,16 +329,16 @@ mod tests {
 
         fn translate_queries(
             &self, _staged: &(), dict: &mut Dictionary, predicate_map: &HashMap<String, String>,
-        ) -> Result<Vec<(String, String)>, RdfError> {
+        ) -> Result<Vec<TranslatedQuery>, RdfError> {
             let dl = translate_query(QUERY, dict, predicate_map, "Q_path")?;
-            Ok(vec![("path".to_string(), dl)])
+            Ok(vec![TranslatedQuery {
+                name: "path".to_string(),
+                datalog: dl,
+                expected: Some(3),
+            }])
         }
 
         fn description(&self, _raw: &ToyRaw) -> String { "toy".to_string() }
-
-        fn write_expected(&self, _staged: &(), expected_dir: &Path) -> Result<(), RdfError> {
-            write_cardinality_csv(&expected_dir.join("path.csv"), 3)
-        }
 
         fn build_meta(
             &self, _raw: &ToyRaw, _staged: &(), part: &Partitioned, provenance: Provenance,
@@ -389,13 +388,14 @@ mod tests {
         assert!(out.join("follows.parquet").exists());
         assert!(out.join("dict.parquet").exists());
         assert!(out.join("benchmark.yml").exists());
-        assert_eq!(
-            fs::read_to_string(out.join("expected/path.csv")).unwrap(),
-            "cardinality\n3\n"
+        assert!(
+            !out.join("expected").exists(),
+            "expected/ sidecars are gone"
         );
         assert!(meta_json_path(out).exists());
 
         let yaml = fs::read_to_string(out.join("benchmark.yml")).unwrap();
+        assert!(yaml.contains("expected: 3"), "{yaml}");
         assert!(yaml.contains("Q_path(X, Y, Z) :- follows(X, Y), follows(Y, Z)."));
         assert!(yaml.contains("toy-bench"));
         assert!(yaml.contains("description: toy"));

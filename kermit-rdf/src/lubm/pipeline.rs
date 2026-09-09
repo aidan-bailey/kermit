@@ -17,15 +17,13 @@
 //!   raw/data.nt                (gunzipped jar output, document-self stripped)
 //!   raw/data.entailed.nt       (post-Univ-Bench-TBox closure; what partition reads)
 //!   raw/queries/qN.sparql      (the 14 LUBM queries verbatim)
-//!   expected/<query>.csv       (one cardinality per query, optional input)
 //! ```
 
 use {
     crate::{
         dict::Dictionary,
         error::RdfError,
-        expected::write_cardinality_csv,
-        generator::{self, Generator, GeneratorMeta, Provenance, Target},
+        generator::{self, Generator, GeneratorMeta, Provenance, Target, TranslatedQuery},
         lubm::{
             driver::{drive, LubmDriverInputs, LubmRawArtifacts},
             entailment::{entail, EntailmentStats},
@@ -52,8 +50,8 @@ pub struct LubmQuerySpec {
     /// FILTER/OPTIONAL/UNION.
     pub sparql: String,
     /// Optional expected cardinality for this query at this scale (from
-    /// the LUBM paper Table 3 or recomputed). Written to
-    /// `expected/<name>.csv` if provided.
+    /// the LUBM paper Table 3 or recomputed). Written into `benchmark.yml`
+    /// as the query's `expected` field.
     pub expected_cardinality: Option<u64>,
 }
 
@@ -186,12 +184,16 @@ impl Generator for LubmGenerator<'_> {
 
     fn translate_queries(
         &self, _staged: &LubmStaged, dict: &mut Dictionary, predicate_map: &HashMap<String, String>,
-    ) -> Result<Vec<(String, String)>, RdfError> {
-        let mut translated: Vec<(String, String)> = Vec::new();
+    ) -> Result<Vec<TranslatedQuery>, RdfError> {
+        let mut translated: Vec<TranslatedQuery> = Vec::new();
         for spec in self.inputs.queries {
             let head = format!("Q_{}", spec.name);
             let dl = translate_query(&spec.sparql, dict, predicate_map, &head)?;
-            translated.push((spec.name.clone(), dl));
+            translated.push(TranslatedQuery {
+                name: spec.name.clone(),
+                datalog: dl,
+                expected: spec.expected_cardinality,
+            });
         }
         Ok(translated)
     }
@@ -201,16 +203,6 @@ impl Generator for LubmGenerator<'_> {
             "Lehigh University Benchmark, on-the-fly: scale={}, seed={}, tag={}",
             raw.scale, raw.seed, self.inputs.tag
         )
-    }
-
-    /// One CSV per query that carries an expected cardinality.
-    fn write_expected(&self, _staged: &LubmStaged, expected_dir: &Path) -> Result<(), RdfError> {
-        for spec in self.inputs.queries {
-            if let Some(n) = spec.expected_cardinality {
-                write_cardinality_csv(&expected_dir.join(format!("{}.csv", spec.name)), n)?;
-            }
-        }
-        Ok(())
     }
 
     fn build_meta(
@@ -257,18 +249,4 @@ pub fn process_artifacts(
 pub fn run_lubm_pipeline(inputs: &LubmPipelineInputs) -> Result<LubmMeta, RdfError> {
     let raw = drive(&inputs.driver)?;
     process_artifacts(inputs, &raw)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn write_expected_cardinality_two_lines() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("q.csv");
-        write_cardinality_csv(&p, 42).unwrap();
-        let text = fs::read_to_string(&p).unwrap();
-        assert_eq!(text, "cardinality\n42\n");
-    }
 }

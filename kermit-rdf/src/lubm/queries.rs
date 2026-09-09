@@ -67,6 +67,14 @@ const QUERY_DATA: &[(&str, &str, Option<u64>)] = &[
     ),
 ];
 
+/// Whether the paper's LUBM(1, 0) reference cardinalities apply to a
+/// generation: scale 1, seed 0, start index 0. Any other setting produces a
+/// different ABox, so the counts must not be attached.
+#[must_use]
+pub fn lubm_reference_applies(scale: u32, seed: u32, start_index: u32) -> bool {
+    scale == 1 && seed == 0 && start_index == 0
+}
+
 /// Returns specs for all 14 LUBM queries with LUBM(1, 0) reference
 /// cardinalities. Pass `include_expected = false` if generating for a
 /// scale ≠ 1 — the cardinalities do not generalise across scales.
@@ -124,6 +132,14 @@ mod tests {
         let without = lubm_query_specs(false);
         assert!(with.iter().any(|s| s.expected_cardinality.is_some()));
         assert!(without.iter().all(|s| s.expected_cardinality.is_none()));
+    }
+
+    #[test]
+    fn reference_cardinalities_apply_only_to_lubm_1_0() {
+        assert!(lubm_reference_applies(1, 0, 0));
+        assert!(!lubm_reference_applies(2, 0, 0));
+        assert!(!lubm_reference_applies(1, 5, 0));
+        assert!(!lubm_reference_applies(1, 0, 3));
     }
 
     #[test]

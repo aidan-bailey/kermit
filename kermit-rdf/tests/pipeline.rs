@@ -2,6 +2,7 @@
 
 use {
     kermit_rdf::{
+        generator::TranslatedQuery,
         parquet, partition,
         sparql::translator::translate_query,
         yaml_emit::{write_benchmark_yaml, YamlInputs},
@@ -33,7 +34,11 @@ fn end_to_end_stages_4_through_5_on_handcrafted_input() {
 
     let q = "SELECT * WHERE { ?x <http://x/follows> ?y . ?y <http://x/follows> ?z . }";
     let dl = translate_query(q, &mut dict, &part.predicate_map, "Q_path").unwrap();
-    let queries = vec![("path".to_string(), dl)];
+    let queries = vec![TranslatedQuery {
+        name: "path".to_string(),
+        datalog: dl,
+        expected: None,
+    }];
 
     let predicates: Vec<String> = part.relations.iter().map(|r| r.name.clone()).collect();
     let inputs = YamlInputs {

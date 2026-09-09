@@ -44,8 +44,8 @@ pub enum RdfError {
     #[error("unsupported SPARQL feature: {0}")]
     UnsupportedSparql(String),
 
-    /// Computing expected results failed.
-    #[error("expected-results computation failed: {0}")]
+    /// Benchmark YAML emission / validation failed.
+    #[error("benchmark YAML emission / validation failed: {0}")]
     Expected(String),
 
     /// The LUBM-UBA jar could not be found at the resolved path.
