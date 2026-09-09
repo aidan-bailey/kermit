@@ -393,6 +393,12 @@ where
     }
 }
 
+// These tests stay inline deliberately, despite using `kermit-ds` and being
+// roughly half this file. They drive `LeapfrogTriejoinIter` directly — a
+// `pub(crate)` type — rather than the public `LeapfrogTriejoin::join_iter`,
+// so moving them to `tests/` would mean exporting the iterator and its two
+// traits purely to serve tests. Keeping the iterator internal is the
+// deliberate choice; the test placement follows from it.
 #[cfg(test)]
 mod tests {
     use {
