@@ -93,7 +93,9 @@ Every `bench` subcommand wraps Criterion. Each invocation writes:
   (`benchmark.json`, `estimates.json`, `sample.json`, `tukey.json`).
 - A machine-readable JSON summary at `bench-runs/<kind>-<unix-millis>.json`
   (override with `--report-json <PATH>`). See
-  `docs/specs/bench-report-schema.md`.
+  `docs/specs/bench-report-schema.md`. It is rewritten after every cell, so a
+  `bench run` sweep that fails or is interrupted partway still leaves a valid
+  report holding every cell that finished first; the error names the file.
 
 Parent-level options apply to all subcommands:
 
