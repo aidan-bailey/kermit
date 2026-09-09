@@ -3,7 +3,7 @@
 //! produced by the [Const-view rewrite](crate::const_rewrite).
 
 use {
-    crate::singleton::SingletonTrieIter,
+    crate::sorted::singleton::SingletonTrieIter,
     kermit_iters::{JoinIterable, LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 

@@ -7,15 +7,10 @@
 #![deny(missing_docs)]
 
 mod const_rewrite;
-mod hash_singleton;
-mod hash_trie_iter_kind;
-mod hash_triejoin;
+mod hash;
 mod join_algo;
-mod leapfrog_join;
-mod leapfrog_triejoin;
 mod optimiser;
-mod singleton;
-mod trie_iter_kind;
+mod sorted;
 
 // `clap::ValueEnum` is derived here, in a library crate, on purpose: it keeps
 // the registry enums beside the implementations they name, so adding an
@@ -27,18 +22,14 @@ pub use {
     const_rewrite::{
         is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
     },
-    hash_singleton::SingletonHashTrieIter,
-    hash_trie_iter_kind::HashTrieIterKind,
-    hash_triejoin::HashTriejoin,
+    hash::{HashTrieIterKind, HashTriejoin, SingletonHashTrieIter},
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
-    leapfrog_triejoin::LeapfrogTriejoin,
     optimiser::{
         analyse, topological_order, CardinalityOptimiser, CatalogStats, LexicographicOptimiser,
         PlanError, QueryAnalysis, QueryOptimiser, QueryPlan, RelationStats,
     },
-    singleton::SingletonTrieIter,
-    trie_iter_kind::TrieIterKind,
+    sorted::{LeapfrogTriejoin, SingletonTrieIter, TrieIterKind},
 };
 
 /// The available join algorithm implementations.

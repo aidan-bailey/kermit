@@ -12,8 +12,8 @@
 use {
     crate::{
         join_algo::JoinAlgo,
-        leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
         optimiser::{analyse, QueryPlan},
+        sorted::leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
     },
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
     kermit_parser::JoinQuery,
@@ -395,7 +395,7 @@ where
 #[cfg(test)]
 mod tests {
     use {
-        crate::{
+        crate::sorted::{
             leapfrog_join::LeapfrogJoinIterator,
             leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
         },

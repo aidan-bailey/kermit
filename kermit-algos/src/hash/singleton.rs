@@ -1,7 +1,7 @@
 //! Singleton hash-trie iterator: a unary "relation" of one value, used by
 //! the const-view rewrite (see [`crate::const_rewrite`]).
 //!
-//! Analogous to [`crate::singleton::SingletonTrieIter`]. Exposes the
+//! Analogous to [`crate::sorted::SingletonTrieIter`]. Exposes the
 //! [`HashTrieIterator`] interface around a precomputed `u64` hash of its
 //! single value so the join algorithm can intersect against `HashTrie`
 //! data without divergence. The caller (`kermit::db::hash_join`) is
