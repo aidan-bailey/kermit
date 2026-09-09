@@ -30,6 +30,7 @@ A benchmark is **either** static (the relations and queries are spelled out dire
 | `relations[].name`          | string             | yes      | Relation identifier referenced in Datalog queries below. |
 | `relations[].url`           | string             | one of   | HTTP(S) download URL for the relation's Parquet file. Fetched once into the cache. |
 | `relations[].path`          | string             | one of   | Workspace-relative path to a committed CSV or Parquet file. Read in place — never downloaded, copied, or cached. |
+| `relations[].sha256`        | string (64 lowercase hex) | no | Digest of the relation file, checked against a download before it is cached and re-checked by `bench fetch`; never on `bench run`. Compute with `sha256sum <file>`. |
 
 Exactly one of `url` and `path` must be set per relation. Use `url` for large or
 externally-hosted datasets; use `path` for small worked examples that should be
@@ -46,6 +47,7 @@ Two constraints apply to `path`, both enforced by `BenchmarkDefinition::validate
 | `queries[].name`            | string             | yes      | Query identifier (used by `kermit bench run <benchmark> -q <query>`). |
 | `queries[].description`     | string             | yes      | Human-readable summary of what the query computes. |
 | `queries[].query`           | string             | yes      | A Datalog rule parsed by `kermit-parser`. See the grammar below. |
+| `queries[].expected`        | integer            | no       | The query's result cardinality, counted as the tuples the join returns (including any multiset duplicates from `HashTrie`-backed relations, not a distinct count). `bench run --verify` runs the query once and aborts on a mismatch. |
 
 ### Generator block (declarative)
 
@@ -102,12 +104,17 @@ relation is committed rather than fetched, so it runs offline on a cold cache:
 name: triangle
 description: "Triangle query over a small committed edge relation (sanity workload)"
 relations:
+  # Committed in the repository rather than fetched: this is a worked example,
+  # so it should be readable in-tree and runnable offline on a cold cache.
+  # `path` is workspace-relative and its file stem must match `name`.
   - name: edge
     path: "benchmarks/data/triangle/edge.csv"
+    sha256: "942b63a8faab8c2241f1df373bde53b8dc629e992be4a8eee5b1e9514d84862e"
 queries:
   - name: triangle
     description: "Three-way cyclic join; four matches over the committed graph"
     query: "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
+    expected: 4
 ```
 
 `benchmarks/data/triangle/edge.csv` is a directed graph on five vertices with eight
@@ -166,7 +173,7 @@ Two families of committed YAMLs are **frozen snapshots**, not declarative specs.
 
 `scripts/` is retained **only** so these bundles can be regenerated. Nothing in the Rust workspace reproduces them: `kermit-rdf` supersedes the WatDiv preprocessor for *new* workloads (`generator: { kind: watdiv, ... }`), but it writes `file://` URLs into the local cache rather than the hosted snapshot, and the Oxford converter has no Rust counterpart at all. Do not delete the directory as part of a Python cleanup, and do not edit the snapshot YAMLs by hand — regenerate them via the matching script.
 
-The WatDiv snapshots must be regenerated as a unit: the `c<dict-id>` atoms in their query bodies (below) are tied to the dictionary of one specific preprocessor run, so the YAMLs, `dict.parquet`, and all `<predicate>.parquet` files must be rebuilt and re-uploaded together; mixing files from different runs makes constant atoms point at the wrong rows. The preprocessor is also the only source of WatDiv expected cardinalities: it harvests the `.desc` sidecars of the original WatDiv distribution, which the binary vendored by `kermit-rdf` does not emit.
+The WatDiv snapshots must be regenerated as a unit: the `c<dict-id>` atoms in their query bodies (below) are tied to the dictionary of one specific preprocessor run, so the YAMLs, `dict.parquet`, and all `<predicate>.parquet` files must be rebuilt and re-uploaded together; mixing files from different runs makes constant atoms point at the wrong rows. Expected cardinalities for these snapshots are not yet in the YAMLs (the preprocessor's `expected.json` values could be folded in later); the on-the-fly WatDiv generator attaches none, because the vendored binary emits no `.desc` sidecars.
 
 Every WatDiv query body may contain `c<dict-id>` atom terms filtering a BGP position against a constant URI. At join time, the join entry point (`lftj_join` / `hash_join`) rewrites each atom into a fresh variable + synthetic `Const_c<id>` unary relation (Veldhuizen 2014 §3.4 point 4 — see `kermit-algos/src/const_rewrite.rs`).
 

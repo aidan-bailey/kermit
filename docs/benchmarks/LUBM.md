@@ -85,7 +85,7 @@ lubm-uba.jar (vendored)        kermit-rdf::lubm::driver
                                        │ kermit-rdf::sparql::translator
                                        │ (14 LUBM SPARQL → Datalog rules)
                                        ▼
-                              benchmark.yml + meta.json + expected/*.csv
+                              benchmark.yml (+ expected per query) + meta.json
 ```
 
 ## Output layout
@@ -93,13 +93,13 @@ lubm-uba.jar (vendored)        kermit-rdf::lubm::driver
 ```
 ~/.cache/kermit/benchmarks/lubm-{scale}-{tag}/
   meta.json                    LubmMeta — kind = "lubm-onthefly"
-  benchmark.yml                kermit BenchmarkDefinition with all 14 queries
+  benchmark.yml                kermit BenchmarkDefinition with all 14 queries;
+                               each carries `expected` for LUBM(1, 0) only — see below
   dict.parquet                 Shared URI/literal → usize dictionary
   <predicate>.parquet × N      One per predicate seen in entailed data
   raw/data.nt                  Gunzipped jar output, document-self stripped
   raw/data.entailed.nt         Post-Univ-Bench-TBox closure; what partition reads
   raw/queries/q1.sparql … q14.sparql
-  expected/q1.csv … q14.csv    Reference cardinalities (LUBM(1, 0) only — see below)
 ```
 
 `meta.json` records the SHA-256 of the jar that produced the snapshot, the
@@ -158,9 +158,13 @@ Both URI forms exist in any LUBM(N ≥ 1) by the data generator's deterministic
 
 Reference cardinalities are from the LUBM paper Table 3 (DLDB-OWL column —
 the only system in the paper that achieved 100 % completeness across all
-queries) and are written to `expected/q*.csv` only when `--scale 1`. At other
-scales the queries still run but expected files are omitted to avoid
-misleading the cardinality test.
+queries) and are attached to each query as its `expected` cardinality in the
+generated `benchmark.yml` only for LUBM(1, 0) — scale 1, seed 0, start
+index 0 (`lubm_reference_applies`). Check them with
+`kermit bench run <name> -i all -a all --verify`, which runs each query once
+and aborts on a count mismatch. At other settings the queries still run but
+carry no `expected`, so `--verify` reports them as not verified rather than
+comparing against numbers that do not generalise.
 
 ## Determinism
 

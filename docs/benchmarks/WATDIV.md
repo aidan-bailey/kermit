@@ -200,8 +200,11 @@ LUBM (BGP-only, rejects FILTER/OPTIONAL/UNION).
   raw/data.nt                  Raw watdiv stdout from -d
   raw/templates/*.txt          Stress templates from -s
   raw/queries/*.sparql         Concrete queries from -q
-  expected/                    Empty — the vendored binary emits no .desc sidecars
 ```
+
+WatDiv queries carry no `expected` cardinality in `benchmark.yml`: the
+vendored binary emits no `.desc` sidecars, so there is no result oracle and
+`bench run --verify` reports every WatDiv query as not verified.
 
 `meta.json` records the SHA-256 of the vendored watdiv binary, the names
 files, and the model file. The 12 committed snapshots have a similar
@@ -342,8 +345,8 @@ bwrap can't construct the `/usr/share/dict/words` bind.
 ## Future work
 
 - **Result oracle** — the vendored binary doesn't emit `.desc` sidecars, so
-  `expected/*.csv` is empty. A reference engine (e.g. blazegraph) could
-  produce ground-truth cardinalities for cross-engine validation.
+  WatDiv queries carry no `expected` cardinality. A reference engine (e.g.
+  blazegraph) could produce ground-truth cardinalities to fill it in.
 - **Vendor-binary SHA-256 verification** in `kermit-rdf::driver::drive` —
   refuse to invoke a binary whose hash doesn't match an embedded constant
   unless `--watdiv-bin` is explicit.

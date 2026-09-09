@@ -716,6 +716,9 @@ fn run_fetch(name: Option<String>) -> anyhow::Result<()> {
         eprintln!("Fetching {}...", benchmark.name);
         kermit_bench::cache::ensure_cached(benchmark, &root)
             .map_err(|e| anyhow::anyhow!("Failed to fetch {}: {e}", benchmark.name))?;
+        // A cold fetch hashes a fresh download twice (once in ensure_cached,
+        // once here); the re-read is cheap and keeps the report's count honest
+        // for cached files too.
         let checked = kermit_bench::cache::verify_integrity(benchmark, &root)
             .map_err(|e| anyhow::anyhow!("Failed to verify {}: {e}", benchmark.name))?;
         if checked == 0 {

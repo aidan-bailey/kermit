@@ -1,7 +1,7 @@
 # Answer Verification, Rust–Python Contract, and Download Integrity
 
 **Date:** 2026-09-09
-**Status:** Approved design, not yet implemented
+**Status:** Implemented 2026-09-09
 **Scope:** Sub-projects C, D and E of the benchmarking-flow improvement
 series (A: sweep hardening — landed; B: runner consolidation — landed).
 Sections 1–6 are C; Part D and Part E follow. One plan implements all three,
@@ -84,6 +84,9 @@ unset — their counts are not known.
   `kermit/src/main.rs::run_gen_lubm`), with a unit test on a small pure
   helper `lubm_reference_applies(scale, seed, start_index) -> bool` in
   `kermit-rdf/src/lubm/queries.rs`.
+
+  Implementation note: seed is `u32` in the driver, so
+  `lubm_reference_applies(u32, u32, u32)`.
 
 ## 3. Runner (`kermit`)
 
@@ -244,6 +247,10 @@ Both cases use `--sample-size 10 --measurement-time 1 --warm-up-time 1`.
 This is the only test that would catch a Criterion JSON-layout change or a
 Rust-side key rename.
 
+Implementation note: both contract tests run with `cwd` = a temp dir and
+`KERMIT_WORKSPACE` pointing at the checkout, so Criterion output never lands
+in the repo's `target/`.
+
 ## D.4 CI
 
 A `python` job in both `.github/workflows/pr.yml` and `build.yml`: checkout,
@@ -319,6 +326,10 @@ stay unpinned: their `file://` relations are covered by `meta.json`'s
   is the same `Integrity` error.
 - `ensure_cached` passes each relation's `sha256` into `download_file`; it
   does not hash files that already exist.
+
+Implementation note: the digest is checked against the downloaded bytes
+before the `.part` file is written, so a mismatch leaves nothing on disk
+(simpler than hash-after-write-then-delete).
 
 ## E.3 CLI
 

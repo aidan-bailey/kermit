@@ -218,6 +218,19 @@ kermit bench run triangle -i tree-trie -a leapfrog-triejoin --optimiser lexicogr
 kermit bench run triangle -i tree-trie -a leapfrog-triejoin --optimiser cardinality
 ```
 
+Pass `--verify` to check answers before timing them. For every cell, the
+query is run once and its returned tuple count is compared with the
+`expected` value declared in the benchmark YAML; a mismatch aborts the run
+with `verification failed: ...` (reports already written for earlier cells
+are kept), and a match stamps `verified: yes` into the stderr metadata and
+`verified: true` into the report's `axes`. A query with no `expected` value
+is still timed but noted on stderr as `not verified`. Without the flag
+nothing is checked:
+
+```sh
+kermit bench run triangle -i all -a all -m iteration --verify
+```
+
 ### Sweep all index structures and algorithms
 
 `-i` and `-a` accept `all` as a value (in addition to the concrete
@@ -296,6 +309,12 @@ kermit bench clean                   # wipe all cached benchmark data
 
 Cache lives at `~/.cache/kermit/benchmarks/` on Linux.
 
+`bench fetch` also re-hashes every relation that declares a `sha256` in its
+YAML (cached downloads and committed `path:` files alike) and reports
+`Verified N relation(s).`, or `No integrity hashes declared.` when the
+benchmark pins nothing. A download whose digest does not match is rejected
+before anything is written to the cache. `bench run` never hashes.
+
 ### Generate a fresh WatDiv benchmark (`bench gen watdiv`)
 
 Drives the vendored `watdiv` binary to synthesize a new RDF dataset + stress
@@ -351,9 +370,11 @@ Univ-Bench TBox URL (only useful if you've mirrored the ontology), and
 benchmarks placed there are NOT auto-discovered by
 `bench list/fetch/run`).
 
-LUBM(1, 0) reference cardinalities (paper Table 3) are only emitted as
-`expected/*.csv` when `--scale 1`; at higher scales the queries still
-run but the cardinality assertions are skipped.
+LUBM(1, 0) reference cardinalities (paper Table 3) are written into the
+generated `benchmark.yml` as each query's `expected` only for scale 1,
+seed 0 and start index 0; at other settings the queries still run but
+carry no `expected`, so `bench run --verify` reports them as not
+verified.
 
 ## JSON reports
 

@@ -33,6 +33,27 @@ comparative figures the thesis needs are assembled *across* runs in
 `kermit-lab`. See
 [`docs/specs/2026-05-04-remove-criterion-graphs-design.md`](docs/specs/2026-05-04-remove-criterion-graphs-design.md).
 
+## Verify before you trust
+
+Before a measurement campaign, run each cell once with `--verify`:
+
+```sh
+kermit bench run <name> -i all -a all -m iteration --verify
+```
+
+For every query whose YAML entry carries an `expected` cardinality, the
+runner executes the query once before timing it and compares the returned
+tuple count with `expected`; a mismatch aborts the run, so a benchmark that
+declares its answers cannot produce timings for wrong ones. Queries without
+`expected` are timed as usual and flagged on stderr as not verified. The
+check is opt-in because it costs one extra query execution per cell, which
+is unwelcome in a long sweep once the answers are known to be right.
+
+`bench fetch` verifies relation digests for the same reason: a relation that
+declares a `sha256` is checked against the download before it is cached and
+re-hashed on every `fetch`, so a corrupted or swapped data file is caught
+before it is measured.
+
 ## What you can measure
 
 `bench ds` and `bench run` accept `--metrics`, defaulting to `insertion`,

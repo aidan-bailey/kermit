@@ -337,7 +337,7 @@ The benchmark crate is a leaf with no internal kermit dependencies. It defines t
 
 A benchmark is a single `benchmarks/<name>.yml` file (filename stem must equal the `name:` field). The schema is documented in `benchmarks/README.md`. Two flavours:
 
-- **Static** — declares `relations:` (each with a download URL) and `queries:` (Datalog strings). See `benchmarks/triangle.yml`.
+- **Static** — declares `relations:` (each with a download URL or committed path, optionally pinned by a `sha256` digest) and `queries:` (Datalog strings, optionally with an `expected` result cardinality for `bench run --verify`). See `benchmarks/triangle.yml`.
 - **Generator-driven** — declares a `generator: { kind: watdiv|lubm, scale: N, ... }` block instead. The relations and queries are produced on demand by a `kermit-rdf` pipeline.
 
 The two are mutually exclusive; `BenchmarkDefinition::validate` enforces the XOR plus structural invariants (non-empty name, unique relation/query names, portable filename characters, generator-specific bounds).
@@ -357,8 +357,9 @@ Generator-driven benchmarks materialise into:
   dict.parquet
   <predicate>.parquet × N
   raw/...
-  expected/...
 ```
+
+Each query in the cache-side `benchmark.yml` carries an `expected` cardinality when the generator knows it (LUBM at scale 1, seed 0, start index 0; never WatDiv), which `bench run --verify` checks before timing.
 
 `GeneratorSpec::spec_hash` is a SHA-256 over the canonical YAML serialisation of the spec. On `bench run <name>`, `kermit/src/materialize.rs::materialize` compares the cached `meta.json.spec_hash` against the current YAML's hash:
 
@@ -375,7 +376,7 @@ Legacy `meta.json` files lacking `spec_hash` are treated as drift.
 - **WatDiv** — `pipeline::run_pipeline` drives the vendored `kermit-rdf/vendor/watdiv` binary (CLI: `-d <model> <scale>` for data, `-s ... ` for stress-template queries). The binary writes only to stdout; `driver::invoke` captures it and splits on `#end` markers. The binary is committed (vendored, ~360 KB at `bin/Release/watdiv`, force-added past the inert `**/watdiv` ignore rule); `MODEL.txt`/`files/`/`VERSION` are committed alongside it.
 - **LUBM** — `lubm::pipeline::run_lubm_pipeline` drives `vendor/lubm-uba/lubm-uba.jar` (committed, ~2.9 MB), gunzips the resulting `Universities.nt.gz`, then runs Univ-Bench TBox forward chaining via `lubm::entailment` before partitioning. Requires JDK 8 on PATH. The 14 LUBM queries are committed verbatim at `kermit-rdf/queries/lubm/q1.sparql … q14.sparql` and exposed via `lubm::queries::lubm_query_specs`.
 
-Both pipelines share post-driver stages: `partition` (split N-Triples by predicate), `parquet` (encode dict + per-predicate parquet), `dict` (string→usize), `sparql::translator` (BGP-only SPARQL → Datalog), `yaml_emit` (write the cache-side `benchmark.yml`), `expected` (cardinality CSVs). The cache-side YAML always has `generator: None` — provenance lives in `meta.json.spec_hash`.
+Both pipelines share post-driver stages: `partition` (split N-Triples by predicate), `parquet` (encode dict + per-predicate parquet), `dict` (string→usize), `sparql::translator` (BGP-only SPARQL → Datalog), `yaml_emit` (write the cache-side `benchmark.yml`, including each query's `expected` cardinality when the generator supplies one). The cache-side YAML always has `generator: None` — provenance lives in `meta.json.spec_hash`.
 
 User-facing reference docs live at `docs/benchmarks/WATDIV.md` and `docs/benchmarks/LUBM.md`. Module-internal contributor notes for the LUBM driver live at `kermit-rdf/src/lubm/README.md`.
 

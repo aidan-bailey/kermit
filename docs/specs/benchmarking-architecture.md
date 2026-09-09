@@ -15,7 +15,8 @@ three management subcommands, and one generation subcommand:
 - **`bench run`** — Criterion benchmarks on a YAML-defined named workload
   drawn from `benchmarks/` (with relation files cached locally on first run).
 - **`bench list`** — Print all named workloads and their cache status.
-- **`bench fetch`** — Pre-fetch (download) one or all workloads.
+- **`bench fetch`** — Pre-fetch (download) one or all workloads and verify
+  declared `sha256` digests.
 - **`bench clean`** — Remove cached workload data.
 - **`bench gen [watdiv|lubm]`** — Generate a fresh benchmark on the fly
   (materialises generator-driven data via `kermit-rdf`).
@@ -104,7 +105,8 @@ that named query within the workload), `--indexstructure`, `--algorithm`,
 optional `--optimiser` (defaults to `lexicographic`; no `all` sweep —
 enumerate values per run), `--metrics` (defaults to `insertion iteration
 space`; `end-to-end` is opt-in), `--queries-per-build` (K for the
-`end-to-end` metric, default 1).
+`end-to-end` metric, default 1), `--verify` (run each query once before
+timing and compare its result count with the YAML's `expected`).
 
 **Flow:**
 1. Resolve workload(s) via `resolve_benchmarks`, which uses
@@ -119,8 +121,10 @@ space`; `end-to-end` is opt-in), `--queries-per-build` (K for the
    YAML when missing).
 4. Load relations as `R` values and build the family's engine from them
    (`ExecutionFamily::build`); the same values back the space metric.
-5. For each query in the workload (filtered by `--query` if set), run the
-   chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
+5. For each query in the workload (filtered by `--query` if set), with
+   `--verify`, run the query once and compare its count with `expected`
+   (mismatch aborts; a query without `expected` is noted as not verified),
+   then run the chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
    wall-clock Criterion; `Space` goes through `SpaceMeasurement`.
 
 The runner itself (`run_benchmark`, which calls `ExecutionFamily::build` from
