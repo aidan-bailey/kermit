@@ -5,10 +5,10 @@
 //! `Q(X) :- edge(c1, X).` ("successors of node 1") — must return the same
 //! answer as the symmetric object-position query. This exercises
 //! `rewrite_atoms` → optimiser planning → join end-to-end via the real
-//! engine wiring (`DatabaseEngine::join` for LFTJ, `hash_join` for the hash
-//! family), the only paths where the global attribute order is *derived* from
-//! the query — the macro-generated join suites supply a valid order by hand
-//! and so never cover this.
+//! engine wiring (`lftj_join` for LFTJ, `hash_join` for the hash family), the
+//! only paths where the global attribute order is *derived* from the query —
+//! the macro-generated join suites supply a valid order by hand and so never
+//! cover this.
 //!
 //! Root cause this guards against: the triejoin descends each relation one
 //! physical column per depth, so the global variable order must bind every
@@ -18,32 +18,30 @@
 //! `topological_order` enforces a valid descent order.
 
 use {
-    kermit::db::{hash_join, DatabaseEngine, DB},
+    kermit::db::{hash_join, lftj_join},
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{HashTrie, Relation, TreeTrie},
     kermit_iters::SipHashStrategy,
-    std::collections::HashMap,
+    std::collections::BTreeMap,
 };
 
 type HashTrieSip = HashTrie<SipHashStrategy>;
 
-/// edge = {(1,2), (1,3), (2,4)} as a `TreeTrie`-backed engine (LFTJ path).
-fn edge_db() -> DatabaseEngine<TreeTrie, LeapfrogTriejoin> {
-    let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> = DatabaseEngine::new("edge-db".into());
-    db.add_relation("edge", 2);
-    db.add_keys_batch("edge", vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
-    db
+/// edge = {(1,2), (1,3), (2,4)} as a `TreeTrie` relation map (LFTJ path).
+fn edge_tries() -> BTreeMap<String, TreeTrie> {
+    let edge = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+    BTreeMap::from([("edge".to_string(), edge)])
 }
 
 /// edge = {(1,2), (1,3), (2,4)} as a `HashTrie` relation map (hash path).
-fn edge_rels() -> HashMap<String, HashTrieSip> {
+fn edge_rels() -> BTreeMap<String, HashTrieSip> {
     let edge = HashTrieSip::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
-    HashMap::from([("edge".to_string(), edge)])
+    BTreeMap::from([("edge".to_string(), edge)])
 }
 
 fn lftj(query: &str) -> Vec<Vec<usize>> {
     let q: JoinQuery = query.parse().expect("parse");
-    edge_db().join(q)
+    lftj_join::<TreeTrie, LeapfrogTriejoin>(&edge_tries(), q, &LexicographicOptimiser)
 }
 
 fn hash(query: &str) -> Vec<Vec<usize>> {

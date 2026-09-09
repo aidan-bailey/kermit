@@ -1,9 +1,9 @@
 //! Library interface for the Kermit CLI.
 //!
 //! Re-exports a curated subset of algorithm and data-structure types from
-//! [`kermit_algos`] and [`kermit_ds`], plus the [`db`] module's database
-//! abstraction (`DB` trait and `DatabaseEngine`) and the [`compute_join`]
-//! helper for running joins from raw tuple inputs.
+//! [`kermit_algos`] and [`kermit_ds`], plus the [`db`] module's join entry
+//! points (`lftj_join` and `hash_join`) and the [`compute_join`] helper for
+//! running joins from raw tuple inputs.
 
 #![deny(missing_docs)]
 

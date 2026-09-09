@@ -23,9 +23,9 @@ where
     /// lazily, one per `next()`, whereas
     /// [`HashTriejoin`](crate::HashTriejoin) materialises the whole result
     /// into a `Vec` before returning its iterator. Callers that measure
-    /// throughput over the full result (the current `DB::join` path) see no
-    /// difference; a time-to-first-tuple or peak-memory metric would, and
-    /// must not assume every implementation streams.
+    /// throughput over the full result (the `lftj_join` / `hash_join` path) see
+    /// no difference; a time-to-first-tuple or peak-memory metric would,
+    /// and must not assume every implementation streams.
     ///
     /// # Panics
     ///

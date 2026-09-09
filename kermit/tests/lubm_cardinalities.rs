@@ -9,7 +9,7 @@
 //!
 //! This lives in the `kermit` crate (not `kermit-rdf`) because only the
 //! binary crate depends on *both* the LUBM pipeline (`kermit-rdf`) and the
-//! join engine (`kermit-algos` + [`DatabaseEngine`]). The WatDiv equivalent,
+//! join engine (`kermit-algos` + [`lftj_join`]). The WatDiv equivalent,
 //! `watdiv_correctness.rs`, sits here for the same reason.
 //!
 //! Gated on `java` being on PATH and a present vendored jar — CI runners
@@ -17,19 +17,19 @@
 //! only hold for LUBM(1, 0), so the scale is pinned to 1.
 
 use {
-    kermit::db::{DatabaseEngine, DB},
+    kermit::db::lftj_join,
     kermit_algos::{
         CardinalityOptimiser, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
     },
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::TreeTrie,
+    kermit_ds::{RelationFileExt, TreeTrie},
     kermit_rdf::lubm::{
         driver::{LubmDriverInputs, DEFAULT_ONTOLOGY_IRI},
         pipeline::{run_lubm_pipeline, LubmPipelineInputs},
         queries::lubm_query_specs,
     },
     std::{
-        collections::HashMap,
+        collections::{BTreeMap, HashMap},
         path::{Path, PathBuf},
         process::Command,
     },
@@ -58,12 +58,12 @@ fn cardinality_mismatches(
     bench: &BenchmarkDefinition, dir: &Path, optimiser_name: &str,
     optimiser: Box<dyn QueryOptimiser>, expected: &HashMap<String, u64>,
 ) -> Vec<String> {
-    let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
-        DatabaseEngine::with_optimiser(bench.name.clone(), optimiser);
+    let mut relations: BTreeMap<String, TreeTrie> = BTreeMap::new();
     for rel in &bench.relations {
         let path = dir.join(format!("{}.parquet", rel.name));
-        db.add_file(&path)
+        let trie = TreeTrie::from_parquet(&path)
             .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
+        relations.insert(rel.name.clone(), trie);
     }
 
     // Collect every divergence so one run surfaces the complete picture
@@ -75,7 +75,8 @@ fn cardinality_mismatches(
             .unwrap_or_else(|| panic!("no reference cardinality for query {}", q.name));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = db.join(parsed).len() as u64;
+        let got = lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, optimiser.as_ref())
+            .len() as u64;
 
         if got != want {
             mismatches.push(format!(

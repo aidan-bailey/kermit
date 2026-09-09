@@ -53,7 +53,7 @@ Output (CSV to stdout):
 2,3,4
 ```
 
-Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. `kermit join` supports the two sorted-trie structures `tree-trie` and `column-trie` (both paired with `leapfrog-triejoin`); the third structure, `hash-trie`, is exercised via `bench run -i hash-trie -a hash-triejoin` (see [Benchmarking](#benchmarking)).
+Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. `kermit join` accepts every valid cell: `tree-trie` / `column-trie` with `leapfrog-triejoin`, and `hash-trie` with `hash-triejoin` (optionally `--ds-layout-hasher fxhash`); an incompatible pair is a usage error.
 
 An optional `--optimiser <lexicographic|cardinality>` flag picks the query optimiser that plans the join's variable ordering (default: `lexicographic`, which reproduces the historical ordering; `cardinality` binds variables from the smallest relations first). See [`docs/optimisers/`](docs/optimisers/).
 
@@ -134,7 +134,7 @@ kermit bench join \
   --indexstructure tree-trie
 ```
 
-Supported index structures (for `bench join`): `tree-trie`, `column-trie` — both via `leapfrog-triejoin`. (`hash-trie` is only available through `bench run`/`bench ds`, paired with `hash-triejoin`.) Supported metrics (on `bench ds`/`bench run`): `insertion`, `iteration`, `space`, plus the opt-in `end-to-end`.
+Supported cells (for `bench join`): `tree-trie` / `column-trie` via `leapfrog-triejoin`, and `hash-trie` via `hash-triejoin`. Supported metrics (on `bench ds`/`bench run`): `insertion`, `iteration`, `space`, plus the opt-in `end-to-end`.
 
 ### JSON reports for tooling
 

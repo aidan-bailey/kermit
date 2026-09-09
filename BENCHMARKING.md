@@ -57,11 +57,13 @@ build-then-query crossover study is testing (e.g. cache effects across the
 build→query boundary). Each Criterion sample therefore performs a *fresh*
 build (`BatchSize::PerIteration`) followed by K joins. Two caveats:
 
-- In `bench run`, the timed build goes through the real query pipeline
-  (`add_relation` + `add_keys_batch`, tuples in input order) — **not** the
-  presorting `from_tuples` path the `insertion` phase times. End-to-end
-  numbers are internally comparable across structures, but their build term
-  is not the `insertion` number.
+- In `bench run`, the timed build goes through
+  `ExecutionFamily::build_from_tuples`, which routes every relation through
+  the same `RelationFamily::build_relation` site the `insertion` phase uses
+  — so the build term is the `from_tuples` path in both phases, honouring
+  any `--ds-config` values. The end-to-end build additionally pays for
+  assembling the relation store (`BTreeMap<String, R>`), so the two numbers
+  still are not identical.
 - K is recorded in the report's `queries_per_build` axis (and surfaces as a
   DataFrame column), never in the Criterion function id.
 

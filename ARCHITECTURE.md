@@ -84,7 +84,7 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 | Structure | `TreeTrie`, `ColumnTrie` | `HashTrie<H>` |
 | Algorithm | `LeapfrogTriejoin` | `HashTriejoin` |
 | `Projectable` | `project_via_trie_iter` (shared helper) | hand-rolled on `HashTrie` |
-| Engine | `DB` trait / `DatabaseEngine` | `hash_join` free function |
+| Engine | `lftj_join` free function over `BTreeMap<String, R>` | `hash_join` free function over `BTreeMap<String, HashTrie<H, P>>` |
 | Bench cell | `Execution::TrieLftj(SortedTrie)` / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, config }` / `HashHtj<H, P>` (labels derived from `H`/`P`) |
 | `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
 | `bench ds` dispatch | one generic `run_ds_bench<F: RelationFamily>` over `SortedTrieFamily<R>` | the same `run_ds_bench<F>` over `HashTrieFamily<H, P>` |
@@ -296,7 +296,7 @@ Note one documented deviation from the paper: Veldhuizen keeps one persistent le
 4. **Emit**: at the leaf, cross-product the participating tuple chains, then **verify shared variables against the real tuple values** — hashing can produce false positives at any inner level, so equality must be re-checked before a tuple is emitted.
 5. **Ascend**: `up` exactly as many times as the descent opened, including on partial-open failure.
 
-One behavioural asymmetry is worth knowing: `HashTriejoin::join_iter` fully materialises its results into a `Vec` before returning `impl Iterator`, whereas `LeapfrogTriejoin` returns a genuinely lazy iterator chain. This does not currently affect benchmarks, because `DB::join` returns `Vec<Vec<usize>>` and normalises both — but it means LFTJ's laziness is never exploited by the CLI, and any future time-to-first-tuple metric would be comparing unlike things.
+One behavioural asymmetry is worth knowing: `HashTriejoin::join_iter` fully materialises its results into a `Vec` before returning `impl Iterator`, whereas `LeapfrogTriejoin` returns a genuinely lazy iterator chain. This does not currently affect benchmarks, because `ExecutionFamily::join` returns `Vec<Vec<usize>>` and normalises both — but it means LFTJ's laziness is never exploited by the CLI, and any future time-to-first-tuple metric would be comparing unlike things.
 
 ### JoinAlgo Trait
 
@@ -323,7 +323,7 @@ That is what makes `(HashTrie, LeapfrogTriejoin)` a compile error rather than a 
 
 ### Const-Rewrite
 
-Before handing a query to `JoinAlgo::join_iter`, `DatabaseEngine::join` calls `kermit_algos::rewrite_atoms` (see `kermit-algos/src/const_rewrite.rs`) to implement Veldhuizen 2014 §3.4 point 4. Each `Term::Atom("c<id>")` in the body becomes a fresh variable `K<i>` plus a synthetic unary predicate `Const_c<id>(K<i>)` appended to the body, backed by a `SingletonTrieIter`. Body atoms only — head atoms are passed through. Implication: a new `JoinAlgo` impl must tolerate seeing the rewritten query, which can carry extra unary body predicates that do not appear in the user's original Datalog source. Adding a new data structure does *not* require any atom handling — the rewrite happens above the DS layer.
+Before handing a query to `JoinAlgo::join_iter`, the shared join body behind `lftj_join` / `hash_join` calls `kermit_algos::rewrite_atoms` (see `kermit-algos/src/const_rewrite.rs`) to implement Veldhuizen 2014 §3.4 point 4. Each `Term::Atom("c<id>")` in the body becomes a fresh variable `K<i>` plus a synthetic unary predicate `Const_c<id>(K<i>)` appended to the body, backed by a `SingletonTrieIter`. Body atoms only — head atoms are passed through. Implication: a new `JoinAlgo` impl must tolerate seeing the rewritten query, which can carry extra unary body predicates that do not appear in the user's original Datalog source. Adding a new data structure does *not* require any atom handling — the rewrite happens above the DS layer.
 
 ### Query Planning
 
@@ -397,9 +397,11 @@ Working examples live in `README.md` and `USAGE.md`; the YAML schema and generat
 
 ### Database layer
 
-`kermit/src/db.rs` defines the object-safe `DB` trait and its sole implementor `DatabaseEngine<R, JA>`, generic over the sorted-trie family (`R: Relation + TrieIterable + Cardinality`). `DB::join` runs the const-rewrite, plans the query, and returns `Vec<Vec<usize>>`.
+`kermit/src/db.rs` exposes one join entry point per iterator family, both free functions over a `BTreeMap<String, R>` relation store keyed by relation name: `lftj_join<R: TrieIterable + Cardinality, JA>` (generic in the sorted-family algorithm) and `hash_join<R: HashTrieIterable + Cardinality, H: HashStrategy>` (hardwired to `HashTriejoin`; `H` hashes constant singletons with the same strategy the relations were built with). Each runs the const-rewrite, plans the query, and returns `Vec<Vec<usize>>`.
 
-The hash family cannot be a second `DB` implementation: an `impl<R: HashTrieIterable, …> DB for DatabaseEngine<R, JA>` overlaps the existing one and Rust's coherence rules reject it (E0119). The hash path is therefore the free function `hash_join<R, H>` instead, and `instantiate_database` panics on every pair that does not belong to the sorted family — including the *valid* `(HashTrie, HashTriejoin)` pair, which the CLI routes to `hash_join` directly and never through this factory.
+They share a single private body. The `JoinFamily<R>` trait — with a GAT `Wrapper<'a>` — abstracts the only two steps that differ between families: wrapping a borrowed relation (`TrieIterKind` vs `HashTrieIterKind`) and wrapping a constant atom (the hash side folds in `H::hash`). Everything else — `rewrite_atoms`, the wrapper map, `CatalogStats`, `optimiser.plan`, `join_iter(..).collect()` — is written once, so a fix to the prologue cannot land in one family only.
+
+There is deliberately no object-safe engine trait. Runtime selection of the `(structure, algorithm)` cell — for `kermit join` and `bench join` as much as for `bench run` — goes through `Execution::for_pair` and the `ExecutionFamily` impls in `kermit/src/execution.rs` (`load_query_runner` in `main.rs` monomorphises per cell exactly as `dispatch_run_bench` does). An incompatible pair is a usage error, and all three valid cells, including `(HashTrie, HashTriejoin)`, are reachable from every command.
 
 ### Selector dispatch
 
@@ -451,15 +453,15 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 2. Implement `Relation` + `Projectable` + `HeapSize` + `Cardinality` on the structure. `HeapSize::heap_size_bytes` returns heap bytes only, excluding `size_of::<Self>`.
 3. Implement the iterator. For the sorted family that is `TrieIterator` plus `#[derive(IntoTrieIter)]`, then `TrieIterable` on the structure. For the hash family it is `HashTrieIterator` and `HashTrieIterable` — and note that the shared helpers `project_via_trie_iter` and `TrieIteratorWrapper` are `TrieIterable`-only, so a hash-family structure must supply its own equivalents. The `kermit-ds` test macros fork along the same seam: `hash_trie_test_suite!` covers the hash family, `relation_trie_test_suite!` the sorted one.
 4. Register the module and add a variant to `IndexStructure` in `kermit-ds/src/ds/mod.rs`.
-5. Wire the CLI: a variant on `IndexStructureSelector` and its `expand()`. A sorted-family structure also needs a `SortedTrie` variant plus a `SortedTrieRelation` impl and an `Execution::for_pair` arm (`kermit/src/execution.rs`), an `instantiate_database` arm (`kermit/src/db.rs`), and arms in `dispatch_run_bench` / `dispatch_ds_bench` (`kermit/src/main.rs`). A structure in a new trait family needs its own `ExecutionFamily` impl.
-6. **Wire the tests.** Add `define_multiway_join_test_suite!(<Type>, <Algo>, LexicographicOptimiser)` and a second invocation with `CardinalityOptimiser` in `kermit/tests/join_tests.rs`, so all 11 standard join patterns run against the structure. Each distinct layout combination is its own suite invocation (e.g. `HashTrieSip`, `HashTrieFx`).
+5. Wire the CLI: a variant on `IndexStructureSelector` and its `expand()`. A sorted-family structure also needs a `SortedTrie` variant plus a `SortedTrieRelation` impl and an `Execution::for_pair` arm (`kermit/src/execution.rs`), and arms in `load_query_runner` and `dispatch_run_bench` / `dispatch_ds_bench` (`kermit/src/main.rs`). A structure in a new trait family needs its own `ExecutionFamily` impl.
+6. **Wire the tests.** Add `define_multiway_join_test_suite!(<Type>, <Algo>, LexicographicOptimiser)` and a second invocation with `CardinalityOptimiser` in `kermit/tests/join_tests.rs`, so all 12 standard join patterns run against the structure. Each distinct layout combination is its own suite invocation (e.g. `HashTrieSip`, `HashTrieFx`).
 7. **Write the doc** at `docs/data-structures/<name>.md` from the template.
 
 ### New Join Algorithm
 
 1. Create `kermit-algos/src/<name>.rs` and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable` or `HashTrieIterable`. The implementation must tolerate the const-rewritten query shape (extra synthetic unary body predicates) and must validate the incoming `QueryPlan`.
 2. Register the module and add a variant to the `JoinAlgorithm` enum in `kermit-algos/src/lib.rs`.
-3. Wire the CLI: a variant on `JoinAlgorithmSelector` and its `expand()`, plus the algorithm's valid cells in `Execution` / `Execution::for_pair` (the compiler flags the incomplete match) and a `dispatch_run_bench` arm. A sorted-family algorithm is also reachable through `instantiate_database`, which still backs `kermit join`; a hash-family algorithm needs its own execution path instead, as `hash_join` is for `HashTriejoin` (see "Database layer").
+3. Wire the CLI: a variant on `JoinAlgorithmSelector` and its `expand()`, plus the algorithm's valid cells in `Execution` / `Execution::for_pair` (the compiler flags the incomplete match) and a `dispatch_run_bench` arm. `kermit join` / `bench join` dispatch through the same cells (`load_query_runner`), so nothing extra is needed for them. A sorted-family algorithm plugs into `lftj_join<R, JA>`; a hash-family one needs its own entry point beside `hash_join` over the shared body (see "Database layer").
 4. **Wire the tests.** Add a `define_multiway_join_test_suite!` invocation per compatible index structure × optimiser.
 5. **Write the doc** at `docs/algorithms/<name>.md` from the template.
 

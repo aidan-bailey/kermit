@@ -219,7 +219,7 @@ generator; do **not** modernise Java source level when rebuilding.
 
 The cardinality regression test lives in the `kermit` crate (not `kermit-rdf`)
 because only the binary crate depends on both the LUBM pipeline and the join
-engine (`kermit-algos` + `DatabaseEngine`), mirroring `watdiv_correctness.rs`.
+engine (`kermit-algos` + `kermit::db::lftj_join`), mirroring `watdiv_correctness.rs`.
 It is the load-bearing correctness check for the entailment rule set and the
 const-view-rewrite join path; finding it green is the precondition for relying
 on Q5–Q13 results from this pipeline.

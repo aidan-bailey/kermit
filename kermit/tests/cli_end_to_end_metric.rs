@@ -3,12 +3,12 @@
 //! `--queries-per-build` (default 1) and recorded in the report's
 //! `queries_per_build` axis.
 //!
-//! `bench run` is exercised for both trait families — (tree-trie,
-//! leapfrog-triejoin) through `run_benchmark<R>` and (hash-trie,
-//! hash-triejoin) through `run_benchmark<F: ExecutionFamily>` with `HashHtj<H, P>` — against a fake
-//! benchmark cache built from the committed watdiv-mini fixture, so no
-//! network access is needed. `bench ds` is exercised directly against the
-//! `edge.csv` fixture.
+//! `bench run` is exercised for both trait families through the one
+//! generic `run_benchmark<F: ExecutionFamily>` — (tree-trie,
+//! leapfrog-triejoin) as `TrieLftj<R>` and (hash-trie, hash-triejoin) as
+//! `HashHtj<H, P>` — against a fake benchmark cache built from the
+//! committed watdiv-mini fixture, so no network access is needed. `bench
+//! ds` is exercised directly against the `edge.csv` fixture.
 
 use {
     std::{fs, path::PathBuf, process::Command},

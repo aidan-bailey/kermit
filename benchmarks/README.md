@@ -159,7 +159,7 @@ generator:
 
 The committed `watdiv-stress-*.yml` files are **frozen snapshots**, not declarative specs. They were produced by `scripts/watdiv-preprocess/` (Python) before the on-the-fly path existed. Do not edit them by hand — regenerate via the preprocessor. The on-the-fly path (`generator: { kind: watdiv, ... }`) supersedes this for new workloads.
 
-Every WatDiv query body may contain `c<dict-id>` atom terms filtering a BGP position against a constant URI. At join time, `DatabaseEngine::join` rewrites each atom into a fresh variable + synthetic `Const_c<id>` unary relation (Veldhuizen 2014 §3.4 point 4 — see `kermit-algos/src/const_rewrite.rs`).
+Every WatDiv query body may contain `c<dict-id>` atom terms filtering a BGP position against a constant URI. At join time, the join entry point (`lftj_join` / `hash_join`) rewrites each atom into a fresh variable + synthetic `Const_c<id>` unary relation (Veldhuizen 2014 §3.4 point 4 — see `kermit-algos/src/const_rewrite.rs`).
 
 ## Caching
 

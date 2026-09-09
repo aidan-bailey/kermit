@@ -1,268 +1,107 @@
-//! Database abstraction bridging query parsing and data structures.
+//! Join entry points bridging a parsed Datalog query to a relation store.
 //!
-//! The [`DB`] trait erases the concrete `Relation` and `JoinAlgo` type
-//! parameters so the CLI can hold `Box<dyn DB>` regardless of which data
-//! structure or algorithm the user selects. [`DatabaseEngine`] is the sole
-//! implementation, parameterised by the chosen types, and
-//! `instantiate_database` dispatches on the `IndexStructure` /
-//! `JoinAlgorithm` CLI enums to produce the right concrete combination.
+//! Each iterator family has one free function — [`lftj_join`] for sorted
+//! tries under a [`TrieIterable`]-family algorithm, [`hash_join`] for
+//! [`HashTrieIterable`] structures under [`HashTriejoin`] — over the same
+//! shape of relation store, a `BTreeMap<String, R>` keyed by relation name.
+//! Both share one private body and differ only in how a relation and a
+//! constant are wrapped for the algorithm (the [`JoinFamily`] trait).
+//! Runtime selection of the (structure, algorithm) cell lives in the CLI's
+//! `execution` module, not here.
 
 use {
     kermit_algos::{
         is_const_predicate, rewrite_atoms, CatalogStats, HashTrieIterKind, HashTriejoin, JoinAlgo,
-        JoinAlgorithm, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
-        SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
+        JoinQuery, QueryOptimiser, SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
     },
-    kermit_ds::{Cardinality, ColumnTrie, IndexStructure, Relation, RelationFileExt, TreeTrie},
-    kermit_iters::{HashStrategy, HashTrieIterable, TrieIterable},
-    std::{collections::HashMap, path::Path},
+    kermit_ds::Cardinality,
+    kermit_iters::{HashStrategy, HashTrieIterable, JoinIterable, TrieIterable},
+    std::collections::{BTreeMap, HashMap},
 };
 
-/// Object-safe interface for a relational database that can store relations
-/// and execute join queries. Erases the concrete `Relation` and `JoinAlgo`
-/// type parameters.
-pub trait DB {
-    /// Creates a new database with the given name.
-    fn new(name: String) -> Self
-    where
-        Self: Sized;
-
-    /// Returns the database's name.
-    fn name(&self) -> &String;
-
-    /// Registers a new empty relation with the given name and arity.
-    fn add_relation(&mut self, name: &str, arity: usize);
-
-    /// Inserts a single tuple into the named relation.
-    fn add_keys(&mut self, relation_name: &str, keys: Vec<usize>);
-
-    /// Inserts multiple tuples into the named relation.
-    fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>);
-
-    /// Executes `query` against the registered relations and materialises
-    /// the result tuples.
-    fn join(&self, query: kermit_algos::JoinQuery) -> Vec<Vec<usize>>;
-
-    /// Loads a relation from a file (CSV or Parquet) and registers it.
-    ///
-    /// # Errors
-    ///
-    /// Returns `std::io::Error` if the extension is unsupported, the file
-    /// cannot be read, or the relation cannot be parsed.
-    fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error>;
-}
-
-/// A typed relational database parameterized by its data structure `R` and
-/// join algorithm `JA`.
+/// How one iterator family wraps a stored relation and a constant atom into
+/// the [`JoinIterable`] its algorithms consume.
 ///
-/// Implements the object-safe [`DB`] trait so it can be used behind `Box<dyn
-/// DB>`.
-pub struct DatabaseEngine<R, JA>
-where
-    R: Relation,
-{
-    name: String,
-    relations: HashMap<String, R>,
-    /// Plans each join's variable ordering. Defaults to
-    /// [`LexicographicOptimiser`]; see [`DatabaseEngine::with_optimiser`].
-    optimiser: Box<dyn QueryOptimiser>,
-    // `JA` does not appear in any field; PhantomData satisfies the
-    // unused-type-parameter rule. `R` is already used by `relations`.
-    phantom_ja: std::marker::PhantomData<JA>,
+/// The two wrapper enums ([`TrieIterKind`] and [`HashTrieIterKind`]) are
+/// structurally identical; the only real asymmetry is that the hash family
+/// must hash the constant with the same [`HashStrategy`] its relations were
+/// built with, which is why the hash implementor carries `H`.
+pub trait JoinFamily<R> {
+    /// The wrapper handed to the algorithm; borrows the relation for `'a`.
+    type Wrapper<'a>: JoinIterable
+    where
+        R: 'a;
+
+    /// Wraps a borrowed relation.
+    fn wrap_relation(relation: &R) -> Self::Wrapper<'_>;
+
+    /// Wraps the singleton relation `{id}` standing in for a constant atom.
+    fn wrap_const<'a>(id: usize) -> Self::Wrapper<'a>
+    where
+        R: 'a;
 }
 
-impl<R, JA> DB for DatabaseEngine<R, JA>
-where
-    R: Relation + TrieIterable + Cardinality,
-    JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
-{
-    fn new(name: String) -> Self
+/// [`JoinFamily`] for sorted tries: [`TrieIterKind`] wrappers.
+pub struct SortedFamily;
+
+impl<R: TrieIterable> JoinFamily<R> for SortedFamily {
+    type Wrapper<'a>
+        = TrieIterKind<'a, R>
     where
-        Self: Sized,
+        R: 'a;
+
+    fn wrap_relation(relation: &R) -> Self::Wrapper<'_> { TrieIterKind::Relation(relation) }
+
+    fn wrap_const<'a>(id: usize) -> Self::Wrapper<'a>
+    where
+        R: 'a,
     {
-        DatabaseEngine {
-            name,
-            relations: HashMap::new(),
-            optimiser: Box::new(LexicographicOptimiser),
-            phantom_ja: std::marker::PhantomData,
-        }
-    }
-
-    fn name(&self) -> &String { &self.name }
-
-    fn add_relation(&mut self, name: &str, arity: usize) {
-        let relation = R::new(arity.into());
-        self.relations.insert(name.to_owned(), relation);
-    }
-
-    fn add_keys(&mut self, relation_name: &str, keys: Vec<usize>) {
-        self.relations
-            .get_mut(relation_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "DB::add_keys: relation {relation_name:?} not registered; call add_relation \
-                     first"
-                )
-            })
-            .insert(keys);
-    }
-
-    fn add_keys_batch(&mut self, relation_name: &str, keys: Vec<Vec<usize>>) {
-        self.relations
-            .get_mut(relation_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "DB::add_keys_batch: relation {relation_name:?} not registered; call \
-                     add_relation first"
-                )
-            })
-            .insert_all(keys);
-    }
-
-    fn join(&self, query: JoinQuery) -> Vec<Vec<usize>> {
-        let (rewritten, const_specs) =
-            rewrite_atoms(query).expect("malformed constant atom in query");
-
-        let mut wrappers: HashMap<String, TrieIterKind<'_, R>> = HashMap::new();
-        for pred in &rewritten.body {
-            if wrappers.contains_key(&pred.name) {
-                continue;
-            }
-            // Const_* predicates are synthetic — created by rewrite_atoms
-            // above and materialised from const_specs below. They aren't
-            // expected to live in self.relations.
-            if is_const_predicate(&pred.name) {
-                continue;
-            }
-            match self.relations.get(&pred.name) {
-                | Some(r) => {
-                    wrappers.insert(pred.name.clone(), TrieIterKind::Relation(r));
-                },
-                | None => panic!(
-                    "DatabaseEngine::join: query body references unknown relation {:?}; known \
-                     relations: {:?}",
-                    pred.name,
-                    self.relations.keys().collect::<Vec<_>>(),
-                ),
-            }
-        }
-        for (name, id) in const_specs {
-            wrappers
-                .entry(name)
-                .or_insert_with(|| TrieIterKind::Singleton(SingletonTrieIter::new(id)));
-        }
-
-        let ds_map: HashMap<String, &TrieIterKind<'_, R>> =
-            wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
-
-        // Stats + planning run per join — inside benchmarks' measured region —
-        // so this stays O(#predicates) on top of O(1) tuple_count() reads.
-        let stats = CatalogStats::for_query(&rewritten, |name| {
-            self.relations.get(name).map(Cardinality::tuple_count)
-        });
-        let plan = self.optimiser.plan(&rewritten, &stats);
-
-        JA::join_iter(&plan, rewritten, ds_map).collect()
-    }
-
-    /// Loads a relation from a file (CSV or Parquet) and adds it to the
-    /// database.
-    ///
-    /// The file type is determined by the extension (.csv or .parquet).
-    /// The relation name is extracted from the filename.
-    fn add_file(&mut self, filepath: &Path) -> Result<(), std::io::Error> {
-        let path = filepath;
-        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-        let relation = match extension.to_lowercase().as_str() {
-            | "csv" => R::from_csv(path)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?,
-            | "parquet" => R::from_parquet(path)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?,
-            | _ => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Unsupported file extension: {}", extension),
-                ))
-            },
-        };
-
-        let relation_name = relation.header().name().to_string();
-        self.relations.insert(relation_name, relation);
-
-        Ok(())
+        TrieIterKind::Singleton(SingletonTrieIter::new(id))
     }
 }
 
-impl<R, JA> DatabaseEngine<R, JA>
-where
-    R: Relation,
-{
-    /// Inherent constructor so tests can build the engine without needing
-    /// the full [`DB`] trait bound in scope.
-    pub fn new(name: String) -> Self {
-        DatabaseEngine {
-            name,
-            relations: HashMap::new(),
-            optimiser: Box::new(LexicographicOptimiser),
-            phantom_ja: std::marker::PhantomData,
-        }
-    }
+/// [`JoinFamily`] for hash tries: [`HashTrieIterKind`] wrappers whose
+/// constant singletons are hashed with `H`.
+pub struct HashFamily<H>(std::marker::PhantomData<H>);
 
-    /// Like [`DatabaseEngine::new`] but with an explicit query optimiser.
-    pub fn with_optimiser(name: String, optimiser: Box<dyn QueryOptimiser>) -> Self {
-        DatabaseEngine {
-            name,
-            relations: HashMap::new(),
-            optimiser,
-            phantom_ja: std::marker::PhantomData,
-        }
+impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
+    type Wrapper<'a>
+        = HashTrieIterKind<'a, R>
+    where
+        R: 'a;
+
+    fn wrap_relation(relation: &R) -> Self::Wrapper<'_> { HashTrieIterKind::Relation(relation) }
+
+    fn wrap_const<'a>(id: usize) -> Self::Wrapper<'a>
+    where
+        R: 'a,
+    {
+        HashTrieIterKind::Singleton(SingletonHashTrieIter::new(id, H::hash(id)))
     }
 }
 
-/// Hash-family join entry point. Mirror of [`DatabaseEngine::join`] for
-/// algorithms in the hash-trie family (currently [`HashTriejoin`]).
+/// The one join body: const-view rewrite, wrapper map, statistics, plan,
+/// execute.
 ///
-/// Lives as a free function rather than a [`DB`] trait method because
-/// Rust's coherence rules (E0119) reject a parallel `impl<R:
-/// HashTrieIterable, JA: ...> DB for DatabaseEngine<R, JA>` block that
-/// would overlap with the existing LFTJ-family impl, even though the
-/// bounds are disjoint in practice. The CLI dispatches directly to this
-/// function for hash-family algorithms, sidestepping the [`DB`] trait
-/// entirely on that path.
-///
-/// Mirrors the sorted-family body, but builds [`HashTrieIterKind`]
-/// wrappers and synthesises [`SingletonHashTrieIter`] singletons for the
-/// `Const_*` predicates introduced by [`rewrite_atoms`]. Constant atoms
-/// hashed for the singleton use the same [`HashStrategy`] `H` that the
-/// peer `HashTrie<H>` relations were built with, so the algorithm sees
-/// matching hashes on both sides of the intersection.
-///
-/// The second type parameter `H` selects the hash function used for
-/// any constant-atom singletons; callers must thread the same `H` used
-/// when constructing the `HashTrie<H>` relations. Rust forbids defaults
-/// on free-function type parameters (see issue #36887), so all callers
-/// must specify the strategy explicitly via turbofish — Phase 4 of the
-/// optimization-standard plan threads this through the CLI dispatch.
-///
-/// `optimiser` plans the variable ordering; pass `&LexicographicOptimiser`
-/// for the historical default.
+/// `label` names the entry point in the unknown-relation panic so a CLI
+/// user can tell which family rejected the query.
 ///
 /// # Panics
 ///
 /// Panics if the query references a relation name not present in
-/// `relations` (matching the behaviour of [`DatabaseEngine::join`]) or if
-/// the query contains a malformed constant atom.
-pub fn hash_join<R, H>(
-    relations: &HashMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+/// `relations`, or if it contains a malformed constant atom.
+fn run_join<'a, R, F, JA>(
+    relations: &'a BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    label: &str,
 ) -> Vec<Vec<usize>>
 where
-    R: HashTrieIterable + Cardinality,
-    H: HashStrategy,
+    R: Cardinality + 'a,
+    F: JoinFamily<R>,
+    JA: JoinAlgo<F::Wrapper<'a>>,
 {
     let (rewritten, const_specs) = rewrite_atoms(query).expect("malformed constant atom in query");
 
-    let mut wrappers: HashMap<String, HashTrieIterKind<'_, R>> = HashMap::new();
+    let mut wrappers: HashMap<String, F::Wrapper<'a>> = HashMap::new();
     for pred in &rewritten.body {
         if wrappers.contains_key(&pred.name) {
             continue;
@@ -275,23 +114,20 @@ where
         }
         match relations.get(&pred.name) {
             | Some(r) => {
-                wrappers.insert(pred.name.clone(), HashTrieIterKind::Relation(r));
+                wrappers.insert(pred.name.clone(), F::wrap_relation(r));
             },
             | None => panic!(
-                "hash_join: query body references unknown relation {:?}; known relations: {:?}",
+                "{label}: query body references unknown relation {:?}; known relations: {:?}",
                 pred.name,
                 relations.keys().collect::<Vec<_>>(),
             ),
         }
     }
     for (name, id) in const_specs {
-        wrappers.entry(name).or_insert_with(|| {
-            let hash = H::hash(id);
-            HashTrieIterKind::Singleton(SingletonHashTrieIter::new(id, hash))
-        });
+        wrappers.entry(name).or_insert_with(|| F::wrap_const(id));
     }
 
-    let ds_map: HashMap<String, &HashTrieIterKind<'_, R>> =
+    let ds_map: HashMap<String, &F::Wrapper<'a>> =
         wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
 
     // Stats + planning run per join — inside benchmarks' measured region —
@@ -301,104 +137,93 @@ where
     });
     let plan = optimiser.plan(&rewritten, &stats);
 
-    <HashTriejoin as JoinAlgo<HashTrieIterKind<'_, R>>>::join_iter(&plan, rewritten, ds_map)
-        .collect()
+    JA::join_iter(&plan, rewritten, ds_map).collect()
 }
 
-/// Creates a [`DatabaseEngine`] as a `Box<dyn DB>` based on the CLI-selected
-/// index structure and join algorithm. `name` is exposed via [`DB::name`] —
-/// callers typically pass the benchmark or query identifier so downstream
-/// tooling can correlate engines with workloads.
+/// Sorted-family join entry point: runs `query` over `relations` with the
+/// [`TrieIterable`]-family algorithm `JA` (normally
+/// [`LeapfrogTriejoin`](kermit_algos::LeapfrogTriejoin)), planned by
+/// `optimiser`. Mirror of [`hash_join`].
 ///
 /// # Panics
 ///
-/// Panics on incompatible `(IndexStructure, JoinAlgorithm)` pairs. The
-/// CLI never reaches them — `bench run` only constructs valid cells via
-/// `Execution::for_pair` in `kermit/src/execution.rs` — so these panics are
-/// defence-in-depth for direct programmatic callers. The hash-trie
-/// family (`HashTrie` + `HashTriejoin`) deliberately panics here too —
-/// see the function's body for the dedicated [`hash_join`] free-function
-/// path the CLI takes for that combination.
-pub fn instantiate_database(
-    ds: IndexStructure, ja: JoinAlgorithm, optimiser: Box<dyn QueryOptimiser>, name: String,
-) -> Box<dyn DB> {
-    match (ds, ja) {
-        | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-            Box::new(DatabaseEngine::<TreeTrie, LeapfrogTriejoin>::with_optimiser(name, optimiser))
-        },
-        | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => Box::new(
-            DatabaseEngine::<ColumnTrie, LeapfrogTriejoin>::with_optimiser(name, optimiser),
-        ),
-        // The hash-trie family does not flow through the `DB` trait —
-        // `DB::join` is implementation-coupled to `TrieIterKind`, which
-        // is incompatible with `HashTrieIterable`. The CLI dispatches
-        // directly to the [`hash_join`] free function for this pair, so
-        // `instantiate_database` is never called with it from the CLI.
-        // Programmatic callers reaching this arm have a usage bug.
-        | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => panic!(
-            "instantiate_database: (HashTrie, HashTriejoin) does not go through the DB trait — \
-             use kermit::db::hash_join directly (the CLI dispatch handles this in \
-             BenchSubcommand::Run / Ds)"
-        ),
-        // Incompatible pairings: `HashTrie` only joins via `HashTriejoin`
-        // (different trait family — `HashTrieIterable` rather than
-        // `TrieIterable`), and `HashTriejoin` only consumes `HashTrie`.
-        | (IndexStructure::HashTrie, JoinAlgorithm::LeapfrogTriejoin) => panic!(
-            "incompatible pair: (HashTrie, LeapfrogTriejoin) — HashTrie can only be joined with \
-             HashTriejoin; the CLI's Execution::for_pair should never produce this pair"
-        ),
-        | (IndexStructure::TreeTrie | IndexStructure::ColumnTrie, JoinAlgorithm::HashTriejoin) => {
-            panic!(
-                "incompatible pair: ({ds:?}, HashTriejoin) — HashTriejoin can only be used with \
-                 HashTrie; the CLI's Execution::for_pair should never produce this pair"
-            )
-        },
-    }
+/// Panics if the query references a relation name not present in
+/// `relations`, or if it contains a malformed constant atom.
+pub fn lftj_join<R, JA>(
+    relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+) -> Vec<Vec<usize>>
+where
+    R: TrieIterable + Cardinality,
+    JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
+{
+    run_join::<R, SortedFamily, JA>(relations, query, optimiser, "lftj_join")
+}
+
+/// Hash-family join entry point: runs `query` over `relations` with
+/// [`HashTriejoin`], planned by `optimiser`. Mirror of [`lftj_join`].
+///
+/// `H` selects the hash function used for any constant-atom singletons;
+/// callers must thread the same `H` used when constructing the
+/// `HashTrie<H>` relations so the algorithm sees matching hashes on both
+/// sides of the intersection. Rust forbids defaults on free-function type
+/// parameters (see issue #36887), so callers specify it via turbofish.
+///
+/// # Panics
+///
+/// Panics if the query references a relation name not present in
+/// `relations`, or if it contains a malformed constant atom.
+pub fn hash_join<R, H>(
+    relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+) -> Vec<Vec<usize>>
+where
+    R: HashTrieIterable + Cardinality,
+    H: HashStrategy,
+{
+    run_join::<R, HashFamily<H>, HashTriejoin>(relations, query, optimiser, "hash_join")
 }
 
 #[cfg(test)]
 mod tests {
-
     use {
         super::*,
-        kermit_algos::{JoinQuery, LeapfrogTriejoin},
-        kermit_ds::TreeTrie,
+        kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
+        kermit_ds::{Relation, TreeTrie},
     };
 
-    #[test]
-    fn test_relation() {
-        let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
-            DatabaseEngine::new("test".to_string());
-        let relation_name = "apple".to_string();
-        db.add_relation(&relation_name, 3);
-        db.add_keys(&relation_name, vec![1, 2, 3])
+    fn rels(entries: Vec<(&str, usize, Vec<Vec<usize>>)>) -> BTreeMap<String, TreeTrie> {
+        entries
+            .into_iter()
+            .map(|(name, arity, tuples)| {
+                (
+                    name.to_string(),
+                    TreeTrie::from_tuples(arity.into(), tuples),
+                )
+            })
+            .collect()
     }
 
     #[test]
     fn test_join() {
-        let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
-            DatabaseEngine::new("test".to_string());
-
-        db.add_relation("first", 1);
-        db.add_keys_batch("first", vec![vec![1_usize], vec![2], vec![3]]);
-
-        db.add_relation("second", 1);
-        db.add_keys_batch("second", vec![vec![1_usize], vec![2], vec![3]]);
-
+        let relations = rels(vec![
+            ("first", 1, vec![vec![1], vec![2], vec![3]]),
+            ("second", 1, vec![vec![2], vec![3], vec![4]]),
+        ]);
         let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
-        db.join(query);
+        let mut got: Vec<usize> =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .iter()
+                .map(|r| r[0])
+                .collect();
+        got.sort();
+        assert_eq!(got, vec![2, 3]);
     }
 
     #[test]
     fn test_join_with_constant_filter() {
-        let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
-            DatabaseEngine::new("test".to_string());
-
-        db.add_relation("p", 2);
-        db.add_keys_batch("p", vec![vec![1, 10], vec![2, 20], vec![3, 30]]);
-
+        let relations = rels(vec![("p", 2, vec![vec![1, 10], vec![2, 20], vec![3, 30]])]);
         let query: JoinQuery = "Q(X) :- p(X, c10).".parse().unwrap();
-        let result = db.join(query);
+        let result =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser);
         let mut got: Vec<_> = result.iter().map(|r| r[0]).collect();
         got.sort();
         assert_eq!(
@@ -411,26 +236,29 @@ mod tests {
     #[test]
     #[should_panic(expected = "unknown relation")]
     fn test_join_panics_on_missing_relation() {
-        let db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
-            DatabaseEngine::new("test".to_string());
-
+        let relations: BTreeMap<String, TreeTrie> = BTreeMap::new();
         // `missing` was never added; previously the body predicate was
         // silently dropped, which could mask typos or load failures.
         let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
-        db.join(query);
+        lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser);
     }
 }
 
 #[cfg(test)]
 mod hash_join_tests {
-    use {super::*, kermit_ds::HashTrie, kermit_iters::SipHashStrategy};
+    use {
+        super::*,
+        kermit_algos::LexicographicOptimiser,
+        kermit_ds::{HashTrie, Relation},
+        kermit_iters::SipHashStrategy,
+    };
 
     /// Pins the basic happy path: build two unary `HashTrie`s, run a
     /// straight intersection through the free function, verify the
     /// rewrite + dispatch + collect chain end-to-end.
     #[test]
     fn hash_join_unary_intersection() {
-        let mut relations: HashMap<String, HashTrie> = HashMap::new();
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
         relations.insert(
             "R".to_string(),
             HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]),
@@ -471,7 +299,7 @@ mod hash_join_tests {
     /// for LFTJ above.
     #[test]
     fn hash_join_with_constant_atom() {
-        let mut relations: HashMap<String, HashTrie> = HashMap::new();
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
         relations.insert(
             "R".to_string(),
             HashTrie::from_tuples(2.into(), vec![vec![1, 5], vec![2, 5], vec![3, 7]]),

@@ -13,7 +13,6 @@
 use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
-    kermit::db::instantiate_database,
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HashTrieConfig, HeapSize, IndexStructure, Relation},
@@ -103,6 +102,9 @@ struct QueryArgs {
     /// `-o` belongs to `--output`.
     #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
     optimiser: Optimiser,
+
+    #[command(flatten)]
+    layout: LayoutChoices,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
@@ -483,26 +485,92 @@ fn write_tuples(
     writer.flush()
 }
 
-fn load_query(args: &QueryArgs) -> anyhow::Result<(Box<dyn kermit::db::DB>, JoinQuery)> {
+/// Parses the query file named by `args`.
+fn parse_query(args: &QueryArgs) -> anyhow::Result<JoinQuery> {
     let query_str = fs::read_to_string(&args.query)
         .map_err(|e| anyhow::anyhow!("Failed to read query file {:?}: {}", args.query, e))?;
-    let join_query: JoinQuery = query_str
+    query_str
         .trim()
         .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", args.query, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", args.query, e))
+}
 
-    let mut db = instantiate_database(
+/// A built engine behind a closure: runs one query and returns its tuples.
+type JoinRunner = Box<dyn Fn(JoinQuery) -> Vec<Vec<usize>>>;
+
+/// Loads `args.relations` into `family`'s engine and returns a runner over it.
+fn build_join_runner<F: ExecutionFamily + 'static>(
+    family: F, paths: &[PathBuf],
+) -> anyhow::Result<JoinRunner> {
+    let relations = paths
+        .iter()
+        .map(|p| family.load(p))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let engine = family.build(relations);
+    Ok(Box::new(move |q| family.join(&engine, q)))
+}
+
+/// Resolves the `(structure, algorithm)` pair in `args` to its execution
+/// cell and builds a [`JoinRunner`] for it. Incompatible pairs are a usage
+/// error, and the `--ds-layout-*` flags are only accepted with
+/// `-i hash-trie`.
+///
+/// `kermit join` deliberately carries no `--ds-config`: the one Config
+/// value (`HashTrie`'s load factor) trades space against probe length and
+/// cannot change a query's answers, so this path builds every relation with
+/// [`HashTrieConfig::default()`]. The Config axis belongs to `bench ds` /
+/// `bench run`, which measure and report it.
+fn load_query_runner(args: &QueryArgs) -> anyhow::Result<JoinRunner> {
+    if args.indexstructure != IndexStructure::HashTrie {
+        let explicit: &[(&str, bool)] = &[
+            (
+                "--ds-layout-hasher",
+                args.layout.hash_trie_hasher_explicit(),
+            ),
+            (
+                "--ds-layout-pruning",
+                args.layout.hash_trie_pruning_explicit(),
+            ),
+        ];
+        for (flag, given) in explicit {
+            if *given {
+                anyhow::bail!("{flag} is only valid with --indexstructure hash-trie");
+            }
+        }
+    }
+    let cell = Execution::for_pair(
         args.indexstructure,
         args.algorithm,
-        args.optimiser.instantiate(),
-        "join".to_string(),
-    );
-    for path in &args.relations {
-        db.add_file(path)
-            .map_err(|e| anyhow::anyhow!("Failed to load relation {:?}: {}", path, e))?;
+        args.layout.hash_trie_hasher_resolved(),
+        args.layout.hash_trie_pruning_resolved(),
+        HashTrieConfig::default(),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "incompatible selection: {:?} cannot run under {:?}",
+            args.indexstructure,
+            args.algorithm
+        )
+    })?;
+    let optimiser = args.optimiser;
+    match cell {
+        | Execution::TrieLftj(SortedTrie::TreeTrie) => build_join_runner(
+            TrieLftj::<kermit_ds::TreeTrie>::new(optimiser),
+            &args.relations,
+        ),
+        | Execution::TrieLftj(SortedTrie::ColumnTrie) => build_join_runner(
+            TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser),
+            &args.relations,
+        ),
+        | Execution::HashHtj {
+            hasher,
+            pruning,
+            config,
+        } => with_hash_trie_layout!(hasher, pruning, |H, P| build_join_runner(
+            HashHtj::<H, P>::new(config, optimiser),
+            &args.relations
+        )),
     }
-
-    Ok((db, join_query))
 }
 
 fn build_time_criterion(args: &BenchArgs) -> criterion::Criterion {
@@ -1077,9 +1145,10 @@ fn resolve_benchmarks(
 /// Handler for the top-level `kermit join` subcommand: run one join query
 /// and write its tuples to `output` (or stdout when `None`).
 fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()> {
-    let (db, join_query) = load_query(&query_args)?;
+    let join_query = parse_query(&query_args)?;
+    let join = load_query_runner(&query_args)?;
     let header = head_column_names(&join_query);
-    let tuples = db.join(join_query);
+    let tuples = join(join_query);
     let writer: Box<dyn Write> = match &output {
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         | None => Box::new(BufWriter::new(io::stdout().lock())),
@@ -1156,11 +1225,12 @@ fn run_clean(name: Option<String>) -> anyhow::Result<()> {
 fn run_bench_join(
     bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let (db, join_query) = load_query(&query_args)?;
+    let join_query = parse_query(&query_args)?;
+    let join = load_query_runner(&query_args)?;
 
     if let Some(path) = &output {
         let header = head_column_names(&join_query);
-        let tuples = db.join(join_query.clone());
+        let tuples = join(join_query.clone());
         let writer = BufWriter::new(fs::File::create(path)?);
         write_tuples(writer, &header, &tuples)?;
     }
@@ -1184,7 +1254,7 @@ fn run_bench_join(
     group.bench_function(&bench_id, |b| {
         b.iter_batched(
             || join_query.clone(),
-            |q| db.join(q),
+            &join,
             criterion::BatchSize::SmallInput,
         );
     });
@@ -1304,10 +1374,9 @@ fn dispatch_run_bench(
     cell: Execution, benchmark: &BenchmarkDefinition, optimiser: Optimiser, metrics: &[Metric],
     queries_per_build: u32, query_filter: Option<&str>, bench_args: &BenchArgs,
 ) -> anyhow::Result<Vec<BenchReport>> {
-    let name = benchmark.name.clone();
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie>::new(optimiser, name),
+            &TrieLftj::<kermit_ds::TreeTrie>::new(optimiser),
             benchmark,
             optimiser,
             metrics,
@@ -1316,7 +1385,7 @@ fn dispatch_run_bench(
             bench_args,
         ),
         | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_benchmark(
-            &TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser, name),
+            &TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser),
             benchmark,
             optimiser,
             metrics,

@@ -59,8 +59,9 @@ planning the variable ordering; defaults to `lexicographic`), optional
 variable names).
 
 **Flow:**
-1. Load relation files (CSV or Parquet) into a `DatabaseEngine` via
-   `instantiate_database`.
+1. Resolve the `(structure, algorithm)` pair to its `Execution` cell and
+   load the relation files (CSV or Parquet) into that family's engine
+   (`load_query_runner`).
 2. Parse the `.dl` query file via `kermit-parser`.
 3. If `--output` is set, run the join once and write results
    (`head_column_names(query)` produces the header row).
@@ -111,8 +112,8 @@ space`; `end-to-end` is opt-in), `--queries-per-build` (K for the
 3. For each workload, ensure relation files are cached locally
    (`kermit_bench::cache::ensure_cached`, downloading from the URLs in the
    YAML when missing).
-4. Load relations into a `DatabaseEngine` and as raw `R` values for the
-   space metric.
+4. Load relations as `R` values and build the family's engine from them
+   (`ExecutionFamily::build`); the same values back the space metric.
 5. For each query in the workload (filtered by `--query` if set), run the
    chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
    wall-clock Criterion; `Space` goes through `SpaceMeasurement`.
@@ -120,9 +121,8 @@ space`; `end-to-end` is opt-in), `--queries-per-build` (K for the
 `EndToEnd` is the only metric whose timed body spans the build→query
 boundary: each Criterion sample constructs a fresh database from the
 pre-loaded tuples **through the same pipeline as the untimed step-4 build**
-(`instantiate_database` + `add_relation` + `add_keys_batch` for the sorted
-family; a fresh `HashMap<String, HashTrie<H>>` via `from_tuples` handed to
-`hash_join` for the hash family) and then executes the query K times
+(a fresh `BTreeMap<String, R>` via `from_tuples`, handed to `lftj_join` or
+`hash_join` — `ExecutionFamily::build_from_tuples` for either family) and then executes the query K times
 (`--queries-per-build`). `BatchSize::PerIteration` is deliberate — batching
 would amortise away the per-build cost the metric exists to measure. Because
 the sorted-family build path is `insert_all` (input order), the build term is

@@ -5,16 +5,15 @@
 //! every query from the emitted YAML against the committed Parquet
 //! relations, comparing tuple counts to the hand-verified
 //! `expected.json`. Exercises the full Const-view rewrite path in
-//! [`DatabaseEngine::join`] without any network or Python dependency at
-//! test time.
+//! [`lftj_join`] without any network or Python dependency at test time.
 
 use {
-    kermit::db::{DatabaseEngine, DB},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin},
+    kermit::db::lftj_join,
+    kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::TreeTrie,
+    kermit_ds::{RelationFileExt, TreeTrie},
     std::{
-        collections::HashMap,
+        collections::{BTreeMap, HashMap},
         path::{Path, PathBuf},
     },
 };
@@ -40,13 +39,12 @@ fn watdiv_mini_cardinalities_match() {
     let bench = load_yaml(&dir);
     let expected = load_expected(&dir);
 
-    let mut db: DatabaseEngine<TreeTrie, LeapfrogTriejoin> =
-        DatabaseEngine::new(bench.name.clone());
-
+    let mut relations: BTreeMap<String, TreeTrie> = BTreeMap::new();
     for rel in &bench.relations {
         let path = dir.join(format!("{}.parquet", rel.name));
-        db.add_file(&path)
+        let trie = TreeTrie::from_parquet(&path)
             .unwrap_or_else(|e| panic!("failed to load {path:?}: {e}"));
+        relations.insert(rel.name.clone(), trie);
     }
 
     for q in &bench.queries {
@@ -56,7 +54,9 @@ fn watdiv_mini_cardinalities_match() {
             .unwrap_or_else(|| panic!("no expected entry for {key}"));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = db.join(parsed).len();
+        let got =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, &LexicographicOptimiser)
+                .len();
 
         assert_eq!(
             got, want,
