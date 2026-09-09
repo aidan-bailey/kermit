@@ -31,6 +31,11 @@ A benchmark is **either** static (the relations and queries are spelled out dire
 | `relations[].url`           | string             | one of   | HTTP(S) download URL for the relation's Parquet file. Fetched once into the cache. |
 | `relations[].path`          | string             | one of   | Workspace-relative path to a committed CSV or Parquet file. Read in place — never downloaded, copied, or cached. |
 | `relations[].sha256`        | string (64 lowercase hex) | no | Digest of the relation file, checked against a download before it is cached and re-checked by `bench fetch`; never on `bench run`. Compute with `sha256sum <file>`. |
+| `queries`                   | list               | yes      | Named queries to run. Must be non-empty; names must be unique. |
+| `queries[].name`            | string             | yes      | Query identifier (used by `kermit bench run <benchmark> -q <query>`). |
+| `queries[].description`     | string             | yes      | Human-readable summary of what the query computes. |
+| `queries[].query`           | string             | yes      | A Datalog rule parsed by `kermit-parser`. See the grammar below. |
+| `queries[].expected`        | integer            | no       | The query's result cardinality, counted as the tuples the join returns (including any multiset duplicates from `HashTrie`-backed relations, not a distinct count). `bench run --verify` runs the query once and aborts on a mismatch. |
 
 Exactly one of `url` and `path` must be set per relation. Use `url` for large or
 externally-hosted datasets; use `path` for small worked examples that should be
@@ -43,11 +48,6 @@ Two constraints apply to `path`, both enforced by `BenchmarkDefinition::validate
 - Its **file stem must equal the relation's `name`**. The CSV and Parquet loaders take
   the relation's name from the filename, so `path: data/edges.csv` under
   `name: edge` would load a relation the queries cannot refer to.
-| `queries`                   | list               | yes      | Named queries to run. Must be non-empty; names must be unique. |
-| `queries[].name`            | string             | yes      | Query identifier (used by `kermit bench run <benchmark> -q <query>`). |
-| `queries[].description`     | string             | yes      | Human-readable summary of what the query computes. |
-| `queries[].query`           | string             | yes      | A Datalog rule parsed by `kermit-parser`. See the grammar below. |
-| `queries[].expected`        | integer            | no       | The query's result cardinality, counted as the tuples the join returns (including any multiset duplicates from `HashTrie`-backed relations, not a distinct count). `bench run --verify` runs the query once and aborts on a mismatch. |
 
 ### Generator block (declarative)
 
