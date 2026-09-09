@@ -44,8 +44,10 @@ pub enum RdfError {
     #[error("unsupported SPARQL feature: {0}")]
     UnsupportedSparql(String),
 
-    /// Benchmark YAML emission / validation failed.
-    #[error("benchmark YAML emission / validation failed: {0}")]
+    /// A post-driver pipeline stage failed: benchmark YAML emission or
+    /// validation, `meta.json` (de)serialisation, or entailment
+    /// convergence. The payload names the stage.
+    #[error("pipeline stage failed: {0}")]
     Expected(String),
 
     /// The LUBM-UBA jar could not be found at the resolved path.
