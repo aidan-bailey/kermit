@@ -1,7 +1,8 @@
 //! Smallest-relation-first ordering policy.
 
-use crate::optimiser::{
-    analysis::analyse, ordering::topological_order, CatalogStats, QueryOptimiser, QueryPlan,
+use crate::{
+    analysis::analyse,
+    optimiser::{ordering::topological_order, CatalogStats, QueryOptimiser, QueryPlan},
 };
 
 /// Plans the global attribute order preferring variables that appear in

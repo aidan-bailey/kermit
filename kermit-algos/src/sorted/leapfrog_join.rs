@@ -5,7 +5,7 @@ use kermit_iters::LinearIterator;
 
 /// The `LeapfrogJoinIterator` trait defines the interface for a leapfrog join
 /// iterator.
-pub trait LeapfrogJoinIterator {
+pub(crate) trait LeapfrogJoinIterator {
     /// Returns a reference to the key at the iterator's current position,
     /// otherwise `None` if `leapfrog_init` has not yet been called, or the
     /// iterator is positioned at the end.
@@ -43,7 +43,7 @@ pub trait LeapfrogJoinIterator {
 /// iterator's initial key (computed in
 /// [`leapfrog_init`](LeapfrogJoinIterator::leapfrog_init)), and `p` walks
 /// this permutation cyclically.
-pub struct LeapfrogJoinIter<IT>
+pub(crate) struct LeapfrogJoinIter<IT>
 where
     IT: LinearIterator,
 {
@@ -65,7 +65,7 @@ where
     IT: LinearIterator,
 {
     /// Creates a new leapfrog join over the given sorted iterators.
-    pub fn new(iterators: Vec<IT>) -> Self {
+    pub(crate) fn new(iterators: Vec<IT>) -> Self {
         LeapfrogJoinIter {
             sorted_iter_perm: (0..iterators.len()).collect(),
             iterators,
@@ -74,7 +74,7 @@ where
     }
 
     /// Returns the number of iterators being joined.
-    pub fn k(&self) -> usize { self.iterators.len() }
+    pub(crate) fn k(&self) -> usize { self.iterators.len() }
 
     /// Resolves a ring position `i` (an index into `sorted_iter_perm`) to the
     /// corresponding underlying iterator. Centralised so the cyclic-walk call

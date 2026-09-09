@@ -35,7 +35,7 @@ Arrows read "depends on". Only production (`[dependencies]`) edges are listed.
 kermit         ──▶ kermit-iters, kermit-ds, kermit-algos,
                    kermit-parser, kermit-bench, kermit-rdf
 kermit-rdf     ──▶ kermit-bench
-kermit-algos   ──▶ kermit-iters, kermit-derive, kermit-parser
+kermit-algos   ──▶ kermit-iters, kermit-parser
 kermit-ds      ──▶ kermit-iters, kermit-derive
 kermit-derive  ──▶ (none)
 kermit-parser  ──▶ (none)
@@ -284,7 +284,7 @@ At depth 0 (variable A): R and T participate
 At depth 1 (variable B): R and S participate
 At depth 2 (variable C): S and T participate
 
-Note one documented deviation from the paper: Veldhuizen keeps one persistent leapfrog per level over freely-aliased iterator arrays. Safe Rust cannot alias owned iterators across levels, so `LeapfrogTriejoinIter` instead *moves* iterators between an idle pool and the inner `LeapfrogJoinIter` on every depth change. Observable semantics are preserved; the cost is a drain/refill per `open`/`up`. The rationale is recorded in the module docs of `kermit-algos/src/leapfrog_triejoin.rs`.
+Note one documented deviation from the paper: Veldhuizen keeps one persistent leapfrog per level over freely-aliased iterator arrays. Safe Rust cannot alias owned iterators across levels, so `LeapfrogTriejoinIter` instead *moves* iterators between an idle pool and the inner `LeapfrogJoinIter` on every depth change. Observable semantics are preserved; the cost is a drain/refill per `open`/`up`. The rationale is recorded in the module docs of `kermit-algos/src/sorted/leapfrog_triejoin.rs`.
 
 ### Hash Triejoin
 
@@ -459,8 +459,8 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 
 ### New Join Algorithm
 
-1. Create `kermit-algos/src/<name>.rs` and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable` or `HashTrieIterable`. The implementation must tolerate the const-rewritten query shape (extra synthetic unary body predicates) and must validate the incoming `QueryPlan`.
-2. Register the module and add a variant to the `JoinAlgorithm` enum in `kermit-algos/src/lib.rs`.
+1. Create `kermit-algos/src/<family>/<name>.rs` (`sorted/` or `hash/`, matching the iterator family) and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable` or `HashTrieIterable` accordingly. The implementation must tolerate the const-rewritten query shape (extra synthetic unary body predicates) and must validate the incoming `QueryPlan`.
+2. Register the module in the family's `mod.rs`, re-export it from the flat facade in `kermit-algos/src/lib.rs`, and add a variant to the `JoinAlgorithm` enum there.
 3. Wire the CLI: a variant on `JoinAlgorithmSelector` and its `expand()`, plus the algorithm's valid cells in `Execution` / `Execution::for_pair` (the compiler flags the incomplete match) and a `dispatch_run_bench` arm. `kermit join` / `bench join` dispatch through the same cells (`load_query_runner`), so nothing extra is needed for them. A sorted-family algorithm plugs into `lftj_join<R, JA>`; a hash-family one needs its own entry point beside `hash_join` over the shared body (see "Database layer").
 4. **Wire the tests.** Add a `define_multiway_join_test_suite!` invocation per compatible index structure × optimiser.
 5. **Write the doc** at `docs/algorithms/<name>.md` from the template.

@@ -176,8 +176,8 @@ pub trait Generator {
     ) -> Result<(PathBuf, Self::Staged), RdfError>;
 
     /// Hook to add relations the data lacks before Parquet is written (the
-    /// WatDiv basic workload seeds empty relations for query predicates
-    /// absent from the generated data). Default: nothing.
+    /// WatDiv generator seeds empty relations for query predicates absent
+    /// from the probabilistically generated data). Default: nothing.
     fn seed_relations(
         &self, _staged: &Self::Staged, _part: &mut Partitioned,
     ) -> Result<(), RdfError> {

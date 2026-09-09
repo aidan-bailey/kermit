@@ -3,7 +3,7 @@
 //! produced by the [Const-view rewrite](crate::const_rewrite).
 
 use {
-    crate::singleton::SingletonTrieIter,
+    crate::sorted::singleton::SingletonTrieIter,
     kermit_iters::{JoinIterable, LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
 
@@ -21,7 +21,7 @@ pub enum TrieIterKind<'a, R: TrieIterable> {
 
 /// Iterator produced by [`TrieIterKind::trie_iter`]; dispatches all
 /// `TrieIterator` / `LinearIterator` methods to the inner variant.
-pub enum KindIter<IT>
+pub(crate) enum KindIter<IT>
 where
     IT: TrieIterator,
 {

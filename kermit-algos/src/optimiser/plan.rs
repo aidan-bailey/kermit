@@ -1,6 +1,6 @@
 //! The query plan consumed by join algorithms.
 
-use {crate::optimiser::analysis::QueryAnalysis, std::fmt};
+use {crate::analysis::QueryAnalysis, std::fmt};
 
 /// An executable plan for a join query, produced by a query optimiser.
 ///
@@ -10,7 +10,7 @@ use {crate::optimiser::analysis::QueryAnalysis, std::fmt};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryPlan {
     /// Canonical variable indices (see
-    /// [`analyse`](crate::optimiser::analyse)) in descent order.
+    /// [`analyse`](crate::analyse)) in descent order.
     pub variable_ordering: Vec<usize>,
 }
 
@@ -99,7 +99,7 @@ impl QueryPlan {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::optimiser::analysis::analyse, kermit_parser::JoinQuery};
+    use {super::*, crate::analysis::analyse, kermit_parser::JoinQuery};
 
     fn triangle() -> QueryAnalysis {
         let q: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).".parse().unwrap();

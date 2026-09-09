@@ -1,10 +1,10 @@
-//! Mirror of [`crate::trie_iter_kind::TrieIterKind`] for the hash-trie
+//! Mirror of [`crate::sorted::TrieIterKind`] for the hash-trie
 //! algorithm family. Lets the `hash_join` machinery hold a
 //! heterogeneous mix of real `HashTrieIterable` relations and synthetic
 //! `Const_<id>` singletons under one type.
 
 use {
-    crate::hash_singleton::SingletonHashTrieIter,
+    crate::hash::singleton::SingletonHashTrieIter,
     kermit_iters::{HashTrieIterable, HashTrieIterator, JoinIterable},
 };
 
@@ -23,7 +23,7 @@ pub enum HashTrieIterKind<'a, R: HashTrieIterable> {
 
 /// Iterator produced by [`HashTrieIterKind::hash_trie_iter`]; dispatches
 /// all [`HashTrieIterator`] methods to the inner variant.
-pub enum HashKindIter<IT>
+pub(crate) enum HashKindIter<IT>
 where
     IT: HashTrieIterator,
 {
