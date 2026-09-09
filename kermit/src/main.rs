@@ -26,6 +26,7 @@ use {
     },
 };
 
+mod bench;
 mod bench_report;
 mod execution;
 mod materialize;
