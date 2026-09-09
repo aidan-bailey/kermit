@@ -17,13 +17,18 @@ use {
 };
 
 pub mod ds;
-
-// Task 3 wires `Workload` into the runners; until then it is unused.
-#[allow(dead_code)]
+pub mod run;
 pub mod workload;
 
+// `NamedQuery` is unused as an import until Task 4 routes `bench join`
+// through `Workload::adhoc`; the type itself is already load-bearing as
+// the element type of `Workload::queries`.
 #[allow(unused_imports)]
 pub use workload::{NamedQuery, Workload};
+pub(crate) use {
+    ds::dispatch_ds_bench,
+    run::{dispatch_run_bench, resolve_sweep},
+};
 
 /// A measurement `bench ds` / `bench run` can record.
 #[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]

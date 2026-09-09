@@ -34,6 +34,8 @@ pub struct Workload {
 
 impl Workload {
     /// The `name` of a workload built by [`Workload::adhoc`].
+    // Unused until Task 4 routes `bench join` through `Workload::adhoc`.
+    #[allow(dead_code)]
     pub const ADHOC: &'static str = "adhoc";
 
     /// Builds the workload for `bench run`: caches the definition's
@@ -96,6 +98,8 @@ impl Workload {
     /// # Errors
     ///
     /// `query_path` has no file stem, cannot be read, or does not parse.
+    // Unused until Task 4 routes `bench join` through this constructor.
+    #[allow(dead_code)]
     pub fn adhoc(relation_paths: Vec<PathBuf>, query_path: &Path) -> anyhow::Result<Self> {
         let name = query_path
             .file_stem()
