@@ -87,3 +87,38 @@ pub fn reports_of(report: &NamedTempFile) -> Vec<serde_json::Value> {
 pub fn axes_of(report: &NamedTempFile) -> serde_json::Value {
     reports_of(report)[0]["axes"].clone()
 }
+
+/// Runs `bench join` over the `first.csv` / `second.csv` fixtures with
+/// `intersect_query.dl`, appending `extra_args` after the structure and
+/// algorithm. Returns the raw process output and the report file.
+pub fn bench_join(
+    indexstructure: &str, algorithm: &str, extra_args: &[&str],
+) -> (Output, NamedTempFile) {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let report = NamedTempFile::new().expect("failed to create temp report file");
+    let mut cmd = Command::new(kermit_bin());
+    cmd.arg("bench")
+        .arg("--sample-size")
+        .arg("10")
+        .arg("--measurement-time")
+        .arg("1")
+        .arg("--warm-up-time")
+        .arg("1")
+        .arg("--report-json")
+        .arg(report.path())
+        .arg("join")
+        .arg("--relations")
+        .arg(fixtures.join("first.csv"))
+        .arg(fixtures.join("second.csv"))
+        .arg("--query")
+        .arg(fixtures.join("intersect_query.dl"))
+        .arg("--indexstructure")
+        .arg(indexstructure)
+        .arg("--algorithm")
+        .arg(algorithm);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    let output = cmd.output().expect("failed to execute kermit binary");
+    (output, report)
+}

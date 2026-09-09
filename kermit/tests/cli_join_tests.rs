@@ -354,6 +354,8 @@ fn cli_bench_runs_criterion() {
             "10",
             "--measurement-time",
             "1",
+            "--warm-up-time",
+            "1",
         ],
     );
     assert!(
@@ -365,16 +367,21 @@ fn cli_bench_runs_criterion() {
     // stderr contains metadata
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--- bench metadata ---"),
+        stderr.contains("--- bench run metadata ---"),
         "stderr missing metadata header: {stderr}"
+    );
+    assert!(
+        stderr.contains("benchmark:") && stderr.contains("adhoc"),
+        "{stderr}"
     );
     assert!(stderr.contains("data structure:"));
     assert!(stderr.contains("algorithm:"));
 
-    // stdout contains Criterion benchmark output with the given name
+    // stdout contains Criterion benchmark output with the given name as
+    // the group prefix
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("test-intersect"),
+        stdout.contains("test-intersect/adhoc/intersect_query/TreeTrie/LeapfrogTriejoin"),
         "stdout should contain benchmark name: {stdout}"
     );
     assert!(
@@ -390,7 +397,14 @@ fn cli_bench_default_name() {
         "intersect_query.dl",
         "leapfrog-triejoin",
         "tree-trie",
-        &["--sample-size", "10", "--measurement-time", "1"],
+        &[
+            "--sample-size",
+            "10",
+            "--measurement-time",
+            "1",
+            "--warm-up-time",
+            "1",
+        ],
     );
     assert!(
         output.status.success(),
@@ -400,7 +414,7 @@ fn cli_bench_default_name() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("join/"),
+        stdout.contains("join/adhoc/intersect_query/TreeTrie/LeapfrogTriejoin/"),
         "stdout should use default 'join' group name: {stdout}"
     );
 }

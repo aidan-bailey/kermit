@@ -20,11 +20,7 @@ pub mod ds;
 pub mod run;
 pub mod workload;
 
-// `NamedQuery` is unused as an import until Task 4 routes `bench join`
-// through `Workload::adhoc`; the type itself is already load-bearing as
-// the element type of `Workload::queries`.
-#[allow(unused_imports)]
-pub use workload::{NamedQuery, Workload};
+pub use workload::Workload;
 pub(crate) use {
     ds::dispatch_ds_bench,
     run::{dispatch_run_bench, resolve_sweep, RunSettings},

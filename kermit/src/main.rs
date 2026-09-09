@@ -18,7 +18,6 @@ use {
     kermit_ds::{HashTrieConfig, IndexStructure},
     kermit_parser::Term,
     std::{
-        collections::BTreeMap,
         fs,
         io::{self, BufWriter, Write},
         path::{Path, PathBuf},
@@ -33,14 +32,8 @@ mod measurement;
 mod options;
 
 use {
-    bench::{
-        build_time_criterion, dispatch_ds_bench, dispatch_run_bench, resolve_sweep, Metric,
-        RunSettings, Workload,
-    },
-    bench_report::{
-        write_metadata_block, BenchKind, BenchReport, CriterionGroupRef, MetadataLine,
-        ReportMetric, ReportSink,
-    },
+    bench::{dispatch_ds_bench, dispatch_run_bench, resolve_sweep, Metric, RunSettings, Workload},
+    bench_report::{BenchKind, ReportSink},
     execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
     options::{
         validate_config_choices, validate_layout_choices, with_hash_trie_layout, ConfigChoices,
@@ -54,8 +47,8 @@ use {
 /// semantics").
 const DEFAULT_RUN_GROUP: &str = "run";
 
-/// Default Criterion group name for `bench join` (full group name, not a
-/// prefix).
+/// Default Criterion group *prefix* for `bench join`
+/// (`{prefix}/adhoc/{query}/{ds}/{algo}`).
 const DEFAULT_JOIN_GROUP: &str = "join";
 
 /// Default Criterion group name for `bench ds` (full group name, not a
@@ -121,6 +114,17 @@ enum IndexStructureSelector {
 }
 
 impl IndexStructureSelector {
+    /// The selector naming exactly `ds`, so the `--ds-layout-*` /
+    /// `--ds-config` validators (which take a selector) apply to a
+    /// concrete structure.
+    fn of(ds: IndexStructure) -> Self {
+        match ds {
+            | IndexStructure::ColumnTrie => Self::ColumnTrie,
+            | IndexStructure::HashTrie => Self::HashTrie,
+            | IndexStructure::TreeTrie => Self::TreeTrie,
+        }
+    }
+
     fn expand(self) -> Vec<IndexStructure> {
         use clap::ValueEnum;
         match self {
@@ -183,12 +187,12 @@ struct BenchArgs {
 
 #[derive(Subcommand)]
 enum BenchSubcommand {
-    /// Benchmark a join query.
+    /// Benchmark a join query over relation files.
     ///
-    /// Note: `bench join` does not currently support `-i all` / `-a all`
-    /// because it shares its argument struct with the one-shot top-level
-    /// `kermit join` command. For sweeps, use `bench run` against a YAML
-    /// benchmark instead.
+    /// Runs through the same runner as `bench run`, with the workload named
+    /// `adhoc` and the query named by the query file's stem, so the Criterion
+    /// group is `{--name|join}/adhoc/{stem}/{ds}/{algo}`. No `-i all` /
+    /// `-a all` sweep here; use `bench run` for sweeps.
     Join {
         #[command(flatten)]
         query_args: QueryArgs,
@@ -196,6 +200,25 @@ enum BenchSubcommand {
         /// Output file for one run's results (optional)
         #[arg(short, long, value_name = "PATH")]
         output: Option<PathBuf>,
+
+        /// Metrics to benchmark (`end-to-end` is opt-in, not in the default
+        /// set)
+        #[arg(
+            short,
+            long,
+            value_enum,
+            num_args = 1..,
+            default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
+        )]
+        metrics: Vec<Metric>,
+
+        /// Query executions per database build in the `end-to-end` metric's
+        /// timed body (T = build + K × query). Ignored by other metrics.
+        #[arg(long, value_name = "K", default_value = "1", value_parser = clap::value_parser!(u32).range(1..))]
+        queries_per_build: u32,
+
+        #[command(flatten)]
+        config: ConfigChoices,
     },
 
     /// Benchmark an index structure (insertion, iteration, space,
@@ -503,12 +526,12 @@ fn build_join_runner<F: ExecutionFamily + 'static>(
 /// error, and the `--ds-layout-*` flags are only accepted with
 /// `-i hash-trie`.
 ///
-/// `kermit join` deliberately carries no `--ds-config`: the one Config
-/// value (`HashTrie`'s load factor) trades space against probe length and
-/// cannot change a query's answers, so this path builds every relation with
-/// [`HashTrieConfig::default()`]. The Config axis belongs to `bench ds` /
-/// `bench run`, which measure and report it.
-fn load_query_runner(args: &QueryArgs) -> anyhow::Result<JoinRunner> {
+/// `kermit join` deliberately carries no `--ds-config` and passes
+/// [`HashTrieConfig::default()`]: the one Config value trades space against
+/// probe length and cannot change a query's answers. `bench join --output`
+/// passes its resolved config so the CSV comes from the same build the
+/// measurements use.
+fn load_query_runner(args: &QueryArgs, config: HashTrieConfig) -> anyhow::Result<JoinRunner> {
     if args.indexstructure != IndexStructure::HashTrie {
         let explicit: &[(&str, bool)] = &[
             (
@@ -531,7 +554,7 @@ fn load_query_runner(args: &QueryArgs) -> anyhow::Result<JoinRunner> {
         args.algorithm,
         args.layout.hash_trie_hasher_resolved(),
         args.layout.hash_trie_pruning_resolved(),
-        HashTrieConfig::default(),
+        config,
     )
     .ok_or_else(|| {
         anyhow::anyhow!(
@@ -631,7 +654,7 @@ fn resolve_benchmarks(
 /// and write its tuples to `output` (or stdout when `None`).
 fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()> {
     let join_query = parse_query(&query_args)?;
-    let join = load_query_runner(&query_args)?;
+    let join = load_query_runner(&query_args, HashTrieConfig::default())?;
     let header = head_column_names(&join_query);
     let tuples = join(join_query);
     let writer: Box<dyn Write> = match &output {
@@ -705,68 +728,53 @@ fn run_clean(name: Option<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Handler for `bench join`: benchmark a single join query (optionally
-/// dumping its result to `output`) and write the report.
+/// Handler for `bench join`: an ad-hoc workload over the given relation
+/// files, run through the same generic runner as `bench run` under the
+/// `adhoc/{query-stem}` identity.
 fn run_bench_join(
-    bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>,
+    bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>, metrics: &[Metric],
+    queries_per_build: u32, config: ConfigChoices,
 ) -> anyhow::Result<()> {
-    let join_query = parse_query(&query_args)?;
-    let join = load_query_runner(&query_args)?;
+    let selector = IndexStructureSelector::of(query_args.indexstructure);
+    validate_layout_choices(selector, &query_args.layout)?;
+    validate_config_choices(selector, &config)?;
+    let hash_trie_config = config.hash_trie_config_resolved()?;
+    let cell = Execution::for_pair(
+        query_args.indexstructure,
+        query_args.algorithm,
+        query_args.layout.hash_trie_hasher_resolved(),
+        query_args.layout.hash_trie_pruning_resolved(),
+        hash_trie_config,
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "incompatible selection: {:?} cannot run under {:?}",
+            query_args.indexstructure,
+            query_args.algorithm
+        )
+    })?;
 
     if let Some(path) = &output {
+        let join_query = parse_query(&query_args)?;
+        let join = load_query_runner(&query_args, hash_trie_config)?;
         let header = head_column_names(&join_query);
-        let tuples = join(join_query.clone());
+        let tuples = join(join_query);
         let writer = BufWriter::new(fs::File::create(path)?);
         write_tuples(writer, &header, &tuples)?;
     }
 
-    let group_name = bench_args
-        .name
-        .as_deref()
-        .unwrap_or(DEFAULT_JOIN_GROUP)
-        .to_string();
-    let ds_name = query_args.indexstructure.axis_value();
-    let algo_name = query_args.algorithm.axis_value();
-    let bench_id = format!("{ds_name}/{algo_name}");
-
-    let metadata = vec![
-        MetadataLine::new("data structure", ds_name),
-        MetadataLine::new("algorithm", algo_name),
-        MetadataLine::new("relations", query_args.relations.len()),
-    ];
-    write_metadata_block(&mut io::stderr(), "bench metadata", &metadata)?;
-
-    let mut criterion = build_time_criterion(bench_args);
-    let mut group = criterion.benchmark_group(&group_name);
-    group.bench_function(&bench_id, |b| {
-        b.iter_batched(
-            || join_query.clone(),
-            &join,
-            criterion::BatchSize::SmallInput,
-        );
-    });
-    group.finish();
-    criterion.final_summary();
-
-    let axes = BTreeMap::from([
-        ("data_structure".to_string(), serde_json::json!(ds_name)),
-        ("algorithm".to_string(), serde_json::json!(algo_name)),
-        (
-            "optimiser".to_string(),
-            serde_json::json!(query_args.optimiser.axis_value()),
-        ),
-        (
-            "relations".to_string(),
-            serde_json::json!(query_args.relations.len()),
-        ),
-    ]);
-    let report = BenchReport::new(BenchKind::Join, &metadata, axes, vec![CriterionGroupRef {
-        group: group_name,
-        function: bench_id,
-        metric: ReportMetric::Time,
-    }]);
+    let workload = Workload::adhoc(query_args.relations.clone(), &query_args.query)?;
+    let settings = RunSettings {
+        kind: BenchKind::Join,
+        prefix: bench_args.name.as_deref().unwrap_or(DEFAULT_JOIN_GROUP),
+        optimiser: query_args.optimiser,
+        metrics,
+        queries_per_build,
+        bench_args,
+    };
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
-    sink.push(vec![report])?;
+    let reports = dispatch_run_bench(cell, &workload, settings)?;
+    sink.push(reports)?;
     sink.finish()?;
     Ok(())
 }
@@ -1046,7 +1054,17 @@ fn main() -> anyhow::Result<()> {
             | BenchSubcommand::Join {
                 query_args,
                 output,
-            } => run_bench_join(&bench_args, query_args, output)?,
+                metrics,
+                queries_per_build,
+                config,
+            } => run_bench_join(
+                &bench_args,
+                query_args,
+                output,
+                &metrics,
+                queries_per_build,
+                config,
+            )?,
 
             | BenchSubcommand::Ds {
                 relation,
