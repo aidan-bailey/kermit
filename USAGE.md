@@ -110,9 +110,9 @@ kermit bench \
 ```
 
 `-n`/`--name` controls the Criterion group name. Semantics differ by
-subcommand: for `bench join` / `bench ds` it is the full group name (defaults
-`join` / `ds`); for `bench run` it is a *prefix* on the auto-generated
-`{benchmark}/{query}/{ds}/{algo}` identity (default `run`).
+subcommand: for `bench ds` it is the full group name (default `ds`); for
+`bench join` and `bench run` it is a *prefix* on the auto-generated
+`{benchmark}/{query}/{ds}/{algo}` identity (defaults `join` / `run`).
 
 ### Benchmark a join (`bench join`)
 
@@ -130,6 +130,13 @@ Pass `-o`/`--output <PATH>` to also write the join's tuples to a CSV file
 (useful for verifying correctness alongside the benchmark). `--optimiser
 <lexicographic|cardinality>` picks the query optimiser (default:
 `lexicographic`); the choice lands in the JSON report's `optimiser` axis.
+
+`bench join` runs through the same runner as `bench run`: it records the
+`insertion`, `iteration` and `space/<relation>` metrics by default (`-m`
+selects; `end-to-end` is opt-in with `--queries-per-build K`), accepts
+`--ds-config` alongside the `--ds-layout-*` flags, and writes its Criterion
+output under `{--name|join}/adhoc/{query-file-stem}/{ds}/{algo}`. The
+report's `benchmark` axis is `adhoc` and `query` is the query file's stem.
 
 ### Benchmark a data structure (`bench ds`)
 

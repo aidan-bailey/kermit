@@ -37,8 +37,8 @@ comparative figures the thesis needs are assembled *across* runs in
 
 `bench ds` and `bench run` accept `--metrics`, defaulting to `insertion`,
 `iteration`, and `space` (the opt-in `end-to-end` phase is *not* in the
-default set). They fall into two families. (`bench join` is time-only and has
-no `--metrics` flag — it times the full query each iteration.)
+default set). They fall into two families. (`bench join` accepts the same
+`--metrics` as `bench run`; it is the ad-hoc form of the same measurement.)
 
 ### Time — three phases
 

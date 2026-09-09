@@ -1,7 +1,7 @@
 # Runner Consolidation
 
 **Date:** 2026-09-09
-**Status:** Approved design, not yet implemented
+**Status:** Implemented 2026-09-09
 **Scope:** Sub-project B of the benchmarking-flow improvement series
 (A: sweep hardening — landed 2026-09-09; B: runner consolidation;
 C: answer verification; D: Rust–Python contract; E: download integrity).
@@ -101,6 +101,14 @@ fetch / clean / gen), `resolve_benchmarks`, `describe_benchmark_status`,
 `load_query_runner` + `JoinRunner` (still the right tool for the one-shot
 `kermit join`), and `main`. The `DEFAULT_*_GROUP` constants stay with the
 handlers that apply them.
+
+Implementation note: the runner's per-invocation inputs (`kind`, `prefix`,
+`optimiser`, `metrics`, `queries_per_build`, `bench_args`) are grouped in
+`RunSettings` (`bench/run.rs`) so `run_benchmark` / `dispatch_run_bench` take
+`(family_or_cell, &Workload, RunSettings)`; `load_query_runner` takes the
+resolved `HashTrieConfig` so `bench join --output` writes CSV from the same
+build it measures; `bench/mod.rs` re-exports only `Workload` (`NamedQuery` is
+reachable via `bench::workload`).
 
 ## 3. The new `bench join`
 

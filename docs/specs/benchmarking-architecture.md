@@ -36,17 +36,17 @@ All `bench` subcommands accept:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--name` | varies | Criterion benchmark group name (or prefix, for `bench run`) |
+| `--name` | varies | Criterion group name (`bench ds`) or prefix (`bench join`, `bench run`) |
 | `--sample-size` | 100 | Criterion sample count (min 10) |
 | `--measurement-time` | 5s | Measurement time per sample |
 | `--warm-up-time` | 3s | Warm-up before sampling |
 | `--report-json` | `bench-runs/{kind}-{unix-millis}.json` | Override the path of the always-emitted machine-readable JSON report |
 
-For `bench join` and `bench ds`, `--name` is the full Criterion group name
-(`join`/`ds` if unset). For `bench run`, `--name` is a *prefix* on the
+For `bench ds`, `--name` is the full Criterion group name (`ds` if unset).
+For `bench join` and `bench run`, `--name` is a *prefix* on the
 group — the full name becomes
-`{name}/{benchmark}/{query}/{ds}/{algo}` (defaulting to `run/...` if
-unset) so the workload identity remains in the Criterion path.
+`{name}/{benchmark}/{query}/{ds}/{algo}` (defaulting to `join/...` /
+`run/...` if unset) so the workload identity remains in the Criterion path.
 
 ## `kermit bench join`
 
@@ -56,17 +56,20 @@ Benchmarks end-to-end join execution time on real data.
 `--algorithm`, `--indexstructure`, optional `--optimiser` (query optimiser
 planning the variable ordering; defaults to `lexicographic`), optional
 `--output` (writes one run's results as CSV with a header row of head
-variable names).
+variable names), `--metrics` (defaults to `insertion iteration space`;
+`end-to-end` is opt-in), `--queries-per-build` (K for the `end-to-end`
+metric, default 1), `--ds-config` alongside the `--ds-layout-*` flags.
 
 **Flow:**
-1. Resolve the `(structure, algorithm)` pair to its `Execution` cell and
-   load the relation files (CSV or Parquet) into that family's engine
-   (`load_query_runner`).
-2. Parse the `.dl` query file via `kermit-parser`.
-3. If `--output` is set, run the join once and write results
-   (`head_column_names(query)` produces the header row).
-4. Wrap `db.join(query)` in Criterion's `iter_batched` (cloning the
-   `JoinQuery` per sample).
+1. Validate the layout/config flags for the concrete structure and resolve
+   the `(structure, algorithm)` pair to its `Execution` cell.
+2. If `--output` is set, run the join once through `load_query_runner`
+   (built with the resolved config) and write CSV with a header row
+   (`head_column_names(query)`).
+3. Build `bench::Workload::adhoc` (name `adhoc`, one query named by the file
+   stem) and run it through `bench::run::dispatch_run_bench` — the same
+   runner as `bench run` — with prefix `--name` or `join`; function names as
+   for `bench run`.
 
 ## `kermit bench ds`
 
@@ -117,6 +120,11 @@ space`; `end-to-end` is opt-in), `--queries-per-build` (K for the
 5. For each query in the workload (filtered by `--query` if set), run the
    chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
    wall-clock Criterion; `Space` goes through `SpaceMeasurement`.
+
+The runner itself (`run_benchmark` / `ExecutionFamily::build`) lives in
+`kermit/src/bench/run.rs` and takes a `Workload` built by
+`Workload::from_definition`, which performs the `ensure_cached` step and the
+query parsing described in step 3 and the per-query loop above.
 
 `EndToEnd` is the only metric whose timed body spans the build→query
 boundary: each Criterion sample constructs a fresh database from the
@@ -184,7 +192,9 @@ Each `bench` subcommand emits three independent output streams:
    axis values for downstream tooling (conventional keys: `data_structure`,
    `algorithm`, `optimiser`, `query`, `benchmark`, `relation_path`,
    `relation_bytes`, `tuples`, `arity`; `optimiser` is emitted by
-   `bench join` and `bench run` only — `bench ds` performs no join), plus
+   `bench join` and `bench run` only — `bench ds` performs no join;
+   `benchmark` and `query` are now emitted by `bench join` as well (`adhoc` /
+   the query file's stem); `relations` is no longer emitted), plus
    pointers into the Criterion artefact tree
    (`group`, `function`, `metric`). Always emitted
    as a JSON array (single-element for `bench join`/`bench ds`,

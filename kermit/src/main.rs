@@ -532,6 +532,10 @@ fn build_join_runner<F: ExecutionFamily + 'static>(
 /// passes its resolved config so the CSV comes from the same build the
 /// measurements use.
 fn load_query_runner(args: &QueryArgs, config: HashTrieConfig) -> anyhow::Result<JoinRunner> {
+    // Deliberately duplicates `validate_layout_choices` for `kermit join`,
+    // which has no selector-based validation of its own; `bench join`
+    // validates first and pays this check a second time on its `--output`
+    // path, which is harmless.
     if args.indexstructure != IndexStructure::HashTrie {
         let explicit: &[(&str, bool)] = &[
             (
