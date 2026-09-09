@@ -41,16 +41,24 @@ placeholder plus a BGP `SELECT`. `S1`'s `%v2%` is a subject-position
 placeholder, so the basic workload exercises the subject-position-constant
 join path.
 
-### Absent predicates in the basic workload
+### Absent predicates
 
-The fixed basic templates reference predicates by the WatDiv data model, but
-WatDiv generates data probabilistically, so a referenced predicate may have
-zero instances at a given scale. The basic pipeline therefore seeds an **empty
-relation** for any query-referenced predicate absent from the generated data
-(absent predicate = empty relation = empty result), rather than failing
-translation. This keeps the workload robust and deterministic regardless of
-scale. At low scale, expect some basic queries to return 0 results because a
-relation is empty — raise the scale for more meaningful cardinalities.
+WatDiv draws data (`-d`) and queries (`-s`/`-q`) as independent samples of
+the model. Rare predicates live in `<pgroup>` blocks with p < 1 over small
+entity populations (for example `MODEL.txt:132`, `0.2 @wsdbm:ProductCategory4`,
+over 12–24 products at scale 1), so a predicate can appear in a generated
+query while drawing zero triples in the generated data. Measured at scale 1
+in two independent samples (2 of 15 runs, then 4 of 15), some query-referenced
+predicate is absent from the whole dataset in roughly one run in five.
+
+Both pipelines therefore seed an **empty relation** for any query-referenced
+predicate absent from the generated data (absent predicate = empty relation =
+empty result) rather than failing translation. Seeded relations are written
+as empty Parquet files and listed in `benchmark.yml` like any other. Expect a
+few stress or basic queries at scale 1 to return 0 results for this reason;
+at scale 100 and above it should be effectively unobservable. The translator
+still hard-errors on a predicate that is neither in the data nor seeded,
+which after seeding indicates a genuine bug.
 
 ## How to run
 
@@ -239,12 +247,24 @@ no `--seed` flag. Two back-to-back invocations of `./watdiv -d <model> 1`
 produce different output sizes (15.0 MB vs 15.7 MB), different triple counts
 (109 961 vs 114 711), and different content from the very first line.
 
+The binary seeds from the wall clock at **one-second granularity**: 200
+back-to-back `watdiv -d MODEL.txt 1` runs produced only 20 distinct datasets,
+in contiguous byte-identical blocks. Two invocations in the same second are
+identical. Consequences: independent samples must be spaced more than one
+second apart (`bench gen watdiv --tag a` immediately followed by `--tag b`
+yields two differently-tagged, byte-identical datasets); and within one
+pipeline run the `-d` and `-q` stages draw the same seed value on an idle
+machine but different ones under load; the two streams are consumed
+differently either way, so the samples stay independent, but this is why
+absent-predicate failures once looked load-correlated.
+
 This forces a particular discipline:
 
 - **Each `bench gen watdiv` invocation produces a fresh, locally-owned snapshot
   tagged by the user.** Re-running with the same `--tag` overwrites silently;
   re-running with a different `--tag` produces a fresh artefact set with
-  unrelated data.
+  unrelated data, unless the two runs fall in the same wall-clock second (see
+  above), in which case the data is byte-identical.
 - **The 12 committed `watdiv-stress-*.yml` snapshots are the canonical
   reproducible reference** — they pin specific Parquet blobs on ZivaHub.
   `bench gen watdiv` outputs are *additional* artefacts, not replacements.
