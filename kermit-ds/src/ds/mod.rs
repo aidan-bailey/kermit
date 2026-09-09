@@ -41,3 +41,46 @@ impl FromStr for IndexStructure {
         }
     }
 }
+
+impl IndexStructure {
+    /// The bench-report axis value for this structure (the
+    /// `data_structure` key) and the label embedded in Criterion group
+    /// names. This is a stable external contract: it names on-disk
+    /// `target/criterion/` directories, so existing measurements are
+    /// repartitioned if it changes. Equal to the `Debug` representation
+    /// for historical continuity.
+    pub fn axis_value(self) -> &'static str {
+        match self {
+            | Self::ColumnTrie => "ColumnTrie",
+            | Self::HashTrie => "HashTrie",
+            | Self::TreeTrie => "TreeTrie",
+        }
+    }
+}
+
+#[cfg(test)]
+mod index_structure_tests {
+    use {super::*, clap::ValueEnum};
+
+    /// Pins every label to a literal. These strings name
+    /// `target/criterion/{group}` directories and the report's
+    /// `data_structure` axis, so a change here repartitions every
+    /// measurement taken so far. Change deliberately or not at all.
+    #[test]
+    fn axis_values_are_pinned() {
+        assert_eq!(IndexStructure::ColumnTrie.axis_value(), "ColumnTrie");
+        assert_eq!(IndexStructure::HashTrie.axis_value(), "HashTrie");
+        assert_eq!(IndexStructure::TreeTrie.axis_value(), "TreeTrie");
+    }
+
+    /// The label used to be `format!("{:?}")`. Keeping the two equal means
+    /// historical Criterion directories keep their names; if you ever
+    /// diverge them, update this test *and* decide what happens to old
+    /// measurements.
+    #[test]
+    fn axis_values_match_debug_repr() {
+        for v in IndexStructure::value_variants() {
+            assert_eq!(v.axis_value(), format!("{v:?}"));
+        }
+    }
+}
