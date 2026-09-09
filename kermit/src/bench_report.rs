@@ -221,6 +221,9 @@ impl ReportSink {
         })
     }
 
+    /// The path the report is written to.
+    pub fn path(&self) -> &Path { &self.path }
+
     /// The default report path: `bench-runs/{kind}-{unix-millis}.json`
     /// relative to the current directory (`bench-runs/` is gitignored at
     /// the workspace root).

@@ -187,3 +187,114 @@ fn cli_bench_run_explicit_incompatible_pair_is_rejected() {
     );
     assert!(reports.is_none(), "no report must be written: {reports:?}");
 }
+
+/// Builds a fake cache with two static benchmarks: `a-ok` (the mini
+/// fixture, relations present) and `z-bad` (one relation whose parquet is
+/// missing and whose URL cannot be fetched). Filename order guarantees
+/// `a-ok` runs first.
+fn make_two_benchmark_cache() -> TempDir {
+    let tmp = tempfile::tempdir().expect("failed to create temp cache dir");
+    let root = tmp.path().join("kermit/benchmarks");
+    let artifacts = fixtures_dir().join("watdiv-mini/artifacts");
+
+    let ok_dir = root.join("a-ok");
+    fs::create_dir_all(&ok_dir).unwrap();
+    let yaml = fs::read_to_string(artifacts.join(format!("{MINI_BENCH}.yml"))).unwrap();
+    fs::write(
+        ok_dir.join("benchmark.yml"),
+        yaml.replacen(&format!("name: {MINI_BENCH}"), "name: a-ok", 1),
+    )
+    .unwrap();
+    fs::write(ok_dir.join("meta.json"), "{}").unwrap();
+    for rel in ["eligibleregion", "includes", "parentcountry"] {
+        fs::copy(
+            artifacts.join(format!("{rel}.parquet")),
+            ok_dir.join(format!("{rel}.parquet")),
+        )
+        .unwrap();
+    }
+
+    let bad_dir = root.join("z-bad");
+    fs::create_dir_all(&bad_dir).unwrap();
+    // The query is named `q0002` so the `-q q0002` filter below passes and
+    // the failure is the fetch of the missing relation, not the filter.
+    fs::write(
+        bad_dir.join("benchmark.yml"),
+        "name: z-bad\n\
+         description: relation cannot be fetched\n\
+         relations:\n\
+         - name: missing\n  \
+           url: file:///nonexistent/kermit-test/missing.parquet\n\
+         queries:\n\
+         - name: q0002\n  \
+           description: q0002\n  \
+           query: 'Q(X, Y) :- missing(X, Y).'\n",
+    )
+    .unwrap();
+    fs::write(bad_dir.join("meta.json"), "{}").unwrap();
+    tmp
+}
+
+#[test]
+fn partial_sweep_keeps_reports_of_finished_benchmarks() {
+    if skip_unsupported() {
+        return;
+    }
+    let cache = make_two_benchmark_cache();
+    let empty_workspace = tempfile::tempdir().expect("failed to create temp workspace");
+    let report = NamedTempFile::new().expect("failed to create temp report file");
+    let output = Command::new(kermit_bin())
+        .env("XDG_CACHE_HOME", cache.path())
+        .env("KERMIT_WORKSPACE", empty_workspace.path())
+        .args([
+            "bench",
+            "--sample-size",
+            "10",
+            "--measurement-time",
+            "1",
+            "--warm-up-time",
+            "1",
+            "--report-json",
+        ])
+        .arg(report.path())
+        .args([
+            "run",
+            "--all",
+            "-q",
+            "q0002",
+            "--indexstructure",
+            "tree-trie",
+            "--algorithm",
+            "leapfrog-triejoin",
+            "--metrics",
+            "iteration",
+        ])
+        .output()
+        .expect("failed to execute kermit binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "z-bad must fail the run; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("partial report retained at"),
+        "the error must tell the user the partial report was kept; stderr: {stderr}"
+    );
+    let text = fs::read_to_string(report.path()).expect("report file should exist");
+    let reports: Vec<serde_json::Value> =
+        serde_json::from_str(&text).expect("report must be a valid JSON array after a failure");
+    assert_eq!(
+        reports.len(),
+        1,
+        "exactly a-ok's single-query report: {text}"
+    );
+    assert_eq!(reports[0]["axes"]["benchmark"], "a-ok");
+    assert_eq!(reports[0]["axes"]["query"], "q0002");
+    let staging = PathBuf::from(format!("{}.part", report.path().display()));
+    assert!(
+        !staging.exists(),
+        "no staging file may remain: {}",
+        staging.display()
+    );
+}

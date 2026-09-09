@@ -1441,7 +1441,15 @@ fn run_bench_run_command(
                 queries_per_build,
                 query.as_deref(),
                 bench_args,
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "bench run failed on benchmark '{}' cell {:?}; partial report retained at {}",
+                    benchmark.name,
+                    cell,
+                    sink.path().display()
+                )
+            })?;
             sink.push(cell_reports)?;
         }
     }
