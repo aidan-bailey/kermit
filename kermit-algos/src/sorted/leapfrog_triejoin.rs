@@ -11,8 +11,9 @@
 
 use {
     crate::{
+        analysis::analyse,
         join_algo::JoinAlgo,
-        optimiser::{analyse, QueryPlan},
+        optimiser::QueryPlan,
         sorted::leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
     },
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},

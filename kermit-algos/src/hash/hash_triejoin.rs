@@ -11,10 +11,7 @@
 //! positives at any inner level).
 
 use {
-    crate::{
-        join_algo::JoinAlgo,
-        optimiser::{analyse, QueryPlan},
-    },
+    crate::{analysis::analyse, join_algo::JoinAlgo, optimiser::QueryPlan},
     kermit_iters::{HashTrieIterable, HashTrieIterator},
     kermit_parser::JoinQuery,
     std::collections::HashMap,

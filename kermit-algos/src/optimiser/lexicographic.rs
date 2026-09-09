@@ -1,7 +1,8 @@
 //! The default ordering policy: smallest canonical variable index first.
 
-use crate::optimiser::{
-    analysis::analyse, ordering::topological_order, CatalogStats, QueryOptimiser, QueryPlan,
+use crate::{
+    analysis::analyse,
+    optimiser::{ordering::topological_order, CatalogStats, QueryOptimiser, QueryPlan},
 };
 
 /// Plans the global attribute order by Kahn's topological sort with a

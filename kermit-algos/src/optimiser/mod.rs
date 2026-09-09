@@ -8,79 +8,25 @@
 //! DAG (see [`topological_order`]); the provided optimisers are valid by
 //! construction, and executors defensively assert
 //! [`QueryPlan::validate`].
+//!
+//! [`QueryPlan`] is the *only* type crossing from planner to executor.
+//! The canonical variable numbering both sides agree on is not a planning
+//! decision and lives one level up, in [`crate::analysis`].
 
-mod analysis;
 mod cardinality;
 mod lexicographic;
 mod ordering;
 mod plan;
+mod stats;
 
 pub use {
-    analysis::{analyse, QueryAnalysis},
     cardinality::CardinalityOptimiser,
     lexicographic::LexicographicOptimiser,
     ordering::topological_order,
     plan::{PlanError, QueryPlan},
+    stats::{CatalogStats, RelationStats},
 };
-use {kermit_parser::JoinQuery, std::collections::BTreeMap};
-
-/// Statistics for one relation, as visible to the planner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RelationStats {
-    /// Number of stored tuples (`kermit_ds::Cardinality` semantics: what a
-    /// full iteration yields).
-    pub tuples: usize,
-    /// Number of attributes.
-    pub arity: usize,
-}
-
-/// Per-relation statistics for the predicates of one query.
-///
-/// Plain data: planners never touch data structures, so they stay
-/// data-structure-agnostic and unit-testable with literal maps. Callers
-/// build one per join via [`CatalogStats::for_query`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CatalogStats {
-    relations: BTreeMap<String, RelationStats>,
-}
-
-impl CatalogStats {
-    /// Records stats for `name`, replacing any previous entry.
-    pub fn insert(&mut self, name: impl Into<String>, stats: RelationStats) {
-        self.relations.insert(name.into(), stats);
-    }
-
-    /// Tuple count for `name`, if known.
-    pub fn tuples(&self, name: &str) -> Option<usize> { self.relations.get(name).map(|s| s.tuples) }
-
-    /// Builds stats for every body predicate of `query`.
-    ///
-    /// `tuple_count_of` supplies per-relation counts (typically from
-    /// `kermit_ds::Cardinality::tuple_count`). Synthetic `Const_*`
-    /// predicates (introduced by the const-view rewrite) are recorded as
-    /// single-tuple unary relations. Predicates the lookup does not know
-    /// get no entry — planners treat missing stats as "assume large".
-    pub fn for_query(query: &JoinQuery, tuple_count_of: impl Fn(&str) -> Option<usize>) -> Self {
-        let mut stats = CatalogStats::default();
-        for pred in &query.body {
-            if stats.relations.contains_key(&pred.name) {
-                continue;
-            }
-            if crate::const_rewrite::is_const_predicate(&pred.name) {
-                stats.insert(pred.name.clone(), RelationStats {
-                    tuples: 1,
-                    arity: 1,
-                });
-            } else if let Some(tuples) = tuple_count_of(&pred.name) {
-                stats.insert(pred.name.clone(), RelationStats {
-                    tuples,
-                    arity: pred.terms.len(),
-                });
-            }
-        }
-        stats
-    }
-}
+use {clap::ValueEnum, kermit_parser::JoinQuery};
 
 /// A query optimiser plans how a join executes.
 ///
@@ -97,39 +43,51 @@ pub trait QueryOptimiser {
     fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan;
 }
 
+/// The available query optimisers.
+///
+/// Used as a CLI argument to select which [`QueryOptimiser`] plans the
+/// join's variable ordering. Distinct from the optimization *axes*
+/// standard (`ds_layout_*` etc.) — the optimiser is a first-class
+/// benchmark dimension with its own `optimiser` report axis.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
+pub enum Optimiser {
+    /// Smallest canonical variable index first — reproduces the
+    /// pre-optimiser hardcoded ordering. The default.
+    Lexicographic,
+    /// Smallest-relation-first; see [`CardinalityOptimiser`].
+    Cardinality,
+}
+
+impl Optimiser {
+    /// Boxes the corresponding [`QueryOptimiser`] implementation.
+    pub fn instantiate(self) -> Box<dyn QueryOptimiser> {
+        match self {
+            | Self::Lexicographic => Box::new(LexicographicOptimiser),
+            | Self::Cardinality => Box::new(CardinalityOptimiser),
+        }
+    }
+
+    /// The bench-report axis value for this optimiser (the `optimiser`
+    /// key).
+    pub fn axis_value(self) -> &'static str {
+        match self {
+            | Self::Lexicographic => "lexicographic",
+            | Self::Cardinality => "cardinality",
+        }
+    }
+}
+
 #[cfg(test)]
-mod tests {
-    use {super::*, kermit_parser::JoinQuery};
+mod optimiser_enum_tests {
+    use super::*;
 
+    /// Pins `axis_value` to clap's derived kebab-case value name, so a
+    /// variant rename cannot silently desync the CLI value from the
+    /// bench-report `optimiser` axis.
     #[test]
-    fn for_query_records_relations_and_const_singletons() {
-        let q: JoinQuery = "Q(X) :- R(X, K0), Const_c5(K0).".parse().unwrap();
-        let stats = CatalogStats::for_query(&q, |name| match name {
-            | "R" => Some(42),
-            | _ => None,
-        });
-        assert_eq!(stats.tuples("R"), Some(42));
-        assert_eq!(stats.tuples("Const_c5"), Some(1));
-        assert_eq!(stats.tuples("Unknown"), None);
-    }
-
-    #[test]
-    fn for_query_skips_unknown_relations() {
-        let q: JoinQuery = "Q(X) :- R(X), Mystery(X).".parse().unwrap();
-        let stats = CatalogStats::for_query(&q, |name| (name == "R").then_some(7));
-        assert_eq!(stats.tuples("Mystery"), None);
-    }
-
-    #[test]
-    fn for_query_looks_up_each_relation_once() {
-        use std::cell::Cell;
-        let q: JoinQuery = "Q(X, Z) :- R(X, Y), R(Y, Z).".parse().unwrap();
-        let lookups = Cell::new(0);
-        let stats = CatalogStats::for_query(&q, |name| {
-            lookups.set(lookups.get() + 1);
-            (name == "R").then_some(9)
-        });
-        assert_eq!(stats.tuples("R"), Some(9));
-        assert_eq!(lookups.get(), 1);
+    fn axis_values_match_clap_value_names() {
+        for v in Optimiser::value_variants() {
+            assert_eq!(v.axis_value(), v.to_possible_value().unwrap().get_name());
+        }
     }
 }

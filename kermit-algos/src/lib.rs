@@ -4,21 +4,39 @@
 //! which performs worst-case optimal multi-way joins over trie-structured
 //! relations. The algorithm is generic over any data structure that implements
 //! [`TrieIterable`](kermit_iters::TrieIterable).
+//!
+//! # Layout
+//!
+//! The crate is organised in four parts. Two are family-agnostic and sit at
+//! the root — `const_rewrite`, which turns constant atoms into synthetic
+//! unary predicates, and `analysis`, the canonical variable numbering that
+//! planners and executors must agree on. `optimiser` plans a
+//! [`QueryPlan`]. The remaining two are the iterator families, `sorted`
+//! (over [`TrieIterable`](kermit_iters::TrieIterable)) and `hash` (over
+//! [`HashTrieIterable`](kermit_iters::HashTrieIterable)); they share no
+//! code and never reference each other.
+//!
+//! Everything is re-exported flat from this root, so consumers name
+//! `kermit_algos::HashTriejoin`, never the family path.
 #![deny(missing_docs)]
 
+mod analysis;
 mod const_rewrite;
 mod hash;
 mod join_algo;
 mod optimiser;
 mod sorted;
 
-// `clap::ValueEnum` is derived here, in a library crate, on purpose: it keeps
+// `clap::ValueEnum` is derived in this library crate on purpose: it keeps
 // the registry enums beside the implementations they name, so adding an
 // algorithm or optimiser touches one file for both the type and its CLI
 // spelling. The cost is `clap` in this crate's dependency tree. Decided in
-// aidan-bailey/kermit#60 (item 5).
+// aidan-bailey/kermit#60 (item 5). `JoinAlgorithm` lives here rather than in
+// a family module because it spans both families; `Optimiser` lives beside
+// its implementations in `optimiser`.
 use clap::ValueEnum;
 pub use {
+    analysis::{analyse, QueryAnalysis},
     const_rewrite::{
         is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
     },
@@ -26,8 +44,8 @@ pub use {
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     optimiser::{
-        analyse, topological_order, CardinalityOptimiser, CatalogStats, LexicographicOptimiser,
-        PlanError, QueryAnalysis, QueryOptimiser, QueryPlan, RelationStats,
+        topological_order, CardinalityOptimiser, CatalogStats, LexicographicOptimiser, Optimiser,
+        PlanError, QueryOptimiser, QueryPlan, RelationStats,
     },
     sorted::{LeapfrogTriejoin, SingletonTrieIter, TrieIterKind},
 };
@@ -42,53 +60,4 @@ pub enum JoinAlgorithm {
     /// The [Leapfrog Triejoin](https://arxiv.org/abs/1210.0481) algorithm;
     /// see [`LeapfrogTriejoin`].
     LeapfrogTriejoin,
-}
-
-/// The available query optimisers.
-///
-/// Used as a CLI argument to select which [`QueryOptimiser`] plans the
-/// join's variable ordering. Distinct from the optimization *axes*
-/// standard (`ds_layout_*` etc.) — the optimiser is a first-class
-/// benchmark dimension with its own `optimiser` report axis.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
-pub enum Optimiser {
-    /// Smallest canonical variable index first — reproduces the
-    /// pre-optimiser hardcoded ordering. The default.
-    Lexicographic,
-    /// Smallest-relation-first; see [`CardinalityOptimiser`].
-    Cardinality,
-}
-
-impl Optimiser {
-    /// Boxes the corresponding [`QueryOptimiser`] implementation.
-    pub fn instantiate(self) -> Box<dyn QueryOptimiser> {
-        match self {
-            | Self::Lexicographic => Box::new(LexicographicOptimiser),
-            | Self::Cardinality => Box::new(CardinalityOptimiser),
-        }
-    }
-
-    /// The bench-report axis value for this optimiser (the `optimiser`
-    /// key).
-    pub fn axis_value(self) -> &'static str {
-        match self {
-            | Self::Lexicographic => "lexicographic",
-            | Self::Cardinality => "cardinality",
-        }
-    }
-}
-
-#[cfg(test)]
-mod optimiser_enum_tests {
-    use super::*;
-
-    /// Pins `axis_value` to clap's derived kebab-case value name, so a
-    /// variant rename cannot silently desync the CLI value from the
-    /// bench-report `optimiser` axis.
-    #[test]
-    fn axis_values_match_clap_value_names() {
-        for v in Optimiser::value_variants() {
-            assert_eq!(v.axis_value(), v.to_possible_value().unwrap().get_name());
-        }
-    }
 }
