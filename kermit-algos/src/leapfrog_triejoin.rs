@@ -22,7 +22,7 @@ use {
 
 /// Extension of [`LeapfrogJoinIterator`] with trie navigation for the
 /// [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
+pub(crate) trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
     /// Descends one level in the trie, opening child iterators at the current
     /// key and initializing the leapfrog join at the new depth.
     fn triejoin_open(&mut self) -> bool;
@@ -67,7 +67,7 @@ pub trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
 /// join semantics are identical; the cost is a drain/refill and a fresh
 /// inner leapfrog per depth change, accepted to keep the implementation in
 /// safe, ownership-idiomatic Rust.
-pub struct LeapfrogTriejoinIter<IT>
+pub(crate) struct LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
@@ -145,7 +145,7 @@ where
     ///   order as `iters`); each entry lists the variable IDs that predicate
     ///   carries.
     /// * `iters` — Trie iterators, one per body predicate.
-    pub fn new(
+    pub(crate) fn new(
         variable_ordering: Vec<usize>, predicate_variables: Vec<Vec<usize>>, iters: Vec<IT>,
     ) -> Self {
         // Build the variable-to-iterator lookup table. For each depth (position

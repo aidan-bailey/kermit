@@ -21,7 +21,7 @@ pub enum TrieIterKind<'a, R: TrieIterable> {
 
 /// Iterator produced by [`TrieIterKind::trie_iter`]; dispatches all
 /// `TrieIterator` / `LinearIterator` methods to the inner variant.
-pub enum KindIter<IT>
+pub(crate) enum KindIter<IT>
 where
     IT: TrieIterator,
 {

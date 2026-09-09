@@ -35,7 +35,7 @@ Arrows read "depends on". Only production (`[dependencies]`) edges are listed.
 kermit         ──▶ kermit-iters, kermit-ds, kermit-algos,
                    kermit-parser, kermit-bench, kermit-rdf
 kermit-rdf     ──▶ kermit-bench
-kermit-algos   ──▶ kermit-iters, kermit-derive, kermit-parser
+kermit-algos   ──▶ kermit-iters, kermit-parser
 kermit-ds      ──▶ kermit-iters, kermit-derive
 kermit-derive  ──▶ (none)
 kermit-parser  ──▶ (none)

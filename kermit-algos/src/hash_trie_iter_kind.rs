@@ -23,7 +23,7 @@ pub enum HashTrieIterKind<'a, R: HashTrieIterable> {
 
 /// Iterator produced by [`HashTrieIterKind::hash_trie_iter`]; dispatches
 /// all [`HashTrieIterator`] methods to the inner variant.
-pub enum HashKindIter<IT>
+pub(crate) enum HashKindIter<IT>
 where
     IT: HashTrieIterator,
 {

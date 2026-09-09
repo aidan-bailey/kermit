@@ -108,7 +108,7 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|lis
                   All Criterion execution lives here (including SpaceMeasurement).
 ```
 
-**Dependency flow:** `kermit-iters`/`kermit-derive` → `kermit-ds`; `kermit-iters`/`kermit-derive`/`kermit-parser` → `kermit-algos`; `kermit-bench` → `kermit-rdf`; everything → `kermit` (binary). Three crates are leaves with no internal deps: `kermit-iters`, `kermit-parser`, `kermit-bench`. `kermit-parser` is consumed by `kermit-algos` only. `kermit-algos` pulls `kermit-ds` in as a dev-dependency only, so there is no production edge between them.
+**Dependency flow:** `kermit-iters`/`kermit-derive` → `kermit-ds`; `kermit-iters`/`kermit-parser` → `kermit-algos`; `kermit-bench` → `kermit-rdf`; everything → `kermit` (binary). Three crates are leaves with no internal deps: `kermit-iters`, `kermit-parser`, `kermit-bench`. `kermit-parser` is consumed by `kermit-algos` only. `kermit-algos` pulls `kermit-ds` in as a dev-dependency only, so there is no production edge between them.
 
 > `kermit-rdf` depends on `kermit-bench` **only** — deliberately. Its link to the query layer is textual, not structural: `sparql::translator` emits a Datalog *string* into the generated `benchmark.yml`, parsed by `kermit-parser` later (in the binary, at bench-run time). It never constructs a relation, so it needs no `kermit-ds`. Don't re-add either dependency to satisfy a type — if you find yourself wanting one, the pipeline boundary has probably moved.
 

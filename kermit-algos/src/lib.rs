@@ -22,7 +22,7 @@ mod trie_iter_kind;
 // algorithm or optimiser touches one file for both the type and its CLI
 // spelling. The cost is `clap` in this crate's dependency tree. Decided in
 // aidan-bailey/kermit#60 (item 5).
-use {clap::ValueEnum, std::str::FromStr};
+use clap::ValueEnum;
 pub use {
     const_rewrite::{
         is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
@@ -51,18 +51,6 @@ pub enum JoinAlgorithm {
     /// The [Leapfrog Triejoin](https://arxiv.org/abs/1210.0481) algorithm;
     /// see [`LeapfrogTriejoin`].
     LeapfrogTriejoin,
-}
-
-impl FromStr for JoinAlgorithm {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            | "hash_triejoin" => Ok(Self::HashTriejoin),
-            | "leapfrog_triejoin" => Ok(Self::LeapfrogTriejoin),
-            | _ => Err(format!("Invalid join algorithm: {}", s)),
-        }
-    }
 }
 
 /// The available query optimisers.
