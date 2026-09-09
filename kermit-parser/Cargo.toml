@@ -10,5 +10,5 @@ readme.workspace = true
 repository.workspace = true
 
 [dependencies]
-winnow = "0.7.13"
+winnow = "1.0.4"
 

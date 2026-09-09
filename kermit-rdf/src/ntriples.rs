@@ -36,7 +36,7 @@ fn map_triple(
         message: e.to_string(),
     })?;
     let subject_iri = match triple.subject {
-        | oxrdf::Subject::NamedNode(n) => n.into_string(),
+        | oxrdf::NamedOrBlankNode::NamedNode(n) => n.into_string(),
         | other => {
             return Err(RdfError::NTriplesParse {
                 line,

@@ -10,9 +10,9 @@ readme.workspace = true
 repository.workspace = true
 
 [dependencies]
-arrow = "56.2.0"
+arrow = "59.3.0"
 csv = "1.1"
-parquet = "56.2.0"
+parquet = "59.3.0"
 kermit-iters = { version = "0.0.10", path = "../kermit-iters" }
 kermit-derive = { version = "0.0.7", path = "../kermit-derive" }
 clap = { version = "4.4", features = ["derive" ] }

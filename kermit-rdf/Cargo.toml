@@ -11,16 +11,16 @@ repository.workspace = true
 
 [dependencies]
 kermit-bench = { version = "0.1.2", path = "../kermit-bench" }
-arrow = "56.2.0"
-parquet = "56.2.0"
+arrow = "59.3.0"
+parquet = "59.3.0"
 flate2 = "1"
-oxrdf = "0.2"
-oxttl = "0.1"
-spargebra = "0.3"
+oxrdf = "0.3"
+oxttl = "0.2"
+spargebra = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-sha2 = "0.10"
+sha2 = "0.11"
 tempfile = "3"
 thiserror = "2"
 regex-lite = "0.1"
