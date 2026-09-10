@@ -67,7 +67,7 @@ fn cli_join_intersection_hash_trie() {
 /// every valid cell. Only the head column is asserted: the entry points
 /// emit every variable, including the fresh one the selection rewrite
 /// introduces (the same leak the const rewrite has), so each row is
-/// `X,X`. Head projection is tracked separately.
+/// `X,X`. Head projection is tracked in issue #71.
 fn assert_cli_diagonal(algorithm: &str, indexstructure: &str) {
     let output = run_join(
         &["diagonal.csv"],

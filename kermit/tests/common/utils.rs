@@ -61,7 +61,8 @@ impl<H: HashStrategy, P: PruningPolicy, C> JoinEntry<Configured<HashTrie<H, P>, 
 /// order (`kermit_algos::analyse`), and the entry points emit every
 /// variable in canonical order, so truncating each row to the head's
 /// length is the projection. Body-only variables — including the fresh
-/// ones the rewrites introduce — are dropped this way.
+/// ones the rewrites introduce — are dropped this way (issue #71 tracks
+/// doing this in the entry points themselves).
 pub fn test_join<R, JA, O>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     result: Vec<Vec<usize>>,
