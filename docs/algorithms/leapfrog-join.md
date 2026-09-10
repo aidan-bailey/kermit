@@ -78,4 +78,4 @@ First common key = `2`. `leapfrog_next` advances the ring head, eventually surfa
 ## See also
 
 - [`LeapfrogTriejoin`](./leapfrog-triejoin.md) — multi-way trie join that invokes `LeapfrogJoin` at every depth.
-- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — `LeapfrogTriejoin` (which wraps `LeapfrogJoin`) must pass all 11 patterns under every index structure (Priorities item 1).
+- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — `LeapfrogTriejoin` (which wraps `LeapfrogJoin`) must pass all 14 patterns under every index structure (Priorities item 1).

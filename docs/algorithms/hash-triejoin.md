@@ -1,6 +1,6 @@
 # `HashTriejoin`
 
-> **Status:** experimental · **CLI:** `-a hash-triejoin` · **Implementation:** [`kermit_algos::hash_triejoin`](../../kermit-algos/src/hash_triejoin.rs)
+> **Status:** experimental · **CLI:** `-a hash-triejoin` · **Implementation:** [`kermit_algos::hash_triejoin`](../../kermit-algos/src/hash/hash_triejoin.rs)
 
 ## What it is
 
@@ -33,7 +33,7 @@ function enumerate(i):                              # Alg. 3 line 1
 
 Rust mapping:
 
-- `enumerate(i)` → `fn enumerate(i, arity, iters, predicate_variables, variable_to_iter_map, output)` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash_triejoin.rs).
+- `enumerate(i)` → `fn enumerate(i, arity, iters, predicate_variables, variable_to_iter_map, output)` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs).
 - Lines 16–19 → `fn emit_leaf(iters, predicate_variables, arity, output)`.
 - Line 18's verification → `fn verify_and_construct(candidate, predicate_variables, arity)`.
 
@@ -42,8 +42,9 @@ Rust mapping:
 - **Iterators in `I_join` are in lockstep.** When `enumerate(i)` calls `open()` on every iterator in `I_join`, all of them descend to depth `i+1`. The `up()` calls after recursion symmetrically restore the depth. Any iterator that fails `open()` short-circuits the descent — the corresponding `up()` calls are limited to the iterators that successfully opened, preventing depth drift.
 - **`enumerate` opens iterators at entry and ascends at exit.** The design diverged from the paper's pseudocode here for ergonomics — Algorithm 3 expects callers to have already descended the iterators before invoking `enumerate(i)`. The Rust implementation works on un-opened iterators: it issues `open()` on every participant in `I_join` at the start of the call and matches each successful descent with an `up()` before returning. This keeps the caller (the top-level `join_iter` entry point) free of bookkeeping at the cost of one extra descend/ascend per recursive level.
 - **`I_scan` choice is local to each level.** The argmin is recomputed at every depth; the choice doesn't affect correctness, only the cost of probing the other iterators.
-- **Hash collision rejection is at the leaves.** Inner-level `lookup(h)` may succeed on a false-positive hash match. The leaf-level `verify_and_construct` is the only place where actual key equality is enforced — every result tuple emerges from there. The `*_collision_*` tests in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash_triejoin.rs) force a real collision (a test-only `hash(k) = k mod 10` strategy on a real `HashTrie`) and check that the phantom candidate is rejected both by `verify_and_construct` directly and end-to-end through `join_iter`.
-- **Singleton iterators participate normally.** The const-view rewrite produces synthetic unary predicates backed by `SingletonHashTrieIter`. These satisfy `HashTrieIterator`'s contract via the [`HashTrieIterKind::Singleton`](../../kermit-algos/src/hash_trie_iter_kind.rs) variant.
+- **Hash collision rejection is at the leaves.** Inner-level `lookup(h)` may succeed on a false-positive hash match. The leaf-level `verify_and_construct` is the only place where actual key equality is enforced — every result tuple emerges from there. The `*_collision_*` tests in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs) force a real collision (a test-only `hash(k) = k mod 10` strategy on a real `HashTrie`) and check that the phantom candidate is rejected both by `verify_and_construct` directly and end-to-end through `join_iter`.
+- **Singleton iterators participate normally.** The const-view rewrite produces synthetic unary predicates backed by `SingletonHashTrieIter`. These satisfy `HashTrieIterator`'s contract via the [`HashTrieIterKind::Singleton`](../../kermit-algos/src/hash/iter_kind.rs) variant.
+- **Repeated variables never reach the join.** The entry point also runs `rewrite_repeated_variables` ([selection_rewrite.rs](../../kermit-algos/src/selection_rewrite.rs)), so an atom such as `r(X, X)` arrives as `Select_0_r(X, K0)` backed by an [`EqualitySelectionHashTrieIter`](../../kermit-algos/src/hash/selection.rs) through the [`HashTrieIterKind::Selection`](../../kermit-algos/src/hash/iter_kind.rs) variant. At the repeat's level the view is a one-bucket table (`size() == 1`, so `enumerate` picks it as `I_scan`) admitting only the hash it passed at the source level. Hash equality is not value equality, so the view also filters its leaf chain by value — the "collision rejection is at the leaves" rule applies inside the view too, and a `hash(k) = k mod 10` test pins it. Before the rewrite the algorithm opened `r` once and panicked in `emit_leaf`.
 - **The result is materialised, not streamed.** `join_iter` runs `enumerate` to completion, collecting every tuple into a `Vec`, and only then returns `output.into_iter()`. This satisfies the same `impl Iterator` signature as [LFTJ](leapfrog-triejoin.md), which yields lazily, so the asymmetry is invisible to callers that consume the whole result (as `DB::join` does). Any future time-to-first-tuple or peak-memory metric would be comparing unlike things; see the note on `JoinAlgo::join_iter`.
 - **Variable ordering arrives as a plan, not a self-computed order.** `join_iter` no longer derives the descent order itself (the earlier per-algorithm `build_variable_index`/`global_attribute_order` helper has been deleted); it receives a `QueryPlan` produced ahead of time by a [`QueryOptimiser`](../optimisers/), validates it with [`QueryPlan::validate`](../../kermit-algos/src/optimiser/plan.rs), and panics on an invalid plan. The default [`LexicographicOptimiser`](../optimisers/lexicographic.md) reproduces the previously hardcoded Kahn's-with-smallest-index order, so documented behaviour is unchanged by default. LFTJ shares the exact same `QueryPlan` contract.
 
@@ -96,11 +97,11 @@ Trace:
 
 Output (sorted): `[[1, 2, 3], [1, 2, 4]]`.
 
-Related test: `join_algo_triangle` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash_triejoin.rs) exercises this same triangle-query path under `HashTriejoin` (with different sample data).
+Related test: `join_algo_triangle` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs) exercises this same triangle-query path under `HashTriejoin` (with different sample data).
 
 ## See also
 
 - [`HashTrie`](../data-structures/hash-trie.md) — the only data structure this algorithm consumes.
 - [`LeapfrogTriejoin`](./leapfrog-triejoin.md) — sibling worst-case-optimal algorithm using sorted (LFTJ) intersection.
 - [`docs/optimisers/`](../optimisers/) — the `QueryOptimiser` implementations that plan the `QueryPlan` this algorithm executes.
-- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this algorithm must pass all 11 patterns under `HashTrie` (Priorities item 1).
+- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this algorithm must pass all 14 patterns under `HashTrie` (Priorities item 1).

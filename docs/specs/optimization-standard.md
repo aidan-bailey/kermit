@@ -455,7 +455,7 @@ on `bench ds` and `bench run`.
 
 Use `define_multiway_join_test_suite_with_config!` (`kermit/tests/common/macros.rs`).
 It declares the `Configured<Relation, Provider>` alias inside a module of its
-own and runs the 12 standard join patterns on it:
+own and runs the 14 standard join patterns on it:
 
 ```rust
 use kermit_ds::{define_config_provider, HashTrieConfig, LoadFactor};

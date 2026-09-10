@@ -48,5 +48,5 @@ A short paragraph. Workload shapes where this structure shines vs. siblings. Wor
 ## See also
 
 - Sibling docs in `docs/data-structures/`.
-- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this structure must pass all 11 patterns under every compatible algorithm (Priorities item 1).
+- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this structure must pass all 14 patterns under every compatible algorithm (Priorities item 1).
 - Algorithm doc(s) that consume the `TrieIterable` contract.

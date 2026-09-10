@@ -88,4 +88,4 @@ Iteration walk:
 
 - [`TreeTrie`](./tree-trie.md) — pointer-based alternative.
 - [`LeapfrogTriejoin`](../algorithms/leapfrog-triejoin.md) — primary algorithm consumer.
-- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; `ColumnTrie` must pass all 11 patterns under every algorithm (Priorities item 1).
+- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; `ColumnTrie` must pass all 14 patterns under every algorithm (Priorities item 1).
