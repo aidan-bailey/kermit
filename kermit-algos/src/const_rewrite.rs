@@ -118,7 +118,10 @@ fn parse_const_atom(s: &str) -> Result<usize, RewriteError> {
         .map_err(|_| RewriteError::BadAtom(s.to_string()))
 }
 
-fn highest_k_index(query: &JoinQuery) -> Option<usize> {
+/// Highest `n` among existing `K<n>` variable names in `query`, if any.
+/// Shared with [`crate::rewrite_repeated_variables`] so both rewrites draw
+/// fresh names from one counter.
+pub(crate) fn highest_k_index(query: &JoinQuery) -> Option<usize> {
     let scan = |p: &Predicate| -> Option<usize> {
         p.terms
             .iter()

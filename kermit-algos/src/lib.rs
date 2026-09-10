@@ -7,10 +7,12 @@
 //!
 //! # Layout
 //!
-//! The crate is organised in four parts. Two are family-agnostic and sit at
-//! the root — `const_rewrite`, which turns constant atoms into synthetic
-//! unary predicates, and `analysis`, the canonical variable numbering that
-//! planners and executors must agree on. `optimiser` plans a
+//! The crate is organised in five parts. Three are family-agnostic and sit
+//! at the root — `const_rewrite`, which turns constant atoms into synthetic
+//! unary predicates; `selection_rewrite`, which turns a variable repeated
+//! inside one atom into a fresh variable plus a synthetic selection view;
+//! and `analysis`, the canonical variable numbering that planners and
+//! executors must agree on. `optimiser` plans a
 //! [`QueryPlan`]. The remaining two are the iterator families, `sorted`
 //! (over [`TrieIterable`](kermit_iters::TrieIterable)) and `hash` (over
 //! [`HashTrieIterable`](kermit_iters::HashTrieIterable)); they share no
@@ -25,6 +27,7 @@ mod const_rewrite;
 mod hash;
 mod join_algo;
 mod optimiser;
+mod selection_rewrite;
 mod sorted;
 
 // `clap::ValueEnum` is derived in this library crate on purpose: it keeps
@@ -40,14 +43,18 @@ pub use {
     const_rewrite::{
         is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
     },
-    hash::{HashTrieIterKind, HashTriejoin, SingletonHashTrieIter},
+    hash::{EqualitySelectionHashTrieIter, HashTrieIterKind, HashTriejoin, SingletonHashTrieIter},
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     optimiser::{
         topological_order, CardinalityOptimiser, CatalogStats, LexicographicOptimiser, Optimiser,
         PlanError, QueryOptimiser, QueryPlan, RelationStats,
     },
-    sorted::{LeapfrogTriejoin, SingletonTrieIter, TrieIterKind},
+    selection_rewrite::{
+        is_selection_predicate, rewrite_repeated_variables, ColumnEquality, SelectionSpec,
+        SELECTION_PREDICATE_PREFIX,
+    },
+    sorted::{EqualitySelectionTrieIter, LeapfrogTriejoin, SingletonTrieIter, TrieIterKind},
 };
 
 /// The available join algorithm implementations.
