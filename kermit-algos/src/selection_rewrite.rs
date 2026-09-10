@@ -129,11 +129,7 @@ pub fn rewrite_repeated_variables(mut query: JoinQuery) -> (JoinQuery, Vec<Selec
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        crate::rewrite_atoms,
-        kermit_parser::Predicate,
-    };
+    use {super::*, crate::rewrite_atoms, kermit_parser::Predicate};
 
     fn parse(q: &str) -> JoinQuery { q.parse().unwrap() }
 

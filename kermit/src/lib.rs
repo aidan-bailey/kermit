@@ -31,6 +31,11 @@ use {
 /// Constructs a synthetic Datalog query from the `variables` and
 /// `rel_variables` mappings, builds one `R` per input relation, and executes
 /// the join via `JA`.
+///
+/// Calls [`JoinAlgo::join_iter`] directly, so neither the const-view nor
+/// the selection rewrite runs: `rel_variables` must contain no repeated
+/// index within one entry. Use [`db::lftj_join`] / [`db::hash_join`] for
+/// queries that need them.
 pub fn compute_join<R, JA>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
 ) -> Vec<Vec<usize>>

@@ -13,9 +13,8 @@
 //!
 //! - [`singleton`] — the unary one-value relation standing in for a constant
 //!   atom, per the [const-view rewrite](crate::const_rewrite).
-//! - [`selection`] — the equality-selection view standing in for an atom
-//!   with a repeated variable, per the
-//!   [selection rewrite](crate::selection_rewrite).
+//! - [`selection`] — the equality-selection view standing in for an atom with a
+//!   repeated variable, per the [selection rewrite](crate::selection_rewrite).
 //! - [`iter_kind`] — the wrapper letting an algorithm hold real relations,
 //!   synthetic singletons and selection views under one type.
 //! - one module per algorithm ([`leapfrog_join`], [`leapfrog_triejoin`]), each

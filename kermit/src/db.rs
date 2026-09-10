@@ -4,23 +4,26 @@
 //! tries under a [`TrieIterable`]-family algorithm, [`hash_join`] for
 //! [`HashTrieIterable`] structures under [`HashTriejoin`] — over the same
 //! shape of relation store, a `BTreeMap<String, R>` keyed by relation name.
-//! Both share one private body and differ only in how a relation and a
-//! constant are wrapped for the algorithm (the [`JoinFamily`] trait).
+//! Both share one private body and differ only in how a relation, a
+//! constant and a selection view are wrapped for the algorithm (the
+//! [`JoinFamily`] trait).
 //! Runtime selection of the (structure, algorithm) cell lives in the CLI's
 //! `execution` module, not here.
 
 use {
     kermit_algos::{
-        is_const_predicate, rewrite_atoms, CatalogStats, HashTrieIterKind, HashTriejoin, JoinAlgo,
-        JoinQuery, QueryOptimiser, SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
+        is_const_predicate, is_selection_predicate, rewrite_atoms, rewrite_repeated_variables,
+        CatalogStats, ColumnEquality, HashTrieIterKind, HashTriejoin, JoinAlgo, JoinQuery,
+        QueryOptimiser, SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
     },
     kermit_ds::Cardinality,
     kermit_iters::{HashStrategy, HashTrieIterable, JoinIterable, TrieIterable},
     std::collections::{BTreeMap, HashMap},
 };
 
-/// How one iterator family wraps a stored relation and a constant atom into
-/// the [`JoinIterable`] its algorithms consume.
+/// How one iterator family wraps a stored relation, a constant atom and an
+/// equality-selection view into the [`JoinIterable`] its algorithms
+/// consume.
 ///
 /// The two wrapper enums ([`TrieIterKind`] and [`HashTrieIterKind`]) are
 /// structurally identical; the only real asymmetry is that the hash family
@@ -39,6 +42,10 @@ pub trait JoinFamily<R> {
     fn wrap_const<'a>(id: usize) -> Self::Wrapper<'a>
     where
         R: 'a;
+
+    /// Wraps a borrowed relation viewed through column `equalities`, standing
+    /// in for an atom that repeated a variable.
+    fn wrap_selection(relation: &R, equalities: Vec<ColumnEquality>) -> Self::Wrapper<'_>;
 }
 
 /// [`JoinFamily`] for sorted tries: [`TrieIterKind`] wrappers.
@@ -57,6 +64,13 @@ impl<R: TrieIterable> JoinFamily<R> for SortedFamily {
         R: 'a,
     {
         TrieIterKind::Singleton(SingletonTrieIter::new(id))
+    }
+
+    fn wrap_selection(relation: &R, equalities: Vec<ColumnEquality>) -> Self::Wrapper<'_> {
+        TrieIterKind::Selection {
+            relation,
+            equalities,
+        }
     }
 }
 
@@ -78,10 +92,17 @@ impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
     {
         HashTrieIterKind::Singleton(SingletonHashTrieIter::new(id, H::hash(id)))
     }
+
+    fn wrap_selection(relation: &R, equalities: Vec<ColumnEquality>) -> Self::Wrapper<'_> {
+        HashTrieIterKind::Selection {
+            relation,
+            equalities,
+        }
+    }
 }
 
-/// The one join body: const-view rewrite, wrapper map, statistics, plan,
-/// execute.
+/// The one join body: const-view rewrite, selection rewrite, wrapper map,
+/// statistics, plan, execute.
 ///
 /// `label` names the entry point in the unknown-relation panic so a CLI
 /// user can tell which family rejected the query.
@@ -99,41 +120,58 @@ where
     F: JoinFamily<R>,
     JA: JoinAlgo<F::Wrapper<'a>>,
 {
+    // Const first, then selection: the second pass then sees an atom-free
+    // body, and the two share one fresh-variable counter.
     let (rewritten, const_specs) = rewrite_atoms(query).expect("malformed constant atom in query");
+    let (rewritten, selection_specs) = rewrite_repeated_variables(rewritten);
+
+    let lookup = |name: &str| -> &'a R {
+        relations.get(name).unwrap_or_else(|| {
+            panic!(
+                "{label}: query body references unknown relation {name:?}; known relations: {:?}",
+                relations.keys().collect::<Vec<_>>(),
+            )
+        })
+    };
 
     let mut wrappers: HashMap<String, F::Wrapper<'a>> = HashMap::new();
     for pred in &rewritten.body {
         if wrappers.contains_key(&pred.name) {
             continue;
         }
-        // Const_* predicates are synthetic — created by rewrite_atoms
-        // above and materialised from const_specs below. They aren't
-        // expected to live in `relations`.
-        if is_const_predicate(&pred.name) {
+        // Const_* and Select_* predicates are synthetic — created by the
+        // rewrites above and materialised from their specs below. They
+        // aren't expected to live in `relations`.
+        if is_const_predicate(&pred.name) || is_selection_predicate(&pred.name) {
             continue;
         }
-        match relations.get(&pred.name) {
-            | Some(r) => {
-                wrappers.insert(pred.name.clone(), F::wrap_relation(r));
-            },
-            | None => panic!(
-                "{label}: query body references unknown relation {:?}; known relations: {:?}",
-                pred.name,
-                relations.keys().collect::<Vec<_>>(),
-            ),
-        }
+        wrappers.insert(pred.name.clone(), F::wrap_relation(lookup(&pred.name)));
     }
     for (name, id) in const_specs {
         wrappers.entry(name).or_insert_with(|| F::wrap_const(id));
+    }
+    for spec in &selection_specs {
+        let base = lookup(&spec.relation);
+        wrappers.insert(
+            spec.name.clone(),
+            F::wrap_selection(base, spec.equalities.clone()),
+        );
     }
 
     let ds_map: HashMap<String, &F::Wrapper<'a>> =
         wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
 
     // Stats + planning run per join — inside benchmarks' measured region —
-    // so this stays O(#predicates) on top of O(1) tuple_count() reads.
+    // so this stays O(#predicates) on top of O(1) tuple_count() reads. A
+    // selection view reports its base relation's count: an upper bound,
+    // which is the conservative value for a cardinality-driven planner.
+    let base_of: HashMap<&str, &str> = selection_specs
+        .iter()
+        .map(|s| (s.name.as_str(), s.relation.as_str()))
+        .collect();
     let stats = CatalogStats::for_query(&rewritten, |name| {
-        relations.get(name).map(Cardinality::tuple_count)
+        let base = base_of.get(name).copied().unwrap_or(name);
+        relations.get(base).map(Cardinality::tuple_count)
     });
     let plan = optimiser.plan(&rewritten, &stats);
 
@@ -233,6 +271,67 @@ mod tests {
         );
     }
 
+    /// `Q(X) :- r(X, X).` — the PROBLEMS.md repro. Before the selection
+    /// rewrite this returned every first-column key of `r`.
+    #[test]
+    fn test_join_diagonal() {
+        let relations = rels(vec![("r", 2, vec![
+            vec![1, 1],
+            vec![1, 2],
+            vec![2, 3],
+            vec![3, 3],
+            vec![4, 5],
+        ])]);
+        let query: JoinQuery = "Q(X) :- r(X, X).".parse().unwrap();
+        let mut got: Vec<usize> =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .iter()
+                .map(|r| r[0])
+                .collect();
+        got.sort();
+        assert_eq!(got, vec![1, 3]);
+    }
+
+    /// Both rewrites on one atom: the constant takes `K0`, the repeat
+    /// `K1`, and the view enforces column 0 = column 2.
+    #[test]
+    fn test_join_const_and_repeat() {
+        let relations = rels(vec![("r", 3, vec![
+            vec![1, 5, 1],
+            vec![1, 5, 2],
+            vec![2, 6, 2],
+            vec![3, 5, 3],
+        ])]);
+        let query: JoinQuery = "Q(X) :- r(X, c5, X).".parse().unwrap();
+        let mut got: Vec<usize> =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .iter()
+                .map(|r| r[0])
+                .collect();
+        got.sort();
+        assert_eq!(got, vec![1, 3]);
+    }
+
+    /// Two views of one relation: `r(X, X)` becomes a selection view while
+    /// `r(X, Y)` stays the base relation.
+    #[test]
+    fn test_join_mixed_occurrences() {
+        let relations = rels(vec![("r", 2, vec![
+            vec![1, 1],
+            vec![1, 2],
+            vec![2, 3],
+            vec![3, 3],
+        ])]);
+        let query: JoinQuery = "Q(X, Y) :- r(X, X), r(X, Y).".parse().unwrap();
+        let mut got: Vec<(usize, usize)> =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .iter()
+                .map(|r| (r[0], r[1]))
+                .collect();
+        got.sort();
+        assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
+    }
+
     #[test]
     #[should_panic(expected = "unknown relation")]
     fn test_join_panics_on_missing_relation() {
@@ -317,5 +416,75 @@ mod hash_join_tests {
             vec![1, 2],
             "expected only X=1, X=2 to pass the c5 filter, got {got:?}"
         );
+    }
+
+    /// `Q(X) :- r(X, X).` — the PROBLEMS.md repro. Before the selection
+    /// rewrite this panicked in `emit_leaf` ("at leaf level for every
+    /// participating iter") because `r` was opened only once.
+    #[test]
+    fn hash_join_diagonal() {
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
+        relations.insert(
+            "r".to_string(),
+            HashTrie::from_tuples(2.into(), vec![
+                vec![1, 1],
+                vec![1, 2],
+                vec![2, 3],
+                vec![3, 3],
+                vec![4, 5],
+            ]),
+        );
+        let q: JoinQuery = "Q(X) :- r(X, X).".parse().unwrap();
+        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+            &relations,
+            q,
+            &LexicographicOptimiser,
+        );
+        let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
+        got.sort();
+        assert_eq!(got, vec![1, 3]);
+    }
+
+    #[test]
+    fn hash_join_const_and_repeat() {
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
+        relations.insert(
+            "r".to_string(),
+            HashTrie::from_tuples(3.into(), vec![
+                vec![1, 5, 1],
+                vec![1, 5, 2],
+                vec![2, 6, 2],
+                vec![3, 5, 3],
+            ]),
+        );
+        let q: JoinQuery = "Q(X) :- r(X, c5, X).".parse().unwrap();
+        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+            &relations,
+            q,
+            &LexicographicOptimiser,
+        );
+        let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
+        got.sort();
+        assert_eq!(got, vec![1, 3]);
+    }
+
+    #[test]
+    fn hash_join_mixed_occurrences() {
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
+        relations.insert(
+            "r".to_string(),
+            HashTrie::from_tuples(2.into(), vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![
+                3, 3,
+            ]]),
+        );
+        let q: JoinQuery = "Q(X, Y) :- r(X, X), r(X, Y).".parse().unwrap();
+        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+            &relations,
+            q,
+            &LexicographicOptimiser,
+        );
+        let mut got: Vec<(usize, usize)> = result.iter().map(|r| (r[0], r[1])).collect();
+        got.sort();
+        assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
     }
 }

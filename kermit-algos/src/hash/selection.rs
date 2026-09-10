@@ -13,10 +13,7 @@
 //! [`HashTriejoin`](crate::HashTriejoin) invariant) applies inside the view
 //! as well as across relations.
 
-use {
-    crate::selection_rewrite::ColumnEquality,
-    kermit_iters::HashTrieIterator,
-};
+use {crate::selection_rewrite::ColumnEquality, kermit_iters::HashTrieIterator};
 
 /// Bookkeeping for one open level of the inner iterator.
 #[derive(Debug, Clone, Copy)]
@@ -62,11 +59,7 @@ pub struct EqualitySelectionHashTrieIter<IT: HashTrieIterator> {
 impl<IT: HashTrieIterator> EqualitySelectionHashTrieIter<IT> {
     /// Wraps `inner`, positioned at its root, with the given equalities.
     pub fn new(inner: IT, equalities: &[ColumnEquality]) -> Self {
-        let width = equalities
-            .iter()
-            .map(|e| e.repeat + 1)
-            .max()
-            .unwrap_or(0);
+        let width = equalities.iter().map(|e| e.repeat + 1).max().unwrap_or(0);
         let mut source_of = vec![None; width];
         for e in equalities {
             debug_assert!(e.source < e.repeat, "source column must precede the repeat");
@@ -231,7 +224,9 @@ mod tests {
     /// `HashTriejoin::enumerate` does: scan each level, descend, collect
     /// leaf chains.
     fn collect<IT: HashTrieIterator>(it: &mut IT, arity: usize) -> Vec<Vec<usize>> {
-        fn go<IT: HashTrieIterator>(it: &mut IT, depth: usize, arity: usize, out: &mut Vec<Vec<usize>>) {
+        fn go<IT: HashTrieIterator>(
+            it: &mut IT, depth: usize, arity: usize, out: &mut Vec<Vec<usize>>,
+        ) {
             if !it.open() {
                 return;
             }
@@ -312,18 +307,18 @@ mod tests {
 
     #[test]
     fn non_adjacent_repeat() {
-        let r: HashTrie = HashTrie::from_tuples(3.into(), vec![vec![1, 2, 1], vec![1, 2, 3], vec![2, 5, 2]]);
+        let r: HashTrie =
+            HashTrie::from_tuples(3.into(), vec![vec![1, 2, 1], vec![1, 2, 3], vec![2, 5, 2]]);
         let mut it = view(&r, &[eq(0, 2)]);
         assert_eq!(collect(&mut it, 3), vec![vec![1, 2, 1], vec![2, 5, 2]]);
     }
 
     #[test]
     fn interleaved_repeats() {
-        let r: HashTrie = HashTrie::from_tuples(4.into(), vec![
-            vec![1, 2, 1, 2],
-            vec![1, 2, 1, 3],
-            vec![1, 2, 2, 2],
-        ]);
+        let r: HashTrie =
+            HashTrie::from_tuples(4.into(), vec![vec![1, 2, 1, 2], vec![1, 2, 1, 3], vec![
+                1, 2, 2, 2,
+            ]]);
         let mut it = view(&r, &[eq(0, 2), eq(1, 3)]);
         assert_eq!(collect(&mut it, 4), vec![vec![1, 2, 1, 2]]);
     }
@@ -353,12 +348,16 @@ mod tests {
         assert!(it.open());
         assert!(it.open(), "the colliding bucket is admitted by hash");
         assert_eq!(it.leaf_tuples(), Some(&[][..]));
-        assert_eq!(collect(&mut view(&r, &[eq(0, 1)]), 2), Vec::<Vec<usize>>::new());
+        assert_eq!(
+            collect(&mut view(&r, &[eq(0, 1)]), 2),
+            Vec::<Vec<usize>>::new()
+        );
     }
 
     #[test]
     fn leaf_filter_keeps_true_diagonal_among_colliders() {
-        let r = CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 11], vec![1, 1], vec![1, 21]]);
+        let r =
+            CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 11], vec![1, 1], vec![1, 21]]);
         let mut it = view(&r, &[eq(0, 1)]);
         assert_eq!(collect(&mut it, 2), vec![vec![1, 1]]);
     }

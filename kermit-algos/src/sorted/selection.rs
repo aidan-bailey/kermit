@@ -49,11 +49,7 @@ pub struct EqualitySelectionTrieIter<IT: TrieIterator> {
 impl<IT: TrieIterator> EqualitySelectionTrieIter<IT> {
     /// Wraps `inner`, positioned at its root, with the given equalities.
     pub fn new(inner: IT, equalities: &[ColumnEquality]) -> Self {
-        let width = equalities
-            .iter()
-            .map(|e| e.repeat + 1)
-            .max()
-            .unwrap_or(0);
+        let width = equalities.iter().map(|e| e.repeat + 1).max().unwrap_or(0);
         let mut source_of = vec![None; width];
         for e in equalities {
             debug_assert!(e.source < e.repeat, "source column must precede the repeat");
@@ -345,11 +341,9 @@ mod tests {
 
     #[test]
     fn interleaved_repeats() {
-        let r = trie(4, vec![
-            vec![1, 2, 1, 2],
-            vec![1, 2, 1, 3],
-            vec![1, 2, 2, 2],
-        ]);
+        let r = trie(4, vec![vec![1, 2, 1, 2], vec![1, 2, 1, 3], vec![
+            1, 2, 2, 2,
+        ]]);
         let tuples: Vec<Vec<usize>> = view(&r, &[eq(0, 2), eq(1, 3)]).into_iter().collect();
         assert_eq!(tuples, vec![vec![1, 2, 1, 2]]);
     }

@@ -63,6 +63,37 @@ fn cli_join_intersection_hash_trie() {
     assert_eq!(parse_output(&output), vec![vec![2], vec![3]]);
 }
 
+/// `Q(X) :- diagonal(X, X).` — the PROBLEMS.md repro, through the CLI on
+/// every valid cell. Only the head column is asserted: the entry points
+/// emit every variable, including the fresh one the selection rewrite
+/// introduces (the same leak the const rewrite has), so each row is
+/// `X,X`. Head projection is tracked separately.
+fn assert_cli_diagonal(algorithm: &str, indexstructure: &str) {
+    let output = run_join(
+        &["diagonal.csv"],
+        "diagonal_query.dl",
+        algorithm,
+        indexstructure,
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut heads: Vec<usize> = parse_output(&output).iter().map(|row| row[0]).collect();
+    heads.sort();
+    assert_eq!(heads, vec![1, 3]);
+}
+
+#[test]
+fn cli_join_diagonal_tree_trie() { assert_cli_diagonal("leapfrog-triejoin", "tree-trie"); }
+
+#[test]
+fn cli_join_diagonal_column_trie() { assert_cli_diagonal("leapfrog-triejoin", "column-trie"); }
+
+#[test]
+fn cli_join_diagonal_hash_trie() { assert_cli_diagonal("hash-triejoin", "hash-trie"); }
+
 /// `--ds-layout-hasher` threads through to the hash cell on `kermit join`.
 #[test]
 fn cli_join_hash_trie_fxhash_layout() {

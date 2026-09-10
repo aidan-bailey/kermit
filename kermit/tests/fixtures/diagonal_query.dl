@@ -1,0 +1,1 @@
+Q(X) :- diagonal(X, X).

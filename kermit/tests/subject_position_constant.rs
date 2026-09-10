@@ -5,10 +5,11 @@
 //! `Q(X) :- edge(c1, X).` ("successors of node 1") — must return the same
 //! answer as the symmetric object-position query. This exercises
 //! `rewrite_atoms` → optimiser planning → join end-to-end via the real
-//! engine wiring (`lftj_join` for LFTJ, `hash_join` for the hash family), the
-//! only paths where the global attribute order is *derived* from the query —
-//! the macro-generated join suites supply a valid order by hand and so never
-//! cover this.
+//! engine wiring (`lftj_join` for LFTJ, `hash_join` for the hash family),
+//! where the global attribute order is *derived* from the query. The
+//! macro-generated join suites now run through the same entry points, but
+//! none of their patterns puts a constant in the subject position, so this
+//! test remains the one that pins that shape.
 //!
 //! Root cause this guards against: the triejoin descends each relation one
 //! physical column per depth, so the global variable order must bind every

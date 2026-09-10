@@ -314,6 +314,61 @@ macro_rules! define_deep_dead_end_multiway_join_test {
     };
 }
 
+/// `Q(V0) :- R0(V0, V0).` — a variable repeated inside one atom, the
+/// PROBLEMS.md diagonal. `R0 = {(1,1),(1,2),(2,3),(3,3),(4,5)}` has exactly
+/// two diagonal tuples. An executor that registers `R0` once "for `V0`"
+/// opens only its first column and returns every subject (`{1,2,3,4}`),
+/// or reaches the leaf one level early and panics; the selection rewrite
+/// keeps both from ever seeing the repeat.
+#[macro_export]
+macro_rules! define_diagonal_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<diagonal_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
+            $relation_type,
+            $join_algorithm,
+            $optimiser,
+            [
+                vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3], vec![4, 5]]
+            ],
+            vec![0],
+            vec![vec![0, 0]],
+            vec![vec![1], vec![3]],
+            {print!("");}
+        );
+        }
+    };
+}
+
+/// `Q(V0, V1) :- R0(V0, V1, V0), R1(V1).` — the repeat is *not* adjacent
+/// to its first occurrence, and another relation joins in between. Of
+/// `R0 = {(1,2,1),(1,2,3),(2,5,2),(3,7,3)}`, `(1,2,3)` dies at the
+/// constrained third column and `(2,5,2)` dies on `R1 = {2, 7}`, leaving
+/// `(1,2)` and `(3,7)`. Guards the case where the admitted key comes from
+/// a level other than the immediate parent.
+#[macro_export]
+macro_rules! define_repeated_nonadjacent_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<repeated_nonadjacent_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
+            $relation_type,
+            $join_algorithm,
+            $optimiser,
+            [
+                vec![vec![1, 2, 1], vec![1, 2, 3], vec![2, 5, 2], vec![3, 7, 3]],
+                vec![vec![2], vec![7]]
+            ],
+            vec![0, 1],
+            vec![vec![0, 1, 0], vec![1]],
+            vec![vec![1, 2], vec![3, 7]],
+            {print!("");}
+        );
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! define_multiway_join_test_suite {
     (
@@ -336,6 +391,8 @@ macro_rules! define_multiway_join_test_suite {
                 $crate::define_wide_fanout_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
                 $crate::define_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
                 $crate::define_deep_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_diagonal_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_repeated_nonadjacent_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
         )+
     };
 }
@@ -344,7 +401,7 @@ macro_rules! define_multiway_join_test_suite {
 /// prescribed by `docs/specs/optimization-standard.md`.
 ///
 /// Declares `type <Relation><Provider> = Configured<Relation, Provider>;`
-/// inside a uniquely named module and runs the 12 standard join patterns
+/// inside a uniquely named module and runs the 14 standard join patterns
 /// against it. `Provider` is a marker declared with
 /// `kermit_ds::define_config_provider!`.
 ///
