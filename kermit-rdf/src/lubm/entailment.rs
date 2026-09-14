@@ -607,6 +607,97 @@ mod tests {
         )));
     }
 
+    /// Every rule at once, on an ABox where rules feed each other, asserting
+    /// the exact closure rather than individual members. The fixed point
+    /// needs three passes:
+    ///
+    /// - pass 1: `headOf` → `worksFor` + `memberOf` (subPropertyOf closure);
+    ///   `chair` realised as `Chair` (reads the live set); `doctoralDegreeFrom`
+    ///   → `degreeFrom`; inverse of the *input* `hasAlumnus`; one hop of
+    ///   `subOrganizationOf` transitivity; subClassOf on the input types.
+    /// - pass 2: `Chair` → `Professor` … `Person` (the realised type is only in
+    ///   the frozen snapshot now); inverse of the pass-1 `degreeFrom`; the
+    ///   second transitivity hop (`group` → `system`).
+    /// - pass 3: nothing new.
+    ///
+    /// Negative cases in the same closure: `lecturer` heads a `ResearchGroup`,
+    /// not a `Department`, so is not a `Chair`; a blank-node alumnus has no
+    /// inverse; a literal triggers nothing; an input triple that is also
+    /// derivable (`chair memberOf dept`) is not counted as derived.
+    #[test]
+    fn fixed_point_closure_of_interacting_rules_is_exact() {
+        fn x(local: &str) -> RdfValue { RdfValue::Iri(format!("http://x/{local}")) }
+        fn t(s: &str, p: String, o: RdfValue) -> (String, String, RdfValue) {
+            (format!("http://x/{s}"), p, o)
+        }
+        let rdf_type = || RDF_TYPE.to_string();
+        let class = |c: &str| RdfValue::Iri(ub(c));
+
+        let input = [
+            t("chair", ub("headOf"), x("dept")),
+            t("dept", rdf_type(), class("Department")),
+            t("chair", ub("memberOf"), x("dept")),
+            t("chair", ub("doctoralDegreeFrom"), x("univ")),
+            t("alma", ub("hasAlumnus"), x("chair")),
+            t(
+                "alma",
+                ub("hasAlumnus"),
+                RdfValue::BlankNode("_:anon".into()),
+            ),
+            t("group", ub("subOrganizationOf"), x("dept")),
+            t("dept", ub("subOrganizationOf"), x("univ")),
+            t("univ", ub("subOrganizationOf"), x("system")),
+            t("group", rdf_type(), class("ResearchGroup")),
+            t("lecturer", rdf_type(), class("Lecturer")),
+            t("lecturer", ub("headOf"), x("group")),
+            t("chair", ub("name"), RdfValue::Literal("\"Ada\"".into())),
+        ];
+        let derived = [
+            // headOf ⊑ worksFor ⊑ memberOf (`chair memberOf dept` is input).
+            t("chair", ub("worksFor"), x("dept")),
+            t("lecturer", ub("worksFor"), x("group")),
+            t("lecturer", ub("memberOf"), x("group")),
+            // Realisation, then Chair ⊑ Professor ⊑ Faculty ⊑ Employee ⊑ Person.
+            t("chair", rdf_type(), class("Chair")),
+            t("chair", rdf_type(), class("Professor")),
+            t("chair", rdf_type(), class("Faculty")),
+            t("chair", rdf_type(), class("Employee")),
+            t("chair", rdf_type(), class("Person")),
+            // doctoralDegreeFrom ⊑ degreeFrom, then its inverse.
+            t("chair", ub("degreeFrom"), x("univ")),
+            t("univ", ub("hasAlumnus"), x("chair")),
+            // Inverse of the input hasAlumnus.
+            t("chair", ub("degreeFrom"), x("alma")),
+            // subOrganizationOf transitivity, one hop per pass.
+            t("group", ub("subOrganizationOf"), x("univ")),
+            t("dept", ub("subOrganizationOf"), x("system")),
+            t("group", ub("subOrganizationOf"), x("system")),
+            // subClassOf on the input types.
+            t("dept", rdf_type(), class("Organization")),
+            t("group", rdf_type(), class("Organization")),
+            t("lecturer", rdf_type(), class("Faculty")),
+            t("lecturer", rdf_type(), class("Employee")),
+            t("lecturer", rdf_type(), class("Person")),
+        ];
+
+        let nt: String = input
+            .iter()
+            .map(|(s, p, o)| format!("<{s}> <{p}> {} .\n", o.to_canonical()))
+            .collect();
+        let (triples, stats) = run_entailment(&nt);
+
+        let expected: HashSet<_> = input.iter().chain(&derived).cloned().collect();
+        let missing: Vec<_> = expected.difference(&triples).collect();
+        let unexpected: Vec<_> = triples.difference(&expected).collect();
+        assert!(
+            missing.is_empty() && unexpected.is_empty(),
+            "closure mismatch\n  missing: {missing:#?}\n  unexpected: {unexpected:#?}"
+        );
+        assert_eq!(stats.input_triples, 13);
+        assert_eq!(stats.output_triples, 32);
+        assert_eq!(stats.derived_triples, 19);
+    }
+
     #[test]
     fn empty_input_produces_empty_output() {
         let (triples, stats) = run_entailment("");
