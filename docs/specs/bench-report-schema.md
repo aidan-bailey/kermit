@@ -56,8 +56,8 @@ always parse a list.
 
 | Field      | Type                       | Description |
 |------------|----------------------------|-------------|
-| `group`    | string                     | The `criterion::BenchmarkGroup` name verbatim (e.g. `run/oxford-uniform-s1/triangle/TreeTrie/LeapfrogTriejoin`). On disk, Criterion flattens any `/` to `_` so this group lives at `target/criterion/run_oxford-uniform-s1_triangle_TreeTrie_LeapfrogTriejoin/`. |
-| `function` | string                     | Criterion `function_id` (e.g. `space/P` or `iteration`). On disk, `/` is again replaced with `_` — read each candidate subdir's `benchmark.json:directory_name` to resolve to the actual filesystem path. |
+| `group`    | string                     | The `criterion::BenchmarkGroup` name verbatim (e.g. `run/oxford-uniform-s1/triangle/TreeTrie/LeapfrogTriejoin`). On disk Criterion 0.8.2 escapes `/` (and `?"\*<>:\|^`) to `_` **and truncates the name to 64 bytes**, so `run/watdiv-stress-100-test-1-prelim/q0000/ColumnTrie/LeapfrogTriejoin` lives at `target/criterion/run_watdiv-stress-100-test-1-prelim_q0000_ColumnTrie_LeapfrogTri/`. Don't compute it — resolve as below. `bench run` refuses a sweep in which two groups would truncate to the same directory. |
+| `function` | string                     | Criterion `function_id` (e.g. `space/P` or `iteration`). On disk it is escaped the same way, and gets a `_2`, `_3`… suffix if its directory name was already used by the same `Criterion` instance. Resolve as below. |
 | `metric`   | `"time"` \| `"space"`      | Which Criterion measurement axis this function recorded. |
 
 ## Conventional `axes` keys
@@ -84,29 +84,32 @@ semantics).
 
 ## Resolving a `CriterionGroupRef` to filesystem paths
 
+Directory names are lossy (escaped, truncated to 64 bytes, possibly
+suffixed), but every `new/benchmark.json` records the untruncated `group_id`
+and `function_id`. Index those once and look the pair up:
+
 ```python
 import json, pathlib
 
-def resolve(group_ref, criterion_root="target/criterion"):
-    # Criterion flattens slashes in the group name to underscores on disk.
-    group_dir = pathlib.Path(criterion_root) / group_ref["group"].replace("/", "_")
-    for candidate in group_dir.iterdir():
-        if not candidate.is_dir():
-            continue
-        bench_json = candidate / "new" / "benchmark.json"
-        if not bench_json.exists():
-            continue
-        with bench_json.open() as f:
-            meta = json.load(f)
-        if meta["function_id"] == group_ref["function"]:
-            return candidate / "new"
-    raise FileNotFoundError(group_ref)
+def index(criterion_root="target/criterion"):
+    found = {}
+    for bench_json in pathlib.Path(criterion_root).glob("*/*/new/benchmark.json"):
+        meta = json.loads(bench_json.read_text())
+        found.setdefault((meta["group_id"], meta["function_id"]), []).append(bench_json.parent)
+    return found
+
+def resolve(group_ref, found):
+    dirs = found.get((group_ref["group"], group_ref["function"]), [])
+    if len(dirs) != 1:  # 0: missing or overwritten; >1: a stale duplicate
+        raise LookupError(group_ref, dirs)
+    return dirs[0]
 ```
 
-The `directory_name` in each subdir's `benchmark.json` is the canonical
-mapping; computing it locally (slash-to-underscore replacement) works for
-common cases but Criterion's own escaping rules apply for other special
-characters, so prefer reading the file when in doubt.
+Match on **both** ids: two groups sharing a 64-byte prefix share a group
+directory, and their functions (`iteration`, `iteration_2`) carry the same
+`function_id`. `base/` holds the previous run's copy and is never a
+candidate. `kermit_lab.criterion.CriterionIndex` implements this with
+diagnostic errors.
 
 ## Null-valued estimates
 

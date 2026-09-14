@@ -32,7 +32,10 @@ mod measurement;
 mod options;
 
 use {
-    bench::{dispatch_ds_bench, dispatch_run_bench, resolve_sweep, Metric, RunSettings, Workload},
+    bench::{
+        check_sweep_group_directories, dispatch_ds_bench, dispatch_run_bench, resolve_sweep,
+        Metric, RunSettings, Workload,
+    },
     bench_report::{BenchKind, ReportSink},
     execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
     options::{
@@ -869,6 +872,10 @@ fn run_bench_run_command(
         verify,
         bench_args,
     };
+    // Names only — nothing is fetched — so a sweep whose cells would
+    // overwrite each other's Criterion results fails before any is timed.
+    check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells)?;
+
     // Opened before the loop so every finished cell is on disk before the
     // next one starts; a crash mid-sweep keeps the completed cells.
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Run)?;

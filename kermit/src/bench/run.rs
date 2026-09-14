@@ -3,7 +3,10 @@
 //! query.
 
 use {
-    super::{add_space_bench, build_space_criterion, build_time_criterion, Metric, Workload},
+    super::{
+        add_space_bench, build_space_criterion, build_time_criterion, criterion_directory_name,
+        Metric, Workload, CRITERION_MAX_DIRECTORY_NAME_BYTES,
+    },
     crate::{
         bench_report::{
             write_metadata_block, BenchKind, BenchReport, CriterionGroupRef, MetadataLine,
@@ -14,8 +17,12 @@ use {
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
     kermit_algos::Optimiser,
+    kermit_bench::BenchmarkDefinition,
     kermit_ds::{HashTrieConfig, Relation},
-    std::{collections::BTreeMap, io},
+    std::{
+        collections::{hash_map::Entry, BTreeMap, HashMap},
+        io,
+    },
 };
 
 /// Everything a measured join needs besides the cell and the workload:
@@ -158,10 +165,7 @@ fn run_benchmark<F: ExecutionFamily>(
         }
         write_metadata_block(&mut io::stderr(), "bench run metadata", &metadata)?;
 
-        let group_name = format!(
-            "{}/{}/{}/{}/{}",
-            prefix, workload.name, query_def.name, ds_name, algo_name
-        );
+        let group_name = criterion_group_name(prefix, &workload.name, &query_def.name, execution);
 
         let mut criterion_groups: Vec<CriterionGroupRef> = Vec::new();
 
@@ -334,6 +338,70 @@ pub(crate) fn dispatch_run_bench(
     }
 }
 
+/// Fails if two of `groups` would share a Criterion directory.
+///
+/// Criterion truncates directory names to 64 bytes, and each group here gets
+/// a fresh `Criterion`, whose within-instance de-duplication therefore never
+/// sees the other groups: two groups sharing their first 64 bytes write into
+/// one `target/criterion/<dir>/`, the later silently replacing the earlier
+/// (issue #69). Checked before any cell runs, so a doomed sweep costs nothing.
+fn check_group_directories_distinct(
+    groups: impl IntoIterator<Item = String>,
+) -> anyhow::Result<()> {
+    let mut claimed: HashMap<String, String> = HashMap::new();
+    for group in groups {
+        match claimed.entry(criterion_directory_name(&group)) {
+            | Entry::Occupied(first) => anyhow::bail!(
+                "Criterion groups '{}' and '{group}' would share the Criterion directory '{}': \
+                 Criterion truncates directory names to {CRITERION_MAX_DIRECTORY_NAME_BYTES} \
+                 bytes, so the later would overwrite the earlier's results. Shorten --name (or \
+                 the benchmark or query name) so every group differs within its first \
+                 {CRITERION_MAX_DIRECTORY_NAME_BYTES} bytes.",
+                first.get(),
+                first.key()
+            ),
+            | Entry::Vacant(slot) => {
+                slot.insert(group);
+            },
+        }
+    }
+    Ok(())
+}
+
+/// The Criterion group under which one query of one cell is measured:
+/// `{prefix}/{workload}/{query}/{ds}/{algo}`.
+fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: Execution) -> String {
+    format!(
+        "{prefix}/{workload}/{query}/{}/{}",
+        cell.index_structure().axis_value(),
+        cell.algorithm().axis_value()
+    )
+}
+
+/// Refuses a `bench run` sweep in which two (benchmark, query, cell) groups
+/// would share a Criterion directory; see [`check_group_directories_distinct`].
+///
+/// Works from names alone, so it fetches nothing and runs before the first
+/// cell. A `query_filter` naming no query of a benchmark contributes no
+/// groups for it: that benchmark still fails in its own turn, after the
+/// benchmarks before it have run and been reported.
+pub(crate) fn check_sweep_group_directories(
+    prefix: &str, benchmarks: &[BenchmarkDefinition], query_filter: Option<&str>,
+    cells: &[Execution],
+) -> anyhow::Result<()> {
+    check_group_directories_distinct(benchmarks.iter().flat_map(|benchmark| {
+        benchmark
+            .queries
+            .iter()
+            .filter(move |query| query_filter.is_none_or(|name| query.name == name))
+            .flat_map(move |query| {
+                cells.iter().map(move |&cell| {
+                    criterion_group_name(prefix, &benchmark.name, &query.name, cell)
+                })
+            })
+    }))
+}
+
 /// Expands the `-i` / `-a` selectors into the valid execution cells.
 ///
 /// Incompatible concrete pairs are dropped: with `all` on either side they
@@ -362,4 +430,35 @@ pub(crate) fn resolve_sweep(
         eprintln!("bench run: skipping incompatible pair ({ds:?}, {algo:?})");
     }
     Ok(sweep.cells)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_sharing_a_truncated_directory_are_rejected() {
+        let prefix = format!("run/{}", "long-benchmark-name-".repeat(3));
+        let tree = format!("{prefix}/q0000/TreeTrie/LeapfrogTriejoin");
+        let column = format!("{prefix}/q0000/ColumnTrie/LeapfrogTriejoin");
+
+        let err = check_group_directories_distinct([tree.clone(), column.clone()])
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains(&tree), "{err}");
+        assert!(err.contains(&column), "{err}");
+        assert!(err.contains("64"), "{err}");
+    }
+
+    #[test]
+    fn long_groups_that_differ_within_the_first_64_bytes_are_accepted() {
+        // The WatDiv prelim sweep's names: 72 bytes, truncated mid-algorithm,
+        // but the structure segment already tells them apart.
+        let groups = ["TreeTrie", "ColumnTrie"]
+            .map(|ds| format!("run/watdiv-stress-100-test-1-prelim/q0000/{ds}/LeapfrogTriejoin"));
+        assert!(groups.iter().all(|g| g.len() > 64));
+
+        check_group_directories_distinct(groups).unwrap();
+    }
 }

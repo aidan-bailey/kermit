@@ -28,9 +28,10 @@ def _write_function_dir(criterion_root: Path, spec: _FunctionSpec) -> None:
     """Mirror Criterion's on-disk layout for one function under ``new/``.
 
     Criterion flattens slashes to underscores in both the group and function
-    directory names (``kermit_lab.criterion.resolve_function_dir`` undoes the
-    group half), so a group such as ``run/triangle/triangle/TreeTrie/...``
-    lands in one flat directory rather than a nested tree.
+    directory names, so a group such as ``run/triangle/triangle/TreeTrie/...``
+    lands in one flat directory rather than a nested tree. Fixture groups stay
+    under Criterion's 64-byte directory-name cap; the truncated layout is
+    exercised directly in ``test_criterion.py``.
     """
     group_dirname = spec.group.replace("/", "_")
     dirname = spec.function.replace("/", "_")

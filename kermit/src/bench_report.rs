@@ -19,9 +19,10 @@
 //! tooling can then parse the JSON to correlate stderr metadata with the
 //! Criterion artefacts under `target/criterion/`. Both `group` and `function`
 //! are logical identities that may contain `/`; on disk Criterion flattens
-//! `/`→`_` and nests the estimate files under a `new/` (or `base/`) subdir, so
-//! resolve via each candidate subdir's `benchmark.json:directory_name` rather
-//! than concatenating the strings — see
+//! `/`→`_`, truncates each directory name to 64 bytes and nests the estimate
+//! files under a `new/` (or `base/`) subdir, so resolve by matching each
+//! `new/benchmark.json`'s `group_id` and `function_id` rather than
+//! concatenating the strings — see
 //! `docs/specs/bench-report-schema.md` §"Resolving a `CriterionGroupRef` to
 //! filesystem paths".
 
@@ -122,9 +123,10 @@ impl From<&MetadataLine> for ReportField {
 
 /// A pointer into the Criterion artefacts directory, identifying one
 /// benchmark function. `group` and `function` are the logical Criterion
-/// identities; both may contain `/`. On disk Criterion flattens `/`→`_` and
-/// nests the estimate files under a `new/` (or `base/`) subdir, so resolve via
-/// each candidate subdir's `benchmark.json:directory_name` rather than
+/// identities; both may contain `/`. On disk Criterion flattens `/`→`_`,
+/// truncates each directory name to 64 bytes and nests the estimate files
+/// under a `new/` (or `base/`) subdir, so resolve by matching each
+/// `new/benchmark.json`'s `group_id` and `function_id` rather than
 /// concatenating these strings — see
 /// `docs/specs/bench-report-schema.md` §"Resolving a `CriterionGroupRef` to
 /// filesystem paths".

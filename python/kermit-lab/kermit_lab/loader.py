@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from . import SCHEMA_VERSION
-from .criterion import FunctionData, load_function
+from .criterion import CriterionIndex, FunctionData
 
 
 class SchemaError(ValueError):
@@ -116,12 +116,14 @@ def iter_function_data(
 ) -> Iterator[tuple[BenchReport, CriterionGroupRef, FunctionData]]:
     """Yield ``(report, group_ref, FunctionData)`` for every Criterion function in ``reports``.
 
-    Resolves each ``CriterionGroupRef`` against ``criterion_root`` and loads
-    the per-function JSON. Missing on-disk artefacts raise
-    :class:`FileNotFoundError` rather than being silently skipped — a
-    stale-cargo-clean bug should fail loudly, not produce an empty plot.
+    Resolves each ``CriterionGroupRef`` against one :class:`CriterionIndex` of
+    ``criterion_root`` and loads the per-function JSON. Missing on-disk
+    artefacts raise :class:`FileNotFoundError` rather than being silently
+    skipped — a stale-cargo-clean bug should fail loudly, not produce an empty
+    plot.
     """
+    index = CriterionIndex(criterion_root)
     for report in reports:
         for group_ref in report.criterion_groups:
-            data = load_function(criterion_root, group_ref.group, group_ref.function)
+            data = index.load(group_ref.group, group_ref.function)
             yield report, group_ref, data

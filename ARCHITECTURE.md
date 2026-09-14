@@ -431,7 +431,7 @@ Every `kermit bench` invocation writes a `BenchReport` JSON array to disk. The d
 `python/kermit-lab/` is a uv-managed Python package for notebook-first analysis of benchmark output. It is not a Cargo workspace member and shares no code with the Rust side — **the only coupling is the on-disk data contract**:
 
 - `kl.load("bench-runs/*.json")` parses `BenchReport` arrays into a pandas `DataFrame`, including the `ds_*` / `algo_*` optimization axes. It checks `schema_version` on load and raises `SchemaError` if a report is newer than the package understands.
-- Each `criterion_groups` pointer is then resolved into `target/criterion/{group}/{directory_name}/new/*.json`, matching on `benchmark.json`'s `function_id` rather than recomputing Criterion's name escaping.
+- Each `criterion_groups` pointer is then resolved to its `target/criterion/<group dir>/<function dir>/new/*.json` through a `CriterionIndex` built once per load, keyed on every `new/benchmark.json`'s `(group_id, function_id)` — never by recomputing the directory names, which Criterion escapes, truncates to 64 bytes and de-duplicates with `_2` suffixes.
 - `kl.plot(df, kind=…, x=…, colour=…, facet=…)` is the general engine; `kl.scaling()`, `kl.bar_time()`, `kl.ablation()` and friends are presets over it, each returning a `matplotlib.figure.Figure`. `kl.summary` / `compare` / `bootstrap_ratio_ci` / `mannwhitney_u` cover pivots and statistics.
 
 Because the boundary is a versioned file format rather than a binding, analysis code and notebooks stay valid across Rust revisions. Bump `schema_version` in `bench_report.rs` on any breaking field-name or value-type change, and update `SCHEMA_VERSION` in `kermit_lab` to match.

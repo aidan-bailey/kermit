@@ -103,3 +103,88 @@ def test_resolves_group_with_slashes(tmp_path: Path) -> None:
 
     resolved = resolve_function_dir(criterion_root, group, function_id)
     assert resolved == new_dir
+
+
+# Criterion 0.8.2 clamps each on-disk directory name to 64 bytes
+# (`report::make_filename_safe`), so realistic `bench run` groups land in
+# truncated directories (issue #69). Two groups sharing that 64-byte prefix
+# share a directory: inside one process Criterion keeps them apart with an
+# `_2` suffix on the function directory; a later process overwrites instead.
+_LONG_PREFIX = "run/" + "watdiv-stress-100-test-1-prelim" + "-x" * 20
+_GROUP_TREE = f"{_LONG_PREFIX}/q0000/TreeTrie/LeapfrogTriejoin"
+_GROUP_COLUMN = f"{_LONG_PREFIX}/q0000/ColumnTrie/LeapfrogTriejoin"
+_TRUNCATED = _LONG_PREFIX.replace("/", "_")[:64]
+
+
+def _write_benchmark_json(new_dir: Path, group: str, function_id: str) -> Path:
+    new_dir.mkdir(parents=True)
+    (new_dir / "benchmark.json").write_text(
+        json.dumps(
+            {
+                "group_id": group,
+                "function_id": function_id,
+                "directory_name": f"{new_dir.parent.parent.name}/{new_dir.parent.name}",
+            }
+        )
+    )
+    return new_dir
+
+
+def test_resolves_group_whose_directory_name_criterion_truncated(tmp_path: Path) -> None:
+    assert len(_GROUP_TREE.replace("/", "_")) > 64
+    new_dir = _write_benchmark_json(
+        tmp_path / _TRUNCATED / "iteration" / "new", _GROUP_TREE, "iteration"
+    )
+
+    assert resolve_function_dir(tmp_path, _GROUP_TREE, "iteration") == new_dir
+
+
+def test_tells_apart_groups_sharing_a_truncated_directory(tmp_path: Path) -> None:
+    """One process, two colliding groups: Criterion suffixed the second
+    function directory. Both carry ``function_id: iteration``, so matching on
+    ``function_id`` alone would hand back whichever sorts first."""
+    tree_dir = _write_benchmark_json(
+        tmp_path / _TRUNCATED / "iteration_2" / "new", _GROUP_TREE, "iteration"
+    )
+    column_dir = _write_benchmark_json(
+        tmp_path / _TRUNCATED / "iteration" / "new", _GROUP_COLUMN, "iteration"
+    )
+
+    assert resolve_function_dir(tmp_path, _GROUP_TREE, "iteration") == tree_dir
+    assert resolve_function_dir(tmp_path, _GROUP_COLUMN, "iteration") == column_dir
+
+
+def test_overwritten_group_error_names_the_group_that_replaced_it(tmp_path: Path) -> None:
+    """A later process wrote a colliding group into the same directory, so
+    the requested group's results are gone; say why instead of just 'not
+    found'."""
+    _write_benchmark_json(tmp_path / _TRUNCATED / "iteration" / "new", _GROUP_COLUMN, "iteration")
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        resolve_function_dir(tmp_path, _GROUP_TREE, "iteration")
+
+    message = str(excinfo.value)
+    assert _GROUP_COLUMN in message
+    assert "64" in message
+
+
+def test_two_directories_claiming_one_function_is_an_error(tmp_path: Path) -> None:
+    """Colliding groups run together (the second lands in ``iteration_2``),
+    then one is re-run alone and lands in ``iteration``: both directories now
+    claim it, one of them stale. Refuse to guess."""
+    _write_benchmark_json(tmp_path / _TRUNCATED / "iteration" / "new", _GROUP_TREE, "iteration")
+    _write_benchmark_json(tmp_path / _TRUNCATED / "iteration_2" / "new", _GROUP_TREE, "iteration")
+
+    with pytest.raises(ValueError, match="iteration_2"):
+        resolve_function_dir(tmp_path, _GROUP_TREE, "iteration")
+
+
+def test_base_directories_are_not_candidates(tmp_path: Path) -> None:
+    """Criterion keeps the previous run's copy under ``base/``; only ``new/``
+    is the current result, so ``base/`` must not count as a second claim."""
+    new_dir = _write_benchmark_json(
+        tmp_path / _TRUNCATED / "iteration" / "new", _GROUP_TREE, "iteration"
+    )
+    _write_benchmark_json(tmp_path / _TRUNCATED / "iteration" / "base", _GROUP_TREE, "iteration")
+
+    assert resolve_function_dir(tmp_path, _GROUP_TREE, "iteration") == new_dir
