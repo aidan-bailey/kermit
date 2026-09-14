@@ -1,7 +1,7 @@
-# Hand-built Univ-Bench ABox for kermit/tests/lubm_mini_oracle.rs (40 triples).
-# The query -> expected-count derivation lives in that test's module doc; keep
-# the two in sync. Individuals use the IRIs the 14 LUBM queries name as
-# constants, so every query binds.
+# Hand-built Univ-Bench ABox for kermit/tests/lubm_mini_oracle.rs: 58 lines,
+# 57 distinct triples. The query -> expected-count derivation lives in that
+# test's module doc; keep the two in sync. Individuals use the IRIs the 14 LUBM
+# queries name as constants, so every query binds.
 
 # Organisations. Department0 reaches University0 only through College0, so
 # subOrganizationOf transitivity is needed wherever a query asks for it.
@@ -64,3 +64,32 @@
 <http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#advisor> <http://www.Department0.University0.edu/AssociateProfessor0> .
 <http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#takesCourse> <http://www.Department0.University0.edu/Course0> .
 <http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#takesCourse> <http://www.Department0.University0.edu/GraduateCourse0> .
+
+# Another publication, by AssociateProfessor0 rather than AssistantProfessor0:
+# excluded from q3 only by q3's author constant.
+<http://www.Department0.University0.edu/AssociateProfessor0/Publication0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#Publication> .
+<http://www.Department0.University0.edu/AssociateProfessor0/Publication0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#publicationAuthor> <http://www.Department0.University0.edu/AssociateProfessor0> .
+
+# Distractors in University1, mirroring University0's people and organisations
+# so each would answer a query if that query's constant were ignored: its
+# Department0 (q4, q5), University1 itself (q8, q11, q12, q13), its Course0 and
+# teacher (q1, q10, q7). University1 has no University type, so q2 stays at 1.
+<http://www.Department0.University1.edu> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#Department> .
+<http://www.Department0.University1.edu> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#subOrganizationOf> <http://www.University1.edu> .
+<http://www.Department0.University1.edu/ResearchGroup0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#ResearchGroup> .
+<http://www.Department0.University1.edu/ResearchGroup0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#subOrganizationOf> <http://www.Department0.University1.edu> .
+<http://www.Department0.University1.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#headOf> <http://www.Department0.University1.edu> .
+<http://www.Department0.University1.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#name> "FullProfessor0" .
+<http://www.Department0.University1.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#emailAddress> "FullProfessor0@Department0.University1.edu" .
+<http://www.Department0.University1.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#telephone> "xxx-xxx-xxxx" .
+<http://www.Department0.University1.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#doctoralDegreeFrom> <http://www.University1.edu> .
+<http://www.Department0.University1.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#teacherOf> <http://www.Department0.University1.edu/Course0> .
+<http://www.Department0.University1.edu/Course0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#Course> .
+<http://www.Department0.University1.edu/GraduateStudent0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#GraduateStudent> .
+<http://www.Department0.University1.edu/GraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#memberOf> <http://www.Department0.University1.edu> .
+<http://www.Department0.University1.edu/GraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#emailAddress> "GraduateStudent0@Department0.University1.edu" .
+<http://www.Department0.University1.edu/GraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#takesCourse> <http://www.Department0.University1.edu/Course0> .
+
+# UBA repeats type assertions; a duplicate line pins that the entailment
+# statistics subtract distinct input triples, not input lines.
+<http://www.University0.edu> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#University> .

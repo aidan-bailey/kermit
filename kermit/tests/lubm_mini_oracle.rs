@@ -1,11 +1,11 @@
 //! Java-free miniature LUBM oracle: the 14 real LUBM queries over a
-//! hand-built 40-triple Univ-Bench ABox with hand-counted answers.
+//! hand-built Univ-Bench ABox (57 triples) with hand-counted answers.
 //!
 //! `lubm_cardinalities.rs` checks the paper's LUBM(1, 0) counts but needs the
 //! vendored jar and `java`, so it skips on CI. This test runs the same
 //! post-driver path — Univ-Bench entailment, partition, translate, emit
 //! (`kermit_rdf::lubm::pipeline::process_artifacts`), then [`lftj_join`]
-//! under both optimisers — on the committed `tests/fixtures/lubm-mini/abox.nt`,
+//! under every optimiser — on the committed `tests/fixtures/lubm-mini/abox.nt`,
 //! with no external tool. It lives in the `kermit` crate for the same reason
 //! as `lubm_cardinalities.rs`: only the binary depends on both `kermit-rdf`
 //! and the join engine.
@@ -20,8 +20,9 @@
 //! *Rules* lists the rule families the answers need — subClassOf (SC),
 //! subPropertyOf (SP), inverseOf (INV), `subOrganizationOf` transitivity
 //! (TR), `Chair` realisation (RE) — so dropping one family from the
-//! entailment fails exactly the rows naming it. Entailment adds 37 triples to
-//! the 40 asserted (77 in total).
+//! entailment fails exactly the rows naming it. The file has 58 lines, 57
+//! distinct triples (one type assertion is repeated, as UBA does); entailment
+//! adds 51 (108 in total).
 //!
 //! | query | expected | raw | rules           |
 //! |-------|---------:|----:|-----------------|
@@ -30,7 +31,7 @@
 //! | q3    |        2 |   1 | SC              |
 //! | q4    |        2 |   0 | SC, SP, RE      |
 //! | q5    |        5 |   0 | SC, SP, RE      |
-//! | q6    |        2 |   0 | SC              |
+//! | q6    |        3 |   0 | SC              |
 //! | q7    |        3 |   0 | SC              |
 //! | q8    |        2 |   0 | SC, TR          |
 //! | q9    |        3 |   0 | SC              |
@@ -41,7 +42,8 @@
 //! | q14   |        1 |   1 | —               |
 //!
 //! The answers, with each individual abbreviated to the distinguishing part
-//! of its IRI (`http://www.University0.edu` is University0):
+//! of its IRI (`http://www.University0.edu` is University0). Individuals of
+//! University1 are prefixed `U1/`:
 //!
 //! - **q1** GraduateStudent0: asserted type and `takesCourse GraduateCourse0`.
 //! - **q2** (GraduateStudent0, University0, Department0): Department0 is a
@@ -56,7 +58,8 @@
 //!   (asserted); AssociateProfessor0 and AssistantProfessor0 (from `worksFor`
 //!   by SP); FullProfessor0 (from `headOf`, by SP twice). All five are `Person`
 //!   by SC (FullProfessor0 only after RE).
-//! - **q6** GraduateStudent0, UndergraduateStudent0: `… ⊑ Student`.
+//! - **q6** GraduateStudent0, UndergraduateStudent0, U1/GraduateStudent0: each
+//!   a `Student` by SC.
 //! - **q7** (GraduateStudent0, GraduateCourse0), (UndergraduateStudent0,
 //!   Course0), (UndergraduateStudent0, GraduateCourse0): AssociateProfessor0
 //!   teaches both courses; `GraduateCourse ⊑ Course`.
@@ -77,6 +80,23 @@
 //!   RE).
 //! - **q14** UndergraduateStudent0: asserted type.
 //!
+//! # Distractors
+//!
+//! Every non-class constant in the queries excludes at least one would-be
+//! answer, so a constant the pipeline or the engine fails to enforce changes a
+//! count. Each entry gives the counts with that constant widened to an unbound
+//! variable (kermit counts every binding, the widened variable included) and
+//! the triples it excludes:
+//!
+//! - GraduateCourse0 (q1 → 2, q10 → 4): U1/GraduateStudent0 takes U1/Course0.
+//! - AssistantProfessor0 (q3 → 3): AssociateProfessor0 wrote
+//!   AssociateProfessor0/Publication0.
+//! - Department0 (q4 → 3, q5 → 7): U1/FullProfessor0 heads, and
+//!   U1/GraduateStudent0 belongs to, U1/Department0.
+//! - AssociateProfessor0 (q7 → 4): U1/FullProfessor0 teaches U1/Course0.
+//! - University0 (q8 → 5, q11 → 5, q12 → 3, q13 → 5): U1/Department0 and its
+//!   research group sit under University1, whose alumnus is U1/FullProfessor0.
+//!
 //! A complete OWL reasoner over the published `univ-bench.owl` reaches some of
 //! these memberships by extra routes (`emailAddress` has domain `Person`,
 //! `teacherOf` has range `Course`, …) but yields the same 14 counts on this
@@ -84,10 +104,9 @@
 //! stops.
 
 use {
+    clap::ValueEnum,
     kermit::db::lftj_join,
-    kermit_algos::{
-        CardinalityOptimiser, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
-    },
+    kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{RelationFileExt, TreeTrie},
     kermit_rdf::lubm::{
@@ -110,7 +129,7 @@ const EXPECTED: &[(&str, u64)] = &[
     ("q3", 2),
     ("q4", 2),
     ("q5", 5),
-    ("q6", 2),
+    ("q6", 3),
     ("q7", 3),
     ("q8", 2),
     ("q9", 3),
@@ -129,9 +148,9 @@ fn abox_path() -> PathBuf {
 /// runs every query, and returns one line per query whose result count
 /// differs from the hand-counted cardinality.
 fn cardinality_mismatches(
-    bench: &BenchmarkDefinition, dir: &Path, optimiser_name: &str,
-    optimiser: Box<dyn QueryOptimiser>, expected: &HashMap<&str, u64>,
+    bench: &BenchmarkDefinition, dir: &Path, optimiser: Optimiser, expected: &HashMap<&str, u64>,
 ) -> Vec<String> {
+    let planner = optimiser.instantiate();
     let mut relations: BTreeMap<String, TreeTrie> = BTreeMap::new();
     for rel in &bench.relations {
         let path = dir.join(format!("{}.parquet", rel.name));
@@ -144,12 +163,14 @@ fn cardinality_mismatches(
     for q in &bench.queries {
         let want = expected[q.name.as_str()];
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, optimiser.as_ref())
+        let got = lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, planner.as_ref())
             .len() as u64;
         if got != want {
             mismatches.push(format!(
-                "  [{optimiser_name}] {}: got {got}, expected {want}\n    query: {}",
-                q.name, q.query
+                "  [{}] {}: got {got}, expected {want}\n    query: {}",
+                optimiser.axis_value(),
+                q.name,
+                q.query
             ));
         }
     }
@@ -207,21 +228,15 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
     let bench: BenchmarkDefinition = serde_yaml::from_str(&yaml).expect("benchmark.yml malformed");
     assert_eq!(bench.queries.len(), EXPECTED.len());
 
-    // As in `lubm_cardinalities.rs`: the plan an optimiser picks changes the
-    // join's descent order, never its answer. Add a row whenever an optimiser
-    // is added.
-    let optimisers: Vec<(&str, Box<dyn QueryOptimiser>)> = vec![
-        ("lexicographic", Box::new(LexicographicOptimiser)),
-        ("cardinality", Box::new(CardinalityOptimiser)),
-    ];
-    let optimiser_count = optimisers.len();
-
+    // The plan an optimiser picks changes the join's descent order, never its
+    // answer. Iterating the CLI enum covers every optimiser, including ones
+    // added later, with no edit here.
+    let optimisers = Optimiser::value_variants();
     let mut mismatches: Vec<String> = Vec::new();
-    for (name, optimiser) in optimisers {
+    for &optimiser in optimisers {
         mismatches.extend(cardinality_mismatches(
             &bench,
             out.path(),
-            name,
             optimiser,
             &expected,
         ));
@@ -231,11 +246,13 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
         "mini LUBM cardinality mismatches ({} across {} queries x {} optimisers):\n{}",
         mismatches.len(),
         bench.queries.len(),
-        optimiser_count,
+        optimisers.len(),
         mismatches.join("\n"),
     );
 
-    assert_eq!(meta.triple_count_pre_entailment, 40);
-    assert_eq!(meta.derived_triple_count, 37);
-    assert_eq!(meta.triple_count_post_entailment, 77);
+    // 58 input lines, 57 of them distinct; `derived_triple_count` must count
+    // against the distinct triples.
+    assert_eq!(meta.triple_count_pre_entailment, 58);
+    assert_eq!(meta.derived_triple_count, 51);
+    assert_eq!(meta.triple_count_post_entailment, 108);
 }
