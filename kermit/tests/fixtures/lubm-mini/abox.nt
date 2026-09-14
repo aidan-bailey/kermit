@@ -1,0 +1,66 @@
+# Hand-built Univ-Bench ABox for kermit/tests/lubm_mini_oracle.rs (40 triples).
+# The query -> expected-count derivation lives in that test's module doc; keep
+# the two in sync. Individuals use the IRIs the 14 LUBM queries name as
+# constants, so every query binds.
+
+# Organisations. Department0 reaches University0 only through College0, so
+# subOrganizationOf transitivity is needed wherever a query asks for it.
+<http://www.University0.edu> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#University> .
+<http://www.Department0.University0.edu> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#Department> .
+<http://www.Department0.University0.edu> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#subOrganizationOf> <http://www.College0.University0.edu> .
+<http://www.College0.University0.edu> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#subOrganizationOf> <http://www.University0.edu> .
+<http://www.Department0.University0.edu/ResearchGroup0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#ResearchGroup> .
+<http://www.Department0.University0.edu/ResearchGroup0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#subOrganizationOf> <http://www.Department0.University0.edu> .
+
+# FullProfessor0 heads Department0 and carries no class assertion: every class
+# it has (Chair, Professor, ..., Person) comes from Chair realisation.
+<http://www.Department0.University0.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#headOf> <http://www.Department0.University0.edu> .
+<http://www.Department0.University0.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#name> "FullProfessor0" .
+<http://www.Department0.University0.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#emailAddress> "FullProfessor0@Department0.University0.edu" .
+<http://www.Department0.University0.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#telephone> "xxx-xxx-xxxx" .
+<http://www.Department0.University0.edu/FullProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#doctoralDegreeFrom> <http://www.University0.edu> .
+
+# AssociateProfessor0 teaches both courses and advises both students.
+<http://www.Department0.University0.edu/AssociateProfessor0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#AssociateProfessor> .
+<http://www.Department0.University0.edu/AssociateProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#worksFor> <http://www.Department0.University0.edu> .
+<http://www.Department0.University0.edu/AssociateProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#name> "AssociateProfessor0" .
+<http://www.Department0.University0.edu/AssociateProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#emailAddress> "AssociateProfessor0@Department0.University0.edu" .
+<http://www.Department0.University0.edu/AssociateProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#telephone> "xxx-xxx-xxxx" .
+<http://www.Department0.University0.edu/AssociateProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#teacherOf> <http://www.Department0.University0.edu/GraduateCourse0> .
+<http://www.Department0.University0.edu/AssociateProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#teacherOf> <http://www.Department0.University0.edu/Course0> .
+<http://www.Department0.University0.edu/AssociateProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#mastersDegreeFrom> <http://www.University0.edu> .
+
+# AssistantProfessor0 works for Department0 but has no name/email/telephone,
+# so it is a Professor that q4 must still exclude. University0 names it as an
+# alumnus directly, so hasAlumnus is asserted data too: a query over it still
+# translates when the rules that derive hasAlumnus are removed.
+<http://www.Department0.University0.edu/AssistantProfessor0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#AssistantProfessor> .
+<http://www.Department0.University0.edu/AssistantProfessor0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#worksFor> <http://www.Department0.University0.edu> .
+<http://www.University0.edu> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#hasAlumnus> <http://www.Department0.University0.edu/AssistantProfessor0> .
+
+# Courses: only Course0 is directly a Course.
+<http://www.Department0.University0.edu/GraduateCourse0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#GraduateCourse> .
+<http://www.Department0.University0.edu/Course0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#Course> .
+
+# Publications: Publication0 is directly a Publication, Publication1 only via
+# JournalArticle -> Article -> Publication.
+<http://www.Department0.University0.edu/AssistantProfessor0/Publication0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#Publication> .
+<http://www.Department0.University0.edu/AssistantProfessor0/Publication0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#publicationAuthor> <http://www.Department0.University0.edu/AssistantProfessor0> .
+<http://www.Department0.University0.edu/AssistantProfessor0/Publication1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#JournalArticle> .
+<http://www.Department0.University0.edu/AssistantProfessor0/Publication1> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#publicationAuthor> <http://www.Department0.University0.edu/AssistantProfessor0> .
+
+# GraduateStudent0.
+<http://www.Department0.University0.edu/GraduateStudent0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#GraduateStudent> .
+<http://www.Department0.University0.edu/GraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#memberOf> <http://www.Department0.University0.edu> .
+<http://www.Department0.University0.edu/GraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#undergraduateDegreeFrom> <http://www.University0.edu> .
+<http://www.Department0.University0.edu/GraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#emailAddress> "GraduateStudent0@Department0.University0.edu" .
+<http://www.Department0.University0.edu/GraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#advisor> <http://www.Department0.University0.edu/AssociateProfessor0> .
+<http://www.Department0.University0.edu/GraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#takesCourse> <http://www.Department0.University0.edu/GraduateCourse0> .
+
+# UndergraduateStudent0 takes both courses.
+<http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#UndergraduateStudent> .
+<http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#memberOf> <http://www.Department0.University0.edu> .
+<http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#emailAddress> "UndergraduateStudent0@Department0.University0.edu" .
+<http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#advisor> <http://www.Department0.University0.edu/AssociateProfessor0> .
+<http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#takesCourse> <http://www.Department0.University0.edu/Course0> .
+<http://www.Department0.University0.edu/UndergraduateStudent0> <http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#takesCourse> <http://www.Department0.University0.edu/GraduateCourse0> .
