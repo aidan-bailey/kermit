@@ -11,7 +11,10 @@ pub struct PartitionedRelation {
     /// Datalog-safe lowercase identifier (collisions resolved with `_<id>`
     /// suffix).
     pub name: String,
-    /// `(s_id, o_id)` pairs.
+    /// `(s_id, o_id)` pairs, in the order their triples appear in the input.
+    /// The order is a contract: relations loaded from the Parquet files are
+    /// built in this order and build time depends on it (issue #66), so
+    /// reordering here would shift benchmark measurements.
     pub tuples: Vec<(usize, usize)>,
 }
 
@@ -31,6 +34,10 @@ pub struct Partitioned {
 
 /// Streams an N-Triples file once, building the dictionary and per-predicate
 /// `(s, o)` buckets in a single pass.
+///
+/// Each relation's tuples keep the order of their triples in the input file
+/// (see [`PartitionedRelation::tuples`]): relation build time is sensitive to
+/// insertion order (issue #66), so the partitioner must not reorder them.
 ///
 /// Collisions between sanitized predicate names are resolved by appending
 /// `_<dict-id>` to all but the first occurrence. The chosen name is recorded

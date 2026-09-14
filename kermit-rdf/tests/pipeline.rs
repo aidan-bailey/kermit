@@ -4,17 +4,20 @@
 //! Every test reads one artifact back from disk and pins its *contents*, not
 //! just its existence: the per-predicate Parquet tuples, the dictionary, the
 //! full translated Datalog rules, and the emitted `benchmark.yml`. All
-//! expected values below are derived by hand from [`NT`] and the pipeline's
-//! documented rules:
+//! expected values below are derived by hand from [`NT`]:
 //!
-//! - **Dictionary** (`dict.rs`): every term is interned in stream order —
-//!   subject, predicate, object per triple — so ids are dense from 0. The
-//!   translator interns query-only constants afterwards, and the orchestrator
-//!   writes `dict.parquet` after translation, so those ids follow the data's.
-//! - **Partition** (`partition.rs`): one relation per predicate IRI in order of
-//!   first appearance, tuples in input order. A sanitisation collision is
-//!   resolved by suffixing `_<dict-id of the predicate IRI>` onto every name
-//!   but the first.
+//! - **Partition** (documented in `partition.rs`): one relation per predicate
+//!   IRI, its tuples in the order of the input triples. A sanitisation
+//!   collision is resolved by suffixing `_<dict-id of the predicate IRI>` onto
+//!   every name but the first-seen one.
+//! - **Dictionary**: `dict.rs` promises only that ids follow insertion order.
+//!   That `partition` interns subject, predicate, object per triple — and so
+//!   the exact ids below — is its current implementation, not a documented
+//!   contract. The ids are pinned anyway because they surface in generated
+//!   names and rules (`title_6`, `c<id>`), so changing them changes every
+//!   generated benchmark. The translator interns query-only constants, and the
+//!   orchestrator writes `dict.parquet` after translation, so those ids follow
+//!   the data's.
 //!
 //! | id | canonical value                                     | first seen |
 //! |----|-----------------------------------------------------|------------|
@@ -22,7 +25,7 @@
 //! |  1 | `<http://x/follows>`                                | t1 p       |
 //! |  2 | `<http://x/bob>`                                    | t1 o       |
 //! |  3 | `<http://x/carol>`                                  | t2 o       |
-//! |  4 | `<http://ogp.me/ns#title>`                          | t3 p       |
+//! |  4 | `<http://z.example/ns#title>`                       | t3 p       |
 //! |  5 | `"Dr"@en`                                           | t3 o       |
 //! |  6 | `<http://purl.org/stuff/rev#title>`                 | t5 p       |
 //! |  7 | `_:review1`                                         | t5 o       |
@@ -53,23 +56,27 @@ use {
     },
 };
 
-/// Seven triples over four predicate IRIs. `ogp.me/ns#title` and
-/// `purl.org/stuff/rev#title` both sanitise to `title`; `has-age` sanitises to
-/// `has_age`. Objects cover IRIs, a language-tagged literal, a blank node, a
-/// typed literal and a plain literal.
+/// Seven triples over four predicate IRIs. `z.example/ns#title` and
+/// `purl.org/stuff/rev#title` both sanitise to `title`; the `z.example` IRI is
+/// seen first but sorts last, so the bare name follows first appearance, not
+/// lexicographic order. `has-age` sanitises to `has_age`. Objects cover IRIs,
+/// a language-tagged literal, a blank node, a typed literal and a plain
+/// literal.
 const NT: &str = r#"<http://x/alice> <http://x/follows> <http://x/bob> .
 <http://x/bob> <http://x/follows> <http://x/carol> .
-<http://x/alice> <http://ogp.me/ns#title> "Dr"@en .
+<http://x/alice> <http://z.example/ns#title> "Dr"@en .
 <http://x/carol> <http://x/follows> <http://x/alice> .
 <http://x/bob> <http://purl.org/stuff/rev#title> _:review1 .
 <http://x/carol> <http://x/has-age> "42"^^<http://www.w3.org/2001/XMLSchema#integer> .
-<http://x/bob> <http://ogp.me/ns#title> "Mx" .
+<http://x/bob> <http://z.example/ns#title> "Mx" .
 "#;
 
 /// `(name, sparql, hand-counted answers over NT)`.
 ///
 /// - `path`: two-hop `follows` cycle — (alice, bob, carol), (bob, carol,
 ///   alice), (carol, alice, bob).
+/// - `followers`: projects away a bound variable (`?y`), which stays in the
+///   body — alice, bob and carol each follow someone.
 /// - `titles`: explicit projection in a non-first-appearance order, both
 ///   colliding predicates, and a data constant (`carol`, id 3). Only `bob`
 ///   follows `carol`, with review `_:review1` and title `"Mx"`.
@@ -83,9 +90,14 @@ const QUERIES: &[(&str, &str, u64)] = &[
         3,
     ),
     (
+        "followers",
+        "SELECT ?x WHERE { ?x <http://x/follows> ?y . }",
+        3,
+    ),
+    (
         "titles",
         "SELECT ?t ?n ?x WHERE { ?x <http://x/follows> <http://x/carol> . \
-         ?x <http://purl.org/stuff/rev#title> ?t . ?x <http://ogp.me/ns#title> ?n . }",
+         ?x <http://purl.org/stuff/rev#title> ?t . ?x <http://z.example/ns#title> ?n . }",
         1,
     ),
     (
@@ -287,7 +299,7 @@ fn relation_parquet_files_hold_each_predicates_tuples_in_input_order() {
         (2, 3),
         (3, 0)
     ]);
-    // t3, t7: the first `title` IRI (ogp.me) keeps the bare name.
+    // t3, t7: the first-seen `title` IRI (z.example) keeps the bare name.
     assert_eq!(read_relation(&out.join("title.parquet")), [(0, 5), (2, 10)]);
     // t5: bob → _:review1.
     assert_eq!(read_relation(&out.join("title_6.parquet")), [(2, 7)]);
@@ -300,10 +312,11 @@ fn sanitisation_collision_suffixes_the_second_predicate_with_its_dict_id() {
     let dir = generate();
     let out = dir.path();
 
-    // Both IRIs sanitise to `title`. The ogp.me IRI appears first (t3) and
-    // keeps the bare name; the purl.org IRI (t5) is dictionary id 6.
+    // Both IRIs sanitise to `title`. The z.example IRI appears first (t3) and
+    // keeps the bare name even though it sorts after purl.org; the purl.org
+    // IRI (t5) is dictionary id 6.
     let dict = read_dict(&out.join("dict.parquet"));
-    assert_eq!(dict[4], (4, "<http://ogp.me/ns#title>".to_string()));
+    assert_eq!(dict[4], (4, "<http://z.example/ns#title>".to_string()));
     assert_eq!(
         dict[6],
         (6, "<http://purl.org/stuff/rev#title>".to_string())
@@ -332,7 +345,7 @@ fn dictionary_is_dense_canonical_and_appends_query_only_constants() {
         "<http://x/follows>",
         "<http://x/bob>",
         "<http://x/carol>",
-        "<http://ogp.me/ns#title>",
+        "<http://z.example/ns#title>",
         "\"Dr\"@en",
         "<http://purl.org/stuff/rev#title>",
         "_:review1",
@@ -368,6 +381,8 @@ fn translated_rules_match_exactly() {
     assert_eq!(rules, [
         // SELECT *: head is every variable in first-appearance order.
         ("path", "Q_path(X, Y, Z) :- follows(X, Y), follows(Y, Z)."),
+        // Explicit projection: the head holds only X; Y stays in the body.
+        ("followers", "Q_followers(X) :- follows(X, Y)."),
         // Explicit projection keeps the SELECT order; `carol` is data id 3.
         (
             "titles",
@@ -404,6 +419,7 @@ fn benchmark_yaml_parses_validates_and_resolves_every_relation() {
         .collect();
     assert_eq!(queries, [
         ("path", Some(3)),
+        ("followers", Some(3)),
         ("titles", Some(1)),
         ("dave", Some(0)),
         ("strangers", Some(0))
