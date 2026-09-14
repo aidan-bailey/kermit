@@ -16,6 +16,9 @@ authors = ["Aidan Bailey"]
 edition = "2021"
 homepage = "https://github.com/aidan-bailey/kermit"
 license = "Apache-2.0 OR MIT"
+# Not published to crates.io: releases are GitHub tags plus a git-cliff
+# changelog (`.github/workflows/release.yml`).
+publish = false
 readme = "README.md"
 repository = "https://github.com/aidan-bailey/kermit"
 

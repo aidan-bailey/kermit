@@ -56,52 +56,14 @@ jobs:
             echo "::notice::Release v${{ steps.version.outputs.version }} will be created"
           fi
 
-  publish:
-    name: Publish to crates.io
+  # The workspace is not published to crates.io (`publish = false` in the root
+  # Cargo.toml): a release is a tag plus git-cliff notes, nothing more.
+  release:
+    name: Create Release
+    needs: version
     if: |
       needs.version.outputs.should_release == 'true' &&
       github.repository == 'aidan-bailey/kermit'
-    needs: version
-    runs-on: ubuntu-latest
-    environment: cargo
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ needs.version.outputs.sha }}
-
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
-        with:
-          toolchain: nightly
-
-      - name: Login to crates.io
-        run: cargo login ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      # Publish in dependency order: iters -> derive -> parser -> ds -> algos -> bench -> kermit
-      - name: Publish crates to crates.io
-        run: |
-          CRATES=("kermit-iters" "kermit-derive" "kermit-parser" "kermit-ds" "kermit-algos" "kermit-bench" "kermit")
-
-          for crate in "${CRATES[@]}"; do
-            CRATE_VERSION=$(grep -m1 '^version' "$crate/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
-            echo "Publishing $crate $CRATE_VERSION"
-            OUTPUT=$(cargo publish -p "$crate" --no-verify 2>&1) && {
-              echo "$crate $CRATE_VERSION published successfully"
-              continue
-            }
-            if echo "$OUTPUT" | grep -q "already exists"; then
-              echo "$crate $CRATE_VERSION already exists, skipping"
-              continue
-            fi
-            echo "::error::Failed to publish $crate"
-            echo "$OUTPUT"
-            exit 1
-          done
-
-  release:
-    name: Create Release
-    needs: [version, publish]
-    if: needs.version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

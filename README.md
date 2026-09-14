@@ -1,9 +1,7 @@
-# Kermit &emsp; [![Build Status]][actions] [![dependency status](https://deps.rs/repo/github/aidan-bailey/kermit/status.svg)](https://deps.rs/repo/github/aidan-bailey/kermit) [![Latest Version]][crates.io]
+# Kermit &emsp; [![Build Status]][actions] [![dependency status](https://deps.rs/repo/github/aidan-bailey/kermit/status.svg)](https://deps.rs/repo/github/aidan-bailey/kermit)
 
 [Build Status]: https://img.shields.io/github/actions/workflow/status/aidan-bailey/kermit/build.yml?branch=master
 [actions]: https://github.com/aidan-bailey/kermit/actions?query=branch%3Amaster
-[Latest Version]: https://img.shields.io/crates/v/kermit.svg
-[crates.io]: https://crates.io/crates/kermit
 
 *Kermit* is a library containing data structures, iterators and algorithms related to [relational algebra](https://en.wikipedia.org/wiki/Relational_algebra), primarily for the purpose of research and benchmarking. It is currently in early stages of development and as such all builds and releases should be considered unstable.
 
