@@ -27,6 +27,17 @@ pub enum BenchError {
         source: reqwest::Error,
     },
 
+    /// A download succeeded at the HTTP level but did not deliver a relation
+    /// file: a status other than `200 OK`, an empty body, or bytes without the
+    /// Parquet magic. Nothing is written to the cache.
+    #[error("download from {url} did not return a Parquet file: {reason}")]
+    UnusableDownload {
+        /// URL that was being fetched.
+        url: String,
+        /// What was wrong with the response.
+        reason: String,
+    },
+
     /// A benchmark with the requested name does not exist.
     #[error("benchmark not found: {0}")]
     NotFound(String),

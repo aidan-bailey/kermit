@@ -96,6 +96,8 @@ pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
 ///   file cannot be written, or a declared local path does not exist.
 /// - [`BenchError::Download`] — an HTTP error occurred while fetching a
 ///   relation file.
+/// - [`BenchError::UnusableDownload`] — the server answered without error but
+///   did not send a Parquet file (non-200 status, empty body, missing magic).
 /// - [`BenchError::Integrity`] — a downloaded file does not match the `sha256`
 ///   its relation declares.
 pub fn ensure_cached(
@@ -208,8 +210,46 @@ pub fn verify_integrity(
     Ok(checked)
 }
 
-/// Downloads a file from a URL to the given destination path, checking it
-/// against `rel`'s declared `sha256` (if any) before anything is written.
+/// Four bytes that open and close every Parquet file.
+const PARQUET_MAGIC: &[u8] = b"PAR1";
+
+/// Explains why a response that passed `error_for_status` is still not a
+/// relation file, or returns `None` if it is one.
+///
+/// `error_for_status` only rejects 4xx/5xx, so a `202 Accepted` with an empty
+/// body — what an AWS WAF bot challenge looks like to a non-browser client —
+/// would otherwise be cached as a zero-byte `.parquet` and never re-fetched.
+fn unusable_download(
+    status: reqwest::StatusCode, waf_action: Option<&str>, body: &[u8],
+) -> Option<String> {
+    if status != reqwest::StatusCode::OK {
+        return Some(match waf_action {
+            | Some(action) => format!(
+                "HTTP {status} with `x-amzn-waf-action: {action}`: the host answered with a \
+                 bot-protection challenge instead of the file"
+            ),
+            | None => format!("expected HTTP 200 OK, got {status}"),
+        });
+    }
+    if body.is_empty() {
+        return Some("the response body is empty".to_string());
+    }
+    let is_parquet = body.len() >= 2 * PARQUET_MAGIC.len()
+        && body.starts_with(PARQUET_MAGIC)
+        && body.ends_with(PARQUET_MAGIC);
+    if !is_parquet {
+        return Some(format!(
+            "the {}-byte body lacks the Parquet `PAR1` magic at both ends",
+            body.len()
+        ));
+    }
+    None
+}
+
+/// Downloads a file from a URL to the given destination path, rejecting a
+/// response that is not a Parquet file (see [`unusable_download`]) and
+/// checking it against `rel`'s declared `sha256` (if any) before anything is
+/// written.
 fn download_file(url: &str, dest: &Path, rel: &RelationSource) -> Result<(), BenchError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
@@ -227,10 +267,24 @@ fn download_file(url: &str, dest: &Path, rel: &RelationSource) -> Result<(), Ben
             source,
         })?;
 
+    let status = response.status();
+    let waf_action = response
+        .headers()
+        .get("x-amzn-waf-action")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     let bytes = response.bytes().map_err(|source| BenchError::Download {
         url: url.to_string(),
         source,
     })?;
+
+    if let Some(reason) = unusable_download(status, waf_action.as_deref(), &bytes) {
+        return Err(BenchError::UnusableDownload {
+            url: url.to_string(),
+            reason,
+        });
+    }
 
     if let Some(expected) = rel.sha256.as_deref() {
         if let Err(actual) = check_digest(&bytes, expected) {
@@ -376,6 +430,122 @@ mod tests {
             verify_integrity(&local_bench(root.path(), None), root.path()).unwrap(),
             0
         );
+    }
+
+    /// Serves `response` verbatim to the first connection on a loopback port
+    /// and returns the URL to fetch it from.
+    fn serve_once(response: Vec<u8>) -> String {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/relation.parquet", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+            stream.write_all(&response).unwrap();
+        });
+        url
+    }
+
+    fn http_response(status: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
+        let mut head = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        for header in headers {
+            head.push_str(header);
+            head.push_str("\r\n");
+        }
+        head.push_str("\r\n");
+        let mut response = head.into_bytes();
+        response.extend_from_slice(body);
+        response
+    }
+
+    fn url_relation(url: &str) -> RelationSource {
+        RelationSource {
+            name: "edge".to_string(),
+            url: Some(url.to_string()),
+            path: None,
+            sha256: None,
+        }
+    }
+
+    /// Smallest byte string carrying the Parquet magic at both ends.
+    const PARQUET_LIKE: &[u8] = b"PAR1\x00\x00\x00\x00PAR1";
+
+    /// Fetches `response` into a fresh temp cache path and returns the error
+    /// text, asserting that neither the cache file nor its `.part` staging
+    /// sibling was left behind.
+    fn rejected_download(response: Vec<u8>) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("edge.parquet");
+        let url = serve_once(response);
+        let err = download_file(&url, &dest, &url_relation(&url))
+            .expect_err("download should have been rejected");
+        assert!(
+            !dest.exists(),
+            "a rejected download must not reach the cache"
+        );
+        assert!(!dest.with_extension("parquet.part").exists());
+        err.to_string()
+    }
+
+    #[test]
+    fn download_writes_a_parquet_body_served_with_200() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("edge.parquet");
+        let url = serve_once(http_response("200 OK", &[], PARQUET_LIKE));
+        download_file(&url, &dest, &url_relation(&url)).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), PARQUET_LIKE);
+    }
+
+    #[test]
+    fn download_rejects_a_waf_challenge_and_names_it() {
+        // ZivaHub's AWS WAF answers non-browser clients this way (issue #70).
+        let msg = rejected_download(http_response(
+            "202 Accepted",
+            &["x-amzn-waf-action: challenge"],
+            b"",
+        ));
+        assert!(msg.contains("challenge"), "{msg}");
+    }
+
+    #[test]
+    fn download_rejects_a_success_status_other_than_200() {
+        let msg = rejected_download(http_response("202 Accepted", &[], PARQUET_LIKE));
+        assert!(msg.contains("202"), "{msg}");
+    }
+
+    #[test]
+    fn download_rejects_an_empty_200_body() {
+        let msg = rejected_download(http_response("200 OK", &[], b""));
+        assert!(msg.contains("empty"), "{msg}");
+    }
+
+    #[test]
+    fn download_rejects_a_200_body_that_is_not_parquet() {
+        let msg = rejected_download(http_response(
+            "200 OK",
+            &["Content-Type: text/html"],
+            b"<html>please enable JavaScript</html>",
+        ));
+        assert!(msg.contains("Parquet"), "{msg}");
+    }
+
+    #[test]
+    fn download_rejects_a_parquet_body_cut_off_before_its_footer() {
+        let truncated = &PARQUET_LIKE[..PARQUET_LIKE.len() - 1];
+        let msg = rejected_download(http_response("200 OK", &[], truncated));
+        assert!(msg.contains("Parquet"), "{msg}");
     }
 
     #[test]
