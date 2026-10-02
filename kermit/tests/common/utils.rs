@@ -7,7 +7,7 @@
 //! hosts it, mirroring how the CLI's `execution` module pairs them.
 
 use {
-    kermit::db::{hash_join, lftj_join},
+    kermit::db::{hash_join, hash_join_for_each, lftj_join, lftj_join_for_each},
     kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, QueryOptimiser},
     kermit_ds::{Cardinality, Configured, HashTrie, PruningPolicy, Relation},
     kermit_iters::{HashStrategy, TrieIterable},
@@ -19,6 +19,12 @@ pub trait JoinEntry<R> {
     fn join(
         relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     ) -> Vec<Vec<usize>>;
+
+    /// Counts the result through the streaming `_for_each` entry point —
+    /// the path `bench run`'s `iteration` metric times.
+    fn count(
+        relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    ) -> usize;
 }
 
 impl<R: TrieIterable + Cardinality> JoinEntry<R> for LeapfrogTriejoin {
@@ -26,6 +32,14 @@ impl<R: TrieIterable + Cardinality> JoinEntry<R> for LeapfrogTriejoin {
         relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     ) -> Vec<Vec<usize>> {
         lftj_join::<R, LeapfrogTriejoin>(relations, query, optimiser)
+    }
+
+    fn count(
+        relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    ) -> usize {
+        let mut rows = 0;
+        lftj_join_for_each::<R, LeapfrogTriejoin>(relations, query, optimiser, |_| rows += 1);
+        rows
     }
 }
 
@@ -39,6 +53,15 @@ impl<H: HashStrategy, P: PruningPolicy> JoinEntry<HashTrie<H, P>> for HashTriejo
     ) -> Vec<Vec<usize>> {
         hash_join::<HashTrie<H, P>, H>(relations, query, optimiser)
     }
+
+    fn count(
+        relations: &BTreeMap<String, HashTrie<H, P>>, query: JoinQuery,
+        optimiser: &dyn QueryOptimiser,
+    ) -> usize {
+        let mut rows = 0;
+        hash_join_for_each::<HashTrie<H, P>, H>(relations, query, optimiser, |_| rows += 1);
+        rows
+    }
 }
 
 impl<H: HashStrategy, P: PruningPolicy, C> JoinEntry<Configured<HashTrie<H, P>, C>>
@@ -50,12 +73,27 @@ impl<H: HashStrategy, P: PruningPolicy, C> JoinEntry<Configured<HashTrie<H, P>, 
     ) -> Vec<Vec<usize>> {
         hash_join::<Configured<HashTrie<H, P>, C>, H>(relations, query, optimiser)
     }
+
+    fn count(
+        relations: &BTreeMap<String, Configured<HashTrie<H, P>, C>>, query: JoinQuery,
+        optimiser: &dyn QueryOptimiser,
+    ) -> usize {
+        let mut rows = 0;
+        hash_join_for_each::<Configured<HashTrie<H, P>, C>, H>(relations, query, optimiser, |_| {
+            rows += 1
+        });
+        rows
+    }
 }
 
 /// Builds one `R` per input relation (named `R0`, `R1`, …), synthesises
 /// `Q(V…) :- R0(V…), R1(V…), ….` from `variables` / `rel_variables`, runs
 /// it through `JA`'s entry point, projects each row to the head, and
 /// asserts multiset equality with `result`.
+///
+/// It also counts the result through the streaming entry point and checks
+/// that count against `result`, so the path `bench run` times is covered
+/// for every structure × algorithm × optimiser invocation.
 ///
 /// Head variables receive canonical indices `0..variables.len()` in head
 /// order (`kermit_algos::analyse`), and the entry points emit every
@@ -104,6 +142,14 @@ pub fn test_join<R, JA, O>(
     // before asserting so algorithms with non-sorted output (hash-trie
     // family) and plans with different enumeration orders pass the same
     // suite.
+    // The streamed count is what `bench run --verify` checks and what the
+    // `iteration` metric times; it must agree with the expected rows.
+    let streamed = JA::count(&relations, query.clone(), &O::default());
+    assert_eq!(
+        streamed,
+        result.len(),
+        "streamed count disagrees with the expected row count"
+    );
     let mut actual: Vec<Vec<usize>> = JA::join(&relations, query, &O::default())
         .into_iter()
         .map(|row| row[..head_arity].to_vec())

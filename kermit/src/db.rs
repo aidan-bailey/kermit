@@ -1,8 +1,10 @@
 //! Join entry points bridging a parsed Datalog query to a relation store.
 //!
-//! Each iterator family has one free function — [`lftj_join`] for sorted
-//! tries under a [`TrieIterable`]-family algorithm, [`hash_join`] for
-//! [`HashTrieIterable`] structures under [`HashTriejoin`] — over the same
+//! Each iterator family has one streaming free function —
+//! [`lftj_join_for_each`] for sorted tries under a [`TrieIterable`]-family
+//! algorithm, [`hash_join_for_each`] for [`HashTrieIterable`] structures
+//! under [`HashTriejoin`] — plus a collecting wrapper ([`lftj_join`],
+//! [`hash_join`]), all over the same
 //! shape of relation store, a `BTreeMap<String, R>` keyed by relation name.
 //! Both share one private body and differ only in how a relation, a
 //! constant and a selection view are wrapped for the algorithm (the
@@ -104,6 +106,9 @@ impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
 /// The one join body: const-view rewrite, selection rewrite, wrapper map,
 /// statistics, plan, execute.
 ///
+/// Each result tuple is passed to `emit` as a borrowed slice; the result
+/// is never materialised here.
+///
 /// `label` names the entry point in the unknown-relation panic so a CLI
 /// user can tell which family rejected the query.
 ///
@@ -111,14 +116,14 @@ impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
 ///
 /// Panics if the query references a relation name not present in
 /// `relations`, or if it contains a malformed constant atom.
-fn run_join<'a, R, F, JA>(
+fn run_join<'a, R, F, JA, S>(
     relations: &'a BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-    label: &str,
-) -> Vec<Vec<usize>>
-where
+    label: &str, emit: S,
+) where
     R: Cardinality + 'a,
     F: JoinFamily<R>,
     JA: JoinAlgo<F::Wrapper<'a>>,
+    S: FnMut(&[usize]),
 {
     // Const first, then selection: the second pass then sees an atom-free
     // body, and the two share one fresh-variable counter.
@@ -175,18 +180,35 @@ where
     });
     let plan = optimiser.plan(&rewritten, &stats);
 
-    JA::join_iter(&plan, rewritten, ds_map).collect()
+    JA::join_for_each(&plan, rewritten, ds_map, emit);
 }
 
 /// Sorted-family join entry point: runs `query` over `relations` with the
 /// [`TrieIterable`]-family algorithm `JA` (normally
 /// [`LeapfrogTriejoin`](kermit_algos::LeapfrogTriejoin)), planned by
-/// `optimiser`. Mirror of [`hash_join`].
+/// `optimiser`, and passes each result tuple to `emit` without
+/// materialising the result. Mirror of [`hash_join_for_each`].
 ///
 /// # Panics
 ///
 /// Panics if the query references a relation name not present in
 /// `relations`, or if it contains a malformed constant atom.
+pub fn lftj_join_for_each<R, JA>(
+    relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    emit: impl FnMut(&[usize]),
+) where
+    R: TrieIterable + Cardinality,
+    JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
+{
+    run_join::<R, SortedFamily, JA, _>(relations, query, optimiser, "lftj_join", emit);
+}
+
+/// [`lftj_join_for_each`], collected: returns every result tuple. For
+/// callers that need the rows themselves; allocates one `Vec` per tuple.
+///
+/// # Panics
+///
+/// As [`lftj_join_for_each`].
 pub fn lftj_join<R, JA>(
     relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
 ) -> Vec<Vec<usize>>
@@ -194,11 +216,17 @@ where
     R: TrieIterable + Cardinality,
     JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
 {
-    run_join::<R, SortedFamily, JA>(relations, query, optimiser, "lftj_join")
+    let mut tuples = Vec::new();
+    lftj_join_for_each::<R, JA>(relations, query, optimiser, |tuple| {
+        tuples.push(tuple.to_vec())
+    });
+    tuples
 }
 
 /// Hash-family join entry point: runs `query` over `relations` with
-/// [`HashTriejoin`], planned by `optimiser`. Mirror of [`lftj_join`].
+/// [`HashTriejoin`], planned by `optimiser`, and passes each result tuple
+/// to `emit` without materialising the result. Mirror of
+/// [`lftj_join_for_each`].
 ///
 /// `H` selects the hash function used for any constant-atom singletons;
 /// callers must thread the same `H` used when constructing the
@@ -210,6 +238,22 @@ where
 ///
 /// Panics if the query references a relation name not present in
 /// `relations`, or if it contains a malformed constant atom.
+pub fn hash_join_for_each<R, H>(
+    relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    emit: impl FnMut(&[usize]),
+) where
+    R: HashTrieIterable + Cardinality,
+    H: HashStrategy,
+{
+    run_join::<R, HashFamily<H>, HashTriejoin, _>(relations, query, optimiser, "hash_join", emit);
+}
+
+/// [`hash_join_for_each`], collected: returns every result tuple. For
+/// callers that need the rows themselves; allocates one `Vec` per tuple.
+///
+/// # Panics
+///
+/// As [`hash_join_for_each`].
 pub fn hash_join<R, H>(
     relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
 ) -> Vec<Vec<usize>>
@@ -217,7 +261,11 @@ where
     R: HashTrieIterable + Cardinality,
     H: HashStrategy,
 {
-    run_join::<R, HashFamily<H>, HashTriejoin>(relations, query, optimiser, "hash_join")
+    let mut tuples = Vec::new();
+    hash_join_for_each::<R, H>(relations, query, optimiser, |tuple| {
+        tuples.push(tuple.to_vec())
+    });
+    tuples
 }
 
 #[cfg(test)]
@@ -330,6 +378,26 @@ mod tests {
                 .collect();
         got.sort();
         assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
+    }
+
+    /// The streaming entry point visits every row without collecting;
+    /// `lftj_join` is the same traversal, collected.
+    #[test]
+    fn lftj_join_for_each_visits_every_row() {
+        let relations = rels(vec![
+            ("first", 1, vec![vec![1], vec![2], vec![3]]),
+            ("second", 1, vec![vec![2], vec![3], vec![4]]),
+        ]);
+        let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
+        let mut got = Vec::new();
+        lftj_join_for_each::<TreeTrie, LeapfrogTriejoin>(
+            &relations,
+            query,
+            &LexicographicOptimiser,
+            |row| got.push(row[0]),
+        );
+        got.sort();
+        assert_eq!(got, vec![2, 3]);
     }
 
     #[test]
@@ -486,5 +554,28 @@ mod hash_join_tests {
         let mut got: Vec<(usize, usize)> = result.iter().map(|r| (r[0], r[1])).collect();
         got.sort();
         assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
+    }
+
+    #[test]
+    fn hash_join_for_each_visits_every_row() {
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
+        relations.insert(
+            "R".to_string(),
+            HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]),
+        );
+        relations.insert(
+            "S".to_string(),
+            HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]),
+        );
+        let q: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
+        let mut got = Vec::new();
+        hash_join_for_each::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+            &relations,
+            q,
+            &LexicographicOptimiser,
+            |row| got.push(row[0]),
+        );
+        got.sort();
+        assert_eq!(got, vec![2, 3]);
     }
 }
