@@ -554,7 +554,7 @@ fn cli_bench_ds_writes_json_report() {
 
     assert!(json.is_array(), "top-level shape is always a JSON array");
     let report = &json[0];
-    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["schema_version"], 3);
     assert_eq!(report["kind"], "ds");
 
     let metadata = report["metadata"]
@@ -639,7 +639,7 @@ fn cli_bench_ds_writes_default_report_when_path_omitted() {
 
     let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap())
         .expect("default report should be valid JSON");
-    assert_eq!(json[0]["schema_version"], 2);
+    assert_eq!(json[0]["schema_version"], 3);
     assert_eq!(json[0]["kind"], "ds");
 
     let _ = std::fs::remove_dir_all(&tmp_cwd);
@@ -721,7 +721,7 @@ fn cli_bench_run_writes_json_report() {
 
     assert!(json.is_array(), "top-level shape is always a JSON array");
     let report = &json[0];
-    assert_eq!(report["schema_version"], 2);
+    assert_eq!(report["schema_version"], 3);
     assert_eq!(report["kind"], "run");
 
     let metadata = report["metadata"]
