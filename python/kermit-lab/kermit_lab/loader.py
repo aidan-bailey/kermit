@@ -94,7 +94,8 @@ def _refuse_mixed_schema(reports: Sequence[BenchReport]) -> None:
             f"with schema_version {newer.schema_version} ({newer.source_path}): from "
             f"v{STREAMED_JOIN_SCHEMA} the iteration and end_to_end phases time a streamed, "
             "counted join, so their values are not comparable with earlier reports. Load "
-            "each side separately, or pass allow_mixed_schema=True to compare space only."
+            "each side separately, or (Python API) pass allow_mixed_schema=True to compare "
+            "space only."
         )
 
 

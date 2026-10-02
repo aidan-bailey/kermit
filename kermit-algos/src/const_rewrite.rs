@@ -3,7 +3,7 @@
 //! Transforms body atoms (e.g. `p(X, c42)`) into fresh variables
 //! filtered by synthetic unary `Const_c42` predicates, so the existing
 //! LFTJ engine can handle them without modification. Intended to run
-//! immediately before [`crate::JoinAlgo::join_iter`].
+//! immediately before [`crate::JoinAlgo::join_for_each`].
 
 use {
     kermit_parser::{JoinQuery, Predicate, Term},

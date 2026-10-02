@@ -128,8 +128,8 @@ where
     }
 
     /// Advances to the next complete tuple and lends it: the slice is the
-    /// wrapper's own path stack, valid until the next call, so the
-    /// traversal allocates nothing per tuple. Callers that need an owned
+    /// wrapper's own path stack, valid until the next call, so the wrapper
+    /// allocates nothing per tuple. Callers that need an owned
     /// tuple use the [`Iterator`] impl, which copies this slice.
     ///
     /// Moves through the trie in depth-first order. Backtracks via

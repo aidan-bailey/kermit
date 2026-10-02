@@ -20,8 +20,8 @@ where
     ///
     /// This is the method every algorithm implements, and it never
     /// materialises the result. The slice handed to `emit` is borrowed for
-    /// that call only, so an implementation reuses one scratch row and
-    /// allocates nothing per tuple. The `iteration` and `end_to_end`
+    /// that call only, so an implementation reuses one scratch row and never
+    /// allocates a result tuple. The `iteration` and `end_to_end`
     /// benchmark metrics time exactly this path, counting rows through a
     /// `black_box` sink (issue #65). The sink is a generic parameter rather
     /// than `&mut dyn FnMut`, so the per-tuple call is monomorphised, not

@@ -138,10 +138,6 @@ pub fn test_join<R, JA, O>(
     let query: JoinQuery = query_str.parse().expect("Failed to build JoinQuery");
 
     let head_arity = variables.len();
-    // Multiset equality (relational algebra semantics) — sort both sides
-    // before asserting so algorithms with non-sorted output (hash-trie
-    // family) and plans with different enumeration orders pass the same
-    // suite.
     // The streamed count is what `bench run --verify` checks and what the
     // `iteration` metric times; it must agree with the expected rows.
     let streamed = JA::count(&relations, query.clone(), &O::default());
@@ -150,6 +146,11 @@ pub fn test_join<R, JA, O>(
         result.len(),
         "streamed count disagrees with the expected row count"
     );
+
+    // Multiset equality (relational algebra semantics) — sort both sides
+    // before asserting so algorithms with non-sorted output (hash-trie
+    // family) and plans with different enumeration orders pass the same
+    // suite.
     let mut actual: Vec<Vec<usize>> = JA::join(&relations, query, &O::default())
         .into_iter()
         .map(|row| row[..head_arity].to_vec())

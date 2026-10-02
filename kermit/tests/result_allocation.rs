@@ -15,6 +15,8 @@
 //! `open`/`up`, which is algorithm cost, not materialisation — cancels out.
 //! The only term that could differ is one that scales with the result. The
 //! shared `X` makes HashTriejoin verify a real join condition at the leaf.
+//! Each cell runs one unmeasured join first, so a one-time lazy
+//! initialisation on the join path cannot masquerade as per-row allocation.
 
 use {
     kermit::db::{hash_join_for_each, lftj_join_for_each},
@@ -102,6 +104,7 @@ fn assert_flat(cell: &str, small: u64, large: u64) {
 
 #[test]
 fn tree_trie_lftj_allocates_independently_of_result_size() {
+    lftj_allocations::<TreeTrie>(SMALL);
     assert_flat(
         "TreeTrie/LFTJ",
         lftj_allocations::<TreeTrie>(SMALL),
@@ -111,6 +114,7 @@ fn tree_trie_lftj_allocates_independently_of_result_size() {
 
 #[test]
 fn column_trie_lftj_allocates_independently_of_result_size() {
+    lftj_allocations::<ColumnTrie>(SMALL);
     assert_flat(
         "ColumnTrie/LFTJ",
         lftj_allocations::<ColumnTrie>(SMALL),
@@ -120,6 +124,7 @@ fn column_trie_lftj_allocates_independently_of_result_size() {
 
 #[test]
 fn hash_trie_sip_allocates_independently_of_result_size() {
+    htj_allocations::<SipHashStrategy, NoPruning>(SMALL);
     assert_flat(
         "HashTrie<Sip>/HTJ",
         htj_allocations::<SipHashStrategy, NoPruning>(SMALL),
@@ -129,6 +134,7 @@ fn hash_trie_sip_allocates_independently_of_result_size() {
 
 #[test]
 fn hash_trie_fx_allocates_independently_of_result_size() {
+    htj_allocations::<FxHashStrategy, NoPruning>(SMALL);
     assert_flat(
         "HashTrie<Fx>/HTJ",
         htj_allocations::<FxHashStrategy, NoPruning>(SMALL),
@@ -138,6 +144,7 @@ fn hash_trie_fx_allocates_independently_of_result_size() {
 
 #[test]
 fn hash_trie_sip_pruned_allocates_independently_of_result_size() {
+    htj_allocations::<SipHashStrategy, SingletonPruning>(SMALL);
     assert_flat(
         "HashTrie<Sip, Pruned>/HTJ",
         htj_allocations::<SipHashStrategy, SingletonPruning>(SMALL),
@@ -147,6 +154,7 @@ fn hash_trie_sip_pruned_allocates_independently_of_result_size() {
 
 #[test]
 fn hash_trie_fx_pruned_allocates_independently_of_result_size() {
+    htj_allocations::<FxHashStrategy, SingletonPruning>(SMALL);
     assert_flat(
         "HashTrie<Fx, Pruned>/HTJ",
         htj_allocations::<FxHashStrategy, SingletonPruning>(SMALL),

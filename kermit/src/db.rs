@@ -4,8 +4,8 @@
 //! [`lftj_join_for_each`] for sorted tries under a [`TrieIterable`]-family
 //! algorithm, [`hash_join_for_each`] for [`HashTrieIterable`] structures
 //! under [`HashTriejoin`] — plus a collecting wrapper ([`lftj_join`],
-//! [`hash_join`]), all over the same
-//! shape of relation store, a `BTreeMap<String, R>` keyed by relation name.
+//! [`hash_join`]), all over the same shape of relation store, a
+//! `BTreeMap<String, R>` keyed by relation name.
 //! Both share one private body and differ only in how a relation, a
 //! constant and a selection view are wrapped for the algorithm (the
 //! [`JoinFamily`] trait).

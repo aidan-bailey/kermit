@@ -730,7 +730,7 @@ mod tests {
     }
 
     /// Like `triejoin_collect`, but maps each tuple from descent order back
-    /// to canonical variable order (as `join_iter` does) and sorts, so
+    /// to canonical variable order (as `join_for_each` does) and sorts, so
     /// results from different variable orderings are directly comparable.
     fn triejoin_canonical(
         variable_ordering: Vec<usize>, predicate_variables: Vec<Vec<usize>>,

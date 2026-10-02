@@ -307,7 +307,7 @@ pub trait ExecutionFamily: RelationFamily {
 
     /// Runs `query` against `engine` and counts its result tuples, passing
     /// each through [`std::hint::black_box`] so the traversal cannot be
-    /// optimised away. Allocates nothing per tuple: this is what the
+    /// optimised away. Allocates no result rows: this is what the
     /// `iteration` and `end_to_end` metrics time and what `--verify`
     /// checks (issue #65).
     fn count(&self, engine: &Self::Engine, query: JoinQuery) -> u64 {

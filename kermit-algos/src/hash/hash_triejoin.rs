@@ -70,6 +70,9 @@ fn verify_and_construct<'t>(
             }
         }
     }
+    // Every variable is carried by some relation, or `enumerate` would have
+    // returned before reaching the leaf, so no slot of `row` is stale.
+    debug_assert!(bound.iter().all(|&b| b), "unbound variable at the leaf");
     true
 }
 
