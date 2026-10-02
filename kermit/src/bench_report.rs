@@ -77,8 +77,10 @@ pub fn write_metadata_block<W: Write>(
 }
 
 /// Schema version for the JSON report. Bump on any breaking change to
-/// [`BenchReport`] field names or value types.
-pub const REPORT_SCHEMA_VERSION: u32 = 2;
+/// [`BenchReport`] field names or value types, or to what a metric
+/// measures. 3: `iteration` / `end_to_end` time a streamed join whose rows
+/// are counted, never materialised (issue #65).
+pub const REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).

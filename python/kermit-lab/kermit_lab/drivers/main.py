@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 from .. import presets
 from ..frame import load, load_samples
-from ..loader import load_reports
+from ..loader import SchemaError, load_reports
 from ..plot import plot
 from ..plots_errors import InsufficientAxesError
 from ..styles import apply as apply_style
@@ -152,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
     except InsufficientAxesError as e:
         log.error("%s: %s", args.command, e)
         return 3
+    except SchemaError as e:
+        log.error("%s: %s", args.command, e)
+        return 4
     log.info("wrote %s", args.out)
     return 0
 

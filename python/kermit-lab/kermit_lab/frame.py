@@ -170,6 +170,7 @@ def load(
     criterion_root: Path | str = "target/criterion",
     *,
     apply_defaults: bool = True,
+    allow_mixed_schema: bool = False,
 ) -> pd.DataFrame:
     """Return the summary DataFrame for the given report JSON files.
 
@@ -179,9 +180,10 @@ def load(
     the axis columns (conventional + discovered optimization axes),
     ``mean_*``/``median_*`` estimates, plus
     ``criterion_group`` / ``criterion_function`` join keys into
-    :func:`load_samples`.
+    :func:`load_samples`. ``allow_mixed_schema`` passes through to
+    :func:`~kermit_lab.loader.load_reports`.
     """
-    reports = load_reports(_resolve_paths(paths))
+    reports = load_reports(_resolve_paths(paths), allow_mixed_schema=allow_mixed_schema)
     return _summary_from_reports(reports, criterion_root, apply_defaults=apply_defaults)
 
 
@@ -211,6 +213,8 @@ def _samples_from_reports(
 def load_samples(
     paths: Iterable[Path | str] | Path | str,
     criterion_root: Path | str = "target/criterion",
+    *,
+    allow_mixed_schema: bool = False,
 ) -> pd.DataFrame:
     """Return the per-iteration samples DataFrame.
 
@@ -218,5 +222,5 @@ def load_samples(
     sample point. Join back to :func:`load` on ``(criterion_group,
     criterion_function)``.
     """
-    reports = load_reports(_resolve_paths(paths))
+    reports = load_reports(_resolve_paths(paths), allow_mixed_schema=allow_mixed_schema)
     return _samples_from_reports(reports, criterion_root)

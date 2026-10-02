@@ -11,14 +11,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Sequence
 
 from . import SCHEMA_VERSION
 from .criterion import CriterionIndex, FunctionData
 
 
 class SchemaError(ValueError):
-    """Report's ``schema_version`` is missing or higher than this package supports."""
+    """Report's ``schema_version`` is missing, unsupported, or mixed across an incompatible boundary."""
+
+
+STREAMED_JOIN_SCHEMA = 3
+"""First schema version whose ``iteration`` / ``end_to_end`` phases time a
+streamed join with counted, never-materialised rows (issue #65). Reports on
+either side of it measure different things, so one load may not mix them."""
 
 
 @dataclass(frozen=True)
@@ -79,8 +85,27 @@ def _parse_one(obj: dict, source_path: Path) -> BenchReport:
         raise SchemaError(f"{source_path}: malformed report ({exc})") from exc
 
 
-def load_reports(paths: Iterable[Path]) -> list[BenchReport]:
-    """Load all reports from one or more JSON files; flattens the array shape."""
+def _refuse_mixed_schema(reports: Sequence[BenchReport]) -> None:
+    older = next((r for r in reports if r.schema_version < STREAMED_JOIN_SCHEMA), None)
+    newer = next((r for r in reports if r.schema_version >= STREAMED_JOIN_SCHEMA), None)
+    if older is not None and newer is not None:
+        raise SchemaError(
+            f"refusing to mix schema_version {older.schema_version} ({older.source_path}) "
+            f"with schema_version {newer.schema_version} ({newer.source_path}): from "
+            f"v{STREAMED_JOIN_SCHEMA} the iteration and end_to_end phases time a streamed, "
+            "counted join, so their values are not comparable with earlier reports. Load "
+            "each side separately, or pass allow_mixed_schema=True to compare space only."
+        )
+
+
+def load_reports(
+    paths: Iterable[Path], *, allow_mixed_schema: bool = False
+) -> list[BenchReport]:
+    """Load all reports from one or more JSON files; flattens the array shape.
+
+    Raises :class:`SchemaError` when the reports straddle
+    :data:`STREAMED_JOIN_SCHEMA`, unless ``allow_mixed_schema`` is true.
+    """
     out: list[BenchReport] = []
     for path in paths:
         with Path(path).open() as f:
@@ -89,6 +114,8 @@ def load_reports(paths: Iterable[Path]) -> list[BenchReport]:
             raise SchemaError(f"{path}: top level must be a JSON array")
         for obj in data:
             out.append(_parse_one(obj, Path(path)))
+    if not allow_mixed_schema:
+        _refuse_mixed_schema(out)
     return out
 
 
