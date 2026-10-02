@@ -148,6 +148,11 @@ projection stays with #71.
   that `iteration` and `end_to_end` now time a streamed, counted join, and
   that their values are not comparable with v2.
 - Only #65 bumps the version. #66 must not reuse "3".
+- v3 marks every measurement change on master when #65 lands, not just
+  #65's. #67 (TreeTrie `iteration`) and #66 (HashTrie `insertion` and
+  `end_to_end`) are planned to land first. At landing, the change-log row
+  names each one that has landed; the coordinating session confirms the
+  list.
 
 **Mixing guard.**
 
@@ -159,9 +164,10 @@ complaint. Therefore:
   both sides of the boundary (some `schema_version < 3` and some `>= 3`).
   The message names one file from each side.
 - `load_reports`, `kl.load` and `kl.load_samples` take a keyword
-  `allow_mixed_schema=False` as a deliberate escape hatch. One use is putting
-  `space` numbers side by side, since space and insertion semantics did not
-  change.
+  `allow_mixed_schema=False` as a deliberate escape hatch. Its one
+  documented use is putting `space` numbers side by side. `insertion` is not
+  a safe use: #66 changes it. `space` stays safe only while #66 adds no bytes
+  per table, and the coordinating session will say if that changes.
 - The CLI surfaces the error and gets no override flag.
 - Loads that are all v2 keep working, so the analysis of the prelim sweep
   still loads.
@@ -171,8 +177,9 @@ complaint. Therefore:
 | File | Change |
 |---|---|
 | `BENCHMARKING.md` | The Iteration and End-to-end rows say the join's rows pass through a counting `black_box` sink and no result rows are allocated. |
-| `JoinAlgo` rustdoc, `docs/algorithms/leapfrog-triejoin.md`, `docs/algorithms/hash-triejoin.md`, `docs/algorithms/TEMPLATE.md` | `join_for_each` is the method each algorithm implements. The hash-triejoin "materialised, not streamed" bullet is rewritten. |
-| `ARCHITECTURE.md` | Rewrite the paragraph on the `join_iter` laziness asymmetry. |
+| `JoinAlgo` rustdoc, `docs/algorithms/leapfrog-triejoin.md`, `docs/algorithms/hash-triejoin.md` | `join_for_each` is the method each algorithm implements. The hash-triejoin "materialised, not streamed" bullet is rewritten. (`docs/algorithms/TEMPLATE.md` names no trait method, so it needs no change.) |
+| `ARCHITECTURE.md` | Rewrite the paragraph on the `join_iter` laziness asymmetry, the `JoinAlgo` trait snippet, and the line that says the shared body ends in `join_iter(..).collect()`. |
+| `docs/specs/benchmarking-architecture.md` | Step 5 of the `bench run` flow says `--verify`, `iteration` and `end_to_end` count rows through `ExecutionFamily::count`. |
 | `CLAUDE.md` | Name `join_for_each` where it names the algorithm trait method: Priorities item 3 and the add-an-algorithm recipe. |
 | `docs/specs/bench-report-schema.md` | Current version is 3; add the change-log row. |
 | `scripts/watdiv_stress_sample.py` | Remove the docstring's `--exclude q0005` advice. Keep the flag. |
@@ -192,7 +199,15 @@ These are observations, not part of this change:
 - **Streaming the CSV output of `kermit join` / `bench join --output`.** A
   sink that writes would need to propagate I/O errors. Nothing in #65 needs
   it.
-- **Turning the join's panics into errors.** That is #78.
+- **Turning the join's panics into errors.** That is #78, which will make
+  the `_for_each` entry points and `ExecutionFamily::{join_for_each, count,
+  join}` fallible.
+- **`bench ds`'s `{ds}/iteration` and `{ds}/end_to_end`.** They time
+  `F::tuples(&relation)`, a full single-relation scan collected into a
+  `Vec`. They aren't joins, their memory is bounded by the relation, and a
+  non-allocating scan for `HashTrie` would touch `kermit-ds` and the files
+  #66 changes. They are a follow-up candidate. The v3 change-log row says
+  they are unchanged.
 
 ## Testing
 
@@ -208,8 +223,16 @@ This pins the counting sink for every structure × algorithm × optimiser ×
 config invocation.
 
 **Result-allocation test.** The new file `kermit/tests/result_allocation.rs`
-installs a counting `#[global_allocator]`. Its counter is thread-local, so
-parallel tests in the same binary don't disturb it.
+counts allocations with the `allocation-counter` crate (0.8, MIT/Apache-2.0,
+no dependencies), a new dev-dependency of `kermit`.
+
+- `allocation_counter::measure(|| …)` counts only the calling thread's
+  allocations, so parallel tests in the same binary don't disturb it.
+- The crate installs its own `#[global_allocator]`, which keeps the
+  codebase free of `unsafe`. A hand-written `GlobalAlloc` would need an
+  `unsafe impl`.
+- Rust links an unreferenced dev-dependency into no binary, so only this
+  test binary gets the counting allocator.
 
 - Query: `Q(X, Y, Z) :- R(X, Y), S(X, Z).` with |R| = 10 fixed, and |S|
   scaled so the result grows from 100 to 100,000 rows. The shared `X`
@@ -250,14 +273,20 @@ parallel tests in the same binary don't disturb it.
 - **Counts end to end.** Run `bench run … --verify` on a benchmark with
   `expected` counts.
 - **q0005.** Build a one-query benchmark whose `expected` is 4169173508,
-  over the `watdiv-stress-100-test-1` relations. For each cell, run
+  over the `watdiv-stress-100-test-1` relations. Run
   `bench run <it> -q q0005 -i … -a … --metrics space --verify` under
-  `/usr/bin/time -v`, fully detached.
+  `/usr/bin/time -v`, fully detached, on two cells one after the other:
+  ColumnTrie/LFTJ, then HashTrie/HashTriejoin.
+  - Skip TreeTrie. It runs the same LFTJ and wrapper code as ColumnTrie, and
+    the result-allocation test covers its allocations. Until #67 lands, its
+    linear `seek` could stretch one run to hours on a shared host.
   - With space as the only metric, the one join that runs is the untimed
-    verify count. The result is a correct count, peak RSS (expected flat,
+    verify count. Each run yields a correct count, peak RSS (expected flat,
     not hundreds of GB) and the wall time of one execution.
   - The host is shared with other builds, so wall times are indicative
-    only. They go in the hand-off report, not in commits or issues.
+    only. They go in the hand-off report, not in commits or issues. The
+    per-execution time decides whether the final sweep needs a sample-size
+    override for q0005.
 
 ## Acceptance (issue #65)
 
