@@ -139,8 +139,8 @@ query parsing described in step 3 and the per-query loop above.
 `EndToEnd` is the only metric whose timed body spans the build→query
 boundary: each Criterion sample constructs a fresh database from the
 pre-loaded tuples **through the same pipeline as the untimed step-4 build**
-(a fresh `BTreeMap<String, R>` via `from_tuples`, handed to `lftj_join` or
-`hash_join` — `ExecutionFamily::build_from_tuples` for either family) and then executes and counts the query K times
+(a fresh `BTreeMap<String, R>` via `from_tuples`, queried through
+`ExecutionFamily::count` — `ExecutionFamily::build_from_tuples` for either family) and then executes and counts the query K times
 (`--queries-per-build`). `BatchSize::PerIteration` is deliberate — batching
 would amortise away the per-build cost the metric exists to measure. Because
 the sorted-family build path is `insert_all` (input order), the build term is

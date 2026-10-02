@@ -56,7 +56,7 @@ The output-sensitive cost is bounded by `AGM(Q)`, the AGM bound of the query —
 |---|---|---|
 | `triejoin_open` | O(k · open + leapfrog_init) | descend one level |
 | `triejoin_up` | O(k · up) | ascend one level |
-| collecting all tuples | O(AGM(Q) · per-tuple work) | worst-case-optimal |
+| enumerating all tuples (`join_for_each`) | O(AGM(Q) · per-tuple work) | worst-case-optimal |
 
 ## Worked micro-example
 

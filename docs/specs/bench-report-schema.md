@@ -170,6 +170,9 @@ bump — the `axes` field is an open map.
 - **Bump `schema_version`** on any breaking change: renaming a field,
   changing a value type, removing a key from `axes` (if external tooling
   pinned to it), or restructuring nesting.
+- **Also bump** when what a metric measures changes, even if every field
+  keeps its name and type: values on either side are no longer comparable.
+  v3 is such a bump.
 - **No bump** for additive changes: new `axes` keys, new optional fields on
   `CriterionGroupRef`, new conventional values for `kind` or `metric`.
 - Consumers should refuse to parse if `schema_version` is missing or

@@ -140,7 +140,7 @@ Because a per-level key is a hash rather than a value, `HashTrieIterable` does *
 
 #### TrieIteratorWrapper
 
-Converts any `TrieIterator` into a standard Rust `Iterator<Item = Vec<usize>>` that yields complete tuples. It handles the stack management for depth-first traversal automatically. `#[derive(IntoTrieIter)]` (from `kermit-derive`) generates the `IntoIterator` impl that wraps an iterator type in it. There is no hash-family equivalent, per the note above.
+Converts any `TrieIterator` into a standard Rust `Iterator<Item = Vec<usize>>` that yields complete tuples. It handles the stack management for depth-first traversal automatically. `advance()` is the allocation-free form: it lends each tuple from the wrapper's own stack, and `Iterator::next` copies that slice. `#[derive(IntoTrieIter)]` (from `kermit-derive`) generates the `IntoIterator` impl that wraps an iterator type in it. There is no hash-family equivalent, per the note above.
 
 ### Data Structures (`kermit-ds`)
 
@@ -410,7 +410,7 @@ Working examples live in `README.md` and `USAGE.md`; the YAML schema and generat
 
 ### Database layer
 
-`kermit/src/db.rs` exposes one join entry point per iterator family, both free functions over a `BTreeMap<String, R>` relation store keyed by relation name: `lftj_join<R: TrieIterable + Cardinality, JA>` (generic in the sorted-family algorithm) and `hash_join<R: HashTrieIterable + Cardinality, H: HashStrategy>` (hardwired to `HashTriejoin`; `H` hashes constant singletons with the same strategy the relations were built with). Each runs the const-rewrite, plans the query, and returns `Vec<Vec<usize>>`.
+`kermit/src/db.rs` exposes one streaming join entry point per iterator family, both free functions over a `BTreeMap<String, R>` relation store keyed by relation name: `lftj_join_for_each<R: TrieIterable + Cardinality, JA>` (generic in the sorted-family algorithm) and `hash_join_for_each<R: HashTrieIterable + Cardinality, H: HashStrategy>` (hardwired to `HashTriejoin`; `H` hashes constant singletons with the same strategy the relations were built with). Each runs the const-rewrite, plans the query, and passes each result tuple to a sink without materialising the result. `lftj_join` / `hash_join` are collecting wrappers that return `Vec<Vec<usize>>`.
 
 They share a single private body. The `JoinFamily<R>` trait — with a GAT `Wrapper<'a>` — abstracts the only three steps that differ between families: wrapping a borrowed relation (`TrieIterKind` vs `HashTrieIterKind`), wrapping a constant atom (the hash side folds in `H::hash`), and wrapping an equality-selection view (`wrap_selection`). Everything else — `rewrite_atoms`, `rewrite_repeated_variables`, the wrapper map, `CatalogStats`, `optimiser.plan`, `join_for_each(.., emit)` — is written once, so a fix to the prologue cannot land in one family only.
 
