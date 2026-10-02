@@ -17,6 +17,13 @@
 //! shared `X` makes HashTriejoin verify a real join condition at the leaf.
 //! Each cell runs one unmeasured join first, so a one-time lazy
 //! initialisation on the join path cannot masquerade as per-row allocation.
+//!
+//! Issue #79 extends the same check to `bench ds`, which scans a single
+//! relation: the `*_scan_*` tests drive the exact walk
+//! `RelationFamily::for_each_tuple` uses for each structure and Layout —
+//! `TrieIteratorWrapper::advance` for the sorted tries,
+//! `HashTrie::for_each_tuple` for the hash trie — over 100 and 100,000
+//! stored tuples.
 
 use {
     kermit::db::{hash_join_for_each, lftj_join_for_each},
@@ -25,7 +32,9 @@ use {
         Cardinality, ColumnTrie, HashTrie, NoPruning, PruningPolicy, Relation, SingletonPruning,
         TreeTrie,
     },
-    kermit_iters::{FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable},
+    kermit_iters::{
+        FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable, TrieIteratorWrapper,
+    },
     std::collections::BTreeMap,
 };
 
@@ -43,13 +52,21 @@ const LARGE: usize = 10_000;
 /// keys, so the join has `XS * fan_out` rows.
 fn relations<Rel: Relation>(fan_out: usize) -> BTreeMap<String, Rel> {
     let r: Vec<Vec<usize>> = (0..XS).map(|x| vec![x, 0]).collect();
-    let s: Vec<Vec<usize>> = (0..XS)
-        .flat_map(|x| (0..fan_out).map(move |z| vec![x, z]))
-        .collect();
     BTreeMap::from([
         ("R".to_string(), Rel::from_tuples(2.into(), r)),
-        ("S".to_string(), Rel::from_tuples(2.into(), s)),
+        (
+            "S".to_string(),
+            Rel::from_tuples(2.into(), s_tuples(fan_out)),
+        ),
     ])
+}
+
+/// `S = {(x, z) : z < fan_out}` for each of the `XS` keys: `XS * fan_out`
+/// tuples.
+fn s_tuples(fan_out: usize) -> Vec<Vec<usize>> {
+    (0..XS)
+        .flat_map(|x| (0..fan_out).map(move |z| vec![x, z]))
+        .collect()
 }
 
 /// Allocations made by one streamed LFTJ join, after checking that it
@@ -159,5 +176,99 @@ fn hash_trie_fx_pruned_allocates_independently_of_result_size() {
         "HashTrie<Fx, Pruned>/HTJ",
         htj_allocations::<FxHashStrategy, SingletonPruning>(SMALL),
         htj_allocations::<FxHashStrategy, SingletonPruning>(LARGE),
+    );
+}
+
+// ── `bench ds` scans (issue #79) ────────────────────────────────────────
+
+/// Allocations made by one scan of a sorted trie holding `S`, through the
+/// walk `RelationFamily::for_each_tuple` drives, after checking that it
+/// lent every tuple.
+fn sorted_scan_allocations<Rel: TrieIterable + Relation>(fan_out: usize) -> u64 {
+    let rel = Rel::from_tuples(2.into(), s_tuples(fan_out));
+    let mut tuples = 0usize;
+    let info = allocation_counter::measure(|| {
+        let mut walk = TrieIteratorWrapper::new(rel.trie_iter());
+        while let Some(tuple) = walk.advance() {
+            std::hint::black_box(tuple);
+            tuples += 1;
+        }
+    });
+    assert_eq!(tuples, XS * fan_out, "the scan must visit every tuple");
+    info.count_total
+}
+
+/// Allocations made by one scan of `HashTrie<H, P>` holding `S`, through
+/// `HashTrie::for_each_tuple`, after checking that it lent every tuple.
+fn hash_scan_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
+    let rel = HashTrie::<H, P>::from_tuples(2.into(), s_tuples(fan_out));
+    let mut tuples = 0usize;
+    let info = allocation_counter::measure(|| {
+        rel.for_each_tuple(|tuple| {
+            std::hint::black_box(tuple);
+            tuples += 1;
+        });
+    });
+    assert_eq!(tuples, XS * fan_out, "the scan must visit every tuple");
+    info.count_total
+}
+
+#[test]
+fn tree_trie_scan_allocates_independently_of_relation_size() {
+    sorted_scan_allocations::<TreeTrie>(SMALL);
+    assert_flat(
+        "TreeTrie scan",
+        sorted_scan_allocations::<TreeTrie>(SMALL),
+        sorted_scan_allocations::<TreeTrie>(LARGE),
+    );
+}
+
+#[test]
+fn column_trie_scan_allocates_independently_of_relation_size() {
+    sorted_scan_allocations::<ColumnTrie>(SMALL);
+    assert_flat(
+        "ColumnTrie scan",
+        sorted_scan_allocations::<ColumnTrie>(SMALL),
+        sorted_scan_allocations::<ColumnTrie>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_scan_allocates_independently_of_relation_size() {
+    hash_scan_allocations::<SipHashStrategy, NoPruning>(SMALL);
+    assert_flat(
+        "HashTrie<Sip> scan",
+        hash_scan_allocations::<SipHashStrategy, NoPruning>(SMALL),
+        hash_scan_allocations::<SipHashStrategy, NoPruning>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_fx_scan_allocates_independently_of_relation_size() {
+    hash_scan_allocations::<FxHashStrategy, NoPruning>(SMALL);
+    assert_flat(
+        "HashTrie<Fx> scan",
+        hash_scan_allocations::<FxHashStrategy, NoPruning>(SMALL),
+        hash_scan_allocations::<FxHashStrategy, NoPruning>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_scan_allocates_independently_of_relation_size() {
+    hash_scan_allocations::<SipHashStrategy, SingletonPruning>(SMALL);
+    assert_flat(
+        "HashTrie<Sip, Pruned> scan",
+        hash_scan_allocations::<SipHashStrategy, SingletonPruning>(SMALL),
+        hash_scan_allocations::<SipHashStrategy, SingletonPruning>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_fx_pruned_scan_allocates_independently_of_relation_size() {
+    hash_scan_allocations::<FxHashStrategy, SingletonPruning>(SMALL);
+    assert_flat(
+        "HashTrie<Fx, Pruned> scan",
+        hash_scan_allocations::<FxHashStrategy, SingletonPruning>(SMALL),
+        hash_scan_allocations::<FxHashStrategy, SingletonPruning>(LARGE),
     );
 }
