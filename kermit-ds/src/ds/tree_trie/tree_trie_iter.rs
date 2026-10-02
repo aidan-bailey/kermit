@@ -112,10 +112,16 @@ impl LinearIterator for TreeTrieIter<'_> {
                     .siblings()
                     .expect("If there exists a key, there should ALWAYS be at least one sibling");
 
-                while (!self.at_end()) && seek_key > siblings[self.sibling_idx].key() {
-                    self.sibling_idx += 1;
-                }
+                // Siblings are sorted by key (TreeTrie invariant), so
+                // `partition_point(|n| n.key() < seek_key)` over the remaining
+                // siblings is the offset of the first key ≥ `seek_key` — a
+                // binary search, as in `ColumnTrieIter::seek`.
+                self.sibling_idx +=
+                    siblings[self.sibling_idx..].partition_point(|n| n.key() < seek_key);
 
+                // Off the end, the stack top stays on the last positioned
+                // node: `open` descends from it after `at_end` (see the
+                // position model above).
                 if self.at_end() {
                     false
                 } else {
