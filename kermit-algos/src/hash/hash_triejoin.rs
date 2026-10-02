@@ -41,47 +41,79 @@ fn build_variable_to_iter_map(
         .collect()
 }
 
-/// Verify a candidate result tuple's join condition and construct the
-/// output tuple in canonical (head-first) variable-index order (i.e. indexed
-/// by the variable indices in `predicate_variables`). Returns `None` if any
-/// variable mentioned by two or more predicates has inconsistent values
-/// in the candidate (a hash false positive).
+/// Verify one candidate result tuple's join condition, writing its output
+/// tuple into `row` in canonical (head-first) variable-index order (i.e.
+/// indexed by the variable indices in `predicate_variables`). Returns
+/// `false` if any variable mentioned by two or more predicates has
+/// inconsistent values in the candidate (a hash false positive); `row` then
+/// holds a partial write and must not be emitted.
 ///
-/// `candidate[k]` is one tuple from the k-th participating relation's
-/// leaf chain. `predicate_variables[k]` lists the variable indices carried
-/// by the k-th relation (in attribute order). `arity` is the number of
-/// distinct variables in the query.
-fn verify_and_construct(
-    candidate: &[&Vec<usize>], predicate_variables: &[Vec<usize>], arity: usize,
-) -> Option<Vec<usize>> {
-    let mut result: Vec<Option<usize>> = vec![None; arity];
-    for (rel_idx, tuple) in candidate.iter().enumerate() {
-        for (col, &var_idx) in predicate_variables[rel_idx].iter().enumerate() {
+/// `candidate` yields one tuple per participating relation, the k-th from
+/// the k-th relation's leaf chain. `predicate_variables[k]` lists the
+/// variable indices carried by the k-th relation (in attribute order).
+/// `row` and `bound` are per-join scratch with one slot per distinct query
+/// variable. `bound` is reset on entry, so a rejected candidate leaves
+/// nothing behind for the next one.
+fn verify_and_construct<'t>(
+    candidate: impl IntoIterator<Item = &'t [usize]>, predicate_variables: &[Vec<usize>],
+    row: &mut [usize], bound: &mut [bool],
+) -> bool {
+    bound.fill(false);
+    for (tuple, vars) in candidate.into_iter().zip(predicate_variables) {
+        for (col, &var_idx) in vars.iter().enumerate() {
             let v = tuple[col];
-            match result[var_idx] {
-                | None => result[var_idx] = Some(v),
-                | Some(existing) if existing != v => return None,
-                | _ => {},
+            if !bound[var_idx] {
+                row[var_idx] = v;
+                bound[var_idx] = true;
+            } else if row[var_idx] != v {
+                return false;
             }
         }
     }
-    Some(result.into_iter().map(Option::unwrap).collect())
+    true
+}
+
+/// Per-join scratch for the leaf cross product (Algorithm 3 lines 16–19),
+/// allocated once in `join_for_each` so that emitting a result tuple
+/// allocates nothing (issue #65).
+struct LeafScratch {
+    /// Mixed-base cursor: `cursor[k]` indexes the k-th iterator's leaf chain.
+    cursor: Vec<usize>,
+    /// `chain_lens[k]` is the length of the k-th iterator's current chain.
+    chain_lens: Vec<usize>,
+    /// The candidate's output tuple, in canonical variable order.
+    row: Vec<usize>,
+    /// `bound[v]` records whether `row[v]` was written for this candidate.
+    bound: Vec<bool>,
+}
+
+impl LeafScratch {
+    /// Scratch for `relations` body predicates over `arity` distinct
+    /// variables.
+    fn new(relations: usize, arity: usize) -> Self {
+        Self {
+            cursor: vec![0; relations],
+            chain_lens: vec![0; relations],
+            row: vec![0; arity],
+            bound: vec![false; arity],
+        }
+    }
 }
 
 /// Algorithm 3 from the paper. Recursively descends through attribute
-/// positions; emits all verified result tuples into `output`.
+/// positions; passes every verified result tuple to `emit`.
 ///
 /// **Contract.** `enumerate(i, ...)` is called with each iterator in
 /// `variable_to_iter_map[i]` positioned at depth `i - 1` (or pre-root for
 /// `i == 0`). The function descends each one level (to depth `i`), scans
 /// at depth `i`, recurses on matches, then ascends back. This way the
 /// caller's stack is unchanged on return.
-fn enumerate<IT: HashTrieIterator>(
+fn enumerate<IT: HashTrieIterator, S: FnMut(&[usize])>(
     i: usize, arity: usize, iters: &mut [IT], predicate_variables: &[Vec<usize>],
-    variable_to_iter_map: &[Vec<usize>], output: &mut Vec<Vec<usize>>,
+    variable_to_iter_map: &[Vec<usize>], scratch: &mut LeafScratch, emit: &mut S,
 ) {
     if i == arity {
-        emit_leaf(iters, predicate_variables, arity, output);
+        emit_leaf(iters, predicate_variables, scratch, emit);
         return;
     }
 
@@ -133,7 +165,8 @@ fn enumerate<IT: HashTrieIterator>(
                     iters,
                     predicate_variables,
                     variable_to_iter_map,
-                    output,
+                    scratch,
+                    emit,
                 );
             }
 
@@ -150,27 +183,40 @@ fn enumerate<IT: HashTrieIterator>(
 
 /// Algorithm 3 lines 16–19. Cross-product the leaf chains of every
 /// iterator and emit each verified candidate.
-fn emit_leaf<IT: HashTrieIterator>(
-    iters: &[IT], predicate_variables: &[Vec<usize>], arity: usize, output: &mut Vec<Vec<usize>>,
+///
+/// Allocates nothing: each chain is re-borrowed through `leaf_tuples()`
+/// rather than collected, and the cursor and output row live in `scratch`.
+fn emit_leaf<IT: HashTrieIterator, S: FnMut(&[usize])>(
+    iters: &[IT], predicate_variables: &[Vec<usize>], scratch: &mut LeafScratch, emit: &mut S,
 ) {
-    let chains: Vec<&[Vec<usize>]> = iters
-        .iter()
-        .map(|it| {
-            it.leaf_tuples()
-                .expect("at leaf level for every participating iter")
-        })
-        .collect();
-    if chains.iter().any(|c| c.is_empty()) {
+    let chain = |k: usize| {
+        iters[k]
+            .leaf_tuples()
+            .expect("at leaf level for every participating iter")
+    };
+    for (k, len) in scratch.chain_lens.iter_mut().enumerate() {
+        *len = chain(k).len();
+    }
+    if scratch.chain_lens.contains(&0) {
         return;
     }
 
-    let mut cursor: Vec<usize> = vec![0; chains.len()];
+    scratch.cursor.fill(0);
     loop {
-        let candidate: Vec<&Vec<usize>> = chains.iter().zip(&cursor).map(|(c, &i)| &c[i]).collect();
-        if let Some(result) = verify_and_construct(&candidate, predicate_variables, arity) {
-            output.push(result);
+        let candidate = scratch
+            .cursor
+            .iter()
+            .enumerate()
+            .map(|(k, &i)| chain(k)[i].as_slice());
+        if verify_and_construct(
+            candidate,
+            predicate_variables,
+            &mut scratch.row,
+            &mut scratch.bound,
+        ) {
+            emit(&scratch.row);
         }
-        if !advance_cursor(&mut cursor, &chains) {
+        if !advance_cursor(&mut scratch.cursor, &scratch.chain_lens) {
             break;
         }
     }
@@ -178,14 +224,14 @@ fn emit_leaf<IT: HashTrieIterator>(
 
 /// Advance a mixed-base cursor over the chain lengths. Returns `false`
 /// once every position has been exhausted (overflow off the high end).
-fn advance_cursor(cursor: &mut [usize], chains: &[&[Vec<usize>]]) -> bool {
+fn advance_cursor(cursor: &mut [usize], chain_lens: &[usize]) -> bool {
     let mut k = 0;
     loop {
         if k >= cursor.len() {
             return false;
         }
         cursor[k] += 1;
-        if cursor[k] < chains[k].len() {
+        if cursor[k] < chain_lens[k] {
             return true;
         }
         cursor[k] = 0;
@@ -203,12 +249,12 @@ impl<DS> JoinAlgo<DS> for HashTriejoin
 where
     DS: HashTrieIterable,
 {
-    fn join_iter(
-        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>,
-    ) -> impl Iterator<Item = Vec<usize>> {
+    fn join_for_each<S: FnMut(&[usize])>(
+        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>, mut emit: S,
+    ) {
         let analysis = analyse(&query);
         if let Err(e) = plan.validate(&analysis) {
-            panic!("HashTriejoin::join_iter: invalid query plan: {e}");
+            panic!("HashTriejoin::join_for_each: invalid query plan: {e}");
         }
         let variable_ordering = &plan.variable_ordering;
         let predicate_variables = analysis.predicate_variables;
@@ -224,18 +270,16 @@ where
             .collect();
         let variable_to_iter_map =
             build_variable_to_iter_map(variable_ordering, &predicate_variables);
-        // The result is fully materialised before any tuple is yielded; see
-        // the "Laziness is not part of the contract" note on `JoinAlgo`.
-        let mut output = Vec::new();
+        let mut scratch = LeafScratch::new(iters.len(), variable_ordering.len());
         enumerate(
             0,
             variable_ordering.len(),
             &mut iters,
             &predicate_variables,
             &variable_to_iter_map,
-            &mut output,
+            &mut scratch,
+            &mut emit,
         );
-        output.into_iter()
     }
 }
 
@@ -256,36 +300,63 @@ mod tests {
     #[test]
     fn verify_constructs_when_shared_var_agrees() {
         // R(X, Y), S(Y, Z) with X=1, Y=2, Z=3.
-        // predicate_variables = [[0, 1], [1, 2]]
-        // arity = 3
-        let r_tuple = vec![1, 2];
-        let s_tuple = vec![2, 3];
-        let candidate: Vec<&Vec<usize>> = vec![&r_tuple, &s_tuple];
         let pv = vec![vec![0, 1], vec![1, 2]];
-        assert_eq!(
-            verify_and_construct(&candidate, &pv, 3),
-            Some(vec![1, 2, 3])
-        );
+        let (mut row, mut bound) = (vec![0; 3], vec![false; 3]);
+        assert!(verify_and_construct(
+            [&[1, 2][..], &[2, 3][..]],
+            &pv,
+            &mut row,
+            &mut bound
+        ));
+        assert_eq!(row, vec![1, 2, 3]);
     }
 
     #[test]
     fn verify_rejects_when_shared_var_disagrees() {
         // R(X, Y), S(Y, Z) but Y differs in R (=2) vs S (=99)
-        let r_tuple = vec![1, 2];
-        let s_tuple = vec![99, 3];
-        let candidate: Vec<&Vec<usize>> = vec![&r_tuple, &s_tuple];
         let pv = vec![vec![0, 1], vec![1, 2]];
-        assert_eq!(verify_and_construct(&candidate, &pv, 3), None);
+        let (mut row, mut bound) = (vec![0; 3], vec![false; 3]);
+        assert!(!verify_and_construct(
+            [&[1, 2][..], &[99, 3][..]],
+            &pv,
+            &mut row,
+            &mut bound
+        ));
     }
 
     #[test]
     fn verify_passes_no_shared_var() {
         // Two disjoint unary predicates R(X), S(Y).
-        let r_tuple = vec![1];
-        let s_tuple = vec![2];
-        let candidate: Vec<&Vec<usize>> = vec![&r_tuple, &s_tuple];
         let pv = vec![vec![0], vec![1]];
-        assert_eq!(verify_and_construct(&candidate, &pv, 2), Some(vec![1, 2]));
+        let (mut row, mut bound) = (vec![0; 2], vec![false; 2]);
+        assert!(verify_and_construct(
+            [&[1][..], &[2][..]],
+            &pv,
+            &mut row,
+            &mut bound
+        ));
+        assert_eq!(row, vec![1, 2]);
+    }
+
+    /// The scratch row outlives each candidate: a rejected candidate leaves
+    /// a partial write, and the next one must not mistake it for a binding.
+    #[test]
+    fn verify_resets_scratch_between_candidates() {
+        let pv = vec![vec![0, 1], vec![1, 2]];
+        let (mut row, mut bound) = (vec![0; 3], vec![false; 3]);
+        assert!(!verify_and_construct(
+            [&[1, 2][..], &[99, 3][..]],
+            &pv,
+            &mut row,
+            &mut bound
+        ));
+        assert!(verify_and_construct(
+            [&[4, 5][..], &[5, 6][..]],
+            &pv,
+            &mut row,
+            &mut bound
+        ));
+        assert_eq!(row, vec![4, 5, 6]);
     }
 
     #[test]
@@ -300,8 +371,7 @@ mod tests {
         // Inline the same setup the JoinAlgo entry point does.
         let predicate_variables = vec![vec![0], vec![0]];
         let variable_to_iter_map = vec![vec![0, 1]];
-        // The result is fully materialised before any tuple is yielded; see
-        // the "Laziness is not part of the contract" note on `JoinAlgo`.
+        let mut scratch = LeafScratch::new(iters.len(), 1);
         let mut output = Vec::new();
         enumerate(
             0,
@@ -309,7 +379,8 @@ mod tests {
             &mut iters,
             &predicate_variables,
             &variable_to_iter_map,
-            &mut output,
+            &mut scratch,
+            &mut |row: &[usize]| output.push(row.to_vec()),
         );
         output.sort();
         assert_eq!(output, vec![vec![2], vec![3]]);
@@ -367,11 +438,15 @@ mod tests {
         let s_chain = s_it.leaf_tuples().expect("S at leaf");
         assert_eq!(r_chain.to_vec(), vec![vec![1, 2]]);
         assert_eq!(s_chain.to_vec(), vec![vec![12, 3]]);
-        let candidate: Vec<&Vec<usize>> = vec![&r_chain[0], &s_chain[0]];
         let pv = vec![vec![0, 1], vec![1, 2]];
-        assert_eq!(
-            verify_and_construct(&candidate, &pv, 3),
-            None,
+        let (mut row, mut bound) = (vec![0; 3], vec![false; 3]);
+        assert!(
+            !verify_and_construct(
+                [r_chain[0].as_slice(), s_chain[0].as_slice()],
+                &pv,
+                &mut row,
+                &mut bound
+            ),
             "Y = 2 in R but 12 in S: the leaf-level check must reject it"
         );
     }
@@ -439,6 +514,25 @@ mod tests {
         ds.insert("T".to_string(), &t);
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
         let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
+        out.sort();
+        assert_eq!(out, vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]);
+    }
+
+    #[test]
+    fn join_for_each_streams_every_verified_row() {
+        use kermit_ds::{HashTrie, Relation};
+        let r = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3], vec![3, 1]]);
+        let s = HashTrie::from_tuples(2.into(), vec![vec![2, 3], vec![3, 1], vec![1, 2]]);
+        let t = HashTrie::from_tuples(2.into(), vec![vec![1, 3], vec![2, 1], vec![3, 2]]);
+        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).".parse().unwrap();
+        let ds: HashMap<String, &HashTrie> = HashMap::from([
+            ("R".to_string(), &r),
+            ("S".to_string(), &s),
+            ("T".to_string(), &t),
+        ]);
+        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+        let mut out = Vec::new();
+        HashTriejoin::join_for_each(&plan, query, ds, |tuple| out.push(tuple.to_vec()));
         out.sort();
         assert_eq!(out, vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]);
     }

@@ -352,12 +352,12 @@ impl<DS> JoinAlgo<DS> for LeapfrogTriejoin
 where
     DS: TrieIterable,
 {
-    fn join_iter(
-        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>,
-    ) -> impl Iterator<Item = Vec<usize>> {
+    fn join_for_each<S: FnMut(&[usize])>(
+        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>, mut emit: S,
+    ) {
         let analysis = analyse(&query);
         if let Err(e) = plan.validate(&analysis) {
-            panic!("LeapfrogTriejoin::join_iter: invalid query plan: {e}");
+            panic!("LeapfrogTriejoin::join_for_each: invalid query plan: {e}");
         }
         let variable_ordering = plan.variable_ordering.clone();
         let predicate_variables = analysis.predicate_variables;
@@ -383,13 +383,19 @@ where
             descent_pos_of_var[v] = pos;
         }
 
-        LeapfrogTriejoinIter::new(variable_ordering, predicate_variables, trie_iters)
-            .into_iter()
-            .map(move |descent_tuple| {
-                (0..arity)
-                    .map(|v| descent_tuple[descent_pos_of_var[v]])
-                    .collect()
-            })
+        // One scratch row for the whole join: `advance` lends the descent
+        // tuple and `emit` borrows the reordered one, so no result tuple is
+        // ever allocated (issue #65).
+        let mut descents =
+            LeapfrogTriejoinIter::new(variable_ordering, predicate_variables, trie_iters)
+                .into_iter();
+        let mut tuple = vec![0usize; arity];
+        while let Some(descent_tuple) = descents.advance() {
+            for (v, slot) in tuple.iter_mut().enumerate() {
+                *slot = descent_tuple[descent_pos_of_var[v]];
+            }
+            emit(&tuple);
+        }
     }
 }
 
@@ -402,12 +408,18 @@ where
 #[cfg(test)]
 mod tests {
     use {
-        crate::sorted::{
-            leapfrog_join::LeapfrogJoinIterator,
-            leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
+        crate::{
+            optimiser::{CatalogStats, LexicographicOptimiser, QueryOptimiser},
+            sorted::{
+                leapfrog_join::LeapfrogJoinIterator,
+                leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
+            },
+            JoinAlgo, LeapfrogTriejoin,
         },
         kermit_ds::{Relation, TreeTrie},
         kermit_iters::TrieIterable,
+        kermit_parser::JoinQuery,
+        std::collections::HashMap,
     };
 
     /// Collect triejoin results end-to-end via `into_iter().collect()`.
@@ -802,5 +814,28 @@ mod tests {
             expected,
             "cardinality ordering"
         );
+    }
+
+    /// `Q(X, Y) :- R(Y, X).` forces the descent order Y, X (R's column
+    /// order) against the head order X, Y, so `join_for_each` must reorder
+    /// every descent tuple into its scratch row before emitting it.
+    #[test]
+    fn join_for_each_emits_head_order_under_a_reordering_plan() {
+        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 10], vec![2, 20]]);
+        let query: JoinQuery = "Q(X, Y) :- R(Y, X).".parse().unwrap();
+        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+        assert_eq!(
+            plan.variable_ordering,
+            vec![1, 0],
+            "the plan must descend Y first"
+        );
+        let mut rows = Vec::new();
+        LeapfrogTriejoin::join_for_each(
+            &plan,
+            query,
+            HashMap::from([("R".to_string(), &r)]),
+            |tuple| rows.push(tuple.to_vec()),
+        );
+        assert_eq!(rows, vec![vec![10, 1], vec![20, 2]]);
     }
 }
