@@ -1848,10 +1848,11 @@ pub trait JoinAlgo<DS> where DS: JoinIterable {
       "kermit-lab also refuses to load reports from both sides of version 3
       in one call, because the `iteration` and `end_to_end` values changed
       meaning there.";
-    - append this change-log row:
+    - append this change-log row. It carries only #65's entry. Task 11
+      adds the entries of the sibling changes that land first.
 
 ```markdown
-| 3       | 2026-10-02 | `iteration` and `end_to_end` (`bench run` / `bench join`) time a streamed join whose rows are counted through a `black_box` sink and never materialised (#65); `--verify` counts the same way. Values are not comparable with v2, so kermit-lab refuses to load v2 and v3 reports together unless `allow_mixed_schema=True`. `bench ds`'s `{ds}/iteration` and `{ds}/end_to_end` are unchanged. |
+| 3       | 2026-10-02 | What the time metrics measure changed, so values are not comparable with v2, and kermit-lab refuses to load v2 and v3 reports together unless `allow_mixed_schema=True`. `bench run` / `bench join` `iteration` and `end_to_end` time a streamed join whose rows are counted through a `black_box` sink and never materialised (#65); `--verify` counts the same way. |
 ```
 
   - `docs/specs/benchmarking-architecture.md`, step 5 of the `bench run`
@@ -2090,10 +2091,21 @@ for f in $SCRATCH/q0005-*.log; do echo "== $f"; grep -E 'verified|verification f
   - q0005's per-cell wall time and peak RSS, marked indicative;
   - the decisions the user made: `iteration` redefined; no q0005 policy;
     push sink; no `Result` before #78;
-  - landing notes: the schema-3 change-log row must name every measurement
-    change on master at landing (#66 / #67 if they landed first), and
-    whichever of #65 / #66 lands second merges `origin/master` and re-runs
-    the gate.
+  - landing notes: whichever of #65 / #66 lands second merges
+    `origin/master` (never rebase) and re-runs the gate. The schema-3
+    change-log row in `docs/specs/bench-report-schema.md` must name every
+    measurement change on master at landing; the coordinating session
+    confirms the list. The expected additions to #65's entry, for each one
+    that has landed:
+    - `bench run` and `bench ds` `insertion` / `end_to_end` build from the
+      reader's file order (#66);
+    - HashTrie build and lookup cost change with its new bucket mapping
+      (#66);
+    - TreeTrie `seek` is a binary search, which changes TreeTrie
+      `iteration` (#67).
+
+    `bench ds`'s `{ds}/iteration` keeps its meaning. Its `insertion` and
+    `end_to_end` change only through #66.
 
 - [ ] **Step 3: Summarise for the user.** Cover what changed, the
   verification evidence, and the follow-up candidates from the spec's Out

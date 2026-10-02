@@ -206,8 +206,11 @@ These are observations, not part of this change:
   `F::tuples(&relation)`, a full single-relation scan collected into a
   `Vec`. They aren't joins, their memory is bounded by the relation, and a
   non-allocating scan for `HashTrie` would touch `kermit-ds` and the files
-  #66 changes. They are a follow-up candidate. The v3 change-log row says
-  they are unchanged.
+  #66 changes. #65 leaves them as they are, and the coordinating session
+  tracks them as a follow-up after #65 and #66 land. They don't stay
+  untouched at v3, though: #66 feeds `bench ds`'s `insertion` and
+  `end_to_end` the reader's file order. Only `{ds}/iteration` keeps its
+  meaning.
 
 ## Testing
 
