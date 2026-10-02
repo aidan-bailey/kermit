@@ -123,7 +123,10 @@ timing and compare its result count with the YAML's `expected`).
    (`ExecutionFamily::build`); the same values back the space metric.
 5. For each query in the workload (filtered by `--query` if set), with
    `--verify`, run the query once and compare its count with `expected`
-   (mismatch aborts; a query without `expected` is noted as not verified),
+   (mismatch aborts; a query without `expected` is noted as not verified)
+   — the count comes from `ExecutionFamily::count`, which streams the join
+   through a `black_box` sink and never materialises it, as do the
+   `Iteration` and `EndToEnd` timed bodies —
    then run the chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
    wall-clock Criterion; `Space` goes through `SpaceMeasurement`.
 
@@ -137,7 +140,7 @@ query parsing described in step 3 and the per-query loop above.
 boundary: each Criterion sample constructs a fresh database from the
 pre-loaded tuples **through the same pipeline as the untimed step-4 build**
 (a fresh `BTreeMap<String, R>` via `from_tuples`, handed to `lftj_join` or
-`hash_join` — `ExecutionFamily::build_from_tuples` for either family) and then executes the query K times
+`hash_join` — `ExecutionFamily::build_from_tuples` for either family) and then executes and counts the query K times
 (`--queries-per-build`). `BatchSize::PerIteration` is deliberate — batching
 would amortise away the per-build cost the metric exists to measure. Because
 the sorted-family build path is `insert_all` (input order), the build term is

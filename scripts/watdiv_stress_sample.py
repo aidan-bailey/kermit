@@ -32,9 +32,9 @@ Usage:
     uvx --from ./scripts/watdiv-preprocess watdiv-preprocess --input $U \\
         --output $U/out --base-url https://zivahub.uct.ac.za/ndownloader/files
 
-    # test-1's q0005 has 4,169,173,508 result rows, beyond what the
-    # `iteration` metric can materialise, so leave it out:
-    uv run scripts/watdiv_stress_sample.py watdiv-stress-100-test-1 --exclude q0005
+    # Every template, q0005's 4,169,173,508 rows included: the metrics
+    # count rows without materialising them. Use --exclude to drop any.
+    uv run scripts/watdiv_stress_sample.py watdiv-stress-100-test-1
 
 Output:
     <cache>/<snapshot>/*.parquet

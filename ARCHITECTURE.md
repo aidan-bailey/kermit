@@ -296,17 +296,25 @@ Note one documented deviation from the paper: Veldhuizen keeps one persistent le
 4. **Emit**: at the leaf, cross-product the participating tuple chains, then **verify shared variables against the real tuple values** — hashing can produce false positives at any inner level, so equality must be re-checked before a tuple is emitted.
 5. **Ascend**: `up` exactly as many times as the descent opened, including on partial-open failure.
 
-One behavioural asymmetry is worth knowing: `HashTriejoin::join_iter` fully materialises its results into a `Vec` before returning `impl Iterator`, whereas `LeapfrogTriejoin` returns a genuinely lazy iterator chain. This does not currently affect benchmarks, because `ExecutionFamily::join` returns `Vec<Vec<usize>>` and normalises both — but it means LFTJ's laziness is never exploited by the CLI, and any future time-to-first-tuple metric would be comparing unlike things.
+Both algorithms stream. `JoinAlgo::join_for_each` passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result: LFTJ reorders each tuple that `TrieIteratorWrapper::advance` lends into one scratch row, and HashTriejoin's leaf cross product writes into scratch buffers allocated once per join. `join_iter` is a provided method that collects through `join_for_each`, for callers that need the rows; benchmarks never call it inside a timed region (issue #65).
 
 ### JoinAlgo Trait
 
 ```rust
 pub trait JoinAlgo<DS> where DS: JoinIterable {
+    fn join_for_each<S: FnMut(&[usize])>(
+        plan: &QueryPlan,
+        query: JoinQuery,
+        datastructures: HashMap<String, &DS>,
+        emit: S,
+    );
+
+    // Provided: collects through `join_for_each`.
     fn join_iter(
         plan: &QueryPlan,
         query: JoinQuery,
         datastructures: HashMap<String, &DS>,
-    ) -> impl Iterator<Item = Vec<usize>>;
+    ) -> impl Iterator<Item = Vec<usize>> { … }
 }
 ```
 
@@ -323,7 +331,7 @@ That is what makes `(HashTrie, LeapfrogTriejoin)` a compile error rather than a 
 
 ### Const-Rewrite
 
-Before handing a query to `JoinAlgo::join_iter`, the shared join body behind `lftj_join` / `hash_join` calls `kermit_algos::rewrite_atoms` (see `kermit-algos/src/const_rewrite.rs`) to implement Veldhuizen 2014 §3.4 point 4. Each `Term::Atom("c<id>")` in the body becomes a fresh variable `K<i>` plus a synthetic unary predicate `Const_c<id>(K<i>)` appended to the body, backed by a `SingletonTrieIter`. Body atoms only — head atoms are passed through. Implication: a new `JoinAlgo` impl must tolerate seeing the rewritten query, which can carry extra unary body predicates that do not appear in the user's original Datalog source. Adding a new data structure does *not* require any atom handling — the rewrite happens above the DS layer.
+Before handing a query to `JoinAlgo::join_for_each`, the shared join body behind `lftj_join` / `hash_join` calls `kermit_algos::rewrite_atoms` (see `kermit-algos/src/const_rewrite.rs`) to implement Veldhuizen 2014 §3.4 point 4. Each `Term::Atom("c<id>")` in the body becomes a fresh variable `K<i>` plus a synthetic unary predicate `Const_c<id>(K<i>)` appended to the body, backed by a `SingletonTrieIter`. Body atoms only — head atoms are passed through. Implication: a new `JoinAlgo` impl must tolerate seeing the rewritten query, which can carry extra unary body predicates that do not appear in the user's original Datalog source. Adding a new data structure does *not* require any atom handling — the rewrite happens above the DS layer.
 
 ### Selection rewrite (repeated variables)
 
@@ -331,7 +339,7 @@ Immediately after the const rewrite, the same join body calls `kermit_algos::rew
 
 ### Query Planning
 
-Between the const-view rewrite and execution, the engine plans the join: it gathers per-relation tuple counts (`Cardinality::tuple_count`) into `CatalogStats` and asks its `QueryOptimiser` for a `QueryPlan` — the global attribute order the algorithm will descend. The space of valid plans is exactly the set of topological orders of the column-order constraint DAG; provided optimisers rank candidates inside Kahn's algorithm and are valid by construction, and `join_iter` asserts `QueryPlan::validate` defensively. `LexicographicOptimiser` (default) reproduces the historical hardcoded order; `CardinalityOptimiser` prefers variables from small relations (`--optimiser cardinality`).
+Between the const-view rewrite and execution, the engine plans the join: it gathers per-relation tuple counts (`Cardinality::tuple_count`) into `CatalogStats` and asks its `QueryOptimiser` for a `QueryPlan` — the global attribute order the algorithm will descend. The space of valid plans is exactly the set of topological orders of the column-order constraint DAG; provided optimisers rank candidates inside Kahn's algorithm and are valid by construction, and `join_for_each` asserts `QueryPlan::validate` defensively. `LexicographicOptimiser` (default) reproduces the historical hardcoded order; `CardinalityOptimiser` prefers variables from small relations (`--optimiser cardinality`).
 
 ## Benchmarking (`kermit-bench`)
 
@@ -404,7 +412,7 @@ Working examples live in `README.md` and `USAGE.md`; the YAML schema and generat
 
 `kermit/src/db.rs` exposes one join entry point per iterator family, both free functions over a `BTreeMap<String, R>` relation store keyed by relation name: `lftj_join<R: TrieIterable + Cardinality, JA>` (generic in the sorted-family algorithm) and `hash_join<R: HashTrieIterable + Cardinality, H: HashStrategy>` (hardwired to `HashTriejoin`; `H` hashes constant singletons with the same strategy the relations were built with). Each runs the const-rewrite, plans the query, and returns `Vec<Vec<usize>>`.
 
-They share a single private body. The `JoinFamily<R>` trait — with a GAT `Wrapper<'a>` — abstracts the only three steps that differ between families: wrapping a borrowed relation (`TrieIterKind` vs `HashTrieIterKind`), wrapping a constant atom (the hash side folds in `H::hash`), and wrapping an equality-selection view (`wrap_selection`). Everything else — `rewrite_atoms`, `rewrite_repeated_variables`, the wrapper map, `CatalogStats`, `optimiser.plan`, `join_iter(..).collect()` — is written once, so a fix to the prologue cannot land in one family only.
+They share a single private body. The `JoinFamily<R>` trait — with a GAT `Wrapper<'a>` — abstracts the only three steps that differ between families: wrapping a borrowed relation (`TrieIterKind` vs `HashTrieIterKind`), wrapping a constant atom (the hash side folds in `H::hash`), and wrapping an equality-selection view (`wrap_selection`). Everything else — `rewrite_atoms`, `rewrite_repeated_variables`, the wrapper map, `CatalogStats`, `optimiser.plan`, `join_for_each(.., emit)` — is written once, so a fix to the prologue cannot land in one family only.
 
 There is deliberately no object-safe engine trait. Runtime selection of the `(structure, algorithm)` cell — for `kermit join` and `bench join` as much as for `bench run` — goes through `Execution::for_pair` and the `ExecutionFamily` impls in `kermit/src/execution.rs` (`load_query_runner` in `main.rs` monomorphises per cell exactly as `dispatch_run_bench` does). An incompatible pair is a usage error, and all three valid cells, including `(HashTrie, HashTriejoin)`, are reachable from every command.
 

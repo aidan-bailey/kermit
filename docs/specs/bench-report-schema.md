@@ -1,6 +1,6 @@
 # `BenchReport` JSON schema
 
-**Current schema version:** `2`
+**Current schema version:** `3`
 **Source of truth:** `kermit/src/bench_report.rs`
 
 ## Top-level shape
@@ -19,7 +19,7 @@ always parse a list.
 ```json
 [
   {
-    "schema_version": 2,
+    "schema_version": 3,
     "kind": "ds",
     "metadata": [
       { "label": "data structure", "value": "TreeTrie" },
@@ -46,7 +46,7 @@ always parse a list.
 
 | Field              | Type                         | Description |
 |--------------------|------------------------------|-------------|
-| `schema_version`   | u32                          | Currently `2`. Consumers should refuse unknown majors. |
+| `schema_version`   | u32                          | Currently `3`. Consumers should refuse unknown majors. |
 | `kind`             | `"join"` \| `"ds"` \| `"run"` | Which `bench` subcommand produced the report. |
 | `metadata`         | Array of `{label, value}`    | Human-readable label/value pairs mirroring the stderr block. Both fields are strings (numerics get stringified for stderr alignment). |
 | `axes`             | Object (string → JSON value) | Structured axis values for downstream tooling. Numeric axes are kept numeric; alphabetically ordered (`BTreeMap`) so JSON diffs are deterministic. |
@@ -173,7 +173,9 @@ bump — the `axes` field is an open map.
 - **No bump** for additive changes: new `axes` keys, new optional fields on
   `CriterionGroupRef`, new conventional values for `kind` or `metric`.
 - Consumers should refuse to parse if `schema_version` is missing or
-  greater than the highest version they know about.
+  greater than the highest version they know about. kermit-lab also
+  refuses to load reports from both sides of version 3 in one call,
+  because the `iteration` and `end_to_end` values changed meaning there.
 
 ## Change log
 
@@ -185,3 +187,4 @@ bump — the `axes` field is an open map.
 | 2 (no bump) | 2026-07-23 | Added the `queries_per_build` conventional `axes` key and the `end_to_end` time-metric function id (`--metrics end-to-end`). Additive — the key only appears when the metric is requested, so `schema_version` stays `2`. |
 | 2 (no bump) | 2026-09-09 | `bench join` now runs through the generic runner: it gained `benchmark` (`"adhoc"`), `query` (the query file's stem), and `tuples`, and dropped the redundant `relations` count. No key changed name or type, so `schema_version` stays `2`. |
 | 2 (no bump) | 2026-09-09 | Added the `verified` conventional `axes` key, present only when `bench run --verify` checked the query. Additive, so `schema_version` stays `2`. |
+| 3       | 2026-10-02 | What the time metrics measure changed, so values are not comparable with v2, and kermit-lab refuses to load v2 and v3 reports together unless `allow_mixed_schema=True`. `bench run` / `bench join` `iteration` and `end_to_end` time a streamed join whose rows are counted through a `black_box` sink and never materialised (#65); `--verify` counts the same way. |
