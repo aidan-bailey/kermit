@@ -121,11 +121,13 @@ fn run_benchmark<F: ExecutionFamily>(
         // Correctness gate: with `--verify`, run the query once (untimed)
         // and compare the answer count before spending any measurement time
         // on it. A mismatch aborts so a wrong answer can never yield a
-        // plausible timing.
+        // plausible timing. The count comes through the same streaming path
+        // the `iteration` metric times, so verifying a huge result never
+        // materialises it.
         let verified = if verify {
             match query_def.expected {
                 | Some(expected) => {
-                    let actual = family.join(&engine, query_def.query.clone()).len() as u64;
+                    let actual = family.count(&engine, query_def.query.clone());
                     if actual != expected {
                         anyhow::bail!(
                             "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
@@ -215,10 +217,14 @@ fn run_benchmark<F: ExecutionFamily>(
             }
 
             if metrics.contains(&Metric::Iteration) {
+                // Times the join with its rows counted, never collected: the
+                // timed region holds no per-row allocation, and a batch keeps
+                // only `u64`s alive, so memory is independent of result size
+                // (issue #65).
                 group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || query_def.query.clone(),
-                        |q| family.join(&engine, q),
+                        |q| family.count(&engine, q),
                         criterion::BatchSize::SmallInput,
                     );
                 });
@@ -250,7 +256,7 @@ fn run_benchmark<F: ExecutionFamily>(
                         |(inputs, queries)| {
                             let fresh = family.build_from_tuples(inputs);
                             for q in queries {
-                                std::hint::black_box(family.join(&fresh, q));
+                                std::hint::black_box(family.count(&fresh, q));
                             }
                         },
                         criterion::BatchSize::PerIteration,

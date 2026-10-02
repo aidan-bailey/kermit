@@ -6,10 +6,10 @@
 //! tries pair with [`LeapfrogTriejoin`](kermit_algos::LeapfrogTriejoin)
 //! and the hash trie pairs with
 //! [`HashTriejoin`](kermit_algos::HashTriejoin). The two families run
-//! through separate join entry points ([`lftj_join`] vs [`hash_join`]),
-//! and historically the CLI carried two hand-reconciled copies of the
-//! benchmark runner, each taking the structure and the algorithm as
-//! *separate* parameters. That separation
+//! through separate join entry points ([`lftj_join_for_each`] vs
+//! [`hash_join_for_each`]), and historically the CLI carried two
+//! hand-reconciled copies of the benchmark runner, each taking the structure
+//! and the algorithm as *separate* parameters. That separation
 //! is what let `-i all -a leapfrog-triejoin` run `hash_join` on the
 //! `HashTrie` cell and stamp the report `LeapfrogTriejoin` (issue #56).
 //!
@@ -24,7 +24,7 @@
 
 use {
     crate::options::{hasher_of, pruning_of, HasherChoice, PruningChoice},
-    kermit::db::{hash_join, lftj_join},
+    kermit::db::{hash_join_for_each, lftj_join_for_each},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser, QueryOptimiser},
     kermit_ds::{
         Cardinality, ColumnTrie, ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize,
@@ -35,7 +35,7 @@ use {
 };
 
 /// The sorted-family index structures: every `IndexStructure` that
-/// implements `TrieIterable` and therefore joins through [`lftj_join`]
+/// implements `TrieIterable` and therefore joins through [`lftj_join_for_each`]
 /// under Leapfrog Triejoin.
 ///
 /// A dedicated enum (rather than reusing [`IndexStructure`]) keeps
@@ -86,9 +86,10 @@ impl SortedTrieRelation for ColumnTrie {
 // data would have to drop it here and clone the cells instead.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Execution {
-    /// A sorted trie joined by Leapfrog Triejoin through [`lftj_join`].
+    /// A sorted trie joined by Leapfrog Triejoin through
+    /// [`lftj_join_for_each`].
     TrieLftj(SortedTrie),
-    /// `HashTrie<H, P>` joined by Hash Triejoin through [`hash_join`],
+    /// `HashTrie<H, P>` joined by Hash Triejoin through [`hash_join_for_each`],
     /// with `H` chosen by `--ds-layout-hasher`, `P` by
     /// `--ds-layout-pruning`, and the runtime values by `--ds-config`.
     HashHtj {
@@ -300,8 +301,32 @@ pub trait ExecutionFamily: RelationFamily {
     /// The relations an engine built by [`ExecutionFamily::build`] retains.
     fn relations(engine: &Self::Engine) -> Vec<&Self::Rel>;
 
-    /// Runs `query` against `engine`.
-    fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>>;
+    /// Runs `query` against `engine`, passing each result tuple to `emit`
+    /// as a borrowed slice; the result is never materialised.
+    fn join_for_each<S: FnMut(&[usize])>(&self, engine: &Self::Engine, query: JoinQuery, emit: S);
+
+    /// Runs `query` against `engine` and counts its result tuples, passing
+    /// each through [`std::hint::black_box`] so the traversal cannot be
+    /// optimised away. Allocates nothing per tuple: this is what the
+    /// `iteration` and `end_to_end` metrics time and what `--verify`
+    /// checks (issue #65).
+    fn count(&self, engine: &Self::Engine, query: JoinQuery) -> u64 {
+        let mut rows = 0u64;
+        self.join_for_each(engine, query, |tuple| {
+            std::hint::black_box(tuple);
+            rows += 1;
+        });
+        rows
+    }
+
+    /// Runs `query` against `engine` and returns every result tuple. Only
+    /// for callers that need the rows themselves (`kermit join`,
+    /// `bench join --output`); never inside a timed region.
+    fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>> {
+        let mut tuples = Vec::new();
+        self.join_for_each(engine, query, |tuple| tuples.push(tuple.to_vec()));
+        tuples
+    }
 }
 
 /// The sorted-family structure `R` on its own: what `bench ds -i tree-trie`
@@ -380,7 +405,7 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashTrieFam
     }
 }
 
-/// Sorted family: `R` under Leapfrog Triejoin through [`lftj_join`].
+/// Sorted family: `R` under Leapfrog Triejoin through [`lftj_join_for_each`].
 pub struct TrieLftj<R> {
     structure: SortedTrieFamily<R>,
     optimiser: Box<dyn QueryOptimiser>,
@@ -411,7 +436,8 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for TrieLftj<R> {
 }
 
 impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
-    /// Relations keyed by name — the shape [`lftj_join`] borrows per query.
+    /// Relations keyed by name — the shape [`lftj_join_for_each`] borrows per
+    /// query.
     type Engine = BTreeMap<String, R>;
 
     fn build(&self, relations: Vec<R>) -> Self::Engine {
@@ -433,12 +459,13 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
 
     fn relations(engine: &Self::Engine) -> Vec<&R> { engine.values().collect() }
 
-    fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>> {
-        lftj_join::<R, LeapfrogTriejoin>(engine, query, self.optimiser.as_ref())
+    fn join_for_each<S: FnMut(&[usize])>(&self, engine: &Self::Engine, query: JoinQuery, emit: S) {
+        lftj_join_for_each::<R, LeapfrogTriejoin>(engine, query, self.optimiser.as_ref(), emit);
     }
 }
 
-/// Hash family: `HashTrie<H, P>` under Hash Triejoin through [`hash_join`].
+/// Hash family: `HashTrie<H, P>` under Hash Triejoin through
+/// [`hash_join_for_each`].
 pub struct HashHtj<H, P> {
     structure: HashTrieFamily<H, P>,
     optimiser: Box<dyn kermit_algos::QueryOptimiser>,
@@ -477,8 +504,8 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashHtj<H, 
 }
 
 impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H, P> {
-    /// Relations keyed by name — the shape [`hash_join`] borrows per query
-    /// so a Criterion iteration allocates no wrappers.
+    /// Relations keyed by name — the shape [`hash_join_for_each`] borrows per
+    /// query so a Criterion iteration allocates no wrappers.
     type Engine = BTreeMap<String, HashTrie<H, P>>;
 
     fn build(&self, relations: Vec<HashTrie<H, P>>) -> Self::Engine {
@@ -500,8 +527,8 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H,
 
     fn relations(engine: &Self::Engine) -> Vec<&HashTrie<H, P>> { engine.values().collect() }
 
-    fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>> {
-        hash_join::<HashTrie<H, P>, H>(engine, query, self.optimiser.as_ref())
+    fn join_for_each<S: FnMut(&[usize])>(&self, engine: &Self::Engine, query: JoinQuery, emit: S) {
+        hash_join_for_each::<HashTrie<H, P>, H>(engine, query, self.optimiser.as_ref(), emit);
     }
 }
 
@@ -511,6 +538,7 @@ mod tests {
         super::*,
         clap::ValueEnum,
         kermit_ds::{NoPruning, SingletonPruning},
+        kermit_iters::SipHashStrategy,
     };
 
     fn all_structures() -> Vec<IndexStructure> { IndexStructure::value_variants().to_vec() }
@@ -803,5 +831,36 @@ mod tests {
                 .get("ds_layout_pruning"),
             Some(&serde_json::Value::String("on".into()))
         );
+    }
+
+    /// `count` (what `bench run` times and `--verify` checks) and `join`
+    /// (what `kermit join` writes) are one traversal: they must agree in
+    /// every family.
+    #[test]
+    fn count_agrees_with_join_in_every_family() {
+        // Triangles in this graph: (1, 2, 3) and (2, 3, 4).
+        let edges = vec![vec![1, 2], vec![2, 3], vec![1, 3], vec![3, 4], vec![2, 4]];
+        let inputs = || vec![(RelationHeader::new_positional("edge", 2), edges.clone())];
+        let query: JoinQuery = "Q(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
+            .parse()
+            .unwrap();
+
+        let tree = TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic);
+        let engine = tree.build_from_tuples(inputs());
+        assert_eq!(tree.count(&engine, query.clone()), 2);
+        assert_eq!(tree.join(&engine, query.clone()).len(), 2);
+
+        let column = TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic);
+        let engine = column.build_from_tuples(inputs());
+        assert_eq!(column.count(&engine, query.clone()), 2);
+        assert_eq!(column.join(&engine, query.clone()).len(), 2);
+
+        let hash = HashHtj::<SipHashStrategy, NoPruning>::new(
+            HashTrieConfig::default(),
+            Optimiser::Lexicographic,
+        );
+        let engine = hash.build_from_tuples(inputs());
+        assert_eq!(hash.count(&engine, query.clone()), 2);
+        assert_eq!(hash.join(&engine, query).len(), 2);
     }
 }
