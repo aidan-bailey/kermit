@@ -40,6 +40,9 @@ use {
     },
 };
 
+/// The `kind` discriminator in a LUBM `meta.json`.
+pub const LUBM_META_KIND: &str = "lubm-onthefly";
+
 /// One hand-written LUBM query.
 #[derive(Debug, Clone)]
 pub struct LubmQuerySpec {
@@ -112,6 +115,13 @@ pub struct LubmMeta {
     pub relation_count: u32,
     /// Number of queries written to `benchmark.yml`.
     pub query_count: u32,
+    /// SHA-256 of the N-Triples file partition read (`raw/data.entailed.nt`).
+    /// With `dict_sha256` it pins the encoding: two caches with equal
+    /// hashes hold the same dictionary ids, relation row order and query
+    /// constants.
+    pub partition_input_sha256: String,
+    /// SHA-256 of `dict.parquet`.
+    pub dict_sha256: String,
     /// Hash of the declarative `GeneratorSpec` that produced this run, when
     /// the run was driven by a YAML spec. `None` for imperative `bench gen`
     /// runs. Used by the materialization layer to detect param drift.
@@ -212,7 +222,7 @@ impl Generator for LubmGenerator<'_> {
         let stats = &staged.entailment_stats;
         Ok(LubmMeta {
             schema_version: provenance.schema_version,
-            kind: "lubm-onthefly".to_string(),
+            kind: LUBM_META_KIND.to_string(),
             scale: raw.scale,
             seed: raw.seed,
             start_index: raw.start_index,
@@ -227,6 +237,8 @@ impl Generator for LubmGenerator<'_> {
             entailment_iterations: stats.iterations,
             relation_count: provenance.relation_count,
             query_count: provenance.query_count,
+            partition_input_sha256: provenance.partition_input_sha256,
+            dict_sha256: provenance.dict_sha256,
             spec_hash: provenance.spec_hash,
         })
     }

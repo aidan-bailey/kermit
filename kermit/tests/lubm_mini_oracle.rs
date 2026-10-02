@@ -291,8 +291,8 @@ fn encoded_artifacts(dir: &Path) -> Vec<PathBuf> {
 #[test]
 fn mini_lubm_generation_is_byte_reproducible() {
     let specs = lubm_query_specs(false);
-    let (first, _) = generate_mini(&specs);
-    let (second, _) = generate_mini(&specs);
+    let (first, first_meta) = generate_mini(&specs);
+    let (second, second_meta) = generate_mini(&specs);
 
     let files = encoded_artifacts(first.path());
     assert_eq!(files, encoded_artifacts(second.path()));
@@ -310,4 +310,12 @@ fn mini_lubm_generation_is_byte_reproducible() {
             .collect()
     };
     assert_eq!(queries(first.path()), queries(second.path()));
+
+    // `meta.json` records the two hashes that pin an encoding, so two caches
+    // can be compared without regenerating either.
+    assert_eq!(
+        first_meta.partition_input_sha256,
+        second_meta.partition_input_sha256
+    );
+    assert_eq!(first_meta.dict_sha256, second_meta.dict_sha256);
 }
