@@ -286,10 +286,22 @@ no dependencies), a new dev-dependency of `kermit`.
   - With space as the only metric, the one join that runs is the untimed
     verify count. Each run yields a correct count, peak RSS (expected flat,
     not hundreds of GB) and the wall time of one execution.
+  - Cap each run at 45 minutes of wall clock (`timeout` inside
+    `/usr/bin/time`). q0005 has the shape #68 is investigating: every valid
+    plan binds V0, V2 and V4 before the shared country V3, and the
+    lexicographic plan enumerates users × names × cities × offers before
+    checking country or gender. Its intermediate work may exceed the output
+    by orders of magnitude.
+  - A capped run still shows flat peak RSS while streaming, so memory
+    independence holds. If a cell is capped, the sweep's q0005 policy goes
+    back to the user, with #68's diagnosis as the probable cause.
   - The host is shared with other builds, so wall times are indicative
     only. They go in the hand-off report, not in commits or issues. The
     per-execution time decides whether the final sweep needs a sample-size
     override for q0005.
+  - Remove the check benchmark afterwards. It is discoverable, so
+    `bench run --all` would otherwise pick up a 4.17 B-row query with
+    placeholder URLs.
 
 ## Acceptance (issue #65)
 
@@ -299,5 +311,5 @@ no dependencies), a new dev-dependency of `kermit`.
 | No per-row result allocation in the timed region; `BENCHMARKING.md` accurate | `count` through `join_for_each`, the result-allocation test, the doc rows |
 | `--verify` counts without materialising | `family.count` in the verify gate |
 | Reports from before and after can't be silently mixed | Schema 3 and the loader's mixing guard |
-| `q0005` runs | No policy needed; the verified q0005 run |
+| `q0005` runs | It streams in constant memory, with no exclusion policy. Whether one execution is short enough for a sweep is settled by the capped run; if it's capped, that goes back to the user, pending #68 |
 | The standard suite exercises the new path | `lftj_join` / `hash_join` route through `_for_each`; `JoinEntry::count` |

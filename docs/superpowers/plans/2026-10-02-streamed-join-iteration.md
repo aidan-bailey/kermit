@@ -2039,39 +2039,68 @@ target/release/kermit bench list | grep watdiv-q0005-check
   `~/.cache/kermit/benchmarks/watdiv-stress-100-test-1-prelim/` (same
   layout) before going on.
 
-- [ ] **Step 2: Run both cells one after the other, fully detached, with
-  `/usr/bin/time -v`.**
+- [ ] **Step 2: Run both cells one after the other, fully detached, each
+  capped at 45 minutes of wall clock.**
+
+  Why the cap: q0005 has the shape the #68 session is investigating.
+  - V3, the country, is the object of `nationality`, `parentcountry` and
+    `eligibleregion`, so every valid plan binds V0, V2 and V4 before V3.
+  - The lexicographic plan is V0, V1, V2, V4, V3, K: it enumerates
+    users × given names × cities × offers before it checks country or
+    gender.
+  - That intermediate work may exceed the 4.17 B output rows by orders of
+    magnitude, so an uncapped run could take hours or days per cell.
+
+  `timeout` sits *inside* `/usr/bin/time`, so `time` still prints its
+  report when the cap kills the run. On Linux, `wait4` reports the waited
+  child's peak RSS, `kermit`'s included.
 
 ```bash
 setsid nohup bash -c '
   for cell in "column-trie leapfrog-triejoin" "hash-trie hash-triejoin"; do
     set -- $cell
-    /usr/bin/time -v target/release/kermit bench run watdiv-q0005-check -q q0005 -i $1 -a $2 \
-      --metrics space --verify '"$QUICK"' --report-json "'"$SCRATCH"'/q0005-$1.json" \
+    /usr/bin/time -v timeout 45m target/release/kermit bench run watdiv-q0005-check -q q0005 \
+      -i $1 -a $2 --metrics space --verify '"$QUICK"' --report-json "'"$SCRATCH"'/q0005-$1.json" \
       > "'"$SCRATCH"'/q0005-$1.log" 2>&1
     echo "exit $?" >> "'"$SCRATCH"'/q0005-$1.log"
   done' > /dev/null 2>&1 &
 ```
 
-  Poll with Monitor, at a long interval: each run may take minutes. Then
-  collect:
+  Poll with Monitor at a long interval; the whole loop can take up to
+  about 90 minutes. Then collect:
 
 ```bash
 for f in $SCRATCH/q0005-*.log; do echo "== $f"; grep -E 'verified|verification failed|Elapsed \(wall|Maximum resident|^exit' $f; done
 ```
 
-  Expected for each cell: `verified: yes` (the count was exactly
-  4169173508), `exit 0`, and a "Maximum resident set size" in MB, not
-  hundreds of GB. Record the wall clock of each run as the per-execution
-  time. It also includes loading five relations and about 10 s of `space`
-  benchmarking; both are small next to a 4-billion-row join. The host is shared, so these times are indicative only: they go
-  in the hand-off report, not in commits or issues.
+  For each cell, expect one of two outcomes:
+  - **Completed** (`exit 0`): `verified: yes` (the count was exactly
+    4169173508), a "Maximum resident set size" in MB rather than hundreds
+    of GB, and an elapsed time that is the per-execution time. That time
+    also includes loading five relations and about 10 s of `space`
+    benchmarking, both small next to the join.
+  - **Capped** (`exit 124`, elapsed ≈ 45 min): no count, but a peak RSS in
+    MB after 45 minutes of streaming. Since nothing collects rows, that
+    still shows memory independent of result size. Record that the cell
+    timed out, and at what cap. The sweep's q0005 policy then goes back to
+    the user, with #68's diagnosis as the probable cause.
 
-- [ ] **Step 3: Leave the benchmark directory in place.** It costs
-  nothing, since the files are hard links. Mention it in the hand-off so
-  the user can delete
-  `~/.cache/kermit/benchmarks/watdiv-q0005-check` or keep it for the final
-  sweep.
+  Either way, the times are indicative only, because the host is shared.
+  They go in the hand-off report, not in commits or issues. `exit 1` with
+  "verification failed" is a real bug: stop and use
+  `superpowers:systematic-debugging`.
+
+- [ ] **Step 3: Remove the check benchmark.** It is discoverable: it has
+  both `benchmark.yml` and `meta.json`. Left in place, `bench list` and
+  `bench run --all` would pick up a 4.17 B-row query with placeholder URLs.
+  The parquet files are hard links, so removing them leaves
+  `watdiv-stress-100-test-1` intact.
+
+```bash
+rm -r ~/.cache/kermit/benchmarks/watdiv-q0005-check
+ls ~/.cache/kermit/benchmarks/watdiv-stress-100-test-1/nationality.parquet   # must still exist
+target/release/kermit bench list | grep -c watdiv-q0005-check                 # must print 0
+```
 
 ---
 
@@ -2088,7 +2117,10 @@ for f in $SCRATCH/q0005-*.log; do echo "== $f"; grep -E 'verified|verification f
   - the tests run, saying whether `lubm_cardinalities` ran or skipped;
   - the mutation-check results;
   - the prelim verify results;
-  - q0005's per-cell wall time and peak RSS, marked indicative;
+  - q0005, per cell: completed or capped at 45 minutes, the wall time and
+    the peak RSS, all marked indicative. If a cell was capped, say that the
+    sweep's q0005 policy goes back to the user, pending #68;
+  - that `~/.cache/kermit/benchmarks/watdiv-q0005-check` was removed;
   - the decisions the user made: `iteration` redefined; no q0005 policy;
     push sink; no `Result` before #78;
   - landing notes: whichever of #65 / #66 lands second merges
