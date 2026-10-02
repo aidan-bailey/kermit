@@ -64,15 +64,20 @@ macro_rules! trie_traversal_tests {
 
             use super::*;
 
-            $crate::trie_test!(empty, $relation_type, [], |iter: &mut dyn TrieIterator| {
-                // All operations should indicate an empty/exhausted iterator
-                assert!(iter.key().is_none());
-                assert!(!iter.open());
-                assert!(!iter.up());
-                assert!(iter.next().is_none());
-                assert!(iter.key().is_none());
-                assert!(iter.at_end());
-            });
+            $crate::trie_test!(
+                empty,
+                $relation_type,
+                [],
+                |iter: &mut dyn TrieIterator| {
+                    // All operations should indicate an empty/exhausted iterator
+                    assert!(iter.key().is_none());
+                    assert!(!iter.open());
+                    assert!(!iter.up());
+                    assert!(iter.next().is_none());
+                    assert!(iter.key().is_none());
+                    assert!(iter.at_end());
+                }
+            );
 
             $crate::trie_test!(
                 single,
@@ -242,7 +247,9 @@ macro_rules! trie_traversal_tests {
             $crate::trie_test!(
                 hard,
                 $relation_type,
-                [vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]],
+                [vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![
+                    7, 8, 9
+                ]],
                 |iter: &mut dyn TrieIterator| {
                     // Begin at root
                     assert!(iter.key().is_none());
@@ -502,7 +509,11 @@ macro_rules! trie_seek_tests {
                 // A stride coprime to 2 alternates exact hits and gaps.
                 for target in (0..=LAST_KEY).step_by(13) {
                     assert!(iter.seek(target), "seek({target}) fell off the end");
-                    assert_eq!(iter.key(), Some(target + target % 2), "seek({target})");
+                    assert_eq!(
+                        iter.key(),
+                        Some(target + target % 2),
+                        "seek({target})"
+                    );
                 }
                 assert!(iter.seek(LAST_KEY));
                 assert_eq!(iter.key(), Some(LAST_KEY));
@@ -530,7 +541,10 @@ macro_rules! trie_seek_tests {
             /// out; and `MAX_RATIO` sits far from both outcomes (~1x for a
             /// binary search, hundreds of x for a scan).
             #[test]
-            #[cfg_attr(miri, ignore = "wall-clock complexity check; too slow under miri")]
+            #[cfg_attr(
+                miri,
+                ignore = "wall-clock complexity check; too slow under miri"
+            )]
             fn seek_cost_is_independent_of_distance() {
                 use {
                     kermit_ds::Relation,
@@ -1189,9 +1203,15 @@ macro_rules! hash_trie_traversal_tests {
 
                     // lookup() reaches each leaf bucket deterministically.
                     assert!(iter.lookup(h(2)));
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 2]])
+                    );
                     assert!(iter.lookup(h(3)));
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 3]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 3]])
+                    );
 
                     // Navigate back up through both levels
                     assert!(iter.up());
@@ -1217,7 +1237,10 @@ macro_rules! hash_trie_traversal_tests {
                     assert!(iter.leaf_tuples().is_none());
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(h(3)));
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2, 3]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 2, 3]])
+                    );
                     assert!(!iter.open()); // leaf
 
                     // Ascend: h(3) → h(2) → h(1) → root
@@ -1291,7 +1314,9 @@ macro_rules! hash_trie_traversal_tests {
                 hard,
                 $relation_type,
                 3,
-                [vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]],
+                [vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![
+                    7, 8, 9
+                ]],
                 |iter: &mut dyn HashTrieIterator| {
                     // Begin at root
                     assert!(iter.key().is_none());
@@ -1317,9 +1342,15 @@ macro_rules! hash_trie_traversal_tests {
                     // Each leaf under [1, 2] holds exactly its tuple
                     assert!(iter.lookup(h(3)));
                     assert!(!iter.open()); // 3 is a leaf
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2, 3]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 2, 3]])
+                    );
                     assert!(iter.lookup(h(4)));
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2, 4]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 2, 4]])
+                    );
 
                     // up() → [1, 2]
                     assert!(iter.up());
@@ -1331,7 +1362,10 @@ macro_rules! hash_trie_traversal_tests {
                     assert_eq!(iter.size(), 1);
                     assert_eq!(iter.key(), Some(h(6)));
                     assert!(!iter.open()); // 6 is a leaf
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 5, 6]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 5, 6]])
+                    );
 
                     // up() → 5, up() → 1
                     assert!(iter.up());
@@ -1346,7 +1380,10 @@ macro_rules! hash_trie_traversal_tests {
                     assert!(iter.open());
                     assert_eq!(iter.key(), Some(h(9)));
                     assert!(!iter.open()); // 9 is a leaf
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![7, 8, 9]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![7, 8, 9]])
+                    );
 
                     // up() → 8, up() → 7, up() → root
                     assert!(iter.up());
@@ -1381,7 +1418,10 @@ macro_rules! hash_trie_traversal_tests {
                         Some(vec![vec![1, 2], vec![1, 2]])
                     );
                     assert!(iter.lookup(h(3)));
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 3]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 3]])
+                    );
                 }
             );
         }
@@ -1475,12 +1515,21 @@ macro_rules! hash_trie_lookup_tests {
                     assert_eq!(iter.key(), Some(h(1)));
                     assert!(iter.open());
                     assert!(iter.lookup(h(5)));
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 5]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 5]])
+                    );
                     assert!(iter.lookup(h(8)));
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 8]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 8]])
+                    );
                     // Backwards repositioning is fine: lookup is not monotone.
                     assert!(iter.lookup(h(2)));
-                    assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![1, 2]]));
+                    assert_eq!(
+                        iter.leaf_tuples().map(sorted),
+                        Some(vec![vec![1, 2]])
+                    );
                 }
             );
 
