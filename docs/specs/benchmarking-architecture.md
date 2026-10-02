@@ -87,8 +87,8 @@ opt-in), `--queries-per-build` (K for the `end-to-end` metric, default 1).
 | Metric | How measured |
 |--------|--------------|
 | `Insertion` | `R::from_tuples(header, tuples)` via Criterion `iter_batched`, on the relation's tuples in file order |
-| `Iteration` | `relation.trie_iter().into_iter().collect()` via Criterion `iter` |
-| `EndToEnd` | `R::from_tuples` (same input) then K full-trie iterations, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
+| `Iteration` | `F::scan(&relation)` via Criterion `iter`: walks every stored tuple through `RelationFamily::for_each_tuple` (`TrieIteratorWrapper::advance` / `HashTrie::for_each_tuple`), counting each through a `black_box` sink; no tuple is materialised |
+| `EndToEnd` | `R::from_tuples` (same input) then K `F::scan` traversals, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
 | `Space` | `R::from_tuples(...).heap_size_bytes()` via Criterion `iter_custom` with `SpaceMeasurement` |
 
 Each metric becomes a separate Criterion `bench_function`:
@@ -131,7 +131,10 @@ timing and compare its result count with the YAML's `expected`).
    metrics rebuild from them.
 5. For each query in the workload (filtered by `--query` if set), with
    `--verify`, run the query once and compare its count with `expected`
-   (mismatch aborts; a query without `expected` is noted as not verified),
+   (mismatch aborts; a query without `expected` is noted as not verified)
+   — the count comes from `ExecutionFamily::count`, which streams the join
+   through a `black_box` sink and never materialises it, as do the
+   `Iteration` and `EndToEnd` timed bodies —
    then run the chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
    wall-clock Criterion; `Space` goes through `SpaceMeasurement`.
 
@@ -144,8 +147,8 @@ query parsing described in step 3 and the per-query loop above.
 `EndToEnd` is the only metric whose timed body spans the build→query
 boundary: each Criterion sample constructs a fresh database from the
 file-order tuples kept in step 4 **through the same pipeline as the untimed step-4 build**
-(a fresh `BTreeMap<String, R>` via `from_tuples`, handed to `lftj_join` or
-`hash_join` — `ExecutionFamily::build_from_tuples` for either family) and then executes the query K times
+(a fresh `BTreeMap<String, R>` via `from_tuples`, queried through
+`ExecutionFamily::count` — `ExecutionFamily::build_from_tuples` for either family) and then executes and counts the query K times
 (`--queries-per-build`). `BatchSize::PerIteration` is deliberate — batching
 would amortise away the per-build cost the metric exists to measure. Every
 relation is built through `RelationFamily::build_relation` from the same

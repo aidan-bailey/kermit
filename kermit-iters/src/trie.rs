@@ -127,11 +127,16 @@ where
         }
     }
 
-    /// Produces the next complete tuple by advancing through the trie in
-    /// depth-first order. Backtracks via `up`/`next_sibling` when a leaf is
-    /// reached, then descends again via `down` until the next leaf. Returns
-    /// `None` when the entire trie has been exhausted.
-    fn next(&mut self) -> Option<Vec<usize>> {
+    /// Advances to the next complete tuple and lends it: the slice is the
+    /// wrapper's own path stack, valid until the next call, so the wrapper
+    /// allocates nothing per tuple. Callers that need an owned
+    /// tuple use the [`Iterator`] impl, which copies this slice.
+    ///
+    /// Moves through the trie in depth-first order. Backtracks via
+    /// `up`/`next_sibling` when a leaf is reached, then descends again via
+    /// `down` until the next leaf. Returns `None` when the entire trie has
+    /// been exhausted.
+    pub fn advance(&mut self) -> Option<&[usize]> {
         loop {
             // Phase 1: Backtrack — advance to the next sibling, moving up
             // through ancestors until one has a remaining sibling.
@@ -158,7 +163,7 @@ where
                 }
             }
 
-            return Some(self.stack.clone());
+            return Some(&self.stack);
         }
     }
 }
@@ -169,7 +174,7 @@ where
 {
     type Item = Vec<usize>;
 
-    fn next(&mut self) -> Option<Self::Item> { self.next() }
+    fn next(&mut self) -> Option<Self::Item> { self.advance().map(<[usize]>::to_vec) }
 }
 
 #[cfg(test)]
@@ -285,9 +290,9 @@ mod tests {
 
     fn collect_tuples(trie: &MockTrie) -> Vec<Vec<usize>> {
         let iter = MockTrieIter::new(trie);
-        let mut wrapper = TrieIteratorWrapper::new(iter);
+        let wrapper = TrieIteratorWrapper::new(iter);
         let mut result = Vec::new();
-        while let Some(tuple) = wrapper.next() {
+        for tuple in wrapper {
             result.push(tuple);
         }
         result
@@ -414,6 +419,31 @@ mod tests {
         let wrapper = TrieIteratorWrapper::with_arity(iter, 2);
         let result: Vec<Vec<usize>> = wrapper.collect();
         assert_eq!(result, Vec::<Vec<usize>>::new());
+    }
+
+    /// `advance` lends each tuple from the wrapper's own stack; it must
+    /// visit exactly the tuples `next` yields, in the same order, under an
+    /// arity filter too.
+    #[test]
+    fn advance_lends_the_tuples_next_yields() {
+        let trie = MockTrie {
+            roots: vec![
+                node(1, vec![
+                    node(2, vec![leaf(5), leaf(6)]),
+                    node(3, vec![leaf(7)]),
+                ]),
+                leaf(4),
+            ],
+        };
+        let mut lent = Vec::new();
+        let mut wrapper = TrieIteratorWrapper::with_arity(MockTrieIter::new(&trie), 3);
+        while let Some(tuple) = wrapper.advance() {
+            lent.push(tuple.to_vec());
+        }
+        let yielded: Vec<Vec<usize>> =
+            TrieIteratorWrapper::with_arity(MockTrieIter::new(&trie), 3).collect();
+        assert_eq!(lent, yielded);
+        assert_eq!(lent, vec![vec![1, 2, 5], vec![1, 2, 6], vec![1, 3, 7]]);
     }
 
     #[test]

@@ -27,11 +27,12 @@ use {
 /// (`F::Rel`), how to *build* one from a `(header, tuples)` snapshot
 /// honouring the family's `--ds-config` values
 /// ([`RelationFamily::build_relation`], and [`RelationFamily::load`] on
-/// top of it), how to recover its tuples (`F::tuples` — `trie_iter()` for
-/// sorted tries, `collect_tuples()` for the hash trie, whose iterator
-/// yields hashes), and its optimization axes. `bench ds` involves no join,
-/// which the bound states: a `RelationFamily` has no engine to build or
-/// query.
+/// top of it), how to walk its tuples without materialising them
+/// (`F::for_each_tuple` — `TrieIteratorWrapper::advance` for sorted tries,
+/// `HashTrie::for_each_tuple` for the hash trie, whose iterator yields
+/// hashes; `F::scan` counts through it), and its optimization axes. `bench ds`
+/// involves no join, which the bound states: a `RelationFamily` has no engine
+/// to build or query.
 fn run_ds_bench<F: RelationFamily>(
     family: &F, relation_path: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
     bench_args: &BenchArgs,
@@ -97,7 +98,11 @@ fn run_ds_bench<F: RelationFamily>(
         if metrics.contains(&Metric::Iteration) {
             let function = format!("{ds_name}/iteration");
             group.bench_function(&function, |b| {
-                b.iter(|| F::tuples(&relation));
+                // Counts the tuples through a `black_box` sink rather than
+                // collecting them, so the scan allocates nothing per tuple
+                // and the structures are compared on traversal alone
+                // (issue #79).
+                b.iter(|| F::scan(&relation));
             });
             criterion_groups.push(CriterionGroupRef {
                 group: group_name.to_string(),
@@ -119,7 +124,7 @@ fn run_ds_bench<F: RelationFamily>(
                     |(h, t)| {
                         let built = family.build_relation(h, t);
                         for _ in 0..queries_per_build {
-                            std::hint::black_box(F::tuples(&built));
+                            std::hint::black_box(F::scan(&built));
                         }
                     },
                     criterion::BatchSize::PerIteration,

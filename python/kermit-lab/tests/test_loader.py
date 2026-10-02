@@ -140,3 +140,43 @@ def test_axes_preserve_value_types(tmp_path: Path) -> None:
     assert r.axis("tuples") == 4
     assert isinstance(r.axis("tuples"), int)
     assert r.axis("is_synthetic") is True
+
+
+def _versioned_report(path: Path, version: int) -> Path:
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "schema_version": version,
+                    "kind": "run",
+                    "metadata": [],
+                    "axes": {},
+                    "criterion_groups": [],
+                }
+            ]
+        )
+    )
+    return path
+
+
+def test_refuses_to_mix_reports_across_the_streamed_join_boundary(tmp_path: Path) -> None:
+    old = _versioned_report(tmp_path / "old.json", 2)
+    new = _versioned_report(tmp_path / "new.json", 3)
+    with pytest.raises(SchemaError, match="refusing to mix schema_version 2"):
+        load_reports([old, new])
+    with pytest.raises(SchemaError, match="old.json"):
+        load_reports([new, old])
+
+
+def test_allow_mixed_schema_loads_both_sides(tmp_path: Path) -> None:
+    old = _versioned_report(tmp_path / "old.json", 2)
+    new = _versioned_report(tmp_path / "new.json", 3)
+    reports = load_reports([old, new], allow_mixed_schema=True)
+    assert [r.schema_version for r in reports] == [2, 3]
+
+
+def test_single_sided_loads_are_unaffected(tmp_path: Path) -> None:
+    v2 = [_versioned_report(tmp_path / f"a{i}.json", 2) for i in range(2)]
+    v3 = [_versioned_report(tmp_path / f"b{i}.json", 3) for i in range(2)]
+    assert len(load_reports(v2)) == 2
+    assert len(load_reports(v3)) == 2

@@ -77,8 +77,10 @@ pub fn write_metadata_block<W: Write>(
 }
 
 /// Schema version for the JSON report. Bump on any breaking change to
-/// [`BenchReport`] field names or value types.
-pub const REPORT_SCHEMA_VERSION: u32 = 2;
+/// [`BenchReport`] field names or value types, or to what a metric
+/// measures. 3: `iteration` / `end_to_end` time a streamed join whose rows
+/// are counted, never materialised (issue #65).
+pub const REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).
@@ -363,7 +365,7 @@ mod tests {
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(json.is_array());
-        assert_eq!(json[0]["schema_version"], 2);
+        assert_eq!(json[0]["schema_version"], 3);
         assert_eq!(json[0]["kind"], "ds");
         assert_eq!(json[0]["metadata"][0]["label"], "data structure");
         assert_eq!(json[0]["metadata"][0]["value"], "TreeTrie");

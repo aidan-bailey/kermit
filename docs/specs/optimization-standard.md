@@ -166,7 +166,7 @@ both Layout axes and its Config axis, so `ds_layout_pruning` and
 ```json
 [
   {
-    "schema_version": 2,
+    "schema_version": 3,
     "kind": "ds",
     "axes": {
       "data_structure": "HashTrie",
@@ -662,7 +662,7 @@ Then load all of them in `kermit-lab` and pivot.
 
 ### Q: Does adding a new axis break existing bench reports?
 
-No. `BenchReport.axes` is an open map; downstream tooling treats missing keys as defaults. The `schema_version` stays at `2` — adding new keys is non-breaking.
+No. `BenchReport.axes` is an open map; downstream tooling treats missing keys as defaults. The `schema_version` does not change — adding new keys is non-breaking.
 
 For old reports that predate the standard, back-fill defaults in `kermit-lab`:
 

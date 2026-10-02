@@ -9,6 +9,9 @@ Total: 20 summary rows; 200 sample rows (20 functions × 10 samples each).
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -17,6 +20,7 @@ from kermit_lab.frame import (
     load,
     load_samples,
 )
+from kermit_lab.loader import SchemaError
 
 
 @pytest.fixture
@@ -195,3 +199,18 @@ def test_verified_column_is_nullable_boolean(verified_tree):
     by_group = df.set_index("criterion_group")["verified"]
     assert bool(by_group["run/triangle/triangle/TreeTrie/LeapfrogTriejoin/v"]) is True
     assert pd.isna(by_group["run/triangle/triangle/TreeTrie/LeapfrogTriejoin/nv"])
+
+
+def _bare_report(path: Path, version: int) -> Path:
+    path.write_text(json.dumps([{"schema_version": version, "kind": "run",
+                                 "metadata": [], "axes": {}, "criterion_groups": []}]))
+    return path
+
+
+def test_load_refuses_mixed_schema_and_passes_the_escape_hatch(tmp_path: Path) -> None:
+    paths = [_bare_report(tmp_path / "v2.json", 2), _bare_report(tmp_path / "v3.json", 3)]
+    with pytest.raises(SchemaError, match="refusing to mix"):
+        load(paths, criterion_root=tmp_path)
+    with pytest.raises(SchemaError, match="refusing to mix"):
+        load_samples(paths, criterion_root=tmp_path)
+    assert len(load_samples(paths, criterion_root=tmp_path, allow_mixed_schema=True)) == 0

@@ -17,7 +17,7 @@
 //! ([`crate::sorted::EqualitySelectionTrieIter`] /
 //! [`crate::hash::EqualitySelectionHashTrieIter`]), so neither executor
 //! ever sees a repeated variable. Intended to run immediately after
-//! [`crate::rewrite_atoms`] and before [`crate::JoinAlgo::join_iter`].
+//! [`crate::rewrite_atoms`] and before [`crate::JoinAlgo::join_for_each`].
 
 use {
     crate::const_rewrite::highest_k_index,

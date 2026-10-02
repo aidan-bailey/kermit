@@ -99,14 +99,43 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
 
     /// Walk the trie depth-first and return every materialized tuple.
     ///
-    /// Used by [`crate::relation::Projectable::project`], the CLI's
-    /// `bench ds` machinery (whose `iteration` metric times this walk),
-    /// and tests. Allocates a fresh `Vec<Vec<usize>>`; for large
-    /// relations this is O(n · arity) in both time and space.
+    /// Used by [`crate::relation::Projectable::project`] and tests.
+    /// Allocates a fresh `Vec<Vec<usize>>`; for large relations this is
+    /// O(n · arity) in both time and space. To visit the tuples without
+    /// materialising them, use [`for_each_tuple`](Self::for_each_tuple).
     pub fn collect_tuples(&self) -> Vec<Vec<usize>> {
         let mut out = Vec::new();
         Self::collect_at(&self.root, &mut out);
         out
+    }
+
+    /// Walk the trie depth-first, lending every stored tuple to `visit` in
+    /// the order [`collect_tuples`](Self::collect_tuples) returns them.
+    ///
+    /// Each tuple is borrowed from its leaf chain (or pruned `Singleton`)
+    /// for that call only, so the walk allocates nothing per tuple: O(n)
+    /// time, O(arity) stack. The CLI's `bench ds` `iteration` and
+    /// `end_to_end` metrics time this walk (issue #79).
+    pub fn for_each_tuple<V: FnMut(&[usize])>(&self, mut visit: V) {
+        Self::visit_at(&self.root, &mut visit);
+    }
+
+    fn visit_at<V: FnMut(&[usize])>(node: &HashTrieNode<P>, visit: &mut V) {
+        match node {
+            | HashTrieNode::Inner(table) => {
+                for (_, child) in table.iter() {
+                    Self::visit_at(child, visit);
+                }
+            },
+            | HashTrieNode::Leaf(table) => {
+                for (_, chain) in table.iter() {
+                    for tuple in chain {
+                        visit(tuple);
+                    }
+                }
+            },
+            | HashTrieNode::Singleton(payload) => visit(payload.tuple()),
+        }
     }
 
     fn collect_at(node: &HashTrieNode<P>, out: &mut Vec<Vec<usize>>) {
@@ -879,6 +908,35 @@ mod tests {
         a.sort();
         b.sort();
         assert_eq!(a, b);
+    }
+
+    /// `for_each_tuple` is the borrowed form of `collect_tuples` (issue
+    /// #79): it must lend exactly the tuples `collect_tuples` returns, in the
+    /// same order — a duplicate in one leaf chain, and (pruned) a
+    /// `Singleton` subtrie, included.
+    #[test]
+    fn for_each_tuple_visits_what_collect_tuples_returns() {
+        let tuples = vec![
+            vec![1, 2, 3],
+            vec![1, 2, 3],
+            vec![1, 2, 4],
+            vec![1, 5, 6],
+            vec![7, 8, 9],
+        ];
+        let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
+        let compact = pruned(3, tuples);
+        for (name, collected, mut visited) in [
+            ("NoPruning", plain.collect_tuples(), Vec::new()),
+            ("SingletonPruning", compact.collect_tuples(), Vec::new()),
+        ] {
+            if name == "NoPruning" {
+                plain.for_each_tuple(|t| visited.push(t.to_vec()));
+            } else {
+                compact.for_each_tuple(|t| visited.push(t.to_vec()));
+            }
+            assert_eq!(visited, collected, "{name}");
+            assert_eq!(visited.len(), 5, "{name}");
+        }
     }
 }
 

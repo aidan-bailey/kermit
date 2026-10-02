@@ -3,7 +3,7 @@
 //! Kermit separates planning from execution. A [`QueryOptimiser`] consumes
 //! a parsed, const-rewritten [`JoinQuery`] plus per-relation statistics
 //! ([`CatalogStats`]) and produces a [`QueryPlan`]; join algorithms
-//! (`JoinAlgo::join_iter`) execute the plan. The space of valid plans is
+//! (`JoinAlgo::join_for_each`) execute the plan. The space of valid plans is
 //! exactly the set of topological orders of the column-order constraint
 //! DAG (see [`topological_order`]); the provided optimisers are valid by
 //! construction, and executors defensively assert

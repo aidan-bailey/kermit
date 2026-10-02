@@ -23,11 +23,11 @@ Each family directory holds the same three kinds of module: a `singleton.rs` (th
 
 Everything is re-exported flat from the crate root — consumers write `kermit_algos::HashTriejoin`, never the family path. The two `*Iter` types (`LeapfrogTriejoinIter`, `LeapfrogJoinIter`) and the traits driving them are `pub(crate)`: they are implementation detail, exercised by the inline tests, and not reachable from outside the crate.
 
-- [`JoinAlgo`](src/join_algo.rs) — the algorithm trait. Takes a `QueryPlan`, a parsed `JoinQuery`, and a map from predicate name to data structure reference; returns an iterator over the join output. Laziness is **not** part of the contract: `LeapfrogTriejoin` streams, `HashTriejoin` materialises.
+- [`JoinAlgo`](src/join_algo.rs) — the algorithm trait. Takes a `QueryPlan`, a parsed `JoinQuery`, and a map from predicate name to data structure reference; its one required method, `join_for_each`, passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result. `join_iter` is a provided method that collects through it, for callers that need the rows.
 - [`LeapfrogTriejoin`](src/sorted/leapfrog_triejoin.rs) — the sorted-family entry point (`-a leapfrog-triejoin`).
 - [`HashTriejoin`](src/hash/hash_triejoin.rs) — the hash-family entry point (`-a hash-triejoin`).
-- [`QueryOptimiser`](src/optimiser/mod.rs) — plans the variable ordering (`QueryPlan`) that `JoinAlgo::join_iter` executes. Implementations: `LexicographicOptimiser` (default), `CardinalityOptimiser`.
-- [`rewrite_atoms`](src/const_rewrite.rs) — the const-view rewrite, run by the caller before `join_iter`. A new `JoinAlgo` impl must tolerate the rewritten query shape (extra synthetic unary body predicates).
+- [`QueryOptimiser`](src/optimiser/mod.rs) — plans the variable ordering (`QueryPlan`) that `JoinAlgo::join_for_each` executes. Implementations: `LexicographicOptimiser` (default), `CardinalityOptimiser`.
+- [`rewrite_atoms`](src/const_rewrite.rs) — the const-view rewrite, run by the caller before `join_for_each`. A new `JoinAlgo` impl must tolerate the rewritten query shape (extra synthetic unary body predicates).
 - `JoinAlgorithm` / `Optimiser` — CLI registry enums used by the binary to pick an implementation at runtime.
 
 ## Relationship to other crates

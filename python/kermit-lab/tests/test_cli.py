@@ -5,6 +5,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import json
 from pathlib import Path
 
 from kermit_lab.drivers.main import main
@@ -33,3 +34,15 @@ def test_scaling_preset_subcommand(fixture_tree, tmp_path: Path) -> None:
     ])
     assert rc == 0
     assert out.exists()
+
+
+def test_mixed_schema_reports_exit_with_code_4(tmp_path: Path) -> None:
+    paths = []
+    for version in (2, 3):
+        p = tmp_path / f"v{version}.json"
+        p.write_text(json.dumps([{"schema_version": version, "kind": "run",
+                                  "metadata": [], "axes": {}, "criterion_groups": []}]))
+        paths.append(str(p))
+    rc = main(["scaling", *paths, "--criterion-root", str(tmp_path),
+               "--out", str(tmp_path / "s.pdf")])
+    assert rc == 4

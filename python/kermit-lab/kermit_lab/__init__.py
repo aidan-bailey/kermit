@@ -5,7 +5,7 @@ Primary surface: :func:`load` / :func:`load_samples` return tidy DataFrames;
 of it. The CLI in :mod:`kermit_lab.drivers.main` is a thin wrapper.
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """Highest BenchReport schema version this package can parse."""
 
 from .analysis import bootstrap_ratio_ci, compare, mannwhitney_u, summary
