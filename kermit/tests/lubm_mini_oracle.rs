@@ -111,7 +111,7 @@ use {
     kermit_ds::{RelationFileExt, TreeTrie},
     kermit_rdf::lubm::{
         driver::{LubmDriverInputs, LubmRawArtifacts, DEFAULT_ONTOLOGY_IRI},
-        pipeline::{process_artifacts, LubmPipelineInputs},
+        pipeline::{process_artifacts, LubmMeta, LubmPipelineInputs, LubmQuerySpec},
         queries::lubm_query_specs,
         sandbox::LubmStagingDir,
     },
@@ -142,6 +142,53 @@ const EXPECTED: &[(&str, u64)] = &[
 
 fn abox_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lubm-mini/abox.nt")
+}
+
+/// Runs the post-driver LUBM pipeline over the committed mini ABox into a
+/// fresh temp dir, returning the dir and the `meta.json` it recorded.
+fn generate_mini(specs: &[LubmQuerySpec]) -> (tempfile::TempDir, LubmMeta) {
+    // Stand in for the driver: put the ABox where the jar's gunzipped output
+    // would be. No jar runs, but `LubmMeta` records the jar's SHA-256, so
+    // point `jar_path` at a placeholder file.
+    let stage = LubmStagingDir::create().expect("create staging dir");
+    let data_nt = stage.ntriples_output_path();
+    fs::copy(abox_path(), &data_nt).expect("stage the ABox");
+    let jar_placeholder = stage.root().join("no-jar-was-run");
+    fs::write(&jar_placeholder, b"").expect("write jar placeholder");
+
+    let out = tempfile::tempdir().expect("create temp dir");
+    let inputs = LubmPipelineInputs {
+        driver: LubmDriverInputs {
+            jar_path: &jar_placeholder,
+            scale: 1,
+            seed: 0,
+            start_index: 0,
+            threads: 1,
+            ontology_iri: DEFAULT_ONTOLOGY_IRI,
+        },
+        out_dir: out.path(),
+        bench_name: "lubm-mini",
+        tag: "mini-oracle",
+        queries: specs,
+        spec_hash: None,
+    };
+    let raw = LubmRawArtifacts {
+        data_nt,
+        scale: 1,
+        seed: 0,
+        start_index: 0,
+        ontology_iri: DEFAULT_ONTOLOGY_IRI.to_string(),
+        stage,
+    };
+    let meta = process_artifacts(&inputs, &raw).expect("mini LUBM pipeline must succeed");
+    (out, meta)
+}
+
+/// Parses the `benchmark.yml` a generation emitted into `dir`.
+fn emitted_benchmark(dir: &Path) -> BenchmarkDefinition {
+    let yaml =
+        fs::read_to_string(dir.join("benchmark.yml")).expect("emitted benchmark.yml missing");
+    serde_yaml::from_str(&yaml).expect("benchmark.yml malformed")
 }
 
 /// Loads the generated relations into a fresh engine planned by `optimiser`,
@@ -188,44 +235,8 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
         "every LUBM query needs a hand-counted cardinality"
     );
 
-    // Stand in for the driver: put the ABox where the jar's gunzipped output
-    // would be. No jar runs, but `LubmMeta` records the jar's SHA-256, so
-    // point `jar_path` at a placeholder file.
-    let stage = LubmStagingDir::create().expect("create staging dir");
-    let data_nt = stage.ntriples_output_path();
-    fs::copy(abox_path(), &data_nt).expect("stage the ABox");
-    let jar_placeholder = stage.root().join("no-jar-was-run");
-    fs::write(&jar_placeholder, b"").expect("write jar placeholder");
-
-    let out = tempfile::tempdir().expect("create temp dir");
-    let inputs = LubmPipelineInputs {
-        driver: LubmDriverInputs {
-            jar_path: &jar_placeholder,
-            scale: 1,
-            seed: 0,
-            start_index: 0,
-            threads: 1,
-            ontology_iri: DEFAULT_ONTOLOGY_IRI,
-        },
-        out_dir: out.path(),
-        bench_name: "lubm-mini",
-        tag: "mini-oracle",
-        queries: &specs,
-        spec_hash: None,
-    };
-    let raw = LubmRawArtifacts {
-        data_nt,
-        scale: 1,
-        seed: 0,
-        start_index: 0,
-        ontology_iri: DEFAULT_ONTOLOGY_IRI.to_string(),
-        stage,
-    };
-    let meta = process_artifacts(&inputs, &raw).expect("mini LUBM pipeline must succeed");
-
-    let yaml = fs::read_to_string(out.path().join("benchmark.yml"))
-        .expect("emitted benchmark.yml missing");
-    let bench: BenchmarkDefinition = serde_yaml::from_str(&yaml).expect("benchmark.yml malformed");
+    let (out, meta) = generate_mini(&specs);
+    let bench = emitted_benchmark(out.path());
     assert_eq!(bench.queries.len(), EXPECTED.len());
 
     // The plan an optimiser picks changes the join's descent order, never its
@@ -255,4 +266,48 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
     assert_eq!(meta.triple_count_pre_entailment, 58);
     assert_eq!(meta.derived_triple_count, 51);
     assert_eq!(meta.triple_count_post_entailment, 108);
+}
+
+/// Every file a generation writes whose bytes depend only on the input: the
+/// entailed N-Triples partition reads, the dictionary, and each relation.
+/// `benchmark.yml` (its relation URLs name the output dir) and `meta.json`
+/// (a timestamp) are compared separately or not at all.
+fn encoded_artifacts(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .expect("read output dir")
+        .map(|e| PathBuf::from(e.expect("dir entry").file_name()))
+        .filter(|f| f.extension().is_some_and(|ext| ext == "parquet"))
+        .collect();
+    files.sort();
+    files.push(PathBuf::from("raw/data.entailed.nt"));
+    files
+}
+
+/// Issue #74: one ABox must encode identically on every generation — the
+/// same dictionary ids, relation row order and query constants — or a LUBM
+/// timing cannot be reproduced from its spec. Entailment once wrote its
+/// closure in per-run hash order, which partition turned into a per-run
+/// encoding; this also pins partition and translation as deterministic.
+#[test]
+fn mini_lubm_generation_is_byte_reproducible() {
+    let specs = lubm_query_specs(false);
+    let (first, _) = generate_mini(&specs);
+    let (second, _) = generate_mini(&specs);
+
+    let files = encoded_artifacts(first.path());
+    assert_eq!(files, encoded_artifacts(second.path()));
+    for file in &files {
+        let a = fs::read(first.path().join(file)).expect("read first generation");
+        let b = fs::read(second.path().join(file)).expect("read second generation");
+        assert!(a == b, "{} differs between two generations", file.display());
+    }
+
+    let queries = |dir: &Path| -> Vec<(String, String)> {
+        emitted_benchmark(dir)
+            .queries
+            .into_iter()
+            .map(|q| (q.name, q.query))
+            .collect()
+    };
+    assert_eq!(queries(first.path()), queries(second.path()));
 }
