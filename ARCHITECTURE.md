@@ -284,7 +284,7 @@ At depth 0 (variable A): R and T participate
 At depth 1 (variable B): R and S participate
 At depth 2 (variable C): S and T participate
 
-Note one documented deviation from the paper: Veldhuizen keeps one persistent leapfrog per level over freely-aliased iterator arrays. Safe Rust cannot alias owned iterators across levels, so `LeapfrogTriejoinIter` instead *moves* iterators between an idle pool and the inner `LeapfrogJoinIter` on every depth change. Observable semantics are preserved; the cost is a drain/refill per `open`/`up`. The rationale is recorded in the module docs of `kermit-algos/src/sorted/leapfrog_triejoin.rs`.
+Note one documented deviation from the paper: Veldhuizen keeps one persistent leapfrog per level over freely-aliased iterator arrays. Safe Rust cannot alias owned iterators across levels, so `LeapfrogTriejoinIter` instead *moves* iterators between an idle pool and the inner `LeapfrogJoinIter` on every depth change. Observable semantics are preserved; the cost is a drain/refill per `open`/`up`, which moves iterators but allocates nothing, because the one inner leapfrog is refilled in place (#83). The rationale is recorded in the module docs of `kermit-algos/src/sorted/leapfrog_triejoin.rs`.
 
 ### Hash Triejoin
 

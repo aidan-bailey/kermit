@@ -1,6 +1,6 @@
 # `LeapfrogJoin`
 
-> **Status:** stable · **CLI:** internal helper — not CLI-exposed (used by [`LeapfrogTriejoin`](./leapfrog-triejoin.md)) · **Implementation:** [`kermit_algos::leapfrog_join`](../../kermit-algos/src/leapfrog_join.rs)
+> **Status:** stable · **CLI:** internal helper — not CLI-exposed (used by [`LeapfrogTriejoin`](./leapfrog-triejoin.md)) · **Implementation:** [`kermit_algos::leapfrog_join`](../../kermit-algos/src/sorted/leapfrog_join.rs)
 
 ## What it is
 
@@ -36,11 +36,12 @@ next():
     return search()
 ```
 
-Source mapping: [`leapfrog_init`](../../kermit-algos/src/leapfrog_join.rs) (line 89), [`leapfrog_search`](../../kermit-algos/src/leapfrog_join.rs) (line 111), [`leapfrog_next`](../../kermit-algos/src/leapfrog_join.rs) (line 146).
+Source mapping: [`leapfrog_init`](../../kermit-algos/src/sorted/leapfrog_join.rs) (line 122), [`leapfrog_search`](../../kermit-algos/src/sorted/leapfrog_join.rs) (line 150), [`leapfrog_next`](../../kermit-algos/src/sorted/leapfrog_join.rs) (line 185).
 
 ## Invariants
 
 - **Ring order.** `sorted_iter_perm` is a permutation of `0..k` ordering iterators by their *initial* current key (set in `leapfrog_init`). The ring is not re-sorted on each step — the monotone-increasing target ensures whichever iterator was largest remains the predecessor that defines `target_key`.
+- **Refill.** [`refill`](../../kermit-algos/src/sorted/leapfrog_join.rs) re-seeds a drained join over a new set of iterators and leaves it exactly as `new` would — the ring is the identity permutation of the new `0..k`, and `p = 0` — but in the existing buffers, so once they have grown to the widest set a refill allocates nothing. [`LeapfrogTriejoin`](./leapfrog-triejoin.md) refills its one inner join on every depth change (#83). After `triejoin_up` it steps the refilled join without re-running `leapfrog_init`; the identity ring is valid there because every iterator sits on the key it descended from, so any order is sorted.
 - **Monotone target.** Each iteration of `leapfrog_search` only ever raises `target_key`. Each `seek` either (a) reaches equality and returns `true`, (b) runs off the end and returns `false`, or (c) advances the current iterator strictly past the old target. Because keys are sorted ascending, the target rises only finitely many times before some iterator exhausts.
 - **Underlying iterator contract.** Every input `LinearIterator` must be sorted ascending; `seek(k)` is forward-only and assumes `k ≥ self.key()`. Violations panic in the underlying iterator (e.g. [`TreeTrieIter::seek`](../data-structures/tree-trie.md)).
 
@@ -73,7 +74,7 @@ C = [2, 5, 7]
 2. Seek `A` to `2`. `A` advances to `2`. `target = 2`. `p = 1`.
 3. `current = key(B) = 2 == target` → return `true`.
 
-First common key = `2`. `leapfrog_next` advances the ring head, eventually surfacing the next common key `5`, then exhausts. See test [`test_leapfrog_join_iter_multiple_vectors_with_common_elements`](../../kermit-algos/src/leapfrog_join.rs#L225).
+First common key = `2`. `leapfrog_next` advances the ring head, eventually surfacing the next common key `5`, then exhausts. See test [`test_leapfrog_join_iter_multiple_vectors_with_common_elements`](../../kermit-algos/src/sorted/leapfrog_join.rs#L264).
 
 ## See also
 

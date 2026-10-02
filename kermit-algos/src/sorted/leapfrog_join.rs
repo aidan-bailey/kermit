@@ -73,6 +73,25 @@ where
         }
     }
 
+    /// Refills a drained join with a new set of sorted iterators, leaving it
+    /// as [`new`](Self::new) would but in the existing buffers: once
+    /// `iterators` and `sorted_iter_perm` have grown to the widest set they
+    /// will hold, a refill allocates nothing. The triejoin refills on every
+    /// depth change rather than building a new join (issue #83).
+    ///
+    /// The caller must already have taken every previous iterator out of
+    /// `iterators`.
+    pub(crate) fn refill(&mut self, iterators: impl IntoIterator<Item = IT>) {
+        debug_assert!(
+            self.iterators.is_empty(),
+            "refill needs the previous iterators drained first"
+        );
+        self.iterators.extend(iterators);
+        self.sorted_iter_perm.clear();
+        self.sorted_iter_perm.extend(0..self.iterators.len());
+        self.p = 0;
+    }
+
     /// Returns the number of iterators being joined.
     pub(crate) fn k(&self) -> usize { self.iterators.len() }
 
@@ -324,6 +343,31 @@ mod tests {
         assert!(join_iter.leapfrog_init());
         assert_eq!(join_iter.key(), Some(500));
         assert_eq!(join_iter.leapfrog_next(), Some(501));
+    }
+
+    /// The triejoin steps a refilled join without calling `leapfrog_init`
+    /// after `triejoin_up`, so `refill` must reset the ring position as well
+    /// as rebuild the ring for the new iterator count.
+    #[test]
+    fn test_leapfrog_join_iter_refill_behaves_like_new() {
+        let v1: Vec<usize> = vec![1, 2, 3, 5];
+        let v2: Vec<usize> = vec![2, 4, 5, 6];
+        let v3: Vec<usize> = vec![2, 7];
+
+        let mut join_iter = LeapfrogJoinIter::new(vec![v1.linear_iter(), v2.linear_iter()]);
+        assert!(join_iter.leapfrog_init());
+        assert_eq!(join_iter.key(), Some(2));
+        assert_ne!(join_iter.p, 0, "the used join should sit mid-ring");
+        join_iter.iterators.clear();
+
+        join_iter.refill([v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
+        assert_eq!(join_iter.sorted_iter_perm, vec![0, 1, 2]);
+        assert_eq!(join_iter.p, 0);
+        // A ring left over two iterators would also report the 5 that only
+        // `v1` and `v2` share.
+        assert!(join_iter.leapfrog_init());
+        assert_eq!(join_iter.key(), Some(2));
+        assert_eq!(join_iter.leapfrog_next(), None);
     }
 
     #[test]

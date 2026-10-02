@@ -65,9 +65,10 @@ pub(crate) trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
 /// this implementation instead encodes "which iterators participate at the
 /// current depth" by *moving* them between the idle pool and the inner
 /// [`LeapfrogJoinIter`] (which owns its `Vec` of iterators). The observable
-/// join semantics are identical; the cost is a drain/refill and a fresh
-/// inner leapfrog per depth change, accepted to keep the implementation in
-/// safe, ownership-idiomatic Rust.
+/// join semantics are identical; the cost is a drain/refill per depth
+/// change, accepted to keep the implementation in safe, ownership-idiomatic
+/// Rust. The refill reuses the one inner leapfrog's buffers, so a depth
+/// change moves iterators but allocates nothing (issue #83).
 pub(crate) struct LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
@@ -186,8 +187,8 @@ where
     ///    idle slot via `active_iter_indices`.
     /// 2. **Refill** for the new depth: `variable_to_iter_map[depth - 1]` names
     ///    the idle slots whose iterators belong in the new leapfrog; each one
-    ///    is taken out of `idle_iterators` and pushed into a fresh
-    ///    [`LeapfrogJoinIter`].
+    ///    is taken out of `idle_iterators` and moved into the same
+    ///    [`LeapfrogJoinIter`] by [`refill`](LeapfrogJoinIter::refill).
     ///
     /// At depth 0 the second phase is skipped — the leapfrog stays empty.
     fn update_iters(&mut self) {
@@ -204,16 +205,17 @@ where
             return;
         }
 
-        let mut next_iters =
-            Vec::<IT>::with_capacity(self.variable_to_iter_map[self.depth - 1].len());
-        for i in &self.variable_to_iter_map[self.depth - 1] {
-            let iter = self.idle_iterators[*i]
-                .take()
-                .expect("There is an iterator here");
-            next_iters.push(iter);
-            self.active_iter_indices.push(*i);
-        }
-        self.leapfrog = LeapfrogJoinIter::new(next_iters);
+        // Refill the one leapfrog rather than building a new one: `refill`
+        // reuses its iterator and permutation buffers, which saves two
+        // allocations and two frees per depth change (issue #83).
+        let participants = &self.variable_to_iter_map[self.depth - 1];
+        let idle_iterators = &mut self.idle_iterators;
+        self.leapfrog.refill(
+            participants
+                .iter()
+                .map(|&i| idle_iterators[i].take().expect("There is an iterator here")),
+        );
+        self.active_iter_indices.extend_from_slice(participants);
     }
 
     /// Undoes a descent that could not be completed, restoring the parent

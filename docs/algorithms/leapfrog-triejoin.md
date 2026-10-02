@@ -28,7 +28,7 @@ triejoin_up():         # ascend
 # TrieIteratorWrapper, which walks the depth in DFS order.
 ```
 
-Source mapping: [`triejoin_open`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs) (line 257), [`triejoin_up`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs) (line 296), [`update_iters`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs) (line 193), plan validation and variable ordering in [`join_for_each`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs) (line 355).
+Source mapping: [`triejoin_open`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs) (line 259), [`triejoin_up`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs) (line 298), [`update_iters`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs) (line 194), plan validation and variable ordering in [`join_for_each`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs) (line 357).
 
 ## State machine
 
@@ -39,9 +39,11 @@ Every body-predicate iterator is in **exactly one** of two places at any moment:
 
 `active_iter_indices` is parallel to `leapfrog.iterators` (in pop order) and remembers which idle slot lent each active iterator. The *only* code that moves iterators across the idle/active boundary is `update_iters`, called by every depth change. All other code reads — never moves — iterators across this boundary.
 
+`update_iters` refills the one inner `LeapfrogJoinIter` in place (`LeapfrogJoinIter::refill`) rather than building a new one, so the leapfrog's iterator and permutation buffers grow to the widest depth once and a depth change allocates nothing — before #83 it cost two allocations and two frees. `kermit/tests/result_allocation.rs` pins this: the allocation count must not grow with the number of descents.
+
 ## Invariants
 
-- **Iterator depth tracks triejoin depth.** Every iterator in `leapfrog.iterators` has had `open()` called the same number of times as the triejoin's `depth`. `up()` on an active iterator must succeed; if it returns `false` the triejoin asserts and panics ([leapfrog_triejoin.rs:439](../../kermit-algos/src/sorted/leapfrog_triejoin.rs)) — this is always a programming error, not a recoverable runtime condition.
+- **Iterator depth tracks triejoin depth.** Every iterator in `leapfrog.iterators` has had `open()` called the same number of times as the triejoin's `depth`. `up()` on an active iterator must succeed; if it returns `false` the triejoin asserts and panics ([leapfrog_triejoin.rs:303](../../kermit-algos/src/sorted/leapfrog_triejoin.rs)) — this is always a programming error, not a recoverable runtime condition.
 - **A failed descent is atomic.** When `triejoin_open` returns `false` — a participating iterator refused to `open`, or the leapfrog found no common key — it ascends the iterators that did descend, restores the parent depth and rebuilds the parent leapfrog before returning. This is what keeps the invariant above true on the pruning path, and it honours `TrieIterator::open`'s contract that a failed open leaves the position unchanged. `TrieIteratorWrapper` pushes nothing when `open` fails, so without the restore the wrapper's tuple stack runs one level behind the join and `next_sibling` overwrites the wrong key — silently dropping answers whenever the failure happens at depth 3 or deeper (it self-heals at shallower depths, because popping the emptied stack is a no-op). Regression: `valid_orderings_agree_when_a_deep_open_fails`.
 - **`open()` is called even after `at_end()` returns true.** This is **not** a bug. LFTJ uses the `at_end` → `open` sequence to descend past a stale stack top, relying on the index structure's `open()` to push a *child of the current node* rather than positioning on the sibling. Index structures with a different `open` semantics will silently break LFTJ. See the LFTJ gotcha in `CLAUDE.md`.
 - **Const rewrite tolerance.** The join entry point (`lftj_join`, sharing its body with `hash_join`) rewrites every `Term::Atom("c<id>")` into a fresh variable plus a synthetic unary `Const_c<id>` predicate (see [const_rewrite.rs](../../kermit-algos/src/const_rewrite.rs) and the const-view-rewrite gotcha). LFTJ never sees atoms; new algorithms must also tolerate the rewritten form.
@@ -74,7 +76,7 @@ Variable ordering `[a, b, c]`:
 2. **Depth 2 (`b`).** `R` and `S` carry `b`. With `a = 7` fixed, `R(7, …)` exposes `b = 4`; `S` starts at `b = 4`. Intersection on `b`: `{4}`.
 3. **Depth 3 (`c`).** `S` and `T` carry `c`. With `b = 4` fixed, `S(4, …) = {1, 4, 5, 9}`. With `a = 7` fixed, `T(7, …) = {2, 3, 5}`. Intersection: `{5}`.
 
-Result tuple: `(7, 4, 5)`. This is the test [`triangle_join_collect`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs#L586).
+Result tuple: `(7, 4, 5)`. This is the test [`triangle_join_collect`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs#L600).
 
 ## See also
 
