@@ -290,9 +290,9 @@ mod tests {
 
     fn collect_tuples(trie: &MockTrie) -> Vec<Vec<usize>> {
         let iter = MockTrieIter::new(trie);
-        let mut wrapper = TrieIteratorWrapper::new(iter);
+        let wrapper = TrieIteratorWrapper::new(iter);
         let mut result = Vec::new();
-        while let Some(tuple) = wrapper.next() {
+        for tuple in wrapper {
             result.push(tuple);
         }
         result
