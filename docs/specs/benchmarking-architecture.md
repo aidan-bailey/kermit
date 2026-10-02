@@ -87,8 +87,8 @@ opt-in), `--queries-per-build` (K for the `end-to-end` metric, default 1).
 | Metric | How measured |
 |--------|--------------|
 | `Insertion` | `R::from_tuples(header, tuples)` via Criterion `iter_batched`, on the relation's tuples in file order |
-| `Iteration` | `relation.trie_iter().into_iter().collect()` via Criterion `iter` |
-| `EndToEnd` | `R::from_tuples` (same input) then K full-trie iterations, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
+| `Iteration` | `F::scan(&relation)` via Criterion `iter`: walks every stored tuple through `RelationFamily::for_each_tuple` (`TrieIteratorWrapper::advance` / `HashTrie::for_each_tuple`), counting each through a `black_box` sink; no tuple is materialised |
+| `EndToEnd` | `R::from_tuples` (same input) then K `F::scan` traversals, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
 | `Space` | `R::from_tuples(...).heap_size_bytes()` via Criterion `iter_custom` with `SpaceMeasurement` |
 
 Each metric becomes a separate Criterion `bench_function`:

@@ -69,14 +69,17 @@ Time is split into phases because they stress different things and a single
 | Phase | `--metrics` | What it times | When it matters |
 | --- | --- | --- | --- |
 | **Insertion** | `insertion` | Building the index from the input tuples (`from_tuples`, which presorts) | Construction-heavy workloads; one-shot queries; comparing build cost of structures |
-| **Iteration** | `iteration` | Running the join itself (`open`/`up`/`seek`/`next` traversal). In `bench run` / `bench join`, each result tuple is passed to a counting `black_box` sink and dropped: no result rows are allocated, and memory does not grow with the result. (`bench ds`'s per-relation scan still collects the relation's tuples.) | The worst-case-optimal join's actual cost; the headline number for query performance |
+| **Iteration** | `iteration` | Running the join itself (`open`/`up`/`seek`/`next` traversal). In `bench run` / `bench join`, each result tuple is passed to a counting `black_box` sink and dropped: no result rows are allocated, and memory does not grow with the result. `bench ds` scans its relation the same way: tuples are counted through the sink, never collected. | The worst-case-optimal join's actual cost; the headline number for query performance |
 | **End-to-end** | `end-to-end` | One database build **plus K query executions** in a single timed body (`T = build + K × query`, K from `--queries-per-build`, default 1); each execution counts its rows the same way as Iteration | Amortisation/crossover questions: which structure wins depends on how many queries run per build |
 
-Reports with `schema_version` below 3 timed a `bench run` / `bench join`
-join that also collected every result row into memory, so their Iteration and End-to-end values are
-not comparable with later ones. `kermit-lab` refuses to load both kinds
-together unless you pass `allow_mixed_schema=True` (see
-[`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md)).
+Reports with `schema_version` below 3 are not comparable with later ones.
+Before v3, `bench run` / `bench join` timed a join that also collected every
+result row into memory, `bench ds` timed a scan that collected every tuple,
+and the rebuilds, HashTrie's bucket index and TreeTrie's `seek` all differed;
+the v3 row of
+[`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md)
+lists every change. `kermit-lab` refuses to load both kinds together unless
+you pass `allow_mixed_schema=True`.
 `--verify` counts rows the same way, so verifying a result of billions of
 rows needs no more memory than a small one.
 

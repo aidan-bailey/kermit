@@ -114,8 +114,8 @@ fn htj_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
 fn assert_flat(cell: &str, small: u64, large: u64) {
     assert_eq!(
         small, large,
-        "{cell}: a 1000x larger result changed the allocation count from {small} to {large}; the \
-         streamed join is allocating per result row"
+        "{cell}: 1000x more rows changed the allocation count from {small} to {large}; the \
+         streamed path is allocating per row"
     );
 }
 
