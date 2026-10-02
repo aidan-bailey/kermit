@@ -10,13 +10,13 @@
 //!
 //! **What this isolates.** The query is `Q(X, Y, Z) :- R(X, Y), S(X, Z).`
 //! with `R` fixed at 10 tuples, and only `S`'s fan-out per `X` grows. The
-//! number of trie descents is therefore the same at both sizes, so
-//! per-descent allocation — LFTJ's `update_iters` builds a `Vec` on every
-//! `open`/`up`, which is algorithm cost, not materialisation — cancels out.
-//! The only term that could differ is one that scales with the result. The
-//! shared `X` makes HashTriejoin verify a real join condition at the leaf.
-//! Each cell runs one unmeasured join first, so a one-time lazy
-//! initialisation on the join path cannot masquerade as per-row allocation.
+//! number of trie descents is therefore the same at both sizes, so any
+//! per-descent allocation cancels out — the descent tests below pin that
+//! separately — and the only term that could differ is one that scales with
+//! the result. The shared `X` makes HashTriejoin verify a real join
+//! condition at the leaf. Each cell runs one unmeasured join first, so a
+//! one-time lazy initialisation on the join path cannot masquerade as
+//! per-row allocation.
 //!
 //! Issue #79 extends the same check to `bench ds`, which scans a single
 //! relation: the `*_scan_*` tests drive the exact walk
@@ -24,6 +24,15 @@
 //! `TrieIteratorWrapper::advance` for the sorted tries,
 //! `HashTrie::for_each_tuple` for the hash trie — over 100 and 100,000
 //! stored tuples.
+//!
+//! Issue #83 adds the orthogonal check: the `*_descent_count` tests hold
+//! the result at 10 rows and grow the number of trie descents 1000x with
+//! dead-end prefixes, each of which descends, fails one level further down
+//! and ascends again. LFTJ used to build a new inner leapfrog, two
+//! allocations, on every `open` and `up`, so its count grew with the
+//! descents; it now refills one in place. The HashTriejoin cells hold the
+//! other side of every LFTJ-vs-HashTriejoin comparison to the same
+//! standard.
 
 use {
     kermit::db::{hash_join_for_each, lftj_join_for_each},
@@ -69,46 +78,60 @@ fn s_tuples(fan_out: usize) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// Allocations made by one streamed LFTJ join, after checking that it
-/// produced every row.
-fn lftj_allocations<Rel: TrieIterable + Cardinality + Relation>(fan_out: usize) -> u64 {
-    let relations = relations::<Rel>(fan_out);
-    let query: JoinQuery = QUERY.parse().unwrap();
-    let mut rows = 0usize;
+/// Allocations made by one streamed LFTJ join of `query` over `relations`,
+/// after checking that it produced `rows` rows.
+fn lftj_join_allocations<Rel: TrieIterable + Cardinality + Relation>(
+    query: &str, relations: &BTreeMap<String, Rel>, rows: usize,
+) -> u64 {
+    let query: JoinQuery = query.parse().unwrap();
+    let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
         lftj_join_for_each::<Rel, LeapfrogTriejoin>(
-            &relations,
+            relations,
             query,
             &LexicographicOptimiser,
             |tuple| {
                 std::hint::black_box(tuple);
-                rows += 1;
+                produced += 1;
             },
         );
     });
-    assert_eq!(rows, XS * fan_out, "the join must produce every row");
+    assert_eq!(produced, rows, "the join must produce every row");
     info.count_total
 }
 
-/// Allocations made by one streamed HashTriejoin join over
-/// `HashTrie<H, P>`, after checking that it produced every row.
-fn htj_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    let relations = relations::<HashTrie<H, P>>(fan_out);
-    let query: JoinQuery = QUERY.parse().unwrap();
-    let mut rows = 0usize;
+/// Allocations made by one streamed HashTriejoin join of `query` over
+/// `HashTrie<H, P>` relations, after checking that it produced `rows` rows.
+fn htj_join_allocations<H: HashStrategy, P: PruningPolicy>(
+    query: &str, relations: &BTreeMap<String, HashTrie<H, P>>, rows: usize,
+) -> u64 {
+    let query: JoinQuery = query.parse().unwrap();
+    let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
         hash_join_for_each::<HashTrie<H, P>, H>(
-            &relations,
+            relations,
             query,
             &LexicographicOptimiser,
             |tuple| {
                 std::hint::black_box(tuple);
-                rows += 1;
+                produced += 1;
             },
         );
     });
-    assert_eq!(rows, XS * fan_out, "the join must produce every row");
+    assert_eq!(produced, rows, "the join must produce every row");
     info.count_total
+}
+
+/// Allocations made by one streamed LFTJ join of `QUERY`, after checking
+/// that it produced every row.
+fn lftj_allocations<Rel: TrieIterable + Cardinality + Relation>(fan_out: usize) -> u64 {
+    lftj_join_allocations(QUERY, &relations::<Rel>(fan_out), XS * fan_out)
+}
+
+/// Allocations made by one streamed HashTriejoin join of `QUERY` over
+/// `HashTrie<H, P>`, after checking that it produced every row.
+fn htj_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
+    htj_join_allocations(QUERY, &relations::<HashTrie<H, P>>(fan_out), XS * fan_out)
 }
 
 fn assert_flat(cell: &str, small: u64, large: u64) {
@@ -270,5 +293,124 @@ fn hash_trie_fx_pruned_scan_allocates_independently_of_relation_size() {
         "HashTrie<Fx, Pruned> scan",
         hash_scan_allocations::<FxHashStrategy, SingletonPruning>(SMALL),
         hash_scan_allocations::<FxHashStrategy, SingletonPruning>(LARGE),
+    );
+}
+
+// ── Trie descents (issue #83) ───────────────────────────────────────────
+
+/// The column orders admit only the descent `X`, `Y`, `Z`: `R` binds `X`
+/// before `Y`, and `S` binds `Y` before `Z`.
+const DESCENT_QUERY: &str = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(Z).";
+
+/// Rows the descent workload produces, whatever its number of dead ends.
+const DESCENT_ROWS: usize = 10;
+
+/// Dead-end `X` keys for the few- and many-descent runs.
+const FEW_DEAD_ENDS: usize = 10;
+const MANY_DEAD_ENDS: usize = 10_000;
+
+/// `X = 0` yields the `DESCENT_ROWS` rows `(0, 0, z)`. Each dead-end key
+/// `x` in `1..=dead_ends` matches `R` and `S` on `Y = x`, then fails at
+/// `Z`: `S(x, ·) = {DESCENT_ROWS}`, which `T` lacks. So every dead end
+/// costs a successful descent, a failed one and an ascent, and adds no
+/// row.
+fn descent_relations<Rel: Relation>(dead_ends: usize) -> BTreeMap<String, Rel> {
+    let r = (0..=dead_ends).map(|x| vec![x, x]).collect();
+    let s = (0..DESCENT_ROWS)
+        .map(|z| vec![0, z])
+        .chain((1..=dead_ends).map(|x| vec![x, DESCENT_ROWS]))
+        .collect();
+    let t = (0..DESCENT_ROWS).map(|z| vec![z]).collect();
+    BTreeMap::from([
+        ("R".to_string(), Rel::from_tuples(2.into(), r)),
+        ("S".to_string(), Rel::from_tuples(2.into(), s)),
+        ("T".to_string(), Rel::from_tuples(1.into(), t)),
+    ])
+}
+
+/// Allocations made by one streamed LFTJ join of the descent workload.
+fn lftj_descent_allocations<Rel: TrieIterable + Cardinality + Relation>(dead_ends: usize) -> u64 {
+    lftj_join_allocations(
+        DESCENT_QUERY,
+        &descent_relations::<Rel>(dead_ends),
+        DESCENT_ROWS,
+    )
+}
+
+/// Allocations made by one streamed HashTriejoin join of the descent
+/// workload over `HashTrie<H, P>`.
+fn htj_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) -> u64 {
+    htj_join_allocations(
+        DESCENT_QUERY,
+        &descent_relations::<HashTrie<H, P>>(dead_ends),
+        DESCENT_ROWS,
+    )
+}
+
+fn assert_flat_in_descents(cell: &str, few: u64, many: u64) {
+    assert_eq!(
+        few, many,
+        "{cell}: 1000x more dead-end descents changed the allocation count from {few} to {many}; \
+         the join is allocating per descent"
+    );
+}
+
+#[test]
+fn tree_trie_lftj_allocates_independently_of_descent_count() {
+    lftj_descent_allocations::<TreeTrie>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "TreeTrie/LFTJ",
+        lftj_descent_allocations::<TreeTrie>(FEW_DEAD_ENDS),
+        lftj_descent_allocations::<TreeTrie>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn column_trie_lftj_allocates_independently_of_descent_count() {
+    lftj_descent_allocations::<ColumnTrie>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "ColumnTrie/LFTJ",
+        lftj_descent_allocations::<ColumnTrie>(FEW_DEAD_ENDS),
+        lftj_descent_allocations::<ColumnTrie>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_sip_allocates_independently_of_descent_count() {
+    htj_descent_allocations::<SipHashStrategy, NoPruning>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashTrie<Sip>/HTJ",
+        htj_descent_allocations::<SipHashStrategy, NoPruning>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<SipHashStrategy, NoPruning>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_fx_allocates_independently_of_descent_count() {
+    htj_descent_allocations::<FxHashStrategy, NoPruning>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashTrie<Fx>/HTJ",
+        htj_descent_allocations::<FxHashStrategy, NoPruning>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<FxHashStrategy, NoPruning>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_allocates_independently_of_descent_count() {
+    htj_descent_allocations::<SipHashStrategy, SingletonPruning>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashTrie<Sip, Pruned>/HTJ",
+        htj_descent_allocations::<SipHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<SipHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_fx_pruned_allocates_independently_of_descent_count() {
+    htj_descent_allocations::<FxHashStrategy, SingletonPruning>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashTrie<Fx, Pruned>/HTJ",
+        htj_descent_allocations::<FxHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<FxHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
     );
 }
