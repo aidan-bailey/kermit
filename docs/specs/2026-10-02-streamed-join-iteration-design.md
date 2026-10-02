@@ -303,6 +303,42 @@ no dependencies), a new dev-dependency of `kermit`.
     `bench run --all` would otherwise pick up a 4.17 B-row query with
     placeholder URLs.
 
+## Addendum: issue #79 (`bench ds`), 2026-10-02
+
+The user folded #79 into this change, under the same v3 boundary, after #66
+landed. `bench ds`'s `{ds}/iteration` timed `F::tuples(&relation)`, and each
+`{ds}/end_to_end` sample ended the same way: a full scan collected into a
+`Vec<Vec<usize>>`. That is #65's problem in the data-structure benchmark.
+This addendum supersedes the "Out of scope" bullet about `bench ds`.
+
+**Design.** It reuses #65's sink and follows #79's Direction:
+
+- **`kermit-ds`:** a new `HashTrie::for_each_tuple(visit)` walks the
+  tables, leaf chains and pruned singletons in `collect_tuples`'s order and
+  lends each stored tuple to `visit`. `collect_tuples` is unchanged.
+- **`RelationFamily`:** the materialising `tuples(rel)` is replaced by a
+  required `for_each_tuple(rel, visit)`.
+  - Sorted tries implement it with
+    `TrieIteratorWrapper::new(rel.trie_iter())` and `advance`.
+  - The hash trie implements it with `HashTrie::for_each_tuple`.
+  - A provided `scan(rel) -> u64` passes each tuple to `black_box` and
+    counts it. `{ds}/iteration` times `F::scan(&relation)`, and each
+    `{ds}/end_to_end` sample ends with `black_box(F::scan(&built))`.
+
+**Tests.**
+
+- `result_allocation.rs` gains a scan test for every structure and Layout
+  (TreeTrie, ColumnTrie, and the four HashTrie aliases). It requires the
+  allocations of one scan to be identical for 100 and 100,000 stored
+  tuples.
+- A `kermit-ds` unit test pins that `for_each_tuple` visits exactly what
+  `collect_tuples` returns, in the same order, under both pruning policies.
+- A binary unit test pins that `scan` agrees with `tuple_count` in every
+  family.
+
+**Schema.** The v3 change-log row adds "`bench ds` `iteration` /
+`end_to_end` traverse without materialising (#79)". No further bump.
+
 ## Acceptance (issue #65)
 
 | Criterion | Met by |

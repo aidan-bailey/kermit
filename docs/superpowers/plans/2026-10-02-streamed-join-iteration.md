@@ -2107,6 +2107,53 @@ target/release/kermit bench list | grep -c watdiv-q0005-check                 # 
 
 ---
 
+### Task 12: `bench ds` scans without materialising (#79)
+
+Folded in by the user after #66 landed; see the spec's #79 addendum. Do it
+after merging `origin/master` (`71bb843`), because #66 rewrote `bench/ds.rs`
+and `execution.rs`.
+
+- [ ] **Step 1 (red):** add a test to `kermit-ds/src/ds/hash_trie/implementation.rs`,
+  `for_each_tuple_visits_what_collect_tuples_returns`. It must cover both
+  pruning policies, a duplicate tuple and a pruned singleton. Run
+  `cargo test -p kermit-ds for_each_tuple` and check that it fails to
+  compile.
+- [ ] **Step 2 (green):** add `pub fn for_each_tuple<V: FnMut(&[usize])>(&self, visit: V)`
+  next to `collect_tuples`. It is a recursive walk mirroring `collect_at`,
+  calling `visit(tuple)` where `collect_at` pushes a clone. Update
+  `collect_tuples`'s doc, which says `bench ds` times it. Mention the new
+  traversal in `docs/data-structures/hash-trie.md`.
+- [ ] **Step 3 (red, then green):** in `kermit/src/execution.rs`, replace
+  `RelationFamily::tuples` with
+  `fn for_each_tuple<V: FnMut(&[usize])>(rel: &Self::Rel, visit: V)` and a
+  provided `fn scan(rel: &Self::Rel) -> u64` (`black_box` each tuple, then
+  count it). Implement `for_each_tuple` in all four families:
+  - sorted: `TrieIteratorWrapper::new(rel.trie_iter())` and `advance`;
+  - hash: `rel.for_each_tuple(visit)`;
+  - the join families delegate.
+
+  Move the two existing tests that call `tuples` onto `for_each_tuple`, and
+  add `scan_agrees_with_tuple_count_in_every_family`.
+- [ ] **Step 4:** in `kermit/src/bench/ds.rs`, `{ds}/iteration` becomes
+  `b.iter(|| F::scan(&relation))`, and `end_to_end` ends with
+  `std::hint::black_box(F::scan(&built))`. Update the runner's doc comment,
+  which names `F::tuples`.
+- [ ] **Step 5:** add six scan tests to `kermit/tests/result_allocation.rs`,
+  one per structure and Layout. Each scans a relation of 100 vs 100,000
+  tuples through the primitive its family uses, with one unmeasured warm-up
+  scan, and requires equal allocation counts. Mutation-check: make the
+  sorted and hash visitors clone each tuple, confirm the mutation applied,
+  and watch the tests fail. Restore with `git checkout` only after
+  committing.
+- [ ] **Step 6:** docs.
+  - `BENCHMARKING.md`: drop the "`bench ds` still collects" parenthesis.
+  - `docs/specs/benchmarking-architecture.md`: the `bench ds` metric
+    table's Iteration and EndToEnd rows.
+  - The v3 change-log row names every measurement change on master: #65,
+    #66, #67, #74, the toolchain, and #79.
+- [ ] **Step 7:** rerun Task 8's gate on the merged tree, with a private
+  `MIRI_SYSROOT` and miri for `kermit-ds` too.
+
 ### Task 11: Hand off
 
 - [ ] **Step 1: Review the branch.** Use
