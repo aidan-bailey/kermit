@@ -1959,11 +1959,13 @@ QUICK="--sample-size 10 --measurement-time 1 --warm-up-time 1"
 ```
 
 `QUICK` keeps Criterion's overhead to the minimum, 10 samples. These runs
-check counts and memory, not timings.
+check counts and memory, not timings. `--sample-size`, `--measurement-time`,
+`--warm-up-time` and `--report-json` belong to the parent `bench` command, so
+they go between `bench` and `run`; after `run`, clap rejects them.
 
 - [ ] **Step 1: Run triangle with `--verify` in every cell.**
 
-Run: `nix develop --command bash -c 'CARGO_BUILD_JOBS=2 cargo build --release -p kermit' && target/release/kermit bench run triangle -i all -a all -m iteration --verify $QUICK --report-json "$SCRATCH/triangle.json"`
+Run: `nix develop --command bash -c 'CARGO_BUILD_JOBS=2 cargo build --release -p kermit' && target/release/kermit bench $QUICK --report-json "$SCRATCH/triangle.json" run triangle -i all -a all -m iteration --verify`
 Expected: three cells, each printing `verified: yes`, and exit 0.
 
 - [ ] **Step 2: Run the prelim sample's largest results with `--verify`.**
@@ -1981,8 +1983,8 @@ setsid nohup bash -c '
   for cell in "column-trie leapfrog-triejoin" "hash-trie hash-triejoin"; do
     set -- $cell
     for q in q0131 q0034 q0021; do
-      target/release/kermit bench run watdiv-stress-100-test-1-prelim -q $q -i $1 -a $2 \
-        -m iteration --verify '"$QUICK"' --report-json "'"$SCRATCH"'/prelim-$1-$q.json" \
+      target/release/kermit bench '"$QUICK"' --report-json "'"$SCRATCH"'/prelim-$1-$q.json" \
+        run watdiv-stress-100-test-1-prelim -q $q -i $1 -a $2 -m iteration --verify \
         > "'"$SCRATCH"'/prelim-$1-$q.log" 2>&1
       echo "exit $?" >> "'"$SCRATCH"'/prelim-$1-$q.log"
     done
@@ -2059,8 +2061,9 @@ target/release/kermit bench list | grep watdiv-q0005-check
 setsid nohup bash -c '
   for cell in "column-trie leapfrog-triejoin" "hash-trie hash-triejoin"; do
     set -- $cell
-    /usr/bin/time -v timeout 45m target/release/kermit bench run watdiv-q0005-check -q q0005 \
-      -i $1 -a $2 --metrics space --verify '"$QUICK"' --report-json "'"$SCRATCH"'/q0005-$1.json" \
+    /usr/bin/time -v timeout 45m target/release/kermit bench '"$QUICK"' \
+      --report-json "'"$SCRATCH"'/q0005-$1.json" \
+      run watdiv-q0005-check -q q0005 -i $1 -a $2 --metrics space --verify \
       > "'"$SCRATCH"'/q0005-$1.log" 2>&1
     echo "exit $?" >> "'"$SCRATCH"'/q0005-$1.log"
   done' > /dev/null 2>&1 &
@@ -2137,7 +2140,16 @@ target/release/kermit bench list | grep -c watdiv-q0005-check                 # 
       `iteration` (#67).
 
     `bench ds`'s `{ds}/iteration` keeps its meaning. Its `insertion` and
-    `end_to_end` change only through #66.
+    `end_to_end` change only through #66. The #66 entry must say *every
+    structure*: the sorted tries also lose their sorted, deduplicated
+    rebuild input. When merging #66, fix the comment in `run.rs`'s
+    `end_to_end` block that still says `insertion` times "the presorting
+    `from_tuples` path", and expect a small merge in
+    `docs/specs/benchmarking-architecture.md`. Merge `origin/master` before
+    the final gate; #67 moves the toolchain to nightly 2026-10-01, whose
+    rustfmt formats inside macros that use `$metavariables`. Run miri with
+    a private `MIRI_SYSROOT`: the shared `~/.cache/miri` races between
+    sessions.
 
 - [ ] **Step 3: Summarise for the user.** Cover what changed, the
   verification evidence, and the follow-up candidates from the spec's Out
