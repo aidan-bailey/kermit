@@ -244,6 +244,40 @@ The `c<dict-id>` atoms are resolved via kermit's const-rewrite path
 (`kermit_algos::rewrite_atoms`) into singleton-trie unary predicates before
 LFTJ runs.
 
+## Known limitation: incoming-star templates
+
+Every trie stores a relation subject-first, so every plan binds an atom's
+subject before its object. An *incoming star* is several atoms sharing an
+object whose subjects appear nowhere else. On such a query, every valid plan
+enumerates the cross product of those subjects, under either optimiser and on
+every structure. In q0264, `includes(V2, V0)` and `purchasefor(V7, V0)` share
+`V0`. Subject-first tries bind 90,000 × 150,000 = 1.35e10 keys there, where
+object-first tries would bind 1.
+
+Until the fixes land, these `watdiv-stress-100-test-1` templates are excluded
+from sample runs:
+
+| Templates | Cause | Fix |
+|-----------|-------|-----|
+| q0008, q0010, q0017, q0030, q0035, q0079, q0085, q0264, q0306, q0409 | Index-bound: the best valid plan binds 3.7e7 to 1.7e11 keys, and `cardinality` already finds it. Object-first tries would bind 1 to 1.4e6. | #82 |
+| q0020 | Optimiser-bound: both optimisers bind 9.7e10 keys, where a valid plan binds 1.8e4. | #81 |
+| q0005 | An incoming star on the country `V3` (`nationality`, `parentcountry`, `eligibleregion`), plus 4,169,173,508 genuine result rows. The lexicographic plan enumerates users × given names × cities × offers before it checks the country. #65's capped runs did not finish on either family, and memory was not the limit. | #82 cuts the enumeration; the output stays 4.17e9 rows |
+
+Three more templates depend on the optimiser. q0073 and q0440 are slow only
+under `--optimiser lexicographic`, and q0034 only under `--optimiser
+cardinality`, which binds 187× more keys than lexicographic. Exclude each one
+from sweeps that use the optimiser it is slow under.
+
+```bash
+uv run scripts/watdiv_stress_sample.py watdiv-stress-100-test-1 \
+    --exclude q0005,q0008,q0010,q0017,q0020,q0030,q0035,q0079,q0085,q0264,q0306,q0409
+```
+
+The diagnosis is in #68. Its evidence (exact binding counts, plans and traces)
+is in `kermit-bench-runs/watdiv-stress-100-prelim-2026-09-10/diagnostics/issue-68/`,
+next to this repository. The fixes are #81 (a cost-based optimiser) and #82
+(object-first tries for selected relations); both are future work.
+
 ## Determinism
 
 **WatDiv is non-deterministic by construction.** The upstream binary calls
@@ -357,3 +391,10 @@ bwrap can't construct the `/usr/share/dict/words` bind.
 - **Migration off the Python preprocessor** — `scripts/watdiv-preprocess/`
   is retained for historical regeneration of the 12 committed snapshots
   but is functionally superseded by the Rust on-the-fly path.
+- **Cost-based optimiser** (#81) — plan from estimated intermediate sizes
+  rather than relation sizes alone. Fixes q0020 and q0034; see
+  [Known limitation](#known-limitation-incoming-star-templates).
+- **Object-first tries for selected relations** (#82) — index the relations
+  a cost-based plan reverses (object, subject) as well, so incoming stars no
+  longer force cross products. Fixes the ten index-bound templates; see
+  [Known limitation](#known-limitation-incoming-star-templates).
