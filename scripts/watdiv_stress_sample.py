@@ -33,7 +33,9 @@ Usage:
         --output $U/out --base-url https://zivahub.uct.ac.za/ndownloader/files
 
     # Every template, q0005's 4,169,173,508 rows included: the metrics
-    # count rows without materialising them. Use --exclude to drop any.
+    # count rows without materialising them. Use --exclude to drop any; the
+    # recommended list is in docs/benchmarks/WATDIV.md, "Known limitation:
+    # incoming-star templates".
     uv run scripts/watdiv_stress_sample.py watdiv-stress-100-test-1
 
 Output:
