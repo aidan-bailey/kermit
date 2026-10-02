@@ -36,15 +36,15 @@ fn run_ds_bench<F: RelationFamily>(
     family: &F, relation_path: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
     bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    let relation: F::Rel = family.load(relation_path)?;
-
-    // Read the tuples back off the built relation rather than off the
-    // reader: singleton pruning does not change iteration order (a
-    // one-tuple subtrie yields the same sequence either way), so the
-    // insertion / end-to-end closures below are fed identical input
-    // whichever Layout ran.
-    let tuples: Vec<Vec<usize>> = F::tuples(&relation);
+    // The insertion / end-to-end closures below rebuild from the tuples in
+    // file order rather than reading them back off the built relation: file
+    // order is the same whichever structure and Layout ran, so every one of
+    // them is fed identical input (see `RelationFamily::load_with_tuples`).
+    let (relation, tuples): (F::Rel, Vec<Vec<usize>>) = family.load_with_tuples(relation_path)?;
     let header = relation.header().clone();
+    // What the structure stores, which for a set-semantics structure can be
+    // fewer than the file's rows; the `tuples` axis has always reported this.
+    let tuple_count = F::tuple_count(&relation);
 
     // This string becomes the report's `data_structure` axis and the
     // `{ds_name}/<metric>` Criterion function ids under
@@ -58,7 +58,7 @@ fn run_ds_bench<F: RelationFamily>(
         MetadataLine::new("data structure", ds_name),
         MetadataLine::new("relation", relation_path.display()),
         MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
-        MetadataLine::new("tuples", tuples.len()),
+        MetadataLine::new("tuples", tuple_count),
         MetadataLine::new("arity", header.arity()),
     ];
     if metrics.contains(&Metric::EndToEnd) {
@@ -137,7 +137,7 @@ fn run_ds_bench<F: RelationFamily>(
     }
 
     if metrics.contains(&Metric::Space) {
-        let n = tuples.len();
+        let n = tuple_count;
         let mut criterion = build_space_criterion(bench_args);
         let mut group = criterion.benchmark_group(group_name);
         group.throughput(criterion::Throughput::Elements(n as u64));
@@ -157,7 +157,7 @@ fn run_ds_bench<F: RelationFamily>(
             "relation_bytes".to_string(),
             serde_json::json!(relation_bytes),
         ),
-        ("tuples".to_string(), serde_json::json!(tuples.len())),
+        ("tuples".to_string(), serde_json::json!(tuple_count)),
         ("arity".to_string(), serde_json::json!(header.arity())),
     ]);
     // Only meaningful when the end-to-end metric ran; omitting it otherwise

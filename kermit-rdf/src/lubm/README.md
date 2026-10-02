@@ -16,7 +16,7 @@ WatDiv pipeline at the crate root.
 ## Output (`~/.cache/kermit/benchmarks/lubm-{scale}-{tag}/`)
 
 ```
-meta.json                 LubmMeta — kind = "lubm-onthefly"; jar SHA-256, scale, seed, entailment stats
+meta.json                 LubmMeta — kind = "lubm-onthefly"; jar SHA-256, scale, seed, entailment stats, encoding hashes
 benchmark.yml             kermit BenchmarkDefinition with all 14 queries
 dict.parquet              Shared URI/literal → usize dictionary
 <predicate>.parquet × N   One per predicate seen in entailed data (e.g. type, worksFor, memberOf, takesCourse, …)
@@ -50,10 +50,19 @@ LUBM-UBA's documented invariant is bit-identical output for fixed `(seed, N)`
 across thread counts. Because `driver.rs` always passes `--consolidate Maximal`,
 the jar routes through `SingleFileConsolidator` and emits exactly one
 `Universities.nt.gz` regardless of `--threads`. We still pin `--threads 1` by
-default for absolute reproducibility — multi-threaded runs can change triple
-ordering *within* that single file even when its byte-level content is
-otherwise the same. Override with `--threads N` if you want to stress-test on
-multi-core hardware.
+default because multi-threaded runs can change triple ordering *within* that
+single file even when its byte-level content is otherwise the same. Override
+with `--threads N` if you want to stress-test on multi-core hardware.
+
+A fixed jar output is not enough on its own: partition assigns dictionary ids
+and relation row order by stream order, so `entailment.rs` must write a
+closure whose order depends only on its input — the distinct input triples
+in input order, then the derived triples sorted (its "Output order" doc).
+Before issue #74 it wrote hash order, and every generation of one spec got its
+own encoding; `MetaHeader::outdated_reason` marks those caches (`meta.json`
+`schema_version` below 3) as outdated. `meta.json` records
+`partition_input_sha256` and `dict_sha256`, which match between two caches
+exactly when they encode identically.
 
 The jar SHA-256 is recorded in `meta.json` so a regenerated bench is
 distinguishable from a snapshot if anyone rebuilds the jar with a different

@@ -9,7 +9,11 @@
 use std::fmt;
 
 /// An RDF term in the dictionary.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// The derived `Ord` (variant, then string) carries no RDF meaning; it
+/// exists so entailment can write its derived triples in an order that
+/// depends only on their values.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RdfValue {
     /// An IRI (with surrounding angle brackets stripped).
     Iri(String),

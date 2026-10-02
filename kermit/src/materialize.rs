@@ -18,7 +18,10 @@
 //! On a cache hit (matching `spec_hash`), [`materialize`] loads the
 //! cache-side `benchmark.yml` and returns it. On drift it errors with
 //! [`BenchError::SpecDrift`] unless `force` is set, in which case the
-//! cache subdir is wiped and the pipeline re-runs.
+//! cache subdir is wiped and the pipeline re-runs. A cache whose spec matches
+//! but whose pipeline has since changed its output for that spec
+//! ([`MetaHeader::outdated_reason`], e.g. LUBM before issue #74) is handled
+//! the same way, with [`BenchError::OutdatedCache`].
 
 use {
     kermit_bench::{BenchError, BenchmarkDefinition, GeneratorSpec, WatdivStressSpec},
@@ -34,6 +37,16 @@ use {
 /// a legacy `meta.json` (schema_version=1) has no `spec_hash` field.
 const MISSING_SPEC_HASH: &str = "<missing>";
 
+/// How to get past a drifted or outdated cache.
+const REGENERATE_HINT: &str =
+    "re-run with `bench run --force <name>` to regenerate, or delete the cache subdir manually";
+
+/// How to get past an outdated cache that no workspace spec can rebuild.
+const REGENERATE_BY_HAND_HINT: &str =
+    "no workspace YAML declares its generator, so `--force` cannot rebuild it: re-run the `bench \
+     gen` command that made it (its parameters are in meta.json), restore the YAML that declared \
+     it and use `bench run --force <name>`, or delete the cache subdir";
+
 /// Classification of a cache subdir's `meta.json` against the
 /// freshly-computed `spec_hash`.
 enum CacheState {
@@ -43,6 +56,9 @@ enum CacheState {
     /// missing, which we treat as legacy drift). Carries the cached value
     /// for diagnostic reporting.
     Drift(Option<String>),
+    /// The `spec_hash` matches, but the cache was written by a pipeline that
+    /// encoded this spec differently. Carries the reason.
+    Outdated(&'static str),
     /// No `meta.json` — first generation, or the cache was cleaned.
     Miss,
 }
@@ -53,11 +69,13 @@ fn classify_cache(meta_path: &Path, expected_hash: &str) -> Result<CacheState, B
     if !meta_path.exists() {
         return Ok(CacheState::Miss);
     }
-    let actual = read_meta_spec_hash(meta_path)?;
-    if actual.as_deref() == Some(expected_hash) {
-        Ok(CacheState::Hit)
-    } else {
-        Ok(CacheState::Drift(actual))
+    let header = read_meta_header(meta_path)?;
+    if header.spec_hash.as_deref() != Some(expected_hash) {
+        return Ok(CacheState::Drift(header.spec_hash));
+    }
+    match header.outdated_reason() {
+        | Some(reason) => Ok(CacheState::Outdated(reason)),
+        | None => Ok(CacheState::Hit),
     }
 }
 
@@ -158,15 +176,28 @@ pub(crate) fn vendored_lubm_jar() -> PathBuf {
 /// `!force`), or wipes it before regenerating (`force`).
 ///
 /// For a static benchmark (`def.generator.is_none()`), returns `def`
-/// unchanged so the caller's existing fetch path takes over.
+/// unchanged so the caller's existing fetch path takes over — unless it is a
+/// generated cache with no workspace spec (an imperative `bench gen` output)
+/// whose encoding is outdated, which errors whatever `force` says, since there
+/// is no spec to regenerate it from.
 pub fn materialize(
     def: BenchmarkDefinition, cache_root: &Path, force: bool,
 ) -> Result<BenchmarkDefinition, BenchError> {
-    let Some(spec) = def.generator.as_ref() else {
-        return Ok(def);
-    };
     let cache_subdir = cache_root.join(&def.name);
     let meta_path = cache_subdir.join("meta.json");
+    let Some(spec) = def.generator.as_ref() else {
+        // Discovery treats a cache-side `meta.json` only as a marker, so one
+        // that is not a generator header is not this check's business.
+        let header = MetaHeader::read(&cache_subdir).ok();
+        if let Some(reason) = header.and_then(|h| h.outdated_reason()) {
+            return Err(BenchError::OutdatedCache {
+                name: def.name.clone(),
+                reason: reason.to_string(),
+                hint: REGENERATE_BY_HAND_HINT.to_string(),
+            });
+        }
+        return Ok(def);
+    };
     let yml_path = cache_subdir.join("benchmark.yml");
     let expected_hash = spec.spec_hash();
 
@@ -177,12 +208,17 @@ pub fn materialize(
                 name: def.name.clone(),
                 expected_hash,
                 actual_hash: actual.unwrap_or_else(|| MISSING_SPEC_HASH.to_string()),
-                hint: "re-run with `bench run --force <name>` to regenerate, or delete the cache \
-                       subdir manually"
-                    .to_string(),
+                hint: REGENERATE_HINT.to_string(),
             });
         },
-        | CacheState::Drift(_) => fs::remove_dir_all(&cache_subdir)?,
+        | CacheState::Outdated(reason) if !force => {
+            return Err(BenchError::OutdatedCache {
+                name: def.name.clone(),
+                reason: reason.to_string(),
+                hint: REGENERATE_HINT.to_string(),
+            });
+        },
+        | CacheState::Drift(_) | CacheState::Outdated(_) => fs::remove_dir_all(&cache_subdir)?,
         | CacheState::Miss => {},
     }
 
@@ -206,16 +242,15 @@ fn load_cached_yaml(yml_path: &Path) -> Result<BenchmarkDefinition, BenchError> 
     Ok(def)
 }
 
-/// Reads the optional `spec_hash` field from a `meta.json` produced by
-/// any `kermit-rdf` generator. Returns `Ok(None)` for legacy
+/// Reads the kind-agnostic header of a `meta.json` produced by any
+/// `kermit-rdf` generator. Its `spec_hash` is `None` for legacy
 /// (schema_version=1) meta files that pre-date the field.
-fn read_meta_spec_hash(meta_path: &Path) -> Result<Option<String>, BenchError> {
+fn read_meta_header(meta_path: &Path) -> Result<MetaHeader, BenchError> {
     let out_dir = meta_path.parent().unwrap_or(meta_path);
-    let header = MetaHeader::read(out_dir).map_err(|e| BenchError::Invalid {
+    MetaHeader::read(out_dir).map_err(|e| BenchError::Invalid {
         name: meta_path.display().to_string(),
         reason: format!("failed to parse meta.json: {e}"),
-    })?;
-    Ok(header.spec_hash)
+    })
 }
 
 /// Routes a `GeneratorSpec` to the appropriate `kermit-rdf` pipeline,
@@ -523,6 +558,121 @@ queries:
         };
         let err = materialize(def, dir.path(), false).unwrap_err();
         assert!(matches!(err, BenchError::SpecDrift { .. }));
+    }
+
+    fn lubm_spec() -> GeneratorSpec {
+        GeneratorSpec::Lubm {
+            scale: 1,
+            seed: 0,
+            threads: 1,
+            start_index: 0,
+            ontology: kermit_rdf::lubm::driver::DEFAULT_ONTOLOGY_IRI.to_string(),
+            queries: None,
+        }
+    }
+
+    /// A LUBM cache whose `meta.json` matches [`lubm_spec`] and was written
+    /// at `schema_version`; below 3 it predates reproducible entailment
+    /// (issue #74), as every pre-fix cache does.
+    fn write_lubm_cache(subdir: &Path, schema_version: u32) -> BenchmarkDefinition {
+        write_meta_and_yaml(subdir, None);
+        let meta = serde_json::json!({
+            "schema_version": schema_version,
+            "kind": "lubm-onthefly",
+            "spec_hash": lubm_spec().spec_hash(),
+        });
+        fs::write(subdir.join("meta.json"), meta.to_string()).unwrap();
+        BenchmarkDefinition {
+            name: subdir.file_name().unwrap().to_str().unwrap().to_string(),
+            description: "x".to_string(),
+            relations: vec![],
+            queries: vec![],
+            generator: Some(lubm_spec()),
+        }
+    }
+
+    #[test]
+    fn lubm_cache_with_matching_spec_but_old_encoding_is_refused_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("lubm-old");
+        let def = write_lubm_cache(&subdir, 2);
+
+        let err = materialize(def, dir.path(), false).unwrap_err();
+        match err {
+            | BenchError::OutdatedCache {
+                name,
+                reason,
+                ..
+            } => {
+                assert_eq!(name, "lubm-old");
+                assert!(reason.contains("#74"), "{reason}");
+            },
+            | other => panic!("expected OutdatedCache, got {other:?}"),
+        }
+        assert!(
+            subdir.exists(),
+            "an outdated cache must not be deleted without --force"
+        );
+    }
+
+    #[test]
+    fn current_lubm_cache_with_matching_spec_is_a_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = write_lubm_cache(
+            &dir.path().join("lubm-new"),
+            kermit_rdf::generator::META_SCHEMA_VERSION,
+        );
+        let out = materialize(def, dir.path(), false).unwrap();
+        assert_eq!(out.relations.len(), 1);
+    }
+
+    /// A generated cache with no workspace spec (imperative `bench gen`, or
+    /// a YAML since removed) loads like a static benchmark, but its encoding
+    /// can predate reproducible entailment all the same. With no spec to
+    /// rebuild from, `--force` cannot help either.
+    #[test]
+    fn cache_only_lubm_cache_with_old_encoding_is_refused_even_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("lubm-1-old");
+        let mut def = write_lubm_cache(&subdir, 2);
+        def.generator = None;
+        for force in [false, true] {
+            let err = materialize(def.clone(), dir.path(), force).unwrap_err();
+            match err {
+                | BenchError::OutdatedCache {
+                    hint, ..
+                } => assert!(hint.contains("bench gen"), "{hint}"),
+                | other => panic!("force={force}: expected OutdatedCache, got {other:?}"),
+            }
+        }
+        assert!(subdir.exists(), "an outdated cache must not be deleted");
+    }
+
+    #[test]
+    fn cache_only_current_lubm_cache_passes_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut def = write_lubm_cache(
+            &dir.path().join("lubm-1-new"),
+            kermit_rdf::generator::META_SCHEMA_VERSION,
+        );
+        def.generator = None;
+        let out = materialize(def, dir.path(), false).unwrap();
+        assert_eq!(out.name, "lubm-1-new");
+    }
+
+    /// Discovery treats a cache-side `meta.json` only as a marker, so a
+    /// cache-only benchmark whose marker is not a generator header (hand-made
+    /// fixtures, sampled snapshots) must load rather than fail the check.
+    #[test]
+    fn cache_only_benchmark_with_unparseable_meta_passes_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("hand-made");
+        write_meta_and_yaml(&subdir, None);
+        fs::write(subdir.join("meta.json"), "{}").unwrap();
+        let mut def = static_def();
+        def.name = "hand-made".to_string();
+        let out = materialize(def, dir.path(), false).unwrap();
+        assert_eq!(out.name, "hand-made");
     }
 
     fn workspace_tree() -> tempfile::TempDir {

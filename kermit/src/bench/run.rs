@@ -75,11 +75,24 @@ fn run_benchmark<F: ExecutionFamily>(
     } = settings;
     // Load each relation from disk exactly once; the family builds its
     // engine from these typed relations rather than re-reading the files.
-    let relations: Vec<F::Rel> = workload
-        .relation_paths
+    // The `insertion` and `end_to_end` metrics rebuild relations, and they
+    // rebuild from each relation's tuples in file order, kept here (see
+    // `RelationFamily::load_with_tuples`). An `iteration`-only run keeps
+    // none: it would be a dead copy of the whole workload.
+    let rebuilds = metrics
         .iter()
-        .map(|p| family.load(p))
-        .collect::<Result<_, _>>()?;
+        .any(|m| matches!(m, Metric::Insertion | Metric::EndToEnd));
+    let mut relations: Vec<F::Rel> = Vec::with_capacity(workload.relation_paths.len());
+    let mut build_inputs: Vec<(kermit_ds::RelationHeader, Vec<Vec<usize>>)> = Vec::new();
+    for path in &workload.relation_paths {
+        if rebuilds {
+            let (relation, tuples) = family.load_with_tuples(path)?;
+            build_inputs.push((relation.header().clone(), tuples));
+            relations.push(relation);
+        } else {
+            relations.push(family.load(path)?);
+        }
+    }
     let engine = family.build(relations);
     let relations = F::relations(&engine);
 
@@ -175,22 +188,6 @@ fn run_benchmark<F: ExecutionFamily>(
             let mut criterion = build_time_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
 
-            // Snapshot each relation's header + tuples once; both the
-            // `insertion` and `end_to_end` bodies rebuild from these. Skipped
-            // for an `iteration`-only run, where it would be a dead copy of
-            // the whole workload.
-            let build_inputs: Vec<(kermit_ds::RelationHeader, Vec<Vec<usize>>)> = if metrics
-                .iter()
-                .any(|m| matches!(m, Metric::Insertion | Metric::EndToEnd))
-            {
-                relations
-                    .iter()
-                    .map(|r| (r.header().clone(), F::tuples(r)))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
             if metrics.contains(&Metric::Insertion) {
                 group.bench_function("insertion", |b| {
                     b.iter_batched(
@@ -236,11 +233,12 @@ fn run_benchmark<F: ExecutionFamily>(
             }
 
             if metrics.contains(&Metric::EndToEnd) {
-                // The timed body rebuilds the engine through the same path
-                // the untimed `family.build` above used, so the build term
-                // is the one the `iteration` metric's engine actually paid —
-                // NOT the presorting `from_tuples` path the `insertion`
-                // metric times.
+                // The timed body rebuilds the engine from the file-order
+                // tuples kept above, through the same `build_relation` path
+                // that loaded the untimed engine and that the `insertion`
+                // metric times, so the build term is the one the
+                // `iteration` metric's engine paid. It additionally pays for
+                // assembling the relation store.
                 //
                 // PerIteration: a fresh build per sample is the point of this
                 // metric — batching would amortise away the construction cost

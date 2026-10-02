@@ -600,10 +600,13 @@ fn load_query_runner(args: &QueryArgs, config: HashTrieConfig) -> anyhow::Result
 /// Returns the `bench list` status string for a benchmark.
 ///
 /// For static benchmarks the values are "cached" / "not cached" (matching
-/// the historical behaviour). For generator-driven benchmarks the values
+/// the historical behaviour), or "stale" for a generated cache with no
+/// workspace spec (an imperative `bench gen` output) whose encoding is
+/// outdated. For generator-driven benchmarks the values
 /// distinguish "not generated" (no cache subdir), "cached" (subdir exists
 /// and `meta.json` spec_hash matches the spec), and "stale" (subdir
-/// exists but the spec has drifted).
+/// exists but the spec has drifted, or the cache predates a pipeline change
+/// to this spec's output — see `MetaHeader::outdated_reason`).
 ///
 /// `workspace_def`, when supplied, is the workspace YAML for this
 /// benchmark name. It must be passed for generator-driven benchmarks
@@ -619,23 +622,31 @@ fn describe_benchmark_status(
     let spec = workspace_def
         .and_then(|w| w.generator.as_ref())
         .or(b.generator.as_ref());
+    let cache_subdir = cache_root.join(&b.name);
+    let header = kermit_rdf::generator::MetaHeader::read(&cache_subdir).ok();
     let Some(spec) = spec else {
+        if header
+            .as_ref()
+            .is_some_and(|h| h.outdated_reason().is_some())
+        {
+            return "stale";
+        }
         return if kermit_bench::cache::is_cached(b).unwrap_or(false) {
             "cached"
         } else {
             "not cached"
         };
     };
-    let cache_subdir = cache_root.join(&b.name);
-    let meta_path = cache_subdir.join("meta.json");
-    if !meta_path.exists() {
+    if !cache_subdir.join("meta.json").exists() {
         return "not generated";
     }
-    let cached_hash = kermit_rdf::generator::MetaHeader::read(&cache_subdir)
-        .ok()
-        .and_then(|h| h.spec_hash);
-    match cached_hash {
-        | Some(h) if h == spec.spec_hash() => "cached",
+    match header {
+        | Some(h)
+            if h.spec_hash.as_deref() == Some(spec.spec_hash().as_str())
+                && h.outdated_reason().is_none() =>
+        {
+            "cached"
+        },
         | _ => "stale",
     }
 }
@@ -1355,6 +1366,60 @@ mod tests {
             describe_benchmark_status(&def, Some(&def), dir.path()),
             "stale"
         );
+    }
+
+    fn lubm_status(schema_version: u32) -> &'static str {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = kermit_bench::GeneratorSpec::Lubm {
+            scale: 1,
+            seed: 0,
+            threads: 1,
+            start_index: 0,
+            ontology: kermit_rdf::lubm::driver::DEFAULT_ONTOLOGY_IRI.to_string(),
+            queries: None,
+        };
+        let subdir = dir.path().join("lubm-x");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({
+                "schema_version": schema_version,
+                "kind": "lubm-onthefly",
+                "spec_hash": spec.spec_hash()
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("lubm-x", spec);
+        describe_benchmark_status(&def, Some(&def), dir.path())
+    }
+
+    /// Issue #74: a LUBM cache written before entailment became
+    /// reproducible matches its spec but not today's encoding of it.
+    #[test]
+    fn status_stale_for_lubm_cache_before_reproducible_entailment() {
+        assert_eq!(lubm_status(2), "stale");
+        assert_eq!(
+            lubm_status(kermit_rdf::generator::META_SCHEMA_VERSION),
+            "cached"
+        );
+    }
+
+    /// A generated cache with no workspace spec (imperative `bench gen`) is
+    /// listed through the static branch, but must still show an outdated
+    /// encoding.
+    #[test]
+    fn status_stale_for_cache_only_lubm_cache_before_reproducible_entailment() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("lubm-1-old");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({"schema_version": 2, "kind": "lubm-onthefly"}).to_string(),
+        )
+        .unwrap();
+        let def = make_static_def("lubm-1-old");
+        assert_eq!(describe_benchmark_status(&def, None, dir.path()), "stale");
     }
 
     /// Pins the `IndexStructureSelector::All` expansion to every concrete

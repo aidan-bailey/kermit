@@ -133,6 +133,22 @@ fn seek_backward_panics() {
     iter.seek(1); // should panic — seeking backward
 }
 
+/// A successful seek moves the stack top; one that runs off the end leaves it
+/// on the last node the iterator was positioned on, so `open` still descends
+/// into *that* node's children after `at_end` — the descent LFTJ relies on
+/// (see `TreeTrieIter`'s position model).
+#[test]
+fn open_after_failed_seek_descends_from_last_positioned_node() {
+    let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 5], vec![2, 6], vec![3, 7]]);
+    let mut iter = trie.trie_iter();
+    assert!(iter.open());
+    assert!(iter.seek(2));
+    assert!(!iter.seek(100));
+    assert!(iter.at_end());
+    assert!(iter.open());
+    assert_eq!(iter.key(), Some(6));
+}
+
 #[test]
 fn test_tree_trie_iter() {
     let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
