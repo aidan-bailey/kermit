@@ -100,8 +100,7 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
     /// Walk the trie depth-first and return every materialized tuple.
     ///
     /// Used by [`crate::relation::Projectable::project`], the CLI's
-    /// `bench` machinery (which needs to recover tuples from an
-    /// already-built relation for the insertion-benchmark closure),
+    /// `bench ds` machinery (whose `iteration` metric times this walk),
     /// and tests. Allocates a fresh `Vec<Vec<usize>>`; for large
     /// relations this is O(n · arity) in both time and space.
     pub fn collect_tuples(&self) -> Vec<Vec<usize>> {

@@ -2,14 +2,40 @@
 //! hashes.
 //!
 //! Paper-faithful implementation of §3.3.1 of "Combining Worst-Case Optimal
-//! and Traditional Binary Join Processing" (SIGMOD 2020). Capacity is a
-//! power of two; the bucket index is computed as `hash >> (64 - p)` where
-//! capacity = 2^p; collisions are resolved by linear probing within the
-//! bucket array.
+//! and Traditional Binary Join Processing" (SIGMOD 2020), with one
+//! departure. Capacity is a power of two, `2^p`; collisions are resolved by
+//! linear probing within the bucket array. The bucket index is the high `p`
+//! bits of the hash, as in the paper, but of the hash multiplied by a
+//! constant that changes with the capacity — the departure; see
+//! `HashTable::bucket_index` for why.
 //!
 //! Internal to the `hash_trie` module. Not exposed outside the crate.
 
 use super::config::LoadFactor;
+
+/// The bucket-index multiplier for each capacity exponent: a table with
+/// `2^p` buckets multiplies by `MULTIPLIERS[p]` (see
+/// [`HashTable::bucket_index`]). Each is odd, so the multiply is a bijection
+/// on `u64` that discards none of the hash, and each is a separate SplitMix64
+/// output, so the multipliers of different capacities are unrelated.
+const MULTIPLIERS: [u64; 64] = {
+    let mut multipliers = [0; 64];
+    let mut p = 0;
+    while p < 64 {
+        multipliers[p] = splitmix64(p as u64) | 1;
+        p += 1;
+    }
+    multipliers
+};
+
+/// The `index`-th output of SplitMix64 seeded with 0 (Steele, Lea & Flood,
+/// "Fast Splittable Pseudorandom Number Generators", OOPSLA 2014).
+const fn splitmix64(index: u64) -> u64 {
+    let mut z = index.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
 
 /// A bucket entry stores the full 64-bit hash (for collision disambiguation
 /// during linear probing) and the value.
@@ -42,10 +68,39 @@ impl<V> HashTable<V> {
     /// Number of occupied buckets.
     pub fn len(&self) -> usize { self.len }
 
-    /// Bucket index for a given hash: the high `log2_capacity` bits.
+    /// Bucket index for `hash` at the current capacity `2^p`: the high `p`
+    /// bits of `hash × MULTIPLIERS[p]` — multiplicative hashing (Knuth,
+    /// TAOCP vol. 3, §6.4) with a multiplier that changes with the capacity.
+    ///
+    /// The paper indexes by the high bits of the hash itself. That index is
+    /// a prefix of the index at every larger capacity, so iterating a table,
+    /// which walks its buckets in order, yields its keys sorted by the index
+    /// of every smaller capacity too. A table rebuilt in that order — as
+    /// when a `HashTrie` is rebuilt from its own tuples — starts small and
+    /// doubles, and at each smaller capacity the keys it holds so far all
+    /// share its lowest buckets: linear probing piles them into one cluster
+    /// and the build turns quadratic (issue #66). With a multiplier per
+    /// capacity the index at one capacity says nothing about the index at
+    /// another, so iteration order no longer predicts where a key lands
+    /// while the rebuilt table is smaller than its source. Once the two are
+    /// the same size the keys do arrive in bucket order, but no denser than
+    /// the source held them — at most its load-factor cap — so the extra
+    /// cost stays bounded instead of growing with the keys.
+    ///
+    /// One order remains that no index computed from the hash and the
+    /// capacity alone can defuse: the iteration orders of two or more large
+    /// tables of the same capacity, concatenated. Their keys share that
+    /// capacity's multiplier, so their densities add up in the low buckets.
+    /// Only a seed that differs per table instance would cover it.
+    ///
+    /// The price is a table load and a multiply per probe sequence, and no
+    /// space. A salt fixed per trie depth would not do: the source and the
+    /// rebuilt table would share it, and the salted hash would cluster just
+    /// the same.
     fn bucket_index(&self, hash: u64) -> usize {
-        let shift = 64 - self.log2_capacity;
-        (hash >> shift) as usize
+        let p = self.log2_capacity;
+        let mixed = hash.wrapping_mul(MULTIPLIERS[p as usize]);
+        (mixed >> (64 - p)) as usize
     }
 
     /// Look up a value by exact hash. Returns `None` if not found.
@@ -234,7 +289,10 @@ impl<V> HashTable<V> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {
+        super::*,
+        kermit_iters::{FxHashStrategy, HashStrategy, SipHashStrategy},
+    };
 
     #[test]
     fn new_starts_empty_with_4_buckets() {
@@ -244,16 +302,17 @@ mod tests {
         assert_eq!(t.log2_capacity, 2);
     }
 
+    /// Odd, so multiplying by one is a bijection on `u64` and discards none
+    /// of the hash; distinct, so no two capacities index alike.
     #[test]
-    fn bucket_index_uses_high_bits() {
-        let t: HashTable<u32> = HashTable::new();
-        // Capacity 4 => shift 62. Top 2 bits of the hash become the bucket.
-        assert_eq!(t.bucket_index(0x0000_0000_0000_0000), 0);
-        assert_eq!(t.bucket_index(0x4000_0000_0000_0000), 1);
-        assert_eq!(t.bucket_index(0x8000_0000_0000_0000), 2);
-        assert_eq!(t.bucket_index(0xC000_0000_0000_0000), 3);
-        // Anything below the top 2 bits collapses to the same bucket.
-        assert_eq!(t.bucket_index(0x0000_0000_FFFF_FFFF), 0);
+    fn multipliers_are_odd_and_distinct() {
+        for (p, m) in MULTIPLIERS.iter().enumerate() {
+            assert_eq!(m % 2, 1, "the multiplier for 2^{p} buckets is even");
+            assert!(
+                !MULTIPLIERS[..p].contains(m),
+                "the multiplier for 2^{p} buckets repeats"
+            );
+        }
     }
 
     #[test]
@@ -278,23 +337,33 @@ mod tests {
         assert!(t.get(0x4000_0000_0000_0001).is_none());
     }
 
+    /// Two distinct hashes whose home is the same bucket of `t`.
+    fn colliding_pair<V>(t: &HashTable<V>) -> (u64, u64) {
+        let first = 0x4000_0000_0000_0000;
+        let second = (first + 1..)
+            .find(|&h| t.bucket_index(h) == t.bucket_index(first))
+            .unwrap();
+        (first, second)
+    }
+
     #[test]
     fn get_probes_past_collision() {
         let mut t: HashTable<u32> = HashTable::new();
-        // Force a probe: put a different hash in slot 1 and the target in slot
-        // 2.
-        t.buckets[1] = Some(Entry {
-            hash: 0x4000_0000_0000_0000,
+        // Force a probe: seat a different hash in the target's home bucket
+        // and the target in the next one.
+        let (other, target) = colliding_pair(&t);
+        let home = t.bucket_index(target);
+        let next = (home + 1) % t.buckets_len();
+        t.buckets[home] = Some(Entry {
+            hash: other,
             value: 1,
         });
-        t.buckets[2] = Some(Entry {
-            hash: 0x4000_0000_0000_0001,
+        t.buckets[next] = Some(Entry {
+            hash: target,
             value: 2,
         });
         t.len = 2;
-        // Both hash to bucket 1 (top 2 bits = 01). Linear probing finds
-        // the target at slot 2.
-        assert_eq!(t.get(0x4000_0000_0000_0001), Some(&2));
+        assert_eq!(t.get(target), Some(&2));
     }
 
     #[test]
@@ -322,10 +391,16 @@ mod tests {
     #[test]
     fn entry_handles_probe_collision() {
         let mut t: HashTable<u32> = HashTable::new();
-        *t.entry_or_insert_with(0x4000_0000_0000_0000, LoadFactor::default(), || 1) = 1;
-        *t.entry_or_insert_with(0x4000_0000_0000_0001, LoadFactor::default(), || 2) = 2;
-        assert_eq!(t.get(0x4000_0000_0000_0000), Some(&1));
-        assert_eq!(t.get(0x4000_0000_0000_0001), Some(&2));
+        let (first, second) = colliding_pair(&t);
+        *t.entry_or_insert_with(first, LoadFactor::default(), || 1) = 1;
+        *t.entry_or_insert_with(second, LoadFactor::default(), || 2) = 2;
+        assert_ne!(
+            t.index_of(second),
+            Some(t.bucket_index(second)),
+            "the second entry should have been probed past its home bucket"
+        );
+        assert_eq!(t.get(first), Some(&1));
+        assert_eq!(t.get(second), Some(&2));
         assert_eq!(t.len(), 2);
     }
 
@@ -333,12 +408,10 @@ mod tests {
     fn resize_triggers_above_load_factor() {
         let mut t: HashTable<u32> = HashTable::new();
         // Capacity 4, threshold > 4 * 0.7 = 2.8. The 3rd insert should resize.
-        // Use hashes guaranteed to land in distinct buckets so we can observe
-        // capacity changes via `buckets.len()` instead of through probing.
         let hashes = [
-            0x0000_0000_0000_0000, // bucket 0
-            0x4000_0000_0000_0000, // bucket 1
-            0x8000_0000_0000_0000, // bucket 2
+            0x0000_0000_0000_0000,
+            0x4000_0000_0000_0000,
+            0x8000_0000_0000_0000,
         ];
         for (i, &h) in hashes.iter().enumerate() {
             *t.entry_or_insert_with(h, LoadFactor::default(), || i as u32) = i as u32;
@@ -427,5 +500,95 @@ mod tests {
                 hash = hash.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
             }
         }
+    }
+
+    /// Keys per table in the build-cost tests below: enough for a clustered
+    /// rebuild to cost many times an unrelated one, few enough for Miri.
+    const BUILD_KEYS: usize = if cfg!(miri) {
+        1 << 9
+    } else {
+        1 << 12
+    };
+
+    /// A table mapping `H::hash(key)` to `key` for each of `keys`, inserted
+    /// in the given order.
+    fn build<H: HashStrategy>(keys: impl Iterator<Item = usize>) -> HashTable<usize> {
+        let mut t = HashTable::new();
+        for key in keys {
+            t.entry_or_insert_with(H::hash(key), LoadFactor::default(), || key);
+        }
+        t
+    }
+
+    /// Probe steps a fresh table takes to absorb `hashes` in the given
+    /// order. Linear probing never moves an entry until the next doubling,
+    /// so an insert's probe sequence is its distance from its home bucket
+    /// plus one, read off right after the insert; a doubling re-probes
+    /// every entry.
+    fn build_probes(hashes: &[u64]) -> usize {
+        let mut t: HashTable<()> = HashTable::new();
+        let mut probes = 0;
+        for &hash in hashes {
+            let capacity = t.buckets_len();
+            t.entry_or_insert_with(hash, LoadFactor::default(), || ());
+            let cap = t.buckets_len();
+            let probe = |h: u64| (t.index_of(h).unwrap() + cap - t.bucket_index(h)) % cap + 1;
+            probes += if cap == capacity {
+                probe(hash)
+            } else {
+                t.iter().map(|(h, _)| probe(h)).sum()
+            };
+        }
+        probes
+    }
+
+    /// Asserts that absorbing `hashes` in `iteration_order` costs at most
+    /// twice what absorbing them in `key_order` does.
+    fn assert_no_dearer(label: &str, iteration_order: &[u64], key_order: &[u64]) {
+        let (rebuilt, baseline) = (build_probes(iteration_order), build_probes(key_order));
+        assert!(
+            rebuilt <= 2 * baseline,
+            "{label}: rebuilding in iteration order took {rebuilt} probes, key order {baseline}"
+        );
+    }
+
+    /// Rebuilding a table in another table's iteration order costs no more
+    /// than building it in an order unrelated to its layout (issue #66).
+    ///
+    /// The finished table cannot show the difference — under linear probing
+    /// the total displacement of a key set does not depend on insertion
+    /// order — so this counts the probes the build took. With the hash's
+    /// own high bits as the bucket index, the iteration-order build costs
+    /// many times more, and the factor grows linearly with the keys.
+    #[test]
+    fn rebuilding_in_iteration_order_costs_no_more_than_key_order() {
+        fn check<H: HashStrategy>() {
+            let source = build::<H>(0..BUILD_KEYS);
+            let iteration_order: Vec<u64> = source.iter().map(|(h, _)| h).collect();
+            let key_order: Vec<u64> = (0..BUILD_KEYS).map(H::hash).collect();
+            assert_no_dearer(H::NAME, &iteration_order, &key_order);
+        }
+        check::<SipHashStrategy>();
+        check::<FxHashStrategy>();
+    }
+
+    /// The same holds when the source table is larger than the rebuilt one,
+    /// as when a projection or a filtered rebuild drops keys: the rebuilt
+    /// table then never reaches the source's final capacity, so the source's
+    /// order must not predict the index at any smaller one.
+    #[test]
+    fn rebuilding_a_subset_in_a_larger_tables_iteration_order_costs_no_more_than_key_order() {
+        fn check<H: HashStrategy>() {
+            let source = build::<H>(0..4 * BUILD_KEYS);
+            let iteration_order: Vec<u64> = source
+                .iter()
+                .filter(|&(_, &key)| key % 4 == 0)
+                .map(|(h, _)| h)
+                .collect();
+            let key_order: Vec<u64> = (0..BUILD_KEYS).map(|k| H::hash(4 * k)).collect();
+            assert_no_dearer(H::NAME, &iteration_order, &key_order);
+        }
+        check::<SipHashStrategy>();
+        check::<FxHashStrategy>();
     }
 }
