@@ -33,8 +33,10 @@ use {
     crate::{
         dict::Dictionary,
         error::RdfError,
+        lubm::pipeline::LUBM_META_KIND,
         parquet,
         partition::{self, Partitioned},
+        sha256_file,
         timestamp::utc_iso8601_now,
         yaml_emit::{write_benchmark_yaml, YamlInputs},
     },
@@ -49,8 +51,28 @@ use {
 /// Current `meta.json` schema version shared by every generator. Bump on
 /// any breaking field-name or value-type change to a shared field; a
 /// generator-specific field change bumps it too, since consumers key
-/// compatibility off this single number.
-pub const META_SCHEMA_VERSION: u32 = 2;
+/// compatibility off this single number. Also bump it when a generator's
+/// output for an unchanged spec changes, and add that generator's kind to
+/// the `OUTDATED_BEFORE` table behind [`MetaHeader::outdated_reason`] so its
+/// older caches stop matching.
+///
+/// - 2: adds `spec_hash`.
+/// - 3: adds `partition_input_sha256` and `dict_sha256`; LUBM entailment output
+///   becomes reproducible (issue #74).
+pub const META_SCHEMA_VERSION: u32 = 3;
+
+/// Per generator kind: the first schema version whose caches hold what the
+/// current pipeline writes for their spec, and why older caches do not. A
+/// cache below its kind's floor is outdated even when its `spec_hash`
+/// matches. Kinds whose output has never changed under a fixed spec have no
+/// entry, so their older caches stay valid.
+const OUTDATED_BEFORE: &[(&str, u32, &str)] = &[(
+    LUBM_META_KIND,
+    3,
+    "LUBM caches written before meta.json schema 3 hold the entailed triples in per-run hash \
+     order, so their dictionary ids, relation row order and query constants are not reproducible \
+     from the spec (issue #74)",
+)];
 
 /// Where a generator writes its output and how the run is labelled. The
 /// fields every pipeline's `*Inputs` struct carries, so the orchestrator
@@ -86,6 +108,13 @@ pub struct Provenance {
     pub query_count: u32,
     /// See [`Target::spec_hash`].
     pub spec_hash: Option<String>,
+    /// SHA-256 of the N-Triples file partition read (LUBM's entailed
+    /// closure, WatDiv's raw data). With [`Provenance::dict_sha256`] it pins
+    /// the encoding, so two caches can be compared without regenerating.
+    pub partition_input_sha256: String,
+    /// SHA-256 of the written `dict.parquet`, constants added by query
+    /// translation included.
+    pub dict_sha256: String,
 }
 
 /// Accessors for the fields every generator's `meta.json` shares. Each
@@ -130,6 +159,17 @@ impl MetaHeader {
     pub fn read(out_dir: &Path) -> Result<Self, RdfError> {
         let text = fs::read_to_string(meta_json_path(out_dir))?;
         serde_json::from_str(&text).map_err(|e| RdfError::Expected(e.to_string()))
+    }
+
+    /// Why the cache this header describes no longer holds what its
+    /// generator now writes for the same spec, or `None` if it still does.
+    /// Independent of `spec_hash`, which detects a changed spec rather than
+    /// a changed pipeline.
+    pub fn outdated_reason(&self) -> Option<&'static str> {
+        OUTDATED_BEFORE
+            .iter()
+            .find(|(kind, floor, _)| *kind == self.kind && self.schema_version < *floor)
+            .map(|(_, _, reason)| *reason)
     }
 }
 
@@ -225,6 +265,7 @@ pub fn process_artifacts<G: Generator>(generator: &G, raw: &G::Raw) -> Result<G:
     let raw_root = out_dir.join("raw");
     fs::create_dir_all(&raw_root)?;
     let (nt_path, staged) = generator.stage_raw(raw, &raw_root)?;
+    let partition_input_sha256 = sha256_file(&nt_path)?;
 
     // Stage B: partition the N-Triples into per-predicate relations and
     // write each as Parquet.
@@ -239,7 +280,9 @@ pub fn process_artifacts<G: Generator>(generator: &G, raw: &G::Raw) -> Result<G:
     let queries = generator.translate_queries(&staged, &mut part.dict, &part.predicate_map)?;
 
     // Stage D: write the dictionary (after the translator may have grown it).
-    parquet::write_dict(&part.dict, &out_dir.join("dict.parquet"))?;
+    let dict_path = out_dir.join("dict.parquet");
+    parquet::write_dict(&part.dict, &dict_path)?;
+    let dict_sha256 = sha256_file(&dict_path)?;
 
     // Stage E: emit benchmark.yml.
     let base_url = format!("file://{}", out_dir.canonicalize()?.display());
@@ -261,6 +304,8 @@ pub fn process_artifacts<G: Generator>(generator: &G, raw: &G::Raw) -> Result<G:
         relation_count: part.relations.len() as u32,
         query_count: queries.len() as u32,
         spec_hash: target.spec_hash.map(|s| s.to_string()),
+        partition_input_sha256,
+        dict_sha256,
     };
     let meta = generator.build_meta(raw, &staged, &part, provenance)?;
     write_meta_json(out_dir, &meta)?;
@@ -291,6 +336,8 @@ mod tests {
         query_count: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spec_hash: Option<String>,
+        partition_input_sha256: String,
+        dict_sha256: String,
         triple_count: u64,
     }
 
@@ -351,6 +398,8 @@ mod tests {
                 relation_count: provenance.relation_count,
                 query_count: provenance.query_count,
                 spec_hash: provenance.spec_hash,
+                partition_input_sha256: provenance.partition_input_sha256,
+                dict_sha256: provenance.dict_sha256,
                 triple_count: part.relations.iter().map(|r| r.tuples.len() as u64).sum(),
             })
         }
@@ -407,6 +456,14 @@ mod tests {
         assert_eq!(meta.triple_count, 3);
         assert_eq!(meta.spec_hash.as_deref(), Some("abc"));
         assert!(!meta.generated_at_utc.is_empty());
+        assert_eq!(
+            meta.partition_input_sha256,
+            crate::sha256_file(&out.join("raw/data.nt")).unwrap()
+        );
+        assert_eq!(
+            meta.dict_sha256,
+            crate::sha256_file(&out.join("dict.parquet")).unwrap()
+        );
     }
 
     #[test]
@@ -446,5 +503,38 @@ mod tests {
         assert_eq!(header.schema_version, 1);
         assert_eq!(header.kind, "watdiv-onthefly");
         assert_eq!(header.spec_hash, None);
+    }
+
+    fn header(kind: &str, schema_version: u32) -> MetaHeader {
+        MetaHeader {
+            schema_version,
+            kind: kind.to_string(),
+            spec_hash: Some("abc".to_string()),
+        }
+    }
+
+    #[test]
+    fn lubm_cache_before_reproducible_entailment_is_outdated() {
+        let reason = header(LUBM_META_KIND, 2).outdated_reason();
+        assert!(reason.is_some_and(|r| r.contains("#74")), "{reason:?}");
+        assert_eq!(header(LUBM_META_KIND, 1).outdated_reason(), reason);
+    }
+
+    #[test]
+    fn current_lubm_cache_is_not_outdated() {
+        assert_eq!(
+            header(LUBM_META_KIND, META_SCHEMA_VERSION).outdated_reason(),
+            None
+        );
+    }
+
+    /// WatDiv encodes its generator output in file order and never changed
+    /// that under a fixed spec, so the LUBM floor must not invalidate its
+    /// caches (they take minutes to regenerate).
+    #[test]
+    fn watdiv_caches_from_older_schemas_are_not_outdated() {
+        for kind in ["watdiv-onthefly", "watdiv-basic-onthefly"] {
+            assert_eq!(header(kind, 2).outdated_reason(), None, "{kind}");
+        }
     }
 }

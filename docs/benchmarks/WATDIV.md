@@ -207,7 +207,9 @@ vendored binary emits no `.desc` sidecars, so there is no result oracle and
 `bench run --verify` reports every WatDiv query as not verified.
 
 `meta.json` records the SHA-256 of the vendored watdiv binary, the names
-files, and the model file. The 12 committed snapshots have a similar
+files, and the model file, plus `partition_input_sha256` (`raw/data.nt`) and
+`dict_sha256` (`dict.parquet`), which match between two caches exactly when
+they encode identically. The 12 committed snapshots have a similar
 provenance record from their original Python pipeline run.
 
 ## Workload reference

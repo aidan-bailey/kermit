@@ -140,8 +140,10 @@ the mean.
 - **Generator benchmarks** (WatDiv, LUBM) hash their spec; a cached dataset is
   reused on a `spec_hash` match. Changing the YAML's parameters makes the next
   `bench run` abort with `SpecDrift` rather than silently regenerate — pass
-  `--force` to opt in. WatDiv/LUBM also have generator-level non-determinism
-  (seeds, thread count); the discipline for keeping runs comparable is in
+  `--force` to opt in. A LUBM cache from before reproducible entailment is
+  refused the same way (`OutdatedCache`). WatDiv/LUBM also have
+  generator-level non-determinism (seeds, thread count); the discipline for
+  keeping runs comparable is in
   [`docs/benchmarks/WATDIV.md`](docs/benchmarks/WATDIV.md) and
   [`docs/benchmarks/LUBM.md`](docs/benchmarks/LUBM.md).
 - **Don't move two variables at once.** Because benchmarks compare structures

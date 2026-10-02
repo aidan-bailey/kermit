@@ -20,12 +20,21 @@
 //!
 //! ## Memory model
 //!
-//! In-memory: the entire ABox is loaded into a `Vec<Triple>`, the closure
-//! is computed in a `HashSet`, and the union is written to the output
-//! file. At LUBM(50) (~6.9M ABox triples) peak memory is ~1 GB. For
-//! larger scales a streaming variant could be added — the rule set
-//! tolerates it (most rules are single-pass) — but the LUBM thesis
-//! workload doesn't need it.
+//! In-memory: the entire ABox is loaded into a `HashSet`, the closure is
+//! computed in place, and the union is written to the output file. At
+//! LUBM(50) (~6.9M ABox triples) peak memory is ~1 GB. For larger scales a
+//! streaming variant could be added — the rule set tolerates it (most rules
+//! are single-pass) — but the LUBM thesis workload doesn't need it.
+//!
+//! ## Output order
+//!
+//! The output is a pure function of the input file: its distinct triples in
+//! input order, then the derived triples sorted by (subject, predicate,
+//! object). Partition assigns dictionary ids and relation row order by
+//! stream order, so any hash-dependent order here would give each generation
+//! of one spec its own encoding (issue #74). Keeping the input order
+//! preserves UBA's per-entity grouping, the analogue of the generator order
+//! WatDiv relations keep.
 //!
 //! ## Authoritativeness
 //!
@@ -411,19 +420,35 @@ pub fn entail(input_path: &Path, output_path: &Path) -> Result<EntailmentStats, 
         }
     }
 
+    // The output order must be a function of the input alone: partition
+    // assigns dictionary ids and relation row order by stream order, so
+    // writing `working` in hash order gave every generation its own encoding
+    // (issue #74). Input triples go first, in input order, which keeps the
+    // generator's per-entity grouping; re-streaming the input and writing
+    // each triple only when it leaves `working` drops repeats (the first
+    // occurrence wins) and the `<>` subjects skipped above, without a second
+    // copy of the ABox. What stays in `working` is exactly the derived set,
+    // written sorted.
     let out = std::fs::File::create(output_path)?;
     let mut writer = BufWriter::new(out);
-    let mut output_count = 0;
-    for (s, p, o) in &working {
+    for triple in ntriples::iter_path(input_path)? {
+        let triple = triple?;
+        if working.remove(&triple) {
+            let (s, p, o) = &triple;
+            write_triple(&mut writer, s, p, o)?;
+        }
+    }
+    let mut derived: Vec<(String, String, RdfValue)> = working.into_iter().collect();
+    derived.sort_unstable();
+    for (s, p, o) in &derived {
         write_triple(&mut writer, s, p, o)?;
-        output_count += 1;
     }
     writer.flush()?;
 
     Ok(EntailmentStats {
         input_triples: input_count,
-        output_triples: output_count,
-        derived_triples: output_count.saturating_sub(original_size),
+        output_triples: original_size + derived.len(),
+        derived_triples: derived.len(),
         iterations,
     })
 }
@@ -696,6 +721,65 @@ mod tests {
         assert_eq!(stats.input_triples, 13);
         assert_eq!(stats.output_triples, 32);
         assert_eq!(stats.derived_triples, 19);
+    }
+
+    /// Entails `input` and returns the output file's exact text.
+    fn entail_to_text(input: &str) -> String {
+        let in_file = write_temp(input);
+        let out_file = tempfile::NamedTempFile::new().unwrap();
+        entail(in_file.path(), out_file.path()).unwrap();
+        std::fs::read_to_string(out_file.path()).unwrap()
+    }
+
+    /// Issue #74: the closure was written in `HashSet` iteration order, and
+    /// `RandomState` reseeds every set, so one input gave different bytes on
+    /// each run (and partition then assigned different dictionary ids). Two
+    /// runs in one process see two seeds, so they are enough to catch it.
+    #[test]
+    fn output_is_byte_identical_across_runs() {
+        // 40 students, each deriving Student and Person: 120 output lines,
+        // far too many for two random orders to coincide.
+        let nt: String = (0..40)
+            .map(|i| format!("<http://x/s{i}> <{RDF_TYPE}> <{UB}GraduateStudent> .\n"))
+            .collect();
+        assert_eq!(entail_to_text(&nt), entail_to_text(&nt));
+    }
+
+    /// The order contract: the distinct input triples in input order (first
+    /// occurrence wins, and a derivable input triple stays where the input
+    /// put it), then the derived triples sorted by (subject, predicate,
+    /// object). Keeping the input order preserves the generator's
+    /// per-entity grouping, which partition turns into dictionary ids and
+    /// relation row order.
+    #[test]
+    fn input_triples_keep_their_order_and_derived_triples_follow_sorted() {
+        let ty = |s: &str, c: &str| format!("<http://x/{s}> <{RDF_TYPE}> <{UB}{c}> .\n");
+        let prop =
+            |s: &str, p: &str, o: &str| format!("<http://x/{s}> <{UB}{p}> <http://x/{o}> .\n");
+        let input = [
+            ty("zed", "GraduateStudent"),
+            prop("amy", "worksFor", "dept"),
+            ty("zed", "GraduateStudent"),
+            prop("amy", "memberOf", "dept"),
+            prop("bob", "headOf", "lab"),
+        ]
+        .concat();
+        let expected = [
+            // Input, minus the repeated `zed` type assertion.
+            ty("zed", "GraduateStudent"),
+            prop("amy", "worksFor", "dept"),
+            prop("amy", "memberOf", "dept"),
+            prop("bob", "headOf", "lab"),
+            // Derived, sorted: `bob` before `zed` although the input has them
+            // the other way round; `#memberOf` < `#worksFor`; `#Person` <
+            // `#Student`.
+            prop("bob", "memberOf", "lab"),
+            prop("bob", "worksFor", "lab"),
+            ty("zed", "Person"),
+            ty("zed", "Student"),
+        ]
+        .concat();
+        assert_eq!(entail_to_text(&input), expected);
     }
 
     #[test]

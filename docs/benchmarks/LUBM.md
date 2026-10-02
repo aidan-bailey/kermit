@@ -103,8 +103,10 @@ lubm-uba.jar (vendored)        kermit-rdf::lubm::driver
 ```
 
 `meta.json` records the SHA-256 of the jar that produced the snapshot, the
-ontology IRI, ISO timestamp, pre/post entailment triple counts, and
-fixed-point iteration count.
+ontology IRI, ISO timestamp, pre/post entailment triple counts,
+fixed-point iteration count, and the SHA-256 of `raw/data.entailed.nt`
+(`partition_input_sha256`) and of `dict.parquet` (`dict_sha256`) — the two
+hashes that pin the encoding (see [Determinism](#determinism)).
 
 ## Inference / preprocessing
 
@@ -168,11 +170,34 @@ comparing against numbers that do not generalise.
 
 ## Determinism
 
-LUBM-UBA's documented invariant is bit-identical output for fixed
-`(seed, scale)` across thread counts. We pin `--threads 1` by default for
-absolute reproducibility — multi-threaded runs change file emission ordering
-even when byte-level content is the same. Override with `--threads N` for
-multi-core throughput when reproducibility is not required.
+A LUBM benchmark is reproducible from its spec: generating the same
+`(scale, seed, start_index, ontology)` twice yields byte-identical relations,
+dictionary and query constants. That takes every stage being deterministic,
+not just the jar:
+
+- **The jar.** LUBM-UBA's documented invariant is bit-identical output for
+  fixed `(seed, scale)` across thread counts. We pin `--threads 1` by default
+  because multi-threaded runs change triple emission order even when the
+  content is the same. Override with `--threads N` for multi-core throughput
+  when reproducibility is not required.
+- **Entailment** writes the distinct input triples in input order, then the
+  derived triples sorted. The input order keeps UBA's per-entity grouping,
+  which partition turns into dictionary ids and relation row order.
+- **Partition** assigns dictionary ids and row order by stream order.
+
+Encoding matters for timing, not answers: dictionary ids set key order (seek
+distances in sorted tries, hash placement in `HashTrie`) and row order sets
+build order. Two caches encode identically exactly when their
+`partition_input_sha256` and `dict_sha256` match.
+
+Caches generated before this held (`meta.json` `schema_version` below 3)
+wrote the entailed closure in per-run hash order, so each had its own
+encoding (issue #74). `bench list` shows them as `stale` and `bench run`
+refuses them with `OutdatedCache`. Regenerate inside `nix develop`, which
+provides the JDK: `bench run --force <name>` for a benchmark declared by a
+workspace YAML, or re-run the `bench gen lubm` command (its parameters are in
+`meta.json`) for one made imperatively, which `--force` cannot rebuild. LUBM
+timings from before and after that regeneration are not comparable.
 
 The vendored jar's SHA-256 is recorded in `meta.json` so a regenerated bench
 is distinguishable post-hoc if the jar is rebuilt against a different JDK or

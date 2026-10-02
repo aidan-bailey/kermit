@@ -74,6 +74,20 @@ pub enum BenchError {
         hint: String,
     },
 
+    /// A generator cache matches its spec but was written by an older
+    /// pipeline whose output for that spec differs from today's. Returned
+    /// by the materialization layer, like [`BenchError::SpecDrift`], so a
+    /// stale encoding is never silently reused and never silently rebuilt.
+    #[error("cache for benchmark '{name}' is outdated: {reason}; {hint}")]
+    OutdatedCache {
+        /// Benchmark name.
+        name: String,
+        /// Why the cached encoding differs from what the pipeline now writes.
+        reason: String,
+        /// Resolution hint shown to the user.
+        hint: String,
+    },
+
     /// A relation file's contents do not match the `sha256` its benchmark
     /// declares.
     #[error(
