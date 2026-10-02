@@ -480,6 +480,106 @@ macro_rules! trie_seek_tests {
                     assert!(iter.at_end());
                 }
             );
+
+            /// The contract at a fan-out wide enough for a binary search to
+            /// make ~10 probes per seek (small enough for miri). One parent
+            /// holds every child, so the siblings are read from a node
+            /// rather than the trie root. Even keys only, so the least upper
+            /// bound of `t` is `t` rounded up to even.
+            #[test]
+            fn seek_high_fan_out_lands_on_least_upper_bound() {
+                use {
+                    kermit_ds::Relation,
+                    kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
+                };
+                const FAN_OUT: usize = 1000;
+                const LAST_KEY: usize = 2 * (FAN_OUT - 1);
+                let tuples = (0..FAN_OUT).map(|i| vec![1, 2 * i]).collect();
+                let relation = $relation_type::from_tuples(2_usize.into(), tuples);
+                let mut iter = relation.trie_iter();
+                assert!(iter.open());
+                assert!(iter.open());
+                // A stride coprime to 2 alternates exact hits and gaps.
+                for target in (0..=LAST_KEY).step_by(13) {
+                    assert!(iter.seek(target), "seek({target}) fell off the end");
+                    assert_eq!(iter.key(), Some(target + target % 2), "seek({target})");
+                }
+                assert!(iter.seek(LAST_KEY));
+                assert_eq!(iter.key(), Some(LAST_KEY));
+                assert!(!iter.seek(LAST_KEY + 1));
+                assert!(iter.at_end());
+                assert_eq!(iter.next(), None);
+                // The failed seek left the parent level intact.
+                assert!(iter.up());
+                assert_eq!(iter.key(), Some(1));
+            }
+
+            /// Pins `seek`'s *complexity*, which the contract tests above
+            /// cannot see: seeking across a whole high-fan-out sibling list
+            /// must cost about as much as seeking one step. A linear scan is
+            /// O(distance), so the far seek costs ~fan-out times the near
+            /// one; a binary search over the remaining siblings is
+            /// O(log fan-out) for both. LFTJ's worst-case-optimality bound
+            /// assumes the latter (issue #67).
+            ///
+            /// Wall-clock is the only observable: keys are plain `usize`, so
+            /// comparisons cannot be counted without instrumenting the trie.
+            /// The ratio calibrates itself (machine speed and debug/release
+            /// cancel); the near and far batches interleave and each keeps
+            /// its fastest run, so scheduler noise cannot single one side
+            /// out; and `MAX_RATIO` sits far from both outcomes (~1x for a
+            /// binary search, hundreds of x for a scan).
+            #[test]
+            #[cfg_attr(miri, ignore = "wall-clock complexity check; too slow under miri")]
+            fn seek_cost_is_independent_of_distance() {
+                use {
+                    kermit_ds::Relation,
+                    kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
+                    std::{
+                        hint::black_box,
+                        time::{Duration, Instant},
+                    },
+                };
+                const FAN_OUT: usize = 1 << 12;
+                const SEEKS_PER_BATCH: usize = 4096;
+                const BATCHES: usize = 5;
+                const MAX_RATIO: f64 = 10.0;
+
+                /// Times `SEEKS_PER_BATCH` seeks from the first root key to
+                /// `target`, re-opening the root level between them.
+                fn time_batch(iter: &mut impl TrieIterator, target: usize) -> Duration {
+                    let start = Instant::now();
+                    for _ in 0..SEEKS_PER_BATCH {
+                        iter.open();
+                        black_box(iter.seek(black_box(target)));
+                        iter.up();
+                    }
+                    start.elapsed()
+                }
+
+                let tuples = (0..FAN_OUT).map(|k| vec![k]).collect();
+                let relation = $relation_type::from_tuples(1_usize.into(), tuples);
+                let mut iter = relation.trie_iter();
+                let (near_target, far_target) = (1, FAN_OUT - 1);
+                for target in [near_target, far_target] {
+                    assert!(iter.open());
+                    assert!(iter.seek(target));
+                    assert_eq!(iter.key(), Some(target));
+                    assert!(iter.up());
+                }
+
+                let (mut near, mut far) = (Duration::MAX, Duration::MAX);
+                for _ in 0..BATCHES {
+                    near = near.min(time_batch(&mut iter, near_target));
+                    far = far.min(time_batch(&mut iter, far_target));
+                }
+                let ratio = far.as_secs_f64() / near.as_secs_f64();
+                assert!(
+                    ratio < MAX_RATIO,
+                    "seeking across {FAN_OUT} siblings took {ratio:.1}x a one-step seek ({far:?} \
+                     vs {near:?}); seek must be sublinear in the fan-out"
+                );
+            }
         }
     };
 }
