@@ -86,14 +86,19 @@ opt-in), `--queries-per-build` (K for the `end-to-end` metric, default 1).
 
 | Metric | How measured |
 |--------|--------------|
-| `Insertion` | `R::from_tuples(header, tuples)` via Criterion `iter_batched` |
+| `Insertion` | `R::from_tuples(header, tuples)` via Criterion `iter_batched`, on the relation's tuples in file order |
 | `Iteration` | `relation.trie_iter().into_iter().collect()` via Criterion `iter` |
-| `EndToEnd` | `R::from_tuples` then K full-trie iterations, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
+| `EndToEnd` | `R::from_tuples` (same input) then K full-trie iterations, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
 | `Space` | `R::from_tuples(...).heap_size_bytes()` via Criterion `iter_custom` with `SpaceMeasurement` |
 
 Each metric becomes a separate Criterion `bench_function`:
 `{ds_name}/insertion`, `{ds_name}/iteration`, `{ds_name}/end_to_end`,
-`{ds_name}/space`. K is stamped into the report's `queries_per_build` axis
+`{ds_name}/space`. The two rebuilding metrics build from the tuples as the
+reader produced them (`RelationFamily::load_with_tuples`), not from the
+structure's own iteration order: that order is sorted and deduplicated for
+the sorted tries (their best case) and was a degenerate build order for
+the hash trie (issue #66), whereas file order is the same input for every
+structure and Layout. K is stamped into the report's `queries_per_build` axis
 (only when the metric is requested), never into the function id.
 
 ## `kermit bench run`
@@ -120,7 +125,10 @@ timing and compare its result count with the YAML's `expected`).
    (`kermit_bench::cache::ensure_cached`, downloading from the URLs in the
    YAML when missing).
 4. Load relations as `R` values and build the family's engine from them
-   (`ExecutionFamily::build`); the same values back the space metric.
+   (`ExecutionFamily::build`); the same values back the space metric. When
+   `insertion` or `end-to-end` is selected, each relation's tuples are also
+   kept in file order (`RelationFamily::load_with_tuples`), and those two
+   metrics rebuild from them.
 5. For each query in the workload (filtered by `--query` if set), with
    `--verify`, run the query once and compare its count with `expected`
    (mismatch aborts; a query without `expected` is noted as not verified),
@@ -135,14 +143,14 @@ query parsing described in step 3 and the per-query loop above.
 
 `EndToEnd` is the only metric whose timed body spans the build→query
 boundary: each Criterion sample constructs a fresh database from the
-pre-loaded tuples **through the same pipeline as the untimed step-4 build**
+file-order tuples kept in step 4 **through the same pipeline as the untimed step-4 build**
 (a fresh `BTreeMap<String, R>` via `from_tuples`, handed to `lftj_join` or
 `hash_join` — `ExecutionFamily::build_from_tuples` for either family) and then executes the query K times
 (`--queries-per-build`). `BatchSize::PerIteration` is deliberate — batching
-would amortise away the per-build cost the metric exists to measure. Because
-the sorted-family build path is `insert_all` (input order), the build term is
-*not* comparable with the `Insertion` metric, which times the presorting
-`from_tuples` path.
+would amortise away the per-build cost the metric exists to measure. Every
+relation is built through `RelationFamily::build_relation` from the same
+input as the `Insertion` metric, so the build term is that metric's work
+plus assembling the engine's map.
 
 **Function names:** `insertion`, `iteration`, `end_to_end`, and
 `space/{relation_name}`.

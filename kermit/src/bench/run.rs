@@ -75,11 +75,24 @@ fn run_benchmark<F: ExecutionFamily>(
     } = settings;
     // Load each relation from disk exactly once; the family builds its
     // engine from these typed relations rather than re-reading the files.
-    let relations: Vec<F::Rel> = workload
-        .relation_paths
+    // The `insertion` and `end_to_end` metrics rebuild relations, and they
+    // rebuild from each relation's tuples in file order, kept here (see
+    // `RelationFamily::load_with_tuples`). An `iteration`-only run keeps
+    // none: it would be a dead copy of the whole workload.
+    let rebuilds = metrics
         .iter()
-        .map(|p| family.load(p))
-        .collect::<Result<_, _>>()?;
+        .any(|m| matches!(m, Metric::Insertion | Metric::EndToEnd));
+    let mut relations: Vec<F::Rel> = Vec::with_capacity(workload.relation_paths.len());
+    let mut build_inputs: Vec<(kermit_ds::RelationHeader, Vec<Vec<usize>>)> = Vec::new();
+    for path in &workload.relation_paths {
+        if rebuilds {
+            let (relation, tuples) = family.load_with_tuples(path)?;
+            build_inputs.push((relation.header().clone(), tuples));
+            relations.push(relation);
+        } else {
+            relations.push(family.load(path)?);
+        }
+    }
     let engine = family.build(relations);
     let relations = F::relations(&engine);
 
@@ -172,22 +185,6 @@ fn run_benchmark<F: ExecutionFamily>(
         if has_time_metrics {
             let mut criterion = build_time_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
-
-            // Snapshot each relation's header + tuples once; both the
-            // `insertion` and `end_to_end` bodies rebuild from these. Skipped
-            // for an `iteration`-only run, where it would be a dead copy of
-            // the whole workload.
-            let build_inputs: Vec<(kermit_ds::RelationHeader, Vec<Vec<usize>>)> = if metrics
-                .iter()
-                .any(|m| matches!(m, Metric::Insertion | Metric::EndToEnd))
-            {
-                relations
-                    .iter()
-                    .map(|r| (r.header().clone(), F::tuples(r)))
-                    .collect()
-            } else {
-                Vec::new()
-            };
 
             if metrics.contains(&Metric::Insertion) {
                 group.bench_function("insertion", |b| {

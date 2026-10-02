@@ -227,14 +227,14 @@ pub trait RelationFamily {
     /// `data_structure` / `algorithm` axes.
     fn execution(&self) -> Execution;
 
-    /// Builds one relation from a `(header, tuples)` snapshot, honouring
-    /// the family's configuration.
+    /// Builds one relation from a header and its tuples, honouring the
+    /// family's configuration.
     ///
-    /// Every relation the family builds *from a tuple snapshot* routes
-    /// through this one site — the `insertion` metric, [`load`](Self::load),
-    /// and both families' [`build_from_tuples`] — so such a measurement can
-    /// never build a relation the report's `ds_config_*` axes fail to
-    /// describe.
+    /// Every relation the family builds *from tuples* routes through this
+    /// one site — the `insertion` metric, [`load`](Self::load),
+    /// [`load_with_tuples`](Self::load_with_tuples), and both families'
+    /// [`build_from_tuples`] — so such a measurement can never build a
+    /// relation the report's `ds_config_*` axes fail to describe.
     ///
     /// [`build_from_tuples`]: ExecutionFamily::build_from_tuples
     fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self::Rel {
@@ -251,14 +251,26 @@ pub trait RelationFamily {
     /// Returns an error if the extension is neither `csv` nor `parquet`,
     /// or if the reader fails.
     fn load(&self, path: &Path) -> anyhow::Result<Self::Rel> {
-        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        let (header, tuples) = match extension.to_lowercase().as_str() {
-            | "csv" => kermit_ds::read_csv(path),
-            | "parquet" => kermit_ds::read_parquet(path),
-            | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
-        }
-        .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))?;
+        let (header, tuples) = read_relation(path)?;
         Ok(self.build_relation(header, tuples))
+    }
+
+    /// Loads one relation file like [`load`](Self::load), and also returns
+    /// the tuples it was built from, in the order the reader produced them.
+    ///
+    /// These are the input of every metric that rebuilds a relation
+    /// (`insertion`, `end_to_end`). A structure's own iteration order is not
+    /// neutral input — it is the sorted tries' best case, and it made the
+    /// hash trie's build quadratic (issue #66) — whereas file order is the
+    /// same for every structure and every Layout, so all of them build from
+    /// identical input.
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load).
+    fn load_with_tuples(&self, path: &Path) -> anyhow::Result<(Self::Rel, Vec<Vec<usize>>)> {
+        let (header, tuples) = read_relation(path)?;
+        Ok((self.build_relation(header, tuples.clone()), tuples))
     }
 
     /// Every stored tuple of `rel`, in the structure's native iteration
@@ -272,6 +284,23 @@ pub trait RelationFamily {
     /// The `ds_*` optimization axes emitted by the relation type, merged
     /// into the report's axes. Empty for structures without any.
     fn optimization_axes(rel: &Self::Rel) -> BTreeMap<String, serde_json::Value>;
+}
+
+/// Reads one relation file into its header and its tuples, in the order the
+/// file stores them. The reader is chosen by extension.
+///
+/// # Errors
+///
+/// Returns an error if the extension is neither `csv` nor `parquet`, or if
+/// the reader fails.
+fn read_relation(path: &Path) -> anyhow::Result<(RelationHeader, Vec<Vec<usize>>)> {
+    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    match extension.to_lowercase().as_str() {
+        | "csv" => kermit_ds::read_csv(path),
+        | "parquet" => kermit_ds::read_parquet(path),
+        | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
+    }
+    .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))
 }
 
 /// The join-facing half of a family: building an engine over loaded
@@ -373,7 +402,9 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashTrieFam
 
     fn tuples(rel: &HashTrie<H, P>) -> Vec<Vec<usize>> { rel.collect_tuples() }
 
-    fn tuple_count(rel: &HashTrie<H, P>) -> usize { rel.collect_tuples().len() }
+    /// The trie's own multiset count, kept as it is built, so counting
+    /// does not materialise every tuple.
+    fn tuple_count(rel: &HashTrie<H, P>) -> usize { Cardinality::tuple_count(rel) }
 
     fn optimization_axes(rel: &HashTrie<H, P>) -> BTreeMap<String, serde_json::Value> {
         rel.optimization_axes()
@@ -762,6 +793,53 @@ mod tests {
             HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::optimization_axes(&rel)
                 .get("ds_config_load_factor"),
             Some(&serde_json::Value::from(0.5_f64))
+        );
+    }
+
+    /// `load_with_tuples` hands back the tuples in the order the reader
+    /// produced them, not in the structure's own iteration order: the
+    /// `insertion` and `end_to_end` metrics rebuild from them, and a
+    /// structure's iteration order is not neutral input — sorted for the
+    /// sorted tries, and a degenerate build order for the hash trie (issue
+    /// #66).
+    #[test]
+    fn load_with_tuples_returns_file_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("r.csv");
+        std::fs::write(&path, "a,b\n3,1\n1,2\n2,0\n1,1\n").expect("write csv");
+        let file_order = vec![vec![3, 1], vec![1, 2], vec![2, 0], vec![1, 1]];
+
+        let (tree, tuples) = SortedTrieFamily::<TreeTrie>::new()
+            .load_with_tuples(&path)
+            .expect("load");
+        assert_eq!(tuples, file_order);
+        assert_ne!(
+            SortedTrieFamily::<TreeTrie>::tuples(&tree),
+            file_order,
+            "the fixture must not already be in iteration order"
+        );
+
+        let (hash, tuples) = HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning>::default()
+            .load_with_tuples(&path)
+            .expect("load");
+        assert_eq!(tuples, file_order);
+        assert_eq!(hash.header().name(), "r");
+    }
+
+    /// `tuple_count` must agree with `tuples().len()` — the trait's
+    /// contract — including duplicates, which the hash trie keeps.
+    #[test]
+    fn hash_family_tuple_count_agrees_with_its_tuples() {
+        let family = HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning>::default();
+        let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
+        let rel = family.build_relation(header, vec![vec![1, 2], vec![1, 2], vec![3, 4]]);
+        assert_eq!(
+            HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning>::tuple_count(&rel),
+            3
+        );
+        assert_eq!(
+            HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning>::tuples(&rel).len(),
+            3
         );
     }
 
