@@ -2053,7 +2053,7 @@ target/release/kermit bench list | grep watdiv-q0005-check
   - That intermediate work may exceed the 4.17 B output rows by orders of
     magnitude, so an uncapped run could take hours or days per cell.
 
-  `timeout` sits *inside* `/usr/bin/time`, so `time` still prints its
+  GNU `time` lives at `/run/current-system/sw/bin/time` on this NixOS host (there is no `/usr/bin/time`). `timeout` sits *inside* it, so `time` still prints its
   report when the cap kills the run. On Linux, `wait4` reports the waited
   child's peak RSS, `kermit`'s included.
 
@@ -2061,7 +2061,7 @@ target/release/kermit bench list | grep watdiv-q0005-check
 setsid nohup bash -c '
   for cell in "column-trie leapfrog-triejoin" "hash-trie hash-triejoin"; do
     set -- $cell
-    /usr/bin/time -v timeout 45m target/release/kermit bench '"$QUICK"' \
+    /run/current-system/sw/bin/time -v timeout 45m target/release/kermit bench '"$QUICK"' \
       --report-json "'"$SCRATCH"'/q0005-$1.json" \
       run watdiv-q0005-check -q q0005 -i $1 -a $2 --metrics space --verify \
       > "'"$SCRATCH"'/q0005-$1.log" 2>&1
