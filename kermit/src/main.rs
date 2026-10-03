@@ -473,10 +473,11 @@ enum Commands {
 
 use materialize::{vendored_lubm_jar, vendored_watdiv_root, workspace_root};
 
-/// Column names derived from a query's head predicate. `Var(X)` becomes
-/// `"X"`, `Atom(c)` becomes `"c"` (constants are pre-rewritten by
-/// `rewrite_atoms` so they appear as `c<id>` in the head when present), and
-/// `Placeholder` becomes `"_"`.
+/// Column names derived from a query's head predicate: one per head term,
+/// matching the columns the join emits (it projects to the head). A query
+/// reaching the join has a head of distinct variables — validation rejects
+/// head constants and placeholders — so the `Atom` (`"c<id>"`) and
+/// `Placeholder` (`"_"`) arms only keep this function total.
 fn head_column_names(query: &JoinQuery) -> Vec<String> {
     query
         .head
