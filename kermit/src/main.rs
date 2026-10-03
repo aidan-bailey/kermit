@@ -500,21 +500,65 @@ fn head_column_names(query: &JoinQuery) -> Vec<String> {
         .collect()
 }
 
-fn write_tuples(
-    mut writer: impl Write, header: &[String], tuples: &[Vec<usize>],
-) -> io::Result<()> {
-    if !header.is_empty() {
-        writeln!(writer, "{}", header.join(","))?;
+/// Streams a join result as CSV: the header row, then one line per tuple as
+/// the join produces it, so writing a result never materialises it (the
+/// memory half of issue #65: a result larger than RAM is written, not
+/// killed). A join's sink cannot fail, so the first I/O error is kept,
+/// later rows are dropped, and [`finish`](Self::finish) returns it.
+struct CsvSink<W: Write> {
+    writer: W,
+    error: Option<io::Error>,
+}
+
+impl<W: Write> CsvSink<W> {
+    /// Writes the header row (if any) and returns a sink for the rows.
+    fn new(mut writer: W, header: &[String]) -> io::Result<Self> {
+        if !header.is_empty() {
+            writeln!(writer, "{}", header.join(","))?;
+        }
+        Ok(Self {
+            writer,
+            error: None,
+        })
     }
-    for tuple in tuples {
-        let line: String = tuple
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        writeln!(writer, "{}", line)?;
+
+    /// Writes one row, unless an earlier write failed.
+    fn write_tuple(&mut self, tuple: &[usize]) {
+        if self.error.is_none() {
+            if let Err(e) = write_row(&mut self.writer, tuple) {
+                self.error = Some(e);
+            }
+        }
     }
-    writer.flush()
+
+    /// Flushes the writer, or returns the first write error.
+    fn finish(mut self) -> io::Result<()> {
+        match self.error.take() {
+            | Some(e) => Err(e),
+            | None => self.writer.flush(),
+        }
+    }
+}
+
+/// Writes `tuple` as one comma-separated line, without allocating.
+fn write_row(writer: &mut impl Write, tuple: &[usize]) -> io::Result<()> {
+    for (i, value) in tuple.iter().enumerate() {
+        if i > 0 {
+            writer.write_all(b",")?;
+        }
+        write!(writer, "{value}")?;
+    }
+    writer.write_all(b"\n")
+}
+
+/// Runs `query` through `join`, streaming its header and rows to `writer`.
+fn write_join(
+    writer: impl Write, header: &[String], join: &JoinRunner, query: JoinQuery,
+) -> anyhow::Result<()> {
+    let mut sink = CsvSink::new(writer, header)?;
+    join(query, &mut |tuple| sink.write_tuple(tuple))?;
+    sink.finish()?;
+    Ok(())
 }
 
 /// Parses the query file named by `args`.
@@ -527,8 +571,9 @@ fn parse_query(args: &QueryArgs) -> anyhow::Result<JoinQuery> {
         .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", args.query, e))
 }
 
-/// A built engine behind a closure: runs one query and returns its tuples.
-type JoinRunner = Box<dyn Fn(JoinQuery) -> Result<Vec<Vec<usize>>, JoinError>>;
+/// A built engine behind a closure: runs one query, passing each result
+/// tuple to the sink as the join produces it.
+type JoinRunner = Box<dyn Fn(JoinQuery, &mut dyn FnMut(&[usize])) -> Result<(), JoinError>>;
 
 /// Loads `args.relations` into `family`'s engine and returns a runner over it.
 fn build_join_runner<F: ExecutionFamily + 'static>(
@@ -539,7 +584,9 @@ fn build_join_runner<F: ExecutionFamily + 'static>(
         .map(|p| family.load(p))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let engine = family.build(relations);
-    Ok(Box::new(move |q| family.join(&engine, q)))
+    Ok(Box::new(move |q, sink| {
+        family.join_for_each(&engine, q, sink)
+    }))
 }
 
 /// Checks `query` against the headers of `args.relations`, read without
@@ -707,13 +754,11 @@ fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()
     validate_query_files(&join_query, &query_args)?;
     let join = load_query_runner(&query_args, HashTrieConfig::default())?;
     let header = head_column_names(&join_query);
-    let tuples = join(join_query)?;
     let writer: Box<dyn Write> = match &output {
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         | None => Box::new(BufWriter::new(io::stdout().lock())),
     };
-    write_tuples(writer, &header, &tuples)?;
-    Ok(())
+    write_join(writer, &header, &join, join_query)
 }
 
 /// Handler for `bench list`: print every discoverable benchmark with its
@@ -821,9 +866,8 @@ fn run_bench_join(
         validate_query_files(&join_query, &query_args)?;
         let join = load_query_runner(&query_args, hash_trie_config)?;
         let header = head_column_names(&join_query);
-        let tuples = join(join_query)?;
         let writer = BufWriter::new(fs::File::create(path)?);
-        write_tuples(writer, &header, &tuples)?;
+        write_join(writer, &header, &join, join_query)?;
     }
 
     let workload = Workload::adhoc(query_args.relations.clone(), &query_args.query)?;
@@ -1236,37 +1280,100 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn write_tuples_no_header_emits_only_rows() {
-        let tuples = vec![vec![1, 2, 3], vec![4, 5, 6]];
+    /// Streams `tuples` through a [`CsvSink`] over `header` and returns the
+    /// text written.
+    fn csv(header: &[&str], tuples: &[&[usize]]) -> String {
+        let header: Vec<String> = header.iter().map(|h| h.to_string()).collect();
         let mut buf = Vec::new();
-        write_tuples(&mut buf, &[], &tuples).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "1,2,3\n4,5,6\n");
+        let mut sink = CsvSink::new(&mut buf, &header).unwrap();
+        for tuple in tuples {
+            sink.write_tuple(tuple);
+        }
+        sink.finish().unwrap();
+        String::from_utf8(buf).unwrap()
     }
 
     #[test]
-    fn write_tuples_with_header_emits_header_then_rows() {
-        let tuples = vec![vec![1, 2, 3], vec![4, 5, 6]];
-        let header = vec!["X".to_string(), "Y".to_string(), "Z".to_string()];
-        let mut buf = Vec::new();
-        write_tuples(&mut buf, &header, &tuples).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "X,Y,Z\n1,2,3\n4,5,6\n");
+    fn csv_sink_without_header_emits_only_rows() {
+        assert_eq!(csv(&[], &[&[1, 2, 3], &[4, 5, 6]]), "1,2,3\n4,5,6\n");
     }
 
     #[test]
-    fn write_tuples_single_column() {
-        let tuples = vec![vec![10], vec![20]];
-        let mut buf = Vec::new();
-        write_tuples(&mut buf, &[], &tuples).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "10\n20\n");
+    fn csv_sink_emits_the_header_then_rows() {
+        assert_eq!(
+            csv(&["X", "Y", "Z"], &[&[1, 2, 3], &[4, 5, 6]]),
+            "X,Y,Z\n1,2,3\n4,5,6\n"
+        );
     }
 
     #[test]
-    fn write_tuples_empty() {
-        let tuples: Vec<Vec<usize>> = vec![];
-        let mut buf = Vec::new();
-        write_tuples(&mut buf, &[], &tuples).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "");
+    fn csv_sink_single_column() {
+        assert_eq!(csv(&[], &[&[10], &[20]]), "10\n20\n");
+    }
+
+    #[test]
+    fn csv_sink_with_no_rows_writes_only_the_header() {
+        assert_eq!(csv(&[], &[]), "");
+        assert_eq!(csv(&["X"], &[]), "X\n");
+    }
+
+    /// Writing a result allocates nothing per row, so `kermit join`'s memory
+    /// does not grow with the result (#65): the counts at two result sizes
+    /// 1000x apart must be equal.
+    #[test]
+    fn csv_sink_allocates_nothing_per_row() {
+        let allocations = |rows: usize| {
+            allocation_counter::measure(|| {
+                let header = ["X".to_string(), "Y".to_string()];
+                let mut sink = CsvSink::new(io::sink(), &header).unwrap();
+                for i in 0..rows {
+                    sink.write_tuple(&[i, i + 1]);
+                }
+                sink.finish().unwrap();
+            })
+            .count_total
+        };
+        assert_eq!(allocations(10), allocations(10_000));
+    }
+
+    /// A writer that accepts `capacity` bytes, then fails every write.
+    struct FailAfter {
+        capacity: usize,
+        writes: usize,
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            if buf.len() > self.capacity {
+                return Err(io::Error::other("disk full"));
+            }
+            self.capacity -= buf.len();
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    /// A join sink cannot fail, so the first write error is kept, later
+    /// rows are not attempted, and `finish` returns the error.
+    #[test]
+    fn csv_sink_reports_the_first_write_error_and_stops_writing() {
+        let mut writer = FailAfter {
+            capacity: 4,
+            writes: 0,
+        };
+        let mut sink = CsvSink::new(&mut writer, &[]).unwrap();
+        sink.write_tuple(&[1, 2]);
+        sink.write_tuple(&[3, 4]);
+        let writes_at_error = sink.writer.writes;
+        sink.write_tuple(&[5, 6]);
+        assert_eq!(
+            sink.writer.writes, writes_at_error,
+            "kept writing after an error"
+        );
+        let err = sink.finish().unwrap_err();
+        assert_eq!(err.to_string(), "disk full");
     }
 
     #[test]
