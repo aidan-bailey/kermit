@@ -93,19 +93,17 @@ impl<H: HashStrategy, P: PruningPolicy, C: ConfigProvider<HashTrieConfig>>
 
 /// Builds one `R` per input relation (named `R0`, `R1`, …), synthesises
 /// `Q(V…) :- R0(V…), R1(V…), ….` from `variables` / `rel_variables`, runs
-/// it through `JA`'s entry point, projects each row to the head, and
-/// asserts multiset equality with `result`.
+/// it through `JA`'s entry point, and asserts multiset equality with
+/// `result`.
 ///
 /// It also counts the result through the streaming entry point and checks
 /// that count against `result`, so the path `bench run` times is covered
 /// for every structure × algorithm × optimiser invocation.
 ///
-/// Head variables receive canonical indices `0..variables.len()` in head
-/// order (`kermit_algos::analyse`), and the entry points emit every
-/// variable in canonical order, so truncating each row to the head's
-/// length is the projection. Body-only variables — including the fresh
-/// ones the rewrites introduce — are dropped this way (issue #71 tracks
-/// doing this in the entry points themselves).
+/// The rows are compared as returned: the entry points project to the
+/// head themselves (issue #71), so a body-only variable — including the
+/// fresh ones the rewrites introduce — leaking into a row fails the
+/// comparison.
 pub fn test_join<R, JA, O>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     result: Vec<Vec<usize>>,
@@ -142,7 +140,6 @@ pub fn test_join<R, JA, O>(
     let query_str = format!("Q({}) :- {}.", head_vars.join(", "), body_preds.join(", "));
     let query: JoinQuery = query_str.parse().expect("Failed to build JoinQuery");
 
-    let head_arity = variables.len();
     // The streamed count is what `bench run --verify` checks and what the
     // `iteration` metric times; it must agree with the expected rows.
     let streamed = JA::count(&relations, query.clone(), &O::default())
@@ -157,11 +154,8 @@ pub fn test_join<R, JA, O>(
     // before asserting so algorithms with non-sorted output (hash-trie
     // family) and plans with different enumeration orders pass the same
     // suite.
-    let mut actual: Vec<Vec<usize>> = JA::join(&relations, query, &O::default())
-        .unwrap_or_else(|e| panic!("{query_str}: {e}"))
-        .into_iter()
-        .map(|row| row[..head_arity].to_vec())
-        .collect();
+    let mut actual: Vec<Vec<usize>> =
+        JA::join(&relations, query, &O::default()).unwrap_or_else(|e| panic!("{query_str}: {e}"));
     actual.sort();
     let mut expected = result;
     expected.sort();

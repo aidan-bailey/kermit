@@ -113,17 +113,18 @@ impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
 }
 
 /// The one join body: validation and the query rewrites ([`prepare`]),
-/// wrapper map, statistics, plan, execute.
+/// wrapper map, statistics, plan, execute, project.
 ///
-/// Each result tuple is passed to `emit` as a borrowed slice; the result
-/// is never materialised here.
+/// Each result tuple is passed to `emit` as a borrowed slice of exactly
+/// the head's columns; the result is never materialised here.
 ///
 /// # Errors
 ///
 /// Returns the [`JoinError`] [`validate_query`] would, before any tuple is
 /// emitted.
 fn run_join<'a, R, F, JA, S>(
-    relations: &'a BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser, emit: S,
+    relations: &'a BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    mut emit: S,
 ) -> Result<(), JoinError>
 where
     R: Relation + Cardinality + 'a,
@@ -131,6 +132,7 @@ where
     JA: JoinAlgo<F::Wrapper<'a>>,
     S: FnMut(&[usize]),
 {
+    let head_len = query.head.terms.len();
     let Prepared {
         query: rewritten,
         const_specs,
@@ -181,7 +183,13 @@ where
     });
     let plan = optimiser.plan(&rewritten, &stats);
 
-    JA::join_for_each(&plan, rewritten, ds_map, emit);
+    // Projection to the head (#71). The executors emit every variable of
+    // the rewritten query in canonical order, and `analyse` numbers the
+    // head's variables `0..head_len` in head order — which holds because
+    // `prepare` has checked that the head is distinct variables — so the
+    // head's columns are each row's prefix. Lending that prefix allocates
+    // nothing; duplicates stay (bag semantics), so counts are unchanged.
+    JA::join_for_each(&plan, rewritten, ds_map, |row| emit(&row[..head_len]));
     Ok(())
 }
 
@@ -299,14 +307,11 @@ mod tests {
             ("second", 1, vec![vec![2], vec![3], vec![4]]),
         ]);
         let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
-        let mut got: Vec<usize> =
+        let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
-                .unwrap()
-                .iter()
-                .map(|r| r[0])
-                .collect();
+                .unwrap();
         got.sort();
-        assert_eq!(got, vec![2, 3]);
+        assert_eq!(got, vec![vec![2], vec![3]]);
     }
 
     #[test]
@@ -316,11 +321,11 @@ mod tests {
         let result =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
                 .unwrap();
-        let mut got: Vec<_> = result.iter().map(|r| r[0]).collect();
+        let mut got = result;
         got.sort();
         assert_eq!(
             got,
-            vec![1],
+            vec![vec![1]],
             "expected only X=1 to pass the c10 filter, got {got:?}"
         );
     }
@@ -337,14 +342,11 @@ mod tests {
             vec![4, 5],
         ])]);
         let query: JoinQuery = "Q(X) :- r(X, X).".parse().unwrap();
-        let mut got: Vec<usize> =
+        let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
-                .unwrap()
-                .iter()
-                .map(|r| r[0])
-                .collect();
+                .unwrap();
         got.sort();
-        assert_eq!(got, vec![1, 3]);
+        assert_eq!(got, vec![vec![1], vec![3]]);
     }
 
     /// Both rewrites on one atom: the constant takes `K0`, the repeat
@@ -358,14 +360,11 @@ mod tests {
             vec![3, 5, 3],
         ])]);
         let query: JoinQuery = "Q(X) :- r(X, c5, X).".parse().unwrap();
-        let mut got: Vec<usize> =
+        let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
-                .unwrap()
-                .iter()
-                .map(|r| r[0])
-                .collect();
+                .unwrap();
         got.sort();
-        assert_eq!(got, vec![1, 3]);
+        assert_eq!(got, vec![vec![1], vec![3]]);
     }
 
     /// Two views of one relation: `r(X, X)` becomes a selection view while
@@ -379,14 +378,11 @@ mod tests {
             vec![3, 3],
         ])]);
         let query: JoinQuery = "Q(X, Y) :- r(X, X), r(X, Y).".parse().unwrap();
-        let mut got: Vec<(usize, usize)> =
+        let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
-                .unwrap()
-                .iter()
-                .map(|r| (r[0], r[1]))
-                .collect();
+                .unwrap();
         got.sort();
-        assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
+        assert_eq!(got, vec![vec![1, 1], vec![1, 2], vec![3, 3]]);
     }
 
     /// `Q(X) :- r(X, _).` — a trailing placeholder is a fresh unused
@@ -397,14 +393,11 @@ mod tests {
     fn test_join_trailing_placeholder() {
         let relations = rels(vec![("r", 2, vec![vec![1, 2], vec![1, 3], vec![2, 4]])]);
         let query: JoinQuery = "Q(X) :- r(X, _).".parse().unwrap();
-        let mut got: Vec<usize> =
+        let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
-                .unwrap()
-                .iter()
-                .map(|r| r[0])
-                .collect();
+                .unwrap();
         got.sort();
-        assert_eq!(got, vec![1, 1, 2]);
+        assert_eq!(got, vec![vec![1], vec![1], vec![2]]);
     }
 
     /// `Q(X, Y) :- r(X, _, Y).` — `Y` names the third column. Before the
@@ -413,14 +406,38 @@ mod tests {
     fn test_join_middle_placeholder() {
         let relations = rels(vec![("r", 3, vec![vec![1, 2, 3], vec![1, 4, 5]])]);
         let query: JoinQuery = "Q(X, Y) :- r(X, _, Y).".parse().unwrap();
-        let mut got: Vec<(usize, usize)> =
+        let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
-                .unwrap()
-                .iter()
-                .map(|r| (r[0], r[1]))
-                .collect();
+                .unwrap();
         got.sort();
-        assert_eq!(got, vec![(1, 3), (1, 5)]);
+        assert_eq!(got, vec![vec![1, 3], vec![1, 5]]);
+    }
+
+    /// Rows carry exactly the head's columns, in head order: body-only
+    /// variables — written, or introduced by the const, placeholder and
+    /// selection rewrites — are dropped, and duplicates are kept (bag
+    /// semantics), so the row count is unchanged by projection (#71).
+    #[test]
+    fn results_are_projected_to_the_head() {
+        let relations = rels(vec![
+            ("r", 2, vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3]]),
+            ("p", 2, vec![vec![1, 10], vec![2, 20]]),
+        ]);
+        for (q, want) in [
+            ("Q(X) :- r(X, Y).", vec![vec![1], vec![1], vec![2], vec![3]]),
+            ("Q(Y) :- r(X, Y).", vec![vec![1], vec![2], vec![3], vec![3]]),
+            ("Q(X) :- r(X, _).", vec![vec![1], vec![1], vec![2], vec![3]]),
+            ("Q(X) :- p(X, c10).", vec![vec![1]]),
+            ("Q(X) :- r(X, X).", vec![vec![1], vec![3]]),
+            ("Q(Y, X) :- p(X, Y).", vec![vec![10, 1], vec![20, 2]]),
+        ] {
+            let query: JoinQuery = q.parse().unwrap();
+            let mut got =
+                lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                    .unwrap();
+            got.sort();
+            assert_eq!(got, want, "{q}");
+        }
     }
 
     /// The streaming entry point visits every row without collecting;
@@ -437,11 +454,11 @@ mod tests {
             &relations,
             query,
             &LexicographicOptimiser,
-            |row| got.push(row[0]),
+            |row| got.push(row.to_vec()),
         )
         .unwrap();
         got.sort();
-        assert_eq!(got, vec![2, 3]);
+        assert_eq!(got, vec![vec![2], vec![3]]);
     }
 
     /// `missing` was never added. Silently dropping the atom would mask
@@ -527,10 +544,9 @@ mod hash_join_tests {
     /// tail of the variable ordering, matching the trie's physical layout.
     /// The LFTJ const test uses the same shape for the same reason.
     ///
-    /// The algorithm emits tuples in `variable_ordering` order (all
-    /// query variables, not just head vars), so we project to the head
-    /// slot ourselves — mirroring [`tests::test_join_with_constant_filter`]
-    /// for LFTJ above.
+    /// The entry point projects each row to the head, so the rewrite's
+    /// fresh `K0` column never reaches the caller — mirroring
+    /// [`tests::test_join_with_constant_filter`] for LFTJ above.
     #[test]
     fn hash_join_with_constant_atom() {
         let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
@@ -545,11 +561,11 @@ mod hash_join_tests {
             &LexicographicOptimiser,
         )
         .unwrap();
-        let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
+        let mut got = result;
         got.sort();
         assert_eq!(
             got,
-            vec![1, 2],
+            vec![vec![1], vec![2]],
             "expected only X=1, X=2 to pass the c5 filter, got {got:?}"
         );
     }
@@ -577,9 +593,9 @@ mod hash_join_tests {
             &LexicographicOptimiser,
         )
         .unwrap();
-        let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
+        let mut got = result;
         got.sort();
-        assert_eq!(got, vec![1, 3]);
+        assert_eq!(got, vec![vec![1], vec![3]]);
     }
 
     #[test]
@@ -601,9 +617,9 @@ mod hash_join_tests {
             &LexicographicOptimiser,
         )
         .unwrap();
-        let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
+        let mut got = result;
         got.sort();
-        assert_eq!(got, vec![1, 3]);
+        assert_eq!(got, vec![vec![1], vec![3]]);
     }
 
     #[test]
@@ -622,9 +638,9 @@ mod hash_join_tests {
             &LexicographicOptimiser,
         )
         .unwrap();
-        let mut got: Vec<(usize, usize)> = result.iter().map(|r| (r[0], r[1])).collect();
+        let mut got = result;
         got.sort();
-        assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
+        assert_eq!(got, vec![vec![1, 1], vec![1, 2], vec![3, 3]]);
     }
 
     /// Mirror of [`tests::test_join_trailing_placeholder`]. Before the
@@ -644,9 +660,9 @@ mod hash_join_tests {
             &LexicographicOptimiser,
         )
         .unwrap();
-        let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
+        let mut got = result;
         got.sort();
-        assert_eq!(got, vec![1, 1, 2]);
+        assert_eq!(got, vec![vec![1], vec![1], vec![2]]);
     }
 
     /// Mirror of [`tests::test_join_middle_placeholder`]; panicked at the
@@ -665,9 +681,9 @@ mod hash_join_tests {
             &LexicographicOptimiser,
         )
         .unwrap();
-        let mut got: Vec<(usize, usize)> = result.iter().map(|r| (r[0], r[1])).collect();
+        let mut got = result;
         got.sort();
-        assert_eq!(got, vec![(1, 3), (1, 5)]);
+        assert_eq!(got, vec![vec![1, 3], vec![1, 5]]);
     }
 
     /// Every #78 shape is rejected by the hash family with exactly the
@@ -707,6 +723,40 @@ mod hash_join_tests {
         }
     }
 
+    /// Mirror of [`tests::results_are_projected_to_the_head`].
+    #[test]
+    fn hash_join_results_are_projected_to_the_head() {
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
+        relations.insert(
+            "r".to_string(),
+            HashTrie::from_tuples(2.into(), vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![
+                3, 3,
+            ]]),
+        );
+        relations.insert(
+            "p".to_string(),
+            HashTrie::from_tuples(2.into(), vec![vec![1, 10], vec![2, 20]]),
+        );
+        for (q, want) in [
+            ("Q(X) :- r(X, Y).", vec![vec![1], vec![1], vec![2], vec![3]]),
+            ("Q(Y) :- r(X, Y).", vec![vec![1], vec![2], vec![3], vec![3]]),
+            ("Q(X) :- r(X, _).", vec![vec![1], vec![1], vec![2], vec![3]]),
+            ("Q(X) :- p(X, c10).", vec![vec![1]]),
+            ("Q(X) :- r(X, X).", vec![vec![1], vec![3]]),
+            ("Q(Y, X) :- p(X, Y).", vec![vec![10, 1], vec![20, 2]]),
+        ] {
+            let query: JoinQuery = q.parse().unwrap();
+            let mut got = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+                &relations,
+                query,
+                &LexicographicOptimiser,
+            )
+            .unwrap();
+            got.sort();
+            assert_eq!(got, want, "{q}");
+        }
+    }
+
     #[test]
     fn hash_join_for_each_visits_every_row() {
         let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
@@ -724,10 +774,10 @@ mod hash_join_tests {
             &relations,
             q,
             &LexicographicOptimiser,
-            |row| got.push(row[0]),
+            |row| got.push(row.to_vec()),
         )
         .unwrap();
         got.sort();
-        assert_eq!(got, vec![2, 3]);
+        assert_eq!(got, vec![vec![2], vec![3]]);
     }
 }
