@@ -101,8 +101,8 @@ pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
 /// - [`BenchError::Integrity`] — a downloaded file does not match the `sha256`
 ///   its relation declares.
 /// - [`BenchError::CorruptCache`] — a file already at a relation's cache path
-///   cannot be a Parquet file (see [`cached_file_problem`]). It is reported,
-///   never deleted or re-downloaded.
+///   cannot be a Parquet file: shorter than two `PAR1` markers, or missing one
+///   at either end. It is reported, never deleted or re-downloaded.
 pub fn ensure_cached(
     benchmark: &BenchmarkDefinition, workspace_root: &Path,
 ) -> Result<Vec<PathBuf>, BenchError> {
