@@ -4,7 +4,7 @@
 
 **Goal:** Make `ColumnTrie::from_tuples` build in one pass (O(n·a) after the sort instead of O(n·a·b)), and keep the old routine as the `incremental` mode of a `--ds-build` BuildMode knob, reported as the `ds_build_mode` axis.
 
-**Architecture:** Phase 1 (Tasks 1–4) replaces the insert loop with a push-only bulk builder and stamps `ds_build_mode: "bulk"` on ColumnTrie reports through a new `RelationFamily::build_mode_axes` hook; it can land on its own. Phase 2 (Tasks 5–11) bundles the `--ds-*` choices into `DsChoices`, adds `ColumnTrieBuildMode` / `BuildModeRelation` / `BuiltWith` in `kermit-ds`, threads the mode through the `Execution` cell and `SortedTrieFamily`, adds the build-mode join-test macro, the kermit-lab back-fill, and docs.
+**Architecture:** Four work packages (see "Work packages"). Phase 1 (Tasks 1–4) replaces the insert loop with a push-only bulk builder and stamps `ds_build_mode: "bulk"` on ColumnTrie reports through a new `RelationFamily::build_mode_axes` hook; it can land on its own. Phase 2 (Tasks 5–11) bundles the `--ds-*` choices into `DsChoices`, adds `ColumnTrieBuildMode` / `BuildModeRelation` / `BuiltWith` in `kermit-ds`, threads the mode through the `Execution` cell and `SortedTrieFamily`, adds the build-mode join-test macro, the kermit-lab back-fill, and docs.
 
 **Tech Stack:** Rust nightly workspace (clap, Criterion, serde_json), Python kermit-lab (pandas, pytest via uv), Nix dev shell.
 
@@ -30,9 +30,26 @@
 
 ---
 
-# Phase 1 — the one-pass bulk build
+## Work packages
 
-## Task 1: One-pass bulk build with an array-level equivalence test
+The twelve tasks are grouped into four packages, each executed by one implementer agent end to end (its tasks in order, one commit per task, mutation checks included), then reviewed before the next package starts. The gates, evidence runs, supervisor checkpoints and landing (Tasks 4, 11, 12) stay with the controller, between packages.
+
+| Package | Tasks | Scope | Depends on | Commits | Done when |
+|---|---|---|---|---|---|
+| **P1 — Phase 1: the bulk build** | 1, 2, 3 | `column_trie/implementation.rs`; the `build_mode_axes` hook in `execution.rs`, `bench/ds.rs`, `bench/run.rs`; `cli_column_trie_build_mode.rs`; `column-trie.md`, `bench-report-schema.md` | — | 3 | `cargo test -p kermit-ds` and `-p kermit` green, clippy clean on both, both mutation checks recorded |
+| *Controller* | 4 | Phase 1 gate, miri, `friendof` before/after, supervisor checkpoint 2, ask the user about landing phase 1 (Task 12 for phase 1 alone if approved) | P1 | — | — |
+| **P2 — Prepare (no behaviour change)** | 5, 6 | Merge `origin/master` first (Task 5 Step 0); `DsChoices` in the binary; `ColumnTrieBuildMode`, `BuildModeRelation`, `BuiltWith` and the `ColumnTrieIncremental` DS-level aliases in `kermit-ds` | P1 | 2 | Every existing test green with the old flag behaviour; new `ds_choices_*`, `build_mode`, `built_with` and equivalence tests green |
+| **P3 — Expose the knob** | 7, 8 | `--ds-build`, the cell and family carrying the mode, `build_relation` made required; `define_multiway_join_test_suite_for_build_mode!` and its two invocations | P2 | 2 | `cargo test -p kermit` green incl. 8 `cli_column_trie_build_mode` tests and 28 `columntrieincremental` join tests; both mutation checks recorded |
+| **P4 — Analysis and docs** | 9, 10 | kermit-lab back-fill, ablation guard, contract test; every doc in Task 10 | P3 (the contract test needs `--ds-build`) | 2 | kermit-lab pytest green with `KERMIT_BIN`; `cargo doc` clean |
+| *Controller* | 11, 12 | Phase 2 gate, miri, evidence, supervisor checkpoint; landing only on the user's instruction | P4 | — | — |
+
+Each implementer gets: this plan, its package's task numbers, the ground rules above, and a report budget of about 40 lines — commit SHAs, test counts, mutation-check outcomes, and any deviation from the plan with its reason. It must not start the next package, push, or merge (except Task 5 Step 0's `origin/master` merge).
+
+---
+
+# Phase 1 — the one-pass bulk build (P1, then controller)
+
+## Task 1 [P1]: One-pass bulk build with an array-level equivalence test
 
 **Files:**
 - Modify: `kermit-ds/src/ds/column_trie/implementation.rs`
@@ -449,7 +466,7 @@ Mutant B — misplace an interval push. Replace `if depth > diverge {` with `if 
 
 ---
 
-## Task 2: ColumnTrie reports carry `ds_build_mode: "bulk"`
+## Task 2 [P1]: ColumnTrie reports carry `ds_build_mode: "bulk"`
 
 **Files:**
 - Modify: `kermit/src/execution.rs`
@@ -717,7 +734,7 @@ Mutant — drop the `bench run` merge: delete the line `optimization_axes.extend
 
 ---
 
-## Task 3: Document the one-pass build
+## Task 3 [P1]: Document the one-pass build
 
 **Files:**
 - Modify: `docs/data-structures/column-trie.md`
@@ -813,7 +830,7 @@ EOF
 
 ---
 
-## Task 4: Phase 1 gate, evidence, checkpoint
+## Task 4 [controller]: Phase 1 gate, evidence, checkpoint
 
 - [ ] **Step 1: Full gate**
 
@@ -867,9 +884,9 @@ Landing order (supervisor): phase 1 unblocks the authoritative sweep's `insertio
 
 ---
 
-# Phase 2 — the `--ds-build` knob
+# Phase 2 — the `--ds-build` knob (P2, P3, P4, then controller)
 
-## Task 5: Resolved `--ds-*` choices travel as one `DsChoices`
+## Task 5 [P2]: Resolved `--ds-*` choices travel as one `DsChoices`
 
 **Files:**
 - Modify: `kermit/src/options.rs`
@@ -1159,7 +1176,7 @@ EOF
 
 ---
 
-## Task 6: `ColumnTrieBuildMode`, `BuildModeRelation` and `BuiltWith`
+## Task 6 [P2]: `ColumnTrieBuildMode`, `BuildModeRelation` and `BuiltWith`
 
 **Files:**
 - Create: `kermit-ds/src/ds/column_trie/build_mode.rs`
@@ -1652,7 +1669,7 @@ EOF
 
 ---
 
-## Task 7: `--ds-build` selects ColumnTrie's build mode
+## Task 7 [P3]: `--ds-build` selects ColumnTrie's build mode
 
 **Files:**
 - Modify: `kermit/src/options.rs`, `kermit/src/execution.rs`, `kermit/src/bench/run.rs`, `kermit/src/bench/ds.rs`, `kermit/src/main.rs`
@@ -2218,7 +2235,7 @@ Note: whether `TrieLftj::build_relation` delegates to the structure cannot be ob
 
 ---
 
-## Task 8: `define_multiway_join_test_suite_for_build_mode!`
+## Task 8 [P3]: `define_multiway_join_test_suite_for_build_mode!`
 
 **Files:**
 - Modify: `kermit/tests/common/macros.rs`
@@ -2331,7 +2348,7 @@ EOF
 
 ---
 
-## Task 9: kermit-lab back-fills `ds_build_mode` on pre-#84 ColumnTrie rows
+## Task 9 [P4]: kermit-lab back-fills `ds_build_mode` on pre-#84 ColumnTrie rows
 
 **Files:**
 - Modify: `python/kermit-lab/kermit_lab/defaults.py`
@@ -2576,7 +2593,7 @@ EOF
 
 ---
 
-## Task 10: Document the first BuildMode consumer
+## Task 10 [P4]: Document the first BuildMode consumer
 
 **Files:**
 - Modify: `docs/data-structures/column-trie.md`, `docs/specs/optimization-standard.md`, `docs/specs/bench-report-schema.md`, `CLAUDE.md`, `ARCHITECTURE.md`, `BENCHMARKING.md`, `USAGE.md`
@@ -2808,7 +2825,7 @@ EOF
 
 ---
 
-## Task 11: Phase 2 gate, evidence, checkpoint
+## Task 11 [controller]: Phase 2 gate, evidence, checkpoint
 
 - [ ] **Step 1: Full gate** — repeat Task 4 Step 1, then the kermit-lab suite with the real binary:
 
@@ -2843,7 +2860,7 @@ SendMessage to the supervisor: phase-2 commit SHAs, gate and miri results, mutat
 
 ---
 
-## Task 12: Hand-off (only on the user's instruction)
+## Task 12 [controller]: Hand-off (only on the user's instruction)
 
 - [ ] **Step 1:** Invoke `superpowers:finishing-a-development-branch`. Before any merge or push, send supervisor checkpoint 3 and get the user's explicit approval.
 - [ ] **Step 2:** If landing: `git -C $WT fetch origin`, then `git -C $WT merge origin/master` (never rebase). Expect conflicts in `kermit/tests/common/macros.rs` and `CLAUDE.md` if the #78 session (`aidanb/78`) has landed; keep both sides' additions. Re-run the full gate (Task 11 Steps 1–2) on the merged tree, then `git -C $WT push origin HEAD:master` only with the user's go-ahead.
