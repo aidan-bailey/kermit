@@ -100,10 +100,10 @@ PartialEq, Eq` and implementing `LayoutOption`:
 ```rust
 impl SeekStrategy for GallopingSeek {
     fn partition_point<T, P: FnMut(&T) -> bool>(remaining: &[T], mut below: P) -> usize {
-        // A seek usually lands close by, so probe the current position first.
-        match remaining.first() {
-            | Some(first) if below(first) => {},
-            | _ => return 0,
+        // A seek usually lands close by, so probe the current position
+        // first: a seek that does not move costs one probe.
+        if remaining.is_empty() || !below(&remaining[0]) {
+            return 0;
         }
         // Gallop: double `bound` while it is still below. Invariant: `below`
         // holds at offset `bound / 2`.
@@ -752,9 +752,11 @@ amends and no pushes.
 - **The sweep.** It is at 62f722e: iteration and space are done, and the
   insertion re-run is pending #84. #80 lands after the sweep. Its default
   changes no metric's code, but the user's sequencing stands.
-- **Checkpoints.** A supervising session reviews at three points: this
-  spec and its plan; after commit 4, when the A/B becomes possible; and
-  before any merge or push.
+- **Checkpoints.** A supervising session reviews at four points:
+  1. this spec and its plan;
+  2. after the binary-side commits (4–5), with measurement 1;
+  3. after kermit-lab, the docs and measurement 2;
+  4. before any merge or push.
 
 ## Open questions
 
