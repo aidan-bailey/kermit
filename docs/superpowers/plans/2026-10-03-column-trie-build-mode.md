@@ -2810,6 +2810,10 @@ kermit bench ds -r data.csv -i column-trie -m insertion --ds-build incremental
 ```
 ````
 
+- [ ] **Step 5b: Bring the design spec in line with the code**
+
+`docs/specs/2026-10-03-column-trie-build-mode-design.md` predates three naming choices the code made (all reviewer-approved as clearer): `SortedTrieRelation::build_with` (the spec says `build`), `TrieLftj::new(build, optimiser)` (the spec says `new(optimiser, build)`, against `HashHtj::new(config, optimiser)`'s order), and `BuildChoices { column_trie_build }` (the spec says `ds_build`). Update those three mentions, change the header's `**Status:**` to `Implemented (#84)`, and add a short "Implementation notes" section at the end recording what review added beyond the design: `load_query_runner` takes `DsChoices`; `RelationFamily::build_mode_axes` is required as well as `build_relation`; `BuiltWith` has a spy test that it applies its provider, and `execution.rs` has a spy test (`sorted_families_build_with_their_mode`) that each sorted family builds with its own mode; the standard's output equivalence is pinned to same contents and same `HeapSize`.
+
 - [ ] **Step 6: Verify and commit**
 
 ```bash
