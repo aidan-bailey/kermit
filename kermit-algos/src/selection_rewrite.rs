@@ -17,7 +17,8 @@
 //! ([`crate::sorted::EqualitySelectionTrieIter`] /
 //! [`crate::hash::EqualitySelectionHashTrieIter`]), so neither executor
 //! ever sees a repeated variable. Intended to run immediately after
-//! [`crate::rewrite_atoms`] and before [`crate::JoinAlgo::join_for_each`].
+//! [`crate::rewrite_atoms`] and [`crate::rewrite_placeholders`], and before
+//! [`crate::JoinAlgo::join_for_each`].
 
 use {
     crate::const_rewrite::highest_k_index,
@@ -72,11 +73,11 @@ pub struct SelectionSpec {
 /// that `r(X, X), r(X, Y)` yields two distinct views of `r`.
 ///
 /// Fresh variables share the `K<n>` counter with [`crate::rewrite_atoms`]
-/// (both start past the highest existing `K<n>`), so the two rewrites
-/// compose in either order. Run this one **second**: after the const
-/// rewrite the body is atom-free, and the const rewrite's fresh variables
-/// are distinct by construction, so this pass never mistakes one for a
-/// repeat.
+/// and [`crate::rewrite_placeholders`] (all start past the highest
+/// existing `K<n>`), so the rewrites compose in any order. Run this one
+/// **last**: after the other two the body holds only variables, and their
+/// fresh variables are distinct by construction, so this pass never
+/// mistakes one for a repeat.
 ///
 /// # Head asymmetry
 ///
@@ -86,7 +87,9 @@ pub struct SelectionSpec {
 /// # Placeholders
 ///
 /// `_` terms are neither sources nor repeats. Column positions are
-/// physical, so `r(X, _, X)` yields the equality `(0, 2)`.
+/// physical, so `r(X, _, X)` yields the equality `(0, 2)`. (Through
+/// `kermit::db` no placeholder reaches this pass:
+/// [`crate::rewrite_placeholders`] runs first.)
 pub fn rewrite_repeated_variables(mut query: JoinQuery) -> (JoinQuery, Vec<SelectionSpec>) {
     let mut next_k = highest_k_index(&query).map_or(0, |n| n + 1);
     let mut specs: Vec<SelectionSpec> = Vec::new();

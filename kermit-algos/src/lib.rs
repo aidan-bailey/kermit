@@ -7,9 +7,10 @@
 //!
 //! # Layout
 //!
-//! The crate is organised in five parts. Three are family-agnostic and sit
+//! The crate is organised in six parts. Four are family-agnostic and sit
 //! at the root — `const_rewrite`, which turns constant atoms into synthetic
-//! unary predicates; `selection_rewrite`, which turns a variable repeated
+//! unary predicates; `placeholder_rewrite`, which turns each `_` into a
+//! fresh variable; `selection_rewrite`, which turns a variable repeated
 //! inside one atom into a fresh variable plus a synthetic selection view;
 //! and `analysis`, the canonical variable numbering that planners and
 //! executors must agree on. `optimiser` plans a
@@ -27,6 +28,7 @@ mod const_rewrite;
 mod hash;
 mod join_algo;
 mod optimiser;
+mod placeholder_rewrite;
 mod selection_rewrite;
 mod sorted;
 
@@ -50,6 +52,7 @@ pub use {
         topological_order, CardinalityOptimiser, CatalogStats, LexicographicOptimiser, Optimiser,
         PlanError, QueryOptimiser, QueryPlan, RelationStats,
     },
+    placeholder_rewrite::rewrite_placeholders,
     selection_rewrite::{
         is_selection_predicate, rewrite_repeated_variables, ColumnEquality, SelectionSpec,
         SELECTION_PREDICATE_PREFIX,

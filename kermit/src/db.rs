@@ -14,9 +14,10 @@
 
 use {
     kermit_algos::{
-        is_const_predicate, is_selection_predicate, rewrite_atoms, rewrite_repeated_variables,
-        CatalogStats, ColumnEquality, HashTrieIterKind, HashTriejoin, JoinAlgo, JoinQuery,
-        QueryOptimiser, SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
+        is_const_predicate, is_selection_predicate, rewrite_atoms, rewrite_placeholders,
+        rewrite_repeated_variables, CatalogStats, ColumnEquality, HashTrieIterKind, HashTriejoin,
+        JoinAlgo, JoinQuery, QueryOptimiser, SingletonHashTrieIter, SingletonTrieIter,
+        TrieIterKind,
     },
     kermit_ds::Cardinality,
     kermit_iters::{HashStrategy, HashTrieIterable, JoinIterable, TrieIterable},
@@ -103,8 +104,8 @@ impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
     }
 }
 
-/// The one join body: const-view rewrite, selection rewrite, wrapper map,
-/// statistics, plan, execute.
+/// The one join body: const-view rewrite, placeholder rewrite, selection
+/// rewrite, wrapper map, statistics, plan, execute.
 ///
 /// Each result tuple is passed to `emit` as a borrowed slice; the result
 /// is never materialised here.
@@ -125,9 +126,11 @@ fn run_join<'a, R, F, JA, S>(
     JA: JoinAlgo<F::Wrapper<'a>>,
     S: FnMut(&[usize]),
 {
-    // Const first, then selection: the second pass then sees an atom-free
-    // body, and the two share one fresh-variable counter.
+    // Const, then placeholder, then selection: the selection pass then sees
+    // a body of variables only, and all three share one fresh-variable
+    // counter, so no fresh variable is ever mistaken for a repeat.
     let (rewritten, const_specs) = rewrite_atoms(query).expect("malformed constant atom in query");
+    let rewritten = rewrite_placeholders(rewritten);
     let (rewritten, selection_specs) = rewrite_repeated_variables(rewritten);
 
     let lookup = |name: &str| -> &'a R {
@@ -380,6 +383,38 @@ mod tests {
         assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
     }
 
+    /// `Q(X) :- r(X, _).` — a trailing placeholder is a fresh unused
+    /// variable, so `X` repeats once per matching tuple (bag semantics).
+    /// Before the placeholder rewrite the trailing level was never
+    /// opened and each `X` appeared once.
+    #[test]
+    fn test_join_trailing_placeholder() {
+        let relations = rels(vec![("r", 2, vec![vec![1, 2], vec![1, 3], vec![2, 4]])]);
+        let query: JoinQuery = "Q(X) :- r(X, _).".parse().unwrap();
+        let mut got: Vec<usize> =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .iter()
+                .map(|r| r[0])
+                .collect();
+        got.sort();
+        assert_eq!(got, vec![1, 1, 2]);
+    }
+
+    /// `Q(X, Y) :- r(X, _, Y).` — `Y` names the third column. Before the
+    /// placeholder rewrite it bound the second (issue #73).
+    #[test]
+    fn test_join_middle_placeholder() {
+        let relations = rels(vec![("r", 3, vec![vec![1, 2, 3], vec![1, 4, 5]])]);
+        let query: JoinQuery = "Q(X, Y) :- r(X, _, Y).".parse().unwrap();
+        let mut got: Vec<(usize, usize)> =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .iter()
+                .map(|r| (r[0], r[1]))
+                .collect();
+        got.sort();
+        assert_eq!(got, vec![(1, 3), (1, 5)]);
+    }
+
     /// The streaming entry point visits every row without collecting;
     /// `lftj_join` is the same traversal, collected.
     #[test]
@@ -554,6 +589,47 @@ mod hash_join_tests {
         let mut got: Vec<(usize, usize)> = result.iter().map(|r| (r[0], r[1])).collect();
         got.sort();
         assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
+    }
+
+    /// Mirror of [`tests::test_join_trailing_placeholder`]. Before the
+    /// placeholder rewrite this panicked in `emit_leaf` ("at leaf level
+    /// for every participating iter").
+    #[test]
+    fn hash_join_trailing_placeholder() {
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
+        relations.insert(
+            "r".to_string(),
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]),
+        );
+        let q: JoinQuery = "Q(X) :- r(X, _).".parse().unwrap();
+        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+            &relations,
+            q,
+            &LexicographicOptimiser,
+        );
+        let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
+        got.sort();
+        assert_eq!(got, vec![1, 1, 2]);
+    }
+
+    /// Mirror of [`tests::test_join_middle_placeholder`]; panicked at the
+    /// same site as the trailing case.
+    #[test]
+    fn hash_join_middle_placeholder() {
+        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
+        relations.insert(
+            "r".to_string(),
+            HashTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![1, 4, 5]]),
+        );
+        let q: JoinQuery = "Q(X, Y) :- r(X, _, Y).".parse().unwrap();
+        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+            &relations,
+            q,
+            &LexicographicOptimiser,
+        );
+        let mut got: Vec<(usize, usize)> = result.iter().map(|r| (r[0], r[1])).collect();
+        got.sort();
+        assert_eq!(got, vec![(1, 3), (1, 5)]);
     }
 
     #[test]

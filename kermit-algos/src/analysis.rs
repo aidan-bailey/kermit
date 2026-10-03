@@ -28,7 +28,11 @@ pub struct QueryAnalysis {
 /// first-appearance order. Specifically, the j-th distinct head variable
 /// receives canonical index j. A third pass collects per-predicate variable
 /// index lists. Placeholders (`_`) and atoms are skipped in all passes —
-/// they occupy trie levels but don't bind a join variable.
+/// they occupy trie levels but don't bind a join variable — so an atom
+/// holding either yields a list shorter than its arity. The executors need
+/// one variable per column, which is why `kermit::db` hands them the
+/// rewritten query ([`crate::rewrite_atoms`], [`crate::rewrite_placeholders`]),
+/// in which neither occurs.
 ///
 /// Deterministic: same query, same numbering, always.
 pub fn analyse(query: &JoinQuery) -> QueryAnalysis {
