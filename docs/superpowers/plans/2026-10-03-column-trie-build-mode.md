@@ -39,9 +39,11 @@ The twelve tasks are grouped into four packages, each executed by one implemente
 | **P1 — Phase 1: the bulk build** | 1, 2, 3 | `column_trie/implementation.rs`; the `build_mode_axes` hook in `execution.rs`, `bench/ds.rs`, `bench/run.rs`; `cli_column_trie_build_mode.rs`; `column-trie.md`, `bench-report-schema.md` | — | 3 | `cargo test -p kermit-ds` and `-p kermit` green, clippy clean on both, both mutation checks recorded |
 | *Controller* | 4 | Phase 1 gate, miri, `friendof` before/after, supervisor checkpoint 2, ask the user about landing phase 1 (Task 12 for phase 1 alone if approved) | P1 | — | — |
 | **P2 — Prepare (no behaviour change)** | 5, 6 | Merge `origin/master` first (Task 5 Step 0); `DsChoices` in the binary; `ColumnTrieBuildMode`, `BuildModeRelation`, `BuiltWith` and the `ColumnTrieIncremental` DS-level aliases in `kermit-ds` | P1 | 2 | Every existing test green with the old flag behaviour; new `ds_choices_*`, `build_mode`, `built_with` and equivalence tests green |
-| **P3 — Expose the knob** | 7, 8 | `--ds-build`, the cell and family carrying the mode, `build_relation` made required; `define_multiway_join_test_suite_for_build_mode!` and its two invocations | P2 | 2 | `cargo test -p kermit` green incl. 8 `cli_column_trie_build_mode` tests and 28 `columntrieincremental` join tests; both mutation checks recorded |
+| **P3 — Expose the knob** | 7, 8 | `--ds-build`, the cell and family carrying the mode, `build_relation` made required; `define_multiway_join_test_suite_for_build_mode!` and its two invocations | P2 | 2 | `cargo test -p kermit` green incl. 8 `cli_column_trie_build_mode` tests and 32 `columntrieincremental` join tests (16 patterns × 2 optimisers once #78 is merged in); both mutation checks recorded |
 | **P4 — Analysis and docs** | 9, 10 | kermit-lab back-fill, ablation guard, contract test; every doc in Task 10 | P3 (the contract test needs `--ds-build`) | 2 | kermit-lab pytest green with `KERMIT_BIN`; `cargo doc` clean |
 | *Controller* | 11, 12 | Phase 2 gate, miri, evidence, supervisor checkpoint; landing only on the user's instruction | P4 | — | — |
+
+**#78 landed first.** #78's P1 reached master before this branch's phase 1, and the controller merges it in after P1. It changes code that Tasks 5 and 7 edit: `ExecutionFamily` methods return `Result<_, JoinError>`, `kermit/src/execution.rs` gains `read_relation_header`, `bench run` calls `workload.validate()?` before loading (its timed closures `.expect(VALIDATED)`), and the standard join suite has 16 patterns. The code in Tasks 5, 7 and 8 predates that merge. Where a signature or surrounding line changed, adapt the snippet minimally to the merged code, keep its intent, and report the deviation.
 
 Each implementer gets: this plan, its package's task numbers, the ground rules above, and a report budget of about 40 lines — commit SHAs, test counts, mutation-check outcomes, and any deviation from the plan with its reason. It must not start the next package, push, or merge (except Task 5 Step 0's `origin/master` merge).
 
@@ -2324,7 +2326,7 @@ macro_rules! define_multiway_join_test_suite_for_build_mode {
 - [ ] **Step 3: Run the tests**
 
 Run: `CARGO_BUILD_JOBS=2 nix develop $WT --command cargo test -p kermit --test join_tests columntrieincremental`
-Expected: PASS, 28 tests (14 patterns × 2 optimisers).
+Expected: PASS, 32 tests (16 patterns × 2 optimisers, the suite size after #78 adds its two placeholder patterns; 28 on a tree without them).
 
 - [ ] **Step 4: Format, lint, commit**
 
