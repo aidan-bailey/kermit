@@ -22,7 +22,7 @@ mod stats;
 pub use {
     cardinality::CardinalityOptimiser,
     lexicographic::LexicographicOptimiser,
-    ordering::topological_order,
+    ordering::{check_attribute_order, topological_order, CyclicAttributeOrder},
     plan::{PlanError, QueryPlan},
     stats::{CatalogStats, RelationStats},
 };

@@ -49,8 +49,9 @@ pub use {
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     optimiser::{
-        topological_order, CardinalityOptimiser, CatalogStats, LexicographicOptimiser, Optimiser,
-        PlanError, QueryOptimiser, QueryPlan, RelationStats,
+        check_attribute_order, topological_order, CardinalityOptimiser, CatalogStats,
+        CyclicAttributeOrder, LexicographicOptimiser, Optimiser, PlanError, QueryOptimiser,
+        QueryPlan, RelationStats,
     },
     placeholder_rewrite::rewrite_placeholders,
     selection_rewrite::{
