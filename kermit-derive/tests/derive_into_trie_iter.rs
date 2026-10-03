@@ -147,3 +147,49 @@ fn derive_into_iter_type_is_wrapper() {
     let result: Vec<Vec<usize>> = wrapper.collect();
     assert_eq!(result, vec![vec![42]]);
 }
+
+// -- A type parameter after `'a`, as on `TreeTrieIter<'a, S>` --
+
+/// Stands in for a Layout parameter such as a seek strategy.
+trait Marker {}
+
+struct Plain;
+
+impl Marker for Plain {}
+
+/// `MockTrieIter`, generic over a type parameter after `'a`. The derive must
+/// carry `M: Marker` into the impl it generates.
+#[derive(kermit_derive::IntoTrieIter)]
+struct GenericMockTrieIter<'a, M: Marker> {
+    inner: MockTrieIter<'a>,
+    _marker: std::marker::PhantomData<M>,
+}
+
+impl<M: Marker> LinearIterator for GenericMockTrieIter<'_, M> {
+    fn key(&self) -> Option<usize> { self.inner.key() }
+
+    fn next(&mut self) -> Option<usize> { self.inner.next() }
+
+    fn seek(&mut self, seek_key: usize) -> bool { self.inner.seek(seek_key) }
+
+    fn at_end(&self) -> bool { self.inner.at_end() }
+}
+
+impl<M: Marker> TrieIterator for GenericMockTrieIter<'_, M> {
+    fn open(&mut self) -> bool { self.inner.open() }
+
+    fn up(&mut self) -> bool { self.inner.up() }
+}
+
+#[test]
+fn derive_accepts_a_type_parameter_after_the_lifetime() {
+    let trie = MockTrie {
+        roots: vec![node(1, vec![leaf(2), leaf(3)]), node(4, vec![leaf(5)])],
+    };
+    let iter = GenericMockTrieIter::<Plain> {
+        inner: MockTrieIter::new(&trie),
+        _marker: std::marker::PhantomData,
+    };
+    let result: Vec<Vec<usize>> = iter.into_iter().collect();
+    assert_eq!(result, vec![vec![1, 2], vec![1, 3], vec![4, 5]]);
+}

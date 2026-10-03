@@ -1,0 +1,7 @@
+error: #[derive(IntoTrieIter)] requires the lifetime `'a` as the first generic parameter, optionally followed by type parameters; found 2 parameter(s) on `TwoLifetimes`
+ --> tests/ui/reject_second_lifetime.rs:4:10
+  |
+4 | #[derive(IntoTrieIter)]
+  |          ^^^^^^^^^^^^
+  |
+  = note: this error originates in the derive macro `IntoTrieIter` (in Nightly builds, run with -Z macro-backtrace for more info)

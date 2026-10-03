@@ -27,6 +27,10 @@
 //! //   }
 //! ```
 //!
+//! A struct generic over a type parameter after `'a`, such as
+//! `TreeTrieIter<'a, S: SeekStrategy>`, gets
+//! `impl<'a, S: SeekStrategy> IntoIterator for TreeTrieIter<'a, S>`.
+//!
 //! See `kermit-derive/tests/derive_into_trie_iter.rs` for a runnable example
 //! with a minimal mock trie, and `kermit-ds` for two production uses
 //! (`TreeTrieIter`, `ColumnTrieIter`).
@@ -44,7 +48,10 @@ use {
 /// The annotated struct must:
 /// - implement `kermit_iters::TrieIterator` (and therefore
 ///   `kermit_iters::LinearIterator`),
-/// - have exactly one generic parameter, and it must be a lifetime named `'a`.
+/// - take the lifetime `'a` as its first generic parameter, optionally followed
+///   by type parameters (a Layout such as a seek strategy). Declare their
+///   bounds on the struct: the generated impl carries them, which is what lets
+///   it name `TrieIteratorWrapper<Self>`.
 ///
 /// The expanded impl wraps `self` in a `kermit_iters::TrieIteratorWrapper`,
 /// yielding each root-to-leaf path in the trie as a `Vec<usize>`.
@@ -54,21 +61,26 @@ pub fn derive_into_trie_iter(input: TokenStream) -> TokenStream {
     let ident = &input.ident;
 
     let params: Vec<_> = input.generics.params.iter().collect();
-    let valid =
-        matches!(params.as_slice(), [GenericParam::Lifetime(lt)] if lt.lifetime.ident == "a");
+    let valid = match params.split_first() {
+        | Some((GenericParam::Lifetime(lt), rest)) => {
+            lt.lifetime.ident == "a" && rest.iter().all(|p| matches!(p, GenericParam::Type(_)))
+        },
+        | _ => false,
+    };
     if !valid {
         let msg = format!(
-            "#[derive(IntoTrieIter)] requires exactly one generic parameter, a lifetime named \
-             `'a`; found {} parameter(s) on `{}`",
+            "#[derive(IntoTrieIter)] requires the lifetime `'a` as the first generic parameter, \
+             optionally followed by type parameters; found {} parameter(s) on `{}`",
             params.len(),
             ident
         );
         return quote! { compile_error!(#msg); }.into();
     }
 
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let output = quote! {
 
-        impl<'a> IntoIterator for #ident<'a> {
+        impl #impl_generics IntoIterator for #ident #ty_generics #where_clause {
             type Item = Vec<usize>;
             type IntoIter = TrieIteratorWrapper<Self>;
 

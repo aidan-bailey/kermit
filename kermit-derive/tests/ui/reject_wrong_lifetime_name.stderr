@@ -1,4 +1,4 @@
-error: #[derive(IntoTrieIter)] requires exactly one generic parameter, a lifetime named `'a`; found 1 parameter(s) on `WrongName`
+error: #[derive(IntoTrieIter)] requires the lifetime `'a` as the first generic parameter, optionally followed by type parameters; found 1 parameter(s) on `WrongName`
  --> tests/ui/reject_wrong_lifetime_name.rs:4:10
   |
 4 | #[derive(IntoTrieIter)]

@@ -1,8 +1,9 @@
 //! Compile-fail (UI) tests for `#[derive(IntoTrieIter)]`.
 //!
-//! The derive emits a `compile_error!` when the annotated struct's generics are
-//! not exactly one lifetime named `'a`. Each file under `tests/ui/` exercises
-//! one rejected shape; the sibling `.stderr` pins the diagnostic text.
+//! The derive emits a `compile_error!` unless the annotated struct's generics
+//! are the lifetime `'a` followed only by type parameters. Each file under
+//! `tests/ui/` exercises one rejected shape; the sibling `.stderr` pins the
+//! diagnostic text.
 //!
 //! Ignored under miri: `trybuild` shells out to `cargo`, which miri cannot
 //! interpret.
