@@ -268,9 +268,19 @@ structure-scoped registry next to `AXIS_DEFAULTS`. A missing
 `ds_build_mode` is filled with `"incremental"` only on rows whose
 `data_structure` is `"ColumnTrie"`, and only when the column is present
 (matching the existing rule). TreeTrie and HashTrie rows stay NaN, because
-they have no build-mode axis. `render_all` already draws an ablation figure
-for any optimisation column with two or more values, so old and new
-ColumnTrie rows appear as an ablation with no driver change.
+they have no build-mode axis.
+
+`render_all` draws an ablation figure for every optimisation column with two
+or more values, on its default `iteration` phase. With old rows back-filled
+`incremental` beside new `bulk` ones, that would chart an iteration-time
+"build-mode ablation" — but both modes build the same trie, so the difference
+is noise or binary drift. `presets.ablation` therefore refuses
+`ds_build_mode` on any phase other than `insertion` and `end_to_end`, raising
+`InsufficientAxesError`, which `render_all` already logs as a skip
+(supervisor review, checkpoint 1). The back-filled rows are for continuity;
+thesis comparisons of the two builds should come from one binary
+(`--ds-build incremental` against the default), since reports carry no binary
+identity. BENCHMARKING.md says so.
 
 ## Out of scope
 
@@ -347,8 +357,11 @@ carry no such key.
 - Unit tests for `DsChoices::resolve`, and the guard test pinning
   `axis_value()` to the clap names.
 - kermit-lab: `test_defaults.py` (ColumnTrie NaN becomes `incremental`;
-  other structures stay NaN; explicit `bulk` untouched), and a column-trie
-  `bench ds` case in the real-binary contract test `test_contract.py`.
+  other structures stay NaN; explicit `bulk` untouched); a column-trie
+  `bench ds` case in the real-binary contract test `test_contract.py`; and
+  `test_render_all.py` over mixed old/new ColumnTrie rows (no
+  `ablation-ds_build_mode` on `iteration`, one on `insertion`; the preset
+  raises `InsufficientAxesError` for `iteration`).
 
 ## Verification
 

@@ -861,7 +861,9 @@ Expected: `col84-base` ≈ 34 s; `col84-bulk` well under 1 s. Record both number
 
 - [ ] **Step 4: Checkpoint 2 — report to the supervisor and the user**
 
-SendMessage to the supervisor: the three phase-1 commit SHAs, the gate results (test counts, clippy/doc/fmt/miri), both mutation-check outcomes, and the two `friendof` timings. Tell the user the same in a short summary, and ask whether to land phase 1 on its own before phase 2 (landing needs the user's approval and supervisor checkpoint 3; see Task 12). Continue with phase 2 unless told otherwise.
+SendMessage to the supervisor: the three phase-1 commit SHAs, the gate results (test counts, clippy/doc/fmt/miri), both mutation-check outcomes, and the two `friendof` timings. Tell the user the same in a short summary.
+
+Landing order (supervisor): phase 1 unblocks the authoritative sweep's `insertion` re-run, so it should reach master first — as soon as checkpoint 2 passes **and the user approves the push**. Ask the user; if approved, follow Task 12 for phase 1 alone (supervisor checkpoint 3 first). Then continue with phase 2.
 
 ---
 
@@ -876,7 +878,11 @@ SendMessage to the supervisor: the three phase-1 commit SHAs, the gate results (
 - Modify: `kermit/src/bench/ds.rs`
 - Modify: `kermit/src/main.rs`
 
-Behaviour-preserving refactor: the existing tests are the safety net; one new test pins `resolve`.
+Behaviour-preserving refactor: the existing tests are the safety net; one new test pins `resolve`. The existing `validate_layout_choices*` / `validate_config_choices*` tests must keep passing unchanged (their signatures do not change) — that is the evidence hash-trie handling did not move.
+
+- [ ] **Step 0: Catch up with master before changing signatures**
+
+#78's P1 edits `execution.rs` (a `read_relation_header` beside `read_relation`), `main.rs`'s `load_query_runner` and `bench run`'s setup — exactly where this task and Task 7 change signatures. Run `git -C $WT fetch origin`; if `origin/master` has moved since the branch point, `git -C $WT merge origin/master` now (never rebase), resolve, and re-run `CARGO_BUILD_JOBS=2 nix develop $WT --command cargo test -p kermit` before Step 1, so the refactor is written against the current code.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2415,7 +2421,137 @@ systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0 env KERMIT_BIN=$WT
 
 Expected: all pass, including the two new default tests and the three contract tests (none skipped, since `KERMIT_BIN` is set).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Write the failing ablation-guard tests**
+
+Required by the supervisor's checkpoint-1 review. `render_all` defaults to `phase="iteration"` and draws `ablation-<axis>` for every axis with two values. Once old ColumnTrie rows are back-filled `incremental` beside new `bulk` ones, it would draw an iteration-time "build-mode ablation" — but both modes build the same trie, so any difference there is noise or binary drift. A BuildMode axis can only explain phases that time the build (`insertion`, `end_to_end`).
+
+Append to `tests/conftest.py`:
+
+```python
+@pytest.fixture
+def fixture_build_mode_tree(tmp_path: Path) -> dict:
+    """ColumnTrie reports from before and after issue #84, for the
+    build-mode ablation guard.
+
+    The old report carries no ``ds_build_mode`` (back-filled to
+    ``incremental`` on load); the new one carries ``"bulk"``. Each times
+    insertion and iteration (plus space), so the build-mode axis has two
+    values and applies to one time phase but not the other.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for tag, build_mode, insertion_point in (("old", None, 9000.0), ("new", "bulk", 300.0)):
+        groups: list[tuple[str, str, str]] = []
+        # Same trie under both builds, so the same traversal time.
+        for phase, point in (("insertion", insertion_point), ("iteration", 100.0)):
+            function = f"ColumnTrie/{tag}/{phase}"
+            samples = [(i + 1, point * (i + 1)) for i in range(10)]
+            _write_function_dir(
+                criterion_root, _FunctionSpec("run", function, "time", point, samples)
+            )
+            groups.append(("run", function, "time"))
+        space_function = f"ColumnTrie/{tag}/space"
+        space_samples = [(i + 1, 6400.0 * (i + 1)) for i in range(10)]
+        _write_function_dir(
+            criterion_root,
+            _FunctionSpec("run", space_function, "space", 6400.0, space_samples),
+        )
+        groups.append(("run", space_function, "space"))
+        axes = {
+            "benchmark": "triangle",
+            "query": "triangle",
+            "data_structure": "ColumnTrie",
+            "algorithm": "LeapfrogTriejoin",
+            "tuples": 100,
+        }
+        if build_mode is not None:
+            axes["ds_build_mode"] = build_mode
+        paths.append(
+            _write_report(
+                reports_dir, f"run-ColumnTrie-{tag}", kind="run", axes=axes,
+                metadata=[], groups=groups,
+            )
+        )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }
+```
+
+Append to `tests/test_render_all.py` (add `import pytest`, `import kermit_lab as kl`, `from kermit_lab import presets` and `from kermit_lab.plots_errors import InsufficientAxesError` to its imports):
+
+```python
+def test_build_mode_ablation_is_drawn_only_for_build_phases(
+    fixture_build_mode_tree, tmp_path: Path
+) -> None:
+    """Old ColumnTrie rows back-fill to ``incremental`` beside new ``bulk``
+    ones, but both builds produce the same trie: an iteration-time
+    "build-mode ablation" would chart drift, not the build mode."""
+    reports = load_reports(fixture_build_mode_tree["paths"])
+    for phase, drawn in (("iteration", False), ("insertion", True)):
+        out = tmp_path / phase
+        out.mkdir()
+        render_all(reports, out, fixture_build_mode_tree["criterion_root"], "pdf", phase=phase)
+        names = {p.name for p in out.iterdir()}
+        assert ("ablation-ds_build_mode.pdf" in names) is drawn, (phase, names)
+
+
+def test_ablation_preset_refuses_build_mode_outside_build_phases(
+    fixture_build_mode_tree,
+) -> None:
+    df = kl.load(
+        fixture_build_mode_tree["paths"],
+        criterion_root=fixture_build_mode_tree["criterion_root"],
+    )
+    assert set(df["ds_build_mode"].dropna()) == {"incremental", "bulk"}
+    with pytest.raises(InsufficientAxesError, match="built"):
+        presets.ablation(df, axis="ds_build_mode", phase="iteration")
+```
+
+Run: `systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0 uv --directory $WT/python/kermit-lab run pytest tests/test_render_all.py`
+Expected: both new tests FAIL (the iteration-phase render draws `ablation-ds_build_mode.pdf`; the preset raises nothing). If a non-ablation shape raises something other than `InsufficientAxesError` on this fixture, align the fixture with `fixture_opt_tree`'s shape rather than weakening `render_all`.
+
+- [ ] **Step 5: Guard the ablation preset**
+
+In `kermit_lab/presets.py`, import `from .plots_errors import InsufficientAxesError` (if not already imported), and above `def ablation` add:
+
+```python
+# A BuildMode changes how a structure is built, never the structure, so its
+# axis can only explain the phases that time a build. On any other phase two
+# build modes measure the same structure, and a difference between them is
+# noise or binary drift, not a build-mode effect.
+_BUILD_ONLY_AXES = frozenset({"ds_build_mode"})
+_BUILD_PHASES = frozenset({"insertion", "end_to_end"})
+```
+
+and make `ablation` begin:
+
+```python
+def ablation(
+    df: pd.DataFrame, *, axis: str, phase: str = "iteration", out: Optional[Path] = None
+) -> Figure:
+    """Ablation: time vs an optimization axis, coloured by DS, faceted by query when >1.
+
+    Raises :class:`InsufficientAxesError` for a build-mode axis on a phase
+    that does not time the build.
+    """
+    if axis in _BUILD_ONLY_AXES and phase not in _BUILD_PHASES:
+        raise InsufficientAxesError(
+            f"{axis} changes only how a structure is built, so it cannot affect "
+            f"phase {phase!r}; plot it on 'insertion' or 'end_to_end'"
+        )
+```
+
+(the rest of the body is unchanged). `render_all`'s `_try` already demotes `InsufficientAxesError` to an info log (`skipped ablation-ds_build_mode: …`), so it skips rather than raises; the CLI `ablation` subcommand reports it the same way.
+
+Run the full suite again (Step 3's two commands). Expected: all pass.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git -C $WT add python/kermit-lab
@@ -2427,6 +2563,11 @@ built incrementally; every ColumnTrie report since carries the axis. The
 new SCOPED_AXIS_DEFAULTS fills it on ColumnTrie rows only, since the
 other structures have no build-mode axis. The contract test checks the
 real binary emits the key.
+
+The ablation preset refuses ds_build_mode on any phase but insertion and
+end_to_end: both modes build the same structure, so on iteration (the
+render-all default) old and new rows differ only by drift. render-all
+logs the skip.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01EQYT5rUt5xkPAh85YeHs8t
@@ -2607,10 +2748,19 @@ BENCHMARKING.md:
 
 ````markdown
 `--ds-build` works the same way for ColumnTrie's build (`bulk` by default,
-`incremental` for the build before issue #84). Give every run its own
-`--name`: Criterion group names do not encode optimisation axes, so two runs
-that differ only in a `--ds-*` flag write into the same `target/criterion/`
-directory, and the later overwrites the earlier's samples.
+`incremental` for the build before issue #84). For thesis figures, compare the
+two modes **within one binary** — `--ds-build incremental` against the default.
+kermit-lab back-fills `incremental` on pre-#84 ColumnTrie reports, but those
+rows are for continuity only: reports carry no binary identity, so a
+difference between an old row and a new one mixes the build mode with every
+other change between the two binaries. A build mode only changes the build,
+so `kl.ablation` (and `render-all`) draw the `ds_build_mode` axis for the
+`insertion` and `end_to_end` phases only.
+
+Give every run its own `--name`: Criterion group names do not encode
+optimisation axes, so two runs that differ only in a `--ds-*` flag write into
+the same `target/criterion/` directory, and the later overwrites the earlier's
+samples.
 
 ```sh
 kermit bench --name col-bulk --report-json bench-runs/col-bulk.json \
