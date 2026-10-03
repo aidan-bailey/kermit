@@ -497,3 +497,46 @@ macro_rules! define_multiway_join_test_suite_with_config {
         )+
     };
 }
+
+/// The BuildMode-axis counterpart of [`define_multiway_join_test_suite!`]
+/// prescribed by `docs/specs/optimization-standard.md`.
+///
+/// Declares `type <Relation><Provider> = BuiltWith<Relation, Provider>;`
+/// inside a uniquely named module and runs the standard join patterns
+/// against it by delegating to [`define_multiway_join_test_suite!`], so a
+/// pattern added there runs here too. `Provider` is a marker declared with
+/// `kermit_ds::define_build_mode_provider!`.
+///
+/// ```ignore
+/// define_build_mode_provider!(Incremental, ColumnTrieBuildMode, ColumnTrieBuildMode::Incremental);
+/// define_multiway_join_test_suite_for_build_mode!(ColumnTrie, LeapfrogTriejoin, LexicographicOptimiser, Incremental);
+/// // → tests named e.g. `triangle_columntrieincremental_leapfrogtriejoin_lexicographicoptimiser`
+/// ```
+#[macro_export]
+macro_rules! define_multiway_join_test_suite_for_build_mode {
+    (
+        $(
+            $relation_type:ident,
+            $join_algorithm:ident,
+            $optimiser:ident,
+            $provider:ident
+        ),+
+    ) => {
+        $(
+            paste::paste! {
+                // One module per invocation, as in the Config variant, so
+                // sibling invocations' aliases cannot collide.
+                mod [<build_mode_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower _ $provider:lower>] {
+                    use super::*;
+
+                    type [<$relation_type $provider>] =
+                        kermit_ds::BuiltWith<$relation_type, $provider>;
+
+                    $crate::define_multiway_join_test_suite!(
+                        [<$relation_type $provider>], $join_algorithm, $optimiser
+                    );
+                }
+            }
+        )+
+    };
+}
