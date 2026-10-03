@@ -100,6 +100,9 @@ pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
 ///   did not send a Parquet file (non-200 status, empty body, missing magic).
 /// - [`BenchError::Integrity`] — a downloaded file does not match the `sha256`
 ///   its relation declares.
+/// - [`BenchError::CorruptCache`] — a file already at a relation's cache path
+///   cannot be a Parquet file (see [`cached_file_problem`]). It is reported,
+///   never deleted or re-downloaded.
 pub fn ensure_cached(
     benchmark: &BenchmarkDefinition, workspace_root: &Path,
 ) -> Result<Vec<PathBuf>, BenchError> {
@@ -124,7 +127,19 @@ pub fn ensure_cached(
         }
 
         let path = relation_cache_path(&benchmark.name, &rel.name)?;
-        if !path.exists() {
+        if path.exists() {
+            // Downloads are atomic and checked since #70, but a file written
+            // before that, or truncated or replaced since, would otherwise
+            // be trusted here and fail only when decoded.
+            if let Some(reason) = cached_file_problem(&path)? {
+                return Err(BenchError::CorruptCache {
+                    benchmark: benchmark.name.clone(),
+                    relation: rel.name.clone(),
+                    path: path.display().to_string(),
+                    reason,
+                });
+            }
+        } else {
             // `validate` guarantees the XOR, so a non-local relation has a url.
             let url = rel.url.as_deref().unwrap_or_default();
             eprintln!("  downloading {} from {url}...", rel.name);
@@ -212,6 +227,40 @@ pub fn verify_integrity(
 
 /// Four bytes that open and close every Parquet file.
 const PARQUET_MAGIC: &[u8] = b"PAR1";
+
+/// Explains why the file at `path` cannot be a Parquet file, or returns
+/// `None` if it may be one: the structural check [`unusable_download`]
+/// applies to a download, `PAR1` at both ends, read from the file's first
+/// and last four bytes so a large relation is not read whole.
+///
+/// # Errors
+///
+/// [`BenchError::Io`] if the file cannot be opened or read.
+fn cached_file_problem(path: &Path) -> Result<Option<String>, BenchError> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let magic = PARQUET_MAGIC.len() as u64;
+    if len < 2 * magic {
+        return Ok(Some(format!(
+            "it is {len} bytes, shorter than a Parquet file's two `PAR1` markers"
+        )));
+    }
+    let mut head = [0u8; 4];
+    file.read_exact(&mut head)?;
+    let mut tail = [0u8; 4];
+    file.seek(SeekFrom::End(-(magic as i64)))?;
+    file.read_exact(&mut tail)?;
+    let missing = match (head == PARQUET_MAGIC, tail == PARQUET_MAGIC) {
+        | (true, true) => return Ok(None),
+        | (true, false) => "its end (it was cut off before its footer)",
+        | (false, true) => "its start",
+        | (false, false) => "either end",
+    };
+    Ok(Some(format!(
+        "the {len}-byte file lacks the Parquet `PAR1` magic at {missing}"
+    )))
+}
 
 /// Explains why a response that passed `error_for_status` is still not a
 /// relation file, or returns `None` if it is one.
@@ -416,6 +465,49 @@ mod tests {
             queries: vec![],
             generator: None,
         }
+    }
+
+    /// Writes `bytes` to a fresh temp file.
+    fn temp_file(bytes: &[u8]) -> tempfile::NamedTempFile {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        fs::write(f.path(), bytes).unwrap();
+        f
+    }
+
+    #[test]
+    fn a_complete_parquet_file_passes_the_cached_file_check() {
+        let f = temp_file(b"PAR1 row groups and footer PAR1");
+        assert_eq!(cached_file_problem(f.path()).unwrap(), None);
+    }
+
+    /// A zero-byte file is what a WAF challenge left at the cache path
+    /// before #70; any file shorter than both markers cannot be Parquet.
+    #[test]
+    fn an_empty_or_tiny_file_fails_the_cached_file_check() {
+        for bytes in [&b""[..], b"PAR1PAR"] {
+            let reason = cached_file_problem(temp_file(bytes).path()).unwrap();
+            assert!(reason.is_some_and(|r| r.contains("bytes")), "{bytes:?}");
+        }
+    }
+
+    /// A file cut off before its footer still starts with `PAR1` but
+    /// does not end with it.
+    #[test]
+    fn a_truncated_file_fails_the_cached_file_check() {
+        let reason = cached_file_problem(temp_file(b"PAR1 row groups, no footer").path()).unwrap();
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("PAR1")),
+            "{reason:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_parquet_fails_the_cached_file_check() {
+        let reason = cached_file_problem(temp_file(b"<html>challenge</html>").path()).unwrap();
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("PAR1")),
+            "{reason:?}"
+        );
     }
 
     #[test]
