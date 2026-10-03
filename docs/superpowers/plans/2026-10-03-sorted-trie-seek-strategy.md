@@ -138,6 +138,17 @@ push or merge.
 
 **Files:** none modified, apart from the merge commit.
 
+**As executed (2026-10-03).**
+- **Merge.** `origin/master` was `ec6f42b` (#84 phase 2 and #78 P2+P3).
+  It merged cleanly into `0056fe1`, which is BASE.
+- **Baseline binary.** The release build is deferred to Task 6, where
+  measurement 1 needs it. BASE is pinned in `$SCRATCH/base.sha` and
+  `git archive` reproduces it at any time. Building it now would compete
+  with the P1 implementers' cargo runs on a memory-constrained host.
+- **Green baseline (Step 4).** Satisfied by identity:
+  `git diff --stat ec6f42b 0056fe1` shows only this spec and plan, and the
+  supervisor ran the full gate (CI-scope miri included) on `ec6f42b`.
+
 - [ ] **Step 1: Confirm the precondition**
 
 ```bash
@@ -1163,11 +1174,21 @@ not.
 
 - [ ] **Step 6: The DS-level suites take one alias per structure × strategy**
 
-Replace `kermit-ds/tests/trie_tests.rs`. Keep any lines #84 added, such as
-its `ColumnTrieIncremental` alias and invocation:
+Replace the two plain invocations in `kermit-ds/tests/trie_tests.rs`. Keep
+#84's `define_build_mode_provider!(Incremental, …)`, its
+`type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;` and
+`relation_trie_test_suite!(ColumnTrieIncremental);`. That alias names
+`ColumnTrie` in type position, so it is the default `binary` strategy.
+`BuiltWith` derefs to its inner relation, so the seek-cost test's
+`relation.optimization_axes()` resolves through `Deref`. If it does not,
+add a forwarding `impl<R: HasOptimizationAxes, P> HasOptimizationAxes for
+BuiltWith<R, P>` in `kermit-ds/src/built_with.rs` and report the
+deviation. The `use` line becomes `use kermit_ds::{define_build_mode_provider,
+BinarySeek, BuiltWith, ColumnTrie, ColumnTrieBuildMode, GallopingSeek,
+LinearSeek, TreeTrie};`, and the six aliases replace the two plain
+invocations:
 
 ```rust
-use kermit_ds::{BinarySeek, ColumnTrie, GallopingSeek, LinearSeek, TreeTrie};
 mod common;
 
 // One alias per structure × seek strategy: the Layout test obligation of
@@ -2134,21 +2155,46 @@ In `kermit/src/bench/ds.rs`, make the same import change, and make
 is still used here because that rejection is CLI policy, not a type
 invariant, and one dispatch shape reads more easily than a special case.
 
-In `kermit/src/main.rs`, add `validate_layout_choices` (#84's refactor
-dropped it from this import) and `with_sorted_trie_layout` to the
-`options::{…}` import. In `load_query_runner`:
+In `kermit/src/main.rs`, add `with_sorted_trie_layout` to the
+`options::{…}` import.
 
-1. Replace the hand-duplicated layout check (the `if args.indexstructure !=
-   IndexStructure::HashTrie { … }` block and its comment) with:
+**As landed (adapted at Task 0).** `load_query_runner(args: &QueryArgs,
+choices: DsChoices)` takes its `DsChoices` from its two callers:
+
+- `bench join --output` passes the result of `DsChoices::resolve`.
+- `run_join` (`kermit join`) builds a literal,
+  `DsChoices { hasher: …, pruning: …, ..DsChoices::default() }`.
+
+A new `seek` field would silently take the default there, and no test
+could notice: `kermit join` writes no report axis, and every strategy
+gives the same answers. So `kermit join` resolves through
+`DsChoices::resolve` like every other command, which also makes the
+hand-duplicated check in `load_query_runner` dead.
+
+1. In `run_join`, replace the `let choices = DsChoices { … };` literal with:
 
 ```rust
-    // `kermit join` resolves no `DsChoices`, so run the shared layout check
-    // here; `bench join` has already run it and pays it twice on its
-    // `--output` path, which is harmless.
-    validate_layout_choices(IndexStructureSelector::of(args.indexstructure), &args.layout)?;
+    // `kermit join` has no `--ds-config` / `--ds-build` (neither can change
+    // an answer), so it resolves its layout flags against their defaults,
+    // through the same validator as every bench command.
+    let choices = DsChoices::resolve(
+        IndexStructureSelector::of(query_args.indexstructure),
+        &query_args.layout,
+        &ConfigChoices::default(),
+        &BuildChoices::default(),
+    )?;
 ```
 
-2. In its `DsChoices { … }` literal, add `seek: args.layout.sorted_trie_seek_resolved(),`.
+2. In `load_query_runner`, delete the hand-duplicated layout check: the
+   comment beginning "Deliberately duplicates `validate_layout_choices`"
+   and the `if args.indexstructure != IndexStructure::HashTrie { … }` block.
+   Both callers now pass a `DsChoices` that `resolve` validated. Add one
+   sentence to its doc comment: "Both callers resolve `choices` through
+   `DsChoices::resolve`, which has already validated every `--ds-*`
+   flag."
+   `cli_join_tests.rs` asserts the substring `--ds-layout-pruning is only
+   valid with --indexstructure hash-trie`, and `resolve`'s message still
+   contains it.
 
 3. Make its two sorted arms:
 
@@ -2169,6 +2215,13 @@ dropped it from this import) and `with_sorted_trie_layout` to the
 ```
 
 Drop any import the compiler reports unused, e.g. `IndexStructure` if the removed check was its last user.
+
+**Known limitation, inherited (#86).** Like the hasher, pruning, config
+and build validators, the seek validator checks `-i` only and ignores `-a`.
+So `-i all -a hash-triejoin --ds-layout-seek galloping` validates, then
+runs only the hash cell, which has no seek field. Keep the seek rule
+consistent with the existing validators; #86 tracks the fix for all of
+them, and #80 does not fix it (Priority 6).
 
 - [ ] **Step 6: `bench ds` rejects the flag**
 
