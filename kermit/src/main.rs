@@ -365,7 +365,12 @@ enum GenSubcommand {
     /// Generate a fresh watdiv benchmark on the fly
     Watdiv {
         /// Scale factor passed to watdiv -d (>= 1)
-        #[arg(long, value_name = "N", required = true)]
+        #[arg(
+            long,
+            value_name = "N",
+            required = true,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
         scale: u32,
 
         /// Tag appended to the benchmark name; must contain a non-numeric
@@ -407,7 +412,12 @@ enum GenSubcommand {
     /// Generate a fresh LUBM benchmark on the fly
     Lubm {
         /// Number of universities to generate (`-u`); must be >= 1
-        #[arg(long, value_name = "N", required = true)]
+        #[arg(
+            long,
+            value_name = "N",
+            required = true,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
         scale: u32,
 
         /// Tag appended to the benchmark name; pick a value that won't
