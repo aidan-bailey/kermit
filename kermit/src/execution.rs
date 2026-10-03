@@ -27,10 +27,13 @@ use {
     kermit::db::{hash_join_for_each, lftj_join_for_each, JoinError},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser, QueryOptimiser},
     kermit_ds::{
-        Cardinality, ColumnTrie, ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize,
-        IndexStructure, PruningPolicy, Relation, RelationFileExt, RelationHeader, TreeTrie,
+        BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ConfigurableRelation,
+        HashTrie, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy, Relation,
+        RelationFileExt, RelationHeader, TreeTrie,
     },
-    kermit_iters::{HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper},
+    kermit_iters::{
+        BuildMode, HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper,
+    },
     std::{collections::BTreeMap, marker::PhantomData, path::Path},
 };
 
@@ -47,8 +50,12 @@ use {
 pub enum SortedTrie {
     /// Pointer-based trie (`-i tree-trie`).
     TreeTrie,
-    /// Column-oriented trie (`-i column-trie`).
-    ColumnTrie,
+    /// Column-oriented trie (`-i column-trie`), built by the `--ds-build`
+    /// mode `build`.
+    ColumnTrie {
+        /// The `--ds-build` mode every relation is built with.
+        build: ColumnTrieBuildMode,
+    },
 }
 
 impl SortedTrie {
@@ -56,39 +63,71 @@ impl SortedTrie {
     pub fn index_structure(self) -> IndexStructure {
         match self {
             | Self::TreeTrie => IndexStructure::TreeTrie,
-            | Self::ColumnTrie => IndexStructure::ColumnTrie,
+            | Self::ColumnTrie {
+                ..
+            } => IndexStructure::ColumnTrie,
         }
     }
 }
 
-/// Ties a sorted-family relation type to its [`SortedTrie`] label so the
-/// runner's report axes are derived from the type it monomorphised over,
-/// not from a separately threaded value that could disagree with it.
+/// Ties a sorted-family relation type to its [`SortedTrie`] label and its
+/// build modes, so the runner's report axes are derived from the type it
+/// monomorphised over and the mode it built with, not from a separately
+/// threaded value that could disagree with them.
 pub trait SortedTrieRelation:
     Relation + RelationFileExt + TrieIterable + Cardinality + HeapSize
 {
-    /// The CLI-visible identity of this relation type.
-    const KIND: SortedTrie;
-
-    /// The `ds_build_mode` axis of every relation the bench builds of this
-    /// type. The build process leaves no trace in the built structure, so
-    /// it is reported for the build this type's `from_tuples` runs. Empty for a
+    /// How this structure can be built from its tuples: `()` for a
     /// structure with a single build process.
-    fn build_mode_axes() -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+    type BuildMode: Copy + Default;
+
+    /// The CLI-visible identity of this relation type built by `build`.
+    fn kind(build: Self::BuildMode) -> SortedTrie;
+
+    /// Builds one relation from `tuples` by `build`.
+    fn build_with(header: RelationHeader, build: Self::BuildMode, tuples: Vec<Vec<usize>>) -> Self;
+
+    /// The `ds_build_mode` axis of relations built by `build`. The build
+    /// leaves no trace in the built structure, so this — not the relation —
+    /// reports it. Empty for a structure with a single build process.
+    fn build_mode_axes(build: Self::BuildMode) -> BTreeMap<String, serde_json::Value>;
 }
 
 impl SortedTrieRelation for TreeTrie {
-    const KIND: SortedTrie = SortedTrie::TreeTrie;
+    type BuildMode = ();
+
+    fn kind(_: ()) -> SortedTrie { SortedTrie::TreeTrie }
+
+    fn build_with(header: RelationHeader, _: (), tuples: Vec<Vec<usize>>) -> Self {
+        TreeTrie::from_tuples(header, tuples)
+    }
+
+    fn build_mode_axes(_: ()) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
 impl SortedTrieRelation for ColumnTrie {
-    const KIND: SortedTrie = SortedTrie::ColumnTrie;
+    type BuildMode = ColumnTrieBuildMode;
 
-    /// `from_tuples` is the one-pass bulk build (issue #84). Reported so a
-    /// row built this way is never read as a pre-#84 row, which kermit-lab
-    /// treats as `incremental`.
-    fn build_mode_axes() -> BTreeMap<String, serde_json::Value> {
-        BTreeMap::from([("ds_build_mode".to_string(), serde_json::Value::from("bulk"))])
+    fn kind(build: ColumnTrieBuildMode) -> SortedTrie {
+        SortedTrie::ColumnTrie {
+            build,
+        }
+    }
+
+    fn build_with(
+        header: RelationHeader, build: ColumnTrieBuildMode, tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        ColumnTrie::from_tuples_with_build_mode(header, build, tuples)
+    }
+
+    /// Every ColumnTrie report says which build made it, so kermit-lab can
+    /// read a ColumnTrie row *without* the axis as the pre-#84 incremental
+    /// build.
+    fn build_mode_axes(build: ColumnTrieBuildMode) -> BTreeMap<String, serde_json::Value> {
+        BTreeMap::from([(
+            "ds_build_mode".to_string(),
+            serde_json::Value::from(build.axis_value()),
+        )])
     }
 }
 
@@ -123,8 +162,8 @@ pub enum Execution {
 impl Execution {
     /// The only way to obtain an `Execution` from a concrete pair. Returns
     /// `None` for the three incompatible pairs, which the sweep skips.
-    /// `choices` reach the cells that have each axis: today the hash-trie
-    /// cell's hasher, pruning and config.
+    /// `choices` reach the cells that have each axis: the hash-trie cell's
+    /// hasher, pruning and config, and the column-trie cell's build mode.
     pub fn for_pair(
         ds: IndexStructure, algo: JoinAlgorithm, choices: DsChoices,
     ) -> Option<Execution> {
@@ -132,13 +171,16 @@ impl Execution {
             hasher,
             pruning,
             config,
+            build,
         } = choices;
         match (ds, algo) {
             | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
                 Some(Execution::TrieLftj(SortedTrie::TreeTrie))
             },
             | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-                Some(Execution::TrieLftj(SortedTrie::ColumnTrie))
+                Some(Execution::TrieLftj(SortedTrie::ColumnTrie {
+                    build,
+                }))
             },
             | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => Some(Execution::HashHtj {
                 hasher,
@@ -163,10 +205,13 @@ impl Execution {
             hasher,
             pruning,
             config,
+            build,
         } = choices;
         match ds {
             | IndexStructure::TreeTrie => Execution::TrieLftj(SortedTrie::TreeTrie),
-            | IndexStructure::ColumnTrie => Execution::TrieLftj(SortedTrie::ColumnTrie),
+            | IndexStructure::ColumnTrie => Execution::TrieLftj(SortedTrie::ColumnTrie {
+                build,
+            }),
             | IndexStructure::HashTrie => Execution::HashHtj {
                 hasher,
                 pruning,
@@ -250,18 +295,19 @@ pub trait RelationFamily {
     fn execution(&self) -> Execution;
 
     /// Builds one relation from a header and its tuples, honouring the
-    /// family's configuration.
+    /// family's configuration and build mode.
     ///
     /// Every relation the family builds *from tuples* routes through this
     /// one site — the `insertion` metric, [`load`](Self::load),
     /// [`load_with_tuples`](Self::load_with_tuples), and both families'
     /// [`build_from_tuples`] — so such a measurement can never build a
-    /// relation the report's `ds_config_*` axes fail to describe.
+    /// relation the report's `ds_config_*` / `ds_build_mode` axes fail to
+    /// describe. Required, with no default, so no family can silently fall
+    /// back to `Relation::from_tuples` and build with a configuration or
+    /// mode its report does not name.
     ///
     /// [`build_from_tuples`]: ExecutionFamily::build_from_tuples
-    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self::Rel {
-        Self::Rel::from_tuples(header, tuples)
-    }
+    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self::Rel;
 
     /// Loads one relation file into `Self::Rel`, honouring the family's
     /// configuration: the reader is chosen by extension and the relation
@@ -326,8 +372,9 @@ pub trait RelationFamily {
     /// into the report's axes. A build mode describes the build, and every
     /// mode builds the same structure, so the family that ran the build
     /// reports it rather than the relation. Empty for structures with a
-    /// single build process.
-    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+    /// single build process. Required, with no default, so no family can omit
+    /// the axis by accident.
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value>;
 }
 
 /// Reads only the header of one relation file — its name and columns, not
@@ -436,23 +483,35 @@ pub trait ExecutionFamily: RelationFamily {
 }
 
 /// The sorted-family structure `R` on its own: what `bench ds -i tree-trie`
-/// / `-i column-trie` measures. Carries no optimiser or engine, so it
-/// cannot join — the type says what `bench ds` does.
-pub struct SortedTrieFamily<R>(PhantomData<R>);
-
-impl<R> SortedTrieFamily<R> {
-    /// The family for `R`.
-    pub fn new() -> Self { Self(PhantomData) }
+/// / `-i column-trie` measures. Carries the `--ds-build` mode every
+/// relation is built with (`()` for a structure with a single build), but
+/// no optimiser or engine, so it cannot join — the type says what
+/// `bench ds` does.
+pub struct SortedTrieFamily<R: SortedTrieRelation> {
+    build: R::BuildMode,
 }
 
-impl<R> Default for SortedTrieFamily<R> {
-    fn default() -> Self { Self::new() }
+impl<R: SortedTrieRelation> SortedTrieFamily<R> {
+    /// The family building every relation by `build`.
+    pub fn new(build: R::BuildMode) -> Self {
+        Self {
+            build,
+        }
+    }
+}
+
+impl<R: SortedTrieRelation> Default for SortedTrieFamily<R> {
+    fn default() -> Self { Self::new(R::BuildMode::default()) }
 }
 
 impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
     type Rel = R;
 
-    fn execution(&self) -> Execution { Execution::TrieLftj(R::KIND) }
+    fn execution(&self) -> Execution { Execution::TrieLftj(R::kind(self.build)) }
+
+    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> R {
+        R::build_with(header, self.build, tuples)
+    }
 
     fn for_each_tuple<V: FnMut(&[usize])>(rel: &R, mut visit: V) {
         let mut tuples = TrieIteratorWrapper::new(rel.trie_iter());
@@ -465,7 +524,9 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
 
     fn optimization_axes(_rel: &R) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 
-    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { R::build_mode_axes() }
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
+        R::build_mode_axes(self.build)
+    }
 }
 
 /// `HashTrie<H, P>` on its own: what `bench ds -i hash-trie` measures.
@@ -520,19 +581,23 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashTrieFam
     fn optimization_axes(rel: &HashTrie<H, P>) -> BTreeMap<String, serde_json::Value> {
         rel.optimization_axes()
     }
+
+    /// `HashTrie` has a single build process, so no `ds_build_mode` axis.
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
 /// Sorted family: `R` under Leapfrog Triejoin through [`lftj_join_for_each`].
-pub struct TrieLftj<R> {
+pub struct TrieLftj<R: SortedTrieRelation> {
     structure: SortedTrieFamily<R>,
     optimiser: Box<dyn QueryOptimiser>,
 }
 
-impl<R> TrieLftj<R> {
-    /// Creates the family planned by `optimiser`.
-    pub fn new(optimiser: Optimiser) -> Self {
+impl<R: SortedTrieRelation> TrieLftj<R> {
+    /// Creates the family building every relation by `build`, planned by
+    /// `optimiser`.
+    pub fn new(build: R::BuildMode, optimiser: Optimiser) -> Self {
         Self {
-            structure: SortedTrieFamily::new(),
+            structure: SortedTrieFamily::new(build),
             optimiser: optimiser.instantiate(),
         }
     }
@@ -542,6 +607,10 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for TrieLftj<R> {
     type Rel = R;
 
     fn execution(&self) -> Execution { self.structure.execution() }
+
+    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> R {
+        self.structure.build_relation(header, tuples)
+    }
 
     fn for_each_tuple<V: FnMut(&[usize])>(rel: &R, visit: V) {
         SortedTrieFamily::<R>::for_each_tuple(rel, visit);
@@ -628,6 +697,9 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashHtj<H, 
     fn optimization_axes(rel: &HashTrie<H, P>) -> BTreeMap<String, serde_json::Value> {
         HashTrieFamily::<H, P>::optimization_axes(rel)
     }
+
+    /// `HashTrie` has a single build process, so no `ds_build_mode` axis.
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
 impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H, P> {
@@ -755,20 +827,23 @@ mod tests {
     #[test]
     fn for_structure_agrees_with_for_pair() {
         let config = HashTrieConfig::default();
-        for ds in all_structures() {
-            for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
-                for pruning in [PruningChoice::Off, PruningChoice::On] {
-                    let choices = DsChoices {
-                        hasher,
-                        pruning,
-                        config,
-                    };
-                    let cell = Execution::for_structure(ds, choices);
-                    assert_eq!(cell.index_structure(), ds);
-                    assert_eq!(
-                        Execution::for_pair(ds, cell.algorithm(), choices),
-                        Some(cell)
-                    );
+        for build in [ColumnTrieBuildMode::Incremental, ColumnTrieBuildMode::Bulk] {
+            for ds in all_structures() {
+                for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
+                    for pruning in [PruningChoice::Off, PruningChoice::On] {
+                        let choices = DsChoices {
+                            hasher,
+                            pruning,
+                            config,
+                            build,
+                        };
+                        let cell = Execution::for_structure(ds, choices);
+                        assert_eq!(cell.index_structure(), ds);
+                        assert_eq!(
+                            Execution::for_pair(ds, cell.algorithm(), choices),
+                            Some(cell)
+                        );
+                    }
                 }
             }
         }
@@ -779,12 +854,13 @@ mod tests {
     #[test]
     fn structure_markers_agree_with_join_families() {
         assert_eq!(
-            SortedTrieFamily::<TreeTrie>::new().execution(),
-            TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic).execution()
+            SortedTrieFamily::<TreeTrie>::default().execution(),
+            TrieLftj::<TreeTrie>::new((), Optimiser::Lexicographic).execution()
         );
         assert_eq!(
-            SortedTrieFamily::<ColumnTrie>::new().execution(),
-            TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic).execution()
+            SortedTrieFamily::<ColumnTrie>::default().execution(),
+            TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::default(), Optimiser::Lexicographic)
+                .execution()
         );
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
@@ -804,12 +880,15 @@ mod tests {
     /// can never disagree with the code path that ran.
     #[test]
     fn families_report_their_own_execution() {
-        let tree = TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic);
+        let tree = TrieLftj::<TreeTrie>::new((), Optimiser::Lexicographic);
         assert_eq!(tree.execution(), Execution::TrieLftj(SortedTrie::TreeTrie));
-        let column = TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic);
+        let column =
+            TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::Incremental, Optimiser::Lexicographic);
         assert_eq!(
             column.execution(),
-            Execution::TrieLftj(SortedTrie::ColumnTrie)
+            Execution::TrieLftj(SortedTrie::ColumnTrie {
+                build: ColumnTrieBuildMode::Incremental
+            })
         );
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
@@ -922,7 +1001,7 @@ mod tests {
         std::fs::write(&path, "a,b\n3,1\n1,2\n2,0\n1,1\n").expect("write csv");
         let file_order = vec![vec![3, 1], vec![1, 2], vec![2, 0], vec![1, 1]];
 
-        let (tree, tuples) = SortedTrieFamily::<TreeTrie>::new()
+        let (tree, tuples) = SortedTrieFamily::<TreeTrie>::default()
             .load_with_tuples(&path)
             .expect("load");
         assert_eq!(tuples, file_order);
@@ -973,12 +1052,12 @@ mod tests {
         let header = || RelationHeader::new_positional("r", 2);
         let tuples = || vec![vec![1, 2], vec![1, 2], vec![1, 3], vec![4, 5]];
 
-        let tree = SortedTrieFamily::<TreeTrie>::new().build_relation(header(), tuples());
+        let tree = SortedTrieFamily::<TreeTrie>::default().build_relation(header(), tuples());
         assert_eq!(SortedTrieFamily::<TreeTrie>::scan(&tree), 3);
         assert_eq!(SortedTrieFamily::<TreeTrie>::tuple_count(&tree), 3);
         assert_eq!(TrieLftj::<TreeTrie>::scan(&tree), 3);
 
-        let column = SortedTrieFamily::<ColumnTrie>::new().build_relation(header(), tuples());
+        let column = SortedTrieFamily::<ColumnTrie>::default().build_relation(header(), tuples());
         assert_eq!(SortedTrieFamily::<ColumnTrie>::scan(&column), 3);
         assert_eq!(SortedTrieFamily::<ColumnTrie>::tuple_count(&column), 3);
 
@@ -1051,12 +1130,13 @@ mod tests {
             .parse()
             .unwrap();
 
-        let tree = TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic);
+        let tree = TrieLftj::<TreeTrie>::new((), Optimiser::Lexicographic);
         let engine = tree.build_from_tuples(inputs());
         assert_eq!(tree.count(&engine, query.clone()).unwrap(), 2);
         assert_eq!(tree.join(&engine, query.clone()).unwrap().len(), 2);
 
-        let column = TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic);
+        let column =
+            TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::default(), Optimiser::Lexicographic);
         let engine = column.build_from_tuples(inputs());
         assert_eq!(column.count(&engine, query.clone()).unwrap(), 2);
         assert_eq!(column.join(&engine, query.clone()).unwrap().len(), 2);
@@ -1096,24 +1176,31 @@ mod tests {
         }
     }
 
-    /// Every `ColumnTrie` report says how its relations were built; the
-    /// other structures have a single build and carry no such axis (issue
-    /// #84).
+    fn build_mode_axis(mode: &str) -> BTreeMap<String, serde_json::Value> {
+        BTreeMap::from([("ds_build_mode".to_string(), serde_json::Value::from(mode))])
+    }
+
+    /// Every ColumnTrie family reports the mode it builds with; the other
+    /// structures have a single build and carry no such axis (issue #84).
     #[test]
-    fn only_column_trie_families_report_a_build_mode() {
-        let bulk = BTreeMap::from([("ds_build_mode".to_string(), serde_json::Value::from("bulk"))]);
+    fn only_column_trie_families_report_their_build_mode() {
         assert_eq!(
-            SortedTrieFamily::<ColumnTrie>::new().build_mode_axes(),
-            bulk
+            SortedTrieFamily::<ColumnTrie>::default().build_mode_axes(),
+            build_mode_axis("bulk")
         );
         assert_eq!(
-            TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic).build_mode_axes(),
-            bulk
+            SortedTrieFamily::<ColumnTrie>::new(ColumnTrieBuildMode::Incremental).build_mode_axes(),
+            build_mode_axis("incremental")
         );
-        assert!(SortedTrieFamily::<TreeTrie>::new()
+        assert_eq!(
+            TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::Incremental, Optimiser::Lexicographic)
+                .build_mode_axes(),
+            build_mode_axis("incremental")
+        );
+        assert!(SortedTrieFamily::<TreeTrie>::default()
             .build_mode_axes()
             .is_empty());
-        assert!(TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic)
+        assert!(TrieLftj::<TreeTrie>::new((), Optimiser::Lexicographic)
             .build_mode_axes()
             .is_empty());
         assert!(HashTrieFamily::<SipHashStrategy, NoPruning>::default()
@@ -1125,5 +1212,24 @@ mod tests {
         )
         .build_mode_axes()
         .is_empty());
+    }
+
+    /// The `--ds-build` mode reaches the column-trie cell of a sweep and no
+    /// other.
+    #[test]
+    fn sweep_attaches_the_build_mode_to_the_column_trie_cell_only() {
+        let choices = DsChoices {
+            build: ColumnTrieBuildMode::Incremental,
+            ..DsChoices::default()
+        };
+        let sweep = Sweep::expand(&all_structures(), &all_algorithms(), choices);
+        assert!(sweep
+            .cells
+            .contains(&Execution::TrieLftj(SortedTrie::ColumnTrie {
+                build: ColumnTrieBuildMode::Incremental
+            })));
+        assert!(sweep
+            .cells
+            .contains(&Execution::TrieLftj(SortedTrie::TreeTrie)));
     }
 }

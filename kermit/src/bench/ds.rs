@@ -194,23 +194,26 @@ fn run_ds_bench<F: RelationFamily>(
 /// for `ds`. The hash cell's `H` / `P` Layout parameters are picked from
 /// the `--ds-layout-hasher` / `--ds-layout-pruning` CLI flags by
 /// `with_hash_trie_layout!` — the one place that product is expanded —
-/// and the `--ds-config` values ride along on the family, so the relation
-/// this measures is the one the report's `ds_*` axes describe.
+/// and the `--ds-config` values and the `--ds-build` mode ride along on the
+/// family, so the relation this measures is the one the report's `ds_*` axes
+/// describe.
 pub(crate) fn dispatch_ds_bench(
     ds: IndexStructure, choices: DsChoices, relation: &Path, metrics: &[Metric],
     queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
     match Execution::for_structure(ds, choices) {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_ds_bench(
-            &SortedTrieFamily::<kermit_ds::TreeTrie>::new(),
+            &SortedTrieFamily::<kermit_ds::TreeTrie>::default(),
             relation,
             metrics,
             queries_per_build,
             group_name,
             bench_args,
         ),
-        | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_ds_bench(
-            &SortedTrieFamily::<kermit_ds::ColumnTrie>::new(),
+        | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            build,
+        }) => run_ds_bench(
+            &SortedTrieFamily::<kermit_ds::ColumnTrie>::new(build),
             relation,
             metrics,
             queries_per_build,

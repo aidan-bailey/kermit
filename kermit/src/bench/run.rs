@@ -337,12 +337,14 @@ pub(crate) fn dispatch_run_bench(
     let optimiser = settings.optimiser;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie>::new(optimiser),
+            &TrieLftj::<kermit_ds::TreeTrie>::new((), optimiser),
             workload,
             settings,
         ),
-        | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_benchmark(
-            &TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser),
+        | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            build,
+        }) => run_benchmark(
+            &TrieLftj::<kermit_ds::ColumnTrie>::new(build, optimiser),
             workload,
             settings,
         ),

@@ -1,11 +1,11 @@
 //! CLI option groups for the optimisation axes (`--ds-layout-*`,
-//! `--ds-config`) and the single place the `HashTrie` Layout product is
-//! monomorphised.
+//! `--ds-config`, `--ds-build`) and the single place the `HashTrie` Layout
+//! product is monomorphised.
 
 use {
     crate::IndexStructureSelector,
     clap::Args,
-    kermit_ds::{HashTrieConfig, LoadFactor, PruningPolicy},
+    kermit_ds::{ColumnTrieBuildMode, HashTrieConfig, LoadFactor, PruningPolicy},
     kermit_iters::{HashStrategy, LayoutOption},
 };
 
@@ -341,6 +341,51 @@ pub(crate) fn validate_config_choices(
     Ok(())
 }
 
+/// BuildMode-axis CLI choice, flattened beside [`LayoutChoices`] and
+/// [`ConfigChoices`] into `bench ds`, `bench run` and `bench join`. Every
+/// build mode builds the same structure, so the flag changes build time
+/// only. `kermit join` takes no `--ds-build`, for the same reason it takes
+/// no `--ds-config`: it cannot change a query's answers.
+#[derive(Args, Clone, Debug, Default)]
+pub(crate) struct BuildChoices {
+    /// How `ColumnTrie` is built from its tuples (default: `bulk`;
+    /// `incremental` is the build before issue #84). Only valid with
+    /// `--indexstructure column-trie` (or `all`).
+    #[arg(long = "ds-build", value_name = "MODE", value_enum)]
+    column_trie_build: Option<ColumnTrieBuildMode>,
+}
+
+impl BuildChoices {
+    /// The mode to build ColumnTrie relations with, applying the default
+    /// when none was supplied.
+    pub(crate) fn column_trie_build_resolved(&self) -> ColumnTrieBuildMode {
+        self.column_trie_build.unwrap_or_default()
+    }
+
+    /// Whether the user explicitly passed `--ds-build`.
+    pub(crate) fn column_trie_build_explicit(&self) -> bool { self.column_trie_build.is_some() }
+}
+
+/// Rejects `--ds-build` on index structures that have no BuildMode axis, so
+/// a report can never carry a `ds_build_mode` the build ignored. Same
+/// discipline as [`validate_config_choices`].
+pub(crate) fn validate_build_choices(
+    indexstructure: IndexStructureSelector, build: &BuildChoices,
+) -> anyhow::Result<()> {
+    if build.column_trie_build_explicit()
+        && !matches!(
+            indexstructure,
+            IndexStructureSelector::ColumnTrie | IndexStructureSelector::All
+        )
+    {
+        anyhow::bail!(
+            "--ds-build is only valid with --indexstructure column-trie (or all); got \
+             --indexstructure {indexstructure:?}"
+        );
+    }
+    Ok(())
+}
+
 /// The resolved value of every `--ds-*` option for one command — what the
 /// execution cells are built from. Commands obtain it from
 /// [`DsChoices::resolve`], which rejects a flag the selected structure
@@ -353,6 +398,8 @@ pub(crate) struct DsChoices {
     pub pruning: PruningChoice,
     /// `--ds-config`; reaches the hash-trie cell only.
     pub config: HashTrieConfig,
+    /// `--ds-build`; reaches the column-trie cell only.
+    pub build: ColumnTrieBuildMode,
 }
 
 impl DsChoices {
@@ -365,13 +412,16 @@ impl DsChoices {
     /// axis, or if `--ds-config` is malformed.
     pub(crate) fn resolve(
         indexstructure: IndexStructureSelector, layout: &LayoutChoices, config: &ConfigChoices,
+        build: &BuildChoices,
     ) -> anyhow::Result<Self> {
         validate_layout_choices(indexstructure, layout)?;
         validate_config_choices(indexstructure, config)?;
+        validate_build_choices(indexstructure, build)?;
         Ok(Self {
             hasher: layout.hash_trie_hasher_resolved(),
             pruning: layout.hash_trie_pruning_resolved(),
             config: config.hash_trie_config_resolved()?,
+            build: build.column_trie_build_resolved(),
         })
     }
 }
@@ -657,8 +707,13 @@ mod tests {
         let config = ConfigChoices {
             ds_config: vec!["load-factor=0.5".into()],
         };
-        let choices =
-            DsChoices::resolve(IndexStructureSelector::HashTrie, &layout, &config).unwrap();
+        let choices = DsChoices::resolve(
+            IndexStructureSelector::HashTrie,
+            &layout,
+            &config,
+            &BuildChoices::default(),
+        )
+        .unwrap();
         assert_eq!(choices.hasher, HasherChoice::Fxhash);
         assert_eq!(choices.pruning, PruningChoice::Off);
         assert_eq!(choices.config.load_factor, LoadFactor::percent(50).unwrap());
@@ -666,7 +721,8 @@ mod tests {
             DsChoices::resolve(
                 IndexStructureSelector::TreeTrie,
                 &LayoutChoices::default(),
-                &ConfigChoices::default()
+                &ConfigChoices::default(),
+                &BuildChoices::default()
             )
             .unwrap(),
             DsChoices::default()
@@ -685,6 +741,7 @@ mod tests {
             IndexStructureSelector::TreeTrie,
             &layout,
             &ConfigChoices::default(),
+            &BuildChoices::default(),
         )
         .unwrap_err()
         .to_string();
@@ -696,9 +753,51 @@ mod tests {
             IndexStructureSelector::ColumnTrie,
             &LayoutChoices::default(),
             &config,
+            &BuildChoices::default(),
         )
         .unwrap_err()
         .to_string();
         assert!(msg.contains("--ds-config"), "{msg}");
+    }
+
+    #[test]
+    fn validate_build_choices_accepts_column_trie_or_all_only() {
+        let build = BuildChoices {
+            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
+        };
+        assert!(validate_build_choices(IndexStructureSelector::ColumnTrie, &build).is_ok());
+        assert!(validate_build_choices(IndexStructureSelector::All, &build).is_ok());
+        for sel in [
+            IndexStructureSelector::TreeTrie,
+            IndexStructureSelector::HashTrie,
+        ] {
+            let msg = validate_build_choices(sel, &build).unwrap_err().to_string();
+            assert!(msg.contains("--ds-build"), "{msg}");
+            assert!(msg.contains("column-trie"), "{msg}");
+            assert!(validate_build_choices(sel, &BuildChoices::default()).is_ok());
+        }
+    }
+
+    #[test]
+    fn ds_choices_resolve_carries_the_build_mode() {
+        let build = BuildChoices {
+            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
+        };
+        let choices = DsChoices::resolve(
+            IndexStructureSelector::ColumnTrie,
+            &LayoutChoices::default(),
+            &ConfigChoices::default(),
+            &build,
+        )
+        .unwrap();
+        assert_eq!(choices.build, ColumnTrieBuildMode::Incremental);
+        assert_eq!(DsChoices::default().build, ColumnTrieBuildMode::Bulk);
+        assert!(DsChoices::resolve(
+            IndexStructureSelector::TreeTrie,
+            &LayoutChoices::default(),
+            &ConfigChoices::default(),
+            &build,
+        )
+        .is_err());
     }
 }

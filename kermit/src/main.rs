@@ -39,7 +39,7 @@ use {
     },
     bench_report::{BenchKind, ReportSink},
     execution::{read_relation_header, Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
-    options::{with_hash_trie_layout, ConfigChoices, DsChoices, LayoutChoices},
+    options::{with_hash_trie_layout, BuildChoices, ConfigChoices, DsChoices, LayoutChoices},
 };
 
 /// Default Criterion group name when `--name` is omitted on `bench run`.
@@ -220,6 +220,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         config: ConfigChoices,
+
+        #[command(flatten)]
+        build: BuildChoices,
     },
 
     /// Benchmark an index structure (insertion, iteration, space,
@@ -261,6 +264,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         config: ConfigChoices,
+
+        #[command(flatten)]
+        build: BuildChoices,
     },
 
     /// Run a named benchmark from benchmarks/ YAML files
@@ -331,6 +337,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         config: ConfigChoices,
+
+        #[command(flatten)]
+        build: BuildChoices,
     },
 
     /// List available benchmarks
@@ -548,9 +557,10 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
 /// error, and the `--ds-layout-*` flags are only accepted with
 /// `-i hash-trie`.
 ///
-/// `kermit join` deliberately carries no `--ds-config`: it passes the default
-/// config inside its [`DsChoices`], because the one Config value trades space
-/// against probe length and cannot change a query's answers. `bench join
+/// `kermit join` deliberately carries neither `--ds-config` nor `--ds-build`:
+/// it passes their defaults inside its [`DsChoices`], because neither can
+/// change a query's answers (the one Config value trades space against probe
+/// length, and every build mode builds the same structure). `bench join
 /// --output` passes its resolved [`DsChoices`], so the CSV comes from the same
 /// build the measurements use.
 fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<JoinRunner> {
@@ -586,11 +596,13 @@ fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Joi
     let optimiser = args.optimiser;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => build_join_runner(
-            TrieLftj::<kermit_ds::TreeTrie>::new(optimiser),
+            TrieLftj::<kermit_ds::TreeTrie>::new((), optimiser),
             &args.relations,
         ),
-        | Execution::TrieLftj(SortedTrie::ColumnTrie) => build_join_runner(
-            TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser),
+        | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            build,
+        }) => build_join_runner(
+            TrieLftj::<kermit_ds::ColumnTrie>::new(build, optimiser),
             &args.relations,
         ),
         | Execution::HashHtj {
@@ -781,10 +793,10 @@ fn run_clean(name: Option<String>) -> anyhow::Result<()> {
 /// `adhoc/{query-stem}` identity.
 fn run_bench_join(
     bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>, metrics: &[Metric],
-    queries_per_build: u32, config: ConfigChoices,
+    queries_per_build: u32, config: ConfigChoices, build: BuildChoices,
 ) -> anyhow::Result<()> {
     let selector = IndexStructureSelector::of(query_args.indexstructure);
-    let choices = DsChoices::resolve(selector, &query_args.layout, &config)?;
+    let choices = DsChoices::resolve(selector, &query_args.layout, &config, &build)?;
     let cell = Execution::for_pair(query_args.indexstructure, query_args.algorithm, choices)
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -827,8 +839,9 @@ fn run_bench_join(
 fn run_ds_bench_command(
     bench_args: &BenchArgs, relation: PathBuf, indexstructure: IndexStructureSelector,
     metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices, config: ConfigChoices,
+    build: BuildChoices,
 ) -> anyhow::Result<()> {
-    let choices = DsChoices::resolve(indexstructure, &layout, &config)?;
+    let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Ds)?;
     for ds in indexstructure.expand() {
@@ -855,9 +868,9 @@ fn run_bench_run_command(
     bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, optimiser: Optimiser,
     metrics: Vec<Metric>, queries_per_build: u32, force: bool, verify: bool, layout: LayoutChoices,
-    config: ConfigChoices,
+    config: ConfigChoices, build: BuildChoices,
 ) -> anyhow::Result<()> {
-    let choices = DsChoices::resolve(indexstructure, &layout, &config)?;
+    let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let cells = resolve_sweep(indexstructure, algorithm, choices)?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
@@ -1092,6 +1105,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 config,
+                build,
             } => run_bench_join(
                 &bench_args,
                 query_args,
@@ -1099,6 +1113,7 @@ fn main() -> anyhow::Result<()> {
                 &metrics,
                 queries_per_build,
                 config,
+                build,
             )?,
 
             | BenchSubcommand::Ds {
@@ -1108,6 +1123,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 layout,
                 config,
+                build,
             } => run_ds_bench_command(
                 &bench_args,
                 relation,
@@ -1116,6 +1132,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 layout,
                 config,
+                build,
             )?,
 
             | BenchSubcommand::Run {
@@ -1131,6 +1148,7 @@ fn main() -> anyhow::Result<()> {
                 verify,
                 layout,
                 config,
+                build,
             } => run_bench_run_command(
                 &bench_args,
                 name,
@@ -1145,6 +1163,7 @@ fn main() -> anyhow::Result<()> {
                 verify,
                 layout,
                 config,
+                build,
             )?,
 
             | BenchSubcommand::Gen {
