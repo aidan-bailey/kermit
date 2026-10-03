@@ -28,7 +28,7 @@ operational rows describe how it actually runs.
 | Predicate arity | All binary + unary type lookups | All binary |
 | Inference required | OWL-Lite (subClassOf, subPropertyOf, transitivity, inverseOf, realisation) | None — data is pre-materialised |
 | Triangle queries | **Q2, Q9 — explicit hand-designed** | Incidental (e.g. q0010 sharing a country variable) |
-| Self-joins | None | Yes (e.g. `friendof(V2, V2)`) |
+| Self-joins | None | Yes (e.g. `friendof(V_v2, V_v2)`) |
 | Result oracle | Paper Table 3, manually transcribed | None — vendored binary emits no `.desc` |
 | Reproducibility | Deterministic per `(seed, scale)` | Non-deterministic; tag-based snapshots |
 | Sandbox | — | bwrap required (or `--no-bwrap`) |
