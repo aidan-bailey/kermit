@@ -1,7 +1,7 @@
 # ColumnTrie Build Modes
 
 **Date:** 2026-10-03
-**Status:** Approved design, not yet implemented
+**Status:** Implemented (#84)
 **Scope:** Issue #84. `ColumnTrie::from_tuples` stops inserting tuples one
 at a time and builds its layers in one pass. The old routine survives as
 the `incremental` mode of the first **BuildMode** consumer under
@@ -217,7 +217,7 @@ replaced by:
 
 - `type BuildMode: Copy + Default`
 - `fn kind(build: Self::BuildMode) -> SortedTrie`
-- `fn build(header, build: Self::BuildMode, tuples) -> Self`
+- `fn build_with(header, build: Self::BuildMode, tuples) -> Self`
 - `fn build_mode_axes(build: Self::BuildMode) -> BTreeMap<String, Value>`
 
 TreeTrie's impl uses `type BuildMode = ()` and calls plain `from_tuples`, so
@@ -227,18 +227,18 @@ TreeTrie's code isn't touched. ColumnTrie's calls
 **The family.** `SortedTrieFamily<R>` gains `build: R::BuildMode`.
 `execution()` returns `Execution::TrieLftj(R::kind(self.build))`, so the
 report's identity axes still come from the cell (issue #56).
-`build_relation` calls `R::build(header, self.build, tuples)`. That is the
+`build_relation` calls `R::build_with(header, self.build, tuples)`. That is the
 one construction site: `load`, `load_with_tuples`, `build_from_tuples` and
 the `insertion` closures all reach it, so `insertion` times the mode the
 axis names. `build_mode_axes(&self)` delegates to `R::build_mode_axes(self.build)`.
-`TrieLftj::new(optimiser, build)` threads it through.
+`TrieLftj::new(build, optimiser)` threads it through.
 
 `for_pair`, `for_structure` and `Sweep::expand` attach `build` to the
 ColumnTrie cell only, as they attach `config` to the hash cell only.
 
 ### `kermit` binary: CLI
 
-A `BuildChoices { ds_build: Option<ColumnTrieBuildMode> }` group
+A `BuildChoices { column_trie_build: Option<ColumnTrieBuildMode> }` group
 (`--ds-build bulk|incremental`) is flattened into `bench ds`, `bench run` and
 `bench join`. `validate_build_choices` (in `DsChoices::resolve`) accepts
 `column-trie` and `all`, and rejects anything else with
@@ -441,3 +441,22 @@ Mutation checks run on commits 1, 2 and 6. Plain commits; no amend, no push.
 | `heap_size_bytes` unchanged for the same input | The same test; guaranteed by push-only construction |
 | `column-trie.md`'s complexity table reflects the new build | Commit 3 |
 | Re-run the authoritative re-benchmark's `insertion` step for all three structures | Out of scope here; taken up by the supervising session with the user. Phase 1's axis keeps those rows correctly labelled whenever it runs. |
+
+## Implementation notes
+
+What review added beyond the design above. The renames (`build_with`,
+`TrieLftj::new(build, optimiser)`, `BuildChoices { column_trie_build }`) are
+folded into the text.
+
+- `load_query_runner` takes the whole `DsChoices`, not only the mode.
+- `RelationFamily::build_mode_axes` is required, as `build_relation` is, so
+  every family states how it builds and what it reports. The design had it
+  default to empty, and `SortedTrieRelation::build_mode_axes` likewise.
+- Both modes build identical tries, so no output can show whether the mode
+  reached the build. Two spy tests pin it: `BuiltWith` applies its provider
+  (`from_tuples_asks_the_provider_for_its_mode`), and each sorted family
+  builds with its own mode on every route a relation is built
+  (`sorted_families_build_with_their_mode` in `kermit/src/execution.rs`).
+- The standard's output equivalence for a BuildMode is pinned to the same
+  contents and the same `HeapSize`, because kermit-lab's ablation guard
+  (`ds_build_mode` only on `insertion` and `end_to_end`) depends on it.

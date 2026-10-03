@@ -48,8 +48,8 @@ That yields the arrays of the worked micro-example below. Incremental `insert` r
 - **Sorted within sibling intervals.** Each layer's `data` is sorted ascending within every `data[interval[i]..interval[i+1]]` span. Keys belonging to different parents are *not* globally sorted across the entire `data` array.
 - **Interval-length coherence.** `layers[i].interval.len()` equals the number of distinct keys in `layers[i-1].data` (1 for the root layer when non-empty, 0 when empty).
 - **Interval bounds.** Every interval entry indexes into `layers[i].data`; the last entry may equal `data.len()`.
-- **Canonical layout.** The arrays depend only on the tuple *set*: each layer's `data` is every parent's sorted children, concatenated in parent order. So `from_tuples` and any sequence of `insert` calls over the same tuples produce identical arrays — down to each `Vec`'s capacity, because both grow one element at a time — and so the same `heap_size_bytes`. Pinned by `bulk_build_matches_one_by_one_inserts`.
-- **Duplicate insert is a no-op.** When an inserted key matches an existing key in the active interval, insertion *recurses into the existing key's position* — the next layer is inserted under the right parent. Encoded as [`LayerStep::Recurse`](../../kermit-ds/src/ds/column_trie/implementation.rs#L218).
+- **Canonical layout.** The arrays depend only on the tuple *set*: each layer's `data` is every parent's sorted children, concatenated in parent order. So `from_tuples` and any sequence of `insert` calls over the same tuples produce identical arrays — down to each `Vec`'s capacity, because both grow one element at a time — and so the same `heap_size_bytes`. Pinned by `bulk_and_incremental_builds_are_identical`.
+- **Duplicate insert is a no-op.** When an inserted key matches an existing key in the active interval, insertion *recurses into the existing key's position* — the next layer is inserted under the right parent. Encoded as `LayerStep::Recurse` in [`implementation.rs`](../../kermit-ds/src/ds/column_trie/implementation.rs).
 - **Forward-only `seek`.** Like `TreeTrieIter`, `ColumnTrieIter::seek(k)` only advances; it uses `partition_point` on the remaining slice.
 - **LFTJ `open`-after-`at_end` discipline.** `ColumnTrieIter::open` derives the new interval index from `parent_start + rel_data_i` even if `rel_data_i` is currently past the end of the parent's children. LFTJ relies on this — do not "fix" the apparent stale offset. See the LFTJ gotcha in `CLAUDE.md`.
 
@@ -92,6 +92,20 @@ Iteration walk:
 3. `next()` → current = `3`. Emit `[1, 3]`.
 4. `next()` → `at_end()` at depth 2. `up()` → search `layer0.intervals = [0]` for owner of `data_index = 0`; pick `interval_i = 0`, `rel_data_i = 0`. Back at `1` in layer 0.
 5. `next()` → current = `2`. `open()` (depth 1 → depth 2): `parent_start = 0`, `interval_i = 0 + 1 = 1`. `rel_data = layer1.child_data(1) = [4]`. Current = `4`. Emit `[2, 4]`. Done.
+
+## Optimizations
+
+Under [`optimization-standard.md`](../specs/optimization-standard.md), `ColumnTrie` has one axis, a **BuildMode**: how the trie is built from a known set of tuples. Every mode builds the identical trie — the same arrays and the same capacities — so the mode changes the `insertion` and `end_to_end` timings and nothing else.
+
+| Mode | `--ds-build` | Build | Time |
+|---|---|---|---|
+| `Bulk` (default) | `bulk` | sort, then one pass (see Construction) | O(n · a · log n) |
+| `Incremental` | `incremental` | sort, then one `insert` per tuple — the build before issue #84 | O(n · a · b) |
+
+- **Axis:** `ds_build_mode`, on every ColumnTrie report. The bench family that ran the build emits it (`RelationFamily::build_mode_axes`), because the trie cannot tell how it was built. kermit-lab reads a ColumnTrie row without the axis as `incremental`, the only build before the axis existed.
+- **API:** `ColumnTrieBuildMode`, through `BuildModeRelation::from_tuples_with_build_mode`; `Relation::from_tuples` uses the default, `Bulk`.
+- **Tests:** `bulk_and_incremental_builds_are_identical` (array-level, capacities included), the `ColumnTrieIncremental` alias in `kermit-ds/tests/{trie,parquet}_tests.rs`, and `define_multiway_join_test_suite_for_build_mode!` in `kermit/tests/join_tests.rs`.
+- **When `incremental` is useful:** reproducing pre-#84 `insertion` numbers, and measuring how much of ColumnTrie's build cost belonged to the routine rather than the layout.
 
 ## When to prefer this structure
 

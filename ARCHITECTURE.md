@@ -85,7 +85,7 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 | Algorithm | `LeapfrogTriejoin` | `HashTriejoin` |
 | `Projectable` | `project_via_trie_iter` (shared helper) | hand-rolled on `HashTrie` |
 | Engine | `lftj_join` free function over `BTreeMap<String, R>` | `hash_join` free function over `BTreeMap<String, HashTrie<H, P>>` |
-| Bench cell | `Execution::TrieLftj(SortedTrie)` / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, config }` / `HashHtj<H, P>` (labels derived from `H`/`P`) |
+| Bench cell | `Execution::TrieLftj(SortedTrie)` (`ColumnTrie { build }` carries `--ds-build`) / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, config }` / `HashHtj<H, P>` (labels derived from `H`/`P`) |
 | `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
 | `bench ds` dispatch | one generic `run_ds_bench<F: RelationFamily>` over `SortedTrieFamily<R>` | the same `run_ds_bench<F>` over `HashTrieFamily<H, P>` |
 
@@ -223,7 +223,7 @@ Tables use linear probing with power-of-two capacity, doubling above a 0.7 load 
 - **Multiset semantics.** Tuples with identical hash signatures chain in the same leaf bucket rather than deduplicating, so `Cardinality::tuple_count` counts multiset size where `TreeTrie` and `ColumnTrie` count distinct tuples.
 - **Leaves hold whole tuples.** Because inner levels store only hashes, the real values are needed at the leaf to reject hash collisions.
 
-`H` is the crate's only optimization axis: `SipHashStrategy` (default) and `FxHashStrategy` are zero-sized types implementing both `HashStrategy` and `LayoutOption`, and `HashTrie<H>` is the sole `HasOptimizationAxes` implementor in the workspace, reporting `ds_layout_hasher`.
+`HashTrie<H, P>` has two Layout axes — the hasher `H` (`SipHashStrategy` default, `FxHashStrategy`) and the pruning policy `P` — and one Config axis, the load factor; it is the only structure implementing `HasOptimizationAxes`, reporting `ds_layout_hasher`, `ds_layout_pruning` and `ds_config_load_factor`. `ColumnTrie`'s BuildMode axis, `ds_build_mode`, is reported by its bench family instead, because the built trie is the same under every mode.
 
 ### Query Representation (`kermit-parser`)
 
@@ -438,11 +438,11 @@ There is deliberately no object-safe engine trait. Runtime selection of the `(st
 
 `bench ds` and `bench run` accept `all` for `--indexstructure` and `--algorithm`, expanding to a Cartesian sweep.
 
-For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(TreeTrie | ColumnTrie)` and `HashHtj { hasher, pruning, config }` — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the three incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
+For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(SortedTrie)` (whose `ColumnTrie { build }` variant carries the `--ds-build` mode) and `HashHtj { hasher, pruning, config }` — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the three incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
 
 Consequently `-i all -a all` runs exactly the three valid cells, announcing each skipped pair on stderr, while a single explicitly-named incompatible pair leaves nothing to run and is reported as a usage error. Because the report's `data_structure` and `algorithm` axes are both derived from `ExecutionFamily::execution()`, a report cannot name an algorithm it did not run (issue #56).
 
-`bench ds` selects a structure but no algorithm, so it names its cell through the total `Execution::for_structure` (every structure has exactly one compatible algorithm) and runs the same kind of generic runner, `run_ds_bench<F: RelationFamily>`. `RelationFamily` is the relation-facing supertrait of `ExecutionFamily` (load, tuples, axes, cell label); `bench ds` instantiates the structure-only markers `SortedTrieFamily<R>` / `HashTrieFamily<H, P>`, which implement the supertrait alone and so cannot join. The join families `TrieLftj<R>` / `HashHtj<H, P>` embed those markers and delegate, so the two commands cannot disagree about a structure (issue #61). `HashTrieFamily<H, P>` is also where the `--ds-config` values live, so the `insertion` and `end_to_end` closures build through `RelationFamily::build_relation` and measure the structure the report's `ds_config_*` axes describe.
+`bench ds` selects a structure but no algorithm, so it names its cell through the total `Execution::for_structure` (every structure has exactly one compatible algorithm) and runs the same kind of generic runner, `run_ds_bench<F: RelationFamily>`. `RelationFamily` is the relation-facing supertrait of `ExecutionFamily` (load, tuples, axes, cell label); `bench ds` instantiates the structure-only markers `SortedTrieFamily<R>` / `HashTrieFamily<H, P>`, which implement the supertrait alone and so cannot join. The join families `TrieLftj<R>` / `HashHtj<H, P>` embed those markers and delegate, so the two commands cannot disagree about a structure (issue #61). `HashTrieFamily<H, P>` is also where the `--ds-config` values live, so the `insertion` and `end_to_end` closures build through `RelationFamily::build_relation` and measure the structure the report's `ds_config_*` axes describe. `SortedTrieFamily<R>` likewise carries ColumnTrie's `--ds-build` mode (`R::BuildMode`, `()` for TreeTrie), builds through it, and reports it as `ds_build_mode` via `RelationFamily::build_mode_axes`.
 
 ### Space measurement
 
@@ -484,7 +484,7 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 2. Implement `Relation` + `Projectable` + `HeapSize` + `Cardinality` on the structure. `HeapSize::heap_size_bytes` returns heap bytes only, excluding `size_of::<Self>`.
 3. Implement the iterator. For the sorted family that is `TrieIterator` plus `#[derive(IntoTrieIter)]`, then `TrieIterable` on the structure. For the hash family it is `HashTrieIterator` and `HashTrieIterable` — and note that the shared helpers `project_via_trie_iter` and `TrieIteratorWrapper` are `TrieIterable`-only, so a hash-family structure must supply its own equivalents. The `kermit-ds` test macros fork along the same seam: `hash_trie_test_suite!` covers the hash family, `relation_trie_test_suite!` the sorted one.
 4. Register the module and add a variant to `IndexStructure` in `kermit-ds/src/ds/mod.rs`.
-5. Wire the CLI: a variant on `IndexStructureSelector` and its `expand()`. A sorted-family structure also needs a `SortedTrie` variant plus a `SortedTrieRelation` impl and an `Execution::for_pair` arm (`kermit/src/execution.rs`), and arms in `load_query_runner` and `dispatch_run_bench` / `dispatch_ds_bench` (`kermit/src/main.rs`). A structure in a new trait family needs its own `ExecutionFamily` impl.
+5. Wire the CLI: a variant on `IndexStructureSelector` and its `expand()`. A sorted-family structure also needs a `SortedTrie` variant plus a `SortedTrieRelation` impl (with its `BuildMode`, `()` for a single build process) and an `Execution::for_pair` arm (`kermit/src/execution.rs`), and arms in `load_query_runner` and `dispatch_run_bench` / `dispatch_ds_bench` (`kermit/src/main.rs`). A structure in a new trait family needs its own `ExecutionFamily` impl.
 6. **Wire the tests.** Add `define_multiway_join_test_suite!(<Type>, <Algo>, LexicographicOptimiser)` and a second invocation with `CardinalityOptimiser` in `kermit/tests/join_tests.rs`, so all 16 standard join patterns run against the structure. Each distinct layout combination is its own suite invocation (e.g. `HashTrieSip`, `HashTrieFx`).
 7. **Write the doc** at `docs/data-structures/<name>.md` from the template.
 
