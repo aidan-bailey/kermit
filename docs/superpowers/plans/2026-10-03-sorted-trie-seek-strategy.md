@@ -54,11 +54,14 @@ shell.
   snippets minimally, keep their intent, and report the deviation.
 - **The authoritative sweep comes first.** Iteration and space ran at
   62f722e; the insertion re-run is pending #84. #80 lands after the sweep
-  (user, 2026-10-02). Task 10 lands nothing without the user's instruction.
-- **Open questions 1–3 in the spec** (galloping schedule, keeping `linear`,
-  measurement-2 scope) must be answered before Task 2. This plan assumes
-  the recommended answers. If an answer differs, the controller amends the
-  affected tasks before dispatching P1.
+  (user, 2026-10-02). In practice, "after the sweep" means after that
+  deferred insertion re-run. Making `TreeTrie<S>` generic changes how the
+  build path monomorphises, so the insertion binary must not contain it.
+  Task 10 lands nothing without the user's instruction.
+- **Questions 1–3 in the spec are resolved.** At checkpoint 1
+  (2026-10-03) the user chose the recommended answer to all three:
+  stateless doubling galloping, `linear` kept, and the probe set for
+  measurement 2. The plan stands as written.
 
 ## Ground rules for every task
 
@@ -1144,9 +1147,19 @@ Confirm that `kermit-algos` received annotations and nothing else
 
 ```bash
 git -C $WT diff -- kermit-algos | grep -E '^[-+][^-+]' | grep -vE '(TreeTrie|ColumnTrie)' || echo 'annotations only'
+git -C $WT diff -- kermit-algos/src | grep -E '^[-+][^-+]' | grep -cvE '(TreeTrie|ColumnTrie)'
 ```
 
-Expected: `annotations only`.
+Expected: `annotations only`, and a count of `0`. Quote both outputs in
+the Task 3 commit body (supervisor requirement, checkpoint 1).
+
+**Stop rule.** Count the annotated sites
+(`git -C $WT diff | grep -cE '^\+.*: (TreeTrie|ColumnTrie)'`). If the count
+grows well past ~100, stop and report it to the supervisor before
+continuing. The fallback is a `pub type TreeTrie = …<BinarySeek>` alias
+over a renamed generic struct, which avoids the churn but breaks the
+HashTrie precedent. The supervisor decides on it; the implementer does
+not.
 
 - [ ] **Step 6: The DS-level suites take one alias per structure × strategy**
 

@@ -1,7 +1,7 @@
 # Sorted-Trie Seek Strategies
 
 **Date:** 2026-10-03
-**Status:** Design for review (checkpoint 1); no code yet
+**Status:** Approved design (checkpoint 1, 2026-10-03); no code yet
 **Scope:** Issue #80. `TreeTrie` and `ColumnTrie` take their seek algorithm
 as a **Layout** type parameter `S: SeekStrategy`, under
 [`optimization-standard.md`](optimization-standard.md). There are three
@@ -758,10 +758,10 @@ amends and no pushes.
   3. after kermit-lab, the docs and measurement 2;
   4. before any merge or push.
 
-## Open questions
+## Resolved questions
 
-These are for the user, routed through the supervisor. The spec assumes the
-recommended answers.
+At checkpoint 1 (2026-10-03) the user chose the recommended answer to all
+three, so the design stands as written.
 
 1. **Galloping schedule.** Recommended: a stateless doubling gallop from the
    current position (probes at 0, 1, 2, 4, …), then a binary search in the
