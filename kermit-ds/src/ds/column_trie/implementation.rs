@@ -14,9 +14,12 @@ use {
 ///
 /// The two backing `Vec`s are kept private so the cross-field invariants
 /// (sortedness, interval-into-data) cannot be broken by external mutation.
-/// All read access is through the methods below; mutation goes through
+/// All read access is through the methods below. Incremental `insert`
+/// mutates through
 /// [`insert_key_and_shift_intervals`](Self::insert_key_and_shift_intervals)
-/// and [`add_interval`](Self::add_interval).
+/// and [`add_interval`](Self::add_interval); the bulk build only appends,
+/// through [`push_key`](Self::push_key) and
+/// [`open_interval`](Self::open_interval).
 pub struct ColumnTrieLayer {
     /// Sorted keys at this trie depth.
     data: Vec<usize>,
@@ -73,6 +76,15 @@ impl ColumnTrieLayer {
             self.interval.insert(i, self.interval[i]);
         }
     }
+
+    /// Appends `key` to the end of this layer's data. Used by the bulk
+    /// build, where every key arrives in its final position.
+    fn push_key(&mut self, key: usize) { self.data.push(key); }
+
+    /// Opens a new child interval at the current end of `data`: for a
+    /// parent just appended to the layer above, or, on the root layer, the
+    /// trie's single root interval.
+    fn open_interval(&mut self) { self.interval.push(self.data.len()); }
 }
 
 /// A column-oriented trie that stores a relation as parallel arrays per
@@ -82,8 +94,9 @@ impl ColumnTrieLayer {
 /// `ColumnTrie` flattens each trie level into a `ColumnTrieLayer` with
 /// `data` and `interval` arrays. This layout avoids per-node allocation
 /// overhead and is more cache-friendly for large relations, at the cost of
-/// more expensive inserts (keys in later layers must shift when earlier
-/// layers grow).
+/// more expensive incremental inserts: `insert` must shift the offsets of
+/// later intervals when an earlier layer grows. `from_tuples` builds every
+/// layer in one pass and pays no such cost.
 ///
 /// # Invariants
 ///
@@ -119,7 +132,8 @@ pub struct ColumnTrie {
     /// must not be mutated piecemeal — read access goes through
     /// [`ColumnTrie::layer`].
     layers: Vec<ColumnTrieLayer>,
-    /// Number of distinct tuples stored; maintained by `insert`.
+    /// Number of distinct tuples stored; maintained by `insert` and by the bulk
+    /// build.
     tuple_count: usize,
 }
 
@@ -244,6 +258,72 @@ impl ColumnTrie {
             false,
         )
     }
+
+    /// Builds a trie from tuples already sorted lexicographically, in one
+    /// pass: append keys layer by layer, and open a new child interval
+    /// wherever the prefix changes.
+    ///
+    /// Each tuple shares some leading keys with its predecessor; those keys
+    /// are already stored. So the tuple appends one key to every layer from
+    /// the first differing depth down, and every key it appends above the
+    /// last layer is a new parent, whose child interval the layer below
+    /// opens first. A tuple equal to its predecessor appends nothing.
+    ///
+    /// Produces exactly the arrays, and the capacities, of inserting the
+    /// same tuples one at a time: on sorted input `insert` only ever
+    /// appends, so the two builds perform the same pushes in the same
+    /// order. Never pre-size these `Vec`s — `heap_size_bytes` sums their
+    /// capacities.
+    ///
+    /// The input must be sorted; debug builds check it.
+    ///
+    /// O(n · a) for n tuples of arity a.
+    fn from_sorted(header: RelationHeader, sorted: Vec<Vec<usize>>) -> Self {
+        let mut trie = Self::new(header);
+        if sorted.is_empty() {
+            return trie;
+        }
+        let arity = trie.header.arity();
+        // A non-empty trie's root layer holds exactly one interval.
+        if let Some(root) = trie.layers.first_mut() {
+            root.open_interval();
+        }
+        let mut previous: Option<Vec<usize>> = None;
+        for tuple in sorted {
+            // The depth at which this tuple leaves its predecessor's path:
+            // the number of leading keys the two share.
+            let divergence_depth = previous
+                .as_deref()
+                .map_or(0, |prev| common_prefix_len(prev, &tuple));
+            if let Some(prev) = previous.as_deref() {
+                debug_assert!(
+                    prev <= tuple.as_slice(),
+                    "from_sorted: tuples are not sorted"
+                );
+            }
+            if divergence_depth == arity {
+                // Equal to its predecessor, so already stored.
+                continue;
+            }
+            for (depth, &key) in tuple.iter().enumerate().skip(divergence_depth) {
+                let layer = &mut trie.layers[depth];
+                if depth > divergence_depth {
+                    // The key just appended one layer up is a new parent,
+                    // so its children start here.
+                    layer.open_interval();
+                }
+                layer.push_key(key);
+            }
+            trie.tuple_count += 1;
+            previous = Some(tuple);
+        }
+        trie
+    }
+}
+
+/// The number of leading positions at which `a` and `b` agree.
+fn common_prefix_len(a: &[usize], b: &[usize]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
 /// Result of one layer step in [`ColumnTrie::internal_insert`]. The
@@ -314,36 +394,40 @@ impl Relation for ColumnTrie {
         }
     }
 
+    /// Sorts the tuples, then builds every layer in one pass (see
+    /// `from_sorted`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
     fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<usize>>) -> Self {
-        if tuples.is_empty() {
-            Self::new(header)
-        } else {
-            let arity = tuples[0].len();
+        let arity = header.arity();
+        // Checked before the sort: its comparator indexes `b` by `a`'s
+        // length, so a shorter tuple would panic there with an index error
+        // instead of this message.
+        for tuple in &tuples {
             assert_eq!(
+                tuple.len(),
                 arity,
-                header.arity(),
-                "from_tuples: tuple arity {arity} does not match header arity {}",
-                header.arity()
+                "from_tuples: tuple arity {} does not match header arity {arity}",
+                tuple.len()
             );
-            // Reproduces the derived `Vec<usize>` lexicographic order (kept
-            // hand-rolled here rather than `sort_unstable()`).
-            tuples.sort_unstable_by(|a, b| {
-                for i in 0..a.len() {
-                    match a[i].cmp(&b[i]) {
-                        | std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
-                        | std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
-                        | std::cmp::Ordering::Equal => continue,
-                    }
-                }
-                std::cmp::Ordering::Equal
-            });
-
-            let mut trie = Self::new(header);
-            for tuple in tuples {
-                trie.insert(tuple);
-            }
-            trie
         }
+        // The derived `Vec<usize>` lexicographic order, kept hand-rolled as
+        // in TreeTrie's `from_tuples`: the sort then costs the same in every
+        // ColumnTrie build and in TreeTrie's, so a change in the `insertion`
+        // metric measures the build routine alone.
+        tuples.sort_unstable_by(|a, b| {
+            for i in 0..a.len() {
+                match a[i].cmp(&b[i]) {
+                    | std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
+                    | std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
+                    | std::cmp::Ordering::Equal => continue,
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        Self::from_sorted(header, tuples)
     }
 
     /// Inserts a single tuple. Duplicate tuples are silently absorbed.
@@ -392,9 +476,26 @@ impl crate::cardinality::Cardinality for ColumnTrie {
 mod tests {
     use {
         super::ColumnTrie,
-        crate::relation::{Projectable, Relation as _},
+        crate::{
+            relation::{Projectable, Relation as _},
+            HeapSize,
+        },
         kermit_iters::TrieIterable,
     };
+
+    /// Linear-congruential generator, so the randomised tests need no `rand`
+    /// dev-dependency. The constants are Knuth's MMIX ones.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_usize(&mut self) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) as usize
+        }
+    }
 
     #[test]
     fn test_insert() {
@@ -577,19 +678,11 @@ mod tests {
     /// thought to check.
     #[test]
     fn random_inserts_round_trip_to_sorted_deduped_input() {
-        // Linear-congruential PRNG so we don't add a `rand` dev-dep.
-        // Seed and constants are arbitrary but fixed.
-        let mut state: u64 = 0x00C0_FFEE_DEAD_BEEF_u64;
-        let mut next = || {
-            state = state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (state >> 33) as usize
-        };
+        let mut rng = Lcg(0x00C0_FFEE_DEAD_BEEF_u64);
         let arity = 3;
         let n = 500;
         let mut tuples: Vec<Vec<usize>> = (0..n)
-            .map(|_| (0..arity).map(|_| next() % 50).collect())
+            .map(|_| (0..arity).map(|_| rng.next_usize() % 50).collect())
             .collect();
         let mut trie = ColumnTrie::new(arity.into());
         for t in &tuples {
@@ -601,6 +694,137 @@ mod tests {
         let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
         collected.sort();
         assert_eq!(collected, tuples);
+    }
+
+    /// The build before issue #84, kept as the oracle: one `insert` per
+    /// tuple, in the order given.
+    fn insert_one_by_one(arity: usize, tuples: &[Vec<usize>]) -> ColumnTrie {
+        let mut trie = ColumnTrie::new(arity.into());
+        for tuple in tuples {
+            trie.insert(tuple.clone());
+        }
+        trie
+    }
+
+    /// Asserts two tries are identical down to each `Vec`'s capacity, which
+    /// `heap_size_bytes` sums.
+    fn assert_identical(actual: &ColumnTrie, expected: &ColumnTrie, case: &str) {
+        assert_eq!(
+            actual.layers.len(),
+            expected.layers.len(),
+            "{case}: layer count"
+        );
+        for (depth, (a, e)) in actual.layers.iter().zip(&expected.layers).enumerate() {
+            assert_eq!(a.data, e.data, "{case}: layer {depth} data");
+            assert_eq!(a.interval, e.interval, "{case}: layer {depth} interval");
+            assert_eq!(
+                a.data.capacity(),
+                e.data.capacity(),
+                "{case}: layer {depth} data capacity"
+            );
+            assert_eq!(
+                a.interval.capacity(),
+                e.interval.capacity(),
+                "{case}: layer {depth} interval capacity"
+            );
+        }
+        assert_eq!(
+            actual.tuple_count, expected.tuple_count,
+            "{case}: tuple_count"
+        );
+        assert_eq!(
+            actual.heap_size_bytes(),
+            expected.heap_size_bytes(),
+            "{case}: heap_size_bytes"
+        );
+    }
+
+    /// `from_tuples` builds exactly what inserting the same tuples one at a
+    /// time builds: the same arrays, the same capacities, the same count and
+    /// heap size (issue #84). Small key ranges make duplicates and long
+    /// shared prefixes common.
+    #[test]
+    fn bulk_build_matches_one_by_one_inserts() {
+        let seeds: &[u64] = if cfg!(miri) {
+            &[1]
+        } else {
+            &[1, 2, 3, 0x00C0_FFEE_DEAD_BEEF]
+        };
+        let sizes: &[usize] = if cfg!(miri) {
+            &[0, 1, 2, 17]
+        } else {
+            &[0, 1, 2, 17, 200]
+        };
+        for &seed in seeds {
+            let mut rng = Lcg(seed);
+            for arity in 1..=4 {
+                for key_range in [2, 5, 50] {
+                    for &n in sizes {
+                        let tuples: Vec<Vec<usize>> = (0..n)
+                            .map(|_| (0..arity).map(|_| rng.next_usize() % key_range).collect())
+                            .collect();
+                        let case = format!("seed {seed}, arity {arity}, keys < {key_range}, n {n}");
+                        let bulk = ColumnTrie::from_tuples(arity.into(), tuples.clone());
+
+                        let mut sorted = tuples.clone();
+                        sorted.sort();
+                        assert_identical(&bulk, &insert_one_by_one(arity, &sorted), &case);
+                        // The layout depends only on the tuple set, so
+                        // inserting in arrival order agrees too.
+                        assert_identical(
+                            &bulk,
+                            &insert_one_by_one(arity, &tuples),
+                            &format!("{case}, unsorted inserts"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bulk_build_of_duplicates_stores_one_tuple() {
+        let tuples = vec![vec![3, 1, 4]; 5];
+        let bulk = ColumnTrie::from_tuples(3.into(), tuples.clone());
+        assert_eq!(bulk.tuple_count, 1);
+        assert_identical(&bulk, &insert_one_by_one(3, &tuples), "all duplicates");
+    }
+
+    #[test]
+    fn bulk_build_of_no_tuples_is_the_empty_trie() {
+        let bulk = ColumnTrie::from_tuples(2.into(), vec![]);
+        assert!(bulk
+            .layers
+            .iter()
+            .all(|layer| layer.data.is_empty() && layer.interval.is_empty()));
+        assert_identical(&bulk, &ColumnTrie::new(2.into()), "empty");
+    }
+
+    /// Arity 0 keeps the result it had before issue #84: no layers and a
+    /// count of 0, because `insert` stores nothing for an empty tuple.
+    #[test]
+    fn bulk_build_of_nullary_tuples_stores_nothing() {
+        let tuples = vec![vec![]; 3];
+        let bulk = ColumnTrie::from_tuples(0.into(), tuples.clone());
+        assert!(bulk.layers.is_empty());
+        assert_eq!(bulk.tuple_count, 0);
+        assert_identical(&bulk, &insert_one_by_one(0, &tuples), "arity 0");
+    }
+
+    /// Pins the worked example in `docs/data-structures/column-trie.md`.
+    #[test]
+    fn bulk_build_matches_the_documented_example() {
+        let trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        assert_eq!(trie.layers[0].data, vec![1, 2]);
+        assert_eq!(trie.layers[0].interval, vec![0]);
+        assert_eq!(trie.layers[1].data, vec![2, 3, 4]);
+        assert_eq!(trie.layers[1].interval, vec![0, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not match header arity")]
+    fn bulk_build_rejects_a_tuple_of_the_wrong_arity() {
+        ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3]]);
     }
 }
 
