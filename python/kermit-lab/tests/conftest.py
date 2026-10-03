@@ -388,13 +388,14 @@ def fixture_opt_tree(tmp_path: Path) -> dict:
 
 @pytest.fixture
 def fixture_build_mode_tree(tmp_path: Path) -> dict:
-    """ColumnTrie reports from before and after issue #84, for the
-    build-mode ablation guard.
+    """ColumnTrie reports from before and after issue #84, plus a TreeTrie
+    one, for the build-mode ablation guard.
 
-    The old report carries no ``ds_build_mode`` (back-filled to
-    ``incremental`` on load); the new one carries ``"bulk"``. Each times
-    insertion and iteration (plus space), so the build-mode axis has two
-    values and applies to one time phase but not the other.
+    The old ColumnTrie report carries no ``ds_build_mode`` (back-filled to
+    ``incremental`` on load); the new one carries ``"bulk"``. The TreeTrie
+    report has no build-mode axis, so it stays NaN. Each times insertion and
+    iteration (plus space), so the build-mode axis has two values and applies
+    to one time phase but not the other.
     """
     criterion_root = tmp_path / "target" / "criterion"
     reports_dir = tmp_path / "reports"
@@ -402,17 +403,21 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
     reports_dir.mkdir()
 
     paths: list[Path] = []
-    for tag, build_mode, insertion_point in (("old", None, 9000.0), ("new", "bulk", 300.0)):
+    for tag, data_structure, build_mode, insertion_point in (
+        ("old", "ColumnTrie", None, 9000.0),
+        ("new", "ColumnTrie", "bulk", 300.0),
+        ("tree", "TreeTrie", None, 500.0),
+    ):
         groups: list[tuple[str, str, str]] = []
         # Same trie under both builds, so the same traversal time.
         for phase, point in (("insertion", insertion_point), ("iteration", 100.0)):
-            function = f"ColumnTrie/{tag}/{phase}"
+            function = f"{data_structure}/{tag}/{phase}"
             samples = [(i + 1, point * (i + 1)) for i in range(10)]
             _write_function_dir(
                 criterion_root, _FunctionSpec("run", function, "time", point, samples)
             )
             groups.append(("run", function, "time"))
-        space_function = f"ColumnTrie/{tag}/space"
+        space_function = f"{data_structure}/{tag}/space"
         space_samples = [(i + 1, 6400.0 * (i + 1)) for i in range(10)]
         _write_function_dir(
             criterion_root,
@@ -422,7 +427,7 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
         axes = {
             "benchmark": "triangle",
             "query": "triangle",
-            "data_structure": "ColumnTrie",
+            "data_structure": data_structure,
             "algorithm": "LeapfrogTriejoin",
             "tuples": 100,
         }
@@ -430,7 +435,7 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
             axes["ds_build_mode"] = build_mode
         paths.append(
             _write_report(
-                reports_dir, f"run-ColumnTrie-{tag}", kind="run", axes=axes,
+                reports_dir, f"run-{data_structure}-{tag}", kind="run", axes=axes,
                 metadata=[], groups=groups,
             )
         )

@@ -209,8 +209,8 @@ the short version:
    BuildMode on a data structure implements `BuildModeRelation`; `BuiltWith<R, P>`
    lifts it to a type.
 3. Extend the DS or algorithm's `HasOptimizationAxes` impl with the new
-   axis under the right prefix (`ds_layout_*` / `ds_config_*` / `ds_build_mode`).
-   A BuildMode axis is emitted by the bench family instead
+   axis under the right prefix (`ds_layout_*` / `ds_config_*`). A BuildMode axis
+   (`ds_build_mode`) is emitted by the bench family instead
    (`RelationFamily::build_mode_axes`), since the relation is identical under
    every mode.
 4. Add CLI surface (`--ds-layout-<dim>` / `--ds-config <flag>=<value>[,...]` /

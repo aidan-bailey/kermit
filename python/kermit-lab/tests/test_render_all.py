@@ -65,3 +65,32 @@ def test_ablation_preset_refuses_build_mode_outside_build_phases(
     assert set(df["ds_build_mode"].dropna()) == {"incremental", "bulk"}
     with pytest.raises(InsufficientAxesError, match="built"):
         presets.ablation(df, axis="ds_build_mode", phase="iteration")
+
+
+def test_ablation_preset_lets_build_mode_through_on_end_to_end(
+    fixture_build_mode_tree,
+) -> None:
+    """``end_to_end`` times the build, so the guard must not refuse it. The
+    fixture has no such rows, so the preset fails later and differently."""
+    df = kl.load(
+        fixture_build_mode_tree["paths"],
+        criterion_root=fixture_build_mode_tree["criterion_root"],
+    )
+    with pytest.raises(InsufficientAxesError, match="no time rows"):
+        presets.ablation(df, axis="ds_build_mode", phase="end_to_end")
+
+
+def test_build_mode_ablation_leaves_out_structures_without_the_axis(
+    fixture_build_mode_tree,
+) -> None:
+    """TreeTrie rows keep NaN for ``ds_build_mode``; charting them would add a
+    bar for a structure that has no build mode."""
+    df = kl.load(
+        fixture_build_mode_tree["paths"],
+        criterion_root=fixture_build_mode_tree["criterion_root"],
+    )
+    assert df.loc[df["data_structure"] == "TreeTrie", "ds_build_mode"].isna().all()
+    fig = presets.ablation(df, axis="ds_build_mode", phase="insertion")
+    labels = {t.get_text() for ax in fig.axes for t in ax.get_xticklabels()}
+    plt.close(fig)
+    assert labels == {"bulk", "incremental"}

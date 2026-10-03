@@ -47,6 +47,30 @@ def test_build_mode_backfills_column_trie_rows_only() -> None:
     assert "ds_build_mode" not in AXIS_DEFAULTS
 
 
+def test_build_mode_backfills_an_all_nan_float_column() -> None:
+    """A frame with no ds_build_mode value at all (only pre-#84 ColumnTrie rows
+    plus other structures) holds a float64 NaN column, which a ``.loc`` fill
+    rejects once pandas stops upcasting."""
+    df = pd.DataFrame({
+        "data_structure": ["ColumnTrie", "TreeTrie"],
+        "ds_build_mode": pd.Series([float("nan")] * 2),
+    })
+    assert df["ds_build_mode"].dtype == "float64"
+    out = apply_axis_defaults(df)
+    assert out["ds_build_mode"].iloc[0] == "incremental"
+    assert pd.isna(out["ds_build_mode"].iloc[1])
+
+
+def test_scoped_default_skips_rows_with_no_data_structure() -> None:
+    df = pd.DataFrame({
+        "data_structure": pd.Series(["ColumnTrie", pd.NA], dtype="string"),
+        "ds_build_mode": pd.Series([pd.NA, pd.NA], dtype="object"),
+    })
+    out = apply_axis_defaults(df)
+    assert out["ds_build_mode"].iloc[0] == "incremental"
+    assert pd.isna(out["ds_build_mode"].iloc[1])
+
+
 def test_scoped_default_needs_the_data_structure_column() -> None:
     df = pd.DataFrame({"ds_build_mode": [pd.NA]})
     out = apply_axis_defaults(df)

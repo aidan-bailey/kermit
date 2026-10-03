@@ -304,7 +304,7 @@ Unlike a Layout or Config axis, the `ds_build_mode` axis is **not** emitted by t
 
 ### `HasOptimizationAxes`
 
-The umbrella trait the bench reporter consumes. A DS or algorithm implements it; the impl composes results from the other three trait methods under the correct key prefixes.
+The umbrella trait the bench reporter consumes. A DS or algorithm implements it; the impl composes results from the Layout and Config trait methods under the correct key prefixes. A BuildMode axis is not composed here: the bench family that ran the build reports it (see `BuildMode` above).
 
 ```rust
 pub trait HasOptimizationAxes {
@@ -595,6 +595,37 @@ flag lands in the report (`kermit/tests/cli_hash_trie_layout_pruning.rs`).
 
 ---
 
+## Walkthrough: adding a BuildMode
+
+ColumnTrie's build (`ColumnTrieBuildMode`) is the worked example. A BuildMode
+is a process, not a shape: the structure gains no type parameter, and its axis
+is never read off the relation.
+
+1. **Classify.** Every mode must build the same structure: the same contents
+   and the same `HeapSize`. A mode that changes capacities is not a BuildMode.
+2. **Define the mode** (`kermit-ds/src/ds/<name>/build_mode.rs`): a
+   `Default + clap::ValueEnum` enum whose `BuildMode::axis_value` is the clap name.
+3. **Implement `BuildModeRelation`**, and make `Relation::from_tuples` call it
+   with the default mode.
+4. **Pin equivalence** with an array-level test over every mode, capacities
+   included (`bulk_and_incremental_builds_are_identical`).
+5. **Carry the mode on the cell and family.** Implement `SortedTrieRelation`'s
+   `BuildMode`, `kind`, `build_with` and `build_mode_axes`; the `SortedTrie`
+   variant and `TrieLftj::new(build, optimiser)` hold it, and the axis comes
+   from `RelationFamily::build_mode_axes`.
+6. **Add the CLI.** `--ds-build` (`BuildChoices`, `validate_build_choices`,
+   `DsChoices.build`) is typed to `ColumnTrieBuildMode` today, so a second
+   consumer must reshape it; `Execution::HashHtj` has no BuildMode slot yet.
+7. **Test it.** `kermit_ds::define_build_mode_provider!` plus
+   `define_multiway_join_test_suite_for_build_mode!` per non-default mode and
+   optimiser, `BuiltWith` aliases in `kermit-ds/tests/`, a CLI smoke test, and
+   a spy test that the mode reaches the build (no output shows it).
+8. **kermit-lab.** Add a `SCOPED_AXIS_DEFAULTS` entry if pre-axis rows came
+   from a known mode. The `ablation` preset already limits `ds_build_mode` to
+   `insertion` / `end_to_end` and drops rows of structures without the axis.
+
+---
+
 ## Ablation studies with `kermit-lab`
 
 The whole point of the prefix convention is that ablation analysis becomes a one-liner in pandas. Suppose you have 20 bench-runs JSON files in `bench-runs/`, varying the load-factor cap and the pruning Layout across the triangle query:
@@ -664,17 +695,23 @@ Don't do it as a single CLI invocation — shell-loop instead:
 for hasher in sip fxhash; do
     for pruning in off on; do
         for lf in 0.5 0.7 0.9; do
-            kermit bench run triangle -i hash-trie -a hash-triejoin \
+            kermit bench \
+                --name triangle-$hasher-$pruning-lf$lf \
+                --report-json bench-runs/triangle-$hasher-$pruning-lf$lf.json \
+                run triangle -i hash-trie -a hash-triejoin \
                 --ds-layout-hasher $hasher \
                 --ds-layout-pruning $pruning \
-                --ds-config load-factor=$lf \
-                --report-json bench-runs/triangle-$hasher-$pruning-lf$lf.json
+                --ds-config load-factor=$lf
         done
     done
 done
 ```
 
-Then load all of them in `kermit-lab` and pivot.
+`--name` and `--report-json` are `bench`-level flags, so they go before `run`.
+Give every run its own `--name`: Criterion group names do not encode
+optimization axes, so runs that differ only in a `--ds-*` flag would overwrite
+each other's samples under `target/criterion/`. Then load all of the reports in
+`kermit-lab` and pivot.
 
 ### Q: Does adding a new axis break existing bench reports?
 
@@ -686,7 +723,7 @@ For old reports that predate the standard, back-fill defaults in `kermit-lab`:
 df["ds_layout_hasher"] = df.get("ds_layout_hasher", "sip")
 ```
 
-This is semantically correct — pre-standard runs were SipHash-only. `kermit_lab.defaults` does exactly this for every axis, back-filling `ds_layout_pruning = "off"` and `ds_config_load_factor = 0.7` (the historical constant) as well.
+This is semantically correct — pre-standard runs were SipHash-only. `kermit_lab.defaults` does exactly this for every axis, back-filling `ds_layout_pruning = "off"` and `ds_config_load_factor = 0.7` (the historical constant) as well. It also back-fills `ds_build_mode = "incremental"`, on ColumnTrie rows only (`SCOPED_AXIS_DEFAULTS`): ColumnTrie built tuple by tuple before issue #84, and no other structure has a build-mode axis.
 
 ---
 

@@ -83,6 +83,10 @@ def ablation(
             f"{axis} changes only how a structure is built, so it cannot affect "
             f"phase {phase!r}; plot it on 'insertion' or 'end_to_end'"
         )
+    # Rows without the axis belong to structures that do not have it. (An
+    # unknown axis falls through to `plot`, which names the missing column.)
+    if axis in df.columns:
+        df = df[df[axis].notna()]
     facet = "query" if "query" in df.columns and df["query"].nunique(dropna=True) > 1 else None
     return plot(df, kind="bar", x=axis, y="time", colour="data_structure",
                 facet=facet, phase=phase, title=f"Ablation — {axis}", out=out)

@@ -43,6 +43,7 @@ def apply_axis_defaults(df: pd.DataFrame) -> pd.DataFrame:
     if "data_structure" in out.columns:
         for (col, data_structure), default in SCOPED_AXIS_DEFAULTS.items():
             if col in out.columns:
-                rows = out["data_structure"] == data_structure
-                out.loc[rows, col] = out.loc[rows, col].fillna(default)
+                # `isin`, not `==`: a missing data_structure must not match.
+                on_structure = out["data_structure"].isin([data_structure])
+                out[col] = out[col].mask(out[col].isna() & on_structure, default)
     return out
