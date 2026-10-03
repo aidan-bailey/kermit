@@ -25,6 +25,15 @@ raw/data.entailed.nt      Post-Univ-Bench-TBox closure; this is what partition r
 raw/queries/q*.sparql     The 14 hand-written LUBM queries verbatim
 ```
 
+Unlike WatDiv, LUBM seeds no empty relation for a query predicate the data
+lacks. The workload is fixed and a full UBA university contains every
+predicate it uses, so a gap means broken input (a truncated file, a namespace
+mismatch, another jar): `translate_queries` checks every selected query first
+and fails with `RdfError::MissingQueryPredicates`, naming each affected query
+and predicate, before anything is translated or `benchmark.yml` is written
+(#77). A hand-built fixture passed to `process_artifacts` must therefore cover
+the predicates of every query it selects.
+
 ## Entailment rule set (authoritative list)
 
 Codified in `entailment.rs` as Rust constants. Sourced from LUBM paper §2.1
