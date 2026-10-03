@@ -1,7 +1,8 @@
 use {
     kermit_ds::{
-        define_config_provider, ColumnTrie, Configured, HashTrie, HashTrieConfig, LoadFactor,
-        PruningPolicy, SingletonPruning, TreeTrie,
+        define_build_mode_provider, define_config_provider, BuiltWith, ColumnTrie,
+        ColumnTrieBuildMode, Configured, HashTrie, HashTrieConfig, LoadFactor, PruningPolicy,
+        SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -10,6 +11,18 @@ mod common;
 parquet_test_suite!(TreeTrie);
 
 parquet_test_suite!(ColumnTrie);
+
+// …and under ColumnTrie's incremental BuildMode, which must load the same
+// trie (issue #84).
+define_build_mode_provider!(
+    Incremental,
+    ColumnTrieBuildMode,
+    ColumnTrieBuildMode::Incremental
+);
+
+type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;
+
+parquet_test_suite!(ColumnTrieIncremental);
 
 // `HashTrie` has no tuple-shaped iterator (it is `HashTrieIterable`, not
 // `TrieIterable`), so the round-trip is checked through `collect_tuples()`,

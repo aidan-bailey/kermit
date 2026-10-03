@@ -1,5 +1,6 @@
 use {
-    crate::relation::{Relation, RelationHeader},
+    super::build_mode::ColumnTrieBuildMode,
+    crate::relation::{BuildModeRelation, Relation, RelationHeader},
     kermit_iters::JoinIterable,
     std::fmt,
 };
@@ -96,7 +97,8 @@ impl ColumnTrieLayer {
 /// overhead and is more cache-friendly for large relations, at the cost of
 /// more expensive incremental inserts: `insert` must shift the offsets of
 /// later intervals when an earlier layer grows. `from_tuples` builds every
-/// layer in one pass and pays no such cost.
+/// layer in one pass (under the default [`ColumnTrieBuildMode::Bulk`]) and
+/// pays no such cost.
 ///
 /// # Invariants
 ///
@@ -259,6 +261,19 @@ impl ColumnTrie {
         )
     }
 
+    /// Builds a trie from sorted tuples by inserting them one at a time —
+    /// the build before issue #84, kept as
+    /// [`ColumnTrieBuildMode::Incremental`] so its measurements can be
+    /// reproduced. Each `insert` scans its interval from the start, so this
+    /// is O(n · a · b).
+    fn from_sorted_by_insertion(header: RelationHeader, sorted: Vec<Vec<usize>>) -> Self {
+        let mut trie = Self::new(header);
+        for tuple in sorted {
+            trie.insert(tuple);
+        }
+        trie
+    }
+
     /// Builds a trie from tuples already sorted lexicographically, in one
     /// pass: append keys layer by layer, and open a new child interval
     /// wherever the prefix changes.
@@ -394,13 +409,51 @@ impl Relation for ColumnTrie {
         }
     }
 
-    /// Sorts the tuples, then builds every layer in one pass (see
-    /// `from_sorted`).
+    /// Builds with the default [`ColumnTrieBuildMode`], `Bulk`.
     ///
     /// # Panics
     ///
     /// Panics if any tuple's length does not equal `header.arity()`.
-    fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<usize>>) -> Self {
+    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
+        Self::from_tuples_with_build_mode(header, ColumnTrieBuildMode::default(), tuples)
+    }
+
+    /// Inserts a single tuple. Duplicate tuples are silently absorbed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tuple.len()` does not match the relation's arity.
+    fn insert(&mut self, tuple: Vec<usize>) {
+        assert_eq!(
+            tuple.len(),
+            self.header().arity(),
+            "tuple arity must match relation arity"
+        );
+        if self.internal_insert(&tuple) {
+            self.tuple_count += 1;
+        }
+    }
+
+    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
+        for tuple in tuples {
+            self.insert(tuple);
+        }
+    }
+}
+
+impl BuildModeRelation for ColumnTrie {
+    type BuildMode = ColumnTrieBuildMode;
+
+    /// Sorts the tuples, then builds the layers by `mode`: one pass over
+    /// the sorted tuples for `Bulk` (see `from_sorted`), one `insert` per
+    /// tuple for `Incremental` (see `from_sorted_by_insertion`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
+    fn from_tuples_with_build_mode(
+        header: RelationHeader, mode: ColumnTrieBuildMode, mut tuples: Vec<Vec<usize>>,
+    ) -> Self {
         let arity = header.arity();
         // Checked before the sort: its comparator indexes `b` by `a`'s
         // length, so a shorter tuple would panic there with an index error
@@ -427,28 +480,9 @@ impl Relation for ColumnTrie {
             }
             std::cmp::Ordering::Equal
         });
-        Self::from_sorted(header, tuples)
-    }
-
-    /// Inserts a single tuple. Duplicate tuples are silently absorbed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `tuple.len()` does not match the relation's arity.
-    fn insert(&mut self, tuple: Vec<usize>) {
-        assert_eq!(
-            tuple.len(),
-            self.header().arity(),
-            "tuple arity must match relation arity"
-        );
-        if self.internal_insert(&tuple) {
-            self.tuple_count += 1;
-        }
-    }
-
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
-        for tuple in tuples {
-            self.insert(tuple);
+        match mode {
+            | ColumnTrieBuildMode::Incremental => Self::from_sorted_by_insertion(header, tuples),
+            | ColumnTrieBuildMode::Bulk => Self::from_sorted(header, tuples),
         }
     }
 }
@@ -475,9 +509,9 @@ impl crate::cardinality::Cardinality for ColumnTrie {
 #[cfg(test)]
 mod tests {
     use {
-        super::ColumnTrie,
+        super::{ColumnTrie, ColumnTrieBuildMode},
         crate::{
-            relation::{Projectable, Relation as _},
+            relation::{BuildModeRelation, Projectable, Relation as _},
             HeapSize,
         },
         kermit_iters::TrieIterable,
@@ -739,12 +773,11 @@ mod tests {
         );
     }
 
-    /// `from_tuples` builds exactly what inserting the same tuples one at a
-    /// time builds: the same arrays, the same capacities, the same count and
-    /// heap size (issue #84). Small key ranges make duplicates and long
-    /// shared prefixes common.
+    /// Every build mode builds exactly the same trie: the same arrays, the
+    /// same capacities, the same count and heap size (issue #84). Small key
+    /// ranges make duplicates and long shared prefixes common.
     #[test]
-    fn bulk_build_matches_one_by_one_inserts() {
+    fn bulk_and_incremental_builds_are_identical() {
         let seeds: &[u64] = if cfg!(miri) {
             &[1]
         } else {
@@ -764,11 +797,17 @@ mod tests {
                             .map(|_| (0..arity).map(|_| rng.next_usize() % key_range).collect())
                             .collect();
                         let case = format!("seed {seed}, arity {arity}, keys < {key_range}, n {n}");
-                        let bulk = ColumnTrie::from_tuples(arity.into(), tuples.clone());
-
-                        let mut sorted = tuples.clone();
-                        sorted.sort();
-                        assert_identical(&bulk, &insert_one_by_one(arity, &sorted), &case);
+                        let bulk = ColumnTrie::from_tuples_with_build_mode(
+                            arity.into(),
+                            ColumnTrieBuildMode::Bulk,
+                            tuples.clone(),
+                        );
+                        let incremental = ColumnTrie::from_tuples_with_build_mode(
+                            arity.into(),
+                            ColumnTrieBuildMode::Incremental,
+                            tuples.clone(),
+                        );
+                        assert_identical(&bulk, &incremental, &case);
                         // The layout depends only on the tuple set, so
                         // inserting in arrival order agrees too.
                         assert_identical(
