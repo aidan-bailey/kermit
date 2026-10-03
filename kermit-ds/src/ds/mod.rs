@@ -8,7 +8,7 @@ mod tree_trie;
 // in this crate's dependency tree. Decided in aidan-bailey/kermit#60 (item 5).
 use {clap::ValueEnum, std::str::FromStr};
 pub use {
-    column_trie::ColumnTrie,
+    column_trie::{ColumnTrie, ColumnTrieBuildMode},
     hash_trie::{
         HashTrie, HashTrieConfig, InvalidLoadFactor, LoadFactor, NoPruning, PruningPolicy,
         SingletonPruning,

@@ -10,10 +10,10 @@ use {
         },
         execution::{Execution, HashTrieFamily, RelationFamily, SortedTrie, SortedTrieFamily},
         measurement,
-        options::{with_hash_trie_layout, HasherChoice, PruningChoice},
+        options::{with_hash_trie_layout, DsChoices},
         BenchArgs,
     },
-    kermit_ds::{HashTrieConfig, IndexStructure, Relation},
+    kermit_ds::{IndexStructure, Relation},
     std::{collections::BTreeMap, fs, io, path::Path},
 };
 
@@ -25,7 +25,7 @@ use {
 /// closed the last hand-mirrored pair). The family supplies the four
 /// points where the bodies used to diverge: the relation type to load
 /// (`F::Rel`), how to *build* one from a `(header, tuples)` snapshot
-/// honouring the family's `--ds-config` values
+/// honouring the family's `--ds-config` values and `--ds-build` mode
 /// ([`RelationFamily::build_relation`], and [`RelationFamily::load`] on
 /// top of it), how to walk its tuples without materialising them
 /// (`F::for_each_tuple` — `TrieIteratorWrapper::advance` for sorted tries,
@@ -173,11 +173,14 @@ fn run_ds_bench<F: RelationFamily>(
             serde_json::json!(queries_per_build),
         );
     }
-    // Standard optimization axes: merge in dimensions emitted by the DS.
-    // The `ds_layout_*` / `ds_config_*` / `ds_build_mode` naming convention
-    // (see `kermit_iters::HasOptimizationAxes`) guarantees no collision
-    // with the base axes assembled above. Empty for the sorted tries.
+    // Standard optimization axes: the relation's Layout / Config dimensions
+    // (empty for the sorted tries), then the build mode, which only the
+    // family that ran the build can report. The `ds_layout_*` /
+    // `ds_config_*` / `ds_build_mode` naming convention (see
+    // `kermit_iters::HasOptimizationAxes`) guarantees no collision with the
+    // base axes assembled above.
     axes.extend(F::optimization_axes(&relation));
+    axes.extend(family.build_mode_axes());
     Ok(BenchReport::new(
         BenchKind::Ds,
         &metadata,
@@ -191,25 +194,26 @@ fn run_ds_bench<F: RelationFamily>(
 /// for `ds`. The hash cell's `H` / `P` Layout parameters are picked from
 /// the `--ds-layout-hasher` / `--ds-layout-pruning` CLI flags by
 /// `with_hash_trie_layout!` — the one place that product is expanded —
-/// and the `--ds-config` values ride along on the family, so the relation
-/// this measures is the one the report's `ds_*` axes describe.
-#[allow(clippy::too_many_arguments)]
+/// and the `--ds-config` values and the `--ds-build` mode ride along on the
+/// family, so the relation this measures is the one the report's `ds_*` axes
+/// describe.
 pub(crate) fn dispatch_ds_bench(
-    ds: IndexStructure, hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig,
-    relation: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
-    bench_args: &BenchArgs,
+    ds: IndexStructure, choices: DsChoices, relation: &Path, metrics: &[Metric],
+    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    match Execution::for_structure(ds, hasher, pruning, config) {
+    match Execution::for_structure(ds, choices) {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_ds_bench(
-            &SortedTrieFamily::<kermit_ds::TreeTrie>::new(),
+            &SortedTrieFamily::<kermit_ds::TreeTrie>::default(),
             relation,
             metrics,
             queries_per_build,
             group_name,
             bench_args,
         ),
-        | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_ds_bench(
-            &SortedTrieFamily::<kermit_ds::ColumnTrie>::new(),
+        | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            build,
+        }) => run_ds_bench(
+            &SortedTrieFamily::<kermit_ds::ColumnTrie>::new(build),
             relation,
             metrics,
             queries_per_build,

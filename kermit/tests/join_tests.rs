@@ -3,8 +3,8 @@ mod common;
 use {
     kermit_algos::{CardinalityOptimiser, HashTriejoin, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{
-        define_config_provider, ColumnTrie, HashTrie, HashTrieConfig, LoadFactor, SingletonPruning,
-        TreeTrie,
+        define_build_mode_provider, define_config_provider, ColumnTrie, ColumnTrieBuildMode,
+        HashTrie, HashTrieConfig, LoadFactor, SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -60,4 +60,26 @@ define_multiway_join_test_suite_with_config!(
     HashTriejoin,
     CardinalityOptimiser,
     HalfFull
+);
+
+// ── BuildMode axis: ColumnTrie's build ──────────────────────────────────
+// The plain ColumnTrie invocations above build with the default (`bulk`);
+// these run the alternate. Every mode must build the same trie (issue #84).
+define_build_mode_provider!(
+    Incremental,
+    ColumnTrieBuildMode,
+    ColumnTrieBuildMode::Incremental
+);
+
+define_multiway_join_test_suite_for_build_mode!(
+    ColumnTrie,
+    LeapfrogTriejoin,
+    LexicographicOptimiser,
+    Incremental
+);
+define_multiway_join_test_suite_for_build_mode!(
+    ColumnTrie,
+    LeapfrogTriejoin,
+    CardinalityOptimiser,
+    Incremental
 );

@@ -93,9 +93,9 @@ build (`BatchSize::PerIteration`) followed by K joins. Two caveats:
   `ExecutionFamily::build_from_tuples`, which routes every relation through
   the same `RelationFamily::build_relation` site the `insertion` phase uses
   — so the build term is the `from_tuples` path in both phases, honouring
-  any `--ds-config` values. The end-to-end build additionally pays for
-  assembling the relation store (`BTreeMap<String, R>`), so the two numbers
-  still are not identical.
+  any `--ds-config` values and ColumnTrie's `--ds-build` mode. The
+  end-to-end build additionally pays for assembling the relation store
+  (`BTreeMap<String, R>`), so the two numbers still are not identical.
 - K is recorded in the report's `queries_per_build` axis (and surfaces as a
   DataFrame column), never in the Criterion function id.
 
@@ -194,9 +194,9 @@ load them together:
 
 ```sh
 # two runs, same workload, different hasher → one ablation dataset
-kermit bench --report-json bench-runs/tri-sip.json \
+kermit bench --name tri-sip --report-json bench-runs/tri-sip.json \
   run triangle -i hash-trie -a hash-triejoin --ds-layout-hasher sip    --metrics iteration
-kermit bench --report-json bench-runs/tri-fx.json \
+kermit bench --name tri-fx --report-json bench-runs/tri-fx.json \
   run triangle -i hash-trie -a hash-triejoin --ds-layout-hasher fxhash --metrics iteration
 ```
 
@@ -208,6 +208,28 @@ kl.ablation(df, axis="ds_layout_hasher")          # the preset
 # …or bind the axis to any channel via the general engine:
 kl.plot(df, kind="bar", x="ds_layout_hasher", y="time",
         colour="data_structure", facet="query")
+```
+
+`--ds-build` works the same way for ColumnTrie's build (`bulk` by default,
+`incremental` for the build before issue #84). For thesis figures, compare the
+two modes **within one binary** — `--ds-build incremental` against the default.
+kermit-lab back-fills `incremental` on pre-#84 ColumnTrie reports, but those
+rows are for continuity only: reports carry no binary identity, so a
+difference between an old row and a new one mixes the build mode with every
+other change between the two binaries. A build mode only changes the build,
+so `kl.ablation` (and `render-all`) draw the `ds_build_mode` axis for the
+`insertion` and `end_to_end` phases only.
+
+Give every run its own `--name`: Criterion group names do not encode
+optimisation axes, so two runs that differ only in a `--ds-*` flag write into
+the same `target/criterion/` directory, and the later overwrites the earlier's
+samples.
+
+```sh
+kermit bench --name col-bulk --report-json bench-runs/col-bulk.json \
+  ds -r data.parquet -i column-trie -m insertion
+kermit bench --name col-incr --report-json bench-runs/col-incr.json \
+  ds -r data.parquet -i column-trie -m insertion --ds-build incremental
 ```
 
 The full optimization model (Layout / Config / BuildMode, how to add one, and

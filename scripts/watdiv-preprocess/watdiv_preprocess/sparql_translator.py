@@ -113,9 +113,25 @@ def _term_to_datalog(term, uri_to_id: dict[str, int]) -> tuple[str, str | None]:
 
 
 def _var_name(raw: str) -> str:
-    """Normalises a SPARQL variable name to a Datalog-safe uppercase token."""
+    """Maps a SPARQL variable name to the Datalog variable ``V_<escaped name>``.
+
+    Mirrors ``kermit_rdf::sparql::bindings::var_name`` (issue #75): SPARQL
+    names are case-sensitive, so uppercasing merged ``?x`` and ``?X``. ASCII
+    letters and digits pass through, ``_`` becomes ``__``, and any other
+    character becomes ``_x<hex code point>_``, which keeps the mapping
+    injective and every result a kermit-parser variable. Snapshots generated
+    before this change carry the old uppercased names and stay valid.
+    """
     name = raw.lstrip("?").lstrip("$")
-    return name.upper()
+    out = ["V_"]
+    for ch in name:
+        if ch.isascii() and ch.isalnum():
+            out.append(ch)
+        elif ch == "_":
+            out.append("__")
+        else:
+            out.append(f"_x{ord(ch):x}_")
+    return "".join(out)
 
 
 def translate_file(

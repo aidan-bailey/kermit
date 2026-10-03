@@ -199,6 +199,13 @@ workspace YAML, or re-run the `bench gen lubm` command (its parameters are in
 `meta.json`) for one made imperatively, which `--force` cannot rebuild. LUBM
 timings from before and after that regeneration are not comparable.
 
+Caches below `schema_version` 4 are also `stale`, for a smaller reason: issue
+#75 changed how SPARQL variables are named in the emitted Datalog (`?x` →
+`V_x`, so case-distinct variables no longer merge), which changes every query's
+text and CSV header but not the encoding. Regenerate them the same way; the
+rebuild reproduces the cache's `partition_input_sha256` and `dict_sha256`, so
+timings on either side of it remain comparable.
+
 The vendored jar's SHA-256 is recorded in `meta.json` so a regenerated bench
 is distinguishable post-hoc if the jar is rebuilt against a different JDK or
 upstream commit. There is no runtime hash check that *rejects* a mismatched

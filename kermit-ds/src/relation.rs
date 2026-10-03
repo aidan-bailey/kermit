@@ -307,6 +307,33 @@ pub trait ConfigurableRelation: Relation {
     fn config(&self) -> &Self::Config;
 }
 
+/// A [`Relation`] with more than one way to build from a known set of
+/// tuples — the BuildMode category of the optimization standard
+/// (`docs/specs/optimization-standard.md`).
+///
+/// Every mode must build the *same* relation: same contents, same layout,
+/// same [`HeapSize`](crate::HeapSize). Only the construction process
+/// differs. [`Relation::from_tuples`] must equal
+/// `from_tuples_with_build_mode(header, Self::BuildMode::default(), tuples)`.
+/// Wrapper types that exist to inject a mode (see `BuiltWith` in
+/// `built_with.rs`) deliberately do not implement this.
+///
+/// Only structures with a BuildMode axis implement this.
+pub trait BuildModeRelation: Relation {
+    /// The construction processes this structure offers.
+    type BuildMode: kermit_iters::BuildMode + Copy + Default;
+
+    /// Creates a relation populated with `tuples`, built by `mode`. Same
+    /// contract as [`Relation::from_tuples`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
+    fn from_tuples_with_build_mode(
+        header: RelationHeader, mode: Self::BuildMode, tuples: Vec<Vec<usize>>,
+    ) -> Self;
+}
+
 /// Loads a [`Relation`] from a CSV or Parquet file.
 ///
 /// Defined as an extension trait (with a blanket impl over every

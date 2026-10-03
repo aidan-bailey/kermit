@@ -61,13 +61,14 @@ planning the variable ordering; defaults to `lexicographic`), optional
 `--output` (writes one run's results as CSV with a header row of head
 variable names), `--metrics` (defaults to `insertion iteration space`;
 `end-to-end` is opt-in), `--queries-per-build` (K for the `end-to-end`
-metric, default 1), `--ds-config` alongside the `--ds-layout-*` flags.
+metric, default 1), `--ds-config` and `--ds-build` alongside the `--ds-layout-*` flags.
 
 **Flow:**
-1. Validate the layout/config flags for the concrete structure and resolve
-   the `(structure, algorithm)` pair to its `Execution` cell.
+1. Validate the layout/config/build flags for the concrete structure, resolve
+   them into a `DsChoices`, and resolve the `(structure, algorithm)` pair to
+   its `Execution` cell.
 2. If `--output` is set, run the join once through `load_query_runner`
-   (built with the resolved config) and write CSV with a header row
+   (built with the resolved `DsChoices`) and write CSV with a header row
    (`head_column_names(query)`).
 3. Build `bench::Workload::adhoc` (name `adhoc`, one query named by the file
    stem) and run it through `bench::run::dispatch_run_bench` — the same
@@ -86,10 +87,10 @@ opt-in), `--queries-per-build` (K for the `end-to-end` metric, default 1).
 
 | Metric | How measured |
 |--------|--------------|
-| `Insertion` | `R::from_tuples(header, tuples)` via Criterion `iter_batched`, on the relation's tuples in file order |
+| `Insertion` | `RelationFamily::build_relation(header, tuples)` (which applies the family's config or build mode) via Criterion `iter_batched`, on the relation's tuples in file order |
 | `Iteration` | `F::scan(&relation)` via Criterion `iter`: walks every stored tuple through `RelationFamily::for_each_tuple` (`TrieIteratorWrapper::advance` / `HashTrie::for_each_tuple`), counting each through a `black_box` sink; no tuple is materialised |
-| `EndToEnd` | `R::from_tuples` (same input) then K `F::scan` traversals, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
-| `Space` | `R::from_tuples(...).heap_size_bytes()` via Criterion `iter_custom` with `SpaceMeasurement` |
+| `EndToEnd` | `RelationFamily::build_relation` (same input) then K `F::scan` traversals, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
+| `Space` | `heap_size_bytes()` of the relation `RelationFamily::load_with_tuples` built (through `build_relation`), via Criterion `iter_custom` with `SpaceMeasurement` |
 
 Each metric becomes a separate Criterion `bench_function`:
 `{ds_name}/insertion`, `{ds_name}/iteration`, `{ds_name}/end_to_end`,
@@ -147,7 +148,7 @@ query parsing described in step 3 and the per-query loop above.
 `EndToEnd` is the only metric whose timed body spans the build→query
 boundary: each Criterion sample constructs a fresh database from the
 file-order tuples kept in step 4 **through the same pipeline as the untimed step-4 build**
-(a fresh `BTreeMap<String, R>` via `from_tuples`, queried through
+(a fresh `BTreeMap<String, R>` via `build_relation`, queried through
 `ExecutionFamily::count` — `ExecutionFamily::build_from_tuples` for either family) and then executes and counts the query K times
 (`--queries-per-build`). `BatchSize::PerIteration` is deliberate — batching
 would amortise away the per-build cost the metric exists to measure. Every

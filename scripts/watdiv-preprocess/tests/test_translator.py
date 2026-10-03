@@ -14,7 +14,7 @@ def test_simple_bgp_one_triple():
     predicate_map = {"<http://example/p>": "p"}
     sparql = "SELECT ?x WHERE { ?x <http://example/p> <http://example/c> . }"
     out = translate_query(sparql, uri_to_id, predicate_map, "Q0")
-    assert out == "Q0(X) :- p(X, c42)."
+    assert out == "Q0(V_x) :- p(V_x, c42)."
 
 
 def test_select_star_projects_all_bound_vars_in_source_order():
@@ -27,7 +27,7 @@ def test_select_star_projects_all_bound_vars_in_source_order():
         "SELECT * WHERE { ?x <http://example/p> ?y . ?y <http://example/q> ?z . }"
     )
     out = translate_query(sparql, uri_to_id, predicate_map, "Q1")
-    assert out == "Q1(X, Y, Z) :- p(X, Y), q(Y, Z)."
+    assert out == "Q1(V_x, V_y, V_z) :- p(V_x, V_y), q(V_y, V_z)."
 
 
 def test_watdiv_style_select_star_with_constant_object():
@@ -47,7 +47,9 @@ def test_watdiv_style_select_star_with_constant_object():
         "?v0 <http://ogp.me/ns#title> ?v2 .  }"
     )
     out = translate_query(sparql, uri_to_id, predicate_map, "Q_test1_q0000")
-    assert out == "Q_test1_q0000(V0, V2) :- homepage(V0, c2948), title(V0, V2)."
+    assert out == (
+        "Q_test1_q0000(V_v0, V_v2) :- homepage(V_v0, c2948), title(V_v0, V_v2)."
+    )
 
 
 def test_predicate_map_disambiguates_sanitize_collisions():
@@ -70,8 +72,29 @@ def test_predicate_map_disambiguates_sanitize_collisions():
         "}"
     )
     out = translate_query(sparql, uri_to_id, predicate_map, "Q_collision")
-    assert "title(X, c100)" in out
-    assert "title_11(X, c101)" in out
+    assert "title(V_x, c100)" in out
+    assert "title_11(V_x, c101)" in out
+
+
+def test_case_distinct_variables_stay_distinct():
+    """``?x`` and ``?X`` are different variables (issue #75)."""
+    uri_to_id = {"<http://example/p>": 10}
+    predicate_map = {"<http://example/p>": "p"}
+    sparql = "SELECT ?x WHERE { ?x <http://example/p> ?X . }"
+    out = translate_query(sparql, uri_to_id, predicate_map, "Q")
+    assert out == "Q(V_x) :- p(V_x, V_X)."
+
+
+def test_variable_names_match_the_rust_translator():
+    """Same mapping as ``kermit_rdf::sparql::bindings::var_name``."""
+    from watdiv_preprocess.sparql_translator import _var_name
+
+    assert _var_name("?x") == "V_x"
+    assert _var_name("?X") == "V_X"
+    assert _var_name("?_x") == "V___x"
+    assert _var_name("?a_b") == "V_a__b"
+    assert _var_name("?1a") == "V_1a"
+    assert _var_name("?straße") == "V_stra_xdf_e"
 
 
 def test_missing_predicate_in_map_errors():

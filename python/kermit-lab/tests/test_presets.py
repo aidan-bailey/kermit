@@ -6,10 +6,12 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import pytest
 from matplotlib.figure import Figure
 
 from kermit_lab import presets
 from kermit_lab.frame import load, load_samples
+from kermit_lab.plots_errors import InsufficientAxesError
 
 
 def test_scaling(fixture_tree) -> None:
@@ -53,3 +55,11 @@ def test_ablation(fixture_opt_tree) -> None:
     df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
     assert isinstance(presets.ablation(df, axis="ds_config_load_factor"), Figure)
     plt.close("all")
+
+
+def test_ablation_on_an_unknown_axis_is_insufficient_axes(fixture_opt_tree) -> None:
+    """The CLI maps this error to a clean exit; a bare ``KeyError`` would
+    surface as a traceback."""
+    df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
+    with pytest.raises(InsufficientAxesError):
+        presets.ablation(df, axis="ds_no_such_axis")

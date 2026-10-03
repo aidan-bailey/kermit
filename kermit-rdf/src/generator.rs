@@ -42,7 +42,7 @@ use {
     },
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         fs,
         path::{Path, PathBuf},
     },
@@ -59,20 +59,37 @@ use {
 /// - 2: adds `spec_hash`.
 /// - 3: adds `partition_input_sha256` and `dict_sha256`; LUBM entailment output
 ///   becomes reproducible (issue #74).
-pub const META_SCHEMA_VERSION: u32 = 3;
+/// - 4: SPARQL variables map injectively to `V_<escaped name>` Datalog
+///   variables instead of being uppercased, which changes every generator's
+///   emitted query text and CSV headers for an unchanged spec (issue #75). The
+///   data, dictionary and answers are unchanged.
+pub const META_SCHEMA_VERSION: u32 = 4;
 
-/// Per generator kind: the first schema version whose caches hold what the
-/// current pipeline writes for their spec, and why older caches do not. A
-/// cache below its kind's floor is outdated even when its `spec_hash`
-/// matches. Kinds whose output has never changed under a fixed spec have no
-/// entry, so their older caches stay valid.
-const OUTDATED_BEFORE: &[(&str, u32, &str)] = &[(
-    LUBM_META_KIND,
-    3,
-    "LUBM caches written before meta.json schema 3 hold the entailed triples in per-run hash \
-     order, so their dictionary ids, relation row order and query constants are not reproducible \
-     from the spec (issue #74)",
-)];
+/// Why every generator's caches below schema 4 are outdated; see
+/// [`META_SCHEMA_VERSION`].
+const VARIABLE_MAPPING_CHANGED: &str =
+    "caches written before meta.json schema 4 name their query variables by uppercasing the \
+     SPARQL names, which merges case-distinct variables; queries now use the injective `V_<name>` \
+     mapping (issue #75). Regenerating a WatDiv benchmark draws new data, since WatDiv seeds from \
+     the clock";
+
+/// Per generator kind: a schema version below which that kind's caches no
+/// longer hold what the current pipeline writes for their spec, and why. A
+/// cache below a floor is outdated even when its `spec_hash` matches.
+/// Entries for one kind are listed oldest floor first, so a cache reports the
+/// earliest change it predates.
+const OUTDATED_BEFORE: &[(&str, u32, &str)] = &[
+    (
+        LUBM_META_KIND,
+        3,
+        "LUBM caches written before meta.json schema 3 hold the entailed triples in per-run hash \
+         order, so their dictionary ids, relation row order and query constants are not \
+         reproducible from the spec (issue #74)",
+    ),
+    (LUBM_META_KIND, 4, VARIABLE_MAPPING_CHANGED),
+    ("watdiv-onthefly", 4, VARIABLE_MAPPING_CHANGED),
+    ("watdiv-basic-onthefly", 4, VARIABLE_MAPPING_CHANGED),
+];
 
 /// Where a generator writes its output and how the run is labelled. The
 /// fields every pipeline's `*Inputs` struct carries, so the orchestrator
@@ -229,6 +246,11 @@ pub trait Generator {
     /// Hook to add relations the data lacks before Parquet is written (the
     /// WatDiv generator seeds empty relations for query predicates absent
     /// from the probabilistically generated data). Default: nothing.
+    ///
+    /// Name each added relation with [`partition::unique_relation_name`]
+    /// against the names already in `part`: [`process_artifacts`] refuses a
+    /// partition in which two relations share a name
+    /// ([`RdfError::DuplicateRelationName`]).
     fn seed_relations(
         &self, _staged: &Self::Staged, _part: &mut Partitioned,
     ) -> Result<(), RdfError> {
@@ -252,6 +274,29 @@ pub trait Generator {
     ) -> Result<Self::Meta, RdfError>;
 }
 
+/// Refuses a partition in which two relations share a name, before any of
+/// them is written: each becomes `<name>.parquet`, so the second write would
+/// silently replace the first's tuples (#76).
+fn check_relation_names_unique(part: &Partitioned) -> Result<(), RdfError> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for rel in &part.relations {
+        if !seen.insert(rel.name.as_str()) {
+            let mut iris: Vec<String> = part
+                .predicate_map
+                .iter()
+                .filter(|(_, name)| **name == rel.name)
+                .map(|(iri, _)| iri.clone())
+                .collect();
+            iris.sort();
+            return Err(RdfError::DuplicateRelationName {
+                name: rel.name.clone(),
+                iris,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Runs the shared post-driver sequence for `generator` over `raw`, writing
 /// the complete benchmark cache directory at `target().out_dir` and
 /// returning the `meta.json` contents it recorded.
@@ -271,6 +316,7 @@ pub fn process_artifacts<G: Generator>(generator: &G, raw: &G::Raw) -> Result<G:
     // write each as Parquet.
     let mut part = partition::partition(&nt_path)?;
     generator.seed_relations(&staged, &mut part)?;
+    check_relation_names_unique(&part)?;
     for rel in &part.relations {
         parquet::write_relation(rel, &out_dir.join(format!("{}.parquet", rel.name)))?;
     }
@@ -320,6 +366,9 @@ mod tests {
     /// exercising every hook without an external tool.
     struct ToyGenerator<'a> {
         target: Target<'a>,
+        /// Seeds a relation reusing the name `follows`, as a broken
+        /// `seed_relations` might.
+        seed_duplicate_name: bool,
     }
 
     struct ToyRaw {
@@ -374,6 +423,18 @@ mod tests {
             Ok((nt, ()))
         }
 
+        fn seed_relations(&self, _staged: &(), part: &mut Partitioned) -> Result<(), RdfError> {
+            if self.seed_duplicate_name {
+                part.predicate_map
+                    .insert("http://y/follows".to_string(), "follows".to_string());
+                part.relations.push(crate::partition::PartitionedRelation {
+                    name: "follows".to_string(),
+                    tuples: Vec::new(),
+                });
+            }
+            Ok(())
+        }
+
         fn translate_queries(
             &self, _staged: &(), dict: &mut Dictionary, predicate_map: &HashMap<String, String>,
         ) -> Result<Vec<TranslatedQuery>, RdfError> {
@@ -420,11 +481,48 @@ mod tests {
                 tag: "toy-tag",
                 spec_hash,
             },
+            seed_duplicate_name: false,
         };
         process_artifacts(&generator, &ToyRaw {
             nt_text: NT,
         })
         .expect("toy pipeline succeeds")
+    }
+
+    /// Two relations sharing a name would write one Parquet file twice, so
+    /// the orchestrator refuses before writing any (#76).
+    #[test]
+    fn a_duplicate_relation_name_is_rejected_before_any_parquet_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let generator = ToyGenerator {
+            target: Target {
+                out_dir: dir.path(),
+                bench_name: "toy-bench",
+                tag: "toy-tag",
+                spec_hash: None,
+            },
+            seed_duplicate_name: true,
+        };
+        let err = process_artifacts(&generator, &ToyRaw {
+            nt_text: NT,
+        })
+        .unwrap_err();
+        match err {
+            | RdfError::DuplicateRelationName {
+                name,
+                iris,
+            } => {
+                assert_eq!(name, "follows");
+                assert_eq!(iris, vec!["http://x/follows", "http://y/follows"]);
+            },
+            | other => panic!("expected DuplicateRelationName, got {other:?}"),
+        }
+        let parquet: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "parquet"))
+            .collect();
+        assert!(parquet.is_empty(), "wrote {parquet:?}");
     }
 
     #[test]
@@ -445,7 +543,7 @@ mod tests {
 
         let yaml = fs::read_to_string(out.join("benchmark.yml")).unwrap();
         assert!(yaml.contains("expected: 3"), "{yaml}");
-        assert!(yaml.contains("Q_path(X, Y, Z) :- follows(X, Y), follows(Y, Z)."));
+        assert!(yaml.contains("Q_path(V_x, V_y, V_z) :- follows(V_x, V_y), follows(V_y, V_z)."));
         assert!(yaml.contains("toy-bench"));
         assert!(yaml.contains("description: toy"));
 
@@ -528,13 +626,35 @@ mod tests {
         );
     }
 
-    /// WatDiv encodes its generator output in file order and never changed
-    /// that under a fixed spec, so the LUBM floor must not invalidate its
-    /// caches (they take minutes to regenerate).
+    /// Every generator's emitted query text changed at schema 4 (`?x` became
+    /// `V_x`, #75), so every kind's older caches are outdated from there.
     #[test]
-    fn watdiv_caches_from_older_schemas_are_not_outdated() {
+    fn caches_before_the_injective_variable_mapping_are_outdated() {
+        for kind in [LUBM_META_KIND, "watdiv-onthefly", "watdiv-basic-onthefly"] {
+            let reason = header(kind, 3).outdated_reason();
+            assert!(
+                reason.is_some_and(|r| r.contains("#75")),
+                "{kind}: {reason:?}"
+            );
+            assert_eq!(
+                header(kind, META_SCHEMA_VERSION).outdated_reason(),
+                None,
+                "{kind}"
+            );
+        }
+    }
+
+    /// WatDiv encodes its generator output in file order and never changed
+    /// that under a fixed spec, so its older caches are outdated only by the
+    /// query-text change, never by LUBM's reproducibility floor.
+    #[test]
+    fn watdiv_caches_are_outdated_only_by_the_variable_mapping() {
         for kind in ["watdiv-onthefly", "watdiv-basic-onthefly"] {
-            assert_eq!(header(kind, 2).outdated_reason(), None, "{kind}");
+            let reason = header(kind, 2).outdated_reason();
+            assert!(
+                reason.is_some_and(|r| r.contains("#75") && !r.contains("#74")),
+                "{kind}: {reason:?}"
+            );
         }
     }
 }

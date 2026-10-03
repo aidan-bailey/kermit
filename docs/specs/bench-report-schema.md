@@ -151,15 +151,21 @@ tooling relies on them for cross-DS comparison.
 - `ds_config_<flag>` — runtime configuration value on the data structure
   (e.g., `ds_config_load_factor`).
 - `ds_build_mode` — construction-time build mode for the data structure
-  (single key; value is a `<mode>[:<params>]` string, e.g., `parallel:8`).
+  (single key; value is a `<mode>[:<params>]` string, e.g., `bulk`). Emitted
+  only on ColumnTrie reports, by the bench family that ran the build rather
+  than by the relation, since every build mode builds the same structure.
+  Values: `bulk` (default) and `incremental` (`--ds-build incremental`).
 - `algo_layout_<dim>`, `algo_config_<flag>`, `algo_build_mode` — analogous
   prefixes for algorithm-level optimizations (reserved; not yet used).
 
 When pivoting bench reports in kermit-lab, downstream code should:
 - Treat missing keys as the algorithm/DS default. For pre-standard reports
   predating this change, back-fill `ds_layout_hasher == "sip"` (the
-  historical hash function for HashTrie), `ds_layout_pruning == "off"`, and
-  `ds_config_load_factor == 0.7` (the historical constant).
+  historical hash function for HashTrie), `ds_layout_pruning == "off"`,
+  `ds_config_load_factor == 0.7` (the historical constant), and, on
+  ColumnTrie rows only, `ds_build_mode == "incremental"` (ColumnTrie's build
+  before issue #84; every ColumnTrie report since carries the axis). The
+  other structures have no build-mode axis, so their rows stay NaN.
 - Group on the relevant prefix to perform ablation analysis.
 
 Adding new keys under these prefixes does not require a `schema_version`
@@ -191,3 +197,4 @@ bump — the `axes` field is an open map.
 | 2 (no bump) | 2026-09-09 | `bench join` now runs through the generic runner: it gained `benchmark` (`"adhoc"`), `query` (the query file's stem), and `tuples`, and dropped the redundant `relations` count. No key changed name or type, so `schema_version` stays `2`. |
 | 2 (no bump) | 2026-09-09 | Added the `verified` conventional `axes` key, present only when `bench run --verify` checked the query. Additive, so `schema_version` stays `2`. |
 | 3       | 2026-10-02 | What the time metrics measure changed, so values are not comparable with v2, and kermit-lab refuses to load v2 and v3 reports together unless `allow_mixed_schema=True`. The changes on master at this version: `bench run` / `bench join` `iteration` and `end_to_end` time a streamed join whose rows are counted through a `black_box` sink and never materialised, and `--verify` counts the same way (#65); `bench ds` `iteration` / `end_to_end` traverse the relation without materialising it (#79); `insertion` and `end_to_end` rebuild every structure from the file's tuple order, and HashTrie's bucket index gains a per-capacity multiplier, which changes its build and lookup cost (#66); TreeTrie `seek` is a binary search (#67, from `9604293`); LFTJ reuses its per-depth buffers, so it no longer allocates on every `open`/`up` (#83); the LUBM caches are regenerated with a deterministic encoding (#74, from `8048fd7`); the toolchain is nightly 2026-10-01 (`106ad36`). |
+| 3 (no bump) | 2026-10-03 | ColumnTrie's `from_tuples` builds in one pass (#84), so its `insertion` and `end_to_end` values drop; every ColumnTrie report now carries `ds_build_mode: "bulk"`, which tells it apart from earlier ColumnTrie rows. Additive, so `schema_version` stays `3`. `--ds-build incremental` restores the old build, and kermit-lab back-fills `incremental` on earlier ColumnTrie rows, so old ColumnTrie rows stay correctly labelled; compare the two modes within one binary. |

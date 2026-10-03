@@ -16,6 +16,7 @@
 //! instead — algorithms select the matching iterable trait.
 #![deny(missing_docs)]
 
+mod built_with;
 mod cardinality;
 mod configured;
 mod ds;
@@ -24,15 +25,17 @@ mod relation;
 
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
+    built_with::{BuildModeProvider, BuiltWith},
     cardinality::Cardinality,
     configured::{ConfigProvider, Configured},
     ds::{
-        ColumnTrie, HashTrie, HashTrieConfig, IndexStructure, InvalidLoadFactor, LoadFactor,
-        NoPruning, PruningPolicy, SingletonPruning, TreeTrie,
+        ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieConfig, IndexStructure,
+        InvalidLoadFactor, LoadFactor, NoPruning, PruningPolicy, SingletonPruning, TreeTrie,
     },
     heap_size::HeapSize,
     relation::{
-        read_csv, read_csv_header, read_parquet, read_parquet_header, ConfigurableRelation,
-        ModelType, Projectable, Relation, RelationError, RelationFileExt, RelationHeader,
+        read_csv, read_csv_header, read_parquet, read_parquet_header, BuildModeRelation,
+        ConfigurableRelation, ModelType, Projectable, Relation, RelationError, RelationFileExt,
+        RelationHeader,
     },
 };

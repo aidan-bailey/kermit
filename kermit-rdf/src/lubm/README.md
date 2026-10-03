@@ -25,6 +25,15 @@ raw/data.entailed.nt      Post-Univ-Bench-TBox closure; this is what partition r
 raw/queries/q*.sparql     The 14 hand-written LUBM queries verbatim
 ```
 
+Unlike WatDiv, LUBM seeds no empty relation for a query predicate the data
+lacks. The workload is fixed and a full UBA university contains every
+predicate it uses, so a gap means broken input (a truncated file, a namespace
+mismatch, another jar): `translate_queries` checks every selected query first
+and fails with `RdfError::MissingQueryPredicates`, naming each affected query
+and predicate, before anything is translated or `benchmark.yml` is written
+(#77). A hand-built fixture passed to `process_artifacts` must therefore cover
+the predicates of every query it selects.
+
 ## Entailment rule set (authoritative list)
 
 Codified in `entailment.rs` as Rust constants. Sourced from LUBM paper §2.1
@@ -60,7 +69,9 @@ closure whose order depends only on its input — the distinct input triples
 in input order, then the derived triples sorted (its "Output order" doc).
 Before issue #74 it wrote hash order, and every generation of one spec got its
 own encoding; `MetaHeader::outdated_reason` marks those caches (`meta.json`
-`schema_version` below 3) as outdated. `meta.json` records
+`schema_version` below 3) as outdated. Caches below schema 4 are outdated too,
+for their query text only: #75 renamed query variables (`?x` → `V_x`) without
+touching the encoding, so regenerating one reproduces its two hashes. `meta.json` records
 `partition_input_sha256` and `dict_sha256`, which match between two caches
 exactly when they encode identically.
 

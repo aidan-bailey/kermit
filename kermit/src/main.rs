@@ -16,7 +16,7 @@ use {
     kermit::db::{validate_query, JoinError},
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HashTrieConfig, IndexStructure},
+    kermit_ds::IndexStructure,
     kermit_parser::Term,
     std::{
         fs,
@@ -39,10 +39,7 @@ use {
     },
     bench_report::{BenchKind, ReportSink},
     execution::{read_relation_header, Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
-    options::{
-        validate_config_choices, validate_layout_choices, with_hash_trie_layout, ConfigChoices,
-        LayoutChoices,
-    },
+    options::{with_hash_trie_layout, BuildChoices, ConfigChoices, DsChoices, LayoutChoices},
 };
 
 /// Default Criterion group name when `--name` is omitted on `bench run`.
@@ -119,8 +116,8 @@ enum IndexStructureSelector {
 
 impl IndexStructureSelector {
     /// The selector naming exactly `ds`, so the `--ds-layout-*` /
-    /// `--ds-config` validators (which take a selector) apply to a
-    /// concrete structure.
+    /// `--ds-config` / `--ds-build` validators (which take a selector) apply
+    /// to a concrete structure.
     fn of(ds: IndexStructure) -> Self {
         match ds {
             | IndexStructure::ColumnTrie => Self::ColumnTrie,
@@ -223,6 +220,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         config: ConfigChoices,
+
+        #[command(flatten)]
+        build: BuildChoices,
     },
 
     /// Benchmark an index structure (insertion, iteration, space,
@@ -264,6 +264,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         config: ConfigChoices,
+
+        #[command(flatten)]
+        build: BuildChoices,
     },
 
     /// Run a named benchmark from benchmarks/ YAML files
@@ -334,6 +337,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         config: ConfigChoices,
+
+        #[command(flatten)]
+        build: BuildChoices,
     },
 
     /// List available benchmarks
@@ -365,7 +371,12 @@ enum GenSubcommand {
     /// Generate a fresh watdiv benchmark on the fly
     Watdiv {
         /// Scale factor passed to watdiv -d (>= 1)
-        #[arg(long, value_name = "N", required = true)]
+        #[arg(
+            long,
+            value_name = "N",
+            required = true,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
         scale: u32,
 
         /// Tag appended to the benchmark name; must contain a non-numeric
@@ -407,7 +418,12 @@ enum GenSubcommand {
     /// Generate a fresh LUBM benchmark on the fly
     Lubm {
         /// Number of universities to generate (`-u`); must be >= 1
-        #[arg(long, value_name = "N", required = true)]
+        #[arg(
+            long,
+            value_name = "N",
+            required = true,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
         scale: u32,
 
         /// Tag appended to the benchmark name; pick a value that won't
@@ -490,21 +506,65 @@ fn head_column_names(query: &JoinQuery) -> Vec<String> {
         .collect()
 }
 
-fn write_tuples(
-    mut writer: impl Write, header: &[String], tuples: &[Vec<usize>],
-) -> io::Result<()> {
-    if !header.is_empty() {
-        writeln!(writer, "{}", header.join(","))?;
+/// Streams a join result as CSV: the header row, then one line per tuple as
+/// the join produces it, so writing a result never materialises it (the
+/// memory half of issue #65: a result larger than RAM is written, not
+/// killed). A join's sink cannot fail, so the first I/O error is kept,
+/// later rows are dropped, and [`finish`](Self::finish) returns it.
+struct CsvSink<W: Write> {
+    writer: W,
+    error: Option<io::Error>,
+}
+
+impl<W: Write> CsvSink<W> {
+    /// Writes the header row (if any) and returns a sink for the rows.
+    fn new(mut writer: W, header: &[String]) -> io::Result<Self> {
+        if !header.is_empty() {
+            writeln!(writer, "{}", header.join(","))?;
+        }
+        Ok(Self {
+            writer,
+            error: None,
+        })
     }
-    for tuple in tuples {
-        let line: String = tuple
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        writeln!(writer, "{}", line)?;
+
+    /// Writes one row, unless an earlier write failed.
+    fn write_tuple(&mut self, tuple: &[usize]) {
+        if self.error.is_none() {
+            if let Err(e) = write_row(&mut self.writer, tuple) {
+                self.error = Some(e);
+            }
+        }
     }
-    writer.flush()
+
+    /// Flushes the writer, or returns the first write error.
+    fn finish(mut self) -> io::Result<()> {
+        match self.error.take() {
+            | Some(e) => Err(e),
+            | None => self.writer.flush(),
+        }
+    }
+}
+
+/// Writes `tuple` as one comma-separated line, without allocating.
+fn write_row(writer: &mut impl Write, tuple: &[usize]) -> io::Result<()> {
+    for (i, value) in tuple.iter().enumerate() {
+        if i > 0 {
+            writer.write_all(b",")?;
+        }
+        write!(writer, "{value}")?;
+    }
+    writer.write_all(b"\n")
+}
+
+/// Runs `query` through `join`, streaming its header and rows to `writer`.
+fn write_join(
+    writer: impl Write, header: &[String], join: &JoinRunner, query: JoinQuery,
+) -> anyhow::Result<()> {
+    let mut sink = CsvSink::new(writer, header)?;
+    join(query, &mut |tuple| sink.write_tuple(tuple))?;
+    sink.finish()?;
+    Ok(())
 }
 
 /// Parses the query file named by `args`.
@@ -517,8 +577,9 @@ fn parse_query(args: &QueryArgs) -> anyhow::Result<JoinQuery> {
         .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", args.query, e))
 }
 
-/// A built engine behind a closure: runs one query and returns its tuples.
-type JoinRunner = Box<dyn Fn(JoinQuery) -> Result<Vec<Vec<usize>>, JoinError>>;
+/// A built engine behind a closure: runs one query, passing each result
+/// tuple to the sink as the join produces it.
+type JoinRunner = Box<dyn Fn(JoinQuery, &mut dyn FnMut(&[usize])) -> Result<(), JoinError>>;
 
 /// Loads `args.relations` into `family`'s engine and returns a runner over it.
 fn build_join_runner<F: ExecutionFamily + 'static>(
@@ -529,7 +590,9 @@ fn build_join_runner<F: ExecutionFamily + 'static>(
         .map(|p| family.load(p))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let engine = family.build(relations);
-    Ok(Box::new(move |q| family.join(&engine, q)))
+    Ok(Box::new(move |q, sink| {
+        family.join_for_each(&engine, q, sink)
+    }))
 }
 
 /// Checks `query` against the headers of `args.relations`, read without
@@ -551,12 +614,13 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
 /// error, and the `--ds-layout-*` flags are only accepted with
 /// `-i hash-trie`.
 ///
-/// `kermit join` deliberately carries no `--ds-config` and passes
-/// [`HashTrieConfig::default()`]: the one Config value trades space against
-/// probe length and cannot change a query's answers. `bench join --output`
-/// passes its resolved config so the CSV comes from the same build the
-/// measurements use.
-fn load_query_runner(args: &QueryArgs, config: HashTrieConfig) -> anyhow::Result<JoinRunner> {
+/// `kermit join` deliberately carries neither `--ds-config` nor `--ds-build`:
+/// it passes their defaults inside its [`DsChoices`], because neither can
+/// change a query's answers (the one Config value trades space against probe
+/// length, and every build mode builds the same structure). `bench join
+/// --output` passes its resolved [`DsChoices`], so the CSV comes from the same
+/// build the measurements use.
+fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<JoinRunner> {
     // Deliberately duplicates `validate_layout_choices` for `kermit join`,
     // which has no selector-based validation of its own; `bench join`
     // validates first and pays this check a second time on its `--output`
@@ -578,28 +642,24 @@ fn load_query_runner(args: &QueryArgs, config: HashTrieConfig) -> anyhow::Result
             }
         }
     }
-    let cell = Execution::for_pair(
-        args.indexstructure,
-        args.algorithm,
-        args.layout.hash_trie_hasher_resolved(),
-        args.layout.hash_trie_pruning_resolved(),
-        config,
-    )
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "incompatible selection: {:?} cannot run under {:?}",
-            args.indexstructure,
-            args.algorithm
-        )
-    })?;
+    let cell =
+        Execution::for_pair(args.indexstructure, args.algorithm, choices).ok_or_else(|| {
+            anyhow::anyhow!(
+                "incompatible selection: {:?} cannot run under {:?}",
+                args.indexstructure,
+                args.algorithm
+            )
+        })?;
     let optimiser = args.optimiser;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => build_join_runner(
-            TrieLftj::<kermit_ds::TreeTrie>::new(optimiser),
+            TrieLftj::<kermit_ds::TreeTrie>::new((), optimiser),
             &args.relations,
         ),
-        | Execution::TrieLftj(SortedTrie::ColumnTrie) => build_join_runner(
-            TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser),
+        | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            build,
+        }) => build_join_runner(
+            TrieLftj::<kermit_ds::ColumnTrie>::new(build, optimiser),
             &args.relations,
         ),
         | Execution::HashHtj {
@@ -695,15 +755,18 @@ fn resolve_benchmarks(
 fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()> {
     let join_query = parse_query(&query_args)?;
     validate_query_files(&join_query, &query_args)?;
-    let join = load_query_runner(&query_args, HashTrieConfig::default())?;
+    let choices = DsChoices {
+        hasher: query_args.layout.hash_trie_hasher_resolved(),
+        pruning: query_args.layout.hash_trie_pruning_resolved(),
+        ..DsChoices::default()
+    };
+    let join = load_query_runner(&query_args, choices)?;
     let header = head_column_names(&join_query);
-    let tuples = join(join_query)?;
     let writer: Box<dyn Write> = match &output {
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         | None => Box::new(BufWriter::new(io::stdout().lock())),
     };
-    write_tuples(writer, &header, &tuples)?;
-    Ok(())
+    write_join(writer, &header, &join, join_query)
 }
 
 /// Handler for `bench list`: print every discoverable benchmark with its
@@ -785,35 +848,26 @@ fn run_clean(name: Option<String>) -> anyhow::Result<()> {
 /// `adhoc/{query-stem}` identity.
 fn run_bench_join(
     bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>, metrics: &[Metric],
-    queries_per_build: u32, config: ConfigChoices,
+    queries_per_build: u32, config: ConfigChoices, build: BuildChoices,
 ) -> anyhow::Result<()> {
     let selector = IndexStructureSelector::of(query_args.indexstructure);
-    validate_layout_choices(selector, &query_args.layout)?;
-    validate_config_choices(selector, &config)?;
-    let hash_trie_config = config.hash_trie_config_resolved()?;
-    let cell = Execution::for_pair(
-        query_args.indexstructure,
-        query_args.algorithm,
-        query_args.layout.hash_trie_hasher_resolved(),
-        query_args.layout.hash_trie_pruning_resolved(),
-        hash_trie_config,
-    )
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "incompatible selection: {:?} cannot run under {:?}",
-            query_args.indexstructure,
-            query_args.algorithm
-        )
-    })?;
+    let choices = DsChoices::resolve(selector, &query_args.layout, &config, &build)?;
+    let cell = Execution::for_pair(query_args.indexstructure, query_args.algorithm, choices)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "incompatible selection: {:?} cannot run under {:?}",
+                query_args.indexstructure,
+                query_args.algorithm
+            )
+        })?;
 
     if let Some(path) = &output {
         let join_query = parse_query(&query_args)?;
         validate_query_files(&join_query, &query_args)?;
-        let join = load_query_runner(&query_args, hash_trie_config)?;
+        let join = load_query_runner(&query_args, choices)?;
         let header = head_column_names(&join_query);
-        let tuples = join(join_query)?;
         let writer = BufWriter::new(fs::File::create(path)?);
-        write_tuples(writer, &header, &tuples)?;
+        write_join(writer, &header, &join, join_query)?;
     }
 
     let workload = Workload::adhoc(query_args.relations.clone(), &query_args.query)?;
@@ -839,18 +893,15 @@ fn run_bench_join(
 fn run_ds_bench_command(
     bench_args: &BenchArgs, relation: PathBuf, indexstructure: IndexStructureSelector,
     metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices, config: ConfigChoices,
+    build: BuildChoices,
 ) -> anyhow::Result<()> {
-    validate_layout_choices(indexstructure, &layout)?;
-    validate_config_choices(indexstructure, &config)?;
-    let hash_trie_config = config.hash_trie_config_resolved()?;
+    let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Ds)?;
     for ds in indexstructure.expand() {
         let report = dispatch_ds_bench(
             ds,
-            layout.hash_trie_hasher_resolved(),
-            layout.hash_trie_pruning_resolved(),
-            hash_trie_config,
+            choices,
             &relation,
             &metrics,
             queries_per_build,
@@ -871,18 +922,10 @@ fn run_bench_run_command(
     bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, optimiser: Optimiser,
     metrics: Vec<Metric>, queries_per_build: u32, force: bool, verify: bool, layout: LayoutChoices,
-    config: ConfigChoices,
+    config: ConfigChoices, build: BuildChoices,
 ) -> anyhow::Result<()> {
-    validate_layout_choices(indexstructure, &layout)?;
-    validate_config_choices(indexstructure, &config)?;
-    let hash_trie_config = config.hash_trie_config_resolved()?;
-    let cells = resolve_sweep(
-        indexstructure,
-        algorithm,
-        layout.hash_trie_hasher_resolved(),
-        layout.hash_trie_pruning_resolved(),
-        hash_trie_config,
-    )?;
+    let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
+    let cells = resolve_sweep(indexstructure, algorithm, choices)?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
         .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
@@ -1116,6 +1159,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 config,
+                build,
             } => run_bench_join(
                 &bench_args,
                 query_args,
@@ -1123,6 +1167,7 @@ fn main() -> anyhow::Result<()> {
                 &metrics,
                 queries_per_build,
                 config,
+                build,
             )?,
 
             | BenchSubcommand::Ds {
@@ -1132,6 +1177,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 layout,
                 config,
+                build,
             } => run_ds_bench_command(
                 &bench_args,
                 relation,
@@ -1140,6 +1186,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 layout,
                 config,
+                build,
             )?,
 
             | BenchSubcommand::Run {
@@ -1155,6 +1202,7 @@ fn main() -> anyhow::Result<()> {
                 verify,
                 layout,
                 config,
+                build,
             } => run_bench_run_command(
                 &bench_args,
                 name,
@@ -1169,6 +1217,7 @@ fn main() -> anyhow::Result<()> {
                 verify,
                 layout,
                 config,
+                build,
             )?,
 
             | BenchSubcommand::Gen {
@@ -1226,37 +1275,100 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn write_tuples_no_header_emits_only_rows() {
-        let tuples = vec![vec![1, 2, 3], vec![4, 5, 6]];
+    /// Streams `tuples` through a [`CsvSink`] over `header` and returns the
+    /// text written.
+    fn csv(header: &[&str], tuples: &[&[usize]]) -> String {
+        let header: Vec<String> = header.iter().map(|h| h.to_string()).collect();
         let mut buf = Vec::new();
-        write_tuples(&mut buf, &[], &tuples).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "1,2,3\n4,5,6\n");
+        let mut sink = CsvSink::new(&mut buf, &header).unwrap();
+        for tuple in tuples {
+            sink.write_tuple(tuple);
+        }
+        sink.finish().unwrap();
+        String::from_utf8(buf).unwrap()
     }
 
     #[test]
-    fn write_tuples_with_header_emits_header_then_rows() {
-        let tuples = vec![vec![1, 2, 3], vec![4, 5, 6]];
-        let header = vec!["X".to_string(), "Y".to_string(), "Z".to_string()];
-        let mut buf = Vec::new();
-        write_tuples(&mut buf, &header, &tuples).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "X,Y,Z\n1,2,3\n4,5,6\n");
+    fn csv_sink_without_header_emits_only_rows() {
+        assert_eq!(csv(&[], &[&[1, 2, 3], &[4, 5, 6]]), "1,2,3\n4,5,6\n");
     }
 
     #[test]
-    fn write_tuples_single_column() {
-        let tuples = vec![vec![10], vec![20]];
-        let mut buf = Vec::new();
-        write_tuples(&mut buf, &[], &tuples).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "10\n20\n");
+    fn csv_sink_emits_the_header_then_rows() {
+        assert_eq!(
+            csv(&["X", "Y", "Z"], &[&[1, 2, 3], &[4, 5, 6]]),
+            "X,Y,Z\n1,2,3\n4,5,6\n"
+        );
     }
 
     #[test]
-    fn write_tuples_empty() {
-        let tuples: Vec<Vec<usize>> = vec![];
-        let mut buf = Vec::new();
-        write_tuples(&mut buf, &[], &tuples).unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "");
+    fn csv_sink_single_column() {
+        assert_eq!(csv(&[], &[&[10], &[20]]), "10\n20\n");
+    }
+
+    #[test]
+    fn csv_sink_with_no_rows_writes_only_the_header() {
+        assert_eq!(csv(&[], &[]), "");
+        assert_eq!(csv(&["X"], &[]), "X\n");
+    }
+
+    /// Writing a result allocates nothing per row, so `kermit join`'s memory
+    /// does not grow with the result (#65): the counts at two result sizes
+    /// 1000x apart must be equal.
+    #[test]
+    fn csv_sink_allocates_nothing_per_row() {
+        let allocations = |rows: usize| {
+            allocation_counter::measure(|| {
+                let header = ["X".to_string(), "Y".to_string()];
+                let mut sink = CsvSink::new(io::sink(), &header).unwrap();
+                for i in 0..rows {
+                    sink.write_tuple(&[i, i + 1]);
+                }
+                sink.finish().unwrap();
+            })
+            .count_total
+        };
+        assert_eq!(allocations(10), allocations(10_000));
+    }
+
+    /// A writer that accepts `capacity` bytes, then fails every write.
+    struct FailAfter {
+        capacity: usize,
+        writes: usize,
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            if buf.len() > self.capacity {
+                return Err(io::Error::other("disk full"));
+            }
+            self.capacity -= buf.len();
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    /// A join sink cannot fail, so the first write error is kept, later
+    /// rows are not attempted, and `finish` returns the error.
+    #[test]
+    fn csv_sink_reports_the_first_write_error_and_stops_writing() {
+        let mut writer = FailAfter {
+            capacity: 4,
+            writes: 0,
+        };
+        let mut sink = CsvSink::new(&mut writer, &[]).unwrap();
+        sink.write_tuple(&[1, 2]);
+        sink.write_tuple(&[3, 4]);
+        let writes_at_error = sink.writer.writes;
+        sink.write_tuple(&[5, 6]);
+        assert_eq!(
+            sink.writer.writes, writes_at_error,
+            "kept writing after an error"
+        );
+        let err = sink.finish().unwrap_err();
+        assert_eq!(err.to_string(), "disk full");
     }
 
     #[test]
@@ -1330,8 +1442,12 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
         fs::write(
             subdir.join("meta.json"),
-            serde_json::json!({"schema_version": 2, "kind": "watdiv-onthefly", "spec_hash": hash})
-                .to_string(),
+            serde_json::json!({
+                "schema_version": kermit_rdf::generator::META_SCHEMA_VERSION,
+                "kind": "watdiv-onthefly",
+                "spec_hash": hash
+            })
+            .to_string(),
         )
         .unwrap();
         let def = make_generator_def("watdiv-cached", spec);
@@ -1410,6 +1526,35 @@ mod tests {
         .unwrap();
         let def = make_generator_def("lubm-x", spec);
         describe_benchmark_status(&def, Some(&def), dir.path())
+    }
+
+    /// Issue #75: a WatDiv cache written before the injective variable
+    /// mapping matches its spec, but its queries use the old uppercased
+    /// variable names, so it is stale like any other outdated encoding.
+    #[test]
+    fn status_stale_for_watdiv_cache_before_injective_variable_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = kermit_bench::GeneratorSpec::Watdiv {
+            scale: 1,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        };
+        let subdir = dir.path().join("watdiv-old");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({
+                "schema_version": 3,
+                "kind": "watdiv-onthefly",
+                "spec_hash": spec.spec_hash()
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("watdiv-old", spec);
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "stale"
+        );
     }
 
     /// Issue #74: a LUBM cache written before entailment became
@@ -1515,8 +1660,12 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
         fs::write(
             subdir.join("meta.json"),
-            serde_json::json!({"schema_version": 2, "kind": "watdiv-onthefly", "spec_hash": hash})
-                .to_string(),
+            serde_json::json!({
+                "schema_version": kermit_rdf::generator::META_SCHEMA_VERSION,
+                "kind": "watdiv-onthefly",
+                "spec_hash": hash
+            })
+            .to_string(),
         )
         .unwrap();
 

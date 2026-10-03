@@ -12,6 +12,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 
 from .plot import plot
+from .plots_errors import InsufficientAxesError
 
 
 def scaling(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] = None) -> Figure:
@@ -61,10 +62,31 @@ def bar_queries(
                 title="Across queries", out=out)
 
 
+# A BuildMode changes how a structure is built, never the structure, so its
+# axis can only explain the phases that time a build. On any other phase two
+# build modes measure the same structure, and a difference between them is
+# noise or binary drift, not a build-mode effect.
+_BUILD_ONLY_AXES = frozenset({"ds_build_mode"})
+_BUILD_PHASES = frozenset({"insertion", "end_to_end"})
+
+
 def ablation(
     df: pd.DataFrame, *, axis: str, phase: str = "iteration", out: Optional[Path] = None
 ) -> Figure:
-    """Ablation: time vs an optimization axis, coloured by DS, faceted by query when >1."""
+    """Ablation: time vs an optimization axis, coloured by DS, faceted by query when >1.
+
+    Raises :class:`InsufficientAxesError` for a build-mode axis on a phase
+    that does not time the build.
+    """
+    if axis in _BUILD_ONLY_AXES and phase not in _BUILD_PHASES:
+        raise InsufficientAxesError(
+            f"{axis} changes only how a structure is built, so it cannot affect "
+            f"phase {phase!r}; plot it on 'insertion' or 'end_to_end'"
+        )
+    # Rows without the axis belong to structures that do not have it. (An
+    # unknown axis falls through to `plot`, which names the missing column.)
+    if axis in df.columns:
+        df = df[df[axis].notna()]
     facet = "query" if "query" in df.columns and df["query"].nunique(dropna=True) > 1 else None
     return plot(df, kind="bar", x=axis, y="time", colour="data_structure",
                 facet=facet, phase=phase, title=f"Ablation — {axis}", out=out)

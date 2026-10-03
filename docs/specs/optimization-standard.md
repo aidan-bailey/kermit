@@ -103,17 +103,17 @@ A **Config** option is a *value* field on a config struct, read on a code path t
 
 A **BuildMode** changes the construction process but leaves the resulting in-memory representation unchanged. Modes produce *equivalent results* on the same input — they're a perf knob, not a semantic change.
 
-> **Concrete example (hypothetical).** Parallel build. `HashTrie::from_tuples_parallel(tuples, threads=8)` and `HashTrie::from_tuples(tuples)` both yield the same trie on the same input, just one uses morsel-driven concurrent insertion.
+> **Concrete example (implemented).** ColumnTrie's build. `ColumnTrie::from_tuples_with_build_mode(header, ColumnTrieBuildMode::Incremental, tuples)` sorts the tuples and inserts them one at a time (the build before issue #84, O(n · a · b)); `ColumnTrieBuildMode::Bulk`, the default, builds every layer in one pass (O(n · a)). Both build identical arrays with identical capacities, which an array-level test pins.
 
 | Aspect | BuildMode |
 |---|---|
 | Runtime cost | None at query time (build-only) |
 | Binary size cost | One constructor variant per mode |
 | Type system enforcement | Weak (mode is just a parameter) |
-| Output equivalence | Required (must produce same trie as default) |
+| Output equivalence | Required: every mode builds the same structure — same contents **and** the same `HeapSize` — so a build mode can move only the build-timing metrics (`insertion`, `end_to_end`), never `iteration` or `space`. kermit-lab relies on this when it limits `ds_build_mode` ablations to the build phases. |
 | Bench axis key | `ds_build_mode` (single key with mode + params) |
-| Examples (potential) | Parallel build, radix partitioning, presorted input |
-| Test obligation | Each mode output-equivalent to the default via `define_multiway_join_test_suite_for_build_mode!` (macro lands with the first BuildMode consumer) |
+| Examples (potential) | ColumnTrie bulk / incremental ✓, parallel build, radix partitioning |
+| Test obligation | Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an array-level test that every mode builds the identical structure, capacities included |
 
 ---
 
@@ -136,14 +136,11 @@ kermit bench run triangle -i hash-trie -a hash-triejoin \
     --ds-config load-factor=0.5
 ```
 
-Hypothetically (when BuildMode gets a consumer):
+The BuildMode category has one consumer, ColumnTrie:
 
 ```bash
-kermit bench run triangle -i hash-trie -a hash-triejoin \
-    --ds-layout-hasher fxhash \
-    --ds-layout-pruning on \
-    --ds-config load-factor=0.5 \
-    --ds-build parallel:8
+# The pre-#84 build, to reproduce its insertion numbers
+kermit bench run triangle -i column-trie -a leapfrog-triejoin --ds-build incremental
 ```
 
 Each category has its own flag namespace — `--ds-layout-<dim>` for Layout, `--ds-config <flag>=<value>,...` for Config (a single flag with comma-separated key=value pairs), `--ds-build <mode>[:<params>]` for BuildMode.
@@ -191,7 +188,7 @@ The keys `ds_layout_hasher`, `ds_layout_pruning` and `ds_config_load_factor` sit
 |---|---|---|
 | `ds_layout_<dim>` | DS layout (compile-time) | `ds_layout_hasher: "fxhash"`, `ds_layout_pruning: "on"` |
 | `ds_config_<flag>` | DS config (runtime) | `ds_config_load_factor: 0.5` |
-| `ds_build_mode` | DS build mode | `ds_build_mode: "parallel:8"` |
+| `ds_build_mode` | DS build mode | `ds_build_mode: "bulk"` |
 | `algo_layout_<dim>` | Algorithm layout (reserved) | (none yet) |
 | `algo_config_<flag>` | Algorithm config (reserved) | (none yet) |
 | `algo_build_mode` | Algorithm build mode (reserved) | (none yet) |
@@ -282,28 +279,32 @@ pub trait BuildMode {
 }
 ```
 
-Usage (hypothetical):
+Usage (`ColumnTrieBuildMode`, in
+[`kermit-ds/src/ds/column_trie/build_mode.rs`](../../kermit-ds/src/ds/column_trie/build_mode.rs)):
 ```rust
-enum HashTrieBuildMode {
-    Serial,
-    Parallel { threads: usize },
-    Radix    { bits: u32 },
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ColumnTrieBuildMode {
+    Incremental,
+    #[default]
+    Bulk,
 }
 
-impl BuildMode for HashTrieBuildMode {
+impl BuildMode for ColumnTrieBuildMode {
     fn axis_value(&self) -> String {
         match self {
-            Self::Serial               => "serial".to_string(),
-            Self::Parallel { threads } => format!("parallel:{threads}"),
-            Self::Radix    { bits }    => format!("radix:{bits}"),
+            Self::Incremental => "incremental",
+            Self::Bulk => "bulk",
         }
+        .to_string()
     }
 }
 ```
 
+Unlike a Layout or Config axis, the `ds_build_mode` axis is **not** emitted by the relation's `HasOptimizationAxes`: every mode builds the same relation, so the relation cannot know. The bench family that ran the build reports it, through `RelationFamily::build_mode_axes` (`kermit/src/execution.rs`).
+
 ### `HasOptimizationAxes`
 
-The umbrella trait the bench reporter consumes. A DS or algorithm implements it; the impl composes results from the other three trait methods under the correct key prefixes.
+The umbrella trait the bench reporter consumes. A DS or algorithm implements it; the impl composes results from the Layout and Config trait methods under the correct key prefixes. A BuildMode axis is not composed here: the bench family that ran the build reports it (see `BuildMode` above).
 
 ```rust
 pub trait HasOptimizationAxes {
@@ -348,6 +349,21 @@ wrapper deliberately does **not** implement `ConfigurableRelation` itself:
 its config-carrying constructors would take an arbitrary value that `P`
 cannot vouch for. The data structure never sees the marker — its config stays
 a runtime value, which is what makes it Config rather than Layout.
+
+### `BuildModeRelation` and `BuiltWith<R, P>` (kermit-ds)
+
+`kermit_ds::BuildModeRelation` ([`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs))
+adds `from_tuples_with_build_mode(header, mode, tuples)`. Every mode must build
+the same relation, and `Relation::from_tuples` must use the default mode.
+Only `ColumnTrie` implements it today.
+
+`kermit_ds::BuiltWith<R, P>` ([`kermit-ds/src/built_with.rs`](../../kermit-ds/src/built_with.rs))
+wraps an `R: BuildModeRelation` with a zero-sized
+`P: BuildModeProvider<R::BuildMode>`, declared with
+`kermit_ds::define_build_mode_provider!`, so macro suites can name a mode as a
+type. Unlike `Configured`, it needs no rule that `project` preserve the mode:
+projection rebuilds through the default mode, and every mode builds the same
+relation.
 
 ---
 
@@ -540,8 +556,9 @@ its `HasOptimizationAxes` impl emits `ds_layout_pruning` from
 `ValueEnum`, default `off`), listed in `validate_layout_choices` so it is
 rejected on non-`hash-trie` selectors. Dispatch does **not** repeat the
 product: `with_hash_trie_layout!(hasher, pruning, |H, P| …)` in
-`kermit/src/options.rs` expands the hasher × pruning cells once, and both
-`dispatch_run_bench` and `dispatch_ds_bench` call it. **Adding a third
+`kermit/src/options.rs` expands the hasher × pruning cells once, and
+`dispatch_run_bench`, `dispatch_ds_bench` and `load_query_runner` (`main.rs`)
+all call it. **Adding a third
 Layout dimension means adding arms to that macro and nowhere else** — do
 not reach for a runtime enum inside the structure, which would reintroduce
 the tax the Layout category exists to avoid.
@@ -553,7 +570,7 @@ name a Layout it did not run.
 ### 4. The test obligation: one alias per combination × the whole suite
 
 Each Layout combination is a distinct type alias, and each alias runs the
-full 11-pattern suite under every compatible algorithm and optimiser
+full 16-pattern suite under every compatible algorithm and optimiser
 (Priorities item 1):
 
 ```rust
@@ -576,6 +593,37 @@ and the actual elision witness,
 (`off_frame_is_the_bare_table_pair` in `hash_trie_iter.rs`), which shows the
 off frame really is the pre-pruning pair — plus a CLI smoke test that the
 flag lands in the report (`kermit/tests/cli_hash_trie_layout_pruning.rs`).
+
+---
+
+## Walkthrough: adding a BuildMode
+
+ColumnTrie's build (`ColumnTrieBuildMode`) is the worked example. A BuildMode
+is a process, not a shape: the structure gains no type parameter, and its axis
+is never read off the relation.
+
+1. **Classify.** Every mode must build the same structure: the same contents
+   and the same `HeapSize`. A mode that changes capacities is not a BuildMode.
+2. **Define the mode** (`kermit-ds/src/ds/<name>/build_mode.rs`): a
+   `Default + clap::ValueEnum` enum whose `BuildMode::axis_value` is the clap name.
+3. **Implement `BuildModeRelation`**, and make `Relation::from_tuples` call it
+   with the default mode.
+4. **Pin equivalence** with an array-level test over every mode, capacities
+   included (`bulk_and_incremental_builds_are_identical`).
+5. **Carry the mode on the cell and family.** Implement `SortedTrieRelation`'s
+   `BuildMode`, `kind`, `build_with` and `build_mode_axes`; the `SortedTrie`
+   variant and `TrieLftj::new(build, optimiser)` hold it, and the axis comes
+   from `RelationFamily::build_mode_axes`.
+6. **Add the CLI.** `--ds-build` (`BuildChoices`, `validate_build_choices`,
+   `DsChoices.build`) is typed to `ColumnTrieBuildMode` today, so a second
+   consumer must reshape it; `Execution::HashHtj` has no BuildMode slot yet.
+7. **Test it.** `kermit_ds::define_build_mode_provider!` plus
+   `define_multiway_join_test_suite_for_build_mode!` per non-default mode and
+   optimiser, `BuiltWith` aliases in `kermit-ds/tests/`, a CLI smoke test, and
+   a spy test that the mode reaches the build (no output shows it).
+8. **kermit-lab.** Add a `SCOPED_AXIS_DEFAULTS` entry if pre-axis rows came
+   from a known mode. The `ablation` preset already limits `ds_build_mode` to
+   `insertion` / `end_to_end` and drops rows of structures without the axis.
 
 ---
 
@@ -648,17 +696,23 @@ Don't do it as a single CLI invocation — shell-loop instead:
 for hasher in sip fxhash; do
     for pruning in off on; do
         for lf in 0.5 0.7 0.9; do
-            kermit bench run triangle -i hash-trie -a hash-triejoin \
+            kermit bench \
+                --name triangle-$hasher-$pruning-lf$lf \
+                --report-json bench-runs/triangle-$hasher-$pruning-lf$lf.json \
+                run triangle -i hash-trie -a hash-triejoin \
                 --ds-layout-hasher $hasher \
                 --ds-layout-pruning $pruning \
-                --ds-config load-factor=$lf \
-                --report-json bench-runs/triangle-$hasher-$pruning-lf$lf.json
+                --ds-config load-factor=$lf
         done
     done
 done
 ```
 
-Then load all of them in `kermit-lab` and pivot.
+`--name` and `--report-json` are `bench`-level flags, so they go before `run`.
+Give every run its own `--name`: Criterion group names do not encode
+optimization axes, so runs that differ only in a `--ds-*` flag would overwrite
+each other's samples under `target/criterion/`. Then load all of the reports in
+`kermit-lab` and pivot.
 
 ### Q: Does adding a new axis break existing bench reports?
 
@@ -670,7 +724,7 @@ For old reports that predate the standard, back-fill defaults in `kermit-lab`:
 df["ds_layout_hasher"] = df.get("ds_layout_hasher", "sip")
 ```
 
-This is semantically correct — pre-standard runs were SipHash-only. `kermit_lab.defaults` does exactly this for every axis, back-filling `ds_layout_pruning = "off"` and `ds_config_load_factor = 0.7` (the historical constant) as well.
+This is semantically correct — pre-standard runs were SipHash-only. `kermit_lab.defaults` does exactly this for every axis, back-filling `ds_layout_pruning = "off"` and `ds_config_load_factor = 0.7` (the historical constant) as well. It also back-fills `ds_build_mode = "incremental"`, on ColumnTrie rows only (`SCOPED_AXIS_DEFAULTS`): ColumnTrie built tuple by tuple before issue #84, and no other structure has a build-mode axis.
 
 ---
 
@@ -683,7 +737,7 @@ This is semantically correct — pre-standard runs were SipHash-only. `kermit_la
 | Second Layout consumer (pruning policy) | [`kermit-ds/src/ds/hash_trie/pruning.rs`](../../kermit-ds/src/ds/hash_trie/pruning.rs) |
 | HashTrie's `HasOptimizationAxes` impl | [`kermit-ds/src/ds/hash_trie/implementation.rs`](../../kermit-ds/src/ds/hash_trie/implementation.rs) |
 | CLI dispatch monomorphizing on the Layout cell | [`kermit/src/options.rs`](../../kermit/src/options.rs) (`with_hash_trie_layout!` — the one place Layout dimensions multiply) |
-| Bench-report axes merge | [`kermit/src/main.rs`](../../kermit/src/main.rs) (search `optimization_axes`) |
+| Bench-report axes merge | [`kermit/src/bench/run.rs`](../../kermit/src/bench/run.rs) and [`kermit/src/bench/ds.rs`](../../kermit/src/bench/ds.rs) (search `optimization_axes` / `build_mode_axes`), from the families in [`kermit/src/execution.rs`](../../kermit/src/execution.rs) |
 | CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_layout_pruning.rs`](../../kermit/tests/cli_hash_trie_layout_pruning.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs) |
 | First Config consumer (load-factor cap) | [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs) |
 | The classification rule and why pruning moved | [`docs/specs/2026-09-08-singleton-pruning-config-design.md`](2026-09-08-singleton-pruning-config-design.md) § Amendment 1 |
@@ -691,6 +745,9 @@ This is semantically correct — pre-standard runs were SipHash-only. `kermit_la
 | `Configured` / `ConfigProvider` / `define_config_provider!` | [`kermit-ds/src/configured.rs`](../../kermit-ds/src/configured.rs) |
 | Config-aware construction in `bench run` | [`kermit/src/execution.rs`](../../kermit/src/execution.rs) — `ExecutionFamily::build_relation`, with `load` defaulting to read-then-`build_relation` |
 | Config join test macro | [`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs) (search `with_config`) |
+| First BuildMode consumer (ColumnTrie build) | [`kermit-ds/src/ds/column_trie/build_mode.rs`](../../kermit-ds/src/ds/column_trie/build_mode.rs) |
+| BuildMode seam and test wrapper | [`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs) (`BuildModeRelation`), [`kermit-ds/src/built_with.rs`](../../kermit-ds/src/built_with.rs) |
+| BuildMode join test macro | [`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs) (search `for_build_mode`) |
 | Per-DS catalog | [`docs/data-structures/hash-trie.md`](../data-structures/hash-trie.md) § Optimizations |
 | Schema axis prefixes | [`docs/specs/bench-report-schema.md`](bench-report-schema.md) § Standard axis prefixes |
 | Contributor recipe | [`CLAUDE.md`](../../CLAUDE.md) § "Adding an optimization to a data structure or algorithm" |
@@ -699,18 +756,18 @@ This is semantically correct — pre-standard runs were SipHash-only. `kermit_la
 
 ## What's implemented today, what's available
 
-Three optimizations are implemented — two Layout dimensions and one Config
-value:
+Four optimizations are implemented — two Layout dimensions, one Config
+value and one BuildMode:
 
 | Optimization | Category | Where | Paper § |
 |---|---|---|---|
 | Hasher choice (Sip vs Fx) | Layout | `ds_layout_hasher` | §3.3.1 |
 | Singleton pruning (off/on) | Layout | `ds_layout_pruning` | §3.3.1, Fig 5 |
 | Load-factor cap | Config | `ds_config_load_factor` | (kermit-specific) |
+| ColumnTrie build (bulk / incremental) | BuildMode | `ds_build_mode` | (kermit-specific, issue #84) |
 
-The BuildMode category still has no consumer, so
-`define_multiway_join_test_suite_for_build_mode!` lands with the first
-BuildMode consumer.
+`define_multiway_join_test_suite_for_build_mode!` landed with the first
+BuildMode consumer, ColumnTrie's build.
 
 Available to add (each a separate brainstorming → planning → implementation cycle):
 

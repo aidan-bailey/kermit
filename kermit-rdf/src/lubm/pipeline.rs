@@ -30,7 +30,7 @@ use {
         },
         partition::Partitioned,
         sha256_file,
-        sparql::translator::translate_query,
+        sparql::translator::{bgp_predicate_iris, translate_query},
     },
     serde::Serialize,
     std::{
@@ -195,10 +195,34 @@ impl Generator for LubmGenerator<'_> {
     fn translate_queries(
         &self, _staged: &LubmStaged, dict: &mut Dictionary, predicate_map: &HashMap<String, String>,
     ) -> Result<Vec<TranslatedQuery>, RdfError> {
+        // Unlike WatDiv, LUBM seeds no relation for an absent predicate: the
+        // Univ-Bench workload is fixed and a full UBA university contains
+        // every predicate it uses, so a gap means broken input (a truncated
+        // file, a namespace mismatch, another jar) and must stay loud
+        // (#77). Every selected query is checked before any is translated,
+        // so one error lists every gap.
+        let mut by_query: Vec<(String, Vec<String>)> = Vec::new();
+        for spec in self.inputs.queries {
+            let missing: Vec<String> = bgp_predicate_iris(&spec.sparql)
+                .map_err(|e| e.in_query(&spec.name))?
+                .into_iter()
+                .filter(|iri| !predicate_map.contains_key(iri))
+                .collect();
+            if !missing.is_empty() {
+                by_query.push((spec.name.clone(), missing));
+            }
+        }
+        if !by_query.is_empty() {
+            return Err(RdfError::MissingQueryPredicates {
+                by_query,
+            });
+        }
+
         let mut translated: Vec<TranslatedQuery> = Vec::new();
         for spec in self.inputs.queries {
             let head = format!("Q_{}", spec.name);
-            let dl = translate_query(&spec.sparql, dict, predicate_map, &head)?;
+            let dl = translate_query(&spec.sparql, dict, predicate_map, &head)
+                .map_err(|e| e.in_query(&spec.name))?;
             translated.push(TranslatedQuery {
                 name: spec.name.clone(),
                 datalog: dl,
@@ -246,6 +270,20 @@ impl Generator for LubmGenerator<'_> {
 
 /// Post-driver stages of the pipeline (entailment, partition, translate,
 /// emit). Public so tests can drive these without invoking the jar.
+///
+/// Every predicate a selected query uses must occur in `raw`'s data (after
+/// entailment). A full UBA university has all of them, but a hand-built
+/// fixture must cover each selected query's predicates, or select fewer
+/// queries: an absent predicate is not seeded as an empty relation, as
+/// WatDiv does, but fails the run with
+/// [`RdfError::MissingQueryPredicates`] naming every affected query and
+/// predicate, before any query is translated or `benchmark.yml` written.
+///
+/// # Errors
+///
+/// [`RdfError::MissingQueryPredicates`] as above;
+/// [`RdfError::QueryTranslation`] naming a query the translator rejects;
+/// otherwise any error of the shared stages.
 pub fn process_artifacts(
     inputs: &LubmPipelineInputs, raw: &LubmRawArtifacts,
 ) -> Result<LubmMeta, RdfError> {

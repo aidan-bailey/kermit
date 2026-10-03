@@ -155,9 +155,9 @@ Pass `-o`/`--output <PATH>` to also write the join's tuples to a CSV file
 `insertion`, `iteration` and `space/<relation>` metrics by default (`-m`
 selects; `end-to-end` is opt-in, with `--queries-per-build K` setting its K,
 default 1), accepts
-`--ds-config` alongside the `--ds-layout-*` flags, and writes its Criterion
-output under `{--name|join}/adhoc/{query-file-stem}/{ds}/{algo}`. The
-report's `benchmark` axis is `adhoc` and `query` is the query file's stem.
+`--ds-config` and `--ds-build` alongside the `--ds-layout-*` flags, and writes
+its Criterion output under `{--name|join}/adhoc/{query-file-stem}/{ds}/{algo}`.
+The report's `benchmark` axis is `adhoc` and `query` is the query file's stem.
 
 ### Benchmark a data structure (`bench ds`)
 
@@ -183,6 +183,15 @@ K full-trie iterations in a single Criterion body; K comes from
 
 ```sh
 kermit bench ds -r data.csv -i tree-trie -m end-to-end --queries-per-build 4
+```
+
+`-i column-trie` takes `--ds-build bulk|incremental` (default `bulk`), choosing
+how the trie is built from its tuples. Both build the identical trie, so the
+flag changes the `insertion` and `end-to-end` timings only; the report records
+it as `ds_build_mode`. `bench run` and `bench join` accept it too.
+
+```sh
+kermit bench ds -r data.csv -i column-trie -m insertion --ds-build incremental
 ```
 
 ### Run a named benchmark (`bench run`)

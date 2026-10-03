@@ -88,6 +88,27 @@ pub enum BenchError {
         hint: String,
     },
 
+    /// A relation file already at its cache path cannot be a Parquet file:
+    /// it is shorter than the format's two `PAR1` markers or lacks one, as
+    /// a zero-byte or truncated file does. Reported instead of reusing it,
+    /// so the problem is named here rather than as a Parquet decode error
+    /// once the relation is loaded.
+    #[error(
+        "cached relation '{relation}' of benchmark '{benchmark}' at {path} is not a usable \
+         Parquet file ({reason}); delete it with `kermit bench clean {benchmark}`, then fetch or \
+         regenerate the benchmark"
+    )]
+    CorruptCache {
+        /// Benchmark name.
+        benchmark: String,
+        /// Relation name as declared in the YAML.
+        relation: String,
+        /// The cached file.
+        path: String,
+        /// What is wrong with it.
+        reason: String,
+    },
+
     /// A relation file's contents do not match the `sha256` its benchmark
     /// declares.
     #[error(

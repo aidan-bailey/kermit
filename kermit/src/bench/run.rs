@@ -13,12 +13,12 @@ use {
             ReportMetric,
         },
         execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
-        options::{with_hash_trie_layout, HasherChoice, PruningChoice},
+        options::{with_hash_trie_layout, DsChoices},
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
     kermit_algos::Optimiser,
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HashTrieConfig, Relation},
+    kermit_ds::Relation,
     std::{
         collections::{hash_map::Entry, BTreeMap, HashMap},
         io,
@@ -129,10 +129,14 @@ fn run_benchmark<F: ExecutionFamily>(
     // produces the canonical `ds_layout_*` set. The `ds_*` prefix convention
     // (see `kermit_iters::HasOptimizationAxes`) guarantees no collision with
     // the base axes assembled per query below.
-    let optimization_axes = relations
+    let mut optimization_axes = relations
         .first()
         .map(|r| F::optimization_axes(r))
         .unwrap_or_default();
+    // The build mode comes from the family, not a relation: it describes the
+    // build, which leaves no trace in the structure, and it must be present
+    // even for a workload with no relations.
+    optimization_axes.extend(family.build_mode_axes());
 
     let mut reports: Vec<BenchReport> = Vec::with_capacity(workload.queries.len());
 
@@ -209,8 +213,9 @@ fn run_benchmark<F: ExecutionFamily>(
                             // `family.build_relation` rather than the whole
                             // engine build, which `end_to_end` covers — and
                             // goes through the family so the build honours
-                            // the same configuration the report's
-                            // `ds_config_*` axes name.
+                            // the same configuration and build mode the
+                            // report's `ds_config_*` / `ds_build_mode` axes
+                            // name.
                             for (header, tuples) in data {
                                 std::hint::black_box(family.build_relation(header, tuples));
                             }
@@ -333,12 +338,14 @@ pub(crate) fn dispatch_run_bench(
     let optimiser = settings.optimiser;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie>::new(optimiser),
+            &TrieLftj::<kermit_ds::TreeTrie>::new((), optimiser),
             workload,
             settings,
         ),
-        | Execution::TrieLftj(SortedTrie::ColumnTrie) => run_benchmark(
-            &TrieLftj::<kermit_ds::ColumnTrie>::new(optimiser),
+        | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            build,
+        }) => run_benchmark(
+            &TrieLftj::<kermit_ds::ColumnTrie>::new(build, optimiser),
             workload,
             settings,
         ),
@@ -425,16 +432,9 @@ pub(crate) fn check_sweep_group_directories(
 /// three valid cells; when the user named a single incompatible pair there
 /// is nothing left to run and that is a usage error.
 pub(crate) fn resolve_sweep(
-    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, hasher: HasherChoice,
-    pruning: PruningChoice, config: HashTrieConfig,
+    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, choices: DsChoices,
 ) -> anyhow::Result<Vec<Execution>> {
-    let sweep = Sweep::expand(
-        &indexstructure.expand(),
-        &algorithm.expand(),
-        hasher,
-        pruning,
-        config,
-    );
+    let sweep = Sweep::expand(&indexstructure.expand(), &algorithm.expand(), choices);
     if sweep.cells.is_empty() {
         anyhow::bail!(
             "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \
