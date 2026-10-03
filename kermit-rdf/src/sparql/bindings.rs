@@ -45,6 +45,10 @@ impl VarOrder {
 /// Read left to right, an escaped `_` is always followed by `_` (a literal
 /// underscore) or `x` (a code point running to the next `_`), so distinct
 /// names never map to one variable.
+///
+/// The WatDiv preprocessor (`scripts/watdiv-preprocess`, `_var_name`)
+/// applies the same mapping, so the committed snapshots and on-the-fly
+/// generation name variables alike.
 pub fn var_name(raw: &str) -> String {
     let name = raw.trim_start_matches('?').trim_start_matches('$');
     let mut out = String::with_capacity(name.len() + 2);
