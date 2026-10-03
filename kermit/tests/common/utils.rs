@@ -16,6 +16,10 @@ use {
     std::collections::BTreeMap,
 };
 
+/// Marks a placeholder (`_`) in a fixture's `rel_variables` entry: the
+/// column exists in the relation's tuples but binds no variable.
+pub const PLACEHOLDER: usize = usize::MAX;
+
 /// The entry point in `kermit::db` that runs algorithm `Self` over `R`.
 pub trait JoinEntry<R> {
     fn join(
@@ -92,7 +96,8 @@ impl<H: HashStrategy, P: PruningPolicy, C: ConfigProvider<HashTrieConfig>>
 }
 
 /// Builds one `R` per input relation (named `R0`, `R1`, …), synthesises
-/// `Q(V…) :- R0(V…), R1(V…), ….` from `variables` / `rel_variables`, runs
+/// `Q(V…) :- R0(V…), R1(V…), ….` from `variables` / `rel_variables` (a
+/// [`PLACEHOLDER`] entry becomes `_`), runs
 /// it through `JA`'s entry point, and asserts multiset equality with
 /// `result`.
 ///
@@ -132,7 +137,13 @@ pub fn test_join<R, JA, O>(
     for (i, rv) in rel_variables.iter().enumerate() {
         let var_list = rv
             .iter()
-            .map(|v| format!("V{v}"))
+            .map(|&v| {
+                if v == PLACEHOLDER {
+                    "_".to_string()
+                } else {
+                    format!("V{v}")
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         body_preds.push(format!("R{i}({var_list})"));

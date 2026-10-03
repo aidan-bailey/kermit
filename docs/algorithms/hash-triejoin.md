@@ -104,4 +104,4 @@ Related test: `join_algo_triangle` in [`kermit-algos/src/hash_triejoin.rs`](../.
 - [`HashTrie`](../data-structures/hash-trie.md) — the only data structure this algorithm consumes.
 - [`LeapfrogTriejoin`](./leapfrog-triejoin.md) — sibling worst-case-optimal algorithm using sorted (LFTJ) intersection.
 - [`docs/optimisers/`](../optimisers/) — the `QueryOptimiser` implementations that plan the `QueryPlan` this algorithm executes.
-- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this algorithm must pass all 14 patterns under `HashTrie` (Priorities item 1).
+- `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; this algorithm must pass all 16 patterns under `HashTrie` (Priorities item 1).
