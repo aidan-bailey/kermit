@@ -117,10 +117,14 @@ fn run_benchmark<F: ExecutionFamily>(
     // produces the canonical `ds_layout_*` set. The `ds_*` prefix convention
     // (see `kermit_iters::HasOptimizationAxes`) guarantees no collision with
     // the base axes assembled per query below.
-    let optimization_axes = relations
+    let mut optimization_axes = relations
         .first()
         .map(|r| F::optimization_axes(r))
         .unwrap_or_default();
+    // The build mode comes from the family, not a relation: it describes the
+    // build, which leaves no trace in the structure, and it must be present
+    // even for a workload with no relations.
+    optimization_axes.extend(family.build_mode_axes());
 
     let mut reports: Vec<BenchReport> = Vec::with_capacity(workload.queries.len());
 

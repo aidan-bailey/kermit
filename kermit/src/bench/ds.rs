@@ -173,11 +173,14 @@ fn run_ds_bench<F: RelationFamily>(
             serde_json::json!(queries_per_build),
         );
     }
-    // Standard optimization axes: merge in dimensions emitted by the DS.
-    // The `ds_layout_*` / `ds_config_*` / `ds_build_mode` naming convention
-    // (see `kermit_iters::HasOptimizationAxes`) guarantees no collision
-    // with the base axes assembled above. Empty for the sorted tries.
+    // Standard optimization axes: the relation's Layout / Config dimensions
+    // (empty for the sorted tries), then the build mode, which only the
+    // family that ran the build can report. The `ds_layout_*` /
+    // `ds_config_*` / `ds_build_mode` naming convention (see
+    // `kermit_iters::HasOptimizationAxes`) guarantees no collision with the
+    // base axes assembled above.
     axes.extend(F::optimization_axes(&relation));
+    axes.extend(family.build_mode_axes());
     Ok(BenchReport::new(
         BenchKind::Ds,
         &metadata,

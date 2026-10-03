@@ -69,6 +69,12 @@ pub trait SortedTrieRelation:
 {
     /// The CLI-visible identity of this relation type.
     const KIND: SortedTrie;
+
+    /// The `ds_build_mode` axis of every relation the bench builds of this
+    /// type. The build process leaves no trace in the built structure, so
+    /// the type that ran it reports it. Empty for a structure with a single
+    /// build process.
+    fn build_mode_axes() -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
 impl SortedTrieRelation for TreeTrie {
@@ -77,6 +83,13 @@ impl SortedTrieRelation for TreeTrie {
 
 impl SortedTrieRelation for ColumnTrie {
     const KIND: SortedTrie = SortedTrie::ColumnTrie;
+
+    /// `from_tuples` is the one-pass bulk build (issue #84). Reported so a
+    /// row built this way is never read as a pre-#84 row, which kermit-lab
+    /// treats as `incremental`.
+    fn build_mode_axes() -> BTreeMap<String, serde_json::Value> {
+        BTreeMap::from([("ds_build_mode".to_string(), serde_json::Value::from("bulk"))])
+    }
 }
 
 /// One valid `(index structure, join algorithm)` cell of a `bench run`
@@ -300,6 +313,13 @@ pub trait RelationFamily {
     /// The `ds_*` optimization axes emitted by the relation type, merged
     /// into the report's axes. Empty for structures without any.
     fn optimization_axes(rel: &Self::Rel) -> BTreeMap<String, serde_json::Value>;
+
+    /// The `ds_build_mode` axis of the relations this family builds, merged
+    /// into the report's axes. A build mode describes the build, and every
+    /// mode builds the same structure, so the family that ran the build
+    /// reports it rather than the relation. Empty for structures with a
+    /// single build process.
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
 /// Reads one relation file into its header and its tuples, in the order the
@@ -402,6 +422,8 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
     fn tuple_count(rel: &R) -> usize { rel.trie_iter().into_iter().count() }
 
     fn optimization_axes(_rel: &R) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { R::build_mode_axes() }
 }
 
 /// `HashTrie<H, P>` on its own: what `bench ds -i hash-trie` measures.
@@ -487,6 +509,10 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for TrieLftj<R> {
 
     fn optimization_axes(rel: &R) -> BTreeMap<String, serde_json::Value> {
         SortedTrieFamily::<R>::optimization_axes(rel)
+    }
+
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
+        self.structure.build_mode_axes()
     }
 }
 
@@ -1009,5 +1035,36 @@ mod tests {
         let engine = hash.build_from_tuples(inputs());
         assert_eq!(hash.count(&engine, query.clone()), 2);
         assert_eq!(hash.join(&engine, query).len(), 2);
+    }
+
+    /// Every ColumnTrie report says how its relations were built; the
+    /// other structures have a single build and carry no such axis (issue
+    /// #84).
+    #[test]
+    fn only_column_trie_families_report_a_build_mode() {
+        let bulk = BTreeMap::from([("ds_build_mode".to_string(), serde_json::Value::from("bulk"))]);
+        assert_eq!(
+            SortedTrieFamily::<ColumnTrie>::new().build_mode_axes(),
+            bulk
+        );
+        assert_eq!(
+            TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic).build_mode_axes(),
+            bulk
+        );
+        assert!(SortedTrieFamily::<TreeTrie>::new()
+            .build_mode_axes()
+            .is_empty());
+        assert!(TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic)
+            .build_mode_axes()
+            .is_empty());
+        assert!(HashTrieFamily::<SipHashStrategy, NoPruning>::default()
+            .build_mode_axes()
+            .is_empty());
+        assert!(HashHtj::<SipHashStrategy, NoPruning>::new(
+            HashTrieConfig::default(),
+            Optimiser::Lexicographic
+        )
+        .build_mode_axes()
+        .is_empty());
     }
 }
