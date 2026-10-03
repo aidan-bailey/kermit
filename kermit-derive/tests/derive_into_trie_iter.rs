@@ -193,3 +193,44 @@ fn derive_accepts_a_type_parameter_after_the_lifetime() {
     let result: Vec<Vec<usize>> = iter.into_iter().collect();
     assert_eq!(result, vec![vec![1, 2], vec![1, 3], vec![4, 5]]);
 }
+
+/// `GenericMockTrieIter` with its bound in a where-clause, which the derive
+/// must carry into the impl too: without it, the generated impl would name
+/// `WhereMockTrieIter<'a, M>` for an unbounded `M` and fail to compile.
+#[derive(kermit_derive::IntoTrieIter)]
+struct WhereMockTrieIter<'a, M>
+where
+    M: Marker,
+{
+    inner: MockTrieIter<'a>,
+    _marker: std::marker::PhantomData<M>,
+}
+
+impl<M: Marker> LinearIterator for WhereMockTrieIter<'_, M> {
+    fn key(&self) -> Option<usize> { self.inner.key() }
+
+    fn next(&mut self) -> Option<usize> { self.inner.next() }
+
+    fn seek(&mut self, seek_key: usize) -> bool { self.inner.seek(seek_key) }
+
+    fn at_end(&self) -> bool { self.inner.at_end() }
+}
+
+impl<M: Marker> TrieIterator for WhereMockTrieIter<'_, M> {
+    fn open(&mut self) -> bool { self.inner.open() }
+
+    fn up(&mut self) -> bool { self.inner.up() }
+}
+
+#[test]
+fn derive_carries_a_where_clause_into_the_impl() {
+    let trie = MockTrie {
+        roots: vec![node(1, vec![leaf(2), leaf(3)]), node(4, vec![leaf(5)])],
+    };
+    let iter = WhereMockTrieIter::<Plain> {
+        inner: MockTrieIter::new(&trie),
+        _marker: std::marker::PhantomData,
+    };
+    let result: Vec<Vec<usize>> = iter.into_iter().collect();
+    assert_eq!(result, vec![vec![1, 2], vec![1, 3], vec![4, 5]]);
+}
