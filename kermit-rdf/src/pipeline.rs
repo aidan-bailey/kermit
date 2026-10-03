@@ -161,8 +161,9 @@ impl Workload {
 /// triples (rare predicates sit in `<pgroup>` blocks with p < 1 over small
 /// entity populations; see issue #63). Seed an empty relation into `part`
 /// for each such predicate so translation yields an empty-result join
-/// instead of erroring. Mirrors the naming convention used by
-/// `partition::partition` for collision-free relation names.
+/// instead of erroring. Names come from `partition::unique_relation_name`,
+/// the rule `partition::partition` uses, so a seeded relation can never
+/// take a name the data's relations already hold.
 fn seed_missing_predicates(
     part: &mut Partitioned, sparql_paths: &[PathBuf],
 ) -> Result<(), RdfError> {
@@ -184,11 +185,7 @@ fn seed_missing_predicates(
         }
         let base = partition::sanitize_predicate(&p_iri);
         let pred_id = part.dict.intern(RdfValue::Iri(p_iri.clone()));
-        let name = if used.contains(&base) {
-            format!("{base}_{pred_id}")
-        } else {
-            base.clone()
-        };
+        let name = partition::unique_relation_name(&base, pred_id, &used);
         used.insert(name.clone());
         part.predicate_map.insert(p_iri.clone(), name.clone());
         part.relations.push(partition::PartitionedRelation {

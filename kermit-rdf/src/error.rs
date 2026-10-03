@@ -79,6 +79,20 @@ pub enum RdfError {
         message: String,
     },
 
+    /// Two partitioned relations share one name, so writing them would make
+    /// one Parquet file overwrite the other. `partition` never produces this;
+    /// a `Generator::seed_relations` hook that bypasses its naming can.
+    #[error(
+        "relation name {name:?} is assigned to more than one predicate ({iris:?}); one Parquet \
+         file would overwrite another"
+    )]
+    DuplicateRelationName {
+        /// The shared relation name.
+        name: String,
+        /// The predicate IRIs mapped to it, sorted.
+        iris: Vec<String>,
+    },
+
     /// Underlying I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

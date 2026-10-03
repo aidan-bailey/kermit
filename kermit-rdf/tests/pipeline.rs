@@ -9,7 +9,8 @@
 //! - **Partition** (documented in `partition.rs`): one relation per predicate
 //!   IRI, its tuples in the order of the input triples. A sanitisation
 //!   collision is resolved by suffixing `_<dict-id of the predicate IRI>` onto
-//!   every name but the first-seen one.
+//!   every name but the first-seen one, plus `_<k>` when that name is itself
+//!   taken (#76; see [`SUFFIX_COLLISION_NT`]).
 //! - **Dictionary**: `dict.rs` promises only that ids follow insertion order.
 //!   That `partition` interns subject, predicate, object per triple — and so
 //!   the exact ids below — is its current implementation, not a documented
@@ -116,9 +117,37 @@ const QUERIES: &[(&str, &str, u64)] = &[
 const BENCH_NAME: &str = "handcrafted-bench";
 const DESCRIPTION: &str = "hand-crafted pipeline fixture";
 
-/// A generator whose "driver output" is the in-memory [`NT`] text.
+/// The #76 reproduction, traced by hand in the issue. Ids: `a` 0,
+/// `x/title_6` 1, `b` 2, `ogp#title` 3, `c` 4, `d` 5, `rev#title` 6, `e` 7.
+/// `x/title_6` sanitises to `title_6` and `ogp#title` to `title`;
+/// `rev#title` collides on `title`, and its suffixed name `title_6` is
+/// already taken by the first predicate.
+const SUFFIX_COLLISION_NT: &str = r#"<http://x/a> <http://x/title_6> <http://x/b> .
+<http://x/a> <http://ogp.me/ns#title> <http://x/c> .
+<http://x/d> <http://purl.org/stuff/rev#title> <http://x/e> .
+"#;
+
+/// One query per predicate of [`SUFFIX_COLLISION_NT`], each with one answer.
+const SUFFIX_COLLISION_QUERIES: &[(&str, &str, u64)] = &[
+    ("plain", "SELECT * WHERE { ?s <http://x/title_6> ?o . }", 1),
+    (
+        "ogp",
+        "SELECT * WHERE { ?s <http://ogp.me/ns#title> ?o . }",
+        1,
+    ),
+    (
+        "rev",
+        "SELECT * WHERE { ?s <http://purl.org/stuff/rev#title> ?o . }",
+        1,
+    ),
+];
+
+/// A generator whose "driver output" is in-memory N-Triples text and whose
+/// workload is a fixed list of SPARQL queries.
 struct HandcraftedGenerator<'a> {
     out_dir: &'a Path,
+    nt: &'a str,
+    queries: &'a [(&'a str, &'a str, u64)],
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -163,14 +192,14 @@ impl Generator for HandcraftedGenerator<'_> {
 
     fn stage_raw(&self, _raw: &(), raw_root: &Path) -> Result<(PathBuf, ()), RdfError> {
         let nt = raw_root.join("data.nt");
-        fs::write(&nt, NT)?;
+        fs::write(&nt, self.nt)?;
         Ok((nt, ()))
     }
 
     fn translate_queries(
         &self, _staged: &(), dict: &mut Dictionary, predicate_map: &HashMap<String, String>,
     ) -> Result<Vec<TranslatedQuery>, RdfError> {
-        QUERIES
+        self.queries
             .iter()
             .map(|(name, sparql, expected)| {
                 Ok(TranslatedQuery {
@@ -198,12 +227,19 @@ impl Generator for HandcraftedGenerator<'_> {
     }
 }
 
-/// Runs the full post-driver sequence into a fresh temp dir.
-fn generate() -> tempfile::TempDir {
+/// Runs the full post-driver sequence over [`NT`] and [`QUERIES`] into a
+/// fresh temp dir.
+fn generate() -> tempfile::TempDir { generate_from(NT, QUERIES) }
+
+/// Runs the full post-driver sequence over `nt` and `queries` into a fresh
+/// temp dir.
+fn generate_from(nt: &str, queries: &[(&str, &str, u64)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     process_artifacts(
         &HandcraftedGenerator {
             out_dir: dir.path(),
+            nt,
+            queries,
         },
         &(),
     )
@@ -333,6 +369,34 @@ fn sanitisation_collision_suffixes_the_second_predicate_with_its_dict_id() {
         "{}",
         titles.query
     );
+}
+
+/// #76: the suffixed name of a colliding predicate can already belong to
+/// another predicate. Each predicate must still get its own relation name
+/// and its own Parquet file, and each query must name its own predicate's
+/// relation; before the fix `title_6.parquet` was written twice and held
+/// `(d, e)`.
+#[test]
+fn a_taken_suffixed_name_gets_a_fresh_one_and_files_keep_their_tuples() {
+    let dir = generate_from(SUFFIX_COLLISION_NT, SUFFIX_COLLISION_QUERIES);
+    let out = dir.path();
+
+    assert_eq!(read_relation(&out.join("title_6.parquet")), [(0, 2)]);
+    assert_eq!(read_relation(&out.join("title.parquet")), [(0, 4)]);
+    assert_eq!(read_relation(&out.join("title_6_2.parquet")), [(5, 7)]);
+
+    let bench: BenchmarkDefinition =
+        serde_yaml::from_str(&fs::read_to_string(out.join("benchmark.yml")).unwrap()).unwrap();
+    let relations: Vec<&str> = bench.relations.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(relations.len(), 3, "{relations:?}");
+    for (query, relation) in [
+        ("plain", "title_6("),
+        ("ogp", "title("),
+        ("rev", "title_6_2("),
+    ] {
+        let q = bench.queries.iter().find(|q| q.name == query).unwrap();
+        assert!(q.query.contains(relation), "{query}: {}", q.query);
+    }
 }
 
 #[test]

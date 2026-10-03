@@ -42,7 +42,7 @@ use {
     },
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         fs,
         path::{Path, PathBuf},
     },
@@ -229,6 +229,11 @@ pub trait Generator {
     /// Hook to add relations the data lacks before Parquet is written (the
     /// WatDiv generator seeds empty relations for query predicates absent
     /// from the probabilistically generated data). Default: nothing.
+    ///
+    /// Name each added relation with [`partition::unique_relation_name`]
+    /// against the names already in `part`: [`process_artifacts`] refuses a
+    /// partition in which two relations share a name
+    /// ([`RdfError::DuplicateRelationName`]).
     fn seed_relations(
         &self, _staged: &Self::Staged, _part: &mut Partitioned,
     ) -> Result<(), RdfError> {
@@ -252,6 +257,29 @@ pub trait Generator {
     ) -> Result<Self::Meta, RdfError>;
 }
 
+/// Refuses a partition in which two relations share a name, before any of
+/// them is written: each becomes `<name>.parquet`, so the second write would
+/// silently replace the first's tuples (#76).
+fn check_relation_names_unique(part: &Partitioned) -> Result<(), RdfError> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for rel in &part.relations {
+        if !seen.insert(rel.name.as_str()) {
+            let mut iris: Vec<String> = part
+                .predicate_map
+                .iter()
+                .filter(|(_, name)| **name == rel.name)
+                .map(|(iri, _)| iri.clone())
+                .collect();
+            iris.sort();
+            return Err(RdfError::DuplicateRelationName {
+                name: rel.name.clone(),
+                iris,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Runs the shared post-driver sequence for `generator` over `raw`, writing
 /// the complete benchmark cache directory at `target().out_dir` and
 /// returning the `meta.json` contents it recorded.
@@ -271,6 +299,7 @@ pub fn process_artifacts<G: Generator>(generator: &G, raw: &G::Raw) -> Result<G:
     // write each as Parquet.
     let mut part = partition::partition(&nt_path)?;
     generator.seed_relations(&staged, &mut part)?;
+    check_relation_names_unique(&part)?;
     for rel in &part.relations {
         parquet::write_relation(rel, &out_dir.join(format!("{}.parquet", rel.name)))?;
     }
@@ -320,6 +349,9 @@ mod tests {
     /// exercising every hook without an external tool.
     struct ToyGenerator<'a> {
         target: Target<'a>,
+        /// Seeds a relation reusing the name `follows`, as a broken
+        /// `seed_relations` might.
+        seed_duplicate_name: bool,
     }
 
     struct ToyRaw {
@@ -374,6 +406,18 @@ mod tests {
             Ok((nt, ()))
         }
 
+        fn seed_relations(&self, _staged: &(), part: &mut Partitioned) -> Result<(), RdfError> {
+            if self.seed_duplicate_name {
+                part.predicate_map
+                    .insert("http://y/follows".to_string(), "follows".to_string());
+                part.relations.push(crate::partition::PartitionedRelation {
+                    name: "follows".to_string(),
+                    tuples: Vec::new(),
+                });
+            }
+            Ok(())
+        }
+
         fn translate_queries(
             &self, _staged: &(), dict: &mut Dictionary, predicate_map: &HashMap<String, String>,
         ) -> Result<Vec<TranslatedQuery>, RdfError> {
@@ -420,11 +464,48 @@ mod tests {
                 tag: "toy-tag",
                 spec_hash,
             },
+            seed_duplicate_name: false,
         };
         process_artifacts(&generator, &ToyRaw {
             nt_text: NT,
         })
         .expect("toy pipeline succeeds")
+    }
+
+    /// Two relations sharing a name would write one Parquet file twice, so
+    /// the orchestrator refuses before writing any (#76).
+    #[test]
+    fn a_duplicate_relation_name_is_rejected_before_any_parquet_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let generator = ToyGenerator {
+            target: Target {
+                out_dir: dir.path(),
+                bench_name: "toy-bench",
+                tag: "toy-tag",
+                spec_hash: None,
+            },
+            seed_duplicate_name: true,
+        };
+        let err = process_artifacts(&generator, &ToyRaw {
+            nt_text: NT,
+        })
+        .unwrap_err();
+        match err {
+            | RdfError::DuplicateRelationName {
+                name,
+                iris,
+            } => {
+                assert_eq!(name, "follows");
+                assert_eq!(iris, vec!["http://x/follows", "http://y/follows"]);
+            },
+            | other => panic!("expected DuplicateRelationName, got {other:?}"),
+        }
+        let parquet: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "parquet"))
+            .collect();
+        assert!(parquet.is_empty(), "wrote {parquet:?}");
     }
 
     #[test]
