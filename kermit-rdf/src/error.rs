@@ -79,6 +79,40 @@ pub enum RdfError {
         message: String,
     },
 
+    /// Two partitioned relations share one name, so writing them would make
+    /// one Parquet file overwrite the other. `partition` never produces this;
+    /// a `Generator::seed_relations` hook that bypasses its naming can.
+    #[error(
+        "relation name {name:?} is assigned to more than one predicate ({iris:?}); one Parquet \
+         file would overwrite another"
+    )]
+    DuplicateRelationName {
+        /// The shared relation name.
+        name: String,
+        /// The predicate IRIs mapped to it, sorted.
+        iris: Vec<String>,
+    },
+
+    /// Translating one named query failed; `source` says why.
+    #[error("query {query:?}: {source}")]
+    QueryTranslation {
+        /// The query's name in the generated benchmark (`q3`,
+        /// `tiny_q0002`, …).
+        query: String,
+        /// The translator's error.
+        #[source]
+        source: Box<RdfError>,
+    },
+
+    /// Selected queries use predicates the generated data does not contain.
+    /// Reported for every query at once, before any is translated.
+    #[error("{}", missing_predicates_message(.by_query))]
+    MissingQueryPredicates {
+        /// Each affected query's name with the absent predicate IRIs it
+        /// uses, in workload order.
+        by_query: Vec<(String, Vec<String>)>,
+    },
+
     /// Underlying I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -90,6 +124,32 @@ pub enum RdfError {
     /// Underlying Parquet error.
     #[error("parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
+}
+
+impl RdfError {
+    /// Wraps `self` as the failure to translate the query named `query`.
+    pub fn in_query(self, query: impl Into<String>) -> RdfError {
+        RdfError::QueryTranslation {
+            query: query.into(),
+            source: Box::new(self),
+        }
+    }
+}
+
+fn missing_predicates_message(by_query: &[(String, Vec<String>)]) -> String {
+    let listed: Vec<String> = by_query
+        .iter()
+        .map(|(query, iris)| {
+            let iris: Vec<String> = iris.iter().map(|iri| format!("<{iri}>")).collect();
+            format!("{query} uses {}", iris.join(", "))
+        })
+        .collect();
+    format!(
+        "the generated data lacks predicates the selected queries use ({}); every selected \
+         query's predicates must occur in the data, so this usually means truncated input, a \
+         namespace mismatch or a different generator build",
+        listed.join("; ")
+    )
 }
 
 #[cfg(test)]

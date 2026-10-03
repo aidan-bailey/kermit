@@ -433,7 +433,7 @@ pub trait ExecutionFamily: RelationFamily {
 
     /// Builds an engine from `(header, tuples)` snapshots along the same
     /// path as [`ExecutionFamily::build`]. Used inside the timed
-    /// `end_to_end` body, where only [`ExecutionFamily::join`] is needed
+    /// `end_to_end` body, where only [`ExecutionFamily::count`] is needed
     /// afterwards.
     fn build_from_tuples(&self, inputs: Vec<(RelationHeader, Vec<Vec<usize>>)>) -> Self::Engine;
 
@@ -467,19 +467,6 @@ pub trait ExecutionFamily: RelationFamily {
             rows += 1;
         })?;
         Ok(rows)
-    }
-
-    /// Runs `query` against `engine` and returns every result tuple. Only
-    /// for callers that need the rows themselves (`kermit join`,
-    /// `bench join --output`); never inside a timed region.
-    ///
-    /// # Errors
-    ///
-    /// As [`join_for_each`](Self::join_for_each).
-    fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Result<Vec<Vec<usize>>, JoinError> {
-        let mut tuples = Vec::new();
-        self.join_for_each(engine, query, |tuple| tuples.push(tuple.to_vec()))?;
-        Ok(tuples)
     }
 }
 
@@ -1121,9 +1108,16 @@ mod tests {
         );
     }
 
-    /// `count` (what `bench run` times and `--verify` checks) and `join`
-    /// (what `kermit join` writes) are one traversal: they must agree in
-    /// every family.
+    /// `count` (what `bench run` times and `--verify` checks) and the rows
+    /// `join_for_each` streams (what `kermit join` writes) come from one
+    /// traversal: they must agree in every family.
+    /// How many rows `join_for_each` streams for `query`.
+    fn rows<F: ExecutionFamily>(family: &F, engine: &F::Engine, query: JoinQuery) -> usize {
+        let mut rows = 0;
+        family.join_for_each(engine, query, |_| rows += 1).unwrap();
+        rows
+    }
+
     #[test]
     fn count_agrees_with_join_in_every_family() {
         // Triangles in this graph: (1, 2, 3) and (2, 3, 4).
@@ -1136,13 +1130,13 @@ mod tests {
         let tree = TrieLftj::<TreeTrie>::new((), Optimiser::Lexicographic);
         let engine = tree.build_from_tuples(inputs());
         assert_eq!(tree.count(&engine, query.clone()).unwrap(), 2);
-        assert_eq!(tree.join(&engine, query.clone()).unwrap().len(), 2);
+        assert_eq!(rows(&tree, &engine, query.clone()), 2);
 
         let column =
             TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::default(), Optimiser::Lexicographic);
         let engine = column.build_from_tuples(inputs());
         assert_eq!(column.count(&engine, query.clone()).unwrap(), 2);
-        assert_eq!(column.join(&engine, query.clone()).unwrap().len(), 2);
+        assert_eq!(rows(&column, &engine, query.clone()), 2);
 
         let hash = HashHtj::<SipHashStrategy, NoPruning>::new(
             HashTrieConfig::default(),
@@ -1150,7 +1144,7 @@ mod tests {
         );
         let engine = hash.build_from_tuples(inputs());
         assert_eq!(hash.count(&engine, query.clone()).unwrap(), 2);
-        assert_eq!(hash.join(&engine, query).unwrap().len(), 2);
+        assert_eq!(rows(&hash, &engine, query), 2);
     }
 
     /// `read_relation_header` is what queries are validated against before

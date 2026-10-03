@@ -161,8 +161,9 @@ impl Workload {
 /// triples (rare predicates sit in `<pgroup>` blocks with p < 1 over small
 /// entity populations; see issue #63). Seed an empty relation into `part`
 /// for each such predicate so translation yields an empty-result join
-/// instead of erroring. Mirrors the naming convention used by
-/// `partition::partition` for collision-free relation names.
+/// instead of erroring. Names come from `partition::unique_relation_name`,
+/// the rule `partition::partition` uses, so a seeded relation can never
+/// take a name the data's relations already hold.
 fn seed_missing_predicates(
     part: &mut Partitioned, sparql_paths: &[PathBuf],
 ) -> Result<(), RdfError> {
@@ -184,11 +185,7 @@ fn seed_missing_predicates(
         }
         let base = partition::sanitize_predicate(&p_iri);
         let pred_id = part.dict.intern(RdfValue::Iri(p_iri.clone()));
-        let name = if used.contains(&base) {
-            format!("{base}_{pred_id}")
-        } else {
-            base.clone()
-        };
+        let name = partition::unique_relation_name(&base, pred_id, &used);
         used.insert(name.clone());
         part.predicate_map.insert(p_iri.clone(), name.clone());
         part.relations.push(partition::PartitionedRelation {
@@ -277,7 +274,8 @@ impl Generator for WatdivGenerator<'_> {
             for (i, q) in split_on_end_markers(&text).iter().enumerate() {
                 let qname = format!("{stem}_q{i:04}");
                 let head = format!("Q_{stem_underscores}_q{i:04}");
-                let dl = translate_query(q, dict, predicate_map, &head)?;
+                let dl = translate_query(q, dict, predicate_map, &head)
+                    .map_err(|e| e.in_query(&qname))?;
                 all_queries.push(TranslatedQuery {
                     name: qname,
                     datalog: dl,
@@ -443,6 +441,49 @@ mod tests {
             inputs,
             workload,
         }
+    }
+
+    /// A query the translator rejects is named in the error, so a failing
+    /// generation points at the query rather than only at the feature.
+    #[test]
+    fn translation_errors_name_the_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let sparql = write_sparql(
+            dir.path(),
+            "q.sparql",
+            "SELECT ?s ?o WHERE { ?s <http://a/title> ?o . }\n#end\nSELECT ?s WHERE { ?s ?p ?o . \
+             }\n#end\n",
+        );
+        let unused = Path::new("unused");
+        let inputs = PipelineInputs {
+            driver: DriverInputs {
+                watdiv_bin: unused,
+                vendor_files: unused,
+                model_file: unused,
+                scale: 1,
+                stress: StressParams::default(),
+                query_count_per_template: 1,
+                use_bwrap: false,
+            },
+            out_dir: dir.path(),
+            bench_name: "unit",
+            tag: "unit",
+            spec_hash: None,
+        };
+        let staged = WatdivStaged {
+            copied_sparql_paths: vec![sparql],
+        };
+        let mut part = partitioned_with_title();
+        let err = generator_for(&inputs, Workload::Stress)
+            .translate_queries(&staged, &mut part.dict, &part.predicate_map)
+            .unwrap_err();
+        assert!(
+            matches!(&err, RdfError::QueryTranslation { query, .. } if query == "q_q0001"),
+            "{err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("q_q0001"), "{message}");
+        assert!(message.contains("non-ground predicate"), "{message}");
     }
 
     #[test]

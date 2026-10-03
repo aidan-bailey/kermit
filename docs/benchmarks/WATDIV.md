@@ -158,6 +158,13 @@ Editing the YAML's params and re-running errors with `SpecDrift` — pass
 so a typo doesn't trigger silent rebuilds). See `benchmarks/README.md` for
 the full schema.
 
+A generated cache below `meta.json` `schema_version` 4 is `stale` even with a
+matching spec: issue #75 changed how SPARQL variables are named in the emitted
+Datalog (`?v0` → `V_v0`). `--force` rebuilds it, but WatDiv seeds from the
+clock, so the rebuild draws new data and its timings are not comparable with
+the old cache's. The sample benchmarks installed by
+`scripts/watdiv_stress_sample.py` are not generator caches and are unaffected.
+
 The declarative path uses the same pipeline as on-the-fly generation; the
 choice between the two is between imperative ad-hoc generation (your shell
 history holds the params) and declarative reproducibility (the params live
@@ -239,7 +246,11 @@ queries sampled): 4 atoms (75), 6 atoms (61), 5 atoms (31), 2 atoms (21),
 `c<dict-id>` anchor; explicit triangles are rare and incidental.
 
 The translator emits queries of the form
-`Q_test_1_q0042(V0, V2, V3) :- pred1(V0, c149844), pred2(V0, V2), pred3(V0, V3).`
+`Q_test_1_q0042(V_v0, V_v2, V_v3) :- pred1(V_v0, c149844), pred2(V_v0, V_v2), pred3(V_v0, V_v3).`
+Each SPARQL variable `?name` becomes `V_<name>` (letters and digits as
+written, `_` doubled, other characters escaped), so case-distinct variables
+stay distinct (#75); snapshots generated before #75 read `V0` where these
+read `V_v0`.
 The `c<dict-id>` atoms are resolved via kermit's const-rewrite path
 (`kermit_algos::rewrite_atoms`) into singleton-trie unary predicates before
 LFTJ runs.
@@ -250,8 +261,8 @@ Every trie stores a relation subject-first, so every plan binds an atom's
 subject before its object. An *incoming star* is several atoms sharing an
 object whose subjects appear nowhere else. On such a query, every valid plan
 enumerates the cross product of those subjects, under either optimiser and on
-every structure. In q0264, `includes(V2, V0)` and `purchasefor(V7, V0)` share
-`V0`. Subject-first tries bind 90,000 × 150,000 = 1.35e10 keys there, where
+every structure. In q0264, `includes(V_v2, V_v0)` and `purchasefor(V_v7, V_v0)`
+share `V_v0`. Subject-first tries bind 90,000 × 150,000 = 1.35e10 keys there, where
 object-first tries would bind 1.
 
 Until the fixes land, these `watdiv-stress-100-test-1` templates are excluded
@@ -261,7 +272,7 @@ from sample runs:
 |-----------|-------|-----|
 | q0008, q0010, q0017, q0030, q0035, q0079, q0085, q0264, q0306, q0409 | Index-bound: the best valid plan binds 3.7e7 to 1.7e11 keys, and `cardinality` already finds it. Object-first tries would bind 1 to 1.4e6. | #82 |
 | q0020 | Optimiser-bound: both optimisers bind 9.7e10 keys, where a valid plan binds 1.8e4. | #81 |
-| q0005 | An incoming star on the country `V3` (`nationality`, `parentcountry`, `eligibleregion`), plus 4,169,173,508 genuine result rows. The lexicographic plan enumerates users × given names × cities × offers before it checks the country. #65's capped runs did not finish on either family, and memory was not the limit. | #82 cuts the enumeration; the output stays 4.17e9 rows |
+| q0005 | An incoming star on the country `V_v3` (`nationality`, `parentcountry`, `eligibleregion`), plus 4,169,173,508 genuine result rows. The lexicographic plan enumerates users × given names × cities × offers before it checks the country. #65's capped runs did not finish on either family, and memory was not the limit. | #82 cuts the enumeration; the output stays 4.17e9 rows |
 
 Three more templates depend on the optimiser. q0073 and q0440 are slow only
 under `--optimiser lexicographic`, and q0034 only under `--optimiser
