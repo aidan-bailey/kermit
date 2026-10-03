@@ -2186,7 +2186,7 @@ and extend its doc comment's last sentence: "…and the `--ds-config` values and
 - imports: `kermit_ds::{ColumnTrieBuildMode, HashTrieConfig, IndexStructure}` and `options::{with_hash_trie_layout, BuildChoices, ConfigChoices, DsChoices, LayoutChoices}`;
 - add `#[command(flatten)] build: BuildChoices,` after `config: ConfigChoices,` in `BenchSubcommand::Join`, `Ds` and `Run`, and `build` to each destructuring in `main()` and each handler call;
 - handler signatures gain `build: BuildChoices` as their last parameter (`run_bench_join`, `run_ds_bench_command`, `run_bench_run_command`), and each `DsChoices::resolve(…, &config)` becomes `DsChoices::resolve(…, &config, &build)`;
-- `load_query_runner(args: &QueryArgs, config: HashTrieConfig, build: ColumnTrieBuildMode)`: pass `build` into its `DsChoices { …, config, build }`, and make its two sorted arms:
+- `load_query_runner(args: &QueryArgs, choices: DsChoices)` already takes the whole bundle (P2's review fix), so its signature does not change; make its two sorted arms:
 
 ```rust
         | Execution::TrieLftj(SortedTrie::TreeTrie) => build_join_runner(
@@ -2201,8 +2201,8 @@ and extend its doc comment's last sentence: "…and the `--ds-config` values and
         ),
 ```
 
-- replace its doc paragraph "`kermit join` deliberately carries no `--ds-config` …" with: "`kermit join` deliberately carries no `--ds-config` or `--ds-build` and passes the defaults: neither the load factor nor the build mode can change a query's answers. `bench join --output` passes its resolved values so the CSV comes from the same build the measurements use.";
-- `run_join` calls `load_query_runner(&query_args, HashTrieConfig::default(), ColumnTrieBuildMode::default())`; `run_bench_join`'s `--output` branch calls `load_query_runner(&query_args, choices.config, choices.build)`.
+- extend its doc paragraph so it says `kermit join` carries neither `--ds-config` nor `--ds-build` (it passes their defaults inside `DsChoices`, since neither can change a query's answers), while `bench join --output` passes its resolved `DsChoices`;
+- `run_join` already passes `DsChoices { hasher, pruning, ..DsChoices::default() }`, which now defaults `build` too — no change; `run_bench_join`'s `--output` branch already passes `choices`.
 
 - [ ] **Step 6: Run the tests**
 
@@ -2638,7 +2638,7 @@ Also update the pinning-test name in the Canonical-layout invariant bullet from 
 > **Concrete example (implemented).** ColumnTrie's build. `ColumnTrie::from_tuples_with_build_mode(header, ColumnTrieBuildMode::Incremental, tuples)` sorts the tuples and inserts them one at a time (the build before issue #84, O(n · a · b)); `ColumnTrieBuildMode::Bulk`, the default, builds every layer in one pass (O(n · a)). Both build identical arrays with identical capacities, which an array-level test pins.
 ```
 
-   In its table, replace the `Examples (potential)` cell with `ColumnTrie bulk / incremental ✓, parallel build, radix partitioning` and the `Test obligation` cell with `Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an array-level test that every mode builds the identical structure, capacities included`.
+   In its table, replace the `Examples (potential)` cell with `ColumnTrie bulk / incremental ✓, parallel build, radix partitioning` and the `Test obligation` cell with `Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an array-level test that every mode builds the identical structure, capacities included`; and the `Output equivalence` cell with `Required: every mode builds the same structure — same contents **and** the same `HeapSize` — so a build mode can move only the build-timing metrics (`insertion`, `end_to_end`), never `iteration` or `space`. kermit-lab relies on this when it limits `ds_build_mode` ablations to the build phases.` (Decision recorded after the P2 code review: the trait contract `BuildModeRelation` states, kept strict rather than softened, because the ablation guard's premise depends on it. A future mode that changes capacities would be a different kind of optimisation, or would need the guard widened.)
 
 2. CLI section: replace
 
@@ -2851,7 +2851,7 @@ CARGO_BUILD_JOBS=2 nix develop $WT --command cargo build --release -p kermit
 setsid nohup env -C $SCRATCH/ab-run $WT/target/release/kermit bench --sample-size 10 --measurement-time 1 --warm-up-time 1 --name col84-incr --report-json $SCRATCH/ab-run/incr.json ds --relation $REL -i column-trie -m insertion --ds-build incremental > $SCRATCH/ab-incr.log 2>&1 < /dev/null & disown
 ```
 
-When done: `for g in col84-base col84-bulk col84-incr; do printf '%s ' $g; jq '.mean.point_estimate / 1e9' $SCRATCH/ab-run/target/criterion/$g/ColumnTrie_insertion/new/estimates.json; done`. Expected: `col84-incr` within run-to-run noise of `col84-base` (≈ 34 s); `col84-bulk` far below.
+When done: `for g in col84-base col84-bulk col84-incr; do printf '%s ' $g; jq '.mean.point_estimate / 1e9' $SCRATCH/ab-run/target/criterion/$g/ColumnTrie_insertion/new/estimates.json; done`. Expected: `col84-incr` within run-to-run noise of `col84-base` (≈ 35 s); `col84-bulk` far below. **This comparison is the check that the mode `match` in `from_tuples_with_build_mode` dispatches the right arm** — both arms build identical tries, so no test can tell them apart; swapped arms would show as `incr ≈ bulk`. Record it as such in the checkpoint.
 
 Then confirm `bench run` delivers the mode through `TrieLftj` (the path `bench ds` does not exercise):
 
