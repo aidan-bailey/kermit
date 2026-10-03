@@ -24,7 +24,7 @@
 
 use {
     crate::options::{hasher_of, pruning_of, HasherChoice, PruningChoice},
-    kermit::db::{hash_join_for_each, lftj_join_for_each},
+    kermit::db::{hash_join_for_each, lftj_join_for_each, JoinError},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser, QueryOptimiser},
     kermit_ds::{
         Cardinality, ColumnTrie, ConfigurableRelation, HashTrie, HashTrieConfig, HeapSize,
@@ -322,6 +322,25 @@ pub trait RelationFamily {
     fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
+/// Reads only the header of one relation file — its name and columns, not
+/// its tuples — so a query can be validated against a workload before
+/// any relation is built. The reader is chosen by extension, as in
+/// [`read_relation`], whose header this always equals.
+///
+/// # Errors
+///
+/// Returns an error if the extension is neither `csv` nor `parquet`, or if
+/// the reader fails.
+pub fn read_relation_header(path: &Path) -> anyhow::Result<RelationHeader> {
+    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    match extension.to_lowercase().as_str() {
+        | "csv" => kermit_ds::read_csv_header(path),
+        | "parquet" => kermit_ds::read_parquet_header(path),
+        | _ => anyhow::bail!("Unsupported file extension for {path:?}: '{extension}'"),
+    }
+    .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))
+}
+
 /// Reads one relation file into its header and its tuples, in the order the
 /// file stores them. The reader is chosen by extension.
 ///
@@ -367,29 +386,44 @@ pub trait ExecutionFamily: RelationFamily {
 
     /// Runs `query` against `engine`, passing each result tuple to `emit`
     /// as a borrowed slice; the result is never materialised.
-    fn join_for_each<S: FnMut(&[usize])>(&self, engine: &Self::Engine, query: JoinQuery, emit: S);
+    ///
+    /// # Errors
+    ///
+    /// The [`JoinError`] for a query that cannot run over `engine`,
+    /// before any tuple is emitted.
+    fn join_for_each<S: FnMut(&[usize])>(
+        &self, engine: &Self::Engine, query: JoinQuery, emit: S,
+    ) -> Result<(), JoinError>;
 
     /// Runs `query` against `engine` and counts its result tuples, passing
     /// each through [`std::hint::black_box`] so the traversal cannot be
     /// optimised away. Allocates no result rows: this is what the
     /// `iteration` and `end_to_end` metrics time and what `--verify`
     /// checks (issue #65).
-    fn count(&self, engine: &Self::Engine, query: JoinQuery) -> u64 {
+    ///
+    /// # Errors
+    ///
+    /// As [`join_for_each`](Self::join_for_each).
+    fn count(&self, engine: &Self::Engine, query: JoinQuery) -> Result<u64, JoinError> {
         let mut rows = 0u64;
         self.join_for_each(engine, query, |tuple| {
             std::hint::black_box(tuple);
             rows += 1;
-        });
-        rows
+        })?;
+        Ok(rows)
     }
 
     /// Runs `query` against `engine` and returns every result tuple. Only
     /// for callers that need the rows themselves (`kermit join`,
     /// `bench join --output`); never inside a timed region.
-    fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Vec<Vec<usize>> {
+    ///
+    /// # Errors
+    ///
+    /// As [`join_for_each`](Self::join_for_each).
+    fn join(&self, engine: &Self::Engine, query: JoinQuery) -> Result<Vec<Vec<usize>>, JoinError> {
         let mut tuples = Vec::new();
-        self.join_for_each(engine, query, |tuple| tuples.push(tuple.to_vec()));
-        tuples
+        self.join_for_each(engine, query, |tuple| tuples.push(tuple.to_vec()))?;
+        Ok(tuples)
     }
 }
 
@@ -540,8 +574,10 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
 
     fn relations(engine: &Self::Engine) -> Vec<&R> { engine.values().collect() }
 
-    fn join_for_each<S: FnMut(&[usize])>(&self, engine: &Self::Engine, query: JoinQuery, emit: S) {
-        lftj_join_for_each::<R, LeapfrogTriejoin>(engine, query, self.optimiser.as_ref(), emit);
+    fn join_for_each<S: FnMut(&[usize])>(
+        &self, engine: &Self::Engine, query: JoinQuery, emit: S,
+    ) -> Result<(), JoinError> {
+        lftj_join_for_each::<R, LeapfrogTriejoin>(engine, query, self.optimiser.as_ref(), emit)
     }
 }
 
@@ -610,8 +646,10 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H,
 
     fn relations(engine: &Self::Engine) -> Vec<&HashTrie<H, P>> { engine.values().collect() }
 
-    fn join_for_each<S: FnMut(&[usize])>(&self, engine: &Self::Engine, query: JoinQuery, emit: S) {
-        hash_join_for_each::<HashTrie<H, P>, H>(engine, query, self.optimiser.as_ref(), emit);
+    fn join_for_each<S: FnMut(&[usize])>(
+        &self, engine: &Self::Engine, query: JoinQuery, emit: S,
+    ) -> Result<(), JoinError> {
+        hash_join_for_each::<HashTrie<H, P>, H>(engine, query, self.optimiser.as_ref(), emit)
     }
 }
 
@@ -1020,21 +1058,47 @@ mod tests {
 
         let tree = TrieLftj::<TreeTrie>::new(Optimiser::Lexicographic);
         let engine = tree.build_from_tuples(inputs());
-        assert_eq!(tree.count(&engine, query.clone()), 2);
-        assert_eq!(tree.join(&engine, query.clone()).len(), 2);
+        assert_eq!(tree.count(&engine, query.clone()).unwrap(), 2);
+        assert_eq!(tree.join(&engine, query.clone()).unwrap().len(), 2);
 
         let column = TrieLftj::<ColumnTrie>::new(Optimiser::Lexicographic);
         let engine = column.build_from_tuples(inputs());
-        assert_eq!(column.count(&engine, query.clone()), 2);
-        assert_eq!(column.join(&engine, query.clone()).len(), 2);
+        assert_eq!(column.count(&engine, query.clone()).unwrap(), 2);
+        assert_eq!(column.join(&engine, query.clone()).unwrap().len(), 2);
 
         let hash = HashHtj::<SipHashStrategy, NoPruning>::new(
             HashTrieConfig::default(),
             Optimiser::Lexicographic,
         );
         let engine = hash.build_from_tuples(inputs());
-        assert_eq!(hash.count(&engine, query.clone()), 2);
-        assert_eq!(hash.join(&engine, query).len(), 2);
+        assert_eq!(hash.count(&engine, query.clone()).unwrap(), 2);
+        assert_eq!(hash.join(&engine, query).unwrap().len(), 2);
+    }
+
+    /// `read_relation_header` is what queries are validated against before
+    /// any build, so it must agree with the header the build itself reads.
+    /// The empty Parquet file is written by the WatDiv pipeline's own
+    /// writer — the shape of a relation seeded for an absent predicate —
+    /// and keeps its arity from the schema.
+    #[test]
+    fn header_only_read_agrees_with_the_full_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("edge.csv");
+        std::fs::write(&csv, "# a comment\nsrc,dst\n1,2\n3,4\n").unwrap();
+        let full = dir.path().join("full.parquet");
+        let empty = dir.path().join("empty.parquet");
+        for (path, tuples) in [(&full, vec![(1, 2), (3, 4)]), (&empty, vec![])] {
+            let rel = kermit_rdf::partition::PartitionedRelation {
+                name: "ignored".into(),
+                tuples,
+            };
+            kermit_rdf::parquet::write_relation(&rel, path).unwrap();
+        }
+        for path in [&csv, &full, &empty] {
+            let header = read_relation_header(path).unwrap();
+            assert_eq!(header, read_relation(path).unwrap().0, "{path:?}");
+            assert_eq!(header.arity(), 2, "{path:?}");
+        }
     }
 
     /// Every ColumnTrie report says how its relations were built; the

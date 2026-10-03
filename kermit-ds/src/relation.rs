@@ -95,7 +95,7 @@ pub enum ModelType {
 /// the only authoritative column count). Orthogonally, a header is
 /// **nameless** when its `name` is empty — used for intermediate or
 /// projected relations whose origin no longer matters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelationHeader {
     name: String,
     /// Attribute names. Empty iff this is a positional header.
@@ -362,6 +362,36 @@ fn file_stem(path: &Path) -> String {
         .to_string()
 }
 
+/// Opens `path` as a relation CSV and reads its header: attribute names
+/// from the first non-comment row, relation name from the file stem. The
+/// one place CSV header parsing happens — [`read_csv`] continues from the
+/// returned reader, [`read_csv_header`] stops here.
+fn open_csv(path: &Path) -> Result<(RelationHeader, csv::Reader<File>), RelationError> {
+    let file = File::open(path)?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .delimiter(b',')
+        .double_quote(false)
+        .escape(Some(b'\\'))
+        .flexible(false)
+        .comment(Some(b'#'))
+        .from_reader(file);
+    let attrs: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
+    Ok((RelationHeader::new(file_stem(path), attrs), rdr))
+}
+
+/// Reads only the header of a relation CSV, never its data rows: what a
+/// caller needs to check a query against a relation's name and arity
+/// before paying for the build.
+///
+/// # Errors
+///
+/// [`RelationError::Io`] if the file cannot be opened;
+/// [`RelationError::Csv`] if the header row cannot be parsed.
+pub fn read_csv_header<P: AsRef<Path>>(filepath: P) -> Result<RelationHeader, RelationError> {
+    open_csv(filepath.as_ref()).map(|(header, _)| header)
+}
+
 /// Reads a CSV file into a header (attribute names from the header row,
 /// relation name from the file stem) and its tuples. Shared by
 /// [`RelationFileExt::from_csv`] and by callers that need to build with a
@@ -374,23 +404,7 @@ fn file_stem(path: &Path) -> String {
 pub fn read_csv<P: AsRef<Path>>(
     filepath: P,
 ) -> Result<(RelationHeader, Vec<Vec<usize>>), RelationError> {
-    let path = filepath.as_ref();
-    let file = File::open(path)?;
-
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .delimiter(b',')
-        .double_quote(false)
-        .escape(Some(b'\\'))
-        .flexible(false)
-        .comment(Some(b'#'))
-        .from_reader(file);
-
-    // Extract column names from CSV header
-    let attrs: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
-
-    // Create header from the CSV header with the extracted name
-    let header = RelationHeader::new(file_stem(path), attrs);
+    let (header, mut rdr) = open_csv(filepath.as_ref())?;
 
     let mut tuples = Vec::new();
     for (row_idx, result) in rdr.records().enumerate() {
@@ -410,6 +424,35 @@ pub fn read_csv<P: AsRef<Path>>(
     Ok((header, tuples))
 }
 
+/// Opens `path` as a relation Parquet file and reads its header: column
+/// names from the schema in the footer, relation name from the file stem.
+/// The arity therefore holds even for a file with no rows. The one place
+/// Parquet header parsing happens — [`read_parquet`] continues from the
+/// returned builder, [`read_parquet_header`] stops here.
+fn open_parquet(
+    path: &Path,
+) -> Result<(RelationHeader, ParquetRecordBatchReaderBuilder<File>), RelationError> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
+    let attrs: Vec<String> = builder
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+    Ok((RelationHeader::new(file_stem(path), attrs), builder))
+}
+
+/// Reads only the header of a relation Parquet file (its footer schema),
+/// never its row groups. Counterpart of [`read_csv_header`].
+///
+/// # Errors
+///
+/// [`RelationError::Io`] if the file cannot be opened;
+/// [`RelationError::Parquet`] if it is not a readable Parquet file.
+pub fn read_parquet_header<P: AsRef<Path>>(filepath: P) -> Result<RelationHeader, RelationError> {
+    open_parquet(filepath.as_ref()).map(|(header, _)| header)
+}
+
 /// Reads a Parquet file into a header (column names from the schema,
 /// relation name from the file stem) and its tuples. Counterpart of
 /// [`read_csv`]. Shared by [`RelationFileExt::from_parquet`] and by callers
@@ -422,21 +465,7 @@ pub fn read_csv<P: AsRef<Path>>(
 pub fn read_parquet<P: AsRef<Path>>(
     filepath: P,
 ) -> Result<(RelationHeader, Vec<Vec<usize>>), RelationError> {
-    let path = filepath.as_ref();
-    let file = File::open(path)?;
-
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-
-    // Extract schema to get column names
-    let schema = builder.schema();
-    let attrs: Vec<String> = schema
-        .fields()
-        .iter()
-        .map(|field| field.name().clone())
-        .collect();
-
-    // Create header from the parquet schema with the extracted name
-    let header = RelationHeader::new(file_stem(path), attrs);
+    let (header, builder) = open_parquet(filepath.as_ref())?;
 
     // Build the reader
     let reader = builder.build()?;
@@ -608,6 +637,81 @@ mod tests {
         );
 
         std::fs::remove_file(path).ok();
+    }
+
+    /// Writes `rows` as an `Int64` Parquet file with one column per name.
+    fn write_parquet(path: &Path, attrs: &[&str], rows: &[Vec<i64>]) {
+        use {
+            arrow::{
+                array::{ArrayRef, Int64Array, RecordBatch},
+                datatypes::{DataType, Field, Schema},
+            },
+            parquet::arrow::ArrowWriter,
+            std::sync::Arc,
+        };
+        let schema = Arc::new(Schema::new(
+            attrs
+                .iter()
+                .map(|a| Field::new(*a, DataType::Int64, false))
+                .collect::<Vec<_>>(),
+        ));
+        let columns: Vec<ArrayRef> = (0..attrs.len())
+            .map(|c| {
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r[c]).collect::<Vec<_>>(),
+                )) as ArrayRef
+            })
+            .collect();
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    /// The header comes from the first non-comment line alone: a malformed
+    /// data row that `read_csv` rejects is never read.
+    #[test]
+    fn read_csv_header_reads_only_the_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.csv");
+        std::fs::write(&path, "# comment\na,b\n1,x\n").unwrap();
+        assert!(read_csv(&path).is_err());
+        let header = read_csv_header(&path).unwrap();
+        assert_eq!(header.name(), "edge");
+        assert_eq!(header.attrs(), ["a", "b"]);
+    }
+
+    #[test]
+    fn read_csv_header_agrees_with_read_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.csv");
+        std::fs::write(&path, "# comment\nsrc,dst\n1,2\n3,4\n").unwrap();
+        assert_eq!(read_csv_header(&path).unwrap(), read_csv(&path).unwrap().0);
+    }
+
+    #[test]
+    fn read_parquet_header_agrees_with_read_parquet() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("triple.parquet");
+        write_parquet(&path, &["a", "b", "c"], &[vec![1, 2, 3], vec![4, 5, 6]]);
+        let header = read_parquet_header(&path).unwrap();
+        assert_eq!(header.arity(), 3);
+        assert_eq!(header, read_parquet(&path).unwrap().0);
+    }
+
+    /// An empty relation's arity comes from the schema, not from a first
+    /// row — the case of a WatDiv relation seeded for an absent predicate.
+    #[test]
+    fn empty_parquet_keeps_its_arity_from_the_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.parquet");
+        write_parquet(&path, &["s", "o"], &[]);
+        let header = read_parquet_header(&path).unwrap();
+        assert_eq!(header.name(), "empty");
+        assert_eq!(header.arity(), 2);
+        let (full, tuples) = read_parquet(&path).unwrap();
+        assert!(tuples.is_empty());
+        assert_eq!(header, full);
     }
 
     #[test]

@@ -39,6 +39,26 @@ X,Y,Z
 2,3,4
 ```
 
+### What a query may say
+
+`kermit join` (and `bench join` / `bench run`) checks the query against the
+relation files' headers before loading any data, and exits 1 with a message
+naming the problem if it cannot run:
+
+- every head term is a variable, and no variable names two head columns;
+- every head variable appears in the body;
+- each body atom names a relation passed with `--relations` (by file stem)
+  and has one term per column — constants (`c<id>`) and `_` count;
+- the atoms do not need a relation's columns in two orders at once
+  (`edge(X, Y), edge(Y, X)` is a limitation of the trie joins, reported as
+  such).
+
+Each output row carries exactly the head's columns. Duplicates are kept: a
+result has one row per satisfying assignment of all body variables, so
+`Q(X) :- edge(X, Y).` repeats `X` once per out-edge. `_` matches any value
+in its column and binds nothing — `Q(X) :- edge(X, _).` returns the same
+rows as `Q(X) :- edge(X, Y).`.
+
 ### Multiple relations
 
 Repeat `--relations` for each input file:

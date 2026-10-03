@@ -369,6 +369,62 @@ macro_rules! define_repeated_nonadjacent_multiway_join_test {
     };
 }
 
+/// `Q(V0) :- R0(V0, _), R1(V0).` — a trailing placeholder. `_` is a
+/// fresh variable used nowhere else, so each `R0` tuple whose subject
+/// survives the join yields one row (bag semantics): `1` twice, `2`
+/// once, and `3` dropped by `R1 = {1, 2}`. The sorted family used to
+/// leave the placeholder's level unopened and return `1` once; Hash
+/// Triejoin panicked expecting every iterator at its leaf.
+#[macro_export]
+macro_rules! define_trailing_placeholder_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<trailing_placeholder_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
+            $relation_type,
+            $join_algorithm,
+            $optimiser,
+            [
+                vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]],
+                vec![vec![1], vec![2]]
+            ],
+            vec![0],
+            vec![vec![0, $crate::common::utils::PLACEHOLDER], vec![0]],
+            vec![vec![1], vec![1], vec![2]],
+            {print!("");}
+        );
+        }
+    };
+}
+
+/// `Q(V0, V2) :- R0(V0, _, V2), R1(V2).` — a middle placeholder, with a
+/// join on the column after it. `V2` must bind `R0`'s third column: of
+/// `R0 = {(1,2,3),(1,4,3),(2,5,6),(3,7,8)}` and `R1 = {3, 6}`, that gives
+/// `(1,3)` twice (two middles, bag semantics) and `(2,6)`. An executor
+/// that skips the placeholder binds `V2` to the middle column instead,
+/// which meets `R1` nowhere.
+#[macro_export]
+macro_rules! define_middle_placeholder_multiway_join_test {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+        paste::paste! {
+        $crate::define_multiway_join_test!(
+            [<middle_placeholder_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
+            $relation_type,
+            $join_algorithm,
+            $optimiser,
+            [
+                vec![vec![1, 2, 3], vec![1, 4, 3], vec![2, 5, 6], vec![3, 7, 8]],
+                vec![vec![3], vec![6]]
+            ],
+            vec![0, 2],
+            vec![vec![0, $crate::common::utils::PLACEHOLDER, 2], vec![2]],
+            vec![vec![1, 3], vec![1, 3], vec![2, 6]],
+            {print!("");}
+        );
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! define_multiway_join_test_suite {
     (
@@ -393,6 +449,8 @@ macro_rules! define_multiway_join_test_suite {
                 $crate::define_deep_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
                 $crate::define_diagonal_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
                 $crate::define_repeated_nonadjacent_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_trailing_placeholder_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+                $crate::define_middle_placeholder_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
         )+
     };
 }
@@ -401,7 +459,7 @@ macro_rules! define_multiway_join_test_suite {
 /// prescribed by `docs/specs/optimization-standard.md`.
 ///
 /// Declares `type <Relation><Provider> = Configured<Relation, Provider>;`
-/// inside a uniquely named module and runs the 14 standard join patterns
+/// inside a uniquely named module and runs the 16 standard join patterns
 /// against it. `Provider` is a marker declared with
 /// `kermit_ds::define_config_provider!`.
 ///

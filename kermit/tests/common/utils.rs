@@ -7,39 +7,45 @@
 //! hosts it, mirroring how the CLI's `execution` module pairs them.
 
 use {
-    kermit::db::{hash_join, hash_join_for_each, lftj_join, lftj_join_for_each},
+    kermit::db::{hash_join, hash_join_for_each, lftj_join, lftj_join_for_each, JoinError},
     kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, QueryOptimiser},
-    kermit_ds::{Cardinality, Configured, HashTrie, PruningPolicy, Relation},
+    kermit_ds::{
+        Cardinality, ConfigProvider, Configured, HashTrie, HashTrieConfig, PruningPolicy, Relation,
+    },
     kermit_iters::{HashStrategy, TrieIterable},
     std::collections::BTreeMap,
 };
+
+/// Marks a placeholder (`_`) in a fixture's `rel_variables` entry: the
+/// column exists in the relation's tuples but binds no variable.
+pub const PLACEHOLDER: usize = usize::MAX;
 
 /// The entry point in `kermit::db` that runs algorithm `Self` over `R`.
 pub trait JoinEntry<R> {
     fn join(
         relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-    ) -> Vec<Vec<usize>>;
+    ) -> Result<Vec<Vec<usize>>, JoinError>;
 
     /// Counts the result through the streaming `_for_each` entry point —
     /// the path `bench run`'s `iteration` metric times.
     fn count(
         relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-    ) -> usize;
+    ) -> Result<usize, JoinError>;
 }
 
-impl<R: TrieIterable + Cardinality> JoinEntry<R> for LeapfrogTriejoin {
+impl<R: TrieIterable + Relation + Cardinality> JoinEntry<R> for LeapfrogTriejoin {
     fn join(
         relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-    ) -> Vec<Vec<usize>> {
+    ) -> Result<Vec<Vec<usize>>, JoinError> {
         lftj_join::<R, LeapfrogTriejoin>(relations, query, optimiser)
     }
 
     fn count(
         relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-    ) -> usize {
+    ) -> Result<usize, JoinError> {
         let mut rows = 0;
-        lftj_join_for_each::<R, LeapfrogTriejoin>(relations, query, optimiser, |_| rows += 1);
-        rows
+        lftj_join_for_each::<R, LeapfrogTriejoin>(relations, query, optimiser, |_| rows += 1)?;
+        Ok(rows)
     }
 }
 
@@ -50,57 +56,59 @@ impl<H: HashStrategy, P: PruningPolicy> JoinEntry<HashTrie<H, P>> for HashTriejo
     fn join(
         relations: &BTreeMap<String, HashTrie<H, P>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
-    ) -> Vec<Vec<usize>> {
+    ) -> Result<Vec<Vec<usize>>, JoinError> {
         hash_join::<HashTrie<H, P>, H>(relations, query, optimiser)
     }
 
     fn count(
         relations: &BTreeMap<String, HashTrie<H, P>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
-    ) -> usize {
+    ) -> Result<usize, JoinError> {
         let mut rows = 0;
-        hash_join_for_each::<HashTrie<H, P>, H>(relations, query, optimiser, |_| rows += 1);
-        rows
+        hash_join_for_each::<HashTrie<H, P>, H>(relations, query, optimiser, |_| rows += 1)?;
+        Ok(rows)
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, C> JoinEntry<Configured<HashTrie<H, P>, C>>
-    for HashTriejoin
+impl<H: HashStrategy, P: PruningPolicy, C: ConfigProvider<HashTrieConfig>>
+    JoinEntry<Configured<HashTrie<H, P>, C>> for HashTriejoin
 {
     fn join(
         relations: &BTreeMap<String, Configured<HashTrie<H, P>, C>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
-    ) -> Vec<Vec<usize>> {
+    ) -> Result<Vec<Vec<usize>>, JoinError> {
         hash_join::<Configured<HashTrie<H, P>, C>, H>(relations, query, optimiser)
     }
 
     fn count(
         relations: &BTreeMap<String, Configured<HashTrie<H, P>, C>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
-    ) -> usize {
+    ) -> Result<usize, JoinError> {
         let mut rows = 0;
-        hash_join_for_each::<Configured<HashTrie<H, P>, C>, H>(relations, query, optimiser, |_| {
-            rows += 1
-        });
-        rows
+        hash_join_for_each::<Configured<HashTrie<H, P>, C>, H>(
+            relations,
+            query,
+            optimiser,
+            |_| rows += 1,
+        )?;
+        Ok(rows)
     }
 }
 
 /// Builds one `R` per input relation (named `R0`, `R1`, …), synthesises
-/// `Q(V…) :- R0(V…), R1(V…), ….` from `variables` / `rel_variables`, runs
-/// it through `JA`'s entry point, projects each row to the head, and
-/// asserts multiset equality with `result`.
+/// `Q(V…) :- R0(V…), R1(V…), ….` from `variables` / `rel_variables` (a
+/// [`PLACEHOLDER`] entry becomes `_`), runs
+/// it through `JA`'s entry point, and asserts multiset equality with
+/// `result`.
 ///
 /// It also counts the result through the streaming entry point and checks
 /// that count against `result`, so the path `bench run` times is covered
 /// for every structure × algorithm × optimiser invocation.
 ///
-/// Head variables receive canonical indices `0..variables.len()` in head
-/// order (`kermit_algos::analyse`), and the entry points emit every
-/// variable in canonical order, so truncating each row to the head's
-/// length is the projection. Body-only variables — including the fresh
-/// ones the rewrites introduce — are dropped this way (issue #71 tracks
-/// doing this in the entry points themselves).
+/// The rows are compared as returned: the entry points project to the
+/// head themselves (issue #71), so a body-only variable — including the
+/// fresh ones the rewrites introduce — leaking into a row fails the
+/// comparison.
 pub fn test_join<R, JA, O>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     result: Vec<Vec<usize>>,
@@ -109,38 +117,44 @@ pub fn test_join<R, JA, O>(
     JA: JoinEntry<R>,
     O: QueryOptimiser + Default,
 {
+    // Each relation's arity is its atom's term count: the query is what
+    // fixes a column count, and an empty relation has no first tuple to
+    // read one from (the join rejects an atom whose arity disagrees).
     let relations: BTreeMap<String, R> = input
         .into_iter()
+        .zip(&rel_variables)
         .enumerate()
-        .map(|(i, tuples)| {
-            let k = if tuples.is_empty() {
-                0
-            } else {
-                tuples[0].len()
-            };
-            (format!("R{i}"), R::from_tuples(k.into(), tuples))
+        .map(|(i, (tuples, rv))| {
+            assert!(
+                tuples.iter().all(|t| t.len() == rv.len()),
+                "fixture R{i}: every tuple must have one value per atom term"
+            );
+            (format!("R{i}"), R::from_tuples(rv.len().into(), tuples))
         })
         .collect();
     let head_vars: Vec<String> = variables.iter().map(|v| format!("V{v}")).collect();
     let mut body_preds: Vec<String> = Vec::new();
     for (i, rv) in rel_variables.iter().enumerate() {
-        let var_list = if rv.is_empty() {
-            "_".to_string()
-        } else {
-            rv.iter()
-                .map(|v| format!("V{v}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let var_list = rv
+            .iter()
+            .map(|&v| {
+                if v == PLACEHOLDER {
+                    "_".to_string()
+                } else {
+                    format!("V{v}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         body_preds.push(format!("R{i}({var_list})"));
     }
     let query_str = format!("Q({}) :- {}.", head_vars.join(", "), body_preds.join(", "));
     let query: JoinQuery = query_str.parse().expect("Failed to build JoinQuery");
 
-    let head_arity = variables.len();
     // The streamed count is what `bench run --verify` checks and what the
     // `iteration` metric times; it must agree with the expected rows.
-    let streamed = JA::count(&relations, query.clone(), &O::default());
+    let streamed = JA::count(&relations, query.clone(), &O::default())
+        .unwrap_or_else(|e| panic!("{query_str}: {e}"));
     assert_eq!(
         streamed,
         result.len(),
@@ -151,10 +165,8 @@ pub fn test_join<R, JA, O>(
     // before asserting so algorithms with non-sorted output (hash-trie
     // family) and plans with different enumeration orders pass the same
     // suite.
-    let mut actual: Vec<Vec<usize>> = JA::join(&relations, query, &O::default())
-        .into_iter()
-        .map(|row| row[..head_arity].to_vec())
-        .collect();
+    let mut actual: Vec<Vec<usize>> =
+        JA::join(&relations, query, &O::default()).unwrap_or_else(|e| panic!("{query_str}: {e}"));
     actual.sort();
     let mut expected = result;
     expected.sort();

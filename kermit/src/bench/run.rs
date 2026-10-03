@@ -25,6 +25,11 @@ use {
     },
 };
 
+/// Why a timed join cannot fail: [`run_benchmark`] calls
+/// [`Workload::validate`] on every query before it builds anything, and
+/// the join rejects exactly the queries validation does.
+const VALIDATED: &str = "query validated against the workload before timing";
+
 /// Everything a measured join needs besides the cell and the workload:
 /// what kind of report to stamp, how to name the Criterion group, which
 /// optimiser plans the queries, and what to measure. One value is built
@@ -59,8 +64,11 @@ pub(crate) struct RunSettings<'a> {
 /// are identical, and the report's `data_structure` / `algorithm` axes
 /// come from `family.execution()` — the same value that picked the code
 /// path — so a report can never name an algorithm it did not run (issue
-/// #56). With `settings.verify`, each query with an `expected` count is
-/// executed once before timing and a mismatch aborts.
+/// #56). Every query is validated against the relations' headers before
+/// anything is loaded, so a query that cannot run aborts the cell with an
+/// error rather than a panic inside Criterion (issue #78). With
+/// `settings.verify`, each query with an `expected` count is executed once
+/// before timing and a mismatch aborts.
 fn run_benchmark<F: ExecutionFamily>(
     family: &F, workload: &Workload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
@@ -73,6 +81,10 @@ fn run_benchmark<F: ExecutionFamily>(
         verify,
         bench_args,
     } = settings;
+    // Reject a query that cannot run before loading anything: the headers
+    // alone settle it, and a failure inside a timed closure below could
+    // only panic.
+    workload.validate()?;
     // Load each relation from disk exactly once; the family builds its
     // engine from these typed relations rather than re-reading the files.
     // The `insertion` and `end_to_end` metrics rebuild relations, and they
@@ -144,7 +156,7 @@ fn run_benchmark<F: ExecutionFamily>(
         let verified = if verify {
             match query_def.expected {
                 | Some(expected) => {
-                    let actual = family.count(&engine, query_def.query.clone());
+                    let actual = family.count(&engine, query_def.query.clone())?;
                     if actual != expected {
                         anyhow::bail!(
                             "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
@@ -225,7 +237,7 @@ fn run_benchmark<F: ExecutionFamily>(
                 group.bench_function("iteration", |b| {
                     b.iter_batched(
                         || query_def.query.clone(),
-                        |q| family.count(&engine, q),
+                        |q| family.count(&engine, q).expect(VALIDATED),
                         criterion::BatchSize::SmallInput,
                     );
                 });
@@ -258,7 +270,7 @@ fn run_benchmark<F: ExecutionFamily>(
                         |(inputs, queries)| {
                             let fresh = family.build_from_tuples(inputs);
                             for q in queries {
-                                std::hint::black_box(family.count(&fresh, q));
+                                std::hint::black_box(family.count(&fresh, q).expect(VALIDATED));
                             }
                         },
                         criterion::BatchSize::PerIteration,

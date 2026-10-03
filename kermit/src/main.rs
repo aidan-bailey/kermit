@@ -13,6 +13,7 @@
 use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
+    kermit::db::{validate_query, JoinError},
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HashTrieConfig, IndexStructure},
@@ -37,7 +38,7 @@ use {
         Metric, RunSettings, Workload,
     },
     bench_report::{BenchKind, ReportSink},
-    execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
+    execution::{read_relation_header, Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
     options::{
         validate_config_choices, validate_layout_choices, with_hash_trie_layout, ConfigChoices,
         LayoutChoices,
@@ -472,10 +473,11 @@ enum Commands {
 
 use materialize::{vendored_lubm_jar, vendored_watdiv_root, workspace_root};
 
-/// Column names derived from a query's head predicate. `Var(X)` becomes
-/// `"X"`, `Atom(c)` becomes `"c"` (constants are pre-rewritten by
-/// `rewrite_atoms` so they appear as `c<id>` in the head when present), and
-/// `Placeholder` becomes `"_"`.
+/// Column names derived from a query's head predicate: one per head term,
+/// matching the columns the join emits (it projects to the head). A query
+/// reaching the join has a head of distinct variables — validation rejects
+/// head constants and placeholders — so the `Atom` (`"c<id>"`) and
+/// `Placeholder` (`"_"`) arms only keep this function total.
 fn head_column_names(query: &JoinQuery) -> Vec<String> {
     query
         .head
@@ -516,7 +518,7 @@ fn parse_query(args: &QueryArgs) -> anyhow::Result<JoinQuery> {
 }
 
 /// A built engine behind a closure: runs one query and returns its tuples.
-type JoinRunner = Box<dyn Fn(JoinQuery) -> Vec<Vec<usize>>>;
+type JoinRunner = Box<dyn Fn(JoinQuery) -> Result<Vec<Vec<usize>>, JoinError>>;
 
 /// Loads `args.relations` into `family`'s engine and returns a runner over it.
 fn build_join_runner<F: ExecutionFamily + 'static>(
@@ -528,6 +530,20 @@ fn build_join_runner<F: ExecutionFamily + 'static>(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let engine = family.build(relations);
     Ok(Box::new(move |q| family.join(&engine, q)))
+}
+
+/// Checks `query` against the headers of `args.relations`, read without
+/// their tuples, so a query that cannot run fails before any relation is
+/// built. The error names the query file and is the same for every
+/// structure.
+fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<()> {
+    let headers = args
+        .relations
+        .iter()
+        .map(|path| read_relation_header(path))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    validate_query(query, headers.as_slice())
+        .map_err(|e| anyhow::anyhow!("query {:?}: {e}", args.query))
 }
 
 /// Resolves the `(structure, algorithm)` pair in `args` to its execution
@@ -678,9 +694,10 @@ fn resolve_benchmarks(
 /// and write its tuples to `output` (or stdout when `None`).
 fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()> {
     let join_query = parse_query(&query_args)?;
+    validate_query_files(&join_query, &query_args)?;
     let join = load_query_runner(&query_args, HashTrieConfig::default())?;
     let header = head_column_names(&join_query);
-    let tuples = join(join_query);
+    let tuples = join(join_query)?;
     let writer: Box<dyn Write> = match &output {
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         | None => Box::new(BufWriter::new(io::stdout().lock())),
@@ -791,9 +808,10 @@ fn run_bench_join(
 
     if let Some(path) = &output {
         let join_query = parse_query(&query_args)?;
+        validate_query_files(&join_query, &query_args)?;
         let join = load_query_runner(&query_args, hash_trie_config)?;
         let header = head_column_names(&join_query);
-        let tuples = join(join_query);
+        let tuples = join(join_query)?;
         let writer = BufWriter::new(fs::File::create(path)?);
         write_tuples(writer, &header, &tuples)?;
     }

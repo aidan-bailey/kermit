@@ -42,12 +42,12 @@ fn edge_rels() -> BTreeMap<String, HashTrieSip> {
 
 fn lftj(query: &str) -> Vec<Vec<usize>> {
     let q: JoinQuery = query.parse().expect("parse");
-    lftj_join::<TreeTrie, LeapfrogTriejoin>(&edge_tries(), q, &LexicographicOptimiser)
+    lftj_join::<TreeTrie, LeapfrogTriejoin>(&edge_tries(), q, &LexicographicOptimiser).unwrap()
 }
 
 fn hash(query: &str) -> Vec<Vec<usize>> {
     let q: JoinQuery = query.parse().expect("parse");
-    hash_join::<HashTrieSip, SipHashStrategy>(&edge_rels(), q, &LexicographicOptimiser)
+    hash_join::<HashTrieSip, SipHashStrategy>(&edge_rels(), q, &LexicographicOptimiser).unwrap()
 }
 
 /// First column (the head variable `X`) of every result tuple, sorted.

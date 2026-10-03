@@ -32,7 +32,7 @@ pub use {
     },
     heap_size::HeapSize,
     relation::{
-        read_csv, read_parquet, ConfigurableRelation, ModelType, Projectable, Relation,
-        RelationError, RelationFileExt, RelationHeader,
+        read_csv, read_csv_header, read_parquet, read_parquet_header, ConfigurableRelation,
+        ModelType, Projectable, Relation, RelationError, RelationFileExt, RelationHeader,
     },
 };

@@ -1,7 +1,8 @@
 //! Query optimisers: planners that choose the global attribute order.
 //!
 //! Kermit separates planning from execution. A [`QueryOptimiser`] consumes
-//! a parsed, const-rewritten [`JoinQuery`] plus per-relation statistics
+//! a parsed, rewritten (const, placeholder, selection) [`JoinQuery`] plus
+//! per-relation statistics
 //! ([`CatalogStats`]) and produces a [`QueryPlan`]; join algorithms
 //! (`JoinAlgo::join_for_each`) execute the plan. The space of valid plans is
 //! exactly the set of topological orders of the column-order constraint
@@ -22,7 +23,7 @@ mod stats;
 pub use {
     cardinality::CardinalityOptimiser,
     lexicographic::LexicographicOptimiser,
-    ordering::topological_order,
+    ordering::{check_attribute_order, topological_order, CyclicAttributeOrder},
     plan::{PlanError, QueryPlan},
     stats::{CatalogStats, RelationStats},
 };
@@ -30,14 +31,14 @@ use {clap::ValueEnum, kermit_parser::JoinQuery};
 
 /// A query optimiser plans how a join executes.
 ///
-/// Implementations receive the query *after* the const-view rewrite (the
-/// exact query the executor will run, including synthetic `Const_*`
-/// predicates) and produce a [`QueryPlan`] the executor consumes. Object
-/// safe: the engine holds `Box<dyn QueryOptimiser>` so the choice is a
-/// runtime decision. The returned plan must order variables consistently
-/// with every relation's physical column order (any [`topological_order`]
-/// output qualifies); executors assert [`QueryPlan::validate`] and panic
-/// on violation.
+/// Implementations receive the query *after* the const, placeholder and
+/// selection rewrites (the exact query the executor will run, including
+/// synthetic `Const_*` and `Select_*` predicates) and produce a [`QueryPlan`]
+/// the executor consumes. Object safe: the engine holds `Box<dyn
+/// QueryOptimiser>` so the choice is a runtime decision. The returned plan must
+/// order variables consistently with every relation's physical column order
+/// (any [`topological_order`] output qualifies); executors assert
+/// [`QueryPlan::validate`] and panic on violation.
 pub trait QueryOptimiser {
     /// Produces a plan for `query` given per-relation `stats`.
     fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan;

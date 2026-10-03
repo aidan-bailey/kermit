@@ -56,6 +56,7 @@ fn watdiv_mini_cardinalities_match() {
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
         let got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, &LexicographicOptimiser)
+                .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
                 .len();
 
         assert_eq!(

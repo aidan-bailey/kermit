@@ -76,6 +76,7 @@ fn cardinality_mismatches(
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
         let got = lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, optimiser.as_ref())
+            .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
             .len() as u64;
 
         if got != want {
