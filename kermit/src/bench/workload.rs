@@ -2,8 +2,11 @@
 //! plus named, already-parsed queries.
 
 use {
+    crate::execution::read_relation_header,
+    kermit::db::validate_query,
     kermit_algos::JoinQuery,
     kermit_bench::BenchmarkDefinition,
+    kermit_ds::RelationHeader,
     std::path::{Path, PathBuf},
 };
 
@@ -91,6 +94,29 @@ impl Workload {
             relation_paths,
             queries,
         })
+    }
+
+    /// Checks every query against the relations' headers, read without
+    /// their tuples, so a query that cannot run fails before any relation
+    /// is built or any measurement starts — in milliseconds even for a
+    /// workload whose build takes minutes.
+    ///
+    /// # Errors
+    ///
+    /// A relation file whose header cannot be read, or the first query
+    /// that [`validate_query`] rejects, named with its benchmark.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let headers = self
+            .relation_paths
+            .iter()
+            .map(|path| read_relation_header(path))
+            .collect::<anyhow::Result<Vec<RelationHeader>>>()?;
+        for q in &self.queries {
+            validate_query(&q.query, headers.as_slice()).map_err(|e| {
+                anyhow::anyhow!("benchmark '{}' query '{}': {e}", self.name, q.name)
+            })?;
+        }
+        Ok(())
     }
 
     /// Builds the workload for `bench join`: the given relation paths

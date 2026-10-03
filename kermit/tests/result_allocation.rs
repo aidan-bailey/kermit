@@ -94,7 +94,8 @@ fn lftj_join_allocations<Rel: TrieIterable + Cardinality + Relation>(
                 std::hint::black_box(tuple);
                 produced += 1;
             },
-        );
+        )
+        .unwrap();
     });
     assert_eq!(produced, rows, "the join must produce every row");
     info.count_total
@@ -116,7 +117,8 @@ fn htj_join_allocations<H: HashStrategy, P: PruningPolicy>(
                 std::hint::black_box(tuple);
                 produced += 1;
             },
-        );
+        )
+        .unwrap();
     });
     assert_eq!(produced, rows, "the join must produce every row");
     info.count_total

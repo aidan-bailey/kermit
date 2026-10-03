@@ -9,19 +9,27 @@
 //! Both share one private body and differ only in how a relation, a
 //! constant and a selection view are wrapped for the algorithm (the
 //! [`JoinFamily`] trait).
+//!
+//! Every entry point is total: a query that cannot run over the store
+//! returns a [`JoinError`] rather than panicking, identically for both
+//! families. [`validate_query`] runs the same checks without joining, for
+//! callers that want to reject a query before building or timing anything.
 //! Runtime selection of the (structure, algorithm) cell lives in the CLI's
 //! `execution` module, not here.
 
+mod validation;
+
+pub use validation::{validate_query, JoinError, RelationArities};
 use {
     kermit_algos::{
-        is_const_predicate, is_selection_predicate, rewrite_atoms, rewrite_placeholders,
-        rewrite_repeated_variables, CatalogStats, ColumnEquality, HashTrieIterKind, HashTriejoin,
-        JoinAlgo, JoinQuery, QueryOptimiser, SingletonHashTrieIter, SingletonTrieIter,
-        TrieIterKind,
+        is_const_predicate, is_selection_predicate, CatalogStats, ColumnEquality, HashTrieIterKind,
+        HashTriejoin, JoinAlgo, JoinQuery, QueryOptimiser, SingletonHashTrieIter,
+        SingletonTrieIter, TrieIterKind,
     },
-    kermit_ds::Cardinality,
+    kermit_ds::{Cardinality, Relation},
     kermit_iters::{HashStrategy, HashTrieIterable, JoinIterable, TrieIterable},
     std::collections::{BTreeMap, HashMap},
+    validation::{prepare, Prepared},
 };
 
 /// How one iterator family wraps a stored relation, a constant atom and an
@@ -104,43 +112,33 @@ impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
     }
 }
 
-/// The one join body: const-view rewrite, placeholder rewrite, selection
-/// rewrite, wrapper map, statistics, plan, execute.
+/// The one join body: validation and the query rewrites ([`prepare`]),
+/// wrapper map, statistics, plan, execute.
 ///
 /// Each result tuple is passed to `emit` as a borrowed slice; the result
 /// is never materialised here.
 ///
-/// `label` names the entry point in the unknown-relation panic so a CLI
-/// user can tell which family rejected the query.
+/// # Errors
 ///
-/// # Panics
-///
-/// Panics if the query references a relation name not present in
-/// `relations`, or if it contains a malformed constant atom.
+/// Returns the [`JoinError`] [`validate_query`] would, before any tuple is
+/// emitted.
 fn run_join<'a, R, F, JA, S>(
-    relations: &'a BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-    label: &str, emit: S,
-) where
-    R: Cardinality + 'a,
+    relations: &'a BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser, emit: S,
+) -> Result<(), JoinError>
+where
+    R: Relation + Cardinality + 'a,
     F: JoinFamily<R>,
     JA: JoinAlgo<F::Wrapper<'a>>,
     S: FnMut(&[usize]),
 {
-    // Const, then placeholder, then selection: the selection pass then sees
-    // a body of variables only, and all three share one fresh-variable
-    // counter, so no fresh variable is ever mistaken for a repeat.
-    let (rewritten, const_specs) = rewrite_atoms(query).expect("malformed constant atom in query");
-    let rewritten = rewrite_placeholders(rewritten);
-    let (rewritten, selection_specs) = rewrite_repeated_variables(rewritten);
+    let Prepared {
+        query: rewritten,
+        const_specs,
+        selection_specs,
+    } = prepare(&query, relations)?;
 
-    let lookup = |name: &str| -> &'a R {
-        relations.get(name).unwrap_or_else(|| {
-            panic!(
-                "{label}: query body references unknown relation {name:?}; known relations: {:?}",
-                relations.keys().collect::<Vec<_>>(),
-            )
-        })
-    };
+    // `prepare` has checked that every relation the body names is present.
+    let lookup = |name: &str| -> &'a R { &relations[name] };
 
     let mut wrappers: HashMap<String, F::Wrapper<'a>> = HashMap::new();
     for pred in &rewritten.body {
@@ -184,6 +182,7 @@ fn run_join<'a, R, F, JA, S>(
     let plan = optimiser.plan(&rewritten, &stats);
 
     JA::join_for_each(&plan, rewritten, ds_map, emit);
+    Ok(())
 }
 
 /// Sorted-family join entry point: runs `query` over `relations` with the
@@ -192,38 +191,39 @@ fn run_join<'a, R, F, JA, S>(
 /// `optimiser`, and passes each result tuple to `emit` without
 /// materialising the result. Mirror of [`hash_join_for_each`].
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the query references a relation name not present in
-/// `relations`, or if it contains a malformed constant atom.
+/// Returns a [`JoinError`], before emitting anything, if the query cannot
+/// run over `relations` (see [`validate_query`]).
 pub fn lftj_join_for_each<R, JA>(
     relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     emit: impl FnMut(&[usize]),
-) where
-    R: TrieIterable + Cardinality,
+) -> Result<(), JoinError>
+where
+    R: TrieIterable + Relation + Cardinality,
     JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
 {
-    run_join::<R, SortedFamily, JA, _>(relations, query, optimiser, "lftj_join", emit);
+    run_join::<R, SortedFamily, JA, _>(relations, query, optimiser, emit)
 }
 
 /// [`lftj_join_for_each`], collected: returns every result tuple. For
 /// callers that need the rows themselves; allocates one `Vec` per tuple.
 ///
-/// # Panics
+/// # Errors
 ///
 /// As [`lftj_join_for_each`].
 pub fn lftj_join<R, JA>(
     relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-) -> Vec<Vec<usize>>
+) -> Result<Vec<Vec<usize>>, JoinError>
 where
-    R: TrieIterable + Cardinality,
+    R: TrieIterable + Relation + Cardinality,
     JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
 {
     let mut tuples = Vec::new();
     lftj_join_for_each::<R, JA>(relations, query, optimiser, |tuple| {
         tuples.push(tuple.to_vec())
-    });
-    tuples
+    })?;
+    Ok(tuples)
 }
 
 /// Hash-family join entry point: runs `query` over `relations` with
@@ -237,38 +237,39 @@ where
 /// sides of the intersection. Rust forbids defaults on free-function type
 /// parameters (see issue #36887), so callers specify it via turbofish.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the query references a relation name not present in
-/// `relations`, or if it contains a malformed constant atom.
+/// Returns a [`JoinError`], before emitting anything, if the query cannot
+/// run over `relations` (see [`validate_query`]).
 pub fn hash_join_for_each<R, H>(
     relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     emit: impl FnMut(&[usize]),
-) where
-    R: HashTrieIterable + Cardinality,
+) -> Result<(), JoinError>
+where
+    R: HashTrieIterable + Relation + Cardinality,
     H: HashStrategy,
 {
-    run_join::<R, HashFamily<H>, HashTriejoin, _>(relations, query, optimiser, "hash_join", emit);
+    run_join::<R, HashFamily<H>, HashTriejoin, _>(relations, query, optimiser, emit)
 }
 
 /// [`hash_join_for_each`], collected: returns every result tuple. For
 /// callers that need the rows themselves; allocates one `Vec` per tuple.
 ///
-/// # Panics
+/// # Errors
 ///
 /// As [`hash_join_for_each`].
 pub fn hash_join<R, H>(
     relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-) -> Vec<Vec<usize>>
+) -> Result<Vec<Vec<usize>>, JoinError>
 where
-    R: HashTrieIterable + Cardinality,
+    R: HashTrieIterable + Relation + Cardinality,
     H: HashStrategy,
 {
     let mut tuples = Vec::new();
     hash_join_for_each::<R, H>(relations, query, optimiser, |tuple| {
         tuples.push(tuple.to_vec())
-    });
-    tuples
+    })?;
+    Ok(tuples)
 }
 
 #[cfg(test)]
@@ -300,6 +301,7 @@ mod tests {
         let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
         let mut got: Vec<usize> =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .unwrap()
                 .iter()
                 .map(|r| r[0])
                 .collect();
@@ -312,7 +314,8 @@ mod tests {
         let relations = rels(vec![("p", 2, vec![vec![1, 10], vec![2, 20], vec![3, 30]])]);
         let query: JoinQuery = "Q(X) :- p(X, c10).".parse().unwrap();
         let result =
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser);
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .unwrap();
         let mut got: Vec<_> = result.iter().map(|r| r[0]).collect();
         got.sort();
         assert_eq!(
@@ -336,6 +339,7 @@ mod tests {
         let query: JoinQuery = "Q(X) :- r(X, X).".parse().unwrap();
         let mut got: Vec<usize> =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .unwrap()
                 .iter()
                 .map(|r| r[0])
                 .collect();
@@ -356,6 +360,7 @@ mod tests {
         let query: JoinQuery = "Q(X) :- r(X, c5, X).".parse().unwrap();
         let mut got: Vec<usize> =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .unwrap()
                 .iter()
                 .map(|r| r[0])
                 .collect();
@@ -376,6 +381,7 @@ mod tests {
         let query: JoinQuery = "Q(X, Y) :- r(X, X), r(X, Y).".parse().unwrap();
         let mut got: Vec<(usize, usize)> =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .unwrap()
                 .iter()
                 .map(|r| (r[0], r[1]))
                 .collect();
@@ -393,6 +399,7 @@ mod tests {
         let query: JoinQuery = "Q(X) :- r(X, _).".parse().unwrap();
         let mut got: Vec<usize> =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .unwrap()
                 .iter()
                 .map(|r| r[0])
                 .collect();
@@ -408,6 +415,7 @@ mod tests {
         let query: JoinQuery = "Q(X, Y) :- r(X, _, Y).".parse().unwrap();
         let mut got: Vec<(usize, usize)> =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser)
+                .unwrap()
                 .iter()
                 .map(|r| (r[0], r[1]))
                 .collect();
@@ -430,19 +438,42 @@ mod tests {
             query,
             &LexicographicOptimiser,
             |row| got.push(row[0]),
-        );
+        )
+        .unwrap();
         got.sort();
         assert_eq!(got, vec![2, 3]);
     }
 
+    /// `missing` was never added. Silently dropping the atom would mask
+    /// typos and load failures, and panicking exited 101; the entry point
+    /// returns the error instead.
     #[test]
-    #[should_panic(expected = "unknown relation")]
-    fn test_join_panics_on_missing_relation() {
-        let relations: BTreeMap<String, TreeTrie> = BTreeMap::new();
-        // `missing` was never added; previously the body predicate was
-        // silently dropped, which could mask typos or load failures.
+    fn test_join_errors_on_missing_relation() {
+        let relations = rels(vec![("edge", 2, vec![vec![1, 2]])]);
         let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
-        lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser);
+        assert_eq!(
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &LexicographicOptimiser),
+            Err(JoinError::UnknownRelation {
+                relation: "missing".into(),
+                known: vec!["edge".into()],
+            })
+        );
+    }
+
+    /// A rejected query emits nothing: validation runs before the join.
+    #[test]
+    fn a_rejected_query_emits_no_rows() {
+        let relations = rels(vec![("edge", 2, vec![vec![1, 2], vec![3, 4]])]);
+        let query: JoinQuery = "Q(X, Y) :- edge(X, Z).".parse().unwrap();
+        let mut rows = 0;
+        let result = lftj_join_for_each::<TreeTrie, LeapfrogTriejoin>(
+            &relations,
+            query,
+            &LexicographicOptimiser,
+            |_| rows += 1,
+        );
+        assert!(matches!(result, Err(JoinError::UnboundHeadVariable { .. })));
+        assert_eq!(rows, 0);
     }
 }
 
@@ -474,7 +505,8 @@ mod hash_join_tests {
             &relations,
             q,
             &LexicographicOptimiser,
-        );
+        )
+        .unwrap();
         out.sort();
         assert_eq!(out, vec![vec![2], vec![3]]);
     }
@@ -511,7 +543,8 @@ mod hash_join_tests {
             &relations,
             q,
             &LexicographicOptimiser,
-        );
+        )
+        .unwrap();
         let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
         got.sort();
         assert_eq!(
@@ -542,7 +575,8 @@ mod hash_join_tests {
             &relations,
             q,
             &LexicographicOptimiser,
-        );
+        )
+        .unwrap();
         let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
         got.sort();
         assert_eq!(got, vec![1, 3]);
@@ -565,7 +599,8 @@ mod hash_join_tests {
             &relations,
             q,
             &LexicographicOptimiser,
-        );
+        )
+        .unwrap();
         let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
         got.sort();
         assert_eq!(got, vec![1, 3]);
@@ -585,7 +620,8 @@ mod hash_join_tests {
             &relations,
             q,
             &LexicographicOptimiser,
-        );
+        )
+        .unwrap();
         let mut got: Vec<(usize, usize)> = result.iter().map(|r| (r[0], r[1])).collect();
         got.sort();
         assert_eq!(got, vec![(1, 1), (1, 2), (3, 3)]);
@@ -606,7 +642,8 @@ mod hash_join_tests {
             &relations,
             q,
             &LexicographicOptimiser,
-        );
+        )
+        .unwrap();
         let mut got: Vec<usize> = result.iter().map(|r| r[0]).collect();
         got.sort();
         assert_eq!(got, vec![1, 1, 2]);
@@ -626,10 +663,48 @@ mod hash_join_tests {
             &relations,
             q,
             &LexicographicOptimiser,
-        );
+        )
+        .unwrap();
         let mut got: Vec<(usize, usize)> = result.iter().map(|r| (r[0], r[1])).collect();
         got.sort();
         assert_eq!(got, vec![(1, 3), (1, 5)]);
+    }
+
+    /// Every #78 shape is rejected by the hash family with exactly the
+    /// error the sorted family gives: validation runs before either
+    /// family's code.
+    #[test]
+    fn both_families_reject_malformed_queries_identically() {
+        use {crate::db::lftj_join, kermit_algos::LeapfrogTriejoin, kermit_ds::TreeTrie};
+        let edges = vec![vec![1, 2], vec![2, 1], vec![2, 3]];
+        let hash: BTreeMap<String, HashTrie> = BTreeMap::from([(
+            "edge".into(),
+            HashTrie::from_tuples(2.into(), edges.clone()),
+        )]);
+        let sorted: BTreeMap<String, TreeTrie> =
+            BTreeMap::from([("edge".into(), TreeTrie::from_tuples(2.into(), edges))]);
+        for q in [
+            "Q(X, Y) :- edge(X, Z).",
+            "Q(X, X) :- edge(X, Y).",
+            "Q(X, Y, Z) :- edge(X, Y, Z).",
+            "Q(X) :- edge(X).",
+            "Q(X, Y) :- nope(X, Y).",
+            "Q(_) :- edge(X, Y).",
+            "Q(X) :- edge(X, cfoo).",
+            "Q(X) :- Const_c5(X).",
+            "Q(X, Y) :- edge(X, Y), edge(Y, X).",
+        ] {
+            let query: JoinQuery = q.parse().unwrap();
+            let from_hash = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
+                &hash,
+                query.clone(),
+                &LexicographicOptimiser,
+            );
+            let from_sorted =
+                lftj_join::<TreeTrie, LeapfrogTriejoin>(&sorted, query, &LexicographicOptimiser);
+            assert!(from_hash.is_err(), "{q} was accepted");
+            assert_eq!(from_hash, from_sorted, "{q}");
+        }
     }
 
     #[test]
@@ -650,7 +725,8 @@ mod hash_join_tests {
             q,
             &LexicographicOptimiser,
             |row| got.push(row[0]),
-        );
+        )
+        .unwrap();
         got.sort();
         assert_eq!(got, vec![2, 3]);
     }
