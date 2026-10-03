@@ -20,7 +20,7 @@
 //! algorithm it did not execute. [`RelationFamily`] captures the handful
 //! of relation-level operations that differ between the two families and
 //! [`ExecutionFamily`] the join-level ones on top; `bench ds` and
-//! `bench run` in `main.rs` are generic over one each.
+//! `bench run` (`bench/ds.rs`, `bench/run.rs`) are generic over one each.
 
 use {
     crate::options::{hasher_of, pruning_of, DsChoices, HasherChoice, PruningChoice},
@@ -43,7 +43,7 @@ use {
 ///
 /// A dedicated enum (rather than reusing [`IndexStructure`]) keeps
 /// `HashTrie` out of the sorted arm by construction — the dispatch `match`
-/// in `main.rs` cannot accidentally route a hash trie through the LFTJ
+/// in `bench/run.rs` cannot accidentally route a hash trie through the LFTJ
 /// runner, and the compiler flags any new sorted structure that has not
 /// been wired into the runner.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -417,7 +417,7 @@ fn read_relation(path: &Path) -> anyhow::Result<(RelationHeader, Vec<Vec<usize>>
 /// The join-facing half of a family: building an engine over loaded
 /// relations and querying it. Everything else in a `bench run` cell —
 /// query parsing, metadata, Criterion group wiring, report assembly — is
-/// shared by the generic runner in `main.rs`.
+/// shared by the generic runner in `bench/run.rs`.
 ///
 /// Both `build` paths must construct the engine the same way: the
 /// `end_to_end` metric times [`ExecutionFamily::build_from_tuples`] and

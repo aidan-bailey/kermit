@@ -53,8 +53,8 @@ pub trait BuildMode {
 /// Umbrella trait consumed by the bench reporter to populate optimization
 /// axes in `BenchReport.axes`. A DS or algorithm that adopts the standard
 /// implements this; the implementation typically composes results from
-/// `LayoutOption::NAME`, `ConfigOption::axes`, and `BuildMode::axis_value`
-/// under the correct key prefixes. A build mode leaves the built structure
+/// `LayoutOption::NAME` and `ConfigOption::axes` under the correct key
+/// prefixes. A build mode leaves the built structure
 /// unchanged, so the structure cannot report it; the code that ran the build
 /// emits the `ds_build_mode` axis instead (in kermit's bench,
 /// `RelationFamily::build_mode_axes`).

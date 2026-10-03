@@ -259,9 +259,11 @@ unnoticed. Here the axis does that job:
 - `space` is unchanged by construction (identical capacities, pinned by the
   equivalence test).
 - A v4 would stop kermit-lab loading new rows alongside every pre-#84 row,
-  which loses the one cross-version comparison the thesis wants: old
-  `incremental` against new `bulk` on the same data. The perf fixes for #67
-  and #83 didn't bump either.
+  which would orphan the old `incremental` rows. Those rows are for
+  continuity only: reports carry no binary identity, so the thesis compares
+  the two modes within one binary (`--ds-build incremental` against the
+  default), not old rows against new. The perf fixes for #67 and #83 didn't
+  bump either.
 
 kermit-lab (`python/kermit-lab/kermit_lab/defaults.py`) gains a
 structure-scoped registry next to `AXIS_DEFAULTS`. A missing

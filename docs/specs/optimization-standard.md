@@ -556,8 +556,9 @@ its `HasOptimizationAxes` impl emits `ds_layout_pruning` from
 `ValueEnum`, default `off`), listed in `validate_layout_choices` so it is
 rejected on non-`hash-trie` selectors. Dispatch does **not** repeat the
 product: `with_hash_trie_layout!(hasher, pruning, |H, P| …)` in
-`kermit/src/options.rs` expands the hasher × pruning cells once, and both
-`dispatch_run_bench` and `dispatch_ds_bench` call it. **Adding a third
+`kermit/src/options.rs` expands the hasher × pruning cells once, and
+`dispatch_run_bench`, `dispatch_ds_bench` and `load_query_runner` (`main.rs`)
+all call it. **Adding a third
 Layout dimension means adding arms to that macro and nowhere else** — do
 not reach for a runtime enum inside the structure, which would reintroduce
 the tax the Layout category exists to avoid.
@@ -569,7 +570,7 @@ name a Layout it did not run.
 ### 4. The test obligation: one alias per combination × the whole suite
 
 Each Layout combination is a distinct type alias, and each alias runs the
-full 11-pattern suite under every compatible algorithm and optimiser
+full 16-pattern suite under every compatible algorithm and optimiser
 (Priorities item 1):
 
 ```rust
