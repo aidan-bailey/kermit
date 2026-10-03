@@ -20,7 +20,11 @@
 //! call they made before the parameter existed. Bench axis
 //! `ds_layout_seek`; see `docs/data-structures/seek-strategies.md`.
 
-use {kermit_iters::LayoutOption, std::fmt::Debug};
+use {
+    kermit_iters::LayoutOption,
+    serde_json::Value,
+    std::{collections::BTreeMap, fmt::Debug},
+};
 
 /// Compile-time seek strategy of a sorted trie: how its iterator's `seek`
 /// finds the least upper bound among the siblings it has not yet passed.
@@ -107,6 +111,15 @@ impl SeekStrategy for GallopingSeek {
         let hi = bound.min(remaining.len());
         lo + remaining[lo..hi].partition_point(below)
     }
+}
+
+/// The `ds_layout_seek` axis of a sorted trie seeking with `S`, shared by
+/// both tries' `HasOptimizationAxes` impls so the key is spelt once.
+pub(crate) fn seek_axes<S: SeekStrategy>() -> BTreeMap<String, Value> {
+    BTreeMap::from([(
+        "ds_layout_seek".to_string(),
+        Value::String(<S as LayoutOption>::NAME.to_string()),
+    )])
 }
 
 #[cfg(test)]

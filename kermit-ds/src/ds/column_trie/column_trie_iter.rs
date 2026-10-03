@@ -1,6 +1,6 @@
 use {
     super::implementation::ColumnTrie,
-    crate::relation::Relation,
+    crate::{relation::Relation, seek::SeekStrategy},
     kermit_derive::IntoTrieIter,
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
@@ -27,7 +27,7 @@ use {
 /// reverses this by searching the parent layer's interval array for the
 /// interval that owns our current global data index.
 #[derive(IntoTrieIter)]
-pub struct ColumnTrieIter<'a> {
+pub struct ColumnTrieIter<'a, S: SeekStrategy> {
     /// Current depth in the trie. `0` = root/uninitialised; `1..=arity`
     /// indexes into `trie.layer(depth - 1)`.
     depth: usize,
@@ -41,13 +41,13 @@ pub struct ColumnTrieIter<'a> {
     /// `None` when positioned at the root (depth 0).
     interval_slice: Option<&'a [usize]>,
     /// The trie being iterated.
-    trie: &'a ColumnTrie,
+    trie: &'a ColumnTrie<S>,
 }
 
-impl<'a> ColumnTrieIter<'a> {
+impl<'a, S: SeekStrategy> ColumnTrieIter<'a, S> {
     /// Creates a new iterator positioned at the root (depth 0). Call
     /// [`open`](TrieIterator::open) to descend to the first data layer.
-    pub fn new(trie: &'a ColumnTrie) -> Self {
+    pub fn new(trie: &'a ColumnTrie<S>) -> Self {
         ColumnTrieIter {
             interval_i: 0,
             interval_slice: None,
@@ -58,7 +58,7 @@ impl<'a> ColumnTrieIter<'a> {
     }
 }
 
-impl LinearIterator for ColumnTrieIter<'_> {
+impl<S: SeekStrategy> LinearIterator for ColumnTrieIter<'_, S> {
     fn key(&self) -> Option<usize> {
         if let Some(data) = self.interval_slice {
             data.get(self.slice_offset).copied()
@@ -85,11 +85,14 @@ impl LinearIterator for ColumnTrieIter<'_> {
         }
         if let Some(data) = self.interval_slice {
             // `interval_slice` is sorted within each interval (ColumnTrie
-            // invariant). For a sorted slice, `partition_point(|x| x <
-            // target)` returns the index of the first element ≥ target —
-            // exactly what `seek` needs.
+            // invariant), so the number of remaining keys below `seek_key`
+            // is the offset of the first key ≥ `seek_key`, exactly what
+            // `seek` needs. `S` decides how to count them; every strategy
+            // returns the same offset. A target at or below the current key
+            // gives 0 under every strategy, so the iterator stays put, as
+            // it always has.
             let remaining = &data[self.slice_offset..];
-            let offset = remaining.partition_point(|&k| k < seek_key);
+            let offset = S::partition_point(remaining, |&k| k < seek_key);
             self.slice_offset += offset;
             !self.at_end()
         } else {
@@ -106,7 +109,7 @@ impl LinearIterator for ColumnTrieIter<'_> {
     }
 }
 
-impl TrieIterator for ColumnTrieIter<'_> {
+impl<S: SeekStrategy> TrieIterator for ColumnTrieIter<'_, S> {
     fn open(&mut self) -> bool {
         if self.depth == self.trie.header().arity() {
             // Already at a leaf — nothing to descend into.
@@ -206,7 +209,7 @@ impl TrieIterator for ColumnTrieIter<'_> {
 }
 
 /// Implementation of the `TrieIterable` trait for `ColumnTrie`.
-impl TrieIterable for ColumnTrie {
+impl<S: SeekStrategy> TrieIterable for ColumnTrie<S> {
     fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>> {
         ColumnTrieIter::new(self)
     }

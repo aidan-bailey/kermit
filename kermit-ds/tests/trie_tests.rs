@@ -1,9 +1,22 @@
-use kermit_ds::{define_build_mode_provider, BuiltWith, ColumnTrie, ColumnTrieBuildMode, TreeTrie};
+use kermit_ds::{
+    define_build_mode_provider, BinarySeek, BuiltWith, ColumnTrie, ColumnTrieBuildMode,
+    GallopingSeek, LinearSeek, TreeTrie,
+};
 mod common;
 
-relation_trie_test_suite!(TreeTrie);
+// One alias per structure × seek strategy: the Layout test obligation of
+// `docs/specs/optimization-standard.md`. `TreeTrieBinary` is plain
+// `TreeTrie`.
+type TreeTrieLinear = TreeTrie<LinearSeek>;
+type TreeTrieBinary = TreeTrie<BinarySeek>;
+type TreeTrieGalloping = TreeTrie<GallopingSeek>;
+type ColumnTrieLinear = ColumnTrie<LinearSeek>;
+type ColumnTrieBinary = ColumnTrie<BinarySeek>;
+type ColumnTrieGalloping = ColumnTrie<GallopingSeek>;
 
-relation_trie_test_suite!(ColumnTrie);
+relation_trie_test_suite!(TreeTrieLinear, TreeTrieBinary, TreeTrieGalloping);
+
+relation_trie_test_suite!(ColumnTrieLinear, ColumnTrieBinary, ColumnTrieGalloping);
 
 // The incremental BuildMode must satisfy the same contract: it builds the
 // same trie as the default bulk build (issue #84).

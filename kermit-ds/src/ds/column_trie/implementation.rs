@@ -1,8 +1,12 @@
 use {
     super::build_mode::ColumnTrieBuildMode,
-    crate::relation::{BuildModeRelation, Relation, RelationHeader},
-    kermit_iters::JoinIterable,
-    std::fmt,
+    crate::{
+        relation::{BuildModeRelation, Relation, RelationHeader},
+        seek::{seek_axes, BinarySeek, SeekStrategy},
+    },
+    kermit_iters::{HasOptimizationAxes, JoinIterable},
+    serde_json::Value,
+    std::{collections::BTreeMap, fmt, marker::PhantomData},
 };
 
 /// A single level of a [`ColumnTrie`].
@@ -117,15 +121,24 @@ impl ColumnTrieLayer {
 /// [`TreeTrie`](crate::ds::TreeTrie) for small inputs or when you are
 /// inserting one tuple at a time.
 ///
+/// # Seek strategy
+///
+/// `S` picks how the iterator's `seek` searches the siblings it has not yet
+/// passed (see [`SeekStrategy`]); it changes no stored data. The default,
+/// [`BinarySeek`], is a `partition_point` binary search, so plain
+/// `ColumnTrie` is the structure as it was before the parameter existed.
+/// Bench axis `ds_layout_seek`.
+///
 /// # Example
 ///
 /// ```
 /// use kermit_ds::{ColumnTrie, Relation};
 ///
-/// let trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+/// let trie: ColumnTrie =
+///     ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
 /// assert_eq!(trie.header().arity(), 2);
 /// ```
-pub struct ColumnTrie {
+pub struct ColumnTrie<S: SeekStrategy = BinarySeek> {
     header: RelationHeader,
     /// One layer per attribute/depth in the relation; `layers[i]` holds the
     /// keys found at column `i` of the tuples, grouped by parent. Private
@@ -137,9 +150,11 @@ pub struct ColumnTrie {
     /// Number of distinct tuples stored; maintained by `insert` and by the bulk
     /// build.
     tuple_count: usize,
+    /// The seek strategy: a type-level choice, zero-sized.
+    _seek: PhantomData<S>,
 }
 
-impl ColumnTrie {
+impl<S: SeekStrategy> ColumnTrie<S> {
     /// Returns a reference to the layer at the given depth.
     ///
     /// # Panics
@@ -360,7 +375,7 @@ enum LayerStep {
     },
 }
 
-impl fmt::Display for ColumnTrie {
+impl<S: SeekStrategy> fmt::Display for ColumnTrie<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (layer_i, layer) in self.layers.iter().enumerate() {
             writeln!(f, "LAYER {layer_i}")?;
@@ -385,15 +400,15 @@ impl fmt::Display for ColumnTrie {
     }
 }
 
-impl JoinIterable for ColumnTrie {}
+impl<S: SeekStrategy> JoinIterable for ColumnTrie<S> {}
 
-impl crate::relation::Projectable for ColumnTrie {
+impl<S: SeekStrategy> crate::relation::Projectable for ColumnTrie<S> {
     fn project(&self, columns: Vec<usize>) -> Self {
         crate::relation::project_via_trie_iter(self, columns)
     }
 }
 
-impl Relation for ColumnTrie {
+impl<S: SeekStrategy> Relation for ColumnTrie<S> {
     fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
@@ -406,6 +421,7 @@ impl Relation for ColumnTrie {
                 .collect::<Vec<_>>(),
             header,
             tuple_count: 0,
+            _seek: PhantomData,
         }
     }
 
@@ -441,7 +457,7 @@ impl Relation for ColumnTrie {
     }
 }
 
-impl BuildModeRelation for ColumnTrie {
+impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
     type BuildMode = ColumnTrieBuildMode;
 
     /// Sorts the tuples, then builds the layers by `mode`: one pass over
@@ -487,7 +503,7 @@ impl BuildModeRelation for ColumnTrie {
     }
 }
 
-impl crate::heap_size::HeapSize for ColumnTrie {
+impl<S: SeekStrategy> crate::heap_size::HeapSize for ColumnTrie<S> {
     fn heap_size_bytes(&self) -> usize {
         let layers_vec_bytes = self.layers.capacity() * std::mem::size_of::<ColumnTrieLayer>();
         let layer_contents_bytes: usize = self
@@ -502,8 +518,13 @@ impl crate::heap_size::HeapSize for ColumnTrie {
     }
 }
 
-impl crate::cardinality::Cardinality for ColumnTrie {
+impl<S: SeekStrategy> crate::cardinality::Cardinality for ColumnTrie<S> {
     fn tuple_count(&self) -> usize { self.tuple_count }
+}
+
+impl<S: SeekStrategy> HasOptimizationAxes for ColumnTrie<S> {
+    /// The layout axis `ds_layout_seek`: the strategy's `LayoutOption::NAME`.
+    fn optimization_axes(&self) -> BTreeMap<String, Value> { seek_axes::<S>() }
 }
 
 #[cfg(test)]
@@ -513,14 +534,14 @@ mod tests {
         crate::{
             relation::{BuildModeRelation, Projectable, Relation as _},
             test_support::Lcg,
-            HeapSize,
+            BinarySeek, GallopingSeek, HeapSize, LinearSeek, SeekStrategy,
         },
-        kermit_iters::TrieIterable,
+        kermit_iters::{HasOptimizationAxes, TrieIterable},
     };
 
     #[test]
     fn test_insert() {
-        let mut trie = ColumnTrie::new(2.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(2.into());
         trie.insert(vec![2, 3]);
         println!("{trie}");
         trie.insert(vec![3, 1]);
@@ -532,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_project() {
-        let mut trie = ColumnTrie::new(3.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(3.into());
         trie.insert(vec![1, 2, 3]);
         trie.insert(vec![4, 5, 6]);
         trie.insert(vec![7, 8, 9]);
@@ -557,7 +578,7 @@ mod tests {
             "b".to_string(),
             "c".to_string(),
         ]);
-        let mut trie = ColumnTrie::new(header);
+        let mut trie: ColumnTrie = ColumnTrie::new(header);
         trie.insert(vec![1, 2, 3]);
         trie.insert(vec![4, 5, 6]);
 
@@ -581,7 +602,7 @@ mod tests {
     /// and one interval at the root.
     #[test]
     fn empty_trie_first_insert_initialises_layer() {
-        let mut trie = ColumnTrie::new(2.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(2.into());
         trie.insert(vec![5, 7]);
         let collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
         assert_eq!(collected, vec![vec![5, 7]]);
@@ -593,7 +614,7 @@ mod tests {
     /// crash on the inner search.
     #[test]
     fn duplicate_insert_is_noop() {
-        let mut trie = ColumnTrie::new(2.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(2.into());
         trie.insert(vec![1, 2]);
         trie.insert(vec![1, 2]);
         let collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
@@ -604,7 +625,7 @@ mod tests {
     /// `interval_index` stays 0 here because we're in the root.
     #[test]
     fn insert_before_first_key_in_first_interval() {
-        let mut trie = ColumnTrie::new(2.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(2.into());
         trie.insert(vec![5, 50]);
         trie.insert(vec![3, 30]);
         let mut collected: Vec<Vec<usize>> = trie.trie_iter().into_iter().collect();
@@ -618,7 +639,7 @@ mod tests {
     /// This is the canonical case the audit flagged.
     #[test]
     fn insert_before_in_non_first_interval_shifts_subsequent_intervals() {
-        let mut trie = ColumnTrie::new(2.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(2.into());
         // Build a trie with two top-level groups: 1 -> {10, 20} and 5 -> {50,
         // 60}
         trie.insert(vec![1, 10]);
@@ -646,7 +667,7 @@ mod tests {
     /// equivalent observable output.
     #[test]
     fn append_at_end_of_data_extends_data() {
-        let mut trie = ColumnTrie::new(2.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(2.into());
         trie.insert(vec![1, 10]);
         trie.insert(vec![2, 20]);
         trie.insert(vec![3, 30]);
@@ -661,7 +682,7 @@ mod tests {
     /// non-existent next layer.
     #[test]
     fn single_layer_trie_inserts_without_panic() {
-        let mut trie = ColumnTrie::new(1.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(1.into());
         trie.insert(vec![3]);
         trie.insert(vec![1]);
         trie.insert(vec![2]);
@@ -675,7 +696,7 @@ mod tests {
     /// between layer N's insertion and layer N+1's `add_interval` call.
     #[test]
     fn arity_three_trie_with_branching_at_every_layer() {
-        let mut trie = ColumnTrie::new(3.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(3.into());
         let tuples = vec![
             vec![1, 10, 100],
             vec![1, 10, 200],
@@ -705,7 +726,7 @@ mod tests {
         let mut tuples: Vec<Vec<usize>> = (0..n)
             .map(|_| (0..arity).map(|_| rng.next_usize() % 50).collect())
             .collect();
-        let mut trie = ColumnTrie::new(arity.into());
+        let mut trie: ColumnTrie = ColumnTrie::new(arity.into());
         for t in &tuples {
             trie.insert(t.clone());
         }
@@ -840,7 +861,8 @@ mod tests {
     /// Pins the worked example in `docs/data-structures/column-trie.md`.
     #[test]
     fn bulk_build_matches_the_documented_example() {
-        let trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let trie: ColumnTrie =
+            ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         assert_eq!(trie.layers[0].data, vec![1, 2]);
         assert_eq!(trie.layers[0].interval, vec![0]);
         assert_eq!(trie.layers[1].data, vec![2, 3, 4]);
@@ -850,7 +872,45 @@ mod tests {
     #[test]
     #[should_panic(expected = "does not match header arity")]
     fn bulk_build_rejects_a_tuple_of_the_wrong_arity() {
-        ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3]]);
+        let _: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3]]);
+    }
+
+    /// See `TreeTrie`'s `seek_strategy_adds_no_state`.
+    #[test]
+    fn seek_strategy_adds_no_state() {
+        use std::mem::{size_of, size_of_val};
+        let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4]];
+        let linear: ColumnTrie<LinearSeek> = ColumnTrie::from_tuples(2.into(), tuples.clone());
+        let binary: ColumnTrie<BinarySeek> = ColumnTrie::from_tuples(2.into(), tuples.clone());
+        let galloping: ColumnTrie<GallopingSeek> = ColumnTrie::from_tuples(2.into(), tuples);
+        assert_eq!(
+            size_of::<ColumnTrie<LinearSeek>>(),
+            size_of::<ColumnTrie<BinarySeek>>()
+        );
+        assert_eq!(
+            size_of::<ColumnTrie<GallopingSeek>>(),
+            size_of::<ColumnTrie<BinarySeek>>()
+        );
+        assert_eq!(
+            size_of_val(&linear.trie_iter()),
+            size_of_val(&binary.trie_iter())
+        );
+        assert_eq!(
+            size_of_val(&galloping.trie_iter()),
+            size_of_val(&binary.trie_iter())
+        );
+        assert_eq!(linear.heap_size_bytes(), binary.heap_size_bytes());
+        assert_eq!(galloping.heap_size_bytes(), binary.heap_size_bytes());
+    }
+
+    #[test]
+    fn optimization_axes_name_the_seek_strategy() {
+        fn seek_axis<S: SeekStrategy>() -> serde_json::Value {
+            ColumnTrie::<S>::new(1.into()).optimization_axes()["ds_layout_seek"].clone()
+        }
+        assert_eq!(seek_axis::<LinearSeek>(), "linear");
+        assert_eq!(seek_axis::<BinarySeek>(), "binary");
+        assert_eq!(seek_axis::<GallopingSeek>(), "galloping");
     }
 }
 
@@ -860,20 +920,21 @@ mod cardinality_tests {
 
     #[test]
     fn empty_relation_has_zero_tuples() {
-        let trie = ColumnTrie::new(2.into());
+        let trie: ColumnTrie = ColumnTrie::new(2.into());
         assert_eq!(trie.tuple_count(), 0);
     }
 
     #[test]
     fn tuple_count_matches_iteration_count() {
-        let trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let trie: ColumnTrie =
+            ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         assert_eq!(trie.tuple_count(), 3);
         assert_eq!(trie.trie_iter().into_iter().count(), 3);
     }
 
     #[test]
     fn duplicate_insert_does_not_inflate_count() {
-        let mut trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let mut trie: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         trie.insert(vec![1, 2]); // exact duplicate — absorbed
         assert_eq!(trie.tuple_count(), 1);
         trie.insert(vec![1, 3]); // shared prefix, new tuple
@@ -892,7 +953,7 @@ mod heap_size_tests {
 
     #[test]
     fn empty_column_trie_heap_size() {
-        let trie = ColumnTrie::new(2.into());
+        let trie: ColumnTrie = ColumnTrie::new(2.into());
         // Layers Vec is allocated with arity capacity, but data/interval Vecs
         // are empty
         let expected = trie.layers.capacity() * std::mem::size_of::<ColumnTrieLayer>();
@@ -901,14 +962,15 @@ mod heap_size_tests {
 
     #[test]
     fn single_tuple_column_trie_heap_size() {
-        let trie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         assert!(trie.heap_size_bytes() > 0);
     }
 
     #[test]
     fn more_tuples_means_more_heap() {
-        let small = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
-        let large = ColumnTrie::from_tuples(2.into(), (0..100).map(|i| vec![i, i + 1]).collect());
+        let small: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let large: ColumnTrie =
+            ColumnTrie::from_tuples(2.into(), (0..100).map(|i| vec![i, i + 1]).collect());
         assert!(large.heap_size_bytes() > small.heap_size_bytes());
     }
 
@@ -919,8 +981,8 @@ mod heap_size_tests {
     #[test]
     fn heap_size_is_deterministic_across_rebuilds() {
         let tuples: Vec<Vec<usize>> = (0..50).map(|i| vec![i, i + 1]).collect();
-        let a = ColumnTrie::from_tuples(2.into(), tuples.clone());
-        let b = ColumnTrie::from_tuples(2.into(), tuples);
+        let a: ColumnTrie = ColumnTrie::from_tuples(2.into(), tuples.clone());
+        let b: ColumnTrie = ColumnTrie::from_tuples(2.into(), tuples);
         assert_eq!(a.heap_size_bytes(), b.heap_size_bytes());
     }
 }

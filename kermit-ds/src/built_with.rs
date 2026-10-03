@@ -172,7 +172,7 @@ mod tests {
     fn from_tuples_builds_the_same_relation() {
         let tuples = vec![vec![3, 4], vec![1, 2], vec![1, 2]];
         let r = IncrementalTrie::from_tuples(2.into(), tuples.clone());
-        let plain = ColumnTrie::from_tuples(2.into(), tuples);
+        let plain: ColumnTrie = ColumnTrie::from_tuples(2.into(), tuples);
         assert_eq!(r.header().arity(), 2);
         assert_eq!(tuples_of(&r), vec![vec![1, 2], vec![3, 4]]);
         assert_eq!(Cardinality::tuple_count(&r), 2);

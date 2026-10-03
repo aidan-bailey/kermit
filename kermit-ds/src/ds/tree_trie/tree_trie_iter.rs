@@ -1,5 +1,6 @@
 use {
     super::implementation::{TreeTrie, TrieNode},
+    crate::seek::SeekStrategy,
     kermit_derive::IntoTrieIter,
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
 };
@@ -27,19 +28,19 @@ use {
 /// arrays, `TreeTrieIter` walks pointer-linked nodes via the explicit
 /// stack.
 #[derive(IntoTrieIter)]
-struct TreeTrieIter<'a> {
+struct TreeTrieIter<'a, S: SeekStrategy> {
     /// Cursor within the current sibling list; may sit one past the last
     /// sibling (past-end). See the type-level docs for why this is not the
     /// same as the deepest stack entry's index.
     sibling_idx: usize,
     /// The trie being iterated.
-    trie: &'a TreeTrie,
+    trie: &'a TreeTrie<S>,
     /// Path from the root to the current depth.
     stack: Vec<(&'a TrieNode, usize)>,
 }
 
-impl<'a> TreeTrieIter<'a> {
-    fn new(trie: &'a TreeTrie) -> Self {
+impl<'a, S: SeekStrategy> TreeTrieIter<'a, S> {
+    fn new(trie: &'a TreeTrie<S>) -> Self {
         Self {
             sibling_idx: 0,
             trie,
@@ -66,7 +67,7 @@ impl<'a> TreeTrieIter<'a> {
     }
 }
 
-impl LinearIterator for TreeTrieIter<'_> {
+impl<S: SeekStrategy> LinearIterator for TreeTrieIter<'_, S> {
     fn key(&self) -> Option<usize> { Some(self.siblings()?.get(self.sibling_idx)?.key()) }
 
     fn next(&mut self) -> Option<usize> {
@@ -112,12 +113,14 @@ impl LinearIterator for TreeTrieIter<'_> {
                     .siblings()
                     .expect("If there exists a key, there should ALWAYS be at least one sibling");
 
-                // Siblings are sorted by key (TreeTrie invariant), so
-                // `partition_point(|n| n.key() < seek_key)` over the remaining
-                // siblings is the offset of the first key ≥ `seek_key` — a
-                // binary search, as in `ColumnTrieIter::seek`.
+                // Siblings are sorted by key (TreeTrie invariant), so the
+                // number of remaining siblings whose key is below `seek_key`
+                // is the offset of the first key ≥ `seek_key`. `S` decides
+                // how to count them (a scan, a binary search or a gallop);
+                // every strategy returns the same offset, so nothing below
+                // depends on `S`.
                 self.sibling_idx +=
-                    siblings[self.sibling_idx..].partition_point(|n| n.key() < seek_key);
+                    S::partition_point(&siblings[self.sibling_idx..], |n| n.key() < seek_key);
 
                 // Off the end, the stack top stays on the last positioned
                 // node: `open` descends from it after `at_end` (see the
@@ -148,7 +151,7 @@ impl LinearIterator for TreeTrieIter<'_> {
     }
 }
 
-impl TrieIterator for TreeTrieIter<'_> {
+impl<S: SeekStrategy> TrieIterator for TreeTrieIter<'_, S> {
     fn open(&mut self) -> bool {
         // No `at_end` guard (unlike `ColumnTrieIter::open`): the stack top
         // holds the resolved current node, so we descend into its
@@ -185,7 +188,7 @@ impl TrieIterator for TreeTrieIter<'_> {
     }
 }
 
-impl TrieIterable for TreeTrie {
+impl<S: SeekStrategy> TrieIterable for TreeTrie<S> {
     fn trie_iter(&self) -> impl TrieIterator + IntoIterator<Item = Vec<usize>> {
         TreeTrieIter::new(self)
     }

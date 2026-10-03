@@ -1,7 +1,15 @@
 use {
-    crate::relation::{Relation, RelationHeader},
-    kermit_iters::JoinIterable,
-    std::ops::{Index, IndexMut},
+    crate::{
+        relation::{Relation, RelationHeader},
+        seek::{seek_axes, BinarySeek, SeekStrategy},
+    },
+    kermit_iters::{HasOptimizationAxes, JoinIterable},
+    serde_json::Value,
+    std::{
+        collections::BTreeMap,
+        marker::PhantomData,
+        ops::{Index, IndexMut},
+    },
 };
 
 /// Inserts a tuple into a sorted list of children nodes, recursing for the
@@ -86,29 +94,39 @@ impl IndexMut<usize> for TrieNode {
 /// [`ARCHITECTURE.md`](https://github.com/aidan-bailey/kermit/blob/master/ARCHITECTURE.md)
 /// for a deeper comparison.
 ///
+/// # Seek strategy
+///
+/// `S` picks how the iterator's `seek` searches the siblings it has not yet
+/// passed (see [`SeekStrategy`]); it changes no stored data. The default,
+/// [`BinarySeek`], is a `partition_point` binary search, so plain
+/// `TreeTrie` is the structure as it was before the parameter existed.
+/// Bench axis `ds_layout_seek`.
+///
 /// # Example
 ///
 /// ```
 /// use kermit_ds::{Relation, TreeTrie};
 ///
-/// let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+/// let trie: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
 /// assert_eq!(trie.header().arity(), 2);
 /// ```
 ///
 /// [`LeapfrogTriejoinIter`]: https://docs.rs/kermit-algos
 #[derive(Clone, Debug)]
-pub struct TreeTrie {
+pub struct TreeTrie<S: SeekStrategy = BinarySeek> {
     header: RelationHeader,
     children: Vec<TrieNode>,
     /// Number of distinct tuples stored; maintained by `insert`.
     tuple_count: usize,
+    /// The seek strategy: a type-level choice, zero-sized.
+    _seek: PhantomData<S>,
 }
 
-impl TreeTrie {
+impl<S: SeekStrategy> TreeTrie<S> {
     pub(crate) fn children(&self) -> &Vec<TrieNode> { &self.children }
 }
 
-impl Relation for TreeTrie {
+impl<S: SeekStrategy> Relation for TreeTrie<S> {
     fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self {
@@ -116,6 +134,7 @@ impl Relation for TreeTrie {
             header,
             children: vec![],
             tuple_count: 0,
+            _seek: PhantomData,
         }
     }
 
@@ -194,15 +213,15 @@ impl Relation for TreeTrie {
     }
 }
 
-impl JoinIterable for TreeTrie {}
+impl<S: SeekStrategy> JoinIterable for TreeTrie<S> {}
 
-impl crate::relation::Projectable for TreeTrie {
+impl<S: SeekStrategy> crate::relation::Projectable for TreeTrie<S> {
     fn project(&self, columns: Vec<usize>) -> Self {
         crate::relation::project_via_trie_iter(self, columns)
     }
 }
 
-impl crate::heap_size::HeapSize for TreeTrie {
+impl<S: SeekStrategy> crate::heap_size::HeapSize for TreeTrie<S> {
     fn heap_size_bytes(&self) -> usize {
         fn node_heap_bytes(node: &TrieNode) -> usize {
             let vec_capacity_bytes = node.children().capacity() * std::mem::size_of::<TrieNode>();
@@ -214,8 +233,13 @@ impl crate::heap_size::HeapSize for TreeTrie {
     }
 }
 
-impl crate::cardinality::Cardinality for TreeTrie {
+impl<S: SeekStrategy> crate::cardinality::Cardinality for TreeTrie<S> {
     fn tuple_count(&self) -> usize { self.tuple_count }
+}
+
+impl<S: SeekStrategy> HasOptimizationAxes for TreeTrie<S> {
+    /// The layout axis `ds_layout_seek`: the strategy's `LayoutOption::NAME`.
+    fn optimization_axes(&self) -> BTreeMap<String, Value> { seek_axes::<S>() }
 }
 
 #[cfg(test)]
@@ -227,20 +251,20 @@ mod heap_size_tests {
 
     #[test]
     fn empty_tree_trie_heap_size() {
-        let trie = TreeTrie::new(2.into());
+        let trie: TreeTrie = TreeTrie::new(2.into());
         assert_eq!(trie.heap_size_bytes(), 0);
     }
 
     #[test]
     fn single_tuple_tree_trie_heap_size() {
-        let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let trie: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         assert!(trie.heap_size_bytes() > 0);
     }
 
     #[test]
     fn more_tuples_means_more_heap() {
-        let small = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
-        let large =
+        let small: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let large: TreeTrie =
             TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![
                 3, 5,
             ]]);
@@ -254,8 +278,8 @@ mod heap_size_tests {
     #[test]
     fn heap_size_is_deterministic_across_rebuilds() {
         let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]];
-        let a = TreeTrie::from_tuples(2.into(), tuples.clone());
-        let b = TreeTrie::from_tuples(2.into(), tuples);
+        let a: TreeTrie = TreeTrie::from_tuples(2.into(), tuples.clone());
+        let b: TreeTrie = TreeTrie::from_tuples(2.into(), tuples);
         assert_eq!(a.heap_size_bytes(), b.heap_size_bytes());
     }
 }
@@ -266,20 +290,21 @@ mod cardinality_tests {
 
     #[test]
     fn empty_relation_has_zero_tuples() {
-        let trie = TreeTrie::new(2.into());
+        let trie: TreeTrie = TreeTrie::new(2.into());
         assert_eq!(trie.tuple_count(), 0);
     }
 
     #[test]
     fn tuple_count_matches_iteration_count() {
-        let trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+        let trie: TreeTrie =
+            TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         assert_eq!(trie.tuple_count(), 3);
         assert_eq!(trie.trie_iter().into_iter().count(), 3);
     }
 
     #[test]
     fn duplicate_insert_does_not_inflate_count() {
-        let mut trie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let mut trie: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         trie.insert(vec![1, 2]); // exact duplicate — absorbed
         assert_eq!(trie.tuple_count(), 1);
         trie.insert(vec![1, 3]); // shares prefix, genuinely new

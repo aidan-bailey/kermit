@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_classic() {
-        let t1 = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let t1: TreeTrie = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
         let t2 = TreeTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
         let t1_iter = t1.trie_iter();
         let t2_iter = t2.trie_iter();
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn more_complicated() {
-        let r = TreeTrie::from_tuples(2.into(), vec![vec![7, 4]]);
+        let r: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![7, 4]]);
         let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![
             4, 9,
         ]]);
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn chain() {
-        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3]]);
+        let r: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3]]);
         let s = TreeTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
         let t = TreeTrie::from_tuples(2.into(), vec![vec![4, 6], vec![5, 7]]);
         let r_iter = r.trie_iter();
@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn column_trie_binary_join() {
         use kermit_ds::ColumnTrie;
-        let r = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3]]);
+        let r: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3]]);
         let s = ColumnTrie::from_tuples(2.into(), vec![vec![2, 4], vec![3, 5]]);
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
@@ -823,7 +823,7 @@ mod tests {
     /// every descent tuple into its scratch row before emitting it.
     #[test]
     fn join_for_each_emits_head_order_under_a_reordering_plan() {
-        let r = TreeTrie::from_tuples(2.into(), vec![vec![1, 10], vec![2, 20]]);
+        let r: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 10], vec![2, 20]]);
         let query: JoinQuery = "Q(X, Y) :- R(Y, X).".parse().unwrap();
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
         assert_eq!(

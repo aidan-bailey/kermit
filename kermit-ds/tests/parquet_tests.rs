@@ -1,16 +1,32 @@
 use {
     kermit_ds::{
-        define_build_mode_provider, define_config_provider, BuiltWith, ColumnTrie,
-        ColumnTrieBuildMode, Configured, HashTrie, HashTrieConfig, LoadFactor, PruningPolicy,
-        SingletonPruning, TreeTrie,
+        define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
+        ColumnTrieBuildMode, Configured, GallopingSeek, HashTrie, HashTrieConfig, LinearSeek,
+        LoadFactor, PruningPolicy, SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
 mod common;
 
-parquet_test_suite!(TreeTrie);
+// One alias per structure × seek strategy, matching `trie_tests.rs`.
+type TreeTrieLinear = TreeTrie<LinearSeek>;
+type TreeTrieBinary = TreeTrie<BinarySeek>;
+type TreeTrieGalloping = TreeTrie<GallopingSeek>;
+type ColumnTrieLinear = ColumnTrie<LinearSeek>;
+type ColumnTrieBinary = ColumnTrie<BinarySeek>;
+type ColumnTrieGalloping = ColumnTrie<GallopingSeek>;
 
-parquet_test_suite!(ColumnTrie);
+parquet_test_suite!(TreeTrieLinear);
+
+parquet_test_suite!(TreeTrieBinary);
+
+parquet_test_suite!(TreeTrieGalloping);
+
+parquet_test_suite!(ColumnTrieLinear);
+
+parquet_test_suite!(ColumnTrieBinary);
+
+parquet_test_suite!(ColumnTrieGalloping);
 
 // …and under ColumnTrie's incremental BuildMode, which must load the same
 // trie (issue #84).

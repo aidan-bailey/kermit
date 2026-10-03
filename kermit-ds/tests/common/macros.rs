@@ -340,6 +340,10 @@ macro_rules! trie_traversal_tests {
     };
 }
 
+/// Seek-contract tests for a `TrieIterable` relation. The relation must also
+/// implement `HasOptimizationAxes` with a `ds_layout_seek` key, as both
+/// sorted tries do: `seek_cost_matches_the_strategy` reads it to decide which
+/// cost to assert.
 #[macro_export]
 macro_rules! trie_seek_tests {
     ($relation_type:ident) => {
@@ -525,30 +529,74 @@ macro_rules! trie_seek_tests {
                 assert_eq!(iter.key(), Some(1));
             }
 
-            /// Pins `seek`'s *complexity*, which the contract tests above
-            /// cannot see: seeking across a whole high-fan-out sibling list
-            /// must cost about as much as seeking one step. A linear scan is
-            /// O(distance), so the far seek costs ~fan-out times the near
-            /// one; a binary search over the remaining siblings is
-            /// O(log fan-out) for both. LFTJ's worst-case-optimality bound
-            /// assumes the latter (issue #67).
+            /// Seeks at Fibonacci distances (1, 2, 3, 5, 8, …) through one
+            /// wide sibling list, so a galloping seek crosses brackets of
+            /// every size and lands on their edges, shapes the 3-5-key
+            /// fixtures above never reach (issue #80). Keys are even, so the
+            /// odd target `2(i + d) - 1` lands on index `i + d`.
+            #[test]
+            fn seek_varied_distances_land_on_least_upper_bound() {
+                use {
+                    kermit_ds::Relation,
+                    kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
+                };
+                const FAN_OUT: usize = 1000;
+                let tuples = (0..FAN_OUT).map(|i| vec![1, 2 * i]).collect();
+                let relation = $relation_type::from_tuples(2_usize.into(), tuples);
+                let mut iter = relation.trie_iter();
+                assert!(iter.open());
+                assert!(iter.open());
+                let (mut index, mut distance, mut next_distance) = (0, 1, 2);
+                while index + distance < FAN_OUT {
+                    let target = 2 * (index + distance) - 1;
+                    assert!(iter.seek(target), "seek({target}) fell off the end");
+                    assert_eq!(
+                        iter.key(),
+                        Some(target + 1),
+                        "seek({target}) from index {index}"
+                    );
+                    index += distance;
+                    (distance, next_distance) = (next_distance, distance + next_distance);
+                }
+                assert!(!iter.seek(2 * FAN_OUT));
+                assert!(iter.at_end());
+                // The failed seek left the parent level intact.
+                assert!(iter.up());
+                assert_eq!(iter.key(), Some(1));
+            }
+
+            /// Pins `seek`'s *complexity* through the real iterator, which
+            /// the contract tests above cannot see, in the direction the
+            /// relation's seek strategy promises. The strategy is read from
+            /// the `ds_layout_seek` axis, which comes from the type, so an
+            /// alias cannot be mislabelled.
+            ///
+            /// - `binary` and `galloping` are sublinear: seeking across a whole
+            ///   high-fan-out sibling list costs about as much as seeking one step.
+            ///   LFTJ's worst-case-optimality bound assumes this (issue #67).
+            /// - `linear` is O(distance) by design (issue #80): the far seek costs
+            ///   ~fan-out times the near one. If it ever met the sublinear bound, the
+            ///   linear arm of every seek ablation would measure the wrong thing.
             ///
             /// Wall-clock is the only observable: keys are plain `usize`, so
-            /// comparisons cannot be counted without instrumenting the trie.
-            /// The ratio calibrates itself (machine speed and debug/release
+            /// comparisons cannot be counted without instrumenting the trie
+            /// (`seek.rs` counts them for the strategies themselves). The
+            /// ratio calibrates itself (machine speed and debug/release
             /// cancel); the near and far batches interleave and each keeps
             /// its fastest run, so scheduler noise cannot single one side
             /// out; and `MAX_RATIO` sits far from both outcomes (~1x for a
-            /// binary search, hundreds of x for a scan).
+            /// sublinear search, hundreds of x for a scan).
             #[test]
             #[cfg_attr(
                 miri,
                 ignore = "wall-clock complexity check; too slow under miri"
             )]
-            fn seek_cost_is_independent_of_distance() {
+            fn seek_cost_matches_the_strategy() {
                 use {
                     kermit_ds::Relation,
-                    kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
+                    kermit_iters::{
+                        HasOptimizationAxes, LinearIterator, TrieIterable, TrieIterator,
+                    },
                     std::{
                         hint::black_box,
                         time::{Duration, Instant},
@@ -588,11 +636,20 @@ macro_rules! trie_seek_tests {
                     far = far.min(time_batch(&mut iter, far_target));
                 }
                 let ratio = far.as_secs_f64() / near.as_secs_f64();
-                assert!(
-                    ratio < MAX_RATIO,
-                    "seeking across {FAN_OUT} siblings took {ratio:.1}x a one-step seek ({far:?} \
-                     vs {near:?}); seek must be sublinear in the fan-out"
-                );
+                let strategy = relation.optimization_axes()["ds_layout_seek"].clone();
+                if strategy == "linear" {
+                    assert!(
+                        ratio >= MAX_RATIO,
+                        "a linear seek across {FAN_OUT} siblings took only {ratio:.1}x a one-step \
+                         seek ({far:?} vs {near:?}); `linear` must scan"
+                    );
+                } else {
+                    assert!(
+                        ratio < MAX_RATIO,
+                        "a {strategy} seek across {FAN_OUT} siblings took {ratio:.1}x a one-step \
+                         seek ({far:?} vs {near:?}); it must be sublinear in the fan-out"
+                    );
+                }
             }
         }
     };

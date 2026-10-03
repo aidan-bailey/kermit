@@ -601,7 +601,7 @@ mod tests {
         let path = dir.join("test_csv_bad_value.csv");
         std::fs::write(&path, "a,b\n1,2\n3,hello\n").unwrap();
 
-        let result = TreeTrie::from_csv(&path);
+        let result: Result<TreeTrie, _> = TreeTrie::from_csv(&path);
         assert!(result.is_err(), "expected error for non-integer CSV value");
 
         let err = result.unwrap_err();
@@ -626,7 +626,8 @@ mod tests {
     fn from_csv_missing_file_returns_error() {
         use crate::ds::TreeTrie;
 
-        let result = TreeTrie::from_csv("/tmp/nonexistent_kermit_test_file.csv");
+        let result: Result<TreeTrie, _> =
+            TreeTrie::from_csv("/tmp/nonexistent_kermit_test_file.csv");
         assert!(result.is_err());
         assert!(
             matches!(result.unwrap_err(), RelationError::Io(_)),
@@ -640,7 +641,8 @@ mod tests {
     fn from_parquet_missing_file_returns_error() {
         use crate::ds::TreeTrie;
 
-        let result = TreeTrie::from_parquet("/tmp/nonexistent_kermit_test_file.parquet");
+        let result: Result<TreeTrie, _> =
+            TreeTrie::from_parquet("/tmp/nonexistent_kermit_test_file.parquet");
         assert!(result.is_err());
         assert!(
             matches!(result.unwrap_err(), RelationError::Io(_)),
@@ -656,7 +658,7 @@ mod tests {
         let path = dir.join("test_bad_parquet.parquet");
         std::fs::write(&path, b"this is not a parquet file").unwrap();
 
-        let result = TreeTrie::from_parquet(&path);
+        let result: Result<TreeTrie, _> = TreeTrie::from_parquet(&path);
         assert!(result.is_err());
         assert!(
             matches!(result.unwrap_err(), RelationError::Parquet(_)),
