@@ -109,11 +109,14 @@ use {
     kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{RelationFileExt, TreeTrie},
-    kermit_rdf::lubm::{
-        driver::{LubmDriverInputs, LubmRawArtifacts, DEFAULT_ONTOLOGY_IRI},
-        pipeline::{process_artifacts, LubmMeta, LubmPipelineInputs, LubmQuerySpec},
-        queries::lubm_query_specs,
-        sandbox::LubmStagingDir,
+    kermit_rdf::{
+        generator::{MetaHeader, META_SCHEMA_VERSION},
+        lubm::{
+            driver::{LubmDriverInputs, LubmRawArtifacts, DEFAULT_ONTOLOGY_IRI},
+            pipeline::{process_artifacts, LubmMeta, LubmPipelineInputs, LubmQuerySpec},
+            queries::lubm_query_specs,
+            sandbox::LubmStagingDir,
+        },
     },
     std::{
         collections::{BTreeMap, HashMap},
@@ -319,4 +322,41 @@ fn mini_lubm_generation_is_byte_reproducible() {
         second_meta.partition_input_sha256
     );
     assert_eq!(first_meta.dict_sha256, second_meta.dict_sha256);
+}
+
+/// The mini ABox's encoding hashes. Equal to what the pipeline wrote before
+/// #75 changed only the emitted variable names (checked by restoring the
+/// uppercase mapping), so they pin that the bump left the encoding alone.
+const MINI_PARTITION_INPUT_SHA256: &str =
+    "2d647306eb390b0187e7dbaac3acb6f980b56d2c152b4479e43a33e2af2fa650";
+const MINI_DICT_SHA256: &str = "e66f88ff44efffea16f82c2661c4d5b84c878bc10631f748b4e4edc320b22ff2";
+
+/// Issue #75 bumped the meta schema to 4 with a floor for every generator,
+/// because emitted query text changed under a fixed spec. A cache from
+/// before the bump is outdated, and regenerating it — what `bench run
+/// --force` does: wipe the directory, rerun the pipeline — reproduces the
+/// same encoding at the new schema: same entailed input, same dictionary.
+#[test]
+fn regenerating_a_cache_from_before_the_variable_mapping_keeps_its_encoding() {
+    let specs = lubm_query_specs(false);
+    let (old, old_meta) = generate_mini(&specs);
+    assert_eq!(old_meta.partition_input_sha256, MINI_PARTITION_INPUT_SHA256);
+    assert_eq!(old_meta.dict_sha256, MINI_DICT_SHA256);
+
+    // Mark the cache as written at schema 3, before #75.
+    let meta_path = old.path().join("meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+    meta["schema_version"] = 3.into();
+    fs::write(&meta_path, meta.to_string()).unwrap();
+    let reason = MetaHeader::read(old.path()).unwrap().outdated_reason();
+    assert!(reason.is_some_and(|r| r.contains("#75")), "{reason:?}");
+
+    let (_regenerated, new_meta) = generate_mini(&specs);
+    assert_eq!(new_meta.schema_version, META_SCHEMA_VERSION);
+    assert_eq!(
+        new_meta.partition_input_sha256,
+        old_meta.partition_input_sha256
+    );
+    assert_eq!(new_meta.dict_sha256, old_meta.dict_sha256);
 }

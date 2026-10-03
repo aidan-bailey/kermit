@@ -365,7 +365,7 @@ fn sanitisation_collision_suffixes_the_second_predicate_with_its_dict_id() {
         serde_yaml::from_str(&fs::read_to_string(out.join("benchmark.yml")).unwrap()).unwrap();
     let titles = bench.queries.iter().find(|q| q.name == "titles").unwrap();
     assert!(
-        titles.query.contains("title_6(X, T), title(X, N)"),
+        titles.query.contains("title_6(V_x, V_t), title(V_x, V_n)"),
         "{}",
         titles.query
     );
@@ -443,22 +443,27 @@ fn translated_rules_match_exactly() {
         .map(|q| (q.name.as_str(), q.query.as_str()))
         .collect();
     assert_eq!(rules, [
-        // SELECT *: head is every variable in first-appearance order.
-        ("path", "Q_path(X, Y, Z) :- follows(X, Y), follows(Y, Z)."),
-        // Explicit projection: the head holds only X; Y stays in the body.
-        ("followers", "Q_followers(X) :- follows(X, Y)."),
+        // SELECT *: head is every variable in first-appearance order. Each
+        // SPARQL `?name` becomes `V_<name>` (#75).
+        (
+            "path",
+            "Q_path(V_x, V_y, V_z) :- follows(V_x, V_y), follows(V_y, V_z)."
+        ),
+        // Explicit projection: the head holds only `?x`; `?y` stays in the
+        // body.
+        ("followers", "Q_followers(V_x) :- follows(V_x, V_y)."),
         // Explicit projection keeps the SELECT order; `carol` is data id 3.
         (
             "titles",
-            "Q_titles(T, N, X) :- follows(X, c3), title_6(X, T), title(X, N)."
+            "Q_titles(V_t, V_n, V_x) :- follows(V_x, c3), title_6(V_x, V_t), title(V_x, V_n)."
         ),
         // `dave` is absent from the data: first fresh id after the 11 data
         // terms.
-        ("dave", "Q_dave(Y) :- follows(c11, Y)."),
+        ("dave", "Q_dave(V_y) :- follows(c11, V_y)."),
         // `erin` is fresh (12); `dave` reuses 11.
         (
             "strangers",
-            "Q_strangers(X) :- follows(X, c12), follows(c11, X)."
+            "Q_strangers(V_x) :- follows(V_x, c12), follows(c11, V_x)."
         ),
     ]);
 }

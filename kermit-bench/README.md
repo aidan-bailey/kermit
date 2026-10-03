@@ -43,7 +43,7 @@ generator:
 
 ## Generator metadata + drift detection
 
-Generator-produced benches carry a `meta.json` (schema_version 3) with a `spec_hash` field. On `bench run <name>`, the binary recomputes the hash from the YAML's `generator:` block and compares it against `meta.json.spec_hash`: equal short-circuits to a cache hit, missing is treated as legacy v1 (drift), and any mismatch yields `BenchError::SpecDrift`. A matching hash on a cache whose generator has since changed its output for that spec (LUBM below schema 3, issue #74) yields `BenchError::OutdatedCache` instead. Neither auto-regenerates — the user must pass `bench run --force <name>` to wipe the cache subdir and rebuild. Enforcement lives in `kermit/src/materialize.rs` (binary side); the data structures and the error variant live here.
+Generator-produced benches carry a `meta.json` (schema_version 4) with a `spec_hash` field. On `bench run <name>`, the binary recomputes the hash from the YAML's `generator:` block and compares it against `meta.json.spec_hash`: equal short-circuits to a cache hit, missing is treated as legacy v1 (drift), and any mismatch yields `BenchError::SpecDrift`. A matching hash on a cache whose generator has since changed its output for that spec (LUBM below schema 3, issue #74; every generator below schema 4, whose query variables were renamed by issue #75) yields `BenchError::OutdatedCache` instead. Neither auto-regenerates — the user must pass `bench run --force <name>` to wipe the cache subdir and rebuild. Enforcement lives in `kermit/src/materialize.rs` (binary side); the data structures and the error variant live here.
 
 ## Relationship to other crates
 

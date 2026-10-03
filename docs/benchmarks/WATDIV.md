@@ -158,6 +158,13 @@ Editing the YAML's params and re-running errors with `SpecDrift` — pass
 so a typo doesn't trigger silent rebuilds). See `benchmarks/README.md` for
 the full schema.
 
+A generated cache below `meta.json` `schema_version` 4 is `stale` even with a
+matching spec: issue #75 changed how SPARQL variables are named in the emitted
+Datalog (`?v0` → `V_v0`). `--force` rebuilds it, but WatDiv seeds from the
+clock, so the rebuild draws new data and its timings are not comparable with
+the old cache's. The sample benchmarks installed by
+`scripts/watdiv_stress_sample.py` are not generator caches and are unaffected.
+
 The declarative path uses the same pipeline as on-the-fly generation; the
 choice between the two is between imperative ad-hoc generation (your shell
 history holds the params) and declarative reproducibility (the params live

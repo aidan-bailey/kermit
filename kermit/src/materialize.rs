@@ -439,7 +439,7 @@ mod tests {
         fs::create_dir_all(subdir).unwrap();
         let meta = match spec_hash_in_meta {
             | Some(h) => serde_json::json!({
-                "schema_version": 2,
+                "schema_version": kermit_rdf::generator::META_SCHEMA_VERSION,
                 "kind": "watdiv-onthefly",
                 "spec_hash": h,
             }),
@@ -607,6 +607,27 @@ queries:
                 assert_eq!(name, "lubm-old");
                 assert!(reason.contains("#74"), "{reason}");
             },
+            | other => panic!("expected OutdatedCache, got {other:?}"),
+        }
+        assert!(
+            subdir.exists(),
+            "an outdated cache must not be deleted without --force"
+        );
+    }
+
+    /// Issue #75: a schema-3 cache carries uppercased query variables, so
+    /// a matching spec is not enough; `bench run` refuses it until
+    /// `--force` regenerates it.
+    #[test]
+    fn lubm_cache_before_the_injective_variable_mapping_is_refused_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("lubm-schema-3");
+        let def = write_lubm_cache(&subdir, 3);
+
+        match materialize(def, dir.path(), false).unwrap_err() {
+            | BenchError::OutdatedCache {
+                reason, ..
+            } => assert!(reason.contains("#75"), "{reason}"),
             | other => panic!("expected OutdatedCache, got {other:?}"),
         }
         assert!(

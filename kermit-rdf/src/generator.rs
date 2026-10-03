@@ -59,20 +59,37 @@ use {
 /// - 2: adds `spec_hash`.
 /// - 3: adds `partition_input_sha256` and `dict_sha256`; LUBM entailment output
 ///   becomes reproducible (issue #74).
-pub const META_SCHEMA_VERSION: u32 = 3;
+/// - 4: SPARQL variables map injectively to `V_<escaped name>` Datalog
+///   variables instead of being uppercased, which changes every generator's
+///   emitted query text and CSV headers for an unchanged spec (issue #75). The
+///   data, dictionary and answers are unchanged.
+pub const META_SCHEMA_VERSION: u32 = 4;
 
-/// Per generator kind: the first schema version whose caches hold what the
-/// current pipeline writes for their spec, and why older caches do not. A
-/// cache below its kind's floor is outdated even when its `spec_hash`
-/// matches. Kinds whose output has never changed under a fixed spec have no
-/// entry, so their older caches stay valid.
-const OUTDATED_BEFORE: &[(&str, u32, &str)] = &[(
-    LUBM_META_KIND,
-    3,
-    "LUBM caches written before meta.json schema 3 hold the entailed triples in per-run hash \
-     order, so their dictionary ids, relation row order and query constants are not reproducible \
-     from the spec (issue #74)",
-)];
+/// Why every generator's caches below schema 4 are outdated; see
+/// [`META_SCHEMA_VERSION`].
+const VARIABLE_MAPPING_CHANGED: &str =
+    "caches written before meta.json schema 4 name their query variables by uppercasing the \
+     SPARQL names, which merges case-distinct variables; queries now use the injective `V_<name>` \
+     mapping (issue #75). Regenerating a WatDiv benchmark draws new data, since WatDiv seeds from \
+     the clock";
+
+/// Per generator kind: a schema version below which that kind's caches no
+/// longer hold what the current pipeline writes for their spec, and why. A
+/// cache below a floor is outdated even when its `spec_hash` matches.
+/// Entries for one kind are listed oldest floor first, so a cache reports the
+/// earliest change it predates.
+const OUTDATED_BEFORE: &[(&str, u32, &str)] = &[
+    (
+        LUBM_META_KIND,
+        3,
+        "LUBM caches written before meta.json schema 3 hold the entailed triples in per-run hash \
+         order, so their dictionary ids, relation row order and query constants are not \
+         reproducible from the spec (issue #74)",
+    ),
+    (LUBM_META_KIND, 4, VARIABLE_MAPPING_CHANGED),
+    ("watdiv-onthefly", 4, VARIABLE_MAPPING_CHANGED),
+    ("watdiv-basic-onthefly", 4, VARIABLE_MAPPING_CHANGED),
+];
 
 /// Where a generator writes its output and how the run is labelled. The
 /// fields every pipeline's `*Inputs` struct carries, so the orchestrator
@@ -526,7 +543,7 @@ mod tests {
 
         let yaml = fs::read_to_string(out.join("benchmark.yml")).unwrap();
         assert!(yaml.contains("expected: 3"), "{yaml}");
-        assert!(yaml.contains("Q_path(X, Y, Z) :- follows(X, Y), follows(Y, Z)."));
+        assert!(yaml.contains("Q_path(V_x, V_y, V_z) :- follows(V_x, V_y), follows(V_y, V_z)."));
         assert!(yaml.contains("toy-bench"));
         assert!(yaml.contains("description: toy"));
 
@@ -609,13 +626,35 @@ mod tests {
         );
     }
 
-    /// WatDiv encodes its generator output in file order and never changed
-    /// that under a fixed spec, so the LUBM floor must not invalidate its
-    /// caches (they take minutes to regenerate).
+    /// Every generator's emitted query text changed at schema 4 (`?x` became
+    /// `V_x`, #75), so every kind's older caches are outdated from there.
     #[test]
-    fn watdiv_caches_from_older_schemas_are_not_outdated() {
+    fn caches_before_the_injective_variable_mapping_are_outdated() {
+        for kind in [LUBM_META_KIND, "watdiv-onthefly", "watdiv-basic-onthefly"] {
+            let reason = header(kind, 3).outdated_reason();
+            assert!(
+                reason.is_some_and(|r| r.contains("#75")),
+                "{kind}: {reason:?}"
+            );
+            assert_eq!(
+                header(kind, META_SCHEMA_VERSION).outdated_reason(),
+                None,
+                "{kind}"
+            );
+        }
+    }
+
+    /// WatDiv encodes its generator output in file order and never changed
+    /// that under a fixed spec, so its older caches are outdated only by the
+    /// query-text change, never by LUBM's reproducibility floor.
+    #[test]
+    fn watdiv_caches_are_outdated_only_by_the_variable_mapping() {
         for kind in ["watdiv-onthefly", "watdiv-basic-onthefly"] {
-            assert_eq!(header(kind, 2).outdated_reason(), None, "{kind}");
+            let reason = header(kind, 2).outdated_reason();
+            assert!(
+                reason.is_some_and(|r| r.contains("#75") && !r.contains("#74")),
+                "{kind}: {reason:?}"
+            );
         }
     }
 }

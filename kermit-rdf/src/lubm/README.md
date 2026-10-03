@@ -69,7 +69,9 @@ closure whose order depends only on its input — the distinct input triples
 in input order, then the derived triples sorted (its "Output order" doc).
 Before issue #74 it wrote hash order, and every generation of one spec got its
 own encoding; `MetaHeader::outdated_reason` marks those caches (`meta.json`
-`schema_version` below 3) as outdated. `meta.json` records
+`schema_version` below 3) as outdated. Caches below schema 4 are outdated too,
+for their query text only: #75 renamed query variables (`?x` → `V_x`) without
+touching the encoding, so regenerating one reproduces its two hashes. `meta.json` records
 `partition_input_sha256` and `dict_sha256`, which match between two caches
 exactly when they encode identically.
 

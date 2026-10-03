@@ -1340,8 +1340,12 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
         fs::write(
             subdir.join("meta.json"),
-            serde_json::json!({"schema_version": 2, "kind": "watdiv-onthefly", "spec_hash": hash})
-                .to_string(),
+            serde_json::json!({
+                "schema_version": kermit_rdf::generator::META_SCHEMA_VERSION,
+                "kind": "watdiv-onthefly",
+                "spec_hash": hash
+            })
+            .to_string(),
         )
         .unwrap();
         let def = make_generator_def("watdiv-cached", spec);
@@ -1420,6 +1424,35 @@ mod tests {
         .unwrap();
         let def = make_generator_def("lubm-x", spec);
         describe_benchmark_status(&def, Some(&def), dir.path())
+    }
+
+    /// Issue #75: a WatDiv cache written before the injective variable
+    /// mapping matches its spec, but its queries use the old uppercased
+    /// variable names, so it is stale like any other outdated encoding.
+    #[test]
+    fn status_stale_for_watdiv_cache_before_injective_variable_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = kermit_bench::GeneratorSpec::Watdiv {
+            scale: 1,
+            stress: kermit_bench::WatdivStressSpec::default(),
+        };
+        let subdir = dir.path().join("watdiv-old");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(
+            subdir.join("meta.json"),
+            serde_json::json!({
+                "schema_version": 3,
+                "kind": "watdiv-onthefly",
+                "spec_hash": spec.spec_hash()
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let def = make_generator_def("watdiv-old", spec);
+        assert_eq!(
+            describe_benchmark_status(&def, Some(&def), dir.path()),
+            "stale"
+        );
     }
 
     /// Issue #74: a LUBM cache written before entailment became
@@ -1525,8 +1558,12 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
         fs::write(
             subdir.join("meta.json"),
-            serde_json::json!({"schema_version": 2, "kind": "watdiv-onthefly", "spec_hash": hash})
-                .to_string(),
+            serde_json::json!({
+                "schema_version": kermit_rdf::generator::META_SCHEMA_VERSION,
+                "kind": "watdiv-onthefly",
+                "spec_hash": hash
+            })
+            .to_string(),
         )
         .unwrap();
 
