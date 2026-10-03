@@ -571,21 +571,32 @@ macro_rules! trie_seek_tests {
             /// the `ds_layout_seek` axis, which comes from the type, so an
             /// alias cannot be mislabelled.
             ///
-            /// - `binary` and `galloping` are sublinear: seeking across a whole
-            ///   high-fan-out sibling list costs about as much as seeking one step.
-            ///   LFTJ's worst-case-optimality bound assumes this (issue #67).
-            /// - `linear` is O(distance) by design (issue #80): the far seek costs
-            ///   ~fan-out times the near one. If it ever met the sublinear bound, the
-            ///   linear arm of every seek ablation would measure the wrong thing.
+            /// Each batch seeks from the first of `FAN_OUT` = 4096 keys,
+            /// either one step (near) or to the last key (far). By probe
+            /// count, the far seek costs this many times the near one:
+            ///
+            /// - `binary`: 13 / 13 = 1x, O(log fan-out) wherever the seek lands. LFTJ's
+            ///   worst-case-optimality bound assumes a sublinear seek (issue #67).
+            /// - `galloping`: 25 / 2 = 12.5x (1 + 12 doubling probes + 12 in the
+            ///   bracket, against 2). It is O(log distance): sublinear, but not flat.
+            ///   Each seek's fixed cost (`open`, `up`, the call) only lowers the
+            ///   measured ratio, to ~3x in a debug build.
+            /// - `linear`: 4096 / 2 = 2048x, O(distance) by design (issue #80), and
+            ///   ~220-300x measured in a debug build. If it ever met the sublinear
+            ///   bound, the linear arm of every seek ablation would measure the wrong
+            ///   thing.
+            ///
+            /// `MAX_RATIO` = 32 sits above both sublinear strategies' probe
+            /// ratios, so their arm holds by construction, and well below
+            /// linear's measured one.
             ///
             /// Wall-clock is the only observable: keys are plain `usize`, so
             /// comparisons cannot be counted without instrumenting the trie
             /// (`seek.rs` counts them for the strategies themselves). The
             /// ratio calibrates itself (machine speed and debug/release
-            /// cancel); the near and far batches interleave and each keeps
-            /// its fastest run, so scheduler noise cannot single one side
-            /// out; and `MAX_RATIO` sits far from both outcomes (~1x for a
-            /// sublinear search, hundreds of x for a scan).
+            /// cancel), and the near and far batches interleave and each
+            /// keeps its fastest run, so scheduler noise cannot single one
+            /// side out.
             #[test]
             #[cfg_attr(
                 miri,
@@ -605,7 +616,7 @@ macro_rules! trie_seek_tests {
                 const FAN_OUT: usize = 1 << 12;
                 const SEEKS_PER_BATCH: usize = 4096;
                 const BATCHES: usize = 5;
-                const MAX_RATIO: f64 = 10.0;
+                const MAX_RATIO: f64 = 32.0;
 
                 /// Times `SEEKS_PER_BATCH` seeks from the first root key to
                 /// `target`, re-opening the root level between them.

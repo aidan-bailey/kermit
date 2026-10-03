@@ -1,7 +1,8 @@
 use {
     super::implementation::*,
     crate::{
-        relation::{Projectable, Relation},
+        relation::{Projectable, Relation, RelationHeader},
+        test_support::{take_spy_lengths, SpySeek},
         BinarySeek, GallopingSeek, HeapSize, LinearSeek, SeekStrategy,
     },
     kermit_iters::{HasOptimizationAxes, LinearIterator, TrieIterable, TrieIterator},
@@ -233,30 +234,27 @@ fn test_project_with_named_attributes() {
 
 /// The seek strategy is a type-level choice: it adds no field to the trie
 /// or its iterator and no heap, so no instantiation pays for the others
-/// (the non-user-tax test of `docs/specs/optimization-standard.md`).
+/// (the non-user-tax test of `docs/specs/optimization-standard.md`). Each
+/// instantiation is pinned to the fields the structure had before the
+/// parameter existed, as `off_frame_is_the_bare_table_pair` pins
+/// `HashTrie`'s, so a field added to every instantiation fails too.
 #[test]
 fn seek_strategy_adds_no_state() {
     use std::mem::{size_of, size_of_val};
+    // `TreeTrie`'s fields: `header`, `children`, `tuple_count`.
+    let bare_trie = size_of::<(RelationHeader, Vec<TrieNode>, usize)>();
+    // `TreeTrieIter`'s fields: `sibling_idx`, `trie`, `stack`.
+    let bare_iter = size_of::<(usize, &TreeTrie, Vec<(&TrieNode, usize)>)>();
     let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4]];
     let linear: TreeTrie<LinearSeek> = TreeTrie::from_tuples(2.into(), tuples.clone());
     let binary: TreeTrie<BinarySeek> = TreeTrie::from_tuples(2.into(), tuples.clone());
     let galloping: TreeTrie<GallopingSeek> = TreeTrie::from_tuples(2.into(), tuples);
-    assert_eq!(
-        size_of::<TreeTrie<LinearSeek>>(),
-        size_of::<TreeTrie<BinarySeek>>()
-    );
-    assert_eq!(
-        size_of::<TreeTrie<GallopingSeek>>(),
-        size_of::<TreeTrie<BinarySeek>>()
-    );
-    assert_eq!(
-        size_of_val(&linear.trie_iter()),
-        size_of_val(&binary.trie_iter())
-    );
-    assert_eq!(
-        size_of_val(&galloping.trie_iter()),
-        size_of_val(&binary.trie_iter())
-    );
+    assert_eq!(size_of::<TreeTrie<LinearSeek>>(), bare_trie);
+    assert_eq!(size_of::<TreeTrie<BinarySeek>>(), bare_trie);
+    assert_eq!(size_of::<TreeTrie<GallopingSeek>>(), bare_trie);
+    assert_eq!(size_of_val(&linear.trie_iter()), bare_iter);
+    assert_eq!(size_of_val(&binary.trie_iter()), bare_iter);
+    assert_eq!(size_of_val(&galloping.trie_iter()), bare_iter);
     assert_eq!(linear.heap_size_bytes(), binary.heap_size_bytes());
     assert_eq!(galloping.heap_size_bytes(), binary.heap_size_bytes());
 }
@@ -271,4 +269,31 @@ fn optimization_axes_name_the_seek_strategy() {
     assert_eq!(seek_axis::<LinearSeek>(), "linear");
     assert_eq!(seek_axis::<BinarySeek>(), "binary");
     assert_eq!(seek_axis::<GallopingSeek>(), "galloping");
+}
+
+/// Plain `TreeTrie`, in type position, seeks with `BinarySeek`, so code that
+/// names no strategy keeps the binary search it had before the parameter
+/// existed.
+#[test]
+fn default_seek_strategy_is_binary() {
+    let trie: TreeTrie = TreeTrie::new(1.into());
+    assert_eq!(trie.optimization_axes()["ds_layout_seek"], "binary");
+}
+
+/// `seek` hands its strategy exactly the siblings it has not yet passed,
+/// once per seek: a spy strategy sees all 10 siblings for the first seek,
+/// then the 7 from key 3 on. Unlike `seek_cost_matches_the_strategy`, this
+/// is deterministic and runs under miri.
+#[test]
+fn seek_hands_the_strategy_only_the_unpassed_siblings() {
+    let trie: TreeTrie<SpySeek> =
+        TreeTrie::from_tuples(1.into(), (0..10).map(|k| vec![k]).collect());
+    let mut iter = trie.trie_iter();
+    take_spy_lengths();
+    assert!(iter.open());
+    assert!(iter.seek(3));
+    assert_eq!(iter.key(), Some(3));
+    assert!(iter.seek(7));
+    assert_eq!(iter.key(), Some(7));
+    assert_eq!(take_spy_lengths(), vec![10, 7]);
 }

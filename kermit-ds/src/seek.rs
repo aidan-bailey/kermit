@@ -99,7 +99,9 @@ impl SeekStrategy for GallopingSeek {
         }
         // Gallop: double `bound` while it is still below. Invariant: `below`
         // holds at offset `bound / 2`. The loop doubles only while
-        // `bound < len <= isize::MAX`, so the doubling cannot overflow.
+        // `bound < len`. Callers search non-zero-sized keys (`usize`,
+        // `TrieNode`), so `len <= isize::MAX` and the doubling cannot
+        // overflow.
         let mut bound = 1;
         while bound < remaining.len() && below(&remaining[bound]) {
             bound *= 2;
@@ -216,25 +218,34 @@ mod tests {
         }
     }
 
-    /// How many times `S` evaluates the predicate to place `target`.
-    fn probes<S: SeekStrategy>(remaining: &[usize], target: usize) -> usize {
-        let count = Cell::new(0);
-        S::partition_point(remaining, |&k| {
-            count.set(count.get() + 1);
+    /// `S`'s offset for `target` in `remaining`, and how many times it
+    /// evaluated the predicate to find it.
+    fn seek_counting_probes<S: SeekStrategy>(remaining: &[usize], target: usize) -> (usize, usize) {
+        let probes = Cell::new(0);
+        let offset = S::partition_point(remaining, |&k| {
+            probes.set(probes.get() + 1);
             k < target
         });
-        count.get()
+        (offset, probes.get())
     }
 
     /// Bits needed to write `n`, i.e. `⌊log₂ n⌋ + 1` (0 for 0): an upper
     /// bound on `⌈log₂ n⌉` that needs no float.
     fn bit_length(n: usize) -> usize { (usize::BITS - n.leading_zeros()) as usize }
 
+    /// `⌈log₂ n⌉` for `n ≥ 1`, with no float: the bits needed to write
+    /// `n - 1`.
+    fn ceil_log2(n: usize) -> usize { bit_length(n - 1) }
+
     /// Pins each strategy's *cost*, which the agreement tests cannot see: a
     /// galloping search that degenerated into a scan would still return the
-    /// right offsets. Probe counts are exact, so this also runs under miri.
+    /// right offsets. Galloping is held to the module table's own bound,
+    /// which it meets exactly at some distances (`d = 1` among them), so a
+    /// bracket that probes one element too many fails. Every seek must also
+    /// land on its least upper bound. Probe counts are exact, so this also
+    /// runs under miri.
     #[test]
-    fn probe_counts_match_each_strategys_bound() {
+    fn probe_counts_meet_each_strategy_bound() {
         let n = if cfg!(miri) {
             64
         } else {
@@ -244,29 +255,29 @@ mod tests {
         let slice: Vec<usize> = (0..n).map(|k| 2 * k).collect();
         for d in 0..=n {
             let target = 2 * d;
-            assert_eq!(
-                probes::<LinearSeek>(&slice, target),
-                (d + 1).min(n),
-                "linear, d = {d}"
-            );
-            let binary = probes::<BinarySeek>(&slice, target);
+            let (offset, linear) = seek_counting_probes::<LinearSeek>(&slice, target);
+            assert_eq!(offset, d, "linear, d = {d}: offset");
+            assert_eq!(linear, (d + 1).min(n), "linear, d = {d}");
+            let (offset, binary) = seek_counting_probes::<BinarySeek>(&slice, target);
+            assert_eq!(offset, d, "binary, d = {d}: offset");
             assert!(
                 binary <= bit_length(n) + 1,
                 "binary, d = {d}: {binary} probes"
             );
-            let galloping = probes::<GallopingSeek>(&slice, target);
+            let (offset, galloping) = seek_counting_probes::<GallopingSeek>(&slice, target);
+            assert_eq!(offset, d, "galloping, d = {d}: offset");
             if d == 0 {
                 assert_eq!(galloping, 1, "galloping must stop at the current key");
             } else {
                 assert!(
-                    galloping <= 2 * bit_length(d) + 2,
+                    galloping <= 2 * ceil_log2(d) + 2,
                     "galloping, d = {d}: {galloping} probes"
                 );
             }
         }
-        assert_eq!(probes::<LinearSeek>(&[], 1), 0);
-        assert_eq!(probes::<BinarySeek>(&[], 1), 0);
-        assert_eq!(probes::<GallopingSeek>(&[], 1), 0);
+        assert_eq!(seek_counting_probes::<LinearSeek>(&[], 1), (0, 0));
+        assert_eq!(seek_counting_probes::<BinarySeek>(&[], 1), (0, 0));
+        assert_eq!(seek_counting_probes::<GallopingSeek>(&[], 1), (0, 0));
     }
 
     /// These strings are `ds_layout_seek` report values: renaming one splits

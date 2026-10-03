@@ -530,13 +530,13 @@ impl<S: SeekStrategy> HasOptimizationAxes for ColumnTrie<S> {
 #[cfg(test)]
 mod tests {
     use {
-        super::{ColumnTrie, ColumnTrieBuildMode},
+        super::{ColumnTrie, ColumnTrieBuildMode, ColumnTrieLayer},
         crate::{
-            relation::{BuildModeRelation, Projectable, Relation as _},
-            test_support::Lcg,
+            relation::{BuildModeRelation, Projectable, Relation as _, RelationHeader},
+            test_support::{take_spy_lengths, Lcg, SpySeek},
             BinarySeek, GallopingSeek, HeapSize, LinearSeek, SeekStrategy,
         },
-        kermit_iters::{HasOptimizationAxes, TrieIterable},
+        kermit_iters::{HasOptimizationAxes, LinearIterator, TrieIterable, TrieIterator},
     };
 
     #[test]
@@ -879,26 +879,21 @@ mod tests {
     #[test]
     fn seek_strategy_adds_no_state() {
         use std::mem::{size_of, size_of_val};
+        // `ColumnTrie`'s fields: `header`, `layers`, `tuple_count`.
+        let bare_trie = size_of::<(RelationHeader, Vec<ColumnTrieLayer>, usize)>();
+        // `ColumnTrieIter`'s fields: `depth`, `interval_i`, `slice_offset`,
+        // `interval_slice`, `trie`.
+        let bare_iter = size_of::<(usize, usize, usize, Option<&[usize]>, &ColumnTrie)>();
         let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4]];
         let linear: ColumnTrie<LinearSeek> = ColumnTrie::from_tuples(2.into(), tuples.clone());
         let binary: ColumnTrie<BinarySeek> = ColumnTrie::from_tuples(2.into(), tuples.clone());
         let galloping: ColumnTrie<GallopingSeek> = ColumnTrie::from_tuples(2.into(), tuples);
-        assert_eq!(
-            size_of::<ColumnTrie<LinearSeek>>(),
-            size_of::<ColumnTrie<BinarySeek>>()
-        );
-        assert_eq!(
-            size_of::<ColumnTrie<GallopingSeek>>(),
-            size_of::<ColumnTrie<BinarySeek>>()
-        );
-        assert_eq!(
-            size_of_val(&linear.trie_iter()),
-            size_of_val(&binary.trie_iter())
-        );
-        assert_eq!(
-            size_of_val(&galloping.trie_iter()),
-            size_of_val(&binary.trie_iter())
-        );
+        assert_eq!(size_of::<ColumnTrie<LinearSeek>>(), bare_trie);
+        assert_eq!(size_of::<ColumnTrie<BinarySeek>>(), bare_trie);
+        assert_eq!(size_of::<ColumnTrie<GallopingSeek>>(), bare_trie);
+        assert_eq!(size_of_val(&linear.trie_iter()), bare_iter);
+        assert_eq!(size_of_val(&binary.trie_iter()), bare_iter);
+        assert_eq!(size_of_val(&galloping.trie_iter()), bare_iter);
         assert_eq!(linear.heap_size_bytes(), binary.heap_size_bytes());
         assert_eq!(galloping.heap_size_bytes(), binary.heap_size_bytes());
     }
@@ -911,6 +906,49 @@ mod tests {
         assert_eq!(seek_axis::<LinearSeek>(), "linear");
         assert_eq!(seek_axis::<BinarySeek>(), "binary");
         assert_eq!(seek_axis::<GallopingSeek>(), "galloping");
+    }
+
+    /// See `TreeTrie`'s `default_seek_strategy_is_binary`.
+    #[test]
+    fn default_seek_strategy_is_binary() {
+        let trie: ColumnTrie = ColumnTrie::new(1.into());
+        assert_eq!(trie.optimization_axes()["ds_layout_seek"], "binary");
+    }
+
+    /// See `TreeTrie`'s `seek_hands_the_strategy_only_the_unpassed_siblings`:
+    /// the strategy sees the interval slice from the current key on.
+    #[test]
+    fn seek_hands_the_strategy_only_the_unpassed_keys() {
+        let trie: ColumnTrie<SpySeek> =
+            ColumnTrie::from_tuples(1.into(), (0..10).map(|k| vec![k]).collect());
+        let mut iter = trie.trie_iter();
+        take_spy_lengths();
+        assert!(iter.open());
+        assert!(iter.seek(3));
+        assert_eq!(iter.key(), Some(3));
+        assert!(iter.seek(7));
+        assert_eq!(iter.key(), Some(7));
+        assert_eq!(take_spy_lengths(), vec![10, 7]);
+    }
+
+    /// Unlike `TreeTrie`, which panics, a `ColumnTrie` seek to a key below
+    /// the current one leaves the iterator where it is: every strategy
+    /// returns offset 0, because it searches only the keys not yet passed.
+    fn backward_seek_stays_put<S: SeekStrategy>() {
+        let trie: ColumnTrie<S> =
+            ColumnTrie::from_tuples(1.into(), vec![vec![1], vec![3], vec![5]]);
+        let mut iter = trie.trie_iter();
+        assert!(iter.open());
+        assert!(iter.seek(3));
+        assert!(iter.seek(1));
+        assert_eq!(iter.key(), Some(3));
+    }
+
+    #[test]
+    fn backward_seek_stays_put_under_every_strategy() {
+        backward_seek_stays_put::<LinearSeek>();
+        backward_seek_stays_put::<BinarySeek>();
+        backward_seek_stays_put::<GallopingSeek>();
     }
 }
 
