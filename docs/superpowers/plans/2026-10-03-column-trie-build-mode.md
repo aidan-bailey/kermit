@@ -1357,7 +1357,7 @@ Inside `impl ColumnTrie` (next to `from_sorted`) add:
     }
 ```
 
-Add the trait impl after `impl Relation for ColumnTrie`, moving the prologue there:
+Add the trait impl after `impl Relation for ColumnTrie`, **moving** the prologue there exactly as it stands in `from_tuples` after P1's review-polish commit. That commit dropped the empty-input early return (the guard lives in `from_sorted`, where the tests reach it; `from_sorted_by_insertion` returns an empty trie on empty input too) and reworded the comparator comment. The snippet below shows the shape; take the comment text and the `# Panics` doc from the current code:
 
 ```rust
 impl BuildModeRelation for ColumnTrie {
@@ -1366,9 +1366,6 @@ impl BuildModeRelation for ColumnTrie {
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: ColumnTrieBuildMode, mut tuples: Vec<Vec<usize>>,
     ) -> Self {
-        if tuples.is_empty() {
-            return Self::new(header);
-        }
         let arity = header.arity();
         // Checked before the sort: its comparator indexes `b` by `a`'s
         // length, so a shorter tuple would panic there with an index error
@@ -1995,6 +1992,13 @@ Make `RelationFamily::build_relation` **required** — replace its default body 
     fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self::Rel;
 ```
 
+Make `RelationFamily::build_mode_axes` **required** for the same reason (P1 code review): with a default empty body, a future family over ColumnTrie that forgot to delegate would ship rows without the axis, which kermit-lab would back-fill as `incremental` — the silent mislabel the axis exists to prevent. Replace its default body with a declaration (keep the doc, adding "Required, with no default, so no family can omit the axis by accident."), and give `HashTrieFamily<H, P>` and `HashHtj<H, P>` explicit impls:
+
+```rust
+    /// `HashTrie` has a single build process, so no `ds_build_mode` axis.
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+```
+
 Replace `struct SortedTrieFamily` and its two impls:
 
 ```rust
@@ -2599,6 +2603,8 @@ EOF
 
 **Files:**
 - Modify: `docs/data-structures/column-trie.md`, `docs/specs/optimization-standard.md`, `docs/specs/bench-report-schema.md`, `CLAUDE.md`, `ARCHITECTURE.md`, `BENCHMARKING.md`, `USAGE.md`
+
+(`kermit-iters/src/optimization.rs`'s docs already say the build-running code, not the structure, emits `ds_build_mode` — done in P1's review polish. Also fix the stale `implementation.rs#L218` anchor for `LayerStep::Recurse` in `column-trie.md`'s Invariants: link the file without a line number, since lines move.)
 
 Read each passage before replacing it; the old text below is quoted from 62f722e.
 
