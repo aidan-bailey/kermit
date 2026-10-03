@@ -349,14 +349,14 @@ pub(crate) fn validate_config_choices(
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct BuildChoices {
     /// How `ColumnTrie` is built from its tuples (default: `bulk`;
-    /// `incremental` is the build before issue #84). Only valid with
-    /// `--indexstructure column-trie` (or `all`).
+    /// `incremental` is the build before the one-pass bulk build). Only valid
+    /// with `--indexstructure column-trie` (or `all`).
     #[arg(long = "ds-build", value_name = "MODE", value_enum)]
     column_trie_build: Option<ColumnTrieBuildMode>,
 }
 
 impl BuildChoices {
-    /// The mode to build ColumnTrie relations with, applying the default
+    /// The mode to build `ColumnTrie` relations with, applying the default
     /// when none was supplied.
     pub(crate) fn column_trie_build_resolved(&self) -> ColumnTrieBuildMode {
         self.column_trie_build.unwrap_or_default()

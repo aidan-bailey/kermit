@@ -2,6 +2,8 @@
 //! `ColumnTrie` report says which build made its relations, so kermit-lab can
 //! read a `ColumnTrie` report *without* the axis as the pre-#84 incremental
 //! build. The other structures have a single build and carry no such axis.
+//! It also covers selecting the mode with `--ds-build` and rejecting the flag
+//! on a structure without a build mode.
 
 mod common;
 

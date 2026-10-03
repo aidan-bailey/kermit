@@ -25,7 +25,7 @@ use {
 /// closed the last hand-mirrored pair). The family supplies the four
 /// points where the bodies used to diverge: the relation type to load
 /// (`F::Rel`), how to *build* one from a `(header, tuples)` snapshot
-/// honouring the family's `--ds-config` values
+/// honouring the family's `--ds-config` values and `--ds-build` mode
 /// ([`RelationFamily::build_relation`], and [`RelationFamily::load`] on
 /// top of it), how to walk its tuples without materialising them
 /// (`F::for_each_tuple` — `TrieIteratorWrapper::advance` for sorted tries,

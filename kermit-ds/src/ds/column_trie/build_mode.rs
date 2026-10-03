@@ -8,10 +8,10 @@
 /// the build takes, never the trie it builds (issue #84).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ColumnTrieBuildMode {
-    /// One `insert` per tuple, in sorted order: the build before issue #84,
-    /// kept so its measurements can be reproduced. Each insert scans its
-    /// interval from the start, so the build is O(n · a · b), `b` the
-    /// average branching factor.
+    /// One `insert` per tuple, in sorted order: the build before the
+    /// one-pass bulk build, kept so its measurements can be reproduced. Each
+    /// insert scans its interval from the start, so the build is O(n · a ·
+    /// b), `b` the average branching factor.
     Incremental,
     /// One pass over the sorted tuples, appending keys layer by layer and
     /// opening a child interval wherever the prefix changes. O(n · a).

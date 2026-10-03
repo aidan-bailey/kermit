@@ -116,8 +116,8 @@ enum IndexStructureSelector {
 
 impl IndexStructureSelector {
     /// The selector naming exactly `ds`, so the `--ds-layout-*` /
-    /// `--ds-config` validators (which take a selector) apply to a
-    /// concrete structure.
+    /// `--ds-config` / `--ds-build` validators (which take a selector) apply
+    /// to a concrete structure.
     fn of(ds: IndexStructure) -> Self {
         match ds {
             | IndexStructure::ColumnTrie => Self::ColumnTrie,

@@ -213,8 +213,9 @@ fn run_benchmark<F: ExecutionFamily>(
                             // `family.build_relation` rather than the whole
                             // engine build, which `end_to_end` covers — and
                             // goes through the family so the build honours
-                            // the same configuration the report's
-                            // `ds_config_*` axes name.
+                            // the same configuration and build mode the
+                            // report's `ds_config_*` / `ds_build_mode` axes
+                            // name.
                             for (header, tuples) in data {
                                 std::hint::black_box(family.build_relation(header, tuples));
                             }

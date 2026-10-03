@@ -120,8 +120,8 @@ impl SortedTrieRelation for ColumnTrie {
         ColumnTrie::from_tuples_with_build_mode(header, build, tuples)
     }
 
-    /// Every ColumnTrie report says which build made it, so kermit-lab can
-    /// read a ColumnTrie row *without* the axis as the pre-#84 incremental
+    /// Every `ColumnTrie` report says which build made it, so kermit-lab can
+    /// read a `ColumnTrie` row *without* the axis as the pre-#84 incremental
     /// build.
     fn build_mode_axes(build: ColumnTrieBuildMode) -> BTreeMap<String, serde_json::Value> {
         BTreeMap::from([(
@@ -134,8 +134,9 @@ impl SortedTrieRelation for ColumnTrie {
 /// One valid `(index structure, join algorithm)` cell of a `bench run`
 /// sweep. Each variant fixes *both* halves of the pair, so an `Execution`
 /// cannot describe a combination the CLI is unable to run.
-// `Copy` relies on `HashTrieConfig: Copy`; a future Config carrying heap
-// data would have to drop it here and clone the cells instead.
+// `Copy` relies on `HashTrieConfig: Copy` and `ColumnTrieBuildMode: Copy`; a
+// future Config or BuildMode carrying heap data would have to drop it here and
+// clone the cells instead.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through
@@ -698,8 +699,9 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashHtj<H, 
         HashTrieFamily::<H, P>::optimization_axes(rel)
     }
 
-    /// `HashTrie` has a single build process, so no `ds_build_mode` axis.
-    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
+        self.structure.build_mode_axes()
+    }
 }
 
 impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H, P> {
@@ -740,6 +742,7 @@ mod tests {
         clap::ValueEnum,
         kermit_ds::{NoPruning, SingletonPruning},
         kermit_iters::SipHashStrategy,
+        std::cell::Cell,
     };
 
     fn all_structures() -> Vec<IndexStructure> { IndexStructure::value_variants().to_vec() }
@@ -1176,11 +1179,82 @@ mod tests {
         }
     }
 
+    kermit_ds::define_build_mode_provider!(AnyMode, ColumnTrieBuildMode, ColumnTrieBuildMode::Bulk);
+
+    /// A `ColumnTrie` whose `SortedTrieRelation::build_with` records the mode
+    /// it was handed. The provider is irrelevant: `build_with` ignores it.
+    type Spy = kermit_ds::BuiltWith<ColumnTrie, AnyMode>;
+
+    thread_local! {
+        static BUILT_WITH: Cell<Option<ColumnTrieBuildMode>> = const { Cell::new(None) };
+    }
+
+    impl SortedTrieRelation for Spy {
+        type BuildMode = ColumnTrieBuildMode;
+
+        fn kind(build: ColumnTrieBuildMode) -> SortedTrie {
+            <ColumnTrie as SortedTrieRelation>::kind(build)
+        }
+
+        fn build_with(
+            header: RelationHeader, build: ColumnTrieBuildMode, tuples: Vec<Vec<usize>>,
+        ) -> Self {
+            BUILT_WITH.set(Some(build));
+            <Spy as Relation>::from_tuples(header, tuples)
+        }
+
+        fn build_mode_axes(build: ColumnTrieBuildMode) -> BTreeMap<String, serde_json::Value> {
+            <ColumnTrie as SortedTrieRelation>::build_mode_axes(build)
+        }
+    }
+
+    /// Both modes build identical tries, so only a spy can see whether the
+    /// family's mode reached the build, on every route a relation is built.
+    #[test]
+    fn sorted_families_build_with_their_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("r.csv");
+        std::fs::write(&path, "a,b\n1,2\n").expect("write csv");
+        let header = || RelationHeader::new_positional("r", 2);
+        let tuples = || vec![vec![1, 2]];
+        // The mode `build` hands to `build_with`, or `None` if it never does.
+        let seen = |build: &dyn Fn()| {
+            BUILT_WITH.take();
+            build();
+            BUILT_WITH.take()
+        };
+
+        for mode in [ColumnTrieBuildMode::Incremental, ColumnTrieBuildMode::Bulk] {
+            let structure = SortedTrieFamily::<Spy>::new(mode);
+            let join = TrieLftj::<Spy>::new(mode, Optimiser::Lexicographic);
+            let routes: [(&str, &dyn Fn()); 5] = [
+                ("SortedTrieFamily::build_relation", &|| {
+                    structure.build_relation(header(), tuples());
+                }),
+                ("SortedTrieFamily::load_with_tuples", &|| {
+                    structure.load_with_tuples(&path).expect("load");
+                }),
+                ("TrieLftj::build_relation", &|| {
+                    join.build_relation(header(), tuples());
+                }),
+                ("TrieLftj::load", &|| {
+                    join.load(&path).expect("load");
+                }),
+                ("TrieLftj::build_from_tuples", &|| {
+                    join.build_from_tuples(vec![(header(), tuples())]);
+                }),
+            ];
+            for (route, build) in routes {
+                assert_eq!(seen(build), Some(mode), "{route} dropped {mode:?}");
+            }
+        }
+    }
+
     fn build_mode_axis(mode: &str) -> BTreeMap<String, serde_json::Value> {
         BTreeMap::from([("ds_build_mode".to_string(), serde_json::Value::from(mode))])
     }
 
-    /// Every ColumnTrie family reports the mode it builds with; the other
+    /// Every `ColumnTrie` family reports the mode it builds with; the other
     /// structures have a single build and carry no such axis (issue #84).
     #[test]
     fn only_column_trie_families_report_their_build_mode() {
