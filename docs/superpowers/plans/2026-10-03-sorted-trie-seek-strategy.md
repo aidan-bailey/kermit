@@ -3104,7 +3104,9 @@ galloping(remaining, below):
 Veldhuizen's LFTJ analysis assumes a seek costs O(log N), amortised
 O(1 + log(N/m)) over m visited keys. Binary meets the first bound;
 galloping meets both. `seek.rs` pins every bound in this table by
-counting probes (`probe_counts_match_each_strategys_bound`).
+counting probes (`probe_counts_meet_each_strategy_bound`), and
+`seek_hands_the_strategy_only_the_unpassed_siblings` / `…_keys` pin that each
+iterator hands its strategy only the siblings it has not yet passed.
 
 ## Worked micro-example
 
