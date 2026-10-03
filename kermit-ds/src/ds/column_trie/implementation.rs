@@ -81,8 +81,9 @@ impl ColumnTrieLayer {
     /// build, where every key arrives in its final position.
     fn push_key(&mut self, key: usize) { self.data.push(key); }
 
-    /// Opens the child interval of a parent just appended to the layer
-    /// above: its children start at the current end of `data`.
+    /// Opens a new child interval at the current end of `data`: for a
+    /// parent just appended to the layer above, or, on the root layer, the
+    /// trie's single root interval.
     fn open_interval(&mut self) { self.interval.push(self.data.len()); }
 }
 
@@ -274,6 +275,8 @@ impl ColumnTrie {
     /// order. Never pre-size these `Vec`s — `heap_size_bytes` sums their
     /// capacities.
     ///
+    /// The input must be sorted; debug builds check it.
+    ///
     /// O(n · a) for n tuples of arity a.
     fn from_sorted(header: RelationHeader, sorted: Vec<Vec<usize>>) -> Self {
         let mut trie = Self::new(header);
@@ -289,16 +292,22 @@ impl ColumnTrie {
         for tuple in sorted {
             // The depth at which this tuple leaves its predecessor's path:
             // the number of leading keys the two share.
-            let diverge = previous
+            let divergence_depth = previous
                 .as_deref()
                 .map_or(0, |prev| common_prefix_len(prev, &tuple));
-            if diverge == arity {
+            if let Some(prev) = previous.as_deref() {
+                debug_assert!(
+                    prev <= tuple.as_slice(),
+                    "from_sorted: tuples are not sorted"
+                );
+            }
+            if divergence_depth == arity {
                 // Equal to its predecessor, so already stored.
                 continue;
             }
-            for (depth, &key) in tuple.iter().enumerate().skip(diverge) {
+            for (depth, &key) in tuple.iter().enumerate().skip(divergence_depth) {
                 let layer = &mut trie.layers[depth];
-                if depth > diverge {
+                if depth > divergence_depth {
                     // The key just appended one layer up is a new parent,
                     // so its children start here.
                     layer.open_interval();
@@ -385,10 +394,13 @@ impl Relation for ColumnTrie {
         }
     }
 
+    /// Sorts the tuples, then builds every layer in one pass (see
+    /// `from_sorted`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
     fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<usize>>) -> Self {
-        if tuples.is_empty() {
-            return Self::new(header);
-        }
         let arity = header.arity();
         // Checked before the sort: its comparator indexes `b` by `a`'s
         // length, so a shorter tuple would panic there with an index error
@@ -401,8 +413,10 @@ impl Relation for ColumnTrie {
                 tuple.len()
             );
         }
-        // Reproduces the derived `Vec<usize>` lexicographic order (kept
-        // hand-rolled here rather than `sort_unstable()`).
+        // The derived `Vec<usize>` lexicographic order, kept hand-rolled as
+        // in TreeTrie's `from_tuples`: the sort then costs the same in every
+        // ColumnTrie build and in TreeTrie's, so a change in the `insertion`
+        // metric measures the build routine alone.
         tuples.sort_unstable_by(|a, b| {
             for i in 0..a.len() {
                 match a[i].cmp(&b[i]) {

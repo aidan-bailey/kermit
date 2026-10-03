@@ -11,7 +11,10 @@
 //!   flag values.
 //! - **BuildMode** (construction-time): a discriminated value (often an enum)
 //!   selected when constructing the DS. Affects the build process but not
-//!   in-memory representation.
+//!   in-memory representation. A build mode leaves the built structure
+//!   unchanged, so the structure cannot report it; the code that ran the build
+//!   emits the `ds_build_mode` axis instead (in kermit's bench,
+//!   `RelationFamily::build_mode_axes`).
 //!
 //! The `HasOptimizationAxes` trait is the umbrella the bench reporter
 //! consumes; it returns the structured axes for inclusion in
@@ -51,7 +54,10 @@ pub trait BuildMode {
 /// axes in `BenchReport.axes`. A DS or algorithm that adopts the standard
 /// implements this; the implementation typically composes results from
 /// `LayoutOption::NAME`, `ConfigOption::axes`, and `BuildMode::axis_value`
-/// under the correct key prefixes.
+/// under the correct key prefixes. A build mode leaves the built structure
+/// unchanged, so the structure cannot report it; the code that ran the build
+/// emits the `ds_build_mode` axis instead (in kermit's bench,
+/// `RelationFamily::build_mode_axes`).
 ///
 /// Key naming convention (the bench reporter merges these into
 /// `BenchReport.axes`):

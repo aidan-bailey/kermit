@@ -72,8 +72,8 @@ pub trait SortedTrieRelation:
 
     /// The `ds_build_mode` axis of every relation the bench builds of this
     /// type. The build process leaves no trace in the built structure, so
-    /// the type that ran it reports it. Empty for a structure with a single
-    /// build process.
+    /// it is reported for the build this type's `from_tuples` runs. Empty for a
+    /// structure with a single build process.
     fn build_mode_axes() -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
@@ -1101,7 +1101,7 @@ mod tests {
         }
     }
 
-    /// Every ColumnTrie report says how its relations were built; the
+    /// Every `ColumnTrie` report says how its relations were built; the
     /// other structures have a single build and carry no such axis (issue
     /// #84).
     #[test]

@@ -1,6 +1,6 @@
-//! CLI smoke test for ColumnTrie's `ds_build_mode` axis (issue #84). Every
-//! ColumnTrie report says which build made its relations, so kermit-lab can
-//! read a ColumnTrie report *without* the axis as the pre-#84 incremental
+//! CLI smoke test for `ColumnTrie`'s `ds_build_mode` axis (issue #84). Every
+//! `ColumnTrie` report says which build made its relations, so kermit-lab can
+//! read a `ColumnTrie` report *without* the axis as the pre-#84 incremental
 //! build. The other structures have a single build and carry no such axis.
 
 mod common;
