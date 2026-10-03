@@ -512,24 +512,11 @@ mod tests {
         super::{ColumnTrie, ColumnTrieBuildMode},
         crate::{
             relation::{BuildModeRelation, Projectable, Relation as _},
+            test_support::Lcg,
             HeapSize,
         },
         kermit_iters::TrieIterable,
     };
-
-    /// Linear-congruential generator, so the randomised tests need no `rand`
-    /// dev-dependency. The constants are Knuth's MMIX ones.
-    struct Lcg(u64);
-
-    impl Lcg {
-        fn next_usize(&mut self) -> usize {
-            self.0 = self
-                .0
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            (self.0 >> 33) as usize
-        }
-    }
 
     #[test]
     fn test_insert() {

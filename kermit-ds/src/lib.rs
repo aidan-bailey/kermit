@@ -14,6 +14,10 @@
 //! additionally implement [`TrieIterable`](kermit_iters::TrieIterable);
 //! `HashTrie` implements [`HashTrieIterable`](kermit_iters::HashTrieIterable)
 //! instead — algorithms select the matching iterable trait.
+//!
+//! The two sorted tries take their seek algorithm as a Layout type
+//! parameter, [`SeekStrategy`]: [`LinearSeek`], [`BinarySeek`] (the
+//! default) or [`GallopingSeek`].
 #![deny(missing_docs)]
 
 mod built_with;
@@ -22,6 +26,9 @@ mod configured;
 mod ds;
 mod heap_size;
 mod relation;
+mod seek;
+#[cfg(test)]
+mod test_support;
 
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
@@ -38,4 +45,5 @@ pub use {
         ConfigurableRelation, ModelType, Projectable, Relation, RelationError, RelationFileExt,
         RelationHeader,
     },
+    seek::{BinarySeek, GallopingSeek, LinearSeek, SeekStrategy},
 };
