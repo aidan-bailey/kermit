@@ -204,9 +204,8 @@ pub(crate) fn validate_layout_choices(
 /// rather than twice. It is not free of the product, though: the arms
 /// *are* the cells,
 /// so a third Layout dimension doubles them (2^n in general) and also costs
-/// a `LayoutChoices` field plus one entry in each of `Execution::HashHtj`,
-/// `Execution::for_pair`, `Sweep::expand`, `HashHtj`, and the two command
-/// entry points (`run_ds_bench_command`, `run_bench_run_command`). Before a
+/// a `LayoutChoices` field plus one field each in `DsChoices` and
+/// `Execution::HashHtj`, and the matching arms in `HashHtj`. Before a
 /// fourth dimension, reach for a nested macro that expands one dimension at
 /// a time, or a builder — not another hand-written 16-arm match.
 ///
@@ -338,6 +337,41 @@ pub(crate) fn validate_config_choices(
         );
     }
     Ok(())
+}
+
+/// The resolved value of every `--ds-*` option for one command — what the
+/// execution cells are built from. Commands obtain it from
+/// [`DsChoices::resolve`], which rejects a flag the selected structure
+/// would ignore before applying any default.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DsChoices {
+    /// `--ds-layout-hasher`; reaches the hash-trie cell only.
+    pub hasher: HasherChoice,
+    /// `--ds-layout-pruning`; reaches the hash-trie cell only.
+    pub pruning: PruningChoice,
+    /// `--ds-config`; reaches the hash-trie cell only.
+    pub config: HashTrieConfig,
+}
+
+impl DsChoices {
+    /// Validates every `--ds-*` flag against `indexstructure`, then resolves
+    /// them, applying each option's default where no flag was given.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a flag was given for a structure that lacks its
+    /// axis, or if `--ds-config` is malformed.
+    pub(crate) fn resolve(
+        indexstructure: IndexStructureSelector, layout: &LayoutChoices, config: &ConfigChoices,
+    ) -> anyhow::Result<Self> {
+        validate_layout_choices(indexstructure, layout)?;
+        validate_config_choices(indexstructure, config)?;
+        Ok(Self {
+            hasher: layout.hash_trie_hasher_resolved(),
+            pruning: layout.hash_trie_pruning_resolved(),
+            config: config.hash_trie_config_resolved()?,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -610,5 +644,59 @@ mod tests {
             &ConfigChoices::default()
         )
         .is_ok());
+    }
+
+    #[test]
+    fn ds_choices_resolve_applies_flags_and_defaults() {
+        let layout = LayoutChoices {
+            hash_trie_hasher: Some(HasherChoice::Fxhash),
+            ..LayoutChoices::default()
+        };
+        let config = ConfigChoices {
+            ds_config: vec!["load-factor=0.5".into()],
+        };
+        let choices =
+            DsChoices::resolve(IndexStructureSelector::HashTrie, &layout, &config).unwrap();
+        assert_eq!(choices.hasher, HasherChoice::Fxhash);
+        assert_eq!(choices.pruning, PruningChoice::Off);
+        assert_eq!(choices.config.load_factor, LoadFactor::percent(50).unwrap());
+        assert_eq!(
+            DsChoices::resolve(
+                IndexStructureSelector::TreeTrie,
+                &LayoutChoices::default(),
+                &ConfigChoices::default()
+            )
+            .unwrap(),
+            DsChoices::default()
+        );
+    }
+
+    /// `resolve` validates before it resolves, so no command can act on a
+    /// flag the selected structure would ignore.
+    #[test]
+    fn ds_choices_resolve_rejects_flags_the_structure_lacks() {
+        let layout = LayoutChoices {
+            hash_trie_pruning: Some(PruningChoice::On),
+            ..LayoutChoices::default()
+        };
+        let msg = DsChoices::resolve(
+            IndexStructureSelector::TreeTrie,
+            &layout,
+            &ConfigChoices::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(msg.contains("--ds-layout-pruning"), "{msg}");
+        let config = ConfigChoices {
+            ds_config: vec!["load-factor=0.5".into()],
+        };
+        let msg = DsChoices::resolve(
+            IndexStructureSelector::ColumnTrie,
+            &LayoutChoices::default(),
+            &config,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(msg.contains("--ds-config"), "{msg}");
     }
 }

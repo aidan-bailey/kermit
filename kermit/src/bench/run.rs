@@ -13,12 +13,12 @@ use {
             ReportMetric,
         },
         execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
-        options::{with_hash_trie_layout, HasherChoice, PruningChoice},
+        options::{with_hash_trie_layout, DsChoices},
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
     kermit_algos::Optimiser,
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HashTrieConfig, Relation},
+    kermit_ds::Relation,
     std::{
         collections::{hash_map::Entry, BTreeMap, HashMap},
         io,
@@ -429,16 +429,9 @@ pub(crate) fn check_sweep_group_directories(
 /// three valid cells; when the user named a single incompatible pair there
 /// is nothing left to run and that is a usage error.
 pub(crate) fn resolve_sweep(
-    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, hasher: HasherChoice,
-    pruning: PruningChoice, config: HashTrieConfig,
+    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, choices: DsChoices,
 ) -> anyhow::Result<Vec<Execution>> {
-    let sweep = Sweep::expand(
-        &indexstructure.expand(),
-        &algorithm.expand(),
-        hasher,
-        pruning,
-        config,
-    );
+    let sweep = Sweep::expand(&indexstructure.expand(), &algorithm.expand(), choices);
     if sweep.cells.is_empty() {
         anyhow::bail!(
             "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \

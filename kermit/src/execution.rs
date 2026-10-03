@@ -23,7 +23,7 @@
 //! `bench run` in `main.rs` are generic over one each.
 
 use {
-    crate::options::{hasher_of, pruning_of, HasherChoice, PruningChoice},
+    crate::options::{hasher_of, pruning_of, DsChoices, HasherChoice, PruningChoice},
     kermit::db::{hash_join_for_each, lftj_join_for_each, JoinError},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser, QueryOptimiser},
     kermit_ds::{
@@ -123,10 +123,16 @@ pub enum Execution {
 impl Execution {
     /// The only way to obtain an `Execution` from a concrete pair. Returns
     /// `None` for the three incompatible pairs, which the sweep skips.
+    /// `choices` reach the cells that have each axis: today the hash-trie
+    /// cell's hasher, pruning and config.
     pub fn for_pair(
-        ds: IndexStructure, algo: JoinAlgorithm, hasher: HasherChoice, pruning: PruningChoice,
-        config: HashTrieConfig,
+        ds: IndexStructure, algo: JoinAlgorithm, choices: DsChoices,
     ) -> Option<Execution> {
+        let DsChoices {
+            hasher,
+            pruning,
+            config,
+        } = choices;
         match (ds, algo) {
             | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
                 Some(Execution::TrieLftj(SortedTrie::TreeTrie))
@@ -152,9 +158,12 @@ impl Execution {
     /// compatible algorithm, so this is total: it is
     /// [`Execution::for_pair`] with that algorithm filled in, and the two
     /// are pinned to agree by `for_structure_agrees_with_for_pair`.
-    pub fn for_structure(
-        ds: IndexStructure, hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig,
-    ) -> Execution {
+    pub fn for_structure(ds: IndexStructure, choices: DsChoices) -> Execution {
+        let DsChoices {
+            hasher,
+            pruning,
+            config,
+        } = choices;
         match ds {
             | IndexStructure::TreeTrie => Execution::TrieLftj(SortedTrie::TreeTrie),
             | IndexStructure::ColumnTrie => Execution::TrieLftj(SortedTrie::ColumnTrie),
@@ -200,17 +209,16 @@ pub struct Sweep {
 
 impl Sweep {
     /// Expands the cross product of `structures × algorithms` into valid
-    /// cells, partitioning off the incompatible pairs. `hasher`,
-    /// `pruning` and `config` are attached to every `HashTrie` cell.
+    /// cells, partitioning off the incompatible pairs. `choices` reach the
+    /// cells that have each axis (see [`Execution::for_pair`]).
     pub fn expand(
-        structures: &[IndexStructure], algorithms: &[JoinAlgorithm], hasher: HasherChoice,
-        pruning: PruningChoice, config: HashTrieConfig,
+        structures: &[IndexStructure], algorithms: &[JoinAlgorithm], choices: DsChoices,
     ) -> Sweep {
         let mut cells = Vec::new();
         let mut skipped = Vec::new();
         for &ds in structures {
             for &algo in algorithms {
-                match Execution::for_pair(ds, algo, hasher, pruning, config) {
+                match Execution::for_pair(ds, algo, choices) {
                     | Some(cell) => cells.push(cell),
                     | None => skipped.push((ds, algo)),
                 }
@@ -670,13 +678,7 @@ mod tests {
     /// skips the other three — the `-i all -a all` acceptance criterion.
     #[test]
     fn sweep_of_full_cross_product_yields_exactly_three_cells() {
-        let sweep = Sweep::expand(
-            &all_structures(),
-            &all_algorithms(),
-            HasherChoice::Sip,
-            PruningChoice::Off,
-            HashTrieConfig::default(),
-        );
+        let sweep = Sweep::expand(&all_structures(), &all_algorithms(), DsChoices::default());
         assert_eq!(sweep.cells.len(), 3, "{sweep:?}");
         assert_eq!(sweep.skipped.len(), 3, "{sweep:?}");
         let ran: Vec<(IndexStructure, JoinAlgorithm)> = sweep
@@ -696,9 +698,7 @@ mod tests {
         let sweep = Sweep::expand(
             &all_structures(),
             &[JoinAlgorithm::LeapfrogTriejoin],
-            HasherChoice::Sip,
-            PruningChoice::Off,
-            HashTrieConfig::default(),
+            DsChoices::default(),
         );
         assert!(sweep
             .cells
@@ -717,9 +717,7 @@ mod tests {
         let sweep = Sweep::expand(
             &[IndexStructure::HashTrie],
             &[JoinAlgorithm::LeapfrogTriejoin],
-            HasherChoice::Sip,
-            PruningChoice::Off,
-            HashTrieConfig::default(),
+            DsChoices::default(),
         );
         assert!(sweep.cells.is_empty());
         assert_eq!(sweep.skipped.len(), 1);
@@ -729,28 +727,20 @@ mod tests {
     /// choice rides along on the hash cell.
     #[test]
     fn execution_axes_round_trip_through_for_pair() {
+        let fx = DsChoices {
+            hasher: HasherChoice::Fxhash,
+            ..DsChoices::default()
+        };
         for ds in all_structures() {
             for algo in all_algorithms() {
-                if let Some(cell) = Execution::for_pair(
-                    ds,
-                    algo,
-                    HasherChoice::Fxhash,
-                    PruningChoice::Off,
-                    HashTrieConfig::default(),
-                ) {
+                if let Some(cell) = Execution::for_pair(ds, algo, fx) {
                     assert_eq!(cell.index_structure(), ds);
                     assert_eq!(cell.algorithm(), algo);
                 }
             }
         }
         assert_eq!(
-            Execution::for_pair(
-                IndexStructure::HashTrie,
-                JoinAlgorithm::HashTriejoin,
-                HasherChoice::Fxhash,
-                PruningChoice::Off,
-                HashTrieConfig::default(),
-            ),
+            Execution::for_pair(IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin, fx),
             Some(Execution::HashHtj {
                 hasher: HasherChoice::Fxhash,
                 pruning: PruningChoice::Off,
@@ -768,10 +758,15 @@ mod tests {
         for ds in all_structures() {
             for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
                 for pruning in [PruningChoice::Off, PruningChoice::On] {
-                    let cell = Execution::for_structure(ds, hasher, pruning, config);
+                    let choices = DsChoices {
+                        hasher,
+                        pruning,
+                        config,
+                    };
+                    let cell = Execution::for_structure(ds, choices);
                     assert_eq!(cell.index_structure(), ds);
                     assert_eq!(
-                        Execution::for_pair(ds, cell.algorithm(), hasher, pruning, config),
+                        Execution::for_pair(ds, cell.algorithm(), choices),
                         Some(cell)
                     );
                 }

@@ -39,10 +39,7 @@ use {
     },
     bench_report::{BenchKind, ReportSink},
     execution::{read_relation_header, Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
-    options::{
-        validate_config_choices, validate_layout_choices, with_hash_trie_layout, ConfigChoices,
-        LayoutChoices,
-    },
+    options::{with_hash_trie_layout, ConfigChoices, DsChoices, LayoutChoices},
 };
 
 /// Default Criterion group name when `--name` is omitted on `bench run`.
@@ -578,13 +575,11 @@ fn load_query_runner(args: &QueryArgs, config: HashTrieConfig) -> anyhow::Result
             }
         }
     }
-    let cell = Execution::for_pair(
-        args.indexstructure,
-        args.algorithm,
-        args.layout.hash_trie_hasher_resolved(),
-        args.layout.hash_trie_pruning_resolved(),
+    let cell = Execution::for_pair(args.indexstructure, args.algorithm, DsChoices {
+        hasher: args.layout.hash_trie_hasher_resolved(),
+        pruning: args.layout.hash_trie_pruning_resolved(),
         config,
-    )
+    })
     .ok_or_else(|| {
         anyhow::anyhow!(
             "incompatible selection: {:?} cannot run under {:?}",
@@ -788,28 +783,20 @@ fn run_bench_join(
     queries_per_build: u32, config: ConfigChoices,
 ) -> anyhow::Result<()> {
     let selector = IndexStructureSelector::of(query_args.indexstructure);
-    validate_layout_choices(selector, &query_args.layout)?;
-    validate_config_choices(selector, &config)?;
-    let hash_trie_config = config.hash_trie_config_resolved()?;
-    let cell = Execution::for_pair(
-        query_args.indexstructure,
-        query_args.algorithm,
-        query_args.layout.hash_trie_hasher_resolved(),
-        query_args.layout.hash_trie_pruning_resolved(),
-        hash_trie_config,
-    )
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "incompatible selection: {:?} cannot run under {:?}",
-            query_args.indexstructure,
-            query_args.algorithm
-        )
-    })?;
+    let choices = DsChoices::resolve(selector, &query_args.layout, &config)?;
+    let cell = Execution::for_pair(query_args.indexstructure, query_args.algorithm, choices)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "incompatible selection: {:?} cannot run under {:?}",
+                query_args.indexstructure,
+                query_args.algorithm
+            )
+        })?;
 
     if let Some(path) = &output {
         let join_query = parse_query(&query_args)?;
         validate_query_files(&join_query, &query_args)?;
-        let join = load_query_runner(&query_args, hash_trie_config)?;
+        let join = load_query_runner(&query_args, choices.config)?;
         let header = head_column_names(&join_query);
         let tuples = join(join_query)?;
         let writer = BufWriter::new(fs::File::create(path)?);
@@ -840,17 +827,13 @@ fn run_ds_bench_command(
     bench_args: &BenchArgs, relation: PathBuf, indexstructure: IndexStructureSelector,
     metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices, config: ConfigChoices,
 ) -> anyhow::Result<()> {
-    validate_layout_choices(indexstructure, &layout)?;
-    validate_config_choices(indexstructure, &config)?;
-    let hash_trie_config = config.hash_trie_config_resolved()?;
+    let choices = DsChoices::resolve(indexstructure, &layout, &config)?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Ds)?;
     for ds in indexstructure.expand() {
         let report = dispatch_ds_bench(
             ds,
-            layout.hash_trie_hasher_resolved(),
-            layout.hash_trie_pruning_resolved(),
-            hash_trie_config,
+            choices,
             &relation,
             &metrics,
             queries_per_build,
@@ -873,16 +856,8 @@ fn run_bench_run_command(
     metrics: Vec<Metric>, queries_per_build: u32, force: bool, verify: bool, layout: LayoutChoices,
     config: ConfigChoices,
 ) -> anyhow::Result<()> {
-    validate_layout_choices(indexstructure, &layout)?;
-    validate_config_choices(indexstructure, &config)?;
-    let hash_trie_config = config.hash_trie_config_resolved()?;
-    let cells = resolve_sweep(
-        indexstructure,
-        algorithm,
-        layout.hash_trie_hasher_resolved(),
-        layout.hash_trie_pruning_resolved(),
-        hash_trie_config,
-    )?;
+    let choices = DsChoices::resolve(indexstructure, &layout, &config)?;
+    let cells = resolve_sweep(indexstructure, algorithm, choices)?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
         .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;

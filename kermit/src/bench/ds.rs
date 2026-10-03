@@ -10,10 +10,10 @@ use {
         },
         execution::{Execution, HashTrieFamily, RelationFamily, SortedTrie, SortedTrieFamily},
         measurement,
-        options::{with_hash_trie_layout, HasherChoice, PruningChoice},
+        options::{with_hash_trie_layout, DsChoices},
         BenchArgs,
     },
-    kermit_ds::{HashTrieConfig, IndexStructure, Relation},
+    kermit_ds::{IndexStructure, Relation},
     std::{collections::BTreeMap, fs, io, path::Path},
 };
 
@@ -196,13 +196,11 @@ fn run_ds_bench<F: RelationFamily>(
 /// `with_hash_trie_layout!` — the one place that product is expanded —
 /// and the `--ds-config` values ride along on the family, so the relation
 /// this measures is the one the report's `ds_*` axes describe.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_ds_bench(
-    ds: IndexStructure, hasher: HasherChoice, pruning: PruningChoice, config: HashTrieConfig,
-    relation: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
-    bench_args: &BenchArgs,
+    ds: IndexStructure, choices: DsChoices, relation: &Path, metrics: &[Metric],
+    queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    match Execution::for_structure(ds, hasher, pruning, config) {
+    match Execution::for_structure(ds, choices) {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => run_ds_bench(
             &SortedTrieFamily::<kermit_ds::TreeTrie>::new(),
             relation,
