@@ -265,7 +265,7 @@ impl ColumnTrie {
     /// the build before issue #84, kept as
     /// [`ColumnTrieBuildMode::Incremental`] so its measurements can be
     /// reproduced. Each `insert` scans its interval from the start, so this
-    /// is O(n · a · b).
+    /// is O(n · a · b), `b` the average branching factor.
     fn from_sorted_by_insertion(header: RelationHeader, sorted: Vec<Vec<usize>>) -> Self {
         let mut trie = Self::new(header);
         for tuple in sorted {

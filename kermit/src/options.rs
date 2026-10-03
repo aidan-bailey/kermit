@@ -199,13 +199,15 @@ pub(crate) fn validate_layout_choices(
 /// Monomorphises `$body` over the `HashTrie` Layout cell selected at
 /// runtime.
 ///
-/// Both dispatchers (`dispatch_ds_bench` and `dispatch_run_bench`, in
-/// `main.rs`) go through here, so the Layout product is written out once
-/// rather than twice. It is not free of the product, though: the arms
+/// The dispatchers (`dispatch_ds_bench` and `dispatch_run_bench`, in
+/// `bench/ds.rs` and `bench/run.rs`) and `load_query_runner` (in `main.rs`)
+/// all go through here, so the Layout product is written out once rather
+/// than once per caller. It is not free of the product, though: the arms
 /// *are* the cells,
 /// so a third Layout dimension doubles them (2^n in general) and also costs
-/// a `LayoutChoices` field plus one field each in `DsChoices` and
-/// `Execution::HashHtj`, and the matching arms in `HashHtj`. Before a
+/// a `LayoutChoices` field, a `DsChoices` field, an `Execution::HashHtj`
+/// field, and a type parameter (with its `*_of::<X>()` label) on `HashHtj`
+/// and `HashTrieFamily`. Before a
 /// fourth dimension, reach for a nested macro that expands one dimension at
 /// a time, or a builder — not another hand-written 16-arm match.
 ///

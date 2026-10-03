@@ -5,8 +5,10 @@
 //! a single type identifier. A build mode has no type-level identity, so
 //! `BuiltWith<R, P>` pairs a relation `R` with a zero-sized marker
 //! `P: BuildModeProvider<R::BuildMode>` that supplies the mode. The wrapper
-//! delegates every trait to `R`; only `from_tuples` differs, routing
-//! through `P::build_mode()`.
+//! forwards the sorted-family traits (`TrieIterable`, `Cardinality`,
+//! `HeapSize`, `Projectable`, `JoinIterable`) to `R`; only `from_tuples`
+//! differs, routing through `P::build_mode()`. A hash-family BuildMode would
+//! also need a `HashTrieIterable` forward, as `Configured` has.
 //!
 //! Like `Configured`, this is test scaffolding shipped in the library so
 //! that `kermit-ds` and `kermit` integration tests share one definition.
@@ -147,6 +149,21 @@ mod tests {
 
     type IncrementalTrie = BuiltWith<ColumnTrie, Incremental>;
 
+    thread_local! {
+        static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Counts how often a build asks it for a mode, so the test below can
+    /// tell a `BuiltWith` that applies its provider from one that ignores it.
+    struct Spy;
+
+    impl BuildModeProvider<ColumnTrieBuildMode> for Spy {
+        fn build_mode() -> ColumnTrieBuildMode {
+            CALLS.with(|calls| calls.set(calls.get() + 1));
+            ColumnTrieBuildMode::Incremental
+        }
+    }
+
     fn tuples_of(relation: &impl TrieIterable) -> Vec<Vec<usize>> {
         relation.trie_iter().into_iter().collect()
     }
@@ -160,6 +177,17 @@ mod tests {
         assert_eq!(tuples_of(&r), vec![vec![1, 2], vec![3, 4]]);
         assert_eq!(Cardinality::tuple_count(&r), 2);
         assert_eq!(r.heap_size_bytes(), plain.heap_size_bytes());
+    }
+
+    /// Without this, a `from_tuples` that ignored `P` would pass every other
+    /// test, and the `ColumnTrieIncremental` suites would silently run Bulk.
+    #[test]
+    fn from_tuples_asks_the_provider_for_its_mode() {
+        CALLS.with(|calls| calls.set(0));
+        let _empty = BuiltWith::<ColumnTrie, Spy>::new(2.into());
+        assert_eq!(CALLS.with(|calls| calls.get()), 0);
+        let _built = BuiltWith::<ColumnTrie, Spy>::from_tuples(2.into(), vec![vec![1, 2]]);
+        assert_eq!(CALLS.with(|calls| calls.get()), 1);
     }
 
     #[test]

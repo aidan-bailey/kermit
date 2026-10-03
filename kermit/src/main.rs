@@ -16,7 +16,7 @@ use {
     kermit::db::{validate_query, JoinError},
     kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HashTrieConfig, IndexStructure},
+    kermit_ds::IndexStructure,
     kermit_parser::Term,
     std::{
         fs,
@@ -548,12 +548,12 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
 /// error, and the `--ds-layout-*` flags are only accepted with
 /// `-i hash-trie`.
 ///
-/// `kermit join` deliberately carries no `--ds-config` and passes
-/// [`HashTrieConfig::default()`]: the one Config value trades space against
-/// probe length and cannot change a query's answers. `bench join --output`
-/// passes its resolved config so the CSV comes from the same build the
-/// measurements use.
-fn load_query_runner(args: &QueryArgs, config: HashTrieConfig) -> anyhow::Result<JoinRunner> {
+/// `kermit join` deliberately carries no `--ds-config`: it passes the default
+/// config inside its [`DsChoices`], because the one Config value trades space
+/// against probe length and cannot change a query's answers. `bench join
+/// --output` passes its resolved [`DsChoices`], so the CSV comes from the same
+/// build the measurements use.
+fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<JoinRunner> {
     // Deliberately duplicates `validate_layout_choices` for `kermit join`,
     // which has no selector-based validation of its own; `bench join`
     // validates first and pays this check a second time on its `--output`
@@ -575,18 +575,14 @@ fn load_query_runner(args: &QueryArgs, config: HashTrieConfig) -> anyhow::Result
             }
         }
     }
-    let cell = Execution::for_pair(args.indexstructure, args.algorithm, DsChoices {
-        hasher: args.layout.hash_trie_hasher_resolved(),
-        pruning: args.layout.hash_trie_pruning_resolved(),
-        config,
-    })
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "incompatible selection: {:?} cannot run under {:?}",
-            args.indexstructure,
-            args.algorithm
-        )
-    })?;
+    let cell =
+        Execution::for_pair(args.indexstructure, args.algorithm, choices).ok_or_else(|| {
+            anyhow::anyhow!(
+                "incompatible selection: {:?} cannot run under {:?}",
+                args.indexstructure,
+                args.algorithm
+            )
+        })?;
     let optimiser = args.optimiser;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie) => build_join_runner(
@@ -690,7 +686,12 @@ fn resolve_benchmarks(
 fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()> {
     let join_query = parse_query(&query_args)?;
     validate_query_files(&join_query, &query_args)?;
-    let join = load_query_runner(&query_args, HashTrieConfig::default())?;
+    let choices = DsChoices {
+        hasher: query_args.layout.hash_trie_hasher_resolved(),
+        pruning: query_args.layout.hash_trie_pruning_resolved(),
+        ..DsChoices::default()
+    };
+    let join = load_query_runner(&query_args, choices)?;
     let header = head_column_names(&join_query);
     let tuples = join(join_query)?;
     let writer: Box<dyn Write> = match &output {
@@ -796,7 +797,7 @@ fn run_bench_join(
     if let Some(path) = &output {
         let join_query = parse_query(&query_args)?;
         validate_query_files(&join_query, &query_args)?;
-        let join = load_query_runner(&query_args, choices.config)?;
+        let join = load_query_runner(&query_args, choices)?;
         let header = head_column_names(&join_query);
         let tuples = join(join_query)?;
         let writer = BufWriter::new(fs::File::create(path)?);
