@@ -71,6 +71,10 @@ fn generate(specs: &[LubmQuerySpec]) -> (Result<LubmMeta, RdfError>, tempfile::T
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "miri cannot model `fs::copy` (copy_file_range) in the LUBM stage step"
+)]
 fn every_absent_predicate_of_every_query_is_reported_at_once() {
     let specs = [
         spec(
@@ -124,6 +128,10 @@ fn every_absent_predicate_of_every_query_is_reported_at_once() {
 /// up-front predicate scan rejects it (a FILTER is not a BGP) or only the
 /// translation does (a predicate variable carries no IRI to check).
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "miri cannot model `fs::copy` (copy_file_range) in the LUBM stage step"
+)]
 fn an_untranslatable_query_is_named() {
     for (name, sparql) in [
         (
