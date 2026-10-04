@@ -1,11 +1,11 @@
 //! CLI option groups for the optimisation axes (`--ds-layout-*`,
-//! `--ds-config`, `--ds-build`) and the single place the `HashTrie` Layout
-//! product is monomorphised.
+//! `--ds-config`, `--ds-build`) and the places the Layout products are
+//! monomorphised: `with_hash_trie_layout!` and `with_sorted_trie_layout!`.
 
 use {
     crate::IndexStructureSelector,
     clap::Args,
-    kermit_ds::{ColumnTrieBuildMode, HashTrieConfig, LoadFactor, PruningPolicy},
+    kermit_ds::{ColumnTrieBuildMode, HashTrieConfig, LoadFactor, PruningPolicy, SeekStrategy},
     kermit_iters::{HashStrategy, LayoutOption},
 };
 
@@ -119,11 +119,62 @@ pub(crate) fn pruning_of<P: PruningPolicy>() -> PruningChoice {
     })
 }
 
+/// CLI-side selector for `--ds-layout-seek`: the [`SeekStrategy`]
+/// monomorphised into `TreeTrie<S>` / `ColumnTrie<S>`. `Binary`, the
+/// default, is the `partition_point` search both sorted tries used before
+/// the parameter existed.
+///
+/// Only valid when the selected index structure is `tree-trie` or
+/// `column-trie` (or `all`): `validate_layout_choices` rejects it on
+/// `hash-trie`, and `bench ds` rejects it outright, since none of its
+/// metrics seeks.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum SeekChoice {
+    /// A scan (`LinearSeek`).
+    Linear,
+    /// A binary search (`BinarySeek`), the default.
+    #[default]
+    Binary,
+    /// A galloping search (`GallopingSeek`).
+    Galloping,
+}
+
+impl SeekChoice {
+    /// The choice that monomorphises to the [`SeekStrategy`] marker whose
+    /// [`LayoutOption::NAME`] is `name`, or `None` if no CLI choice does.
+    /// The counterpart of [`HasherChoice::from_layout_name`].
+    pub(crate) fn from_layout_name(name: &str) -> Option<Self> {
+        match name {
+            | "linear" => Some(Self::Linear),
+            | "binary" => Some(Self::Binary),
+            | "galloping" => Some(Self::Galloping),
+            | _ => None,
+        }
+    }
+}
+
+/// The `--ds-layout-seek` label of the [`SeekStrategy`] a code path was
+/// monomorphised over. The counterpart of [`hasher_of`].
+///
+/// # Panics
+///
+/// Panics if `S`'s layout name has no [`SeekChoice`], with the same caveat
+/// about what the round-trip test covers; see [`hasher_of`].
+pub(crate) fn seek_of<S: SeekStrategy>() -> SeekChoice {
+    let name = <S as LayoutOption>::NAME;
+    SeekChoice::from_layout_name(name).unwrap_or_else(|| {
+        panic!(
+            "no --ds-layout-seek choice for seek strategy {name:?} ({})",
+            std::any::type_name::<S>()
+        )
+    })
+}
+
 /// Layout-axis CLI choices flattened into every subcommand whose dispatch
-/// monomorphises over a `HashTrie<H, P>` (currently `bench Ds` and `bench
-/// Run`). Each field is named `<axis>` and surfaces as the long flag
-/// `--ds-layout-<axis>` so the prefix matches the bench-report axis namespace
-/// described in CLAUDE.md → "JSON bench reports".
+/// monomorphises over a Layout-parameterised structure (`HashTrie<H, P>`,
+/// `TreeTrie<S>`, `ColumnTrie<S>`). Each field is named `<axis>` and surfaces
+/// as the long flag `--ds-layout-<axis>` so the prefix matches the bench-report
+/// axis namespace described in CLAUDE.md → "JSON bench reports".
 ///
 /// Every field is an `Option<…>` rather than a clap-defaulted value so we
 /// can distinguish "not provided" from "explicitly defaulted". The
@@ -141,6 +192,12 @@ pub(crate) struct LayoutChoices {
     /// valid when `--indexstructure hash-trie` is selected.
     #[arg(long = "ds-layout-pruning", value_name = "PRUNING", value_enum)]
     hash_trie_pruning: Option<PruningChoice>,
+    /// Seek strategy of `TreeTrie<S>` / `ColumnTrie<S>` (default:
+    /// `binary`). Only valid when `--indexstructure tree-trie` or
+    /// `column-trie` (or `all`) is selected, and not on `bench ds`, none of
+    /// whose metrics seeks.
+    #[arg(long = "ds-layout-seek", value_name = "SEEK", value_enum)]
+    sorted_trie_seek: Option<SeekChoice>,
 }
 
 impl LayoutChoices {
@@ -165,30 +222,64 @@ impl LayoutChoices {
 
     /// Returns whether the user explicitly passed `--ds-layout-pruning`.
     pub(crate) fn hash_trie_pruning_explicit(&self) -> bool { self.hash_trie_pruning.is_some() }
+
+    /// Returns the `SeekChoice` to monomorphise on, applying
+    /// `SeekChoice::default()` when none was supplied on the command line.
+    /// Use this at dispatch sites.
+    pub(crate) fn sorted_trie_seek_resolved(&self) -> SeekChoice {
+        self.sorted_trie_seek.unwrap_or_default()
+    }
+
+    /// Returns whether the user explicitly passed `--ds-layout-seek`.
+    pub(crate) fn sorted_trie_seek_explicit(&self) -> bool { self.sorted_trie_seek.is_some() }
 }
 
 /// Rejects `LayoutChoices` flags that are incompatible with the chosen
-/// `IndexStructureSelector`. Both layout flags (`--ds-layout-hasher` and
-/// `--ds-layout-pruning`) are meaningful only for `hash-trie` (and for
-/// `all`, where the HashTrie sweep arm picks them up). Passing one on a
-/// non-HashTrie selector is a usage error: the flag would be silently
-/// ignored, producing a benchmark report whose `ds_layout_*` axis
-/// disagrees with the actual structure used.
+/// `IndexStructureSelector`. Each flag names a Layout of particular
+/// structures: `--ds-layout-hasher` and `--ds-layout-pruning` belong to
+/// `hash-trie`, and `--ds-layout-seek` to `tree-trie` and `column-trie`.
+/// `all` accepts every flag, because its sweep has a cell for each. A flag
+/// on a structure without its Layout is a usage error: it would be silently
+/// ignored, producing a benchmark report whose `ds_layout_*` axis disagrees
+/// with the actual structure used.
 pub(crate) fn validate_layout_choices(
     indexstructure: IndexStructureSelector, layout: &LayoutChoices,
 ) -> anyhow::Result<()> {
-    let applies = matches!(
+    let hash_trie = matches!(
         indexstructure,
         IndexStructureSelector::HashTrie | IndexStructureSelector::All
     );
-    let explicit: &[(&str, bool)] = &[
-        ("--ds-layout-hasher", layout.hash_trie_hasher_explicit()),
-        ("--ds-layout-pruning", layout.hash_trie_pruning_explicit()),
+    let sorted_trie = matches!(
+        indexstructure,
+        IndexStructureSelector::TreeTrie
+            | IndexStructureSelector::ColumnTrie
+            | IndexStructureSelector::All
+    );
+    // (flag, given, applies to the selection, the structures it applies to)
+    let flags: &[(&str, bool, bool, &str)] = &[
+        (
+            "--ds-layout-hasher",
+            layout.hash_trie_hasher_explicit(),
+            hash_trie,
+            "hash-trie",
+        ),
+        (
+            "--ds-layout-pruning",
+            layout.hash_trie_pruning_explicit(),
+            hash_trie,
+            "hash-trie",
+        ),
+        (
+            "--ds-layout-seek",
+            layout.sorted_trie_seek_explicit(),
+            sorted_trie,
+            "tree-trie or column-trie",
+        ),
     ];
-    for (flag, given) in explicit {
+    for (flag, given, applies, structures) in flags {
         if *given && !applies {
             anyhow::bail!(
-                "{flag} is only valid with --indexstructure hash-trie (or all); got \
+                "{flag} is only valid with --indexstructure {structures} (or all); got \
                  --indexstructure {indexstructure:?}"
             );
         }
@@ -242,6 +333,36 @@ macro_rules! with_hash_trie_layout {
 }
 
 pub(crate) use with_hash_trie_layout;
+
+/// Monomorphises `$body` over the sorted-trie seek strategy selected at
+/// runtime. It is the sorted counterpart of `with_hash_trie_layout!`, and
+/// the one place a `--ds-layout-seek` choice becomes a type. The two
+/// products share no dimension (a sorted cell has no hasher, and a hash
+/// cell no seek), so they are separate macros. Called by the sorted arms of
+/// `dispatch_run_bench`, `dispatch_ds_bench` and `load_query_runner`.
+///
+/// Hygiene contract as for `with_hash_trie_layout!`: `$S` becomes a type
+/// alias scoped to the arm.
+macro_rules! with_sorted_trie_layout {
+    ($seek:expr, | $S:ident | $body:expr) => {
+        match $seek {
+            | $crate::options::SeekChoice::Linear => {
+                type $S = ::kermit_ds::LinearSeek;
+                $body
+            },
+            | $crate::options::SeekChoice::Binary => {
+                type $S = ::kermit_ds::BinarySeek;
+                $body
+            },
+            | $crate::options::SeekChoice::Galloping => {
+                type $S = ::kermit_ds::GallopingSeek;
+                $body
+            },
+        }
+    };
+}
+
+pub(crate) use with_sorted_trie_layout;
 
 /// Config-axis CLI choices, flattened beside [`LayoutChoices`] into `bench
 /// ds` and `bench run`. One flag, `--ds-config`, takes comma-separated
@@ -396,6 +517,8 @@ pub(crate) struct DsChoices {
     pub hasher: HasherChoice,
     /// `--ds-layout-pruning`; reaches the hash-trie cell only.
     pub pruning: PruningChoice,
+    /// `--ds-layout-seek`; reaches the two sorted-trie cells.
+    pub seek: SeekChoice,
     /// `--ds-config`; reaches the hash-trie cell only.
     pub config: HashTrieConfig,
     /// `--ds-build`; reaches the column-trie cell only.
@@ -420,6 +543,7 @@ impl DsChoices {
         Ok(Self {
             hasher: layout.hash_trie_hasher_resolved(),
             pruning: layout.hash_trie_pruning_resolved(),
+            seek: layout.sorted_trie_seek_resolved(),
             config: config.hash_trie_config_resolved()?,
             build: build.column_trie_build_resolved(),
         })
@@ -431,7 +555,7 @@ mod tests {
     use {
         super::*,
         clap::ValueEnum,
-        kermit_ds::{NoPruning, SingletonPruning},
+        kermit_ds::{BinarySeek, GallopingSeek, LinearSeek, NoPruning, SingletonPruning},
         kermit_iters::{FxHashStrategy, SipHashStrategy},
     };
 
@@ -797,6 +921,80 @@ mod tests {
             &LayoutChoices::default(),
             &ConfigChoices::default(),
             &build,
+        )
+        .is_err());
+    }
+
+    /// The same round trip for `--ds-layout-seek` and `SeekStrategy`.
+    #[test]
+    fn seek_choices_round_trip_through_layout_names() {
+        const TABLE: &[(SeekChoice, &str)] = &[
+            (SeekChoice::Linear, <LinearSeek as LayoutOption>::NAME),
+            (SeekChoice::Binary, <BinarySeek as LayoutOption>::NAME),
+            (SeekChoice::Galloping, <GallopingSeek as LayoutOption>::NAME),
+        ];
+        for choice in SeekChoice::value_variants() {
+            let (_, name) = TABLE
+                .iter()
+                .find(|(listed, _)| listed == choice)
+                .unwrap_or_else(|| panic!("{choice:?} is missing from the round-trip table"));
+            assert_eq!(SeekChoice::from_layout_name(name), Some(*choice));
+        }
+        assert_eq!(seek_of::<LinearSeek>(), SeekChoice::Linear);
+        assert_eq!(seek_of::<BinarySeek>(), SeekChoice::Binary);
+        assert_eq!(seek_of::<GallopingSeek>(), SeekChoice::Galloping);
+    }
+
+    /// Every `with_sorted_trie_layout!` arm binds the marker its
+    /// `SeekChoice` names, so a transposed arm fails here rather than
+    /// mislabelling a bench report.
+    #[test]
+    fn sorted_layout_macro_binds_the_marker_its_arm_names() {
+        for &seek in SeekChoice::value_variants() {
+            assert_eq!(with_sorted_trie_layout!(seek, |S| seek_of::<S>()), seek);
+        }
+    }
+
+    #[test]
+    fn validate_layout_choices_accepts_seek_on_sorted_tries_or_all_only() {
+        let layout = LayoutChoices {
+            sorted_trie_seek: Some(SeekChoice::Galloping),
+            ..LayoutChoices::default()
+        };
+        for sel in [
+            IndexStructureSelector::TreeTrie,
+            IndexStructureSelector::ColumnTrie,
+            IndexStructureSelector::All,
+        ] {
+            assert!(validate_layout_choices(sel, &layout).is_ok(), "{sel:?}");
+        }
+        let msg = validate_layout_choices(IndexStructureSelector::HashTrie, &layout)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("--ds-layout-seek"), "{msg}");
+        assert!(msg.contains("tree-trie or column-trie"), "{msg}");
+    }
+
+    #[test]
+    fn ds_choices_resolve_carries_the_seek_strategy() {
+        let layout = LayoutChoices {
+            sorted_trie_seek: Some(SeekChoice::Linear),
+            ..LayoutChoices::default()
+        };
+        let choices = DsChoices::resolve(
+            IndexStructureSelector::TreeTrie,
+            &layout,
+            &ConfigChoices::default(),
+            &BuildChoices::default(),
+        )
+        .unwrap();
+        assert_eq!(choices.seek, SeekChoice::Linear);
+        assert_eq!(DsChoices::default().seek, SeekChoice::Binary);
+        assert!(DsChoices::resolve(
+            IndexStructureSelector::HashTrie,
+            &layout,
+            &ConfigChoices::default(),
+            &BuildChoices::default(),
         )
         .is_err());
     }

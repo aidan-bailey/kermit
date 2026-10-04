@@ -10,7 +10,7 @@ use {
         },
         execution::{Execution, HashTrieFamily, RelationFamily, SortedTrie, SortedTrieFamily},
         measurement,
-        options::{with_hash_trie_layout, DsChoices},
+        options::{with_hash_trie_layout, with_sorted_trie_layout, DsChoices},
         BenchArgs,
     },
     kermit_ds::{IndexStructure, Relation},
@@ -202,24 +202,27 @@ pub(crate) fn dispatch_ds_bench(
     queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
     match Execution::for_structure(ds, choices) {
-        | Execution::TrieLftj(SortedTrie::TreeTrie) => run_ds_bench(
-            &SortedTrieFamily::<kermit_ds::TreeTrie>::default(),
+        | Execution::TrieLftj(SortedTrie::TreeTrie {
+            seek,
+        }) => with_sorted_trie_layout!(seek, |S| run_ds_bench(
+            &SortedTrieFamily::<kermit_ds::TreeTrie<S>>::default(),
             relation,
             metrics,
             queries_per_build,
             group_name,
             bench_args,
-        ),
+        )),
         | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            seek,
             build,
-        }) => run_ds_bench(
-            &SortedTrieFamily::<kermit_ds::ColumnTrie>::new(build),
+        }) => with_sorted_trie_layout!(seek, |S| run_ds_bench(
+            &SortedTrieFamily::<kermit_ds::ColumnTrie<S>>::new(build),
             relation,
             metrics,
             queries_per_build,
             group_name,
             bench_args,
-        ),
+        )),
         | Execution::HashHtj {
             hasher,
             pruning,

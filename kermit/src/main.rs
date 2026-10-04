@@ -39,7 +39,10 @@ use {
     },
     bench_report::{BenchKind, ReportSink},
     execution::{read_relation_header, Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
-    options::{with_hash_trie_layout, BuildChoices, ConfigChoices, DsChoices, LayoutChoices},
+    options::{
+        with_hash_trie_layout, with_sorted_trie_layout, BuildChoices, ConfigChoices, DsChoices,
+        LayoutChoices,
+    },
 };
 
 /// Default Criterion group name when `--name` is omitted on `bench run`.
@@ -611,8 +614,8 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
 
 /// Resolves the `(structure, algorithm)` pair in `args` to its execution
 /// cell and builds a [`JoinRunner`] for it. Incompatible pairs are a usage
-/// error, and the `--ds-layout-*` flags are only accepted with
-/// `-i hash-trie`.
+/// error. Both callers resolve `choices` through `DsChoices::resolve`, which
+/// has already validated every `--ds-*` flag.
 ///
 /// `kermit join` deliberately carries neither `--ds-config` nor `--ds-build`:
 /// it passes their defaults inside its [`DsChoices`], because neither can
@@ -621,27 +624,6 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
 /// --output` passes its resolved [`DsChoices`], so the CSV comes from the same
 /// build the measurements use.
 fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<JoinRunner> {
-    // Deliberately duplicates `validate_layout_choices` for `kermit join`,
-    // which has no selector-based validation of its own; `bench join`
-    // validates first and pays this check a second time on its `--output`
-    // path, which is harmless.
-    if args.indexstructure != IndexStructure::HashTrie {
-        let explicit: &[(&str, bool)] = &[
-            (
-                "--ds-layout-hasher",
-                args.layout.hash_trie_hasher_explicit(),
-            ),
-            (
-                "--ds-layout-pruning",
-                args.layout.hash_trie_pruning_explicit(),
-            ),
-        ];
-        for (flag, given) in explicit {
-            if *given {
-                anyhow::bail!("{flag} is only valid with --indexstructure hash-trie");
-            }
-        }
-    }
     let cell =
         Execution::for_pair(args.indexstructure, args.algorithm, choices).ok_or_else(|| {
             anyhow::anyhow!(
@@ -652,16 +634,19 @@ fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Joi
         })?;
     let optimiser = args.optimiser;
     match cell {
-        | Execution::TrieLftj(SortedTrie::TreeTrie) => build_join_runner(
-            TrieLftj::<kermit_ds::TreeTrie>::new((), optimiser),
+        | Execution::TrieLftj(SortedTrie::TreeTrie {
+            seek,
+        }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
+            TrieLftj::<kermit_ds::TreeTrie<S>>::new((), optimiser),
             &args.relations,
-        ),
+        )),
         | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            seek,
             build,
-        }) => build_join_runner(
-            TrieLftj::<kermit_ds::ColumnTrie>::new(build, optimiser),
+        }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
+            TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, optimiser),
             &args.relations,
-        ),
+        )),
         | Execution::HashHtj {
             hasher,
             pruning,
@@ -755,11 +740,15 @@ fn resolve_benchmarks(
 fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()> {
     let join_query = parse_query(&query_args)?;
     validate_query_files(&join_query, &query_args)?;
-    let choices = DsChoices {
-        hasher: query_args.layout.hash_trie_hasher_resolved(),
-        pruning: query_args.layout.hash_trie_pruning_resolved(),
-        ..DsChoices::default()
-    };
+    // `kermit join` has no `--ds-config` / `--ds-build` (neither can change
+    // an answer), so it resolves its layout flags against their defaults,
+    // through the same validator as every bench command.
+    let choices = DsChoices::resolve(
+        IndexStructureSelector::of(query_args.indexstructure),
+        &query_args.layout,
+        &ConfigChoices::default(),
+        &BuildChoices::default(),
+    )?;
     let join = load_query_runner(&query_args, choices)?;
     let header = head_column_names(&join_query);
     let writer: Box<dyn Write> = match &output {
@@ -895,6 +884,17 @@ fn run_ds_bench_command(
     metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices, config: ConfigChoices,
     build: BuildChoices,
 ) -> anyhow::Result<()> {
+    // None of `bench ds`'s metrics calls `seek`: insertion builds the
+    // relation, iteration and end_to_end scan it with open/next/up
+    // (`TrieIteratorWrapper::advance`), and space measures it. Accepting
+    // the flag would label identical measurements as a seek ablation.
+    if layout.sorted_trie_seek_explicit() {
+        anyhow::bail!(
+            "--ds-layout-seek has no effect on bench ds: none of its metrics calls seek \
+             (insertion builds the relation; iteration and end_to_end scan it with open/next/up; \
+             space measures it). Time a join with bench run or bench join."
+        );
+    }
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Ds)?;

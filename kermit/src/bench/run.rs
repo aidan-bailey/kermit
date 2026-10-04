@@ -13,7 +13,7 @@ use {
             ReportMetric,
         },
         execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
-        options::{with_hash_trie_layout, DsChoices},
+        options::{with_hash_trie_layout, with_sorted_trie_layout, DsChoices},
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
     kermit_algos::Optimiser,
@@ -337,18 +337,21 @@ pub(crate) fn dispatch_run_bench(
 ) -> anyhow::Result<Vec<BenchReport>> {
     let optimiser = settings.optimiser;
     match cell {
-        | Execution::TrieLftj(SortedTrie::TreeTrie) => run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie>::new((), optimiser),
+        | Execution::TrieLftj(SortedTrie::TreeTrie {
+            seek,
+        }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
+            &TrieLftj::<kermit_ds::TreeTrie<S>>::new((), optimiser),
             workload,
             settings,
-        ),
+        )),
         | Execution::TrieLftj(SortedTrie::ColumnTrie {
+            seek,
             build,
-        }) => run_benchmark(
-            &TrieLftj::<kermit_ds::ColumnTrie>::new(build, optimiser),
+        }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
+            &TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, optimiser),
             workload,
             settings,
-        ),
+        )),
         | Execution::HashHtj {
             hasher,
             pruning,

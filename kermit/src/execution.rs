@@ -23,13 +23,15 @@
 //! `bench run` (`bench/ds.rs`, `bench/run.rs`) are generic over one each.
 
 use {
-    crate::options::{hasher_of, pruning_of, DsChoices, HasherChoice, PruningChoice},
+    crate::options::{
+        hasher_of, pruning_of, seek_of, DsChoices, HasherChoice, PruningChoice, SeekChoice,
+    },
     kermit::db::{hash_join_for_each, lftj_join_for_each, JoinError},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser, QueryOptimiser},
     kermit_ds::{
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ConfigurableRelation,
         HashTrie, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy, Relation,
-        RelationFileExt, RelationHeader, TreeTrie,
+        RelationFileExt, RelationHeader, SeekStrategy, TreeTrie,
     },
     kermit_iters::{
         BuildMode, HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -48,11 +50,18 @@ use {
 /// been wired into the runner.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SortedTrie {
-    /// Pointer-based trie (`-i tree-trie`).
-    TreeTrie,
-    /// Column-oriented trie (`-i column-trie`), built by the `--ds-build`
-    /// mode `build`.
+    /// Pointer-based trie (`-i tree-trie`), seeking with `seek`.
+    TreeTrie {
+        /// The `--ds-layout-seek` choice, in the two roles of
+        /// `Execution::HashHtj`'s Layout fields: the request that selects
+        /// `S`, and the label re-derived from `S`.
+        seek: SeekChoice,
+    },
+    /// Column-oriented trie (`-i column-trie`), seeking with `seek` and
+    /// built by the `--ds-build` mode `build`.
     ColumnTrie {
+        /// As on [`SortedTrie::TreeTrie`].
+        seek: SeekChoice,
         /// The `--ds-build` mode every relation is built with.
         build: ColumnTrieBuildMode,
     },
@@ -62,7 +71,9 @@ impl SortedTrie {
     /// The `IndexStructure` this sorted trie corresponds to.
     pub fn index_structure(self) -> IndexStructure {
         match self {
-            | Self::TreeTrie => IndexStructure::TreeTrie,
+            | Self::TreeTrie {
+                ..
+            } => IndexStructure::TreeTrie,
             | Self::ColumnTrie {
                 ..
             } => IndexStructure::ColumnTrie,
@@ -73,9 +84,11 @@ impl SortedTrie {
 /// Ties a sorted-family relation type to its [`SortedTrie`] label and its
 /// build modes, so the runner's report axes are derived from the type it
 /// monomorphised over and the mode it built with, not from a separately
-/// threaded value that could disagree with them.
+/// threaded value that could disagree with them. Its Layout axes come from
+/// the relation itself (`HasOptimizationAxes`), its build mode from the
+/// family.
 pub trait SortedTrieRelation:
-    Relation + RelationFileExt + TrieIterable + Cardinality + HeapSize
+    Relation + RelationFileExt + TrieIterable + Cardinality + HeapSize + HasOptimizationAxes
 {
     /// How this structure can be built from its tuples: `()` for a
     /// structure with a single build process.
@@ -93,23 +106,28 @@ pub trait SortedTrieRelation:
     fn build_mode_axes(build: Self::BuildMode) -> BTreeMap<String, serde_json::Value>;
 }
 
-impl SortedTrieRelation for TreeTrie {
+impl<S: SeekStrategy> SortedTrieRelation for TreeTrie<S> {
     type BuildMode = ();
 
-    fn kind(_: ()) -> SortedTrie { SortedTrie::TreeTrie }
+    fn kind(_: ()) -> SortedTrie {
+        SortedTrie::TreeTrie {
+            seek: seek_of::<S>(),
+        }
+    }
 
     fn build_with(header: RelationHeader, _: (), tuples: Vec<Vec<usize>>) -> Self {
-        TreeTrie::from_tuples(header, tuples)
+        Self::from_tuples(header, tuples)
     }
 
     fn build_mode_axes(_: ()) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
 }
 
-impl SortedTrieRelation for ColumnTrie {
+impl<S: SeekStrategy> SortedTrieRelation for ColumnTrie<S> {
     type BuildMode = ColumnTrieBuildMode;
 
     fn kind(build: ColumnTrieBuildMode) -> SortedTrie {
         SortedTrie::ColumnTrie {
+            seek: seek_of::<S>(),
             build,
         }
     }
@@ -117,7 +135,7 @@ impl SortedTrieRelation for ColumnTrie {
     fn build_with(
         header: RelationHeader, build: ColumnTrieBuildMode, tuples: Vec<Vec<usize>>,
     ) -> Self {
-        ColumnTrie::from_tuples_with_build_mode(header, build, tuples)
+        Self::from_tuples_with_build_mode(header, build, tuples)
     }
 
     /// Every `ColumnTrie` report says which build made it, so kermit-lab can
@@ -164,22 +182,27 @@ impl Execution {
     /// The only way to obtain an `Execution` from a concrete pair. Returns
     /// `None` for the three incompatible pairs, which the sweep skips.
     /// `choices` reach the cells that have each axis: the hash-trie cell's
-    /// hasher, pruning and config, and the column-trie cell's build mode.
+    /// hasher, pruning and config, both sorted cells' seek strategy, and the
+    /// column-trie cell's build mode.
     pub fn for_pair(
         ds: IndexStructure, algo: JoinAlgorithm, choices: DsChoices,
     ) -> Option<Execution> {
         let DsChoices {
             hasher,
             pruning,
+            seek,
             config,
             build,
         } = choices;
         match (ds, algo) {
             | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
-                Some(Execution::TrieLftj(SortedTrie::TreeTrie))
+                Some(Execution::TrieLftj(SortedTrie::TreeTrie {
+                    seek,
+                }))
             },
             | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
                 Some(Execution::TrieLftj(SortedTrie::ColumnTrie {
+                    seek,
                     build,
                 }))
             },
@@ -205,12 +228,16 @@ impl Execution {
         let DsChoices {
             hasher,
             pruning,
+            seek,
             config,
             build,
         } = choices;
         match ds {
-            | IndexStructure::TreeTrie => Execution::TrieLftj(SortedTrie::TreeTrie),
+            | IndexStructure::TreeTrie => Execution::TrieLftj(SortedTrie::TreeTrie {
+                seek,
+            }),
             | IndexStructure::ColumnTrie => Execution::TrieLftj(SortedTrie::ColumnTrie {
+                seek,
                 build,
             }),
             | IndexStructure::HashTrie => Execution::HashHtj {
@@ -510,7 +537,9 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
 
     fn tuple_count(rel: &R) -> usize { rel.trie_iter().into_iter().count() }
 
-    fn optimization_axes(_rel: &R) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+    /// The relation's own Layout axes (`ds_layout_seek`), read from the type
+    /// it was monomorphised over.
+    fn optimization_axes(rel: &R) -> BTreeMap<String, serde_json::Value> { rel.optimization_axes() }
 
     fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
         R::build_mode_axes(self.build)
@@ -821,18 +850,21 @@ mod tests {
             for ds in all_structures() {
                 for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
                     for pruning in [PruningChoice::Off, PruningChoice::On] {
-                        let choices = DsChoices {
-                            hasher,
-                            pruning,
-                            config,
-                            build,
-                        };
-                        let cell = Execution::for_structure(ds, choices);
-                        assert_eq!(cell.index_structure(), ds);
-                        assert_eq!(
-                            Execution::for_pair(ds, cell.algorithm(), choices),
-                            Some(cell)
-                        );
+                        for &seek in SeekChoice::value_variants() {
+                            let choices = DsChoices {
+                                hasher,
+                                pruning,
+                                seek,
+                                config,
+                                build,
+                            };
+                            let cell = Execution::for_structure(ds, choices);
+                            assert_eq!(cell.index_structure(), ds);
+                            assert_eq!(
+                                Execution::for_pair(ds, cell.algorithm(), choices),
+                                Some(cell)
+                            );
+                        }
                     }
                 }
             }
@@ -871,12 +903,18 @@ mod tests {
     #[test]
     fn families_report_their_own_execution() {
         let tree = TrieLftj::<TreeTrie>::new((), Optimiser::Lexicographic);
-        assert_eq!(tree.execution(), Execution::TrieLftj(SortedTrie::TreeTrie));
+        assert_eq!(
+            tree.execution(),
+            Execution::TrieLftj(SortedTrie::TreeTrie {
+                seek: SeekChoice::Binary
+            })
+        );
         let column =
             TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::Incremental, Optimiser::Lexicographic);
         assert_eq!(
             column.execution(),
             Execution::TrieLftj(SortedTrie::ColumnTrie {
+                seek: SeekChoice::Binary,
                 build: ColumnTrieBuildMode::Incremental
             })
         );
@@ -1173,11 +1211,52 @@ mod tests {
         }
     }
 
-    kermit_ds::define_build_mode_provider!(AnyMode, ColumnTrieBuildMode, ColumnTrieBuildMode::Bulk);
-
     /// A `ColumnTrie` whose `SortedTrieRelation::build_with` records the mode
-    /// it was handed. The provider is irrelevant: `build_with` ignores it.
-    type Spy = kermit_ds::BuiltWith<ColumnTrie, AnyMode>;
+    /// it was handed. A local newtype rather than a `kermit_ds::BuiltWith`
+    /// alias: `SortedTrieRelation` requires `HasOptimizationAxes`, which the
+    /// orphan rule lets this crate implement only for a local type. Every
+    /// other impl delegates to the trie.
+    struct Spy(ColumnTrie);
+
+    impl kermit_iters::JoinIterable for Spy {}
+
+    impl kermit_ds::Projectable for Spy {
+        fn project(&self, columns: Vec<usize>) -> Self { Self(self.0.project(columns)) }
+    }
+
+    impl Relation for Spy {
+        fn header(&self) -> &RelationHeader { self.0.header() }
+
+        fn new(header: RelationHeader) -> Self { Self(ColumnTrie::new(header)) }
+
+        fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
+            Self(ColumnTrie::from_tuples(header, tuples))
+        }
+
+        fn insert(&mut self, tuple: Vec<usize>) { self.0.insert(tuple) }
+
+        fn insert_all(&mut self, tuples: Vec<Vec<usize>>) { self.0.insert_all(tuples) }
+    }
+
+    impl TrieIterable for Spy {
+        fn trie_iter(&self) -> impl kermit_iters::TrieIterator + IntoIterator<Item = Vec<usize>> {
+            self.0.trie_iter()
+        }
+    }
+
+    impl Cardinality for Spy {
+        fn tuple_count(&self) -> usize { self.0.tuple_count() }
+    }
+
+    impl HeapSize for Spy {
+        fn heap_size_bytes(&self) -> usize { self.0.heap_size_bytes() }
+    }
+
+    impl HasOptimizationAxes for Spy {
+        fn optimization_axes(&self) -> BTreeMap<String, serde_json::Value> {
+            self.0.optimization_axes()
+        }
+    }
 
     thread_local! {
         static BUILT_WITH: Cell<Option<ColumnTrieBuildMode>> = const { Cell::new(None) };
@@ -1294,10 +1373,72 @@ mod tests {
         assert!(sweep
             .cells
             .contains(&Execution::TrieLftj(SortedTrie::ColumnTrie {
+                seek: SeekChoice::Binary,
                 build: ColumnTrieBuildMode::Incremental
             })));
         assert!(sweep
             .cells
-            .contains(&Execution::TrieLftj(SortedTrie::TreeTrie)));
+            .contains(&Execution::TrieLftj(SortedTrie::TreeTrie {
+                seek: SeekChoice::Binary
+            })));
+    }
+
+    /// Each sorted family reports the seek strategy its type parameter
+    /// implies, so the label cannot disagree with the code that ran; and a
+    /// sweep attaches the `--ds-layout-seek` choice to both sorted cells.
+    #[test]
+    fn sorted_families_label_their_seek_strategy_from_the_type() {
+        use kermit_ds::{BinarySeek, GallopingSeek, LinearSeek};
+        assert_eq!(
+            TrieLftj::<TreeTrie<LinearSeek>>::new((), Optimiser::Lexicographic).execution(),
+            Execution::TrieLftj(SortedTrie::TreeTrie {
+                seek: SeekChoice::Linear
+            })
+        );
+        assert_eq!(
+            TrieLftj::<ColumnTrie<GallopingSeek>>::new(
+                ColumnTrieBuildMode::Incremental,
+                Optimiser::Lexicographic
+            )
+            .execution(),
+            Execution::TrieLftj(SortedTrie::ColumnTrie {
+                seek: SeekChoice::Galloping,
+                build: ColumnTrieBuildMode::Incremental
+            })
+        );
+        assert_eq!(
+            SortedTrieFamily::<TreeTrie<BinarySeek>>::default().execution(),
+            Execution::TrieLftj(SortedTrie::TreeTrie {
+                seek: SeekChoice::Binary
+            })
+        );
+        let choices = DsChoices {
+            seek: SeekChoice::Linear,
+            ..DsChoices::default()
+        };
+        let sweep = Sweep::expand(&all_structures(), &all_algorithms(), choices);
+        assert!(sweep
+            .cells
+            .contains(&Execution::TrieLftj(SortedTrie::TreeTrie {
+                seek: SeekChoice::Linear
+            })));
+        assert!(sweep
+            .cells
+            .contains(&Execution::TrieLftj(SortedTrie::ColumnTrie {
+                seek: SeekChoice::Linear,
+                build: ColumnTrieBuildMode::default()
+            })));
+    }
+
+    /// A sorted family's report axes are the relation's own.
+    #[test]
+    fn sorted_families_report_the_relations_seek_axis() {
+        use kermit_ds::GallopingSeek;
+        let family = TrieLftj::<TreeTrie<GallopingSeek>>::new((), Optimiser::Lexicographic);
+        let rel = family.build_relation(RelationHeader::new_positional("r", 2), vec![vec![1, 2]]);
+        assert_eq!(
+            TrieLftj::<TreeTrie<GallopingSeek>>::optimization_axes(&rel)["ds_layout_seek"],
+            "galloping"
+        );
     }
 }
