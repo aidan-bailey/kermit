@@ -6,9 +6,10 @@
 //! `BuiltWith<R, P>` pairs a relation `R` with a zero-sized marker
 //! `P: BuildModeProvider<R::BuildMode>` that supplies the mode. The wrapper
 //! forwards the sorted-family traits (`TrieIterable`, `Cardinality`,
-//! `HeapSize`, `Projectable`, `JoinIterable`) to `R`; only `from_tuples`
-//! differs, routing through `P::build_mode()`. A hash-family BuildMode would
-//! also need a `HashTrieIterable` forward, as `Configured` has.
+//! `HeapSize`, `Projectable`, `JoinIterable`, `HasOptimizationAxes`) to `R`;
+//! only `from_tuples` differs, routing through `P::build_mode()`. A
+//! hash-family BuildMode would also need a `HashTrieIterable` forward, as
+//! `Configured` has.
 //!
 //! Like `Configured`, this is test scaffolding shipped in the library so
 //! that `kermit-ds` and `kermit` integration tests share one definition.
@@ -19,8 +20,9 @@ use {
         heap_size::HeapSize,
         relation::{BuildModeRelation, Projectable, Relation, RelationHeader},
     },
-    kermit_iters::{JoinIterable, TrieIterable, TrieIterator},
-    std::{marker::PhantomData, ops::Deref},
+    kermit_iters::{HasOptimizationAxes, JoinIterable, TrieIterable, TrieIterator},
+    serde_json::Value,
+    std::{collections::BTreeMap, marker::PhantomData, ops::Deref},
 };
 
 /// A zero-sized marker that names one build mode.
@@ -134,6 +136,12 @@ impl<R: TrieIterable, P> TrieIterable for BuiltWith<R, P> {
     }
 }
 
+/// Reports the wrapped relation's Layout axes (e.g. `ds_layout_seek`); the
+/// build mode stays a family axis, since the built relation cannot record it.
+impl<R: HasOptimizationAxes, P> HasOptimizationAxes for BuiltWith<R, P> {
+    fn optimization_axes(&self) -> BTreeMap<String, Value> { self.inner.optimization_axes() }
+}
+
 #[cfg(test)]
 mod tests {
     use {
@@ -198,5 +206,17 @@ mod tests {
         grown.insert(vec![3, 4]);
         grown.insert_all(vec![vec![1, 2]]);
         assert_eq!(tuples_of(&grown), vec![vec![1, 2], vec![3, 4]]);
+    }
+
+    /// The wrapper reports the relation's own Layout axes and adds none: the
+    /// build mode is reported by the family that ran the build.
+    #[test]
+    fn optimization_axes_are_the_inner_relations() {
+        let r = BuiltWith::<ColumnTrie<crate::GallopingSeek>, Incremental>::from_tuples(
+            2.into(),
+            vec![vec![1, 2]],
+        );
+        assert_eq!(r.optimization_axes(), r.inner.optimization_axes());
+        assert_eq!(r.optimization_axes()["ds_layout_seek"], "galloping");
     }
 }

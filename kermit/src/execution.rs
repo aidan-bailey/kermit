@@ -1211,52 +1211,11 @@ mod tests {
         }
     }
 
+    kermit_ds::define_build_mode_provider!(AnyMode, ColumnTrieBuildMode, ColumnTrieBuildMode::Bulk);
+
     /// A `ColumnTrie` whose `SortedTrieRelation::build_with` records the mode
-    /// it was handed. A local newtype rather than a `kermit_ds::BuiltWith`
-    /// alias: `SortedTrieRelation` requires `HasOptimizationAxes`, which the
-    /// orphan rule lets this crate implement only for a local type. Every
-    /// other impl delegates to the trie.
-    struct Spy(ColumnTrie);
-
-    impl kermit_iters::JoinIterable for Spy {}
-
-    impl kermit_ds::Projectable for Spy {
-        fn project(&self, columns: Vec<usize>) -> Self { Self(self.0.project(columns)) }
-    }
-
-    impl Relation for Spy {
-        fn header(&self) -> &RelationHeader { self.0.header() }
-
-        fn new(header: RelationHeader) -> Self { Self(ColumnTrie::new(header)) }
-
-        fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
-            Self(ColumnTrie::from_tuples(header, tuples))
-        }
-
-        fn insert(&mut self, tuple: Vec<usize>) { self.0.insert(tuple) }
-
-        fn insert_all(&mut self, tuples: Vec<Vec<usize>>) { self.0.insert_all(tuples) }
-    }
-
-    impl TrieIterable for Spy {
-        fn trie_iter(&self) -> impl kermit_iters::TrieIterator + IntoIterator<Item = Vec<usize>> {
-            self.0.trie_iter()
-        }
-    }
-
-    impl Cardinality for Spy {
-        fn tuple_count(&self) -> usize { self.0.tuple_count() }
-    }
-
-    impl HeapSize for Spy {
-        fn heap_size_bytes(&self) -> usize { self.0.heap_size_bytes() }
-    }
-
-    impl HasOptimizationAxes for Spy {
-        fn optimization_axes(&self) -> BTreeMap<String, serde_json::Value> {
-            self.0.optimization_axes()
-        }
-    }
+    /// it was handed. The provider is irrelevant: `build_with` ignores it.
+    type Spy = kermit_ds::BuiltWith<ColumnTrie, AnyMode>;
 
     thread_local! {
         static BUILT_WITH: Cell<Option<ColumnTrieBuildMode>> = const { Cell::new(None) };
