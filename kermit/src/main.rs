@@ -589,10 +589,11 @@ type JoinRunner = Box<dyn Fn(JoinQuery, &mut dyn FnMut(&[usize])) -> Result<(), 
 fn build_join_runner<F: ExecutionFamily + 'static>(
     family: F, cell: Execution, paths: &[PathBuf],
 ) -> anyhow::Result<JoinRunner> {
-    // `kermit join` writes no report axis, and every Layout gives the same
-    // answers, so this is the only check that a dispatch arm monomorphised
-    // the cell it was asked for: `execution` re-derives the Layout labels
-    // from the family's type parameters.
+    // The joins this runner serves (`kermit join`, `bench join --output`)
+    // write CSV, not a report axis, and every Layout gives the same answers,
+    // so this is the only check that a dispatch arm monomorphised the cell it
+    // was asked for: `execution` re-derives the Layout labels from the
+    // family's type parameters.
     debug_assert_eq!(
         family.execution(),
         cell,
