@@ -573,22 +573,24 @@ macro_rules! trie_seek_tests {
             ///
             /// Each batch seeks from the first of `FAN_OUT` = 4096 keys,
             /// either one step (near) or to the last key (far). By probe
-            /// count, the far seek costs this many times the near one:
+            /// count, the far seek costs this many times the near one, and
+            /// each strategy is held to its own bound on the measured ratio:
             ///
-            /// - `binary`: 13 / 13 = 1x, O(log fan-out) wherever the seek lands. LFTJ's
-            ///   worst-case-optimality bound assumes a sublinear seek (issue #67).
+            /// - `binary`: 13 / 13 = 1x, O(log fan-out) wherever the seek lands, and
+            ///   ~1x measured. It must stay below `BINARY_MAX_RATIO` = 10x, the guard
+            ///   issue #67 added: LFTJ's worst-case-optimality bound assumes a
+            ///   sublinear seek.
             /// - `galloping`: 25 / 2 = 12.5x (1 + 12 doubling probes + 12 in the
             ///   bracket, against 2). It is O(log distance): sublinear, but not flat.
             ///   Each seek's fixed cost (`open`, `up`, the call) only lowers the
-            ///   measured ratio, to ~3x in a debug build.
+            ///   measured ratio, to ~3x in a debug build. It must stay below
+            ///   `GALLOPING_MAX_RATIO` = 32x, above its probe ratio, so the bound holds
+            ///   by construction.
             /// - `linear`: 4096 / 2 = 2048x, O(distance) by design (issue #80), and
-            ///   ~220-300x measured in a debug build. If it ever met the sublinear
-            ///   bound, the linear arm of every seek ablation would measure the wrong
-            ///   thing.
-            ///
-            /// `MAX_RATIO` = 32 sits above both sublinear strategies' probe
-            /// ratios, so their arm holds by construction, and well below
-            /// linear's measured one.
+            ///   ~220-300x measured in a debug build. It must reach `LINEAR_MIN_RATIO`
+            ///   = 32x, galloping's ceiling, so no ratio passes both the linear arm and
+            ///   a sublinear one. If it ever met a sublinear bound, the linear arm of
+            ///   every seek ablation would measure the wrong thing.
             ///
             /// Wall-clock is the only observable: keys are plain `usize`, so
             /// comparisons cannot be counted without instrumenting the trie
@@ -616,7 +618,9 @@ macro_rules! trie_seek_tests {
                 const FAN_OUT: usize = 1 << 12;
                 const SEEKS_PER_BATCH: usize = 4096;
                 const BATCHES: usize = 5;
-                const MAX_RATIO: f64 = 32.0;
+                const BINARY_MAX_RATIO: f64 = 10.0;
+                const GALLOPING_MAX_RATIO: f64 = 32.0;
+                const LINEAR_MIN_RATIO: f64 = GALLOPING_MAX_RATIO;
 
                 /// Times `SEEKS_PER_BATCH` seeks from the first root key to
                 /// `target`, re-opening the root level between them.
@@ -648,18 +652,26 @@ macro_rules! trie_seek_tests {
                 }
                 let ratio = far.as_secs_f64() / near.as_secs_f64();
                 let strategy = relation.optimization_axes()["ds_layout_seek"].clone();
-                if strategy == "linear" {
-                    assert!(
-                        ratio >= MAX_RATIO,
+                match strategy.as_str() {
+                    | Some("binary") => assert!(
+                        ratio < BINARY_MAX_RATIO,
+                        "a binary seek across {FAN_OUT} siblings took {ratio:.1}x a one-step seek \
+                         ({far:?} vs {near:?}); it must cost the same wherever it lands, below \
+                         {BINARY_MAX_RATIO}x"
+                    ),
+                    | Some("galloping") => assert!(
+                        ratio < GALLOPING_MAX_RATIO,
+                        "a galloping seek across {FAN_OUT} siblings took {ratio:.1}x a one-step \
+                         seek ({far:?} vs {near:?}); it must stay below its \
+                         {GALLOPING_MAX_RATIO}x bound, logarithmic in the distance"
+                    ),
+                    | Some("linear") => assert!(
+                        ratio >= LINEAR_MIN_RATIO,
                         "a linear seek across {FAN_OUT} siblings took only {ratio:.1}x a one-step \
-                         seek ({far:?} vs {near:?}); `linear` must scan"
-                    );
-                } else {
-                    assert!(
-                        ratio < MAX_RATIO,
-                        "a {strategy} seek across {FAN_OUT} siblings took {ratio:.1}x a one-step \
-                         seek ({far:?} vs {near:?}); it must be sublinear in the fan-out"
-                    );
+                         seek ({far:?} vs {near:?}); `linear` must scan, at least \
+                         {LINEAR_MIN_RATIO}x"
+                    ),
+                    | _ => panic!("no seek-cost bound for the strategy {strategy}"),
                 }
             }
         }
