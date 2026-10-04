@@ -77,3 +77,13 @@ def test_ablation_refuses_seek_outside_search_phases(fixture_seek_tree) -> None:
         presets.ablation(df, axis="ds_layout_seek", phase="iteration"), Figure
     )
     plt.close("all")
+
+
+def test_ablation_lets_seek_through_on_end_to_end(fixture_seek_tree) -> None:
+    df = kl.load(
+        fixture_seek_tree["paths"], criterion_root=fixture_seek_tree["criterion_root"]
+    )
+    # The guard lets end_to_end through; the error comes from the fixture
+    # having no end_to_end rows, not from the seek scope.
+    with pytest.raises(InsufficientAxesError, match="no time rows"):
+        presets.ablation(df, axis="ds_layout_seek", phase="end_to_end")
