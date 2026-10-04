@@ -23,7 +23,8 @@ use {
     },
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, GallopingSeek, LinearSeek, Relation, RelationFileExt, TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, RelationFileExt,
+        TreeTrie,
     },
     kermit_iters::TrieIterable,
     kermit_rdf::lubm::{
@@ -180,12 +181,33 @@ fn lubm_one_university_query_cardinalities_match_paper() {
             optimiser.as_ref(),
             &expected,
         ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<LinearSeek>>(
+            &bench,
+            out.path(),
+            name,
+            optimiser.as_ref(),
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<BinarySeek>>(
+            &bench,
+            out.path(),
+            name,
+            optimiser.as_ref(),
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<GallopingSeek>>(
+            &bench,
+            out.path(),
+            name,
+            optimiser.as_ref(),
+            &expected,
+        ));
     }
 
     assert!(
         mismatches.is_empty(),
-        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers x 3 seek \
-         strategies):\n{}",
+        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers x 2 sorted tries \
+         x 3 seek strategies):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimiser_count,

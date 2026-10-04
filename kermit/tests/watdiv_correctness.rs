@@ -12,7 +12,8 @@ use {
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, GallopingSeek, LinearSeek, Relation, RelationFileExt, TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, RelationFileExt,
+        TreeTrie,
     },
     kermit_iters::TrieIterable,
     std::{
@@ -77,4 +78,7 @@ fn watdiv_mini_cardinalities_match() {
     check_cardinalities::<TreeTrie<LinearSeek>>();
     check_cardinalities::<TreeTrie<BinarySeek>>();
     check_cardinalities::<TreeTrie<GallopingSeek>>();
+    check_cardinalities::<ColumnTrie<LinearSeek>>();
+    check_cardinalities::<ColumnTrie<BinarySeek>>();
+    check_cardinalities::<ColumnTrie<GallopingSeek>>();
 }

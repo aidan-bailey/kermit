@@ -109,7 +109,8 @@ use {
     kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, GallopingSeek, LinearSeek, Relation, RelationFileExt, TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, RelationFileExt,
+        TreeTrie,
     },
     kermit_iters::TrieIterable,
     kermit_rdf::{
@@ -253,8 +254,9 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
     let optimisers = Optimiser::value_variants();
     let mut mismatches: Vec<String> = Vec::new();
     for &optimiser in optimisers {
-        // Every seek strategy must give every answer: the strategy changes
-        // how far a seek looks, never where it lands (issue #80).
+        // Every seek strategy must give every answer on both sorted tries:
+        // the strategy changes how far a seek looks, never where it lands
+        // (issue #80).
         mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
             &bench,
             out.path(),
@@ -273,11 +275,29 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
             optimiser,
             &expected,
         ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<LinearSeek>>(
+            &bench,
+            out.path(),
+            optimiser,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<BinarySeek>>(
+            &bench,
+            out.path(),
+            optimiser,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<GallopingSeek>>(
+            &bench,
+            out.path(),
+            optimiser,
+            &expected,
+        ));
     }
     assert!(
         mismatches.is_empty(),
-        "mini LUBM cardinality mismatches ({} across {} queries x {} optimisers x 3 seek \
-         strategies):\n{}",
+        "mini LUBM cardinality mismatches ({} across {} queries x {} optimisers x 2 sorted tries \
+         x 3 seek strategies):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimisers.len(),

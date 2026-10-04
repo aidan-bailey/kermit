@@ -585,9 +585,19 @@ fn parse_query(args: &QueryArgs) -> anyhow::Result<JoinQuery> {
 type JoinRunner = Box<dyn Fn(JoinQuery, &mut dyn FnMut(&[usize])) -> Result<(), JoinError>>;
 
 /// Loads `args.relations` into `family`'s engine and returns a runner over it.
+/// `cell` is the cell the caller resolved, which `family` must implement.
 fn build_join_runner<F: ExecutionFamily + 'static>(
-    family: F, paths: &[PathBuf],
+    family: F, cell: Execution, paths: &[PathBuf],
 ) -> anyhow::Result<JoinRunner> {
+    // `kermit join` writes no report axis, and every Layout gives the same
+    // answers, so this is the only check that a dispatch arm monomorphised
+    // the cell it was asked for: `execution` re-derives the Layout labels
+    // from the family's type parameters.
+    debug_assert_eq!(
+        family.execution(),
+        cell,
+        "dispatch built a different cell than the one resolved"
+    );
     let relations = paths
         .iter()
         .map(|p| family.load(p))
@@ -613,31 +623,35 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
 }
 
 /// Resolves the `(structure, algorithm)` pair in `args` to its execution
-/// cell and builds a [`JoinRunner`] for it. Incompatible pairs are a usage
-/// error. Both callers resolve `choices` through `DsChoices::resolve`, which
-/// has already validated every `--ds-*` flag.
+/// cell, carrying `choices`, which both callers obtain from
+/// `DsChoices::resolve` (so every `--ds-*` flag is already validated).
+/// Incompatible pairs are a usage error.
 ///
 /// `kermit join` deliberately carries neither `--ds-config` nor `--ds-build`:
-/// it passes their defaults inside its [`DsChoices`], because neither can
-/// change a query's answers (the one Config value trades space against probe
-/// length, and every build mode builds the same structure). `bench join
-/// --output` passes its resolved [`DsChoices`], so the CSV comes from the same
-/// build the measurements use.
-fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<JoinRunner> {
-    let cell =
-        Execution::for_pair(args.indexstructure, args.algorithm, choices).ok_or_else(|| {
-            anyhow::anyhow!(
-                "incompatible selection: {:?} cannot run under {:?}",
-                args.indexstructure,
-                args.algorithm
-            )
-        })?;
+/// it resolves their defaults, because neither can change a query's answers
+/// (the one Config value trades space against probe length, and every build
+/// mode builds the same structure).
+fn query_cell(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Execution> {
+    Execution::for_pair(args.indexstructure, args.algorithm, choices).ok_or_else(|| {
+        anyhow::anyhow!(
+            "incompatible selection: {:?} cannot run under {:?}",
+            args.indexstructure,
+            args.algorithm
+        )
+    })
+}
+
+/// Builds a [`JoinRunner`] for `cell` over `args.relations`. `bench join
+/// --output` passes the very cell its measurements run, so the CSV comes from
+/// the same build.
+fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRunner> {
     let optimiser = args.optimiser;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
         }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
             TrieLftj::<kermit_ds::TreeTrie<S>>::new((), optimiser),
+            cell,
             &args.relations,
         )),
         | Execution::TrieLftj(SortedTrie::ColumnTrie {
@@ -645,6 +659,7 @@ fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Joi
             build,
         }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
             TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, optimiser),
+            cell,
             &args.relations,
         )),
         | Execution::HashHtj {
@@ -653,6 +668,7 @@ fn load_query_runner(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Joi
             config,
         } => with_hash_trie_layout!(hasher, pruning, |H, P| build_join_runner(
             HashHtj::<H, P>::new(config, optimiser),
+            cell,
             &args.relations
         )),
     }
@@ -749,7 +765,7 @@ fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()
         &ConfigChoices::default(),
         &BuildChoices::default(),
     )?;
-    let join = load_query_runner(&query_args, choices)?;
+    let join = load_query_runner(&query_args, query_cell(&query_args, choices)?)?;
     let header = head_column_names(&join_query);
     let writer: Box<dyn Write> = match &output {
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
@@ -841,19 +857,12 @@ fn run_bench_join(
 ) -> anyhow::Result<()> {
     let selector = IndexStructureSelector::of(query_args.indexstructure);
     let choices = DsChoices::resolve(selector, &query_args.layout, &config, &build)?;
-    let cell = Execution::for_pair(query_args.indexstructure, query_args.algorithm, choices)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "incompatible selection: {:?} cannot run under {:?}",
-                query_args.indexstructure,
-                query_args.algorithm
-            )
-        })?;
+    let cell = query_cell(&query_args, choices)?;
 
     if let Some(path) = &output {
         let join_query = parse_query(&query_args)?;
         validate_query_files(&join_query, &query_args)?;
-        let join = load_query_runner(&query_args, choices)?;
+        let join = load_query_runner(&query_args, cell)?;
         let header = head_column_names(&join_query);
         let writer = BufWriter::new(fs::File::create(path)?);
         write_join(writer, &header, &join, join_query)?;
@@ -891,7 +900,7 @@ fn run_ds_bench_command(
     if layout.sorted_trie_seek_explicit() {
         anyhow::bail!(
             "--ds-layout-seek has no effect on bench ds: none of its metrics calls seek \
-             (insertion builds the relation; iteration and end_to_end scan it with open/next/up; \
+             (insertion builds the relation; iteration and end-to-end scan it with open/next/up; \
              space measures it). Time a join with bench run or bench join."
         );
     }

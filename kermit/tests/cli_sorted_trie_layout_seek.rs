@@ -149,11 +149,31 @@ fn cli_bench_ds_rejects_seek_on_every_structure() {
     }
 }
 
+/// Both sorted cells of a `bench ds` sweep report the default, and the
+/// hash cell reports no seek axis.
 #[test]
 fn cli_bench_ds_reports_the_default_seek() {
-    let (output, report) = bench_ds("tree-trie", &[]);
+    let (output, report) = bench_ds("all", &[]);
     assert_success(&output);
-    assert_eq!(axes_of(&report)["ds_layout_seek"], "binary");
+    let reports = reports_of(&report);
+    let mut structures: Vec<&str> = reports
+        .iter()
+        .map(|r| {
+            r["axes"]["data_structure"]
+                .as_str()
+                .expect("data_structure")
+        })
+        .collect();
+    structures.sort_unstable();
+    assert_eq!(structures, ["ColumnTrie", "HashTrie", "TreeTrie"]);
+    for r in &reports {
+        let axes = &r["axes"];
+        if axes["data_structure"] == "HashTrie" {
+            assert!(axes.get("ds_layout_seek").is_none(), "{axes}");
+        } else {
+            assert_eq!(axes["ds_layout_seek"], "binary", "{axes}");
+        }
+    }
 }
 
 #[test]
