@@ -746,7 +746,7 @@ This is semantically correct — pre-standard runs were SipHash-only. `kermit_la
 | CLI dispatch monomorphizing on the Layout cell | [`kermit/src/options.rs`](../../kermit/src/options.rs) (`with_hash_trie_layout!` — the one place Layout dimensions multiply) |
 | Sorted Layout dispatch | [`kermit/src/options.rs`](../../kermit/src/options.rs) (`with_sorted_trie_layout!`) |
 | Bench-report axes merge | [`kermit/src/bench/run.rs`](../../kermit/src/bench/run.rs) and [`kermit/src/bench/ds.rs`](../../kermit/src/bench/ds.rs) (search `optimization_axes` / `build_mode_axes`), from the families in [`kermit/src/execution.rs`](../../kermit/src/execution.rs) |
-| CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_layout_pruning.rs`](../../kermit/tests/cli_hash_trie_layout_pruning.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs) |
+| CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_layout_pruning.rs`](../../kermit/tests/cli_hash_trie_layout_pruning.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs), [`kermit/tests/cli_sorted_trie_layout_seek.rs`](../../kermit/tests/cli_sorted_trie_layout_seek.rs) |
 | First Config consumer (load-factor cap) | [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs) |
 | The classification rule and why pruning moved | [`docs/specs/2026-09-08-singleton-pruning-config-design.md`](2026-09-08-singleton-pruning-config-design.md) § Amendment 1 |
 | Config-injection seam (`ConfigurableRelation`) | [`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs) |
@@ -756,7 +756,7 @@ This is semantically correct — pre-standard runs were SipHash-only. `kermit_la
 | First BuildMode consumer (ColumnTrie build) | [`kermit-ds/src/ds/column_trie/build_mode.rs`](../../kermit-ds/src/ds/column_trie/build_mode.rs) |
 | BuildMode seam and test wrapper | [`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs) (`BuildModeRelation`), [`kermit-ds/src/built_with.rs`](../../kermit-ds/src/built_with.rs) |
 | BuildMode join test macro | [`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs) (search `for_build_mode`) |
-| Per-DS catalog | [`docs/data-structures/hash-trie.md`](../data-structures/hash-trie.md) § Optimizations |
+| Per-DS catalog | [`docs/data-structures/hash-trie.md`](../data-structures/hash-trie.md), [`tree-trie.md`](../data-structures/tree-trie.md) and [`column-trie.md`](../data-structures/column-trie.md) § Optimizations; [`seek-strategies.md`](../data-structures/seek-strategies.md) for the sorted tries' shared seek Layout |
 | Schema axis prefixes | [`docs/specs/bench-report-schema.md`](bench-report-schema.md) § Standard axis prefixes |
 | Contributor recipe | [`CLAUDE.md`](../../CLAUDE.md) § "Adding an optimization to a data structure or algorithm" |
 

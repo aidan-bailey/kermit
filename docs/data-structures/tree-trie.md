@@ -10,6 +10,7 @@
 TreeTrie<S: SeekStrategy = BinarySeek> {
     header: RelationHeader,
     children: Vec<TrieNode>,         // root level
+    tuple_count: usize,              // distinct tuples; backs `Cardinality`
     _seek: PhantomData<S>,           // seek strategy, zero-sized
 }
 

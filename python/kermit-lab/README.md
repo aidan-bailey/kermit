@@ -133,8 +133,9 @@ figure. An axis whose effect is confined to some phases is drawn only for them
 (`AXIS_PHASES` in `kermit_lab/presets.py`): `ds_build_mode` for `insertion` and
 `end_to_end` (a build mode changes how a structure is built, not the
 structure), and `ds_layout_seek` for `iteration` and `end_to_end` (every seek
-strategy builds the same trie). On any other phase its figure is skipped.
-Shapes that lack the necessary
+strategy builds the same trie). On any other phase its figure is skipped. The
+CLI's `--phase` offers `insertion` and `iteration`; `end_to_end` ablations are
+reachable through `kl.ablation` / `kl.plot`. Shapes that lack the necessary
 axes are skipped with an info-level log message rather than erroring.
 
 ## Contract test

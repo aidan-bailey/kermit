@@ -197,7 +197,7 @@ without per-strategy reasoning.
 
 Rust does not fall back to a defaulted type parameter in expression
 position. Once `S` exists, `let t = TreeTrie::from_tuples(…);
-t.trie_iter()` fails with E0283, "type annotations needed for
+t.trie_iter()` fails with E0282, "type annotations needed for
 `TreeTrie<_>`". So does a binding that only ever reaches a generic
 function. A later use that names `TreeTrie`, such as `Vec<&TreeTrie>`, a
 return type or a struct field, pins `S`. A minimal rustc probe confirmed
@@ -404,12 +404,12 @@ checks. Reports from before #80 therefore stay loadable beside new ones.
 
 ```python
 # ColumnTrie's seek has been a binary search (`partition_point`) since
-# 525c99f (2026-03-02), before the first JSON report writer (f76344d,
+# 525c99f (2026-03-02), before the first JSON report writer (7dbdcaf,
 # 2026-04-26), so every ColumnTrie report without the axis ran `binary`.
 ("ds_layout_seek", "ColumnTrie"): "binary",
 ```
 
-Verified 2026-10-03: 525c99f is an ancestor of f76344d. Every version of
+Verified 2026-10-04: 525c99f is an ancestor of 7dbdcaf. Every version of
 `ColumnTrieIter::seek` since 525c99f calls `partition_point`.
 
 The entry is not in the unscoped `AXIS_DEFAULTS`. That fill ignores
@@ -714,7 +714,7 @@ through `nix develop --command cargo fmt --all`, after
   - recipe step 3: the derive accepts type parameters after `'a`;
   - optimisation recipe step 4: `with_sorted_trie_layout!`;
   - the "sweeps are cells" gotcha: sorted cells carry `seek`;
-  - a one-line gotcha on the E0283 inference trap.
+  - a one-line gotcha on the E0282 inference trap.
 - **Other docs:**
   - `ARCHITECTURE.md`: the `HasOptimizationAxes` implementors and the
     `Execution` variants;

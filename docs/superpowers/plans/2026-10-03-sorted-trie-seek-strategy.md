@@ -1114,13 +1114,13 @@ with:
 ```
 
 Run: `CARGO_BUILD_JOBS=2 nix develop $WT --command cargo test -p kermit-ds --lib`
-Expected: compiles, or fails only with E0283 at plain-`TreeTrie` / `ColumnTrie` constructor sites (Step 5). The new tests pass once Step 5 is done.
+Expected: compiles, or fails only with E0282 at plain-`TreeTrie` / `ColumnTrie` constructor sites (Step 5). The new tests pass once Step 5 is done.
 
 - [ ] **Step 5: Annotate the bindings inference no longer resolves**
 
 Rust does not fall back to a defaulted type parameter in expression
 position. So `let t = TreeTrie::from_tuples(…); t.trie_iter()` now fails
-with **E0283** ("type annotations needed for `TreeTrie<_>`"), and so does a
+with **E0282** ("type annotations needed for `TreeTrie<_>`"), and so does a
 binding that only ever reaches a generic function. A later use that names
 the type (`Vec<&TreeTrie>`, a return type, a struct field) still pins `S`.
 
@@ -2923,7 +2923,7 @@ In `kermit_lab/defaults.py`, add to `SCOPED_AXIS_DEFAULTS`:
 
 ```python
     # ColumnTrie's seek has been a binary search (`partition_point`) since
-    # 525c99f (2026-03-02), before the first JSON report writer (f76344d,
+    # 525c99f (2026-03-02), before the first JSON report writer (7dbdcaf,
     # 2026-04-26), so every ColumnTrie report without the axis ran `binary`.
     # TreeTrie has no entry: its seek was linear until 9604293 (#67) and
     # binary after, and a report cannot tell which side it came from (#80).
@@ -3263,7 +3263,7 @@ same facts.
 - **New gotcha**, after "Singleton pruning is a Layout, not a Config":
 
 ```markdown
-- **Defaulted Layout parameters need annotated bindings**: `TreeTrie<S = BinarySeek>` (like `HashTrie<H, P>`) is no inference fallback in expression position, so `let t = TreeTrie::from_tuples(…); t.trie_iter()` fails with E0283. Annotate the binding (`let t: TreeTrie = …`) or use an alias; test macros take aliases. `bench ds` rejects `--ds-layout-seek` (no metric of it seeks), and kermit-lab draws a seek ablation only for `iteration` / `end_to_end` (`AXIS_PHASES` in `presets.py`).
+- **Defaulted Layout parameters need annotated bindings**: `TreeTrie<S = BinarySeek>` (like `HashTrie<H, P>`) is no inference fallback in expression position, so `let t = TreeTrie::from_tuples(…); t.trie_iter()` fails with E0282. Annotate the binding (`let t: TreeTrie = …`) or use an alias; test macros take aliases. `bench ds` rejects `--ds-layout-seek` (no metric of it seeks), and kermit-lab draws a seek ablation only for `iteration` / `end_to_end` (`AXIS_PHASES` in `presets.py`).
 ```
 
 `ARCHITECTURE.md`: in the HashTrie paragraph on optimisation axes (#84 may

@@ -10,6 +10,7 @@
 ColumnTrie<S: SeekStrategy = BinarySeek> {
     header: RelationHeader,
     layers: Vec<ColumnTrieLayer>,    // one per attribute
+    tuple_count: usize,              // distinct tuples; backs `Cardinality`
     _seek: PhantomData<S>,           // seek strategy, zero-sized
 }
 
