@@ -174,8 +174,8 @@ fn run_ds_bench<F: RelationFamily>(
         );
     }
     // Standard optimization axes: the relation's Layout / Config dimensions
-    // (empty for the sorted tries), then the build mode, which only the
-    // family that ran the build can report. The `ds_layout_*` /
+    // (e.g. `ds_layout_seek` for the sorted tries), then the build mode, which
+    // only the family that ran the build can report. The `ds_layout_*` /
     // `ds_config_*` / `ds_build_mode` naming convention (see
     // `kermit_iters::HasOptimizationAxes`) guarantees no collision with the
     // base axes assembled above.
@@ -196,7 +196,10 @@ fn run_ds_bench<F: RelationFamily>(
 /// `with_hash_trie_layout!` — the one place that product is expanded —
 /// and the `--ds-config` values and the `--ds-build` mode ride along on the
 /// family, so the relation this measures is the one the report's `ds_*` axes
-/// describe.
+/// describe. The sorted arms go through `with_sorted_trie_layout!` although
+/// `bench ds` rejects `--ds-layout-seek`, because that rejection is CLI
+/// policy, not a type invariant, and one dispatch shape reads better than a
+/// special case.
 pub(crate) fn dispatch_ds_bench(
     ds: IndexStructure, choices: DsChoices, relation: &Path, metrics: &[Metric],
     queries_per_build: u32, group_name: &str, bench_args: &BenchArgs,
