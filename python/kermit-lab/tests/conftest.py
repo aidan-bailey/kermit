@@ -444,3 +444,55 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
         "reports_dir": reports_dir,
         "paths": sorted(paths),
     }
+
+
+@pytest.fixture
+def fixture_seek_tree(tmp_path: Path) -> dict:
+    """TreeTrie reports under two seek strategies, for the seek ablation
+    guard (#80).
+
+    Each report times insertion and iteration (plus space), so the seek
+    axis has two values. It applies to iteration but not insertion: both
+    strategies build the same trie, so the insertion points are equal.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for seek, iteration_point in (("binary", 100.0), ("galloping", 80.0)):
+        groups: list[tuple[str, str, str]] = []
+        for phase, point in (("insertion", 300.0), ("iteration", iteration_point)):
+            function = f"TreeTrie/{seek}/{phase}"
+            samples = [(i + 1, point * (i + 1)) for i in range(10)]
+            _write_function_dir(
+                criterion_root, _FunctionSpec("run", function, "time", point, samples)
+            )
+            groups.append(("run", function, "time"))
+        space_function = f"TreeTrie/{seek}/space"
+        space_samples = [(i + 1, 6400.0 * (i + 1)) for i in range(10)]
+        _write_function_dir(
+            criterion_root,
+            _FunctionSpec("run", space_function, "space", 6400.0, space_samples),
+        )
+        groups.append(("run", space_function, "space"))
+        axes = {
+            "benchmark": "triangle",
+            "query": "triangle",
+            "data_structure": "TreeTrie",
+            "algorithm": "LeapfrogTriejoin",
+            "tuples": 100,
+            "ds_layout_seek": seek,
+        }
+        paths.append(
+            _write_report(
+                reports_dir, f"run-TreeTrie-{seek}", kind="run", axes=axes,
+                metadata=[], groups=groups,
+            )
+        )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }

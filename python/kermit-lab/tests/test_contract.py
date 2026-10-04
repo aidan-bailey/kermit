@@ -82,3 +82,17 @@ def test_bench_ds_column_trie_reports_its_build_mode(tmp_path: Path) -> None:
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
     assert len(df) == 1
     assert df.iloc[0]["ds_build_mode"] == "incremental"
+
+
+def test_bench_join_reports_its_seek_strategy(tmp_path: Path) -> None:
+    report = tmp_path / "join.json"
+    _run(
+        tmp_path, report,
+        "join", "--relations", str(FIXTURES / "first.csv"), str(FIXTURES / "second.csv"),
+        "--query", str(FIXTURES / "intersect_query.dl"),
+        "-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "space",
+        "--ds-layout-seek", "galloping",
+    )
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
+    assert len(df) >= 1
+    assert set(df["ds_layout_seek"]) == {"galloping"}

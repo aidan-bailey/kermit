@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import pytest
 from matplotlib.figure import Figure
 
+import kermit_lab as kl
 from kermit_lab import presets
 from kermit_lab.frame import load, load_samples
 from kermit_lab.plots_errors import InsufficientAxesError
@@ -63,3 +64,16 @@ def test_ablation_on_an_unknown_axis_is_insufficient_axes(fixture_opt_tree) -> N
     df = load(fixture_opt_tree["paths"], fixture_opt_tree["criterion_root"])
     with pytest.raises(InsufficientAxesError):
         presets.ablation(df, axis="ds_no_such_axis")
+
+
+def test_ablation_refuses_seek_outside_search_phases(fixture_seek_tree) -> None:
+    df = kl.load(
+        fixture_seek_tree["paths"], criterion_root=fixture_seek_tree["criterion_root"]
+    )
+    assert set(df["ds_layout_seek"].dropna()) == {"binary", "galloping"}
+    with pytest.raises(InsufficientAxesError, match="searched"):
+        presets.ablation(df, axis="ds_layout_seek", phase="insertion")
+    assert isinstance(
+        presets.ablation(df, axis="ds_layout_seek", phase="iteration"), Figure
+    )
+    plt.close("all")

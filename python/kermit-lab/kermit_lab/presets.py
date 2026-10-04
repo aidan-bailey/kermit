@@ -5,6 +5,7 @@ engine. They exist for ergonomics and for the CLI / render-all to call.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -62,12 +63,32 @@ def bar_queries(
                 title="Across queries", out=out)
 
 
-# A BuildMode changes how a structure is built, never the structure, so its
-# axis can only explain the phases that time a build. On any other phase two
-# build modes measure the same structure, and a difference between them is
-# noise or binary drift, not a build-mode effect.
-_BUILD_ONLY_AXES = frozenset({"ds_build_mode"})
-_BUILD_PHASES = frozenset({"insertion", "end_to_end"})
+@dataclass(frozen=True)
+class AxisScope:
+    """The time phases an optimisation axis can affect, and why."""
+
+    phases: frozenset[str]
+    reason: str
+
+
+# The time phases an optimisation axis can affect; an axis absent from this
+# map can affect every phase. `ablation` refuses an axis on a phase outside
+# its scope: two values there time the same code, so any difference between
+# them is noise or binary drift, not the optimisation. Give a new axis an
+# entry when its effect is confined to some phases.
+AXIS_PHASES: dict[str, AxisScope] = {
+    # A BuildMode changes how a structure is built, never the structure (#84).
+    "ds_build_mode": AxisScope(
+        frozenset({"insertion", "end_to_end"}),
+        "it changes only how a structure is built",
+    ),
+    # A seek strategy changes how a built trie is searched; no build calls
+    # seek (#80).
+    "ds_layout_seek": AxisScope(
+        frozenset({"iteration", "end_to_end"}),
+        "it changes only how a built trie is searched",
+    ),
+}
 
 
 def ablation(
@@ -75,13 +96,14 @@ def ablation(
 ) -> Figure:
     """Ablation: time vs an optimization axis, coloured by DS, faceted by query when >1.
 
-    Raises :class:`InsufficientAxesError` for a build-mode axis on a phase
-    that does not time the build.
+    Raises :class:`InsufficientAxesError` for an axis on a phase outside its
+    :data:`AXIS_PHASES` scope.
     """
-    if axis in _BUILD_ONLY_AXES and phase not in _BUILD_PHASES:
+    scope = AXIS_PHASES.get(axis)
+    if scope is not None and phase not in scope.phases:
+        allowed = " or ".join(repr(p) for p in sorted(scope.phases))
         raise InsufficientAxesError(
-            f"{axis} changes only how a structure is built, so it cannot affect "
-            f"phase {phase!r}; plot it on 'insertion' or 'end_to_end'"
+            f"{axis} cannot affect phase {phase!r}: {scope.reason}; plot it on {allowed}"
         )
     # Rows without the axis belong to structures that do not have it. (An
     # unknown axis falls through to `plot`, which names the missing column.)

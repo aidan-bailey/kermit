@@ -26,6 +26,12 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
     # ColumnTrie's build before issue #84 inserted tuple by tuple. Every
     # ColumnTrie report since carries the axis ("bulk" by default).
     ("ds_build_mode", "ColumnTrie"): "incremental",
+    # ColumnTrie's seek has been a binary search (`partition_point`) since
+    # 525c99f (2026-03-02), before the first JSON report writer (f76344d,
+    # 2026-04-26), so every ColumnTrie report without the axis ran `binary`.
+    # TreeTrie has no entry: its seek was linear until 9604293 (#67) and
+    # binary after, and a report cannot tell which side it came from (#80).
+    ("ds_layout_seek", "ColumnTrie"): "binary",
 }
 
 

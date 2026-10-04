@@ -75,3 +75,19 @@ def test_scoped_default_needs_the_data_structure_column() -> None:
     df = pd.DataFrame({"ds_build_mode": [pd.NA]})
     out = apply_axis_defaults(df)
     assert out["ds_build_mode"].isna().all()  # no crash, untouched
+
+
+def test_seek_backfills_column_trie_rows_only() -> None:
+    df = pd.DataFrame({
+        "data_structure": ["ColumnTrie", "ColumnTrie", "TreeTrie", "HashTrie"],
+        "ds_layout_seek": [pd.NA, "galloping", pd.NA, pd.NA],
+    })
+    out = apply_axis_defaults(df)
+    assert out["ds_layout_seek"].iloc[0] == "binary"
+    assert out["ds_layout_seek"].iloc[1] == "galloping"
+    # TreeTrie's seek was linear before #67 and binary after it, and a
+    # report cannot tell which; HashTrie has no seek. Both stay unlabelled.
+    assert out["ds_layout_seek"].iloc[2:].isna().all()
+    assert SCOPED_AXIS_DEFAULTS[("ds_layout_seek", "ColumnTrie")] == "binary"
+    assert ("ds_layout_seek", "TreeTrie") not in SCOPED_AXIS_DEFAULTS
+    assert "ds_layout_seek" not in AXIS_DEFAULTS

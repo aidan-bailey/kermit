@@ -94,3 +94,19 @@ def test_build_mode_ablation_leaves_out_structures_without_the_axis(
     labels = {t.get_text() for ax in fig.axes for t in ax.get_xticklabels()}
     plt.close(fig)
     assert labels == {"bulk", "incremental"}
+
+
+def test_seek_ablation_is_drawn_only_for_search_phases(
+    fixture_seek_tree, tmp_path: Path
+) -> None:
+    """Both seek strategies build the same trie, so an insertion-time "seek
+    ablation" would chart noise; iteration is where the strategy acts."""
+    plt.close("all")  # earlier tests leave figures open; stay under pyplot's cap of 20
+    reports = load_reports(fixture_seek_tree["paths"])
+    for phase, drawn in (("iteration", True), ("insertion", False)):
+        out = tmp_path / phase
+        out.mkdir()
+        render_all(reports, out, fixture_seek_tree["criterion_root"], "pdf", phase=phase)
+        names = {p.name for p in out.iterdir()}
+        plt.close("all")
+        assert ("ablation-ds_layout_seek.pdf" in names) is drawn, (phase, names)
