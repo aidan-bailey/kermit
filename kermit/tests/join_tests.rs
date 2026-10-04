@@ -3,8 +3,9 @@ mod common;
 use {
     kermit_algos::{CardinalityOptimiser, HashTriejoin, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{
-        define_build_mode_provider, define_config_provider, ColumnTrie, ColumnTrieBuildMode,
-        HashTrie, HashTrieConfig, LoadFactor, SingletonPruning, TreeTrie,
+        define_build_mode_provider, define_config_provider, BinarySeek, ColumnTrie,
+        ColumnTrieBuildMode, GallopingSeek, HashTrie, HashTrieConfig, LinearSeek, LoadFactor,
+        SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -15,11 +16,31 @@ type HashTrieFx = HashTrie<FxHashStrategy>;
 type HashTrieSipPruned = HashTrie<SipHashStrategy, SingletonPruning>;
 type HashTrieFxPruned = HashTrie<FxHashStrategy, SingletonPruning>;
 
-define_multiway_join_test_suite!(TreeTrie, LeapfrogTriejoin, LexicographicOptimiser);
-define_multiway_join_test_suite!(TreeTrie, LeapfrogTriejoin, CardinalityOptimiser);
+// ── Layout aliases: seek strategy (sorted tries) ────────────────────────
+type TreeTrieLinear = TreeTrie<LinearSeek>;
+type TreeTrieBinary = TreeTrie<BinarySeek>;
+type TreeTrieGalloping = TreeTrie<GallopingSeek>;
+type ColumnTrieLinear = ColumnTrie<LinearSeek>;
+type ColumnTrieBinary = ColumnTrie<BinarySeek>;
+type ColumnTrieGalloping = ColumnTrie<GallopingSeek>;
 
-define_multiway_join_test_suite!(ColumnTrie, LeapfrogTriejoin, LexicographicOptimiser);
-define_multiway_join_test_suite!(ColumnTrie, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(TreeTrieLinear, LeapfrogTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(TreeTrieLinear, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(TreeTrieBinary, LeapfrogTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(TreeTrieBinary, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(TreeTrieGalloping, LeapfrogTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(TreeTrieGalloping, LeapfrogTriejoin, CardinalityOptimiser);
+
+define_multiway_join_test_suite!(ColumnTrieLinear, LeapfrogTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(ColumnTrieLinear, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(ColumnTrieBinary, LeapfrogTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(ColumnTrieBinary, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(
+    ColumnTrieGalloping,
+    LeapfrogTriejoin,
+    LexicographicOptimiser
+);
+define_multiway_join_test_suite!(ColumnTrieGalloping, LeapfrogTriejoin, CardinalityOptimiser);
 
 define_multiway_join_test_suite!(HashTrieSip, HashTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(HashTrieSip, HashTriejoin, CardinalityOptimiser);

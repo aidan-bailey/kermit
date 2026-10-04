@@ -11,7 +11,10 @@ use {
     kermit::db::lftj_join,
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{RelationFileExt, TreeTrie},
+    kermit_ds::{
+        BinarySeek, Cardinality, GallopingSeek, LinearSeek, Relation, RelationFileExt, TreeTrie,
+    },
+    kermit_iters::TrieIterable,
     std::{
         collections::{BTreeMap, HashMap},
         path::{Path, PathBuf},
@@ -33,17 +36,18 @@ fn load_expected(dir: &Path) -> HashMap<String, usize> {
     serde_json::from_str(&json).expect("expected.json malformed")
 }
 
-#[test]
-fn watdiv_mini_cardinalities_match() {
+/// Loads the fixture's relations as `R` and checks every query's result
+/// count against `expected.json`.
+fn check_cardinalities<R: TrieIterable + Relation + Cardinality>() {
     let dir = artifacts_dir();
     let bench = load_yaml(&dir);
     let expected = load_expected(&dir);
 
-    let mut relations: BTreeMap<String, TreeTrie> = BTreeMap::new();
+    let mut relations: BTreeMap<String, R> = BTreeMap::new();
     for rel in &bench.relations {
         let path = dir.join(format!("{}.parquet", rel.name));
-        let trie = TreeTrie::from_parquet(&path)
-            .unwrap_or_else(|e| panic!("failed to load {path:?}: {e}"));
+        let trie =
+            R::from_parquet(&path).unwrap_or_else(|e| panic!("failed to load {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
 
@@ -54,15 +58,23 @@ fn watdiv_mini_cardinalities_match() {
             .unwrap_or_else(|| panic!("no expected entry for {key}"));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got =
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, &LexicographicOptimiser)
-                .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
-                .len();
+        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, &LexicographicOptimiser)
+            .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
+            .len();
 
         assert_eq!(
-            got, want,
-            "cardinality mismatch on {key}: got {got}, expected {want}\nquery: {}",
+            got,
+            want,
+            "cardinality mismatch on {key} ({}): got {got}, expected {want}\nquery: {}",
+            std::any::type_name::<R>(),
             q.query
         );
     }
+}
+
+#[test]
+fn watdiv_mini_cardinalities_match() {
+    check_cardinalities::<TreeTrie<LinearSeek>>();
+    check_cardinalities::<TreeTrie<BinarySeek>>();
+    check_cardinalities::<TreeTrie<GallopingSeek>>();
 }

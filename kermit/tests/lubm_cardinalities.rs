@@ -22,7 +22,10 @@ use {
         CardinalityOptimiser, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
     },
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{RelationFileExt, TreeTrie},
+    kermit_ds::{
+        BinarySeek, Cardinality, GallopingSeek, LinearSeek, Relation, RelationFileExt, TreeTrie,
+    },
+    kermit_iters::TrieIterable,
     kermit_rdf::lubm::{
         driver::{LubmDriverInputs, DEFAULT_ONTOLOGY_IRI},
         pipeline::{run_lubm_pipeline, LubmPipelineInputs},
@@ -51,17 +54,17 @@ fn vendored_jar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kermit-rdf/vendor/lubm-uba/lubm-uba.jar")
 }
 
-/// Loads the generated relations into a fresh engine planned by `optimiser`,
-/// runs every query, and returns one line per query whose result count
-/// differs from the paper's reference cardinality.
-fn cardinality_mismatches(
-    bench: &BenchmarkDefinition, dir: &Path, optimiser_name: &str,
-    optimiser: Box<dyn QueryOptimiser>, expected: &HashMap<String, u64>,
+/// Loads the generated relations as `R` into a fresh engine planned by
+/// `optimiser`, runs every query, and returns one line per query whose
+/// result count differs from the paper's reference cardinality.
+fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
+    bench: &BenchmarkDefinition, dir: &Path, optimiser_name: &str, optimiser: &dyn QueryOptimiser,
+    expected: &HashMap<String, u64>,
 ) -> Vec<String> {
-    let mut relations: BTreeMap<String, TreeTrie> = BTreeMap::new();
+    let mut relations: BTreeMap<String, R> = BTreeMap::new();
     for rel in &bench.relations {
         let path = dir.join(format!("{}.parquet", rel.name));
-        let trie = TreeTrie::from_parquet(&path)
+        let trie = R::from_parquet(&path)
             .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
@@ -75,14 +78,16 @@ fn cardinality_mismatches(
             .unwrap_or_else(|| panic!("no reference cardinality for query {}", q.name));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, optimiser.as_ref())
+        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, optimiser)
             .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
             .len() as u64;
 
         if got != want {
             mismatches.push(format!(
-                "  [{optimiser_name}] {}: got {got}, expected {want}\n    query: {}",
-                q.name, q.query
+                "  [{optimiser_name} / {}] {}: got {got}, expected {want}\n    query: {}",
+                std::any::type_name::<R>(),
+                q.name,
+                q.query
             ));
         }
     }
@@ -153,19 +158,34 @@ fn lubm_one_university_query_cardinalities_match_paper() {
     let optimiser_count = optimisers.len();
 
     let mut mismatches: Vec<String> = Vec::new();
-    for (name, optimiser) in optimisers {
-        mismatches.extend(cardinality_mismatches(
+    for (name, optimiser) in &optimisers {
+        mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
             &bench,
             out.path(),
             name,
-            optimiser,
+            optimiser.as_ref(),
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<TreeTrie<BinarySeek>>(
+            &bench,
+            out.path(),
+            name,
+            optimiser.as_ref(),
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<TreeTrie<GallopingSeek>>(
+            &bench,
+            out.path(),
+            name,
+            optimiser.as_ref(),
             &expected,
         ));
     }
 
     assert!(
         mismatches.is_empty(),
-        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers):\n{}",
+        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers x 3 seek \
+         strategies):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimiser_count,

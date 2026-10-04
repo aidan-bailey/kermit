@@ -108,7 +108,10 @@ use {
     kermit::db::lftj_join,
     kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{RelationFileExt, TreeTrie},
+    kermit_ds::{
+        BinarySeek, Cardinality, GallopingSeek, LinearSeek, Relation, RelationFileExt, TreeTrie,
+    },
+    kermit_iters::TrieIterable,
     kermit_rdf::{
         generator::{MetaHeader, META_SCHEMA_VERSION},
         lubm::{
@@ -194,17 +197,17 @@ fn emitted_benchmark(dir: &Path) -> BenchmarkDefinition {
     serde_yaml::from_str(&yaml).expect("benchmark.yml malformed")
 }
 
-/// Loads the generated relations into a fresh engine planned by `optimiser`,
-/// runs every query, and returns one line per query whose result count
-/// differs from the hand-counted cardinality.
-fn cardinality_mismatches(
+/// Loads the generated relations as `R` into a fresh engine planned by
+/// `optimiser`, runs every query, and returns one line per query whose
+/// result count differs from the hand-counted cardinality.
+fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
     bench: &BenchmarkDefinition, dir: &Path, optimiser: Optimiser, expected: &HashMap<&str, u64>,
 ) -> Vec<String> {
     let planner = optimiser.instantiate();
-    let mut relations: BTreeMap<String, TreeTrie> = BTreeMap::new();
+    let mut relations: BTreeMap<String, R> = BTreeMap::new();
     for rel in &bench.relations {
         let path = dir.join(format!("{}.parquet", rel.name));
-        let trie = TreeTrie::from_parquet(&path)
+        let trie = R::from_parquet(&path)
             .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
@@ -213,13 +216,14 @@ fn cardinality_mismatches(
     for q in &bench.queries {
         let want = expected[q.name.as_str()];
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, parsed, planner.as_ref())
+        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, planner.as_ref())
             .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
             .len() as u64;
         if got != want {
             mismatches.push(format!(
-                "  [{}] {}: got {got}, expected {want}\n    query: {}",
+                "  [{} / {}] {}: got {got}, expected {want}\n    query: {}",
                 optimiser.axis_value(),
+                std::any::type_name::<R>(),
                 q.name,
                 q.query
             ));
@@ -249,7 +253,21 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
     let optimisers = Optimiser::value_variants();
     let mut mismatches: Vec<String> = Vec::new();
     for &optimiser in optimisers {
-        mismatches.extend(cardinality_mismatches(
+        // Every seek strategy must give every answer: the strategy changes
+        // how far a seek looks, never where it lands (issue #80).
+        mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
+            &bench,
+            out.path(),
+            optimiser,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<TreeTrie<BinarySeek>>(
+            &bench,
+            out.path(),
+            optimiser,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<TreeTrie<GallopingSeek>>(
             &bench,
             out.path(),
             optimiser,
@@ -258,7 +276,8 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
     }
     assert!(
         mismatches.is_empty(),
-        "mini LUBM cardinality mismatches ({} across {} queries x {} optimisers):\n{}",
+        "mini LUBM cardinality mismatches ({} across {} queries x {} optimisers x 3 seek \
+         strategies):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimisers.len(),

@@ -33,13 +33,19 @@
 //! descents; it now refills one in place. The HashTriejoin cells hold the
 //! other side of every LFTJ-vs-HashTriejoin comparison to the same
 //! standard.
+//!
+//! Issue #80 adds the seek strategies: the existing sorted cells run the
+//! default (`binary`), and the `linear` / `galloping` cells below hold the
+//! other two to the same standard: a strategy that allocated per seek would
+//! show up in both checks. The scan cells are not multiplied, because the
+//! scan never seeks.
 
 use {
     kermit::db::{hash_join_for_each, lftj_join_for_each},
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{
-        Cardinality, ColumnTrie, HashTrie, NoPruning, PruningPolicy, Relation, SingletonPruning,
-        TreeTrie,
+        Cardinality, ColumnTrie, GallopingSeek, HashTrie, LinearSeek, NoPruning, PruningPolicy,
+        Relation, SingletonPruning, TreeTrie,
     },
     kermit_iters::{
         FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -161,6 +167,46 @@ fn column_trie_lftj_allocates_independently_of_result_size() {
         "ColumnTrie/LFTJ",
         lftj_allocations::<ColumnTrie>(SMALL),
         lftj_allocations::<ColumnTrie>(LARGE),
+    );
+}
+
+#[test]
+fn tree_trie_linear_lftj_allocates_independently_of_result_size() {
+    lftj_allocations::<TreeTrie<LinearSeek>>(SMALL);
+    assert_flat(
+        "TreeTrie<LinearSeek>/LFTJ",
+        lftj_allocations::<TreeTrie<LinearSeek>>(SMALL),
+        lftj_allocations::<TreeTrie<LinearSeek>>(LARGE),
+    );
+}
+
+#[test]
+fn tree_trie_galloping_lftj_allocates_independently_of_result_size() {
+    lftj_allocations::<TreeTrie<GallopingSeek>>(SMALL);
+    assert_flat(
+        "TreeTrie<GallopingSeek>/LFTJ",
+        lftj_allocations::<TreeTrie<GallopingSeek>>(SMALL),
+        lftj_allocations::<TreeTrie<GallopingSeek>>(LARGE),
+    );
+}
+
+#[test]
+fn column_trie_linear_lftj_allocates_independently_of_result_size() {
+    lftj_allocations::<ColumnTrie<LinearSeek>>(SMALL);
+    assert_flat(
+        "ColumnTrie<LinearSeek>/LFTJ",
+        lftj_allocations::<ColumnTrie<LinearSeek>>(SMALL),
+        lftj_allocations::<ColumnTrie<LinearSeek>>(LARGE),
+    );
+}
+
+#[test]
+fn column_trie_galloping_lftj_allocates_independently_of_result_size() {
+    lftj_allocations::<ColumnTrie<GallopingSeek>>(SMALL);
+    assert_flat(
+        "ColumnTrie<GallopingSeek>/LFTJ",
+        lftj_allocations::<ColumnTrie<GallopingSeek>>(SMALL),
+        lftj_allocations::<ColumnTrie<GallopingSeek>>(LARGE),
     );
 }
 
@@ -374,6 +420,46 @@ fn column_trie_lftj_allocates_independently_of_descent_count() {
         "ColumnTrie/LFTJ",
         lftj_descent_allocations::<ColumnTrie>(FEW_DEAD_ENDS),
         lftj_descent_allocations::<ColumnTrie>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn tree_trie_linear_lftj_allocates_independently_of_descent_count() {
+    lftj_descent_allocations::<TreeTrie<LinearSeek>>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "TreeTrie<LinearSeek>/LFTJ",
+        lftj_descent_allocations::<TreeTrie<LinearSeek>>(FEW_DEAD_ENDS),
+        lftj_descent_allocations::<TreeTrie<LinearSeek>>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn tree_trie_galloping_lftj_allocates_independently_of_descent_count() {
+    lftj_descent_allocations::<TreeTrie<GallopingSeek>>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "TreeTrie<GallopingSeek>/LFTJ",
+        lftj_descent_allocations::<TreeTrie<GallopingSeek>>(FEW_DEAD_ENDS),
+        lftj_descent_allocations::<TreeTrie<GallopingSeek>>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn column_trie_linear_lftj_allocates_independently_of_descent_count() {
+    lftj_descent_allocations::<ColumnTrie<LinearSeek>>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "ColumnTrie<LinearSeek>/LFTJ",
+        lftj_descent_allocations::<ColumnTrie<LinearSeek>>(FEW_DEAD_ENDS),
+        lftj_descent_allocations::<ColumnTrie<LinearSeek>>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn column_trie_galloping_lftj_allocates_independently_of_descent_count() {
+    lftj_descent_allocations::<ColumnTrie<GallopingSeek>>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "ColumnTrie<GallopingSeek>/LFTJ",
+        lftj_descent_allocations::<ColumnTrie<GallopingSeek>>(FEW_DEAD_ENDS),
+        lftj_descent_allocations::<ColumnTrie<GallopingSeek>>(MANY_DEAD_ENDS),
     );
 }
 
