@@ -7,9 +7,10 @@
 `TreeTrie` is a pointer-based trie: each `TrieNode` owns its key (`usize`) and a `Vec<TrieNode>` of children. The trie itself owns the root-level `Vec<TrieNode>`. A tuple `[k_0, k_1, …, k_{n-1}]` is encoded as a root-to-leaf path of depth `n`, where the node at depth `i` holds key `k_i`. Children at every level are kept sorted ascending by key.
 
 ```rust
-TreeTrie {
+TreeTrie<S: SeekStrategy = BinarySeek> {
     header: RelationHeader,
     children: Vec<TrieNode>,         // root level
+    _seek: PhantomData<S>,           // seek strategy, zero-sized
 }
 
 TrieNode {
@@ -40,14 +41,14 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort lexicographically, then insert |
 | `TrieIterator::key()` | O(1) | | slice index |
 | `TrieIterator::next()` | O(1) | | `sibling_idx += 1` |
-| `TrieIterator::seek(target)` | O(log b) | | `partition_point` binary search over the remaining siblings |
+| `TrieIterator::seek(target)` | `S`-dependent: linear O(d), binary O(log r), galloping O(log d) | | `S::partition_point` over the `r` remaining siblings; `d` is the distance moved. See [seek strategies](seek-strategies.md) |
 | `TrieIterator::open()` | O(1) | | push first child |
 | `TrieIterator::up()` | O(1) | | pop stack |
 | `HeapSize::heap_size_bytes()` | O(node count) | | walks the whole trie summing `Vec` capacities |
 
-`seek` binary-searches the siblings it has not yet passed, exactly as `ColumnTrieIter::seek` does, so the two sorted tries differ only in layout. Veldhuizen's analysis of LFTJ assumes `seek` costs O(log N), and amortised O(1 + log(N/m)) over m visited keys. A binary search meets the first bound. The amortised one needs a galloping search, which neither trie uses; over m seeks the difference is at most a log factor. The trade-off cuts both ways: a binary search costs O(log b) even when the seek moves a single sibling, where the old scan cost O(distance), so queries whose seeks mostly move one or two siblings can run slower than they did under the scan. A galloping search would keep both cases cheap, but adopting it means changing both sorted tries together.
+`seek` asks its seek strategy `S` how many of the remaining siblings lie below the target, and moves that far. The strategy is a Layout shared with `ColumnTrie`, so the two sorted tries differ only in layout under any one strategy. The default, `binary`, is the `partition_point` search both tries used before the parameter existed. See [seek strategies](seek-strategies.md) for the three strategies, their probe bounds and the LFTJ bound they relate to.
 
-Until issue #67, `seek` was a linear scan, O(b), which meets neither bound. On high-fan-out WatDiv queries it made `TreeTrie` 10-197x slower than `ColumnTrie`. `TreeTrie` benchmark numbers from before that fix are not comparable with later ones. `seek_cost_is_independent_of_distance` in `trie_seek_tests!` ([`kermit-ds/tests/common/macros.rs`](../../kermit-ds/tests/common/macros.rs)) pins the complexity for both sorted tries.
+Until issue #67, `seek` was a linear scan. On high-fan-out WatDiv queries it made `TreeTrie` 10–197x slower than `ColumnTrie`, and `TreeTrie` numbers from before that fix are not comparable with later ones. `--ds-layout-seek linear` runs the same algorithm in today's code, not the pre-#67 code. `seek_cost_matches_the_strategy` in `trie_seek_tests!` ([`kermit-ds/tests/common/macros.rs`](../../kermit-ds/tests/common/macros.rs)) pins each strategy's complexity through the real iterator.
 
 ## Worked micro-example
 
@@ -77,8 +78,17 @@ Iteration walk (`trie_iter().into_iter()`):
 - Workloads with frequent tuple-by-tuple inserts — `TreeTrie::insert` is local, unlike `ColumnTrie` where an early-layer insert shifts later-layer offsets.
 - When debugging algorithm behaviour against the trie shape; pointer chains are easier to inspect than parallel-array offsets.
 
+## Optimizations
+
+| Dimension | Category | Axis | Flag | Default | Test aliases |
+|---|---|---|---|---|---|
+| Seek strategy | Layout (`S: SeekStrategy`) | `ds_layout_seek` | `--ds-layout-seek linear\|binary\|galloping` | `binary` | `TreeTrieLinear`, `TreeTrieBinary`, `TreeTrieGalloping` |
+
+The strategy changes only how `seek` searches; it changes no stored data, no build and no `heap_size_bytes`. Details: [seek strategies](seek-strategies.md).
+
 ## See also
 
 - [`ColumnTrie`](./column-trie.md) — column-oriented alternative.
+- [Seek strategies](./seek-strategies.md) — the `S` Layout shared with `ColumnTrie`.
 - [`LeapfrogTriejoin`](../algorithms/leapfrog-triejoin.md) — primary algorithm consumer.
 - `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; `TreeTrie` must pass all 16 patterns under every algorithm (Priorities item 1).

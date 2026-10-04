@@ -220,6 +220,32 @@ other change between the two binaries. A build mode only changes the build,
 so `kl.ablation` (and `render-all`) draw the `ds_build_mode` axis for the
 `insertion` and `end_to_end` phases only.
 
+The seek strategy of the sorted tries works the same way. Compare
+strategies **within one binary**, and give each run a distinct `--name`,
+because Criterion group names do not encode axes:
+
+```sh
+for seek in linear binary galloping; do
+  kermit bench --name seek-$seek --report-json bench-runs/seek-$seek.json \
+    run watdiv-stress-100-test-1-prelim -q q0236 -i all -a leapfrog-triejoin \
+    --ds-layout-seek $seek --metrics iteration
+done
+```
+
+`kl.ablation(df, axis="ds_layout_seek")` draws only for `iteration` and
+`end_to_end`: both strategies build the same trie.
+
+**Codegen precision bound.** A rebuild moves timings even where the
+algorithm did not change. Measurement 1 for #80 (`kermit-bench-runs/seek-ab-2026-10-04/`,
+kept outside the repository; `analysis.txt`) compared release builds of
+0056fe1 and f8f7494 under the unchanged default seek, `binary`. The extra
+monomorphised strategies alone moved TreeTrie by −2.8% (geomean new/base
+0.972) and ColumnTrie by +2.1% (1.021), while HashTrie, whose code was
+untouched, stayed flat (0.999): the TreeTrie/ColumnTrie ratio moved ~5% from
+codegen alone. A within-binary difference between the two sorted tries
+smaller than that is not conclusive, and cross-binary comparisons stay
+forbidden, since reports carry no binary identity.
+
 Give every run its own `--name`: Criterion group names do not encode
 optimisation axes, so two runs that differ only in a `--ds-*` flag write into
 the same `target/criterion/` directory, and the later overwrites the earlier's

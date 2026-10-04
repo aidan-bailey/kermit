@@ -72,6 +72,8 @@ A **Layout** option changes the type of the data structure itself. Each combinat
 > **Concrete example.** HashTrie's hash function (sip vs fxhash) is a Layout. `HashTrie<SipHashStrategy>` and `HashTrie<FxHashStrategy>` are different types — the compiler generates different machine code for each because the inner `H::hash(key)` call resolves to different functions.
 >
 > **Second concrete example.** Singleton pruning is HashTrie's other Layout dimension: `HashTrie<H, NoPruning>` and `HashTrie<H, SingletonPruning>` differ in which node variants exist at all, because the policy's `Payload` associated type is uninhabited when pruning is off.
+>
+> **Third concrete example.** The sorted tries' seek strategy is a Layout of two structures at once: `TreeTrie<S>` and `ColumnTrie<S>` share one implementation per `S: SeekStrategy` (`linear`, `binary`, `galloping`), so the same strategy on both tries isolates the layout. Every strategy returns what `slice::partition_point` returns; only the probes differ.
 
 | Aspect | Layout |
 |---|---|
@@ -80,7 +82,7 @@ A **Layout** option changes the type of the data structure itself. Each combinat
 | Type system enforcement | Strong (incompatible layouts won't compile together) |
 | Switching at runtime | Impossible (it's compile-time) |
 | Bench axis key | `ds_layout_<dim>` |
-| Examples (potential) | Hasher choice ✓, singleton pruning ✓, pointer encoding, lazy expansion |
+| Examples (potential) | Hasher choice ✓, singleton pruning ✓, seek strategy ✓, pointer encoding, lazy expansion |
 | Test obligation | Type alias per combination + `define_multiway_join_test_suite!(<alias>, <Algo>, <Optimiser>)` for each |
 
 ### Config — *changes a runtime value*
@@ -363,7 +365,9 @@ wraps an `R: BuildModeRelation` with a zero-sized
 `kermit_ds::define_build_mode_provider!`, so macro suites can name a mode as a
 type. Unlike `Configured`, it needs no rule that `project` preserve the mode:
 projection rebuilds through the default mode, and every mode builds the same
-relation.
+relation. It forwards `HasOptimizationAxes` to the wrapped relation, as
+`Configured` does, so a wrapped `ColumnTrie<S>` still reports its Layout axis
+(`ds_layout_seek`); the build mode stays a family axis.
 
 ---
 
@@ -561,7 +565,9 @@ product: `with_hash_trie_layout!(hasher, pruning, |H, P| …)` in
 all call it. **Adding a third
 Layout dimension means adding arms to that macro and nowhere else** — do
 not reach for a runtime enum inside the structure, which would reintroduce
-the tax the Layout category exists to avoid.
+the tax the Layout category exists to avoid. That rule is per structure
+family. The sorted tries' seek strategy has its own `with_sorted_trie_layout!`
+beside it, because the two products share no dimension.
 
 `Execution::HashHtj { hasher, pruning, config }`
 (`kermit/src/execution.rs`) records the cell, so the bench report cannot
@@ -724,7 +730,7 @@ For old reports that predate the standard, back-fill defaults in `kermit-lab`:
 df["ds_layout_hasher"] = df.get("ds_layout_hasher", "sip")
 ```
 
-This is semantically correct — pre-standard runs were SipHash-only. `kermit_lab.defaults` does exactly this for every axis, back-filling `ds_layout_pruning = "off"` and `ds_config_load_factor = 0.7` (the historical constant) as well. It also back-fills `ds_build_mode = "incremental"`, on ColumnTrie rows only (`SCOPED_AXIS_DEFAULTS`): ColumnTrie built tuple by tuple before issue #84, and no other structure has a build-mode axis.
+This is semantically correct — pre-standard runs were SipHash-only. `kermit_lab.defaults` does exactly this for every axis, back-filling `ds_layout_pruning = "off"` and `ds_config_load_factor = 0.7` (the historical constant) as well. It also back-fills `ds_build_mode = "incremental"`, on ColumnTrie rows only (`SCOPED_AXIS_DEFAULTS`): ColumnTrie built tuple by tuple before issue #84, and no other structure has a build-mode axis. `ds_layout_seek` is likewise back-filled `binary` on ColumnTrie rows only, through the same structure-scoped registry: TreeTrie's seek was linear before issue #67, and a report cannot tell which side of #67 it came from.
 
 ---
 
@@ -735,8 +741,10 @@ This is semantically correct — pre-standard runs were SipHash-only. `kermit_la
 | The four traits | [`kermit-iters/src/optimization.rs`](../../kermit-iters/src/optimization.rs) |
 | First Layout consumer (hasher choice) | [`kermit-iters/src/hash_strategy.rs`](../../kermit-iters/src/hash_strategy.rs) |
 | Second Layout consumer (pruning policy) | [`kermit-ds/src/ds/hash_trie/pruning.rs`](../../kermit-ds/src/ds/hash_trie/pruning.rs) |
+| Third Layout consumer (seek strategy, both sorted tries) | [`kermit-ds/src/seek.rs`](../../kermit-ds/src/seek.rs) |
 | HashTrie's `HasOptimizationAxes` impl | [`kermit-ds/src/ds/hash_trie/implementation.rs`](../../kermit-ds/src/ds/hash_trie/implementation.rs) |
 | CLI dispatch monomorphizing on the Layout cell | [`kermit/src/options.rs`](../../kermit/src/options.rs) (`with_hash_trie_layout!` — the one place Layout dimensions multiply) |
+| Sorted Layout dispatch | [`kermit/src/options.rs`](../../kermit/src/options.rs) (`with_sorted_trie_layout!`) |
 | Bench-report axes merge | [`kermit/src/bench/run.rs`](../../kermit/src/bench/run.rs) and [`kermit/src/bench/ds.rs`](../../kermit/src/bench/ds.rs) (search `optimization_axes` / `build_mode_axes`), from the families in [`kermit/src/execution.rs`](../../kermit/src/execution.rs) |
 | CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_layout_pruning.rs`](../../kermit/tests/cli_hash_trie_layout_pruning.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs) |
 | First Config consumer (load-factor cap) | [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs) |
@@ -756,13 +764,14 @@ This is semantically correct — pre-standard runs were SipHash-only. `kermit_la
 
 ## What's implemented today, what's available
 
-Four optimizations are implemented — two Layout dimensions, one Config
+Five optimizations are implemented — three Layout dimensions, one Config
 value and one BuildMode:
 
 | Optimization | Category | Where | Paper § |
 |---|---|---|---|
 | Hasher choice (Sip vs Fx) | Layout | `ds_layout_hasher` | §3.3.1 |
 | Singleton pruning (off/on) | Layout | `ds_layout_pruning` | §3.3.1, Fig 5 |
+| Seek strategy (linear / binary / galloping) | Layout | `ds_layout_seek` | (kermit-specific; LFTJ §3) |
 | Load-factor cap | Config | `ds_config_load_factor` | (kermit-specific) |
 | ColumnTrie build (bulk / incremental) | BuildMode | `ds_build_mode` | (kermit-specific, issue #84) |
 

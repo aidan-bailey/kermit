@@ -81,11 +81,11 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 |---|---|---|
 | Iterator | `TrieIterator` | `HashTrieIterator` |
 | Iterable | `TrieIterable` | `HashTrieIterable` |
-| Structure | `TreeTrie`, `ColumnTrie` | `HashTrie<H>` |
+| Structure | `TreeTrie<S>`, `ColumnTrie<S>` | `HashTrie<H>` |
 | Algorithm | `LeapfrogTriejoin` | `HashTriejoin` |
 | `Projectable` | `project_via_trie_iter` (shared helper) | hand-rolled on `HashTrie` |
 | Engine | `lftj_join` free function over `BTreeMap<String, R>` | `hash_join` free function over `BTreeMap<String, HashTrie<H, P>>` |
-| Bench cell | `Execution::TrieLftj(SortedTrie)` (`ColumnTrie { build }` carries `--ds-build`) / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, config }` / `HashHtj<H, P>` (labels derived from `H`/`P`) |
+| Bench cell | `Execution::TrieLftj(SortedTrie::TreeTrie { seek } \| ColumnTrie { seek, build })` (`seek` carries `--ds-layout-seek`, `build` `--ds-build`) / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, config }` / `HashHtj<H, P>` (labels derived from `H`/`P`) |
 | `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
 | `bench ds` dispatch | one generic `run_ds_bench<F: RelationFamily>` over `SortedTrieFamily<R>` | the same `run_ds_bench<F>` over `HashTrieFamily<H, P>` |
 
@@ -172,14 +172,15 @@ struct TrieNode {
     children: Vec<TrieNode>,
 }
 
-struct TreeTrie {
+struct TreeTrie<S: SeekStrategy = BinarySeek> {
     header: RelationHeader,
     children: Vec<TrieNode>,
     tuple_count: usize, // distinct tuples; backs `Cardinality`
+    _seek: PhantomData<S>,
 }
 ```
 
-Tuples are stored as root-to-leaf paths. Children are kept sorted for binary search during seeks.
+Tuples are stored as root-to-leaf paths. Children are kept sorted so that `seek` can search them; how it searches is the seek-strategy Layout `S`, shared with `ColumnTrie` (see [`docs/data-structures/seek-strategies.md`](docs/data-structures/seek-strategies.md)).
 
 #### ColumnTrie
 
@@ -191,10 +192,11 @@ struct ColumnTrieLayer {
     interval: Vec<usize>,  // Start indices for each parent's children
 }
 
-struct ColumnTrie {
+struct ColumnTrie<S: SeekStrategy = BinarySeek> {
     header: RelationHeader,
     layers: Vec<ColumnTrieLayer>,
     tuple_count: usize,
+    _seek: PhantomData<S>,
 }
 ```
 
@@ -223,7 +225,7 @@ Tables use linear probing with power-of-two capacity, doubling above a 0.7 load 
 - **Multiset semantics.** Tuples with identical hash signatures chain in the same leaf bucket rather than deduplicating, so `Cardinality::tuple_count` counts multiset size where `TreeTrie` and `ColumnTrie` count distinct tuples.
 - **Leaves hold whole tuples.** Because inner levels store only hashes, the real values are needed at the leaf to reject hash collisions.
 
-`HashTrie<H, P>` has two Layout axes — the hasher `H` (`SipHashStrategy` default, `FxHashStrategy`) and the pruning policy `P` — and one Config axis, the load factor; it is the only structure implementing `HasOptimizationAxes`, reporting `ds_layout_hasher`, `ds_layout_pruning` and `ds_config_load_factor`. `ColumnTrie`'s BuildMode axis, `ds_build_mode`, is reported by its bench family instead, because the built trie is the same under every mode.
+`HashTrie<H, P>` has two Layout axes — the hasher `H` (`SipHashStrategy` default, `FxHashStrategy`) and the pruning policy `P` — and one Config axis, the load factor; its `HasOptimizationAxes` impl reports `ds_layout_hasher`, `ds_layout_pruning` and `ds_config_load_factor`. `TreeTrie<S>` and `ColumnTrie<S>` implement `HasOptimizationAxes` too, reporting their seek-strategy Layout `S` (`LinearSeek`, `BinarySeek` default, `GallopingSeek`; see [`docs/data-structures/seek-strategies.md`](docs/data-structures/seek-strategies.md)) as `ds_layout_seek`. `ColumnTrie`'s BuildMode axis, `ds_build_mode`, is reported by its bench family instead, because the built trie is the same under every mode.
 
 ### Query Representation (`kermit-parser`)
 
@@ -432,13 +434,13 @@ Working examples live in `README.md` and `USAGE.md`; the YAML schema and generat
 
 They share a single private body. The `JoinFamily<R>` trait — with a GAT `Wrapper<'a>` — abstracts the only three steps that differ between families: wrapping a borrowed relation (`TrieIterKind` vs `HashTrieIterKind`), wrapping a constant atom (the hash side folds in `H::hash`), and wrapping an equality-selection view (`wrap_selection`). Everything else — validation and the three rewrites (`validation::prepare`, shared with `validate_query`), the wrapper map, `CatalogStats`, `optimiser.plan`, `join_for_each(.., emit)` and the head projection — is written once, so a fix to the prologue cannot land in one family only.
 
-There is deliberately no object-safe engine trait. Runtime selection of the `(structure, algorithm)` cell — for `kermit join` and `bench join` as much as for `bench run` — goes through `Execution::for_pair` and the `ExecutionFamily` impls in `kermit/src/execution.rs` (`load_query_runner` in `main.rs` monomorphises per cell exactly as `dispatch_run_bench` does). An incompatible pair is a usage error, and all three valid cells, including `(HashTrie, HashTriejoin)`, are reachable from every command.
+There is deliberately no object-safe engine trait. Runtime selection of the `(structure, algorithm)` cell — for `kermit join` and `bench join` as much as for `bench run` — goes through `Execution::for_pair` and the `ExecutionFamily` impls in `kermit/src/execution.rs` (`query_cell` in `main.rs` resolves the one cell both join commands use, and `load_query_runner` monomorphises it exactly as `dispatch_run_bench` does; `build_join_runner` debug-asserts that the family it was handed reports that cell). An incompatible pair is a usage error, and all three valid cells, including `(HashTrie, HashTriejoin)`, are reachable from every command.
 
 ### Selector dispatch
 
 `bench ds` and `bench run` accept `all` for `--indexstructure` and `--algorithm`, expanding to a Cartesian sweep.
 
-For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(SortedTrie)` (whose `ColumnTrie { build }` variant carries the `--ds-build` mode) and `HashHtj { hasher, pruning, config }` — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the three incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
+For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(SortedTrie::TreeTrie { seek } | ColumnTrie { seek, build })` (`seek` carries the `--ds-layout-seek` strategy, and ColumnTrie's `build` the `--ds-build` mode) and `HashHtj { hasher, pruning, config }` — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the three incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
 
 Consequently `-i all -a all` runs exactly the three valid cells, announcing each skipped pair on stderr, while a single explicitly-named incompatible pair leaves nothing to run and is reported as a usage error. Because the report's `data_structure` and `algorithm` axes are both derived from `ExecutionFamily::execution()`, a report cannot name an algorithm it did not run (issue #56).
 

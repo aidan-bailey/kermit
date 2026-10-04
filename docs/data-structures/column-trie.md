@@ -7,9 +7,10 @@
 `ColumnTrie` flattens each trie level into a `ColumnTrieLayer` of parallel arrays: `data: Vec<usize>` for keys at that depth, and `interval: Vec<usize>` for parent → child offsets. One layer per attribute. The children of the parent at position `i` span `data[interval[i]..interval[i+1]]` of the *child* layer (or to `data.len()` for the last parent).
 
 ```rust
-ColumnTrie {
+ColumnTrie<S: SeekStrategy = BinarySeek> {
     header: RelationHeader,
     layers: Vec<ColumnTrieLayer>,    // one per attribute
+    _seek: PhantomData<S>,           // seek strategy, zero-sized
 }
 
 ColumnTrieLayer {
@@ -50,7 +51,7 @@ That yields the arrays of the worked micro-example below. Incremental `insert` r
 - **Interval bounds.** Every interval entry indexes into `layers[i].data`; the last entry may equal `data.len()`.
 - **Canonical layout.** The arrays depend only on the tuple *set*: each layer's `data` is every parent's sorted children, concatenated in parent order. So `from_tuples` and any sequence of `insert` calls over the same tuples produce identical arrays — down to each `Vec`'s capacity, because both grow one element at a time — and so the same `heap_size_bytes`. Pinned by `bulk_and_incremental_builds_are_identical`.
 - **Duplicate insert is a no-op.** When an inserted key matches an existing key in the active interval, insertion *recurses into the existing key's position* — the next layer is inserted under the right parent. Encoded as `LayerStep::Recurse` in [`implementation.rs`](../../kermit-ds/src/ds/column_trie/implementation.rs).
-- **Forward-only `seek`.** Like `TreeTrieIter`, `ColumnTrieIter::seek(k)` only advances; it uses `partition_point` on the remaining slice.
+- **Forward-only `seek`.** Like `TreeTrieIter`, `ColumnTrieIter::seek(k)` only advances; it asks its seek strategy `S` for the offset within the remaining slice (see [seek strategies](seek-strategies.md)).
 - **LFTJ `open`-after-`at_end` discipline.** `ColumnTrieIter::open` derives the new interval index from `parent_start + rel_data_i` even if `rel_data_i` is currently past the end of the parent's children. LFTJ relies on this — do not "fix" the apparent stale offset. See the LFTJ gotcha in `CLAUDE.md`.
 
 ## Complexity
@@ -63,7 +64,7 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort lexicographically (O(n · a · log n)), then build every layer in one pass (O(n · a)); see Construction. Before issue #84 it inserted tuple by tuple, O(n · a · b) |
 | `TrieIterator::key()` | O(1) | | slice index |
 | `TrieIterator::next()` | O(1) | | `rel_data_i += 1` |
-| `TrieIterator::seek(target)` | O(log b) | | `partition_point` binary search on the sorted sibling slice |
+| `TrieIterator::seek(target)` | `S`-dependent: linear O(d), binary O(log r), galloping O(log d) | | `S::partition_point` over the `r` remaining keys of the interval slice; `d` is the distance moved. See [seek strategies](seek-strategies.md) |
 | `TrieIterator::open()` | O(1) | | derive child interval and slice |
 | `TrieIterator::up()` | O(parent interval length) | | linear scan of parent's interval array |
 | `HeapSize::heap_size_bytes()` | O(a) | | sum of `Vec` capacities per layer |
@@ -95,7 +96,11 @@ Iteration walk:
 
 ## Optimizations
 
-Under [`optimization-standard.md`](../specs/optimization-standard.md), `ColumnTrie` has one axis, a **BuildMode**: how the trie is built from a known set of tuples. Every mode builds the identical trie — the same arrays and the same capacities — so the mode changes the `insertion` and `end_to_end` timings and nothing else.
+Under [`optimization-standard.md`](../specs/optimization-standard.md), `ColumnTrie` has two axes: a **BuildMode**, how the trie is built from a known set of tuples, and a **Layout**, the seek strategy its iterator searches with. Each leaves the other's phases alone: the build mode changes only the build, the strategy only the search.
+
+### Build mode
+
+Every mode builds the identical trie — the same arrays and the same capacities — so the mode changes the `insertion` and `end_to_end` timings and nothing else.
 
 | Mode | `--ds-build` | Method | Build (after the sort) |
 |---|---|---|---|
@@ -109,6 +114,14 @@ Both modes sort first, O(n · a · log n); `b` is the average branching factor.
 - **Tests:** `bulk_and_incremental_builds_are_identical` (array-level, capacities included), the `ColumnTrieIncremental` alias in `kermit-ds/tests/{trie,parquet}_tests.rs`, and `define_multiway_join_test_suite_for_build_mode!` in `kermit/tests/join_tests.rs`.
 - **When `incremental` is useful:** reproducing pre-#84 `insertion` numbers, and measuring how much of ColumnTrie's build cost belonged to the routine rather than the layout.
 
+### Seek strategy
+
+| Dimension | Category | Axis | Flag | Default | Test aliases |
+|---|---|---|---|---|---|
+| Seek strategy | Layout (`S: SeekStrategy`) | `ds_layout_seek` | `--ds-layout-seek linear\|binary\|galloping` | `binary` | `ColumnTrieLinear`, `ColumnTrieBinary`, `ColumnTrieGalloping` |
+
+The strategy changes only how `seek` searches; it changes no stored data, no build and no `heap_size_bytes`. It is shared with `TreeTrie`, so one strategy on both tries isolates the layout. kermit-lab reads a ColumnTrie row without the axis as `binary`: ColumnTrie's seek was already a binary search when the first JSON report was written. Details: [seek strategies](seek-strategies.md).
+
 ## When to prefer this structure
 
 - Large, mostly-static relations where iteration speed and compact layout matter.
@@ -118,5 +131,6 @@ Both modes sort first, O(n · a · log n); `b` is the average branching factor.
 ## See also
 
 - [`TreeTrie`](./tree-trie.md) — pointer-based alternative.
+- [Seek strategies](./seek-strategies.md) — the `S` Layout shared with `TreeTrie`.
 - [`LeapfrogTriejoin`](../algorithms/leapfrog-triejoin.md) — primary algorithm consumer.
 - `define_multiway_join_test_suite!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)) — combinatorial coverage; `ColumnTrie` must pass all 16 patterns under every algorithm (Priorities item 1).
