@@ -158,6 +158,22 @@ explained.
 
 # P1 — `kermit-ds`
 
+> **As executed (2026-10-05).** P1 landed as 93a9e55, 352069e and 6252323,
+> and then its quality review's fixes as 2913e8c. Those fixes changed P1's
+> code from the text below in seven ways:
+> - the splitter sample keeps its duplicates and takes 128 keys per
+>   partition, so the splitters share out tuples rather than distinct keys;
+> - the parallel arm sorts with the serial build's hand-rolled comparator;
+> - the test records are now `(threads, partitions)` per build and each
+>   `run_workers` thread count;
+> - a rendezvous test covers a helper thread's panic;
+> - partitions are collected pre-sized;
+> - the morsel-size comment is reworded;
+> - `Threads` is bounded by `Threads::MAX = 1024`.
+>
+> The spec records the design changes. P2 and P3 below are written against
+> the code as it now stands.
+
 ## Task 1 [P1]: The morsel-driven partition and build steps
 
 **Files:**
@@ -1630,6 +1646,7 @@ Add these tests at the end of the module:
             "parallel:0",
             "parallel:x",
             "parallel:-1",
+            "parallel:1025",
             "Serial",
             "threads:4",
             "",
@@ -1859,7 +1876,7 @@ fn cli_bench_ds_rejects_parallel_off_tree_trie() {
 
 #[test]
 fn cli_rejects_malformed_parallel_values() {
-    for bad in ["parallel", "parallel:0", "parallel:x"] {
+    for bad in ["parallel", "parallel:0", "parallel:1025", "parallel:x"] {
         let (output, _) = bench_ds("tree-trie", &["--ds-build", bad]);
         assert!(!output.status.success(), "accepted {bad}");
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1963,7 +1980,8 @@ impl fmt::Display for BuildChoice {
 }
 
 /// Parses a `--ds-build` value: `bulk`, `incremental`, `serial`, or
-/// `parallel:N` with `N` a whole number of threads, at least 1.
+/// `parallel:N` with `N` a whole number of threads from 1 to
+/// [`Threads::MAX`].
 pub(crate) fn parse_build_choice(value: &str) -> Result<BuildChoice, String> {
     match value {
         | "bulk" => Ok(BuildChoice::Bulk),
@@ -1979,7 +1997,10 @@ pub(crate) fn parse_build_choice(value: &str) -> Result<BuildChoice, String> {
                 .and_then(Threads::new)
                 .map(BuildChoice::Parallel)
                 .ok_or_else(|| {
-                    format!("parallel:N needs a whole number of threads N >= 1, got {other:?}")
+                    format!(
+                        "parallel:N needs a whole number of threads N from 1 to {}, got {other:?}",
+                        Threads::MAX
+                    )
                 })
         },
     }
@@ -2005,8 +2026,8 @@ pub(crate) struct BuildModes {
 pub(crate) struct BuildChoices {
     /// How the selected structure is built from its tuples: `bulk` (default)
     /// or `incremental` for `column-trie`; `serial` (default) or `parallel:N`
-    /// (N threads) for `tree-trie`. A value is only valid with a structure
-    /// that has it (or `all`).
+    /// (N threads, 1 to 1024) for `tree-trie`. A value is only valid with a
+    /// structure that has it (or `all`).
     #[arg(long = "ds-build", value_name = "MODE", value_parser = parse_build_choice)]
     build: Option<BuildChoice>,
 }
@@ -2816,7 +2837,9 @@ build produces, so only the build-timing metrics (`insertion`,
 
 `N` counts every thread the build uses, the calling one included. So
 `parallel:1` runs the parallel code on one thread, and against `serial` it
-measures what partitioning costs.
+measures what partitioning costs, net of one saving: sorting P partitions
+takes about n·log₂P fewer comparisons than one sort of everything, so
+`parallel:1` can beat `serial`. N ranges from 1 to 1024 (`Threads::MAX`).
 
 The shared steps live in `kermit-ds/src/morsel.rs` (`scatter`, `dispatch`).
 The TreeTrie build is `TreeTrie::build_parallel` in
@@ -2827,7 +2850,7 @@ The TreeTrie build is `TreeTrie::build_parallel` in
 ```text
 parallel_build(tuples, N):
     check arities                                   // the serial checks, on the caller
-    splitters = evenly spaced first keys of a sample // aiming at P = 4·N partitions
+    splitters = quantiles of a sample of first keys  // duplicates kept; aiming at P = 4·N partitions
     partitions = scatter(tuples, morsels of 16 384)  // step 1, N workers
         // tuple t goes to partition_point(splitters, s <= t[0])
     built = dispatch(partitions):                    // step 2, N workers
@@ -2859,8 +2882,11 @@ N ∈ {1, 2, 3, 8}.
   partition, and the partitions are first-key ranges, in order.
 - Sorted order restricted to a key range is that range sorted, so each
   subtree receives exactly the serial build's sequence of inserts.
-- With sorted input every insert appends, so a child list grows one element
-  at a time in both builds, and its capacity follows the same doublings.
+- A child list grows one insert at a time in both builds, and `Vec::insert`
+  grows a list exactly as `push` does, so capacities match. In fact a
+  TreeTrie, capacities included, depends only on its distinct tuples. The
+  per-partition sort is there for speed (every insert then appends), not
+  for identity.
 - The root grows by one push per first key, as the serial build's
   insert-at-the-end does. `extend` or `append` would reserve in bulk and
   break this, so the assemble step pushes.
@@ -2874,21 +2900,23 @@ With `n` tuples of arity `a`, `k` distinct first keys and `N` threads:
 
 | Step | Work | Runs on |
 |---|---|---|
-| Checks and sampling | O(n · a), plus sorting a sample of at most 32 keys per partition | the calling thread |
+| Checks and sampling | O(n · a), plus sorting a sample of at most 128 keys per partition | the calling thread |
 | Partition | O(n log P) | N workers |
 | Build | O(n · a · log n): sorting and inserting, split across partitions | N workers |
 | Assemble | O(k) moves | the calling thread |
 
 The sequential share is the checks, the sampling and the assemble step.
 With few tuples per first key (`k` close to `n`), the assemble step is a
-larger share and the speedup falls. One dominant first key puts most tuples
-in one partition, which caps the build step at one worker's speed.
+larger share and the speedup falls. The sample keeps duplicate keys, so the
+splitters share out tuples rather than distinct keys. Still, a key's tuples
+cannot be split: one dominant first key fills one partition, which caps the
+build step at one worker's speed.
 
 ## Worked micro-example
 
-`parallel:2` over `[3,1] [1,2] [2,9] [1,1]` aims at 8 partitions. The sample
-has only three distinct first keys, so the splitters are `[1, 2, 3]` and
-there are four partitions:
+`parallel:2` over `[3,1] [1,2] [2,9] [1,1]` aims at 8 partitions. The sorted
+sample is `1 1 2 3`; its quantiles for 8 partitions are `1 1 1 2 2 3 3`,
+which merge to the splitters `[1, 2, 3]`, so there are four partitions:
 
 | Partition | First keys | Tuples (input order) | After sorting and inserting |
 |---|---|---|---|
@@ -3008,7 +3036,9 @@ A flat Karp–Flatt fraction means a fixed sequential share (the assemble
 step) limits the build; a rising one means a cost that grows with N, such as
 allocator contention. Replicates (one report per run, each with its own
 `--name`) are pooled per arm and give bootstrap CIs once each arm has two.
-`parallel:1` against `serial` is the cost of partitioning alone.
+`parallel:1` against `serial` is the cost of partitioning net of one
+saving (P smaller sorts take about n·log₂P fewer comparisons than one big
+one), so `parallel:1` can come out ahead.
 `N = 16` on an 8-core host measures SMT, not more cores. The protocol behind
 reported numbers is in
 [`docs/specs/2026-10-05-parallel-build-design.md`](docs/specs/2026-10-05-parallel-build-design.md).
@@ -3139,7 +3169,8 @@ print(kl.speedup_table(df)[['threads', 'speedup', 'efficiency', 'karp_flatt']])
 
 Expected: all three runs succeed. Then:
 - `parallel:8`'s speedup is clearly above 1;
-- `parallel:1`'s is near 1, with the partitioning overhead below it.
+- `parallel:1`'s is near 1; it can exceed 1, since the per-partition sorts
+  save comparisons.
 
 If `parallel:8` is not faster, stop and report it at the checkpoint. The
 scaling phase would then measure nothing worth having.

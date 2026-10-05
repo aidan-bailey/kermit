@@ -38,7 +38,7 @@ scales with threads. Answering it needs two things:
 | Category | **BuildMode**: a process yielding the same shape. `parallel:N` builds the identical trie, capacities included, for every N. The standard's strict rule therefore holds and needs no amendment. |
 | Approach | Partition, build, assemble (below). Two alternatives were rejected. Filling HashTrie's root in parallel builds a different layout, so it needs an amendment and lets layout effects reach `iteration` and `space`. A shared trie with concurrent inserts needs locks and changes layout from run to run. |
 | Threads | `std::thread::scope` plus `Mutex`-guarded work queues. Safe Rust, no new dependency, and every thread is joined before the build returns. The calling thread is one of the N workers. Threads are not pinned. |
-| Modes | `serial` and `parallel:N` with N ≥ 1. There is no bare `parallel`: N is always explicit and always recorded. |
+| Modes | `serial` and `parallel:N` with 1 ≤ N ≤ 1024 (`Threads::MAX`, which bounds the threads and per-morsel buckets one build allocates). There is no bare `parallel`: N is always explicit and always recorded. |
 | Default | `serial`, which runs today's code unchanged. Every existing measurement stays valid. |
 | Small inputs | No fallback to serial below a size threshold. `parallel:N` always runs all three steps, so the axis means what it says; the crossover is measured, not hidden. |
 | Partition count and morsel size | Constants with comments, not knobs. They change speed only, never the trie. |
@@ -89,7 +89,8 @@ vocabulary of Leis et al.: morsels, dispatcher.
 
 ```rust
 /// The N of `parallel:N`: how many threads a parallel build uses, the
-/// calling thread included. Zero is unrepresentable.
+/// calling thread included. Only 1 to `Threads::MAX` (1024) are
+/// representable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Threads(NonZeroUsize);
 
@@ -117,8 +118,9 @@ pub(crate) fn dispatch<T: Send, R: Send>(
   by morsel index, and `dispatch` orders its results by item index.
 - **Panics.** A panicking worker is joined, and `thread::scope` re-raises
   the panic. It is never swallowed and never deadlocks.
-- **Morsel size.** 16 384 tuples. That amortises one queue lock over enough
-  partitioning work; Leis et al. use morsels of about 100 000 tuples.
+- **Morsel size.** 16 384 tuples. One uncontended lock per 16 384 tuples is
+  negligible, and morsels this small still give a mid-sized relation
+  several morsels per thread. (Leis et al. use about 100 000.)
 - **Partition count.** About 4·N, more partitions than threads, so
   `dispatch` can balance uneven partitions.
 
@@ -137,18 +139,22 @@ the serial build.
 1. **Checks.** Run the same arity checks as `from_tuples`, on the calling
    thread and with the same panic messages. Empty input returns
    `Self::new(header)` without spawning anything.
-2. **Splitters.** Stride-sample up to 32 first keys per partition, then
-   sort and dedup the sample. Take P − 1 evenly spaced splitters, with
-   P = 4·N (fewer if the sample has fewer distinct keys). A tuple's
-   partition is `splitters.partition_point(|&s| s <= tuple[0])`.
-   Partitions are therefore ordered by key, and all tuples sharing a first
-   key land together.
+2. **Splitters.** Stride-sample up to 128 first keys per partition and
+   sort the sample, keeping its duplicates. The splitters are the sample's
+   P − 1 quantiles, with P = 4·N; repeats are merged, since a key heavier
+   than one share repeats and its tuples cannot be split. Because the
+   sample keeps duplicates, the splitters share out the tuples, not the
+   distinct keys (de-duplicating the sample first put 28% of a skewed
+   input in one partition). A tuple's partition is
+   `splitters.partition_point(|&s| s <= tuple[0])`. Partitions are
+   therefore ordered by key, and all tuples sharing a first key land
+   together.
 3. **Partition.** `scatter` with that function. The input positions are
    dropped, because TreeTrie sorts anyway.
 4. **Build.** `dispatch` over the partitions. Each partition:
-   - sorts its tuples with `sort_unstable()`. The derived `Vec<usize>`
-     order is exactly the serial comparator's, which the serial code
-     documents, and equal tuples are indistinguishable;
+   - sorts its tuples with the serial build's hand-rolled comparator, so a
+     comparison costs the same in both builds (the derived order is the
+     same but measurably cheaper, which would favour the parallel arm);
    - inserts them with `insert_into_children` into a local `Vec<TrieNode>`;
    - counts the `true` returns, which are the distinct tuples.
 5. **Assemble.** Start from `Self::new(header)` and push each partition's
@@ -163,12 +169,20 @@ the serial build.
 - The root grows by one push per new key, as the serial
   insert-at-the-end does.
 - Every `Vec` therefore has the serial build's length and capacity.
+- In fact a TreeTrie, capacities included, depends only on its set of
+  distinct tuples: `Vec::insert` grows a child list exactly as `push`
+  does, wherever it inserts. Only the key-range partitions and the
+  one-at-a-time root pushes in key order are load-bearing; the
+  per-partition sort is there for speed (every insert then appends).
 
-**The serial code is untouched.** `insert_into_children` only widens its
-visibility to `pub(super)`. TreeTrie's serial build allocates a fresh
-`Vec` per level per tuple (`key_iter.collect()`), and the parallel build
-inherits that cost on purpose. That is what lets `parallel:1` against
-`serial` isolate the partitioning overhead.
+**The serial code is untouched.** The parallel build lives beside it in
+`implementation.rs` and calls `insert_into_children` unchanged.
+TreeTrie's serial build allocates a fresh `Vec` per level per tuple
+(`key_iter.collect()`), and the parallel build inherits that cost on
+purpose, so `parallel:1` against `serial` measures the partitioning
+process. That comparison includes one saving: sorting P partitions takes
+about n·log₂P fewer comparisons than one sort of everything, so
+`parallel:1` can beat `serial`.
 
 ### HashTrie: `kermit-ds/src/ds/hash_trie/build_mode.rs`
 
@@ -235,10 +249,10 @@ the serial path never calls it.
 
 - **`BuildChoice`.** A value parser replaces ColumnTrie's enum in
   `BuildChoices` and accepts `bulk | incremental | serial | parallel:N`.
-  - `parallel:0`, a bare `parallel` and `parallel:x` are usage errors that
-    show the form `parallel:N` with N ≥ 1.
-  - An N above the core count is allowed and recorded, because
-    oversubscription is a legitimate point on the curve.
+  - `parallel:0`, `parallel:1025`, a bare `parallel` and `parallel:x` are
+    usage errors that show the form `parallel:N` with 1 ≤ N ≤ 1024.
+  - An N above the core count (up to 1024) is allowed and recorded,
+    because oversubscription is a legitimate point on the curve.
 - **`DsFlag::structures`.** Its `--ds-build` row depends on the value:
   - `bulk` and `incremental` belong to ColumnTrie.
   - `serial` and `parallel:N` belong to TreeTrie and HashTrie.
@@ -366,7 +380,8 @@ the serial path never calls it.
 **Analysis.**
 
 - Speedup and efficiency against N, with confidence intervals.
-- `parallel:1 ÷ serial`, which is the partitioning overhead.
+- `parallel:1 ÷ serial`: the partitioning overhead net of the sort saving
+  above, so it can come out below 1.
 - The crossover size, where `parallel:N` first beats `serial`.
 - The Karp–Flatt serial fraction e = (1/S − 1/N) / (1 − 1/N) per N.
   - A flat e means the sequential assemble step is the limit, as
