@@ -449,6 +449,14 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::heap_size::He
     fn heap_size_bytes(&self) -> usize { node_heap_bytes(&self.root) }
 }
 
+/// The trie's own walk, [`HashTrie::for_each_tuple`], which reads unexpanded
+/// children's pending tuples instead of building them.
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::tuple_scan::TupleScan
+    for HashTrie<H, P, E>
+{
+    fn scan_tuples(&self, visit: impl FnMut(&[usize])) { self.for_each_tuple(visit) }
+}
+
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::cardinality::Cardinality
     for HashTrie<H, P, E>
 {

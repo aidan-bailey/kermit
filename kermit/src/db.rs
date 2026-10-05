@@ -30,10 +30,9 @@ use {
         HashTriejoin, JoinAlgo, JoinQuery, QueryOptimiser, SingletonHashTrieIter,
         SingletonTrieIter, TrieIterKind,
     },
-    kermit_ds::{Cardinality, Relation},
+    kermit_ds::{Cardinality, Relation, TupleScan},
     kermit_iters::{
-        HashStrategy, HashTrieIterable, HashTrieIterator, JoinIterable, TrieIterable,
-        TrieIteratorWrapper,
+        HashStrategy, HashTrieIterable, JoinIterable, TrieIterable, TrieIteratorWrapper,
     },
     std::collections::HashMap,
     validation::{prepare, Prepared},
@@ -109,7 +108,7 @@ impl<R: TrieIterable> JoinFamily<R> for SortedFamily {
 /// constant singletons are hashed with `H`.
 pub struct HashFamily<H>(std::marker::PhantomData<H>);
 
-impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
+impl<R: HashTrieIterable + TupleScan, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
     type Wrapper<'a>
         = HashTrieIterKind<'a, R>
     where
@@ -131,55 +130,11 @@ impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
         }
     }
 
-    fn for_each_tuple(relation: &R, mut visit: impl FnMut(&[usize])) {
-        for_each_hash_tuple(relation.hash_trie_iter(), &mut visit);
-    }
-}
-
-/// Depth-first walk of a hash trie through its [`HashTrieIterator`]: the
-/// `open` / `next` / `up` / `leaf_tuples` contract Hash Triejoin itself
-/// relies on, so it serves every hash-family relation, pruned singletons
-/// included.
-fn for_each_hash_tuple(mut iter: impl HashTrieIterator, visit: &mut impl FnMut(&[usize])) {
-    // From before the root, `open` enters the root level, and fails only on
-    // an empty relation. `depth` counts the levels entered, so the walk is
-    // over once it climbs back out of the root.
-    if !iter.open() {
-        return;
-    }
-    let mut depth = 1;
-    loop {
-        let at_leaf = match iter.leaf_tuples() {
-            | Some(chain) => {
-                for tuple in chain {
-                    visit(tuple);
-                }
-                true
-            },
-            | None => false,
-        };
-        if !at_leaf {
-            if iter.open() {
-                depth += 1;
-                continue;
-            }
-            // A built trie has no empty inner node, so `open` succeeds on
-            // every inner bucket. Were one empty, `open` would still push its
-            // frame and report it `at_end`: pop it, so `depth` keeps counting
-            // the frames on the stack.
-            if iter.at_end() {
-                iter.up();
-            }
-        }
-        // Advance to the next bucket, climbing out of each exhausted level.
-        while iter.next().is_none() {
-            iter.up();
-            depth -= 1;
-            if depth == 0 {
-                return;
-            }
-        }
-    }
+    /// Through [`TupleScan`], never the relation's `HashTrieIterator`:
+    /// probing a lazy `HashTrie` builds the children it reaches (#92), so
+    /// gathering statistics by probing would expand the whole trie before
+    /// any join ran.
+    fn for_each_tuple(relation: &R, visit: impl FnMut(&[usize])) { relation.scan_tuples(visit); }
 }
 
 /// The one join body: validation and the query rewrites ([`prepare`]),
@@ -342,7 +297,7 @@ pub fn hash_join_for_each<R, H>(
     emit: impl FnMut(&[usize]),
 ) -> Result<(), JoinError>
 where
-    R: HashTrieIterable + Relation + Cardinality,
+    R: HashTrieIterable + TupleScan + Relation + Cardinality,
     H: HashStrategy,
 {
     run_join::<R, HashFamily<H>, HashTriejoin, _>(database, query, optimiser, emit)
@@ -358,7 +313,7 @@ pub fn hash_join<R, H>(
     database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
 ) -> Result<Vec<Vec<usize>>, JoinError>
 where
-    R: HashTrieIterable + Relation + Cardinality,
+    R: HashTrieIterable + TupleScan + Relation + Cardinality,
     H: HashStrategy,
 {
     let mut tuples = Vec::new();
@@ -1060,8 +1015,8 @@ mod family_walk_tests {
         assert_eq!(walked::<_, SortedFamily>(&column), tuples());
     }
 
-    /// The family walk goes through `HashTrieIterator` and must visit
-    /// exactly what the trie's own `for_each_tuple` visits.
+    /// The family walk goes through `TupleScan` and must visit exactly what
+    /// the trie's own `for_each_tuple` visits.
     fn assert_hash_walk_matches_the_trie<P: PruningPolicy>(tuples: Vec<Vec<usize>>) {
         let trie: HashTrie<SipHashStrategy, P> = HashTrie::from_tuples(3.into(), tuples);
         let mut expected = Vec::new();

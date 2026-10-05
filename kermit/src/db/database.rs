@@ -94,7 +94,9 @@ mod tests {
         super::*,
         crate::db::{HashFamily, SortedFamily},
         kermit_algos::{ColumnEquality, TrieIterKind},
-        kermit_ds::{ColumnTrie, HashTrie, SingletonPruning, TreeTrie},
+        kermit_ds::{
+            ColumnTrie, HashTrie, HeapSize, LazyExpansion, NoPruning, SingletonPruning, TreeTrie,
+        },
         kermit_iters::{SipHashStrategy, TrieIterable},
     };
 
@@ -178,6 +180,30 @@ mod tests {
         assert_eq!(
             multiset.statistics("edge"),
             Some(&RelationStats::new(5, 2).with_column_distinct(vec![3, 3]))
+        );
+    }
+
+    /// Statistics never probe a relation (#92). A lazy `HashTrie` builds the
+    /// children a probe reaches, so a walk through `hash_trie_iter` would
+    /// expand the whole trie before any join ran: laziness gone, and
+    /// `space` measuring an expanded trie. The walk must lend the stored
+    /// tuples instead, leaving the trie byte-for-byte as built.
+    #[test]
+    fn column_distinct_leaves_a_lazy_trie_as_built() {
+        type Lazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
+        let as_built = store::<Lazy>(edges())["edge"].heap_size_bytes();
+        let database = Database::new::<HashFamily<SipHashStrategy>>(
+            store::<Lazy>(edges()),
+            StatisticsLevel::ColumnDistinct,
+        );
+        assert_eq!(
+            database.statistics("edge"),
+            Some(&RelationStats::new(4, 2).with_column_distinct(vec![3, 3]))
+        );
+        assert_eq!(
+            database.get("edge").unwrap().heap_size_bytes(),
+            as_built,
+            "gathering statistics expanded the lazy trie"
         );
     }
 
