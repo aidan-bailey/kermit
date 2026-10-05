@@ -54,9 +54,10 @@ A forward dynamic programme.
 
 **Budget.** The sets searched are the downward-closed sets of the
 constraint DAG, at most 2ⁿ. The largest WatDiv stress template (q0034, 13
-variables) has 820. Past `state_budget` sets (default 2¹⁴ = 16,384), or
-past 64 variables (sets are `u64` bitmasks), the optimiser returns
-`CardinalityOptimiser`'s plan.
+variables) has 820 under `--column-orders stored`, and 2¹³ − 1 = 8,191
+under `any`, where the DAG has no edges. Past `state_budget` sets (default
+2¹⁴ = 16,384), or past 64 variables (sets are `u64` bitmasks), the
+optimiser returns `CardinalityOptimiser`'s plan.
 
 ## Statistics consumed
 
@@ -170,16 +171,45 @@ q0008 against the committed statistics
 (`kermit-algos/tests/fixtures/watdiv-stress-100-stats.tsv`).
 
 **Limitations:**
-- **Subject-first tries.** Every relation is stored subject-first, so 10
-  of #68's 15 slow templates cost 3.7e7 to 1.7e11 bindings under *every*
-  valid plan. Object-first tries (#82) lift that ceiling; this optimiser is
-  the planner they need.
+- **Subject-first tries.** Every relation is stored subject-first, so
+  under `--column-orders stored` 10 of #68's 15 slow templates cost 3.7e7
+  to 1.7e11 bindings under *every* valid plan. `--column-orders any` lifts
+  that ceiling per query by reading a disagreeing atom through a reordered
+  copy (see "Column orders"); #82 is to keep selected copies across
+  queries, so the copies stop being a per-query cost.
 - **Selection views** use their base relation's statistics (cost: the
   table above).
 - **Multi-column prefixes** assume independent columns. No WatDiv or LUBM
   relation has more than two columns.
 - **Past the budget**, the plan is `cardinality`'s, not an approximation of
   this cost model.
+
+## Column orders
+
+`--column-orders stored` (the default) pins every atom to its stored
+column order: the plan binds each atom's columns left to right, as every
+plan did before issue #93. `--column-orders any` pins nothing
+(`CatalogStats::is_pinned`, read through `Precedence::for_query`), so the
+estimate alone decides, and an atom whose plan disagrees with its stored
+order is read through a reordered copy
+(`docs/specs/2026-10-05-column-orders-design.md`).
+
+Under `any` every subset of the variables is a DP state (2ⁿ − 1), so the
+default budget covers up to 14 variables and the search falls back to
+`cardinality` above. None of the 124 `watdiv-stress-100-test-1` templates
+exceeds it: counting each constant as the variable the rewrite gives it,
+the largest has 13 variables (8,191 states). The estimate reads the
+distinct counts of an atom's bound columns as a set, which under `stored`
+is always a prefix, so plans under `stored` are unchanged
+(`cost_based_watdiv_plans.rs` still pins them).
+
+**On real data.** The 10 templates `stored` leaves above 3.7e7 bindings
+(q0264, q0079, q0017, q0030, q0306, q0409, q0035, q0010, q0008, q0085)
+under `--optimiser cost-based --column-orders any`, through `kermit join`
+on the release build: all 30 template × cell runs (tree-trie, column-trie,
+hash-trie) return DuckDB's counts, each in under 1 s of wall time, loading
+included. Under `stored`, with the same optimiser on tree-trie, 8 of the
+10 run past 60 s; q0008 takes 10.9 s and q0085 7.9 s.
 
 ## CLI
 
