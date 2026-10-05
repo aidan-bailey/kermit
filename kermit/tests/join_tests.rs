@@ -262,6 +262,71 @@ define_multiway_join_test_suite_for_build_mode!(
     Radix2
 );
 
+// ── BuildMode axis: HashTrie's parallel build ───────────────────────────
+// These build on two threads, in eight partitions. Every mode must build
+// the identical trie (issue #94). The same three Layouts as the radix rows
+// above (Sip/off/eager, Fx/on/eager, Sip/on/lazy), under every optimiser.
+// TreeTrie's provider is `Parallel2`, so this one is `HashParallel2`.
+define_build_mode_provider!(
+    HashParallel2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+
 // ── Column orders: every alias × optimiser under `any` (issue #93) ─────
 // The invocations above are the `stored` baseline; these run the same 16
 // patterns with the planner free and the join reading reordered copies,
@@ -446,6 +511,7 @@ type HashTrieSipLazyHalfFull = Configured<HashTrieSipLazy, HalfFull>;
 type TreeTrieParallel2 = BuiltWith<TreeTrie, Parallel2>;
 type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;
 type HashTrieSipRadix2 = BuiltWith<HashTrieSip, Radix2>;
+type HashTrieSipParallel2 = BuiltWith<HashTrieSip, HashParallel2>;
 
 define_multiway_join_test_suite_with_column_orders!(
     HashTrieSipHalfFull,
@@ -513,6 +579,18 @@ define_multiway_join_test_suite_with_column_orders!(
     CardinalityOptimiser,
     AnyOrders,
     HashTrieSipRadix2,
+    HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieSipParallel2,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieSipParallel2,
+    HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieSipParallel2,
     HashTriejoin,
     CostBasedOptimiser,
     AnyOrders,
