@@ -625,8 +625,11 @@ is never read off the relation.
    and the same `HeapSize`. A mode that changes capacities is not a BuildMode.
 2. **Define the mode** (`kermit-ds/src/ds/<name>/build_mode.rs`): a
    `Default + clap::ValueEnum` enum whose `BuildMode::axis_value` is the clap name.
+   A mode that carries a value (TreeTrie's `Parallel(Threads)`) cannot derive
+   `clap::ValueEnum`; `BuildChoice` parses it instead (step 6).
 3. **Implement `BuildModeRelation`**, and make `Relation::from_tuples` call it
-   with the default mode.
+   with the default mode. TreeTrie keeps `from_tuples` as its serial build and
+   dispatches in `from_tuples_with_build_mode` instead.
 4. **Pin equivalence** with an array-level test over every mode, capacities
    included (`bulk_and_incremental_builds_are_identical`).
 5. **Carry the mode on the cell and family.** Implement `SortedTrieRelation`'s

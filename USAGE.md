@@ -206,6 +206,19 @@ it as `ds_build_mode`. `bench run` and `bench join` accept it too.
 kermit bench ds -r data.csv -i column-trie -m insertion --ds-build incremental
 ```
 
+`-i tree-trie` takes `--ds-build serial|parallel:N` (default `serial`):
+`parallel:N` builds the identical trie on N threads (N from 1 to 1024, the
+calling thread included), so again only the `insertion` and `end-to-end`
+timings change, and the report records `serial` or `parallel:N` as
+`ds_build_mode`. Each structure takes only its own values: `bulk` on
+`tree-trie`, or `parallel:4` on `column-trie`, is rejected. See
+`BENCHMARKING.md` § "Scaling: measuring a parallel build" for the speedup
+workflow.
+
+```sh
+kermit bench ds -r data.csv -i tree-trie -m insertion --ds-build parallel:4
+```
+
 `--ds-layout-seek` is rejected here: none of `bench ds`'s metrics calls `seek`.
 
 ### Run a named benchmark (`bench run`)

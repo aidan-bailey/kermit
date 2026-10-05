@@ -43,8 +43,8 @@ parallel_build(tuples, N):
   morsel. A partition is its buckets in morsel order, so it lists its tuples
   in input order.
 - **Build.** Workers take whole partitions from the same kind of queue.
-  There are more partitions than threads, so a worker that drew a small
-  partition takes another.
+  There are usually more partitions than threads (fewer only when heavy keys
+  merge splitters), so a worker that drew a small partition takes another.
 - **Assemble.** The calling thread pushes each partition's top-level nodes
   onto the root, in partition order, which is key order.
 
@@ -77,7 +77,7 @@ With `n` tuples of arity `a`, `k` distinct first keys and `N` threads:
 
 | Step | Work | Runs on |
 |---|---|---|
-| Checks and sampling | O(n · a), plus sorting a sample of 128–256 keys per partition (fewer for small inputs) | the calling thread |
+| Checks and sampling | O(n), plus sorting a sample of 128–256 keys per partition (fewer for small inputs) | the calling thread |
 | Partition | O(n log P) | N workers |
 | Build | O(n · a · log n): sorting and inserting, split across partitions | N workers |
 | Assemble | O(k) moves | the calling thread |
@@ -91,6 +91,13 @@ build step at one worker's speed. The build step hands out partitions first
 come, first served. Largest-first would balance a little better (about 4%
 at 8 and 16 threads on uniform keys, in simulation), so that is a known,
 small contributor to the Karp–Flatt fraction.
+
+Two more costs grow with N, both by design. Each parallel step starts its own
+workers, so a build pays 2·(N − 1) thread starts and joins. And the calling
+thread merges the per-morsel buckets into partitions: (n / 16 384) · 4·N of
+them. Both raise the Karp–Flatt fraction as N grows. In the other direction,
+the per-partition sort saving (see `parallel:1` above) can make the speedup
+superlinear, and the fraction then goes negative.
 
 ## Worked micro-example
 
