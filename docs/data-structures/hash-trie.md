@@ -389,8 +389,54 @@ without the multiplier, one partition costs about 90× the probes.
   - `define_multiway_join_test_suite_for_build_mode!` with `Radix2` in
     `kermit/tests/join_tests.rs`, on Sip/off/eager, Fx/on/eager and
     Sip/on/lazy, under every optimiser.
-- **Measured effect:** not yet measured. The `insertion` A/B against
-  `serial` is pending (issue #91).
+- **Measured effect:** slower single-threaded, with identical space:
+  1.12–1.14× `serial`'s `insertion` time on `friendof` and 1.93–2.28× on
+  `price`. See [Radix build A/B](#radix-build-ab).
+
+#### Radix build A/B
+
+`bench ds -m insertion space` on two relations from the WatDiv cache
+`watdiv-stress-100-test-1`, on 2026-10-05. The binary was built at 596f218,
+the #91 landing (sha256 `f92e8ebbbd370045…`), and ran on an AMD Ryzen 7
+7700X with the default Layout (SipHash, pruning off, eager). Each arm ran
+5 replicates at `--sample-size 10`: odd replicates in the order serial,
+radix:4, radix:8, radix:12, and even ones in reverse. Every invocation
+waited for a quiet host; the one that overlapped a peer session's build
+was re-run. Times are the median, with the min–max, of the per-replicate
+Criterion mean. Ratios are medians over `serial`, with the 95 % bootstrap
+CI of the mean ratio in brackets. Run directory:
+`kermit-bench-runs/radix-ab-2026-10-05/`.
+
+| Relation | n | D (distinct first-attribute keys) | D/n |
+|---|---|---|---|
+| `friendof` | 4,491,142 | 39,781 | 0.009 |
+| `price` | 240,000 | 240,000 | 1.000 |
+
+| Relation | Arm | `insertion` (ms), median [min, max] | Over `serial` |
+|---|---|---|---|
+| `friendof` | `serial` | 271.9 [270.2, 273.8] | 1 |
+| | `radix:4` | 311.3 [309.6, 312.1] | 1.14× [1.14, 1.15] |
+| | `radix:8` | 307.1 [306.6, 311.2] | 1.13× [1.13, 1.14] |
+| | `radix:12` | 305.8 [305.4, 307.9] | 1.12× [1.12, 1.13] |
+| `price` | `serial` | 26.8 [26.7, 27.3] | 1 |
+| | `radix:4` | 61.1 [60.6, 61.6] | 2.28× [2.25, 2.29] |
+| | `radix:8` | 51.7 [51.2, 52.1] | 1.93× [1.90, 1.94] |
+| | `radix:12` | 60.3 [59.9, 60.5] | 2.25× [2.22, 2.25] |
+
+`space` is identical across all four arms: 797,992,480 bytes for
+`friendof` and 86,960,128 for `price`, as the identity rule requires.
+
+**Reading.** Single-threaded, the radix build is slower than `serial` on
+both relations at every K. Both inputs already arrive grouped by their
+first attribute. `friendof` is 39,781 runs, one per distinct key (grouped,
+though not sorted), and `price` is sorted with every key distinct. The
+serial build therefore already makes each subtrie's inserts in one burst,
+which is the locality radix partitioning exists to create, so here the
+partition passes are pure overhead. On `price` (D = n) the merge also makes
+as many random root inserts as the serial build does. A shuffled input,
+where the serial build's subtrie inserts scatter, is untested. SIGMOD 2020
+§3.3.2 partitions for cache locality inside a parallel, morsel-driven
+build. This A/B measures one thread only; parallel builds are #94.
 
 ## See also
 
