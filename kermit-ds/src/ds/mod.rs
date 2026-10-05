@@ -13,7 +13,7 @@ pub use {
         HashTrie, HashTrieConfig, InvalidLoadFactor, LoadFactor, NoPruning, PruningPolicy,
         SingletonPruning,
     },
-    tree_trie::TreeTrie,
+    tree_trie::{TreeTrie, TreeTrieBuildMode},
 };
 
 /// The available trie-based index structures for storing relations.

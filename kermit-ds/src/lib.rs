@@ -39,6 +39,7 @@ pub use {
     ds::{
         ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieConfig, IndexStructure,
         InvalidLoadFactor, LoadFactor, NoPruning, PruningPolicy, SingletonPruning, TreeTrie,
+        TreeTrieBuildMode,
     },
     heap_size::HeapSize,
     morsel::Threads,
