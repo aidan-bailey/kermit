@@ -96,6 +96,32 @@ def test_build_mode_ablation_leaves_out_structures_without_the_axis(
     assert labels == {"bulk", "incremental"}
 
 
+_HASH_TRIE_AXES = ("ds_layout_hasher", "ds_layout_pruning", "ds_config_load_factor")
+
+
+def test_hash_trie_ablations_are_drawn_for_a_mixed_sweep(
+    fixture_sweep_tree, tmp_path: Path
+) -> None:
+    plt.close("all")  # earlier tests leave figures open; stay under pyplot's cap of 20
+    reports = load_reports(fixture_sweep_tree["paths"])
+    render_all(reports, tmp_path, fixture_sweep_tree["criterion_root"], "pdf")
+    plt.close("all")
+    names = {p.name for p in tmp_path.iterdir()}
+    for axis in _HASH_TRIE_AXES:
+        assert f"ablation-{axis}.pdf" in names, (axis, names)
+
+
+@pytest.mark.parametrize("axis", _HASH_TRIE_AXES)
+def test_hash_trie_ablations_chart_hash_trie_only(fixture_sweep_tree, axis) -> None:
+    """A back-fill on every row would chart TreeTrie and ColumnTrie under
+    the HashTrie default, e.g. as a "sip" bar beside HashTrie's (#85)."""
+    df = kl.load(fixture_sweep_tree["paths"], criterion_root=fixture_sweep_tree["criterion_root"])
+    fig = presets.ablation(df, axis=axis)
+    structures = {label for ax in fig.axes for label in ax.get_legend_handles_labels()[1]}
+    plt.close(fig)
+    assert structures == {"HashTrie"}
+
+
 def test_seek_ablation_is_drawn_only_for_search_phases(
     fixture_seek_tree, tmp_path: Path
 ) -> None:

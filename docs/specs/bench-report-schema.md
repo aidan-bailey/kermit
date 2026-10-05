@@ -160,13 +160,16 @@ tooling relies on them for cross-DS comparison.
   prefixes for algorithm-level optimizations (reserved; not yet used).
 
 When pivoting bench reports in kermit-lab, downstream code should:
-- Treat missing keys as the algorithm/DS default. For pre-standard reports
-  predating this change, back-fill `ds_layout_hasher == "sip"` (the
-  historical hash function for HashTrie), `ds_layout_pruning == "off"`,
-  `ds_config_load_factor == 0.7` (the historical constant), and, on
-  ColumnTrie rows only, `ds_build_mode == "incremental"` (ColumnTrie's build
-  before issue #84; every ColumnTrie report since carries the axis). The
-  other structures have no build-mode axis, so their rows stay NaN.
+- Treat a missing key as the algorithm/DS default, but only on rows of the
+  structure that has the axis; every other structure's rows stay NaN (#85). For
+  pre-standard reports predating this change, back-fill, on HashTrie rows,
+  `ds_layout_hasher == "sip"` (the historical hash function),
+  `ds_layout_pruning == "off"` and `ds_config_load_factor == 0.7` (the
+  historical constant), and, on ColumnTrie rows, `ds_build_mode ==
+  "incremental"` (ColumnTrie's build before issue #84; every ColumnTrie
+  report since carries the axis). `data_structure` has named HashTrie as
+  `"HashTrie"` in every report since the `axes` map was added, so the
+  scoped fill misses no HashTrie row.
 - Group on the relevant prefix to perform ablation analysis.
 - `ds_layout_seek` (sorted tries only) is back-filled `"binary"` on
   `ColumnTrie` rows only. `TreeTrie` rows stay missing: its seek was

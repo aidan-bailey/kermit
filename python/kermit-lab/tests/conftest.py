@@ -387,6 +387,68 @@ def fixture_opt_tree(tmp_path: Path) -> dict:
 
 
 @pytest.fixture
+def fixture_sweep_tree(tmp_path: Path) -> dict:
+    """Reports from every structure loaded together, as ``-i all`` sweeps
+    produce, for the structure-scoped back-fill (#85).
+
+    The sorted tries carry their own axes but none of HashTrie's. Two
+    HashTrie reports carry all three HashTrie axes with distinct values, and
+    a third carries none of them (a pre-Layout, pre-Config report), so it
+    is back-filled on load. Each report times iteration plus space.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for tag, data_structure, opt_axes, iteration_point in (
+        ("tree", "TreeTrie", {"ds_layout_seek": "galloping"}, 120.0),
+        ("column", "ColumnTrie",
+         {"ds_layout_seek": "galloping", "ds_build_mode": "bulk"}, 110.0),
+        ("sip", "HashTrie", {"ds_layout_hasher": "sip", "ds_layout_pruning": "off",
+                             "ds_config_load_factor": 0.7}, 100.0),
+        ("fx", "HashTrie", {"ds_layout_hasher": "fx", "ds_layout_pruning": "on",
+                            "ds_config_load_factor": 0.5}, 80.0),
+        ("old", "HashTrie", {}, 105.0),
+    ):
+        iter_fn = f"{data_structure}/{tag}/iteration"
+        space_fn = f"{data_structure}/{tag}/space"
+        iter_samples = [(i + 1, iteration_point * (i + 1)) for i in range(10)]
+        space_samples = [(i + 1, 6400.0 * (i + 1)) for i in range(10)]
+        _write_function_dir(
+            criterion_root,
+            _FunctionSpec("run", iter_fn, "time", iteration_point, iter_samples),
+        )
+        _write_function_dir(
+            criterion_root, _FunctionSpec("run", space_fn, "space", 6400.0, space_samples)
+        )
+        algorithm = "HashTriejoin" if data_structure == "HashTrie" else "LeapfrogTriejoin"
+        paths.append(
+            _write_report(
+                reports_dir,
+                f"run-{data_structure}-{tag}",
+                kind="run",
+                axes={
+                    "benchmark": "triangle",
+                    "query": "triangle",
+                    "data_structure": data_structure,
+                    "algorithm": algorithm,
+                    "tuples": 100,
+                    **opt_axes,
+                },
+                metadata=[],
+                groups=[("run", iter_fn, "time"), ("run", space_fn, "space")],
+            )
+        )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }
+
+
+@pytest.fixture
 def fixture_build_mode_tree(tmp_path: Path) -> dict:
     """ColumnTrie reports from before and after issue #84, plus a TreeTrie
     one, for the build-mode ablation guard.

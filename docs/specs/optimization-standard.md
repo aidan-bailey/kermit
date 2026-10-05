@@ -724,13 +724,14 @@ each other's samples under `target/criterion/`. Then load all of the reports in
 
 No. `BenchReport.axes` is an open map; downstream tooling treats missing keys as defaults. The `schema_version` does not change — adding new keys is non-breaking.
 
-For old reports that predate the standard, back-fill defaults in `kermit-lab`:
+For old reports that predate the standard, back-fill defaults in `kermit-lab`, on the rows of the structure that has the axis:
 
 ```python
-df["ds_layout_hasher"] = df.get("ds_layout_hasher", "sip")
+on_hash_trie = df["data_structure"] == "HashTrie"
+df.loc[on_hash_trie, "ds_layout_hasher"] = df.loc[on_hash_trie, "ds_layout_hasher"].fillna("sip")
 ```
 
-This is semantically correct — pre-standard runs were SipHash-only. `kermit_lab.defaults` does exactly this for every axis, back-filling `ds_layout_pruning = "off"` and `ds_config_load_factor = 0.7` (the historical constant) as well. It also back-fills `ds_build_mode = "incremental"`, on ColumnTrie rows only (`SCOPED_AXIS_DEFAULTS`): ColumnTrie built tuple by tuple before issue #84, and no other structure has a build-mode axis. `ds_layout_seek` is likewise back-filled `binary` on ColumnTrie rows only, through the same structure-scoped registry: TreeTrie's seek was linear before issue #67, and a report cannot tell which side of #67 it came from.
+This is semantically correct — pre-standard HashTrie runs were SipHash-only. Scope matters: TreeTrie and ColumnTrie have no hasher, and a fill over every row labels them `sip`, so an ablation charts them as a `sip` bar beside HashTrie's (#85). `kermit_lab.defaults` keeps every default in one structure-scoped registry, `SCOPED_AXIS_DEFAULTS`, keyed by `(axis, data_structure)`. On HashTrie rows it back-fills `ds_layout_hasher = "sip"`, `ds_layout_pruning = "off"` and `ds_config_load_factor = 0.7` (the historical constant). On ColumnTrie rows it back-fills `ds_build_mode = "incremental"`, since ColumnTrie built tuple by tuple before issue #84, and `ds_layout_seek = "binary"`. TreeTrie gets no seek default: its seek was linear before issue #67, and a report cannot tell which side of #67 it came from. A new axis's default goes in the same registry, under the structure that has the axis.
 
 ---
 
