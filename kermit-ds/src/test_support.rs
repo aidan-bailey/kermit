@@ -47,3 +47,20 @@ impl SeekStrategy for SpySeek {
 
 /// Drains the slice lengths [`SpySeek`] has recorded on this thread.
 pub(crate) fn take_spy_lengths() -> Vec<usize> { SPY_LENGTHS.with(RefCell::take) }
+
+/// Test-only strategy that forces real hash collisions: `hash(k) = k mod
+/// 10`, so keys congruent modulo 10 share a bucket at every level and
+/// tuples whose attributes all collide share a leaf chain. Every hash is
+/// below 10, so all of them fall in radix partition 0. Twins live in
+/// `kermit-ds/tests/hash_trie_tests.rs` and the `kermit-algos` tests; none
+/// is shared, so that no crate ships a colliding strategy in its API.
+#[derive(Copy, Clone, Default, Debug)]
+pub(crate) struct Mod10HashStrategy;
+
+impl LayoutOption for Mod10HashStrategy {
+    const NAME: &'static str = "mod10";
+}
+
+impl kermit_iters::HashStrategy for Mod10HashStrategy {
+    fn hash(key: usize) -> u64 { (key % 10) as u64 }
+}

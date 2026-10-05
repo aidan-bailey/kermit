@@ -16,8 +16,8 @@ use {
         QueryOptimiser, StatisticsLevel,
     },
     kermit_ds::{
-        Cardinality, ConfigProvider, Configured, ExpansionPolicy, HashTrie, HashTrieConfig,
-        PruningPolicy, Relation, RelationHeader,
+        BuildModeProvider, BuiltWith, Cardinality, ConfigProvider, Configured, ExpansionPolicy,
+        HashTrie, HashTrieBuildMode, HashTrieConfig, PruningPolicy, Relation, RelationHeader,
     },
     kermit_iters::{HashStrategy, TrieIterable},
     std::{collections::BTreeMap, path::Path},
@@ -115,6 +115,36 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, C: ConfigProvider<Ha
             planner,
             |_| rows += 1,
         )?;
+        Ok(rows)
+    }
+}
+
+impl<
+        H: HashStrategy,
+        P: PruningPolicy,
+        E: ExpansionPolicy,
+        B: BuildModeProvider<HashTrieBuildMode>,
+    > JoinEntry<BuiltWith<HashTrie<H, P, E>, B>> for HashTriejoin
+{
+    fn database(
+        relations: BTreeMap<String, BuiltWith<HashTrie<H, P, E>, B>>, level: StatisticsLevel,
+    ) -> Database<BuiltWith<HashTrie<H, P, E>, B>> {
+        Database::new::<HashFamily<H>>(relations, level)
+    }
+
+    fn join(
+        database: &Database<BuiltWith<HashTrie<H, P, E>, B>>, query: JoinQuery, planner: &Planner,
+    ) -> Result<Vec<Vec<usize>>, JoinError> {
+        hash_join::<BuiltWith<HashTrie<H, P, E>, B>, H>(database, query, planner)
+    }
+
+    fn count(
+        database: &Database<BuiltWith<HashTrie<H, P, E>, B>>, query: JoinQuery, planner: &Planner,
+    ) -> Result<usize, JoinError> {
+        let mut rows = 0;
+        hash_join_for_each::<BuiltWith<HashTrie<H, P, E>, B>, H>(database, query, planner, |_| {
+            rows += 1
+        })?;
         Ok(rows)
     }
 }

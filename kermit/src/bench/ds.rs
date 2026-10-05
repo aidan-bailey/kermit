@@ -231,8 +231,9 @@ pub(crate) fn dispatch_ds_bench(
             pruning,
             expansion,
             config,
+            build,
         } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| run_ds_bench(
-            &HashTrieFamily::<H, P, E>::new(config),
+            &HashTrieFamily::<H, P, E>::new(config, build),
             relation,
             metrics,
             queries_per_build,

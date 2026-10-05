@@ -513,8 +513,9 @@ pub(crate) fn dispatch_run_bench(
             pruning,
             expansion,
             config,
+            build,
         } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| run_benchmark(
-            &HashHtj::<H, P, E>::new(config, planner()),
+            &HashHtj::<H, P, E>::new(config, build, planner()),
             workload,
             settings,
         )),
@@ -644,16 +645,18 @@ mod tests {
     #[test]
     fn resolve_sweep_rejects_a_flag_the_algorithm_leaves_without_a_cell() {
         use DsFlag::*;
+        let column = Build(kermit_ds::IndexStructure::ColumnTrie);
+        let hash = Build(kermit_ds::IndexStructure::HashTrie);
         let rows: &[(JoinAlgorithmSelector, &[DsFlag], &[DsFlag])] = &[
             (
                 JoinAlgorithmSelector::LeapfrogTriejoin,
-                &[LayoutSeek, Build],
-                &[LayoutHasher, LayoutPruning, LayoutExpansion, Config],
+                &[LayoutSeek, column],
+                &[LayoutHasher, LayoutPruning, LayoutExpansion, Config, hash],
             ),
             (
                 JoinAlgorithmSelector::HashTriejoin,
-                &[LayoutHasher, LayoutPruning, LayoutExpansion, Config],
-                &[LayoutSeek, Build],
+                &[LayoutHasher, LayoutPruning, LayoutExpansion, Config, hash],
+                &[LayoutSeek, column],
             ),
             (
                 JoinAlgorithmSelector::All,
@@ -663,7 +666,8 @@ mod tests {
                     LayoutExpansion,
                     LayoutSeek,
                     Config,
-                    Build,
+                    column,
+                    hash,
                 ],
                 &[],
             ),

@@ -8,8 +8,9 @@ use {
     },
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
-        ColumnTrieBuildMode, Configured, GallopingSeek, HashTrie, HashTrieConfig, LazyExpansion,
-        LinearSeek, LoadFactor, NoPruning, SingletonPruning, TreeTrie,
+        ColumnTrieBuildMode, Configured, GallopingSeek, HashTrie, HashTrieBuildMode,
+        HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning, RadixBits,
+        SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -164,6 +165,73 @@ define_multiway_join_test_suite_for_build_mode!(
     LeapfrogTriejoin,
     CostBasedOptimiser,
     Incremental
+);
+
+// ── BuildMode axis: HashTrie's build ────────────────────────────────────
+// The plain HashTrie invocations above build `serial` (the default); these
+// run the radix build, which must build the identical trie (issue #91). Two
+// bits make four partitions, so the 3–5 tuple fixtures spread over several
+// partitions with several keys in each. Sip/off/eager, Fx/on/eager and
+// Sip/on/lazy cover both hashers, both pruning policies and both expansion
+// policies, each under every optimiser.
+define_build_mode_provider!(
+    Radix2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Radix(RadixBits::new(2).unwrap())
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    LexicographicOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    CardinalityOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    CostBasedOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    LexicographicOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    CardinalityOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    CostBasedOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    LexicographicOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    CardinalityOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    CostBasedOptimiser,
+    Radix2
 );
 
 // ── Column orders: every alias × optimiser under `any` (issue #93) ─────
@@ -348,6 +416,7 @@ type HashTrieSipHalfFull = Configured<HashTrieSip, HalfFull>;
 type HashTrieFxHalfFull = Configured<HashTrieFx, HalfFull>;
 type HashTrieSipLazyHalfFull = Configured<HashTrieSipLazy, HalfFull>;
 type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;
+type HashTrieSipRadix2 = BuiltWith<HashTrieSip, Radix2>;
 
 define_multiway_join_test_suite_with_column_orders!(
     HashTrieSipHalfFull,
@@ -392,6 +461,18 @@ define_multiway_join_test_suite_with_column_orders!(
     AnyOrders,
     ColumnTrieIncremental,
     LeapfrogTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieSipRadix2,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieSipRadix2,
+    HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieSipRadix2,
+    HashTriejoin,
     CostBasedOptimiser,
     AnyOrders,
 );

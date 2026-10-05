@@ -76,7 +76,7 @@ def test_bench_ds_column_trie_reports_its_build_mode(tmp_path: Path) -> None:
     _run(
         tmp_path, report,
         "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "column-trie", "-m", "space",
-        "--ds-build", "incremental",
+        "--ds-build", "column-trie=incremental",
     )
     # Without the back-fill, so a missing key cannot pass as "incremental".
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)

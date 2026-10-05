@@ -8,6 +8,7 @@
 // algorithm-side code added in later phases is expected to use it. (`get` is
 // now live: singleton pruning probes buckets with it.) Keep the dead-code gate
 // on `hash_table` until that wiring lands.
+mod build_mode;
 mod config;
 mod expansion;
 #[allow(dead_code)]
@@ -16,8 +17,10 @@ mod hash_trie_iter;
 mod implementation;
 mod node;
 mod pruning;
+mod radix;
 
 pub use {
+    build_mode::{HashTrieBuildMode, InvalidRadixBits, ParseHashTrieBuildModeError, RadixBits},
     config::{HashTrieConfig, InvalidLoadFactor, LoadFactor},
     expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
     implementation::HashTrie,

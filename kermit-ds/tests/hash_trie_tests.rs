@@ -10,8 +10,9 @@
 
 use {
     kermit_ds::{
-        define_config_provider, ConfigurableRelation, Configured, HashTrie, HashTrieConfig,
-        LazyExpansion, LoadFactor, NoPruning, PruningPolicy, SingletonPruning,
+        define_build_mode_provider, define_config_provider, BuiltWith, ConfigurableRelation,
+        Configured, HashTrie, HashTrieBuildMode, HashTrieConfig, LazyExpansion, LoadFactor,
+        NoPruning, PruningPolicy, RadixBits, SingletonPruning,
     },
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
@@ -111,6 +112,24 @@ hash_trie_test_suite!(HashTrieFxPrunedLazy, FxHashStrategy);
 hash_trie_test_suite!(HashTrieMod10PrunedLazy, Mod10HashStrategy);
 
 hash_trie_test_suite!(HashTrieSipDenseLazy, SipHashStrategy);
+
+// ── BuildMode: the radix build ──────────────────────────────────────────
+// Every build mode builds the identical trie (issue #91), so the iterator
+// contract must hold unchanged, eager or lazy. Two bits make four
+// partitions, so the 3–5 tuple fixtures spread over several partitions
+// with several keys in each.
+define_build_mode_provider!(
+    Radix2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Radix(RadixBits::new(2).unwrap())
+);
+
+type HashTrieSipRadix2 = BuiltWith<HashTrieSip, Radix2>;
+type HashTrieSipLazyRadix2 = BuiltWith<HashTrieSipLazy, Radix2>;
+
+hash_trie_test_suite!(HashTrieSipRadix2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipLazyRadix2, SipHashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"

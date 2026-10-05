@@ -1,9 +1,9 @@
 use {
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
-        ColumnTrieBuildMode, Configured, ExpansionPolicy, GallopingSeek, HashTrie, HashTrieConfig,
-        LazyExpansion, LinearSeek, LoadFactor, NoPruning, PruningPolicy, SingletonPruning,
-        TreeTrie,
+        ColumnTrieBuildMode, Configured, ExpansionPolicy, GallopingSeek, HashTrie,
+        HashTrieBuildMode, HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning,
+        PruningPolicy, RadixBits, SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -98,3 +98,19 @@ fn sorted_tuples_dense(relation: &HashTrieSipDense) -> Vec<Vec<usize>> {
 }
 
 parquet_test_suite!(HashTrieSipDense, sorted_tuples_dense);
+
+// …and under the radix BuildMode, which must load the same trie (issue #91).
+define_build_mode_provider!(
+    Radix2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Radix(RadixBits::new(2).unwrap())
+);
+
+type HashTrieSipRadix2 = BuiltWith<HashTrieSip, Radix2>;
+
+fn sorted_tuples_radix(relation: &HashTrieSipRadix2) -> Vec<Vec<usize>> {
+    // `BuiltWith` derefs to the inner `HashTrie`, as `Configured` does.
+    sorted_tuples(relation)
+}
+
+parquet_test_suite!(HashTrieSipRadix2, sorted_tuples_radix);
