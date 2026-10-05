@@ -7,9 +7,9 @@
 //! `P: BuildModeProvider<R::BuildMode>` that supplies the mode. The wrapper
 //! forwards the sorted-family traits (`TrieIterable`, `Cardinality`,
 //! `HeapSize`, `Projectable`, `JoinIterable`, `HasOptimizationAxes`) to `R`;
-//! only `from_tuples` differs, routing through `P::build_mode()`. A
-//! hash-family BuildMode would also need a `HashTrieIterable` forward, as
-//! `Configured` has.
+//! only `from_tuples` differs, routing through `P::build_mode()`. It also
+//! forwards `HashTrieIterable`, as `Configured` does, for HashTrie's build
+//! modes.
 //!
 //! Like `Configured`, this is test scaffolding shipped in the library so
 //! that `kermit-ds` and `kermit` integration tests share one definition.
@@ -20,7 +20,10 @@ use {
         heap_size::HeapSize,
         relation::{BuildModeRelation, Projectable, Relation, RelationHeader},
     },
-    kermit_iters::{HasOptimizationAxes, JoinIterable, TrieIterable, TrieIterator},
+    kermit_iters::{
+        HasOptimizationAxes, HashTrieIterable, HashTrieIterator, JoinIterable, TrieIterable,
+        TrieIterator,
+    },
     serde_json::Value,
     std::{collections::BTreeMap, marker::PhantomData, ops::Deref},
 };
@@ -136,6 +139,10 @@ impl<R: TrieIterable, P> TrieIterable for BuiltWith<R, P> {
     }
 }
 
+impl<R: HashTrieIterable, P> HashTrieIterable for BuiltWith<R, P> {
+    fn hash_trie_iter(&self) -> impl HashTrieIterator { self.inner.hash_trie_iter() }
+}
+
 /// Reports the wrapped relation's Layout axes (e.g. `ds_layout_seek`); the
 /// build mode stays a family axis, since the built relation cannot record it.
 impl<R: HasOptimizationAxes, P> HasOptimizationAxes for BuiltWith<R, P> {
@@ -146,7 +153,8 @@ impl<R: HasOptimizationAxes, P> HasOptimizationAxes for BuiltWith<R, P> {
 mod tests {
     use {
         super::*,
-        crate::ds::{ColumnTrie, ColumnTrieBuildMode},
+        crate::ds::{ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieBuildMode, RadixBits},
+        kermit_iters::{HashTrieIterable, HashTrieIterator},
     };
 
     crate::define_build_mode_provider!(
@@ -218,5 +226,37 @@ mod tests {
         );
         assert_eq!(r.optimization_axes(), r.inner.optimization_axes());
         assert_eq!(r.optimization_axes()["ds_layout_seek"], "galloping");
+    }
+
+    /// The hash-family counterpart of [`Spy`]: counts its calls and asks
+    /// for a radix build.
+    struct HashSpy;
+
+    impl BuildModeProvider<HashTrieBuildMode> for HashSpy {
+        fn build_mode() -> HashTrieBuildMode {
+            CALLS.with(|calls| calls.set(calls.get() + 1));
+            HashTrieBuildMode::Radix(RadixBits::new(2).unwrap())
+        }
+    }
+
+    /// Root keys seen through the `HashTrieIterable` *bound*, as `hash_join`
+    /// sees a relation. A method call would auto-deref to the inner trie and
+    /// pass without the forward.
+    fn root_keys(relation: &impl HashTrieIterable) -> usize {
+        let mut iter = relation.hash_trie_iter();
+        assert!(iter.open());
+        iter.size()
+    }
+
+    /// A hash-family `BuiltWith` asks its provider once per build, never for
+    /// an empty relation, and satisfies `HashTrieIterable` itself.
+    #[test]
+    fn hash_family_asks_the_provider_and_forwards_iteration() {
+        CALLS.with(|calls| calls.set(0));
+        let _empty = BuiltWith::<HashTrie, HashSpy>::new(2.into());
+        assert_eq!(CALLS.with(|calls| calls.get()), 0);
+        let r = BuiltWith::<HashTrie, HashSpy>::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(CALLS.with(|calls| calls.get()), 1);
+        assert_eq!(root_keys(&r), 2);
     }
 }
