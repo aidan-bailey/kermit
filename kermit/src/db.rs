@@ -27,7 +27,10 @@ use {
         SingletonTrieIter, TrieIterKind,
     },
     kermit_ds::{Cardinality, Relation},
-    kermit_iters::{HashStrategy, HashTrieIterable, JoinIterable, TrieIterable},
+    kermit_iters::{
+        HashStrategy, HashTrieIterable, HashTrieIterator, JoinIterable, TrieIterable,
+        TrieIteratorWrapper,
+    },
     std::collections::{BTreeMap, HashMap},
     validation::{prepare, Prepared},
 };
@@ -57,6 +60,12 @@ pub trait JoinFamily<R> {
     /// Wraps a borrowed relation viewed through column `equalities`, standing
     /// in for an atom that repeated a variable.
     fn wrap_selection(relation: &R, equalities: Vec<ColumnEquality>) -> Self::Wrapper<'_>;
+
+    /// Lends every tuple stored in `relation` to `visit`, in the family's
+    /// native order, without allocating per tuple. The catalog walks
+    /// relations through it to count distinct values, so it needs no
+    /// structure-specific code.
+    fn for_each_tuple(relation: &R, visit: impl FnMut(&[usize]));
 }
 
 /// [`JoinFamily`] for sorted tries: [`TrieIterKind`] wrappers.
@@ -81,6 +90,13 @@ impl<R: TrieIterable> JoinFamily<R> for SortedFamily {
         TrieIterKind::Selection {
             relation,
             equalities,
+        }
+    }
+
+    fn for_each_tuple(relation: &R, mut visit: impl FnMut(&[usize])) {
+        let mut tuples = TrieIteratorWrapper::new(relation.trie_iter());
+        while let Some(tuple) = tuples.advance() {
+            visit(tuple);
         }
     }
 }
@@ -108,6 +124,49 @@ impl<R: HashTrieIterable, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
         HashTrieIterKind::Selection {
             relation,
             equalities,
+        }
+    }
+
+    fn for_each_tuple(relation: &R, mut visit: impl FnMut(&[usize])) {
+        for_each_hash_tuple(relation.hash_trie_iter(), &mut visit);
+    }
+}
+
+/// Depth-first walk of a hash trie through its [`HashTrieIterator`]: the
+/// `open` / `next` / `up` / `leaf_tuples` contract Hash Triejoin itself
+/// relies on, so it serves every hash-family relation, pruned singletons
+/// included.
+fn for_each_hash_tuple(mut iter: impl HashTrieIterator, visit: &mut impl FnMut(&[usize])) {
+    // From before the root, `open` enters the root level, and fails only on
+    // an empty relation. `depth` counts the levels entered, so the walk is
+    // over once it climbs back out of the root.
+    if !iter.open() {
+        return;
+    }
+    let mut depth = 1;
+    loop {
+        let at_leaf = match iter.leaf_tuples() {
+            | Some(chain) => {
+                for tuple in chain {
+                    visit(tuple);
+                }
+                true
+            },
+            | None => false,
+        };
+        // A built trie has no empty inner node, so `open` succeeds on every
+        // inner bucket.
+        if !at_leaf && iter.open() {
+            depth += 1;
+            continue;
+        }
+        // Advance to the next bucket, climbing out of each exhausted level.
+        while iter.next().is_none() {
+            iter.up();
+            depth -= 1;
+            if depth == 0 {
+                return;
+            }
         }
     }
 }
@@ -781,5 +840,65 @@ mod hash_join_tests {
         .unwrap();
         got.sort();
         assert_eq!(got, vec![vec![2], vec![3]]);
+    }
+}
+
+#[cfg(test)]
+mod family_walk_tests {
+    use {
+        super::*,
+        kermit_ds::{ColumnTrie, HashTrie, NoPruning, PruningPolicy, SingletonPruning, TreeTrie},
+        kermit_iters::SipHashStrategy,
+    };
+
+    fn walked<R, F: JoinFamily<R>>(relation: &R) -> Vec<Vec<usize>> {
+        let mut tuples = Vec::new();
+        F::for_each_tuple(relation, |tuple| tuples.push(tuple.to_vec()));
+        tuples
+    }
+
+    /// Shared prefixes and single-tuple subtries, so the pruned hash trie
+    /// stores some subtries as `Singleton`s.
+    fn tuples() -> Vec<Vec<usize>> {
+        vec![
+            vec![1, 10, 100],
+            vec![1, 10, 101],
+            vec![1, 20, 100],
+            vec![2, 30, 300],
+            vec![3, 40, 400],
+        ]
+    }
+
+    #[test]
+    fn sorted_walk_visits_every_tuple_in_order() {
+        let tree: TreeTrie = TreeTrie::from_tuples(3.into(), tuples());
+        assert_eq!(walked::<_, SortedFamily>(&tree), tuples());
+        let column: ColumnTrie = ColumnTrie::from_tuples(3.into(), tuples());
+        assert_eq!(walked::<_, SortedFamily>(&column), tuples());
+    }
+
+    /// The family walk goes through `HashTrieIterator` and must visit
+    /// exactly what the trie's own `for_each_tuple` visits.
+    fn assert_hash_walk_matches_the_trie<P: PruningPolicy>(tuples: Vec<Vec<usize>>) {
+        let trie: HashTrie<SipHashStrategy, P> = HashTrie::from_tuples(3.into(), tuples);
+        let mut expected = Vec::new();
+        trie.for_each_tuple(|tuple| expected.push(tuple.to_vec()));
+        let mut got = walked::<_, HashFamily<SipHashStrategy>>(&trie);
+        expected.sort();
+        got.sort();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn hash_walk_visits_what_the_trie_stores() {
+        assert_hash_walk_matches_the_trie::<NoPruning>(tuples());
+        assert_hash_walk_matches_the_trie::<SingletonPruning>(tuples());
+        // The hash trie is a multiset: a duplicate is visited twice.
+        let mut duplicated = tuples();
+        duplicated.push(vec![1, 10, 100]);
+        assert_hash_walk_matches_the_trie::<NoPruning>(duplicated.clone());
+        assert_hash_walk_matches_the_trie::<SingletonPruning>(duplicated);
+        assert_hash_walk_matches_the_trie::<NoPruning>(Vec::new());
+        assert_hash_walk_matches_the_trie::<SingletonPruning>(Vec::new());
     }
 }
