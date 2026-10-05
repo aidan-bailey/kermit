@@ -71,6 +71,13 @@ N ∈ {1, 2, 3, 8}.
 The splitters, the partition count and the morsel size only decide how work
 is spread. None of them can change the trie.
 
+Since the trie cannot show which build made it, each parallel build records
+its thread count and partition sizes in a thread-local. kermit-ds's own tests
+read the record directly. `kermit`'s tests read it through
+`kermit_ds::test_hooks` (the `test-hooks` feature), where
+`tree_trie_families_build_with_their_mode` checks that the family's mode
+reaches the real build on every route a relation is built.
+
 ## Complexity
 
 With `n` tuples of arity `a`, `k` distinct first keys and `N` threads:
