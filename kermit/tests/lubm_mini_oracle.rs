@@ -105,7 +105,7 @@
 
 use {
     clap::ValueEnum,
-    kermit::db::lftj_join,
+    kermit::db::{lftj_join, Database, SortedFamily},
     kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
@@ -212,6 +212,7 @@ fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
             .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
+    let relations = Database::new::<SortedFamily>(relations, planner.required_statistics());
 
     let mut mismatches = Vec::new();
     for q in &bench.queries {

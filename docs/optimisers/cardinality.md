@@ -54,5 +54,6 @@ Bench-report axis: `optimiser: "cardinality"`.
 ## See also
 
 - [`LexicographicOptimiser`](./lexicographic.md) — the stats-free sibling policy and default; use it as the control arm when ablating this one.
+- [`CostBasedOptimiser`](./cost-based.md) — plans from per-column distinct counts by dynamic programming over bound-variable sets.
 - [`LeapfrogTriejoin`](../algorithms/leapfrog-triejoin.md), [`HashTriejoin`](../algorithms/hash-triejoin.md) — the algorithms that execute the produced `QueryPlan`.
 - [`docs/specs/optimization-standard.md`](../specs/optimization-standard.md) — the optimiser is a first-class benchmark dimension with its own `optimiser` report axis, distinct from the `ds_layout_*`/`algo_*` optimization axes.

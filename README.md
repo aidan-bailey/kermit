@@ -53,7 +53,7 @@ Output (CSV to stdout):
 
 Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. `kermit join` accepts every valid cell: `tree-trie` / `column-trie` with `leapfrog-triejoin`, and `hash-trie` with `hash-triejoin` (optionally `--ds-layout-hasher fxhash`); an incompatible pair is a usage error.
 
-An optional `--optimiser <lexicographic|cardinality>` flag picks the query optimiser that plans the join's variable ordering (default: `lexicographic`, which reproduces the historical ordering; `cardinality` binds variables from the smallest relations first). See [`docs/optimisers/`](docs/optimisers/).
+An optional `--optimiser <lexicographic|cardinality|cost-based>` flag picks the query optimiser that plans the join's variable ordering (default: `lexicographic`, which reproduces the historical ordering; `cardinality` binds variables from the smallest relations first; `cost-based` minimises an estimated cost from per-column distinct counts). See [`docs/optimisers/`](docs/optimisers/).
 
 ## Benchmarking
 
@@ -81,7 +81,7 @@ Useful flags:
 - `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the three compatible pairings above are supported; `all` on either side expands to the valid cells and skips the rest, while naming a single incompatible pair is a usage error.
 - `--metrics insertion iteration space` — pick which metrics to measure (default: all three). The opt-in `end-to-end` metric times one database build plus K query executions per Criterion sample (`T = build + K × query`); it is never in the default set.
 - `--queries-per-build <K>` — K for the `end-to-end` metric (default 1); recorded in the report's `queries_per_build` axis. Ignored by other metrics.
-- `--optimiser <lexicographic|cardinality>` — pick the query optimiser planning each join's variable ordering (default: `lexicographic`). The choice is recorded in the JSON report's `optimiser` axis, making optimiser comparisons a third benchmark dimension alongside `-i`/`-a`.
+- `--optimiser <lexicographic|cardinality|cost-based>` — pick the query optimiser planning each join's variable ordering (default: `lexicographic`). The choice is recorded in the JSON report's `optimiser` axis, making optimiser comparisons a third benchmark dimension alongside `-i`/`-a`.
 - `--force` — regenerate a declarative-generator benchmark when its cached `meta.json` no longer matches the YAML's `spec_hash` (otherwise drift is a hard error).
 
 Available benchmarks include `triangle`, the `oxford-uniform-s{1..6}` / `oxford-zipf-s{1..6}` Oxford DSI suites, and the `watdiv-stress-{100,1000}-{warmup,test-1..5}` WatDiv suites. Run `kermit bench list` for the full set.

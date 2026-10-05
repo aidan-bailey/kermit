@@ -803,7 +803,7 @@ Available to add (each a separate brainstorming → planning → implementation 
 | Hash seed | Config | Small | (kermit-specific) |
 | Radix partitioning | BuildMode | Medium | §3.3.2 |
 | Parallel build | BuildMode | Large | §3.3.2 |
-| Algorithm: skip-levels short-circuit | Config (algo) | Medium | §3.3.1 |
+| Algorithm: skip-levels short-circuit (shelved, #90) | Layout (algo) | Medium | (kermit-specific) |
 | Algorithm: eager-collect vs lazy-iterate | Config (algo) | Medium | (kermit-specific) |
 
 The framework is in place; the catalog grows as consumers land.

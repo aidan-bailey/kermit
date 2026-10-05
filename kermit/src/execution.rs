@@ -27,7 +27,9 @@ use {
         expansion_of, hasher_of, pruning_of, seek_of, DsChoices, ExpansionChoice, HasherChoice,
         PruningChoice, SeekChoice,
     },
-    kermit::db::{hash_join_for_each, lftj_join_for_each, JoinError},
+    kermit::db::{
+        hash_join_for_each, lftj_join_for_each, Database, HashFamily, JoinError, SortedFamily,
+    },
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser, QueryOptimiser},
     kermit_ds::{
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ConfigurableRelation,
@@ -666,31 +668,33 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for TrieLftj<R> {
 }
 
 impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
-    /// Relations keyed by name — the shape [`lftj_join_for_each`] borrows per
-    /// query.
-    type Engine = BTreeMap<String, R>;
+    /// The relations, keyed by name, plus the statistics this family's
+    /// optimiser reads, gathered here once so no timed join pays for them.
+    type Engine = Database<R>;
 
     /// Sorted tries are immutable under a join.
     const JOIN_MUTATES: bool = false;
 
     fn build(&self, relations: Vec<R>) -> Self::Engine {
-        relations
+        let relations = relations
             .into_iter()
             .map(|r| (r.header().name().to_string(), r))
-            .collect()
+            .collect();
+        Database::new::<SortedFamily>(relations, self.optimiser.required_statistics())
     }
 
     fn build_from_tuples(&self, inputs: Vec<(RelationHeader, Vec<Vec<usize>>)>) -> Self::Engine {
-        inputs
+        let relations = inputs
             .into_iter()
             .map(|(header, tuples)| {
                 let name = header.name().to_string();
                 (name, self.build_relation(header, tuples))
             })
-            .collect()
+            .collect();
+        Database::new::<SortedFamily>(relations, self.optimiser.required_statistics())
     }
 
-    fn relations(engine: &Self::Engine) -> Vec<&R> { engine.values().collect() }
+    fn relations(engine: &Self::Engine) -> Vec<&R> { engine.relations().collect() }
 
     fn join_for_each<S: FnMut(&[usize])>(
         &self, engine: &Self::Engine, query: JoinQuery, emit: S,
@@ -750,31 +754,33 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFa
 impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> ExecutionFamily
     for HashHtj<H, P, E>
 {
-    /// Relations keyed by name — the shape [`hash_join_for_each`] borrows per
-    /// query so a Criterion iteration allocates no wrappers.
-    type Engine = BTreeMap<String, HashTrie<H, P, E>>;
+    /// The relations, keyed by name, plus the statistics this family's
+    /// optimiser reads, gathered here once so no timed join pays for them.
+    type Engine = Database<HashTrie<H, P, E>>;
 
     /// A lazy trie expands the children a join reaches.
     const JOIN_MUTATES: bool = E::LAZY;
 
     fn build(&self, relations: Vec<HashTrie<H, P, E>>) -> Self::Engine {
-        relations
+        let relations = relations
             .into_iter()
             .map(|r| (r.header().name().to_string(), r))
-            .collect()
+            .collect();
+        Database::new::<HashFamily<H>>(relations, self.optimiser.required_statistics())
     }
 
     fn build_from_tuples(&self, inputs: Vec<(RelationHeader, Vec<Vec<usize>>)>) -> Self::Engine {
-        inputs
+        let relations = inputs
             .into_iter()
             .map(|(header, tuples)| {
                 let name = header.name().to_string();
                 (name, self.build_relation(header, tuples))
             })
-            .collect()
+            .collect();
+        Database::new::<HashFamily<H>>(relations, self.optimiser.required_statistics())
     }
 
-    fn relations(engine: &Self::Engine) -> Vec<&HashTrie<H, P, E>> { engine.values().collect() }
+    fn relations(engine: &Self::Engine) -> Vec<&HashTrie<H, P, E>> { engine.relations().collect() }
 
     fn join_for_each<S: FnMut(&[usize])>(
         &self, engine: &Self::Engine, query: JoinQuery, emit: S,
@@ -1090,7 +1096,7 @@ mod tests {
         );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
         let engine = family.build_from_tuples(vec![(header, vec![vec![1, 2]])]);
-        let rel = &engine["r"];
+        let rel = engine.get("r").unwrap();
         assert_eq!(
             HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::optimization_axes(
                 rel
@@ -1279,6 +1285,40 @@ mod tests {
         let mut rows = 0;
         family.join_for_each(engine, query, |_| rows += 1).unwrap();
         rows
+    }
+
+    /// Each engine gathers exactly the statistics its optimiser reads,
+    /// along both build paths: `iteration` never pays for a walk, and
+    /// `end_to_end` pays only for one its optimiser needs.
+    #[test]
+    fn engines_gather_the_statistics_their_optimiser_reads() {
+        let header = || RelationHeader::new_positional("edge", 2);
+        let edges = || vec![vec![1, 2], vec![1, 3], vec![2, 3]];
+        for &optimiser in Optimiser::value_variants() {
+            let want = optimiser.instantiate().required_statistics();
+            let tree = TrieLftj::<TreeTrie>::new((), optimiser);
+            let built = tree.build(vec![tree.build_relation(header(), edges())]);
+            assert_eq!(built.level(), want, "{optimiser:?}");
+            assert_eq!(
+                tree.build_from_tuples(vec![(header(), edges())]).level(),
+                want
+            );
+            let column = TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::default(), optimiser);
+            assert_eq!(
+                column.build_from_tuples(vec![(header(), edges())]).level(),
+                want
+            );
+            let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+                HashTrieConfig::default(),
+                optimiser,
+            );
+            let built = hash.build(vec![hash.build_relation(header(), edges())]);
+            assert_eq!(built.level(), want, "{optimiser:?}");
+            assert_eq!(
+                hash.build_from_tuples(vec![(header(), edges())]).level(),
+                want
+            );
+        }
     }
 
     #[test]

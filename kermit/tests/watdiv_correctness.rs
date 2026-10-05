@@ -6,10 +6,13 @@
 //! relations, comparing tuple counts to the hand-verified
 //! `expected.json`. Exercises the full Const-view rewrite path in
 //! [`lftj_join`] without any network or Python dependency at test time.
+//! Every query runs under every optimiser, because a plan changes the
+//! descent order, never the answer.
 
 use {
-    kermit::db::lftj_join,
-    kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
+    clap::ValueEnum,
+    kermit::db::{lftj_join, Database, SortedFamily},
+    kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, RelationFileExt,
@@ -38,8 +41,8 @@ fn load_expected(dir: &Path) -> HashMap<String, usize> {
 }
 
 /// Loads the fixture's relations as `R` and checks every query's result
-/// count against `expected.json`.
-fn check_cardinalities<R: TrieIterable + Relation + Cardinality>() {
+/// count, planned by `optimiser`, against `expected.json`.
+fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Optimiser) {
     let dir = artifacts_dir();
     let bench = load_yaml(&dir);
     let expected = load_expected(&dir);
@@ -51,6 +54,8 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>() {
             R::from_parquet(&path).unwrap_or_else(|e| panic!("failed to load {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
+    let planner = optimiser.instantiate();
+    let relations = Database::new::<SortedFamily>(relations, planner.required_statistics());
 
     for q in &bench.queries {
         let key = format!("{}::{}", bench.name, q.name);
@@ -59,14 +64,15 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>() {
             .unwrap_or_else(|| panic!("no expected entry for {key}"));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, &LexicographicOptimiser)
+        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, planner.as_ref())
             .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
             .len();
 
         assert_eq!(
             got,
             want,
-            "cardinality mismatch on {key} ({}): got {got}, expected {want}\nquery: {}",
+            "cardinality mismatch on {key} ({} / {}): got {got}, expected {want}\nquery: {}",
+            optimiser.axis_value(),
             std::any::type_name::<R>(),
             q.query
         );
@@ -75,10 +81,14 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>() {
 
 #[test]
 fn watdiv_mini_cardinalities_match() {
-    check_cardinalities::<TreeTrie<LinearSeek>>();
-    check_cardinalities::<TreeTrie<BinarySeek>>();
-    check_cardinalities::<TreeTrie<GallopingSeek>>();
-    check_cardinalities::<ColumnTrie<LinearSeek>>();
-    check_cardinalities::<ColumnTrie<BinarySeek>>();
-    check_cardinalities::<ColumnTrie<GallopingSeek>>();
+    // The plan an optimiser picks changes the descent order, never the
+    // answer; iterating the CLI enum covers optimisers added later.
+    for &optimiser in Optimiser::value_variants() {
+        check_cardinalities::<TreeTrie<LinearSeek>>(optimiser);
+        check_cardinalities::<TreeTrie<BinarySeek>>(optimiser);
+        check_cardinalities::<TreeTrie<GallopingSeek>>(optimiser);
+        check_cardinalities::<ColumnTrie<LinearSeek>>(optimiser);
+        check_cardinalities::<ColumnTrie<BinarySeek>>(optimiser);
+        check_cardinalities::<ColumnTrie<GallopingSeek>>(optimiser);
+    }
 }

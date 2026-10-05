@@ -7,8 +7,11 @@
 //! hosts it, mirroring how the CLI's `execution` module pairs them.
 
 use {
-    kermit::db::{hash_join, hash_join_for_each, lftj_join, lftj_join_for_each, JoinError},
-    kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, QueryOptimiser},
+    kermit::db::{
+        hash_join, hash_join_for_each, lftj_join, lftj_join_for_each, Database, HashFamily,
+        JoinError, SortedFamily,
+    },
+    kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, QueryOptimiser, StatisticsLevel},
     kermit_ds::{
         Cardinality, ConfigProvider, Configured, ExpansionPolicy, HashTrie, HashTrieConfig,
         PruningPolicy, Relation,
@@ -23,29 +26,36 @@ pub const PLACEHOLDER: usize = usize::MAX;
 
 /// The entry point in `kermit::db` that runs algorithm `Self` over `R`.
 pub trait JoinEntry<R> {
+    /// The database the entry point reads, with statistics up to `level`.
+    fn database(relations: BTreeMap<String, R>, level: StatisticsLevel) -> Database<R>;
+
     fn join(
-        relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+        database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     ) -> Result<Vec<Vec<usize>>, JoinError>;
 
     /// Counts the result through the streaming `_for_each` entry point —
     /// the path `bench run`'s `iteration` metric times.
     fn count(
-        relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+        database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     ) -> Result<usize, JoinError>;
 }
 
 impl<R: TrieIterable + Relation + Cardinality> JoinEntry<R> for LeapfrogTriejoin {
+    fn database(relations: BTreeMap<String, R>, level: StatisticsLevel) -> Database<R> {
+        Database::new::<SortedFamily>(relations, level)
+    }
+
     fn join(
-        relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+        database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     ) -> Result<Vec<Vec<usize>>, JoinError> {
-        lftj_join::<R, LeapfrogTriejoin>(relations, query, optimiser)
+        lftj_join::<R, LeapfrogTriejoin>(database, query, optimiser)
     }
 
     fn count(
-        relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+        database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     ) -> Result<usize, JoinError> {
         let mut rows = 0;
-        lftj_join_for_each::<R, LeapfrogTriejoin>(relations, query, optimiser, |_| rows += 1)?;
+        lftj_join_for_each::<R, LeapfrogTriejoin>(database, query, optimiser, |_| rows += 1)?;
         Ok(rows)
     }
 }
@@ -56,19 +66,23 @@ impl<R: TrieIterable + Relation + Cardinality> JoinEntry<R> for LeapfrogTriejoin
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> JoinEntry<HashTrie<H, P, E>>
     for HashTriejoin
 {
+    fn database(
+        relations: BTreeMap<String, HashTrie<H, P, E>>, level: StatisticsLevel,
+    ) -> Database<HashTrie<H, P, E>> {
+        Database::new::<HashFamily<H>>(relations, level)
+    }
+
     fn join(
-        relations: &BTreeMap<String, HashTrie<H, P, E>>, query: JoinQuery,
-        optimiser: &dyn QueryOptimiser,
+        database: &Database<HashTrie<H, P, E>>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     ) -> Result<Vec<Vec<usize>>, JoinError> {
-        hash_join::<HashTrie<H, P, E>, H>(relations, query, optimiser)
+        hash_join::<HashTrie<H, P, E>, H>(database, query, optimiser)
     }
 
     fn count(
-        relations: &BTreeMap<String, HashTrie<H, P, E>>, query: JoinQuery,
-        optimiser: &dyn QueryOptimiser,
+        database: &Database<HashTrie<H, P, E>>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     ) -> Result<usize, JoinError> {
         let mut rows = 0;
-        hash_join_for_each::<HashTrie<H, P, E>, H>(relations, query, optimiser, |_| rows += 1)?;
+        hash_join_for_each::<HashTrie<H, P, E>, H>(database, query, optimiser, |_| rows += 1)?;
         Ok(rows)
     }
 }
@@ -76,20 +90,26 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> JoinEntry<HashTrie<H
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, C: ConfigProvider<HashTrieConfig>>
     JoinEntry<Configured<HashTrie<H, P, E>, C>> for HashTriejoin
 {
+    fn database(
+        relations: BTreeMap<String, Configured<HashTrie<H, P, E>, C>>, level: StatisticsLevel,
+    ) -> Database<Configured<HashTrie<H, P, E>, C>> {
+        Database::new::<HashFamily<H>>(relations, level)
+    }
+
     fn join(
-        relations: &BTreeMap<String, Configured<HashTrie<H, P, E>, C>>, query: JoinQuery,
+        database: &Database<Configured<HashTrie<H, P, E>, C>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
     ) -> Result<Vec<Vec<usize>>, JoinError> {
-        hash_join::<Configured<HashTrie<H, P, E>, C>, H>(relations, query, optimiser)
+        hash_join::<Configured<HashTrie<H, P, E>, C>, H>(database, query, optimiser)
     }
 
     fn count(
-        relations: &BTreeMap<String, Configured<HashTrie<H, P, E>, C>>, query: JoinQuery,
+        database: &Database<Configured<HashTrie<H, P, E>, C>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
     ) -> Result<usize, JoinError> {
         let mut rows = 0;
         hash_join_for_each::<Configured<HashTrie<H, P, E>, C>, H>(
-            relations,
+            database,
             query,
             optimiser,
             |_| rows += 1,
@@ -106,7 +126,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, C: ConfigProvider<Ha
 ///
 /// It also counts the result through the streaming entry point and checks
 /// that count against `result`, so the path `bench run` times is covered
-/// for every structure × algorithm × optimiser invocation.
+/// for every structure × algorithm × optimiser invocation. The relations
+/// are put in a `Database` built at the optimiser's
+/// `required_statistics()`, as the CLI's engines are.
 ///
 /// The rows are compared as returned: the entry points project to the
 /// head themselves (issue #71), so a body-only variable — including the
@@ -154,9 +176,14 @@ pub fn test_join<R, JA, O>(
     let query_str = format!("Q({}) :- {}.", head_vars.join(", "), body_preds.join(", "));
     let query: JoinQuery = query_str.parse().expect("Failed to build JoinQuery");
 
+    // The database is analysed to exactly what the optimiser reads, as the
+    // CLI's engines are.
+    let optimiser = O::default();
+    let database = JA::database(relations, optimiser.required_statistics());
+
     // The streamed count is what `bench run --verify` checks and what the
     // `iteration` metric times; it must agree with the expected rows.
-    let streamed = JA::count(&relations, query.clone(), &O::default())
+    let streamed = JA::count(&database, query.clone(), &optimiser)
         .unwrap_or_else(|e| panic!("{query_str}: {e}"));
     assert_eq!(
         streamed,
@@ -169,7 +196,7 @@ pub fn test_join<R, JA, O>(
     // family) and plans with different enumeration orders pass the same
     // suite.
     let mut actual: Vec<Vec<usize>> =
-        JA::join(&relations, query, &O::default()).unwrap_or_else(|e| panic!("{query_str}: {e}"));
+        JA::join(&database, query, &optimiser).unwrap_or_else(|e| panic!("{query_str}: {e}"));
     actual.sort();
     let mut expected = result;
     expected.sort();

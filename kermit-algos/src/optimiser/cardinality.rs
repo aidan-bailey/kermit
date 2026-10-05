@@ -41,11 +41,13 @@ impl QueryOptimiser for CardinalityOptimiser {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, kermit_parser::JoinQuery};
+    use {super::*, crate::optimiser::RelationStats, kermit_parser::JoinQuery};
 
     fn stats_for(q: &JoinQuery, sizes: &[(&str, usize)]) -> CatalogStats {
         CatalogStats::for_query(q, |name| {
-            sizes.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+            let arity = q.body.iter().find(|p| p.name == name)?.terms.len();
+            let &(_, tuples) = sizes.iter().find(|(n, _)| *n == name)?;
+            Some(RelationStats::new(tuples, arity))
         })
     }
 
