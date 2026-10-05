@@ -1,16 +1,19 @@
 """Documented default values for optimization axes.
 
 The loader leaves a missing optimization axis as NaN (sparsity is meaningful).
-This registry records the *one* exception the schema mandates: pre-standard
-reports that predate an axis ran a known value, so back-filling recovers
-ground truth rather than inventing it. Each optimization documents its default
-here in one place — the parser (`frame.py`) stays generic.
+These registries record the *one* exception the schema mandates: reports that
+predate an axis ran a known value, so back-filling recovers ground truth
+rather than inventing it. Each default is documented here in one place — the
+parser (`frame.py`) stays generic.
 
-Every default is scoped to the data structure that has the axis. A row of
-any other structure keeps NaN, which is what lets `presets.ablation` leave
-those structures out. A structure-blind fill once stamped HashTrie's axes on
-TreeTrie and ColumnTrie rows, so the ablations charted the sorted tries as
-"sip" (#85).
+Every optimization-axis default is scoped to the data structure that has the
+axis (`SCOPED_AXIS_DEFAULTS`). A row of any other structure keeps NaN, which
+is what lets `presets.ablation` leave those structures out. A
+structure-blind fill once stamped HashTrie's axes on TreeTrie and ColumnTrie
+rows, so the ablations charted the sorted tries as "sip" (#85). The one
+other registry, `JOIN_AXIS_DEFAULTS`, is scoped to join rows instead: it
+holds planner axes every structure's joins share, and a `bench ds` row, which
+joins nothing, keeps NaN.
 
 See `docs/specs/bench-report-schema.md` ("Standard axis prefixes").
 """
@@ -41,15 +44,32 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
 }
 
 
+# Axis -> value to substitute for NaN on *join* rows only (rows with an
+# `algorithm`): a `bench ds` row joins nothing and has no such axis. Unlike
+# the scoped registry this is structure-blind by design, because every
+# structure's joins ran the same policy before the axis existed.
+JOIN_AXIS_DEFAULTS: dict[str, object] = {
+    # Every join before #93 read relations in their stored column order.
+    "column_orders": "stored",
+}
+
+
 def apply_axis_defaults(df: pd.DataFrame) -> pd.DataFrame:
     """Return ``df`` with documented axis defaults filled in for NaN cells.
 
-    Each default fills only the rows of its data structure, so a frame
-    without a ``data_structure`` column is returned unchanged. Only columns
-    present in ``df`` are touched; absent columns are ignored. Mutates a
-    copy, leaving the caller's frame unchanged.
+    Each optimization-axis default fills only the rows of its data
+    structure, and each join default (:data:`JOIN_AXIS_DEFAULTS`) only rows
+    whose ``algorithm`` is set, so a frame without the column a default keys
+    on is left alone by it. Only columns present in ``df`` are touched;
+    absent columns are ignored. Mutates a copy, leaving the caller's frame
+    unchanged.
     """
     out = df.copy()
+    if "algorithm" in out.columns:
+        joined = out["algorithm"].notna()
+        for col, default in JOIN_AXIS_DEFAULTS.items():
+            if col in out.columns:
+                out[col] = out[col].mask(out[col].isna() & joined, default)
     if "data_structure" not in out.columns:
         return out
     for (col, data_structure), default in SCOPED_AXIS_DEFAULTS.items():

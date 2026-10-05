@@ -60,6 +60,21 @@ always parse a list.
 | `function` | string                     | Criterion `function_id` (e.g. `space/P` or `iteration`). On disk it is escaped the same way, and gets a `_2`, `_3`… suffix if its directory name was already used by the same `Criterion` instance. Resolve as below. |
 | `metric`   | `"time"` \| `"space"`      | Which Criterion measurement axis this function recorded. |
 
+### Time and space function ids
+
+`bench run` / `bench join` write the time functions `insertion` (every
+base relation built from its file-order tuples), `iteration` (the
+streamed join over the prebuilt engine), `end_to_end` (opt-in: a fresh
+build plus K joins) and, under `--column-orders any` when the plan needs
+a copy, `copies` (every reordered copy the query needs, permuted and
+built through the same `build_relation` as `insertion`; emitted beside
+`insertion`, so only when `insertion` is measured). The space functions
+are `space/<relation>` per base relation and `space/Index_<π>_<base>` per
+copy (e.g. `space/Index_1_0_edge`). Each copy also gets an `index`
+metadata line, e.g. `edge (1, 0)`. Under `stored` no `copies` or
+`space/Index_*` function is ever written. A query's copies are part of
+the engine `iteration` reads and of `end_to_end`'s fresh build.
+
 ## Conventional `axes` keys
 
 Each call site populates whichever subset is meaningful for that subcommand.
@@ -72,6 +87,7 @@ semantics).
 | `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`. The `IndexStructure::axis_value` string. |
 | `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`. The `JoinAlgorithm::axis_value` string. |
 | `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`, `"cost-based"`. A `"cost-based"` run's `end_to_end` includes its per-column statistics walk; its `iteration` does not. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
+| `column_orders`  | `join`, `run`            | string           | Column-order policy the join was planned under (`--column-orders`). Values: `"stored"` (default; each relation read in its stored column order) and `"any"` (the planner is free; an atom whose plan disagrees with its stored order reads a per-query reordered copy). Always emitted since #93; kermit-lab back-fills `"stored"` on earlier join reports (rows with an `algorithm`). |
 | `query`          | `join`, `run`            | string           | Query name. `run`: from the YAML `queries:` list (e.g. `"triangle"`). `bench join`: the query file's stem. |
 | `benchmark`      | `join`, `run`            | string           | Workload name. `run`: YAML benchmark name (e.g. `"triangle"`, `"watdiv-stress-c1"`). `bench join`: `"adhoc"`. |
 | `relation_path`  | `ds`                     | string           | The single relation file passed to `bench ds`. Workspace-relative if invoked from the workspace root. |
@@ -218,3 +234,4 @@ bump — the `axes` field is an open map.
 | 3 (no bump) | 2026-10-03 | ColumnTrie's `from_tuples` builds in one pass (#84), so its `insertion` and `end_to_end` values drop; every ColumnTrie report now carries `ds_build_mode: "bulk"`, which tells it apart from earlier ColumnTrie rows. Additive, so `schema_version` stays `3`. `--ds-build incremental` restores the old build, and kermit-lab back-fills `incremental` on earlier ColumnTrie rows, so old ColumnTrie rows stay correctly labelled; compare the two modes within one binary. |
 | 3 (no bump) | 2026-10-04 | TreeTrie and ColumnTrie reports carry `ds_layout_seek` (#80): `linear`, `binary` (the default) or `galloping`. Under the default every metric times the same `partition_point` search as before, so `schema_version` stays `3`. kermit-lab back-fills `binary` on earlier ColumnTrie rows only; earlier TreeTrie rows stay missing, since a v3 report may predate `9604293`. Compare strategies within one binary (see `BENCHMARKING.md`'s codegen precision bound). |
 | 3 (no bump) | 2026-10-05 | The sorted tries' default seek becomes `galloping` (it was `binary`), after #80's strategy comparison. Every report since #80 records the strategy in `ds_layout_seek`, so rows from either side of the switch stay labelled and `schema_version` stays `3`. Earlier rows without the axis are unchanged: the ColumnTrie back-fill is still `binary`, which is what they ran. |
+| 3 (no bump) | 2026-10-05 | Added the `column_orders` conventional `axes` key (`--column-orders stored\|any`, #93), the `copies` time function, `space/Index_<π>_<base>` space functions and `index` metadata lines, the last three present only under `any` when the plan needs a copy. Additive — under `stored` only the new axis appears — so `schema_version` stays `3`. kermit-lab back-fills `stored` on earlier join rows. |

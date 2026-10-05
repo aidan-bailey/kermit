@@ -96,3 +96,37 @@ def test_bench_join_reports_its_seek_strategy(tmp_path: Path) -> None:
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
     assert len(df) >= 1
     assert set(df["ds_layout_seek"]) == {"galloping"}
+
+
+def test_bench_join_reports_its_column_orders(tmp_path: Path) -> None:
+    report = tmp_path / "join.json"
+    _run(
+        tmp_path, report,
+        "join", "--relations", str(FIXTURES / "first.csv"), str(FIXTURES / "second.csv"),
+        "--query", str(FIXTURES / "intersect_query.dl"),
+        "-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "space",
+        "--column-orders", "any",
+    )
+    # Without the back-fill, so a missing key cannot pass as "stored".
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
+    assert len(df) >= 1
+    assert set(df["column_orders"]) == {"any"}
+
+
+def test_bench_join_copies_reach_the_frame(tmp_path: Path) -> None:
+    """A query `stored` rejects runs under `any` over a reordered copy: the
+    real binary's `copies` function loads as the `copies` phase and the
+    copy's footprint as `space/Index_1_0_edge` (#93)."""
+    query = tmp_path / "mutual.dl"
+    query.write_text("Q(X, Y) :- edge(X, Y), edge(Y, X).\n")
+    report = tmp_path / "join.json"
+    _run(
+        tmp_path, report,
+        "join", "--relations", str(FIXTURES / "edge.csv"), "--query", str(query),
+        "-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "insertion", "space",
+        "--column-orders", "any",
+    )
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
+    assert set(df["phase"].dropna()) == {"insertion", "copies"}
+    space = set(df.loc[df["metric"] == "space", "criterion_function"])
+    assert space == {"space/edge", "space/Index_1_0_edge"}

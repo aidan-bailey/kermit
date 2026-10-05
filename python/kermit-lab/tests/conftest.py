@@ -312,6 +312,7 @@ def fixture_end_to_end_tree(tmp_path: Path) -> dict:
                             "data_structure": ds,
                             "algorithm": "LeapfrogTriejoin",
                             "optimiser": "lexicographic",
+                            "column_orders": "any",
                             "tuples": n,
                             "queries_per_build": k,
                         },

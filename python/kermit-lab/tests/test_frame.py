@@ -208,6 +208,21 @@ def test_optimiser_axis_reaches_frame(fixture_end_to_end_tree) -> None:
     assert set(df.optimiser.dropna().unique()) == {"lexicographic"}
 
 
+def test_column_orders_axis_reaches_frame(fixture_end_to_end_tree) -> None:
+    df = load(fixture_end_to_end_tree["paths"], fixture_end_to_end_tree["criterion_root"])
+    assert "column_orders" in df.columns
+    assert set(df.column_orders.dropna().unique()) == {"any"}
+
+
+def test_column_orders_backfills_stored_on_legacy_join_reports(fixture_tree) -> None:
+    # Reports from before #93 carry no `column_orders`; every join then ran
+    # `stored`, so the loader fills it on join rows.
+    df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    assert set(df.column_orders.dropna().unique()) == {"stored"}
+    raw = load(fixture_tree["paths"], fixture_tree["criterion_root"], apply_defaults=False)
+    assert raw.column_orders.isna().all()
+
+
 def test_queries_per_build_na_for_legacy_reports(fixture_tree) -> None:
     # Reports that predate the end-to-end metric carry no queries_per_build
     # axis; the column must still exist (NA-filled), so old and new report

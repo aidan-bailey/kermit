@@ -75,14 +75,20 @@ def test_every_default_names_a_known_structure() -> None:
         assert data_structure in STRUCTURES, (axis, data_structure)
 
 
-def test_the_scoped_registry_is_the_only_one() -> None:
+def test_the_registries_are_scoped() -> None:
     """A structure-blind registry stamps an axis on every structure (#85):
-    new defaults go in `SCOPED_AXIS_DEFAULTS`, never a registry beside it."""
+    an optimization-axis default goes in `SCOPED_AXIS_DEFAULTS`. The one
+    registry beside it, `JOIN_AXIS_DEFAULTS`, is scoped too, to join rows
+    (those with an `algorithm`), for planner axes every structure's joins
+    share; it must never hold an optimization axis."""
     registries = sorted(
         name for name, value in vars(defaults).items()
         if name.isupper() and isinstance(value, dict)
     )
-    assert registries == ["SCOPED_AXIS_DEFAULTS"]
+    assert registries == ["JOIN_AXIS_DEFAULTS", "SCOPED_AXIS_DEFAULTS"]
+    assert not any(
+        axis.startswith(("ds_", "algo_")) for axis in defaults.JOIN_AXIS_DEFAULTS
+    )
 
 
 def test_build_mode_backfills_column_trie_rows_only() -> None:
@@ -140,3 +146,33 @@ def test_seek_backfills_column_trie_rows_only() -> None:
     assert out["ds_layout_seek"].iloc[2:].isna().all()
     assert SCOPED_AXIS_DEFAULTS[("ds_layout_seek", "ColumnTrie")] == "binary"
     assert ("ds_layout_seek", "TreeTrie") not in SCOPED_AXIS_DEFAULTS
+
+
+def test_column_orders_backfills_join_rows_only() -> None:
+    """Every join before #93 ran `stored`; a `bench ds` row joins nothing
+    and keeps NaN."""
+    df = pd.DataFrame({
+        "data_structure": ["TreeTrie", "HashTrie", "ColumnTrie", "TreeTrie"],
+        "algorithm": ["LeapfrogTriejoin", "HashTriejoin", pd.NA, "LeapfrogTriejoin"],
+        "column_orders": [pd.NA, "any", pd.NA, pd.NA],
+    })
+    out = apply_axis_defaults(df)
+    assert out["column_orders"].iloc[0] == "stored"
+    assert out["column_orders"].iloc[1] == "any"
+    assert pd.isna(out["column_orders"].iloc[2])
+    assert out["column_orders"].iloc[3] == "stored"
+    assert defaults.JOIN_AXIS_DEFAULTS == {"column_orders": "stored"}
+
+
+def test_column_orders_backfill_needs_the_algorithm_column() -> None:
+    df = pd.DataFrame({"data_structure": ["TreeTrie"], "column_orders": [pd.NA]})
+    out = apply_axis_defaults(df)
+    assert pd.isna(out["column_orders"].iloc[0])
+
+
+def test_join_defaults_apply_without_a_data_structure_column() -> None:
+    """The join-row fill keys off `algorithm` alone, so it does not depend on
+    the structure-scoped fill's early return."""
+    df = pd.DataFrame({"algorithm": ["HashTriejoin"], "column_orders": [pd.NA]})
+    out = apply_axis_defaults(df)
+    assert out["column_orders"].iloc[0] == "stored"
