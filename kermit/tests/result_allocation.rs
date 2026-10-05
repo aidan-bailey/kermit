@@ -42,7 +42,7 @@
 
 use {
     kermit::db::{hash_join_for_each, lftj_join_for_each, Database},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
+    kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, Planner},
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, HashTrie, LinearSeek, NoPruning, PruningPolicy,
         Relation, SingletonPruning, TreeTrie,
@@ -91,17 +91,15 @@ fn lftj_join_allocations<Rel: TrieIterable + Cardinality + Relation>(
 ) -> u64 {
     let database = Database::from(relations);
     let query: JoinQuery = query.parse().unwrap();
+    // Built outside the measured region: the planner is not the join's
+    // allocation.
+    let planner = Planner::stored(LexicographicOptimiser);
     let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
-        lftj_join_for_each::<Rel, LeapfrogTriejoin>(
-            &database,
-            query,
-            &LexicographicOptimiser,
-            |tuple| {
-                std::hint::black_box(tuple);
-                produced += 1;
-            },
-        )
+        lftj_join_for_each::<Rel, LeapfrogTriejoin>(&database, query, &planner, |tuple| {
+            std::hint::black_box(tuple);
+            produced += 1;
+        })
         .unwrap();
     });
     assert_eq!(produced, rows, "the join must produce every row");
@@ -115,17 +113,15 @@ fn htj_join_allocations<H: HashStrategy, P: PruningPolicy>(
 ) -> u64 {
     let database = Database::from(relations);
     let query: JoinQuery = query.parse().unwrap();
+    // Built outside the measured region: the planner is not the join's
+    // allocation.
+    let planner = Planner::stored(LexicographicOptimiser);
     let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
-        hash_join_for_each::<HashTrie<H, P>, H>(
-            &database,
-            query,
-            &LexicographicOptimiser,
-            |tuple| {
-                std::hint::black_box(tuple);
-                produced += 1;
-            },
-        )
+        hash_join_for_each::<HashTrie<H, P>, H>(&database, query, &planner, |tuple| {
+            std::hint::black_box(tuple);
+            produced += 1;
+        })
         .unwrap();
     });
     assert_eq!(produced, rows, "the join must produce every row");

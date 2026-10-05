@@ -20,7 +20,7 @@ use {
     kermit::db::{lftj_join, Database, SortedFamily},
     kermit_algos::{
         CardinalityOptimiser, CostBasedOptimiser, JoinQuery, LeapfrogTriejoin,
-        LexicographicOptimiser, QueryOptimiser,
+        LexicographicOptimiser, Planner,
     },
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
@@ -60,7 +60,7 @@ fn vendored_jar() -> PathBuf {
 /// `optimiser`, runs every query, and returns one line per query whose
 /// result count differs from the paper's reference cardinality.
 fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
-    bench: &BenchmarkDefinition, dir: &Path, optimiser_name: &str, optimiser: &dyn QueryOptimiser,
+    bench: &BenchmarkDefinition, dir: &Path, optimiser_name: &str, planner: &Planner,
     expected: &HashMap<String, u64>,
 ) -> Vec<String> {
     let mut relations: BTreeMap<String, R> = BTreeMap::new();
@@ -70,7 +70,7 @@ fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
             .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
-    let relations = Database::new::<SortedFamily>(relations, optimiser.required_statistics());
+    let relations = Database::new::<SortedFamily>(relations, planner.required_statistics());
 
     // Collect every divergence so one run surfaces the complete picture
     // rather than failing on the first mismatch.
@@ -81,7 +81,7 @@ fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
             .unwrap_or_else(|| panic!("no reference cardinality for query {}", q.name));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, optimiser)
+        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, planner)
             .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
             .len() as u64;
 
@@ -154,55 +154,55 @@ fn lubm_one_university_query_cardinalities_match_paper() {
     // failed descent at depth 3 or deeper once silently dropped every answer
     // to q7 under `cardinality` while `lexicographic` stayed correct. Add a
     // row here whenever an optimiser is added.
-    let optimisers: Vec<(&str, Box<dyn QueryOptimiser>)> = vec![
-        ("lexicographic", Box::new(LexicographicOptimiser)),
-        ("cardinality", Box::new(CardinalityOptimiser)),
-        ("cost-based", Box::new(CostBasedOptimiser::default())),
+    let optimisers: Vec<(&str, Planner)> = vec![
+        ("lexicographic", Planner::stored(LexicographicOptimiser)),
+        ("cardinality", Planner::stored(CardinalityOptimiser)),
+        ("cost-based", Planner::stored(CostBasedOptimiser::default())),
     ];
     let optimiser_count = optimisers.len();
 
     let mut mismatches: Vec<String> = Vec::new();
-    for (name, optimiser) in &optimisers {
+    for (name, planner) in &optimisers {
         mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
             &bench,
             out.path(),
             name,
-            optimiser.as_ref(),
+            planner,
             &expected,
         ));
         mismatches.extend(cardinality_mismatches::<TreeTrie<BinarySeek>>(
             &bench,
             out.path(),
             name,
-            optimiser.as_ref(),
+            planner,
             &expected,
         ));
         mismatches.extend(cardinality_mismatches::<TreeTrie<GallopingSeek>>(
             &bench,
             out.path(),
             name,
-            optimiser.as_ref(),
+            planner,
             &expected,
         ));
         mismatches.extend(cardinality_mismatches::<ColumnTrie<LinearSeek>>(
             &bench,
             out.path(),
             name,
-            optimiser.as_ref(),
+            planner,
             &expected,
         ));
         mismatches.extend(cardinality_mismatches::<ColumnTrie<BinarySeek>>(
             &bench,
             out.path(),
             name,
-            optimiser.as_ref(),
+            planner,
             &expected,
         ));
         mismatches.extend(cardinality_mismatches::<ColumnTrie<GallopingSeek>>(
             &bench,
             out.path(),
             name,
-            optimiser.as_ref(),
+            planner,
             &expected,
         ));
     }

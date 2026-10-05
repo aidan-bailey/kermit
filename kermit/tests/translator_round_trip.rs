@@ -8,7 +8,7 @@
 
 use {
     kermit::db::validate_query,
-    kermit_algos::JoinQuery,
+    kermit_algos::{ColumnOrderPolicy, JoinQuery},
     kermit_ds::RelationHeader,
     kermit_parser::Term,
     kermit_rdf::{
@@ -44,7 +44,7 @@ fn round_trip(sparql: &str) -> JoinQuery {
     let query: JoinQuery = rule
         .parse()
         .unwrap_or_else(|e| panic!("emitted rule {rule:?} does not parse: {e}"));
-    validate_query(&query, headers.as_slice())
+    validate_query(&query, headers.as_slice(), ColumnOrderPolicy::Stored)
         .unwrap_or_else(|e| panic!("emitted rule {rule:?} fails validation: {e}"));
     query
 }

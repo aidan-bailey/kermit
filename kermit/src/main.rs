@@ -14,7 +14,7 @@ use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
     kermit::db::{validate_query, JoinError},
-    kermit_algos::{JoinAlgorithm, JoinQuery, Optimiser},
+    kermit_algos::{ColumnOrderPolicy, JoinAlgorithm, JoinQuery, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::IndexStructure,
     kermit_parser::Term,
@@ -619,7 +619,7 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
         .iter()
         .map(|path| read_relation_header(path))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    validate_query(query, headers.as_slice())
+    validate_query(query, headers.as_slice(), ColumnOrderPolicy::Stored)
         .map_err(|e| anyhow::anyhow!("query {:?}: {e}", args.query))
 }
 
@@ -646,12 +646,13 @@ fn query_cell(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Execution>
 /// --output` passes the very cell its measurements run, so the CSV comes from
 /// the same build.
 fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRunner> {
-    let optimiser = args.optimiser;
+    // One planner per family: a `Planner` owns its optimiser.
+    let planner = || Planner::new(args.optimiser.instantiate(), ColumnOrderPolicy::Stored);
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
         }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
-            TrieLftj::<kermit_ds::TreeTrie<S>>::new((), optimiser),
+            TrieLftj::<kermit_ds::TreeTrie<S>>::new((), planner()),
             cell,
             &args.relations,
         )),
@@ -659,7 +660,7 @@ fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRu
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
-            TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, optimiser),
+            TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, planner()),
             cell,
             &args.relations,
         )),
@@ -668,7 +669,7 @@ fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRu
             pruning,
             config,
         } => with_hash_trie_layout!(hasher, pruning, |H, P| build_join_runner(
-            HashHtj::<H, P>::new(config, optimiser),
+            HashHtj::<H, P>::new(config, planner()),
             cell,
             &args.relations
         )),

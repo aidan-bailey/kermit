@@ -12,7 +12,7 @@
 use {
     clap::ValueEnum,
     kermit::db::{lftj_join, Database, SortedFamily},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
+    kermit_algos::{ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, RelationFileExt,
@@ -54,7 +54,7 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Opti
             R::from_parquet(&path).unwrap_or_else(|e| panic!("failed to load {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
-    let planner = optimiser.instantiate();
+    let planner = Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
     let relations = Database::new::<SortedFamily>(relations, planner.required_statistics());
 
     for q in &bench.queries {
@@ -64,7 +64,7 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Opti
             .unwrap_or_else(|| panic!("no expected entry for {key}"));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, planner.as_ref())
+        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, &planner)
             .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
             .len();
 

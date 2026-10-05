@@ -21,13 +21,13 @@ use {
 /// Under `--column-orders any` a plan may read an atom through a copy of
 /// its relation with the columns permuted (`Index_<π>_<base>`, see
 /// [`kermit_algos::orient`]). The catalog *stores* those copies and never
-/// builds them: `required_indexes` says which copies a query needs, the
-/// caller builds each from the base relation's file-order tuples
-/// ([`build_index`] in the library, the bench family's `build_relation`
-/// in the binary) and [`add_index`](Self::add_index)es it, and
-/// [`clear_indexes`](Self::clear_indexes) drops them after the query, so
-/// one query's copies are held at a time. Statistics stay those of the
-/// base relations: the planner sees only base names.
+/// builds them: [`required_indexes`](Self::required_indexes) says which
+/// copies a query needs, the caller builds each from the base relation's
+/// file-order tuples ([`build_index`] in the library, the bench family's
+/// `build_relation` in the binary) and [`add_index`](Self::add_index)es
+/// it, and [`clear_indexes`](Self::clear_indexes) drops them after the
+/// query, so one query's copies are held at a time. Statistics stay those
+/// of the base relations: the planner sees only base names.
 ///
 /// [`Planner::required_statistics`]: kermit_algos::Planner::required_statistics
 /// [`JoinError::MissingStatistics`]: super::JoinError::MissingStatistics

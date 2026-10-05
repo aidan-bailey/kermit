@@ -18,7 +18,7 @@ use {
         },
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
-    kermit_algos::Optimiser,
+    kermit_algos::{ColumnOrderPolicy, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::Relation,
     std::{
@@ -86,7 +86,7 @@ fn run_benchmark<F: ExecutionFamily>(
     // Reject a query that cannot run before loading anything: the headers
     // alone settle it, and a failure inside a timed closure below could
     // only panic.
-    workload.validate()?;
+    workload.validate(ColumnOrderPolicy::Stored)?;
     // Load each relation from disk exactly once; the family builds its
     // engine from these typed relations rather than re-reading the files.
     // The `insertion` and `end_to_end` metrics rebuild relations, and they
@@ -337,12 +337,13 @@ fn run_benchmark<F: ExecutionFamily>(
 pub(crate) fn dispatch_run_bench(
     cell: Execution, workload: &Workload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
-    let optimiser = settings.optimiser;
+    // One planner per family: a `Planner` owns its optimiser.
+    let planner = || Planner::new(settings.optimiser.instantiate(), ColumnOrderPolicy::Stored);
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie<S>>::new((), optimiser),
+            &TrieLftj::<kermit_ds::TreeTrie<S>>::new((), planner()),
             workload,
             settings,
         )),
@@ -350,7 +351,7 @@ pub(crate) fn dispatch_run_bench(
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, optimiser),
+            &TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, planner()),
             workload,
             settings,
         )),
@@ -359,7 +360,7 @@ pub(crate) fn dispatch_run_bench(
             pruning,
             config,
         } => with_hash_trie_layout!(hasher, pruning, |H, P| run_benchmark(
-            &HashHtj::<H, P>::new(config, optimiser),
+            &HashHtj::<H, P>::new(config, planner()),
             workload,
             settings,
         )),

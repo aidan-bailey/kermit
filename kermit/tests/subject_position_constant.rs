@@ -24,7 +24,7 @@
 use {
     clap::ValueEnum,
     kermit::db::{hash_join, lftj_join, Database, HashFamily, SortedFamily},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
+    kermit_algos::{ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_ds::{HashTrie, Relation, TreeTrie},
     kermit_iters::SipHashStrategy,
     std::collections::BTreeMap,
@@ -39,26 +39,26 @@ fn edges() -> Vec<Vec<usize>> { EDGES.iter().map(|e| e.to_vec()).collect() }
 /// `query` over edge = {(1,2), (1,3), (2,4)} as a `TreeTrie` (LFTJ path),
 /// planned by `optimiser`.
 fn lftj(query: &str, optimiser: Optimiser) -> Vec<Vec<usize>> {
-    let planner = optimiser.instantiate();
+    let planner = Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
     let edge: TreeTrie = TreeTrie::from_tuples(2.into(), edges());
     let database = Database::new::<SortedFamily>(
         BTreeMap::from([("edge".to_string(), edge)]),
         planner.required_statistics(),
     );
     let q: JoinQuery = query.parse().expect("parse");
-    lftj_join::<TreeTrie, LeapfrogTriejoin>(&database, q, planner.as_ref()).unwrap()
+    lftj_join::<TreeTrie, LeapfrogTriejoin>(&database, q, &planner).unwrap()
 }
 
 /// The same over a `HashTrie` (hash path).
 fn hash(query: &str, optimiser: Optimiser) -> Vec<Vec<usize>> {
-    let planner = optimiser.instantiate();
+    let planner = Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
     let edge = HashTrieSip::from_tuples(2.into(), edges());
     let database = Database::new::<HashFamily<SipHashStrategy>>(
         BTreeMap::from([("edge".to_string(), edge)]),
         planner.required_statistics(),
     );
     let q: JoinQuery = query.parse().expect("parse");
-    hash_join::<HashTrieSip, SipHashStrategy>(&database, q, planner.as_ref()).unwrap()
+    hash_join::<HashTrieSip, SipHashStrategy>(&database, q, &planner).unwrap()
 }
 
 /// First column (the head variable `X`) of every result tuple, sorted.

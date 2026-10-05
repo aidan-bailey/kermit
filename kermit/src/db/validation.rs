@@ -18,9 +18,10 @@
 
 use {
     kermit_algos::{
-        check_attribute_order, is_const_predicate, is_selection_predicate, rewrite_atoms,
-        rewrite_placeholders, rewrite_repeated_variables, ConstSpec, JoinQuery, RewriteError,
-        SelectionSpec, StatisticsLevel, CONST_PREDICATE_PREFIX, SELECTION_PREDICATE_PREFIX,
+        check_attribute_order, is_const_predicate, is_index_predicate, is_selection_predicate,
+        rewrite_atoms, rewrite_placeholders, rewrite_repeated_variables, ColumnOrderPolicy,
+        ConstSpec, JoinQuery, RewriteError, SelectionSpec, StatisticsLevel, CONST_PREDICATE_PREFIX,
+        INDEX_PREDICATE_PREFIX, SELECTION_PREDICATE_PREFIX,
     },
     kermit_ds::{Relation, RelationHeader},
     kermit_parser::Term,
@@ -33,9 +34,10 @@ use {
 /// Why a query cannot run over a relation store.
 ///
 /// One variant per check; [`validate_query`] documents the order they run
-/// in. Every variant but [`CyclicAttributeOrder`](Self::CyclicAttributeOrder)
-/// and [`MissingStatistics`](Self::MissingStatistics) means the query itself
-/// is malformed.
+/// in. Every variant but [`CyclicAttributeOrder`](Self::CyclicAttributeOrder),
+/// [`MissingStatistics`](Self::MissingStatistics) and
+/// [`MissingIndex`](Self::MissingIndex) means the query itself is
+/// malformed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinError {
     /// A head term is a placeholder or a constant. The join projects to the
@@ -52,7 +54,7 @@ pub enum JoinError {
         variable: String,
     },
     /// A body atom names a relation with a prefix reserved for the
-    /// predicates the join synthesises (`Const_`, `Select_`).
+    /// predicates the join synthesises (`Const_`, `Select_`, `Index_`).
     ReservedRelationName {
         /// The relation name as written.
         relation: String,
@@ -84,10 +86,12 @@ pub enum JoinError {
         variable: String,
     },
     /// The body atoms need their relations' columns in contradictory
-    /// orders. A limitation of the trie joins, not malformed input: each
-    /// atom is matched one column at a time, left to right, over a relation
-    /// stored in one column order, so `edge(X, Y), edge(Y, X)` would need
-    /// `edge` sorted both ways at once.
+    /// orders under `--column-orders stored`. A limitation of reading each
+    /// relation in one column order, not malformed input: each atom is
+    /// matched one column at a time, left to right, so
+    /// `edge(X, Y), edge(Y, X)` would need `edge` sorted both ways at
+    /// once. `--column-orders any` lifts it by reading one of the atoms
+    /// through a reordered copy.
     CyclicAttributeOrder {
         /// The atoms on one such cycle, as written, in body order.
         atoms: Vec<String>,
@@ -102,6 +106,17 @@ pub enum JoinError {
         required: StatisticsLevel,
         /// What the database gathered.
         available: StatisticsLevel,
+    },
+    /// The plan reads an atom through a reordered copy the database does
+    /// not hold. A library-usage error: build the copies
+    /// [`Database::required_indexes`](super::Database::required_indexes)
+    /// names and [`add_index`](super::Database::add_index) them before
+    /// joining, as the CLI and the test harness do.
+    MissingIndex {
+        /// The copy's name, e.g. `Index_1_0_edge`.
+        index: String,
+        /// The relation it would be built from.
+        base: String,
     },
 }
 
@@ -126,9 +141,9 @@ impl fmt::Display for JoinError {
                 relation,
             } => write!(
                 f,
-                "relation name {relation:?} is reserved: the prefixes {CONST_PREDICATE_PREFIX:?} \
-                 and {SELECTION_PREDICATE_PREFIX:?} name predicates the join synthesises from \
-                 constants and repeated variables"
+                "relation name {relation:?} is reserved: the prefixes {CONST_PREDICATE_PREFIX:?}, \
+                 {SELECTION_PREDICATE_PREFIX:?} and {INDEX_PREDICATE_PREFIX:?} name predicates \
+                 the join synthesises from constants, repeated variables and reordered copies"
             ),
             | JoinError::UnknownRelation {
                 relation,
@@ -157,11 +172,12 @@ impl fmt::Display for JoinError {
                 atoms,
             } => write!(
                 f,
-                "unsupported query: atoms {} need their relations' columns in contradictory \
-                 orders. Each body atom is matched one column at a time, left to right (subject \
-                 before object for an RDF triple), so it fixes the order its variables are bound \
-                 in, and these atoms fix opposite orders. This is a limitation of the trie joins, \
-                 which store each relation in one column order, not an error in the query",
+                "unsupported query under --column-orders stored: atoms {} need their relations' \
+                 columns in contradictory orders. Each body atom is matched one column at a time, \
+                 left to right (subject before object for an RDF triple), so it fixes the order \
+                 its variables are bound in, and these atoms fix opposite orders. This is a \
+                 limitation of reading each relation in its stored column order, not an error in \
+                 the query; `--column-orders any` answers it over a reordered copy",
                 atoms
                     .iter()
                     .map(|a| format!("`{a}`"))
@@ -175,6 +191,14 @@ impl fmt::Display for JoinError {
                 f,
                 "the query optimiser reads {required}, but the database gathered only \
                  {available}; build the database at the optimiser's required statistics"
+            ),
+            | JoinError::MissingIndex {
+                index,
+                base,
+            } => write!(
+                f,
+                "the plan reads {base:?} through the reordered copy {index:?}, which the database \
+                 does not hold; build the copies `required_indexes` names before joining"
             ),
         }
     }
@@ -247,11 +271,13 @@ pub(super) struct Prepared {
     pub(super) selection_specs: Vec<SelectionSpec>,
 }
 
-/// Validates `query` against `relations`, then rewrites a copy of it for
-/// the executors. The one path both [`validate_query`] and the join entry
-/// points take, so they accept exactly the same queries.
+/// Validates `query` against `relations` under `column_orders`, then
+/// rewrites a copy of it for the executors. The one path both
+/// [`validate_query`] and the join entry points take, so they accept
+/// exactly the same queries.
 pub(super) fn prepare(
     query: &JoinQuery, relations: &(impl RelationArities + ?Sized),
+    column_orders: ColumnOrderPolicy,
 ) -> Result<Prepared, JoinError> {
     check_head_terms(query)?;
     check_body_atoms(query, relations)?;
@@ -264,16 +290,22 @@ pub(super) fn prepare(
     let rewritten = rewrite_placeholders(rewritten);
     let (rewritten, selection_specs) = rewrite_repeated_variables(rewritten);
 
-    // The rewrites decide which variables each atom carries, so the order
-    // check runs on their output; they keep body atoms in place, so the
-    // indices it reports locate the atoms as the user wrote them.
-    check_attribute_order(&rewritten).map_err(|cycle| JoinError::CyclicAttributeOrder {
-        atoms: cycle
-            .atoms
-            .iter()
-            .map(|&i| query.body[i].to_string())
-            .collect(),
-    })?;
+    // Under `stored` every atom binds its columns left to right, so the
+    // atoms must admit one order per relation; under `any` the planner is
+    // free and the orientation rewrite reads a disagreeing atom through a
+    // reordered copy, so there is nothing to check. The rewrites decide
+    // which variables each atom carries, so the check runs on their
+    // output; they keep body atoms in place, so the indices it reports
+    // locate the atoms as the user wrote them.
+    if column_orders == ColumnOrderPolicy::Stored {
+        check_attribute_order(&rewritten).map_err(|cycle| JoinError::CyclicAttributeOrder {
+            atoms: cycle
+                .atoms
+                .iter()
+                .map(|&i| query.body[i].to_string())
+                .collect(),
+        })?;
+    }
 
     Ok(Prepared {
         query: rewritten,
@@ -282,7 +314,8 @@ pub(super) fn prepare(
     })
 }
 
-/// Checks that `query` can run over a store holding `relations`.
+/// Checks that `query` can run over a store holding `relations` under
+/// `column_orders`.
 ///
 /// The checks run in a fixed order and the first failure is returned:
 ///
@@ -291,7 +324,7 @@ pub(super) fn prepare(
 ///    store holds the relation, and the atom has one term per column;
 /// 3. every head variable appears in the body;
 /// 4. every constant is a dictionary ID (`c<digits>`);
-/// 5. the atoms admit one column order per relation.
+/// 5. under `stored`, the atoms admit one column order per relation.
 ///
 /// Costs `O(#atoms + #head terms²)` lookups plus the query rewrites; it
 /// never reads a relation's tuples.
@@ -301,8 +334,9 @@ pub(super) fn prepare(
 /// The [`JoinError`] for the first failed check.
 pub fn validate_query(
     query: &JoinQuery, relations: &(impl RelationArities + ?Sized),
+    column_orders: ColumnOrderPolicy,
 ) -> Result<(), JoinError> {
-    prepare(query, relations).map(|_| ())
+    prepare(query, relations, column_orders).map(|_| ())
 }
 
 fn check_head_terms(query: &JoinQuery) -> Result<(), JoinError> {
@@ -328,7 +362,10 @@ fn check_body_atoms(
     query: &JoinQuery, relations: &(impl RelationArities + ?Sized),
 ) -> Result<(), JoinError> {
     for atom in &query.body {
-        if is_const_predicate(&atom.name) || is_selection_predicate(&atom.name) {
+        if is_const_predicate(&atom.name)
+            || is_selection_predicate(&atom.name)
+            || is_index_predicate(&atom.name)
+        {
             return Err(JoinError::ReservedRelationName {
                 relation: atom.name.clone(),
             });
@@ -375,7 +412,19 @@ mod tests {
     }
 
     fn validate(q: &str) -> Result<(), JoinError> {
-        validate_query(&q.parse().unwrap(), headers().as_slice())
+        validate_query(
+            &q.parse().unwrap(),
+            headers().as_slice(),
+            ColumnOrderPolicy::Stored,
+        )
+    }
+
+    fn validate_any(q: &str) -> Result<(), JoinError> {
+        validate_query(
+            &q.parse().unwrap(),
+            headers().as_slice(),
+            ColumnOrderPolicy::Any,
+        )
     }
 
     #[test]
@@ -411,6 +460,7 @@ mod tests {
         for (q, relation) in [
             ("Q(X) :- Const_c5(X).", "Const_c5"),
             ("Q(X) :- Select_0_edge(X, Y).", "Select_0_edge"),
+            ("Q(X, Y) :- Index_1_0_edge(X, Y).", "Index_1_0_edge"),
         ] {
             assert_eq!(
                 validate(q),
@@ -565,12 +615,38 @@ mod tests {
             "Q(X, Y) :- edge(X, Y), edge(Y, X).",
         ] {
             let query: JoinQuery = q.parse().unwrap();
-            assert_eq!(
-                validate_query(&query, &store),
-                validate_query(&query, headers().as_slice()),
-                "{q}"
-            );
+            for policy in [ColumnOrderPolicy::Stored, ColumnOrderPolicy::Any] {
+                assert_eq!(
+                    validate_query(&query, &store, policy),
+                    validate_query(&query, headers().as_slice(), policy),
+                    "{q}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn under_any_opposite_column_orders_are_accepted() {
+        assert_eq!(validate_any("Q(X, Y) :- edge(X, Y), edge(Y, X)."), Ok(()));
+        assert_eq!(validate_any("Q(X) :- r(X, _, Y), edge(Y, X)."), Ok(()));
+        // Every other check still runs.
+        assert!(matches!(
+            validate_any("Q(X, Y) :- edge(X, Z)."),
+            Err(JoinError::UnboundHeadVariable { .. })
+        ));
+    }
+
+    #[test]
+    fn the_cyclic_message_names_the_flag_that_lifts_it() {
+        let err = validate("Q(X, Y) :- edge(X, Y), edge(Y, X).").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("--column-orders any"), "{message}");
+        assert!(message.contains("limitation"), "{message}");
+        let missing = JoinError::MissingIndex {
+            index: "Index_1_0_edge".into(),
+            base: "edge".into(),
+        };
+        assert!(missing.to_string().contains("required_indexes"));
     }
 
     #[test]

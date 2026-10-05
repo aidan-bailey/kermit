@@ -106,7 +106,7 @@
 use {
     clap::ValueEnum,
     kermit::db::{lftj_join, Database, SortedFamily},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
+    kermit_algos::{ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, RelationFileExt,
@@ -204,7 +204,7 @@ fn emitted_benchmark(dir: &Path) -> BenchmarkDefinition {
 fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
     bench: &BenchmarkDefinition, dir: &Path, optimiser: Optimiser, expected: &HashMap<&str, u64>,
 ) -> Vec<String> {
-    let planner = optimiser.instantiate();
+    let planner = Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
     let mut relations: BTreeMap<String, R> = BTreeMap::new();
     for rel in &bench.relations {
         let path = dir.join(format!("{}.parquet", rel.name));
@@ -218,7 +218,7 @@ fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
     for q in &bench.queries {
         let want = expected[q.name.as_str()];
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, planner.as_ref())
+        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, &planner)
             .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
             .len() as u64;
         if got != want {
