@@ -111,7 +111,7 @@ reviewed before the next starts. The controller keeps Tasks 0, 9 and 10.
 |---|---|---|---|---|---|
 | *Controller* | 0 | Merge `origin/master`, record `BASE`, green baseline | — | merge only | `BASE` recorded; workspace tests and kermit-lab pytest green |
 | **P1 — `kermit-ds`** | 1, 2, 3 | `morsel.rs`; `TreeTrieBuildMode`; the parallel build, its identity tests and the structure-level suites | Task 0 | 3 | `cargo test -p kermit-ds` green and warning-free; new tests Miri-clean; mutation checks recorded |
-| **P2 — `kermit` binary** | 4, 5, 6 | the TreeTrie cell's build mode; `--ds-build` values; join suites | P1 | 3 | `cargo test -p kermit` green, including `cli_tree_trie_build_mode` and the 32 new join tests; mutation checks recorded |
+| **P2 — `kermit` binary** | 4, 5, 6 | the TreeTrie cell's build mode; `--ds-build` values; join suites | P1 | 3 | `cargo test -p kermit` green, including `cli_tree_trie_build_mode` and the 48 new join tests; mutation checks recorded |
 | **P3 — analysis and docs** | 7, 8 | kermit-lab; every doc in Task 8 | P2 | 2 | kermit-lab pytest green with `KERMIT_BIN`; `cargo doc` clean |
 | *Controller* | 9, 10 | final gate, smoke run, checkpoint 2; landing only on the user's instruction | P3 | — | — |
 
@@ -1368,11 +1368,13 @@ impl<S: SeekStrategy> SortedTrieRelation for TreeTrie<S> {
 // carrying heap data would have to drop it here and clone the cells instead.
 ```
 
-6. In the `tests` module, replace every
-   `::new((), Optimiser::Lexicographic)` with
-   `::new(TreeTrieBuildMode::default(), Optimiser::Lexicographic)`. Use
-   Edit with `replace_all`; there are five occurrences after Step 1's
-   replacement. Then add `build: TreeTrieBuildMode::Serial,` after the
+6. In the `tests` module, replace every `::new((), ` with
+   `::new(TreeTrieBuildMode::default(), `. Use Edit with `replace_all`;
+   there are six occurrences after Step 1's replacement: five
+   `…::new((), Optimiser::Lexicographic)` and #81's
+   `TrieLftj::<TreeTrie>::new((), optimiser)` in
+   `engines_gather_the_statistics_their_optimiser_reads`. (Every `new((), `
+   in `execution.rs` is in the tests module.) Then add `build: TreeTrieBuildMode::Serial,` after the
    `seek: …` line of each `SortedTrie::TreeTrie { seek: … }` literal in
    the tests:
    - `families_report_their_own_execution`: one (`SeekChoice::Galloping`);
@@ -2134,8 +2136,8 @@ Extend the `kermit_ds::{ … }` import with `Threads` and `TreeTrieBuildMode`:
 ```
 
 Then insert directly after the ColumnTrie `Incremental` build-mode suites
-(the two `define_multiway_join_test_suite_for_build_mode!(ColumnTrie, …,
-Incremental);` invocations):
+(the three `define_multiway_join_test_suite_for_build_mode!(ColumnTrie, …,
+Incremental);` invocations, one per optimiser since #81):
 
 ```rust
 // ── BuildMode axis: TreeTrie's parallel build ───────────────────────────
@@ -2159,6 +2161,12 @@ define_multiway_join_test_suite_for_build_mode!(
     CardinalityOptimiser,
     Parallel2
 );
+define_multiway_join_test_suite_for_build_mode!(
+    TreeTrie,
+    LeapfrogTriejoin,
+    CostBasedOptimiser,
+    Parallel2
+);
 ```
 
 - [ ] **Step 2: Run them**
@@ -2168,7 +2176,7 @@ CARGO_BUILD_JOBS=2 nix develop $WT --command cargo test -p kermit --test join_te
 CARGO_BUILD_JOBS=2 nix develop $WT --command cargo test -p kermit
 ```
 
-Expected: 32 tests pass in the first run (the 16 standard patterns × two
+Expected: 48 tests pass in the first run (the 16 standard patterns × three
 optimisers); then the whole `kermit` crate is green.
 
 - [ ] **Step 3: Format and commit**
@@ -2180,7 +2188,7 @@ git -C $WT commit -F - <<'EOF'
 test(kermit): TreeTrie's parallel build through the join suites (#94)
 
 The 16 standard join patterns run on `BuiltWith<TreeTrie, Parallel2>` under
-both optimisers, the BuildMode test obligation of the optimization standard.
+every optimiser, the BuildMode test obligation of the optimization standard.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01EC25BmBrMyFPmp424HLMDd
