@@ -50,8 +50,8 @@ pub use {
     kermit_parser::JoinQuery,
     optimiser::{
         check_attribute_order, distinct_per_column, topological_order, CardinalityOptimiser,
-        CatalogStats, CyclicAttributeOrder, LexicographicOptimiser, Optimiser, PlanError,
-        QueryOptimiser, QueryPlan, RelationStats, StatisticsLevel,
+        CatalogStats, CostBasedOptimiser, CyclicAttributeOrder, LexicographicOptimiser, Optimiser,
+        PlanError, QueryOptimiser, QueryPlan, RelationStats, StatisticsLevel,
     },
     placeholder_rewrite::rewrite_placeholders,
     selection_rewrite::{

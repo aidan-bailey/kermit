@@ -15,6 +15,7 @@
 //! decision and lives one level up, in [`crate::analysis`].
 
 mod cardinality;
+mod cost_based;
 mod lexicographic;
 mod ordering;
 mod plan;
@@ -22,6 +23,7 @@ mod stats;
 
 pub use {
     cardinality::CardinalityOptimiser,
+    cost_based::CostBasedOptimiser,
     lexicographic::LexicographicOptimiser,
     ordering::{check_attribute_order, topological_order, CyclicAttributeOrder},
     plan::{PlanError, QueryPlan},
