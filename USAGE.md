@@ -195,13 +195,17 @@ K full-trie iterations in a single Criterion body; K comes from
 kermit bench ds -r data.csv -i tree-trie -m end-to-end --queries-per-build 4
 ```
 
-`-i column-trie` takes `--ds-build bulk|incremental` (default `bulk`), choosing
-how the trie is built from its tuples. Both build the identical trie, so the
-flag changes the `insertion` and `end-to-end` timings only; the report records
-it as `ds_build_mode`. `bench run` and `bench join` accept it too.
+`--ds-build` chooses how each structure is built from its tuples, as
+`structure=mode` pairs: `column-trie=bulk|incremental` (default `bulk`) and
+`hash-trie=serial|radix:<bits>` (default `serial`; bits in 1..=16). Every mode
+builds the identical structure, so the flag changes the `insertion` and
+`end-to-end` timings only; the report records it as `ds_build_mode`. A pair is
+valid only when `-i` selects its structure (or `all`). `bench run` and
+`bench join` accept it too.
 
 ```sh
-kermit bench ds -r data.csv -i column-trie -m insertion --ds-build incremental
+kermit bench ds -r data.csv -i column-trie -m insertion --ds-build column-trie=incremental
+kermit bench ds -r data.csv -i hash-trie -m insertion --ds-build hash-trie=radix:8
 ```
 
 `--ds-layout-seek` is rejected here: none of `bench ds`'s metrics calls `seek`.

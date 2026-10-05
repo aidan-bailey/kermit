@@ -85,7 +85,7 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 | Algorithm | `LeapfrogTriejoin` | `HashTriejoin` |
 | `Projectable` | `project_via_trie_iter` (shared helper) | hand-rolled on `HashTrie` |
 | Engine | `lftj_join` free function over `BTreeMap<String, R>` | `hash_join` free function over `BTreeMap<String, HashTrie<H, P>>` |
-| Bench cell | `Execution::TrieLftj(SortedTrie::TreeTrie { seek } \| ColumnTrie { seek, build })` (`seek` carries `--ds-layout-seek`, `build` `--ds-build`) / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, config }` / `HashHtj<H, P>` (labels derived from `H`/`P`) |
+| Bench cell | `Execution::TrieLftj(SortedTrie::TreeTrie { seek } \| ColumnTrie { seek, build })` (`seek` carries `--ds-layout-seek`, `build` `--ds-build`) / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, config, build }` (`build` carries `--ds-build hash-trie=…`) / `HashHtj<H, P>` (labels derived from `H`/`P`) |
 | `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
 | `bench ds` dispatch | one generic `run_ds_bench<F: RelationFamily>` over `SortedTrieFamily<R>` | the same `run_ds_bench<F>` over `HashTrieFamily<H, P>` |
 

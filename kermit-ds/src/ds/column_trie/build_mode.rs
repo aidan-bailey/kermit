@@ -34,7 +34,8 @@ mod tests {
     use {super::*, clap::ValueEnum, kermit_iters::BuildMode};
 
     /// Pins `axis_value` to clap's derived value name, so a report's
-    /// `ds_build_mode` is always what the user typed after `--ds-build`.
+    /// `ds_build_mode` is always the mode the user typed in
+    /// `--ds-build column-trie=<mode>`.
     #[test]
     fn axis_values_match_clap_value_names() {
         for mode in ColumnTrieBuildMode::value_variants() {
