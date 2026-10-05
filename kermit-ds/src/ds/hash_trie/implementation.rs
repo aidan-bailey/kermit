@@ -1175,6 +1175,19 @@ mod tests {
         sync::<HashTrie<SipHashStrategy, SingletonPruning>>();
     }
 
+    /// Every Layout's nodes are `Send`, so the `parallel:N` build can hand a
+    /// worker's finished scratch root to the calling thread (#94). Lazy
+    /// tries stay `!Sync` (their cells) but are `Send`. Generic, so it pins
+    /// the policies' bounds rather than today's two policies of each kind.
+    #[test]
+    fn nodes_are_send_under_every_layout() {
+        use super::super::{expansion::LazyExpansion, pruning::SingletonPruning};
+        fn send<T: Send>() {}
+        fn node_is_send<P: PruningPolicy, E: ExpansionPolicy>() { send::<HashTrieNode<P, E>>(); }
+        node_is_send::<NoPruning, EagerExpansion>();
+        node_is_send::<SingletonPruning, LazyExpansion>();
+    }
+
     #[test]
     fn optimization_axes_include_the_pruning_layout() {
         use kermit_iters::HasOptimizationAxes;
