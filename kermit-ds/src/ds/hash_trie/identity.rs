@@ -19,7 +19,7 @@ use {
 /// Asserts that two tables hold the same buckets: the same capacity
 /// (array length and allocation), the same length, the same hash in
 /// every bucket, and values that `same_value` accepts.
-pub(super) fn assert_same_table<V>(
+fn assert_same_table<V>(
     a: &HashTable<V>, b: &HashTable<V>, path: &str, same_value: &dyn Fn(&V, &V, &str),
 ) {
     assert_eq!(a.buckets_len(), b.buckets_len(), "{path}: capacity");
@@ -39,7 +39,7 @@ pub(super) fn assert_same_table<V>(
 
 // `&Vec`, not a slice: the comparison reads `capacity()`.
 #[allow(clippy::ptr_arg)]
-pub(super) fn assert_same_chain(a: &Vec<Vec<usize>>, b: &Vec<Vec<usize>>, path: &str) {
+fn assert_same_chain(a: &Vec<Vec<usize>>, b: &Vec<Vec<usize>>, path: &str) {
     assert_eq!(a, b, "{path}: chain");
     assert_eq!(a.capacity(), b.capacity(), "{path}: chain capacity");
     for (i, (x, y)) in a.iter().zip(b).enumerate() {
@@ -102,7 +102,7 @@ pub(super) fn rows(arity: usize, rows: &[[usize; 3]]) -> Vec<Vec<usize>> {
 /// times under Miri), with repeats so subtries and chains hold several
 /// tuples. The builds are safe Rust, so Miri runs a small matrix: the full
 /// one took almost five minutes there.
-pub(super) const RANDOM_TUPLES: usize = if cfg!(miri) {
+const RANDOM_TUPLES: usize = if cfg!(miri) {
     48
 } else {
     3_000

@@ -37,9 +37,11 @@ use {
 #[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     /// The `(threads, partition sizes)` of every parallel build on this
-    /// thread. Every build mode builds the same trie, so only this record
-    /// can tell a test which build ran, and where it put its tuples. Other
-    /// crates' tests read it through `test_hooks` (the `test-hooks` feature).
+    /// thread: the size of each of its P partitions, empty ones (which the
+    /// build skips) included. Every build mode builds the same trie, so only
+    /// this record can tell a test which build ran, and where it put its
+    /// tuples. Other crates' tests read it through `test_hooks` (the
+    /// `test-hooks` feature).
     static PARALLEL_BUILDS: std::cell::RefCell<Vec<(usize, Vec<usize>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -52,11 +54,49 @@ pub(crate) fn take_parallel_builds() -> Vec<(usize, Vec<usize>)> {
 }
 
 /// One partition's root entries, each tagged with the input position at
-/// which its key first appeared, in that order: subtries under an `Inner`
-/// root (arity ≥ 2), chains under a `Leaf` root (arity 1).
+/// which its key first appeared, in that order. The root is `Inner` for
+/// arity ≥ 2, so its values are child nodes (subtries, or under pruning and
+/// lazy expansion their `Singleton`s and pending lists), and `Leaf` for
+/// arity 1, so its values are chains.
 enum Entries<P: PruningPolicy, E: ExpansionPolicy> {
-    Subtries(Vec<Arrival<HashTrieNode<P, E>>>),
+    Children(Vec<Arrival<HashTrieNode<P, E>>>),
     Chains(Vec<Arrival<Vec<Vec<usize>>>>),
+}
+
+impl<P: PruningPolicy, E: ExpansionPolicy> Entries<P, E> {
+    /// Moves every entry out of a finished scratch root, in the order its
+    /// keys arrived (`first_seen`, from `radix::build_scratch_root`).
+    fn take_from(scratch: HashTrieNode<P, E>, first_seen: &[(usize, u64)]) -> Self {
+        match scratch {
+            | HashTrieNode::Inner(table) => {
+                let mut children = Vec::with_capacity(first_seen.len());
+                radix::take_in_arrival_order(table, first_seen, &mut children);
+                Self::Children(children)
+            },
+            | HashTrieNode::Leaf(table) => {
+                let mut chains = Vec::with_capacity(first_seen.len());
+                radix::take_in_arrival_order(table, first_seen, &mut chains);
+                Self::Chains(chains)
+            },
+            | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
+                unreachable!("a root is never pruned or unexpanded")
+            },
+        }
+    }
+
+    fn into_children(self) -> Vec<Arrival<HashTrieNode<P, E>>> {
+        match self {
+            | Self::Children(children) => children,
+            | Self::Chains(_) => unreachable!("an Inner root's scratch roots are Inner"),
+        }
+    }
+
+    fn into_chains(self) -> Vec<Arrival<Vec<Vec<usize>>>> {
+        match self {
+            | Self::Chains(chains) => chains,
+            | Self::Children(_) => unreachable!("a Leaf root's scratch roots are Leaf"),
+        }
+    }
 }
 
 /// The radix bits for `threads`: [`PARTITIONS_PER_THREAD`] partitions per
@@ -87,6 +127,8 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
         // The serial build of nothing is the empty root: start no worker.
         return;
     }
+    // 1. Partition, on `threads` workers, by the top bits of the first
+    //    attribute's hash; each partition keeps input order.
     let bits = partition_bits(threads);
     let shift = 64 - bits;
     let partitions = scatter(threads, tuples, morsel_tuples, 1 << bits, |tuple| {
@@ -103,39 +145,22 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
         .into_iter()
         .filter(|partition| partition.len() > 0)
         .collect();
+    // 2. Build, on `threads` workers: each partition into a scratch root, whose
+    //    entries then leave in the order their keys arrived.
     let entries = dispatch(threads, partitions, |partition| {
         let (scratch, first_seen) =
             radix::build_scratch_root::<H, P, E>(partition.into_tuples(), arity, load_factor);
-        match scratch {
-            | HashTrieNode::Inner(table) => {
-                let mut subtries = Vec::with_capacity(first_seen.len());
-                radix::take_in_arrival_order(table, &first_seen, &mut subtries);
-                Entries::Subtries(subtries)
-            },
-            | HashTrieNode::Leaf(table) => {
-                let mut chains = Vec::with_capacity(first_seen.len());
-                radix::take_in_arrival_order(table, &first_seen, &mut chains);
-                Entries::Chains(chains)
-            },
-            | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
-                unreachable!("a root is never pruned or unexpanded")
-            },
-        }
+        Entries::take_from(scratch, &first_seen)
     });
+    // 3. Merge, on this thread, in first-appearance order.
     match root {
         | HashTrieNode::Inner(table) => {
-            let lists = entries.into_iter().map(|entries| match entries {
-                | Entries::Subtries(subtries) => subtries,
-                | Entries::Chains(_) => unreachable!("an Inner root's scratch roots are Inner"),
-            });
-            merge_in_first_appearance_order(table, lists.collect(), load_factor);
+            let lists = entries.into_iter().map(Entries::into_children).collect();
+            merge_in_first_appearance_order(table, lists, load_factor);
         },
         | HashTrieNode::Leaf(table) => {
-            let lists = entries.into_iter().map(|entries| match entries {
-                | Entries::Chains(chains) => chains,
-                | Entries::Subtries(_) => unreachable!("a Leaf root's scratch roots are Leaf"),
-            });
-            merge_in_first_appearance_order(table, lists.collect(), load_factor);
+            let lists = entries.into_iter().map(Entries::into_chains).collect();
+            merge_in_first_appearance_order(table, lists, load_factor);
         },
         | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
             unreachable!("a root is never pruned or unexpanded")
@@ -147,9 +172,9 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
 /// keys first appeared in the input, the order the serial build inserts
 /// them, so the root's buckets, length and capacity are the serial
 /// build's. Each list is already in that order, so a k-way merge suffices:
-/// one heap operation per entry over at most P lists, where the radix build
-/// sorts every entry. It runs on the calling thread: the build's sequential
-/// step.
+/// a heap pop and push per entry over at most P lists, where the radix
+/// build sorts every entry. It runs on the calling thread: the build's
+/// sequential step.
 fn merge_in_first_appearance_order<V>(
     root: &mut HashTable<V>, lists: Vec<Vec<Arrival<V>>>, load_factor: LoadFactor,
 ) {
@@ -187,7 +212,7 @@ mod tests {
                 pruning::{NoPruning, SingletonPruning},
             },
             relation::{BuildModeRelation, ConfigurableRelation, Relation},
-            test_support::Mod10HashStrategy,
+            test_support::{Lcg, Mod10HashStrategy},
         },
         kermit_iters::{FxHashStrategy, LayoutOption, SipHashStrategy},
     };
@@ -295,6 +320,54 @@ mod tests {
         assert_eq!(partition_bits(threads(Threads::MAX)), 12);
     }
 
+    /// Inputs the shared matrix leaves out (the spec's § Testing): arity 4,
+    /// a first key holding half the tuples, and enough tuples (39 768) that
+    /// the public constructor cuts them into three morsels of 16 384.
+    #[test]
+    #[cfg_attr(miri, ignore = "tens of thousands of inserts")]
+    fn parallel_builds_the_serial_trie_on_large_and_skewed_inputs() {
+        fn check<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
+            let n = 2 * MORSEL_TUPLES + 7_000;
+            let mut lcg = Lcg(0x94);
+            for arity in 1..=4 {
+                let random: Vec<Vec<usize>> = (0..n)
+                    .map(|_| (0..arity).map(|_| lcg.next_usize() % 5_000).collect())
+                    .collect();
+                let skewed: Vec<Vec<usize>> = (0..n)
+                    .map(|i| {
+                        let first = if i % 2 == 0 {
+                            7
+                        } else {
+                            lcg.next_usize() % 5_000
+                        };
+                        std::iter::once(first)
+                            .chain((1..arity).map(|_| lcg.next_usize() % 50))
+                            .collect()
+                    })
+                    .collect();
+                for (input, tuples) in [("random", random), ("half one key", skewed)] {
+                    let serial = HashTrie::<H, P, E>::from_tuples(arity.into(), tuples.clone());
+                    for t in [2, 5] {
+                        let built = HashTrie::<H, P, E>::from_tuples_with_build_mode(
+                            arity.into(),
+                            HashTrieBuildMode::Parallel(threads(t)),
+                            tuples.clone(),
+                        );
+                        let label = format!(
+                            "{}/{}/{} arity {arity}, parallel:{t}, {input}",
+                            H::NAME,
+                            P::NAME,
+                            E::NAME
+                        );
+                        assert_same_trie(&serial, &built, &label);
+                    }
+                }
+            }
+        }
+        check::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check::<FxHashStrategy, SingletonPruning, LazyExpansion>();
+    }
+
     /// Hashes a key below 8 to the key in its top three bits, so under
     /// `parallel:2` (eight partitions) key k lands in partition k.
     #[derive(Copy, Clone, Default, Debug)]
@@ -312,7 +385,11 @@ mod tests {
     /// ran, and that `parallel:N` spreads its work: N workers in both steps
     /// (two `run_workers` calls), and the tuples spread over the partitions.
     /// Eight first keys of eight tuples each fill the eight partitions of
-    /// `parallel:2` evenly. The radix build partitions too, but serially.
+    /// `parallel:2` evenly. `parallel:3` aims at 12 partitions, rounded up to
+    /// 16, so key k lands in partition 2k: every other partition is empty,
+    /// and the record lists those too. A second thread count is what shows
+    /// that N itself reaches the build. The radix build partitions too, but
+    /// serially.
     #[test]
     fn build_modes_reach_their_builds() {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 8, i]).collect();
@@ -328,6 +405,11 @@ mod tests {
                 HashTrieBuildMode::Parallel(threads(2)),
                 vec![(2, vec![8; 8])],
                 vec![2, 2],
+            ),
+            (
+                HashTrieBuildMode::Parallel(threads(3)),
+                vec![(3, [8, 0].repeat(8))],
+                vec![3, 3],
             ),
         ] {
             PARALLEL_BUILDS.with(|builds| builds.borrow_mut().clear());

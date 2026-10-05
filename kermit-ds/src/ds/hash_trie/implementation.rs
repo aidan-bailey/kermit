@@ -421,7 +421,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// Creates a trie holding `config`, populated with `tuples` and built by
     /// `mode` — the one constructor that takes both the Config and the
-    /// BuildMode. Every mode builds the identical trie (issue #91), so
+    /// BuildMode. Every mode builds the identical trie (issues #91, #94), so
     /// `mode` changes only how long this takes.
     ///
     /// `Serial` is [`ConfigurableRelation::from_tuples_with_config`],
