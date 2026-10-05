@@ -152,10 +152,21 @@ struct CostModel<'q> {
 }
 
 impl<'q> CostModel<'q> {
+    /// The model of `query`, which must be the rewritten query (as
+    /// [`QueryOptimiser::plan`] receives it): one variable per column, so
+    /// `predicate_variables[i][c]` is the variable in atom `i`'s column `c`.
     fn new(
         query: &JoinQuery, predicate_variables: &'q [Vec<usize>], num_vars: usize,
         stats: &CatalogStats,
     ) -> Self {
+        debug_assert!(
+            query
+                .body
+                .iter()
+                .zip(predicate_variables)
+                .all(|(atom, vars)| vars.len() == atom.terms.len()),
+            "the cost model reads the rewritten query: one variable per column"
+        );
         let atoms = query
             .body
             .iter()
@@ -395,16 +406,66 @@ mod tests {
 
     #[test]
     fn equal_costs_take_the_lexicographically_smaller_order() {
-        // X and Y are interchangeable, so both orders cost 10 + 100.
+        // X and Y are interchangeable, so both orders cost 10 + 100. The
+        // search meets tied candidates in `HashMap` order, which changes
+        // from map to map, so a lucky order could hide a missing tie-break:
+        // each plan is repeated, every time with fresh maps.
         let q: JoinQuery = "Q(X, Y) :- R(X), S(Y).".parse().unwrap();
         let stats = stats_for(&q, &[("R", 10, &[10]), ("S", 10, &[10])]);
-        let plan = CostBasedOptimiser::default().plan(&q, &stats);
-        assert_eq!(plan.variable_ordering, vec![0, 1]);
         // Swapping the head swaps the canonical indices; the smaller still
         // comes first.
-        let q: JoinQuery = "Q(Y, X) :- R(X), S(Y).".parse().unwrap();
+        let swapped: JoinQuery = "Q(Y, X) :- R(X), S(Y).".parse().unwrap();
+        for _ in 0..64 {
+            let plan = CostBasedOptimiser::default().plan(&q, &stats);
+            assert_eq!(plan.variable_ordering, vec![0, 1]);
+            let plan = CostBasedOptimiser::default().plan(&swapped, &stats);
+            assert_eq!(plan.variable_ordering, vec![0, 1]);
+        }
+    }
+
+    #[test]
+    fn a_fully_bound_atom_counts_its_tuples_not_its_first_column() {
+        // A multiset (the hash trie) can hold more tuples than distinct
+        // values; a fully bound unary atom still contributes its tuples.
+        let q: JoinQuery = "Q(X) :- R(X).".parse().unwrap();
+        let stats = stats_for(&q, &[("R", 10, &[4])]);
+        assert_eq!(estimate(&q, &stats, &[0]), 10.0);
+    }
+
+    #[test]
+    fn an_empty_relation_the_set_does_not_touch_leaves_the_estimate_alone() {
+        // At the depth that binds only X, LFTJ enumerates R's keys whatever
+        // S holds.
+        let q: JoinQuery = "Q(X, Y) :- R(X), S(Y).".parse().unwrap();
+        let stats = stats_for(&q, &[("R", 10, &[10]), ("S", 0, &[0])]);
+        assert_eq!(estimate(&q, &stats, &[0]), 10.0);
+    }
+
+    #[test]
+    fn a_relation_without_statistics_is_assumed_large() {
+        let q: JoinQuery = "Q(X, Y) :- Known(X), Unknown(Y).".parse().unwrap();
+        let stats = stats_for(&q, &[("Known", 10, &[10])]);
         let plan = CostBasedOptimiser::default().plan(&q, &stats);
         assert_eq!(plan.variable_ordering, vec![0, 1]);
+        let q: JoinQuery = "Q(Y, X) :- Known(X), Unknown(Y).".parse().unwrap();
+        let plan = CostBasedOptimiser::default().plan(&q, &stats);
+        assert_eq!(plan.variable_ordering, vec![1, 0]);
+    }
+
+    #[test]
+    fn a_column_without_a_distinct_count_is_assumed_a_key() {
+        let q: JoinQuery = "Q(X, Y) :- R(X, Y).".parse().unwrap();
+        let stats = CatalogStats::for_query(&q, |_| Some(RelationStats::new(100, 2)));
+        assert_eq!(estimate(&q, &stats, &[0]), 100.0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "the cost model reads the rewritten query")]
+    fn an_unrewritten_query_is_refused() {
+        let q: JoinQuery = "Q(X) :- R(c5, X).".parse().unwrap();
+        let stats = stats_for(&q, &[("R", 10, &[10, 10])]);
+        CostBasedOptimiser::default().plan(&q, &stats);
     }
 
     #[test]
