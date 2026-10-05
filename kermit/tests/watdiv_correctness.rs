@@ -8,7 +8,7 @@
 //! [`lftj_join`] without any network or Python dependency at test time.
 
 use {
-    kermit::db::lftj_join,
+    kermit::db::{lftj_join, Database},
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
@@ -51,6 +51,7 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>() {
             R::from_parquet(&path).unwrap_or_else(|e| panic!("failed to load {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
+    let relations = Database::from(relations);
 
     for q in &bench.queries {
         let key = format!("{}::{}", bench.name, q.name);

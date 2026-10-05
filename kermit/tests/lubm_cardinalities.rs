@@ -17,7 +17,7 @@
 //! only hold for LUBM(1, 0), so the scale is pinned to 1.
 
 use {
-    kermit::db::lftj_join,
+    kermit::db::{lftj_join, Database, SortedFamily},
     kermit_algos::{
         CardinalityOptimiser, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
     },
@@ -69,6 +69,7 @@ fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
             .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
+    let relations = Database::new::<SortedFamily>(relations, optimiser.required_statistics());
 
     // Collect every divergence so one run surfaces the complete picture
     // rather than failing on the first mismatch.

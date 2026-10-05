@@ -4,8 +4,8 @@
 //! [`lftj_join_for_each`] for sorted tries under a [`TrieIterable`]-family
 //! algorithm, [`hash_join_for_each`] for [`HashTrieIterable`] structures
 //! under [`HashTriejoin`] — plus a collecting wrapper ([`lftj_join`],
-//! [`hash_join`]), all over the same shape of relation store, a
-//! `BTreeMap<String, R>` keyed by relation name.
+//! [`hash_join`]), all over a [`Database`]: the relations, keyed by name,
+//! plus the statistics planners read, gathered once when it is built.
 //! Both share one private body and differ only in how a relation, a
 //! constant and a selection view are wrapped for the algorithm (the
 //! [`JoinFamily`] trait).
@@ -27,7 +27,7 @@ pub use {
 use {
     kermit_algos::{
         is_const_predicate, is_selection_predicate, CatalogStats, ColumnEquality, HashTrieIterKind,
-        HashTriejoin, JoinAlgo, JoinQuery, QueryOptimiser, RelationStats, SingletonHashTrieIter,
+        HashTriejoin, JoinAlgo, JoinQuery, QueryOptimiser, SingletonHashTrieIter,
         SingletonTrieIter, TrieIterKind,
     },
     kermit_ds::{Cardinality, Relation},
@@ -35,7 +35,7 @@ use {
         HashStrategy, HashTrieIterable, HashTrieIterator, JoinIterable, TrieIterable,
         TrieIteratorWrapper,
     },
-    std::collections::{BTreeMap, HashMap},
+    std::collections::HashMap,
     validation::{prepare, Prepared},
 };
 
@@ -183,11 +183,10 @@ fn for_each_hash_tuple(mut iter: impl HashTrieIterator, visit: &mut impl FnMut(&
 ///
 /// # Errors
 ///
-/// Returns the [`JoinError`] [`validate_query`] would, before any tuple is
-/// emitted.
+/// Returns the [`JoinError`] [`validate_query`] would, or
+/// [`JoinError::MissingStatistics`], before any tuple is emitted.
 fn run_join<'a, R, F, JA, S>(
-    relations: &'a BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
-    mut emit: S,
+    database: &'a Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser, mut emit: S,
 ) -> Result<(), JoinError>
 where
     R: Relation + Cardinality + 'a,
@@ -200,10 +199,24 @@ where
         query: rewritten,
         const_specs,
         selection_specs,
-    } = prepare(&query, relations)?;
+    } = prepare(&query, database)?;
+
+    // The plan comes from the database's statistics, so the optimiser must
+    // not read more than were gathered when it was built.
+    let required = optimiser.required_statistics();
+    if required > database.level() {
+        return Err(JoinError::MissingStatistics {
+            required,
+            available: database.level(),
+        });
+    }
 
     // `prepare` has checked that every relation the body names is present.
-    let lookup = |name: &str| -> &'a R { &relations[name] };
+    let lookup = move |name: &str| -> &'a R {
+        database
+            .get(name)
+            .expect("`prepare` checked that the database holds every body relation")
+    };
 
     let mut wrappers: HashMap<String, F::Wrapper<'a>> = HashMap::new();
     for pred in &rewritten.body {
@@ -212,7 +225,7 @@ where
         }
         // Const_* and Select_* predicates are synthetic — created by the
         // rewrites above and materialised from their specs below. They
-        // aren't expected to live in `relations`.
+        // aren't expected to live in the database.
         if is_const_predicate(&pred.name) || is_selection_predicate(&pred.name) {
             continue;
         }
@@ -233,18 +246,17 @@ where
         wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
 
     // Stats + planning run per join — inside benchmarks' measured region —
-    // so this stays O(#predicates) on top of O(1) tuple_count() reads. A
-    // selection view reports its base relation's count: an upper bound,
-    // which is the conservative value for a cardinality-driven planner.
+    // so this stays O(#predicates) reads of statistics the database
+    // gathered when it was built. A selection view reports its base
+    // relation's statistics: upper bounds, the conservative values for a
+    // size-driven planner.
     let base_of: HashMap<&str, &str> = selection_specs
         .iter()
         .map(|s| (s.name.as_str(), s.relation.as_str()))
         .collect();
     let stats = CatalogStats::for_query(&rewritten, |name| {
         let base = base_of.get(name).copied().unwrap_or(name);
-        relations
-            .get(base)
-            .map(|r| RelationStats::new(r.tuple_count(), r.header().arity()))
+        database.statistics(base).cloned()
     });
     let plan = optimiser.plan(&rewritten, &stats);
 
@@ -258,7 +270,7 @@ where
     Ok(())
 }
 
-/// Sorted-family join entry point: runs `query` over `relations` with the
+/// Sorted-family join entry point: runs `query` over `database` with the
 /// [`TrieIterable`]-family algorithm `JA` (normally
 /// [`LeapfrogTriejoin`](kermit_algos::LeapfrogTriejoin)), planned by
 /// `optimiser`, and passes each result tuple to `emit` without
@@ -267,16 +279,18 @@ where
 /// # Errors
 ///
 /// Returns a [`JoinError`], before emitting anything, if the query cannot
-/// run over `relations` (see [`validate_query`]).
+/// run over `database` (see [`validate_query`]), or if `optimiser` reads
+/// statistics `database` was not built with
+/// ([`JoinError::MissingStatistics`]).
 pub fn lftj_join_for_each<R, JA>(
-    relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     emit: impl FnMut(&[usize]),
 ) -> Result<(), JoinError>
 where
     R: TrieIterable + Relation + Cardinality,
     JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
 {
-    run_join::<R, SortedFamily, JA, _>(relations, query, optimiser, emit)
+    run_join::<R, SortedFamily, JA, _>(database, query, optimiser, emit)
 }
 
 /// [`lftj_join_for_each`], collected: returns every result tuple. For
@@ -286,20 +300,20 @@ where
 ///
 /// As [`lftj_join_for_each`].
 pub fn lftj_join<R, JA>(
-    relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
 ) -> Result<Vec<Vec<usize>>, JoinError>
 where
     R: TrieIterable + Relation + Cardinality,
     JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
 {
     let mut tuples = Vec::new();
-    lftj_join_for_each::<R, JA>(relations, query, optimiser, |tuple| {
+    lftj_join_for_each::<R, JA>(database, query, optimiser, |tuple| {
         tuples.push(tuple.to_vec())
     })?;
     Ok(tuples)
 }
 
-/// Hash-family join entry point: runs `query` over `relations` with
+/// Hash-family join entry point: runs `query` over `database` with
 /// [`HashTriejoin`], planned by `optimiser`, and passes each result tuple
 /// to `emit` without materialising the result. Mirror of
 /// [`lftj_join_for_each`].
@@ -313,16 +327,18 @@ where
 /// # Errors
 ///
 /// Returns a [`JoinError`], before emitting anything, if the query cannot
-/// run over `relations` (see [`validate_query`]).
+/// run over `database` (see [`validate_query`]), or if `optimiser` reads
+/// statistics `database` was not built with
+/// ([`JoinError::MissingStatistics`]).
 pub fn hash_join_for_each<R, H>(
-    relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
     emit: impl FnMut(&[usize]),
 ) -> Result<(), JoinError>
 where
     R: HashTrieIterable + Relation + Cardinality,
     H: HashStrategy,
 {
-    run_join::<R, HashFamily<H>, HashTriejoin, _>(relations, query, optimiser, emit)
+    run_join::<R, HashFamily<H>, HashTriejoin, _>(database, query, optimiser, emit)
 }
 
 /// [`hash_join_for_each`], collected: returns every result tuple. For
@@ -332,14 +348,14 @@ where
 ///
 /// As [`hash_join_for_each`].
 pub fn hash_join<R, H>(
-    relations: &BTreeMap<String, R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
+    database: &Database<R>, query: JoinQuery, optimiser: &dyn QueryOptimiser,
 ) -> Result<Vec<Vec<usize>>, JoinError>
 where
     R: HashTrieIterable + Relation + Cardinality,
     H: HashStrategy,
 {
     let mut tuples = Vec::new();
-    hash_join_for_each::<R, H>(relations, query, optimiser, |tuple| {
+    hash_join_for_each::<R, H>(database, query, optimiser, |tuple| {
         tuples.push(tuple.to_vec())
     })?;
     Ok(tuples)
@@ -349,11 +365,15 @@ where
 mod tests {
     use {
         super::*,
-        kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
+        kermit_algos::{
+            CatalogStats, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryPlan,
+            StatisticsLevel,
+        },
         kermit_ds::{Relation, TreeTrie},
+        std::collections::BTreeMap,
     };
 
-    fn rels(entries: Vec<(&str, usize, Vec<Vec<usize>>)>) -> BTreeMap<String, TreeTrie> {
+    fn rel_map(entries: Vec<(&str, usize, Vec<Vec<usize>>)>) -> BTreeMap<String, TreeTrie> {
         entries
             .into_iter()
             .map(|(name, arity, tuples)| {
@@ -363,6 +383,57 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn rels(entries: Vec<(&str, usize, Vec<Vec<usize>>)>) -> Database<TreeTrie> {
+        Database::from(rel_map(entries))
+    }
+
+    /// Plans like `lexicographic` but declares that it reads per-column
+    /// distinct counts.
+    struct NeedsColumns;
+
+    impl QueryOptimiser for NeedsColumns {
+        fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan {
+            LexicographicOptimiser.plan(query, stats)
+        }
+
+        fn required_statistics(&self) -> StatisticsLevel { StatisticsLevel::ColumnDistinct }
+    }
+
+    /// An optimiser that reads more than the database gathered is refused
+    /// before any row, and the same relations analysed to its level run.
+    #[test]
+    fn an_optimiser_reading_ungathered_statistics_is_refused() {
+        let entries = || {
+            vec![
+                ("first", 1, vec![vec![1], vec![2], vec![3]]),
+                ("second", 1, vec![vec![2], vec![3], vec![4]]),
+            ]
+        };
+        let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
+        let mut rows = 0;
+        let refused = lftj_join_for_each::<TreeTrie, LeapfrogTriejoin>(
+            &rels(entries()),
+            query.clone(),
+            &NeedsColumns,
+            |_| rows += 1,
+        );
+        assert_eq!(
+            refused,
+            Err(JoinError::MissingStatistics {
+                required: StatisticsLevel::ColumnDistinct,
+                available: StatisticsLevel::TupleCounts,
+            })
+        );
+        assert_eq!(rows, 0);
+
+        let analysed =
+            Database::new::<SortedFamily>(rel_map(entries()), StatisticsLevel::ColumnDistinct);
+        let mut got =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&analysed, query, &NeedsColumns).unwrap();
+        got.sort();
+        assert_eq!(got, vec![vec![2], vec![3]]);
     }
 
     #[test]
@@ -566,6 +637,7 @@ mod hash_join_tests {
         kermit_algos::LexicographicOptimiser,
         kermit_ds::{HashTrie, Relation},
         kermit_iters::SipHashStrategy,
+        std::collections::BTreeMap,
     };
 
     /// Pins the basic happy path: build two unary `HashTrie`s, run a
@@ -582,6 +654,7 @@ mod hash_join_tests {
             "S".to_string(),
             HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]),
         );
+        let relations = Database::from(relations);
         let q: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
         let mut out = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
             &relations,
@@ -619,6 +692,7 @@ mod hash_join_tests {
             "R".to_string(),
             HashTrie::from_tuples(2.into(), vec![vec![1, 5], vec![2, 5], vec![3, 7]]),
         );
+        let relations = Database::from(relations);
         let q: JoinQuery = "Q(X) :- R(X, c5).".parse().unwrap();
         let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
             &relations,
@@ -651,6 +725,7 @@ mod hash_join_tests {
                 vec![4, 5],
             ]),
         );
+        let relations = Database::from(relations);
         let q: JoinQuery = "Q(X) :- r(X, X).".parse().unwrap();
         let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
             &relations,
@@ -675,6 +750,7 @@ mod hash_join_tests {
                 vec![3, 5, 3],
             ]),
         );
+        let relations = Database::from(relations);
         let q: JoinQuery = "Q(X) :- r(X, c5, X).".parse().unwrap();
         let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
             &relations,
@@ -696,6 +772,7 @@ mod hash_join_tests {
                 3, 3,
             ]]),
         );
+        let relations = Database::from(relations);
         let q: JoinQuery = "Q(X, Y) :- r(X, X), r(X, Y).".parse().unwrap();
         let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
             &relations,
@@ -718,6 +795,7 @@ mod hash_join_tests {
             "r".to_string(),
             HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]),
         );
+        let relations = Database::from(relations);
         let q: JoinQuery = "Q(X) :- r(X, _).".parse().unwrap();
         let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
             &relations,
@@ -739,6 +817,7 @@ mod hash_join_tests {
             "r".to_string(),
             HashTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![1, 4, 5]]),
         );
+        let relations = Database::from(relations);
         let q: JoinQuery = "Q(X, Y) :- r(X, _, Y).".parse().unwrap();
         let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
             &relations,
@@ -758,12 +837,14 @@ mod hash_join_tests {
     fn both_families_reject_malformed_queries_identically() {
         use {crate::db::lftj_join, kermit_algos::LeapfrogTriejoin, kermit_ds::TreeTrie};
         let edges = vec![vec![1, 2], vec![2, 1], vec![2, 3]];
-        let hash: BTreeMap<String, HashTrie> = BTreeMap::from([(
+        let hash: Database<HashTrie> = Database::from(BTreeMap::from([(
             "edge".into(),
             HashTrie::from_tuples(2.into(), edges.clone()),
-        )]);
-        let sorted: BTreeMap<String, TreeTrie> =
-            BTreeMap::from([("edge".into(), TreeTrie::from_tuples(2.into(), edges))]);
+        )]));
+        let sorted: Database<TreeTrie> = Database::from(BTreeMap::from([(
+            "edge".into(),
+            TreeTrie::from_tuples(2.into(), edges),
+        )]));
         for q in [
             "Q(X, Y) :- edge(X, Z).",
             "Q(X, X) :- edge(X, Y).",
@@ -802,6 +883,7 @@ mod hash_join_tests {
             "p".to_string(),
             HashTrie::from_tuples(2.into(), vec![vec![1, 10], vec![2, 20]]),
         );
+        let relations = Database::from(relations);
         for (q, want) in [
             ("Q(X) :- r(X, Y).", vec![vec![1], vec![1], vec![2], vec![3]]),
             ("Q(Y) :- r(X, Y).", vec![vec![1], vec![2], vec![3], vec![3]]),
@@ -833,6 +915,7 @@ mod hash_join_tests {
             "S".to_string(),
             HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]),
         );
+        let relations = Database::from(relations);
         let q: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
         let mut got = Vec::new();
         hash_join_for_each::<HashTrie<SipHashStrategy>, SipHashStrategy>(

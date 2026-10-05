@@ -19,7 +19,7 @@
 //! `topological_order` enforces a valid descent order.
 
 use {
-    kermit::db::{hash_join, lftj_join},
+    kermit::db::{hash_join, lftj_join, Database},
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{HashTrie, Relation, TreeTrie},
     kermit_iters::SipHashStrategy,
@@ -28,16 +28,16 @@ use {
 
 type HashTrieSip = HashTrie<SipHashStrategy>;
 
-/// edge = {(1,2), (1,3), (2,4)} as a `TreeTrie` relation map (LFTJ path).
-fn edge_tries() -> BTreeMap<String, TreeTrie> {
+/// edge = {(1,2), (1,3), (2,4)} as a `TreeTrie` database (LFTJ path).
+fn edge_tries() -> Database<TreeTrie> {
     let edge = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
-    BTreeMap::from([("edge".to_string(), edge)])
+    Database::from(BTreeMap::from([("edge".to_string(), edge)]))
 }
 
-/// edge = {(1,2), (1,3), (2,4)} as a `HashTrie` relation map (hash path).
-fn edge_rels() -> BTreeMap<String, HashTrieSip> {
+/// edge = {(1,2), (1,3), (2,4)} as a `HashTrie` database (hash path).
+fn edge_rels() -> Database<HashTrieSip> {
     let edge = HashTrieSip::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
-    BTreeMap::from([("edge".to_string(), edge)])
+    Database::from(BTreeMap::from([("edge".to_string(), edge)]))
 }
 
 fn lftj(query: &str) -> Vec<Vec<usize>> {
