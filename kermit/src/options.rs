@@ -29,8 +29,9 @@ pub(crate) enum DsFlag {
     LayoutSeek,
     /// `--ds-config`.
     Config,
-    /// `--ds-build`.
-    Build,
+    /// `--ds-build <structure>=…`: one per pair, each reaching only its
+    /// structure.
+    Build(IndexStructure),
 }
 
 impl DsFlag {
@@ -55,7 +56,11 @@ impl DsFlag {
                 &[IndexStructure::HashTrie]
             },
             | Self::LayoutSeek => &[IndexStructure::TreeTrie, IndexStructure::ColumnTrie],
-            | Self::Build => &[IndexStructure::ColumnTrie],
+            | Self::Build(IndexStructure::ColumnTrie) => &[IndexStructure::ColumnTrie],
+            | Self::Build(IndexStructure::HashTrie) => &[IndexStructure::HashTrie],
+            // Never constructed: `BuildChoices::given` emits no tree-trie pair,
+            // since it has a single build. Were it built, it would reach nothing.
+            | Self::Build(IndexStructure::TreeTrie) => &[],
         }
     }
 
@@ -64,12 +69,7 @@ impl DsFlag {
     pub(crate) fn structures_label(self) -> String {
         self.structures()
             .iter()
-            .map(|ds| {
-                ds.to_possible_value()
-                    .expect("every IndexStructure is a CLI value")
-                    .get_name()
-                    .to_owned()
-            })
+            .map(|&ds| cli_name(ds))
             .collect::<Vec<_>>()
             .join(" or ")
     }
@@ -77,14 +77,22 @@ impl DsFlag {
 
 impl fmt::Display for DsFlag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            | Self::LayoutHasher => "--ds-layout-hasher",
-            | Self::LayoutPruning => "--ds-layout-pruning",
-            | Self::LayoutSeek => "--ds-layout-seek",
-            | Self::Config => "--ds-config",
-            | Self::Build => "--ds-build",
-        })
+        match self {
+            | Self::LayoutHasher => f.write_str("--ds-layout-hasher"),
+            | Self::LayoutPruning => f.write_str("--ds-layout-pruning"),
+            | Self::LayoutSeek => f.write_str("--ds-layout-seek"),
+            | Self::Config => f.write_str("--ds-config"),
+            | Self::Build(ds) => write!(f, "--ds-build {}", cli_name(*ds)),
+        }
     }
+}
+
+/// `ds` as `-i` spells it: `"hash-trie"`.
+fn cli_name(ds: IndexStructure) -> String {
+    ds.to_possible_value()
+        .expect("every IndexStructure is a CLI value")
+        .get_name()
+        .to_owned()
 }
 
 /// The first of `given` that none of `structures` has the axis of: a flag
@@ -531,41 +539,146 @@ pub(crate) fn validate_config_choices(
     validate_ds_flags(indexstructure, config.given().as_slice())
 }
 
-/// BuildMode-axis CLI choice, flattened beside [`LayoutChoices`] and
-/// [`ConfigChoices`] into `bench ds`, `bench run` and `bench join`. Every
-/// build mode builds the same structure, so the flag changes build time
-/// only. `kermit join` takes no `--ds-build`, for the same reason it takes
-/// no `--ds-config`: it cannot change a query's answers.
+/// BuildMode-axis CLI choices, flattened beside [`LayoutChoices`] and
+/// [`ConfigChoices`] into `bench ds`, `bench run` and `bench join`. One flag,
+/// `--ds-build`, takes comma-separated `structure=mode` pairs, resolved per
+/// structure by [`resolved`](Self::resolved). Every build mode builds the
+/// same structure, so the flag changes build time only. `kermit join` takes
+/// no `--ds-build`, for the same reason it takes no `--ds-config`: it cannot
+/// change a query's answers.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct BuildChoices {
-    /// How `ColumnTrie` is built from its tuples (default: `bulk`;
-    /// `incremental` is the build before the one-pass bulk build). Only valid
-    /// with `--indexstructure column-trie` (or `all`).
-    #[arg(long = "ds-build", value_name = "MODE", value_enum)]
-    column_trie_build: Option<ColumnTrieBuildMode>,
+    /// How each named structure is built from its tuples, as
+    /// `structure=mode` pairs: `column-trie=bulk|incremental` (default
+    /// `bulk`; `incremental` is the build before the one-pass bulk build) and
+    /// `hash-trie=serial|radix:<bits>` (default `serial`; bits in 1..=16).
+    /// A pair is only valid when `--indexstructure` selects its structure
+    /// (or `all`).
+    #[arg(
+        long = "ds-build",
+        value_name = "STRUCTURE=MODE,...",
+        value_delimiter = ','
+    )]
+    ds_build: Vec<String>,
 }
 
 impl BuildChoices {
-    /// The mode to build `ColumnTrie` relations with, applying the default
-    /// when none was supplied.
-    pub(crate) fn column_trie_build_resolved(&self) -> ColumnTrieBuildMode {
-        self.column_trie_build.unwrap_or_default()
+    /// The structures that have a build mode, as `--ds-build` keys.
+    const STRUCTURES: &'static [IndexStructure] =
+        &[IndexStructure::ColumnTrie, IndexStructure::HashTrie];
+
+    /// One [`DsFlag::Build`] per pair whose key names a structure with a
+    /// build mode, each reaching only that structure. Malformed pairs yield
+    /// no flag here; [`resolved`](Self::resolved) rejects them.
+    fn given(&self) -> Vec<DsFlag> {
+        self.ds_build
+            .iter()
+            .filter_map(|pair| {
+                let (key, _) = pair.split_once('=')?;
+                let ds = <IndexStructure as ValueEnum>::from_str(key, false).ok()?;
+                Self::STRUCTURES.contains(&ds).then_some(DsFlag::Build(ds))
+            })
+            .collect()
     }
 
-    /// Whether the user explicitly passed `--ds-build`.
-    pub(crate) fn column_trie_build_explicit(&self) -> bool { self.column_trie_build.is_some() }
+    /// Resolves the pairs into each structure's mode, starting from the
+    /// defaults. A bare mode, a structure without build modes, an unknown
+    /// structure or mode, and a repeated structure are usage errors.
+    pub(crate) fn resolved(&self) -> anyhow::Result<BuildModes> {
+        let mut modes = BuildModes::default();
+        let mut seen = Vec::new();
+        for pair in &self.ds_build {
+            let Some((key, mode)) = pair.split_once('=') else {
+                anyhow::bail!(
+                    "--ds-build expects structure=mode pairs; got {pair:?}{}",
+                    bare_mode_hint(pair)
+                );
+            };
+            let ds = <IndexStructure as ValueEnum>::from_str(key, false).map_err(|_| {
+                anyhow::anyhow!(
+                    "--ds-build: unknown structure {key:?}; structures with build modes: {}",
+                    Self::structures_label()
+                )
+            })?;
+            if !Self::STRUCTURES.contains(&ds) {
+                anyhow::bail!(
+                    "--ds-build: {key} has a single build process; structures with build modes: \
+                     {}",
+                    Self::structures_label()
+                );
+            }
+            if seen.contains(&ds) {
+                anyhow::bail!("--ds-build: {key} given more than once");
+            }
+            seen.push(ds);
+            match ds {
+                | IndexStructure::ColumnTrie => {
+                    modes.column_trie = <ColumnTrieBuildMode as ValueEnum>::from_str(mode, false)
+                        .map_err(|_| {
+                        anyhow::anyhow!(
+                            "--ds-build column-trie: unknown mode {mode:?}; expected {}",
+                            column_trie_mode_names().join(" or ")
+                        )
+                    })?;
+                },
+                | IndexStructure::HashTrie => {
+                    modes.hash_trie = mode
+                        .parse()
+                        .map_err(|why| anyhow::anyhow!("--ds-build hash-trie: {why}"))?;
+                },
+                | IndexStructure::TreeTrie => unreachable!("rejected above: no build modes"),
+            }
+        }
+        Ok(modes)
+    }
 
-    /// `--ds-build` if the user passed it. See [`DsFlag::given`].
-    fn given(&self) -> Option<DsFlag> { self.column_trie_build_explicit().then_some(DsFlag::Build) }
+    /// [`STRUCTURES`](Self::STRUCTURES) as `-i` spells them.
+    fn structures_label() -> String {
+        Self::STRUCTURES
+            .iter()
+            .map(|&ds| cli_name(ds))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
-/// Rejects `--ds-build` on index structures that have no BuildMode axis, so
-/// a report can never carry a `ds_build_mode` the build ignored. Same
-/// discipline as [`validate_config_choices`].
+/// `ColumnTrieBuildMode`'s modes as `--ds-build column-trie=` spells them.
+fn column_trie_mode_names() -> Vec<String> {
+    ColumnTrieBuildMode::value_variants()
+        .iter()
+        .map(|mode| {
+            mode.to_possible_value()
+                .expect("every ColumnTrieBuildMode is a CLI value")
+                .get_name()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The rest of the error for a bare `--ds-build` mode: the keyed spelling
+/// for each structure that has that mode, or an example when none does.
+fn bare_mode_hint(mode: &str) -> String {
+    let mut keyed = Vec::new();
+    if <ColumnTrieBuildMode as ValueEnum>::from_str(mode, false).is_ok() {
+        keyed.push(format!("column-trie={mode}"));
+    }
+    if mode.parse::<HashTrieBuildMode>().is_ok() {
+        keyed.push(format!("hash-trie={mode}"));
+    }
+    if keyed.is_empty() {
+        "; for example --ds-build column-trie=incremental,hash-trie=radix:8".to_owned()
+    } else {
+        format!("; did you mean --ds-build {}?", keyed.join(" or "))
+    }
+}
+
+/// Rejects a `--ds-build` pair whose structure `indexstructure` does not
+/// select, so a report can never carry a `ds_build_mode` the build ignored.
+/// Same discipline as [`validate_config_choices`].
 pub(crate) fn validate_build_choices(
     indexstructure: IndexStructureSelector, build: &BuildChoices,
 ) -> anyhow::Result<()> {
-    validate_ds_flags(indexstructure, build.given().as_slice())
+    validate_ds_flags(indexstructure, &build.given())
 }
 
 /// The build mode of every structure that has one: what `--ds-build`
@@ -603,7 +716,7 @@ impl DsChoices {
     /// # Errors
     ///
     /// Returns an error if a flag was given for a structure that lacks its
-    /// axis, or if `--ds-config` is malformed.
+    /// axis, or if `--ds-config` or `--ds-build` is malformed.
     pub(crate) fn resolve(
         indexstructure: IndexStructureSelector, layout: &LayoutChoices, config: &ConfigChoices,
         build: &BuildChoices,
@@ -616,10 +729,7 @@ impl DsChoices {
             pruning: layout.hash_trie_pruning_resolved(),
             seek: layout.sorted_trie_seek_resolved(),
             config: config.hash_trie_config_resolved()?,
-            build: BuildModes {
-                column_trie: build.column_trie_build_resolved(),
-                hash_trie: HashTrieBuildMode::default(),
-            },
+            build: build.resolved()?,
         })
     }
 }
@@ -958,37 +1068,109 @@ mod tests {
         assert!(msg.contains("--ds-config"), "{msg}");
     }
 
+    fn build(pairs: &[&str]) -> BuildChoices {
+        BuildChoices {
+            ds_build: pairs.iter().map(|pair| pair.to_string()).collect(),
+        }
+    }
+
     #[test]
-    fn validate_build_choices_accepts_column_trie_or_all_only() {
-        let build = BuildChoices {
-            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
-        };
-        assert!(validate_build_choices(IndexStructureSelector::ColumnTrie, &build).is_ok());
-        assert!(validate_build_choices(IndexStructureSelector::All, &build).is_ok());
-        for sel in [
-            IndexStructureSelector::TreeTrie,
-            IndexStructureSelector::HashTrie,
+    fn build_choices_resolve_keyed_pairs_per_structure() {
+        let radix8 = HashTrieBuildMode::Radix(kermit_ds::RadixBits::new(8).unwrap());
+        assert_eq!(build(&[]).resolved().unwrap(), BuildModes::default());
+        assert_eq!(
+            build(&["hash-trie=serial"]).resolved().unwrap(),
+            BuildModes::default()
+        );
+        assert_eq!(build(&["hash-trie=radix:8"]).resolved().unwrap(), BuildModes {
+            column_trie: ColumnTrieBuildMode::Bulk,
+            hash_trie: radix8,
+        });
+        assert_eq!(
+            build(&["column-trie=incremental", "hash-trie=radix:8"])
+                .resolved()
+                .unwrap(),
+            BuildModes {
+                column_trie: ColumnTrieBuildMode::Incremental,
+                hash_trie: radix8,
+            }
+        );
+    }
+
+    /// Every malformed `--ds-build` is a usage error naming what is wrong.
+    #[test]
+    fn build_choices_reject_malformed_pairs() {
+        let cases: &[(&[&str], &str)] = &[
+            (
+                &["incremental"],
+                "did you mean --ds-build column-trie=incremental?",
+            ),
+            (&["radix:8"], "did you mean --ds-build hash-trie=radix:8?"),
+            (&["fast"], "for example --ds-build"),
+            (&["tree-trie=bulk"], "tree-trie has a single build process"),
+            (&["b-tree=bulk"], "unknown structure \"b-tree\""),
+            (
+                &["hash-trie=serial", "hash-trie=radix:4"],
+                "hash-trie given more than once",
+            ),
+            (&["hash-trie=bulk"], "unknown hash-trie build mode \"bulk\""),
+            (
+                &["column-trie=radix:8"],
+                "unknown mode \"radix:8\"; expected incremental or bulk",
+            ),
+            (&["hash-trie=radix"], "radix needs a bit count"),
+            (&["hash-trie=radix:0"], "between 1 and 16"),
+            (&["hash-trie=radix:17"], "between 1 and 16"),
+            (&["hash-trie=radix:x"], "whole number"),
+        ];
+        for &(pairs, expected) in cases {
+            let msg = build(pairs).resolved().unwrap_err().to_string();
+            assert!(msg.contains("--ds-build"), "{pairs:?}: {msg}");
+            assert!(msg.contains(expected), "{pairs:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn validate_build_choices_accepts_each_key_on_its_structure_or_all() {
+        use IndexStructureSelector::{All, ColumnTrie, HashTrie, TreeTrie};
+        let column = build(&["column-trie=incremental"]);
+        let hash = build(&["hash-trie=radix:4"]);
+        for (choices, key, home) in [
+            (&column, "column-trie", ColumnTrie),
+            (&hash, "hash-trie", HashTrie),
         ] {
-            let msg = validate_build_choices(sel, &build).unwrap_err().to_string();
-            assert!(msg.contains("--ds-build"), "{msg}");
-            assert!(msg.contains("column-trie"), "{msg}");
+            assert!(validate_build_choices(home, choices).is_ok());
+            assert!(validate_build_choices(All, choices).is_ok());
+            for sel in [TreeTrie, ColumnTrie, HashTrie] {
+                if sel == home {
+                    continue;
+                }
+                let msg = validate_build_choices(sel, choices)
+                    .unwrap_err()
+                    .to_string();
+                assert!(msg.contains(&format!("--ds-build {key}")), "{msg}");
+                assert!(msg.contains(&format!("--indexstructure {key}")), "{msg}");
+            }
+        }
+        for sel in [TreeTrie, ColumnTrie, HashTrie, All] {
             assert!(validate_build_choices(sel, &BuildChoices::default()).is_ok());
         }
     }
 
     #[test]
     fn ds_choices_resolve_carries_the_build_mode() {
-        let build = BuildChoices {
-            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
-        };
+        let radix = HashTrieBuildMode::Radix(kermit_ds::RadixBits::new(4).unwrap());
         let choices = DsChoices::resolve(
-            IndexStructureSelector::ColumnTrie,
+            IndexStructureSelector::All,
             &LayoutChoices::default(),
             &ConfigChoices::default(),
-            &build,
+            &build(&["column-trie=incremental", "hash-trie=radix:4"]),
         )
         .unwrap();
-        assert_eq!(choices.build.column_trie, ColumnTrieBuildMode::Incremental);
+        assert_eq!(choices.build, BuildModes {
+            column_trie: ColumnTrieBuildMode::Incremental,
+            hash_trie: radix,
+        });
         assert_eq!(DsChoices::default().build, BuildModes::default());
         assert_eq!(BuildModes::default().column_trie, ColumnTrieBuildMode::Bulk);
         assert_eq!(BuildModes::default().hash_trie, HashTrieBuildMode::Serial);
@@ -996,7 +1178,7 @@ mod tests {
             IndexStructureSelector::TreeTrie,
             &LayoutChoices::default(),
             &ConfigChoices::default(),
-            &build,
+            &build(&["column-trie=incremental"]),
         )
         .is_err());
     }
@@ -1069,23 +1251,35 @@ mod tests {
         let config = ConfigChoices {
             ds_config: vec!["load-factor=0.5".into()],
         };
-        let build = BuildChoices {
-            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
-        };
-        assert_eq!(DsFlag::given(&layout, &config, &build), vec![
+        let builds = build(&["column-trie=incremental", "hash-trie=radix:4"]);
+        assert_eq!(DsFlag::given(&layout, &config, &builds), vec![
             DsFlag::LayoutHasher,
             DsFlag::LayoutPruning,
             DsFlag::LayoutSeek,
             DsFlag::Config,
-            DsFlag::Build,
+            DsFlag::Build(IndexStructure::ColumnTrie),
+            DsFlag::Build(IndexStructure::HashTrie),
         ]);
         let seek_only = LayoutChoices {
             sorted_trie_seek: Some(SeekChoice::Linear),
             ..LayoutChoices::default()
         };
         assert_eq!(
-            DsFlag::given(&seek_only, &ConfigChoices::default(), &build),
-            vec![DsFlag::LayoutSeek, DsFlag::Build]
+            DsFlag::given(&seek_only, &ConfigChoices::default(), &builds),
+            vec![
+                DsFlag::LayoutSeek,
+                DsFlag::Build(IndexStructure::ColumnTrie),
+                DsFlag::Build(IndexStructure::HashTrie)
+            ]
+        );
+        // Malformed pairs yield no flag; `resolved` rejects them.
+        assert_eq!(
+            DsFlag::given(
+                &LayoutChoices::default(),
+                &ConfigChoices::default(),
+                &build(&["incremental", "tree-trie=bulk", "b-tree=x"])
+            ),
+            vec![]
         );
     }
 
@@ -1093,7 +1287,10 @@ mod tests {
     fn unreached_flag_is_the_first_flag_no_structure_has() {
         let sorted = [IndexStructure::TreeTrie, IndexStructure::ColumnTrie];
         assert_eq!(
-            unreached_flag(&[DsFlag::LayoutSeek, DsFlag::Build], &sorted),
+            unreached_flag(
+                &[DsFlag::LayoutSeek, DsFlag::Build(IndexStructure::ColumnTrie)],
+                &sorted
+            ),
             None
         );
         assert_eq!(
@@ -1106,8 +1303,15 @@ mod tests {
         // ColumnTrie alone has a build mode, so TreeTrie alone does not
         // reach --ds-build.
         assert_eq!(
-            unreached_flag(&[DsFlag::Build], &[IndexStructure::TreeTrie]),
-            Some(DsFlag::Build)
+            unreached_flag(&[DsFlag::Build(IndexStructure::ColumnTrie)], &[
+                IndexStructure::TreeTrie
+            ]),
+            Some(DsFlag::Build(IndexStructure::ColumnTrie))
+        );
+        // A hash-trie build pair reaches no sorted trie.
+        assert_eq!(
+            unreached_flag(&[DsFlag::Build(IndexStructure::HashTrie)], &sorted),
+            Some(DsFlag::Build(IndexStructure::HashTrie))
         );
         assert_eq!(unreached_flag(&[], &[]), None);
     }

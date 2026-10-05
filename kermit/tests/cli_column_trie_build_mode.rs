@@ -66,7 +66,7 @@ fn cli_bench_join_column_trie_records_bulk_build_mode() {
 
 #[test]
 fn cli_bench_ds_with_incremental_build_records_axis() {
-    let (output, report) = bench_ds("column-trie", &["--ds-build", "incremental"]);
+    let (output, report) = bench_ds("column-trie", &["--ds-build", "column-trie=incremental"]);
     assert!(
         output.status.success(),
         "{}",
@@ -76,14 +76,22 @@ fn cli_bench_ds_with_incremental_build_records_axis() {
 }
 
 #[test]
-fn cli_bench_ds_rejects_ds_build_off_column_trie() {
+fn cli_bench_ds_rejects_a_column_trie_pair_off_column_trie() {
     for ds in ["tree-trie", "hash-trie"] {
-        let (output, _) = bench_ds(ds, &["--ds-build", "bulk"]);
-        assert!(!output.status.success(), "{ds} accepted --ds-build");
+        let (output, _) = bench_ds(ds, &["--ds-build", "column-trie=bulk"]);
+        assert!(!output.status.success(), "{ds} accepted a column-trie pair");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("--ds-build"), "{ds}: {stderr}");
-        assert!(stderr.contains("column-trie"), "{ds}: {stderr}");
+        assert!(stderr.contains("--ds-build column-trie"), "{ds}: {stderr}");
     }
+}
+
+/// The pre-#91 bare spelling is a usage error that names the keyed one.
+#[test]
+fn cli_bench_ds_rejects_the_bare_spelling_with_a_hint() {
+    let (output, _) = bench_ds("column-trie", &["--ds-build", "incremental"]);
+    assert!(!output.status.success(), "bare --ds-build was accepted");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("column-trie=incremental"), "{stderr}");
 }
 
 #[test]
@@ -96,7 +104,7 @@ fn cli_bench_run_sweep_carries_build_mode_only_to_column_trie_cells() {
         "-m",
         "space",
         "--ds-build",
-        "incremental",
+        "column-trie=incremental",
     ]);
     assert!(
         output.status.success(),
@@ -121,7 +129,7 @@ fn cli_bench_join_with_incremental_build_records_axis() {
         "-m",
         "space",
         "--ds-build",
-        "incremental",
+        "column-trie=incremental",
     ]);
     assert!(
         output.status.success(),

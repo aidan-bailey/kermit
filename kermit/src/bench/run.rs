@@ -490,20 +490,22 @@ mod tests {
     #[test]
     fn resolve_sweep_rejects_a_flag_the_algorithm_leaves_without_a_cell() {
         use DsFlag::*;
+        let column = Build(kermit_ds::IndexStructure::ColumnTrie);
+        let hash = Build(kermit_ds::IndexStructure::HashTrie);
         let rows: &[(JoinAlgorithmSelector, &[DsFlag], &[DsFlag])] = &[
             (
                 JoinAlgorithmSelector::LeapfrogTriejoin,
-                &[LayoutSeek, Build],
-                &[LayoutHasher, LayoutPruning, Config],
+                &[LayoutSeek, column],
+                &[LayoutHasher, LayoutPruning, Config, hash],
             ),
             (
                 JoinAlgorithmSelector::HashTriejoin,
-                &[LayoutHasher, LayoutPruning, Config],
-                &[LayoutSeek, Build],
+                &[LayoutHasher, LayoutPruning, Config, hash],
+                &[LayoutSeek, column],
             ),
             (
                 JoinAlgorithmSelector::All,
-                &[LayoutHasher, LayoutPruning, LayoutSeek, Config, Build],
+                &[LayoutHasher, LayoutPruning, LayoutSeek, Config, column, hash],
                 &[],
             ),
         ];
