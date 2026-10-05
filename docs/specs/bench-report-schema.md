@@ -153,9 +153,11 @@ tooling relies on them for cross-DS comparison.
   (e.g., `ds_config_load_factor`).
 - `ds_build_mode` — construction-time build mode for the data structure
   (single key; value is a `<mode>[:<params>]` string, e.g., `bulk`). Emitted
-  only on ColumnTrie reports, by the bench family that ran the build rather
-  than by the relation, since every build mode builds the same structure.
-  Values: `bulk` (default) and `incremental` (`--ds-build incremental`).
+  on ColumnTrie and TreeTrie reports, by the bench family that ran the build
+  rather than by the relation, since every build mode builds the same
+  structure. ColumnTrie values: `bulk` (default) and `incremental`
+  (`--ds-build incremental`). TreeTrie values: `serial` (default) and
+  `parallel:N` (`--ds-build parallel:N`, N threads).
 - `algo_layout_<dim>`, `algo_config_<flag>`, `algo_build_mode` — analogous
   prefixes for algorithm-level optimizations (reserved; not yet used).
 
@@ -167,7 +169,8 @@ When pivoting bench reports in kermit-lab, downstream code should:
   `ds_layout_pruning == "off"` and `ds_config_load_factor == 0.7` (the
   historical constant), and, on ColumnTrie rows, `ds_build_mode ==
   "incremental"` (ColumnTrie's build before issue #84; every ColumnTrie
-  report since carries the axis). `data_structure` has named HashTrie as
+  report since carries the axis), and, on TreeTrie rows, `ds_build_mode ==
+  "serial"` (TreeTrie's only build before issue #94). `data_structure` has named HashTrie as
   `"HashTrie"` in every report since the `axes` map was added, so the
   scoped fill misses no HashTrie row.
 - Group on the relevant prefix to perform ablation analysis.
@@ -208,3 +211,4 @@ bump — the `axes` field is an open map.
 | 3 (no bump) | 2026-10-03 | ColumnTrie's `from_tuples` builds in one pass (#84), so its `insertion` and `end_to_end` values drop; every ColumnTrie report now carries `ds_build_mode: "bulk"`, which tells it apart from earlier ColumnTrie rows. Additive, so `schema_version` stays `3`. `--ds-build incremental` restores the old build, and kermit-lab back-fills `incremental` on earlier ColumnTrie rows, so old ColumnTrie rows stay correctly labelled; compare the two modes within one binary. |
 | 3 (no bump) | 2026-10-04 | TreeTrie and ColumnTrie reports carry `ds_layout_seek` (#80): `linear`, `binary` (the default) or `galloping`. Under the default every metric times the same `partition_point` search as before, so `schema_version` stays `3`. kermit-lab back-fills `binary` on earlier ColumnTrie rows only; earlier TreeTrie rows stay missing, since a v3 report may predate `9604293`. Compare strategies within one binary (see `BENCHMARKING.md`'s codegen precision bound). |
 | 3 (no bump) | 2026-10-05 | The sorted tries' default seek becomes `galloping` (it was `binary`), after #80's strategy comparison. Every report since #80 records the strategy in `ds_layout_seek`, so rows from either side of the switch stay labelled and `schema_version` stays `3`. Earlier rows without the axis are unchanged: the ColumnTrie back-fill is still `binary`, which is what they ran. |
+| 3 (no bump) | 2026-10-05 | TreeTrie reports carry `ds_build_mode` (#94): `serial` (the default, the build every earlier TreeTrie report ran) or `parallel:N`. Every mode builds the identical trie, so `iteration` and `space` cannot move and `schema_version` stays `3`. kermit-lab back-fills `serial` on earlier TreeTrie rows and derives a numeric `threads` column. Compare build modes within one binary. |

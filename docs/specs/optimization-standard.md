@@ -114,7 +114,7 @@ A **BuildMode** changes the construction process but leaves the resulting in-mem
 | Type system enforcement | Weak (mode is just a parameter) |
 | Output equivalence | Required: every mode builds the same structure — same contents **and** the same `HeapSize` — so a build mode can move only the build-timing metrics (`insertion`, `end_to_end`), never `iteration` or `space`. kermit-lab relies on this when it limits `ds_build_mode` ablations to the build phases. |
 | Bench axis key | `ds_build_mode` (single key with mode + params) |
-| Examples (potential) | ColumnTrie bulk / incremental ✓, parallel build, radix partitioning |
+| Examples (potential) | ColumnTrie bulk / incremental ✓, TreeTrie serial / parallel:N ✓, HashTrie parallel build, radix partitioning |
 | Test obligation | Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an array-level test that every mode builds the identical structure, capacities included |
 
 ---
@@ -779,8 +779,8 @@ This is semantically correct — pre-standard HashTrie runs were SipHash-only. S
 
 ## What's implemented today, what's available
 
-Five optimizations are implemented — three Layout dimensions, one Config
-value and one BuildMode:
+Six optimizations are implemented — three Layout dimensions, one Config
+value and two BuildModes:
 
 | Optimization | Category | Where | Paper § |
 |---|---|---|---|
@@ -789,6 +789,7 @@ value and one BuildMode:
 | Seek strategy (linear / binary / galloping) | Layout | `ds_layout_seek` | (kermit-specific; LFTJ §3) |
 | Load-factor cap | Config | `ds_config_load_factor` | (kermit-specific) |
 | ColumnTrie build (bulk / incremental) | BuildMode | `ds_build_mode` | (kermit-specific, issue #84) |
+| TreeTrie build (serial / parallel:N) | BuildMode | `ds_build_mode` | §3.3.2 (morsel-driven; issue #94) |
 
 `define_multiway_join_test_suite_for_build_mode!` landed with the first
 BuildMode consumer, ColumnTrie's build.
@@ -802,7 +803,7 @@ Available to add (each a separate brainstorming → planning → implementation 
 | Initial capacity hint | Config | Small | (kermit-specific) |
 | Hash seed | Config | Small | (kermit-specific) |
 | Radix partitioning | BuildMode | Medium | §3.3.2 |
-| Parallel build | BuildMode | Large | §3.3.2 |
+| Parallel build (HashTrie; TreeTrie's landed with #94) | BuildMode | Large | §3.3.2 |
 | Algorithm: skip-levels short-circuit (shelved, #90) | Layout (algo) | Medium | (kermit-specific) |
 | Algorithm: eager-collect vs lazy-iterate | Config (algo) | Medium | (kermit-specific) |
 

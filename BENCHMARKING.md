@@ -264,6 +264,36 @@ kermit bench --name col-incr --report-json bench-runs/col-incr.json \
   ds -r data.parquet -i column-trie -m insertion --ds-build incremental
 ```
 
+### Scaling: measuring a parallel build
+
+`--ds-build parallel:N` builds a `TreeTrie` on N threads (#94). The trie is
+identical to the serial build's, so only `insertion` and `end_to_end` can
+move. Run one arm per thread count within one binary, each with its own
+`--name`, then plot the speedup over `serial`:
+
+```sh
+for mode in serial parallel:1 parallel:2 parallel:4 parallel:8 parallel:16; do
+  name="tt-${mode/:/-}"
+  kermit bench --name "$name" --report-json "bench-runs/$name.json" \
+    ds -r data.parquet -i tree-trie -m insertion --ds-build "$mode"
+done
+uv --directory python/kermit-lab run kermit-lab speedup "$PWD"/bench-runs/tt-*.json \
+  --criterion-root "$PWD"/target/criterion --out "$PWD"/speedup.pdf
+```
+
+`kl.speedup_table(df)` gives the numbers behind the plot: speedup and
+efficiency per thread count, with CIs, and the Karp–Flatt serial fraction.
+A flat Karp–Flatt fraction means a fixed sequential share (the assemble
+step) limits the build; a rising one means a cost that grows with N, such as
+allocator contention. Replicates (one report per run, each with its own
+`--name`) are pooled per arm and give bootstrap CIs once each arm has two.
+`parallel:1` against `serial` is the cost of partitioning net of one
+saving (P smaller sorts take about n·log₂P fewer comparisons than one big
+one), so `parallel:1` can come out ahead.
+`N = 16` on an 8-core host measures SMT, not more cores. The protocol behind
+reported numbers is in
+[`docs/specs/2026-10-05-parallel-build-design.md`](docs/specs/2026-10-05-parallel-build-design.md).
+
 The full optimization model (Layout / Config / BuildMode, how to add one, and
 the bench-axis namespace) is in
 [`docs/specs/optimization-standard.md`](docs/specs/optimization-standard.md); a runnable
