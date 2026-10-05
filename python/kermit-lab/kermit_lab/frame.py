@@ -120,11 +120,15 @@ def discover_opt_columns(df: pd.DataFrame) -> list[str]:
 def threads_of(build_mode: object) -> int | None:
     """The thread count of a ``parallel:N`` build mode, else ``None``.
 
-    ``serial``, ColumnTrie's ``bulk`` / ``incremental`` and a missing mode
-    are not thread counts, so they become ``<NA>`` in the ``threads`` column.
+    ``serial``, ColumnTrie's ``bulk`` / ``incremental``, a missing mode and a
+    malformed ``parallel:`` value are not thread counts, so they become
+    ``<NA>`` in the ``threads`` column.
     """
     if isinstance(build_mode, str) and build_mode.startswith("parallel:"):
-        return int(build_mode.removeprefix("parallel:"))
+        count = build_mode.removeprefix("parallel:")
+        # ASCII only: `"²".isdigit()` holds, but `int("²")` raises.
+        if count.isascii() and count.isdigit():
+            return int(count)
     return None
 
 
@@ -156,8 +160,10 @@ def _summary_from_reports(
     if apply_defaults:
         df = apply_axis_defaults(df)
     if "ds_build_mode" in df.columns:
-        # Derived, not reported: `kl.speedup` and line plots want the thread
-        # count as a number (#94).
+        # Derived, not reported: `kl.speedup_table` and the `speedup` preset
+        # want the thread count as a number (#94). Plotting against `threads`
+        # directly needs the `<NA>` rows (serial, bulk, incremental) filtered
+        # out first.
         df.insert(
             df.columns.get_loc("ds_build_mode") + 1,
             "threads",
@@ -196,7 +202,9 @@ def load(
     ``paths`` accepts a single path, a glob pattern (e.g.
     ``"bench-runs/*.json"``), or an iterable of paths. One row per
     ``(report × criterion_group)``. Columns: ``kind``, ``metric``, ``phase``,
-    the axis columns (conventional + discovered optimization axes),
+    the axis columns (conventional + discovered optimization axes), a derived
+    ``threads`` column right after ``ds_build_mode`` when the reports have that
+    axis (the ``N`` of a ``parallel:N`` build, ``<NA>`` for every other mode),
     ``mean_*``/``median_*`` estimates, plus
     ``criterion_group`` / ``criterion_function`` join keys into
     :func:`load_samples`. ``allow_mixed_schema`` passes through to

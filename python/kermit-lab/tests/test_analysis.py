@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 import kermit_lab as kl
-from kermit_lab.analysis import compare, speedup_table
+from kermit_lab.analysis import SPEEDUP_MEASURES, bootstrap_ratio_ci, compare, speedup_table
 
 
 @pytest.fixture
@@ -153,7 +153,10 @@ def test_speedup_table_has_no_karp_flatt_at_one_thread() -> None:
 
 
 def test_speedup_table_needs_a_serial_baseline() -> None:
-    with pytest.raises(ValueError, match="no case"):
+    # The error says no case pairs; the warning names the report left unpaired.
+    with pytest.warns(UserWarning, match="parallel:2-0.json"), pytest.raises(
+        ValueError, match="no case"
+    ):
         speedup_table(_build_mode_rows({"parallel:2": [50.0]}))
 
 
@@ -161,3 +164,72 @@ def test_compare_pairs_build_modes_despite_the_derived_threads_column() -> None:
     df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
     out = compare(df, baseline="serial", target="parallel:2", group_by="ds_build_mode")
     assert out["speedup"].tolist() == pytest.approx([2.0])
+
+
+def test_speedup_table_bootstrap_ci_is_the_replicates_bootstrap() -> None:
+    base, arm = [100.0, 104.0, 98.0], [50.0, 52.0, 51.0]
+    row = speedup_table(_build_mode_rows({"serial": base, "parallel:2": arm})).iloc[0]
+    lo, hi = bootstrap_ratio_ci(base, arm, rng=0)
+    assert (row["speedup_lo"], row["speedup_hi"]) == pytest.approx((lo, hi))
+
+
+def test_speedup_table_envelope_covers_unequal_runs() -> None:
+    df = _build_mode_rows({"serial": [80.0, 100.0, 130.0, 90.0, 120.0], "parallel:2": [50.0]})
+    row = speedup_table(df).iloc[0]
+    assert (row["baseline_runs"], row["runs"]) == (5, 1)
+    assert row["speedup_lo"] == pytest.approx(80 * 0.99 / (50 * 1.01))
+    assert row["speedup_hi"] == pytest.approx(130 * 1.01 / (50 * 0.99))
+
+
+def test_speedup_table_reads_only_its_phase() -> None:
+    insertion = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    end_to_end = _build_mode_rows({"serial": [90.0], "parallel:2": [60.0]}).assign(
+        phase="end_to_end", criterion_function="TreeTrie/end_to_end"
+    )
+    both = pd.concat([insertion, end_to_end], ignore_index=True)
+    assert speedup_table(both)["speedup"].tolist() == pytest.approx([2.0])
+    assert speedup_table(both, phase="end_to_end")["speedup"].tolist() == pytest.approx([1.5])
+
+
+def test_speedup_table_honours_its_baseline() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [60.0], "parallel:4": [30.0]})
+    table = speedup_table(df, baseline="parallel:2").set_index("threads")
+    assert table.loc[4, "speedup"] == pytest.approx(2.0)
+
+
+def test_speedup_table_rejects_rows_sharing_a_criterion_directory() -> None:
+    df = _build_mode_rows({"serial": [100.0, 100.0], "parallel:2": [50.0]})
+    df.loc[1, "criterion_group"] = df.loc[0, "criterion_group"]
+    with pytest.raises(ValueError, match="Criterion directory"):
+        speedup_table(df)
+
+
+def test_speedup_table_warns_about_parallel_rows_without_a_baseline() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0], "parallel:4": [30.0]})
+    df.loc[df["ds_build_mode"] == "parallel:4", "relation_path"] = "other.parquet"
+    with pytest.warns(UserWarning, match="no 'serial' row"):
+        table = speedup_table(df)
+    assert table["threads"].tolist() == [2]
+
+
+def test_speedup_table_pairs_runs_differing_only_in_verified_or_queries_per_build() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    df["verified"] = pd.array([True, pd.NA], dtype="boolean")
+    df["queries_per_build"] = pd.array([1, pd.NA], dtype="Int64")
+    assert speedup_table(df)["speedup"].tolist() == pytest.approx([2.0])
+
+
+def test_speedup_table_keeps_queries_per_build_a_key_on_end_to_end() -> None:
+    """K shapes `end_to_end`, so a run with another K is another case."""
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0], "parallel:4": [30.0]}).assign(
+        phase="end_to_end", queries_per_build=pd.array([1, 1, 4], dtype="Int64")
+    )
+    with pytest.warns(UserWarning, match="no 'serial' row"):
+        table = speedup_table(df, phase="end_to_end")
+    assert table["threads"].tolist() == [2]
+
+
+def test_speedup_table_ends_with_its_measure_columns() -> None:
+    """`kl.speedup` tells a case's identifying columns from these."""
+    table = speedup_table(_build_mode_rows({"serial": [100.0], "parallel:2": [50.0]}))
+    assert tuple(table.columns[-len(SPEEDUP_MEASURES):]) == SPEEDUP_MEASURES

@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
 from .. import presets
+from ..analysis import speedup_table
 from ..frame import load, load_samples
 from ..loader import TIME_PHASES, SchemaError, load_reports
 from ..plot import plot
@@ -107,7 +109,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
-    df = load(args.reports, args.criterion_root)
+    # `speedup` reads the reports as written: back-filling `serial` on a TreeTrie
+    # report from before #94 could put another binary's build into the baseline.
+    df = load(args.reports, args.criterion_root, apply_defaults=(args.command != "speedup"))
     log.info("loaded %d row(s) from %d file(s)", len(df), len(args.reports))
 
     if args.command == "plot":
@@ -131,6 +135,11 @@ def _dispatch(args: argparse.Namespace) -> int:
         fig = presets.ablation(df, axis=args.axis, phase=args.phase, out=args.out)
     elif args.command == "speedup":
         fig = presets.speedup(df, phase=args.phase, out=args.out)
+        # The preset has just warned about any unpaired rows; do not repeat it.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            table = speedup_table(df, phase=args.phase).dropna(axis=1, how="all")
+        print(table.to_string(index=False, float_format="{:.3f}".format))
     else:
         log.error("unknown command: %s", args.command)
         return 2
