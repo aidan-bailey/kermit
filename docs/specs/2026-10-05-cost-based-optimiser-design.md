@@ -281,7 +281,7 @@ optimiser's level.
 |---|---|---|
 | `insertion`, `space` | unchanged (structures untouched) | the same |
 | `iteration` | unchanged: O(1) statistics reads, same planner | statistics reads plus the DP; the walk ran at engine build, outside timing |
-| `end_to_end` | unchanged (`build_from_tuples` gathers `TupleCounts`) | includes the walk, its real price |
+| `end_to_end` | unchanged apart from O(#relations) catalog bookkeeping (a name clone and a map entry per relation, no walk), immeasurable beside the build | includes the walk, its real price |
 | `kermit join` wall time | unchanged | includes the walk |
 
 Planning time for q0034, the largest WatDiv DP (820 states), is measured and
