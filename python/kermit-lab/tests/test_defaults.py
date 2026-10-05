@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
-from kermit_lab.defaults import AXIS_DEFAULTS, SCOPED_AXIS_DEFAULTS, apply_axis_defaults
+from kermit_lab import defaults
+from kermit_lab.defaults import SCOPED_AXIS_DEFAULTS, apply_axis_defaults
 
-
-def test_backfills_documented_default() -> None:
-    df = pd.DataFrame({"ds_layout_hasher": [pd.NA, "fx"], "other": [1, 2]})
-    out = apply_axis_defaults(df)
-    assert out["ds_layout_hasher"].tolist() == ["sip", "fx"]
-    assert AXIS_DEFAULTS["ds_layout_hasher"] == "sip"
+# The `data_structure` labels a report can carry, pinned on the Rust side by
+# `IndexStructure::axis_value`.
+STRUCTURES = ("TreeTrie", "ColumnTrie", "HashTrie")
 
 
 def test_ignores_absent_columns() -> None:
@@ -19,19 +18,69 @@ def test_ignores_absent_columns() -> None:
     assert out["unrelated"].isna().all()  # no crash, untouched
 
 
-def test_pruning_layout_defaults_to_off() -> None:
-    df = pd.DataFrame({"ds_layout_pruning": [pd.NA, "on"]})
+@pytest.mark.parametrize(
+    ("axis", "default", "explicit"),
+    [
+        # HashTrie's historical hash function.
+        ("ds_layout_hasher", "sip", "fx"),
+        # Pre-Layout reports never pruned.
+        ("ds_layout_pruning", "off", "on"),
+        # Pre-Config reports used the historical load factor.
+        ("ds_config_load_factor", 0.7, 0.5),
+    ],
+)
+def test_hash_trie_axes_backfill_hash_trie_rows_only(axis, default, explicit) -> None:
+    """The sorted tries have no hasher, pruning or load factor, so a fill
+    there would chart them under a HashTrie setting (#85)."""
+    df = pd.DataFrame({
+        "data_structure": ["HashTrie", "HashTrie", "TreeTrie", "ColumnTrie"],
+        axis: [pd.NA, explicit, pd.NA, pd.NA],
+    })
     out = apply_axis_defaults(df)
-    assert out["ds_layout_pruning"].tolist() == ["off", "on"]
-    assert AXIS_DEFAULTS["ds_layout_pruning"] == "off"
+    assert out[axis].iloc[0] == default
+    assert out[axis].iloc[1] == explicit
+    assert out[axis].iloc[2:].isna().all()
+    assert SCOPED_AXIS_DEFAULTS[(axis, "HashTrie")] == default
 
 
-def test_load_factor_defaults_to_seventy_percent() -> None:
-    df = pd.DataFrame({"ds_config_load_factor": [pd.NA, 0.5]})
-    out = apply_axis_defaults(df)
-    assert out["ds_config_load_factor"].tolist() == [0.7, 0.5]
-    assert AXIS_DEFAULTS["ds_config_load_factor"] == 0.7
-    assert "ds_config_singleton_pruning" not in AXIS_DEFAULTS
+def test_singleton_pruning_config_axis_has_no_default() -> None:
+    """Pruning was briefly a Config (`ds_config_singleton_pruning`); it is a
+    Layout now, back-filled through `ds_layout_pruning` instead."""
+    assert all(axis != "ds_config_singleton_pruning" for axis, _ in SCOPED_AXIS_DEFAULTS)
+
+
+def test_every_default_fills_only_its_structure() -> None:
+    """A cell is filled iff the registry names its (axis, structure) pair.
+    Rows of every other structure, an unknown one or none at all stay NaN."""
+    labels = [*STRUCTURES, "SomeFutureTrie", pd.NA]
+    for axis in {axis for axis, _ in SCOPED_AXIS_DEFAULTS}:
+        df = pd.DataFrame({
+            "data_structure": pd.Series(labels, dtype="object"),
+            axis: pd.Series([pd.NA] * len(labels), dtype="object"),
+        })
+        out = apply_axis_defaults(df)
+        for label, value in zip(labels, out[axis]):
+            expected = SCOPED_AXIS_DEFAULTS.get((axis, label)) if label is not pd.NA else None
+            if expected is None:
+                assert pd.isna(value), (axis, label, value)
+            else:
+                assert value == expected, (axis, label, value)
+
+
+def test_every_default_names_a_known_structure() -> None:
+    """A misspelt structure would match no row, silently disabling its fill."""
+    for axis, data_structure in SCOPED_AXIS_DEFAULTS:
+        assert data_structure in STRUCTURES, (axis, data_structure)
+
+
+def test_the_scoped_registry_is_the_only_one() -> None:
+    """A structure-blind registry stamps an axis on every structure (#85):
+    new defaults go in `SCOPED_AXIS_DEFAULTS`, never a registry beside it."""
+    registries = sorted(
+        name for name, value in vars(defaults).items()
+        if name.isupper() and isinstance(value, dict)
+    )
+    assert registries == ["SCOPED_AXIS_DEFAULTS"]
 
 
 def test_build_mode_backfills_column_trie_rows_only() -> None:
@@ -44,7 +93,6 @@ def test_build_mode_backfills_column_trie_rows_only() -> None:
     assert out["ds_build_mode"].iloc[1] == "bulk"
     assert out["ds_build_mode"].iloc[2:].isna().all()
     assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "ColumnTrie")] == "incremental"
-    assert "ds_build_mode" not in AXIS_DEFAULTS
 
 
 def test_build_mode_backfills_an_all_nan_float_column() -> None:
@@ -72,9 +120,9 @@ def test_scoped_default_skips_rows_with_no_data_structure() -> None:
 
 
 def test_scoped_default_needs_the_data_structure_column() -> None:
-    df = pd.DataFrame({"ds_build_mode": [pd.NA]})
+    df = pd.DataFrame({axis: [pd.NA] for axis, _ in SCOPED_AXIS_DEFAULTS})
     out = apply_axis_defaults(df)
-    assert out["ds_build_mode"].isna().all()  # no crash, untouched
+    assert out.isna().all().all()  # no crash, untouched
 
 
 def test_seek_backfills_column_trie_rows_only() -> None:
@@ -90,4 +138,3 @@ def test_seek_backfills_column_trie_rows_only() -> None:
     assert out["ds_layout_seek"].iloc[2:].isna().all()
     assert SCOPED_AXIS_DEFAULTS[("ds_layout_seek", "ColumnTrie")] == "binary"
     assert ("ds_layout_seek", "TreeTrie") not in SCOPED_AXIS_DEFAULTS
-    assert "ds_layout_seek" not in AXIS_DEFAULTS
