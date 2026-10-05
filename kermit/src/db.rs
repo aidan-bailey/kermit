@@ -21,7 +21,7 @@ mod database;
 mod validation;
 
 pub use {
-    database::Database,
+    database::{build_index, index_header, Database},
     validation::{validate_query, JoinError, RelationArities},
 };
 use {
