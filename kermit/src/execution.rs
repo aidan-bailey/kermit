@@ -986,7 +986,7 @@ mod tests {
                 HashTrieBuildMode::Serial,
                 Optimiser::Lexicographic,
             )
-                .execution()
+            .execution()
             {
                 | Execution::HashHtj {
                     hasher,

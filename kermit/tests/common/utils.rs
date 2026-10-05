@@ -111,12 +111,9 @@ impl<H: HashStrategy, P: PruningPolicy, B: BuildModeProvider<HashTrieBuildMode>>
         optimiser: &dyn QueryOptimiser,
     ) -> Result<usize, JoinError> {
         let mut rows = 0;
-        hash_join_for_each::<BuiltWith<HashTrie<H, P>, B>, H>(
-            relations,
-            query,
-            optimiser,
-            |_| rows += 1,
-        )?;
+        hash_join_for_each::<BuiltWith<HashTrie<H, P>, B>, H>(relations, query, optimiser, |_| {
+            rows += 1
+        })?;
         Ok(rows)
     }
 }

@@ -505,7 +505,14 @@ mod tests {
             ),
             (
                 JoinAlgorithmSelector::All,
-                &[LayoutHasher, LayoutPruning, LayoutSeek, Config, column, hash],
+                &[
+                    LayoutHasher,
+                    LayoutPruning,
+                    LayoutSeek,
+                    Config,
+                    column,
+                    hash,
+                ],
                 &[],
             ),
         ];

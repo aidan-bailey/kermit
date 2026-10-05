@@ -602,8 +602,7 @@ impl BuildChoices {
             })?;
             if !Self::STRUCTURES.contains(&ds) {
                 anyhow::bail!(
-                    "--ds-build: {key} has a single build process; structures with build modes: \
-                     {}",
+                    "--ds-build: {key} has a single build process; structures with build modes: {}",
                     Self::structures_label()
                 );
             }
@@ -1082,10 +1081,13 @@ mod tests {
             build(&["hash-trie=serial"]).resolved().unwrap(),
             BuildModes::default()
         );
-        assert_eq!(build(&["hash-trie=radix:8"]).resolved().unwrap(), BuildModes {
-            column_trie: ColumnTrieBuildMode::Bulk,
-            hash_trie: radix8,
-        });
+        assert_eq!(
+            build(&["hash-trie=radix:8"]).resolved().unwrap(),
+            BuildModes {
+                column_trie: ColumnTrieBuildMode::Bulk,
+                hash_trie: radix8,
+            }
+        );
         assert_eq!(
             build(&["column-trie=incremental", "hash-trie=radix:8"])
                 .resolved()
@@ -1288,7 +1290,10 @@ mod tests {
         let sorted = [IndexStructure::TreeTrie, IndexStructure::ColumnTrie];
         assert_eq!(
             unreached_flag(
-                &[DsFlag::LayoutSeek, DsFlag::Build(IndexStructure::ColumnTrie)],
+                &[
+                    DsFlag::LayoutSeek,
+                    DsFlag::Build(IndexStructure::ColumnTrie)
+                ],
                 &sorted
             ),
             None
