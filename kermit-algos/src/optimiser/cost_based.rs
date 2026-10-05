@@ -5,7 +5,8 @@ use {
         analysis::analyse,
         optimiser::{
             ordering::{topological_order, Precedence},
-            CardinalityOptimiser, CatalogStats, QueryOptimiser, QueryPlan, StatisticsLevel,
+            CardinalityOptimiser, CatalogStats, ColumnOrderPolicy, QueryOptimiser, QueryPlan,
+            StatisticsLevel,
         },
     },
     kermit_parser::JoinQuery,
@@ -26,7 +27,11 @@ use {
 /// is then a shortest path over sets of bound variables, found by dynamic
 /// programming in the style of Selinger et al. (1979). The search visits
 /// only the sets a valid plan can bind, those closed under the column-order
-/// constraints, so its plan is valid by construction.
+/// constraints, so its plan is valid by construction. Under
+/// `--column-orders any` there are no constraints, so every subset of the
+/// variables is a state: 2ⁿ − 1 for n variables, which fits the default
+/// budget up to 14 variables and falls back to [`CardinalityOptimiser`]
+/// above.
 ///
 /// Ties break towards the lexicographically smaller order, so plans are
 /// deterministic. A query with more than 64 variables, or whose search
@@ -65,7 +70,7 @@ impl QueryOptimiser for CostBasedOptimiser {
             analysis.num_vars,
             stats,
         );
-        let precedence = Precedence::new(analysis.num_vars, &analysis.predicate_variables);
+        let precedence = Precedence::for_query(query, stats);
         let cheapest = precedence
             .predecessor_masks()
             .and_then(|predecessors| cheapest_order(&model, &predecessors, self.state_budget));
@@ -123,17 +128,22 @@ impl AtomStats {
         }
     }
 
-    /// The size of the atom's projection onto its first `prefix` columns.
-    fn projection_size(&self, prefix: usize) -> f64 {
-        if prefix == self.distinct.len() {
+    /// The size of the atom's projection onto `columns` (ascending,
+    /// non-empty): its tuples when they are all its columns, one column's
+    /// distinct count on its own, and otherwise the product of the
+    /// columns' distinct counts capped at the tuples, since no statistic
+    /// covers a multi-column projection (independent columns assumed).
+    /// Under `stored` the bound columns are always a prefix; under `any`
+    /// any subset.
+    fn projection_size(&self, columns: &[usize]) -> f64 {
+        if columns.len() == self.distinct.len() {
             self.tuples
-        } else if prefix == 1 {
-            self.distinct[0]
+        } else if let [column] = columns {
+            self.distinct[*column]
         } else {
-            // No statistic covers a multi-column prefix: assume independent
-            // columns.
-            self.distinct[..prefix]
+            columns
                 .iter()
+                .map(|&column| self.distinct[column])
                 .product::<f64>()
                 .min(self.tuples)
         }
@@ -147,6 +157,9 @@ struct CostModel<'q> {
     /// Each atom's variables in column order, as `analyse` numbers them.
     predicate_variables: &'q [Vec<usize>],
     num_vars: usize,
+    /// The policy the plan is made under: under `stored` every set the
+    /// search reaches binds a prefix of each atom, which `estimate` checks.
+    column_orders: ColumnOrderPolicy,
 }
 
 impl<'q> CostModel<'q> {
@@ -174,6 +187,7 @@ impl<'q> CostModel<'q> {
             atoms,
             predicate_variables,
             num_vars,
+            column_orders: stats.column_orders(),
         }
     }
 
@@ -182,8 +196,9 @@ impl<'q> CostModel<'q> {
     /// variable, by the distinct counts of every column it occupies except
     /// the smallest (the containment-of-value-sets assumption).
     ///
-    /// `bound` must be closed under the column-order constraints, so each
-    /// atom's bound columns form a prefix.
+    /// `bound` is any set of variables; under `stored` it is closed under
+    /// the column-order constraints, so each atom's bound columns form a
+    /// prefix, and under `any` they are any subset.
     fn estimate(&self, bound: u64) -> f64 {
         if bound == 0 {
             return 1.0;
@@ -197,16 +212,19 @@ impl<'q> CostModel<'q> {
         let mut distinct_of: Vec<Vec<f64>> = vec![Vec::new(); self.num_vars];
         let mut met: Vec<usize> = Vec::new();
         for (atom, vars) in self.atoms.iter().zip(self.predicate_variables) {
-            let prefix = vars.iter().take_while(|&&v| contains(bound, v)).count();
+            let bound_columns: Vec<usize> = (0..vars.len())
+                .filter(|&c| contains(bound, vars[c]))
+                .collect();
             debug_assert!(
-                vars[prefix..].iter().all(|&v| !contains(bound, v)),
-                "a set closed under column order binds a prefix of every atom"
+                self.column_orders == ColumnOrderPolicy::Any
+                    || bound_columns.iter().enumerate().all(|(i, &c)| i == c),
+                "under `stored`, a set closed under column order binds a prefix of every atom"
             );
-            if prefix == 0 {
+            if bound_columns.is_empty() {
                 continue;
             }
-            numerator *= atom.projection_size(prefix);
-            let mut columns: Vec<usize> = (0..prefix).collect();
+            numerator *= atom.projection_size(&bound_columns);
+            let mut columns = bound_columns;
             columns.sort_by_key(|&column| vars[column]);
             for column in columns {
                 let v = vars[column];
@@ -515,6 +533,95 @@ mod tests {
         assert_eq!(
             CostBasedOptimiser::default().required_statistics(),
             StatisticsLevel::ColumnDistinct
+        );
+    }
+
+    fn stats_under(
+        q: &JoinQuery, policy: ColumnOrderPolicy, relations: &[(&str, usize, &[usize])],
+    ) -> CatalogStats {
+        CatalogStats::for_query(q, policy, |name| {
+            let &(_, tuples, distinct) = relations.iter().find(|(n, ..)| *n == name)?;
+            Some(RelationStats::new(tuples, distinct.len()).with_column_distinct(distinct.to_vec()))
+        })
+    }
+
+    /// Under `any` a bound set need not be a stored-order prefix of an
+    /// atom: `{Y}` binds `R`'s second column alone, and the estimate reads
+    /// that column's distinct count.
+    #[test]
+    fn under_any_the_bound_columns_need_not_be_a_prefix() {
+        let q: JoinQuery = "Q(X, Y) :- R(X, Y).".parse().unwrap();
+        let stats = stats_under(&q, ColumnOrderPolicy::Any, &[("R", 100, &[10, 20])]);
+        assert_eq!(estimate(&q, &stats, &[1]), 20.0);
+        assert_eq!(estimate(&q, &stats, &[0]), 10.0);
+        assert_eq!(estimate(&q, &stats, &[0, 1]), 100.0);
+    }
+
+    /// Under `any` a non-prefix pair of a ternary atom multiplies those
+    /// columns' distinct counts, capped at the tuples, like a prefix does.
+    #[test]
+    fn under_any_a_column_pair_assumes_independent_columns_capped_by_the_tuples() {
+        let q: JoinQuery = "Q(X, Y, Z) :- T(X, Y, Z).".parse().unwrap();
+        let stats = stats_under(&q, ColumnOrderPolicy::Any, &[("T", 1000, &[10, 5, 7])]);
+        assert_eq!(estimate(&q, &stats, &[0, 2]), 70.0);
+        let stats = stats_under(&q, ColumnOrderPolicy::Any, &[("T", 1000, &[100, 50, 70])]);
+        assert_eq!(estimate(&q, &stats, &[1, 2]), 1000.0);
+    }
+
+    /// `column_order_constraints_bind` is the `stored` half: `R(X, Y)`
+    /// forces `X` first although `S` is tiny. Under `any` the cheap side
+    /// goes first.
+    #[test]
+    fn under_any_the_cheap_side_goes_first() {
+        let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
+        let relations: &[(&str, usize, &[usize])] = &[("R", 1000, &[1000, 1000]), ("S", 1, &[1])];
+        let stored = stats_under(&q, ColumnOrderPolicy::Stored, relations);
+        assert_eq!(
+            CostBasedOptimiser::default()
+                .plan(&q, &stored)
+                .variable_ordering,
+            vec![0, 1]
+        );
+        let any = stats_under(&q, ColumnOrderPolicy::Any, relations);
+        assert_eq!(
+            CostBasedOptimiser::default()
+                .plan(&q, &any)
+                .variable_ordering,
+            vec![1, 0]
+        );
+    }
+
+    /// With no edges every subset is a state: three variables reach seven
+    /// sets, so a budget of six falls back to `cardinality` under `any`
+    /// while `stored` reaches only three.
+    #[test]
+    fn a_free_search_reaches_every_subset() {
+        let q: JoinQuery = "Q(X, Y, Z) :- T(X, Y, Z).".parse().unwrap();
+        let relations: &[(&str, usize, &[usize])] = &[("T", 1000, &[10, 5, 7])];
+        let any = stats_under(&q, ColumnOrderPolicy::Any, relations);
+        let seven = CostBasedOptimiser {
+            state_budget: 7,
+        }
+        .plan(&q, &any);
+        // est({Y}) = 5 is the cheapest first step; then est({Y, Z}) = 35
+        // beats est({X, Y}) = 50, and every order ends at est({X, Y, Z}) =
+        // 1000: Y, Z, X costs 1040, the next best (Z, Y, X) 1042.
+        assert_eq!(seven.variable_ordering, vec![1, 2, 0]);
+        assert_eq!(
+            CostBasedOptimiser {
+                state_budget: 6
+            }
+            .plan(&q, &any),
+            CardinalityOptimiser.plan(&q, &any)
+        );
+        let stored = stats_under(&q, ColumnOrderPolicy::Stored, relations);
+        assert_eq!(
+            CostBasedOptimiser {
+                state_budget: 3
+            }
+            .plan(&q, &stored)
+            .variable_ordering,
+            vec![0, 1, 2]
         );
     }
 }
