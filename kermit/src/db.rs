@@ -369,8 +369,9 @@ mod tests {
             CatalogStats, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryPlan,
             StatisticsLevel,
         },
-        kermit_ds::{Relation, TreeTrie},
-        std::collections::BTreeMap,
+        kermit_ds::{HashTrie, Relation, TreeTrie},
+        kermit_iters::SipHashStrategy,
+        std::{cell::RefCell, collections::BTreeMap},
     };
 
     fn rel_map(entries: Vec<(&str, usize, Vec<Vec<usize>>)>) -> BTreeMap<String, TreeTrie> {
@@ -399,6 +400,94 @@ mod tests {
         }
 
         fn required_statistics(&self) -> StatisticsLevel { StatisticsLevel::ColumnDistinct }
+    }
+
+    /// A query that fails validation reports that error, not
+    /// `MissingStatistics`: the statistics check runs after validation.
+    #[test]
+    fn validation_errors_win_over_missing_statistics() {
+        let relations = rels(vec![("edge", 2, vec![vec![1, 2]])]);
+        let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
+        assert_eq!(
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&relations, query, &NeedsColumns),
+            Err(JoinError::UnknownRelation {
+                relation: "missing".into(),
+                known: vec!["edge".into()],
+            })
+        );
+    }
+
+    /// Records the query and statistics `run_join` hands it, and plans like
+    /// `lexicographic`.
+    #[derive(Default)]
+    struct StatsSpy(RefCell<Option<(JoinQuery, CatalogStats)>>);
+
+    impl QueryOptimiser for StatsSpy {
+        fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan {
+            *self.0.borrow_mut() = Some((query.clone(), stats.clone()));
+            LexicographicOptimiser.plan(query, stats)
+        }
+
+        fn required_statistics(&self) -> StatisticsLevel { StatisticsLevel::ColumnDistinct }
+    }
+
+    /// The planner sees the database's per-column distinct counts; a
+    /// selection view sees its base relation's, and a constant's singleton
+    /// one tuple with one value. Answers cannot show this, since a plan
+    /// never changes them, so it is checked on the statistics themselves, in
+    /// both families.
+    #[test]
+    fn the_planner_reads_the_databases_statistics() {
+        let r = vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3]];
+        let s = vec![vec![1, 5], vec![3, 5], vec![3, 6]];
+        let query: JoinQuery = "Q(X) :- r(X, X), s(X, c5).".parse().unwrap();
+        let check = |spy: &StatsSpy, mut got: Vec<Vec<usize>>| {
+            got.sort();
+            assert_eq!(got, vec![vec![1], vec![3]]);
+            let (planned, stats) = spy.0.borrow_mut().take().expect("the optimiser planned");
+            let named = |prefix: &str| -> String {
+                let atom = planned.body.iter().find(|a| a.name.starts_with(prefix));
+                atom.expect("a synthetic predicate").name.clone()
+            };
+            let selection = named("Select_");
+            let constant = named("Const_");
+            assert_eq!(stats.tuples("s"), Some(3));
+            assert_eq!(
+                (stats.distinct("s", 0), stats.distinct("s", 1)),
+                (Some(2), Some(2))
+            );
+            assert_eq!(stats.tuples(&selection), Some(4));
+            assert_eq!(
+                (stats.distinct(&selection, 0), stats.distinct(&selection, 1)),
+                (Some(3), Some(3))
+            );
+            assert_eq!(stats.tuples(&constant), Some(1));
+            assert_eq!(stats.distinct(&constant, 0), Some(1));
+        };
+
+        let level = StatisticsLevel::ColumnDistinct;
+        let sorted = Database::new::<SortedFamily>(
+            rel_map(vec![("r", 2, r.clone()), ("s", 2, s.clone())]),
+            level,
+        );
+        let spy = StatsSpy::default();
+        check(
+            &spy,
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&sorted, query.clone(), &spy).unwrap(),
+        );
+
+        let hashed: Database<HashTrie> = Database::new::<HashFamily<SipHashStrategy>>(
+            BTreeMap::from([
+                ("r".to_string(), HashTrie::from_tuples(2.into(), r)),
+                ("s".to_string(), HashTrie::from_tuples(2.into(), s)),
+            ]),
+            level,
+        );
+        let spy = StatsSpy::default();
+        check(
+            &spy,
+            hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(&hashed, query, &spy).unwrap(),
+        );
     }
 
     /// An optimiser that reads more than the database gathered is refused
