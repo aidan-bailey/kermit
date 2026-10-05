@@ -285,6 +285,12 @@ impl<V> HashTable<V> {
     pub fn shell_heap_bytes(&self) -> usize {
         self.buckets.capacity() * std::mem::size_of::<Option<Entry<V>>>()
     }
+
+    /// Consumes the table, returning its bucket array: `buckets_len()`
+    /// slots in bucket order, each `None` or the entry stored there. Used
+    /// by the radix build to move each scratch entry out exactly once, by
+    /// the position `index_of` reported for it.
+    pub fn into_buckets(self) -> Vec<Option<Entry<V>>> { self.buckets }
 }
 
 #[cfg(test)]
@@ -590,5 +596,57 @@ mod tests {
         }
         check::<SipHashStrategy>();
         check::<FxHashStrategy>();
+    }
+
+    /// The radix build (issue #91) fills each partition's scratch root with
+    /// keys that share the top `bits` of their hash — a clustered input, as
+    /// in #66. The per-capacity multiplier must keep absorbing one partition
+    /// no dearer than absorbing an unrestricted key set of the same size.
+    /// Without it, `bits` shared index bits would put every key of a small
+    /// table in one bucket.
+    #[test]
+    #[cfg_attr(miri, ignore = "a cost test scanning ~10^6 hashes; nothing here is unsafe")]
+    fn absorbing_one_radix_partition_costs_no_more_than_unrestricted_keys() {
+        fn check<H: HashStrategy>() {
+            for bits in [1u32, 4, 8] {
+                let partition: Vec<u64> = (0..)
+                    .map(H::hash)
+                    .filter(|hash| hash >> (64 - bits) == 0)
+                    .take(BUILD_KEYS)
+                    .collect();
+                let unrestricted: Vec<u64> = (0..BUILD_KEYS).map(H::hash).collect();
+                let (clustered, baseline) = (build_probes(&partition), build_probes(&unrestricted));
+                assert!(
+                    clustered <= 2 * baseline,
+                    "{} radix:{bits}: one partition took {clustered} probes, unrestricted keys \
+                     {baseline}",
+                    H::NAME
+                );
+            }
+        }
+        check::<SipHashStrategy>();
+        check::<FxHashStrategy>();
+    }
+
+    #[test]
+    fn into_buckets_returns_every_entry_at_its_bucket() {
+        let mut t: HashTable<u32> = HashTable::new();
+        for (i, hash) in [0x1000_0000_0000_0000_u64, 0x5000_0000_0000_0000, 0x9000_0000_0000_0000]
+            .into_iter()
+            .enumerate()
+        {
+            t.entry_or_insert_with(hash, LoadFactor::default(), || i as u32);
+        }
+        let positions: Vec<(usize, u64)> = t
+            .iter()
+            .map(|(hash, _)| (t.index_of(hash).unwrap(), hash))
+            .collect();
+        let capacity = t.buckets_len();
+        let buckets = t.into_buckets();
+        assert_eq!(buckets.len(), capacity);
+        assert_eq!(buckets.iter().flatten().count(), 3);
+        for (idx, hash) in positions {
+            assert_eq!(buckets[idx].as_ref().map(|e| e.hash), Some(hash));
+        }
     }
 }
