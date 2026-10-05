@@ -605,7 +605,10 @@ mod tests {
     /// Without it, `bits` shared index bits would put every key of a small
     /// table in one bucket.
     #[test]
-    #[cfg_attr(miri, ignore = "a cost test scanning ~10^6 hashes; nothing here is unsafe")]
+    #[cfg_attr(
+        miri,
+        ignore = "a cost test scanning ~10^6 hashes; nothing here is unsafe"
+    )]
     fn absorbing_one_radix_partition_costs_no_more_than_unrestricted_keys() {
         fn check<H: HashStrategy>() {
             for bits in [1u32, 4, 8] {
@@ -631,9 +634,13 @@ mod tests {
     #[test]
     fn into_buckets_returns_every_entry_at_its_bucket() {
         let mut t: HashTable<u32> = HashTable::new();
-        for (i, hash) in [0x1000_0000_0000_0000_u64, 0x5000_0000_0000_0000, 0x9000_0000_0000_0000]
-            .into_iter()
-            .enumerate()
+        for (i, hash) in [
+            0x1000_0000_0000_0000_u64,
+            0x5000_0000_0000_0000,
+            0x9000_0000_0000_0000,
+        ]
+        .into_iter()
+        .enumerate()
         {
             t.entry_or_insert_with(hash, LoadFactor::default(), || i as u32);
         }

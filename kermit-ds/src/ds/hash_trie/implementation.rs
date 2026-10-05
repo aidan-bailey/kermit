@@ -323,13 +323,7 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
                 }
                 let tuple_count = tuples.len();
                 let mut trie = Self::with_config(header, config);
-                radix::fill_root::<H, P>(
-                    &mut trie.root,
-                    arity,
-                    tuples,
-                    bits,
-                    config.load_factor,
-                );
+                radix::fill_root::<H, P>(&mut trie.root, arity, tuples, bits, config.load_factor);
                 trie.tuple_count = tuple_count;
                 trie
             },

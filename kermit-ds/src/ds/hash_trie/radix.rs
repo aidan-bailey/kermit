@@ -14,8 +14,8 @@
 
 use {
     super::{
-        build_mode::RadixBits, config::LoadFactor, hash_table::HashTable,
-        implementation::HashTrie, node::HashTrieNode, pruning::PruningPolicy,
+        build_mode::RadixBits, config::LoadFactor, hash_table::HashTable, implementation::HashTrie,
+        node::HashTrieNode, pruning::PruningPolicy,
     },
     kermit_iters::HashStrategy,
 };
@@ -43,7 +43,9 @@ pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy>(
         }
         let (scratch, first_seen) = build_scratch_root::<H, P>(partition, arity, load_factor);
         match scratch {
-            | HashTrieNode::Inner(table) => take_in_arrival_order(table, &first_seen, &mut subtries),
+            | HashTrieNode::Inner(table) => {
+                take_in_arrival_order(table, &first_seen, &mut subtries)
+            },
             | HashTrieNode::Leaf(table) => take_in_arrival_order(table, &first_seen, &mut chains),
             | HashTrieNode::Singleton(_) => unreachable!("a root is never pruned"),
         }
@@ -116,9 +118,7 @@ fn take_in_arrival_order<V>(
         .collect();
     let mut buckets = scratch.into_buckets();
     for (&(first, hash), position) in first_seen.iter().zip(positions) {
-        let entry = buckets[position]
-            .take()
-            .expect("each bucket is taken once");
+        let entry = buckets[position].take().expect("each bucket is taken once");
         debug_assert_eq!(entry.hash, hash);
         out.push((first, hash, entry.value));
     }
@@ -131,7 +131,7 @@ fn insert_in_first_appearance_order<V>(
     root: &mut HashTable<V>, mut arrivals: Vec<Arrival<V>>, load_factor: LoadFactor,
 ) {
     // First indices are distinct, so the unstable sort is deterministic.
-    arrivals.sort_unstable_by_key(|&(first, _, _)| first);
+    arrivals.sort_unstable_by_key(|&(first, ..)| first);
     for (_, hash, value) in arrivals {
         root.entry_or_insert_with(hash, load_factor, || value);
     }
@@ -228,11 +228,19 @@ mod tests {
 
     /// Enough distinct first values to double the root several times, with
     /// repeats so subtries and chains hold several tuples.
-    const RANDOM_TUPLES: usize = if cfg!(miri) { 200 } else { 3_000 };
+    const RANDOM_TUPLES: usize = if cfg!(miri) {
+        200
+    } else {
+        3_000
+    };
 
     /// Bit counts under test. Sixteen bits make 65,536 partitions, too slow
     /// to set up a thousand times under Miri.
-    const BITS: &[u8] = if cfg!(miri) { &[1, 4] } else { &[1, 4, 16] };
+    const BITS: &[u8] = if cfg!(miri) {
+        &[1, 4]
+    } else {
+        &[1, 4, 16]
+    };
 
     fn inputs(arity: usize) -> Vec<(&'static str, Vec<Vec<usize>>)> {
         let mut lcg = Lcg(0x91);
@@ -336,7 +344,8 @@ mod tests {
     fn build_mode_relation_uses_the_default_config() {
         let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
         let tuples = rows(2, &[[1, 2, 0], [3, 4, 0], [1, 5, 0]]);
-        let built: HashTrie = HashTrie::from_tuples_with_build_mode(2.into(), radix, tuples.clone());
+        let built: HashTrie =
+            HashTrie::from_tuples_with_build_mode(2.into(), radix, tuples.clone());
         assert_eq!(*built.config(), HashTrieConfig::default());
         let plain: HashTrie = HashTrie::from_tuples(2.into(), tuples.clone());
         let default: HashTrie =

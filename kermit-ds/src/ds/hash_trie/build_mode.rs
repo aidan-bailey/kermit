@@ -26,10 +26,10 @@ pub enum HashTrieBuildMode {
 pub struct RadixBits(u8);
 
 impl RadixBits {
-    /// The fewest bits: two partitions.
-    pub const MIN: u8 = 1;
     /// The most bits: 65,536 partitions, numbered in a `u16`.
     pub const MAX: u8 = 16;
+    /// The fewest bits: two partitions.
+    pub const MIN: u8 = 1;
 
     /// `bits` radix bits, which must lie in `MIN..=MAX`.
     pub fn new(bits: u8) -> Result<Self, InvalidRadixBits> {
@@ -118,7 +118,9 @@ impl kermit_iters::BuildMode for HashTrieBuildMode {
 mod tests {
     use {super::*, kermit_iters::BuildMode};
 
-    fn radix(bits: u8) -> HashTrieBuildMode { HashTrieBuildMode::Radix(RadixBits::new(bits).unwrap()) }
+    fn radix(bits: u8) -> HashTrieBuildMode {
+        HashTrieBuildMode::Radix(RadixBits::new(bits).unwrap())
+    }
 
     /// What a report's `ds_build_mode` says is what `--ds-build hash-trie=…`
     /// parses back, for every mode.
