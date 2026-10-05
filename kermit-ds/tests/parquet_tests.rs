@@ -2,7 +2,7 @@ use {
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
         ColumnTrieBuildMode, Configured, GallopingSeek, HashTrie, HashTrieConfig, LinearSeek,
-        LoadFactor, PruningPolicy, SingletonPruning, TreeTrie,
+        LoadFactor, PruningPolicy, SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -39,6 +39,18 @@ define_build_mode_provider!(
 type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;
 
 parquet_test_suite!(ColumnTrieIncremental);
+
+// …and under TreeTrie's parallel BuildMode, which must load the same trie
+// (issue #94).
+define_build_mode_provider!(
+    Parallel2,
+    TreeTrieBuildMode,
+    TreeTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+
+type TreeTrieParallel2 = BuiltWith<TreeTrie, Parallel2>;
+
+parquet_test_suite!(TreeTrieParallel2);
 
 // `HashTrie` has no tuple-shaped iterator (it is `HashTrieIterable`, not
 // `TrieIterable`), so the round-trip is checked through `collect_tuples()`,
