@@ -10,7 +10,8 @@ use {
     kermit::db::{hash_join, hash_join_for_each, lftj_join, lftj_join_for_each, JoinError},
     kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, QueryOptimiser},
     kermit_ds::{
-        Cardinality, ConfigProvider, Configured, HashTrie, HashTrieConfig, PruningPolicy, Relation,
+        Cardinality, ConfigProvider, Configured, ExpansionPolicy, HashTrie, HashTrieConfig,
+        PruningPolicy, Relation,
     },
     kermit_iters::{HashStrategy, TrieIterable},
     std::collections::BTreeMap,
@@ -52,40 +53,42 @@ impl<R: TrieIterable + Relation + Cardinality> JoinEntry<R> for LeapfrogTriejoin
 /// `hash_join` needs the relation's hash strategy `H` for constant
 /// singletons, so the hash-family impls are per concrete relation type
 /// rather than blanket over `HashTrieIterable`.
-impl<H: HashStrategy, P: PruningPolicy> JoinEntry<HashTrie<H, P>> for HashTriejoin {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> JoinEntry<HashTrie<H, P, E>>
+    for HashTriejoin
+{
     fn join(
-        relations: &BTreeMap<String, HashTrie<H, P>>, query: JoinQuery,
+        relations: &BTreeMap<String, HashTrie<H, P, E>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
     ) -> Result<Vec<Vec<usize>>, JoinError> {
-        hash_join::<HashTrie<H, P>, H>(relations, query, optimiser)
+        hash_join::<HashTrie<H, P, E>, H>(relations, query, optimiser)
     }
 
     fn count(
-        relations: &BTreeMap<String, HashTrie<H, P>>, query: JoinQuery,
+        relations: &BTreeMap<String, HashTrie<H, P, E>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
     ) -> Result<usize, JoinError> {
         let mut rows = 0;
-        hash_join_for_each::<HashTrie<H, P>, H>(relations, query, optimiser, |_| rows += 1)?;
+        hash_join_for_each::<HashTrie<H, P, E>, H>(relations, query, optimiser, |_| rows += 1)?;
         Ok(rows)
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, C: ConfigProvider<HashTrieConfig>>
-    JoinEntry<Configured<HashTrie<H, P>, C>> for HashTriejoin
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, C: ConfigProvider<HashTrieConfig>>
+    JoinEntry<Configured<HashTrie<H, P, E>, C>> for HashTriejoin
 {
     fn join(
-        relations: &BTreeMap<String, Configured<HashTrie<H, P>, C>>, query: JoinQuery,
+        relations: &BTreeMap<String, Configured<HashTrie<H, P, E>, C>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
     ) -> Result<Vec<Vec<usize>>, JoinError> {
-        hash_join::<Configured<HashTrie<H, P>, C>, H>(relations, query, optimiser)
+        hash_join::<Configured<HashTrie<H, P, E>, C>, H>(relations, query, optimiser)
     }
 
     fn count(
-        relations: &BTreeMap<String, Configured<HashTrie<H, P>, C>>, query: JoinQuery,
+        relations: &BTreeMap<String, Configured<HashTrie<H, P, E>, C>>, query: JoinQuery,
         optimiser: &dyn QueryOptimiser,
     ) -> Result<usize, JoinError> {
         let mut rows = 0;
-        hash_join_for_each::<Configured<HashTrie<H, P>, C>, H>(
+        hash_join_for_each::<Configured<HashTrie<H, P, E>, C>, H>(
             relations,
             query,
             optimiser,

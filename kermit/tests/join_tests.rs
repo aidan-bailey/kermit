@@ -4,17 +4,21 @@ use {
     kermit_algos::{CardinalityOptimiser, HashTriejoin, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, ColumnTrie,
-        ColumnTrieBuildMode, GallopingSeek, HashTrie, HashTrieConfig, LinearSeek, LoadFactor,
-        SingletonPruning, TreeTrie,
+        ColumnTrieBuildMode, GallopingSeek, HashTrie, HashTrieConfig, LazyExpansion, LinearSeek,
+        LoadFactor, NoPruning, SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
 
-// ── Layout aliases: hasher × pruning ────────────────────────────────────
+// ── Layout aliases: hasher × pruning × expansion ───────────────────────
 type HashTrieSip = HashTrie<SipHashStrategy>;
 type HashTrieFx = HashTrie<FxHashStrategy>;
 type HashTrieSipPruned = HashTrie<SipHashStrategy, SingletonPruning>;
 type HashTrieFxPruned = HashTrie<FxHashStrategy, SingletonPruning>;
+type HashTrieSipLazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
+type HashTrieFxLazy = HashTrie<FxHashStrategy, NoPruning, LazyExpansion>;
+type HashTrieSipPrunedLazy = HashTrie<SipHashStrategy, SingletonPruning, LazyExpansion>;
+type HashTrieFxPrunedLazy = HashTrie<FxHashStrategy, SingletonPruning, LazyExpansion>;
 
 // ── Layout aliases: seek strategy (sorted tries) ────────────────────────
 type TreeTrieLinear = TreeTrie<LinearSeek>;
@@ -50,6 +54,14 @@ define_multiway_join_test_suite!(HashTrieSipPruned, HashTriejoin, LexicographicO
 define_multiway_join_test_suite!(HashTrieSipPruned, HashTriejoin, CardinalityOptimiser);
 define_multiway_join_test_suite!(HashTrieFxPruned, HashTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(HashTrieFxPruned, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieSipLazy, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieSipLazy, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieFxLazy, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieFxLazy, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieSipPrunedLazy, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieSipPrunedLazy, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieFxPrunedLazy, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieFxPrunedLazy, HashTriejoin, CardinalityOptimiser);
 
 // ── Config axis: load factor ────────────────────────────────────────────
 // The default-config invocations above are the `ds_config_load_factor: 0.7`
@@ -80,6 +92,13 @@ define_multiway_join_test_suite_with_config!(
     HashTrieFx,
     HashTriejoin,
     CardinalityOptimiser,
+    HalfFull
+);
+// Expansion builds each child under the configured cap too.
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipLazy,
+    HashTriejoin,
+    LexicographicOptimiser,
     HalfFull
 );
 
