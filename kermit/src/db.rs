@@ -17,9 +17,13 @@
 //! Runtime selection of the (structure, algorithm) cell lives in the CLI's
 //! `execution` module, not here.
 
+mod database;
 mod validation;
 
-pub use validation::{validate_query, JoinError, RelationArities};
+pub use {
+    database::Database,
+    validation::{validate_query, JoinError, RelationArities},
+};
 use {
     kermit_algos::{
         is_const_predicate, is_selection_predicate, CatalogStats, ColumnEquality, HashTrieIterKind,
