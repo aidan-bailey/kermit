@@ -198,8 +198,8 @@ each implementer.
 >   tests; the new row expects `(3, [8, 0].repeat(8))` and worker runs
 >   `[3, 3]`;
 > - `parallel_builds_the_serial_trie_on_large_and_skewed_inputs` covers
->   arity 4, a first key holding half the tuples, and three full-size
->   morsels (not under Miri);
+>   arity 4, a first key holding half the tuples, and three morsels, two
+>   of them full (not under Miri);
 > - `Entries::Subtries` became `Entries::Children`, with `take_from`,
 >   `into_children` and `into_chains`, and `fill_root_in_morsels` carries
 >   step comments 1–3;
@@ -1990,8 +1990,8 @@ parallel_build(tuples, N):
 Every `parallel:N` build is identical to the serial build of the same
 tuples, bucket for bucket and capacity for capacity, under every Layout and
 load factor. `parallel_builds_the_serial_trie_*` in `parallel.rs` pins it
-for N ∈ {1, 2, 3, 8}, with morsels of 7 tuples and of 16 384 (three full
-morsels in `…_on_large_and_skewed_inputs`).
+for N ∈ {1, 2, 3, 8}, with morsels of 7 tuples and of 16 384 (three
+morsels, two of them full, in `…_on_large_and_skewed_inputs`).
 
 - A table's final layout depends only on the order in which its *new* keys
   arrive, because `HashTable::entry_or_insert_with` returns an existing
