@@ -29,8 +29,8 @@ use {
     kermit::db::{hash_join_for_each, lftj_join_for_each, JoinError},
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Optimiser, QueryOptimiser},
     kermit_ds::{
-        BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ConfigurableRelation,
-        HashTrie, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy, Relation,
+        BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, HashTrie,
+        HashTrieBuildMode, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy, Relation,
         RelationFileExt, RelationHeader, SeekStrategy, TreeTrie,
     },
     kermit_iters::{
@@ -152,9 +152,9 @@ impl<S: SeekStrategy> SortedTrieRelation for ColumnTrie<S> {
 /// One valid `(index structure, join algorithm)` cell of a `bench run`
 /// sweep. Each variant fixes *both* halves of the pair, so an `Execution`
 /// cannot describe a combination the CLI is unable to run.
-// `Copy` relies on `HashTrieConfig: Copy` and `ColumnTrieBuildMode: Copy`; a
-// future Config or BuildMode carrying heap data would have to drop it here and
-// clone the cells instead.
+// `Copy` relies on `HashTrieConfig`, `ColumnTrieBuildMode` and
+// `HashTrieBuildMode` being `Copy`; a future Config or BuildMode carrying heap
+// data would have to drop it here and clone the cells instead.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through
@@ -162,7 +162,8 @@ pub enum Execution {
     TrieLftj(SortedTrie),
     /// `HashTrie<H, P>` joined by Hash Triejoin through [`hash_join_for_each`],
     /// with `H` chosen by `--ds-layout-hasher`, `P` by
-    /// `--ds-layout-pruning`, and the runtime values by `--ds-config`.
+    /// `--ds-layout-pruning`, and the runtime values by `--ds-config`, built
+    /// by the `--ds-build` mode `build`.
     HashHtj {
         /// The `--ds-layout-hasher` choice. Built by
         /// [`Execution::for_pair`] it is the *request* — the CLI choice
@@ -175,6 +176,8 @@ pub enum Execution {
         pruning: PruningChoice,
         /// The `--ds-config` runtime values every relation is built with.
         config: HashTrieConfig,
+        /// The `--ds-build` mode every relation is built with.
+        build: HashTrieBuildMode,
     },
 }
 
@@ -182,8 +185,8 @@ impl Execution {
     /// The only way to obtain an `Execution` from a concrete pair. Returns
     /// `None` for the three incompatible pairs, which the sweep skips.
     /// `choices` reach the cells that have each axis: the hash-trie cell's
-    /// hasher, pruning and config, both sorted cells' seek strategy, and the
-    /// column-trie cell's build mode.
+    /// hasher, pruning and config, both sorted cells' seek strategy, and
+    /// each structure's build mode.
     pub fn for_pair(
         ds: IndexStructure, algo: JoinAlgorithm, choices: DsChoices,
     ) -> Option<Execution> {
@@ -203,13 +206,14 @@ impl Execution {
             | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
                 Some(Execution::TrieLftj(SortedTrie::ColumnTrie {
                     seek,
-                    build,
+                    build: build.column_trie,
                 }))
             },
             | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => Some(Execution::HashHtj {
                 hasher,
                 pruning,
                 config,
+                build: build.hash_trie,
             }),
             | (
                 IndexStructure::TreeTrie | IndexStructure::ColumnTrie,
@@ -238,12 +242,13 @@ impl Execution {
             }),
             | IndexStructure::ColumnTrie => Execution::TrieLftj(SortedTrie::ColumnTrie {
                 seek,
-                build,
+                build: build.column_trie,
             }),
             | IndexStructure::HashTrie => Execution::HashHtj {
                 hasher,
                 pruning,
                 config,
+                build: build.hash_trie,
             },
         }
     }
@@ -547,29 +552,32 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
 }
 
 /// `HashTrie<H, P>` on its own: what `bench ds -i hash-trie` measures.
-/// Carries the `--ds-config` runtime values every relation is built with;
-/// the `--ds-layout-hasher` / `--ds-layout-pruning` labels are *not*
+/// Carries the `--ds-config` runtime values and the `--ds-build` mode every
+/// relation is built with; the `--ds-layout-hasher` / `--ds-layout-pruning`
+/// labels are *not*
 /// parameters — [`execution`](RelationFamily::execution) derives them from
 /// `H` and `P`, so a report cannot name a Layout the family was not
 /// monomorphised over.
 pub struct HashTrieFamily<H, P> {
     config: HashTrieConfig,
+    build: HashTrieBuildMode,
     _layout: PhantomData<(H, P)>,
 }
 
 impl<H, P> HashTrieFamily<H, P> {
     /// The family building every relation with the `--ds-config` values
-    /// `config`.
-    pub fn new(config: HashTrieConfig) -> Self {
+    /// `config`, by the `--ds-build` mode `build`.
+    pub fn new(config: HashTrieConfig, build: HashTrieBuildMode) -> Self {
         Self {
             config,
+            build,
             _layout: PhantomData,
         }
     }
 }
 
 impl<H, P> Default for HashTrieFamily<H, P> {
-    fn default() -> Self { Self::new(HashTrieConfig::default()) }
+    fn default() -> Self { Self::new(HashTrieConfig::default(), HashTrieBuildMode::default()) }
 }
 
 impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashTrieFamily<H, P> {
@@ -580,11 +588,17 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashTrieFam
             hasher: hasher_of::<H>(),
             pruning: pruning_of::<P>(),
             config: self.config,
+            build: self.build,
         }
     }
 
     fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H, P> {
-        HashTrie::<H, P>::from_tuples_with_config(header, self.config, tuples)
+        HashTrie::<H, P>::from_tuples_with_config_and_build_mode(
+            header,
+            self.config,
+            self.build,
+            tuples,
+        )
     }
 
     fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P>, visit: V) {
@@ -599,8 +613,15 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashTrieFam
         rel.optimization_axes()
     }
 
-    /// `HashTrie` has a single build process, so no `ds_build_mode` axis.
-    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+    /// Every `HashTrie` report says which build made it, so kermit-lab can
+    /// read a `HashTrie` report without the axis as the `serial` build, the
+    /// only one before issue #91.
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
+        BTreeMap::from([(
+            "ds_build_mode".to_string(),
+            serde_json::Value::from(self.build.axis_value()),
+        )])
+    }
 }
 
 /// Sorted family: `R` under Leapfrog Triejoin through [`lftj_join_for_each`].
@@ -683,14 +704,15 @@ pub struct HashHtj<H, P> {
 }
 
 impl<H, P> HashHtj<H, P> {
-    /// Creates the family for the `--ds-config` values `config`, planned
-    /// by `optimiser`. The `--ds-layout-hasher` / `--ds-layout-pruning`
-    /// labels are *not* parameters: [`execution`](RelationFamily::execution)
-    /// derives them from `H` and `P`, so a report cannot name a Layout the
-    /// family was not monomorphised over.
-    pub fn new(config: HashTrieConfig, optimiser: Optimiser) -> Self {
+    /// Creates the family for the `--ds-config` values `config` and the
+    /// `--ds-build` mode `build`, planned by `optimiser`. The
+    /// `--ds-layout-hasher` / `--ds-layout-pruning` labels are *not*
+    /// parameters: [`execution`](RelationFamily::execution) derives them from
+    /// `H` and `P`, so a report cannot name a Layout the family was not
+    /// monomorphised over.
+    pub fn new(config: HashTrieConfig, build: HashTrieBuildMode, optimiser: Optimiser) -> Self {
         Self {
-            structure: HashTrieFamily::new(config),
+            structure: HashTrieFamily::new(config, build),
             optimiser: optimiser.instantiate(),
         }
     }
@@ -755,9 +777,10 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H,
 mod tests {
     use {
         super::*,
+        crate::options::BuildModes,
         clap::ValueEnum,
-        kermit_ds::{NoPruning, SingletonPruning},
-        kermit_iters::SipHashStrategy,
+        kermit_ds::{ConfigurableRelation, NoPruning, RadixBits, SingletonPruning},
+        kermit_iters::{LayoutOption, SipHashStrategy},
         std::cell::Cell,
     };
 
@@ -836,6 +859,7 @@ mod tests {
                 hasher: HasherChoice::Fxhash,
                 pruning: PruningChoice::Off,
                 config: HashTrieConfig::default(),
+                build: HashTrieBuildMode::Serial,
             })
         );
     }
@@ -846,7 +870,16 @@ mod tests {
     #[test]
     fn for_structure_agrees_with_for_pair() {
         let config = HashTrieConfig::default();
-        for build in [ColumnTrieBuildMode::Incremental, ColumnTrieBuildMode::Bulk] {
+        let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
+        let builds = [ColumnTrieBuildMode::Incremental, ColumnTrieBuildMode::Bulk]
+            .into_iter()
+            .flat_map(|column_trie| {
+                [HashTrieBuildMode::Serial, radix].map(|hash_trie| BuildModes {
+                    column_trie,
+                    hash_trie,
+                })
+            });
+        for build in builds {
             for ds in all_structures() {
                 for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
                     for pruning in [PruningChoice::Off, PruningChoice::On] {
@@ -887,11 +920,13 @@ mod tests {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
+        let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
         assert_eq!(
-            HashTrieFamily::<kermit_iters::FxHashStrategy, SingletonPruning>::new(config)
+            HashTrieFamily::<kermit_iters::FxHashStrategy, SingletonPruning>::new(config, radix)
                 .execution(),
             HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning>::new(
                 config,
+                radix,
                 Optimiser::Lexicographic
             )
             .execution()
@@ -921,8 +956,10 @@ mod tests {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
+        let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
         let hash = HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning>::new(
             config,
+            radix,
             Optimiser::Lexicographic,
         );
         // No Layout value was passed to `new`: both labels come from the
@@ -932,6 +969,7 @@ mod tests {
             hasher: HasherChoice::Fxhash,
             pruning: PruningChoice::On,
             config,
+            build: radix,
         });
         assert_eq!(hash.execution().algorithm(), JoinAlgorithm::HashTriejoin);
     }
@@ -943,7 +981,11 @@ mod tests {
     fn hash_family_labels_are_derived_from_its_layout_types() {
         use kermit_iters::{FxHashStrategy, SipHashStrategy};
         fn labels<H: HashStrategy + 'static, P: PruningPolicy>() -> (HasherChoice, PruningChoice) {
-            match HashHtj::<H, P>::new(HashTrieConfig::default(), Optimiser::Lexicographic)
+            match HashHtj::<H, P>::new(
+                HashTrieConfig::default(),
+                HashTrieBuildMode::Serial,
+                Optimiser::Lexicographic,
+            )
                 .execution()
             {
                 | Execution::HashHtj {
@@ -981,6 +1023,7 @@ mod tests {
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
             config,
+            HashTrieBuildMode::Serial,
             Optimiser::Lexicographic,
         );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
@@ -1002,6 +1045,7 @@ mod tests {
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
             config,
+            HashTrieBuildMode::Serial,
             Optimiser::Lexicographic,
         );
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1117,6 +1161,7 @@ mod tests {
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
             config,
+            HashTrieBuildMode::Serial,
             Optimiser::Lexicographic,
         );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
@@ -1135,6 +1180,7 @@ mod tests {
     fn pruned_family_reports_the_pruning_layout() {
         let family = HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning>::new(
             HashTrieConfig::default(),
+            HashTrieBuildMode::Serial,
             Optimiser::Lexicographic,
         );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
@@ -1178,6 +1224,7 @@ mod tests {
 
         let hash = HashHtj::<SipHashStrategy, NoPruning>::new(
             HashTrieConfig::default(),
+            HashTrieBuildMode::Serial,
             Optimiser::Lexicographic,
         );
         let engine = hash.build_from_tuples(inputs());
@@ -1286,10 +1333,11 @@ mod tests {
         BTreeMap::from([("ds_build_mode".to_string(), serde_json::Value::from(mode))])
     }
 
-    /// Every `ColumnTrie` family reports the mode it builds with; the other
-    /// structures have a single build and carry no such axis (issue #84).
+    /// Every `ColumnTrie` and `HashTrie` family reports the mode it builds
+    /// with; `TreeTrie` has a single build and carries no such axis.
     #[test]
-    fn only_column_trie_families_report_their_build_mode() {
+    fn families_with_a_build_mode_report_it() {
+        let radix = HashTrieBuildMode::Radix(RadixBits::new(4).unwrap());
         assert_eq!(
             SortedTrieFamily::<ColumnTrie>::default().build_mode_axes(),
             build_mode_axis("bulk")
@@ -1309,23 +1357,104 @@ mod tests {
         assert!(TrieLftj::<TreeTrie>::new((), Optimiser::Lexicographic)
             .build_mode_axes()
             .is_empty());
-        assert!(HashTrieFamily::<SipHashStrategy, NoPruning>::default()
-            .build_mode_axes()
-            .is_empty());
-        assert!(HashHtj::<SipHashStrategy, NoPruning>::new(
-            HashTrieConfig::default(),
-            Optimiser::Lexicographic
-        )
-        .build_mode_axes()
-        .is_empty());
+        assert_eq!(
+            HashTrieFamily::<SipHashStrategy, NoPruning>::default().build_mode_axes(),
+            build_mode_axis("serial")
+        );
+        assert_eq!(
+            HashTrieFamily::<SipHashStrategy, NoPruning>::new(HashTrieConfig::default(), radix)
+                .build_mode_axes(),
+            build_mode_axis("radix:4")
+        );
+        assert_eq!(
+            HashHtj::<SipHashStrategy, NoPruning>::new(
+                HashTrieConfig::default(),
+                radix,
+                Optimiser::Lexicographic
+            )
+            .build_mode_axes(),
+            build_mode_axis("radix:4")
+        );
     }
 
-    /// The `--ds-build` mode reaches the column-trie cell of a sweep and no
-    /// other.
+    thread_local! {
+        static HASHES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// SipHash that counts its calls. The radix build hashes each tuple's
+    /// first attribute once more than the serial build, and the two build
+    /// identical tries, so the count is the only way to see which one ran.
+    #[derive(Copy, Clone, Default, Debug)]
+    struct CountingHash;
+
+    impl LayoutOption for CountingHash {
+        const NAME: &'static str = "counting";
+    }
+
+    impl HashStrategy for CountingHash {
+        fn hash(key: usize) -> u64 {
+            HASHES.set(HASHES.get() + 1);
+            SipHashStrategy::hash(key)
+        }
+    }
+
+    /// Both modes build identical tries, so only a spy can see whether the
+    /// family's mode reached the build, on every route a relation is built.
     #[test]
-    fn sweep_attaches_the_build_mode_to_the_column_trie_cell_only() {
+    fn hash_families_build_with_their_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("r.csv");
+        std::fs::write(&path, "a,b\n1,2\n1,3\n2,4\n").expect("write csv");
+        let header = || RelationHeader::new_positional("r", 2);
+        let tuples = || vec![vec![1, 2], vec![1, 3], vec![2, 4]];
+        let config = HashTrieConfig::default();
+        let structure = |mode| HashTrieFamily::<CountingHash, NoPruning>::new(config, mode);
+        let join =
+            |mode| HashHtj::<CountingHash, NoPruning>::new(config, mode, Optimiser::Lexicographic);
+        let routes: [(&str, &dyn Fn(HashTrieBuildMode)); 5] = [
+            ("HashTrieFamily::build_relation", &|mode| {
+                structure(mode).build_relation(header(), tuples());
+            }),
+            ("HashTrieFamily::load_with_tuples", &|mode| {
+                structure(mode).load_with_tuples(&path).expect("load");
+            }),
+            ("HashHtj::build_relation", &|mode| {
+                join(mode).build_relation(header(), tuples());
+            }),
+            ("HashHtj::load", &|mode| {
+                join(mode).load(&path).expect("load");
+            }),
+            ("HashHtj::build_from_tuples", &|mode| {
+                join(mode).build_from_tuples(vec![(header(), tuples())]);
+            }),
+        ];
+        let hashes = |build: &dyn Fn()| {
+            HASHES.set(0);
+            build();
+            HASHES.get()
+        };
+        let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
+        for (route, build) in routes {
+            let serial = hashes(&|| build(HashTrieBuildMode::Serial));
+            let radixed = hashes(&|| build(radix));
+            assert!(
+                radixed > serial,
+                "{route}: the radix build hashed {radixed} times and the serial build {serial}: \
+                 the mode did not reach the build"
+            );
+        }
+    }
+
+    /// Each structure's `--ds-build` mode reaches its own cell of a sweep
+    /// and no other.
+    #[test]
+    fn sweep_attaches_each_build_mode_to_its_own_cell() {
+        let radix = HashTrieBuildMode::Radix(RadixBits::new(4).unwrap());
         let choices = DsChoices {
-            build: ColumnTrieBuildMode::Incremental,
+            build: BuildModes {
+                column_trie: ColumnTrieBuildMode::Incremental,
+                hash_trie: radix,
+            },
             ..DsChoices::default()
         };
         let sweep = Sweep::expand(&all_structures(), &all_algorithms(), choices);
@@ -1340,6 +1469,12 @@ mod tests {
             .contains(&Execution::TrieLftj(SortedTrie::TreeTrie {
                 seek: SeekChoice::Galloping
             })));
+        assert!(sweep.cells.contains(&Execution::HashHtj {
+            hasher: HasherChoice::Sip,
+            pruning: PruningChoice::Off,
+            config: HashTrieConfig::default(),
+            build: radix,
+        }));
     }
 
     /// Each sorted family reports the seek strategy its type parameter

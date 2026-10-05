@@ -358,8 +358,9 @@ pub(crate) fn dispatch_run_bench(
             hasher,
             pruning,
             config,
+            build,
         } => with_hash_trie_layout!(hasher, pruning, |H, P| run_benchmark(
-            &HashHtj::<H, P>::new(config, optimiser),
+            &HashHtj::<H, P>::new(config, build, optimiser),
             workload,
             settings,
         )),

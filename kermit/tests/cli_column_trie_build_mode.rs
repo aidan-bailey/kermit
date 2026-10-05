@@ -1,7 +1,8 @@
 //! CLI smoke test for `ColumnTrie`'s `ds_build_mode` axis (issue #84). Every
 //! `ColumnTrie` report says which build made its relations, so kermit-lab can
 //! read a `ColumnTrie` report *without* the axis as the pre-#84 incremental
-//! build. The other structures have a single build and carry no such axis.
+//! build. TreeTrie has a single build and carries no such axis; HashTrie
+//! reports its own (`serial` by default — see `cli_hash_trie_build_mode.rs`).
 //! It also covers selecting the mode with `--ds-build` and rejecting the flag
 //! on a structure without a build mode.
 
@@ -21,21 +22,19 @@ fn cli_bench_ds_column_trie_records_bulk_build_mode() {
 }
 
 #[test]
-fn cli_bench_ds_other_structures_have_no_build_mode() {
-    for ds in ["tree-trie", "hash-trie"] {
-        let (output, report) = bench_ds(ds, &[]);
-        assert!(
-            output.status.success(),
-            "{ds}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let axes = axes_of(&report);
-        assert!(axes.get("ds_build_mode").is_none(), "{ds}: {axes}");
-    }
+fn cli_bench_ds_tree_trie_has_no_build_mode() {
+    let (output, report) = bench_ds("tree-trie", &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let axes = axes_of(&report);
+    assert!(axes.get("ds_build_mode").is_none(), "{axes}");
 }
 
 #[test]
-fn cli_bench_run_sweep_reports_build_mode_only_on_column_trie() {
+fn cli_bench_run_sweep_reports_each_structures_build_mode() {
     let (output, report) = bench_run("triangle", &["-i", "all", "-a", "all", "-m", "space"]);
     assert!(
         output.status.success(),
@@ -46,10 +45,10 @@ fn cli_bench_run_sweep_reports_build_mode_only_on_column_trie() {
     assert_eq!(reports.len(), 3, "three valid cells: {reports:?}");
     for r in &reports {
         let axes = &r["axes"];
-        if axes["data_structure"] == "ColumnTrie" {
-            assert_eq!(axes["ds_build_mode"], "bulk", "{axes}");
-        } else {
-            assert!(axes.get("ds_build_mode").is_none(), "{axes}");
+        match axes["data_structure"].as_str() {
+            | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
+            | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
+            | _ => assert!(axes.get("ds_build_mode").is_none(), "{axes}"),
         }
     }
 }
@@ -108,10 +107,10 @@ fn cli_bench_run_sweep_carries_build_mode_only_to_column_trie_cells() {
     assert_eq!(reports.len(), 3, "three valid cells: {reports:?}");
     for r in &reports {
         let axes = &r["axes"];
-        if axes["data_structure"] == "ColumnTrie" {
-            assert_eq!(axes["ds_build_mode"], "incremental", "{axes}");
-        } else {
-            assert!(axes.get("ds_build_mode").is_none(), "{axes}");
+        match axes["data_structure"].as_str() {
+            | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "incremental", "{axes}"),
+            | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
+            | _ => assert!(axes.get("ds_build_mode").is_none(), "{axes}"),
         }
     }
 }

@@ -6,8 +6,8 @@ use {
     crate::IndexStructureSelector,
     clap::{Args, ValueEnum},
     kermit_ds::{
-        ColumnTrieBuildMode, HashTrieConfig, IndexStructure, LoadFactor, PruningPolicy,
-        SeekStrategy,
+        ColumnTrieBuildMode, HashTrieBuildMode, HashTrieConfig, IndexStructure, LoadFactor,
+        PruningPolicy, SeekStrategy,
     },
     kermit_iters::{HashStrategy, LayoutOption},
     std::fmt,
@@ -568,6 +568,16 @@ pub(crate) fn validate_build_choices(
     validate_ds_flags(indexstructure, build.given().as_slice())
 }
 
+/// The build mode of every structure that has one: what `--ds-build`
+/// resolves to, with each structure's default where no pair names it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BuildModes {
+    /// Reaches the column-trie cell only.
+    pub column_trie: ColumnTrieBuildMode,
+    /// Reaches the hash-trie cell only.
+    pub hash_trie: HashTrieBuildMode,
+}
+
 /// The resolved value of every `--ds-*` option for one command — what the
 /// execution cells are built from. Commands obtain it from
 /// [`DsChoices::resolve`], which rejects a flag the selected structure
@@ -582,8 +592,8 @@ pub(crate) struct DsChoices {
     pub seek: SeekChoice,
     /// `--ds-config`; reaches the hash-trie cell only.
     pub config: HashTrieConfig,
-    /// `--ds-build`; reaches the column-trie cell only.
-    pub build: ColumnTrieBuildMode,
+    /// `--ds-build`; each structure's mode reaches its own cell.
+    pub build: BuildModes,
 }
 
 impl DsChoices {
@@ -606,7 +616,10 @@ impl DsChoices {
             pruning: layout.hash_trie_pruning_resolved(),
             seek: layout.sorted_trie_seek_resolved(),
             config: config.hash_trie_config_resolved()?,
-            build: build.column_trie_build_resolved(),
+            build: BuildModes {
+                column_trie: build.column_trie_build_resolved(),
+                hash_trie: HashTrieBuildMode::default(),
+            },
         })
     }
 }
@@ -975,8 +988,10 @@ mod tests {
             &build,
         )
         .unwrap();
-        assert_eq!(choices.build, ColumnTrieBuildMode::Incremental);
-        assert_eq!(DsChoices::default().build, ColumnTrieBuildMode::Bulk);
+        assert_eq!(choices.build.column_trie, ColumnTrieBuildMode::Incremental);
+        assert_eq!(DsChoices::default().build, BuildModes::default());
+        assert_eq!(BuildModes::default().column_trie, ColumnTrieBuildMode::Bulk);
+        assert_eq!(BuildModes::default().hash_trie, HashTrieBuildMode::Serial);
         assert!(DsChoices::resolve(
             IndexStructureSelector::TreeTrie,
             &LayoutChoices::default(),

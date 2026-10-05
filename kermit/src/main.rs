@@ -667,8 +667,9 @@ fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRu
             hasher,
             pruning,
             config,
+            build,
         } => with_hash_trie_layout!(hasher, pruning, |H, P| build_join_runner(
-            HashHtj::<H, P>::new(config, optimiser),
+            HashHtj::<H, P>::new(config, build, optimiser),
             cell,
             &args.relations
         )),
