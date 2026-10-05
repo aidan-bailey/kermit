@@ -28,6 +28,8 @@ mod heap_size;
 mod morsel;
 mod relation;
 mod seek;
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 #[cfg(test)]
 mod test_support;
 mod tuple_scan;

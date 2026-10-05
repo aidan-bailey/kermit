@@ -160,13 +160,21 @@ fn first_key_splitters(tuples: &[Vec<usize>], partitions: usize) -> Vec<usize> {
     splitters
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     /// The `(threads, partition sizes)` of every parallel build on this
     /// thread. Every build mode builds the same trie, so only this record can
-    /// tell a test which build ran, and where it put its tuples.
+    /// tell a test which build ran, and where it put its tuples. Other
+    /// crates' tests read it through `test_hooks` (the `test-hooks` feature).
     static PARALLEL_BUILDS: std::cell::RefCell<Vec<(usize, Vec<usize>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes this thread's record of parallel builds, oldest first, leaving it
+/// empty: the `(threads, partition sizes)` of each.
+#[cfg(feature = "test-hooks")]
+pub(crate) fn take_parallel_builds() -> Vec<(usize, Vec<usize>)> {
+    PARALLEL_BUILDS.with(|builds| builds.take())
 }
 
 impl<S: SeekStrategy> TreeTrie<S> {
@@ -223,7 +231,7 @@ impl<S: SeekStrategy> TreeTrie<S> {
             splitters.len() + 1,
             |tuple| splitters.partition_point(|&splitter| splitter <= tuple[0]),
         );
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-hooks"))]
         PARALLEL_BUILDS.with(|builds| {
             let sizes = partitions.iter().map(|partition| partition.len()).collect();
             builds.borrow_mut().push((threads.get(), sizes));

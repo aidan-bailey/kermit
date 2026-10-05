@@ -27,5 +27,7 @@ serde_yaml = "0.9"
 
 [dev-dependencies]
 allocation-counter = "0.8"
+# The build records `execution.rs`'s tests read (`kermit_ds::test_hooks`).
+kermit-ds = { version = "0.2.0", path = "../kermit-ds", features = ["test-hooks"] }
 paste = "1.0.15"
 tempfile = "3"

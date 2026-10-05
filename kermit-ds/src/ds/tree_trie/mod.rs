@@ -7,6 +7,8 @@ mod tree_trie_iter;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "test-hooks")]
+pub(crate) use implementation::take_parallel_builds;
 pub use {
     build_mode::{ParseTreeTrieBuildModeError, TreeTrieBuildMode},
     implementation::TreeTrie,
