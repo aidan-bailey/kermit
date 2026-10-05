@@ -2,12 +2,15 @@
 //! known set of tuples — the BuildMode category of the optimization standard
 //! (`docs/specs/optimization-standard.md`).
 
-use std::{fmt, str::FromStr};
+use {
+    crate::morsel::Threads,
+    std::{fmt, str::FromStr},
+};
 
 /// How a [`HashTrie`](super::HashTrie) is built from a known set of tuples.
 /// Every mode builds the identical trie — the same buckets and the same
 /// capacities — so the mode changes how long the build takes, never the
-/// trie it builds (issue #91).
+/// trie it builds (issues #91, #94).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HashTrieBuildMode {
     /// One insert per tuple, in input order: Algorithm 2 of the paper, and
@@ -18,6 +21,10 @@ pub enum HashTrieBuildMode {
     /// attribute's hash, build each partition separately, then merge
     /// (SIGMOD 2020 §3.3.2).
     Radix(RadixBits),
+    /// The radix build's partition and build steps on this many threads,
+    /// the calling thread included: the morsel-driven parallel build
+    /// (`docs/data-structures/parallel-build.md`, issue #94).
+    Parallel(Threads),
 }
 
 /// The radix bits of a `radix` build: `2^bits` partitions, `bits` in
@@ -110,6 +117,7 @@ impl kermit_iters::BuildMode for HashTrieBuildMode {
         match self {
             | Self::Serial => "serial".to_owned(),
             | Self::Radix(bits) => format!("radix:{}", bits.get()),
+            | Self::Parallel(threads) => format!("parallel:{}", threads.get()),
         }
     }
 }
@@ -139,6 +147,10 @@ mod tests {
     fn axis_values_and_default_are_pinned() {
         assert_eq!(HashTrieBuildMode::Serial.axis_value(), "serial");
         assert_eq!(radix(8).axis_value(), "radix:8");
+        assert_eq!(
+            HashTrieBuildMode::Parallel(Threads::new(8).unwrap()).axis_value(),
+            "parallel:8"
+        );
         assert_eq!(HashTrieBuildMode::default(), HashTrieBuildMode::Serial);
     }
 

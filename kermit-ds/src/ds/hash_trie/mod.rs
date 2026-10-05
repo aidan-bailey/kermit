@@ -18,9 +18,12 @@ mod hash_trie_iter;
 mod identity;
 mod implementation;
 mod node;
+mod parallel;
 mod pruning;
 mod radix;
 
+#[cfg(feature = "test-hooks")]
+pub(crate) use parallel::take_parallel_builds;
 pub use {
     build_mode::{HashTrieBuildMode, InvalidRadixBits, ParseHashTrieBuildModeError, RadixBits},
     config::{HashTrieConfig, InvalidLoadFactor, LoadFactor},

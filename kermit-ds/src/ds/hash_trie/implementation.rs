@@ -24,6 +24,7 @@ use {
         config::{HashTrieConfig, LoadFactor},
         expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
         node::HashTrieNode,
+        parallel,
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
         radix,
     },
@@ -61,9 +62,9 @@ use {
 /// (via [`ConfigurableRelation`](crate::relation::ConfigurableRelation)) are
 /// the config-carrying constructors; `new` / `from_tuples` are thin wrappers
 /// over them that supply the default configuration. A known set of tuples
-/// can also be built by the `radix:K` BuildMode
+/// can also be built by the `radix:K` and `parallel:N` BuildModes
 /// ([`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
-/// or [`BuildModeRelation`]), which builds the identical trie.
+/// or [`BuildModeRelation`]), which build the identical trie.
 ///
 /// # Layout parameters
 ///
@@ -424,7 +425,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// `mode` changes only how long this takes.
     ///
     /// `Serial` is [`ConfigurableRelation::from_tuples_with_config`],
-    /// unchanged; `Radix` partitions first (see `radix.rs`).
+    /// unchanged; `Radix` partitions first (see `radix.rs`), and
+    /// `Parallel` runs the radix build's partition and build steps on threads
+    /// (see `parallel.rs`).
     ///
     /// # Panics
     ///
@@ -438,6 +441,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             | HashTrieBuildMode::Radix(bits) => {
                 Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
                     radix::fill_root::<H, P, E>(root, arity, tuples, bits, config.load_factor)
+                })
+            },
+            | HashTrieBuildMode::Parallel(threads) => {
+                Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
+                    parallel::fill_root::<H, P, E>(root, arity, tuples, threads, config.load_factor)
                 })
             },
         }
