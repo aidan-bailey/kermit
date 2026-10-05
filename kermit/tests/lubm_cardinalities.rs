@@ -42,6 +42,10 @@ use {
     },
 };
 
+/// Builds one optimiser: a planner owns its optimiser, so each policy
+/// needs a fresh one.
+type NewOptimiser = fn() -> Box<dyn QueryOptimiser>;
+
 fn java_available() -> bool {
     Command::new("java")
         .arg("-version")
@@ -157,7 +161,7 @@ fn lubm_one_university_query_cardinalities_match_paper() {
     // row here whenever an optimiser is added.
     // Every column-order policy too: under `any` an atom may read a
     // reordered copy, which must give the same answers (issue #93).
-    let optimisers: Vec<(&str, fn() -> Box<dyn QueryOptimiser>)> = vec![
+    let optimisers: Vec<(&str, NewOptimiser)> = vec![
         ("lexicographic", || Box::new(LexicographicOptimiser)),
         ("cardinality", || Box::new(CardinalityOptimiser)),
         ("cost-based", || Box::new(CostBasedOptimiser::default())),
