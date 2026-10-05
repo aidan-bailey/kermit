@@ -8,11 +8,13 @@
 //! (pre-root).
 //!
 //! A [`Frame::Table`] is `(node, bucket_index)` on an `Inner` / `Leaf`
-//! node. A [`Frame::Singleton`] carries the singleton frame type the
-//! pruning policy `P` chooses: under `SingletonPruning` it emulates the
-//! one-entry table a pruned level would have held (see `pruning.rs`), and
-//! under `NoPruning` it is uninhabited, so the variant vanishes and a
-//! frame is exactly the `(node, bucket_index)` pair.
+//! node. Under `LazyExpansion`, `open` first resolves an unexpanded child
+//! into its table (`HashTrie::resolve`), so frames, keys, lookups and leaf
+//! chains are those of the eager trie. A [`Frame::Singleton`] carries the
+//! singleton frame type the pruning policy `P` chooses: under
+//! `SingletonPruning` it emulates the one-entry table a pruned level would have
+//! held (see `pruning.rs`), and under `NoPruning` it is uninhabited, so the
+//! variant vanishes and a frame is exactly the `(node, bucket_index)` pair.
 //!
 //! On every `open`, we descend either into the root (when the stack is
 //! empty) or into the child of the current bucket. In the table case we
@@ -23,6 +25,7 @@
 
 use {
     super::{
+        expansion::{EagerExpansion, ExpansionPolicy},
         implementation::HashTrie,
         node::HashTrieNode,
         pruning::{NoPruning, PruningPolicy, SingletonFrame, SingletonPayload},
@@ -32,10 +35,10 @@ use {
 };
 
 /// One opened level of the trie.
-enum Frame<'a, P: PruningPolicy> {
+enum Frame<'a, P: PruningPolicy, E: ExpansionPolicy> {
     /// A bucket within an `Inner` or `Leaf` node — never a `Singleton`.
     Table {
-        node: &'a HashTrieNode<P>,
+        node: &'a HashTrieNode<P, E>,
         idx: usize,
     },
     /// Level `depth` of a pruned subtrie; the frame type is `P::Frame`,
@@ -44,7 +47,7 @@ enum Frame<'a, P: PruningPolicy> {
     Singleton(P::Frame<'a>),
 }
 
-impl<P: PruningPolicy> Frame<'_, P> {
+impl<P: PruningPolicy, E: ExpansionPolicy> Frame<'_, P, E> {
     fn at_end(&self) -> bool {
         match self {
             | Frame::Table {
@@ -57,9 +60,9 @@ impl<P: PruningPolicy> Frame<'_, P> {
 }
 
 /// What `open` found below the current position.
-enum Descent<'a, P: PruningPolicy> {
+enum Descent<'a, P: PruningPolicy, E: ExpansionPolicy> {
     /// A table node to descend into.
-    Node(&'a HashTrieNode<P>),
+    Node(&'a HashTrieNode<P, E>),
     /// Stay inside a pruned subtrie: emulate the next level down for
     /// `tuple`. The depth is the one `open` already computed.
     Deeper(&'a Vec<usize>),
@@ -75,14 +78,19 @@ enum Descent<'a, P: PruningPolicy> {
 /// table would have stored.
 ///
 /// See the module docs for the position model.
-pub struct HashTrieIter<'a, H: HashStrategy = SipHashStrategy, P: PruningPolicy = NoPruning> {
-    stack: Vec<Frame<'a, P>>,
-    trie: &'a HashTrie<H, P>,
+pub struct HashTrieIter<
+    'a,
+    H: HashStrategy = SipHashStrategy,
+    P: PruningPolicy = NoPruning,
+    E: ExpansionPolicy = EagerExpansion,
+> {
+    stack: Vec<Frame<'a, P, E>>,
+    trie: &'a HashTrie<H, P, E>,
 }
 
-impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
+impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIter<'a, H, P, E> {
     /// Construct a fresh iterator positioned before the root.
-    pub(crate) fn new(trie: &'a HashTrie<H, P>) -> Self {
+    pub(crate) fn new(trie: &'a HashTrie<H, P, E>) -> Self {
         Self {
             stack: Vec::new(),
             trie,
@@ -92,9 +100,12 @@ impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
     fn arity(&self) -> usize { self.trie.header().arity() }
 
     /// The frame that opening `child` at `depth` produces, positioned on
-    /// its first entry (or past-end if it has none).
-    fn frame_for(child: &'a HashTrieNode<P>, depth: usize) -> Frame<'a, P> {
-        match child {
+    /// its first entry (or past-end if it has none). An unexpanded child
+    /// is built here, the one expansion site (`HashTrie::resolve`); the
+    /// built node is always a table, so a frame never holds `Unexpanded`.
+    fn frame_for(&self, child: &'a HashTrieNode<P, E>, depth: usize) -> Frame<'a, P, E> {
+        let trie: &'a HashTrie<H, P, E> = self.trie;
+        match trie.resolve(child, depth) {
             | HashTrieNode::Singleton(payload) => Self::singleton_frame(payload.tuple(), depth),
             | table => Frame::Table {
                 node: table,
@@ -107,7 +118,7 @@ impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
     // and hands it back from `tuple()`, which feeds `leaf_tuples`'
     // `&[Vec<usize>]` via `slice::from_ref`.
     #[allow(clippy::ptr_arg)]
-    fn singleton_frame(tuple: &'a Vec<usize>, depth: usize) -> Frame<'a, P> {
+    fn singleton_frame(tuple: &'a Vec<usize>, depth: usize) -> Frame<'a, P, E> {
         Frame::Singleton(P::Frame::new(tuple, depth, H::hash(tuple[depth])))
     }
 
@@ -116,7 +127,7 @@ impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
     /// Matches on `*node` and copies the singleton's `tuple` reference out
     /// of the frame so the returned references carry the trie lifetime
     /// `'a`, not the shorter borrow of `self.stack`.
-    fn descent(&self) -> Descent<'a, P> {
+    fn descent(&self) -> Descent<'a, P, E> {
         match self.stack.last() {
             | None => Descent::Node(self.trie.root()),
             | Some(Frame::Table {
@@ -128,9 +139,9 @@ impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
                     | None => Descent::Blocked, // current bucket empty / past-end
                 },
                 | HashTrieNode::Leaf(_) => Descent::Blocked,
-                | HashTrieNode::Singleton(_) => unreachable!(
-                    "Table frame holds a Singleton; frame_for routes pruned subtries to \
-                     Frame::Singleton"
+                | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => unreachable!(
+                    "Table frame holds a Singleton or Unexpanded node; frame_for routes pruned \
+                     subtries to Frame::Singleton and open resolves unexpanded children first"
                 ),
             },
             | Some(Frame::Singleton(s)) => {
@@ -146,7 +157,9 @@ impl<'a, H: HashStrategy, P: PruningPolicy> HashTrieIter<'a, H, P> {
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> HashTrieIterator for HashTrieIter<'_, H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIterator
+    for HashTrieIter<'_, H, P, E>
+{
     fn key(&self) -> Option<u64> {
         match self.stack.last()? {
             | Frame::Table {
@@ -219,7 +232,7 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrieIterator for HashTrieIter<'_, H,
         // open returns false, with no offset arithmetic to overshoot.
         let depth = self.stack.len();
         let frame = match self.descent() {
-            | Descent::Node(child) => Self::frame_for(child, depth),
+            | Descent::Node(child) => self.frame_for(child, depth),
             | Descent::Deeper(tuple) => Self::singleton_frame(tuple, depth),
             | Descent::Blocked => return false,
         };
@@ -238,9 +251,9 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrieIterator for HashTrieIter<'_, H,
             } => match *node {
                 | HashTrieNode::Leaf(t) => t.value_at(*idx).map(|v| v.as_slice()),
                 | HashTrieNode::Inner(_) => None,
-                | HashTrieNode::Singleton(_) => unreachable!(
-                    "Table frame holds a Singleton; frame_for routes pruned subtries to \
-                     Frame::Singleton"
+                | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => unreachable!(
+                    "Table frame holds a Singleton or Unexpanded node; frame_for routes pruned \
+                     subtries to Frame::Singleton and open resolves unexpanded children first"
                 ),
             },
             // The top frame stands at depth `stack.len() - 1`, so it is the
@@ -435,8 +448,8 @@ mod tests {
         // The `NoPruning` frame collapses to one inhabited variant, so the
         // stack entry is exactly the pre-pruning `(node, idx)` pair.
         assert_eq!(
-            std::mem::size_of::<Frame<'static, NoPruning>>(),
-            std::mem::size_of::<(&'static HashTrieNode<NoPruning>, usize)>()
+            std::mem::size_of::<Frame<'static, NoPruning, EagerExpansion>>(),
+            std::mem::size_of::<(&'static HashTrieNode<NoPruning, EagerExpansion>, usize)>()
         );
     }
 
@@ -597,5 +610,52 @@ mod tests {
         probe(&mut ib, 3, 0, &mut b);
         assert_eq!(a, b);
         assert!(!a.is_empty());
+    }
+
+    // ── Lazy expansion ─────────────────────────────────────────────────
+
+    use crate::ds::hash_trie::expansion::{LazyExpansion, PendingChild};
+
+    type Lazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
+
+    /// How many of the root's children a probe has expanded.
+    fn expanded_root_children(trie: &Lazy) -> usize {
+        match trie.root() {
+            | HashTrieNode::Inner(t) => t
+                .iter()
+                .filter(|(_, c)| matches!(c, HashTrieNode::Unexpanded(p) if p.built().is_some()))
+                .count(),
+            | _ => panic!("arity >= 2 has an Inner root"),
+        }
+    }
+
+    #[test]
+    fn open_expands_only_the_child_it_enters() {
+        let trie = Lazy::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![4, 5]]);
+        let mut it = HashTrieIter::new(&trie);
+        assert!(it.open()); // root: always built
+        assert_eq!(expanded_root_children(&trie), 0);
+        assert!(it.open()); // first child: expanded now
+        assert_eq!(expanded_root_children(&trie), 1);
+        assert!(it.leaf_tuples().is_some());
+        assert!(it.up());
+        it.next();
+        assert!(it.open()); // its sibling, after `up` and `next`
+        assert_eq!(expanded_root_children(&trie), 2);
+        assert!(it.up());
+        assert!(it.up());
+        assert!(it.open());
+        assert!(it.open()); // re-entering an expanded child builds nothing new
+        assert_eq!(expanded_root_children(&trie), 2);
+    }
+
+    #[test]
+    fn a_failed_lookup_expands_nothing() {
+        let trie = Lazy::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3]]);
+        let mut it = HashTrieIter::new(&trie);
+        assert!(it.open());
+        assert!(!it.lookup(h(99)));
+        assert!(!it.open());
+        assert_eq!(expanded_root_children(&trie), 0);
     }
 }

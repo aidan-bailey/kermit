@@ -14,8 +14,9 @@
 
 use {
     super::{
-        build_mode::RadixBits, config::LoadFactor, hash_table::HashTable, implementation::HashTrie,
-        node::HashTrieNode, pruning::PruningPolicy,
+        build_mode::RadixBits, config::LoadFactor, expansion::ExpansionPolicy,
+        hash_table::HashTable, implementation::HashTrie, node::HashTrieNode,
+        pruning::PruningPolicy,
     },
     kermit_iters::HashStrategy,
 };
@@ -29,25 +30,28 @@ type Arrival<V> = (usize, u64, V);
 
 /// Fills the empty `root` with `tuples` by the `radix:bits` build. Every
 /// tuple must have `arity` attributes; the caller checks.
-pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy>(
-    root: &mut HashTrieNode<P>, arity: usize, tuples: Vec<Vec<usize>>, bits: RadixBits,
+pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    root: &mut HashTrieNode<P, E>, arity: usize, tuples: Vec<Vec<usize>>, bits: RadixBits,
     load_factor: LoadFactor,
 ) {
     // One of the two stays empty: the root is `Inner` for arity ≥ 2 (values
-    // are subtries) and `Leaf` for arity 1 (values are chains).
+    // are subtries, or under lazy expansion their pending lists) and `Leaf`
+    // for arity 1 (values are chains).
     let mut subtries = Vec::new();
     let mut chains = Vec::new();
     for partition in partition::<H>(tuples, bits) {
         if partition.is_empty() {
             continue;
         }
-        let (scratch, first_seen) = build_scratch_root::<H, P>(partition, arity, load_factor);
+        let (scratch, first_seen) = build_scratch_root::<H, P, E>(partition, arity, load_factor);
         match scratch {
             | HashTrieNode::Inner(table) => {
                 take_in_arrival_order(table, &first_seen, &mut subtries)
             },
             | HashTrieNode::Leaf(table) => take_in_arrival_order(table, &first_seen, &mut chains),
-            | HashTrieNode::Singleton(_) => unreachable!("a root is never pruned"),
+            | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
+                unreachable!("a root is never pruned or unexpanded")
+            },
         }
     }
     match root {
@@ -55,7 +59,9 @@ pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy>(
             insert_in_first_appearance_order(table, subtries, load_factor)
         },
         | HashTrieNode::Leaf(table) => insert_in_first_appearance_order(table, chains, load_factor),
-        | HashTrieNode::Singleton(_) => unreachable!("a root is never pruned"),
+        | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
+            unreachable!("a root is never pruned or unexpanded")
+        },
     }
 }
 
@@ -86,15 +92,15 @@ fn partition<H: HashStrategy>(tuples: Vec<Vec<usize>>, bits: RadixBits) -> Vec<V
 /// the serial build's own `insert_at`. Returns the scratch root and, for
 /// each key it holds, the input index of the tuple that introduced it and
 /// the key's hash, in arrival order.
-fn build_scratch_root<H: HashStrategy, P: PruningPolicy>(
+fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     partition: Vec<Indexed>, arity: usize, load_factor: LoadFactor,
-) -> (HashTrieNode<P>, Vec<(usize, u64)>) {
-    let mut scratch = HashTrie::<H, P>::make_root(arity);
+) -> (HashTrieNode<P, E>, Vec<(usize, u64)>) {
+    let mut scratch = HashTrie::<H, P, E>::make_root(arity);
     let mut first_seen = Vec::new();
     for (index, tuple) in partition {
         let key = tuple[0];
         let keys_before = scratch.len();
-        HashTrie::<H, P>::insert_at(&mut scratch, 0, arity, tuple, load_factor);
+        HashTrie::<H, P, E>::insert_at(&mut scratch, 0, arity, tuple, load_factor);
         if scratch.len() > keys_before {
             first_seen.push((index, H::hash(key)));
         }
@@ -146,6 +152,7 @@ mod tests {
             ds::hash_trie::{
                 build_mode::HashTrieBuildMode,
                 config::HashTrieConfig,
+                expansion::{EagerExpansion, LazyExpansion, PendingChild},
                 pruning::{NoPruning, SingletonPayload, SingletonPruning},
             },
             heap_size::HeapSize,
@@ -186,7 +193,9 @@ mod tests {
         }
     }
 
-    fn assert_same_node<P: PruningPolicy>(a: &HashTrieNode<P>, b: &HashTrieNode<P>, path: &str) {
+    fn assert_same_node<P: PruningPolicy, E: ExpansionPolicy>(
+        a: &HashTrieNode<P, E>, b: &HashTrieNode<P, E>, path: &str,
+    ) {
         match (a, b) {
             | (HashTrieNode::Inner(x), HashTrieNode::Inner(y)) => {
                 assert_same_table(x, y, path, &|x, y, path| assert_same_node(x, y, path))
@@ -202,15 +211,24 @@ mod tests {
                     "{path}: singleton capacity"
                 );
             },
+            | (HashTrieNode::Unexpanded(x), HashTrieNode::Unexpanded(y)) => {
+                // Building expands nothing, so both children are still the
+                // pending lists `insert_at` appended to.
+                assert!(
+                    x.built().is_none() && y.built().is_none(),
+                    "{path}: expanded during the build"
+                );
+                assert_same_chain(&x.pending(), &y.pending(), &format!("{path}: pending"));
+            },
             | _ => panic!("{path}: node variants differ"),
         }
     }
 
     /// The array-level identity the standard requires of a BuildMode:
     /// every table's buckets and capacity, every chain and tuple capacity,
-    /// every singleton, the heap size and the tuple count.
-    fn assert_same_trie<H: HashStrategy, P: PruningPolicy>(
-        a: &HashTrie<H, P>, b: &HashTrie<H, P>, label: &str,
+    /// every singleton and pending list, the heap size and the tuple count.
+    fn assert_same_trie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
     ) {
         assert_same_node(a.root(), b.root(), label);
         assert_eq!(
@@ -287,7 +305,7 @@ mod tests {
 
     /// `radix:K` builds the trie `serial` builds, for every arity, load
     /// factor, bit count and input.
-    fn check_identity<H: HashStrategy, P: PruningPolicy>() {
+    fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
             for &percent in LOAD_PERCENTS {
                 let config = HashTrieConfig {
@@ -297,7 +315,7 @@ mod tests {
                     let radix = HashTrieBuildMode::Radix(RadixBits::new(bits).unwrap());
                     for (input, tuples) in inputs(arity) {
                         let build = |mode| {
-                            HashTrie::<H, P>::from_tuples_with_config_and_build_mode(
+                            HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
                                 arity.into(),
                                 config,
                                 mode,
@@ -305,9 +323,10 @@ mod tests {
                             )
                         };
                         let label = format!(
-                            "{}/{} arity {arity}, load {percent}%, radix:{bits}, {input}",
+                            "{}/{}/{} arity {arity}, load {percent}%, radix:{bits}, {input}",
                             H::NAME,
-                            P::NAME
+                            P::NAME,
+                            E::NAME
                         );
                         assert_same_trie(&build(HashTrieBuildMode::Serial), &build(radix), &label);
                     }
@@ -318,22 +337,28 @@ mod tests {
 
     #[test]
     fn radix_builds_the_serial_trie_under_siphash() {
-        check_identity::<SipHashStrategy, NoPruning>();
-        check_identity::<SipHashStrategy, SingletonPruning>();
+        check_identity::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_identity::<SipHashStrategy, SingletonPruning, EagerExpansion>();
+        check_identity::<SipHashStrategy, NoPruning, LazyExpansion>();
+        check_identity::<SipHashStrategy, SingletonPruning, LazyExpansion>();
     }
 
     #[test]
     fn radix_builds_the_serial_trie_under_fxhash() {
-        check_identity::<FxHashStrategy, NoPruning>();
-        check_identity::<FxHashStrategy, SingletonPruning>();
+        check_identity::<FxHashStrategy, NoPruning, EagerExpansion>();
+        check_identity::<FxHashStrategy, SingletonPruning, EagerExpansion>();
+        check_identity::<FxHashStrategy, NoPruning, LazyExpansion>();
+        check_identity::<FxHashStrategy, SingletonPruning, LazyExpansion>();
     }
 
     /// Every hash is below 10, so every tuple lands in partition 0, and
     /// distinct keys share full hashes, root entries and leaf chains.
     #[test]
     fn radix_builds_the_serial_trie_under_colliding_hashes() {
-        check_identity::<Mod10HashStrategy, NoPruning>();
-        check_identity::<Mod10HashStrategy, SingletonPruning>();
+        check_identity::<Mod10HashStrategy, NoPruning, EagerExpansion>();
+        check_identity::<Mod10HashStrategy, SingletonPruning, EagerExpansion>();
+        check_identity::<Mod10HashStrategy, NoPruning, LazyExpansion>();
+        check_identity::<Mod10HashStrategy, SingletonPruning, LazyExpansion>();
     }
 
     #[test]

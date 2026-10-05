@@ -10,9 +10,9 @@ use {clap::ValueEnum, std::str::FromStr};
 pub use {
     column_trie::{ColumnTrie, ColumnTrieBuildMode},
     hash_trie::{
-        HashTrie, HashTrieBuildMode, HashTrieConfig, InvalidLoadFactor, InvalidRadixBits,
-        LoadFactor, NoPruning, ParseHashTrieBuildModeError, PruningPolicy, RadixBits,
-        SingletonPruning,
+        EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
+        InvalidLoadFactor, InvalidRadixBits, LazyExpansion, LoadFactor, NoPruning,
+        ParseHashTrieBuildModeError, PruningPolicy, RadixBits, SingletonPruning,
     },
     tree_trie::TreeTrie,
 };

@@ -71,7 +71,7 @@ semantics).
 |------------------|--------------------------|------------------|-------|
 | `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`. The `IndexStructure::axis_value` string. |
 | `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`. The `JoinAlgorithm::axis_value` string. |
-| `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
+| `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`, `"cost-based"`. A `"cost-based"` run's `end_to_end` includes its per-column statistics walk; its `iteration` does not. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
 | `query`          | `join`, `run`            | string           | Query name. `run`: from the YAML `queries:` list (e.g. `"triangle"`). `bench join`: the query file's stem. |
 | `benchmark`      | `join`, `run`            | string           | Workload name. `run`: YAML benchmark name (e.g. `"triangle"`, `"watdiv-stress-c1"`). `bench join`: `"adhoc"`. |
 | `relation_path`  | `ds`                     | string           | The single relation file passed to `bench ds`. Workspace-relative if invoked from the workspace root. |
@@ -147,8 +147,8 @@ during a benchmark run. These prefixes are **normative** — kermit-lab
 tooling relies on them for cross-DS comparison.
 
 - `ds_layout_<dim>` — compile-time layout choice on the data structure
-  (e.g., `ds_layout_hasher`, `ds_layout_pruning`, `ds_layout_seek`,
-  `ds_layout_pointer_encoding`).
+  (e.g., `ds_layout_hasher`, `ds_layout_pruning`, `ds_layout_expansion`,
+  `ds_layout_seek`, `ds_layout_pointer_encoding`).
 - `ds_config_<flag>` — runtime configuration value on the data structure
   (e.g., `ds_config_load_factor`).
 - `ds_build_mode` — construction-time build mode for the data structure
@@ -167,7 +167,8 @@ When pivoting bench reports in kermit-lab, downstream code should:
   structure that has the axis; every other structure's rows stay NaN (#85). For
   pre-standard reports predating this change, back-fill, on HashTrie rows,
   `ds_layout_hasher == "sip"` (the historical hash function),
-  `ds_layout_pruning == "off"` and `ds_config_load_factor == 0.7` (the
+  `ds_layout_pruning == "off"`, `ds_layout_expansion == "eager"` (every
+  HashTrie before #92) and `ds_config_load_factor == 0.7` (the
   historical constant), and, on ColumnTrie rows, `ds_build_mode ==
   "incremental"` (ColumnTrie's build before issue #84; every ColumnTrie
   report since carries the axis). `data_structure` has named HashTrie as
@@ -178,6 +179,15 @@ When pivoting bench reports in kermit-lab, downstream code should:
   `ColumnTrie` rows only. `TreeTrie` rows stay missing: its seek was
   linear before 9604293 (#67) and binary after, and a report cannot tell
   which. `HashTrie` has no seek.
+- `ds_layout_expansion` (HashTrie only, `"eager"` / `"lazy"`, #92). Under
+  `"lazy"` a join builds the children it first reaches, so `bench run` /
+  `bench join` never probe the engine they loaded: `iteration` times one
+  join against the relations **in their as-built state**, on a fresh build
+  made in untimed setup per sample, and `--verify` runs on a fresh build
+  too, so `space` always measures the relations as built. Every other
+  structure reuses one engine for `iteration`, which is the same state, so
+  every pre-existing cell measures what it did and the schema stays at
+  version 3.
 
 Adding new keys under these prefixes does not require a `schema_version`
 bump — the `axes` field is an open map.

@@ -10,8 +10,9 @@
 
 use {
     kermit_ds::{
-        define_build_mode_provider, define_config_provider, BuiltWith, Configured, HashTrie,
-        HashTrieBuildMode, HashTrieConfig, LoadFactor, RadixBits, SingletonPruning,
+        define_build_mode_provider, define_config_provider, BuiltWith, ConfigurableRelation,
+        Configured, HashTrie, HashTrieBuildMode, HashTrieConfig, LazyExpansion, LoadFactor,
+        NoPruning, PruningPolicy, RadixBits, SingletonPruning,
     },
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
@@ -64,6 +65,21 @@ type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;
 // and resolves by probing, so a 90 % cap stresses the probe loops hardest.
 type HashTrieMod10Dense = Configured<HashTrieMod10, NinetyPercent>;
 
+// ── Layout variant: lazy child expansion ────────────────────────────────
+//
+// Each hasher × pruning alias again, with every child below the root built
+// on the first `open` that reaches it. The traversal and lookup suites
+// therefore expand nodes mid-iteration on every descent.
+type HashTrieSipLazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
+type HashTrieFxLazy = HashTrie<FxHashStrategy, NoPruning, LazyExpansion>;
+type HashTrieMod10Lazy = HashTrie<Mod10HashStrategy, NoPruning, LazyExpansion>;
+type HashTrieSipPrunedLazy = HashTrie<SipHashStrategy, SingletonPruning, LazyExpansion>;
+type HashTrieFxPrunedLazy = HashTrie<FxHashStrategy, SingletonPruning, LazyExpansion>;
+type HashTrieMod10PrunedLazy = HashTrie<Mod10HashStrategy, SingletonPruning, LazyExpansion>;
+// Expansion reads the load factor too: a lazy child is built under the cap
+// the trie was configured with.
+type HashTrieSipDenseLazy = Configured<HashTrieSipLazy, NinetyPercent>;
+
 hash_trie_test_suite!(HashTrieSip, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieFx, FxHashStrategy);
@@ -83,10 +99,25 @@ hash_trie_test_suite!(HashTrieSipDense, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieMod10Dense, Mod10HashStrategy);
 
+hash_trie_test_suite!(HashTrieSipLazy, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieFxLazy, FxHashStrategy);
+
+hash_trie_test_suite!(HashTrieMod10Lazy, Mod10HashStrategy);
+
+hash_trie_test_suite!(HashTrieSipPrunedLazy, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieFxPrunedLazy, FxHashStrategy);
+
+hash_trie_test_suite!(HashTrieMod10PrunedLazy, Mod10HashStrategy);
+
+hash_trie_test_suite!(HashTrieSipDenseLazy, SipHashStrategy);
+
 // ── BuildMode: the radix build ──────────────────────────────────────────
 // Every build mode builds the identical trie (issue #91), so the iterator
-// contract must hold unchanged. Two bits make four partitions, so the 3–5
-// tuple fixtures spread over several partitions with several keys in each.
+// contract must hold unchanged, eager or lazy. Two bits make four
+// partitions, so the 3–5 tuple fixtures spread over several partitions
+// with several keys in each.
 define_build_mode_provider!(
     Radix2,
     HashTrieBuildMode,
@@ -94,8 +125,11 @@ define_build_mode_provider!(
 );
 
 type HashTrieSipRadix2 = BuiltWith<HashTrieSip, Radix2>;
+type HashTrieSipLazyRadix2 = BuiltWith<HashTrieSipLazy, Radix2>;
 
 hash_trie_test_suite!(HashTrieSipRadix2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipLazyRadix2, SipHashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"
@@ -210,5 +244,163 @@ mod hash_trie_collisions {
         let mut chain = it.leaf_tuples().expect("leaf chain").to_vec();
         chain.sort();
         assert_eq!(chain, vec![vec![1, 2], vec![11, 12]]);
+    }
+}
+
+/// A lazy trie, probed, must be indistinguishable from the eager trie built
+/// from the same tuples: the same keys, sizes, `at_end` and leaf chains, in
+/// the same order, after every operation. Expansion re-inserts a child's
+/// tuples in insertion order under the same load factor, so the expanded
+/// table *is* the eager one, and this is exact equality, not a multiset
+/// comparison. This is what makes an eager-vs-lazy timing a one-variable
+/// comparison.
+mod lazy_expansion {
+    use {
+        super::*,
+        kermit_ds::Relation,
+        kermit_iters::{HashTrieIterable, HashTrieIterator},
+    };
+
+    /// What a caller can observe after one operation.
+    #[derive(Debug, PartialEq)]
+    struct Obs {
+        returned: Ret,
+        key: Option<u64>,
+        size: usize,
+        at_end: bool,
+        leaf: Option<Vec<Vec<usize>>>,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum Ret {
+        Bool(bool),
+        Key(Option<u64>),
+    }
+
+    fn lcg(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *state >> 33
+    }
+
+    /// One pseudo-random operation, chosen from `state`, then the
+    /// observation. The choice depends only on `state` and on observations
+    /// equal so far, so two equal iterators take the same path.
+    fn step<H: HashStrategy>(it: &mut impl HashTrieIterator, state: &mut u64) -> Obs {
+        let returned = match lcg(state) % 4 {
+            | 0 => Ret::Bool(it.open()),
+            | 1 if !it.at_end() => Ret::Key(it.next()),
+            | 2 => Ret::Bool(it.lookup(H::hash((lcg(state) % 10) as usize))),
+            | _ => Ret::Bool(it.up()),
+        };
+        Obs {
+            returned,
+            key: it.key(),
+            size: it.size(),
+            at_end: it.at_end(),
+            leaf: it.leaf_tuples().map(<[Vec<usize>]>::to_vec),
+        }
+    }
+
+    /// `n` tuples of `arity` attributes over `0..domain`: small enough to
+    /// repeat prefixes and whole tuples (shared children, leaf chains,
+    /// duplicates).
+    fn random_tuples(seed: u64, n: usize, arity: usize, domain: u64) -> Vec<Vec<usize>> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                (0..arity)
+                    .map(|_| (lcg(&mut state) % domain) as usize)
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn assert_lazy_walks_like_eager<H: HashStrategy, P: PruningPolicy>(load_factor: u8) {
+        let config = HashTrieConfig {
+            load_factor: LoadFactor::percent(load_factor).unwrap(),
+        };
+        for arity in [2, 3] {
+            for seed in 1..=20u64 {
+                let tuples = random_tuples(seed, 80, arity, 6);
+                let eager =
+                    HashTrie::<H, P>::from_tuples_with_config(arity.into(), config, tuples.clone());
+                let lazy = HashTrie::<H, P, LazyExpansion>::from_tuples_with_config(
+                    arity.into(),
+                    config,
+                    tuples,
+                );
+                let (mut e, mut l) = (eager.hash_trie_iter(), lazy.hash_trie_iter());
+                let (mut se, mut sl) = (seed, seed);
+                for i in 0..400 {
+                    assert_eq!(
+                        step::<H>(&mut e, &mut se),
+                        step::<H>(&mut l, &mut sl),
+                        "arity {arity}, seed {seed}, step {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sip_lazy_walks_like_eager() {
+        assert_lazy_walks_like_eager::<SipHashStrategy, NoPruning>(70);
+    }
+
+    #[test]
+    fn fx_lazy_walks_like_eager() { assert_lazy_walks_like_eager::<FxHashStrategy, NoPruning>(70); }
+
+    #[test]
+    fn mod10_lazy_walks_like_eager() {
+        assert_lazy_walks_like_eager::<Mod10HashStrategy, NoPruning>(70);
+    }
+
+    #[test]
+    fn sip_pruned_lazy_walks_like_eager() {
+        assert_lazy_walks_like_eager::<SipHashStrategy, SingletonPruning>(70);
+    }
+
+    #[test]
+    fn fx_pruned_lazy_walks_like_eager() {
+        assert_lazy_walks_like_eager::<FxHashStrategy, SingletonPruning>(70);
+    }
+
+    #[test]
+    fn mod10_pruned_lazy_walks_like_eager() {
+        assert_lazy_walks_like_eager::<Mod10HashStrategy, SingletonPruning>(70);
+    }
+
+    /// Expansion reads the configured cap: a lazy child built under 50 % or
+    /// 90 % must match the eager table built under the same cap.
+    #[test]
+    fn lazy_walks_like_eager_under_other_load_factors() {
+        assert_lazy_walks_like_eager::<SipHashStrategy, NoPruning>(50);
+        assert_lazy_walks_like_eager::<Mod10HashStrategy, SingletonPruning>(90);
+    }
+
+    /// Two iterators interleaved on one lazy trie: whichever reaches a child
+    /// first expands it, and the other must then find the same table there.
+    #[test]
+    fn a_second_iterator_sees_the_first_ones_expansion() {
+        let tuples = random_tuples(7, 80, 3, 6);
+        let eager = HashTrieSip::from_tuples(3.into(), tuples.clone());
+        let lazy = HashTrieSipLazy::from_tuples(3.into(), tuples);
+        let (mut e1, mut e2) = (eager.hash_trie_iter(), eager.hash_trie_iter());
+        let (mut l1, mut l2) = (lazy.hash_trie_iter(), lazy.hash_trie_iter());
+        let (mut se1, mut sl1, mut se2, mut sl2) = (11u64, 11u64, 23u64, 23u64);
+        for i in 0..400 {
+            assert_eq!(
+                step::<SipHashStrategy>(&mut e1, &mut se1),
+                step::<SipHashStrategy>(&mut l1, &mut sl1),
+                "iterator 1, step {i}"
+            );
+            assert_eq!(
+                step::<SipHashStrategy>(&mut e2, &mut se2),
+                step::<SipHashStrategy>(&mut l2, &mut sl2),
+                "iterator 2, step {i}"
+            );
+        }
     }
 }

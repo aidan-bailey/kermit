@@ -139,6 +139,10 @@ impl<R: TrieIterable, P> TrieIterable for BuiltWith<R, P> {
     }
 }
 
+impl<R: crate::tuple_scan::TupleScan, P> crate::tuple_scan::TupleScan for BuiltWith<R, P> {
+    fn scan_tuples(&self, visit: impl FnMut(&[usize])) { self.inner.scan_tuples(visit) }
+}
+
 impl<R: HashTrieIterable, P> HashTrieIterable for BuiltWith<R, P> {
     fn hash_trie_iter(&self) -> impl HashTrieIterator { self.inner.hash_trie_iter() }
 }

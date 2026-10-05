@@ -10,6 +10,7 @@
 // on `hash_table` until that wiring lands.
 mod build_mode;
 mod config;
+mod expansion;
 #[allow(dead_code)]
 mod hash_table;
 mod hash_trie_iter;
@@ -21,6 +22,7 @@ mod radix;
 pub use {
     build_mode::{HashTrieBuildMode, InvalidRadixBits, ParseHashTrieBuildModeError, RadixBits},
     config::{HashTrieConfig, InvalidLoadFactor, LoadFactor},
+    expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
     implementation::HashTrie,
     pruning::{NoPruning, PruningPolicy, SingletonPruning},
 };

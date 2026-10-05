@@ -50,7 +50,7 @@ pub fn topological_order<K: Ord>(
 /// [`topological_order`], which orders it, and [`check_attribute_order`],
 /// which reports a cycle in it, so the two cannot disagree about which
 /// queries are answerable.
-struct Precedence {
+pub(crate) struct Precedence {
     /// `adjacency[v]`: the variables that must be bound after `v`.
     adjacency: Vec<HashSet<usize>>,
     /// Number of distinct variables that must be bound before each one.
@@ -58,7 +58,7 @@ struct Precedence {
 }
 
 impl Precedence {
-    fn new(num_vars: usize, predicate_variables: &[Vec<usize>]) -> Self {
+    pub(crate) fn new(num_vars: usize, predicate_variables: &[Vec<usize>]) -> Self {
         let mut adjacency: Vec<HashSet<usize>> = vec![HashSet::new(); num_vars];
         let mut in_degree: Vec<usize> = vec![0; num_vars];
         for vars in predicate_variables {
@@ -73,6 +73,24 @@ impl Precedence {
             adjacency,
             in_degree,
         }
+    }
+
+    /// The variables each variable must follow, as one bitmask per variable:
+    /// bit `u` of entry `v` is set when `u -> v` is an edge. A set of bound
+    /// variables `S` can bind `v` next exactly when `masks[v] & !S == 0`.
+    /// `None` past 64 variables, which a `u64` cannot index.
+    pub(crate) fn predecessor_masks(&self) -> Option<Vec<u64>> {
+        let num_vars = self.in_degree.len();
+        if num_vars > 64 {
+            return None;
+        }
+        let mut masks = vec![0u64; num_vars];
+        for (earlier, laters) in self.adjacency.iter().enumerate() {
+            for &later in laters {
+                masks[later] |= 1u64 << earlier;
+            }
+        }
+        Some(masks)
     }
 
     /// Kahn's algorithm, emitting the smallest-`rank` ready variable first.
@@ -266,6 +284,24 @@ mod tests {
                 atoms: vec![0, 1]
             })
         );
+    }
+
+    #[test]
+    fn predecessor_masks_mirror_the_edges() {
+        // Triangle: R(0,1), S(1,2), T(0,2) — edges 0->1, 1->2, 0->2.
+        let preds = vec![vec![0, 1], vec![1, 2], vec![0, 2]];
+        let masks = Precedence::new(3, &preds).predecessor_masks().unwrap();
+        assert_eq!(masks, vec![0b000, 0b001, 0b011]);
+    }
+
+    #[test]
+    fn predecessor_masks_stop_at_64_variables() {
+        let preds: Vec<Vec<usize>> = (0..65).map(|v| vec![v]).collect();
+        assert!(Precedence::new(65, &preds).predecessor_masks().is_none());
+        let masks = Precedence::new(64, &preds[..64])
+            .predecessor_masks()
+            .unwrap();
+        assert_eq!(masks.len(), 64);
     }
 
     #[test]

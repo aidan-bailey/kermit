@@ -5,18 +5,21 @@
 //! The table variant is fixed by depth: inner nodes live at depths
 //! `0..arity-1`, the leaf node at depth `arity-1`. A `Singleton` may stand
 //! in for either at any depth `1..arity` when singleton pruning is on and
-//! exactly one tuple lives below that bucket (SIGMOD 2020 §3.3.1, Figure 5).
+//! exactly one tuple lives below that bucket (SIGMOD 2020 §3.3.1, Figure 5),
+//! and an `Unexpanded` child may stand in for a table at any depth
+//! `1..arity` when expansion is lazy (Figure 6) until a probe builds it.
 //! No runtime check polices the depth rule — `HashTrie::insert_at`
 //! constructs the right variant based on the caller's known arity.
 
-use super::{hash_table::HashTable, pruning::PruningPolicy};
+use super::{expansion::ExpansionPolicy, hash_table::HashTable, pruning::PruningPolicy};
 
-/// A node in a hash trie, parameterised by the pruning policy so that the
-/// `Singleton` variant is uninhabited (and costs nothing) under
-/// `NoPruning`.
-pub(crate) enum HashTrieNode<P: PruningPolicy> {
+/// A node in a hash trie, parameterised by the pruning and expansion
+/// policies so that the `Singleton` variant is uninhabited (and costs
+/// nothing) under `NoPruning`, and the `Unexpanded` variant under
+/// `EagerExpansion`.
+pub(crate) enum HashTrieNode<P: PruningPolicy, E: ExpansionPolicy> {
     /// Inner level: hash table whose values are child nodes.
-    Inner(HashTable<HashTrieNode<P>>),
+    Inner(HashTable<HashTrieNode<P, E>>),
     /// Leaf level: hash table whose values are tuple chains. Each chain
     /// holds the full materialized tuples whose attribute hashes match the
     /// path of hashes from the root to this bucket.
@@ -33,9 +36,17 @@ pub(crate) enum HashTrieNode<P: PruningPolicy> {
     /// (`implementation.rs`) and `off_frame_is_the_bare_table_pair`
     /// (`hash_trie_iter.rs`).
     Singleton(P::Payload),
+    /// Unexpanded child (lazy child expansion, SIGMOD 2020 Figure 6): the
+    /// tuples below this bucket, kept as a list until a probe first opens
+    /// it, then the table built from them. Never the root. Holds
+    /// `E::Pending<Self>`: `Box<LazyChild<Self>>` when lazy, the uninhabited
+    /// `Never` when eager, so under `EagerExpansion` this variant costs
+    /// nothing (pinned by `node_does_not_grow_under_the_expansion_policy`).
+    /// `HashTrie::resolve` is the one place that expands it.
+    Unexpanded(E::Pending<HashTrieNode<P, E>>),
 }
 
-impl<P: PruningPolicy> HashTrieNode<P> {
+impl<P: PruningPolicy, E: ExpansionPolicy> HashTrieNode<P, E> {
     pub(crate) fn new_inner() -> Self { HashTrieNode::Inner(HashTable::new()) }
 
     pub(crate) fn new_leaf() -> Self { HashTrieNode::Leaf(HashTable::new()) }
@@ -62,12 +73,20 @@ impl<P: PruningPolicy> HashTrieNode<P> {
         panic!("HashTrieNode table accessor called on a Singleton (pruned subtrie)")
     }
 
+    /// As [`singleton_is_not_a_table`](Self::singleton_is_not_a_table):
+    /// `HashTrieIter` resolves an `Unexpanded` child before framing it.
+    #[cold]
+    #[inline(never)]
+    fn unexpanded_is_not_a_table() -> ! {
+        panic!("HashTrieNode table accessor called on an Unexpanded child (resolve it first)")
+    }
+
     // Variant-agnostic forwarding accessors. The two table variants wrap a
     // `HashTable<V>`, and these queries are independent of the value type
     // `V` (they read bucket structure and stored hashes, not values), so a
     // single accessor spares every call site the identical `match` on the
-    // node variant. The `Singleton` arm panics: a pruned subtrie has no
-    // table to forward to.
+    // node variant. The `Singleton` and `Unexpanded` arms panic: a pruned
+    // subtrie has no table to forward to, and an unexpanded one has none yet.
 
     /// Bucket-array length of this node's table (a power of two).
     #[inline]
@@ -76,6 +95,7 @@ impl<P: PruningPolicy> HashTrieNode<P> {
             | HashTrieNode::Inner(t) => t.buckets_len(),
             | HashTrieNode::Leaf(t) => t.buckets_len(),
             | HashTrieNode::Singleton(_) => Self::singleton_is_not_a_table(),
+            | HashTrieNode::Unexpanded(_) => Self::unexpanded_is_not_a_table(),
         }
     }
 
@@ -87,6 +107,7 @@ impl<P: PruningPolicy> HashTrieNode<P> {
             | HashTrieNode::Inner(t) => t.next_occupied(start),
             | HashTrieNode::Leaf(t) => t.next_occupied(start),
             | HashTrieNode::Singleton(_) => Self::singleton_is_not_a_table(),
+            | HashTrieNode::Unexpanded(_) => Self::unexpanded_is_not_a_table(),
         }
     }
 
@@ -97,6 +118,7 @@ impl<P: PruningPolicy> HashTrieNode<P> {
             | HashTrieNode::Inner(t) => t.hash_at(idx),
             | HashTrieNode::Leaf(t) => t.hash_at(idx),
             | HashTrieNode::Singleton(_) => Self::singleton_is_not_a_table(),
+            | HashTrieNode::Unexpanded(_) => Self::unexpanded_is_not_a_table(),
         }
     }
 
@@ -107,6 +129,7 @@ impl<P: PruningPolicy> HashTrieNode<P> {
             | HashTrieNode::Inner(t) => t.index_of(hash),
             | HashTrieNode::Leaf(t) => t.index_of(hash),
             | HashTrieNode::Singleton(_) => Self::singleton_is_not_a_table(),
+            | HashTrieNode::Unexpanded(_) => Self::unexpanded_is_not_a_table(),
         }
     }
 
@@ -117,6 +140,7 @@ impl<P: PruningPolicy> HashTrieNode<P> {
             | HashTrieNode::Inner(t) => t.len(),
             | HashTrieNode::Leaf(t) => t.len(),
             | HashTrieNode::Singleton(_) => Self::singleton_is_not_a_table(),
+            | HashTrieNode::Unexpanded(_) => Self::unexpanded_is_not_a_table(),
         }
     }
 }

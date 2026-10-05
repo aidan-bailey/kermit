@@ -1,9 +1,9 @@
 use {
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
-        ColumnTrieBuildMode, Configured, GallopingSeek, HashTrie, HashTrieBuildMode,
-        HashTrieConfig, LinearSeek, LoadFactor, PruningPolicy, RadixBits, SingletonPruning,
-        TreeTrie,
+        ColumnTrieBuildMode, Configured, ExpansionPolicy, GallopingSeek, HashTrie,
+        HashTrieBuildMode, HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning,
+        PruningPolicy, RadixBits, SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -48,8 +48,8 @@ parquet_test_suite!(ColumnTrieIncremental);
 type HashTrieSip = HashTrie<SipHashStrategy>;
 type HashTrieFx = HashTrie<FxHashStrategy>;
 
-fn sorted_tuples<H: kermit_iters::HashStrategy, P: PruningPolicy>(
-    relation: &HashTrie<H, P>,
+fn sorted_tuples<H: kermit_iters::HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    relation: &HashTrie<H, P, E>,
 ) -> Vec<Vec<usize>> {
     let mut tuples = relation.collect_tuples();
     tuples.sort();
@@ -68,6 +68,21 @@ type HashTrieFxPruned = HashTrie<FxHashStrategy, SingletonPruning>;
 parquet_test_suite!(HashTrieSipPruned, sorted_tuples);
 
 parquet_test_suite!(HashTrieFxPruned, sorted_tuples);
+
+// …and under lazy child expansion: unexpanded children still yield every
+// stored tuple, read from their pending lists.
+type HashTrieSipLazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
+type HashTrieFxLazy = HashTrie<FxHashStrategy, NoPruning, LazyExpansion>;
+type HashTrieSipPrunedLazy = HashTrie<SipHashStrategy, SingletonPruning, LazyExpansion>;
+type HashTrieFxPrunedLazy = HashTrie<FxHashStrategy, SingletonPruning, LazyExpansion>;
+
+parquet_test_suite!(HashTrieSipLazy, sorted_tuples);
+
+parquet_test_suite!(HashTrieFxLazy, sorted_tuples);
+
+parquet_test_suite!(HashTrieSipPrunedLazy, sorted_tuples);
+
+parquet_test_suite!(HashTrieFxPrunedLazy, sorted_tuples);
 
 // …and under the Config axis: a dense load factor keeps the round-trip whole.
 define_config_provider!(NinetyPercent, HashTrieConfig, HashTrieConfig {

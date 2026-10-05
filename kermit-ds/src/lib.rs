@@ -29,6 +29,7 @@ mod relation;
 mod seek;
 #[cfg(test)]
 mod test_support;
+mod tuple_scan;
 
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
@@ -36,9 +37,10 @@ pub use {
     cardinality::Cardinality,
     configured::{ConfigProvider, Configured},
     ds::{
-        ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieBuildMode, HashTrieConfig,
-        IndexStructure, InvalidLoadFactor, InvalidRadixBits, LoadFactor, NoPruning,
-        ParseHashTrieBuildModeError, PruningPolicy, RadixBits, SingletonPruning, TreeTrie,
+        ColumnTrie, ColumnTrieBuildMode, EagerExpansion, ExpansionPolicy, HashTrie,
+        HashTrieBuildMode, HashTrieConfig, IndexStructure, InvalidLoadFactor, InvalidRadixBits,
+        LazyExpansion, LoadFactor, NoPruning, ParseHashTrieBuildModeError, PruningPolicy,
+        RadixBits, SingletonPruning, TreeTrie,
     },
     heap_size::HeapSize,
     relation::{
@@ -47,4 +49,5 @@ pub use {
         RelationHeader,
     },
     seek::{BinarySeek, GallopingSeek, LinearSeek, SeekStrategy},
+    tuple_scan::TupleScan,
 };

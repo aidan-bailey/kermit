@@ -2,14 +2,17 @@
 //! one per attribute. Implements `Relation`, `JoinIterable`, `Projectable`,
 //! `HeapSize`, and `HashTrieIterable`.
 //!
-//! `HashTrie` is generic over two Layout dimensions: a
+//! `HashTrie` is generic over three Layout dimensions: a
 //! [`HashStrategy`](kermit_iters::HashStrategy) `H` (default
 //! [`SipHashStrategy`](kermit_iters::SipHashStrategy)), which controls how
-//! attribute values are hashed at every level of the trie, and a
+//! attribute values are hashed at every level of the trie, a
 //! [`PruningPolicy`] `P` (default [`NoPruning`]), which decides whether the
-//! `Singleton` node variant exists at all. They are the layout axes emitted
-//! by [`HasOptimizationAxes`](kermit_iters::HasOptimizationAxes) under
-//! `ds_layout_hasher` and `ds_layout_pruning`.
+//! `Singleton` node variant exists at all, and an [`ExpansionPolicy`] `E`
+//! (default [`EagerExpansion`]), which decides whether children below the
+//! root are built at construction or on the first probe that reaches them.
+//! They are the layout axes emitted by
+//! [`HasOptimizationAxes`](kermit_iters::HasOptimizationAxes) under
+//! `ds_layout_hasher`, `ds_layout_pruning` and `ds_layout_expansion`.
 //!
 //! Runtime values live in [`HashTrieConfig`] (the Config axis, emitted as
 //! `ds_config_<value>`); they reach the trie through
@@ -19,6 +22,7 @@ use {
     super::{
         build_mode::HashTrieBuildMode,
         config::{HashTrieConfig, LoadFactor},
+        expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
         node::HashTrieNode,
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
         radix,
@@ -43,6 +47,11 @@ use {
 ///   lives below it (order-independent). Under `NoPruning` no `Singleton` can
 ///   be constructed — its payload is uninhabited — and the structure is
 ///   identical to pre-pruning builds.
+/// - With `LazyExpansion`, every `Inner` bucket holds a `Singleton` (pruning
+///   on, exactly one tuple below it) or an `Unexpanded` child, never a table,
+///   and an expanded child's table is the eager table at that position (see
+///   `expand_level`). Under `EagerExpansion` no `Unexpanded` child can be
+///   constructed.
 ///
 /// # Construction
 ///
@@ -68,18 +77,29 @@ use {
 /// stores a one-tuple subtrie as that tuple, [`NoPruning`] (the default)
 /// makes the `Singleton` variant uninhabited so the instantiation compiles
 /// to the pre-pruning structure. Bench axis `ds_layout_pruning`.
-pub struct HashTrie<H: HashStrategy = SipHashStrategy, P: PruningPolicy = NoPruning> {
+///
+/// `E` is an [`ExpansionPolicy`] selecting whether children are built
+/// lazily: [`LazyExpansion`](super::LazyExpansion) keeps every child below
+/// the root as its tuples until a probe first opens it (SIGMOD 2020
+/// Figure 6), while [`EagerExpansion`] (the default) makes the
+/// `Unexpanded` variant uninhabited, so the instantiation compiles to the
+/// eager structure. Bench axis `ds_layout_expansion`.
+pub struct HashTrie<
+    H: HashStrategy = SipHashStrategy,
+    P: PruningPolicy = NoPruning,
+    E: ExpansionPolicy = EagerExpansion,
+> {
     header: RelationHeader,
-    root: HashTrieNode<P>,
+    root: HashTrieNode<P, E>,
     /// Number of stored tuples (multiset: duplicates count); maintained
     /// by `insert` and `from_tuples`.
     tuple_count: usize,
     /// Runtime values, fixed at construction; read by `insert_at`.
     config: HashTrieConfig,
-    _layout: PhantomData<(H, P)>,
+    _layout: PhantomData<(H, P, E)>,
 }
 
-impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// Whether a node at `depth` is the leaf level, i.e. the last attribute.
     /// Written `depth + 1 == arity` rather than `depth == arity - 1` to avoid
     /// the `usize` underflow at `arity == 0`.
@@ -90,7 +110,7 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
     /// when `is_leaf_depth(0, arity)`; `arity <= 1` matches that for every
     /// supported arity and additionally treats the unsupported nullary case
     /// as a leaf.)
-    pub(super) fn make_root(arity: usize) -> HashTrieNode<P> {
+    pub(super) fn make_root(arity: usize) -> HashTrieNode<P, E> {
         if arity <= 1 {
             HashTrieNode::new_leaf()
         } else {
@@ -100,7 +120,7 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
 
     /// Crate-visible accessor for the root node. Used by `HashTrieIter`
     /// (in the same crate) to navigate the trie via shared references.
-    pub(crate) fn root(&self) -> &HashTrieNode<P> { &self.root }
+    pub(crate) fn root(&self) -> &HashTrieNode<P, E> { &self.root }
 
     /// Walk the trie depth-first and return every materialized tuple.
     ///
@@ -121,11 +141,16 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
     /// for that call only, so the walk allocates nothing per tuple: O(n)
     /// time, O(arity) stack. The CLI's `bench ds` `iteration` and
     /// `end_to_end` metrics time this walk (issue #79).
+    ///
+    /// Under `LazyExpansion` an unexpanded child lends its pending tuples in
+    /// insertion order, and the walk expands nothing. A `visit` that opens
+    /// an iterator on this same trie and reaches such a child panics
+    /// (`BorrowMutError`).
     pub fn for_each_tuple<V: FnMut(&[usize])>(&self, mut visit: V) {
         Self::visit_at(&self.root, &mut visit);
     }
 
-    fn visit_at<V: FnMut(&[usize])>(node: &HashTrieNode<P>, visit: &mut V) {
+    fn visit_at<V: FnMut(&[usize])>(node: &HashTrieNode<P, E>, visit: &mut V) {
         match node {
             | HashTrieNode::Inner(table) => {
                 for (_, child) in table.iter() {
@@ -140,10 +165,18 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
                 }
             },
             | HashTrieNode::Singleton(payload) => visit(payload.tuple()),
+            | HashTrieNode::Unexpanded(pending) => match pending.built() {
+                | Some(built) => Self::visit_at(built, visit),
+                | None => {
+                    for tuple in pending.pending().iter() {
+                        visit(tuple);
+                    }
+                },
+            },
         }
     }
 
-    fn collect_at(node: &HashTrieNode<P>, out: &mut Vec<Vec<usize>>) {
+    fn collect_at(node: &HashTrieNode<P, E>, out: &mut Vec<Vec<usize>>) {
         match node {
             | HashTrieNode::Inner(table) => {
                 for (_, child) in table.iter() {
@@ -158,6 +191,10 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
                 }
             },
             | HashTrieNode::Singleton(payload) => out.push(payload.tuple().clone()),
+            | HashTrieNode::Unexpanded(pending) => match pending.built() {
+                | Some(built) => Self::collect_at(built, out),
+                | None => out.extend(pending.pending().iter().cloned()),
+            },
         }
     }
 
@@ -169,7 +206,7 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
     /// a fan-out: the evicted tuple stops as a new `Singleton` where the two
     /// diverge while only the new tuple keeps descending.
     pub(super) fn insert_at(
-        node: &mut HashTrieNode<P>, depth: usize, arity: usize, tuple: Vec<usize>,
+        node: &mut HashTrieNode<P, E>, depth: usize, arity: usize, tuple: Vec<usize>,
         load_factor: LoadFactor,
     ) {
         let key = tuple[depth];
@@ -187,12 +224,59 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
                     });
                     return;
                 }
+                if E::LAZY && table.get(hash).is_none() {
+                    // Fresh bucket, pruning off: defer the child's table
+                    // (Figure 6). The tuple waits in the child's list until a
+                    // probe opens it; `resolve` then builds the table. With
+                    // pruning on, the block above stored a `Singleton` first.
+                    table.entry_or_insert_with(hash, load_factor, || {
+                        HashTrieNode::Unexpanded(E::Pending::from_tuples(vec![tuple]))
+                    });
+                    return;
+                }
                 // The child lives at `depth + 1`; it is the leaf when that is
                 // the last attribute.
                 let child_is_leaf = Self::is_leaf_depth(depth + 1, arity);
                 let child = table.entry_or_insert_with(hash, load_factor, || {
                     HashTrieNode::new_table(child_is_leaf)
                 });
+                if E::LAZY {
+                    // The bucket existed (absence returned above), so the
+                    // closure did not run: under lazy expansion an `Inner`
+                    // bucket holds a `Singleton` or an `Unexpanded` child,
+                    // never a table.
+                    match child {
+                        | HashTrieNode::Unexpanded(pending) => match pending.built_mut() {
+                            | Some(built) => {
+                                Self::insert_at(built, depth + 1, arity, tuple, load_factor)
+                            },
+                            | None => pending.push(tuple),
+                        },
+                        | HashTrieNode::Singleton(_) => {
+                            // A second tuple below a pruned bucket: the child
+                            // becomes the unexpanded list of both. The evicted
+                            // tuple goes first, as an eager unprune re-inserts
+                            // it first, so expansion later builds the eager
+                            // table.
+                            let list = HashTrieNode::Unexpanded(E::Pending::from_tuples(
+                                Vec::with_capacity(2),
+                            ));
+                            let HashTrieNode::Singleton(evicted) = std::mem::replace(child, list)
+                            else {
+                                unreachable!("matched Singleton above")
+                            };
+                            let HashTrieNode::Unexpanded(pending) = child else {
+                                unreachable!("replaced by an Unexpanded child just above")
+                            };
+                            pending.push(evicted.into_tuple());
+                            pending.push(tuple);
+                        },
+                        | HashTrieNode::Inner(_) | HashTrieNode::Leaf(_) => unreachable!(
+                            "a lazy Inner bucket holds a Singleton or an Unexpanded child"
+                        ),
+                    }
+                    return;
+                }
                 if P::ENABLED && matches!(child, HashTrieNode::Singleton(_)) {
                     // Unprune: a second tuple has arrived, so the subtrie no
                     // longer holds exactly one. Swap in the table this level
@@ -212,19 +296,58 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
                 let chain = table.entry_or_insert_with(hash, load_factor, Vec::new);
                 chain.push(tuple);
             },
-            | HashTrieNode::Singleton(_) => {
+            | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
                 unreachable!(
-                    "insert_at descends through Inner/Leaf only; singletons are unpruned by the \
-                     parent"
+                    "insert_at descends through Inner/Leaf only; singletons are unpruned and \
+                     unexpanded children appended to by the parent"
                 )
             },
         }
     }
+
+    /// Builds the table a lazy child at `depth` would have held, from its
+    /// pending `tuples`, through the same `insert_at` construction uses.
+    /// Two consequences:
+    ///
+    /// - The child's own children come out `Unexpanded` (or `Singleton`), so
+    ///   each expansion builds exactly one level (Figure 6).
+    /// - The tuples arrive in insertion order, the order eager construction
+    ///   inserted them into this child, and linear probing places keys by
+    ///   insertion order under the same load factor. So the table is the eager
+    ///   table at this position, bucket for bucket, which the trace-equivalence
+    ///   tests in `kermit-ds/tests/hash_trie_tests.rs` pin.
+    fn expand_level(
+        tuples: Vec<Vec<usize>>, depth: usize, arity: usize, load_factor: LoadFactor,
+    ) -> HashTrieNode<P, E> {
+        let mut node = HashTrieNode::new_table(Self::is_leaf_depth(depth, arity));
+        for tuple in tuples {
+            Self::insert_at(&mut node, depth, arity, tuple, load_factor);
+        }
+        node
+    }
+
+    /// `node` as a probe sees it. An `Unexpanded` child is first built
+    /// (once; later calls return the same table), and any other node is
+    /// returned as is. `depth` is `node`'s depth.
+    ///
+    /// `HashTrieIter::open` is the only caller, so only a probe expands
+    /// anything. Every read-only walk (`collect_tuples`, `for_each_tuple`,
+    /// `heap_size_bytes`) reads the pending list instead.
+    pub(crate) fn resolve<'t>(
+        &'t self, node: &'t HashTrieNode<P, E>, depth: usize,
+    ) -> &'t HashTrieNode<P, E> {
+        match node {
+            | HashTrieNode::Unexpanded(pending) => pending.expand(|tuples| {
+                Self::expand_level(tuples, depth, self.header.arity(), self.config.load_factor)
+            }),
+            | other => other,
+        }
+    }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> JoinIterable for HashTrie<H, P> {}
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> JoinIterable for HashTrie<H, P, E> {}
 
-impl<H: HashStrategy, P: PruningPolicy> Relation for HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTrie<H, P, E> {
     fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self { Self::with_config(header, HashTrieConfig::default()) }
@@ -253,7 +376,9 @@ impl<H: HashStrategy, P: PruningPolicy> Relation for HashTrie<H, P> {
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> ConfigurableRelation for HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
+    for HashTrie<H, P, E>
+{
     type Config = HashTrieConfig;
 
     fn with_config(header: RelationHeader, config: HashTrieConfig) -> Self {
@@ -292,7 +417,7 @@ impl<H: HashStrategy, P: PruningPolicy> ConfigurableRelation for HashTrie<H, P> 
     fn config(&self) -> &HashTrieConfig { &self.config }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// Creates a trie holding `config`, populated with `tuples` and built by
     /// `mode` — the one constructor that takes both the Config and the
     /// BuildMode. Every mode builds the identical trie (issue #91), so
@@ -323,7 +448,13 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
                 }
                 let tuple_count = tuples.len();
                 let mut trie = Self::with_config(header, config);
-                radix::fill_root::<H, P>(&mut trie.root, arity, tuples, bits, config.load_factor);
+                radix::fill_root::<H, P, E>(
+                    &mut trie.root,
+                    arity,
+                    tuples,
+                    bits,
+                    config.load_factor,
+                );
                 trie.tuple_count = tuple_count;
                 trie
             },
@@ -331,7 +462,9 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> BuildModeRelation for HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
+    for HashTrie<H, P, E>
+{
     type BuildMode = HashTrieBuildMode;
 
     /// Builds with the default config; see
@@ -352,7 +485,9 @@ impl<H: HashStrategy, P: PruningPolicy> BuildModeRelation for HashTrie<H, P> {
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> crate::relation::Projectable for HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::relation::Projectable
+    for HashTrie<H, P, E>
+{
     fn project(&self, columns: Vec<usize>) -> Self {
         let arity = self.header.arity();
         for &c in &columns {
@@ -377,28 +512,45 @@ impl<H: HashStrategy, P: PruningPolicy> crate::relation::Projectable for HashTri
             .into_iter()
             .map(|tuple| columns.iter().map(|&c| tuple[c]).collect())
             .collect();
-        HashTrie::<H, P>::from_tuples_with_config(new_header, self.config, projected_tuples)
+        HashTrie::<H, P, E>::from_tuples_with_config(new_header, self.config, projected_tuples)
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> crate::heap_size::HeapSize for HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::heap_size::HeapSize
+    for HashTrie<H, P, E>
+{
     fn heap_size_bytes(&self) -> usize { node_heap_bytes(&self.root) }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> crate::cardinality::Cardinality for HashTrie<H, P> {
+/// The trie's own walk, [`HashTrie::for_each_tuple`], which reads unexpanded
+/// children's pending tuples instead of building them.
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::tuple_scan::TupleScan
+    for HashTrie<H, P, E>
+{
+    fn scan_tuples(&self, visit: impl FnMut(&[usize])) { self.for_each_tuple(visit) }
+}
+
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::cardinality::Cardinality
+    for HashTrie<H, P, E>
+{
     fn tuple_count(&self) -> usize { self.tuple_count }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> kermit_iters::HashTrieIterable for HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> kermit_iters::HashTrieIterable
+    for HashTrie<H, P, E>
+{
     fn hash_trie_iter(&self) -> impl kermit_iters::HashTrieIterator {
-        super::hash_trie_iter::HashTrieIter::<H, P>::new(self)
+        super::hash_trie_iter::HashTrieIter::<H, P, E>::new(self)
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy> kermit_iters::HasOptimizationAxes for HashTrie<H, P> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> kermit_iters::HasOptimizationAxes
+    for HashTrie<H, P, E>
+{
     /// The layout axes `ds_layout_hasher` (the strategy's
     /// `LayoutOption::NAME`, e.g. `"sip"` / `"fxhash"`) and
-    /// `ds_layout_pruning` (`"off"` / `"on"`), plus one
+    /// `ds_layout_pruning` (`"off"` / `"on"`) and `ds_layout_expansion`
+    /// (`"eager"` / `"lazy"`), plus one
     /// `ds_config_<value>` axis per [`HashTrieConfig`] value.
     fn optimization_axes(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
         let mut axes = std::collections::BTreeMap::new();
@@ -410,6 +562,10 @@ impl<H: HashStrategy, P: PruningPolicy> kermit_iters::HasOptimizationAxes for Ha
             "ds_layout_pruning".to_string(),
             serde_json::Value::String(<P as LayoutOption>::NAME.to_string()),
         );
+        axes.insert(
+            "ds_layout_expansion".to_string(),
+            serde_json::Value::String(<E as LayoutOption>::NAME.to_string()),
+        );
         for (suffix, value) in self.config.axes() {
             axes.insert(format!("ds_config_{suffix}"), value);
         }
@@ -417,7 +573,7 @@ impl<H: HashStrategy, P: PruningPolicy> kermit_iters::HasOptimizationAxes for Ha
     }
 }
 
-fn node_heap_bytes<P: PruningPolicy>(node: &HashTrieNode<P>) -> usize {
+fn node_heap_bytes<P: PruningPolicy, E: ExpansionPolicy>(node: &HashTrieNode<P, E>) -> usize {
     match node {
         | HashTrieNode::Inner(table) => {
             let shell = table.shell_heap_bytes();
@@ -428,20 +584,32 @@ fn node_heap_bytes<P: PruningPolicy>(node: &HashTrieNode<P>) -> usize {
             let shell = table.shell_heap_bytes();
             let chains: usize = table
                 .iter()
-                .map(|(_, chain)| {
-                    chain.capacity() * std::mem::size_of::<Vec<usize>>()
-                        + chain
-                            .iter()
-                            .map(|t| t.capacity() * std::mem::size_of::<usize>())
-                            .sum::<usize>()
-                })
+                .map(|(_, chain)| tuple_list_heap_bytes(chain))
                 .sum();
             shell + chains
         },
         | HashTrieNode::Singleton(payload) => {
             payload.tuple().capacity() * std::mem::size_of::<usize>()
         },
+        | HashTrieNode::Unexpanded(pending) => {
+            let below = match pending.built() {
+                | Some(built) => node_heap_bytes(built),
+                | None => tuple_list_heap_bytes(&pending.pending()),
+            };
+            pending.own_heap_bytes() + below
+        },
     }
+}
+
+/// Heap bytes of a list of tuples: the list's buffer plus each tuple's.
+// `&Vec`, not a slice: the list's own buffer is counted by `capacity()`.
+#[allow(clippy::ptr_arg)]
+fn tuple_list_heap_bytes(list: &Vec<Vec<usize>>) -> usize {
+    list.capacity() * std::mem::size_of::<Vec<usize>>()
+        + list
+            .iter()
+            .map(|t| t.capacity() * std::mem::size_of::<usize>())
+            .sum::<usize>()
 }
 
 #[cfg(test)]
@@ -663,6 +831,7 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, vec![
             "ds_config_load_factor",
+            "ds_layout_expansion",
             "ds_layout_hasher",
             "ds_layout_pruning"
         ]);
@@ -681,6 +850,7 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, vec![
             "ds_config_load_factor",
+            "ds_layout_expansion",
             "ds_layout_hasher",
             "ds_layout_pruning"
         ]);
@@ -785,7 +955,9 @@ mod tests {
     /// exactly one tuple lives below it; under `NoPruning` no `Singleton`
     /// exists. The root is never a `Singleton`, and a `Singleton` sits
     /// under the buckets its own tuple hashes to.
-    fn check_pruning_invariant<P: PruningPolicy>(root: &HashTrieNode<P>) -> usize {
+    fn check_pruning_invariant<P: PruningPolicy, E: ExpansionPolicy>(
+        root: &HashTrieNode<P, E>,
+    ) -> usize {
         assert!(
             !matches!(root, HashTrieNode::Singleton(_)),
             "the root is never a Singleton"
@@ -797,8 +969,8 @@ mod tests {
     /// sequence of bucket hashes taken from the root down to `node`, so a
     /// `Singleton` reached here must hash to every one of them — that is
     /// what pins it to the right *place*, not merely the right count.
-    fn check_pruning_invariant_at<P: PruningPolicy>(
-        node: &HashTrieNode<P>, prefix: &mut Vec<u64>,
+    fn check_pruning_invariant_at<P: PruningPolicy, E: ExpansionPolicy>(
+        node: &HashTrieNode<P, E>, prefix: &mut Vec<u64>,
     ) -> usize {
         match node {
             | HashTrieNode::Singleton(payload) => {
@@ -814,6 +986,9 @@ mod tests {
                 1
             },
             | HashTrieNode::Leaf(table) => table.iter().map(|(_, chain)| chain.len()).sum(),
+            | HashTrieNode::Unexpanded(_) => {
+                unreachable!("the pruning invariant is checked on eager tries")
+            },
             | HashTrieNode::Inner(table) => table
                 .iter()
                 .map(|(hash, child)| {
@@ -940,10 +1115,64 @@ mod tests {
     /// `hash_trie_iter.rs`.
     #[test]
     fn node_does_not_grow_under_the_pruning_policy() {
+        use super::super::expansion::EagerExpansion;
         assert_eq!(
-            std::mem::size_of::<HashTrieNode<NoPruning>>(),
-            std::mem::size_of::<HashTrieNode<SingletonPruning>>()
+            std::mem::size_of::<HashTrieNode<NoPruning, EagerExpansion>>(),
+            std::mem::size_of::<HashTrieNode<SingletonPruning, EagerExpansion>>()
         );
+    }
+
+    /// The eager node is laid out as if `Unexpanded` did not exist: the
+    /// mirrors below are the node without that variant, for each pruning
+    /// policy. `HashTable<V>`'s size does not depend on `V`. A lazy node is
+    /// no larger either, because its payload is one boxed pointer. The
+    /// frame counterpart is `off_frame_is_the_bare_table_pair` in
+    /// `hash_trie_iter.rs`.
+    #[test]
+    fn node_does_not_grow_under_the_expansion_policy() {
+        use {
+            super::super::{
+                expansion::{EagerExpansion, LazyExpansion},
+                hash_table::HashTable,
+            },
+            std::mem::size_of,
+        };
+        #[allow(dead_code)]
+        enum Mirror {
+            Inner(HashTable<()>),
+            Leaf(HashTable<Vec<Vec<usize>>>),
+        }
+        #[allow(dead_code)]
+        enum PrunedMirror {
+            Inner(HashTable<()>),
+            Leaf(HashTable<Vec<Vec<usize>>>),
+            Singleton(Vec<usize>),
+        }
+        assert_eq!(
+            size_of::<HashTrieNode<NoPruning, EagerExpansion>>(),
+            size_of::<Mirror>()
+        );
+        assert_eq!(
+            size_of::<HashTrieNode<SingletonPruning, EagerExpansion>>(),
+            size_of::<PrunedMirror>()
+        );
+        assert_eq!(
+            size_of::<HashTrieNode<NoPruning, LazyExpansion>>(),
+            size_of::<HashTrieNode<NoPruning, EagerExpansion>>()
+        );
+        assert_eq!(
+            size_of::<HashTrieNode<SingletonPruning, LazyExpansion>>(),
+            size_of::<HashTrieNode<SingletonPruning, EagerExpansion>>()
+        );
+    }
+
+    /// Eager tries stay `Sync`: their `Unexpanded` payload is `Never` as a
+    /// whole type, so no cell type appears in them. A compile-time pin.
+    #[test]
+    fn eager_tries_stay_sync() {
+        fn sync<T: Sync>() {}
+        sync::<HashTrie>();
+        sync::<HashTrie<SipHashStrategy, SingletonPruning>>();
     }
 
     #[test]
@@ -1042,5 +1271,195 @@ mod cardinality_tests {
         let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 2]]);
         assert_eq!(trie.tuple_count(), 2);
         assert_eq!(trie.collect_tuples().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod lazy_tests {
+    use {
+        super::{
+            super::{
+                expansion::{LazyChild, LazyExpansion, PendingChild},
+                pruning::SingletonPruning,
+            },
+            *,
+        },
+        crate::{cardinality::Cardinality, heap_size::HeapSize, relation::Projectable},
+        kermit_iters::HasOptimizationAxes,
+    };
+
+    type Lazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
+    type LazyPruned = HashTrie<SipHashStrategy, SingletonPruning, LazyExpansion>;
+
+    fn h(k: usize) -> u64 { <SipHashStrategy as HashStrategy>::hash(k) }
+
+    /// The root's child for first attribute `k`.
+    fn child<P: PruningPolicy>(
+        trie: &HashTrie<SipHashStrategy, P, LazyExpansion>, k: usize,
+    ) -> &HashTrieNode<P, LazyExpansion> {
+        match &trie.root {
+            | HashTrieNode::Inner(t) => t.get(h(k)).expect("bucket present"),
+            | _ => panic!("arity >= 2 has an Inner root"),
+        }
+    }
+
+    /// The pending tuples of an unexpanded child, or `None` for any other
+    /// node or an expanded child.
+    fn pending_of<P: PruningPolicy>(
+        node: &HashTrieNode<P, LazyExpansion>,
+    ) -> Option<Vec<Vec<usize>>> {
+        match node {
+            | HashTrieNode::Unexpanded(p) if p.built().is_none() => Some(p.pending().clone()),
+            | _ => None,
+        }
+    }
+
+    const TUPLES: [[usize; 3]; 4] = [[1, 2, 3], [1, 2, 4], [1, 5, 6], [7, 8, 9]];
+
+    fn tuples() -> Vec<Vec<usize>> { TUPLES.iter().map(|t| t.to_vec()).collect() }
+
+    #[test]
+    fn lazy_build_leaves_every_root_child_unexpanded() {
+        let trie = Lazy::from_tuples(3.into(), tuples());
+        assert_eq!(
+            pending_of(child(&trie, 1)),
+            Some(vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6]])
+        );
+        assert_eq!(pending_of(child(&trie, 7)), Some(vec![vec![7, 8, 9]]));
+    }
+
+    #[test]
+    fn lazy_pruned_build_keeps_one_tuple_children_as_singletons() {
+        let trie = LazyPruned::from_tuples(3.into(), tuples());
+        assert_eq!(
+            pending_of(child(&trie, 1)),
+            Some(vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6]])
+        );
+        assert!(matches!(child(&trie, 7), HashTrieNode::Singleton(_)));
+    }
+
+    #[test]
+    fn a_second_tuple_turns_a_singleton_into_an_unexpanded_pair_in_arrival_order() {
+        let mut trie = LazyPruned::from_tuples(2.into(), vec![vec![1, 2]]);
+        trie.insert(vec![1, 3]);
+        assert_eq!(
+            pending_of(child(&trie, 1)),
+            Some(vec![vec![1, 2], vec![1, 3]])
+        );
+    }
+
+    #[test]
+    fn resolve_expands_exactly_one_level() {
+        let trie = Lazy::from_tuples(3.into(), tuples());
+        let node = child(&trie, 1);
+        let built = trie.resolve(node, 1);
+        let HashTrieNode::Inner(level) = built else {
+            panic!("depth 1 of an arity-3 trie is an Inner table")
+        };
+        assert_eq!(level.len(), 2); // second attributes 2 and 5
+        for (_, grandchild) in level.iter() {
+            assert!(
+                pending_of(grandchild).is_some(),
+                "grandchildren stay unexpanded"
+            );
+        }
+        assert!(pending_of(node).is_none(), "the child is expanded now");
+        assert!(
+            std::ptr::eq(trie.resolve(node, 1), built),
+            "expansion happens once"
+        );
+        assert!(
+            pending_of(child(&trie, 7)).is_some(),
+            "siblings are untouched"
+        );
+    }
+
+    #[test]
+    fn resolve_returns_tables_and_singletons_unchanged() {
+        let trie = LazyPruned::from_tuples(3.into(), tuples());
+        let single = child(&trie, 7);
+        assert!(std::ptr::eq(trie.resolve(single, 1), single));
+        assert!(std::ptr::eq(trie.resolve(&trie.root, 0), &trie.root));
+    }
+
+    #[test]
+    fn insert_reaches_the_built_table_after_expansion_and_the_list_before() {
+        let mut trie = Lazy::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![9, 9]]);
+        trie.resolve(child(&trie, 1), 1);
+        trie.insert(vec![1, 4]); // into the expanded child's table
+        trie.insert(vec![9, 8]); // onto the unexpanded sibling's list
+        let HashTrieNode::Unexpanded(p) = child(&trie, 1) else {
+            panic!("a lazy root bucket holds an Unexpanded child")
+        };
+        assert_eq!(p.built().expect("expanded").len(), 3);
+        assert_eq!(
+            pending_of(child(&trie, 9)),
+            Some(vec![vec![9, 9], vec![9, 8]])
+        );
+        assert_eq!(trie.tuple_count(), 5);
+        let mut all = trie.collect_tuples();
+        all.sort();
+        assert_eq!(all, vec![
+            vec![1, 2],
+            vec![1, 3],
+            vec![1, 4],
+            vec![9, 8],
+            vec![9, 9]
+        ]);
+    }
+
+    #[test]
+    fn walks_read_pending_tuples_without_expanding() {
+        let trie = Lazy::from_tuples(3.into(), tuples());
+        let before = trie.heap_size_bytes();
+        let mut collected = trie.collect_tuples();
+        collected.sort();
+        assert_eq!(collected, tuples());
+        let mut visited = 0;
+        trie.for_each_tuple(|_| visited += 1);
+        assert_eq!(visited, 4);
+        assert!(pending_of(child(&trie, 1)).is_some());
+        assert_eq!(trie.heap_size_bytes(), before, "a walk changes nothing");
+    }
+
+    /// Fully expanded, a lazy arity-2 trie is the eager trie plus one
+    /// `LazyChild` box per root child. The tables are identical, the
+    /// tuples are moved rather than copied, and the emptied pending lists
+    /// hold no heap.
+    #[test]
+    fn expanded_heap_is_the_eager_heap_plus_one_box_per_child() {
+        let tuples = vec![vec![1, 2], vec![1, 3], vec![4, 5]];
+        let eager: HashTrie = HashTrie::from_tuples(2.into(), tuples.clone());
+        let lazy = Lazy::from_tuples(2.into(), tuples);
+        for k in [1, 4] {
+            lazy.resolve(child(&lazy, k), 1);
+        }
+        let boxes = 2 * std::mem::size_of::<LazyChild<HashTrieNode<NoPruning, LazyExpansion>>>();
+        assert_eq!(lazy.heap_size_bytes(), eager.heap_size_bytes() + boxes);
+    }
+
+    #[test]
+    fn projection_of_a_lazy_trie_holds_the_projected_tuples() {
+        let trie = Lazy::from_tuples(3.into(), tuples());
+        let mut projected = trie.project(vec![2, 0]).collect_tuples();
+        projected.sort();
+        assert_eq!(projected, vec![vec![3, 1], vec![4, 1], vec![6, 1], vec![
+            9, 7
+        ]]);
+    }
+
+    #[test]
+    fn optimization_axes_include_the_expansion_layout() {
+        let eager: HashTrie = HashTrie::new(2.into());
+        assert_eq!(
+            eager.optimization_axes().get("ds_layout_expansion"),
+            Some(&serde_json::Value::String("eager".into()))
+        );
+        assert_eq!(
+            Lazy::new(2.into())
+                .optimization_axes()
+                .get("ds_layout_expansion"),
+            Some(&serde_json::Value::String("lazy".into()))
+        );
     }
 }

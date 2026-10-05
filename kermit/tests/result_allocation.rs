@@ -39,13 +39,18 @@
 //! other two to the same standard: a strategy that allocated per seek would
 //! show up in both checks. The scan cells are not multiplied, because the
 //! scan never seeks.
+//!
+//! Issue #92 adds the lazy expansion Layout. Its join cells measure a
+//! *second* join over the same relations, because a cold lazy join
+//! allocates once per child it expands, by design. The scan never expands,
+//! so its lazy cells measure the trie as built.
 
 use {
-    kermit::db::{hash_join_for_each, lftj_join_for_each},
+    kermit::db::{hash_join_for_each, lftj_join_for_each, Database},
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{
-        BinarySeek, Cardinality, ColumnTrie, HashTrie, LinearSeek, NoPruning, PruningPolicy,
-        Relation, SingletonPruning, TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie,
+        LazyExpansion, LinearSeek, NoPruning, PruningPolicy, Relation, SingletonPruning, TreeTrie,
     },
     kermit_iters::{
         FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -87,13 +92,14 @@ fn s_tuples(fan_out: usize) -> Vec<Vec<usize>> {
 /// Allocations made by one streamed LFTJ join of `query` over `relations`,
 /// after checking that it produced `rows` rows.
 fn lftj_join_allocations<Rel: TrieIterable + Cardinality + Relation>(
-    query: &str, relations: &BTreeMap<String, Rel>, rows: usize,
+    query: &str, relations: BTreeMap<String, Rel>, rows: usize,
 ) -> u64 {
+    let database = Database::from(relations);
     let query: JoinQuery = query.parse().unwrap();
     let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
         lftj_join_for_each::<Rel, LeapfrogTriejoin>(
-            relations,
+            &database,
             query,
             &LexicographicOptimiser,
             |tuple| {
@@ -108,15 +114,24 @@ fn lftj_join_allocations<Rel: TrieIterable + Cardinality + Relation>(
 }
 
 /// Allocations made by one streamed HashTriejoin join of `query` over
-/// `HashTrie<H, P>` relations, after checking that it produced `rows` rows.
-fn htj_join_allocations<H: HashStrategy, P: PruningPolicy>(
-    query: &str, relations: &BTreeMap<String, HashTrie<H, P>>, rows: usize,
+/// `HashTrie<H, P, E>` relations, after checking that it produced `rows`
+/// rows.
+fn htj_join_allocations<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    query: &str, relations: BTreeMap<String, HashTrie<H, P, E>>, rows: usize,
+) -> u64 {
+    htj_database_allocations(query, &Database::from(relations), rows)
+}
+
+/// [`htj_join_allocations`] over an already-built `database`, so a caller
+/// can join the same relations more than once.
+fn htj_database_allocations<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    query: &str, database: &Database<HashTrie<H, P, E>>, rows: usize,
 ) -> u64 {
     let query: JoinQuery = query.parse().unwrap();
     let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
-        hash_join_for_each::<HashTrie<H, P>, H>(
-            relations,
+        hash_join_for_each::<HashTrie<H, P, E>, H>(
+            database,
             query,
             &LexicographicOptimiser,
             |tuple| {
@@ -133,13 +148,34 @@ fn htj_join_allocations<H: HashStrategy, P: PruningPolicy>(
 /// Allocations made by one streamed LFTJ join of `QUERY`, after checking
 /// that it produced every row.
 fn lftj_allocations<Rel: TrieIterable + Cardinality + Relation>(fan_out: usize) -> u64 {
-    lftj_join_allocations(QUERY, &relations::<Rel>(fan_out), XS * fan_out)
+    lftj_join_allocations(QUERY, relations::<Rel>(fan_out), XS * fan_out)
 }
 
 /// Allocations made by one streamed HashTriejoin join of `QUERY` over
 /// `HashTrie<H, P>`, after checking that it produced every row.
 fn htj_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    htj_join_allocations(QUERY, &relations::<HashTrie<H, P>>(fan_out), XS * fan_out)
+    htj_join_allocations(QUERY, relations::<HashTrie<H, P>>(fan_out), XS * fan_out)
+}
+
+/// Allocations made by a *second* streamed HashTriejoin join of `query`
+/// over the same lazy `relations`. The first join expands every child it
+/// reaches, so the second allocates only what the join path itself does.
+/// A cold lazy join allocates once per child it expands, by design
+/// (issue #92), so the per-row and per-descent checks apply warm. The
+/// eager cells' unmeasured first call builds fresh relations, which would
+/// leave a lazy cell cold, hence this helper.
+fn htj_warm_join_allocations<H: HashStrategy, P: PruningPolicy>(
+    query: &str, relations: BTreeMap<String, HashTrie<H, P, LazyExpansion>>, rows: usize,
+) -> u64 {
+    let database = Database::from(relations);
+    htj_database_allocations(query, &database, rows);
+    htj_database_allocations(query, &database, rows)
+}
+
+/// [`htj_allocations`] for the lazy Layout, measured warm.
+fn htj_lazy_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
+    let relations = relations::<HashTrie<H, P, LazyExpansion>>(fan_out);
+    htj_warm_join_allocations(QUERY, relations, XS * fan_out)
 }
 
 fn assert_flat(cell: &str, small: u64, large: u64) {
@@ -250,6 +286,42 @@ fn hash_trie_fx_pruned_allocates_independently_of_result_size() {
     );
 }
 
+#[test]
+fn hash_trie_sip_lazy_allocates_independently_of_result_size() {
+    assert_flat(
+        "HashTrie<Sip, Lazy>/HTJ",
+        htj_lazy_allocations::<SipHashStrategy, NoPruning>(SMALL),
+        htj_lazy_allocations::<SipHashStrategy, NoPruning>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_fx_lazy_allocates_independently_of_result_size() {
+    assert_flat(
+        "HashTrie<Fx, Lazy>/HTJ",
+        htj_lazy_allocations::<FxHashStrategy, NoPruning>(SMALL),
+        htj_lazy_allocations::<FxHashStrategy, NoPruning>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_lazy_allocates_independently_of_result_size() {
+    assert_flat(
+        "HashTrie<Sip, Pruned, Lazy>/HTJ",
+        htj_lazy_allocations::<SipHashStrategy, SingletonPruning>(SMALL),
+        htj_lazy_allocations::<SipHashStrategy, SingletonPruning>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_fx_pruned_lazy_allocates_independently_of_result_size() {
+    assert_flat(
+        "HashTrie<Fx, Pruned, Lazy>/HTJ",
+        htj_lazy_allocations::<FxHashStrategy, SingletonPruning>(SMALL),
+        htj_lazy_allocations::<FxHashStrategy, SingletonPruning>(LARGE),
+    );
+}
+
 // ── `bench ds` scans (issue #79) ────────────────────────────────────────
 
 /// Allocations made by one scan of a sorted trie holding `S`, through the
@@ -269,10 +341,13 @@ fn sorted_scan_allocations<Rel: TrieIterable + Relation>(fan_out: usize) -> u64 
     info.count_total
 }
 
-/// Allocations made by one scan of `HashTrie<H, P>` holding `S`, through
-/// `HashTrie::for_each_tuple`, after checking that it lent every tuple.
-fn hash_scan_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    let rel = HashTrie::<H, P>::from_tuples(2.into(), s_tuples(fan_out));
+/// Allocations made by one scan of `HashTrie<H, P, E>` holding `S`,
+/// through `HashTrie::for_each_tuple`, after checking that it lent every
+/// tuple.
+fn hash_scan_allocations<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    fan_out: usize,
+) -> u64 {
+    let rel = HashTrie::<H, P, E>::from_tuples(2.into(), s_tuples(fan_out));
     let mut tuples = 0usize;
     let info = allocation_counter::measure(|| {
         rel.for_each_tuple(|tuple| {
@@ -306,41 +381,61 @@ fn column_trie_scan_allocates_independently_of_relation_size() {
 
 #[test]
 fn hash_trie_sip_scan_allocates_independently_of_relation_size() {
-    hash_scan_allocations::<SipHashStrategy, NoPruning>(SMALL);
+    hash_scan_allocations::<SipHashStrategy, NoPruning, EagerExpansion>(SMALL);
     assert_flat(
         "HashTrie<Sip> scan",
-        hash_scan_allocations::<SipHashStrategy, NoPruning>(SMALL),
-        hash_scan_allocations::<SipHashStrategy, NoPruning>(LARGE),
+        hash_scan_allocations::<SipHashStrategy, NoPruning, EagerExpansion>(SMALL),
+        hash_scan_allocations::<SipHashStrategy, NoPruning, EagerExpansion>(LARGE),
     );
 }
 
 #[test]
 fn hash_trie_fx_scan_allocates_independently_of_relation_size() {
-    hash_scan_allocations::<FxHashStrategy, NoPruning>(SMALL);
+    hash_scan_allocations::<FxHashStrategy, NoPruning, EagerExpansion>(SMALL);
     assert_flat(
         "HashTrie<Fx> scan",
-        hash_scan_allocations::<FxHashStrategy, NoPruning>(SMALL),
-        hash_scan_allocations::<FxHashStrategy, NoPruning>(LARGE),
+        hash_scan_allocations::<FxHashStrategy, NoPruning, EagerExpansion>(SMALL),
+        hash_scan_allocations::<FxHashStrategy, NoPruning, EagerExpansion>(LARGE),
     );
 }
 
 #[test]
 fn hash_trie_sip_pruned_scan_allocates_independently_of_relation_size() {
-    hash_scan_allocations::<SipHashStrategy, SingletonPruning>(SMALL);
+    hash_scan_allocations::<SipHashStrategy, SingletonPruning, EagerExpansion>(SMALL);
     assert_flat(
         "HashTrie<Sip, Pruned> scan",
-        hash_scan_allocations::<SipHashStrategy, SingletonPruning>(SMALL),
-        hash_scan_allocations::<SipHashStrategy, SingletonPruning>(LARGE),
+        hash_scan_allocations::<SipHashStrategy, SingletonPruning, EagerExpansion>(SMALL),
+        hash_scan_allocations::<SipHashStrategy, SingletonPruning, EagerExpansion>(LARGE),
     );
 }
 
 #[test]
 fn hash_trie_fx_pruned_scan_allocates_independently_of_relation_size() {
-    hash_scan_allocations::<FxHashStrategy, SingletonPruning>(SMALL);
+    hash_scan_allocations::<FxHashStrategy, SingletonPruning, EagerExpansion>(SMALL);
     assert_flat(
         "HashTrie<Fx, Pruned> scan",
-        hash_scan_allocations::<FxHashStrategy, SingletonPruning>(SMALL),
-        hash_scan_allocations::<FxHashStrategy, SingletonPruning>(LARGE),
+        hash_scan_allocations::<FxHashStrategy, SingletonPruning, EagerExpansion>(SMALL),
+        hash_scan_allocations::<FxHashStrategy, SingletonPruning, EagerExpansion>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_lazy_scan_allocates_independently_of_relation_size() {
+    hash_scan_allocations::<SipHashStrategy, NoPruning, LazyExpansion>(SMALL);
+    assert_flat(
+        "HashTrie<Sip, Lazy> scan",
+        hash_scan_allocations::<SipHashStrategy, NoPruning, LazyExpansion>(SMALL),
+        hash_scan_allocations::<SipHashStrategy, NoPruning, LazyExpansion>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_lazy_scan_allocates_independently_of_relation_size() {
+    hash_scan_allocations::<SipHashStrategy, SingletonPruning, LazyExpansion>(SMALL);
+    assert_flat(
+        "HashTrie<Sip, Pruned, Lazy> scan",
+        hash_scan_allocations::<SipHashStrategy, SingletonPruning, LazyExpansion>(SMALL),
+        hash_scan_allocations::<SipHashStrategy, SingletonPruning, LazyExpansion>(LARGE),
     );
 }
 
@@ -380,7 +475,7 @@ fn descent_relations<Rel: Relation>(dead_ends: usize) -> BTreeMap<String, Rel> {
 fn lftj_descent_allocations<Rel: TrieIterable + Cardinality + Relation>(dead_ends: usize) -> u64 {
     lftj_join_allocations(
         DESCENT_QUERY,
-        &descent_relations::<Rel>(dead_ends),
+        descent_relations::<Rel>(dead_ends),
         DESCENT_ROWS,
     )
 }
@@ -390,9 +485,15 @@ fn lftj_descent_allocations<Rel: TrieIterable + Cardinality + Relation>(dead_end
 fn htj_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) -> u64 {
     htj_join_allocations(
         DESCENT_QUERY,
-        &descent_relations::<HashTrie<H, P>>(dead_ends),
+        descent_relations::<HashTrie<H, P>>(dead_ends),
         DESCENT_ROWS,
     )
+}
+
+/// [`htj_descent_allocations`] for the lazy Layout, measured warm.
+fn htj_lazy_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) -> u64 {
+    let relations = descent_relations::<HashTrie<H, P, LazyExpansion>>(dead_ends);
+    htj_warm_join_allocations(DESCENT_QUERY, relations, DESCENT_ROWS)
 }
 
 fn assert_flat_in_descents(cell: &str, few: u64, many: u64) {
@@ -500,5 +601,41 @@ fn hash_trie_fx_pruned_allocates_independently_of_descent_count() {
         "HashTrie<Fx, Pruned>/HTJ",
         htj_descent_allocations::<FxHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
         htj_descent_allocations::<FxHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_sip_lazy_allocates_independently_of_descent_count() {
+    assert_flat_in_descents(
+        "HashTrie<Sip, Lazy>/HTJ",
+        htj_lazy_descent_allocations::<SipHashStrategy, NoPruning>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<SipHashStrategy, NoPruning>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_fx_lazy_allocates_independently_of_descent_count() {
+    assert_flat_in_descents(
+        "HashTrie<Fx, Lazy>/HTJ",
+        htj_lazy_descent_allocations::<FxHashStrategy, NoPruning>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<FxHashStrategy, NoPruning>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_lazy_allocates_independently_of_descent_count() {
+    assert_flat_in_descents(
+        "HashTrie<Sip, Pruned, Lazy>/HTJ",
+        htj_lazy_descent_allocations::<SipHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<SipHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_fx_pruned_lazy_allocates_independently_of_descent_count() {
+    assert_flat_in_descents(
+        "HashTrie<Fx, Pruned, Lazy>/HTJ",
+        htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
     );
 }

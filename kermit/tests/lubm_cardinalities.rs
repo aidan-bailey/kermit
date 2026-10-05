@@ -17,9 +17,10 @@
 //! only hold for LUBM(1, 0), so the scale is pinned to 1.
 
 use {
-    kermit::db::lftj_join,
+    kermit::db::{lftj_join, Database, SortedFamily},
     kermit_algos::{
-        CardinalityOptimiser, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
+        CardinalityOptimiser, CostBasedOptimiser, JoinQuery, LeapfrogTriejoin,
+        LexicographicOptimiser, QueryOptimiser,
     },
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
@@ -69,6 +70,7 @@ fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
             .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
         relations.insert(rel.name.clone(), trie);
     }
+    let relations = Database::new::<SortedFamily>(relations, optimiser.required_statistics());
 
     // Collect every divergence so one run surfaces the complete picture
     // rather than failing on the first mismatch.
@@ -155,6 +157,7 @@ fn lubm_one_university_query_cardinalities_match_paper() {
     let optimisers: Vec<(&str, Box<dyn QueryOptimiser>)> = vec![
         ("lexicographic", Box::new(LexicographicOptimiser)),
         ("cardinality", Box::new(CardinalityOptimiser)),
+        ("cost-based", Box::new(CostBasedOptimiser::default())),
     ];
     let optimiser_count = optimisers.len();
 

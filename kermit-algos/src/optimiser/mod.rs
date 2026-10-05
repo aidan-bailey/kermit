@@ -15,6 +15,7 @@
 //! decision and lives one level up, in [`crate::analysis`].
 
 mod cardinality;
+mod cost_based;
 mod lexicographic;
 mod ordering;
 mod plan;
@@ -22,10 +23,11 @@ mod stats;
 
 pub use {
     cardinality::CardinalityOptimiser,
+    cost_based::CostBasedOptimiser,
     lexicographic::LexicographicOptimiser,
     ordering::{check_attribute_order, topological_order, CyclicAttributeOrder},
     plan::{PlanError, QueryPlan},
-    stats::{CatalogStats, RelationStats},
+    stats::{distinct_per_column, CatalogStats, RelationStats, StatisticsLevel},
 };
 use {clap::ValueEnum, kermit_parser::JoinQuery};
 
@@ -42,6 +44,12 @@ use {clap::ValueEnum, kermit_parser::JoinQuery};
 pub trait QueryOptimiser {
     /// Produces a plan for `query` given per-relation `stats`.
     fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan;
+
+    /// The statistics [`plan`](Self::plan) reads. The join engine gathers
+    /// exactly this much before planning, and refuses to plan from less,
+    /// so the default (tuple counts, which cost nothing) is right for any
+    /// optimiser that reads only [`CatalogStats::tuples`].
+    fn required_statistics(&self) -> StatisticsLevel { StatisticsLevel::TupleCounts }
 }
 
 /// The available query optimisers.
@@ -57,6 +65,9 @@ pub enum Optimiser {
     Lexicographic,
     /// Smallest-relation-first; see [`CardinalityOptimiser`].
     Cardinality,
+    /// Lowest estimated cost, by dynamic programming over the sets of bound
+    /// variables; see [`CostBasedOptimiser`].
+    CostBased,
 }
 
 impl Optimiser {
@@ -65,6 +76,7 @@ impl Optimiser {
         match self {
             | Self::Lexicographic => Box::new(LexicographicOptimiser),
             | Self::Cardinality => Box::new(CardinalityOptimiser),
+            | Self::CostBased => Box::new(CostBasedOptimiser::default()),
         }
     }
 
@@ -74,6 +86,7 @@ impl Optimiser {
         match self {
             | Self::Lexicographic => "lexicographic",
             | Self::Cardinality => "cardinality",
+            | Self::CostBased => "cost-based",
         }
     }
 }
@@ -89,6 +102,19 @@ mod optimiser_enum_tests {
     fn axis_values_match_clap_value_names() {
         for v in Optimiser::value_variants() {
             assert_eq!(v.axis_value(), v.to_possible_value().unwrap().get_name());
+        }
+    }
+
+    /// Each optimiser declares exactly the statistics it reads; the engine
+    /// gathers that much and no more.
+    #[test]
+    fn each_optimiser_declares_the_statistics_it_reads() {
+        for v in Optimiser::value_variants() {
+            let want = match v {
+                | Optimiser::Lexicographic | Optimiser::Cardinality => StatisticsLevel::TupleCounts,
+                | Optimiser::CostBased => StatisticsLevel::ColumnDistinct,
+            };
+            assert_eq!(v.instantiate().required_statistics(), want, "{v:?}");
         }
     }
 }
