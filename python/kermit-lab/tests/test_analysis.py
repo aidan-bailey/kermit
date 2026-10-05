@@ -233,3 +233,13 @@ def test_speedup_table_ends_with_its_measure_columns() -> None:
     """`kl.speedup` tells a case's identifying columns from these."""
     table = speedup_table(_build_mode_rows({"serial": [100.0], "parallel:2": [50.0]}))
     assert tuple(table.columns[-len(SPEEDUP_MEASURES):]) == SPEEDUP_MEASURES
+
+
+def test_speedup_table_counts_unpaired_rows_in_a_frame_with_a_repeated_index() -> None:
+    """`pd.concat` without `ignore_index` repeats labels; pairing goes by row."""
+    paired = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    unpaired = _build_mode_rows({"parallel:4": [30.0, 31.0]}).assign(relation_path="other.parquet")
+    df = pd.concat([paired, unpaired])
+    assert not df.index.is_unique
+    with pytest.warns(UserWarning, match="2 parallel:N row"):
+        speedup_table(df)

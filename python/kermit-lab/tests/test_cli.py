@@ -168,3 +168,22 @@ def test_speedup_subcommand_warns_once_about_unpaired_runs(
     assert rc == 0
     unpaired = [w for w in record if "no 'serial' row" in str(w.message)]
     assert len(unpaired) == 1
+
+
+def test_speedup_subcommand_does_not_back_fill_a_serial_baseline(
+    fixture_parallel_build_tree, tmp_path: Path
+) -> None:
+    """A TreeTrie report without `ds_build_mode` predates #94 and may come from
+    another binary, so the load must not turn it into the baseline."""
+    for path in fixture_parallel_build_tree["paths"]:
+        if "-serial-" in path.name:
+            report = json.loads(path.read_text())
+            del report[0]["axes"]["ds_build_mode"]
+            path.write_text(json.dumps(report))
+    with pytest.warns(UserWarning):  # the parallel rows, left without a baseline
+        rc = main([
+            "speedup", *[str(p) for p in fixture_parallel_build_tree["paths"]],
+            "--criterion-root", str(fixture_parallel_build_tree["criterion_root"]),
+            "--out", str(tmp_path / "speedup.pdf"),
+        ])
+    assert rc == 3
