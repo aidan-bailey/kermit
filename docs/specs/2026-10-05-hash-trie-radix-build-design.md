@@ -105,16 +105,17 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
 }
 ```
 
-- `ConfigurableRelation::from_tuples_with_config` calls it with
-  `HashTrieBuildMode::Serial`.
+- Its `Serial` arm calls `ConfigurableRelation::from_tuples_with_config`,
+  whose body is today's loop. Its `Radix` arm runs the radix build. The
+  delegation runs from the combined constructor to the serial one, never
+  the reverse, so the serial build's code does not change and its
+  `insertion` numbers stay valid. Only the visibility of `insert_at` and
+  `make_root` widens, because the radix build lives in its own module.
 - The new `BuildModeRelation for HashTrie<H, P>` (`type BuildMode =
-  HashTrieBuildMode`) calls it with `HashTrieConfig::default()`.
+  HashTrieBuildMode`) calls the combined constructor with
+  `HashTrieConfig::default()`.
 - `Relation::from_tuples` keeps calling `from_tuples_with_config` with the
   default config, so it gets both defaults.
-- `Serial` runs today's loop unchanged. To keep the serial build's
-  `insertion` numbers valid, the serial path's code does not change. Only
-  the visibility of `insert_at` and `make_root` widens, if the radix build
-  lives in its own module.
 
 ### The radix build
 
