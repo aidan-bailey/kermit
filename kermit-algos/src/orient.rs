@@ -107,9 +107,10 @@ pub struct Oriented {
 /// positions are). An identity π leaves the atom alone. Otherwise the
 /// atom's terms are permuted; a plain atom is renamed to the copy, and a
 /// `Select_<n>_<base>` atom keeps its name while its [`SelectionSpec`]
-/// points at the copy with its equalities carried through π (see
-/// [`remap_equalities`]; the selection views are positional). Atoms with
-/// equal `(base, π)` share one [`IndexSpec`].
+/// points at the copy, each of its equality classes carried through π and
+/// re-rooted at its new first column (the selection views are positional
+/// and keep one source per column). Atoms with equal `(base, π)` share
+/// one [`IndexSpec`].
 ///
 /// `analyse` numbers body-only variables by first appearance, so
 /// permuting terms can renumber them: the plan is translated by variable
