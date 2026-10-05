@@ -5,6 +5,10 @@ run recorded in Amendment 1 § D below. Sections 1–6 record the superseded
 first implementation.
 **Resolves:** [#58](https://github.com/aidan-bailey/kermit/issues/58) — the optimization standard has one adopter; Config and BuildMode are unexercised.
 **Paper:** SIGMOD 2020 "Combining Worst-Case Optimal and Traditional Binary Join Processing", §3.3.1, Figure 5.
+**Correction (2026-10-05, [#90](https://github.com/aidan-bailey/kermit/issues/90)):**
+the "paper-faithful skip-levels short-circuit" this spec defers is not in the
+paper, which describes pruning as a storage layout only; see
+`docs/data-structures/hash-trie.md` § Deferred follow-ups.
 
 ---
 
