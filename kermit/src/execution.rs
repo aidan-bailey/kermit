@@ -28,9 +28,10 @@ use {
         PruningChoice, SeekChoice,
     },
     kermit::db::{
-        hash_join_for_each, lftj_join_for_each, Database, HashFamily, JoinError, SortedFamily,
+        hash_join_for_each, index_header, lftj_join_for_each, Database, HashFamily, JoinError,
+        SortedFamily,
     },
-    kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Planner},
+    kermit_algos::{IndexSpec, JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Planner},
     kermit_ds::{
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ConfigurableRelation,
         ExpansionPolicy, HashTrie, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy,
@@ -514,6 +515,35 @@ pub trait ExecutionFamily: RelationFamily {
         })?;
         Ok(rows)
     }
+
+    /// The reordered copies `query` needs under this family's planner
+    /// that `engine` does not hold yet ([`Database::required_indexes`]).
+    /// Empty under `--column-orders stored`. Reads only the engine's
+    /// statistics, never a relation, so it is safe on an engine whose
+    /// joins mutate it ([`JOIN_MUTATES`](Self::JOIN_MUTATES)).
+    ///
+    /// # Errors
+    ///
+    /// As [`join_for_each`](Self::join_for_each).
+    fn required_indexes(
+        &self, engine: &Self::Engine, query: &JoinQuery,
+    ) -> Result<Vec<IndexSpec>, JoinError>;
+
+    /// Builds `spec`'s copy from its base relation's header and file-order
+    /// `tuples` through [`build_relation`](RelationFamily::build_relation),
+    /// so the copy carries the configuration and build mode the report's
+    /// axes name, and adds it to `engine`.
+    fn add_index(
+        &self, engine: &mut Self::Engine, spec: IndexSpec, base: &RelationHeader,
+        tuples: &[Vec<usize>],
+    );
+
+    /// Drops every copy `engine` holds.
+    fn clear_indexes(engine: &mut Self::Engine);
+
+    /// Every copy `engine` holds, with its spec: the `space/Index_*`
+    /// functions.
+    fn indexes(engine: &Self::Engine) -> Vec<(&IndexSpec, &Self::Rel)>;
 }
 
 /// The sorted-family structure `R` on its own: what `bench ds -i tree-trie`
@@ -701,6 +731,26 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
     ) -> Result<(), JoinError> {
         lftj_join_for_each::<R, LeapfrogTriejoin>(engine, query, &self.planner, emit)
     }
+
+    fn required_indexes(
+        &self, engine: &Self::Engine, query: &JoinQuery,
+    ) -> Result<Vec<IndexSpec>, JoinError> {
+        engine.required_indexes(query, &self.planner)
+    }
+
+    fn add_index(
+        &self, engine: &mut Self::Engine, spec: IndexSpec, base: &RelationHeader,
+        tuples: &[Vec<usize>],
+    ) {
+        let copy = self.build_relation(index_header(&spec, base), spec.permute_all(tuples));
+        engine.add_index(spec, copy);
+    }
+
+    fn clear_indexes(engine: &mut Self::Engine) { engine.clear_indexes(); }
+
+    fn indexes(engine: &Self::Engine) -> Vec<(&IndexSpec, &Self::Rel)> {
+        engine.indexes().collect()
+    }
 }
 
 /// Hash family: `HashTrie<H, P, E>` under Hash Triejoin through
@@ -787,6 +837,26 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> ExecutionF
     ) -> Result<(), JoinError> {
         hash_join_for_each::<HashTrie<H, P, E>, H>(engine, query, &self.planner, emit)
     }
+
+    fn required_indexes(
+        &self, engine: &Self::Engine, query: &JoinQuery,
+    ) -> Result<Vec<IndexSpec>, JoinError> {
+        engine.required_indexes(query, &self.planner)
+    }
+
+    fn add_index(
+        &self, engine: &mut Self::Engine, spec: IndexSpec, base: &RelationHeader,
+        tuples: &[Vec<usize>],
+    ) {
+        let copy = self.build_relation(index_header(&spec, base), spec.permute_all(tuples));
+        engine.add_index(spec, copy);
+    }
+
+    fn clear_indexes(engine: &mut Self::Engine) { engine.clear_indexes(); }
+
+    fn indexes(engine: &Self::Engine) -> Vec<(&IndexSpec, &Self::Rel)> {
+        engine.indexes().collect()
+    }
 }
 
 #[cfg(test)]
@@ -794,8 +864,8 @@ mod tests {
     use {
         super::*,
         clap::ValueEnum,
-        kermit_algos::{ColumnOrderPolicy, LexicographicOptimiser, Optimiser},
-        kermit_ds::{EagerExpansion, LazyExpansion, NoPruning, SingletonPruning},
+        kermit_algos::{ColumnOrderPolicy, IndexSpec, LexicographicOptimiser, Optimiser},
+        kermit_ds::{EagerExpansion, LazyExpansion, LoadFactor, NoPruning, SingletonPruning},
         kermit_iters::SipHashStrategy,
         std::cell::Cell,
     };
@@ -1586,5 +1656,76 @@ mod tests {
             TrieLftj::<TreeTrie<GallopingSeek>>::optimization_axes(&rel)["ds_layout_seek"],
             "galloping"
         );
+    }
+
+    /// A copy is built through `build_relation`, so it carries the
+    /// family's build mode (seen by the spy) and config (seen on the
+    /// copy), and the engine holds it until cleared.
+    #[test]
+    fn families_build_copies_through_build_relation() {
+        let header = RelationHeader::new_positional("edge", 2);
+        let edges = vec![vec![1, 2], vec![1, 3], vec![2, 3]];
+        let spec = || IndexSpec::new("edge", vec![1, 0]);
+
+        let join = TrieLftj::<Spy>::new(
+            ColumnTrieBuildMode::Incremental,
+            Planner::stored(LexicographicOptimiser),
+        );
+        let mut engine = join.build(vec![join.build_relation(header.clone(), edges.clone())]);
+        BUILT_WITH.take();
+        join.add_index(&mut engine, spec(), &header, &edges);
+        assert_eq!(BUILT_WITH.take(), Some(ColumnTrieBuildMode::Incremental));
+        let held: Vec<&IndexSpec> = TrieLftj::<Spy>::indexes(&engine)
+            .into_iter()
+            .map(|(spec, _)| spec)
+            .collect();
+        assert_eq!(held, vec![&spec()]);
+        let copy = engine.index("Index_1_0_edge").unwrap();
+        assert_eq!(copy.header().name(), "Index_1_0_edge");
+        assert_eq!(copy.header().arity(), 2);
+        TrieLftj::<Spy>::clear_indexes(&mut engine);
+        assert!(TrieLftj::<Spy>::indexes(&engine).is_empty());
+
+        let config = HashTrieConfig {
+            load_factor: LoadFactor::percent(50).unwrap(),
+        };
+        let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+            config,
+            Planner::stored(LexicographicOptimiser),
+        );
+        let mut engine = hash.build(vec![hash.build_relation(header.clone(), edges.clone())]);
+        hash.add_index(&mut engine, spec(), &header, &edges);
+        let (_, copy) = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::indexes(&engine)[0];
+        assert_eq!(copy.config(), &config);
+        assert_eq!(copy.header().name(), "Index_1_0_edge");
+    }
+
+    /// `required_indexes` goes through the engine's planner: the cyclic
+    /// query needs one copy under `any` and is rejected under `stored`.
+    #[test]
+    fn required_indexes_follow_the_familys_planner() {
+        let header = || RelationHeader::new_positional("edge", 2);
+        let edges = || vec![vec![1, 2], vec![2, 1]];
+        let query: JoinQuery = "Q(X, Y) :- edge(X, Y), edge(Y, X).".parse().unwrap();
+
+        let stored = TrieLftj::<TreeTrie>::new((), Planner::stored(LexicographicOptimiser));
+        let engine = stored.build(vec![stored.build_relation(header(), edges())]);
+        assert!(matches!(
+            stored.required_indexes(&engine, &query),
+            Err(JoinError::CyclicAttributeOrder { .. })
+        ));
+
+        let any = TrieLftj::<TreeTrie>::new(
+            (),
+            Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any),
+        );
+        let mut engine = any.build(vec![any.build_relation(header(), edges())]);
+        let specs = any.required_indexes(&engine, &query).unwrap();
+        assert_eq!(specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+        for spec in specs {
+            any.add_index(&mut engine, spec, &header(), &edges());
+        }
+        assert_eq!(any.count(&engine, query.clone()).unwrap(), 2);
+        assert!(any.required_indexes(&engine, &query).unwrap().is_empty());
     }
 }
