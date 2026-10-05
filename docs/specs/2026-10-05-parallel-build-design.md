@@ -139,8 +139,9 @@ the serial build.
 1. **Checks.** Run the same arity checks as `from_tuples`, on the calling
    thread and with the same panic messages. Empty input returns
    `Self::new(header)` without spawning anything.
-2. **Splitters.** Stride-sample up to 128 first keys per partition and
-   sort the sample, keeping its duplicates. The splitters are the sample's
+2. **Splitters.** Stride-sample about 128 first keys per partition
+   (128–256 once the input has at least 128·P tuples, fewer below that)
+   and sort the sample, keeping its duplicates. The splitters are the sample's
    P − 1 quantiles, with P = 4·N; repeats are merged, since a key heavier
    than one share repeats and its tuples cannot be split. Because the
    sample keeps duplicates, the splitters share out the tuples, not the

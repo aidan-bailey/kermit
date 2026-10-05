@@ -2900,7 +2900,7 @@ With `n` tuples of arity `a`, `k` distinct first keys and `N` threads:
 
 | Step | Work | Runs on |
 |---|---|---|
-| Checks and sampling | O(n · a), plus sorting a sample of at most 128 keys per partition | the calling thread |
+| Checks and sampling | O(n · a), plus sorting a sample of 128–256 keys per partition (fewer for small inputs) | the calling thread |
 | Partition | O(n log P) | N workers |
 | Build | O(n · a · log n): sorting and inserting, split across partitions | N workers |
 | Assemble | O(k) moves | the calling thread |
@@ -2910,7 +2910,10 @@ With few tuples per first key (`k` close to `n`), the assemble step is a
 larger share and the speedup falls. The sample keeps duplicate keys, so the
 splitters share out tuples rather than distinct keys. Still, a key's tuples
 cannot be split: one dominant first key fills one partition, which caps the
-build step at one worker's speed.
+build step at one worker's speed. The build step hands out partitions first
+come, first served. Largest-first would balance a little better (about 4%
+at 8 and 16 threads on uniform keys, in simulation), so that is a known,
+small contributor to the Karp–Flatt fraction.
 
 ## Worked micro-example
 
