@@ -8,7 +8,7 @@ use {
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, ColumnTrie,
         ColumnTrieBuildMode, GallopingSeek, HashTrie, HashTrieConfig, LinearSeek, LoadFactor,
-        SingletonPruning, TreeTrie,
+        SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -134,4 +134,32 @@ define_multiway_join_test_suite_for_build_mode!(
     LeapfrogTriejoin,
     CostBasedOptimiser,
     Incremental
+);
+
+// ── BuildMode axis: TreeTrie's parallel build ───────────────────────────
+// The plain TreeTrie invocations above build serially; these build on two
+// threads. Every mode must build the same trie (issue #94).
+define_build_mode_provider!(
+    Parallel2,
+    TreeTrieBuildMode,
+    TreeTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+
+define_multiway_join_test_suite_for_build_mode!(
+    TreeTrie,
+    LeapfrogTriejoin,
+    LexicographicOptimiser,
+    Parallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    TreeTrie,
+    LeapfrogTriejoin,
+    CardinalityOptimiser,
+    Parallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    TreeTrie,
+    LeapfrogTriejoin,
+    CostBasedOptimiser,
+    Parallel2
 );
