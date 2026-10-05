@@ -2,13 +2,13 @@
 
 **Date:** 2026-10-05
 **Status:** Design approved (brainstormed 2026-10-05); not yet implemented
-**Scope:** TreeTrie and HashTrie each gain a `parallel:N` build mode. The
+**Scope:** Issue #94. TreeTrie and HashTrie each gain a `parallel:N` build mode. The
 build is morsel-driven, runs on `std::thread::scope`, and produces exactly
 the trie the serial build produces. Serial stays the default. A scaling
 protocol and a kermit-lab preset make build time against thread count a
 reported thesis result.
 **Related:** #91 (radix partitioning: it reuses this design's partition
-step), #89 (hash seed), #92 (lazy child expansion).
+step), #92 (lazy child expansion).
 
 ## Motivation
 
@@ -439,8 +439,6 @@ the serial path never calls it.
 
 - **#91 (radix partitioning)** reuses `scatter`. Whichever lands second
   builds on the other's `morsel.rs`.
-- **#89 (hash seed).** Partitioning uses `H::hash`, so a seed moves
-  partition boundaries only, never the trie.
 - **#92 (lazy child expansion).** The build step moves finished children
   between threads, so values must be `Send`. `OnceCell` is `Send` (it is
   only `!Sync`), and no trie is ever shared between threads.
