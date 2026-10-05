@@ -1527,7 +1527,8 @@ mod tests {
         }
     }
 
-    /// The `--ds-build` help states the thread range `Threads::MAX` bounds.
+    /// The `--ds-build` help states the thread range `Threads::MAX` bounds,
+    /// once for each trie with a `parallel:<threads>` mode.
     #[test]
     fn ds_build_help_names_the_thread_limit() {
         let command = BuildChoices::augment_args(clap::Command::new("test"));
@@ -1537,7 +1538,11 @@ mod tests {
             .and_then(|arg| arg.get_help())
             .expect("--ds-build has help")
             .to_string();
-        assert!(help.contains(&format!("1..={}", Threads::MAX)), "{help}");
+        assert_eq!(
+            help.matches(&format!("1..={}", Threads::MAX)).count(),
+            2,
+            "tree-trie and hash-trie: {help}"
+        );
     }
 
     #[test]

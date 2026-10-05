@@ -1856,11 +1856,13 @@ mod tests {
             };
             let config = HashTrieConfig::default();
             let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
-            let two = HashTrieBuildMode::Parallel(kermit_ds::Threads::new(2).unwrap());
+            // Three threads, not two: a refactor that dropped N on the way to
+            // the build would show here as well as in kermit-ds.
+            let three = HashTrieBuildMode::Parallel(kermit_ds::Threads::new(3).unwrap());
             for (mode, expected) in [
                 (HashTrieBuildMode::Serial, vec![]),
                 (radix, vec![]),
-                (two, vec![2]),
+                (three, vec![3]),
             ] {
                 let structure = HashTrieFamily::<SipHashStrategy, NoPruning, E>::new(config, mode);
                 let join = HashHtj::<SipHashStrategy, NoPruning, E>::new(

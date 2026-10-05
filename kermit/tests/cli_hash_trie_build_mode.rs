@@ -87,6 +87,29 @@ fn cli_bench_ds_with_parallel_build_records_axis() {
     assert_eq!(axes_of(&report)["ds_build_mode"], "parallel:2");
 }
 
+/// `bench join --output` builds through its own family
+/// (`load_query_runner`), so this pins that route's mode, which the
+/// `bench ds` and `bench run` tests do not reach.
+#[test]
+fn cli_bench_join_with_output_records_a_parallel_build() {
+    let csv = tempfile::NamedTempFile::new().expect("temp csv");
+    let csv_path = csv.path().to_str().expect("utf-8 temp path");
+    let (output, report) = bench_join("hash-trie", "hash-triejoin", &[
+        "-m",
+        "space",
+        "--ds-build",
+        "hash-trie=parallel:3",
+        "--output",
+        csv_path,
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(axes_of(&report)["ds_build_mode"], "parallel:3");
+}
+
 /// `--verify` checks the answer counts of parallel-built tries against the
 /// benchmark's expected values, eager and lazy.
 #[test]

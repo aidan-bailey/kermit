@@ -322,7 +322,8 @@ mod tests {
 
     /// Inputs the shared matrix leaves out (the spec's § Testing): arity 4,
     /// a first key holding half the tuples, and enough tuples (39 768) that
-    /// the public constructor cuts them into three morsels of 16 384.
+    /// the public constructor cuts them into three morsels, two of them full
+    /// (16 384 tuples).
     #[test]
     #[cfg_attr(miri, ignore = "tens of thousands of inserts")]
     fn parallel_builds_the_serial_trie_on_large_and_skewed_inputs() {
