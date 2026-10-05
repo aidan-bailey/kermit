@@ -424,15 +424,18 @@ mod tests {
     #[test]
     fn a_remapped_equality_keeps_its_source_first() {
         let (query, specs) = rewritten("Q(X, Y) :- r(X, Y, X).");
-        // Select_0_r(X, Y, K0), equality (0, 2). Plan K0, Y, X: π = [2, 1, 0].
+        // Select_0_r(X, Y, K0), equality (0, 2). Plan Y, K0, X: π = [1, 2,
+        // 0], which sends the source column 0 to 2 and the repeat column 2
+        // to 1, so the pair arrives as (2, 1) and is re-sorted.
         let out = orient(
             ColumnOrderPolicy::Any,
             query.clone(),
-            plan_of(&query, &["K0", "Y", "X"]),
+            plan_of(&query, &["Y", "K0", "X"]),
             specs,
         );
-        assert_eq!(body_text(&out.query), vec!["Select_0_r(K0, Y, X)"]);
-        assert_eq!(out.selection_specs[0].equalities, vec![eq(0, 2)]);
+        assert_eq!(body_text(&out.query), vec!["Select_0_r(Y, K0, X)"]);
+        assert_eq!(out.selection_specs[0].relation, "Index_1_2_0_r");
+        assert_eq!(out.selection_specs[0].equalities, vec![eq(1, 2)]);
     }
 
     /// `r(X, X, X)` is `Select_0_r(X, K0, K1)` with (0, 1) and (0, 2).
@@ -457,18 +460,18 @@ mod tests {
     #[test]
     fn two_repeated_variables_remap_as_two_classes() {
         // r(X, Y, X, Y) is Select_0_r(X, Y, K0, K1), (0, 2) and (1, 3).
-        // Plan K1, K0, Y, X: π = [3, 2, 1, 0], so X's class {0, 2} lands
-        // on {3, 1} and Y's class {1, 3} on {2, 0}.
+        // Plan Y, K1, X, K0: π = [1, 3, 0, 2], so X's class {0, 2} lands
+        // on {2, 3} and Y's class {1, 3} on {0, 1}.
         let (query, specs) = rewritten("Q(X, Y) :- r(X, Y, X, Y).");
         assert_eq!(specs[0].equalities, vec![eq(0, 2), eq(1, 3)]);
         let out = orient(
             ColumnOrderPolicy::Any,
             query.clone(),
-            plan_of(&query, &["K1", "K0", "Y", "X"]),
+            plan_of(&query, &["Y", "K1", "X", "K0"]),
             specs,
         );
-        assert_eq!(body_text(&out.query), vec!["Select_0_r(K1, K0, Y, X)"]);
-        assert_eq!(out.selection_specs[0].equalities, vec![eq(0, 2), eq(1, 3)]);
+        assert_eq!(body_text(&out.query), vec!["Select_0_r(Y, K1, X, K0)"]);
+        assert_eq!(out.selection_specs[0].equalities, vec![eq(0, 1), eq(2, 3)]);
     }
 
     /// `r(X, A, B)` reoriented to `(X, B, A)` makes `B` the first body-only
