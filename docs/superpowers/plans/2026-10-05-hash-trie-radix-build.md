@@ -2366,6 +2366,33 @@ Expected: PASS, with the contract tests run, not skipped.
 
 Run this only after telling the user and confirming the host is quiet: no other cargo builds or benchmarks, and peer loom sessions paused.
 
+> **Status (2026-10-05): deferred by the user.** Tasks 1–10 are done and
+> gated on the branch merged with `origin/master` (`594d8d9`, which brings
+> in #81 and #92). The host was not quiet: a peer session's Miri was at
+> 100 % CPU, the load average was about 5, and 27 of 30 GB of memory were in
+> use. `earlyoom -m5` was also killing cargo jobs at that time. What is
+> already settled, so a later run can start at Step 3:
+>
+> - **Relations** (Step 2, from `~/.cache/kermit/benchmarks/watdiv-stress-100-test-1/`):
+>   - `friendof.parquet`: n = 4,491,142, D = 39,781, D/n = 0.009. This is
+>     the D ≪ n regime, about 113 tuples per root key.
+>   - `price.parquet`: n = 240,000, D = 240,000, D/n = 1.000. This is the
+>     largest relation with D/n ≥ 0.5, the D = n regime.
+> - **Identity at scale:** `bench ds -m space` on `friendof` gave 797,992,480
+>   bytes for both `serial` and `radix:8`, with zero variance, from a release
+>   binary built at `594d8d9`.
+> - **Settings:** `--sample-size 10` with the default measurement and warm-up
+>   times. Criterion's automatic sampling uses one build per sample on
+>   `friendof` (about 2 s per build). Expect about 15–20 minutes for both
+>   relations × 4 arms × 5 replicates.
+> - **Binary:** rebuild with `cargo build --release -p kermit` at the commit
+>   being measured, and copy it out of `target/` (Step 1). Once #91 has
+>   landed, that is the landed SHA.
+> - **Arms:** the default Layout (Sip, pruning off, eager expansion). A lazy
+>   arm (`--ds-layout-expansion lazy`) is optional. Under lazy expansion the
+>   build does no subtrie work, so radix can only move the root inserts and
+>   pending-list pushes.
+
 - [ ] **Step 1: Build a release binary and copy it out of `target/`**
 
 Run:
