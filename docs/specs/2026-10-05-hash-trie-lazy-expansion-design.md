@@ -466,3 +466,28 @@ the Python job.
       implemented, pinned by tests and documented.
 - [ ] `hash-trie.md` gains a Layout entry, and the catalogue row moves to
       the landed table.
+
+## Amendment 1 (planning, 2026-10-05)
+
+Two refinements found while planning, both verified with a rustc
+prototype before any code:
+
+1. **Payload over the node type.** The payload is generic over the node
+   type: `type Pending<N>: PendingChild<N>`, with `LazyChild<N>`.
+   `E::Pending<P>` would have needed a public trait method returning the
+   crate-private `HashTrieNode`, which `private_interfaces` rejects under
+   `-Dwarnings`; making the node `pub` only moves the error onto
+   `HashTable`. Layout, `Sync` and sizes are as designed, so the
+   "compiler risk" fallback was not needed.
+2. **Warm lazy allocation cells.** `result_allocation.rs` does not make a
+   lazy join warm by itself: each helper call builds fresh relations. Lazy
+   cells measure a second join over the same relations (Testing § Join
+   layer is corrected by this). Measured: the cold variant fails 6 of the
+   8 lazy join cells. The pruned descent cells pass even cold, because
+   their dead-end children are single-tuple `Singleton`s, which never
+   expand.
+
+A third, found while executing: the plan's commit split between the CLI
+task and the bench-rule task could not pass `clippy -Dwarnings` alone,
+because `JOIN_MUTATES` is dead code until `run_benchmark` reads it. The
+two landed as one commit.

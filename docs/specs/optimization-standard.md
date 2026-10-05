@@ -82,7 +82,7 @@ A **Layout** option changes the type of the data structure itself. Each combinat
 | Type system enforcement | Strong (incompatible layouts won't compile together) |
 | Switching at runtime | Impossible (it's compile-time) |
 | Bench axis key | `ds_layout_<dim>` |
-| Examples (potential) | Hasher choice ✓, singleton pruning ✓, seek strategy ✓, pointer encoding, lazy expansion |
+| Examples (potential) | Hasher choice ✓, singleton pruning ✓, seek strategy ✓, lazy expansion ✓, pointer encoding |
 | Test obligation | Type alias per combination + `define_multiway_join_test_suite!(<alias>, <Algo>, <Optimiser>)` for each |
 
 ### Config — *changes a runtime value*
@@ -761,7 +761,7 @@ This is semantically correct — pre-standard HashTrie runs were SipHash-only. S
 | CLI dispatch monomorphizing on the Layout cell | [`kermit/src/options.rs`](../../kermit/src/options.rs) (`with_hash_trie_layout!` — the one place Layout dimensions multiply) |
 | Sorted Layout dispatch | [`kermit/src/options.rs`](../../kermit/src/options.rs) (`with_sorted_trie_layout!`) |
 | Bench-report axes merge | [`kermit/src/bench/run.rs`](../../kermit/src/bench/run.rs) and [`kermit/src/bench/ds.rs`](../../kermit/src/bench/ds.rs) (search `optimization_axes` / `build_mode_axes`), from the families in [`kermit/src/execution.rs`](../../kermit/src/execution.rs) |
-| CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_layout_pruning.rs`](../../kermit/tests/cli_hash_trie_layout_pruning.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs), [`kermit/tests/cli_sorted_trie_layout_seek.rs`](../../kermit/tests/cli_sorted_trie_layout_seek.rs) |
+| CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_layout_pruning.rs`](../../kermit/tests/cli_hash_trie_layout_pruning.rs), [`kermit/tests/cli_hash_trie_layout_expansion.rs`](../../kermit/tests/cli_hash_trie_layout_expansion.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs), [`kermit/tests/cli_sorted_trie_layout_seek.rs`](../../kermit/tests/cli_sorted_trie_layout_seek.rs) |
 | First Config consumer (load-factor cap) | [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs) |
 | The classification rule and why pruning moved | [`docs/specs/2026-09-08-singleton-pruning-config-design.md`](2026-09-08-singleton-pruning-config-design.md) § Amendment 1 |
 | Config-injection seam (`ConfigurableRelation`) | [`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs) |
@@ -779,13 +779,14 @@ This is semantically correct — pre-standard HashTrie runs were SipHash-only. S
 
 ## What's implemented today, what's available
 
-Five optimizations are implemented — three Layout dimensions, one Config
+Six optimizations are implemented — four Layout dimensions, one Config
 value and one BuildMode:
 
 | Optimization | Category | Where | Paper § |
 |---|---|---|---|
 | Hasher choice (Sip vs Fx) | Layout | `ds_layout_hasher` | §3.3.1 |
 | Singleton pruning (off/on) | Layout | `ds_layout_pruning` | §3.3.1, Fig 5 |
+| Lazy child expansion (eager/lazy) | Layout | `ds_layout_expansion` | §3.3.1, Fig 6 |
 | Seek strategy (linear / binary / galloping) | Layout | `ds_layout_seek` | (kermit-specific; LFTJ §3) |
 | Load-factor cap | Config | `ds_config_load_factor` | (kermit-specific) |
 | ColumnTrie build (bulk / incremental) | BuildMode | `ds_build_mode` | (kermit-specific, issue #84) |
@@ -797,7 +798,6 @@ Available to add (each a separate brainstorming → planning → implementation 
 
 | Optimization | Category | Effort | Paper § |
 |---|---|---|---|
-| Lazy child expansion | Layout (an unexpanded node is a node state) | Medium | §3.3.1, Fig 6 |
 | Pointer tagging | Layout | Medium | §3.3.1, Fig 4 |
 | Initial capacity hint | Config | Small | (kermit-specific) |
 | Hash seed | Config | Small | (kermit-specific) |
