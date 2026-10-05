@@ -226,12 +226,21 @@ mod tests {
         rows.iter().map(|row| row[..arity].to_vec()).collect()
     }
 
-    /// Enough distinct first values to double the root several times, with
-    /// repeats so subtries and chains hold several tuples.
+    /// Enough distinct first values to double the root several times (three
+    /// times under Miri), with repeats so subtries and chains hold several
+    /// tuples. The build is safe Rust, so Miri runs a small matrix: the full
+    /// one took almost five minutes there.
     const RANDOM_TUPLES: usize = if cfg!(miri) {
-        200
+        48
     } else {
         3_000
+    };
+
+    /// Load factors under test, in percent. Miri runs the default only.
+    const LOAD_PERCENTS: &[u8] = if cfg!(miri) {
+        &[70]
+    } else {
+        &[70, 50]
     };
 
     /// Bit counts under test. Sixteen bits make 65,536 partitions, too slow
@@ -280,7 +289,7 @@ mod tests {
     /// factor, bit count and input.
     fn check_identity<H: HashStrategy, P: PruningPolicy>() {
         for arity in 1..=3 {
-            for percent in [70, 50] {
+            for &percent in LOAD_PERCENTS {
                 let config = HashTrieConfig {
                     load_factor: LoadFactor::percent(percent).unwrap(),
                 };
