@@ -482,7 +482,7 @@ pub(crate) fn resolve_sweep(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, crate::options::BuildChoice};
 
     /// #86: under `-i all`, `-a` decides which cells run, and a flag must
     /// reach one of them. Each row is one `-a` with the flags that keep a
@@ -490,20 +490,29 @@ mod tests {
     #[test]
     fn resolve_sweep_rejects_a_flag_the_algorithm_leaves_without_a_cell() {
         use DsFlag::*;
+        let incremental = Build(BuildChoice::Incremental);
+        let parallel = Build(BuildChoice::Parallel(kermit_ds::Threads::new(2).unwrap()));
         let rows: &[(JoinAlgorithmSelector, &[DsFlag], &[DsFlag])] = &[
             (
                 JoinAlgorithmSelector::LeapfrogTriejoin,
-                &[LayoutSeek, Build],
+                &[LayoutSeek, incremental, parallel],
                 &[LayoutHasher, LayoutPruning, Config],
             ),
             (
                 JoinAlgorithmSelector::HashTriejoin,
                 &[LayoutHasher, LayoutPruning, Config],
-                &[LayoutSeek, Build],
+                &[LayoutSeek, incremental, parallel],
             ),
             (
                 JoinAlgorithmSelector::All,
-                &[LayoutHasher, LayoutPruning, LayoutSeek, Config, Build],
+                &[
+                    LayoutHasher,
+                    LayoutPruning,
+                    LayoutSeek,
+                    Config,
+                    incremental,
+                    parallel,
+                ],
                 &[],
             ),
         ];

@@ -198,8 +198,8 @@ impl Execution {
     /// The only way to obtain an `Execution` from a concrete pair. Returns
     /// `None` for the three incompatible pairs, which the sweep skips.
     /// `choices` reach the cells that have each axis: the hash-trie cell's
-    /// hasher, pruning and config, both sorted cells' seek strategy, and the
-    /// column-trie cell's build mode.
+    /// hasher, pruning and config, both sorted cells' seek strategy, and each
+    /// sorted cell's own build mode.
     pub fn for_pair(
         ds: IndexStructure, algo: JoinAlgorithm, choices: DsChoices,
     ) -> Option<Execution> {
@@ -214,13 +214,13 @@ impl Execution {
             | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
                 Some(Execution::TrieLftj(SortedTrie::TreeTrie {
                     seek,
-                    build: TreeTrieBuildMode::default(),
+                    build: build.tree,
                 }))
             },
             | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
                 Some(Execution::TrieLftj(SortedTrie::ColumnTrie {
                     seek,
-                    build,
+                    build: build.column,
                 }))
             },
             | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => Some(Execution::HashHtj {
@@ -252,11 +252,11 @@ impl Execution {
         match ds {
             | IndexStructure::TreeTrie => Execution::TrieLftj(SortedTrie::TreeTrie {
                 seek,
-                build: TreeTrieBuildMode::default(),
+                build: build.tree,
             }),
             | IndexStructure::ColumnTrie => Execution::TrieLftj(SortedTrie::ColumnTrie {
                 seek,
-                build,
+                build: build.column,
             }),
             | IndexStructure::HashTrie => Execution::HashHtj {
                 hasher,
@@ -777,6 +777,7 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H,
 mod tests {
     use {
         super::*,
+        crate::options::BuildModes,
         clap::ValueEnum,
         kermit_ds::{NoPruning, SingletonPruning},
         kermit_iters::SipHashStrategy,
@@ -868,7 +869,18 @@ mod tests {
     #[test]
     fn for_structure_agrees_with_for_pair() {
         let config = HashTrieConfig::default();
-        for build in [ColumnTrieBuildMode::Incremental, ColumnTrieBuildMode::Bulk] {
+        let builds = [
+            BuildModes::default(),
+            BuildModes {
+                column: ColumnTrieBuildMode::Incremental,
+                ..BuildModes::default()
+            },
+            BuildModes {
+                tree: TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(4).unwrap()),
+                ..BuildModes::default()
+            },
+        ];
+        for build in builds {
             for ds in all_structures() {
                 for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
                     for pruning in [PruningChoice::Off, PruningChoice::On] {
@@ -1386,12 +1398,16 @@ mod tests {
         .is_empty());
     }
 
-    /// The `--ds-build` mode reaches the column-trie cell of a sweep and no
-    /// other.
+    /// Each structure's `--ds-build` mode reaches its own cell of a sweep and
+    /// no other.
     #[test]
-    fn sweep_attaches_the_build_mode_to_the_column_trie_cell_only() {
+    fn sweep_attaches_each_build_mode_to_its_own_cell() {
+        let four = TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(4).unwrap());
         let choices = DsChoices {
-            build: ColumnTrieBuildMode::Incremental,
+            build: BuildModes {
+                column: ColumnTrieBuildMode::Incremental,
+                tree: four,
+            },
             ..DsChoices::default()
         };
         let sweep = Sweep::expand(&all_structures(), &all_algorithms(), choices);
@@ -1399,13 +1415,13 @@ mod tests {
             .cells
             .contains(&Execution::TrieLftj(SortedTrie::ColumnTrie {
                 seek: SeekChoice::Galloping,
-                build: ColumnTrieBuildMode::Incremental
+                build: ColumnTrieBuildMode::Incremental,
             })));
         assert!(sweep
             .cells
             .contains(&Execution::TrieLftj(SortedTrie::TreeTrie {
                 seek: SeekChoice::Galloping,
-                build: TreeTrieBuildMode::Serial,
+                build: four,
             })));
     }
 

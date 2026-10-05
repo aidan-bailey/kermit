@@ -7,7 +7,7 @@ use {
     clap::{Args, ValueEnum},
     kermit_ds::{
         ColumnTrieBuildMode, HashTrieConfig, IndexStructure, LoadFactor, PruningPolicy,
-        SeekStrategy,
+        SeekStrategy, Threads, TreeTrieBuildMode,
     },
     kermit_iters::{HashStrategy, LayoutOption},
     std::fmt,
@@ -29,8 +29,9 @@ pub(crate) enum DsFlag {
     LayoutSeek,
     /// `--ds-config`.
     Config,
-    /// `--ds-build`.
-    Build,
+    /// `--ds-build`, with the value given: which structures have its axis
+    /// depends on the value.
+    Build(BuildChoice),
 }
 
 impl DsFlag {
@@ -55,7 +56,7 @@ impl DsFlag {
                 &[IndexStructure::HashTrie]
             },
             | Self::LayoutSeek => &[IndexStructure::TreeTrie, IndexStructure::ColumnTrie],
-            | Self::Build => &[IndexStructure::ColumnTrie],
+            | Self::Build(choice) => choice.structures(),
         }
     }
 
@@ -77,13 +78,13 @@ impl DsFlag {
 
 impl fmt::Display for DsFlag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            | Self::LayoutHasher => "--ds-layout-hasher",
-            | Self::LayoutPruning => "--ds-layout-pruning",
-            | Self::LayoutSeek => "--ds-layout-seek",
-            | Self::Config => "--ds-config",
-            | Self::Build => "--ds-build",
-        })
+        match self {
+            | Self::LayoutHasher => f.write_str("--ds-layout-hasher"),
+            | Self::LayoutPruning => f.write_str("--ds-layout-pruning"),
+            | Self::LayoutSeek => f.write_str("--ds-layout-seek"),
+            | Self::Config => f.write_str("--ds-config"),
+            | Self::Build(choice) => write!(f, "--ds-build {choice}"),
+        }
     }
 }
 
@@ -531,6 +532,81 @@ pub(crate) fn validate_config_choices(
     validate_ds_flags(indexstructure, config.given().as_slice())
 }
 
+/// One `--ds-build` value. `ColumnTrie`'s and `TreeTrie`'s modes share the
+/// flag; which structures a value reaches is
+/// [`structures`](Self::structures).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BuildChoice {
+    /// `bulk`: `ColumnTrie`'s one-pass build, its default.
+    Bulk,
+    /// `incremental`: `ColumnTrie`'s build before #84.
+    Incremental,
+    /// `serial`: `TreeTrie`'s single-threaded build, its default.
+    Serial,
+    /// `parallel:N`: `TreeTrie`'s morsel-driven build on `N` threads.
+    Parallel(Threads),
+}
+
+impl BuildChoice {
+    /// The structures that have this value's build mode: the `--ds-build`
+    /// row of [`DsFlag::structures`].
+    pub(crate) fn structures(self) -> &'static [IndexStructure] {
+        match self {
+            | Self::Bulk | Self::Incremental => &[IndexStructure::ColumnTrie],
+            | Self::Serial | Self::Parallel(_) => &[IndexStructure::TreeTrie],
+        }
+    }
+}
+
+impl fmt::Display for BuildChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            | Self::Bulk => f.write_str("bulk"),
+            | Self::Incremental => f.write_str("incremental"),
+            | Self::Serial => f.write_str("serial"),
+            | Self::Parallel(threads) => write!(f, "parallel:{}", threads.get()),
+        }
+    }
+}
+
+/// Parses a `--ds-build` value: `bulk`, `incremental`, `serial`, or
+/// `parallel:N` with `N` a whole number of threads from 1 to
+/// [`Threads::MAX`].
+pub(crate) fn parse_build_choice(value: &str) -> Result<BuildChoice, String> {
+    match value {
+        | "bulk" => Ok(BuildChoice::Bulk),
+        | "incremental" => Ok(BuildChoice::Incremental),
+        | "serial" => Ok(BuildChoice::Serial),
+        | other => {
+            let threads = other.strip_prefix("parallel:").ok_or_else(|| {
+                format!("expected bulk, incremental, serial or parallel:N, got {other:?}")
+            })?;
+            threads
+                .parse::<usize>()
+                .ok()
+                .and_then(Threads::new)
+                .map(BuildChoice::Parallel)
+                .ok_or_else(|| {
+                    format!(
+                        "parallel:N needs a whole number of threads N from 1 to {}, got {other:?}",
+                        Threads::MAX
+                    )
+                })
+        },
+    }
+}
+
+/// Every structure's build mode, resolved from `--ds-build`: the value
+/// reaches the structures that have it, and every other structure keeps its
+/// default.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BuildModes {
+    /// `ColumnTrie`'s build: `bulk` (default) or `incremental`.
+    pub column: ColumnTrieBuildMode,
+    /// `TreeTrie`'s build: `serial` (default) or `parallel:N`.
+    pub tree: TreeTrieBuildMode,
+}
+
 /// BuildMode-axis CLI choice, flattened beside [`LayoutChoices`] and
 /// [`ConfigChoices`] into `bench ds`, `bench run` and `bench join`. Every
 /// build mode builds the same structure, so the flag changes build time
@@ -538,25 +614,33 @@ pub(crate) fn validate_config_choices(
 /// no `--ds-config`: it cannot change a query's answers.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct BuildChoices {
-    /// How `ColumnTrie` is built from its tuples (default: `bulk`;
-    /// `incremental` is the build before the one-pass bulk build). Only valid
-    /// with `--indexstructure column-trie` (or `all`).
-    #[arg(long = "ds-build", value_name = "MODE", value_enum)]
-    column_trie_build: Option<ColumnTrieBuildMode>,
+    /// How the selected structure is built from its tuples: `bulk` (default)
+    /// or `incremental` for `column-trie`; `serial` (default) or `parallel:N`
+    /// (N threads, 1 to 1024) for `tree-trie`. A value is only valid with a
+    /// structure that has it (or `all`).
+    #[arg(long = "ds-build", value_name = "MODE", value_parser = parse_build_choice)]
+    build: Option<BuildChoice>,
 }
 
 impl BuildChoices {
-    /// The mode to build `ColumnTrie` relations with, applying the default
-    /// when none was supplied.
-    pub(crate) fn column_trie_build_resolved(&self) -> ColumnTrieBuildMode {
-        self.column_trie_build.unwrap_or_default()
+    /// Every structure's build mode: `--ds-build` reaches the structures that
+    /// have its value, and the rest keep their defaults.
+    pub(crate) fn resolved(&self) -> BuildModes {
+        let mut modes = BuildModes::default();
+        match self.build {
+            | None => {},
+            | Some(BuildChoice::Bulk) => modes.column = ColumnTrieBuildMode::Bulk,
+            | Some(BuildChoice::Incremental) => modes.column = ColumnTrieBuildMode::Incremental,
+            | Some(BuildChoice::Serial) => modes.tree = TreeTrieBuildMode::Serial,
+            | Some(BuildChoice::Parallel(threads)) => {
+                modes.tree = TreeTrieBuildMode::Parallel(threads)
+            },
+        }
+        modes
     }
 
-    /// Whether the user explicitly passed `--ds-build`.
-    pub(crate) fn column_trie_build_explicit(&self) -> bool { self.column_trie_build.is_some() }
-
     /// `--ds-build` if the user passed it. See [`DsFlag::given`].
-    fn given(&self) -> Option<DsFlag> { self.column_trie_build_explicit().then_some(DsFlag::Build) }
+    fn given(&self) -> Option<DsFlag> { self.build.map(DsFlag::Build) }
 }
 
 /// Rejects `--ds-build` on index structures that have no BuildMode axis, so
@@ -582,8 +666,8 @@ pub(crate) struct DsChoices {
     pub seek: SeekChoice,
     /// `--ds-config`; reaches the hash-trie cell only.
     pub config: HashTrieConfig,
-    /// `--ds-build`; reaches the column-trie cell only.
-    pub build: ColumnTrieBuildMode,
+    /// `--ds-build`; each sorted structure's mode reaches its own cell.
+    pub build: BuildModes,
 }
 
 impl DsChoices {
@@ -606,7 +690,7 @@ impl DsChoices {
             pruning: layout.hash_trie_pruning_resolved(),
             seek: layout.sorted_trie_seek_resolved(),
             config: config.hash_trie_config_resolved()?,
-            build: build.column_trie_build_resolved(),
+            build: build.resolved(),
         })
     }
 }
@@ -945,43 +1029,97 @@ mod tests {
         assert!(msg.contains("--ds-config"), "{msg}");
     }
 
+    /// Each `--ds-build` value reaches the structures that have it, and
+    /// `all`, and no other. Until #94's second plan only `TreeTrie` has
+    /// `serial` and `parallel:N`.
     #[test]
-    fn validate_build_choices_accepts_column_trie_or_all_only() {
-        let build = BuildChoices {
-            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
+    fn validate_build_choices_accepts_each_value_on_its_structures_or_all() {
+        let incremental = BuildChoices {
+            build: Some(BuildChoice::Incremental),
         };
-        assert!(validate_build_choices(IndexStructureSelector::ColumnTrie, &build).is_ok());
-        assert!(validate_build_choices(IndexStructureSelector::All, &build).is_ok());
-        for sel in [
-            IndexStructureSelector::TreeTrie,
-            IndexStructureSelector::HashTrie,
+        let parallel = BuildChoices {
+            build: Some(BuildChoice::Parallel(Threads::new(4).unwrap())),
+        };
+        for (build, home, others, named) in [
+            (
+                &incremental,
+                IndexStructureSelector::ColumnTrie,
+                [
+                    IndexStructureSelector::TreeTrie,
+                    IndexStructureSelector::HashTrie,
+                ],
+                "column-trie",
+            ),
+            (
+                &parallel,
+                IndexStructureSelector::TreeTrie,
+                [
+                    IndexStructureSelector::ColumnTrie,
+                    IndexStructureSelector::HashTrie,
+                ],
+                "tree-trie",
+            ),
         ] {
-            let msg = validate_build_choices(sel, &build).unwrap_err().to_string();
-            assert!(msg.contains("--ds-build"), "{msg}");
-            assert!(msg.contains("column-trie"), "{msg}");
-            assert!(validate_build_choices(sel, &BuildChoices::default()).is_ok());
+            assert!(validate_build_choices(home, build).is_ok(), "{home:?}");
+            assert!(validate_build_choices(IndexStructureSelector::All, build).is_ok());
+            for sel in others {
+                let msg = validate_build_choices(sel, build).unwrap_err().to_string();
+                assert!(msg.contains("--ds-build"), "{msg}");
+                assert!(msg.contains(named), "{msg}");
+                assert!(validate_build_choices(sel, &BuildChoices::default()).is_ok());
+            }
         }
     }
 
     #[test]
     fn ds_choices_resolve_carries_the_build_mode() {
-        let build = BuildChoices {
-            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
+        let incremental = BuildChoices {
+            build: Some(BuildChoice::Incremental),
         };
         let choices = DsChoices::resolve(
             IndexStructureSelector::ColumnTrie,
             &LayoutChoices::default(),
             &ConfigChoices::default(),
-            &build,
+            &incremental,
         )
         .unwrap();
-        assert_eq!(choices.build, ColumnTrieBuildMode::Incremental);
-        assert_eq!(DsChoices::default().build, ColumnTrieBuildMode::Bulk);
+        assert_eq!(choices.build, BuildModes {
+            column: ColumnTrieBuildMode::Incremental,
+            tree: TreeTrieBuildMode::Serial,
+        });
+
+        let four = Threads::new(4).unwrap();
+        let parallel = BuildChoices {
+            build: Some(BuildChoice::Parallel(four)),
+        };
+        let choices = DsChoices::resolve(
+            IndexStructureSelector::All,
+            &LayoutChoices::default(),
+            &ConfigChoices::default(),
+            &parallel,
+        )
+        .unwrap();
+        assert_eq!(choices.build, BuildModes {
+            column: ColumnTrieBuildMode::Bulk,
+            tree: TreeTrieBuildMode::Parallel(four),
+        });
+
+        assert_eq!(DsChoices::default().build, BuildModes {
+            column: ColumnTrieBuildMode::Bulk,
+            tree: TreeTrieBuildMode::Serial,
+        });
         assert!(DsChoices::resolve(
             IndexStructureSelector::TreeTrie,
             &LayoutChoices::default(),
             &ConfigChoices::default(),
-            &build,
+            &incremental,
+        )
+        .is_err());
+        assert!(DsChoices::resolve(
+            IndexStructureSelector::ColumnTrie,
+            &LayoutChoices::default(),
+            &ConfigChoices::default(),
+            &parallel,
         )
         .is_err());
     }
@@ -1055,14 +1193,14 @@ mod tests {
             ds_config: vec!["load-factor=0.5".into()],
         };
         let build = BuildChoices {
-            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
+            build: Some(BuildChoice::Incremental),
         };
         assert_eq!(DsFlag::given(&layout, &config, &build), vec![
             DsFlag::LayoutHasher,
             DsFlag::LayoutPruning,
             DsFlag::LayoutSeek,
             DsFlag::Config,
-            DsFlag::Build,
+            DsFlag::Build(BuildChoice::Incremental),
         ]);
         let seek_only = LayoutChoices {
             sorted_trie_seek: Some(SeekChoice::Linear),
@@ -1070,15 +1208,17 @@ mod tests {
         };
         assert_eq!(
             DsFlag::given(&seek_only, &ConfigChoices::default(), &build),
-            vec![DsFlag::LayoutSeek, DsFlag::Build]
+            vec![DsFlag::LayoutSeek, DsFlag::Build(BuildChoice::Incremental)]
         );
     }
 
     #[test]
     fn unreached_flag_is_the_first_flag_no_structure_has() {
+        let incremental = DsFlag::Build(BuildChoice::Incremental);
+        let parallel = DsFlag::Build(BuildChoice::Parallel(Threads::new(2).unwrap()));
         let sorted = [IndexStructure::TreeTrie, IndexStructure::ColumnTrie];
         assert_eq!(
-            unreached_flag(&[DsFlag::LayoutSeek, DsFlag::Build], &sorted),
+            unreached_flag(&[DsFlag::LayoutSeek, incremental], &sorted),
             None
         );
         assert_eq!(
@@ -1088,11 +1228,18 @@ mod tests {
             ),
             Some(DsFlag::Config)
         );
-        // ColumnTrie alone has a build mode, so TreeTrie alone does not
-        // reach --ds-build.
+        // A `--ds-build` value reaches only the structures that have it.
         assert_eq!(
-            unreached_flag(&[DsFlag::Build], &[IndexStructure::TreeTrie]),
-            Some(DsFlag::Build)
+            unreached_flag(&[incremental], &[IndexStructure::TreeTrie]),
+            Some(incremental)
+        );
+        assert_eq!(
+            unreached_flag(&[parallel], &[IndexStructure::TreeTrie]),
+            None
+        );
+        assert_eq!(
+            unreached_flag(&[parallel], &[IndexStructure::ColumnTrie]),
+            Some(parallel)
         );
         assert_eq!(unreached_flag(&[], &[]), None);
     }
@@ -1119,5 +1266,61 @@ mod tests {
             &BuildChoices::default(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn build_choices_parse_and_display_round_trip() {
+        for text in ["bulk", "incremental", "serial", "parallel:1", "parallel:16"] {
+            assert_eq!(parse_build_choice(text).unwrap().to_string(), text);
+        }
+        assert_eq!(
+            parse_build_choice("parallel:8"),
+            Ok(BuildChoice::Parallel(Threads::new(8).unwrap()))
+        );
+    }
+
+    /// Every malformed value names the form it expected.
+    #[test]
+    fn build_choices_reject_malformed_values() {
+        for bad in [
+            "parallel",
+            "parallel:",
+            "parallel:0",
+            "parallel:x",
+            "parallel:-1",
+            "parallel:1025",
+            "Serial",
+            "threads:4",
+            "",
+        ] {
+            let msg = parse_build_choice(bad).unwrap_err();
+            assert!(msg.contains("parallel:N"), "{bad:?}: {msg}");
+        }
+    }
+
+    /// Which structures each value reaches. `HashTrie` joins `serial` and
+    /// `parallel:N` in #94's second plan.
+    #[test]
+    fn build_choice_structures_are_pinned() {
+        assert_eq!(BuildChoice::Bulk.structures(), &[
+            IndexStructure::ColumnTrie
+        ]);
+        assert_eq!(BuildChoice::Incremental.structures(), &[
+            IndexStructure::ColumnTrie
+        ]);
+        assert_eq!(BuildChoice::Serial.structures(), &[
+            IndexStructure::TreeTrie
+        ]);
+        assert_eq!(
+            BuildChoice::Parallel(Threads::new(2).unwrap()).structures(),
+            &[IndexStructure::TreeTrie]
+        );
+    }
+
+    #[test]
+    fn ds_build_flag_names_its_value() {
+        let flag = DsFlag::Build(BuildChoice::Parallel(Threads::new(2).unwrap()));
+        assert_eq!(flag.to_string(), "--ds-build parallel:2");
+        assert_eq!(flag.structures_label(), "tree-trie");
     }
 }
