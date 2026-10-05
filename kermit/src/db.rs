@@ -158,11 +158,18 @@ fn for_each_hash_tuple(mut iter: impl HashTrieIterator, visit: &mut impl FnMut(&
             },
             | None => false,
         };
-        // A built trie has no empty inner node, so `open` succeeds on every
-        // inner bucket.
-        if !at_leaf && iter.open() {
-            depth += 1;
-            continue;
+        if !at_leaf {
+            if iter.open() {
+                depth += 1;
+                continue;
+            }
+            // A built trie has no empty inner node, so `open` succeeds on
+            // every inner bucket. Were one empty, `open` would still push its
+            // frame and report it `at_end`: pop it, so `depth` keeps counting
+            // the frames on the stack.
+            if iter.at_end() {
+                iter.up();
+            }
         }
         // Advance to the next bucket, climbing out of each exhausted level.
         while iter.next().is_none() {

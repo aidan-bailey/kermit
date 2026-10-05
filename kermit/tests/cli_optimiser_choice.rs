@@ -2,6 +2,8 @@
 //! `optimiser` axis, defaulting to `lexicographic`.
 
 use {
+    clap::ValueEnum,
+    kermit_algos::Optimiser,
     std::{fs, path::PathBuf, process::Command},
     tempfile::NamedTempFile,
 };
@@ -120,7 +122,8 @@ fn cli_join_answers_identically_under_every_optimiser() {
     ] {
         let expected = rows("lexicographic", structure, algorithm);
         assert!(expected.len() > 1, "the fixture query must return rows");
-        for optimiser in ["cardinality", "cost-based"] {
+        for optimiser in Optimiser::value_variants() {
+            let optimiser = optimiser.axis_value();
             assert_eq!(
                 rows(optimiser, structure, algorithm),
                 expected,
