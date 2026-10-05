@@ -65,6 +65,9 @@ pub enum Optimiser {
     Lexicographic,
     /// Smallest-relation-first; see [`CardinalityOptimiser`].
     Cardinality,
+    /// Lowest estimated cost, by dynamic programming over the sets of bound
+    /// variables; see [`CostBasedOptimiser`].
+    CostBased,
 }
 
 impl Optimiser {
@@ -73,6 +76,7 @@ impl Optimiser {
         match self {
             | Self::Lexicographic => Box::new(LexicographicOptimiser),
             | Self::Cardinality => Box::new(CardinalityOptimiser),
+            | Self::CostBased => Box::new(CostBasedOptimiser::default()),
         }
     }
 
@@ -82,6 +86,7 @@ impl Optimiser {
         match self {
             | Self::Lexicographic => "lexicographic",
             | Self::Cardinality => "cardinality",
+            | Self::CostBased => "cost-based",
         }
     }
 }
@@ -107,6 +112,7 @@ mod optimiser_enum_tests {
         for v in Optimiser::value_variants() {
             let want = match v {
                 | Optimiser::Lexicographic | Optimiser::Cardinality => StatisticsLevel::TupleCounts,
+                | Optimiser::CostBased => StatisticsLevel::ColumnDistinct,
             };
             assert_eq!(v.instantiate().required_statistics(), want, "{v:?}");
         }

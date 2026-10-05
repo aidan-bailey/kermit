@@ -19,7 +19,8 @@
 use {
     kermit::db::{lftj_join, Database, SortedFamily},
     kermit_algos::{
-        CardinalityOptimiser, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser,
+        CardinalityOptimiser, CostBasedOptimiser, JoinQuery, LeapfrogTriejoin,
+        LexicographicOptimiser, QueryOptimiser,
     },
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
@@ -156,6 +157,7 @@ fn lubm_one_university_query_cardinalities_match_paper() {
     let optimisers: Vec<(&str, Box<dyn QueryOptimiser>)> = vec![
         ("lexicographic", Box::new(LexicographicOptimiser)),
         ("cardinality", Box::new(CardinalityOptimiser)),
+        ("cost-based", Box::new(CostBasedOptimiser::default())),
     ];
     let optimiser_count = optimisers.len();
 
