@@ -1,10 +1,12 @@
 //! CLI option groups for the optimisation axes (`--ds-layout-*`,
-//! `--ds-config`, `--ds-build`) and the places the Layout products are
+//! `--ds-config`, `--ds-build`), the planner (`--optimiser`,
+//! `--column-orders`), and the places the Layout products are
 //! monomorphised: `with_hash_trie_layout!` and `with_sorted_trie_layout!`.
 
 use {
     crate::IndexStructureSelector,
     clap::{Args, ValueEnum},
+    kermit_algos::{ColumnOrderPolicy, Optimiser, Planner},
     kermit_ds::{
         ColumnTrieBuildMode, ExpansionPolicy, HashTrieConfig, IndexStructure, LoadFactor,
         PruningPolicy, SeekStrategy,
@@ -12,6 +14,34 @@ use {
     kermit_iters::{HashStrategy, LayoutOption},
     std::fmt,
 };
+
+/// How a join is planned: the optimiser and the column-order policy.
+/// Flattened into `join`, `bench join` and `bench run`; `bench ds` joins
+/// nothing and has neither flag.
+#[derive(Args, Copy, Clone, Debug)]
+pub(crate) struct PlannerArgs {
+    /// Query optimiser (plans the join's variable ordering). Long-only:
+    /// `-o` belongs to `--output`.
+    #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
+    pub(crate) optimiser: Optimiser,
+
+    /// Column orders the planner may bind an atom's columns in: `stored`
+    /// reads each relation in its stored column order, so a plan binds
+    /// every atom's columns left to right; `any` lets the planner choose,
+    /// and an atom whose plan disagrees with the stored order runs over a
+    /// per-query copy with the columns permuted, built before the timed
+    /// join (`copies`) and dropped after the query.
+    #[arg(long, value_enum, default_value_t = ColumnOrderPolicy::Stored)]
+    pub(crate) column_orders: ColumnOrderPolicy,
+}
+
+impl PlannerArgs {
+    /// The planner these flags select. A `Planner` owns its optimiser, so
+    /// each family gets its own.
+    pub(crate) fn instantiate(self) -> Planner {
+        Planner::new(self.optimiser.instantiate(), self.column_orders)
+    }
+}
 
 /// One `--ds-*` flag. Each sets an axis that only some index structures
 /// have, so a flag given for a run with none of them would be silently
@@ -744,7 +774,7 @@ impl DsChoices {
 mod tests {
     use {
         super::*,
-        clap::ValueEnum,
+        clap::{Parser, ValueEnum},
         kermit_ds::{
             BinarySeek, EagerExpansion, GallopingSeek, LazyExpansion, LinearSeek, NoPruning,
             SingletonPruning,
@@ -1306,5 +1336,33 @@ mod tests {
             &BuildChoices::default(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn planner_args_default_to_lexicographic_stored() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            planner: PlannerArgs,
+        }
+        let cli = Cli::parse_from(["kermit"]);
+        assert_eq!(cli.planner.optimiser, Optimiser::Lexicographic);
+        assert_eq!(cli.planner.column_orders, ColumnOrderPolicy::Stored);
+        assert_eq!(
+            cli.planner.instantiate().column_orders(),
+            ColumnOrderPolicy::Stored
+        );
+        let cli = Cli::parse_from([
+            "kermit",
+            "--column-orders",
+            "any",
+            "--optimiser",
+            "cost-based",
+        ]);
+        assert_eq!(cli.planner.optimiser, Optimiser::CostBased);
+        assert_eq!(
+            cli.planner.instantiate().column_orders(),
+            ColumnOrderPolicy::Any
+        );
     }
 }

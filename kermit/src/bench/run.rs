@@ -15,10 +15,10 @@ use {
         execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
         options::{
             unreached_flag, with_hash_trie_layout, with_sorted_trie_layout, DsChoices, DsFlag,
+            PlannerArgs,
         },
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
-    kermit_algos::{ColumnOrderPolicy, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HeapSize, Relation},
     std::{
@@ -33,8 +33,9 @@ use {
 const VALIDATED: &str = "query validated against the workload before timing";
 
 /// Everything a measured join needs besides the cell and the workload:
-/// what kind of report to stamp, how to name the Criterion group, which
-/// optimiser plans the queries, and what to measure. One value is built
+/// what kind of report to stamp, how to name the Criterion group, how the
+/// queries are planned (optimiser and column-order policy), and what to
+/// measure. One value is built
 /// per subcommand invocation and shared by every cell it runs.
 #[derive(Clone, Copy)]
 pub(crate) struct RunSettings<'a> {
@@ -45,7 +46,8 @@ pub(crate) struct RunSettings<'a> {
     /// (`{prefix}/{workload}/{query}/{ds}/{algo}`), from `--name` or the
     /// subcommand's default.
     pub prefix: &'a str,
-    pub optimiser: Optimiser,
+    /// `--optimiser` and `--column-orders`.
+    pub planner: PlannerArgs,
     pub metrics: &'a [Metric],
     /// K in the `end_to_end` metric's `T = build + K × query`.
     pub queries_per_build: u32,
@@ -77,16 +79,17 @@ fn run_benchmark<F: ExecutionFamily>(
     let RunSettings {
         kind,
         prefix,
-        optimiser,
+        planner,
         metrics,
         queries_per_build,
         verify,
         bench_args,
     } = settings;
+    let column_orders = planner.column_orders;
     // Reject a query that cannot run before loading anything: the headers
     // alone settle it, and a failure inside a timed closure below could
     // only panic.
-    workload.validate(ColumnOrderPolicy::Stored)?;
+    workload.validate(column_orders)?;
     // Load each relation from disk exactly once; the family builds its
     // engine from these typed relations rather than re-reading the files.
     // Rebuilding metrics rebuild from each relation's tuples in file order,
@@ -357,7 +360,11 @@ fn run_benchmark<F: ExecutionFamily>(
             ("algorithm".to_string(), serde_json::json!(algo_name)),
             (
                 "optimiser".to_string(),
-                serde_json::json!(optimiser.axis_value()),
+                serde_json::json!(planner.optimiser.axis_value()),
+            ),
+            (
+                "column_orders".to_string(),
+                serde_json::json!(column_orders.axis_value()),
             ),
             ("tuples".to_string(), serde_json::json!(total_tuples)),
         ]);
@@ -386,7 +393,7 @@ pub(crate) fn dispatch_run_bench(
     cell: Execution, workload: &Workload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
     // One planner per family: a `Planner` owns its optimiser.
-    let planner = || Planner::new(settings.optimiser.instantiate(), ColumnOrderPolicy::Stored);
+    let planner = || settings.planner.instantiate();
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,

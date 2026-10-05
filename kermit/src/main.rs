@@ -14,11 +14,12 @@ use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
     kermit::db::{validate_query, JoinError},
-    kermit_algos::{ColumnOrderPolicy, JoinAlgorithm, JoinQuery, Optimiser, Planner},
+    kermit_algos::{ColumnOrderPolicy, JoinAlgorithm, JoinQuery},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::IndexStructure,
+    kermit_ds::{IndexStructure, Relation, RelationHeader},
     kermit_parser::Term,
     std::{
+        collections::BTreeMap,
         fs,
         io::{self, BufWriter, Write},
         path::{Path, PathBuf},
@@ -41,7 +42,7 @@ use {
     execution::{read_relation_header, Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
     options::{
         with_hash_trie_layout, with_sorted_trie_layout, BuildChoices, ConfigChoices, DsChoices,
-        DsFlag, LayoutChoices,
+        DsFlag, LayoutChoices, PlannerArgs,
     },
 };
 
@@ -96,10 +97,8 @@ struct QueryArgs {
     )]
     indexstructure: IndexStructure,
 
-    /// Query optimiser (plans the join's variable ordering). Long-only:
-    /// `-o` belongs to `--output`.
-    #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
-    optimiser: Optimiser,
+    #[command(flatten)]
+    planner: PlannerArgs,
 
     #[command(flatten)]
     layout: LayoutChoices,
@@ -300,10 +299,8 @@ enum BenchSubcommand {
         #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
         algorithm: JoinAlgorithmSelector,
 
-        /// Query optimiser (plans the join's variable ordering)
-        // Long-only for parity with the join surfaces (where -o is --output).
-        #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
-        optimiser: Optimiser,
+        #[command(flatten)]
+        planner: PlannerArgs,
 
         /// Metrics to benchmark (`end-to-end` is opt-in, not in the default
         /// set)
@@ -562,7 +559,7 @@ fn write_row(writer: &mut impl Write, tuple: &[usize]) -> io::Result<()> {
 
 /// Runs `query` through `join`, streaming its header and rows to `writer`.
 fn write_join(
-    writer: impl Write, header: &[String], join: &JoinRunner, query: JoinQuery,
+    writer: impl Write, header: &[String], join: &mut JoinRunner, query: JoinQuery,
 ) -> anyhow::Result<()> {
     let mut sink = CsvSink::new(writer, header)?;
     join(query, &mut |tuple| sink.write_tuple(tuple))?;
@@ -582,12 +579,16 @@ fn parse_query(args: &QueryArgs) -> anyhow::Result<JoinQuery> {
 
 /// A built engine behind a closure: runs one query, passing each result
 /// tuple to the sink as the join produces it.
-type JoinRunner = Box<dyn Fn(JoinQuery, &mut dyn FnMut(&[usize])) -> Result<(), JoinError>>;
+type JoinRunner = Box<dyn FnMut(JoinQuery, &mut dyn FnMut(&[usize])) -> Result<(), JoinError>>;
 
 /// Loads `args.relations` into `family`'s engine and returns a runner over it.
 /// `cell` is the cell the caller resolved, which `family` must implement.
+/// Under `--column-orders any` the file-order tuples are kept, so a query's
+/// reordered copies can be built from them
+/// (`RelationFamily::load_with_tuples`) before its join and dropped after;
+/// under `stored` nothing is kept.
 fn build_join_runner<F: ExecutionFamily + 'static>(
-    family: F, cell: Execution, paths: &[PathBuf],
+    family: F, cell: Execution, paths: &[PathBuf], column_orders: ColumnOrderPolicy,
 ) -> anyhow::Result<JoinRunner> {
     // The joins this runner serves (`kermit join`, `bench join --output`)
     // write CSV, not a report axis, and every Layout gives the same answers,
@@ -599,13 +600,29 @@ fn build_join_runner<F: ExecutionFamily + 'static>(
         cell,
         "dispatch built a different cell than the one resolved"
     );
-    let relations = paths
-        .iter()
-        .map(|p| family.load(p))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let engine = family.build(relations);
+    let mut relations = Vec::with_capacity(paths.len());
+    let mut inputs: BTreeMap<String, (RelationHeader, Vec<Vec<usize>>)> = BTreeMap::new();
+    for path in paths {
+        if column_orders == ColumnOrderPolicy::Any {
+            let (relation, tuples) = family.load_with_tuples(path)?;
+            let header = relation.header().clone();
+            inputs.insert(header.name().to_string(), (header, tuples));
+            relations.push(relation);
+        } else {
+            relations.push(family.load(path)?);
+        }
+    }
+    let mut engine = family.build(relations);
     Ok(Box::new(move |q, sink| {
-        family.join_for_each(&engine, q, sink)
+        for spec in family.required_indexes(&engine, &q)? {
+            let (header, tuples) = inputs
+                .get(&spec.base)
+                .expect("validation checked that every base relation was loaded");
+            family.add_index(&mut engine, spec, header, tuples);
+        }
+        let result = family.join_for_each(&engine, q, sink);
+        F::clear_indexes(&mut engine);
+        result
     }))
 }
 
@@ -619,7 +636,7 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
         .iter()
         .map(|path| read_relation_header(path))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    validate_query(query, headers.as_slice(), ColumnOrderPolicy::Stored)
+    validate_query(query, headers.as_slice(), args.planner.column_orders)
         .map_err(|e| anyhow::anyhow!("query {:?}: {e}", args.query))
 }
 
@@ -647,7 +664,8 @@ fn query_cell(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Execution>
 /// the same build.
 fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRunner> {
     // One planner per family: a `Planner` owns its optimiser.
-    let planner = || Planner::new(args.optimiser.instantiate(), ColumnOrderPolicy::Stored);
+    let planner = || args.planner.instantiate();
+    let column_orders = args.planner.column_orders;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
@@ -655,6 +673,7 @@ fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRu
             TrieLftj::<kermit_ds::TreeTrie<S>>::new((), planner()),
             cell,
             &args.relations,
+            column_orders,
         )),
         | Execution::TrieLftj(SortedTrie::ColumnTrie {
             seek,
@@ -663,6 +682,7 @@ fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRu
             TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, planner()),
             cell,
             &args.relations,
+            column_orders,
         )),
         | Execution::HashHtj {
             hasher,
@@ -672,7 +692,8 @@ fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRu
         } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| build_join_runner(
             HashHtj::<H, P, E>::new(config, planner()),
             cell,
-            &args.relations
+            &args.relations,
+            column_orders,
         )),
     }
 }
@@ -768,13 +789,13 @@ fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()
         &ConfigChoices::default(),
         &BuildChoices::default(),
     )?;
-    let join = load_query_runner(&query_args, query_cell(&query_args, choices)?)?;
+    let mut join = load_query_runner(&query_args, query_cell(&query_args, choices)?)?;
     let header = head_column_names(&join_query);
     let writer: Box<dyn Write> = match &output {
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         | None => Box::new(BufWriter::new(io::stdout().lock())),
     };
-    write_join(writer, &header, &join, join_query)
+    write_join(writer, &header, &mut join, join_query)
 }
 
 /// Handler for `bench list`: print every discoverable benchmark with its
@@ -865,17 +886,17 @@ fn run_bench_join(
     if let Some(path) = &output {
         let join_query = parse_query(&query_args)?;
         validate_query_files(&join_query, &query_args)?;
-        let join = load_query_runner(&query_args, cell)?;
+        let mut join = load_query_runner(&query_args, cell)?;
         let header = head_column_names(&join_query);
         let writer = BufWriter::new(fs::File::create(path)?);
-        write_join(writer, &header, &join, join_query)?;
+        write_join(writer, &header, &mut join, join_query)?;
     }
 
     let workload = Workload::adhoc(query_args.relations.clone(), &query_args.query)?;
     let settings = RunSettings {
         kind: BenchKind::Join,
         prefix: bench_args.name.as_deref().unwrap_or(DEFAULT_JOIN_GROUP),
-        optimiser: query_args.optimiser,
+        planner: query_args.planner,
         metrics,
         queries_per_build,
         verify: false,
@@ -932,7 +953,7 @@ fn run_ds_bench_command(
 #[allow(clippy::too_many_arguments)]
 fn run_bench_run_command(
     bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
-    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, optimiser: Optimiser,
+    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, planner: PlannerArgs,
     metrics: Vec<Metric>, queries_per_build: u32, force: bool, verify: bool, layout: LayoutChoices,
     config: ConfigChoices, build: BuildChoices,
 ) -> anyhow::Result<()> {
@@ -951,7 +972,7 @@ fn run_bench_run_command(
     let settings = RunSettings {
         kind: BenchKind::Run,
         prefix,
-        optimiser,
+        planner,
         metrics: &metrics,
         queries_per_build,
         verify,
@@ -1208,7 +1229,7 @@ fn main() -> anyhow::Result<()> {
                 query,
                 indexstructure,
                 algorithm,
-                optimiser,
+                planner,
                 metrics,
                 queries_per_build,
                 force,
@@ -1223,7 +1244,7 @@ fn main() -> anyhow::Result<()> {
                 query,
                 indexstructure,
                 algorithm,
-                optimiser,
+                planner,
                 metrics,
                 queries_per_build,
                 force,

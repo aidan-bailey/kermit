@@ -311,6 +311,7 @@ fn cyclic_attribute_order_is_a_reported_limitation() {
     let outputs = join_on_every_cell("Q(X, Y) :- edge(X, Y), edge(Y, X).");
     let stderr = String::from_utf8_lossy(&outputs[0].stderr);
     assert!(stderr.contains("limitation"), "{stderr}");
+    assert!(stderr.contains("--column-orders any"), "{stderr}");
 }
 
 /// `bench run` validates every query of a workload before it loads or
