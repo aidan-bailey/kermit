@@ -1733,6 +1733,24 @@ mod tests {
             .build_mode_axes(),
             build_mode_axis("radix:4")
         );
+        let hash_two = HashTrieBuildMode::Parallel(kermit_ds::Threads::new(2).unwrap());
+        assert_eq!(
+            HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+                HashTrieConfig::default(),
+                hash_two
+            )
+            .build_mode_axes(),
+            build_mode_axis("parallel:2")
+        );
+        assert_eq!(
+            HashHtj::<SipHashStrategy, NoPruning, LazyExpansion>::new(
+                HashTrieConfig::default(),
+                hash_two,
+                Planner::stored(LexicographicOptimiser)
+            )
+            .build_mode_axes(),
+            build_mode_axis("parallel:2")
+        );
     }
 
     thread_local! {
@@ -1808,6 +1826,78 @@ mod tests {
                      {serial}: the mode did not reach the build",
                     E::NAME
                 );
+            }
+        }
+        check::<EagerExpansion>();
+        check::<LazyExpansion>();
+    }
+
+    /// The real `HashTrie`, not the counting spy, which cannot tell
+    /// `parallel:N` from `radix:K`: only kermit-ds's record of parallel
+    /// builds (the `test-hooks` feature) shows that the family's mode reached
+    /// the build, on every route a relation is built, copies included,
+    /// eager or lazy (#94).
+    #[test]
+    fn hash_trie_families_build_with_their_parallel_mode() {
+        fn check<E: ExpansionPolicy>() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("r.csv");
+            std::fs::write(&path, "a,b\n1,2\n2,1\n3,4\n").expect("write csv");
+            let header = || RelationHeader::new_positional("r", 2);
+            let tuples = || vec![vec![1, 2], vec![2, 1], vec![3, 4]];
+            // The thread count of every parallel build `build` runs.
+            let parallel_builds = |build: &dyn Fn()| {
+                kermit_ds::test_hooks::take_hash_trie_parallel_builds();
+                build();
+                kermit_ds::test_hooks::take_hash_trie_parallel_builds()
+                    .into_iter()
+                    .map(|(threads, _)| threads)
+                    .collect::<Vec<_>>()
+            };
+            let config = HashTrieConfig::default();
+            let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
+            let two = HashTrieBuildMode::Parallel(kermit_ds::Threads::new(2).unwrap());
+            for (mode, expected) in [
+                (HashTrieBuildMode::Serial, vec![]),
+                (radix, vec![]),
+                (two, vec![2]),
+            ] {
+                let structure = HashTrieFamily::<SipHashStrategy, NoPruning, E>::new(config, mode);
+                let join = HashHtj::<SipHashStrategy, NoPruning, E>::new(
+                    config,
+                    mode,
+                    Planner::stored(LexicographicOptimiser),
+                );
+                let routes: [(&str, &dyn Fn()); 6] = [
+                    ("HashTrieFamily::build_relation", &|| {
+                        structure.build_relation(header(), tuples());
+                    }),
+                    ("HashTrieFamily::load_with_tuples", &|| {
+                        structure.load_with_tuples(&path).expect("load");
+                    }),
+                    ("HashHtj::build_relation", &|| {
+                        join.build_relation(header(), tuples());
+                    }),
+                    ("HashHtj::load", &|| {
+                        join.load(&path).expect("load");
+                    }),
+                    ("HashHtj::build_from_tuples", &|| {
+                        join.build_from_tuples(vec![(header(), tuples())]);
+                    }),
+                    ("HashHtj::add_index", &|| {
+                        let mut engine = join.build(Vec::new());
+                        let spec = IndexSpec::new("r", vec![1, 0]);
+                        join.add_index(&mut engine, spec, &header(), &tuples());
+                    }),
+                ];
+                for (route, build) in routes {
+                    assert_eq!(
+                        parallel_builds(build),
+                        expected,
+                        "{} {route} under {mode:?}",
+                        E::NAME
+                    );
+                }
             }
         }
         check::<EagerExpansion>();

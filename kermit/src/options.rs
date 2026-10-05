@@ -706,7 +706,8 @@ pub(crate) struct BuildChoices {
     /// `structure=mode` pairs: `tree-trie=serial|parallel:<threads>` (default
     /// `serial`; threads in 1..=1024), `column-trie=bulk|incremental` (default
     /// `bulk`; `incremental` is the build before the one-pass bulk build) and
-    /// `hash-trie=serial|radix:<bits>` (default `serial`; bits in 1..=16).
+    /// `hash-trie=serial|radix:<bits>|parallel:<threads>` (default `serial`;
+    /// bits in 1..=16, threads in 1..=1024).
     /// A pair is only valid when `--indexstructure` selects its structure
     /// (or `all`).
     #[arg(
@@ -1388,6 +1389,10 @@ mod tests {
             (&["hash-trie=radix:0"], "between 1 and 16"),
             (&["hash-trie=radix:17"], "between 1 and 16"),
             (&["hash-trie=radix:x"], "whole number"),
+            (&["hash-trie=parallel"], "parallel needs a thread count"),
+            (&["hash-trie=parallel:0"], "between 1 and 1024, got 0"),
+            (&["hash-trie=parallel:1025"], "between 1 and 1024, got 1025"),
+            (&["hash-trie=parallel:x"], "whole number"),
         ];
         for &(pairs, expected) in cases {
             let msg = build(pairs).resolved().unwrap_err().to_string();
@@ -1487,7 +1492,13 @@ mod tests {
                 "parallel:3",
             ]),
             (IndexStructure::ColumnTrie, &["bulk", "incremental"]),
-            (IndexStructure::HashTrie, &["serial", "radix:1", "radix:16"]),
+            (IndexStructure::HashTrie, &[
+                "serial",
+                "radix:1",
+                "radix:16",
+                "parallel:1",
+                "parallel:3",
+            ]),
         ];
         let defaults = labels(&BuildModes::default());
         for ds in IndexStructure::value_variants() {
