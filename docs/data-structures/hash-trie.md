@@ -199,11 +199,19 @@ optimizations are classified into Layout, Config, or BuildMode.
 
 ### Deferred follow-ups
 
-- **Skip-levels short-circuit.** The paper's join verifies a singleton
-  against the current bindings and skips the remaining levels. That is an
-  algorithm-side change (`HashTrieIterator` would expose the singleton and
-  `HashTriejoin` would branch on it) and the natural first consumer of the
-  reserved `algo_config_*` prefix.
+- **Skip-levels short-circuit — shelved, not in the paper
+  ([#90](https://github.com/aidan-bailey/kermit/issues/90)).** A join that
+  checks a singleton against the current bindings and skips its remaining
+  levels is not described by the VLDB 2020 paper or by the TUM-I2082
+  technical report it defers to. Both present singleton pruning as a storage
+  layout only — a tagged child pointer straight to the tuple (§3.3.1) — and
+  the probe phase is Algorithm 3, unrolled (§3.3.3). Pruning therefore stays
+  transparent to `HashTriejoin`: each emulated level is a one-entry table,
+  which Algorithm 3's `argmin size` already picks as `I_scan`. Were it
+  revived as a kermit-specific extension, it would be an algorithm *Layout*,
+  not a Config: `JoinAlgo::join_for_each` takes no `self` to hold a runtime
+  value, and checking for a pruned child before each `open` is a branch that
+  runs without the extension would pay for.
 - **Lazy child expansion** is a *Layout* candidate, not a Config one: an
   unexpanded node is a node state and needs a cell in `HashTrieNode` that
   eager tries would carry for nothing. It also needs interior mutability
