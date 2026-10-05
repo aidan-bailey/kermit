@@ -190,6 +190,25 @@ each implementer.
 
 # P1 — `kermit-ds`
 
+> **As executed (2026-10-05).** P1 landed as 97a9263, 7e03950, a3a0b2b,
+> 54f071b and 9e99c5e, then its review follow-ups as 6b35ff1. The follow-ups
+> changed P1's code from the text below in four ways:
+> - `build_modes_reach_their_builds` gained a `parallel:3` row. Every record
+>   check used N = 2, so a build that ignored N passed all 1136 kermit-ds
+>   tests; the new row expects `(3, [8, 0].repeat(8))` and worker runs
+>   `[3, 3]`;
+> - `parallel_builds_the_serial_trie_on_large_and_skewed_inputs` covers
+>   arity 4, a first key holding half the tuples, and three full-size
+>   morsels (not under Miri);
+> - `Entries::Subtries` became `Entries::Children`, with `take_from`,
+>   `into_children` and `into_chains`, and `fill_root_in_morsels` carries
+>   step comments 1–3;
+> - the record's docs say it lists empty partitions, and `identity.rs` keeps
+>   its file-local helpers private.
+>
+> Miri on `hash_trie::parallel`: 5 passed, 3 ignored, about 20 s. The P2 and
+> P3 text below is written against the code as it now stands.
+
 ## Task 1 [P1]: Every Layout's nodes are `Send`
 
 The build step moves each finished scratch root from a worker to the
@@ -1971,7 +1990,8 @@ parallel_build(tuples, N):
 Every `parallel:N` build is identical to the serial build of the same
 tuples, bucket for bucket and capacity for capacity, under every Layout and
 load factor. `parallel_builds_the_serial_trie_*` in `parallel.rs` pins it
-for N ∈ {1, 2, 3, 8}, with morsels of 16 384 and of 7 tuples.
+for N ∈ {1, 2, 3, 8}, with morsels of 7 tuples and of 16 384 (three full
+morsels in `…_on_large_and_skewed_inputs`).
 
 - A table's final layout depends only on the order in which its *new* keys
   arrive, because `HashTable::entry_or_insert_with` returns an existing
@@ -1987,7 +2007,8 @@ for N ∈ {1, 2, 3, 8}, with morsels of 16 384 and of 7 tuples.
 Finished subtries move from a worker to the caller, so every Layout's nodes
 are `Send` (the policies' associated types are bounded so); lazy tries are
 still `!Sync`, and no trie is ever shared between threads. The record of
-parallel builds works as TreeTrie's does:
+parallel builds works as TreeTrie's does, except that it also lists the
+empty partitions the build skips:
 `hash_trie_families_build_with_their_parallel_mode` reads it through
 `kermit_ds::test_hooks::take_hash_trie_parallel_builds`.
 
