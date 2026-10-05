@@ -5,6 +5,7 @@ macro_rules! define_multiway_join_test {
         $relation_type:ident,
         $join_algorithm:ty,
         $optimiser:ty,
+        $policy:ty,
         [ $( $input:expr ),+ $(,)? ],
         $join_vars:expr,
         $projection:expr,
@@ -17,7 +18,7 @@ macro_rules! define_multiway_join_test {
 
             $debugger
 
-            $crate::common::utils::test_join::<$relation_type, $join_algorithm, $optimiser>(
+            $crate::common::utils::test_join::<$relation_type, $join_algorithm, $optimiser, $policy>(
                 inputs,
                 $join_vars.to_vec(),
                 $projection.to_vec(),
@@ -29,13 +30,14 @@ macro_rules! define_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_unary_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<simple_multiwayjoin_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1], vec![2], vec![3]],
                 vec![vec![1], vec![2], vec![3]]
@@ -51,13 +53,14 @@ macro_rules! define_unary_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_triangle_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<triangle_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![2, 3], vec![3, 1]],
                 vec![vec![2, 3], vec![3, 1], vec![1, 2]],
@@ -74,13 +77,14 @@ macro_rules! define_triangle_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_chain_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<chain_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![2, 3]],
                 vec![vec![2, 4], vec![3, 5]],
@@ -97,13 +101,14 @@ macro_rules! define_chain_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_star_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<star_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 10], vec![2, 20]],
                 vec![vec![1, 100], vec![2, 200]]
@@ -119,13 +124,14 @@ macro_rules! define_star_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_self_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<selfjoin_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![2, 3], vec![3, 4]],
                 vec![vec![2, 3], vec![3, 4], vec![4, 5]]
@@ -141,13 +147,14 @@ macro_rules! define_self_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_existential_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<existential_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1], vec![2], vec![3]],
                 vec![vec![2], vec![3], vec![4]]
@@ -163,13 +170,14 @@ macro_rules! define_existential_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_empty_result_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<empty_result_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![3, 4]],
                 vec![vec![5, 6], vec![7, 8]]
@@ -185,13 +193,14 @@ macro_rules! define_empty_result_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_single_relation_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<single_relation_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![3, 4], vec![5, 6]]
             ],
@@ -206,13 +215,14 @@ macro_rules! define_single_relation_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_four_way_chain_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<four_way_chain_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2]],
                 vec![vec![2, 3]],
@@ -230,13 +240,14 @@ macro_rules! define_four_way_chain_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_wide_fanout_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<wide_fanout_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![1, 3], vec![1, 4]],
                 vec![vec![1, 10], vec![1, 20]]
@@ -256,13 +267,14 @@ macro_rules! define_wide_fanout_multiway_join_test {
 
 #[macro_export]
 macro_rules! define_dead_end_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<dead_end_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![2, 3], vec![3, 4]],
                 vec![vec![2, 3], vec![3, 4]]
@@ -293,13 +305,14 @@ macro_rules! define_dead_end_multiway_join_test {
 /// nothing.
 #[macro_export]
 macro_rules! define_deep_dead_end_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<deep_dead_end_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![1, 3]],
                 vec![vec![2, 5], vec![3, 6]],
@@ -322,13 +335,14 @@ macro_rules! define_deep_dead_end_multiway_join_test {
 /// keeps both from ever seeing the repeat.
 #[macro_export]
 macro_rules! define_diagonal_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<diagonal_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3], vec![4, 5]]
             ],
@@ -349,13 +363,14 @@ macro_rules! define_diagonal_multiway_join_test {
 /// a level other than the immediate parent.
 #[macro_export]
 macro_rules! define_repeated_nonadjacent_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<repeated_nonadjacent_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2, 1], vec![1, 2, 3], vec![2, 5, 2], vec![3, 7, 3]],
                 vec![vec![2], vec![7]]
@@ -377,13 +392,14 @@ macro_rules! define_repeated_nonadjacent_multiway_join_test {
 /// Triejoin panicked expecting every iterator at its leaf.
 #[macro_export]
 macro_rules! define_trailing_placeholder_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<trailing_placeholder_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2], vec![1, 3], vec![2, 4], vec![3, 5]],
                 vec![vec![1], vec![2]]
@@ -405,13 +421,14 @@ macro_rules! define_trailing_placeholder_multiway_join_test {
 /// which meets `R1` nowhere.
 #[macro_export]
 macro_rules! define_middle_placeholder_multiway_join_test {
-    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty) => {
+    ($relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
         paste::paste! {
         $crate::define_multiway_join_test!(
             [<middle_placeholder_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower>],
             $relation_type,
             $join_algorithm,
             $optimiser,
+            $policy,
             [
                 vec![vec![1, 2, 3], vec![1, 4, 3], vec![2, 5, 6], vec![3, 7, 8]],
                 vec![vec![3], vec![6]]
@@ -425,8 +442,32 @@ macro_rules! define_middle_placeholder_multiway_join_test {
     };
 }
 
+/// The 16 standard join patterns against `Relation` under `Algo` and
+/// `Optimiser`, under `--column-orders stored`. The `@policy` arm takes
+/// the column-order policy as a fourth argument (a `ColumnOrderProvider`
+/// from `common::utils`); reach it through
+/// [`define_multiway_join_test_suite_with_column_orders!`], which keeps the
+/// test names unique by wrapping each invocation in a module.
 #[macro_export]
 macro_rules! define_multiway_join_test_suite {
+    (@policy $relation_type:ident, $join_algorithm:ty, $optimiser:ty, $policy:ty) => {
+        $crate::define_unary_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_triangle_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_chain_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_star_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_self_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_existential_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_empty_result_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_single_relation_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_four_way_chain_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_wide_fanout_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_deep_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_diagonal_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_repeated_nonadjacent_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_trailing_placeholder_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+        $crate::define_middle_placeholder_multiway_join_test!( $relation_type, $join_algorithm, $optimiser, $policy );
+    };
     (
         $(
             $relation_type:ident,
@@ -435,22 +476,10 @@ macro_rules! define_multiway_join_test_suite {
         ),+
     ) => {
         $(
-                $crate::define_unary_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_triangle_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_chain_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_star_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_self_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_existential_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_empty_result_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_single_relation_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_four_way_chain_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_wide_fanout_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_deep_dead_end_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_diagonal_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_repeated_nonadjacent_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_trailing_placeholder_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
-                $crate::define_middle_placeholder_multiway_join_test!( $relation_type, $join_algorithm, $optimiser );
+            $crate::define_multiway_join_test_suite!(
+                @policy $relation_type, $join_algorithm, $optimiser,
+                $crate::common::utils::StoredOrders
+            );
         )+
     };
 }
@@ -534,6 +563,44 @@ macro_rules! define_multiway_join_test_suite_for_build_mode {
 
                     $crate::define_multiway_join_test_suite!(
                         [<$relation_type $provider>], $join_algorithm, $optimiser
+                    );
+                }
+            }
+        )+
+    };
+}
+
+/// The column-order-policy counterpart of [`define_multiway_join_test_suite!`]
+/// (issue #93).
+///
+/// Runs the standard join patterns against `Relation` under `Policy`
+/// (`AnyOrders` / `StoredOrders` from `common::utils`) inside a uniquely
+/// named module, delegating to [`define_multiway_join_test_suite!`] so a
+/// pattern added there runs here too. Under `AnyOrders` every pattern's
+/// rows must equal the `stored` rows the plain invocation checks, over
+/// whatever reordered copies the plan reads.
+///
+/// ```ignore
+/// define_multiway_join_test_suite_with_column_orders!(TreeTrieGalloping, LeapfrogTriejoin, CostBasedOptimiser, AnyOrders);
+/// // → tests named e.g. `column_orders_treetriegalloping_leapfrogtriejoin_costbasedoptimiser_anyorders::triangle_treetriegalloping_leapfrogtriejoin_costbasedoptimiser`
+/// ```
+#[macro_export]
+macro_rules! define_multiway_join_test_suite_with_column_orders {
+    (
+        $(
+            $relation_type:ident,
+            $join_algorithm:ident,
+            $optimiser:ident,
+            $policy:ident
+        ),+ $(,)?
+    ) => {
+        $(
+            paste::paste! {
+                mod [<column_orders_ $relation_type:lower _ $join_algorithm:lower _ $optimiser:lower _ $policy:lower>] {
+                    use super::*;
+
+                    $crate::define_multiway_join_test_suite!(
+                        @policy $relation_type, $join_algorithm, $optimiser, $policy
                     );
                 }
             }
