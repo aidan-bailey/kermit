@@ -233,8 +233,44 @@ optimizations are classified into Layout, Config, or BuildMode.
     - DS layer: those plus `HashTrieMod10Lazy`, `HashTrieMod10PrunedLazy`
       and `HashTrieSipDenseLazy`.
   - **Bench axis value:** `"eager"` or `"lazy"`.
-  - **Measured effect:** pending — see the measurement record task in
-    `docs/superpowers/plans/2026-10-05-hash-trie-lazy-expansion.md`.
+  - **Measured effect** (2026-10-05, `oxford-uniform-s3 -q triangle`,
+    SipHash, AMD Ryzen 7 7700X). Each arm ran 5 replicates in alternating
+    order, every invocation behind a quiet gate, and none overlapped a
+    contended host sample. Ratios are medians, with the 95 % bootstrap CI
+    of the mean ratio in brackets. `insertion`, `space` and `end_to_end`
+    cover all 8 of the workload's relations, of which the triangle reads
+    the three arity-3 ones (`R`, `S`, `T`). Run directory:
+    `kermit-bench-runs/lazy-expansion-2026-10-05/`.
+    - *Eager parity* (#92's landing 149614f over the pre-#92 baseline
+      35216b6; the span also includes #81's landing):
+      `space` is byte-identical on every relation; `insertion` is 0.999×
+      [0.994, 1.001] and `iteration` 1.003× [0.990, 1.006], against the
+      TreeTrie control's 1.001× and 0.982×. Both are inside the ±3 %
+      codegen bound.
+    - *Lazy over eager*, pruning off / on (binary 149614f):
+      - `insertion`: 0.55× [0.53, 0.55] / 0.73× [0.73, 0.74];
+      - as-built `space`, all 8 relations: 0.45× / 0.72×; `R`, `S` and
+        `T` alone: 0.19× / 0.44× (deterministic, so no interval);
+      - cold `iteration`: 1.68× [1.67, 1.69] / 1.27× [1.25, 1.28];
+      - `end_to_end`, K = 1: 1.24× [1.22, 1.24] / 1.07× [1.06, 1.07];
+      - `end_to_end`, K = 10: 1.14× [1.14, 1.20] / 1.04× [1.04, 1.05].
+    - *Confound bound:* eager `iteration` on the cold path (a build of
+      149614f patched to take it, never committed) over the warm path is
+      0.989× [0.982, 0.995] with pruning off and 1.009× [1.006, 1.012]
+      with it on. That comparison crosses binaries, so the cache-state term
+      is indistinguishable from zero inside the ±3 % codegen bound. The
+      lazy `iteration` gap is therefore the lazy trie's own cost: its
+      expansion plus a slower warm join (next bullet).
+    - *Reading:* with pruning off, lazy cuts the build by 45 % and the
+      as-built footprint by 55 %, and the first query gives that saving
+      back by doing the deferred work. Ten queries per build do not reach parity.
+      `end_to_end` times build, queries and drop together, so its K = 10
+      minus K = 1 medians are nine warm queries. That puts a warm lazy join
+      at about 1.12× eager's with pruning off and 1.03× with it on: the
+      expanded lazy trie stays slower than eager on this workload. Pruning
+      narrows every gap, consistent with less work being left to defer: a
+      bucket with one tuple below it is a `Singleton` under both
+      expansions.
 
 ### Config flags
 
