@@ -91,21 +91,22 @@ def test_the_registries_are_scoped() -> None:
     )
 
 
-def test_build_mode_backfills_column_trie_and_hash_trie_rows() -> None:
-    """Each structure with a build mode back-fills its own pre-axis build:
-    ColumnTrie's pre-#84 ``incremental``, HashTrie's pre-#91 ``serial``.
-    A row that carries the axis keeps it, and TreeTrie (single build) stays
-    NaN."""
+def test_build_mode_backfills_each_structures_pre_axis_build() -> None:
+    """Each structure back-fills its own pre-axis build: ColumnTrie's pre-#84
+    ``incremental``, TreeTrie's pre-#94 ``serial`` and HashTrie's pre-#91
+    ``serial``. A row that carries the axis keeps it."""
     df = pd.DataFrame({
-        "data_structure": ["ColumnTrie", "ColumnTrie", "TreeTrie", "HashTrie", "HashTrie"],
-        "ds_build_mode": [pd.NA, "bulk", pd.NA, pd.NA, "radix:8"],
+        "data_structure": [
+            "ColumnTrie", "ColumnTrie", "TreeTrie", "TreeTrie", "HashTrie", "HashTrie",
+        ],
+        "ds_build_mode": [pd.NA, "bulk", pd.NA, "parallel:4", pd.NA, "radix:8"],
     })
     out = apply_axis_defaults(df)
-    assert list(out["ds_build_mode"].iloc[[0, 1, 3, 4]]) == [
-        "incremental", "bulk", "serial", "radix:8",
+    assert out["ds_build_mode"].tolist() == [
+        "incremental", "bulk", "serial", "parallel:4", "serial", "radix:8",
     ]
-    assert pd.isna(out["ds_build_mode"].iloc[2])
     assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "ColumnTrie")] == "incremental"
+    assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "TreeTrie")] == "serial"
     assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "HashTrie")] == "serial"
 
 
@@ -120,7 +121,7 @@ def test_build_mode_backfills_an_all_nan_float_column() -> None:
     assert df["ds_build_mode"].dtype == "float64"
     out = apply_axis_defaults(df)
     assert out["ds_build_mode"].iloc[0] == "incremental"
-    assert pd.isna(out["ds_build_mode"].iloc[1])
+    assert out["ds_build_mode"].iloc[1] == "serial"
 
 
 def test_scoped_default_skips_rows_with_no_data_structure() -> None:

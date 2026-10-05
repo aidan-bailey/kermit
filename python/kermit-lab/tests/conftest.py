@@ -511,14 +511,14 @@ def fixture_sweep_tree(tmp_path: Path) -> dict:
 
 @pytest.fixture
 def fixture_build_mode_tree(tmp_path: Path) -> dict:
-    """ColumnTrie reports from before and after issue #84, plus a TreeTrie
+    """ColumnTrie reports from before and after issue #84, plus a HashTrie
     one, for the build-mode ablation guard.
 
     The old ColumnTrie report carries no ``ds_build_mode`` (back-filled to
-    ``incremental`` on load); the new one carries ``"bulk"``. The TreeTrie
-    report has no build-mode axis, so it stays NaN. Each times insertion and
-    iteration (plus space), so the build-mode axis has two values and applies
-    to one time phase but not the other.
+    ``incremental`` on load); the new one carries ``"bulk"``. The HashTrie
+    report carries none either, so it loads as its pre-#91 ``serial``. Each times
+    insertion and iteration (plus space), so the build-mode axis has two
+    values and applies to one time phase but not the other.
     """
     criterion_root = tmp_path / "target" / "criterion"
     reports_dir = tmp_path / "reports"
@@ -526,10 +526,10 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
     reports_dir.mkdir()
 
     paths: list[Path] = []
-    for tag, data_structure, build_mode, insertion_point in (
-        ("old", "ColumnTrie", None, 9000.0),
-        ("new", "ColumnTrie", "bulk", 300.0),
-        ("tree", "TreeTrie", None, 500.0),
+    for tag, data_structure, algorithm, build_mode, insertion_point in (
+        ("old", "ColumnTrie", "LeapfrogTriejoin", None, 9000.0),
+        ("new", "ColumnTrie", "LeapfrogTriejoin", "bulk", 300.0),
+        ("hash", "HashTrie", "HashTriejoin", None, 500.0),
     ):
         groups: list[tuple[str, str, str]] = []
         # Same trie under both builds, so the same traversal time.
@@ -551,7 +551,7 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
             "benchmark": "triangle",
             "query": "triangle",
             "data_structure": data_structure,
-            "algorithm": "LeapfrogTriejoin",
+            "algorithm": algorithm,
             "tuples": 100,
         }
         if build_mode is not None:
@@ -614,6 +614,54 @@ def fixture_seek_tree(tmp_path: Path) -> dict:
                 metadata=[], groups=groups,
             )
         )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }
+
+
+@pytest.fixture
+def fixture_parallel_build_tree(tmp_path: Path) -> dict:
+    """``bench ds`` reports of one relation: TreeTrie under ``serial``,
+    ``parallel:2`` and ``parallel:4``, two replicates each (distinct
+    ``--name``, so distinct Criterion groups), plus a ColumnTrie ``bulk``
+    case with no serial baseline. Insertion time halves per thread
+    doubling, so the expected speedups are 2 and 4 exactly.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for data_structure, mode, point in (
+        ("TreeTrie", "serial", 8000.0),
+        ("TreeTrie", "parallel:2", 4000.0),
+        ("TreeTrie", "parallel:4", 2000.0),
+        ("ColumnTrie", "bulk", 3000.0),
+    ):
+        for replicate, jitter in enumerate((1.0, 1.02)):
+            group = f"{data_structure}-{mode.replace(':', '-')}-{replicate}"
+            function = f"{data_structure}/insertion"
+            mean = point * jitter
+            samples = [(i + 1, mean * (i + 1)) for i in range(10)]
+            _write_function_dir(
+                criterion_root, _FunctionSpec(group, function, "time", mean, samples)
+            )
+            axes = {
+                "data_structure": data_structure,
+                "relation_path": "/data/edge.parquet",
+                "tuples": 1000,
+                "arity": 2,
+                "ds_build_mode": mode,
+            }
+            paths.append(
+                _write_report(
+                    reports_dir, group, kind="ds", axes=axes, metadata=[],
+                    groups=[(group, function, "time")],
+                )
+            )
     return {
         "criterion_root": criterion_root,
         "reports_dir": reports_dir,

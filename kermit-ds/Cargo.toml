@@ -19,6 +19,12 @@ kermit-derive = { version = "0.0.7", path = "../kermit-derive" }
 clap = { version = "4.4", features = ["derive" ] }
 serde_json = "1"
 
+[features]
+# Observation points for other crates' tests (`test_hooks`): what a build
+# leaves no trace of in the structure it builds. Enabled only as a
+# dev-dependency (`kermit`), so no benchmark build carries them.
+test-hooks = []
+
 [dev-dependencies]
 paste = "1.0.15"
 tempfile = "3"

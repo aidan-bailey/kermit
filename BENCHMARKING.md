@@ -212,12 +212,14 @@ kl.plot(df, kind="bar", x="ds_layout_hasher", y="time",
 
 `--ds-build` works the same way for the build modes, as `structure=mode`
 pairs: ColumnTrie's (`column-trie=bulk` by default, `column-trie=incremental`
-for the build before issue #84) and HashTrie's (`hash-trie=serial` by default,
-`hash-trie=radix:<bits>` for the radix-partitioned build of issue #91). For
-thesis figures, compare modes **within one binary** — e.g.
+for the build before issue #84), HashTrie's (`hash-trie=serial` by default,
+`hash-trie=radix:<bits>` for the radix-partitioned build of issue #91) and
+TreeTrie's (`tree-trie=serial` by default, `tree-trie=parallel:N` for the
+parallel build of issue #94; see "Scaling" below). For thesis figures,
+compare modes **within one binary** — e.g.
 `--ds-build column-trie=incremental` against the default.
 kermit-lab back-fills `incremental` on pre-#84 ColumnTrie reports, and
-`serial` on pre-#91 HashTrie reports, but those
+`serial` on pre-#91 HashTrie and pre-#94 TreeTrie reports, but those
 rows are for continuity only: reports carry no binary identity, so a
 difference between an old row and a new one mixes the build mode with every
 other change between the two binaries. A build mode only changes the build,
@@ -274,19 +276,54 @@ the bench-axis namespace) is in
 walkthrough is in
 [`python/kermit-lab/notebooks/06_ablation.ipynb`](python/kermit-lab/notebooks/06_ablation.ipynb).
 
+### Scaling: measuring a parallel build
+
+`--ds-build tree-trie=parallel:N` builds a `TreeTrie` on N threads (#94). The trie is
+identical to the serial build's, so only `insertion` and `end_to_end` can
+move. Run one arm per thread count within one binary, each with its own
+`--name`, then plot the speedup over `serial`:
+
+```bash
+for mode in serial parallel:1 parallel:2 parallel:4 parallel:8 parallel:16; do
+  name="tt-${mode/:/-}"
+  kermit bench --name "$name" --report-json "bench-runs/$name.json" \
+    ds -r data.parquet -i tree-trie -m insertion --ds-build "tree-trie=$mode"
+done
+uv --directory python/kermit-lab run kermit-lab speedup "$PWD"/bench-runs/tt-*.json \
+  --criterion-root "$PWD"/target/criterion --out "$PWD"/speedup.pdf
+```
+
+`kl.speedup_table(df)` gives the numbers behind the plot (`kermit-lab speedup`
+prints the same table): speedup and efficiency per thread count, with CIs, and
+the Karp–Flatt serial fraction.
+A flat Karp–Flatt fraction means a fixed sequential share (the assemble
+step) limits the build; a rising one means a cost that grows with N: thread
+start-up and the merge of per-morsel buckets (both by design), then allocator
+contention, memory bandwidth and imbalance. Replicates (one report per run,
+each with its own `--name`) are pooled per arm and give bootstrap CIs once
+each arm has two.
+`parallel:1` against `serial` is the cost of partitioning net of one
+saving (P smaller sorts take about n·log₂P fewer comparisons than one big
+one), so `parallel:1` can come out ahead. The same saving can make a speedup
+superlinear (above N), which makes the Karp–Flatt fraction negative.
+`N = 16` on an 8-core host measures SMT, not more cores. The protocol behind
+reported numbers is in
+[`docs/specs/2026-10-05-parallel-build-design.md`](docs/specs/2026-10-05-parallel-build-design.md).
+
 ## Statistical tooling
 
 When a bar chart isn't enough to claim a difference, `kermit_lab.analysis`
-provides four helpers:
+provides five helpers:
 
 | Helper | Signature (key args) | Use it to |
 | --- | --- | --- |
 | `summary` | `summary(df, *, rows, cols, value="mean_ns")` | Pivot many runs into a readable 2-D table (e.g. DS × size). |
 | `compare` | `compare(df, *, baseline, target, group_by="data_structure")` | Pair every baseline row with its target and compute speedup per workload. |
+| `speedup_table` | `speedup_table(df, *, phase="insertion", baseline="serial")` | Speedup, efficiency and Karp–Flatt fraction of every `parallel:N` build over `serial`, with CIs ("Scaling" above). |
 | `bootstrap_ratio_ci` | `bootstrap_ratio_ci(a, b, *, ci=0.95, rng=…)` | Percentile-bootstrap CI for `mean(a)/mean(b)` from per-iter samples — "is this speedup real?" |
 | `mannwhitney_u` | `mannwhitney_u(a, b)` → `(U, p)` | Non-parametric test that two sample distributions differ; pair with a violin plot. |
 
-`summary`/`compare` consume the summary frame from `kl.load`;
+`summary`/`compare`/`speedup_table` consume the summary frame from `kl.load`;
 `bootstrap_ratio_ci`/`mannwhitney_u` consume per-iteration arrays from
 `kl.load_samples` (the `per_iter_ns` column). The notebooks
 [`03_compare_ds.ipynb`](python/kermit-lab/notebooks/03_compare_ds.ipynb) and

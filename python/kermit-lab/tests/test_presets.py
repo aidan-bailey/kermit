@@ -6,6 +6,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import pandas as pd
 import pytest
 from matplotlib.figure import Figure
 
@@ -87,3 +88,51 @@ def test_ablation_lets_seek_through_on_end_to_end(fixture_seek_tree) -> None:
     # having no end_to_end rows, not from the seek scope.
     with pytest.raises(InsufficientAxesError, match="no time rows"):
         presets.ablation(df, axis="ds_layout_seek", phase="end_to_end")
+
+
+def test_speedup(fixture_parallel_build_tree) -> None:
+    df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
+    fig = presets.speedup(df)
+    labels = {label for ax in fig.axes for label in ax.get_legend_handles_labels()[1]}
+    plt.close(fig)
+    assert isinstance(fig, Figure)
+    assert {"TreeTrie", "ideal"} <= labels
+
+
+def test_speedup_refuses_phases_a_build_mode_cannot_affect(fixture_parallel_build_tree) -> None:
+    df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
+    with pytest.raises(InsufficientAxesError, match="built"):
+        presets.speedup(df, phase="iteration")
+
+
+def test_speedup_without_a_serial_baseline_is_insufficient_axes(fixture_build_mode_tree) -> None:
+    df = load(fixture_build_mode_tree["paths"], fixture_build_mode_tree["criterion_root"])
+    with pytest.raises(InsufficientAxesError, match="no case"):
+        presets.speedup(df)
+
+
+def test_speedup_ideal_line_is_y_equals_x_on_log_axes(fixture_parallel_build_tree) -> None:
+    """Two points make a straight screen line, so the ideal is y = x only when
+    both axes are logarithmic: on a log x-axis with a linear y-axis it sat above
+    data that follows y = x."""
+    df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
+    fig = presets.speedup(df)
+    ax = fig.axes[0]
+    ideal = next(line for line in ax.get_lines() if line.get_label() == "ideal")
+    xs, ys = list(ideal.get_xdata()), list(ideal.get_ydata())
+    scales = (ax.get_xscale(), ax.get_yscale())
+    plt.close(fig)
+    assert xs == ys
+    assert scales == ("log", "log")
+
+
+def test_speedup_draws_one_line_per_case(fixture_parallel_build_tree) -> None:
+    """Cases that differ only in their relation get a line each, labelled by it."""
+    df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
+    tree = df[df["data_structure"] == "TreeTrie"]
+    a = tree.assign(relation_path="a.parquet")
+    b = tree.assign(relation_path="b.parquet", criterion_group=tree["criterion_group"] + "-b")
+    fig = presets.speedup(pd.concat([a, b], ignore_index=True))
+    labels = {line.get_label() for line in fig.axes[0].get_lines()}
+    plt.close(fig)
+    assert labels - {"ideal"} == {"a.parquet", "b.parquet"}

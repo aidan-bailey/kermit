@@ -8,7 +8,7 @@ of it. The CLI in :mod:`kermit_lab.drivers.main` is a thin wrapper.
 SCHEMA_VERSION = 3
 """Highest BenchReport schema version this package can parse."""
 
-from .analysis import bootstrap_ratio_ci, compare, mannwhitney_u, summary
+from .analysis import bootstrap_ratio_ci, compare, mannwhitney_u, speedup_table, summary
 from .axis_mapping import colour_for, linestyle_for, marker_for
 from .frame import discover_opt_columns, load, load_samples
 from .plot import plot
@@ -20,6 +20,7 @@ from .presets import (
     bar_time,
     dist,
     scaling,
+    speedup,
     tradeoff,
 )
 from .styles import apply as apply_style
@@ -44,6 +45,8 @@ __all__ = [
     "marker_for",
     "plot",
     "scaling",
+    "speedup",
+    "speedup_table",
     "summary",
     "tradeoff",
 ]

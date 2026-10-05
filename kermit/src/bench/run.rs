@@ -495,8 +495,9 @@ pub(crate) fn dispatch_run_bench(
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
+            build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie<S>>::new((), planner()),
+            &TrieLftj::<kermit_ds::TreeTrie<S>>::new(build, planner()),
             workload,
             settings,
         )),
@@ -645,18 +646,19 @@ mod tests {
     #[test]
     fn resolve_sweep_rejects_a_flag_the_algorithm_leaves_without_a_cell() {
         use DsFlag::*;
+        let tree = Build(kermit_ds::IndexStructure::TreeTrie);
         let column = Build(kermit_ds::IndexStructure::ColumnTrie);
         let hash = Build(kermit_ds::IndexStructure::HashTrie);
         let rows: &[(JoinAlgorithmSelector, &[DsFlag], &[DsFlag])] = &[
             (
                 JoinAlgorithmSelector::LeapfrogTriejoin,
-                &[LayoutSeek, column],
+                &[LayoutSeek, tree, column],
                 &[LayoutHasher, LayoutPruning, LayoutExpansion, Config, hash],
             ),
             (
                 JoinAlgorithmSelector::HashTriejoin,
                 &[LayoutHasher, LayoutPruning, LayoutExpansion, Config, hash],
-                &[LayoutSeek, column],
+                &[LayoutSeek, tree, column],
             ),
             (
                 JoinAlgorithmSelector::All,
@@ -666,6 +668,7 @@ mod tests {
                     LayoutExpansion,
                     LayoutSeek,
                     Config,
+                    tree,
                     column,
                     hash,
                 ],

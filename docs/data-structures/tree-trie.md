@@ -84,8 +84,11 @@ Iteration walk (`trie_iter().into_iter()`):
 | Dimension | Category | Axis | Flag | Default | Test aliases |
 |---|---|---|---|---|---|
 | Seek strategy | Layout (`S: SeekStrategy`) | `ds_layout_seek` | `--ds-layout-seek linear\|binary\|galloping` | `galloping` | `TreeTrieLinear`, `TreeTrieBinary`, `TreeTrieGalloping` |
+| Build | BuildMode (`TreeTrieBuildMode`) | `ds_build_mode` | `--ds-build tree-trie=serial\|parallel:N` | `serial` | `TreeTrieParallel2` (`BuiltWith<TreeTrie, Parallel2>`) |
 
 The strategy changes only how `seek` searches; it changes no stored data, no build and no `heap_size_bytes`. Details: [seek strategies](seek-strategies.md).
+
+The build mode changes only how long the build takes: `parallel:N` builds the identical trie, down to every `Vec`'s capacity, on N threads. Details: [parallel builds](parallel-build.md).
 
 ## See also
 

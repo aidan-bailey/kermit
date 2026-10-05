@@ -114,7 +114,7 @@ A **BuildMode** changes the construction process but leaves the resulting in-mem
 | Type system enforcement | Weak (mode is just a parameter) |
 | Output equivalence | Required: every mode builds the same structure — same contents **and** the same `HeapSize` — so a build mode can move only the build-timing metrics (`insertion`, `end_to_end`), never `iteration` or `space`. kermit-lab relies on this when it limits `ds_build_mode` ablations to the build phases. |
 | Bench axis key | `ds_build_mode` (single key with mode + params) |
-| Examples | ColumnTrie bulk / incremental ✓, HashTrie radix partitioning ✓, parallel build |
+| Examples | ColumnTrie bulk / incremental ✓, HashTrie radix partitioning ✓, TreeTrie serial / parallel:N ✓, HashTrie parallel build |
 | Test obligation | Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an array-level test that every mode builds the identical structure, capacities included |
 
 ---
@@ -138,7 +138,7 @@ kermit bench run triangle -i hash-trie -a hash-triejoin \
     --ds-config load-factor=0.5
 ```
 
-The BuildMode category has two consumers, ColumnTrie and HashTrie. `--ds-build` takes `structure=mode` pairs:
+The BuildMode category has three consumers: ColumnTrie (#84), HashTrie (#91) and TreeTrie (#94). `--ds-build` takes `structure=mode` pairs:
 
 ```bash
 # The pre-#84 ColumnTrie build, to reproduce its insertion numbers
@@ -146,6 +146,9 @@ kermit bench run triangle -i column-trie -a leapfrog-triejoin --ds-build column-
 
 # HashTrie's radix-partitioned build (#91), 2^8 partitions
 kermit bench run triangle -i hash-trie -a hash-triejoin --ds-build hash-trie=radix:8
+
+# TreeTrie's morsel-driven parallel build (#94), on 8 threads
+kermit bench run triangle -i tree-trie -a leapfrog-triejoin --ds-build tree-trie=parallel:8
 ```
 
 Each category has its own flag namespace — `--ds-layout-<dim>` for Layout, `--ds-config <flag>=<value>,...` for Config (a single flag with comma-separated key=value pairs), `--ds-build <structure>=<mode>[:<params>],...` for BuildMode (one pair per structure, since each structure has its own modes).
@@ -631,13 +634,18 @@ is never read off the relation.
    and the same `HeapSize`. A mode that changes capacities is not a BuildMode.
 2. **Define the mode** (`kermit-ds/src/ds/<name>/build_mode.rs`): a
    `Default + clap::ValueEnum` enum whose `BuildMode::axis_value` is the clap name.
+   A mode that carries a value (HashTrie's `Radix(RadixBits)`, TreeTrie's
+   `Parallel(Threads)`) cannot derive `clap::ValueEnum`; it implements
+   `FromStr` over its `axis_value` strings instead, which
+   `BuildChoices::resolved` calls (step 6).
 3. **Implement `BuildModeRelation`**, and make `Relation::from_tuples` call it
-   with the default mode.
+   with the default mode. TreeTrie keeps `from_tuples` as its serial build and
+   dispatches in `from_tuples_with_build_mode` instead.
 4. **Pin equivalence** with an array-level test over every mode, capacities
    included (`bulk_and_incremental_builds_are_identical`).
 5. **Carry the mode on the cell and family.** Implement `SortedTrieRelation`'s
    `BuildMode`, `kind`, `build_with` and `build_mode_axes`; the `SortedTrie`
-   variant and `TrieLftj::new(build, optimiser)` hold it, and the axis comes
+   variant and `TrieLftj::new(build, planner)` hold it, and the axis comes
    from `RelationFamily::build_mode_axes`.
 6. **Add the CLI.** `--ds-build` takes `structure=mode` pairs (`BuildChoices`,
    `BuildModes`, `DsChoices.build`). A new consumer:
@@ -788,8 +796,8 @@ This is semantically correct — pre-standard HashTrie runs were SipHash-only. S
 
 ## What's implemented today, what's available
 
-Seven optimizations are implemented — four Layout dimensions, one Config
-value and two BuildModes:
+Eight optimizations are implemented — four Layout dimensions, one Config
+value and three BuildModes:
 
 | Optimization | Category | Where | Paper § |
 |---|---|---|---|
@@ -800,9 +808,10 @@ value and two BuildModes:
 | Load-factor cap | Config | `ds_config_load_factor` | (kermit-specific) |
 | ColumnTrie build (bulk / incremental) | BuildMode | `ds_build_mode` | (kermit-specific, issue #84) |
 | HashTrie radix-partitioned build (serial / radix:K) | BuildMode | `ds_build_mode` | §3.3.2 (issue #91) |
+| TreeTrie build (serial / parallel:N) | BuildMode | `ds_build_mode` | §3.3.2 (morsel-driven; issue #94) |
 
 `define_multiway_join_test_suite_for_build_mode!` landed with the first
-BuildMode consumer, ColumnTrie's build, and covers both consumers.
+BuildMode consumer, ColumnTrie's build, and covers every consumer.
 
 Available to add (each a separate brainstorming → planning → implementation cycle):
 
@@ -811,7 +820,7 @@ Available to add (each a separate brainstorming → planning → implementation 
 | Pointer tagging | Layout | Medium | §3.3.1, Fig 4 |
 | Initial capacity hint | Config | Small | (kermit-specific) |
 | Hash seed | Config | Small | (kermit-specific) |
-| Parallel build | BuildMode | Large | §3.3.2 |
+| Parallel build (HashTrie; TreeTrie's landed with #94) | BuildMode | Large | §3.3.2 |
 | Algorithm: skip-levels short-circuit (shelved, #90) | Layout (algo) | Medium | (kermit-specific) |
 | Algorithm: eager-collect vs lazy-iterate | Config (algo) | Medium | (kermit-specific) |
 

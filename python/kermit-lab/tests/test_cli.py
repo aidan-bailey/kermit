@@ -74,8 +74,11 @@ def _subcommands_taking_phase() -> set[str]:
 
 
 def test_every_time_shape_is_covered() -> None:
-    """A new time-using shape must join the end_to_end test below."""
-    assert _subcommands_taking_phase() == {*_TIME_SHAPES, "render-all"}
+    """A new time-using shape must join the end_to_end test below. `speedup`
+    is the exception: it needs a `parallel:N` row beside a serial one, which
+    that test's fixture lacks, so `test_speedup_preset_subcommand` covers it
+    (#94)."""
+    assert _subcommands_taking_phase() == {*_TIME_SHAPES, "render-all", "speedup"}
 
 
 @pytest.mark.parametrize("shape", sorted(_TIME_SHAPES))
@@ -105,3 +108,82 @@ def test_render_all_plots_end_to_end(fixture_end_to_end_seek_tree, tmp_path: Pat
         "scaling.pdf", "tradeoff.pdf", "dist.pdf", "bar-time-triangle.pdf",
         "ablation-ds_layout_seek.pdf",
     } <= names, names
+
+
+def test_speedup_preset_subcommand(fixture_parallel_build_tree, tmp_path: Path) -> None:
+    out = tmp_path / "speedup.pdf"
+    rc = main([
+        "speedup", *[str(p) for p in fixture_parallel_build_tree["paths"]],
+        "--criterion-root", str(fixture_parallel_build_tree["criterion_root"]),
+        "--out", str(out),
+    ])
+    assert rc == 0
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_speedup_subcommand_refuses_search_phases() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["speedup", "r.json", "--out", "s.pdf", "--phase", "iteration"])
+
+
+def test_speedup_subcommand_prints_its_table(
+    fixture_parallel_build_tree, tmp_path: Path, capsys
+) -> None:
+    rc = main([
+        "speedup", *[str(p) for p in fixture_parallel_build_tree["paths"]],
+        "--criterion-root", str(fixture_parallel_build_tree["criterion_root"]),
+        "--out", str(tmp_path / "speedup.pdf"),
+    ])
+    printed = capsys.readouterr().out
+    assert rc == 0
+    assert "2.000" in printed and "4.000" in printed
+
+
+def test_speedup_subcommand_reads_its_phase(fixture_parallel_build_tree, tmp_path: Path) -> None:
+    """The fixture times insertion only, so asking for end_to_end finds no case."""
+    rc = main([
+        "speedup", *[str(p) for p in fixture_parallel_build_tree["paths"]],
+        "--criterion-root", str(fixture_parallel_build_tree["criterion_root"]),
+        "--out", str(tmp_path / "speedup.pdf"), "--phase", "end_to_end",
+    ])
+    assert rc == 3
+
+
+def test_speedup_subcommand_warns_once_about_unpaired_runs(
+    fixture_parallel_build_tree, tmp_path: Path
+) -> None:
+    """The preset and the printed table both build the table; the warning is the
+    preset's, and the table must not repeat it."""
+    for path in fixture_parallel_build_tree["paths"]:
+        if "parallel-4" in path.name:  # another relation, so no serial row to pair with
+            report = json.loads(path.read_text())
+            report[0]["axes"]["relation_path"] = "/data/other.parquet"
+            path.write_text(json.dumps(report))
+    with pytest.warns(UserWarning) as record:
+        rc = main([
+            "speedup", *[str(p) for p in fixture_parallel_build_tree["paths"]],
+            "--criterion-root", str(fixture_parallel_build_tree["criterion_root"]),
+            "--out", str(tmp_path / "speedup.pdf"),
+        ])
+    assert rc == 0
+    unpaired = [w for w in record if "no 'serial' row" in str(w.message)]
+    assert len(unpaired) == 1
+
+
+def test_speedup_subcommand_does_not_back_fill_a_serial_baseline(
+    fixture_parallel_build_tree, tmp_path: Path
+) -> None:
+    """A TreeTrie report without `ds_build_mode` predates #94 and may come from
+    another binary, so the load must not turn it into the baseline."""
+    for path in fixture_parallel_build_tree["paths"]:
+        if "-serial-" in path.name:
+            report = json.loads(path.read_text())
+            del report[0]["axes"]["ds_build_mode"]
+            path.write_text(json.dumps(report))
+    with pytest.warns(UserWarning):  # the parallel rows, left without a baseline
+        rc = main([
+            "speedup", *[str(p) for p in fixture_parallel_build_tree["paths"]],
+            "--criterion-root", str(fixture_parallel_build_tree["criterion_root"]),
+            "--out", str(tmp_path / "speedup.pdf"),
+        ])
+    assert rc == 3

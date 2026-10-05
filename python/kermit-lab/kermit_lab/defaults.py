@@ -38,6 +38,10 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
     # HashTrie built one insert per tuple before issue #91. Every HashTrie
     # report since carries the axis ("serial" by default).
     ("ds_build_mode", "HashTrie"): "serial",
+    # TreeTrie built serially until #94 added `--ds-build
+    # tree-trie=parallel:N`. Every TreeTrie report since carries the axis
+    # ("serial" by default).
+    ("ds_build_mode", "TreeTrie"): "serial",
     # ColumnTrie's seek has been a binary search (`partition_point`) since
     # 525c99f (2026-03-02), before the first JSON report writer (7dbdcaf,
     # 2026-04-26), so every ColumnTrie report without the axis ran `binary`.

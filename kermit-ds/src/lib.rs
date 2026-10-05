@@ -25,8 +25,11 @@ mod cardinality;
 mod configured;
 mod ds;
 mod heap_size;
+mod morsel;
 mod relation;
 mod seek;
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 #[cfg(test)]
 mod test_support;
 mod tuple_scan;
@@ -39,10 +42,12 @@ pub use {
     ds::{
         ColumnTrie, ColumnTrieBuildMode, EagerExpansion, ExpansionPolicy, HashTrie,
         HashTrieBuildMode, HashTrieConfig, IndexStructure, InvalidLoadFactor, InvalidRadixBits,
-        LazyExpansion, LoadFactor, NoPruning, ParseHashTrieBuildModeError, PruningPolicy,
-        RadixBits, SingletonPruning, TreeTrie,
+        LazyExpansion, LoadFactor, NoPruning, ParseHashTrieBuildModeError,
+        ParseTreeTrieBuildModeError, PruningPolicy, RadixBits, SingletonPruning, TreeTrie,
+        TreeTrieBuildMode,
     },
     heap_size::HeapSize,
+    morsel::Threads,
     relation::{
         read_csv, read_csv_header, read_parquet, read_parquet_header, BuildModeRelation,
         ConfigurableRelation, ModelType, Projectable, Relation, RelationError, RelationFileExt,

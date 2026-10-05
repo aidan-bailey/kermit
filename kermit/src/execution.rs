@@ -35,7 +35,7 @@ use {
     kermit_ds::{
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ExpansionPolicy, HashTrie,
         HashTrieBuildMode, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy, Relation,
-        RelationFileExt, RelationHeader, SeekStrategy, TreeTrie,
+        RelationFileExt, RelationHeader, SeekStrategy, TreeTrie, TreeTrieBuildMode,
     },
     kermit_iters::{
         BuildMode, HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -54,12 +54,15 @@ use {
 /// been wired into the runner.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SortedTrie {
-    /// Pointer-based trie (`-i tree-trie`), seeking with `seek`.
+    /// Pointer-based trie (`-i tree-trie`), seeking with `seek` and built by
+    /// the `--ds-build` mode `build`.
     TreeTrie {
         /// The `--ds-layout-seek` choice, in the two roles of
         /// `Execution::HashHtj`'s Layout fields: the request that selects
         /// `S`, and the label re-derived from `S`.
         seek: SeekChoice,
+        /// The `--ds-build` mode every relation is built with.
+        build: TreeTrieBuildMode,
     },
     /// Column-oriented trie (`-i column-trie`), seeking with `seek` and
     /// built by the `--ds-build` mode `build`.
@@ -111,19 +114,30 @@ pub trait SortedTrieRelation:
 }
 
 impl<S: SeekStrategy> SortedTrieRelation for TreeTrie<S> {
-    type BuildMode = ();
+    type BuildMode = TreeTrieBuildMode;
 
-    fn kind(_: ()) -> SortedTrie {
+    fn kind(build: TreeTrieBuildMode) -> SortedTrie {
         SortedTrie::TreeTrie {
             seek: seek_of::<S>(),
+            build,
         }
     }
 
-    fn build_with(header: RelationHeader, _: (), tuples: Vec<Vec<usize>>) -> Self {
-        Self::from_tuples(header, tuples)
+    fn build_with(
+        header: RelationHeader, build: TreeTrieBuildMode, tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        Self::from_tuples_with_build_mode(header, build, tuples)
     }
 
-    fn build_mode_axes(_: ()) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+    /// Every `TreeTrie` report says which build made it, so kermit-lab can
+    /// read a `TreeTrie` row *without* the axis as the serial build, the
+    /// only one before #94.
+    fn build_mode_axes(build: TreeTrieBuildMode) -> BTreeMap<String, serde_json::Value> {
+        BTreeMap::from([(
+            "ds_build_mode".to_string(),
+            serde_json::Value::from(build.axis_value()),
+        )])
+    }
 }
 
 impl<S: SeekStrategy> SortedTrieRelation for ColumnTrie<S> {
@@ -156,9 +170,10 @@ impl<S: SeekStrategy> SortedTrieRelation for ColumnTrie<S> {
 /// One valid `(index structure, join algorithm)` cell of a `bench run`
 /// sweep. Each variant fixes *both* halves of the pair, so an `Execution`
 /// cannot describe a combination the CLI is unable to run.
-// `Copy` relies on `HashTrieConfig`, `ColumnTrieBuildMode` and
-// `HashTrieBuildMode` being `Copy`; a future Config or BuildMode carrying heap
-// data would have to drop it here and clone the cells instead.
+// `Copy` relies on `HashTrieConfig` and the build modes (`TreeTrieBuildMode`,
+// `ColumnTrieBuildMode`, `HashTrieBuildMode`) being `Copy`; a future Config or
+// BuildMode carrying heap data would have to drop it here and clone the cells
+// instead.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through
@@ -210,6 +225,7 @@ impl Execution {
             | (IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin) => {
                 Some(Execution::TrieLftj(SortedTrie::TreeTrie {
                     seek,
+                    build: build.tree_trie,
                 }))
             },
             | (IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin) => {
@@ -250,6 +266,7 @@ impl Execution {
         match ds {
             | IndexStructure::TreeTrie => Execution::TrieLftj(SortedTrie::TreeTrie {
                 seek,
+                build: build.tree_trie,
             }),
             | IndexStructure::ColumnTrie => Execution::TrieLftj(SortedTrie::ColumnTrie {
                 seek,
@@ -982,10 +999,16 @@ mod tests {
     fn for_structure_agrees_with_for_pair() {
         let config = HashTrieConfig::default();
         let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
-        let builds = [ColumnTrieBuildMode::Incremental, ColumnTrieBuildMode::Bulk]
+        let parallel = TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(4).unwrap());
+        let builds = [TreeTrieBuildMode::Serial, parallel]
             .into_iter()
-            .flat_map(|column_trie| {
+            .flat_map(|tree_trie| {
+                [ColumnTrieBuildMode::Incremental, ColumnTrieBuildMode::Bulk]
+                    .map(|column_trie| (tree_trie, column_trie))
+            })
+            .flat_map(|(tree_trie, column_trie)| {
                 [HashTrieBuildMode::Serial, radix].map(|hash_trie| BuildModes {
+                    tree_trie,
                     column_trie,
                     hash_trie,
                 })
@@ -1024,7 +1047,11 @@ mod tests {
     fn structure_markers_agree_with_join_families() {
         assert_eq!(
             SortedTrieFamily::<TreeTrie>::default().execution(),
-            TrieLftj::<TreeTrie>::new((), Planner::stored(LexicographicOptimiser)).execution()
+            TrieLftj::<TreeTrie>::new(
+                TreeTrieBuildMode::default(),
+                Planner::stored(LexicographicOptimiser)
+            )
+            .execution()
         );
         assert_eq!(
             SortedTrieFamily::<ColumnTrie>::default().execution(),
@@ -1068,11 +1095,23 @@ mod tests {
     /// can never disagree with the code path that ran.
     #[test]
     fn families_report_their_own_execution() {
-        let tree = TrieLftj::<TreeTrie>::new((), Planner::stored(LexicographicOptimiser));
+        let tree = TrieLftj::<TreeTrie>::new(
+            TreeTrieBuildMode::default(),
+            Planner::stored(LexicographicOptimiser),
+        );
         assert_eq!(
             tree.execution(),
             Execution::TrieLftj(SortedTrie::TreeTrie {
-                seek: SeekChoice::Galloping
+                seek: SeekChoice::Galloping,
+                build: TreeTrieBuildMode::Serial,
+            })
+        );
+        let four = TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(4).unwrap());
+        assert_eq!(
+            TrieLftj::<TreeTrie>::new(four, Planner::stored(LexicographicOptimiser)).execution(),
+            Execution::TrieLftj(SortedTrie::TreeTrie {
+                seek: SeekChoice::Galloping,
+                build: four,
             })
         );
         let column = TrieLftj::<ColumnTrie>::new(
@@ -1422,7 +1461,7 @@ mod tests {
             let want = optimiser.instantiate().required_statistics();
             // One planner per family: a `Planner` owns its optimiser.
             let planner = || Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
-            let tree = TrieLftj::<TreeTrie>::new((), planner());
+            let tree = TrieLftj::<TreeTrie>::new(TreeTrieBuildMode::default(), planner());
             let built = tree.build(vec![tree.build_relation(header(), edges())]);
             assert_eq!(built.level(), want, "{optimiser:?}");
             assert_eq!(
@@ -1457,7 +1496,10 @@ mod tests {
             .parse()
             .unwrap();
 
-        let tree = TrieLftj::<TreeTrie>::new((), Planner::stored(LexicographicOptimiser));
+        let tree = TrieLftj::<TreeTrie>::new(
+            TreeTrieBuildMode::default(),
+            Planner::stored(LexicographicOptimiser),
+        );
         let engine = tree.build_from_tuples(inputs());
         assert_eq!(tree.count(&engine, query.clone()).unwrap(), 2);
         assert_eq!(rows(&tree, &engine, query.clone()), 2);
@@ -1577,14 +1619,67 @@ mod tests {
         }
     }
 
+    /// The real `TreeTrie`, not a spy relation: its modes build identical
+    /// tries, so only kermit-ds's record of parallel builds (the `test-hooks`
+    /// feature) can show that the family's mode reached
+    /// `TreeTrie::from_tuples_with_build_mode`, on every route a relation is
+    /// built, copies included (#94).
+    #[test]
+    fn tree_trie_families_build_with_their_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("r.csv");
+        std::fs::write(&path, "a,b\n1,2\n2,1\n3,4\n").expect("write csv");
+        let header = || RelationHeader::new_positional("r", 2);
+        let tuples = || vec![vec![1, 2], vec![2, 1], vec![3, 4]];
+        // The thread count of every parallel build `build` runs.
+        let parallel_builds = |build: &dyn Fn()| {
+            kermit_ds::test_hooks::take_tree_trie_parallel_builds();
+            build();
+            kermit_ds::test_hooks::take_tree_trie_parallel_builds()
+                .into_iter()
+                .map(|(threads, _)| threads)
+                .collect::<Vec<_>>()
+        };
+
+        let two = TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(2).unwrap());
+        for (mode, expected) in [(TreeTrieBuildMode::Serial, vec![]), (two, vec![2])] {
+            let structure = SortedTrieFamily::<TreeTrie>::new(mode);
+            let join = TrieLftj::<TreeTrie>::new(mode, Planner::stored(LexicographicOptimiser));
+            let routes: [(&str, &dyn Fn()); 6] = [
+                ("SortedTrieFamily::build_relation", &|| {
+                    structure.build_relation(header(), tuples());
+                }),
+                ("SortedTrieFamily::load_with_tuples", &|| {
+                    structure.load_with_tuples(&path).expect("load");
+                }),
+                ("TrieLftj::build_relation", &|| {
+                    join.build_relation(header(), tuples());
+                }),
+                ("TrieLftj::load", &|| {
+                    join.load(&path).expect("load");
+                }),
+                ("TrieLftj::build_from_tuples", &|| {
+                    join.build_from_tuples(vec![(header(), tuples())]);
+                }),
+                ("TrieLftj::add_index", &|| {
+                    let mut engine = join.build(Vec::new());
+                    let spec = IndexSpec::new("r", vec![1, 0]);
+                    join.add_index(&mut engine, spec, &header(), &tuples());
+                }),
+            ];
+            for (route, build) in routes {
+                assert_eq!(parallel_builds(build), expected, "{route} under {mode:?}");
+            }
+        }
+    }
+
     fn build_mode_axis(mode: &str) -> BTreeMap<String, serde_json::Value> {
         BTreeMap::from([("ds_build_mode".to_string(), serde_json::Value::from(mode))])
     }
 
-    /// Every `ColumnTrie` and `HashTrie` family reports the mode it builds
-    /// with; `TreeTrie` has a single build and carries no such axis.
+    /// Every family reports the mode it builds with (issues #84, #91, #94).
     #[test]
-    fn families_with_a_build_mode_report_it() {
+    fn families_report_their_build_mode() {
         let radix = HashTrieBuildMode::Radix(RadixBits::new(4).unwrap());
         assert_eq!(
             SortedTrieFamily::<ColumnTrie>::default().build_mode_axes(),
@@ -1602,13 +1697,19 @@ mod tests {
             .build_mode_axes(),
             build_mode_axis("incremental")
         );
-        assert!(SortedTrieFamily::<TreeTrie>::default()
-            .build_mode_axes()
-            .is_empty());
-        assert!(
-            TrieLftj::<TreeTrie>::new((), Planner::stored(LexicographicOptimiser))
-                .build_mode_axes()
-                .is_empty()
+        assert_eq!(
+            SortedTrieFamily::<TreeTrie>::default().build_mode_axes(),
+            build_mode_axis("serial")
+        );
+        let two = TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(2).unwrap());
+        assert_eq!(
+            SortedTrieFamily::<TreeTrie>::new(two).build_mode_axes(),
+            build_mode_axis("parallel:2")
+        );
+        assert_eq!(
+            TrieLftj::<TreeTrie>::new(two, Planner::stored(LexicographicOptimiser))
+                .build_mode_axes(),
+            build_mode_axis("parallel:2")
         );
         assert_eq!(
             HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::default()
@@ -1718,8 +1819,10 @@ mod tests {
     #[test]
     fn sweep_attaches_each_build_mode_to_its_own_cell() {
         let radix = HashTrieBuildMode::Radix(RadixBits::new(4).unwrap());
+        let four = TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(4).unwrap());
         let choices = DsChoices {
             build: BuildModes {
+                tree_trie: four,
                 column_trie: ColumnTrieBuildMode::Incremental,
                 hash_trie: radix,
             },
@@ -1730,12 +1833,13 @@ mod tests {
             .cells
             .contains(&Execution::TrieLftj(SortedTrie::ColumnTrie {
                 seek: SeekChoice::Galloping,
-                build: ColumnTrieBuildMode::Incremental
+                build: ColumnTrieBuildMode::Incremental,
             })));
         assert!(sweep
             .cells
             .contains(&Execution::TrieLftj(SortedTrie::TreeTrie {
-                seek: SeekChoice::Galloping
+                seek: SeekChoice::Galloping,
+                build: four,
             })));
         assert!(sweep.cells.contains(&Execution::HashHtj {
             hasher: HasherChoice::Sip,
@@ -1753,10 +1857,14 @@ mod tests {
     fn sorted_families_label_their_seek_strategy_from_the_type() {
         use kermit_ds::{BinarySeek, GallopingSeek, LinearSeek};
         assert_eq!(
-            TrieLftj::<TreeTrie<LinearSeek>>::new((), Planner::stored(LexicographicOptimiser))
-                .execution(),
+            TrieLftj::<TreeTrie<LinearSeek>>::new(
+                TreeTrieBuildMode::default(),
+                Planner::stored(LexicographicOptimiser)
+            )
+            .execution(),
             Execution::TrieLftj(SortedTrie::TreeTrie {
-                seek: SeekChoice::Linear
+                seek: SeekChoice::Linear,
+                build: TreeTrieBuildMode::Serial,
             })
         );
         assert_eq!(
@@ -1773,7 +1881,8 @@ mod tests {
         assert_eq!(
             SortedTrieFamily::<TreeTrie<BinarySeek>>::default().execution(),
             Execution::TrieLftj(SortedTrie::TreeTrie {
-                seek: SeekChoice::Binary
+                seek: SeekChoice::Binary,
+                build: TreeTrieBuildMode::Serial,
             })
         );
         let choices = DsChoices {
@@ -1784,7 +1893,8 @@ mod tests {
         assert!(sweep
             .cells
             .contains(&Execution::TrieLftj(SortedTrie::TreeTrie {
-                seek: SeekChoice::Linear
+                seek: SeekChoice::Linear,
+                build: TreeTrieBuildMode::Serial,
             })));
         assert!(sweep
             .cells
@@ -1798,8 +1908,10 @@ mod tests {
     #[test]
     fn sorted_families_report_the_relations_seek_axis() {
         use kermit_ds::GallopingSeek;
-        let family =
-            TrieLftj::<TreeTrie<GallopingSeek>>::new((), Planner::stored(LexicographicOptimiser));
+        let family = TrieLftj::<TreeTrie<GallopingSeek>>::new(
+            TreeTrieBuildMode::default(),
+            Planner::stored(LexicographicOptimiser),
+        );
         let rel = family.build_relation(RelationHeader::new_positional("r", 2), vec![vec![1, 2]]);
         assert_eq!(
             TrieLftj::<TreeTrie<GallopingSeek>>::optimization_axes(&rel)["ds_layout_seek"],
@@ -1858,7 +1970,10 @@ mod tests {
         let edges = || vec![vec![1, 2], vec![2, 1]];
         let query: JoinQuery = "Q(X, Y) :- edge(X, Y), edge(Y, X).".parse().unwrap();
 
-        let stored = TrieLftj::<TreeTrie>::new((), Planner::stored(LexicographicOptimiser));
+        let stored = TrieLftj::<TreeTrie>::new(
+            TreeTrieBuildMode::default(),
+            Planner::stored(LexicographicOptimiser),
+        );
         let engine = stored.build(vec![stored.build_relation(header(), edges())]);
         assert!(matches!(
             stored.required_indexes(&engine, &query),
@@ -1866,7 +1981,7 @@ mod tests {
         ));
 
         let any = TrieLftj::<TreeTrie>::new(
-            (),
+            TreeTrieBuildMode::default(),
             Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any),
         );
         let mut engine = any.build(vec![any.build_relation(header(), edges())]);

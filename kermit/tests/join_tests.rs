@@ -10,7 +10,7 @@ use {
         define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
         ColumnTrieBuildMode, Configured, GallopingSeek, HashTrie, HashTrieBuildMode,
         HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning, RadixBits,
-        SingletonPruning, TreeTrie,
+        SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -165,6 +165,34 @@ define_multiway_join_test_suite_for_build_mode!(
     LeapfrogTriejoin,
     CostBasedOptimiser,
     Incremental
+);
+
+// ── BuildMode axis: TreeTrie's parallel build ───────────────────────────
+// The plain TreeTrie invocations above build serially; these build on two
+// threads. Every mode must build the same trie (issue #94).
+define_build_mode_provider!(
+    Parallel2,
+    TreeTrieBuildMode,
+    TreeTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+
+define_multiway_join_test_suite_for_build_mode!(
+    TreeTrie,
+    LeapfrogTriejoin,
+    LexicographicOptimiser,
+    Parallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    TreeTrie,
+    LeapfrogTriejoin,
+    CardinalityOptimiser,
+    Parallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    TreeTrie,
+    LeapfrogTriejoin,
+    CostBasedOptimiser,
+    Parallel2
 );
 
 // ── BuildMode axis: HashTrie's build ────────────────────────────────────
@@ -415,6 +443,7 @@ define_multiway_join_test_suite_with_column_orders!(
 type HashTrieSipHalfFull = Configured<HashTrieSip, HalfFull>;
 type HashTrieFxHalfFull = Configured<HashTrieFx, HalfFull>;
 type HashTrieSipLazyHalfFull = Configured<HashTrieSipLazy, HalfFull>;
+type TreeTrieParallel2 = BuiltWith<TreeTrie, Parallel2>;
 type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;
 type HashTrieSipRadix2 = BuiltWith<HashTrieSip, Radix2>;
 
@@ -449,6 +478,18 @@ define_multiway_join_test_suite_with_column_orders!(
     AnyOrders,
     HashTrieSipLazyHalfFull,
     HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    TreeTrieParallel2,
+    LeapfrogTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    TreeTrieParallel2,
+    LeapfrogTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    TreeTrieParallel2,
+    LeapfrogTriejoin,
     CostBasedOptimiser,
     AnyOrders,
     ColumnTrieIncremental,

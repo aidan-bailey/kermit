@@ -56,7 +56,7 @@ fn cli_bench_run_sweep_carries_each_build_mode_to_its_cell() {
         "-m",
         "space",
         "--ds-build",
-        "hash-trie=radix:4",
+        "hash-trie=radix:4,tree-trie=parallel:2",
     ]);
     assert!(
         output.status.success(),
@@ -69,8 +69,9 @@ fn cli_bench_run_sweep_carries_each_build_mode_to_its_cell() {
         let axes = &r["axes"];
         match axes["data_structure"].as_str() {
             | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "radix:4", "{axes}"),
+            | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "parallel:2", "{axes}"),
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
-            | _ => assert!(axes.get("ds_build_mode").is_none(), "{axes}"),
+            | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }
 }

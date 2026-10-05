@@ -12,8 +12,11 @@ from typing import Optional, Sequence
 import pandas as pd
 from matplotlib.figure import Figure
 
+from .analysis import SPEEDUP_MEASURES, speedup_table
+from .facet import finish, make_grid
 from .plot import plot
 from .plots_errors import InsufficientAxesError
+from .styles import apply as apply_style
 
 
 def scaling(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] = None) -> Figure:
@@ -112,3 +115,53 @@ def ablation(
     facet = "query" if "query" in df.columns and df["query"].nunique(dropna=True) > 1 else None
     return plot(df, kind="bar", x=axis, y="time", colour="data_structure",
                 facet=facet, phase=phase, title=f"Ablation — {axis}", out=out)
+
+
+def speedup(
+    df: pd.DataFrame, *, phase: str = "insertion", baseline: str = "serial",
+    out: Optional[Path] = None,
+) -> Figure:
+    """Build speedup over the ``baseline`` build against thread count (#94).
+
+    One line per case of :func:`~kermit_lab.analysis.speedup_table`, with its
+    CI as a band, and the ideal ``speedup = N`` dashed. Both axes are log2, so
+    each doubling of threads is one step and the ideal is a straight line. Load
+    one binary's reports only (see :func:`~kermit_lab.analysis.speedup_table`).
+
+    Raises :class:`InsufficientAxesError` for a phase no build mode can
+    affect, or when no case has both a baseline and a ``parallel:N`` row.
+    """
+    scope = AXIS_PHASES["ds_build_mode"]
+    if phase not in scope.phases:
+        allowed = " or ".join(repr(p) for p in sorted(scope.phases))
+        raise InsufficientAxesError(
+            f"ds_build_mode cannot affect phase {phase!r}: {scope.reason}; plot it on {allowed}"
+        )
+    try:
+        table = speedup_table(df, phase=phase, baseline=baseline)
+    except ValueError as e:
+        raise InsufficientAxesError(str(e)) from e
+
+    apply_style()
+    fig, axes = make_grid(1)
+    ax = axes[0]
+    identity = [c for c in table.columns if c not in SPEEDUP_MEASURES]
+    varying = [c for c in identity if table[c].nunique(dropna=False) > 1] or ["data_structure"]
+    for key, line in table.groupby(varying, dropna=False, sort=True):
+        line = line.sort_values("threads")
+        parts = key if isinstance(key, tuple) else (key,)
+        label = " / ".join(str(p) for p in parts if not pd.isna(p))
+        ax.plot(line["threads"], line["speedup"], marker="o", label=label)
+        ax.fill_between(line["threads"], line["speedup_lo"], line["speedup_hi"], alpha=0.2)
+    ticks = sorted(int(t) for t in table["threads"].unique())
+    top = ticks[-1]
+    ax.plot([1, top], [1, top], linestyle="--", color="grey", label="ideal")
+    # Both axes log2: the ideal speedup = N is then the straight line through
+    # (1, 1) and (top, top), and each doubling of threads is one step.
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log", base=2)
+    ax.set_xticks(ticks, labels=[str(t) for t in ticks])
+    ax.set_xlabel("threads")
+    ax.set_ylabel(f"speedup over {baseline} ({phase})")
+    finish(fig, axes, title="Parallel build speedup", out=out)
+    return fig

@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
 from .. import presets
+from ..analysis import speedup_table
 from ..frame import load, load_samples
 from ..loader import TIME_PHASES, SchemaError, load_reports
 from ..plot import plot
@@ -92,6 +94,11 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_phase(p_ablation)
     p_ablation.add_argument("--axis", required=True, help="optimization axis column name")
 
+    p_speedup = sub.add_parser("speedup", help="parallel-build speedup over serial vs threads")
+    _add_common(p_speedup)
+    p_speedup.add_argument("--phase", choices=["insertion", "end_to_end"], default="insertion",
+                           help="build phase to compare (default: insertion)")
+
     p_render_all = sub.add_parser("render-all", help="render every applicable shape into --out-dir")
     p_render_all.add_argument("reports", nargs="+", type=Path)
     p_render_all.add_argument("--out-dir", type=Path, required=True)
@@ -102,7 +109,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
-    df = load(args.reports, args.criterion_root)
+    # `speedup` reads the reports as written: back-filling `serial` on a TreeTrie
+    # report from before #94 could put another binary's build into the baseline.
+    df = load(args.reports, args.criterion_root, apply_defaults=(args.command != "speedup"))
     log.info("loaded %d row(s) from %d file(s)", len(df), len(args.reports))
 
     if args.command == "plot":
@@ -124,6 +133,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         fig = presets.bar_queries(df, ds=args.ds, algo=args.algo, phase=args.phase, out=args.out)
     elif args.command == "ablation":
         fig = presets.ablation(df, axis=args.axis, phase=args.phase, out=args.out)
+    elif args.command == "speedup":
+        fig = presets.speedup(df, phase=args.phase, out=args.out)
+        # The preset has just warned about any unpaired rows; do not repeat it.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            table = speedup_table(df, phase=args.phase).dropna(axis=1, how="all")
+        print(table.to_string(index=False, float_format="{:.3f}".format))
     else:
         log.error("unknown command: %s", args.command)
         return 2

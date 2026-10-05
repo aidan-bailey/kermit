@@ -1,6 +1,6 @@
 use kermit_ds::{
     define_build_mode_provider, BinarySeek, BuiltWith, ColumnTrie, ColumnTrieBuildMode,
-    GallopingSeek, LinearSeek, TreeTrie,
+    GallopingSeek, LinearSeek, Threads, TreeTrie, TreeTrieBuildMode,
 };
 mod common;
 
@@ -29,3 +29,15 @@ define_build_mode_provider!(
 type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;
 
 relation_trie_test_suite!(ColumnTrieIncremental);
+
+// The parallel BuildMode must satisfy the same contract: it builds the same
+// trie as the serial build (issue #94).
+define_build_mode_provider!(
+    Parallel2,
+    TreeTrieBuildMode,
+    TreeTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+
+type TreeTrieParallel2 = BuiltWith<TreeTrie, Parallel2>;
+
+relation_trie_test_suite!(TreeTrieParallel2);
