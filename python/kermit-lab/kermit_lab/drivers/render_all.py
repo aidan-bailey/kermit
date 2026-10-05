@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+
 from .. import presets
 from ..frame import _samples_from_reports, _summary_from_reports, discover_opt_columns
 from ..loader import BenchReport
@@ -50,7 +52,9 @@ def render_all(
 
     def _try(label: str, fn) -> None:
         try:
-            fn()
+            # Saved already; closing frees it. A sweep renders one figure per
+            # shape, query and ablation axis, and pyplot holds each one open.
+            plt.close(fn())
             log.info("rendered %s", label)
         except InsufficientAxesError as e:
             log.info("skipped %s: %s", label, e)

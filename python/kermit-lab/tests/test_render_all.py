@@ -28,6 +28,18 @@ def test_emits_conventional_shapes(fixture_tree, tmp_path: Path) -> None:
     assert any(n.startswith("bar-time-") for n in names)
 
 
+def test_closes_every_figure_it_renders(fixture_tree, tmp_path: Path) -> None:
+    """One figure per shape, query and ablation axis: on a ~100-query sweep,
+    leaving them open trips pyplot's open-figure warning and holds every
+    figure in memory (#87)."""
+    plt.close("all")
+    reports = load_reports(fixture_tree["paths"])
+    render_all(reports, tmp_path, fixture_tree["criterion_root"], "pdf")
+    rendered = {p.name for p in tmp_path.iterdir()}
+    assert {"bar-time-triangle.pdf", "bar-time-chain.pdf", "bar-time-star.pdf"} <= rendered
+    assert plt.get_fignums() == []
+
+
 def test_emits_ablation_for_opt_axis(fixture_opt_tree, tmp_path: Path) -> None:
     reports = load_reports(fixture_opt_tree["paths"])
     out = tmp_path / "out"

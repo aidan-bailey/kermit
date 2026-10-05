@@ -330,6 +330,64 @@ def fixture_end_to_end_tree(tmp_path: Path) -> dict:
 
 
 @pytest.fixture
+def fixture_end_to_end_seek_tree(tmp_path: Path) -> dict:
+    """Sorted-trie reports timing only ``end_to_end``, plus space, under two
+    seek strategies, so every time-using shape can draw on that phase (#87).
+
+    2 DS × 2 seek strategies × 2 sizes. ``ds_layout_seek`` applies to
+    ``end_to_end``, so the ablation shape can draw too; space sits in the
+    same report as the time, so the tradeoff shape can pair them.
+    """
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for ds in ("TreeTrie", "ColumnTrie"):
+        for seek, speedup in (("binary", 1.0), ("galloping", 0.8)):
+            for n in (10, 100):
+                tag = f"{ds}-{seek}-{n}"
+                e2e_fn = f"{ds}/triangle/{seek}/{n}/end_to_end"
+                space_fn = f"{ds}/triangle/{seek}/{n}/space"
+                e2e_point = 500.0 * n * speedup
+                space_point = float(n * 64)
+                e2e_samples = [(i + 1, e2e_point * (i + 1)) for i in range(10)]
+                space_samples = [(i + 1, space_point * (i + 1)) for i in range(10)]
+                _write_function_dir(
+                    criterion_root, _FunctionSpec("run", e2e_fn, "time", e2e_point, e2e_samples)
+                )
+                _write_function_dir(
+                    criterion_root,
+                    _FunctionSpec("run", space_fn, "space", space_point, space_samples),
+                )
+                paths.append(
+                    _write_report(
+                        reports_dir,
+                        f"run-{tag}",
+                        kind="run",
+                        axes={
+                            "benchmark": "triangle",
+                            "query": "triangle",
+                            "data_structure": ds,
+                            "algorithm": "LeapfrogTriejoin",
+                            "optimiser": "lexicographic",
+                            "tuples": n,
+                            "queries_per_build": 1,
+                            "ds_layout_seek": seek,
+                        },
+                        metadata=[],
+                        groups=[("run", e2e_fn, "time"), ("run", space_fn, "space")],
+                    )
+                )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }
+
+
+@pytest.fixture
 def fixture_opt_tree(tmp_path: Path) -> dict:
     """HashTrie reports carrying optimization axes for ablation tests.
 
