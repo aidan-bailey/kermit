@@ -1,7 +1,8 @@
 //! `any` returns the same multiset as `stored` for every query `stored`
 //! accepts, and answers every query `stored` rejects only for its column
-//! order (issue #93). Random small conjunctive queries over random small
-//! relations, from fixed seeds, so a failure reproduces; no new crate.
+//! order (issue #93); both return the rows a nested-loop evaluator
+//! computes. Random small conjunctive queries over random small relations,
+//! from fixed seeds, so a failure reproduces; no new crate.
 
 mod common;
 
@@ -17,6 +18,7 @@ use {
         SingletonPruning, TreeTrie,
     },
     kermit_iters::SipHashStrategy,
+    kermit_parser::{Predicate, Term},
     std::collections::BTreeMap,
 };
 
@@ -103,18 +105,117 @@ fn rows<R: Relation + Cardinality, JA: JoinEntry<R>, O: QueryOptimiser + Default
     Ok(rows)
 }
 
-/// For each seed: a query `stored` accepts gives the same rows under
-/// `any`; a query `stored` rejects only for its column order runs under
-/// `any`; any other rejection is identical under both. Returns how many
-/// cases fell in the first two classes.
+/// `tuples` as `R` holds them: the hash trie keeps duplicates (a
+/// multiset), the sorted tries drop them (a set), and `R`'s tuple count
+/// says which.
+fn as_held<R: Relation + Cardinality>(
+    name: &str, arity: usize, tuples: &[Vec<usize>],
+) -> Vec<Vec<usize>> {
+    let held = R::from_tuples(RelationHeader::new_positional(name, arity), tuples.to_vec());
+    let mut distinct = tuples.to_vec();
+    distinct.sort();
+    distinct.dedup();
+    if held.tuple_count() == tuples.len() {
+        tuples.to_vec()
+    } else {
+        assert_eq!(
+            held.tuple_count(),
+            distinct.len(),
+            "{name}: neither a set nor a bag"
+        );
+        distinct
+    }
+}
+
+/// The rows `query` must return over `relations` as `R` holds them, by
+/// nested loops in body order: each way of matching every atom to one held
+/// tuple, a variable taking one value throughout and a constant `c<k>`
+/// matching `k`, is one row, projected to the head. Bag semantics, so a
+/// duplicate tuple matches twice. No planner, rewrite or executor is
+/// involved, so this checks the rows of the queries `stored` rejects as
+/// well as those it accepts.
+fn oracle<R: Relation + Cardinality>(relations: &Relations, query: &JoinQuery) -> Vec<Vec<usize>> {
+    let held: BTreeMap<&str, Vec<Vec<usize>>> = relations
+        .iter()
+        .map(|(name, arity, tuples)| (name.as_str(), as_held::<R>(name, *arity, tuples)))
+        .collect();
+    let mut rows = Vec::new();
+    match_atoms(
+        &query.body,
+        &held,
+        &mut BTreeMap::new(),
+        &query.head,
+        &mut rows,
+    );
+    rows.sort();
+    rows
+}
+
+/// Matches `atoms` in order under `binding`, pushing one head row per
+/// complete match.
+fn match_atoms<'q>(
+    atoms: &'q [Predicate], held: &BTreeMap<&str, Vec<Vec<usize>>>,
+    binding: &mut BTreeMap<&'q str, usize>, head: &Predicate, rows: &mut Vec<Vec<usize>>,
+) {
+    let Some((atom, rest)) = atoms.split_first() else {
+        let row = head
+            .terms
+            .iter()
+            .map(|term| match term {
+                | Term::Var(v) => binding[v.as_str()],
+                | _ => unreachable!("the generator's head is variables"),
+            })
+            .collect();
+        rows.push(row);
+        return;
+    };
+    for tuple in &held[atom.name.as_str()] {
+        let mut bound_here: Vec<&str> = Vec::new();
+        let matches = atom
+            .terms
+            .iter()
+            .zip(tuple)
+            .all(|(term, &value)| match term {
+                | Term::Var(v) => match binding.get(v.as_str()) {
+                    | Some(&bound) => bound == value,
+                    | None => {
+                        binding.insert(v.as_str(), value);
+                        bound_here.push(v.as_str());
+                        true
+                    },
+                },
+                | Term::Atom(c) => c[1..].parse() == Ok(value),
+                | Term::Placeholder => true,
+            });
+        if matches {
+            match_atoms(rest, held, binding, head, rows);
+        }
+        for v in bound_here {
+            binding.remove(v);
+        }
+    }
+}
+
+/// How the seeds fell: queries `stored` accepts, queries it rejects only
+/// for their column order, and how many of those return a row.
+#[derive(Debug, Default)]
+struct Cases {
+    agreed: usize,
+    lifted: usize,
+    lifted_with_rows: usize,
+}
+
+/// For each seed: a query `stored` accepts gives the oracle's rows under
+/// both policies; a query `stored` rejects only for its column order gives
+/// them under `any`; any other rejection is identical under both.
 fn equivalent<
     R: Relation + Cardinality,
     JA: JoinEntry<R>,
     O: QueryOptimiser + Default + 'static,
 >(
     seeds: std::ops::Range<u64>,
-) -> (usize, usize) {
-    let (mut agreed, mut lifted) = (0, 0);
+) -> Cases {
+    let mut cases = Cases::default();
     for seed in seeds {
         let mut rng = Lcg(seed);
         let relations = random_relations(&mut rng);
@@ -122,36 +223,40 @@ fn equivalent<
         let query: JoinQuery = text
             .parse()
             .unwrap_or_else(|e| panic!("seed {seed}: unparsable query {text}: {e}"));
+        let want = oracle::<R>(&relations, &query);
         let stored = rows::<R, JA, O>(&relations, &query, ColumnOrderPolicy::Stored);
         let any = rows::<R, JA, O>(&relations, &query, ColumnOrderPolicy::Any);
         match stored {
             | Ok(stored) => {
-                assert_eq!(any.as_ref().ok(), Some(&stored), "seed {seed}: {text}");
-                agreed += 1;
+                assert_eq!(stored, want, "seed {seed}: {text} under stored");
+                assert_eq!(any.ok(), Some(want), "seed {seed}: {text} under any");
+                cases.agreed += 1;
             },
             | Err(JoinError::CyclicAttributeOrder {
                 ..
             }) => {
-                assert!(any.is_ok(), "seed {seed}: {text}: {any:?}");
-                lifted += 1;
+                cases.lifted_with_rows += usize::from(!want.is_empty());
+                assert_eq!(any.ok(), Some(want), "seed {seed}: {text} under any");
+                cases.lifted += 1;
             },
             | Err(other) => assert_eq!(any, Err(other), "seed {seed}: {text}"),
         }
     }
-    (agreed, lifted)
+    cases
 }
 
-const SEEDS: std::ops::Range<u64> = 0..300;
+const SEEDS: std::ops::Range<u64> = 0..1000;
 
 /// The bounds catch a generator that stops producing interesting cases:
-/// the first 300 seeds give 273 queries `stored` accepts and 27 it rejects
-/// for their column order (no other rejection).
+/// the first 1000 seeds give 903 queries `stored` accepts and 97 it
+/// rejects for their column order (no other rejection), 20 of which return
+/// rows.
 #[test]
 fn tree_trie_under_lexicographic() {
-    let (agreed, lifted) = equivalent::<TreeTrie, LeapfrogTriejoin, LexicographicOptimiser>(SEEDS);
+    let cases = equivalent::<TreeTrie, LeapfrogTriejoin, LexicographicOptimiser>(SEEDS);
     assert!(
-        agreed >= 100 && lifted >= 10,
-        "agreed {agreed}, lifted {lifted}"
+        cases.agreed >= 300 && cases.lifted >= 30 && cases.lifted_with_rows >= 10,
+        "{cases:?}"
     );
 }
 
