@@ -199,23 +199,29 @@ pub struct Database<R> {
 }
 
 impl<R: Relation + Cardinality> Database<R> {
-    pub fn new<F: JoinFamily<R>>(
-        relations: impl IntoIterator<Item = R>, level: StatisticsLevel,
-    ) -> Self;
+    pub fn new<F: JoinFamily<R>>(relations: BTreeMap<String, R>, level: StatisticsLevel) -> Self;
+}
+
+impl<R> Database<R> {
     pub fn get(&self, name: &str) -> Option<&R>;
     pub fn relations(&self) -> impl Iterator<Item = &R>;
     pub fn statistics(&self, name: &str) -> Option<&RelationStats>;
     pub fn level(&self) -> StatisticsLevel;
 }
 
+/// Tuple counts only: no walk, so no family needed.
+impl<R: Relation + Cardinality> From<BTreeMap<String, R>> for Database<R> { /* … */ }
+
 impl<R: Relation> RelationArities for Database<R> { /* as for the BTreeMap */ }
 ```
 
-Relations are keyed by `header().name()`, as `ExecutionFamily::build` keys
-them today. At `TupleCounts`, statistics come from `Cardinality::tuple_count`
-and the header's arity, which costs nothing. At `ColumnDistinct`, each
-relation is also walked once through `F::for_each_tuple` into
-`distinct_per_column`.
+Relations stay keyed by the names queries use: the caller's map, as
+today. `ExecutionFamily::build` keys them by `header().name()`, and test
+fixtures by their own names (their headers are nameless). At `TupleCounts`,
+statistics come from `Cardinality::tuple_count` and the header's arity,
+which costs nothing; `From<BTreeMap<String, R>>` builds exactly that. At
+`ColumnDistinct`, each relation is also walked once through
+`F::for_each_tuple` into `distinct_per_column`.
 
 ### The walk (`JoinFamily::for_each_tuple`)
 
@@ -301,10 +307,11 @@ recorded in `docs/optimisers/cost-based.md`.
   `ColumnTrie` × linear/binary/galloping, `HashTrie` × Sip/Fx ×
   pruned/unpruned) plus the `HalfFull` config suite and the two `Incremental`
   build-mode suites.
-- `kermit/tests/common/utils.rs`: `test_join<R, JA, O>` builds
-  `Database::new::<F>(…, O::default().required_statistics())`, so each
-  optimiser plans at exactly the level it declares, and all 16 patterns plan
-  from real statistics. `JoinEntry` takes `&Database<R>`.
+- `kermit/tests/common/utils.rs`: `JoinEntry` gains
+  `database(relations, level)`, which picks the family, and its `join` /
+  `count` take `&Database<R>`. `test_join<R, JA, O>` builds the database at
+  `O::default().required_statistics()`, so each optimiser plans at exactly
+  the level it declares, and all 16 patterns plan from real statistics.
 - `kermit/tests/lubm_mini_oracle.rs`: covered automatically through
   `Optimiser::value_variants()`; it builds the database at the instantiated
   planner's level.
@@ -406,6 +413,10 @@ nightly must track CI's").
 - `ARCHITECTURE.md`: the catalog in the data flow, and the optimiser list.
 
 ## Commit sequence
+
+The implementation plan
+(`docs/superpowers/plans/2026-10-05-cost-based-optimiser.md`) refines this
+into one commit per task.
 
 1. `docs(spec): cost-based query optimiser (#81)` (this file).
 2. `feat(algos): per-column distinct statistics and StatisticsLevel` —
