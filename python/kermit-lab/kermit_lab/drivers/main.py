@@ -92,6 +92,11 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_phase(p_ablation)
     p_ablation.add_argument("--axis", required=True, help="optimization axis column name")
 
+    p_speedup = sub.add_parser("speedup", help="parallel-build speedup over serial vs threads")
+    _add_common(p_speedup)
+    p_speedup.add_argument("--phase", choices=["insertion", "end_to_end"], default="insertion",
+                           help="build phase to compare (default: insertion)")
+
     p_render_all = sub.add_parser("render-all", help="render every applicable shape into --out-dir")
     p_render_all.add_argument("reports", nargs="+", type=Path)
     p_render_all.add_argument("--out-dir", type=Path, required=True)
@@ -124,6 +129,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         fig = presets.bar_queries(df, ds=args.ds, algo=args.algo, phase=args.phase, out=args.out)
     elif args.command == "ablation":
         fig = presets.ablation(df, axis=args.axis, phase=args.phase, out=args.out)
+    elif args.command == "speedup":
+        fig = presets.speedup(df, phase=args.phase, out=args.out)
     else:
         log.error("unknown command: %s", args.command)
         return 2

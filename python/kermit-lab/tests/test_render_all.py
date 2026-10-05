@@ -95,13 +95,14 @@ def test_ablation_preset_lets_build_mode_through_on_end_to_end(
 def test_build_mode_ablation_leaves_out_structures_without_the_axis(
     fixture_build_mode_tree,
 ) -> None:
-    """TreeTrie rows keep NaN for ``ds_build_mode``; charting them would add a
-    bar for a structure that has no build mode."""
+    """HashTrie rows keep NaN for ``ds_build_mode`` (it has no build mode
+    until #94's second plan); charting them would add a bar for a structure
+    that has none."""
     df = kl.load(
         fixture_build_mode_tree["paths"],
         criterion_root=fixture_build_mode_tree["criterion_root"],
     )
-    assert df.loc[df["data_structure"] == "TreeTrie", "ds_build_mode"].isna().all()
+    assert df.loc[df["data_structure"] == "HashTrie", "ds_build_mode"].isna().all()
     fig = presets.ablation(df, axis="ds_build_mode", phase="insertion")
     labels = {t.get_text() for ax in fig.axes for t in ax.get_xticklabels()}
     plt.close(fig)

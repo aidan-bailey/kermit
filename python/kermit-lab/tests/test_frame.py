@@ -236,3 +236,13 @@ def test_load_refuses_mixed_schema_and_passes_the_escape_hatch(tmp_path: Path) -
     with pytest.raises(SchemaError, match="refusing to mix"):
         load_samples(paths, criterion_root=tmp_path)
     assert len(load_samples(paths, criterion_root=tmp_path, allow_mixed_schema=True)) == 0
+
+
+def test_threads_column_is_derived_from_the_build_mode(fixture_parallel_build_tree) -> None:
+    df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
+    assert str(df["threads"].dtype) == "Int64"
+    by_mode = df.groupby("ds_build_mode")["threads"]
+    assert by_mode.apply(lambda t: t.isna().all())["serial"]
+    assert by_mode.apply(lambda t: t.isna().all())["bulk"]
+    assert set(by_mode.first().dropna()) == {2, 4}
+    assert (df.loc[df["ds_build_mode"] == "parallel:4", "threads"] == 4).all()

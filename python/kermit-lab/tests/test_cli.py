@@ -74,8 +74,10 @@ def _subcommands_taking_phase() -> set[str]:
 
 
 def test_every_time_shape_is_covered() -> None:
-    """A new time-using shape must join the end_to_end test below."""
-    assert _subcommands_taking_phase() == {*_TIME_SHAPES, "render-all"}
+    """A new time-using shape must join the end_to_end test below. `speedup`
+    is the exception: it compares build modes, which that test's fixture has
+    none of, so `test_speedup_preset_subcommand` covers it (#94)."""
+    assert _subcommands_taking_phase() == {*_TIME_SHAPES, "render-all", "speedup"}
 
 
 @pytest.mark.parametrize("shape", sorted(_TIME_SHAPES))
@@ -105,3 +107,19 @@ def test_render_all_plots_end_to_end(fixture_end_to_end_seek_tree, tmp_path: Pat
         "scaling.pdf", "tradeoff.pdf", "dist.pdf", "bar-time-triangle.pdf",
         "ablation-ds_layout_seek.pdf",
     } <= names, names
+
+
+def test_speedup_preset_subcommand(fixture_parallel_build_tree, tmp_path: Path) -> None:
+    out = tmp_path / "speedup.pdf"
+    rc = main([
+        "speedup", *[str(p) for p in fixture_parallel_build_tree["paths"]],
+        "--criterion-root", str(fixture_parallel_build_tree["criterion_root"]),
+        "--out", str(out),
+    ])
+    assert rc == 0
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_speedup_subcommand_refuses_search_phases() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["speedup", "r.json", "--out", "s.pdf", "--phase", "iteration"])

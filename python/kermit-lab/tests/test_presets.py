@@ -87,3 +87,24 @@ def test_ablation_lets_seek_through_on_end_to_end(fixture_seek_tree) -> None:
     # having no end_to_end rows, not from the seek scope.
     with pytest.raises(InsufficientAxesError, match="no time rows"):
         presets.ablation(df, axis="ds_layout_seek", phase="end_to_end")
+
+
+def test_speedup(fixture_parallel_build_tree) -> None:
+    df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
+    fig = presets.speedup(df)
+    labels = {label for ax in fig.axes for label in ax.get_legend_handles_labels()[1]}
+    plt.close(fig)
+    assert isinstance(fig, Figure)
+    assert {"TreeTrie", "ideal"} <= labels
+
+
+def test_speedup_refuses_phases_a_build_mode_cannot_affect(fixture_parallel_build_tree) -> None:
+    df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
+    with pytest.raises(InsufficientAxesError, match="built"):
+        presets.speedup(df, phase="iteration")
+
+
+def test_speedup_without_a_serial_baseline_is_insufficient_axes(fixture_build_mode_tree) -> None:
+    df = load(fixture_build_mode_tree["paths"], fixture_build_mode_tree["criterion_root"])
+    with pytest.raises(InsufficientAxesError, match="no case"):
+        presets.speedup(df)

@@ -83,16 +83,17 @@ def test_the_scoped_registry_is_the_only_one() -> None:
     assert registries == ["SCOPED_AXIS_DEFAULTS"]
 
 
-def test_build_mode_backfills_column_trie_rows_only() -> None:
+def test_build_mode_backfills_column_and_tree_trie_rows_only() -> None:
     df = pd.DataFrame({
-        "data_structure": ["ColumnTrie", "ColumnTrie", "TreeTrie", "HashTrie"],
-        "ds_build_mode": [pd.NA, "bulk", pd.NA, pd.NA],
+        "data_structure": ["ColumnTrie", "ColumnTrie", "TreeTrie", "TreeTrie", "HashTrie"],
+        "ds_build_mode": [pd.NA, "bulk", pd.NA, "parallel:4", pd.NA],
     })
     out = apply_axis_defaults(df)
-    assert out["ds_build_mode"].iloc[0] == "incremental"
-    assert out["ds_build_mode"].iloc[1] == "bulk"
-    assert out["ds_build_mode"].iloc[2:].isna().all()
+    assert out["ds_build_mode"].tolist()[:4] == ["incremental", "bulk", "serial", "parallel:4"]
+    # HashTrie has no build mode until #94's second plan.
+    assert pd.isna(out["ds_build_mode"].iloc[4])
     assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "ColumnTrie")] == "incremental"
+    assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "TreeTrie")] == "serial"
 
 
 def test_build_mode_backfills_an_all_nan_float_column() -> None:
@@ -106,7 +107,7 @@ def test_build_mode_backfills_an_all_nan_float_column() -> None:
     assert df["ds_build_mode"].dtype == "float64"
     out = apply_axis_defaults(df)
     assert out["ds_build_mode"].iloc[0] == "incremental"
-    assert pd.isna(out["ds_build_mode"].iloc[1])
+    assert out["ds_build_mode"].iloc[1] == "serial"
 
 
 def test_scoped_default_skips_rows_with_no_data_structure() -> None:

@@ -1,10 +1,14 @@
 """Analysis layer tests: pivot summaries, pairwise comparison, stats."""
 from __future__ import annotations
 
+import math
+
 import numpy as np
+import pandas as pd
 import pytest
 
 import kermit_lab as kl
+from kermit_lab.analysis import compare, speedup_table
 
 
 @pytest.fixture
@@ -94,3 +98,66 @@ def test_mannwhitney_identical_samples_not_significant():
     _u, p = kl.mannwhitney_u(a, b)
     # Drawn from same distribution → cannot reject null at α=0.05.
     assert p > 0.05
+
+
+# --- speedup_table ---------------------------------------------------------
+
+
+def _build_mode_rows(arms: dict[str, list[float]]) -> pd.DataFrame:
+    """One summary row per run: TreeTrie insertion on one relation, under each
+    build mode in ``arms`` (mode -> one mean per replicate)."""
+    rows = []
+    for mode, times in arms.items():
+        threads = int(mode.removeprefix("parallel:")) if mode.startswith("parallel:") else pd.NA
+        for run, t in enumerate(times):
+            rows.append({
+                "kind": "ds", "metric": "time", "phase": "insertion",
+                "data_structure": "TreeTrie", "relation_path": "r.parquet",
+                "ds_build_mode": mode, "threads": threads,
+                "mean_ns": t, "mean_lo": t * 0.99, "mean_hi": t * 1.01,
+                "source_path": f"{mode}-{run}.json", "criterion_group": f"{mode}-{run}",
+                "criterion_function": "TreeTrie/insertion",
+            })
+    df = pd.DataFrame(rows)
+    df["threads"] = df["threads"].astype("Int64")
+    return df
+
+
+def test_speedup_table_reports_speedup_efficiency_and_karp_flatt() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [60.0], "parallel:4": [40.0]})
+    table = speedup_table(df).set_index("threads")
+    assert table.loc[2, "speedup"] == pytest.approx(100 / 60)
+    assert table.loc[4, "efficiency"] == pytest.approx(100 / 40 / 4)
+    # e = (1/S - 1/N) / (1 - 1/N); S = 2.5, N = 4: (0.4 - 0.25) / 0.75 = 0.2.
+    assert table.loc[4, "karp_flatt"] == pytest.approx(0.2)
+    # One run per arm: the CI is the envelope of Criterion's own intervals.
+    assert table.loc[2, "speedup_lo"] == pytest.approx(99 / 60.6)
+    assert table.loc[2, "speedup_hi"] == pytest.approx(101 / 59.4)
+    assert table["baseline_runs"].tolist() == [1, 1]
+
+
+def test_speedup_table_bootstraps_replicates() -> None:
+    df = _build_mode_rows({"serial": [100.0, 104.0, 98.0], "parallel:2": [50.0, 52.0, 51.0]})
+    row = speedup_table(df).iloc[0]
+    assert (row["baseline_runs"], row["runs"]) == (3, 3)
+    assert row["speedup"] == pytest.approx((100 + 104 + 98) / (50 + 52 + 51))
+    assert row["speedup_lo"] <= row["speedup"] <= row["speedup_hi"]
+
+
+def test_speedup_table_has_no_karp_flatt_at_one_thread() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:1": [110.0]})
+    row = speedup_table(df).iloc[0]
+    assert row["threads"] == 1
+    assert row["speedup"] == pytest.approx(100 / 110)
+    assert math.isnan(row["karp_flatt"])
+
+
+def test_speedup_table_needs_a_serial_baseline() -> None:
+    with pytest.raises(ValueError, match="no case"):
+        speedup_table(_build_mode_rows({"parallel:2": [50.0]}))
+
+
+def test_compare_pairs_build_modes_despite_the_derived_threads_column() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    out = compare(df, baseline="serial", target="parallel:2", group_by="ds_build_mode")
+    assert out["speedup"].tolist() == pytest.approx([2.0])

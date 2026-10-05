@@ -117,6 +117,17 @@ def discover_opt_columns(df: pd.DataFrame) -> list[str]:
     return sorted(c for c in df.columns if _OPT_AXIS_RE.match(c))
 
 
+def threads_of(build_mode: object) -> int | None:
+    """The thread count of a ``parallel:N`` build mode, else ``None``.
+
+    ``serial``, ColumnTrie's ``bulk`` / ``incremental`` and a missing mode
+    are not thread counts, so they become ``<NA>`` in the ``threads`` column.
+    """
+    if isinstance(build_mode, str) and build_mode.startswith("parallel:"):
+        return int(build_mode.removeprefix("parallel:"))
+    return None
+
+
 def _summary_from_reports(
     reports: Sequence[BenchReport],
     criterion_root: Path | str,
@@ -144,6 +155,14 @@ def _summary_from_reports(
             df[key] = df[key].astype("boolean")
     if apply_defaults:
         df = apply_axis_defaults(df)
+    if "ds_build_mode" in df.columns:
+        # Derived, not reported: `kl.speedup` and line plots want the thread
+        # count as a number (#94).
+        df.insert(
+            df.columns.get_loc("ds_build_mode") + 1,
+            "threads",
+            df["ds_build_mode"].map(threads_of).astype("Int64"),
+        )
     return df
 
 

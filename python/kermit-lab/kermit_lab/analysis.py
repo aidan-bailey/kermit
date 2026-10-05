@@ -20,6 +20,9 @@ _VALUE_FAMILY: frozenset[str] = frozenset({
     "mean_ns", "mean_lo", "mean_hi", "mean_se",
     "median_ns", "median_lo", "median_hi",
 })
+# Columns `kl.load` derives from another column. `threads` varies exactly when
+# `ds_build_mode` does, so it is never a key that pairs rows.
+_DERIVED_COLS: frozenset[str] = frozenset({"threads"})
 
 
 def summary(
@@ -72,6 +75,7 @@ def compare(
     join_keys = [
         c for c in df.columns
         if c != group_by and c not in _PROVENANCE_COLS and c not in _VALUE_FAMILY
+        and c not in _DERIVED_COLS
     ]
 
     base = df.loc[base_mask, join_keys + [value, value_lo, value_hi]].rename(columns={
@@ -151,3 +155,86 @@ def mannwhitney_u(
     """
     res = mannwhitneyu(np.asarray(a, dtype=float), np.asarray(b, dtype=float), alternative=alternative)
     return float(res.statistic), float(res.pvalue)
+
+
+# The columns that tell runs of one case apart, or that hold its numbers:
+# everything else identifies the case.
+_SPEEDUP_NON_KEYS: frozenset[str] = (
+    _PROVENANCE_COLS | _VALUE_FAMILY | frozenset({"ds_build_mode", "threads"})
+)
+
+
+def speedup_table(
+    df: pd.DataFrame,
+    *,
+    phase: str = "insertion",
+    baseline: str = "serial",
+    value: str = "mean_ns",
+    n_resamples: int = 9999,
+    rng: int | np.random.Generator | None = 0,
+) -> pd.DataFrame:
+    """Speedup of every ``parallel:N`` build over the ``baseline`` build.
+
+    A *case* is everything a row says apart from its build mode and
+    provenance: one structure, workload and relation, measured under several
+    build modes. Replicates of one case and mode (one report each, told apart
+    by ``criterion_group`` / ``source_path``) are pooled. Load one binary's
+    reports only, or codegen drift between binaries enters the speedup.
+
+    One row per case and thread count ``N``, with the case's columns and:
+
+    - ``speedup``: mean baseline ``value`` over mean ``parallel:N`` ``value``;
+      above 1 means the parallel build is faster;
+    - ``speedup_lo`` / ``speedup_hi``: a percentile-bootstrap CI over the
+      replicates when both sides have at least two, else the conservative
+      envelope of Criterion's own CIs, as in :func:`compare`;
+    - ``efficiency``: ``speedup / N``;
+    - ``karp_flatt``: the experimentally determined serial fraction
+      ``(1/speedup - 1/N) / (1 - 1/N)``, NaN at ``N = 1``. Flat across ``N``
+      means a fixed sequential share limits the build; rising means a cost
+      that grows with ``N`` does;
+    - ``baseline_runs`` / ``runs``: the replicates pooled on each side.
+
+    Raises ``ValueError`` when a needed column is missing or no case has both
+    a baseline row and a ``parallel:N`` row on ``phase``.
+    """
+    value_lo, value_hi = _ci_columns_for(value)
+    needed = ["metric", "phase", "ds_build_mode", "threads", value, value_lo, value_hi]
+    missing = [c for c in needed if c not in df.columns]
+    if missing:
+        raise ValueError(f"speedup_table needs columns {missing}")
+    on_phase = ((df["metric"] == "time") & (df["phase"] == phase)).fillna(False).astype(bool)
+    rows = df[on_phase & df["ds_build_mode"].notna()]
+    case_keys = [c for c in rows.columns if c not in _SPEEDUP_NON_KEYS]
+
+    records: list[dict] = []
+    for key, case in rows.groupby(case_keys, dropna=False, sort=True):
+        is_base = case["ds_build_mode"] == baseline
+        base = case.loc[is_base, value]
+        if base.empty:
+            continue
+        identity = dict(zip(case_keys, key if isinstance(key, tuple) else (key,)))
+        for threads, arm in case[case["threads"].notna()].groupby("threads", sort=True):
+            n = int(threads)
+            speedup = base.mean() / arm[value].mean()
+            if len(base) >= 2 and len(arm) >= 2:
+                lo, hi = bootstrap_ratio_ci(base, arm[value], n_resamples=n_resamples, rng=rng)
+            else:
+                lo = case.loc[is_base, value_lo].mean() / arm[value_hi].mean()
+                hi = case.loc[is_base, value_hi].mean() / arm[value_lo].mean()
+            records.append({
+                **identity,
+                "threads": n,
+                "speedup": speedup,
+                "speedup_lo": lo,
+                "speedup_hi": hi,
+                "efficiency": speedup / n,
+                "karp_flatt": (1 / speedup - 1 / n) / (1 - 1 / n) if n > 1 else float("nan"),
+                "baseline_runs": len(base),
+                "runs": len(arm),
+            })
+    if not records:
+        raise ValueError(
+            f"no case has both a {baseline!r} row and a parallel:N row on {phase!r}"
+        )
+    return pd.DataFrame.from_records(records)
