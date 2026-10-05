@@ -1,8 +1,8 @@
 //! The default ordering policy: smallest canonical variable index first.
 
-use crate::{
-    analysis::analyse,
-    optimiser::{ordering::topological_order, CatalogStats, QueryOptimiser, QueryPlan},
+use crate::optimiser::{
+    ordering::{topological_order, Precedence},
+    CatalogStats, QueryOptimiser, QueryPlan,
 };
 
 /// Plans the global attribute order by Kahn's topological sort with a
@@ -12,26 +12,26 @@ use crate::{
 /// query optimisers existed — it keeps head variables early when
 /// unconstrained and is fully deterministic. It ignores statistics, which
 /// makes it the control arm for optimiser ablation studies and the
-/// default everywhere.
+/// default everywhere. Under `--column-orders any` nothing constrains it,
+/// so the plan is the canonical order itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LexicographicOptimiser;
 
 impl QueryOptimiser for LexicographicOptimiser {
-    fn plan(&self, query: &kermit_parser::JoinQuery, _stats: &CatalogStats) -> QueryPlan {
-        let analysis = analyse(query);
+    fn plan(&self, query: &kermit_parser::JoinQuery, stats: &CatalogStats) -> QueryPlan {
         QueryPlan {
-            variable_ordering: topological_order(
-                analysis.num_vars,
-                &analysis.predicate_variables,
-                |v| v,
-            ),
+            variable_ordering: topological_order(&Precedence::for_query(query, stats), |v| v),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::optimiser::RelationStats, kermit_parser::JoinQuery};
+    use {
+        super::*,
+        crate::optimiser::{ColumnOrderPolicy, RelationStats},
+        kermit_parser::JoinQuery,
+    };
 
     #[test]
     fn triangle_orders_head_first() {
@@ -53,12 +53,29 @@ mod tests {
     fn stats_are_ignored() {
         let q: JoinQuery = "Q(X, Y) :- R(X), S(Y).".parse().unwrap();
         // Even with S tiny, lexicographic keeps canonical order.
-        let stats = CatalogStats::for_query(&q, |name| match name {
+        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |name| match name {
             | "R" => Some(RelationStats::new(1_000_000, 1)),
             | "S" => Some(RelationStats::new(1, 1)),
             | _ => None,
         });
         let plan = LexicographicOptimiser.plan(&q, &stats);
         assert_eq!(plan.variable_ordering, vec![0, 1]);
+    }
+
+    /// Under `any` the plan is the canonical order itself, even when the
+    /// stored column order would have forced `Y` first.
+    #[test]
+    fn under_any_the_canonical_order_is_the_plan() {
+        let q: JoinQuery = "Q(X, Y) :- r(Y, X).".parse().unwrap();
+        let stored = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |_| None);
+        assert_eq!(
+            LexicographicOptimiser.plan(&q, &stored).variable_ordering,
+            vec![1, 0]
+        );
+        let any = CatalogStats::for_query(&q, ColumnOrderPolicy::Any, |_| None);
+        assert_eq!(
+            LexicographicOptimiser.plan(&q, &any).variable_ordering,
+            vec![0, 1]
+        );
     }
 }

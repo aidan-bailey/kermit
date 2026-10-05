@@ -65,7 +65,8 @@ impl QueryOptimiser for CostBasedOptimiser {
             analysis.num_vars,
             stats,
         );
-        let cheapest = Precedence::new(analysis.num_vars, &analysis.predicate_variables)
+        let precedence = Precedence::new(analysis.num_vars, &analysis.predicate_variables);
+        let cheapest = precedence
             .predecessor_masks()
             .and_then(|predecessors| cheapest_order(&model, &predecessors, self.state_budget));
         let Some(order) = cheapest else {
@@ -81,10 +82,7 @@ impl QueryOptimiser for CostBasedOptimiser {
         for (index, &v) in order.iter().enumerate() {
             position[v] = index;
         }
-        let variable_ordering =
-            topological_order(analysis.num_vars, &analysis.predicate_variables, |v| {
-                position[v]
-            });
+        let variable_ordering = topological_order(&precedence, |v| position[v]);
         debug_assert_eq!(
             variable_ordering, order,
             "the search returned an order that violates a column-order constraint"
@@ -303,12 +301,16 @@ fn cheapest_order(
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::optimiser::RelationStats, kermit_parser::JoinQuery};
+    use {
+        super::*,
+        crate::optimiser::{ColumnOrderPolicy, RelationStats},
+        kermit_parser::JoinQuery,
+    };
 
     /// Statistics for `q`'s relations: `(name, tuples, per-column distinct
     /// counts)`.
     fn stats_for(q: &JoinQuery, relations: &[(&str, usize, &[usize])]) -> CatalogStats {
-        CatalogStats::for_query(q, |name| {
+        CatalogStats::for_query(q, ColumnOrderPolicy::Stored, |name| {
             let &(_, tuples, distinct) = relations.iter().find(|(n, ..)| *n == name)?;
             Some(RelationStats::new(tuples, distinct.len()).with_column_distinct(distinct.to_vec()))
         })
@@ -455,7 +457,9 @@ mod tests {
     #[test]
     fn a_column_without_a_distinct_count_is_assumed_a_key() {
         let q: JoinQuery = "Q(X, Y) :- R(X, Y).".parse().unwrap();
-        let stats = CatalogStats::for_query(&q, |_| Some(RelationStats::new(100, 2)));
+        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |_| {
+            Some(RelationStats::new(100, 2))
+        });
         assert_eq!(estimate(&q, &stats, &[0]), 100.0);
     }
 

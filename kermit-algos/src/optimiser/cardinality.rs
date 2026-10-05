@@ -2,7 +2,10 @@
 
 use crate::{
     analysis::analyse,
-    optimiser::{ordering::topological_order, CatalogStats, QueryOptimiser, QueryPlan},
+    optimiser::{
+        ordering::{topological_order, Precedence},
+        CatalogStats, QueryOptimiser, QueryPlan,
+    },
 };
 
 /// Plans the global attribute order preferring variables that appear in
@@ -30,21 +33,23 @@ impl QueryOptimiser for CardinalityOptimiser {
             }
         }
         QueryPlan {
-            variable_ordering: topological_order(
-                analysis.num_vars,
-                &analysis.predicate_variables,
-                |v| min_size[v],
-            ),
+            variable_ordering: topological_order(&Precedence::for_query(query, stats), |v| {
+                min_size[v]
+            }),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::optimiser::RelationStats, kermit_parser::JoinQuery};
+    use {
+        super::*,
+        crate::optimiser::{ColumnOrderPolicy, RelationStats},
+        kermit_parser::JoinQuery,
+    };
 
     fn stats_for(q: &JoinQuery, sizes: &[(&str, usize)]) -> CatalogStats {
-        CatalogStats::for_query(q, |name| {
+        CatalogStats::for_query(q, ColumnOrderPolicy::Stored, |name| {
             let arity = q.body.iter().find(|p| p.name == name)?.terms.len();
             let &(_, tuples) = sizes.iter().find(|(n, _)| *n == name)?;
             Some(RelationStats::new(tuples, arity))
@@ -109,5 +114,23 @@ mod tests {
         let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
         let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, &[("R", 1000), ("S", 1)]));
         assert_eq!(plan.variable_ordering, vec![0, 1]);
+    }
+
+    /// Under `any` the ranking alone decides: `S` is tiny, so its `Y`
+    /// goes first even though `R(X, Y)` stores `X` first.
+    #[test]
+    fn under_any_the_smallest_relation_goes_first_regardless_of_column_order() {
+        let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
+        let sizes = [("R", 1000), ("S", 1)];
+        let stored = CardinalityOptimiser.plan(&q, &stats_for(&q, &sizes));
+        assert_eq!(stored.variable_ordering, vec![0, 1]);
+        let any = CatalogStats::for_query(&q, ColumnOrderPolicy::Any, |name| {
+            let arity = q.body.iter().find(|p| p.name == name)?.terms.len();
+            let &(_, tuples) = sizes.iter().find(|(n, _)| *n == name)?;
+            Some(RelationStats::new(tuples, arity))
+        });
+        assert_eq!(CardinalityOptimiser.plan(&q, &any).variable_ordering, vec![
+            1, 0
+        ]);
     }
 }

@@ -26,9 +26,9 @@ pub use {
 };
 use {
     kermit_algos::{
-        is_const_predicate, is_selection_predicate, CatalogStats, ColumnEquality, HashTrieIterKind,
-        HashTriejoin, JoinAlgo, JoinQuery, QueryOptimiser, SingletonHashTrieIter,
-        SingletonTrieIter, TrieIterKind,
+        is_const_predicate, is_selection_predicate, CatalogStats, ColumnEquality,
+        ColumnOrderPolicy, HashTrieIterKind, HashTriejoin, JoinAlgo, JoinQuery, QueryOptimiser,
+        SingletonHashTrieIter, SingletonTrieIter, TrieIterKind,
     },
     kermit_ds::{Cardinality, Relation},
     kermit_iters::{
@@ -261,7 +261,7 @@ where
         .iter()
         .map(|s| (s.name.as_str(), s.relation.as_str()))
         .collect();
-    let stats = CatalogStats::for_query(&rewritten, |name| {
+    let stats = CatalogStats::for_query(&rewritten, ColumnOrderPolicy::Stored, |name| {
         let base = base_of.get(name).copied().unwrap_or(name);
         database.statistics(base).cloned()
     });

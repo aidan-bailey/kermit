@@ -3,8 +3,11 @@
 //! Kermit separates planning from execution. A [`QueryOptimiser`] consumes
 //! a parsed, rewritten (const, placeholder, selection) [`JoinQuery`] plus
 //! per-relation statistics
-//! ([`CatalogStats`]) and produces a [`QueryPlan`]; join algorithms
-//! (`JoinAlgo::join_for_each`) execute the plan. The space of valid plans is
+//! ([`CatalogStats`]) and produces a [`QueryPlan`]. A [`Planner`] bundles
+//! an optimiser with the [`ColumnOrderPolicy`] it plans under;
+//! `kermit::db` passes one where it used to pass a bare optimiser. Join
+//! algorithms (`JoinAlgo::join_for_each`) execute the plan. The space of
+//! valid plans is
 //! exactly the set of topological orders of the column-order constraint
 //! DAG (see [`topological_order`]); the provided optimisers are valid by
 //! construction, and executors defensively assert
@@ -15,18 +18,22 @@
 //! decision and lives one level up, in [`crate::analysis`].
 
 mod cardinality;
+mod column_orders;
 mod cost_based;
 mod lexicographic;
 mod ordering;
 mod plan;
+mod planner;
 mod stats;
 
 pub use {
     cardinality::CardinalityOptimiser,
+    column_orders::ColumnOrderPolicy,
     cost_based::CostBasedOptimiser,
     lexicographic::LexicographicOptimiser,
-    ordering::{check_attribute_order, topological_order, CyclicAttributeOrder},
+    ordering::{check_attribute_order, topological_order, CyclicAttributeOrder, Precedence},
     plan::{PlanError, QueryPlan},
+    planner::Planner,
     stats::{distinct_per_column, CatalogStats, RelationStats, StatisticsLevel},
 };
 use {clap::ValueEnum, kermit_parser::JoinQuery};
