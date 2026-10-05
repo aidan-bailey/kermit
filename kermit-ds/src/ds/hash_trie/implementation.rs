@@ -436,29 +436,35 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         match mode {
             | HashTrieBuildMode::Serial => Self::from_tuples_with_config(header, config, tuples),
             | HashTrieBuildMode::Radix(bits) => {
-                let arity = header.arity();
-                for tuple in &tuples {
-                    assert_eq!(
-                        tuple.len(),
-                        arity,
-                        "from_tuples: tuple arity {} does not match header arity {}",
-                        tuple.len(),
-                        arity,
-                    );
-                }
-                let tuple_count = tuples.len();
-                let mut trie = Self::with_config(header, config);
-                radix::fill_root::<H, P, E>(
-                    &mut trie.root,
-                    arity,
-                    tuples,
-                    bits,
-                    config.load_factor,
-                );
-                trie.tuple_count = tuple_count;
-                trie
+                Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
+                    radix::fill_root::<H, P, E>(root, arity, tuples, bits, config.load_factor)
+                })
             },
         }
+    }
+
+    /// What the partitioned builds share (`radix:K`, `parallel:N`): the
+    /// serial build's arity check, with its message, then `fill` on the
+    /// empty root, then the multiset count the serial build keeps.
+    fn from_tuples_partitioned(
+        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
+        fill: impl FnOnce(&mut HashTrieNode<P, E>, usize, Vec<Vec<usize>>),
+    ) -> Self {
+        let arity = header.arity();
+        for tuple in &tuples {
+            assert_eq!(
+                tuple.len(),
+                arity,
+                "from_tuples: tuple arity {} does not match header arity {}",
+                tuple.len(),
+                arity,
+            );
+        }
+        let tuple_count = tuples.len();
+        let mut trie = Self::with_config(header, config);
+        fill(&mut trie.root, arity, tuples);
+        trie.tuple_count = tuple_count;
+        trie
     }
 }
 
