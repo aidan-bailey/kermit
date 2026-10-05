@@ -146,11 +146,13 @@ def test_default_backfill_applied(fixture_tree) -> None:
     assert "ds_layout_hasher" not in df.columns
 
 
-_HASH_TRIE_AXES = ["ds_layout_hasher", "ds_layout_pruning", "ds_config_load_factor"]
+_HASH_TRIE_AXES = [
+    "ds_layout_hasher", "ds_layout_pruning", "ds_layout_expansion", "ds_config_load_factor",
+]
 
 
 def test_hash_trie_axes_stay_off_sorted_trie_rows(fixture_sweep_tree) -> None:
-    """TreeTrie and ColumnTrie have no hasher, pruning or load factor (#85)."""
+    """TreeTrie and ColumnTrie have no hasher, pruning, expansion or load factor (#85)."""
     df = load(fixture_sweep_tree["paths"], fixture_sweep_tree["criterion_root"])
     sorted_tries = df[df["data_structure"].isin(["TreeTrie", "ColumnTrie"])]
     assert len(sorted_tries) == 4
@@ -163,6 +165,7 @@ def test_hash_trie_reports_without_the_axes_are_back_filled(fixture_sweep_tree) 
     assert len(old) == 2
     assert (old["ds_layout_hasher"] == "sip").all()
     assert (old["ds_layout_pruning"] == "off").all()
+    assert (old["ds_layout_expansion"] == "eager").all()
     assert (old["ds_config_load_factor"] == 0.7).all()
     hash_trie = df[df["data_structure"] == "HashTrie"]
     assert set(hash_trie["ds_layout_hasher"]) == {"sip", "fx"}
