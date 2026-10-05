@@ -51,7 +51,7 @@ pub use {
     optimiser::{
         check_attribute_order, topological_order, CardinalityOptimiser, CatalogStats,
         CyclicAttributeOrder, LexicographicOptimiser, Optimiser, PlanError, QueryOptimiser,
-        QueryPlan, RelationStats,
+        QueryPlan, RelationStats, StatisticsLevel,
     },
     placeholder_rewrite::rewrite_placeholders,
     selection_rewrite::{

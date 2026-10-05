@@ -8,8 +8,35 @@
 //! literal maps.
 
 use {
-    crate::const_rewrite::is_const_predicate, kermit_parser::JoinQuery, std::collections::BTreeMap,
+    crate::const_rewrite::is_const_predicate,
+    kermit_parser::JoinQuery,
+    std::{collections::BTreeMap, fmt},
 };
+
+/// How much a planner needs to know about each relation, cheapest first.
+///
+/// A [`QueryOptimiser`](super::QueryOptimiser) declares its level through
+/// `required_statistics`, and the join engine gathers exactly that much
+/// when it builds its relation store, so an optimiser that reads only tuple
+/// counts never pays for a walk over the data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StatisticsLevel {
+    /// The number of stored tuples per relation. Free: every structure
+    /// keeps it (`kermit_ds::Cardinality`).
+    TupleCounts,
+    /// Tuple counts plus the number of distinct values in each column. One
+    /// walk over every relation.
+    ColumnDistinct,
+}
+
+impl fmt::Display for StatisticsLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            | StatisticsLevel::TupleCounts => "tuple counts",
+            | StatisticsLevel::ColumnDistinct => "per-column distinct counts",
+        })
+    }
+}
 
 /// Statistics for one relation, as visible to the planner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +99,16 @@ impl CatalogStats {
 #[cfg(test)]
 mod tests {
     use {super::*, kermit_parser::JoinQuery};
+
+    #[test]
+    fn statistics_levels_order_cheapest_first() {
+        assert!(StatisticsLevel::TupleCounts < StatisticsLevel::ColumnDistinct);
+        assert_eq!(StatisticsLevel::TupleCounts.to_string(), "tuple counts");
+        assert_eq!(
+            StatisticsLevel::ColumnDistinct.to_string(),
+            "per-column distinct counts"
+        );
+    }
 
     #[test]
     fn for_query_records_relations_and_const_singletons() {
