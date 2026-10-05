@@ -19,23 +19,46 @@
 
 use std::{num::NonZeroUsize, panic, sync::Mutex, thread};
 
-/// How many threads a parallel build uses, the calling thread included.
-/// Zero threads cannot be represented.
+#[cfg(test)]
+thread_local! {
+    /// The thread count of every `run_workers` call on this thread, so a
+    /// test can check a build really ran on the threads it was given.
+    static WORKER_RUNS: std::cell::RefCell<Vec<usize>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drains the thread counts `run_workers` has recorded on this thread.
+#[cfg(test)]
+pub(crate) fn take_worker_runs() -> Vec<usize> { WORKER_RUNS.with(std::cell::RefCell::take) }
+
+/// How many threads a parallel build uses, the calling thread included:
+/// from 1 to [`Threads::MAX`]. No other count can be represented.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Threads(NonZeroUsize);
 
 impl Threads {
-    /// `n` threads, or `None` when `n` is zero.
-    pub fn new(n: usize) -> Option<Self> { NonZeroUsize::new(n).map(Self) }
+    /// The most threads one build may use. It bounds the threads a build
+    /// spawns and the per-morsel bucket headers (`4 · N` per morsel), and is
+    /// far above any core count this platform measures on.
+    pub const MAX: usize = 1024;
+
+    /// `n` threads, or `None` when `n` is zero or above [`Threads::MAX`].
+    pub fn new(n: usize) -> Option<Self> {
+        if n > Self::MAX {
+            return None;
+        }
+        NonZeroUsize::new(n).map(Self)
+    }
 
     /// The number of threads.
     pub fn get(self) -> usize { self.0.get() }
 }
 
 /// Tuples per morsel in the parallel builds. A worker takes one morsel per
-/// lock of the shared queue, so a morsel must hold enough work to make that
-/// lock negligible. Leis et al. use morsels of about 100 000 tuples; these
-/// are smaller because partitioning one tuple is cheap.
+/// lock of the shared queue, and one uncontended lock per 16 384 tuples is
+/// negligible, while morsels this small still give a mid-sized relation
+/// several morsels per thread. (Leis et al. use morsels of about 100 000
+/// tuples.)
 pub(crate) const MORSEL_TUPLES: usize = 16_384;
 
 /// Partitions per thread in the parallel builds. More partitions than
@@ -57,6 +80,9 @@ pub(crate) struct Partition {
 }
 
 impl Partition {
+    /// How many tuples the partition holds.
+    pub(crate) fn len(&self) -> usize { self.segments.iter().map(Vec::len).sum() }
+
     /// The partition's tuples in input order, each with its input position.
     pub(crate) fn into_tuples(self) -> impl Iterator<Item = Positioned> {
         self.segments.into_iter().flatten()
@@ -72,6 +98,8 @@ fn take_next<I: Iterator>(queue: &Mutex<I>) -> Option<I::Item> { queue.lock().un
 /// scoped threads, and returns every worker's result once all have
 /// finished. A worker's panic is re-raised here with its original payload.
 fn run_workers<R: Send>(threads: Threads, work: impl Fn() -> R + Sync) -> Vec<R> {
+    #[cfg(test)]
+    WORKER_RUNS.with(|runs| runs.borrow_mut().push(threads.get()));
     thread::scope(|scope| {
         let helpers: Vec<_> = (1..threads.get()).map(|_| scope.spawn(&work)).collect();
         let mut results = vec![work()];
@@ -168,9 +196,11 @@ mod tests {
     fn threads(n: usize) -> Threads { Threads::new(n).expect("tests use a nonzero count") }
 
     #[test]
-    fn threads_rejects_zero() {
+    fn threads_accepts_only_one_to_max() {
         assert_eq!(Threads::new(0), None);
+        assert_eq!(Threads::new(Threads::MAX + 1), None);
         assert_eq!(threads(3).get(), 3);
+        assert_eq!(threads(Threads::MAX).get(), Threads::MAX);
     }
 
     /// Every tuple lands exactly once, in the partition `partition_of`
@@ -300,6 +330,32 @@ mod tests {
                 panic!("task failed");
             }
             i
+        });
+    }
+
+    /// A panic on a helper thread reaches the caller with its own message.
+    /// The two items rendezvous, so they run on different workers, and only
+    /// the one on the helper panics.
+    #[test]
+    #[should_panic(expected = "task failed")]
+    #[cfg_attr(miri, ignore = "waits on a wall-clock timeout")]
+    fn a_helpers_panic_reaches_the_caller() {
+        let caller = std::thread::current().id();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = Mutex::new(sender);
+        let receiver = Mutex::new(receiver);
+        let _results: Vec<()> = dispatch(threads(2), vec![0, 1], |i: usize| {
+            if i == 0 {
+                let _ = receiver
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(10));
+            } else {
+                sender.lock().unwrap().send(()).unwrap();
+            }
+            if std::thread::current().id() != caller {
+                panic!("task failed");
+            }
         });
     }
 }
