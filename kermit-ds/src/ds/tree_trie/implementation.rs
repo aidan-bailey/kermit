@@ -162,10 +162,10 @@ fn first_key_splitters(tuples: &[Vec<usize>], partitions: usize) -> Vec<usize> {
 
 #[cfg(test)]
 thread_local! {
-    /// The `(threads, partitions)` of every parallel build on this thread.
-    /// Every build mode builds the same trie, so only this record can tell a
-    /// test which build ran, and how widely it spread its work.
-    static PARALLEL_BUILDS: std::cell::RefCell<Vec<(usize, usize)>> =
+    /// The `(threads, partition sizes)` of every parallel build on this
+    /// thread. Every build mode builds the same trie, so only this record can
+    /// tell a test which build ran, and where it put its tuples.
+    static PARALLEL_BUILDS: std::cell::RefCell<Vec<(usize, Vec<usize>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -216,12 +216,6 @@ impl<S: SeekStrategy> TreeTrie<S> {
         }
 
         let splitters = first_key_splitters(&tuples, PARTITIONS_PER_THREAD * threads.get());
-        #[cfg(test)]
-        PARALLEL_BUILDS.with(|builds| {
-            builds
-                .borrow_mut()
-                .push((threads.get(), splitters.len() + 1))
-        });
         let partitions = scatter(
             threads,
             tuples,
@@ -229,6 +223,11 @@ impl<S: SeekStrategy> TreeTrie<S> {
             splitters.len() + 1,
             |tuple| splitters.partition_point(|&splitter| splitter <= tuple[0]),
         );
+        #[cfg(test)]
+        PARALLEL_BUILDS.with(|builds| {
+            let sizes = partitions.iter().map(|partition| partition.len()).collect();
+            builds.borrow_mut().push((threads.get(), sizes));
+        });
         let built = dispatch(threads, partitions, |partition| {
             let mut tuples: Vec<Vec<usize>> = Vec::with_capacity(partition.len());
             tuples.extend(partition.into_tuples().map(|(_, tuple)| tuple));
@@ -588,17 +587,21 @@ mod parallel_build_tests {
 
     /// Both modes build the same trie, so only the test records show which
     /// build each mode ran, and that `parallel:N` spreads its work: N
-    /// workers in both steps, over 4·N partitions when the input has the
-    /// distinct first keys for it.
+    /// workers in both steps, and the tuples spread across the partitions.
+    /// The record holds each partition's size, so a partition function that
+    /// sent every tuple to one partition would show. Here 16 first keys of 4
+    /// tuples each give splitters 2, 4, ..., 14: 8 partitions of 8 tuples.
     #[test]
     fn build_modes_reach_their_builds() {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 16, i]).collect();
         let serial: TreeTrie = TreeTrie::from_tuples(2.into(), tuples.clone());
         for (mode, builds, worker_runs) in [
             (TreeTrieBuildMode::Serial, vec![], vec![]),
-            (TreeTrieBuildMode::Parallel(threads(2)), vec![(2, 8)], vec![
-                2, 2,
-            ]),
+            (
+                TreeTrieBuildMode::Parallel(threads(2)),
+                vec![(2, vec![8; 8])],
+                vec![2, 2],
+            ),
         ] {
             PARALLEL_BUILDS.with(|builds| builds.borrow_mut().clear());
             crate::morsel::take_worker_runs();
