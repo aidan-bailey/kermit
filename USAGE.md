@@ -93,9 +93,10 @@ The sorted tries also take `--ds-layout-seek linear|binary|galloping`
 (default `galloping`), the search their iterators' `seek` uses. Every strategy
 returns the same answers, so the flag changes only how fast a join runs; see
 [`docs/data-structures/seek-strategies.md`](docs/data-structures/seek-strategies.md).
-Like the other `--ds-*` flags, it is checked against `-i` only (#86): `bench
-run … -i all -a hash-triejoin --ds-layout-seek galloping` is accepted and runs
-only the hash cell, which has no seek.
+Like every `--ds-*` flag, it must reach a cell that runs (#86): `-i hash-trie`
+rejects it, and so does `bench run … -i all -a hash-triejoin`, whose sweep
+keeps only the hash cell, which has no seek. Under `-i all -a all` each flag
+reaches the cells that have its axis and no others.
 
 ### Pick the query optimiser
 

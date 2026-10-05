@@ -147,12 +147,21 @@ kermit bench run triangle -i column-trie -a leapfrog-triejoin --ds-build increme
 
 Each category has its own flag namespace — `--ds-layout-<dim>` for Layout, `--ds-config <flag>=<value>,...` for Config (a single flag with comma-separated key=value pairs), `--ds-build <mode>[:<params>]` for BuildMode.
 
-When a chosen DS doesn't have a given Layout dimension, the CLI rejects the flag at parse time:
+When a chosen DS doesn't have a flag's axis, the CLI rejects the flag before anything runs:
 
 ```
 $ kermit bench ds -i tree-trie --ds-layout-hasher fxhash
 Error: --ds-layout-hasher is only valid with --indexstructure hash-trie (or all); got --indexstructure TreeTrie
 ```
+
+`-i all` passes that check for every flag, but in `bench run` the `-a` selector can then leave the sweep without a cell that has the axis. That is rejected too (#86), so a flag is never silently ignored:
+
+```
+$ kermit bench run triangle -i all -a leapfrog-triejoin --ds-config load-factor=0.5
+Error: --ds-config applies only to hash-trie, but --algorithm LeapfrogTriejoin leaves this sweep no hash-trie cell; it runs only (ColumnTrie, LeapfrogTriejoin), (TreeTrie, LeapfrogTriejoin). The flag would be silently ignored.
+```
+
+Both checks read one table, `DsFlag::structures` in `kermit/src/options.rs`, which lists the structures that have each flag's axis.
 
 ---
 
@@ -468,8 +477,10 @@ accepts a decimal in the open interval (0, 1) with at most two decimal places
 and maps it onto `LoadFactor::percent`, so a bad value is a usage error naming
 the range. `validate_config_choices` (mirroring `validate_layout_choices`)
 rejects the flag on an index structure with no Config axis, so a report can
-never carry a `ds_config_*` axis the structure ignored. Both groups are wired
-on `bench ds` and `bench run`.
+never carry a `ds_config_*` axis the structure ignored. Which structures have
+one is `DsFlag::Config`'s row in `DsFlag::structures`, so a Config value on a
+second structure adds that structure to the row. Both groups are wired on
+`bench ds` and `bench run`.
 
 ### 7. Add tests
 
@@ -557,8 +568,10 @@ its `HasOptimizationAxes` impl emits `ds_layout_pruning` from
 ### 3. Add the CLI flag, and multiply the dimensions in exactly one place
 
 `LayoutChoices` gains `--ds-layout-pruning <off|on>` (a `PruningChoice`
-`ValueEnum`, default `off`), listed in `validate_layout_choices` so it is
-rejected on non-`hash-trie` selectors. Dispatch does **not** repeat the
+`ValueEnum`, default `off`). The flag gets a `DsFlag` variant, listed in
+`LayoutChoices::given` and given a row in `DsFlag::structures` naming
+`hash-trie`, so it is rejected on non-`hash-trie` selectors and on a `bench
+run` sweep that `-a` leaves without a hash-trie cell. Dispatch does **not** repeat the
 product: `with_hash_trie_layout!(hasher, pruning, |H, P| …)` in
 `kermit/src/options.rs` expands the hasher × pruning cells once, and
 `dispatch_run_bench`, `dispatch_ds_bench` and `load_query_runner` (`main.rs`)
@@ -622,7 +635,8 @@ is never read off the relation.
    from `RelationFamily::build_mode_axes`.
 6. **Add the CLI.** `--ds-build` (`BuildChoices`, `validate_build_choices`,
    `DsChoices.build`) is typed to `ColumnTrieBuildMode` today, so a second
-   consumer must reshape it; `Execution::HashHtj` has no BuildMode slot yet.
+   consumer must reshape it and join `DsFlag::Build`'s row in
+   `DsFlag::structures`; `Execution::HashHtj` has no BuildMode slot yet.
 7. **Test it.** `kermit_ds::define_build_mode_provider!` plus
    `define_multiway_join_test_suite_for_build_mode!` per non-default mode and
    optimiser, `BuiltWith` aliases in `kermit-ds/tests/`, a CLI smoke test, and
