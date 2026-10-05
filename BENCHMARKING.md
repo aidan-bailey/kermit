@@ -264,6 +264,12 @@ kermit bench --name col-incr --report-json bench-runs/col-incr.json \
   ds -r data.parquet -i column-trie -m insertion --ds-build incremental
 ```
 
+The full optimization model (Layout / Config / BuildMode, how to add one, and
+the bench-axis namespace) is in
+[`docs/specs/optimization-standard.md`](docs/specs/optimization-standard.md); a runnable
+walkthrough is in
+[`python/kermit-lab/notebooks/06_ablation.ipynb`](python/kermit-lab/notebooks/06_ablation.ipynb).
+
 ### Scaling: measuring a parallel build
 
 `--ds-build parallel:N` builds a `TreeTrie` on N threads (#94). The trie is
@@ -293,12 +299,6 @@ one), so `parallel:1` can come out ahead.
 `N = 16` on an 8-core host measures SMT, not more cores. The protocol behind
 reported numbers is in
 [`docs/specs/2026-10-05-parallel-build-design.md`](docs/specs/2026-10-05-parallel-build-design.md).
-
-The full optimization model (Layout / Config / BuildMode, how to add one, and
-the bench-axis namespace) is in
-[`docs/specs/optimization-standard.md`](docs/specs/optimization-standard.md); a runnable
-walkthrough is in
-[`python/kermit-lab/notebooks/06_ablation.ipynb`](python/kermit-lab/notebooks/06_ablation.ipynb).
 
 ## Statistical tooling
 

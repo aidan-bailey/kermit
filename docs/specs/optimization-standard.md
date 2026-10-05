@@ -138,7 +138,7 @@ kermit bench run triangle -i hash-trie -a hash-triejoin \
     --ds-config load-factor=0.5
 ```
 
-The BuildMode category has one consumer, ColumnTrie:
+The BuildMode category has two consumers, ColumnTrie's `bulk` / `incremental` build (#84) and TreeTrie's `serial` / `parallel:N` build (#94); ColumnTrie's is the worked example:
 
 ```bash
 # The pre-#84 build, to reproduce its insertion numbers
@@ -633,10 +633,14 @@ is never read off the relation.
    `BuildMode`, `kind`, `build_with` and `build_mode_axes`; the `SortedTrie`
    variant and `TrieLftj::new(build, optimiser)` hold it, and the axis comes
    from `RelationFamily::build_mode_axes`.
-6. **Add the CLI.** `--ds-build` (`BuildChoices`, `validate_build_choices`,
-   `DsChoices.build`) is typed to `ColumnTrieBuildMode` today, so a second
-   consumer must reshape it and join `DsFlag::Build`'s row in
-   `DsFlag::structures`; `Execution::HashHtj` has no BuildMode slot yet.
+6. **Add the CLI.** `--ds-build` parses one `BuildChoice`
+   (`kermit/src/options.rs`). Its `DsFlag::structures` row depends on the
+   value (`BuildChoice::structures`), which is how `validate_build_choices`
+   rejects a value on a structure without that mode. `DsChoices.build` is a
+   `BuildModes { column, tree }` that `BuildChoices::resolved` fills per
+   structure. A new consumer adds a `BuildChoice` variant, a `BuildModes`
+   field, a `resolved` arm and its row in `BuildChoice::structures`;
+   `Execution::HashHtj` has no BuildMode slot yet.
 7. **Test it.** `kermit_ds::define_build_mode_provider!` plus
    `define_multiway_join_test_suite_for_build_mode!` per non-default mode and
    optimiser, `BuiltWith` aliases in `kermit-ds/tests/`, a CLI smoke test, and
