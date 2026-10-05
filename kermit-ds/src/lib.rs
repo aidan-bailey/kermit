@@ -36,8 +36,9 @@ pub use {
     cardinality::Cardinality,
     configured::{ConfigProvider, Configured},
     ds::{
-        ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieConfig, IndexStructure,
-        InvalidLoadFactor, LoadFactor, NoPruning, PruningPolicy, SingletonPruning, TreeTrie,
+        ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieBuildMode, HashTrieConfig,
+        IndexStructure, InvalidLoadFactor, InvalidRadixBits, LoadFactor, NoPruning,
+        ParseHashTrieBuildModeError, PruningPolicy, RadixBits, SingletonPruning, TreeTrie,
     },
     heap_size::HeapSize,
     relation::{
