@@ -9,8 +9,8 @@ See the workspace [`README.md`](../README.md) for a broader introduction and the
 
 ## Library surface
 
-- [`db::lftj_join_for_each`](src/db.rs) — sorted-family join over a `BTreeMap<String, R>` of `TrieIterable` relations, generic in the algorithm; passes each result tuple to a sink without materialising the result. [`db::lftj_join`](src/db.rs) collects it.
-- [`db::hash_join_for_each`](src/db.rs) — hash-family join over a `BTreeMap<String, HashTrie<H>>` under `HashTriejoin`, streaming the same way. [`db::hash_join`](src/db.rs) collects it.
+- [`db::lftj_join_for_each`](src/db.rs) — sorted-family join over a [`db::Database<R>`](src/db/database.rs) of `TrieIterable` relations (the relations plus the planner statistics gathered when it is built), generic in the algorithm; passes each result tuple to a sink without materialising the result. [`db::lftj_join`](src/db.rs) collects it.
+- [`db::hash_join_for_each`](src/db.rs) — hash-family join over a `Database<HashTrie<H>>` under `HashTriejoin`, streaming the same way. [`db::hash_join`](src/db.rs) collects it.
 - Every entry point projects each row to the query head and returns `Result<_, db::JoinError>` instead of panicking on a query that cannot run; [`db::validate_query`](src/db/validation.rs) runs the same checks without joining, e.g. against relation headers before anything is built.
 - [`db::JoinFamily`](src/db.rs) — the trait both share, abstracting how a family wraps a relation and a constant for its algorithm.
 - [`compute_join`](src/lib.rs) — helper that builds relations from raw tuple vectors and runs a join end-to-end.

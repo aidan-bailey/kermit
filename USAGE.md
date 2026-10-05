@@ -103,8 +103,10 @@ reaches the cells that have its axis and no others.
 `--optimiser` selects the policy that plans the join's variable ordering
 (the global attribute order the algorithm descends). It accepts
 `lexicographic` (the default — reproduces the historical hardcoded
-ordering) or `cardinality` (binds variables from the smallest relations
-first). Long-only: `-o` belongs to `--output`.
+ordering), `cardinality` (binds variables from the smallest relations
+first) or `cost-based` (the plan with the lowest estimated cost, by dynamic
+programming over per-column distinct counts; see
+`docs/optimisers/cost-based.md`). Long-only: `-o` belongs to `--output`.
 
 ```sh
 kermit join … --optimiser cardinality
@@ -157,7 +159,7 @@ kermit bench join \
 
 Pass `-o`/`--output <PATH>` to also write the join's tuples to a CSV file
 (useful for verifying correctness alongside the benchmark). `--optimiser
-<lexicographic|cardinality>` picks the query optimiser (default:
+<lexicographic|cardinality|cost-based>` picks the query optimiser (default:
 `lexicographic`); the choice lands in the JSON report's `optimiser` axis.
 
 `bench join` runs through the same runner as `bench run`: it records the
@@ -250,7 +252,7 @@ kermit bench run triangle -i tree-trie -a leapfrog-triejoin \
   -m end-to-end --queries-per-build 4
 ```
 
-It also accepts `--optimiser <lexicographic|cardinality>` (default:
+It also accepts `--optimiser <lexicographic|cardinality|cost-based>` (default:
 `lexicographic`), stamped into each report's `optimiser` axis — sweep it the
 same way as the DS/algorithm axes to compare ordering policies:
 

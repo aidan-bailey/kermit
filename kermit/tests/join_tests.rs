@@ -1,7 +1,10 @@
 mod common;
 
 use {
-    kermit_algos::{CardinalityOptimiser, HashTriejoin, LeapfrogTriejoin, LexicographicOptimiser},
+    kermit_algos::{
+        CardinalityOptimiser, CostBasedOptimiser, HashTriejoin, LeapfrogTriejoin,
+        LexicographicOptimiser,
+    },
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, ColumnTrie,
         ColumnTrieBuildMode, GallopingSeek, HashTrie, HashTrieConfig, LinearSeek, LoadFactor,
@@ -26,30 +29,40 @@ type ColumnTrieGalloping = ColumnTrie<GallopingSeek>;
 
 define_multiway_join_test_suite!(TreeTrieLinear, LeapfrogTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(TreeTrieLinear, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(TreeTrieLinear, LeapfrogTriejoin, CostBasedOptimiser);
 define_multiway_join_test_suite!(TreeTrieBinary, LeapfrogTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(TreeTrieBinary, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(TreeTrieBinary, LeapfrogTriejoin, CostBasedOptimiser);
 define_multiway_join_test_suite!(TreeTrieGalloping, LeapfrogTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(TreeTrieGalloping, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(TreeTrieGalloping, LeapfrogTriejoin, CostBasedOptimiser);
 
 define_multiway_join_test_suite!(ColumnTrieLinear, LeapfrogTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(ColumnTrieLinear, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(ColumnTrieLinear, LeapfrogTriejoin, CostBasedOptimiser);
 define_multiway_join_test_suite!(ColumnTrieBinary, LeapfrogTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(ColumnTrieBinary, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(ColumnTrieBinary, LeapfrogTriejoin, CostBasedOptimiser);
 define_multiway_join_test_suite!(
     ColumnTrieGalloping,
     LeapfrogTriejoin,
     LexicographicOptimiser
 );
 define_multiway_join_test_suite!(ColumnTrieGalloping, LeapfrogTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(ColumnTrieGalloping, LeapfrogTriejoin, CostBasedOptimiser);
 
 define_multiway_join_test_suite!(HashTrieSip, HashTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(HashTrieSip, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieSip, HashTriejoin, CostBasedOptimiser);
 define_multiway_join_test_suite!(HashTrieFx, HashTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(HashTrieFx, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieFx, HashTriejoin, CostBasedOptimiser);
 define_multiway_join_test_suite!(HashTrieSipPruned, HashTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(HashTrieSipPruned, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieSipPruned, HashTriejoin, CostBasedOptimiser);
 define_multiway_join_test_suite!(HashTrieFxPruned, HashTriejoin, LexicographicOptimiser);
 define_multiway_join_test_suite!(HashTrieFxPruned, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieFxPruned, HashTriejoin, CostBasedOptimiser);
 
 // ── Config axis: load factor ────────────────────────────────────────────
 // The default-config invocations above are the `ds_config_load_factor: 0.7`
@@ -71,6 +84,12 @@ define_multiway_join_test_suite_with_config!(
     HalfFull
 );
 define_multiway_join_test_suite_with_config!(
+    HashTrieSip,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HalfFull
+);
+define_multiway_join_test_suite_with_config!(
     HashTrieFx,
     HashTriejoin,
     LexicographicOptimiser,
@@ -80,6 +99,12 @@ define_multiway_join_test_suite_with_config!(
     HashTrieFx,
     HashTriejoin,
     CardinalityOptimiser,
+    HalfFull
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieFx,
+    HashTriejoin,
+    CostBasedOptimiser,
     HalfFull
 );
 
@@ -102,5 +127,11 @@ define_multiway_join_test_suite_for_build_mode!(
     ColumnTrie,
     LeapfrogTriejoin,
     CardinalityOptimiser,
+    Incremental
+);
+define_multiway_join_test_suite_for_build_mode!(
+    ColumnTrie,
+    LeapfrogTriejoin,
+    CostBasedOptimiser,
     Incremental
 );

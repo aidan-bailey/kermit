@@ -71,7 +71,7 @@ semantics).
 |------------------|--------------------------|------------------|-------|
 | `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`. The `IndexStructure::axis_value` string. |
 | `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`. The `JoinAlgorithm::axis_value` string. |
-| `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
+| `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`, `"cost-based"`. A `"cost-based"` run's `end_to_end` includes its per-column statistics walk; its `iteration` does not. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
 | `query`          | `join`, `run`            | string           | Query name. `run`: from the YAML `queries:` list (e.g. `"triangle"`). `bench join`: the query file's stem. |
 | `benchmark`      | `join`, `run`            | string           | Workload name. `run`: YAML benchmark name (e.g. `"triangle"`, `"watdiv-stress-c1"`). `bench join`: `"adhoc"`. |
 | `relation_path`  | `ds`                     | string           | The single relation file passed to `bench ds`. Workspace-relative if invoked from the workspace root. |

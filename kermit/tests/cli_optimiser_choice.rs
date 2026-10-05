@@ -2,6 +2,8 @@
 //! `optimiser` axis, defaulting to `lexicographic`.
 
 use {
+    clap::ValueEnum,
+    kermit_algos::Optimiser,
     std::{fs, path::PathBuf, process::Command},
     tempfile::NamedTempFile,
 };
@@ -68,4 +70,65 @@ fn cli_bench_join_default_optimiser_is_lexicographic() {
     // Sibling axis guard: the optimiser entry must extend the axes map,
     // not displace existing keys.
     assert_eq!(reports[0]["axes"]["data_structure"], "TreeTrie");
+}
+
+#[test]
+fn cli_bench_join_with_cost_based_optimiser_records_axis() {
+    let reports = run_bench_join(&["--optimiser", "cost-based"]);
+    assert_eq!(reports[0]["axes"]["optimiser"], "cost-based");
+    // Sibling axis guard: the optimiser entry must extend the axes map,
+    // not displace existing keys.
+    assert_eq!(reports[0]["axes"]["algorithm"], "LeapfrogTriejoin");
+}
+
+/// `kermit join` writes the same rows under every optimiser, in every
+/// cell: the plan changes the descent order, never the answer.
+#[test]
+fn cli_join_answers_identically_under_every_optimiser() {
+    let rows = |optimiser: &str, structure: &str, algorithm: &str| -> Vec<String> {
+        let output = Command::new(kermit_bin())
+            .args([
+                "join",
+                "--relations",
+                edge_fixture().to_str().unwrap(),
+                "--query",
+                fixtures_dir().join("path_query.dl").to_str().unwrap(),
+                "--algorithm",
+                algorithm,
+                "--indexstructure",
+                structure,
+                "--optimiser",
+                optimiser,
+            ])
+            .output()
+            .expect("failed to run kermit binary");
+        assert!(
+            output.status.success(),
+            "kermit join --optimiser {optimiser} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut lines: Vec<String> = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        lines.sort();
+        lines
+    };
+    for (structure, algorithm) in [
+        ("tree-trie", "leapfrog-triejoin"),
+        ("column-trie", "leapfrog-triejoin"),
+        ("hash-trie", "hash-triejoin"),
+    ] {
+        let expected = rows("lexicographic", structure, algorithm);
+        assert!(expected.len() > 1, "the fixture query must return rows");
+        for optimiser in Optimiser::value_variants() {
+            let optimiser = optimiser.axis_value();
+            assert_eq!(
+                rows(optimiser, structure, algorithm),
+                expected,
+                "{optimiser} on {structure}"
+            );
+        }
+    }
 }

@@ -20,7 +20,7 @@ use {
     kermit_algos::{
         check_attribute_order, is_const_predicate, is_selection_predicate, rewrite_atoms,
         rewrite_placeholders, rewrite_repeated_variables, ConstSpec, JoinQuery, RewriteError,
-        SelectionSpec, CONST_PREDICATE_PREFIX, SELECTION_PREDICATE_PREFIX,
+        SelectionSpec, StatisticsLevel, CONST_PREDICATE_PREFIX, SELECTION_PREDICATE_PREFIX,
     },
     kermit_ds::{Relation, RelationHeader},
     kermit_parser::Term,
@@ -34,7 +34,8 @@ use {
 ///
 /// One variant per check; [`validate_query`] documents the order they run
 /// in. Every variant but [`CyclicAttributeOrder`](Self::CyclicAttributeOrder)
-/// means the query itself is malformed.
+/// and [`MissingStatistics`](Self::MissingStatistics) means the query itself
+/// is malformed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinError {
     /// A head term is a placeholder or a constant. The join projects to the
@@ -90,6 +91,17 @@ pub enum JoinError {
     CyclicAttributeOrder {
         /// The atoms on one such cycle, as written, in body order.
         atoms: Vec<String>,
+    },
+    /// The query optimiser reads statistics the database was not built
+    /// with. A library-usage error, not a malformed query: build the
+    /// [`Database`](super::Database) at the optimiser's
+    /// [`required_statistics`](kermit_algos::QueryOptimiser::required_statistics),
+    /// as the CLI always does.
+    MissingStatistics {
+        /// What the optimiser reads.
+        required: StatisticsLevel,
+        /// What the database gathered.
+        available: StatisticsLevel,
     },
 }
 
@@ -155,6 +167,14 @@ impl fmt::Display for JoinError {
                     .map(|a| format!("`{a}`"))
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            | JoinError::MissingStatistics {
+                required,
+                available,
+            } => write!(
+                f,
+                "the query optimiser reads {required}, but the database gathered only \
+                 {available}; build the database at the optimiser's required statistics"
             ),
         }
     }

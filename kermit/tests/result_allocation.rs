@@ -41,7 +41,7 @@
 //! scan never seeks.
 
 use {
-    kermit::db::{hash_join_for_each, lftj_join_for_each},
+    kermit::db::{hash_join_for_each, lftj_join_for_each, Database},
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, HashTrie, LinearSeek, NoPruning, PruningPolicy,
@@ -87,13 +87,14 @@ fn s_tuples(fan_out: usize) -> Vec<Vec<usize>> {
 /// Allocations made by one streamed LFTJ join of `query` over `relations`,
 /// after checking that it produced `rows` rows.
 fn lftj_join_allocations<Rel: TrieIterable + Cardinality + Relation>(
-    query: &str, relations: &BTreeMap<String, Rel>, rows: usize,
+    query: &str, relations: BTreeMap<String, Rel>, rows: usize,
 ) -> u64 {
+    let database = Database::from(relations);
     let query: JoinQuery = query.parse().unwrap();
     let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
         lftj_join_for_each::<Rel, LeapfrogTriejoin>(
-            relations,
+            &database,
             query,
             &LexicographicOptimiser,
             |tuple| {
@@ -110,13 +111,14 @@ fn lftj_join_allocations<Rel: TrieIterable + Cardinality + Relation>(
 /// Allocations made by one streamed HashTriejoin join of `query` over
 /// `HashTrie<H, P>` relations, after checking that it produced `rows` rows.
 fn htj_join_allocations<H: HashStrategy, P: PruningPolicy>(
-    query: &str, relations: &BTreeMap<String, HashTrie<H, P>>, rows: usize,
+    query: &str, relations: BTreeMap<String, HashTrie<H, P>>, rows: usize,
 ) -> u64 {
+    let database = Database::from(relations);
     let query: JoinQuery = query.parse().unwrap();
     let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
         hash_join_for_each::<HashTrie<H, P>, H>(
-            relations,
+            &database,
             query,
             &LexicographicOptimiser,
             |tuple| {
@@ -133,13 +135,13 @@ fn htj_join_allocations<H: HashStrategy, P: PruningPolicy>(
 /// Allocations made by one streamed LFTJ join of `QUERY`, after checking
 /// that it produced every row.
 fn lftj_allocations<Rel: TrieIterable + Cardinality + Relation>(fan_out: usize) -> u64 {
-    lftj_join_allocations(QUERY, &relations::<Rel>(fan_out), XS * fan_out)
+    lftj_join_allocations(QUERY, relations::<Rel>(fan_out), XS * fan_out)
 }
 
 /// Allocations made by one streamed HashTriejoin join of `QUERY` over
 /// `HashTrie<H, P>`, after checking that it produced every row.
 fn htj_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    htj_join_allocations(QUERY, &relations::<HashTrie<H, P>>(fan_out), XS * fan_out)
+    htj_join_allocations(QUERY, relations::<HashTrie<H, P>>(fan_out), XS * fan_out)
 }
 
 fn assert_flat(cell: &str, small: u64, large: u64) {
@@ -380,7 +382,7 @@ fn descent_relations<Rel: Relation>(dead_ends: usize) -> BTreeMap<String, Rel> {
 fn lftj_descent_allocations<Rel: TrieIterable + Cardinality + Relation>(dead_ends: usize) -> u64 {
     lftj_join_allocations(
         DESCENT_QUERY,
-        &descent_relations::<Rel>(dead_ends),
+        descent_relations::<Rel>(dead_ends),
         DESCENT_ROWS,
     )
 }
@@ -390,7 +392,7 @@ fn lftj_descent_allocations<Rel: TrieIterable + Cardinality + Relation>(dead_end
 fn htj_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) -> u64 {
     htj_join_allocations(
         DESCENT_QUERY,
-        &descent_relations::<HashTrie<H, P>>(dead_ends),
+        descent_relations::<HashTrie<H, P>>(dead_ends),
         DESCENT_ROWS,
     )
 }
