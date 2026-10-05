@@ -126,3 +126,19 @@ fn sorted_tuples_radix(relation: &HashTrieSipRadix2) -> Vec<Vec<usize>> {
 }
 
 parquet_test_suite!(HashTrieSipRadix2, sorted_tuples_radix);
+
+// …and under the parallel BuildMode, which must load the same trie (#94).
+define_build_mode_provider!(
+    HashParallel2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+
+type HashTrieSipParallel2 = BuiltWith<HashTrieSip, HashParallel2>;
+
+fn sorted_tuples_parallel(relation: &HashTrieSipParallel2) -> Vec<Vec<usize>> {
+    // `BuiltWith` derefs to the inner `HashTrie`, as `Configured` does.
+    sorted_tuples(relation)
+}
+
+parquet_test_suite!(HashTrieSipParallel2, sorted_tuples_parallel);

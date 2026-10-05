@@ -12,7 +12,7 @@ use {
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BuiltWith, ConfigurableRelation,
         Configured, HashTrie, HashTrieBuildMode, HashTrieConfig, LazyExpansion, LoadFactor,
-        NoPruning, PruningPolicy, RadixBits, SingletonPruning,
+        NoPruning, PruningPolicy, RadixBits, SingletonPruning, Threads,
     },
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
@@ -130,6 +130,26 @@ type HashTrieSipLazyRadix2 = BuiltWith<HashTrieSipLazy, Radix2>;
 hash_trie_test_suite!(HashTrieSipRadix2, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieSipLazyRadix2, SipHashStrategy);
+
+// ── BuildMode: the parallel build ───────────────────────────────────────
+// `parallel:2` builds eight partitions on two threads and must build the
+// identical trie (issue #94), so the iterator contract holds unchanged,
+// eager or lazy, pruned or not.
+define_build_mode_provider!(
+    HashParallel2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+
+type HashTrieSipParallel2 = BuiltWith<HashTrieSip, HashParallel2>;
+type HashTrieSipLazyParallel2 = BuiltWith<HashTrieSipLazy, HashParallel2>;
+type HashTrieFxPrunedParallel2 = BuiltWith<HashTrieFxPruned, HashParallel2>;
+
+hash_trie_test_suite!(HashTrieSipParallel2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipLazyParallel2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieFxPrunedParallel2, FxHashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"
