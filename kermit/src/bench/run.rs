@@ -20,7 +20,7 @@ use {
     },
     kermit_algos::{ColumnOrderPolicy, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::Relation,
+    kermit_ds::{HeapSize, Relation},
     std::{
         collections::{hash_map::Entry, BTreeMap, HashMap},
         io,
@@ -61,7 +61,7 @@ pub(crate) struct RunSettings<'a> {
 /// `settings.prefix`.
 ///
 /// Generic over the [`ExecutionFamily`] so the sorted family
-/// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P>`) share one body:
+/// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P, E>`) share one body:
 /// relation loading, metadata, Criterion group wiring and report assembly
 /// are identical, and the report's `data_structure` / `algorithm` axes
 /// come from `family.execution()` — the same value that picked the code
@@ -89,13 +89,16 @@ fn run_benchmark<F: ExecutionFamily>(
     workload.validate(ColumnOrderPolicy::Stored)?;
     // Load each relation from disk exactly once; the family builds its
     // engine from these typed relations rather than re-reading the files.
-    // The `insertion` and `end_to_end` metrics rebuild relations, and they
-    // rebuild from each relation's tuples in file order, kept here (see
-    // `RelationFamily::load_with_tuples`). An `iteration`-only run keeps
-    // none: it would be a dead copy of the whole workload.
+    // Rebuilding metrics rebuild from each relation's tuples in file order,
+    // kept here (see `RelationFamily::load_with_tuples`): `insertion`,
+    // `end_to_end`, and, for a family whose joins mutate their relations,
+    // `iteration` and `--verify`, which then never probe the loaded engine.
+    // A run with no rebuilding metric keeps none: it would be a dead copy
+    // of the whole workload.
     let rebuilds = metrics
         .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::EndToEnd));
+        .any(|m| matches!(m, Metric::Insertion | Metric::EndToEnd))
+        || (F::JOIN_MUTATES && (verify || metrics.contains(&Metric::Iteration)));
     let mut relations: Vec<F::Rel> = Vec::with_capacity(workload.relation_paths.len());
     let mut build_inputs: Vec<(kermit_ds::RelationHeader, Vec<Vec<usize>>)> = Vec::new();
     for path in &workload.relation_paths {
@@ -109,6 +112,13 @@ fn run_benchmark<F: ExecutionFamily>(
     }
     let engine = family.build(relations);
     let relations = F::relations(&engine);
+    // A family whose joins mutate their relations (a lazy HashTrie expands
+    // what a join reaches, #92) never probes this engine: `--verify` and
+    // `iteration` run on fresh builds, so `space` measures the relations
+    // as built, whatever ran before it. Their footprint now is what each
+    // `space` block checks against.
+    let as_built_bytes: Option<Vec<usize>> =
+        F::JOIN_MUTATES.then(|| relations.iter().map(|r| r.heap_size_bytes()).collect());
 
     // `ds_name`/`algo_name` become the report's identity axes and the
     // on-disk `target/criterion/{group}` names (the group_name below embeds
@@ -158,7 +168,12 @@ fn run_benchmark<F: ExecutionFamily>(
         let verified = if verify {
             match query_def.expected {
                 | Some(expected) => {
-                    let actual = family.count(&engine, query_def.query.clone())?;
+                    let actual = if F::JOIN_MUTATES {
+                        let fresh = family.build_from_tuples(build_inputs.clone());
+                        family.count(&fresh, query_def.query.clone())?
+                    } else {
+                        family.count(&engine, query_def.query.clone())?
+                    };
                     if actual != expected {
                         anyhow::bail!(
                             "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
@@ -237,13 +252,37 @@ fn run_benchmark<F: ExecutionFamily>(
                 // timed region holds no per-row allocation, and a batch keeps
                 // only `u64`s alive, so memory is independent of result size
                 // (issue #65).
-                group.bench_function("iteration", |b| {
-                    b.iter_batched(
-                        || query_def.query.clone(),
-                        |q| family.count(&engine, q).expect(VALIDATED),
-                        criterion::BatchSize::SmallInput,
-                    );
-                });
+                if F::JOIN_MUTATES {
+                    // Cold (#92): each timed join runs on an engine built in
+                    // the untimed setup, so it pays the expansion its own
+                    // probes cause instead of finding it done by an earlier
+                    // sample. The routine hands the engine back, so
+                    // Criterion drops it after timing, and `PerIteration`
+                    // keeps one fresh engine alive at a time.
+                    group.bench_function("iteration", |b| {
+                        b.iter_batched(
+                            || {
+                                (
+                                    family.build_from_tuples(build_inputs.clone()),
+                                    query_def.query.clone(),
+                                )
+                            },
+                            |(fresh, q)| {
+                                let rows = family.count(&fresh, q).expect(VALIDATED);
+                                (fresh, rows)
+                            },
+                            criterion::BatchSize::PerIteration,
+                        );
+                    });
+                } else {
+                    group.bench_function("iteration", |b| {
+                        b.iter_batched(
+                            || query_def.query.clone(),
+                            |q| family.count(&engine, q).expect(VALIDATED),
+                            criterion::BatchSize::SmallInput,
+                        );
+                    });
+                }
                 criterion_groups.push(CriterionGroupRef {
                     group: group_name.clone(),
                     function: "iteration".to_string(),
@@ -291,6 +330,15 @@ fn run_benchmark<F: ExecutionFamily>(
         }
 
         if metrics.contains(&Metric::Space) {
+            if let Some(as_built) = &as_built_bytes {
+                let now: Vec<usize> = relations.iter().map(|r| r.heap_size_bytes()).collect();
+                anyhow::ensure!(
+                    now == *as_built,
+                    "internal error: a probe reached the loaded engine of a {ds_name} cell whose \
+                     joins mutate their relations, so `space` would measure them partly expanded; \
+                     see `ExecutionFamily::JOIN_MUTATES`"
+                );
+            }
             let mut criterion = build_space_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
             for rel in &relations {
@@ -358,9 +406,10 @@ pub(crate) fn dispatch_run_bench(
         | Execution::HashHtj {
             hasher,
             pruning,
+            expansion,
             config,
-        } => with_hash_trie_layout!(hasher, pruning, |H, P| run_benchmark(
-            &HashHtj::<H, P>::new(config, planner()),
+        } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| run_benchmark(
+            &HashHtj::<H, P, E>::new(config, planner()),
             workload,
             settings,
         )),
@@ -494,16 +543,23 @@ mod tests {
             (
                 JoinAlgorithmSelector::LeapfrogTriejoin,
                 &[LayoutSeek, Build],
-                &[LayoutHasher, LayoutPruning, Config],
+                &[LayoutHasher, LayoutPruning, LayoutExpansion, Config],
             ),
             (
                 JoinAlgorithmSelector::HashTriejoin,
-                &[LayoutHasher, LayoutPruning, Config],
+                &[LayoutHasher, LayoutPruning, LayoutExpansion, Config],
                 &[LayoutSeek, Build],
             ),
             (
                 JoinAlgorithmSelector::All,
-                &[LayoutHasher, LayoutPruning, LayoutSeek, Config, Build],
+                &[
+                    LayoutHasher,
+                    LayoutPruning,
+                    LayoutExpansion,
+                    LayoutSeek,
+                    Config,
+                    Build,
+                ],
                 &[],
             ),
         ];

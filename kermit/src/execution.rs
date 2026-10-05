@@ -24,7 +24,8 @@
 
 use {
     crate::options::{
-        hasher_of, pruning_of, seek_of, DsChoices, HasherChoice, PruningChoice, SeekChoice,
+        expansion_of, hasher_of, pruning_of, seek_of, DsChoices, ExpansionChoice, HasherChoice,
+        PruningChoice, SeekChoice,
     },
     kermit::db::{
         hash_join_for_each, lftj_join_for_each, Database, HashFamily, JoinError, SortedFamily,
@@ -32,8 +33,8 @@ use {
     kermit_algos::{JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Planner},
     kermit_ds::{
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ConfigurableRelation,
-        HashTrie, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy, Relation,
-        RelationFileExt, RelationHeader, SeekStrategy, TreeTrie,
+        ExpansionPolicy, HashTrie, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy,
+        Relation, RelationFileExt, RelationHeader, SeekStrategy, TreeTrie,
     },
     kermit_iters::{
         BuildMode, HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -162,9 +163,10 @@ pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through
     /// [`lftj_join_for_each`].
     TrieLftj(SortedTrie),
-    /// `HashTrie<H, P>` joined by Hash Triejoin through [`hash_join_for_each`],
-    /// with `H` chosen by `--ds-layout-hasher`, `P` by
-    /// `--ds-layout-pruning`, and the runtime values by `--ds-config`.
+    /// `HashTrie<H, P, E>` joined by Hash Triejoin through
+    /// [`hash_join_for_each`], with `H` chosen by `--ds-layout-hasher`, `P`
+    /// by `--ds-layout-pruning`, `E` by `--ds-layout-expansion`, and the
+    /// runtime values by `--ds-config`.
     HashHtj {
         /// The `--ds-layout-hasher` choice. Built by
         /// [`Execution::for_pair`] it is the *request* — the CLI choice
@@ -175,6 +177,9 @@ pub enum Execution {
         /// The `--ds-layout-pruning` choice, in the same two roles: the
         /// request that selects `P`, and the label re-derived from `P`.
         pruning: PruningChoice,
+        /// The `--ds-layout-expansion` choice, in the same two roles as
+        /// `hasher` and `pruning`.
+        expansion: ExpansionChoice,
         /// The `--ds-config` runtime values every relation is built with.
         config: HashTrieConfig,
     },
@@ -192,6 +197,7 @@ impl Execution {
         let DsChoices {
             hasher,
             pruning,
+            expansion,
             seek,
             config,
             build,
@@ -211,6 +217,7 @@ impl Execution {
             | (IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin) => Some(Execution::HashHtj {
                 hasher,
                 pruning,
+                expansion,
                 config,
             }),
             | (
@@ -230,6 +237,7 @@ impl Execution {
         let DsChoices {
             hasher,
             pruning,
+            expansion,
             seek,
             config,
             build,
@@ -245,6 +253,7 @@ impl Execution {
             | IndexStructure::HashTrie => Execution::HashHtj {
                 hasher,
                 pruning,
+                expansion,
                 config,
             },
         }
@@ -456,6 +465,14 @@ pub trait ExecutionFamily: RelationFamily {
     /// The built, queryable form of a set of relations.
     type Engine;
 
+    /// Whether running a join can change the engine's relations: a lazy
+    /// `HashTrie` builds each child a join first reaches (issue #92). When
+    /// true, `bench run` never probes the engine it loaded. `--verify` and
+    /// `iteration` run on fresh builds, so `space` measures the relations
+    /// as built and each timed join pays its own expansion. Required, like
+    /// `build_relation`: every family states what its joins do.
+    const JOIN_MUTATES: bool;
+
     /// Builds the engine from freshly loaded relations, retaining them for
     /// the per-relation metrics (`insertion`, `space`).
     fn build(&self, relations: Vec<Self::Rel>) -> Self::Engine;
@@ -548,18 +565,19 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
     }
 }
 
-/// `HashTrie<H, P>` on its own: what `bench ds -i hash-trie` measures.
+/// `HashTrie<H, P, E>` on its own: what `bench ds -i hash-trie` measures.
 /// Carries the `--ds-config` runtime values every relation is built with;
-/// the `--ds-layout-hasher` / `--ds-layout-pruning` labels are *not*
-/// parameters — [`execution`](RelationFamily::execution) derives them from
-/// `H` and `P`, so a report cannot name a Layout the family was not
-/// monomorphised over.
-pub struct HashTrieFamily<H, P> {
+/// the `--ds-layout-hasher` / `--ds-layout-pruning` /
+/// `--ds-layout-expansion` labels are *not* parameters —
+/// [`execution`](RelationFamily::execution) derives them from `H`, `P` and
+/// `E`, so a report cannot name a Layout the family was not monomorphised
+/// over.
+pub struct HashTrieFamily<H, P, E> {
     config: HashTrieConfig,
-    _layout: PhantomData<(H, P)>,
+    _layout: PhantomData<(H, P, E)>,
 }
 
-impl<H, P> HashTrieFamily<H, P> {
+impl<H, P, E> HashTrieFamily<H, P, E> {
     /// The family building every relation with the `--ds-config` values
     /// `config`.
     pub fn new(config: HashTrieConfig) -> Self {
@@ -570,34 +588,37 @@ impl<H, P> HashTrieFamily<H, P> {
     }
 }
 
-impl<H, P> Default for HashTrieFamily<H, P> {
+impl<H, P, E> Default for HashTrieFamily<H, P, E> {
     fn default() -> Self { Self::new(HashTrieConfig::default()) }
 }
 
-impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashTrieFamily<H, P> {
-    type Rel = HashTrie<H, P>;
+impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFamily
+    for HashTrieFamily<H, P, E>
+{
+    type Rel = HashTrie<H, P, E>;
 
     fn execution(&self) -> Execution {
         Execution::HashHtj {
             hasher: hasher_of::<H>(),
             pruning: pruning_of::<P>(),
+            expansion: expansion_of::<E>(),
             config: self.config,
         }
     }
 
-    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H, P> {
-        HashTrie::<H, P>::from_tuples_with_config(header, self.config, tuples)
+    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H, P, E> {
+        HashTrie::<H, P, E>::from_tuples_with_config(header, self.config, tuples)
     }
 
-    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P>, visit: V) {
+    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P, E>, visit: V) {
         rel.for_each_tuple(visit);
     }
 
     /// The trie's own multiset count, kept as it is built, so counting
     /// does not materialise every tuple.
-    fn tuple_count(rel: &HashTrie<H, P>) -> usize { Cardinality::tuple_count(rel) }
+    fn tuple_count(rel: &HashTrie<H, P, E>) -> usize { Cardinality::tuple_count(rel) }
 
-    fn optimization_axes(rel: &HashTrie<H, P>) -> BTreeMap<String, serde_json::Value> {
+    fn optimization_axes(rel: &HashTrie<H, P, E>) -> BTreeMap<String, serde_json::Value> {
         rel.optimization_axes()
     }
 
@@ -651,6 +672,9 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
     /// planner reads, gathered here once so no timed join pays for them.
     type Engine = Database<R>;
 
+    /// Sorted tries are immutable under a join.
+    const JOIN_MUTATES: bool = false;
+
     fn build(&self, relations: Vec<R>) -> Self::Engine {
         let relations = relations
             .into_iter()
@@ -679,19 +703,20 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
     }
 }
 
-/// Hash family: `HashTrie<H, P>` under Hash Triejoin through
+/// Hash family: `HashTrie<H, P, E>` under Hash Triejoin through
 /// [`hash_join_for_each`].
-pub struct HashHtj<H, P> {
-    structure: HashTrieFamily<H, P>,
+pub struct HashHtj<H, P, E> {
+    structure: HashTrieFamily<H, P, E>,
     planner: Planner,
 }
 
-impl<H, P> HashHtj<H, P> {
+impl<H, P, E> HashHtj<H, P, E> {
     /// Creates the family for the `--ds-config` values `config`, planned
-    /// by `planner`. The `--ds-layout-hasher` / `--ds-layout-pruning`
-    /// labels are *not* parameters: [`execution`](RelationFamily::execution)
-    /// derives them from `H` and `P`, so a report cannot name a Layout the
-    /// family was not monomorphised over.
+    /// by `planner`. The `--ds-layout-hasher` / `--ds-layout-pruning` /
+    /// `--ds-layout-expansion` labels are *not* parameters:
+    /// [`execution`](RelationFamily::execution) derives them from `H`, `P`
+    /// and `E`, so a report cannot name a Layout the family was not
+    /// monomorphised over.
     pub fn new(config: HashTrieConfig, planner: Planner) -> Self {
         Self {
             structure: HashTrieFamily::new(config),
@@ -700,23 +725,25 @@ impl<H, P> HashHtj<H, P> {
     }
 }
 
-impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashHtj<H, P> {
-    type Rel = HashTrie<H, P>;
+impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFamily
+    for HashHtj<H, P, E>
+{
+    type Rel = HashTrie<H, P, E>;
 
     fn execution(&self) -> Execution { self.structure.execution() }
 
-    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H, P> {
+    fn build_relation(&self, header: RelationHeader, tuples: Vec<Vec<usize>>) -> HashTrie<H, P, E> {
         self.structure.build_relation(header, tuples)
     }
 
-    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P>, visit: V) {
-        HashTrieFamily::<H, P>::for_each_tuple(rel, visit);
+    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P, E>, visit: V) {
+        HashTrieFamily::<H, P, E>::for_each_tuple(rel, visit);
     }
 
-    fn tuple_count(rel: &HashTrie<H, P>) -> usize { HashTrieFamily::<H, P>::tuple_count(rel) }
+    fn tuple_count(rel: &HashTrie<H, P, E>) -> usize { HashTrieFamily::<H, P, E>::tuple_count(rel) }
 
-    fn optimization_axes(rel: &HashTrie<H, P>) -> BTreeMap<String, serde_json::Value> {
-        HashTrieFamily::<H, P>::optimization_axes(rel)
+    fn optimization_axes(rel: &HashTrie<H, P, E>) -> BTreeMap<String, serde_json::Value> {
+        HashTrieFamily::<H, P, E>::optimization_axes(rel)
     }
 
     fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
@@ -724,12 +751,17 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> RelationFamily for HashHtj<H, 
     }
 }
 
-impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H, P> {
+impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> ExecutionFamily
+    for HashHtj<H, P, E>
+{
     /// The relations, keyed by name, plus the statistics this family's
     /// planner reads, gathered here once so no timed join pays for them.
-    type Engine = Database<HashTrie<H, P>>;
+    type Engine = Database<HashTrie<H, P, E>>;
 
-    fn build(&self, relations: Vec<HashTrie<H, P>>) -> Self::Engine {
+    /// A lazy trie expands the children a join reaches.
+    const JOIN_MUTATES: bool = E::LAZY;
+
+    fn build(&self, relations: Vec<HashTrie<H, P, E>>) -> Self::Engine {
         let relations = relations
             .into_iter()
             .map(|r| (r.header().name().to_string(), r))
@@ -748,12 +780,12 @@ impl<H: HashStrategy + 'static, P: PruningPolicy> ExecutionFamily for HashHtj<H,
         Database::new::<HashFamily<H>>(relations, self.planner.required_statistics())
     }
 
-    fn relations(engine: &Self::Engine) -> Vec<&HashTrie<H, P>> { engine.relations().collect() }
+    fn relations(engine: &Self::Engine) -> Vec<&HashTrie<H, P, E>> { engine.relations().collect() }
 
     fn join_for_each<S: FnMut(&[usize])>(
         &self, engine: &Self::Engine, query: JoinQuery, emit: S,
     ) -> Result<(), JoinError> {
-        hash_join_for_each::<HashTrie<H, P>, H>(engine, query, &self.planner, emit)
+        hash_join_for_each::<HashTrie<H, P, E>, H>(engine, query, &self.planner, emit)
     }
 }
 
@@ -763,7 +795,7 @@ mod tests {
         super::*,
         clap::ValueEnum,
         kermit_algos::{ColumnOrderPolicy, LexicographicOptimiser, Optimiser},
-        kermit_ds::{NoPruning, SingletonPruning},
+        kermit_ds::{EagerExpansion, LazyExpansion, NoPruning, SingletonPruning},
         kermit_iters::SipHashStrategy,
         std::cell::Cell,
     };
@@ -842,6 +874,7 @@ mod tests {
             Some(Execution::HashHtj {
                 hasher: HasherChoice::Fxhash,
                 pruning: PruningChoice::Off,
+                expansion: ExpansionChoice::Eager,
                 config: HashTrieConfig::default(),
             })
         );
@@ -857,20 +890,23 @@ mod tests {
             for ds in all_structures() {
                 for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
                     for pruning in [PruningChoice::Off, PruningChoice::On] {
-                        for &seek in SeekChoice::value_variants() {
-                            let choices = DsChoices {
-                                hasher,
-                                pruning,
-                                seek,
-                                config,
-                                build,
-                            };
-                            let cell = Execution::for_structure(ds, choices);
-                            assert_eq!(cell.index_structure(), ds);
-                            assert_eq!(
-                                Execution::for_pair(ds, cell.algorithm(), choices),
-                                Some(cell)
-                            );
+                        for &expansion in ExpansionChoice::value_variants() {
+                            for &seek in SeekChoice::value_variants() {
+                                let choices = DsChoices {
+                                    hasher,
+                                    pruning,
+                                    expansion,
+                                    seek,
+                                    config,
+                                    build,
+                                };
+                                let cell = Execution::for_structure(ds, choices);
+                                assert_eq!(cell.index_structure(), ds);
+                                assert_eq!(
+                                    Execution::for_pair(ds, cell.algorithm(), choices),
+                                    Some(cell)
+                                );
+                            }
                         }
                     }
                 }
@@ -898,9 +934,22 @@ mod tests {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
         assert_eq!(
-            HashTrieFamily::<kermit_iters::FxHashStrategy, SingletonPruning>::new(config)
-                .execution(),
-            HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning>::new(
+            HashTrieFamily::<kermit_iters::FxHashStrategy, SingletonPruning, EagerExpansion>::new(
+                config
+            )
+            .execution(),
+            HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning, EagerExpansion>::new(
+                config,
+                Planner::stored(LexicographicOptimiser)
+            )
+            .execution()
+        );
+        assert_eq!(
+            HashTrieFamily::<kermit_iters::FxHashStrategy, SingletonPruning, LazyExpansion>::new(
+                config
+            )
+            .execution(),
+            HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning, LazyExpansion>::new(
                 config,
                 Planner::stored(LexicographicOptimiser)
             )
@@ -933,7 +982,7 @@ mod tests {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let hash = HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning>::new(
+        let hash = HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning, EagerExpansion>::new(
             config,
             Planner::stored(LexicographicOptimiser),
         );
@@ -943,19 +992,21 @@ mod tests {
         assert_eq!(hash.execution(), Execution::HashHtj {
             hasher: HasherChoice::Fxhash,
             pruning: PruningChoice::On,
+            expansion: ExpansionChoice::Eager,
             config,
         });
         assert_eq!(hash.execution().algorithm(), JoinAlgorithm::HashTriejoin);
     }
 
-    /// All four `HashTrie` Layout instantiations report the labels their
+    /// All eight `HashTrie` Layout instantiations report the labels their
     /// type parameters imply — the `with_hash_trie_layout!` table read
     /// back out of the monomorphised families.
     #[test]
     fn hash_family_labels_are_derived_from_its_layout_types() {
         use kermit_iters::{FxHashStrategy, SipHashStrategy};
-        fn labels<H: HashStrategy + 'static, P: PruningPolicy>() -> (HasherChoice, PruningChoice) {
-            match HashHtj::<H, P>::new(
+        fn labels<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy>(
+        ) -> (HasherChoice, PruningChoice, ExpansionChoice) {
+            match HashHtj::<H, P, E>::new(
                 HashTrieConfig::default(),
                 Planner::stored(LexicographicOptimiser),
             )
@@ -964,27 +1015,81 @@ mod tests {
                 | Execution::HashHtj {
                     hasher,
                     pruning,
+                    expansion,
                     ..
-                } => (hasher, pruning),
+                } => (hasher, pruning, expansion),
                 | other => panic!("hash family reported {other:?}"),
             }
         }
         assert_eq!(
-            labels::<SipHashStrategy, NoPruning>(),
-            (HasherChoice::Sip, PruningChoice::Off)
+            labels::<SipHashStrategy, NoPruning, EagerExpansion>(),
+            (
+                HasherChoice::Sip,
+                PruningChoice::Off,
+                ExpansionChoice::Eager
+            )
         );
         assert_eq!(
-            labels::<SipHashStrategy, SingletonPruning>(),
-            (HasherChoice::Sip, PruningChoice::On)
+            labels::<SipHashStrategy, NoPruning, LazyExpansion>(),
+            (HasherChoice::Sip, PruningChoice::Off, ExpansionChoice::Lazy)
         );
         assert_eq!(
-            labels::<FxHashStrategy, NoPruning>(),
-            (HasherChoice::Fxhash, PruningChoice::Off)
+            labels::<SipHashStrategy, SingletonPruning, EagerExpansion>(),
+            (HasherChoice::Sip, PruningChoice::On, ExpansionChoice::Eager)
         );
         assert_eq!(
-            labels::<FxHashStrategy, SingletonPruning>(),
-            (HasherChoice::Fxhash, PruningChoice::On)
+            labels::<SipHashStrategy, SingletonPruning, LazyExpansion>(),
+            (HasherChoice::Sip, PruningChoice::On, ExpansionChoice::Lazy)
         );
+        assert_eq!(
+            labels::<FxHashStrategy, NoPruning, EagerExpansion>(),
+            (
+                HasherChoice::Fxhash,
+                PruningChoice::Off,
+                ExpansionChoice::Eager
+            )
+        );
+        assert_eq!(
+            labels::<FxHashStrategy, NoPruning, LazyExpansion>(),
+            (
+                HasherChoice::Fxhash,
+                PruningChoice::Off,
+                ExpansionChoice::Lazy
+            )
+        );
+        assert_eq!(
+            labels::<FxHashStrategy, SingletonPruning, EagerExpansion>(),
+            (
+                HasherChoice::Fxhash,
+                PruningChoice::On,
+                ExpansionChoice::Eager
+            )
+        );
+        assert_eq!(
+            labels::<FxHashStrategy, SingletonPruning, LazyExpansion>(),
+            (
+                HasherChoice::Fxhash,
+                PruningChoice::On,
+                ExpansionChoice::Lazy
+            )
+        );
+    }
+
+    /// Only a lazy HashTrie family's joins change its relations (#92).
+    #[test]
+    fn only_lazy_hash_families_mutate_on_join() {
+        const { assert!(!<TrieLftj<TreeTrie> as ExecutionFamily>::JOIN_MUTATES) };
+        const {
+            assert!(!<HashHtj<SipHashStrategy, NoPruning, EagerExpansion> as ExecutionFamily>::JOIN_MUTATES)
+        };
+        const {
+            assert!(<HashHtj<SipHashStrategy, NoPruning, LazyExpansion> as ExecutionFamily>::JOIN_MUTATES)
+        };
+        const {
+            assert!(
+                <HashHtj<SipHashStrategy, SingletonPruning, LazyExpansion> as ExecutionFamily>::JOIN_MUTATES
+            )
+        };
     }
 
     /// The config reaches the relations the family builds, so the report's
@@ -994,7 +1099,7 @@ mod tests {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
+        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
             Planner::stored(LexicographicOptimiser),
         );
@@ -1002,8 +1107,10 @@ mod tests {
         let engine = family.build_from_tuples(vec![(header, vec![vec![1, 2]])]);
         let rel = engine.get("r").unwrap();
         assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::optimization_axes(rel)
-                .get("ds_config_load_factor"),
+            HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::optimization_axes(
+                rel
+            )
+            .get("ds_config_load_factor"),
             Some(&serde_json::Value::from(0.5_f64))
         );
     }
@@ -1015,7 +1122,7 @@ mod tests {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
+        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
             Planner::stored(LexicographicOptimiser),
         );
@@ -1025,8 +1132,10 @@ mod tests {
         let rel = family.load(&path).expect("load");
         assert_eq!(*rel.config(), config);
         assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::optimization_axes(&rel)
-                .get("ds_config_load_factor"),
+            HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::optimization_axes(
+                &rel
+            )
+            .get("ds_config_load_factor"),
             Some(&serde_json::Value::from(0.5_f64))
         );
     }
@@ -1054,9 +1163,10 @@ mod tests {
             "the fixture must not already be in iteration order"
         );
 
-        let (hash, tuples) = HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning>::default()
-            .load_with_tuples(&path)
-            .expect("load");
+        let (hash, tuples) =
+            HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::default()
+                .load_with_tuples(&path)
+                .expect("load");
         assert_eq!(tuples, file_order);
         assert_eq!(hash.header().name(), "r");
     }
@@ -1074,15 +1184,21 @@ mod tests {
     /// keeps.
     #[test]
     fn hash_family_tuple_count_agrees_with_its_tuples() {
-        let family = HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning>::default();
+        let family =
+            HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::default();
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
         let rel = family.build_relation(header, vec![vec![1, 2], vec![1, 2], vec![3, 4]]);
         assert_eq!(
-            HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning>::tuple_count(&rel),
+            HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::tuple_count(
+                &rel
+            ),
             3
         );
         assert_eq!(
-            visited::<HashTrieFamily<kermit_iters::SipHashStrategy, NoPruning>>(&rel).len(),
+            visited::<HashTrieFamily<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>>(
+                &rel
+            )
+            .len(),
             3
         );
     }
@@ -1104,19 +1220,25 @@ mod tests {
         assert_eq!(SortedTrieFamily::<ColumnTrie>::scan(&column), 3);
         assert_eq!(SortedTrieFamily::<ColumnTrie>::tuple_count(&column), 3);
 
-        let hash = HashTrieFamily::<SipHashStrategy, NoPruning>::default()
+        let hash = HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::default()
             .build_relation(header(), tuples());
-        assert_eq!(HashTrieFamily::<SipHashStrategy, NoPruning>::scan(&hash), 4);
         assert_eq!(
-            HashTrieFamily::<SipHashStrategy, NoPruning>::tuple_count(&hash),
+            HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::scan(&hash),
             4
         );
-        assert_eq!(HashHtj::<SipHashStrategy, NoPruning>::scan(&hash), 4);
+        assert_eq!(
+            HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::tuple_count(&hash),
+            4
+        );
+        assert_eq!(
+            HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::scan(&hash),
+            4
+        );
 
-        let pruned = HashTrieFamily::<SipHashStrategy, SingletonPruning>::default()
+        let pruned = HashTrieFamily::<SipHashStrategy, SingletonPruning, EagerExpansion>::default()
             .build_relation(header(), tuples());
         assert_eq!(
-            HashTrieFamily::<SipHashStrategy, SingletonPruning>::scan(&pruned),
+            HashTrieFamily::<SipHashStrategy, SingletonPruning, EagerExpansion>::scan(&pruned),
             4
         );
     }
@@ -1130,7 +1252,7 @@ mod tests {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
         };
-        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::new(
+        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
             Planner::stored(LexicographicOptimiser),
         );
@@ -1138,8 +1260,10 @@ mod tests {
         let rel = family.build_relation(header, vec![vec![1, 2]]);
         assert_eq!(*rel.config(), config);
         assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy, NoPruning>::optimization_axes(&rel)
-                .get("ds_config_load_factor"),
+            HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::optimization_axes(
+                &rel
+            )
+            .get("ds_config_load_factor"),
             Some(&serde_json::Value::from(0.5_f64))
         );
     }
@@ -1148,14 +1272,15 @@ mod tests {
     /// report's `ds_layout_pruning` axis describes the structure that ran.
     #[test]
     fn pruned_family_reports_the_pruning_layout() {
-        let family = HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning>::new(
-            HashTrieConfig::default(),
-            Planner::stored(LexicographicOptimiser),
-        );
+        let family =
+            HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning, EagerExpansion>::new(
+                HashTrieConfig::default(),
+                Planner::stored(LexicographicOptimiser),
+            );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
         let rel = family.build_relation(header, vec![vec![1, 2]]);
         assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning>::optimization_axes(&rel)
+            HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning, EagerExpansion>::optimization_axes(&rel)
                 .get("ds_layout_pruning"),
             Some(&serde_json::Value::String("on".into()))
         );
@@ -1194,8 +1319,10 @@ mod tests {
                 column.build_from_tuples(vec![(header(), edges())]).level(),
                 want
             );
-            let hash =
-                HashHtj::<SipHashStrategy, NoPruning>::new(HashTrieConfig::default(), planner());
+            let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+                HashTrieConfig::default(),
+                planner(),
+            );
             let built = hash.build(vec![hash.build_relation(header(), edges())]);
             assert_eq!(built.level(), want, "{optimiser:?}");
             assert_eq!(
@@ -1227,7 +1354,7 @@ mod tests {
         assert_eq!(column.count(&engine, query.clone()).unwrap(), 2);
         assert_eq!(rows(&column, &engine, query.clone()), 2);
 
-        let hash = HashHtj::<SipHashStrategy, NoPruning>::new(
+        let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
             HashTrieConfig::default(),
             Planner::stored(LexicographicOptimiser),
         );
@@ -1365,10 +1492,12 @@ mod tests {
                 .build_mode_axes()
                 .is_empty()
         );
-        assert!(HashTrieFamily::<SipHashStrategy, NoPruning>::default()
-            .build_mode_axes()
-            .is_empty());
-        assert!(HashHtj::<SipHashStrategy, NoPruning>::new(
+        assert!(
+            HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::default()
+                .build_mode_axes()
+                .is_empty()
+        );
+        assert!(HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
             HashTrieConfig::default(),
             Planner::stored(LexicographicOptimiser)
         )

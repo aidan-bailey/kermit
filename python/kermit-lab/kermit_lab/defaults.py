@@ -25,6 +25,8 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
     ("ds_layout_hasher", "HashTrie"): "sip",
     # Pre-Layout HashTrie reports never pruned.
     ("ds_layout_pruning", "HashTrie"): "off",
+    # Every HashTrie before issue #92 built all levels at construction.
+    ("ds_layout_expansion", "HashTrie"): "eager",
     # Pre-Config HashTrie reports used the historical load factor.
     ("ds_config_load_factor", "HashTrie"): 0.7,
     # ColumnTrie's build before issue #84 inserted tuple by tuple. Every

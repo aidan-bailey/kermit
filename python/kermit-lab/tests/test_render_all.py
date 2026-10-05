@@ -108,7 +108,9 @@ def test_build_mode_ablation_leaves_out_structures_without_the_axis(
     assert labels == {"bulk", "incremental"}
 
 
-_HASH_TRIE_AXES = ("ds_layout_hasher", "ds_layout_pruning", "ds_config_load_factor")
+_HASH_TRIE_AXES = (
+    "ds_layout_hasher", "ds_layout_pruning", "ds_layout_expansion", "ds_config_load_factor",
+)
 
 
 def test_hash_trie_ablations_are_drawn_for_a_mixed_sweep(

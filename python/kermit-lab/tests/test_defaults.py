@@ -27,10 +27,12 @@ def test_ignores_absent_columns() -> None:
         ("ds_layout_pruning", "off", "on"),
         # Pre-Config reports used the historical load factor.
         ("ds_config_load_factor", 0.7, 0.5),
+        # Pre-#92 reports built every level eagerly.
+        ("ds_layout_expansion", "eager", "lazy"),
     ],
 )
 def test_hash_trie_axes_backfill_hash_trie_rows_only(axis, default, explicit) -> None:
-    """The sorted tries have no hasher, pruning or load factor, so a fill
+    """The sorted tries have no hasher, pruning, expansion or load factor, so a fill
     there would chart them under a HashTrie setting (#85)."""
     df = pd.DataFrame({
         "data_structure": ["HashTrie", "HashTrie", "TreeTrie", "ColumnTrie"],

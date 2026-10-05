@@ -20,7 +20,7 @@ use {
 /// Benchmarks one index structure over one relation file.
 ///
 /// Generic over the [`RelationFamily`] so the sorted family
-/// (`SortedTrieFamily<R>`) and the hash family (`HashTrieFamily<H, P>`)
+/// (`SortedTrieFamily<R>`) and the hash family (`HashTrieFamily<H, P, E>`)
 /// share one body, as `run_benchmark` does for `bench run` (issue #61
 /// closed the last hand-mirrored pair). The family supplies the four
 /// points where the bodies used to diverge: the relation type to load
@@ -229,9 +229,10 @@ pub(crate) fn dispatch_ds_bench(
         | Execution::HashHtj {
             hasher,
             pruning,
+            expansion,
             config,
-        } => with_hash_trie_layout!(hasher, pruning, |H, P| run_ds_bench(
-            &HashTrieFamily::<H, P>::new(config),
+        } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| run_ds_bench(
+            &HashTrieFamily::<H, P, E>::new(config),
             relation,
             metrics,
             queries_per_build,

@@ -6,8 +6,8 @@ use {
     crate::IndexStructureSelector,
     clap::{Args, ValueEnum},
     kermit_ds::{
-        ColumnTrieBuildMode, HashTrieConfig, IndexStructure, LoadFactor, PruningPolicy,
-        SeekStrategy,
+        ColumnTrieBuildMode, ExpansionPolicy, HashTrieConfig, IndexStructure, LoadFactor,
+        PruningPolicy, SeekStrategy,
     },
     kermit_iters::{HashStrategy, LayoutOption},
     std::fmt,
@@ -25,6 +25,8 @@ pub(crate) enum DsFlag {
     LayoutHasher,
     /// `--ds-layout-pruning`.
     LayoutPruning,
+    /// `--ds-layout-expansion`.
+    LayoutExpansion,
     /// `--ds-layout-seek`.
     LayoutSeek,
     /// `--ds-config`.
@@ -51,7 +53,7 @@ impl DsFlag {
     /// listed here.
     pub(crate) fn structures(self) -> &'static [IndexStructure] {
         match self {
-            | Self::LayoutHasher | Self::LayoutPruning | Self::Config => {
+            | Self::LayoutHasher | Self::LayoutPruning | Self::LayoutExpansion | Self::Config => {
                 &[IndexStructure::HashTrie]
             },
             | Self::LayoutSeek => &[IndexStructure::TreeTrie, IndexStructure::ColumnTrie],
@@ -80,6 +82,7 @@ impl fmt::Display for DsFlag {
         f.write_str(match self {
             | Self::LayoutHasher => "--ds-layout-hasher",
             | Self::LayoutPruning => "--ds-layout-pruning",
+            | Self::LayoutExpansion => "--ds-layout-expansion",
             | Self::LayoutSeek => "--ds-layout-seek",
             | Self::Config => "--ds-config",
             | Self::Build => "--ds-build",
@@ -223,6 +226,53 @@ pub(crate) fn pruning_of<P: PruningPolicy>() -> PruningChoice {
     })
 }
 
+/// CLI-side selector for `--ds-layout-expansion`: the `ExpansionPolicy`
+/// monomorphised into `HashTrie<H, P, E>`. `Eager` builds every level at
+/// construction, the structure that existed before the parameter. `Lazy`
+/// builds each child below the root on the first probe that reaches it
+/// (SIGMOD 2020 Figure 6).
+///
+/// Like [`HasherChoice`], this flag only applies when the selected index
+/// structure is `hash-trie`; `validate_layout_choices` rejects it elsewhere.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ExpansionChoice {
+    /// Every level built at construction (`EagerExpansion`), the default.
+    #[default]
+    Eager,
+    /// Children built on first probe (`LazyExpansion`).
+    Lazy,
+}
+
+impl ExpansionChoice {
+    /// The choice that monomorphises to the [`ExpansionPolicy`] marker
+    /// whose [`LayoutOption::NAME`] is `name`, or `None` if no CLI choice
+    /// does. The counterpart of [`HasherChoice::from_layout_name`].
+    pub(crate) fn from_layout_name(name: &str) -> Option<Self> {
+        match name {
+            | "eager" => Some(Self::Eager),
+            | "lazy" => Some(Self::Lazy),
+            | _ => None,
+        }
+    }
+}
+
+/// The `--ds-layout-expansion` label of the [`ExpansionPolicy`] a code path
+/// was monomorphised over. The counterpart of [`hasher_of`].
+///
+/// # Panics
+///
+/// Panics if `E`'s layout name has no [`ExpansionChoice`], with the same
+/// caveat about what the round-trip test covers; see [`hasher_of`].
+pub(crate) fn expansion_of<E: ExpansionPolicy>() -> ExpansionChoice {
+    let name = <E as LayoutOption>::NAME;
+    ExpansionChoice::from_layout_name(name).unwrap_or_else(|| {
+        panic!(
+            "no --ds-layout-expansion choice for expansion policy {name:?} ({})",
+            std::any::type_name::<E>()
+        )
+    })
+}
+
 /// CLI-side selector for `--ds-layout-seek`: the [`SeekStrategy`]
 /// monomorphised into `TreeTrie<S>` / `ColumnTrie<S>`. `Galloping` is the
 /// default; `Binary` is the `partition_point` search both sorted tries used
@@ -275,7 +325,7 @@ pub(crate) fn seek_of<S: SeekStrategy>() -> SeekChoice {
 }
 
 /// Layout-axis CLI choices flattened into every subcommand whose dispatch
-/// monomorphises over a Layout-parameterised structure (`HashTrie<H, P>`,
+/// monomorphises over a Layout-parameterised structure (`HashTrie<H, P, E>`,
 /// `TreeTrie<S>`, `ColumnTrie<S>`). Each field is named `<axis>` and surfaces
 /// as the long flag `--ds-layout-<axis>` so the prefix matches the bench-report
 /// axis namespace described in CLAUDE.md → "JSON bench reports".
@@ -283,8 +333,9 @@ pub(crate) fn seek_of<S: SeekStrategy>() -> SeekChoice {
 /// Every field is an `Option<…>` rather than a clap-defaulted value so we
 /// can distinguish "not provided" from "explicitly defaulted". The
 /// `*_explicit` accessors consult that for the `validate_layout_choices`
-/// checks that reject e.g. `--ds-layout-hasher fxhash -i tree-trie` or
-/// `--ds-layout-pruning on -i tree-trie`, while the `*_resolved` accessors
+/// checks that reject e.g. `--ds-layout-hasher fxhash -i tree-trie`,
+/// `--ds-layout-pruning on -i tree-trie` or `--ds-layout-expansion lazy -i
+/// tree-trie`, while the `*_resolved` accessors
 /// supply the default at dispatch time.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct LayoutChoices {
@@ -296,6 +347,10 @@ pub(crate) struct LayoutChoices {
     /// valid when `--indexstructure hash-trie` is selected.
     #[arg(long = "ds-layout-pruning", value_name = "PRUNING", value_enum)]
     hash_trie_pruning: Option<PruningChoice>,
+    /// Child-expansion Layout of `HashTrie<H, P, E>` (default: `eager`).
+    /// Only valid when `--indexstructure hash-trie` is selected.
+    #[arg(long = "ds-layout-expansion", value_name = "EXPANSION", value_enum)]
+    hash_trie_expansion: Option<ExpansionChoice>,
     /// Seek strategy of `TreeTrie<S>` / `ColumnTrie<S>` (default:
     /// `galloping`). Only valid when `--indexstructure tree-trie` or
     /// `column-trie` (or `all`) is selected, and not on `bench ds`, none of
@@ -327,6 +382,16 @@ impl LayoutChoices {
     /// Returns whether the user explicitly passed `--ds-layout-pruning`.
     pub(crate) fn hash_trie_pruning_explicit(&self) -> bool { self.hash_trie_pruning.is_some() }
 
+    /// Returns the `ExpansionChoice` to monomorphise on, applying the
+    /// `ExpansionChoice::default()` when none was supplied on the command
+    /// line. Use this at dispatch sites.
+    pub(crate) fn hash_trie_expansion_resolved(&self) -> ExpansionChoice {
+        self.hash_trie_expansion.unwrap_or_default()
+    }
+
+    /// Returns whether the user explicitly passed `--ds-layout-expansion`.
+    pub(crate) fn hash_trie_expansion_explicit(&self) -> bool { self.hash_trie_expansion.is_some() }
+
     /// Returns the `SeekChoice` to monomorphise on, applying
     /// `SeekChoice::default()` when none was supplied on the command line.
     /// Use this at dispatch sites.
@@ -342,6 +407,7 @@ impl LayoutChoices {
         [
             (DsFlag::LayoutHasher, self.hash_trie_hasher_explicit()),
             (DsFlag::LayoutPruning, self.hash_trie_pruning_explicit()),
+            (DsFlag::LayoutExpansion, self.hash_trie_expansion_explicit()),
             (DsFlag::LayoutSeek, self.sorted_trie_seek_explicit()),
         ]
         .into_iter()
@@ -352,12 +418,12 @@ impl LayoutChoices {
 
 /// Rejects `LayoutChoices` flags that are incompatible with the chosen
 /// `IndexStructureSelector`. Each flag names a Layout of particular
-/// structures ([`DsFlag::structures`]): `--ds-layout-hasher` and
-/// `--ds-layout-pruning` belong to `hash-trie`, and `--ds-layout-seek` to
-/// `tree-trie` and `column-trie`. A flag on a structure without its Layout
-/// is a usage error: it would be silently ignored, producing a benchmark
-/// report whose `ds_layout_*` axis disagrees with the actual structure used.
-/// `all` passes here; see [`validate_ds_flags`].
+/// structures ([`DsFlag::structures`]): `--ds-layout-hasher`,
+/// `--ds-layout-pruning` and `--ds-layout-expansion` belong to `hash-trie`, and
+/// `--ds-layout-seek` to `tree-trie` and `column-trie`. A flag on a structure
+/// without its Layout is a usage error: it would be silently ignored, producing
+/// a benchmark report whose `ds_layout_*` axis disagrees with the actual
+/// structure used. `all` passes here; see [`validate_ds_flags`].
 pub(crate) fn validate_layout_choices(
     indexstructure: IndexStructureSelector, layout: &LayoutChoices,
 ) -> anyhow::Result<()> {
@@ -371,38 +437,98 @@ pub(crate) fn validate_layout_choices(
 /// `bench/ds.rs` and `bench/run.rs`) and `load_query_runner` (in `main.rs`)
 /// all go through here, so the Layout product is written out once rather
 /// than once per caller. It is not free of the product, though: the arms
-/// *are* the cells,
-/// so a third Layout dimension doubles them (2^n in general) and also costs
-/// a `LayoutChoices` field, a `DsChoices` field, an `Execution::HashHtj`
+/// *are* the cells, so each Layout dimension doubles them (2^n in general).
+/// The third, expansion (#92), took them to 8, and also cost a
+/// `LayoutChoices` field, a `DsChoices` field, an `Execution::HashHtj`
 /// field, and a type parameter (with its `*_of::<X>()` label) on `HashHtj`
-/// and `HashTrieFamily`. Before a
-/// fourth dimension, reach for a nested macro that expands one dimension at
-/// a time, or a builder — not another hand-written 16-arm match.
+/// and `HashTrieFamily`. Before a fourth dimension, reach for a nested macro
+/// that expands one dimension at a time, or a builder — not another
+/// hand-written 16-arm match.
 ///
 /// Hygiene contract: the identifiers named in the closure-like pattern
 /// become *type aliases* scoped to the whole arm, so `$body` must not need
-/// a different type of either name.
+/// a different type of any of those names.
 macro_rules! with_hash_trie_layout {
-    ($hasher:expr, $pruning:expr, | $H:ident, $P:ident | $body:expr) => {
-        match ($hasher, $pruning) {
-            | ($crate::options::HasherChoice::Sip, $crate::options::PruningChoice::Off) => {
+    ($hasher:expr, $pruning:expr, $expansion:expr, | $H:ident, $P:ident, $E:ident | $body:expr) => {
+        match ($hasher, $pruning, $expansion) {
+            | (
+                $crate::options::HasherChoice::Sip,
+                $crate::options::PruningChoice::Off,
+                $crate::options::ExpansionChoice::Eager,
+            ) => {
                 type $H = ::kermit_iters::SipHashStrategy;
                 type $P = ::kermit_ds::NoPruning;
+                type $E = ::kermit_ds::EagerExpansion;
                 $body
             },
-            | ($crate::options::HasherChoice::Sip, $crate::options::PruningChoice::On) => {
+            | (
+                $crate::options::HasherChoice::Sip,
+                $crate::options::PruningChoice::Off,
+                $crate::options::ExpansionChoice::Lazy,
+            ) => {
+                type $H = ::kermit_iters::SipHashStrategy;
+                type $P = ::kermit_ds::NoPruning;
+                type $E = ::kermit_ds::LazyExpansion;
+                $body
+            },
+            | (
+                $crate::options::HasherChoice::Sip,
+                $crate::options::PruningChoice::On,
+                $crate::options::ExpansionChoice::Eager,
+            ) => {
                 type $H = ::kermit_iters::SipHashStrategy;
                 type $P = ::kermit_ds::SingletonPruning;
+                type $E = ::kermit_ds::EagerExpansion;
                 $body
             },
-            | ($crate::options::HasherChoice::Fxhash, $crate::options::PruningChoice::Off) => {
+            | (
+                $crate::options::HasherChoice::Sip,
+                $crate::options::PruningChoice::On,
+                $crate::options::ExpansionChoice::Lazy,
+            ) => {
+                type $H = ::kermit_iters::SipHashStrategy;
+                type $P = ::kermit_ds::SingletonPruning;
+                type $E = ::kermit_ds::LazyExpansion;
+                $body
+            },
+            | (
+                $crate::options::HasherChoice::Fxhash,
+                $crate::options::PruningChoice::Off,
+                $crate::options::ExpansionChoice::Eager,
+            ) => {
                 type $H = ::kermit_iters::FxHashStrategy;
                 type $P = ::kermit_ds::NoPruning;
+                type $E = ::kermit_ds::EagerExpansion;
                 $body
             },
-            | ($crate::options::HasherChoice::Fxhash, $crate::options::PruningChoice::On) => {
+            | (
+                $crate::options::HasherChoice::Fxhash,
+                $crate::options::PruningChoice::Off,
+                $crate::options::ExpansionChoice::Lazy,
+            ) => {
+                type $H = ::kermit_iters::FxHashStrategy;
+                type $P = ::kermit_ds::NoPruning;
+                type $E = ::kermit_ds::LazyExpansion;
+                $body
+            },
+            | (
+                $crate::options::HasherChoice::Fxhash,
+                $crate::options::PruningChoice::On,
+                $crate::options::ExpansionChoice::Eager,
+            ) => {
                 type $H = ::kermit_iters::FxHashStrategy;
                 type $P = ::kermit_ds::SingletonPruning;
+                type $E = ::kermit_ds::EagerExpansion;
+                $body
+            },
+            | (
+                $crate::options::HasherChoice::Fxhash,
+                $crate::options::PruningChoice::On,
+                $crate::options::ExpansionChoice::Lazy,
+            ) => {
+                type $H = ::kermit_iters::FxHashStrategy;
+                type $P = ::kermit_ds::SingletonPruning;
+                type $E = ::kermit_ds::LazyExpansion;
                 $body
             },
         }
@@ -578,6 +704,8 @@ pub(crate) struct DsChoices {
     pub hasher: HasherChoice,
     /// `--ds-layout-pruning`; reaches the hash-trie cell only.
     pub pruning: PruningChoice,
+    /// `--ds-layout-expansion`; reaches the hash-trie cell only.
+    pub expansion: ExpansionChoice,
     /// `--ds-layout-seek`; reaches the two sorted-trie cells.
     pub seek: SeekChoice,
     /// `--ds-config`; reaches the hash-trie cell only.
@@ -604,6 +732,7 @@ impl DsChoices {
         Ok(Self {
             hasher: layout.hash_trie_hasher_resolved(),
             pruning: layout.hash_trie_pruning_resolved(),
+            expansion: layout.hash_trie_expansion_resolved(),
             seek: layout.sorted_trie_seek_resolved(),
             config: config.hash_trie_config_resolved()?,
             build: build.column_trie_build_resolved(),
@@ -616,7 +745,10 @@ mod tests {
     use {
         super::*,
         clap::ValueEnum,
-        kermit_ds::{BinarySeek, GallopingSeek, LinearSeek, NoPruning, SingletonPruning},
+        kermit_ds::{
+            BinarySeek, EagerExpansion, GallopingSeek, LazyExpansion, LinearSeek, NoPruning,
+            SingletonPruning,
+        },
         kermit_iters::{FxHashStrategy, SipHashStrategy},
     };
 
@@ -641,24 +773,25 @@ mod tests {
         assert_eq!(hasher_of::<FxHashStrategy>(), HasherChoice::Fxhash);
     }
 
-    /// Every `with_hash_trie_layout!` arm binds the marker pair its
-    /// `(HasherChoice, PruningChoice)` pattern names. Reading the labels
-    /// back out of the aliases the macro defines pins the four pairings
-    /// against `hasher_of`/`pruning_of`, so a transposed arm fails here
-    /// rather than silently mislabelling a bench report.
+    /// Every `with_hash_trie_layout!` arm binds the marker triple its
+    /// `(HasherChoice, PruningChoice, ExpansionChoice)` pattern names.
+    /// Reading the labels back out of the aliases the macro defines pins
+    /// the eight cells against `hasher_of` / `pruning_of` / `expansion_of`,
+    /// so a transposed arm fails here rather than silently mislabelling a
+    /// bench report.
     #[test]
-    fn layout_macro_binds_the_marker_pair_its_arm_names() {
-        for (hasher, pruning) in [
-            (HasherChoice::Sip, PruningChoice::Off),
-            (HasherChoice::Sip, PruningChoice::On),
-            (HasherChoice::Fxhash, PruningChoice::Off),
-            (HasherChoice::Fxhash, PruningChoice::On),
-        ] {
-            let bound = with_hash_trie_layout!(hasher, pruning, |H, P| (
-                hasher_of::<H>(),
-                pruning_of::<P>()
-            ));
-            assert_eq!(bound, (hasher, pruning));
+    fn layout_macro_binds_the_marker_triple_its_arm_names() {
+        for &hasher in HasherChoice::value_variants() {
+            for &pruning in PruningChoice::value_variants() {
+                for &expansion in ExpansionChoice::value_variants() {
+                    let bound = with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| (
+                        hasher_of::<H>(),
+                        pruning_of::<P>(),
+                        expansion_of::<E>()
+                    ));
+                    assert_eq!(bound, (hasher, pruning, expansion));
+                }
+            }
         }
     }
 
@@ -678,6 +811,57 @@ mod tests {
         }
         assert_eq!(pruning_of::<NoPruning>(), PruningChoice::Off);
         assert_eq!(pruning_of::<SingletonPruning>(), PruningChoice::On);
+    }
+
+    /// The same round trip for `--ds-layout-expansion` and `ExpansionPolicy`.
+    #[test]
+    fn expansion_choices_round_trip_through_layout_names() {
+        const TABLE: &[(ExpansionChoice, &str)] = &[
+            (
+                ExpansionChoice::Eager,
+                <EagerExpansion as LayoutOption>::NAME,
+            ),
+            (ExpansionChoice::Lazy, <LazyExpansion as LayoutOption>::NAME),
+        ];
+        for choice in ExpansionChoice::value_variants() {
+            let (_, name) = TABLE
+                .iter()
+                .find(|(c, _)| c == choice)
+                .expect("every ExpansionChoice has a marker");
+            assert_eq!(ExpansionChoice::from_layout_name(name), Some(*choice));
+        }
+        assert_eq!(expansion_of::<EagerExpansion>(), ExpansionChoice::Eager);
+        assert_eq!(expansion_of::<LazyExpansion>(), ExpansionChoice::Lazy);
+    }
+
+    #[test]
+    fn validate_layout_choices_rejects_explicit_expansion_on_non_hash_trie() {
+        let layout = LayoutChoices {
+            hash_trie_expansion: Some(ExpansionChoice::Lazy),
+            ..LayoutChoices::default()
+        };
+        assert!(validate_layout_choices(IndexStructureSelector::HashTrie, &layout).is_ok());
+        assert!(validate_layout_choices(IndexStructureSelector::All, &layout).is_ok());
+        for sel in [
+            IndexStructureSelector::TreeTrie,
+            IndexStructureSelector::ColumnTrie,
+        ] {
+            let msg = validate_layout_choices(sel, &layout)
+                .unwrap_err()
+                .to_string();
+            assert!(msg.contains("--ds-layout-expansion"), "{sel:?}: {msg}");
+            assert!(msg.contains("hash-trie"), "{sel:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn expansion_choice_default_is_eager() {
+        assert_eq!(ExpansionChoice::default(), ExpansionChoice::Eager);
+        assert_eq!(
+            LayoutChoices::default().hash_trie_expansion_resolved(),
+            ExpansionChoice::Eager
+        );
+        assert!(!LayoutChoices::default().hash_trie_expansion_explicit());
     }
 
     #[test]
@@ -901,6 +1085,7 @@ mod tests {
         .unwrap();
         assert_eq!(choices.hasher, HasherChoice::Fxhash);
         assert_eq!(choices.pruning, PruningChoice::Off);
+        assert_eq!(choices.expansion, ExpansionChoice::Eager);
         assert_eq!(choices.config.load_factor, LoadFactor::percent(50).unwrap());
         assert_eq!(
             DsChoices::resolve(
@@ -1049,6 +1234,7 @@ mod tests {
         let layout = LayoutChoices {
             hash_trie_hasher: Some(HasherChoice::Fxhash),
             hash_trie_pruning: Some(PruningChoice::On),
+            hash_trie_expansion: Some(ExpansionChoice::Lazy),
             sorted_trie_seek: Some(SeekChoice::Binary),
         };
         let config = ConfigChoices {
@@ -1060,6 +1246,7 @@ mod tests {
         assert_eq!(DsFlag::given(&layout, &config, &build), vec![
             DsFlag::LayoutHasher,
             DsFlag::LayoutPruning,
+            DsFlag::LayoutExpansion,
             DsFlag::LayoutSeek,
             DsFlag::Config,
             DsFlag::Build,

@@ -137,6 +137,10 @@ impl<R: Cardinality, P> Cardinality for Configured<R, P> {
     fn tuple_count(&self) -> usize { self.inner.tuple_count() }
 }
 
+impl<R: crate::tuple_scan::TupleScan, P> crate::tuple_scan::TupleScan for Configured<R, P> {
+    fn scan_tuples(&self, visit: impl FnMut(&[usize])) { self.inner.scan_tuples(visit) }
+}
+
 impl<R: HashTrieIterable, P> HashTrieIterable for Configured<R, P> {
     fn hash_trie_iter(&self) -> impl HashTrieIterator { self.inner.hash_trie_iter() }
 }

@@ -450,7 +450,7 @@ def fixture_sweep_tree(tmp_path: Path) -> dict:
     produce, for the structure-scoped back-fill (#85).
 
     The sorted tries carry their own axes but none of HashTrie's. Two
-    HashTrie reports carry all three HashTrie axes with distinct values, and
+    HashTrie reports carry all four HashTrie axes with distinct values, and
     a third carries none of them (a pre-Layout, pre-Config report), so it
     is back-filled on load. Each report times iteration plus space.
     """
@@ -465,8 +465,10 @@ def fixture_sweep_tree(tmp_path: Path) -> dict:
         ("column", "ColumnTrie",
          {"ds_layout_seek": "galloping", "ds_build_mode": "bulk"}, 110.0),
         ("sip", "HashTrie", {"ds_layout_hasher": "sip", "ds_layout_pruning": "off",
+                             "ds_layout_expansion": "eager",
                              "ds_config_load_factor": 0.7}, 100.0),
         ("fx", "HashTrie", {"ds_layout_hasher": "fx", "ds_layout_pruning": "on",
+                            "ds_layout_expansion": "lazy",
                             "ds_config_load_factor": 0.5}, 80.0),
         ("old", "HashTrie", {}, 105.0),
     ):
