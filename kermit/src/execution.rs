@@ -906,7 +906,7 @@ mod tests {
         assert_eq!(
             tree.execution(),
             Execution::TrieLftj(SortedTrie::TreeTrie {
-                seek: SeekChoice::Binary
+                seek: SeekChoice::Galloping
             })
         );
         let column =
@@ -914,7 +914,7 @@ mod tests {
         assert_eq!(
             column.execution(),
             Execution::TrieLftj(SortedTrie::ColumnTrie {
-                seek: SeekChoice::Binary,
+                seek: SeekChoice::Galloping,
                 build: ColumnTrieBuildMode::Incremental
             })
         );
@@ -1332,13 +1332,13 @@ mod tests {
         assert!(sweep
             .cells
             .contains(&Execution::TrieLftj(SortedTrie::ColumnTrie {
-                seek: SeekChoice::Binary,
+                seek: SeekChoice::Galloping,
                 build: ColumnTrieBuildMode::Incremental
             })));
         assert!(sweep
             .cells
             .contains(&Execution::TrieLftj(SortedTrie::TreeTrie {
-                seek: SeekChoice::Binary
+                seek: SeekChoice::Galloping
             })));
     }
 

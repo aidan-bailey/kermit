@@ -120,9 +120,9 @@ pub(crate) fn pruning_of<P: PruningPolicy>() -> PruningChoice {
 }
 
 /// CLI-side selector for `--ds-layout-seek`: the [`SeekStrategy`]
-/// monomorphised into `TreeTrie<S>` / `ColumnTrie<S>`. `Binary`, the
-/// default, is the `partition_point` search both sorted tries used before
-/// the parameter existed.
+/// monomorphised into `TreeTrie<S>` / `ColumnTrie<S>`. `Galloping` is the
+/// default; `Binary` is the `partition_point` search both sorted tries used
+/// before the parameter existed.
 ///
 /// Only valid when the selected index structure is `tree-trie` or
 /// `column-trie` (or `all`): `validate_layout_choices` rejects it on
@@ -132,10 +132,10 @@ pub(crate) fn pruning_of<P: PruningPolicy>() -> PruningChoice {
 pub(crate) enum SeekChoice {
     /// A scan (`LinearSeek`).
     Linear,
-    /// A binary search (`BinarySeek`), the default.
-    #[default]
+    /// A binary search (`BinarySeek`).
     Binary,
-    /// A galloping search (`GallopingSeek`).
+    /// A galloping search (`GallopingSeek`), the default.
+    #[default]
     Galloping,
 }
 
@@ -193,7 +193,7 @@ pub(crate) struct LayoutChoices {
     #[arg(long = "ds-layout-pruning", value_name = "PRUNING", value_enum)]
     hash_trie_pruning: Option<PruningChoice>,
     /// Seek strategy of `TreeTrie<S>` / `ColumnTrie<S>` (default:
-    /// `binary`). Only valid when `--indexstructure tree-trie` or
+    /// `galloping`). Only valid when `--indexstructure tree-trie` or
     /// `column-trie` (or `all`) is selected, and not on `bench ds`, none of
     /// whose metrics seeks.
     #[arg(long = "ds-layout-seek", value_name = "SEEK", value_enum)]
@@ -989,7 +989,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(choices.seek, SeekChoice::Linear);
-        assert_eq!(DsChoices::default().seek, SeekChoice::Binary);
+        assert_eq!(DsChoices::default().seek, SeekChoice::Galloping);
         assert!(DsChoices::resolve(
             IndexStructureSelector::HashTrie,
             &layout,

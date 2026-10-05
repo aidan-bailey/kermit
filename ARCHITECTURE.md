@@ -172,7 +172,7 @@ struct TrieNode {
     children: Vec<TrieNode>,
 }
 
-struct TreeTrie<S: SeekStrategy = BinarySeek> {
+struct TreeTrie<S: SeekStrategy = GallopingSeek> {
     header: RelationHeader,
     children: Vec<TrieNode>,
     tuple_count: usize, // distinct tuples; backs `Cardinality`
@@ -192,7 +192,7 @@ struct ColumnTrieLayer {
     interval: Vec<usize>,  // Start indices for each parent's children
 }
 
-struct ColumnTrie<S: SeekStrategy = BinarySeek> {
+struct ColumnTrie<S: SeekStrategy = GallopingSeek> {
     header: RelationHeader,
     layers: Vec<ColumnTrieLayer>,
     tuple_count: usize,

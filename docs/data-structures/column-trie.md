@@ -7,7 +7,7 @@
 `ColumnTrie` flattens each trie level into a `ColumnTrieLayer` of parallel arrays: `data: Vec<usize>` for keys at that depth, and `interval: Vec<usize>` for parent → child offsets. One layer per attribute. The children of the parent at position `i` span `data[interval[i]..interval[i+1]]` of the *child* layer (or to `data.len()` for the last parent).
 
 ```rust
-ColumnTrie<S: SeekStrategy = BinarySeek> {
+ColumnTrie<S: SeekStrategy = GallopingSeek> {
     header: RelationHeader,
     layers: Vec<ColumnTrieLayer>,    // one per attribute
     tuple_count: usize,              // distinct tuples; backs `Cardinality`
@@ -119,7 +119,7 @@ Both modes sort first, O(n · a · log n); `b` is the average branching factor.
 
 | Dimension | Category | Axis | Flag | Default | Test aliases |
 |---|---|---|---|---|---|
-| Seek strategy | Layout (`S: SeekStrategy`) | `ds_layout_seek` | `--ds-layout-seek linear\|binary\|galloping` | `binary` | `ColumnTrieLinear`, `ColumnTrieBinary`, `ColumnTrieGalloping` |
+| Seek strategy | Layout (`S: SeekStrategy`) | `ds_layout_seek` | `--ds-layout-seek linear\|binary\|galloping` | `galloping` | `ColumnTrieLinear`, `ColumnTrieBinary`, `ColumnTrieGalloping` |
 
 The strategy changes only how `seek` searches; it changes no stored data, no build and no `heap_size_bytes`. It is shared with `TreeTrie`, so one strategy on both tries isolates the layout. kermit-lab reads a ColumnTrie row without the axis as `binary`: ColumnTrie's seek was already a binary search when the first JSON report was written. Details: [seek strategies](seek-strategies.md).
 

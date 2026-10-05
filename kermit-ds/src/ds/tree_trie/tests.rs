@@ -271,13 +271,13 @@ fn optimization_axes_name_the_seek_strategy() {
     assert_eq!(seek_axis::<GallopingSeek>(), "galloping");
 }
 
-/// Plain `TreeTrie`, in type position, seeks with `BinarySeek`, so code that
-/// names no strategy keeps the binary search it had before the parameter
-/// existed.
+/// Plain `TreeTrie`, in type position, seeks with `GallopingSeek`, so code
+/// that names no strategy gets the galloping search, the default since it
+/// measured fastest on #80's probe set.
 #[test]
-fn default_seek_strategy_is_binary() {
+fn default_seek_strategy_is_galloping() {
     let trie: TreeTrie = TreeTrie::new(1.into());
-    assert_eq!(trie.optimization_axes()["ds_layout_seek"], "binary");
+    assert_eq!(trie.optimization_axes()["ds_layout_seek"], "galloping");
 }
 
 /// `seek` hands its strategy exactly the siblings it has not yet passed,

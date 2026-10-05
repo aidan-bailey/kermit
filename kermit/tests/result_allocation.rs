@@ -35,7 +35,7 @@
 //! standard.
 //!
 //! Issue #80 adds the seek strategies: the existing sorted cells run the
-//! default (`binary`), and the `linear` / `galloping` cells below hold the
+//! default (`galloping`), and the `linear` / `binary` cells below hold the
 //! other two to the same standard: a strategy that allocated per seek would
 //! show up in both checks. The scan cells are not multiplied, because the
 //! scan never seeks.
@@ -44,7 +44,7 @@ use {
     kermit::db::{hash_join_for_each, lftj_join_for_each},
     kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{
-        Cardinality, ColumnTrie, GallopingSeek, HashTrie, LinearSeek, NoPruning, PruningPolicy,
+        BinarySeek, Cardinality, ColumnTrie, HashTrie, LinearSeek, NoPruning, PruningPolicy,
         Relation, SingletonPruning, TreeTrie,
     },
     kermit_iters::{
@@ -181,12 +181,12 @@ fn tree_trie_linear_lftj_allocates_independently_of_result_size() {
 }
 
 #[test]
-fn tree_trie_galloping_lftj_allocates_independently_of_result_size() {
-    lftj_allocations::<TreeTrie<GallopingSeek>>(SMALL);
+fn tree_trie_binary_lftj_allocates_independently_of_result_size() {
+    lftj_allocations::<TreeTrie<BinarySeek>>(SMALL);
     assert_flat(
-        "TreeTrie<GallopingSeek>/LFTJ",
-        lftj_allocations::<TreeTrie<GallopingSeek>>(SMALL),
-        lftj_allocations::<TreeTrie<GallopingSeek>>(LARGE),
+        "TreeTrie<BinarySeek>/LFTJ",
+        lftj_allocations::<TreeTrie<BinarySeek>>(SMALL),
+        lftj_allocations::<TreeTrie<BinarySeek>>(LARGE),
     );
 }
 
@@ -201,12 +201,12 @@ fn column_trie_linear_lftj_allocates_independently_of_result_size() {
 }
 
 #[test]
-fn column_trie_galloping_lftj_allocates_independently_of_result_size() {
-    lftj_allocations::<ColumnTrie<GallopingSeek>>(SMALL);
+fn column_trie_binary_lftj_allocates_independently_of_result_size() {
+    lftj_allocations::<ColumnTrie<BinarySeek>>(SMALL);
     assert_flat(
-        "ColumnTrie<GallopingSeek>/LFTJ",
-        lftj_allocations::<ColumnTrie<GallopingSeek>>(SMALL),
-        lftj_allocations::<ColumnTrie<GallopingSeek>>(LARGE),
+        "ColumnTrie<BinarySeek>/LFTJ",
+        lftj_allocations::<ColumnTrie<BinarySeek>>(SMALL),
+        lftj_allocations::<ColumnTrie<BinarySeek>>(LARGE),
     );
 }
 
@@ -434,12 +434,12 @@ fn tree_trie_linear_lftj_allocates_independently_of_descent_count() {
 }
 
 #[test]
-fn tree_trie_galloping_lftj_allocates_independently_of_descent_count() {
-    lftj_descent_allocations::<TreeTrie<GallopingSeek>>(FEW_DEAD_ENDS);
+fn tree_trie_binary_lftj_allocates_independently_of_descent_count() {
+    lftj_descent_allocations::<TreeTrie<BinarySeek>>(FEW_DEAD_ENDS);
     assert_flat_in_descents(
-        "TreeTrie<GallopingSeek>/LFTJ",
-        lftj_descent_allocations::<TreeTrie<GallopingSeek>>(FEW_DEAD_ENDS),
-        lftj_descent_allocations::<TreeTrie<GallopingSeek>>(MANY_DEAD_ENDS),
+        "TreeTrie<BinarySeek>/LFTJ",
+        lftj_descent_allocations::<TreeTrie<BinarySeek>>(FEW_DEAD_ENDS),
+        lftj_descent_allocations::<TreeTrie<BinarySeek>>(MANY_DEAD_ENDS),
     );
 }
 
@@ -454,12 +454,12 @@ fn column_trie_linear_lftj_allocates_independently_of_descent_count() {
 }
 
 #[test]
-fn column_trie_galloping_lftj_allocates_independently_of_descent_count() {
-    lftj_descent_allocations::<ColumnTrie<GallopingSeek>>(FEW_DEAD_ENDS);
+fn column_trie_binary_lftj_allocates_independently_of_descent_count() {
+    lftj_descent_allocations::<ColumnTrie<BinarySeek>>(FEW_DEAD_ENDS);
     assert_flat_in_descents(
-        "ColumnTrie<GallopingSeek>/LFTJ",
-        lftj_descent_allocations::<ColumnTrie<GallopingSeek>>(FEW_DEAD_ENDS),
-        lftj_descent_allocations::<ColumnTrie<GallopingSeek>>(MANY_DEAD_ENDS),
+        "ColumnTrie<BinarySeek>/LFTJ",
+        lftj_descent_allocations::<ColumnTrie<BinarySeek>>(FEW_DEAD_ENDS),
+        lftj_descent_allocations::<ColumnTrie<BinarySeek>>(MANY_DEAD_ENDS),
     );
 }
 

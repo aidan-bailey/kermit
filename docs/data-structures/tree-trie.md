@@ -7,7 +7,7 @@
 `TreeTrie` is a pointer-based trie: each `TrieNode` owns its key (`usize`) and a `Vec<TrieNode>` of children. The trie itself owns the root-level `Vec<TrieNode>`. A tuple `[k_0, k_1, …, k_{n-1}]` is encoded as a root-to-leaf path of depth `n`, where the node at depth `i` holds key `k_i`. Children at every level are kept sorted ascending by key.
 
 ```rust
-TreeTrie<S: SeekStrategy = BinarySeek> {
+TreeTrie<S: SeekStrategy = GallopingSeek> {
     header: RelationHeader,
     children: Vec<TrieNode>,         // root level
     tuple_count: usize,              // distinct tuples; backs `Cardinality`
@@ -47,7 +47,7 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | `TrieIterator::up()` | O(1) | | pop stack |
 | `HeapSize::heap_size_bytes()` | O(node count) | | walks the whole trie summing `Vec` capacities |
 
-`seek` asks its seek strategy `S` how many of the remaining siblings lie below the target, and moves that far. The strategy is a Layout shared with `ColumnTrie`, so the two sorted tries differ only in layout under any one strategy. The default, `binary`, is the `partition_point` search both tries used before the parameter existed. See [seek strategies](seek-strategies.md) for the three strategies, their probe bounds and the LFTJ bound they relate to.
+`seek` asks its seek strategy `S` how many of the remaining siblings lie below the target, and moves that far. The strategy is a Layout shared with `ColumnTrie`, so the two sorted tries differ only in layout under any one strategy. The default is `galloping`, the fastest of the three on #80's probe set; `binary`, the `partition_point` search both tries used before the parameter existed, was the default until 2026-10-05. See [seek strategies](seek-strategies.md) for the three strategies, their probe bounds and the LFTJ bound they relate to.
 
 Until issue #67, `seek` was a linear scan. On high-fan-out WatDiv queries it made `TreeTrie` 10–197x slower than `ColumnTrie`, and `TreeTrie` numbers from before that fix are not comparable with later ones. `--ds-layout-seek linear` runs the same algorithm in today's code, not the pre-#67 code. `seek_cost_matches_the_strategy` in `trie_seek_tests!` ([`kermit-ds/tests/common/macros.rs`](../../kermit-ds/tests/common/macros.rs)) pins each strategy's complexity through the real iterator.
 
@@ -83,7 +83,7 @@ Iteration walk (`trie_iter().into_iter()`):
 
 | Dimension | Category | Axis | Flag | Default | Test aliases |
 |---|---|---|---|---|---|
-| Seek strategy | Layout (`S: SeekStrategy`) | `ds_layout_seek` | `--ds-layout-seek linear\|binary\|galloping` | `binary` | `TreeTrieLinear`, `TreeTrieBinary`, `TreeTrieGalloping` |
+| Seek strategy | Layout (`S: SeekStrategy`) | `ds_layout_seek` | `--ds-layout-seek linear\|binary\|galloping` | `galloping` | `TreeTrieLinear`, `TreeTrieBinary`, `TreeTrieGalloping` |
 
 The strategy changes only how `seek` searches; it changes no stored data, no build and no `heap_size_bytes`. Details: [seek strategies](seek-strategies.md).
 

@@ -1,7 +1,7 @@
 use {
     crate::{
         relation::{Relation, RelationHeader},
-        seek::{seek_axes, BinarySeek, SeekStrategy},
+        seek::{seek_axes, GallopingSeek, SeekStrategy},
     },
     kermit_iters::{HasOptimizationAxes, JoinIterable},
     serde_json::Value,
@@ -98,9 +98,12 @@ impl IndexMut<usize> for TrieNode {
 ///
 /// `S` picks how the iterator's `seek` searches the siblings it has not yet
 /// passed (see [`SeekStrategy`]); it changes no stored data. The default,
-/// [`BinarySeek`], is a `partition_point` binary search, so plain
-/// `TreeTrie` is the structure as it was before the parameter existed.
-/// Bench axis `ds_layout_seek`.
+/// [`GallopingSeek`], probes the current position, then doubles its stride
+/// and binary-searches the bracket it finds: O(log d) in the distance a seek
+/// moves. It was the fastest strategy on #80's probe set. Name
+/// `TreeTrie<BinarySeek>` ([`BinarySeek`](crate::BinarySeek)) for the
+/// `partition_point` search plain `TreeTrie` used before then. Bench axis
+/// `ds_layout_seek`.
 ///
 /// # Example
 ///
@@ -113,7 +116,7 @@ impl IndexMut<usize> for TrieNode {
 ///
 /// [`LeapfrogTriejoinIter`]: https://docs.rs/kermit-algos
 #[derive(Clone, Debug)]
-pub struct TreeTrie<S: SeekStrategy = BinarySeek> {
+pub struct TreeTrie<S: SeekStrategy = GallopingSeek> {
     header: RelationHeader,
     children: Vec<TrieNode>,
     /// Number of distinct tuples stored; maintained by `insert`.

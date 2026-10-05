@@ -5,8 +5,8 @@ use kermit_ds::{
 mod common;
 
 // One alias per structure × seek strategy: the Layout test obligation of
-// `docs/specs/optimization-standard.md`. `TreeTrieBinary` is plain
-// `TreeTrie`.
+// `docs/specs/optimization-standard.md`. `TreeTrieGalloping` is plain
+// `TreeTrie`, the default.
 type TreeTrieLinear = TreeTrie<LinearSeek>;
 type TreeTrieBinary = TreeTrie<BinarySeek>;
 type TreeTrieGalloping = TreeTrie<GallopingSeek>;

@@ -235,10 +235,15 @@ done
 `kl.ablation(df, axis="ds_layout_seek")` draws only for `iteration` and
 `end_to_end`: every strategy builds the same trie.
 
+The default seek is `galloping` since 2026-10-05; it was `binary` before.
+Every report records the strategy that ran in `ds_layout_seek`, so rows from
+either side of the switch stay labelled, but compare strategies within one
+binary, never across builds (see the precision bound below).
+
 **Codegen precision bound.** Measurement 1 for #80
 (`kermit-bench-runs/seek-ab-2026-10-04/`, kept outside the repository;
 `analysis.txt`) compared release builds of 0056fe1 and f8f7494 under the
-unchanged default seek, `binary`. The rebuild alone (no algorithm changed
+then-default seek, `binary`. The rebuild alone (no algorithm changed
 under the default) moved TreeTrie by −2.8% (geomean new/base 0.972) and
 ColumnTrie by +2.1% (1.021), while HashTrie, whose code was untouched, stayed
 flat (0.999). That is consistent with code-layout effects of the extra

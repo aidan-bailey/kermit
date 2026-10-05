@@ -2,7 +2,7 @@ use {
     super::build_mode::ColumnTrieBuildMode,
     crate::{
         relation::{BuildModeRelation, Relation, RelationHeader},
-        seek::{seek_axes, BinarySeek, SeekStrategy},
+        seek::{seek_axes, GallopingSeek, SeekStrategy},
     },
     kermit_iters::{HasOptimizationAxes, JoinIterable},
     serde_json::Value,
@@ -125,9 +125,12 @@ impl ColumnTrieLayer {
 ///
 /// `S` picks how the iterator's `seek` searches the siblings it has not yet
 /// passed (see [`SeekStrategy`]); it changes no stored data. The default,
-/// [`BinarySeek`], is a `partition_point` binary search, so plain
-/// `ColumnTrie` is the structure as it was before the parameter existed.
-/// Bench axis `ds_layout_seek`.
+/// [`GallopingSeek`], probes the current position, then doubles its stride
+/// and binary-searches the bracket it finds: O(log d) in the distance a seek
+/// moves. It was the fastest strategy on #80's probe set. Name
+/// `ColumnTrie<BinarySeek>` ([`BinarySeek`](crate::BinarySeek)) for the
+/// `partition_point` search plain `ColumnTrie` used before then. Bench axis
+/// `ds_layout_seek`.
 ///
 /// # Example
 ///
@@ -138,7 +141,7 @@ impl ColumnTrieLayer {
 ///     ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
 /// assert_eq!(trie.header().arity(), 2);
 /// ```
-pub struct ColumnTrie<S: SeekStrategy = BinarySeek> {
+pub struct ColumnTrie<S: SeekStrategy = GallopingSeek> {
     header: RelationHeader,
     /// One layer per attribute/depth in the relation; `layers[i]` holds the
     /// keys found at column `i` of the tuples, grouped by parent. Private
@@ -908,11 +911,11 @@ mod tests {
         assert_eq!(seek_axis::<GallopingSeek>(), "galloping");
     }
 
-    /// See `TreeTrie`'s `default_seek_strategy_is_binary`.
+    /// See `TreeTrie`'s `default_seek_strategy_is_galloping`.
     #[test]
-    fn default_seek_strategy_is_binary() {
+    fn default_seek_strategy_is_galloping() {
         let trie: ColumnTrie = ColumnTrie::new(1.into());
-        assert_eq!(trie.optimization_axes()["ds_layout_seek"], "binary");
+        assert_eq!(trie.optimization_axes()["ds_layout_seek"], "galloping");
     }
 
     /// See `TreeTrie`'s `seek_hands_the_strategy_only_the_unpassed_siblings`:

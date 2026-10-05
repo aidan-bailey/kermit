@@ -15,9 +15,10 @@
 //! Every strategy returns exactly what `partition_point` returns, so an
 //! iterator's state after a seek is the same under all three; only the cost
 //! differs. The strategy is a type parameter rather than a runtime value
-//! because a runtime switch would put a branch in every seek. Under the
-//! default, [`BinarySeek`], both tries compile to the `partition_point`
-//! call they made before the parameter existed. Bench axis
+//! because a runtime switch would put a branch in every seek, and each
+//! instantiation compiles only its own search. The default is
+//! [`GallopingSeek`], the fastest of the three on #80's probe set. Before
+//! that, both tries used [`BinarySeek`]'s `partition_point`. Bench axis
 //! `ds_layout_seek`; see `docs/data-structures/seek-strategies.md`.
 
 use {
@@ -50,8 +51,9 @@ pub trait SeekStrategy: LayoutOption + Copy + Debug + Default + 'static {
 pub struct LinearSeek;
 
 /// Binary-searches everything not yet passed: O(log n) in the `n` remaining
-/// siblings, however far the seek moves. The default, and what both sorted
-/// tries did before the strategy became a parameter.
+/// siblings, however far the seek moves. What both sorted tries did before
+/// the strategy became a parameter, and their default until galloping
+/// replaced it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BinarySeek;
 
@@ -59,7 +61,7 @@ pub struct BinarySeek;
 /// one is no longer below, then binary-searches the bracket the last two
 /// probes found: O(log d) for a seek that moves `d` positions. This is the
 /// cost Veldhuizen's LFTJ analysis assumes for its amortised
-/// O(1 + log(N/m)) seek bound.
+/// O(1 + log(N/m)) seek bound. The default for both sorted tries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GallopingSeek;
 

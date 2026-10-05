@@ -9,8 +9,29 @@ seek (issue #80).
 | Strategy | `--ds-layout-seek` | `ds_layout_seek` | Default |
 |---|---|---|---|
 | `LinearSeek` | `linear` | `"linear"` | |
-| `BinarySeek` | `binary` | `"binary"` | ✓ |
-| `GallopingSeek` | `galloping` | `"galloping"` | |
+| `BinarySeek` | `binary` | `"binary"` | |
+| `GallopingSeek` | `galloping` | `"galloping"` | ✓ |
+
+## Default
+
+`galloping` has been the default since 2026-10-05, replacing `binary`, on
+the strength of #80's strategy comparison. That run measured all three
+strategies inside one release binary, with 5 replicates
+(`kermit-bench-runs/seek-strategies-2026-10-04/analysis.txt`). The table
+gives each strategy's time as a geomean of medians, relative to binary:
+
+| Workload | Structure | galloping/binary | linear/binary |
+|---|---|---|---|
+| WatDiv probe set (34 queries) | TreeTrie | 0.805 | 9.152 |
+| WatDiv probe set (34 queries) | ColumnTrie | 0.835 | 9.912 |
+| `lubm-reference` (14 queries) | TreeTrie | 0.934 | 1.900 |
+| `lubm-reference` (14 queries) | ColumnTrie | 0.913 | 1.942 |
+
+On WatDiv, galloping was faster than binary on 23 of 34 queries for each
+structure, with the replicate ranges disjoint. It was slower on q0065
+(TreeTrie 1.172, ColumnTrie 1.086), q0129 (ColumnTrie 1.016) and q0185
+(TreeTrie 1.058). Name `TreeTrie<BinarySeek>` / `ColumnTrie<BinarySeek>`, or
+pass `--ds-layout-seek binary`, to run the earlier default.
 
 ## Contract
 
@@ -99,9 +120,9 @@ but it made queries dominated by one-step seeks slower (q0236 ~1.9x, q0167
 A runtime switch would add a branch to every seek, a tax on runs that
 never change strategy (the shape/value rule in
 [`optimization-standard.md`](../specs/optimization-standard.md)). As a
-type parameter, the strategy is monomorphised: `TreeTrie` and
-`ColumnTrie` default to `BinarySeek` and compile to the `partition_point`
-call they made before the parameter existed. The trie gains only a
+type parameter, the strategy is monomorphised: each instantiation compiles
+only its own search, and plain `TreeTrie` / `ColumnTrie` mean
+`GallopingSeek`. The trie gains only a
 zero-sized `PhantomData<S>`, which `seek_strategy_adds_no_state` pins.
 
 ## Measuring

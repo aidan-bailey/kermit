@@ -1,6 +1,6 @@
 //! CLI smoke test for the sorted tries' seek-strategy Layout (#80).
 //! `--ds-layout-seek` reaches both sorted cells and is recorded as
-//! `ds_layout_seek`, and the default records `"binary"`. The flag is
+//! `ds_layout_seek`, and the default records `"galloping"`. The flag is
 //! rejected where it cannot act: on `hash-trie`, and on `bench ds`, none
 //! of whose metrics seeks. Mirrors `cli_hash_trie_layout_pruning.rs`.
 
@@ -54,7 +54,7 @@ fn kermit_join(indexstructure: &str, algorithm: &str, extra_args: &[&str]) -> Ou
 }
 
 #[test]
-fn cli_bench_run_default_seek_is_binary_on_both_sorted_tries() {
+fn cli_bench_run_default_seek_is_galloping_on_both_sorted_tries() {
     for ds in ["tree-trie", "column-trie"] {
         let (output, report) = bench_run("triangle", &[
             "-i",
@@ -65,12 +65,14 @@ fn cli_bench_run_default_seek_is_binary_on_both_sorted_tries() {
             "space",
         ]);
         assert_success(&output);
-        assert_eq!(axes_of(&report)["ds_layout_seek"], "binary", "{ds}");
+        assert_eq!(axes_of(&report)["ds_layout_seek"], "galloping", "{ds}");
     }
 }
 
+/// An explicit non-default strategy reaches both sorted cells. (`binary`,
+/// not the default `galloping`, so the test fails if the flag is ignored.)
 #[test]
-fn cli_bench_run_with_galloping_records_axis() {
+fn cli_bench_run_with_binary_records_axis() {
     for ds in ["tree-trie", "column-trie"] {
         let (output, report) = bench_run("triangle", &[
             "-i",
@@ -80,10 +82,10 @@ fn cli_bench_run_with_galloping_records_axis() {
             "-m",
             "space",
             "--ds-layout-seek",
-            "galloping",
+            "binary",
         ]);
         assert_success(&output);
-        assert_eq!(axes_of(&report)["ds_layout_seek"], "galloping", "{ds}");
+        assert_eq!(axes_of(&report)["ds_layout_seek"], "binary", "{ds}");
     }
 }
 
@@ -171,7 +173,7 @@ fn cli_bench_ds_reports_the_default_seek() {
         if axes["data_structure"] == "HashTrie" {
             assert!(axes.get("ds_layout_seek").is_none(), "{axes}");
         } else {
-            assert_eq!(axes["ds_layout_seek"], "binary", "{axes}");
+            assert_eq!(axes["ds_layout_seek"], "galloping", "{axes}");
         }
     }
 }
