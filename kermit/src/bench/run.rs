@@ -13,7 +13,9 @@ use {
             ReportMetric,
         },
         execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
-        options::{with_hash_trie_layout, with_sorted_trie_layout, DsChoices},
+        options::{
+            unreached_flag, with_hash_trie_layout, with_sorted_trie_layout, DsChoices, DsFlag,
+        },
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
     kermit_algos::Optimiser,
@@ -434,8 +436,16 @@ pub(crate) fn check_sweep_group_directories(
 /// are announced on stderr and skipped, so `-i all -a all` runs exactly the
 /// three valid cells; when the user named a single incompatible pair there
 /// is nothing left to run and that is a usage error.
+///
+/// `given` are the `--ds-*` flags the user passed ([`DsFlag::given`]).
+/// [`DsChoices::resolve`] has checked them against `-i` alone, which under
+/// `-i all` accepts every flag; but `-a` can then drop every cell with a
+/// flag's axis (`-i all -a leapfrog-triejoin --ds-config …` runs no
+/// hash-trie cell). Such a flag would be silently ignored, so it is a usage
+/// error too (#86).
 pub(crate) fn resolve_sweep(
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, choices: DsChoices,
+    given: &[DsFlag],
 ) -> anyhow::Result<Vec<Execution>> {
     let sweep = Sweep::expand(&indexstructure.expand(), &algorithm.expand(), choices);
     if sweep.cells.is_empty() {
@@ -443,6 +453,24 @@ pub(crate) fn resolve_sweep(
             "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \
              with --algorithm {algorithm:?} (hash-trie pairs with hash-triejoin; sorted tries \
              pair with leapfrog-triejoin)"
+        );
+    }
+    let ran: Vec<_> = sweep
+        .cells
+        .iter()
+        .map(|cell| cell.index_structure())
+        .collect();
+    if let Some(flag) = unreached_flag(given, &ran) {
+        let cells: Vec<_> = sweep
+            .cells
+            .iter()
+            .map(|cell| format!("({:?}, {:?})", cell.index_structure(), cell.algorithm()))
+            .collect();
+        anyhow::bail!(
+            "{flag} applies only to {structures}, but --algorithm {algorithm:?} leaves this sweep \
+             no {structures} cell; it runs only {}. The flag would be silently ignored.",
+            cells.join(", "),
+            structures = flag.structures_label(),
         );
     }
     for (ds, algo) in &sweep.skipped {
@@ -454,6 +482,49 @@ pub(crate) fn resolve_sweep(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #86: under `-i all`, `-a` decides which cells run, and a flag must
+    /// reach one of them. Each row is one `-a` with the flags that keep a
+    /// cell under it and the flags that lose every cell.
+    #[test]
+    fn resolve_sweep_rejects_a_flag_the_algorithm_leaves_without_a_cell() {
+        use DsFlag::*;
+        let rows: &[(JoinAlgorithmSelector, &[DsFlag], &[DsFlag])] = &[
+            (
+                JoinAlgorithmSelector::LeapfrogTriejoin,
+                &[LayoutSeek, Build],
+                &[LayoutHasher, LayoutPruning, Config],
+            ),
+            (
+                JoinAlgorithmSelector::HashTriejoin,
+                &[LayoutHasher, LayoutPruning, Config],
+                &[LayoutSeek, Build],
+            ),
+            (
+                JoinAlgorithmSelector::All,
+                &[LayoutHasher, LayoutPruning, LayoutSeek, Config, Build],
+                &[],
+            ),
+        ];
+        let sweep = |algorithm, given: &[DsFlag]| {
+            resolve_sweep(
+                IndexStructureSelector::All,
+                algorithm,
+                DsChoices::default(),
+                given,
+            )
+        };
+        for &(algorithm, reached, unreached) in rows {
+            if let Err(e) = sweep(algorithm, reached) {
+                panic!("{algorithm:?} rejected {reached:?}: {e}");
+            }
+            for &flag in unreached {
+                let msg = sweep(algorithm, &[flag]).unwrap_err().to_string();
+                assert!(msg.contains(&flag.to_string()), "{msg}");
+                assert!(msg.contains(&format!("{algorithm:?}")), "{msg}");
+            }
+        }
+    }
 
     #[test]
     fn groups_sharing_a_truncated_directory_are_rejected() {

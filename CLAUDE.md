@@ -221,7 +221,11 @@ the short version:
    `with_hash_trie_layout!` / `with_sorted_trie_layout!` product macros live in
    `kermit/src/options.rs`; `validate_config_choices` / `validate_build_choices`
    reject `--ds-config` / `--ds-build` on structures without the axis, and every
-   `--ds-*` flag resolves through `DsChoices::resolve`; `HashHtj` derives its
+   `--ds-*` flag resolves through `DsChoices::resolve`. A new flag needs a
+   `DsFlag` variant, with its row in `DsFlag::structures` (the one table of
+   which structure has which flag's axis), which both that check and
+   `resolve_sweep` read; the latter rejects a flag that `-a` leaves without a
+   cell (`-i all -a leapfrog-triejoin --ds-config …`, #86). `HashHtj` derives its
    report labels from its Layout types (`hasher_of::<H>()` / `pruning_of::<P>()`),
    never from the flags.
 5. Extend the test suite per the standard (type aliases for Layout, new

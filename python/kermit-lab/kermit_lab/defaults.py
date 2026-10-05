@@ -6,23 +6,27 @@ reports that predate an axis ran a known value, so back-filling recovers
 ground truth rather than inventing it. Each optimization documents its default
 here in one place — the parser (`frame.py`) stays generic.
 
+Every default is scoped to the data structure that has the axis. A row of
+any other structure keeps NaN, which is what lets `presets.ablation` leave
+those structures out. A structure-blind fill once stamped HashTrie's axes on
+TreeTrie and ColumnTrie rows, so the ablations charted the sorted tries as
+"sip" (#85).
+
 See `docs/specs/bench-report-schema.md` ("Standard axis prefixes").
 """
 from __future__ import annotations
 
 import pandas as pd
 
-# axis column name -> value to substitute for NaN.
-AXIS_DEFAULTS: dict[str, object] = {
-    "ds_layout_hasher": "sip",  # HashTrie's historical hash function
-    "ds_layout_pruning": "off",  # pre-Layout reports never pruned
-    "ds_config_load_factor": 0.7,  # pre-Config reports used the historical load factor
-}
-
 # (axis column, data_structure) -> value to substitute for NaN on rows of
-# that structure only. An axis that exists on one structure needs this: a
-# structure-blind fill would stamp the value on rows that never had the axis.
+# that structure only.
 SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
+    # HashTrie's historical hash function.
+    ("ds_layout_hasher", "HashTrie"): "sip",
+    # Pre-Layout HashTrie reports never pruned.
+    ("ds_layout_pruning", "HashTrie"): "off",
+    # Pre-Config HashTrie reports used the historical load factor.
+    ("ds_config_load_factor", "HashTrie"): 0.7,
     # ColumnTrie's build before issue #84 inserted tuple by tuple. Every
     # ColumnTrie report since carries the axis ("bulk" by default).
     ("ds_build_mode", "ColumnTrie"): "incremental",
@@ -38,18 +42,17 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
 def apply_axis_defaults(df: pd.DataFrame) -> pd.DataFrame:
     """Return ``df`` with documented axis defaults filled in for NaN cells.
 
-    Only columns present in ``df`` are touched; absent columns are ignored.
-    Scoped defaults fill only the rows of their data structure.
-    Mutates a copy, leaving the caller's frame unchanged.
+    Each default fills only the rows of its data structure, so a frame
+    without a ``data_structure`` column is returned unchanged. Only columns
+    present in ``df`` are touched; absent columns are ignored. Mutates a
+    copy, leaving the caller's frame unchanged.
     """
     out = df.copy()
-    for col, default in AXIS_DEFAULTS.items():
+    if "data_structure" not in out.columns:
+        return out
+    for (col, data_structure), default in SCOPED_AXIS_DEFAULTS.items():
         if col in out.columns:
-            out[col] = out[col].fillna(default)
-    if "data_structure" in out.columns:
-        for (col, data_structure), default in SCOPED_AXIS_DEFAULTS.items():
-            if col in out.columns:
-                # `isin`, not `==`: a missing data_structure must not match.
-                on_structure = out["data_structure"].isin([data_structure])
-                out[col] = out[col].mask(out[col].isna() & on_structure, default)
+            # `isin`, not `==`: a missing data_structure must not match.
+            on_structure = out["data_structure"].isin([data_structure])
+            out[col] = out[col].mask(out[col].isna() & on_structure, default)
     return out

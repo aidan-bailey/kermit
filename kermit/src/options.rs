@@ -4,10 +4,114 @@
 
 use {
     crate::IndexStructureSelector,
-    clap::Args,
-    kermit_ds::{ColumnTrieBuildMode, HashTrieConfig, LoadFactor, PruningPolicy, SeekStrategy},
+    clap::{Args, ValueEnum},
+    kermit_ds::{
+        ColumnTrieBuildMode, HashTrieConfig, IndexStructure, LoadFactor, PruningPolicy,
+        SeekStrategy,
+    },
     kermit_iters::{HashStrategy, LayoutOption},
+    std::fmt,
 };
+
+/// One `--ds-*` flag. Each sets an axis that only some index structures
+/// have, so a flag given for a run with none of them would be silently
+/// ignored. Two checks rule that out, both reading
+/// [`DsFlag::structures`]: [`DsChoices::resolve`] against the structures
+/// `-i` selects, and `resolve_sweep` (`bench/run.rs`) against the cells
+/// left once `-a` has narrowed a `bench run` sweep (#86).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DsFlag {
+    /// `--ds-layout-hasher`.
+    LayoutHasher,
+    /// `--ds-layout-pruning`.
+    LayoutPruning,
+    /// `--ds-layout-seek`.
+    LayoutSeek,
+    /// `--ds-config`.
+    Config,
+    /// `--ds-build`.
+    Build,
+}
+
+impl DsFlag {
+    /// The flags the user passed among `layout`, `config` and `build`, in
+    /// that order. A flag left to its default is absent, so defaults pass
+    /// every check.
+    pub(crate) fn given(
+        layout: &LayoutChoices, config: &ConfigChoices, build: &BuildChoices,
+    ) -> Vec<DsFlag> {
+        let mut given = layout.given();
+        given.extend(config.given());
+        given.extend(build.given());
+        given
+    }
+
+    /// The structures that have this flag's axis: the one table of which
+    /// flag applies where. A new structure has none of them until it is
+    /// listed here.
+    pub(crate) fn structures(self) -> &'static [IndexStructure] {
+        match self {
+            | Self::LayoutHasher | Self::LayoutPruning | Self::Config => {
+                &[IndexStructure::HashTrie]
+            },
+            | Self::LayoutSeek => &[IndexStructure::TreeTrie, IndexStructure::ColumnTrie],
+            | Self::Build => &[IndexStructure::ColumnTrie],
+        }
+    }
+
+    /// [`structures`](Self::structures) as `-i` spells them, for errors:
+    /// `"tree-trie or column-trie"`.
+    pub(crate) fn structures_label(self) -> String {
+        self.structures()
+            .iter()
+            .map(|ds| {
+                ds.to_possible_value()
+                    .expect("every IndexStructure is a CLI value")
+                    .get_name()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join(" or ")
+    }
+}
+
+impl fmt::Display for DsFlag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            | Self::LayoutHasher => "--ds-layout-hasher",
+            | Self::LayoutPruning => "--ds-layout-pruning",
+            | Self::LayoutSeek => "--ds-layout-seek",
+            | Self::Config => "--ds-config",
+            | Self::Build => "--ds-build",
+        })
+    }
+}
+
+/// The first of `given` that none of `structures` has the axis of: a flag
+/// that would reach no cell of a run over `structures`.
+pub(crate) fn unreached_flag(given: &[DsFlag], structures: &[IndexStructure]) -> Option<DsFlag> {
+    given
+        .iter()
+        .copied()
+        .find(|flag| !flag.structures().iter().any(|ds| structures.contains(ds)))
+}
+
+/// Rejects the first of `given` that none of the structures `indexstructure`
+/// selects has the axis of. `all` selects every structure, so it accepts
+/// every flag here; `bench run` checks again once `-a` has narrowed its
+/// sweep (`resolve_sweep`).
+fn validate_ds_flags(
+    indexstructure: IndexStructureSelector, given: &[DsFlag],
+) -> anyhow::Result<()> {
+    match unreached_flag(given, &indexstructure.expand()) {
+        | Some(flag) => anyhow::bail!(
+            "{flag} is only valid with --indexstructure {} (or all); got --indexstructure \
+             {indexstructure:?}",
+            flag.structures_label()
+        ),
+        | None => Ok(()),
+    }
+}
 
 /// CLI-side selector for `--ds-layout-hasher`. Picks the
 /// [`HashStrategy`](kermit_iters::HashStrategy) compile-time parameter
@@ -232,59 +336,32 @@ impl LayoutChoices {
 
     /// Returns whether the user explicitly passed `--ds-layout-seek`.
     pub(crate) fn sorted_trie_seek_explicit(&self) -> bool { self.sorted_trie_seek.is_some() }
+
+    /// The Layout flags the user passed. See [`DsFlag::given`].
+    fn given(&self) -> Vec<DsFlag> {
+        [
+            (DsFlag::LayoutHasher, self.hash_trie_hasher_explicit()),
+            (DsFlag::LayoutPruning, self.hash_trie_pruning_explicit()),
+            (DsFlag::LayoutSeek, self.sorted_trie_seek_explicit()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, given)| given.then_some(flag))
+        .collect()
+    }
 }
 
 /// Rejects `LayoutChoices` flags that are incompatible with the chosen
 /// `IndexStructureSelector`. Each flag names a Layout of particular
-/// structures: `--ds-layout-hasher` and `--ds-layout-pruning` belong to
-/// `hash-trie`, and `--ds-layout-seek` to `tree-trie` and `column-trie`.
-/// `all` accepts every flag, because its sweep has a cell for each. A flag
-/// on a structure without its Layout is a usage error: it would be silently
-/// ignored, producing a benchmark report whose `ds_layout_*` axis disagrees
-/// with the actual structure used.
+/// structures ([`DsFlag::structures`]): `--ds-layout-hasher` and
+/// `--ds-layout-pruning` belong to `hash-trie`, and `--ds-layout-seek` to
+/// `tree-trie` and `column-trie`. A flag on a structure without its Layout
+/// is a usage error: it would be silently ignored, producing a benchmark
+/// report whose `ds_layout_*` axis disagrees with the actual structure used.
+/// `all` passes here; see [`validate_ds_flags`].
 pub(crate) fn validate_layout_choices(
     indexstructure: IndexStructureSelector, layout: &LayoutChoices,
 ) -> anyhow::Result<()> {
-    let hash_trie = matches!(
-        indexstructure,
-        IndexStructureSelector::HashTrie | IndexStructureSelector::All
-    );
-    let sorted_trie = matches!(
-        indexstructure,
-        IndexStructureSelector::TreeTrie
-            | IndexStructureSelector::ColumnTrie
-            | IndexStructureSelector::All
-    );
-    // (flag, given, applies to the selection, the structures it applies to)
-    let flags: &[(&str, bool, bool, &str)] = &[
-        (
-            "--ds-layout-hasher",
-            layout.hash_trie_hasher_explicit(),
-            hash_trie,
-            "hash-trie",
-        ),
-        (
-            "--ds-layout-pruning",
-            layout.hash_trie_pruning_explicit(),
-            hash_trie,
-            "hash-trie",
-        ),
-        (
-            "--ds-layout-seek",
-            layout.sorted_trie_seek_explicit(),
-            sorted_trie,
-            "tree-trie or column-trie",
-        ),
-    ];
-    for (flag, given, applies, structures) in flags {
-        if *given && !applies {
-            anyhow::bail!(
-                "{flag} is only valid with --indexstructure {structures} (or all); got \
-                 --indexstructure {indexstructure:?}"
-            );
-        }
-    }
-    Ok(())
+    validate_ds_flags(indexstructure, &layout.given())
 }
 
 /// Monomorphises `$body` over the `HashTrie` Layout cell selected at
@@ -391,6 +468,9 @@ impl ConfigChoices {
     /// Whether the user passed any `--ds-config` pair.
     pub(crate) fn explicit(&self) -> bool { !self.ds_config.is_empty() }
 
+    /// `--ds-config` if the user passed it. See [`DsFlag::given`].
+    fn given(&self) -> Option<DsFlag> { self.explicit().then_some(DsFlag::Config) }
+
     /// Resolves the pairs into a [`HashTrieConfig`], starting from the
     /// default. Unknown keys, repeated keys and malformed values are
     /// usage errors.
@@ -448,18 +528,7 @@ pub(crate) fn parse_load_factor(value: &str) -> Result<LoadFactor, String> {
 pub(crate) fn validate_config_choices(
     indexstructure: IndexStructureSelector, config: &ConfigChoices,
 ) -> anyhow::Result<()> {
-    if config.explicit()
-        && !matches!(
-            indexstructure,
-            IndexStructureSelector::HashTrie | IndexStructureSelector::All
-        )
-    {
-        anyhow::bail!(
-            "--ds-config is only valid with --indexstructure hash-trie (or all); got \
-             --indexstructure {indexstructure:?}"
-        );
-    }
-    Ok(())
+    validate_ds_flags(indexstructure, config.given().as_slice())
 }
 
 /// BuildMode-axis CLI choice, flattened beside [`LayoutChoices`] and
@@ -485,6 +554,9 @@ impl BuildChoices {
 
     /// Whether the user explicitly passed `--ds-build`.
     pub(crate) fn column_trie_build_explicit(&self) -> bool { self.column_trie_build.is_some() }
+
+    /// `--ds-build` if the user passed it. See [`DsFlag::given`].
+    fn given(&self) -> Option<DsFlag> { self.column_trie_build_explicit().then_some(DsFlag::Build) }
 }
 
 /// Rejects `--ds-build` on index structures that have no BuildMode axis, so
@@ -493,18 +565,7 @@ impl BuildChoices {
 pub(crate) fn validate_build_choices(
     indexstructure: IndexStructureSelector, build: &BuildChoices,
 ) -> anyhow::Result<()> {
-    if build.column_trie_build_explicit()
-        && !matches!(
-            indexstructure,
-            IndexStructureSelector::ColumnTrie | IndexStructureSelector::All
-        )
-    {
-        anyhow::bail!(
-            "--ds-build is only valid with --indexstructure column-trie (or all); got \
-             --indexstructure {indexstructure:?}"
-        );
-    }
-    Ok(())
+    validate_ds_flags(indexstructure, build.given().as_slice())
 }
 
 /// The resolved value of every `--ds-*` option for one command — what the
@@ -973,6 +1034,67 @@ mod tests {
             .to_string();
         assert!(msg.contains("--ds-layout-seek"), "{msg}");
         assert!(msg.contains("tree-trie or column-trie"), "{msg}");
+    }
+
+    /// Each explicit option maps to its own flag, and defaults map to none,
+    /// so a run that passes no `--ds-*` flag can never be rejected.
+    #[test]
+    fn ds_flag_given_lists_exactly_the_flags_passed() {
+        let none = DsFlag::given(
+            &LayoutChoices::default(),
+            &ConfigChoices::default(),
+            &BuildChoices::default(),
+        );
+        assert_eq!(none, vec![]);
+        let layout = LayoutChoices {
+            hash_trie_hasher: Some(HasherChoice::Fxhash),
+            hash_trie_pruning: Some(PruningChoice::On),
+            sorted_trie_seek: Some(SeekChoice::Binary),
+        };
+        let config = ConfigChoices {
+            ds_config: vec!["load-factor=0.5".into()],
+        };
+        let build = BuildChoices {
+            column_trie_build: Some(ColumnTrieBuildMode::Incremental),
+        };
+        assert_eq!(DsFlag::given(&layout, &config, &build), vec![
+            DsFlag::LayoutHasher,
+            DsFlag::LayoutPruning,
+            DsFlag::LayoutSeek,
+            DsFlag::Config,
+            DsFlag::Build,
+        ]);
+        let seek_only = LayoutChoices {
+            sorted_trie_seek: Some(SeekChoice::Linear),
+            ..LayoutChoices::default()
+        };
+        assert_eq!(
+            DsFlag::given(&seek_only, &ConfigChoices::default(), &build),
+            vec![DsFlag::LayoutSeek, DsFlag::Build]
+        );
+    }
+
+    #[test]
+    fn unreached_flag_is_the_first_flag_no_structure_has() {
+        let sorted = [IndexStructure::TreeTrie, IndexStructure::ColumnTrie];
+        assert_eq!(
+            unreached_flag(&[DsFlag::LayoutSeek, DsFlag::Build], &sorted),
+            None
+        );
+        assert_eq!(
+            unreached_flag(
+                &[DsFlag::LayoutSeek, DsFlag::Config, DsFlag::LayoutHasher],
+                &sorted
+            ),
+            Some(DsFlag::Config)
+        );
+        // ColumnTrie alone has a build mode, so TreeTrie alone does not
+        // reach --ds-build.
+        assert_eq!(
+            unreached_flag(&[DsFlag::Build], &[IndexStructure::TreeTrie]),
+            Some(DsFlag::Build)
+        );
+        assert_eq!(unreached_flag(&[], &[]), None);
     }
 
     #[test]

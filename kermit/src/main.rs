@@ -41,7 +41,7 @@ use {
     execution::{read_relation_header, Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
     options::{
         with_hash_trie_layout, with_sorted_trie_layout, BuildChoices, ConfigChoices, DsChoices,
-        LayoutChoices,
+        DsFlag, LayoutChoices,
     },
 };
 
@@ -935,7 +935,8 @@ fn run_bench_run_command(
     config: ConfigChoices, build: BuildChoices,
 ) -> anyhow::Result<()> {
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
-    let cells = resolve_sweep(indexstructure, algorithm, choices)?;
+    let given = DsFlag::given(&layout, &config, &build);
+    let cells = resolve_sweep(indexstructure, algorithm, choices, &given)?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
         .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;

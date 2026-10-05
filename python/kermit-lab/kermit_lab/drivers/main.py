@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 from .. import presets
 from ..frame import load, load_samples
-from ..loader import SchemaError, load_reports
+from ..loader import TIME_PHASES, SchemaError, load_reports
 from ..plot import plot
 from ..plots_errors import InsufficientAxesError
 from ..styles import apply as apply_style
@@ -28,7 +28,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
 
 
 def _add_phase(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--phase", choices=["insertion", "iteration"], default="iteration",
+    p.add_argument("--phase", choices=TIME_PHASES, default="iteration",
                    help="time-metric phase to plot (default: iteration)")
 
 

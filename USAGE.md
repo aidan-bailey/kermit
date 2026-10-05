@@ -93,9 +93,10 @@ The sorted tries also take `--ds-layout-seek linear|binary|galloping`
 (default `galloping`), the search their iterators' `seek` uses. Every strategy
 returns the same answers, so the flag changes only how fast a join runs; see
 [`docs/data-structures/seek-strategies.md`](docs/data-structures/seek-strategies.md).
-Like the other `--ds-*` flags, it is checked against `-i` only (#86): `bench
-run … -i all -a hash-triejoin --ds-layout-seek galloping` is accepted and runs
-only the hash cell, which has no seek.
+Like every `--ds-*` flag, it must reach a cell that runs (#86): `-i hash-trie`
+rejects it, and so does `bench run … -i all -a hash-triejoin`, whose sweep
+keeps only the hash cell, which has no seek. Under `-i all -a all` each flag
+reaches the cells that have its axis and no others.
 
 ### Pick the query optimiser
 
@@ -290,10 +291,9 @@ kermit bench run triangle -i column-trie -a leapfrog-triejoin
 `-i all` expands to all three index structures (`column-trie`, `hash-trie`,
 `tree-trie`) and `-a all` expands to both concrete algorithms (`hash-triejoin`,
 `leapfrog-triejoin`); the selectors are wired up so adding a new `IndexStructure`
-or `JoinAlgorithm` variant automatically joins the sweep. **However, the
-cross-product currently does *not* filter incompatible pairs**, so the only
-benchmark runs that are both valid and correctly labelled are the three matched
-configurations:
+or `JoinAlgorithm` variant automatically joins the sweep. The cross product is
+filtered to the three valid (structure, algorithm) cells, and each skipped pair
+is announced on stderr, so `-i all -a all` runs exactly:
 
 ```sh
 kermit bench run triangle -i tree-trie -a leapfrog-triejoin
@@ -301,10 +301,11 @@ kermit bench run triangle -i column-trie -a leapfrog-triejoin
 kermit bench run triangle -i hash-trie -a hash-triejoin
 ```
 
-Avoid `-i all -a all` (it panics on the first incompatible pair, e.g.
-`(column-trie, hash-triejoin)`) and `-i all -a leapfrog-triejoin` (it reaches
-the `(hash-trie, leapfrog-triejoin)` arm, which silently runs hash-triejoin yet
-labels the report's algorithm axis `LeapfrogTriejoin`).
+`-i all -a leapfrog-triejoin` runs the two sorted cells, and a single explicit
+incompatible pair (`-i hash-trie -a leapfrog-triejoin`) is a usage error. A
+`--ds-*` flag must reach at least one cell that runs, so `-i all -a
+leapfrog-triejoin --ds-config load-factor=0.5`, which has no hash-trie cell, is
+a usage error too (#86).
 
 ### Declarative generator benchmarks
 
