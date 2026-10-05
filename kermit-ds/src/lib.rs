@@ -25,6 +25,7 @@ mod cardinality;
 mod configured;
 mod ds;
 mod heap_size;
+mod morsel;
 mod relation;
 mod seek;
 #[cfg(test)]
@@ -40,6 +41,7 @@ pub use {
         InvalidLoadFactor, LoadFactor, NoPruning, PruningPolicy, SingletonPruning, TreeTrie,
     },
     heap_size::HeapSize,
+    morsel::Threads,
     relation::{
         read_csv, read_csv_header, read_parquet, read_parquet_header, BuildModeRelation,
         ConfigurableRelation, ModelType, Projectable, Relation, RelationError, RelationFileExt,
