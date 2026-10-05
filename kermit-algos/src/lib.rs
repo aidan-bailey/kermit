@@ -7,13 +7,15 @@
 //!
 //! # Layout
 //!
-//! The crate is organised in six parts. Four are family-agnostic and sit
+//! The crate is organised in seven parts. Five are family-agnostic and sit
 //! at the root — `const_rewrite`, which turns constant atoms into synthetic
 //! unary predicates; `placeholder_rewrite`, which turns each `_` into a
 //! fresh variable; `selection_rewrite`, which turns a variable repeated
 //! inside one atom into a fresh variable plus a synthetic selection view;
-//! and `analysis`, the canonical variable numbering that planners and
-//! executors must agree on. `optimiser` plans a
+//! `analysis`, the canonical variable numbering that planners and
+//! executors must agree on; and `orient`, which runs after planning and
+//! renames each atom whose plan disagrees with its stored column order to
+//! a reordered copy (`--column-orders any`). `optimiser` plans a
 //! [`QueryPlan`]. The remaining two are the iterator families, `sorted`
 //! (over [`TrieIterable`](kermit_iters::TrieIterable)) and `hash` (over
 //! [`HashTrieIterable`](kermit_iters::HashTrieIterable)); they share no
@@ -28,6 +30,7 @@ mod const_rewrite;
 mod hash;
 mod join_algo;
 mod optimiser;
+mod orient;
 mod placeholder_rewrite;
 mod selection_rewrite;
 mod sorted;
@@ -41,7 +44,7 @@ mod sorted;
 // its implementations in `optimiser`.
 use clap::ValueEnum;
 pub use {
-    analysis::{analyse, QueryAnalysis},
+    analysis::{analyse, canonical_names, QueryAnalysis},
     const_rewrite::{
         is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
     },
@@ -54,6 +57,7 @@ pub use {
         LexicographicOptimiser, Optimiser, PlanError, Planner, Precedence, QueryOptimiser,
         QueryPlan, RelationStats, StatisticsLevel,
     },
+    orient::{is_index_predicate, orient, IndexSpec, Oriented, INDEX_PREDICATE_PREFIX},
     placeholder_rewrite::rewrite_placeholders,
     selection_rewrite::{
         is_selection_predicate, rewrite_repeated_variables, ColumnEquality, SelectionSpec,
