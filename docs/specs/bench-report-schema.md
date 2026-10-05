@@ -175,8 +175,9 @@ tooling relies on them for cross-DS comparison.
   structure. ColumnTrie values: `bulk` (default) and `incremental`
   (`--ds-build column-trie=incremental`). TreeTrie values: `serial` (default)
   and `parallel:N` (`--ds-build tree-trie=parallel:N`, N threads in
-  1..=1024). HashTrie values: `serial` (default) and `radix:<bits>`
-  (`--ds-build hash-trie=radix:<bits>`, bits in 1..=16).
+  1..=1024). HashTrie values: `serial` (default), `radix:<bits>`
+  (`--ds-build hash-trie=radix:<bits>`, bits in 1..=16) and `parallel:N`
+  (`--ds-build hash-trie=parallel:N`, N threads in 1..=1024).
 - `algo_layout_<dim>`, `algo_config_<flag>`, `algo_build_mode` — analogous
   prefixes for algorithm-level optimizations (reserved; not yet used).
 
@@ -243,3 +244,4 @@ bump — the `axes` field is an open map.
 | 3 (no bump) | 2026-10-05 | Every HashTrie report carries `ds_build_mode` (#91): `serial`, the only build before, or `radix:<bits>`. Every mode builds the identical trie, so no metric changes meaning and `schema_version` stays `3`; kermit-lab back-fills `serial` on earlier HashTrie rows. `--ds-build` now takes `structure=mode` pairs (`column-trie=incremental`), and the bare form is rejected. |
 | 3 (no bump) | 2026-10-05 | Added the `column_orders` conventional `axes` key (`--column-orders stored\|any`, #93), the `copies` time function, `space/Index_<π>_<base>` space functions and `index` metadata lines, the last three present only under `any` when the plan needs a copy. Additive — under `stored` only the new axis appears — so `schema_version` stays `3`. kermit-lab back-fills `stored` on earlier join rows. |
 | 3 (no bump) | 2026-10-05 | TreeTrie reports carry `ds_build_mode` (#94): `serial` (the default, the build every earlier TreeTrie report ran) or `parallel:N` (`--ds-build tree-trie=parallel:N`). Every mode builds the identical trie, so `iteration` and `space` cannot move and `schema_version` stays `3`. kermit-lab back-fills `serial` on earlier TreeTrie rows and derives a numeric `threads` column. Compare build modes within one binary. |
+| 3 (no bump) | 2026-10-05 | HashTrie reports can carry `ds_build_mode` `parallel:N` (#94, `--ds-build hash-trie=parallel:N`). Every mode builds the identical trie, so `schema_version` stays `3`; kermit-lab derives `threads` from it as for TreeTrie. |

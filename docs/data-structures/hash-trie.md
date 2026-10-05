@@ -322,12 +322,13 @@ optimizations are classified into Layout, Config, or BuildMode.
 
 Every mode builds the identical trie — the same buckets, the same
 capacities, the same `heap_size_bytes` — so the mode changes the
-`insertion` and `end_to_end` timings and nothing else (issue #91).
+`insertion` and `end_to_end` timings and nothing else (issues #91, #94).
 
 | Mode | `--ds-build` | Method |
 |---|---|---|
 | `Serial` (default) | `hash-trie=serial` | one `insert_at` per tuple, in input order (Algorithm 2) |
 | `Radix(K)` | `hash-trie=radix:K`, K in 1..=16 | radix-partition on the top K bits of the first attribute's hash, build each partition into a scratch root, merge (SIGMOD 2020 §3.3.2) |
+| `Parallel(N)` | `hash-trie=parallel:N`, N in 1..=1024 | the radix build's partition and build steps on N threads (P = 4·N partitions, rounded up to a power of two), then a k-way merge into the root on the calling thread (§3.3.2, morsel-driven) |
 
 **The radix build** ([`radix.rs`](../../kermit-ds/src/ds/hash_trie/radix.rs)):
 
@@ -371,10 +372,18 @@ constant added to every key's product, so the partition does not cluster.
 [`hash_table.rs`](../../kermit-ds/src/ds/hash_trie/hash_table.rs), pins this:
 without the multiplier, one partition costs about 90× the probes.
 
-- **Axis:** `ds_build_mode` (`serial` / `radix:K`), on every HashTrie
-  report. The bench family that ran the build emits it, because the trie
-  cannot tell how it was built. kermit-lab reads a HashTrie row without the
-  axis as `serial`, the only build before the axis existed.
+**The parallel build** (`parallel.rs`) runs the radix build's partition
+step through `morsel::scatter` and its build step through
+`morsel::dispatch`, so each runs on N threads. The calling thread then
+merges the partitions' entries into the root by a k-way merge on their
+first-appearance positions. The trie is the radix build's, and so the
+serial build's. Steps, identity argument, complexity and a worked example:
+[`parallel-build.md`](./parallel-build.md#hashtrie).
+
+- **Axis:** `ds_build_mode` (`serial` / `radix:K` / `parallel:N`), on every
+  HashTrie report. The bench family that ran the build emits it, because the
+  trie cannot tell how it was built. kermit-lab reads a HashTrie row without
+  the axis as `serial`, the only build before the axis existed.
 - **API:** `HashTrieBuildMode`, through
   `BuildModeRelation::from_tuples_with_build_mode`. To set the load factor
   as well, use `HashTrie::from_tuples_with_config_and_build_mode`.
@@ -389,12 +398,25 @@ without the multiplier, one partition costs about 90× the probes.
   - `define_multiway_join_test_suite_for_build_mode!` with `Radix2` in
     `kermit/tests/join_tests.rs`, on Sip/off/eager, Fx/on/eager and
     Sip/on/lazy, under every optimiser.
+  - `parallel_builds_the_serial_trie_*` and `build_modes_reach_their_builds`
+    in `parallel.rs`: identity for N ∈ {1, 2, 3, 8}, morsels of 7 and of
+    16 384, arity 1–4 and a dominant key; and the record that shows which
+    build ran, with which N.
+  - The `HashTrieSipParallel2`, `HashTrieSipLazyParallel2` and
+    `HashTrieFxPrunedParallel2` aliases in `hash_trie_tests.rs` (and
+    `HashTrieSipParallel2` in `parquet_tests.rs`), and
+    `define_multiway_join_test_suite_for_build_mode!` with `HashParallel2`
+    in `join_tests.rs`.
+  - `hash_trie_families_build_with_their_parallel_mode` in
+    `kermit/src/execution.rs` (the mode reaches the build on every route)
+    and `kermit/tests/cli_hash_trie_build_mode.rs`.
 - **Measured effect:** on inputs that arrive grouped by their first
   attribute, slower single-threaded, with identical space: 1.12–1.14×
   `serial`'s `insertion` time on `friendof` and 1.93–2.28× on `price`. On
   `friendof` with its rows shuffled, `radix:12` is 0.90× `serial`, the only
   arm that wins. See [Radix build A/B](#radix-build-ab) and
   [its shuffled-input run](#radix-build-ab-shuffled-input).
+  `parallel:N` is not measured yet; that is #94's scaling run.
 
 #### Radix build A/B
 

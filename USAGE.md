@@ -201,21 +201,22 @@ kermit bench ds -r data.csv -i tree-trie -m end-to-end --queries-per-build 4
 `structure=mode` pairs: `tree-trie=serial|parallel:<threads>` (default
 `serial`; threads in 1..=1024, the calling thread included),
 `column-trie=bulk|incremental` (default `bulk`) and
-`hash-trie=serial|radix:<bits>` (default `serial`; bits in 1..=16). Every mode
-builds the identical structure, so the flag changes the `insertion` and
-`end-to-end` timings only; the report records it as `ds_build_mode`. A pair is
-valid only when `-i` selects its structure (or `all`), and each structure
-takes only its own modes (`tree-trie=bulk` is rejected). `bench run` and
-`bench join` accept it too.
+`hash-trie=serial|radix:<bits>|parallel:<threads>` (default `serial`; bits
+in 1..=16, threads in 1..=1024). Every mode builds the identical structure,
+so the flag changes the `insertion` and `end-to-end` timings only; the report
+records it as `ds_build_mode`. A pair is valid only when `-i` selects its
+structure (or `all`), and each structure takes only its own modes
+(`tree-trie=bulk` is rejected). `bench run` and `bench join` accept it too.
 
 ```sh
 kermit bench ds -r data.csv -i tree-trie -m insertion --ds-build tree-trie=parallel:4
 kermit bench ds -r data.csv -i column-trie -m insertion --ds-build column-trie=incremental
 kermit bench ds -r data.csv -i hash-trie -m insertion --ds-build hash-trie=radix:8
+kermit bench ds -r data.csv -i hash-trie -m insertion --ds-build hash-trie=parallel:4
 ```
 
 See `BENCHMARKING.md` § "Scaling: measuring a parallel build" for the
-`tree-trie=parallel:N` speedup workflow.
+`tree-trie=parallel:N` and `hash-trie=parallel:N` speedup workflow.
 
 `--ds-layout-seek` is rejected here: none of `bench ds`'s metrics calls `seek`.
 

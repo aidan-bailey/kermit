@@ -1,7 +1,8 @@
 # Parallel Builds for TreeTrie and HashTrie
 
 **Date:** 2026-10-05
-**Status:** Design approved (brainstormed 2026-10-05); not yet implemented
+**Status:** Design approved (brainstormed 2026-10-05); TreeTrie landed
+(plan 1, 00bcc88); HashTrie implemented by plan 2
 **Scope:** Issue #94. TreeTrie and HashTrie each gain a `parallel:N` build mode. The
 build is morsel-driven, runs on `std::thread::scope`, and produces exactly
 the trie the serial build produces. Serial stays the default. A scaling
@@ -236,6 +237,18 @@ axis values. Construction works like this:
 **Only one shared internal changes.** `HashTable::into_slots` is new, and
 the serial path never calls it.
 
+**As built (plan 2, after #91 and #92).** #91 landed first, so the
+HashTrie build reuses its radix steps: `HashTrieBuildMode` gained a
+`Parallel(Threads)` variant beside `Radix`, `from_tuples_with` is #91's
+`from_tuples_with_config_and_build_mode`, and `into_slots` is #91's
+`into_buckets` through `radix::take_in_arrival_order`. The radix build
+keeps its own serial partition, since changing its executed path would
+invalidate its recorded A/B; only `parallel:N` uses `scatter`. The
+policies' associated types gained `Send` bounds, because generic code
+cannot otherwise prove `HashTrieNode<P, E>: Send`. The CLI spelling is
+keyed (`hash-trie=parallel:N`, #91), and it is a new mode, not
+`radix:K:N` (user decision, 2026-10-05).
+
 ### Placement under the optimisation standard
 
 - **Category.** BuildMode, axis `ds_build_mode`.
@@ -454,7 +467,7 @@ the serial path never calls it.
 ## Coordination
 
 - **#91 (radix partitioning)** reuses `scatter`. Whichever lands second
-  builds on the other's `morsel.rs`.
+  builds on the other's `morsel.rs`. (It did not: see "As built" above.)
 - **#92 (lazy child expansion).** The build step moves finished children
   between threads, so values must be `Send`. `OnceCell` is `Send` (it is
   only `!Sync`), and no trie is ever shared between threads.

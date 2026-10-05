@@ -114,7 +114,7 @@ A **BuildMode** changes the construction process but leaves the resulting in-mem
 | Type system enforcement | Weak (mode is just a parameter) |
 | Output equivalence | Required: every mode builds the same structure — same contents **and** the same `HeapSize` — so a build mode can move only the build-timing metrics (`insertion`, `end_to_end`), never `iteration` or `space`. kermit-lab relies on this when it limits `ds_build_mode` ablations to the build phases. |
 | Bench axis key | `ds_build_mode` (single key with mode + params) |
-| Examples | ColumnTrie bulk / incremental ✓, HashTrie radix partitioning ✓, TreeTrie serial / parallel:N ✓, HashTrie parallel build |
+| Examples | ColumnTrie bulk / incremental ✓, HashTrie radix partitioning ✓, TreeTrie serial / parallel:N ✓, HashTrie serial / parallel:N ✓ |
 | Test obligation | Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an array-level test that every mode builds the identical structure, capacities included |
 
 ---
@@ -796,8 +796,8 @@ This is semantically correct — pre-standard HashTrie runs were SipHash-only. S
 
 ## What's implemented today, what's available
 
-Eight optimizations are implemented — four Layout dimensions, one Config
-value and three BuildModes:
+Nine optimizations are implemented — four Layout dimensions, one Config
+value and four BuildModes:
 
 | Optimization | Category | Where | Paper § |
 |---|---|---|---|
@@ -809,6 +809,7 @@ value and three BuildModes:
 | ColumnTrie build (bulk / incremental) | BuildMode | `ds_build_mode` | (kermit-specific, issue #84) |
 | HashTrie radix-partitioned build (serial / radix:K) | BuildMode | `ds_build_mode` | §3.3.2 (issue #91) |
 | TreeTrie build (serial / parallel:N) | BuildMode | `ds_build_mode` | §3.3.2 (morsel-driven; issue #94) |
+| HashTrie parallel build (serial / parallel:N) | BuildMode | `ds_build_mode` | §3.3.2 (morsel-driven; issue #94) |
 
 `define_multiway_join_test_suite_for_build_mode!` landed with the first
 BuildMode consumer, ColumnTrie's build, and covers every consumer.
@@ -820,7 +821,6 @@ Available to add (each a separate brainstorming → planning → implementation 
 | Pointer tagging | Layout | Medium | §3.3.1, Fig 4 |
 | Initial capacity hint | Config | Small | (kermit-specific) |
 | Hash seed | Config | Small | (kermit-specific) |
-| Parallel build (HashTrie; TreeTrie's landed with #94) | BuildMode | Large | §3.3.2 |
 | Algorithm: skip-levels short-circuit (shelved, #90) | Layout (algo) | Medium | (kermit-specific) |
 | Algorithm: eager-collect vs lazy-iterate | Config (algo) | Medium | (kermit-specific) |
 
