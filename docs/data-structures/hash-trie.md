@@ -389,9 +389,12 @@ without the multiplier, one partition costs about 90× the probes.
   - `define_multiway_join_test_suite_for_build_mode!` with `Radix2` in
     `kermit/tests/join_tests.rs`, on Sip/off/eager, Fx/on/eager and
     Sip/on/lazy, under every optimiser.
-- **Measured effect:** slower single-threaded, with identical space:
-  1.12–1.14× `serial`'s `insertion` time on `friendof` and 1.93–2.28× on
-  `price`. See [Radix build A/B](#radix-build-ab).
+- **Measured effect:** on inputs that arrive grouped by their first
+  attribute, slower single-threaded, with identical space: 1.12–1.14×
+  `serial`'s `insertion` time on `friendof` and 1.93–2.28× on `price`. On
+  `friendof` with its rows shuffled, `radix:12` is 0.90× `serial`, the only
+  arm that wins. See [Radix build A/B](#radix-build-ab) and
+  [its shuffled-input run](#radix-build-ab-shuffled-input).
 
 #### Radix build A/B
 
@@ -433,10 +436,44 @@ though not sorted), and `price` is sorted with every key distinct. The
 serial build therefore already makes each subtrie's inserts in one burst,
 which is the locality radix partitioning exists to create, so here the
 partition passes are pure overhead. On `price` (D = n) the merge also makes
-as many random root inserts as the serial build does. A shuffled input,
-where the serial build's subtrie inserts scatter, is untested. SIGMOD 2020
+as many random root inserts as the serial build does. SIGMOD 2020
 §3.3.2 partitions for cache locality inside a parallel, morsel-driven
 build. This A/B measures one thread only; parallel builds are #94.
+
+#### Radix build A/B, shuffled input
+
+The paper's ablation (§5.4.2 of the technical report TUM-I2082) calls radix
+partitioning "arguably the most important optimization", because "it eliminates any
+runtime fluctuations due to the specific order in which data is stored in
+the base tables". Its gains appear from 500M edges up: read as the ratio of
+Table 6's last two columns, removing radix costs 1.13× at 500M edges and
+1.20× at 1.2B, and nothing at 5M or 50M. To test the order claim, the A/B
+above was repeated on `friendof` in two orders:
+- *grouped:* the cached file;
+- *shuffled:* its rows permuted with seed `0x91`, giving the same schema
+  and tuples in 4,490,997 runs instead of 39,781.
+
+The two inputs and four arms were interleaved in each replicate, with both
+orders alternating, using the same binary and protocol as above. Three
+steps that overlapped a peer session's work were re-run. Run directory:
+`kermit-bench-runs/radix-shuffle-2026-10-05/`.
+
+| Arm | Grouped (ms) | Shuffled (ms) | Over `serial`, shuffled | Shuffled over grouped |
+|---|---|---|---|---|
+| `serial` | 274.3 [272.7, 277.3] | 764.3 [759.0, 784.6] | 1 | 2.79× [2.77, 2.84] |
+| `radix:4` | 313.8 [311.9, 316.7] | 868.9 [859.8, 887.1] | 1.14× [1.12, 1.15] | 2.77× [2.75, 2.81] |
+| `radix:8` | 310.0 [308.4, 314.9] | 808.4 [805.0, 821.0] | 1.06× [1.04, 1.07] | 2.61× [2.59, 2.63] |
+| `radix:12` | 310.0 [306.6, 312.7] | 689.1 [685.5, 692.5] | 0.90× [0.88, 0.91] | 2.22× [2.21, 2.24] |
+
+`space` is 797,992,480 bytes in every cell. The grouped column reproduces
+the first A/B: radix is 1.13–1.14× `serial`.
+
+**Reading.** Input order matters far more than the build mode: shuffling
+the same tuples makes the serial build 2.79× slower. On the shuffled input
+radix helps more as K grows, and at `radix:12` it beats `serial` by 10 %,
+the only case where radix wins at all. It does not remove the order
+penalty, though. `radix:12` cuts it from 2.79× to 2.22×. What makes up the
+remaining penalty was not measured.
 
 ## See also
 
