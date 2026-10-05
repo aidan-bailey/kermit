@@ -341,8 +341,9 @@ pub(crate) fn dispatch_run_bench(
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
+            build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie<S>>::new((), optimiser),
+            &TrieLftj::<kermit_ds::TreeTrie<S>>::new(build, optimiser),
             workload,
             settings,
         )),

@@ -650,8 +650,9 @@ fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRu
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
+            build,
         }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
-            TrieLftj::<kermit_ds::TreeTrie<S>>::new((), optimiser),
+            TrieLftj::<kermit_ds::TreeTrie<S>>::new(build, optimiser),
             cell,
             &args.relations,
         )),

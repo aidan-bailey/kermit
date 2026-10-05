@@ -207,8 +207,9 @@ pub(crate) fn dispatch_ds_bench(
     match Execution::for_structure(ds, choices) {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
+            build,
         }) => with_sorted_trie_layout!(seek, |S| run_ds_bench(
-            &SortedTrieFamily::<kermit_ds::TreeTrie<S>>::default(),
+            &SortedTrieFamily::<kermit_ds::TreeTrie<S>>::new(build),
             relation,
             metrics,
             queries_per_build,
