@@ -25,7 +25,7 @@ pub use {
     lexicographic::LexicographicOptimiser,
     ordering::{check_attribute_order, topological_order, CyclicAttributeOrder},
     plan::{PlanError, QueryPlan},
-    stats::{CatalogStats, RelationStats, StatisticsLevel},
+    stats::{distinct_per_column, CatalogStats, RelationStats, StatisticsLevel},
 };
 use {clap::ValueEnum, kermit_parser::JoinQuery};
 

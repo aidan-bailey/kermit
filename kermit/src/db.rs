@@ -23,7 +23,7 @@ pub use validation::{validate_query, JoinError, RelationArities};
 use {
     kermit_algos::{
         is_const_predicate, is_selection_predicate, CatalogStats, ColumnEquality, HashTrieIterKind,
-        HashTriejoin, JoinAlgo, JoinQuery, QueryOptimiser, SingletonHashTrieIter,
+        HashTriejoin, JoinAlgo, JoinQuery, QueryOptimiser, RelationStats, SingletonHashTrieIter,
         SingletonTrieIter, TrieIterKind,
     },
     kermit_ds::{Cardinality, Relation},
@@ -179,7 +179,9 @@ where
         .collect();
     let stats = CatalogStats::for_query(&rewritten, |name| {
         let base = base_of.get(name).copied().unwrap_or(name);
-        relations.get(base).map(Cardinality::tuple_count)
+        relations
+            .get(base)
+            .map(|r| RelationStats::new(r.tuple_count(), r.header().arity()))
     });
     let plan = optimiser.plan(&rewritten, &stats);
 
