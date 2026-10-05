@@ -252,10 +252,51 @@ queries:
     (workspace, cache)
 }
 
+/// A workspace with a symmetric `edge.csv` (five undirected edges, each
+/// stored both ways) and one benchmark whose 4-cycle query reads the
+/// last atom reversed: the copy `any` builds holds the relation's own
+/// tuples (#96's SNAP case).
+fn symmetric_workspace() -> (TempDir, TempDir) {
+    let workspace = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let data = workspace.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(
+        data.join("edge.csv"),
+        "src,dst\n1,2\n2,1\n2,3\n3,2\n3,4\n4,3\n4,1\n1,4\n1,3\n3,1\n",
+    )
+    .unwrap();
+    let benchmarks = workspace.path().join("benchmarks");
+    fs::create_dir_all(&benchmarks).unwrap();
+    fs::write(
+        benchmarks.join("square.yml"),
+        r#"name: square
+description: "4-cycles over a symmetric edge relation: the reversed copy is redundant"
+relations:
+  - name: edge
+    path: "data/edge.csv"
+queries:
+  - name: four-cycle
+    description: "closed walks of length four"
+    query: "Q(A, B, C, D) :- edge(A, B), edge(B, C), edge(C, D), edge(D, A)."
+    expected: 50
+"#,
+    )
+    .unwrap();
+    (workspace, cache)
+}
+
 /// `bench run mutual` in `workspace`, returning the process output and
 /// the parsed report array (empty if no report was written).
 fn bench_run_mutual(
     workspace: &TempDir, cache: &TempDir, args: &[&str],
+) -> (std::process::Output, Vec<serde_json::Value>) {
+    bench_run_in(workspace, cache, "mutual", args)
+}
+
+/// `bench run <benchmark>` in `workspace`, as [`bench_run_mutual`].
+fn bench_run_in(
+    workspace: &TempDir, cache: &TempDir, benchmark: &str, args: &[&str],
 ) -> (std::process::Output, Vec<serde_json::Value>) {
     let report = workspace.path().join("report.json");
     let output = Command::new(kermit_bin())
@@ -275,7 +316,7 @@ fn bench_run_mutual(
             "--report-json",
         ])
         .arg(&report)
-        .args(["run", "mutual"])
+        .args(["run", benchmark])
         .args(args)
         .output()
         .unwrap();
@@ -433,4 +474,36 @@ fn bench_run_under_any_emits_no_copies_when_the_plan_agrees() {
         "{reports:?}"
     );
     assert_eq!(reports[0]["axes"]["column_orders"], "any");
+}
+
+/// A redundant copy is still a copy: on a symmetric relation the reversed
+/// copy holds the base's own tuples, but the planner cannot know that, so
+/// `any` builds it, times it and measures it like any other, and the
+/// answer still verifies.
+#[test]
+fn bench_run_under_any_reports_a_symmetric_relations_redundant_copy() {
+    let (workspace, cache) = symmetric_workspace();
+    let (output, reports) = bench_run_in(&workspace, &cache, "square", &[
+        "-i",
+        "tree-trie",
+        "-a",
+        "leapfrog-triejoin",
+        "--column-orders",
+        "any",
+        "--verify",
+        "-m",
+        "insertion",
+        "space",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let functions = functions_of(&reports[0]);
+    for function in ["insertion", "copies", "space/edge", "space/Index_1_0_edge"] {
+        assert!(
+            functions.contains(&function.to_string()),
+            "{function} missing from {functions:?}"
+        );
+    }
+    assert!(has_index_line(&reports[0], "edge (1, 0)"), "{reports:?}");
+    assert_eq!(reports[0]["axes"]["verified"], true);
 }

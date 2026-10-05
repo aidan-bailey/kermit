@@ -122,6 +122,39 @@ fn constant_on_reoriented_atom() -> Pattern {
     }
 }
 
+/// A symmetric relation (every edge stored in both directions, as SNAP's
+/// `edge` is, #96) under the 4-cycle `edge(A, B), …, edge(D, A)`. Read in
+/// plan order the last atom disagrees with the stored order, so `any`
+/// builds the reversed copy `Index_1_0_edge` — which, the relation being
+/// symmetric, holds exactly the base's tuples. The planner cannot know
+/// that, so the redundant copy is built, read and reported like any other.
+fn symmetric_four_cycle() -> Pattern {
+    let undirected = [(1, 2), (2, 3), (3, 4), (4, 1), (1, 3)];
+    let edges: Vec<Vec<usize>> = undirected
+        .iter()
+        .flat_map(|&(a, b)| [vec![a, b], vec![b, a]])
+        .collect();
+    let has = |a: usize, b: usize| edges.contains(&vec![a, b]);
+    // Every closed walk of length four (bag semantics): 50 rows.
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    for ab in &edges {
+        for bc in edges.iter().filter(|e| e[0] == ab[1]) {
+            for cd in edges.iter().filter(|e| e[0] == bc[1]) {
+                if has(cd[1], ab[0]) {
+                    rows.push(vec![ab[0], ab[1], bc[1], cd[1]]);
+                }
+            }
+        }
+    }
+    rows.sort();
+    Pattern {
+        relations: vec![("edge", 2, edges)],
+        query: "Q(A, B, C, D) :- edge(A, B), edge(B, C), edge(C, D), edge(D, A).",
+        rows,
+        cyclic_under_stored: true,
+    }
+}
+
 /// Runs `pattern` over `R` through `JA` under `O`: `stored` rejects or
 /// agrees, `any` returns the pinned rows. Returns the specs `any` built.
 fn check<R: Relation + Cardinality, JA: JoinEntry<R>, O: QueryOptimiser + Default + 'static>(
@@ -202,6 +235,11 @@ macro_rules! any_only_patterns {
                         check::<$relation, $algo, $optimiser>(
                             &super::constant_on_reoriented_atom(),
                         );
+                    }
+
+                    #[test]
+                    fn symmetric_four_cycle() {
+                        check::<$relation, $algo, $optimiser>(&super::symmetric_four_cycle());
                     }
                 }
             }
@@ -348,4 +386,23 @@ fn lexicographic_builds_the_expected_copies() {
     assert_eq!(names, vec!["Index_1_0_includes", "Index_1_0_purchasefor"]);
     let specs = check::<HashTrieSip, HashTriejoin, LexicographicOptimiser>(&mutual_edges());
     assert_eq!(specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+}
+
+/// A symmetric relation's reversed copy is redundant, but the planner
+/// cannot know that: `any` still builds it, and it holds the base's tuples.
+#[test]
+fn a_symmetric_relation_still_gets_its_redundant_copy() {
+    let pattern = symmetric_four_cycle();
+    assert_eq!(pattern.rows.len(), 50);
+    let specs = check::<TreeTrie, LeapfrogTriejoin, LexicographicOptimiser>(&pattern);
+    assert_eq!(specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+    let base = &pattern.relations[0].2;
+    let mut copied = specs[0].permute_all(base);
+    let mut original = base.clone();
+    copied.sort();
+    original.sort();
+    assert_eq!(
+        copied, original,
+        "the reversed copy of a symmetric relation is the relation"
+    );
 }
