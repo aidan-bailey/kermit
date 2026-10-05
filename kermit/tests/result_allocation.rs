@@ -44,13 +44,20 @@
 //! *second* join over the same relations, because a cold lazy join
 //! allocates once per child it expands, by design. The scan never expands,
 //! so its lazy cells measure the trie as built.
+//!
+//! Issue #93 adds `--column-orders any`: the `*_under_any_*` cells read a
+//! reversed `R` through its reordered copy, built before measuring, and
+//! the streamed join over the copy must allocate nothing per row either.
 
 use {
-    kermit::db::{hash_join_for_each, lftj_join_for_each, Database},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, Planner},
+    kermit::db::{build_index, hash_join_for_each, lftj_join_for_each, Database},
+    kermit_algos::{
+        ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, Planner,
+    },
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie,
-        LazyExpansion, LinearSeek, NoPruning, PruningPolicy, Relation, SingletonPruning, TreeTrie,
+        LazyExpansion, LinearSeek, NoPruning, PruningPolicy, Relation, RelationHeader,
+        SingletonPruning, TreeTrie,
     },
     kermit_iters::{
         FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -174,6 +181,75 @@ fn htj_lazy_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u6
     htj_warm_join_allocations(QUERY, relations, XS * fan_out)
 }
 
+/// `R` reversed: `{(0, x)}`, so [`REVERSED_QUERY`] binds its second column
+/// first and, under `--column-orders any`, reads it through the copy
+/// `Index_1_0_R`.
+fn reversed_r() -> Vec<Vec<usize>> { (0..XS).map(|x| vec![0, x]).collect() }
+
+const REVERSED_QUERY: &str = "Q(X, Y, Z) :- R(Y, X), S(X, Z).";
+
+/// The reversed `R` and `S` as `Rel`, holding the one copy
+/// [`REVERSED_QUERY`] reads under `planner`, built before anything is
+/// measured.
+fn database_with_copies<Rel: Relation + Cardinality>(
+    fan_out: usize, planner: &Planner,
+) -> Database<Rel> {
+    let r = RelationHeader::new_positional("R", 2);
+    let s = RelationHeader::new_positional("S", 2);
+    let mut database = Database::from(BTreeMap::from([
+        ("R".to_string(), Rel::from_tuples(r.clone(), reversed_r())),
+        ("S".to_string(), Rel::from_tuples(s, s_tuples(fan_out))),
+    ]));
+    let query: JoinQuery = REVERSED_QUERY.parse().unwrap();
+    let specs = database.required_indexes(&query, planner).unwrap();
+    assert_eq!(specs.len(), 1, "the reversed R is read through one copy");
+    for spec in specs {
+        assert_eq!(spec.base, "R");
+        let copy = build_index(&spec, &r, &reversed_r());
+        database.add_index(spec, copy);
+    }
+    database
+}
+
+fn any_planner() -> Planner {
+    Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any)
+}
+
+/// Allocations of one streamed LFTJ join of [`REVERSED_QUERY`] under
+/// `any`, over its prebuilt copy, after checking it produced every row.
+fn lftj_any_allocations<Rel: TrieIterable + Cardinality + Relation>(fan_out: usize) -> u64 {
+    let planner = any_planner();
+    let database = database_with_copies::<Rel>(fan_out, &planner);
+    let query: JoinQuery = REVERSED_QUERY.parse().unwrap();
+    let mut produced = 0usize;
+    let info = allocation_counter::measure(|| {
+        lftj_join_for_each::<Rel, LeapfrogTriejoin>(&database, query, &planner, |tuple| {
+            std::hint::black_box(tuple);
+            produced += 1;
+        })
+        .unwrap();
+    });
+    assert_eq!(produced, XS * fan_out, "the join must produce every row");
+    info.count_total
+}
+
+/// The HashTriejoin twin of [`lftj_any_allocations`].
+fn htj_any_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
+    let planner = any_planner();
+    let database = database_with_copies::<HashTrie<H, P>>(fan_out, &planner);
+    let query: JoinQuery = REVERSED_QUERY.parse().unwrap();
+    let mut produced = 0usize;
+    let info = allocation_counter::measure(|| {
+        hash_join_for_each::<HashTrie<H, P>, H>(&database, query, &planner, |tuple| {
+            std::hint::black_box(tuple);
+            produced += 1;
+        })
+        .unwrap();
+    });
+    assert_eq!(produced, XS * fan_out, "the join must produce every row");
+    info.count_total
+}
+
 fn assert_flat(cell: &str, small: u64, large: u64) {
     assert_eq!(
         small, large,
@@ -189,6 +265,26 @@ fn tree_trie_lftj_allocates_independently_of_result_size() {
         "TreeTrie/LFTJ",
         lftj_allocations::<TreeTrie>(SMALL),
         lftj_allocations::<TreeTrie>(LARGE),
+    );
+}
+
+#[test]
+fn tree_trie_lftj_under_any_allocates_independently_of_result_size() {
+    lftj_any_allocations::<TreeTrie>(SMALL);
+    assert_flat(
+        "TreeTrie/LFTJ/any",
+        lftj_any_allocations::<TreeTrie>(SMALL),
+        lftj_any_allocations::<TreeTrie>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_under_any_allocates_independently_of_result_size() {
+    htj_any_allocations::<SipHashStrategy, NoPruning>(SMALL);
+    assert_flat(
+        "HashTrie<Sip>/HTJ/any",
+        htj_any_allocations::<SipHashStrategy, NoPruning>(SMALL),
+        htj_any_allocations::<SipHashStrategy, NoPruning>(LARGE),
     );
 }
 

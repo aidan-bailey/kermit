@@ -18,14 +18,21 @@
 //! inverting that order and silently yielding 0 results until the optimiser's
 //! `topological_order` enforces a valid descent order.
 //!
-//! Each case runs under every optimiser: the shape exists to guard descent
-//! order, and each optimiser orders it differently.
+//! Each case runs under every optimiser and column-order policy: the shape
+//! exists to guard descent order, and each optimiser orders it differently.
+//! Under `--column-orders any` an optimiser that binds `X` before the
+//! constant's fresh variable reads `edge` through a reordered copy instead
+//! of being forced into the stored order.
+
+mod common;
 
 use {
     clap::ValueEnum,
-    kermit::db::{hash_join, lftj_join, Database, HashFamily, SortedFamily},
-    kermit_algos::{ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
-    kermit_ds::{HashTrie, Relation, TreeTrie},
+    common::utils::{join_under_planner, Inputs, JoinEntry},
+    kermit_algos::{
+        ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
+    },
+    kermit_ds::{Cardinality, HashTrie, Relation, RelationHeader, TreeTrie},
     kermit_iters::SipHashStrategy,
     std::collections::BTreeMap,
 };
@@ -36,29 +43,29 @@ const EDGES: [[usize; 2]; 3] = [[1, 2], [1, 3], [2, 4]];
 
 fn edges() -> Vec<Vec<usize>> { EDGES.iter().map(|e| e.to_vec()).collect() }
 
-/// `query` over edge = {(1,2), (1,3), (2,4)} as a `TreeTrie` (LFTJ path),
-/// planned by `optimiser`.
-fn lftj(query: &str, optimiser: Optimiser) -> Vec<Vec<usize>> {
-    let planner = Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
-    let edge: TreeTrie = TreeTrie::from_tuples(2.into(), edges());
-    let database = Database::new::<SortedFamily>(
-        BTreeMap::from([("edge".to_string(), edge)]),
-        planner.required_statistics(),
-    );
+/// `query` over edge = {(1,2), (1,3), (2,4)} as `R` through `JA`, planned
+/// by `optimiser` under `policy`.
+fn join<R: Relation + Cardinality, JA: JoinEntry<R>>(
+    query: &str, optimiser: Optimiser, policy: ColumnOrderPolicy,
+) -> Vec<Vec<usize>> {
+    let planner = Planner::new(optimiser.instantiate(), policy);
+    let header = RelationHeader::new_positional("edge", 2);
+    let inputs: Inputs = BTreeMap::from([("edge".to_string(), (header.clone(), edges()))]);
+    let store = BTreeMap::from([("edge".to_string(), R::from_tuples(header, edges()))]);
+    let mut database = JA::database(store, planner.required_statistics());
     let q: JoinQuery = query.parse().expect("parse");
-    lftj_join::<TreeTrie, LeapfrogTriejoin>(&database, q, &planner).unwrap()
+    let (rows, _) = join_under_planner::<R, JA>(&mut database, &inputs, q, &planner).unwrap();
+    rows
+}
+
+/// `query` as a `TreeTrie` (LFTJ path).
+fn lftj(query: &str, optimiser: Optimiser, policy: ColumnOrderPolicy) -> Vec<Vec<usize>> {
+    join::<TreeTrie, LeapfrogTriejoin>(query, optimiser, policy)
 }
 
 /// The same over a `HashTrie` (hash path).
-fn hash(query: &str, optimiser: Optimiser) -> Vec<Vec<usize>> {
-    let planner = Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
-    let edge = HashTrieSip::from_tuples(2.into(), edges());
-    let database = Database::new::<HashFamily<SipHashStrategy>>(
-        BTreeMap::from([("edge".to_string(), edge)]),
-        planner.required_statistics(),
-    );
-    let q: JoinQuery = query.parse().expect("parse");
-    hash_join::<HashTrieSip, SipHashStrategy>(&database, q, &planner).unwrap()
+fn hash(query: &str, optimiser: Optimiser, policy: ColumnOrderPolicy) -> Vec<Vec<usize>> {
+    join::<HashTrieSip, HashTriejoin>(query, optimiser, policy)
 }
 
 /// First column (the head variable `X`) of every result tuple, sorted.
@@ -71,17 +78,21 @@ fn head_col(mut rows: Vec<Vec<usize>>) -> Vec<usize> {
 // Q(X) :- edge(c1, X).  — successors of node 1 are {2, 3}.
 #[test]
 fn subject_position_constant_lftj() {
-    for &optimiser in Optimiser::value_variants() {
-        let got = head_col(lftj("Q(X) :- edge(c1, X).", optimiser));
-        assert_eq!(got, vec![2, 3], "{optimiser:?}");
+    for &policy in ColumnOrderPolicy::value_variants() {
+        for &optimiser in Optimiser::value_variants() {
+            let got = head_col(lftj("Q(X) :- edge(c1, X).", optimiser, policy));
+            assert_eq!(got, vec![2, 3], "{optimiser:?} / {policy:?}");
+        }
     }
 }
 
 #[test]
 fn subject_position_constant_hash() {
-    for &optimiser in Optimiser::value_variants() {
-        let got = head_col(hash("Q(X) :- edge(c1, X).", optimiser));
-        assert_eq!(got, vec![2, 3], "{optimiser:?}");
+    for &policy in ColumnOrderPolicy::value_variants() {
+        for &optimiser in Optimiser::value_variants() {
+            let got = head_col(hash("Q(X) :- edge(c1, X).", optimiser, policy));
+            assert_eq!(got, vec![2, 3], "{optimiser:?} / {policy:?}");
+        }
     }
 }
 
@@ -89,16 +100,20 @@ fn subject_position_constant_hash() {
 // object-position constants already worked; pin that they still do.
 #[test]
 fn object_position_constant_lftj() {
-    for &optimiser in Optimiser::value_variants() {
-        let got = head_col(lftj("Q(X) :- edge(X, c4).", optimiser));
-        assert_eq!(got, vec![2], "{optimiser:?}");
+    for &policy in ColumnOrderPolicy::value_variants() {
+        for &optimiser in Optimiser::value_variants() {
+            let got = head_col(lftj("Q(X) :- edge(X, c4).", optimiser, policy));
+            assert_eq!(got, vec![2], "{optimiser:?} / {policy:?}");
+        }
     }
 }
 
 #[test]
 fn object_position_constant_hash() {
-    for &optimiser in Optimiser::value_variants() {
-        let got = head_col(hash("Q(X) :- edge(X, c4).", optimiser));
-        assert_eq!(got, vec![2], "{optimiser:?}");
+    for &policy in ColumnOrderPolicy::value_variants() {
+        for &optimiser in Optimiser::value_variants() {
+            let got = head_col(hash("Q(X) :- edge(X, c4).", optimiser, policy));
+            assert_eq!(got, vec![2], "{optimiser:?} / {policy:?}");
+        }
     }
 }

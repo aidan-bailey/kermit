@@ -20,7 +20,7 @@ use {
         PruningPolicy, Relation, RelationHeader,
     },
     kermit_iters::{HashStrategy, TrieIterable},
-    std::collections::BTreeMap,
+    std::{collections::BTreeMap, path::Path},
 };
 
 /// Marks a placeholder (`_`) in a fixture's `rel_variables` entry: the
@@ -145,6 +145,28 @@ impl ColumnOrderProvider for AnyOrders {
 /// A fixture's relations by name: the header the relation was built with
 /// and its tuples in fixture (file) order, which copies are built from.
 pub type Inputs = BTreeMap<String, (RelationHeader, Vec<Vec<usize>>)>;
+
+/// Reads each named Parquet relation in `dir` (`<name>.parquet`) once,
+/// returning the relations as `R`, keyed by name, and the [`Inputs`] the
+/// copies under `--column-orders any` are built from: each header and its
+/// tuples in file order.
+pub fn load_parquet_relations<'n, R: Relation>(
+    dir: &Path, names: impl IntoIterator<Item = &'n str>,
+) -> (BTreeMap<String, R>, Inputs) {
+    let mut relations: BTreeMap<String, R> = BTreeMap::new();
+    let mut inputs: Inputs = BTreeMap::new();
+    for name in names {
+        let path = dir.join(format!("{name}.parquet"));
+        let (header, tuples) = kermit_ds::read_parquet(&path)
+            .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
+        relations.insert(
+            name.to_string(),
+            R::from_tuples(header.clone(), tuples.clone()),
+        );
+        inputs.insert(name.to_string(), (header, tuples));
+    }
+    (relations, inputs)
+}
 
 /// Runs `query` over `database` under `planner` through `JA`'s entry
 /// points the way the CLI does: builds the copies `required_indexes` names

@@ -4,11 +4,11 @@
 //! `lubm_cardinalities.rs` checks the paper's LUBM(1, 0) counts but needs the
 //! vendored jar and `java`, so it skips on CI. This test runs the same
 //! post-driver path — Univ-Bench entailment, partition, translate, emit
-//! (`kermit_rdf::lubm::pipeline::process_artifacts`), then [`lftj_join`]
-//! under every optimiser — on the committed `tests/fixtures/lubm-mini/abox.nt`,
-//! with no external tool. It lives in the `kermit` crate for the same reason
-//! as `lubm_cardinalities.rs`: only the binary depends on both `kermit-rdf`
-//! and the join engine.
+//! (`kermit_rdf::lubm::pipeline::process_artifacts`), then
+//! `kermit::db::lftj_join` under every optimiser — on the committed
+//! `tests/fixtures/lubm-mini/abox.nt`, with no external tool. It lives in the
+//! `kermit` crate for the same reason as `lubm_cardinalities.rs`: only the
+//! binary depends on both `kermit-rdf` and the join engine.
 //!
 //! # Derivation
 //!
@@ -103,14 +103,15 @@
 //! ABox, so the oracle does not depend on where kermit's hardcoded rule set
 //! stops.
 
+mod common;
+
 use {
     clap::ValueEnum,
-    kermit::db::{lftj_join, Database, SortedFamily},
+    common::utils::{join_under_planner, load_parquet_relations, JoinEntry},
     kermit_algos::{ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, RelationFileExt,
-        TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, TreeTrie,
     },
     kermit_iters::TrieIterable,
     kermit_rdf::{
@@ -123,7 +124,7 @@ use {
         },
     },
     std::{
-        collections::{BTreeMap, HashMap},
+        collections::HashMap,
         fs,
         path::{Path, PathBuf},
     },
@@ -199,32 +200,30 @@ fn emitted_benchmark(dir: &Path) -> BenchmarkDefinition {
 }
 
 /// Loads the generated relations as `R` into a fresh engine planned by
-/// `optimiser`, runs every query, and returns one line per query whose
-/// result count differs from the hand-counted cardinality.
+/// `planner`, runs every query (building the reordered copies it reads
+/// under `--column-orders any`), and returns one line per query whose
+/// result count differs from the hand-counted cardinality. `label` names
+/// the optimiser and policy in each line.
 fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
-    bench: &BenchmarkDefinition, dir: &Path, optimiser: Optimiser, expected: &HashMap<&str, u64>,
+    bench: &BenchmarkDefinition, dir: &Path, planner: &Planner, label: &str,
+    expected: &HashMap<&str, u64>,
 ) -> Vec<String> {
-    let planner = Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
-    let mut relations: BTreeMap<String, R> = BTreeMap::new();
-    for rel in &bench.relations {
-        let path = dir.join(format!("{}.parquet", rel.name));
-        let trie = R::from_parquet(&path)
-            .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
-        relations.insert(rel.name.clone(), trie);
-    }
-    let relations = Database::new::<SortedFamily>(relations, planner.required_statistics());
+    let (relations, inputs) =
+        load_parquet_relations::<R>(dir, bench.relations.iter().map(|r| r.name.as_str()));
+    let mut database =
+        <LeapfrogTriejoin as JoinEntry<R>>::database(relations, planner.required_statistics());
 
     let mut mismatches = Vec::new();
     for q in &bench.queries {
         let want = expected[q.name.as_str()];
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, &planner)
-            .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
-            .len() as u64;
+        let (rows, _) =
+            join_under_planner::<R, LeapfrogTriejoin>(&mut database, &inputs, parsed, planner)
+                .unwrap_or_else(|e| panic!("query {}: {e}", q.name));
+        let got = rows.len() as u64;
         if got != want {
             mismatches.push(format!(
-                "  [{} / {}] {}: got {got}, expected {want}\n    query: {}",
-                optimiser.axis_value(),
+                "  [{label} / {}] {}: got {got}, expected {want}\n    query: {}",
                 std::any::type_name::<R>(),
                 q.name,
                 q.query
@@ -253,55 +252,69 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
     // answer. Iterating the CLI enum covers every optimiser, including ones
     // added later, with no edit here.
     let optimisers = Optimiser::value_variants();
+    let policies = ColumnOrderPolicy::value_variants();
     let mut mismatches: Vec<String> = Vec::new();
-    for &optimiser in optimisers {
-        // Every seek strategy must give every answer on both sorted tries:
-        // the strategy changes how far a seek looks, never where it lands
-        // (issue #80).
-        mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
-            &bench,
-            out.path(),
-            optimiser,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<TreeTrie<BinarySeek>>(
-            &bench,
-            out.path(),
-            optimiser,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<TreeTrie<GallopingSeek>>(
-            &bench,
-            out.path(),
-            optimiser,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<ColumnTrie<LinearSeek>>(
-            &bench,
-            out.path(),
-            optimiser,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<ColumnTrie<BinarySeek>>(
-            &bench,
-            out.path(),
-            optimiser,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<ColumnTrie<GallopingSeek>>(
-            &bench,
-            out.path(),
-            optimiser,
-            &expected,
-        ));
+    // Every column-order policy too: under `any` an atom may read a
+    // reordered copy, which must give the same answers (issue #93).
+    for &policy in policies {
+        for &optimiser in optimisers {
+            let planner = Planner::new(optimiser.instantiate(), policy);
+            let label = format!("{} / {}", optimiser.axis_value(), policy.axis_value());
+            // Every seek strategy must give every answer on both sorted
+            // tries: the strategy changes how far a seek looks, never where
+            // it lands (issue #80).
+            mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
+                &bench,
+                out.path(),
+                &planner,
+                &label,
+                &expected,
+            ));
+            mismatches.extend(cardinality_mismatches::<TreeTrie<BinarySeek>>(
+                &bench,
+                out.path(),
+                &planner,
+                &label,
+                &expected,
+            ));
+            mismatches.extend(cardinality_mismatches::<TreeTrie<GallopingSeek>>(
+                &bench,
+                out.path(),
+                &planner,
+                &label,
+                &expected,
+            ));
+            mismatches.extend(cardinality_mismatches::<ColumnTrie<LinearSeek>>(
+                &bench,
+                out.path(),
+                &planner,
+                &label,
+                &expected,
+            ));
+            mismatches.extend(cardinality_mismatches::<ColumnTrie<BinarySeek>>(
+                &bench,
+                out.path(),
+                &planner,
+                &label,
+                &expected,
+            ));
+            mismatches.extend(cardinality_mismatches::<ColumnTrie<GallopingSeek>>(
+                &bench,
+                out.path(),
+                &planner,
+                &label,
+                &expected,
+            ));
+        }
     }
     assert!(
         mismatches.is_empty(),
-        "mini LUBM cardinality mismatches ({} across {} queries x {} optimisers x 2 sorted tries \
-         x 3 seek strategies):\n{}",
+        "mini LUBM cardinality mismatches ({} across {} queries x {} optimisers x {} column-order \
+         policies x 2 sorted tries x 3 seek strategies):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimisers.len(),
+        policies.len(),
         mismatches.join("\n"),
     );
 
