@@ -16,6 +16,7 @@ mod hash_trie_iter;
 mod implementation;
 mod node;
 mod pruning;
+mod radix;
 
 pub use {
     build_mode::{HashTrieBuildMode, InvalidRadixBits, ParseHashTrieBuildModeError, RadixBits},

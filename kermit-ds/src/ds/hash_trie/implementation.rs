@@ -17,11 +17,13 @@
 
 use {
     super::{
+        build_mode::HashTrieBuildMode,
         config::{HashTrieConfig, LoadFactor},
         node::HashTrieNode,
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
+        radix,
     },
-    crate::relation::{ConfigurableRelation, Relation, RelationHeader},
+    crate::relation::{BuildModeRelation, ConfigurableRelation, Relation, RelationHeader},
     kermit_iters::{ConfigOption, HashStrategy, JoinIterable, LayoutOption, SipHashStrategy},
     std::marker::PhantomData,
 };
@@ -49,7 +51,10 @@ use {
 /// Algorithm 2 from the paper. `with_config` / `from_tuples_with_config`
 /// (via [`ConfigurableRelation`](crate::relation::ConfigurableRelation)) are
 /// the config-carrying constructors; `new` / `from_tuples` are thin wrappers
-/// over them that supply the default configuration.
+/// over them that supply the default configuration. A known set of tuples
+/// can also be built by the `radix:K` BuildMode
+/// ([`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
+/// or [`BuildModeRelation`]), which builds the identical trie.
 ///
 /// # Layout parameters
 ///
@@ -85,7 +90,7 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
     /// when `is_leaf_depth(0, arity)`; `arity <= 1` matches that for every
     /// supported arity and additionally treats the unsupported nullary case
     /// as a leaf.)
-    fn make_root(arity: usize) -> HashTrieNode<P> {
+    pub(super) fn make_root(arity: usize) -> HashTrieNode<P> {
         if arity <= 1 {
             HashTrieNode::new_leaf()
         } else {
@@ -163,7 +168,7 @@ impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
     /// pre-pruning insert. An unprune is a single extra O(arity) chain, not
     /// a fan-out: the evicted tuple stops as a new `Singleton` where the two
     /// diverge while only the new tuple keeps descending.
-    fn insert_at(
+    pub(super) fn insert_at(
         node: &mut HashTrieNode<P>, depth: usize, arity: usize, tuple: Vec<usize>,
         load_factor: LoadFactor,
     ) {
@@ -285,6 +290,72 @@ impl<H: HashStrategy, P: PruningPolicy> ConfigurableRelation for HashTrie<H, P> 
     }
 
     fn config(&self) -> &HashTrieConfig { &self.config }
+}
+
+impl<H: HashStrategy, P: PruningPolicy> HashTrie<H, P> {
+    /// Creates a trie holding `config`, populated with `tuples` and built by
+    /// `mode` — the one constructor that takes both the Config and the
+    /// BuildMode. Every mode builds the identical trie (issue #91), so
+    /// `mode` changes only how long this takes.
+    ///
+    /// `Serial` is [`ConfigurableRelation::from_tuples_with_config`],
+    /// unchanged; `Radix` partitions first (see `radix.rs`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
+    pub fn from_tuples_with_config_and_build_mode(
+        header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
+        tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        match mode {
+            | HashTrieBuildMode::Serial => Self::from_tuples_with_config(header, config, tuples),
+            | HashTrieBuildMode::Radix(bits) => {
+                let arity = header.arity();
+                for tuple in &tuples {
+                    assert_eq!(
+                        tuple.len(),
+                        arity,
+                        "from_tuples: tuple arity {} does not match header arity {}",
+                        tuple.len(),
+                        arity,
+                    );
+                }
+                let tuple_count = tuples.len();
+                let mut trie = Self::with_config(header, config);
+                radix::fill_root::<H, P>(
+                    &mut trie.root,
+                    arity,
+                    tuples,
+                    bits,
+                    config.load_factor,
+                );
+                trie.tuple_count = tuple_count;
+                trie
+            },
+        }
+    }
+}
+
+impl<H: HashStrategy, P: PruningPolicy> BuildModeRelation for HashTrie<H, P> {
+    type BuildMode = HashTrieBuildMode;
+
+    /// Builds with the default config; see
+    /// [`from_tuples_with_config_and_build_mode`](HashTrie::from_tuples_with_config_and_build_mode).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
+    fn from_tuples_with_build_mode(
+        header: RelationHeader, mode: HashTrieBuildMode, tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        Self::from_tuples_with_config_and_build_mode(
+            header,
+            HashTrieConfig::default(),
+            mode,
+            tuples,
+        )
+    }
 }
 
 impl<H: HashStrategy, P: PruningPolicy> crate::relation::Projectable for HashTrie<H, P> {
