@@ -45,6 +45,19 @@ Canonical indices: `A = 0`, `B = 1`, `C = 2`. Constraint edges: `0 -> 1`
 before the large one's, unlike the [lexicographic](./lexicographic.md)
 order `[0, 1, 2]`.
 
+## Column orders
+
+`--column-orders stored` (the default) pins every atom to its stored
+column order: the plan binds each atom's columns left to right, as every
+plan did before issue #93. `--column-orders any` pins nothing
+(`CatalogStats::is_pinned`, read through `Precedence::for_query`), so the
+ranking alone decides, and an atom whose plan disagrees with its stored
+order is read through a reordered copy
+(`docs/specs/2026-10-05-column-orders-design.md`).
+
+Under `any` the smallest relation's variable goes first even when its
+column is not that relation's first.
+
 ## CLI
 
     kermit bench run triangle -i tree-trie -a leapfrog-triejoin --optimiser cardinality

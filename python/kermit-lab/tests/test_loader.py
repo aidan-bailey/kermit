@@ -180,3 +180,13 @@ def test_single_sided_loads_are_unaffected(tmp_path: Path) -> None:
     v3 = [_versioned_report(tmp_path / f"b{i}.json", 3) for i in range(2)]
     assert len(load_reports(v2)) == 2
     assert len(load_reports(v3)) == 2
+
+
+def test_phase_of_recognises_copies() -> None:
+    from kermit_lab.loader import TIME_PHASES, phase_of
+
+    # `bench run` under `--column-orders any` times a query's reordered
+    # copies as one function beside `insertion` (#93).
+    assert "copies" in TIME_PHASES
+    assert phase_of("copies") == "copies"
+    assert phase_of("space/Index_1_0_edge") is None

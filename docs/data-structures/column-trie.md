@@ -105,10 +105,12 @@ Every mode builds the identical trie — the same arrays and the same capacities
 
 | Mode | `--ds-build` | Method | Build (after the sort) |
 |---|---|---|---|
-| `Bulk` (default) | `bulk` | sort, then one pass (see Construction) | O(n · a) |
-| `Incremental` | `incremental` | sort, then one `insert` per tuple — the build before issue #84 | O(n · a · b) |
+| `Bulk` (default) | `column-trie=bulk` | sort, then one pass (see Construction) | O(n · a) |
+| `Incremental` | `column-trie=incremental` | sort, then one `insert` per tuple — the build before issue #84 | O(n · a · b) |
 
 Both modes sort first, O(n · a · log n); `b` is the average branching factor.
+
+`--ds-build` takes `structure=mode` pairs (issue #91), so a ColumnTrie mode is spelled `--ds-build column-trie=incremental`. The bare `--ds-build incremental` is rejected with that hint.
 
 - **Axis:** `ds_build_mode`, on every ColumnTrie report. The bench family that ran the build emits it (`RelationFamily::build_mode_axes`), because the trie cannot tell how it was built. kermit-lab reads a ColumnTrie row without the axis as `incremental`, the only build before the axis existed.
 - **API:** `ColumnTrieBuildMode`, through `BuildModeRelation::from_tuples_with_build_mode`; `Relation::from_tuples` uses the default, `Bulk`.

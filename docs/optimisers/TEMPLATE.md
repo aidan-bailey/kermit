@@ -27,6 +27,13 @@ constraint edges E.
 A small query (plus stats if consumed), the constraint DAG, and the
 resulting `variable_ordering`, step by step.
 
+## Column orders
+
+How the policy behaves under `--column-orders any`, where no atom is
+pinned to its stored column order (`Precedence::for_query` is empty), so
+the ranking alone decides and a disagreeing atom reads a reordered copy:
+what the plan becomes, and any limit the larger search space hits.
+
 ## CLI
 
     kermit bench run <bench> -i <ds> -a <algo> --optimiser <name>

@@ -1,4 +1,4 @@
-# Parallel builds (`--ds-build parallel:N`)
+# Parallel builds (`--ds-build tree-trie=parallel:N`)
 
 `TreeTrie` can be built on several threads (issue #94). The build is
 morsel-driven in the sense of Leis et al. (*Morsel-Driven Parallelism*,
@@ -9,8 +9,8 @@ build produces, so only the build-timing metrics (`insertion`,
 
 | Mode | `--ds-build` | `ds_build_mode` | Default |
 |---|---|---|---|
-| `TreeTrieBuildMode::Serial` | `serial` | `"serial"` | ✓ |
-| `TreeTrieBuildMode::Parallel(n)` | `parallel:N` | `"parallel:N"` | |
+| `TreeTrieBuildMode::Serial` | `tree-trie=serial` | `"serial"` | ✓ |
+| `TreeTrieBuildMode::Parallel(n)` | `tree-trie=parallel:N` | `"parallel:N"` | |
 
 `N` counts every thread the build uses, the calling one included. So
 `parallel:1` runs the parallel code on one thread, and against `serial` it

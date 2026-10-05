@@ -13,7 +13,7 @@
 use {
     kermit_algos::{
         rewrite_atoms, rewrite_placeholders, rewrite_repeated_variables, CatalogStats,
-        CostBasedOptimiser, JoinQuery, QueryOptimiser, RelationStats,
+        ColumnOrderPolicy, CostBasedOptimiser, JoinQuery, QueryOptimiser, RelationStats,
     },
     kermit_parser::Term,
     std::collections::HashMap,
@@ -55,7 +55,7 @@ fn catalog(query: &JoinQuery) -> CatalogStats {
             (name, fields.map(|f| f.parse().expect("a count")).collect())
         })
         .collect();
-    CatalogStats::for_query(query, |name| {
+    CatalogStats::for_query(query, ColumnOrderPolicy::Stored, |name| {
         let counts = table.get(name)?;
         Some(RelationStats::new(counts[0], 2).with_column_distinct(counts[1..].to_vec()))
     })

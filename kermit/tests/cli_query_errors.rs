@@ -1,6 +1,6 @@
 //! Every query shape from issue #78's table, through the real binary, on
-//! all six cells: TreeTrie and ColumnTrie under LFTJ, and HashTrie under
-//! Hash Triejoin with each hasher × pruning Layout.
+//! all ten cells: TreeTrie and ColumnTrie under LFTJ, and HashTrie under
+//! Hash Triejoin with each hasher × pruning × expansion Layout.
 //!
 //! A query that cannot run must exit 1 — never 101, the panic exit — with
 //! a message naming the problem, byte-identical on every cell, and write no
@@ -19,8 +19,8 @@ use {
 
 fn kermit_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_kermit")) }
 
-/// The six (structure, algorithm, Layout) cells `kermit join` can run.
-const CELLS: [&[&str]; 6] = [
+/// The ten (structure, algorithm, Layout) cells `kermit join` can run.
+const CELLS: [&[&str]; 10] = [
     &["-i", "tree-trie", "-a", "leapfrog-triejoin"],
     &["-i", "column-trie", "-a", "leapfrog-triejoin"],
     &[
@@ -62,6 +62,54 @@ const CELLS: [&[&str]; 6] = [
         "fxhash",
         "--ds-layout-pruning",
         "on",
+    ],
+    &[
+        "-i",
+        "hash-trie",
+        "-a",
+        "hash-triejoin",
+        "--ds-layout-hasher",
+        "sip",
+        "--ds-layout-pruning",
+        "off",
+        "--ds-layout-expansion",
+        "lazy",
+    ],
+    &[
+        "-i",
+        "hash-trie",
+        "-a",
+        "hash-triejoin",
+        "--ds-layout-hasher",
+        "sip",
+        "--ds-layout-pruning",
+        "on",
+        "--ds-layout-expansion",
+        "lazy",
+    ],
+    &[
+        "-i",
+        "hash-trie",
+        "-a",
+        "hash-triejoin",
+        "--ds-layout-hasher",
+        "fxhash",
+        "--ds-layout-pruning",
+        "off",
+        "--ds-layout-expansion",
+        "lazy",
+    ],
+    &[
+        "-i",
+        "hash-trie",
+        "-a",
+        "hash-triejoin",
+        "--ds-layout-hasher",
+        "fxhash",
+        "--ds-layout-pruning",
+        "on",
+        "--ds-layout-expansion",
+        "lazy",
     ],
 ];
 
@@ -263,6 +311,7 @@ fn cyclic_attribute_order_is_a_reported_limitation() {
     let outputs = join_on_every_cell("Q(X, Y) :- edge(X, Y), edge(Y, X).");
     let stderr = String::from_utf8_lossy(&outputs[0].stderr);
     assert!(stderr.contains("limitation"), "{stderr}");
+    assert!(stderr.contains("--column-orders any"), "{stderr}");
 }
 
 /// `bench run` validates every query of a workload before it loads or

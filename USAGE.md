@@ -197,27 +197,25 @@ K full-trie iterations in a single Criterion body; K comes from
 kermit bench ds -r data.csv -i tree-trie -m end-to-end --queries-per-build 4
 ```
 
-`-i column-trie` takes `--ds-build bulk|incremental` (default `bulk`), choosing
-how the trie is built from its tuples. Both build the identical trie, so the
-flag changes the `insertion` and `end-to-end` timings only; the report records
-it as `ds_build_mode`. `bench run` and `bench join` accept it too.
+`--ds-build` chooses how each structure is built from its tuples, as
+`structure=mode` pairs: `tree-trie=serial|parallel:<threads>` (default
+`serial`; threads in 1..=1024, the calling thread included),
+`column-trie=bulk|incremental` (default `bulk`) and
+`hash-trie=serial|radix:<bits>` (default `serial`; bits in 1..=16). Every mode
+builds the identical structure, so the flag changes the `insertion` and
+`end-to-end` timings only; the report records it as `ds_build_mode`. A pair is
+valid only when `-i` selects its structure (or `all`), and each structure
+takes only its own modes (`tree-trie=bulk` is rejected). `bench run` and
+`bench join` accept it too.
 
 ```sh
-kermit bench ds -r data.csv -i column-trie -m insertion --ds-build incremental
+kermit bench ds -r data.csv -i tree-trie -m insertion --ds-build tree-trie=parallel:4
+kermit bench ds -r data.csv -i column-trie -m insertion --ds-build column-trie=incremental
+kermit bench ds -r data.csv -i hash-trie -m insertion --ds-build hash-trie=radix:8
 ```
 
-`-i tree-trie` takes `--ds-build serial|parallel:N` (default `serial`):
-`parallel:N` builds the identical trie on N threads (N from 1 to 1024, the
-calling thread included), so again only the `insertion` and `end-to-end`
-timings change, and the report records `serial` or `parallel:N` as
-`ds_build_mode`. Each structure takes only its own values: `bulk` on
-`tree-trie`, or `parallel:4` on `column-trie`, is rejected. See
-`BENCHMARKING.md` § "Scaling: measuring a parallel build" for the speedup
-workflow.
-
-```sh
-kermit bench ds -r data.csv -i tree-trie -m insertion --ds-build parallel:4
-```
+See `BENCHMARKING.md` § "Scaling: measuring a parallel build" for the
+`tree-trie=parallel:N` speedup workflow.
 
 `--ds-layout-seek` is rejected here: none of `bench ds`'s metrics calls `seek`.
 

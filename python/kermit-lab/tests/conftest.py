@@ -312,6 +312,7 @@ def fixture_end_to_end_tree(tmp_path: Path) -> dict:
                             "data_structure": ds,
                             "algorithm": "LeapfrogTriejoin",
                             "optimiser": "lexicographic",
+                            "column_orders": "any",
                             "tuples": n,
                             "queries_per_build": k,
                         },
@@ -450,7 +451,7 @@ def fixture_sweep_tree(tmp_path: Path) -> dict:
     produce, for the structure-scoped back-fill (#85).
 
     The sorted tries carry their own axes but none of HashTrie's. Two
-    HashTrie reports carry all three HashTrie axes with distinct values, and
+    HashTrie reports carry all four HashTrie axes with distinct values, and
     a third carries none of them (a pre-Layout, pre-Config report), so it
     is back-filled on load. Each report times iteration plus space.
     """
@@ -465,8 +466,10 @@ def fixture_sweep_tree(tmp_path: Path) -> dict:
         ("column", "ColumnTrie",
          {"ds_layout_seek": "galloping", "ds_build_mode": "bulk"}, 110.0),
         ("sip", "HashTrie", {"ds_layout_hasher": "sip", "ds_layout_pruning": "off",
+                             "ds_layout_expansion": "eager",
                              "ds_config_load_factor": 0.7}, 100.0),
         ("fx", "HashTrie", {"ds_layout_hasher": "fx", "ds_layout_pruning": "on",
+                            "ds_layout_expansion": "lazy",
                             "ds_config_load_factor": 0.5}, 80.0),
         ("old", "HashTrie", {}, 105.0),
     ):
@@ -512,8 +515,8 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
     one, for the build-mode ablation guard.
 
     The old ColumnTrie report carries no ``ds_build_mode`` (back-filled to
-    ``incremental`` on load); the new one carries ``"bulk"``. HashTrie has no
-    build mode until #94's second plan, so its row stays NaN. Each times
+    ``incremental`` on load); the new one carries ``"bulk"``. The HashTrie
+    report carries none either, so it loads as its pre-#91 ``serial``. Each times
     insertion and iteration (plus space), so the build-mode axis has two
     values and applies to one time phase but not the other.
     """

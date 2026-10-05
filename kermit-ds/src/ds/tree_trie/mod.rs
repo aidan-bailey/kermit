@@ -7,4 +7,7 @@ mod tree_trie_iter;
 #[cfg(test)]
 mod tests;
 
-pub use {build_mode::TreeTrieBuildMode, implementation::TreeTrie};
+pub use {
+    build_mode::{ParseTreeTrieBuildModeError, TreeTrieBuildMode},
+    implementation::TreeTrie,
+};

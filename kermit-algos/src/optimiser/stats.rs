@@ -9,6 +9,7 @@
 //! lends it, for the same reason.
 
 use {
+    super::ColumnOrderPolicy,
     crate::const_rewrite::is_const_predicate,
     kermit_parser::JoinQuery,
     std::{
@@ -100,14 +101,19 @@ pub fn distinct_per_column(
     seen.iter().map(HashSet::len).collect()
 }
 
-/// Per-relation statistics for the predicates of one query.
+/// Per-relation statistics for the predicates of one query, plus the
+/// column-order policy the plan is made under.
 ///
 /// Plain data: planners never touch data structures, so they stay
 /// data-structure-agnostic and unit-testable with literal maps. Callers
-/// build one per join via [`CatalogStats::for_query`].
+/// build one per join via [`CatalogStats::for_query`]. The policy rides
+/// along because it decides which atoms *pin* the plan to their stored
+/// column order ([`is_pinned`](Self::is_pinned)), which every optimiser
+/// reads through [`Precedence::for_query`](super::Precedence::for_query).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CatalogStats {
     relations: BTreeMap<String, RelationStats>,
+    column_orders: ColumnOrderPolicy,
 }
 
 impl CatalogStats {
@@ -128,7 +134,8 @@ impl CatalogStats {
             .copied()
     }
 
-    /// Builds stats for every body predicate of `query`.
+    /// Builds stats for every body predicate of `query`, under
+    /// `column_orders`.
     ///
     /// `stats_of` supplies a relation's statistics (in `kermit::db`, those
     /// its `Database` gathered when it was built). Synthetic `Const_*`
@@ -136,8 +143,14 @@ impl CatalogStats {
     /// single-tuple unary relations whose one column has one value.
     /// Predicates the lookup does not know get no entry — planners treat
     /// missing stats as "assume large".
-    pub fn for_query(query: &JoinQuery, stats_of: impl Fn(&str) -> Option<RelationStats>) -> Self {
-        let mut stats = CatalogStats::default();
+    pub fn for_query(
+        query: &JoinQuery, column_orders: ColumnOrderPolicy,
+        stats_of: impl Fn(&str) -> Option<RelationStats>,
+    ) -> Self {
+        let mut stats = CatalogStats {
+            column_orders,
+            ..CatalogStats::default()
+        };
         for pred in &query.body {
             if stats.relations.contains_key(&pred.name) {
                 continue;
@@ -152,6 +165,24 @@ impl CatalogStats {
             }
         }
         stats
+    }
+
+    /// The column-order policy these statistics were built under.
+    pub fn column_orders(&self) -> ColumnOrderPolicy { self.column_orders }
+
+    /// Whether the atom named `name` must bind its columns left to right,
+    /// i.e. adds its column-order edges to the plan's precedence graph.
+    ///
+    /// `stored` pins every relation and `any` pins none, so today the
+    /// name is not consulted; it is the seam for a selective policy
+    /// (issue #82: a relation with a stored reordered copy is free). A
+    /// `Select_<n>_<base>` view follows its base, and a `Const_*`
+    /// singleton is unary, so pinning it changes nothing.
+    pub fn is_pinned(&self, _name: &str) -> bool {
+        match self.column_orders {
+            | ColumnOrderPolicy::Stored => true,
+            | ColumnOrderPolicy::Any => false,
+        }
     }
 }
 
@@ -172,7 +203,7 @@ mod tests {
     #[test]
     fn for_query_records_relations_and_const_singletons() {
         let q: JoinQuery = "Q(X) :- R(X, K0), Const_c5(K0).".parse().unwrap();
-        let stats = CatalogStats::for_query(&q, |name| match name {
+        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |name| match name {
             | "R" => Some(RelationStats::new(42, 2).with_column_distinct(vec![7, 3])),
             | _ => None,
         });
@@ -187,7 +218,9 @@ mod tests {
     #[test]
     fn distinct_counts_are_absent_at_tuple_counts() {
         let q: JoinQuery = "Q(X) :- R(X).".parse().unwrap();
-        let stats = CatalogStats::for_query(&q, |_| Some(RelationStats::new(9, 1)));
+        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |_| {
+            Some(RelationStats::new(9, 1))
+        });
         assert_eq!(stats.tuples("R"), Some(9));
         assert_eq!(stats.distinct("R", 0), None);
     }
@@ -195,8 +228,9 @@ mod tests {
     #[test]
     fn for_query_skips_unknown_relations() {
         let q: JoinQuery = "Q(X) :- R(X), Mystery(X).".parse().unwrap();
-        let stats =
-            CatalogStats::for_query(&q, |name| (name == "R").then(|| RelationStats::new(7, 1)));
+        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |name| {
+            (name == "R").then(|| RelationStats::new(7, 1))
+        });
         assert_eq!(stats.tuples("Mystery"), None);
     }
 
@@ -205,12 +239,37 @@ mod tests {
         use std::cell::Cell;
         let q: JoinQuery = "Q(X, Z) :- R(X, Y), R(Y, Z).".parse().unwrap();
         let lookups = Cell::new(0);
-        let stats = CatalogStats::for_query(&q, |name| {
+        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |name| {
             lookups.set(lookups.get() + 1);
             (name == "R").then(|| RelationStats::new(9, 2))
         });
         assert_eq!(stats.tuples("R"), Some(9));
         assert_eq!(lookups.get(), 1);
+    }
+
+    #[test]
+    fn stored_pins_every_atom_and_any_pins_none() {
+        let q: JoinQuery = "Q(X) :- R(X, K0), Select_0_R(X, K1), Const_c5(K0)."
+            .parse()
+            .unwrap();
+        let stored = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |_| None);
+        assert_eq!(stored.column_orders(), ColumnOrderPolicy::Stored);
+        for atom in &q.body {
+            assert!(stored.is_pinned(&atom.name), "{}", atom.name);
+        }
+        let any = CatalogStats::for_query(&q, ColumnOrderPolicy::Any, |_| None);
+        assert_eq!(any.column_orders(), ColumnOrderPolicy::Any);
+        for atom in &q.body {
+            assert!(!any.is_pinned(&atom.name), "{}", atom.name);
+        }
+    }
+
+    #[test]
+    fn default_statistics_are_stored() {
+        assert_eq!(
+            CatalogStats::default().column_orders(),
+            ColumnOrderPolicy::Stored
+        );
     }
 
     #[test]

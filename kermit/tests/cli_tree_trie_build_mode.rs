@@ -1,6 +1,7 @@
 //! CLI smoke test for `TreeTrie`'s `ds_build_mode` axis (issue #94):
-//! `--ds-build serial | parallel:N` selects the build, every `TreeTrie` report
-//! records it, and a value is rejected on a structure without it.
+//! `--ds-build tree-trie=serial|parallel:<threads>` selects the build, every
+//! `TreeTrie` report records it, and the pair is rejected when `-i` does not
+//! select `tree-trie`.
 
 mod common;
 
@@ -8,7 +9,7 @@ use common::cli::{axes_of, bench_ds, bench_join, bench_run, reports_of};
 
 #[test]
 fn cli_bench_ds_tree_trie_records_a_parallel_build() {
-    let (output, report) = bench_ds("tree-trie", &["--ds-build", "parallel:2"]);
+    let (output, report) = bench_ds("tree-trie", &["--ds-build", "tree-trie=parallel:2"]);
     assert!(
         output.status.success(),
         "{}",
@@ -25,7 +26,7 @@ fn cli_bench_join_tree_trie_records_a_parallel_build() {
         "-m",
         "space",
         "--ds-build",
-        "parallel:3",
+        "tree-trie=parallel:3",
         "--output",
         csv_path,
     ]);
@@ -50,7 +51,7 @@ fn cli_bench_run_verifies_answers_from_parallel_built_tries() {
         "iteration",
         "--verify",
         "--ds-build",
-        "parallel:2",
+        "tree-trie=parallel:2",
     ]);
     assert!(
         output.status.success(),
@@ -72,7 +73,7 @@ fn cli_bench_run_sweep_carries_parallel_only_to_tree_trie_cells() {
         "-m",
         "space",
         "--ds-build",
-        "parallel:2",
+        "tree-trie=parallel:2",
     ]);
     assert!(
         output.status.success(),
@@ -86,36 +87,50 @@ fn cli_bench_run_sweep_carries_parallel_only_to_tree_trie_cells() {
         match axes["data_structure"].as_str() {
             | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "parallel:2", "{axes}"),
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
-            | Some("HashTrie") => assert!(axes.get("ds_build_mode").is_none(), "{axes}"),
+            | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }
 }
 
-/// Until #94's second plan only `TreeTrie` has `parallel:N`.
 #[test]
-fn cli_bench_ds_rejects_parallel_off_tree_trie() {
+fn cli_bench_ds_rejects_a_tree_trie_pair_off_tree_trie() {
     for ds in ["column-trie", "hash-trie"] {
-        let (output, _) = bench_ds(ds, &["--ds-build", "parallel:2"]);
-        assert!(!output.status.success(), "{ds} accepted parallel:2");
+        let (output, _) = bench_ds(ds, &["--ds-build", "tree-trie=parallel:2"]);
+        assert!(!output.status.success(), "{ds} accepted a tree-trie pair");
         assert_eq!(output.status.code(), Some(1), "{ds}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("--ds-build parallel:2"), "{ds}: {stderr}");
-        assert!(stderr.contains("tree-trie"), "{ds}: {stderr}");
+        assert!(stderr.contains("--ds-build tree-trie"), "{ds}: {stderr}");
     }
 }
 
 #[test]
-fn cli_rejects_malformed_parallel_values() {
-    for bad in ["parallel", "parallel:0", "parallel:1025", "parallel:x"] {
-        let (output, _) = bench_ds("tree-trie", &["--ds-build", bad]);
-        assert!(!output.status.success(), "accepted {bad}");
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{bad}: a malformed value is a usage error"
-        );
+fn cli_bench_ds_rejects_malformed_tree_trie_modes() {
+    for mode in [
+        "parallel",
+        "parallel:0",
+        "parallel:1025",
+        "parallel:x",
+        "bulk",
+    ] {
+        let pair = format!("tree-trie={mode}");
+        let (output, _) = bench_ds("tree-trie", &["--ds-build", &pair]);
+        assert!(!output.status.success(), "{pair} was accepted");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("parallel:N"), "{bad}: {stderr}");
+        assert!(stderr.contains("--ds-build tree-trie"), "{pair}: {stderr}");
+        assert!(
+            stderr.contains("expected serial or parallel:<threads>, threads in 1..=1024"),
+            "{pair}: {stderr}"
+        );
     }
+}
+
+/// #94's first spelling, `--ds-build parallel:2`, predates the keyed flag
+/// (#91): it is a usage error that names the keyed spelling.
+#[test]
+fn cli_bench_ds_rejects_the_bare_spelling_with_a_hint() {
+    let (output, _) = bench_ds("tree-trie", &["--ds-build", "parallel:2"]);
+    assert!(!output.status.success(), "bare --ds-build was accepted");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tree-trie=parallel:2"), "{stderr}");
 }

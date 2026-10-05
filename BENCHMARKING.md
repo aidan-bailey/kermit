@@ -93,7 +93,7 @@ build (`BatchSize::PerIteration`) followed by K joins. Two caveats:
   `ExecutionFamily::build_from_tuples`, which routes every relation through
   the same `RelationFamily::build_relation` site the `insertion` phase uses
   — so the build term is the `from_tuples` path in both phases, honouring
-  any `--ds-config` values and ColumnTrie's `--ds-build` mode. The
+  any `--ds-config` values and each structure's `--ds-build` mode. The
   end-to-end build additionally pays for assembling the relation store
   (`BTreeMap<String, R>`), so the two numbers still are not identical.
 - K is recorded in the report's `queries_per_build` axis (and surfaces as a
@@ -210,10 +210,16 @@ kl.plot(df, kind="bar", x="ds_layout_hasher", y="time",
         colour="data_structure", facet="query")
 ```
 
-`--ds-build` works the same way for ColumnTrie's build (`bulk` by default,
-`incremental` for the build before issue #84). For thesis figures, compare the
-two modes **within one binary** — `--ds-build incremental` against the default.
-kermit-lab back-fills `incremental` on pre-#84 ColumnTrie reports, but those
+`--ds-build` works the same way for the build modes, as `structure=mode`
+pairs: ColumnTrie's (`column-trie=bulk` by default, `column-trie=incremental`
+for the build before issue #84), HashTrie's (`hash-trie=serial` by default,
+`hash-trie=radix:<bits>` for the radix-partitioned build of issue #91) and
+TreeTrie's (`tree-trie=serial` by default, `tree-trie=parallel:N` for the
+parallel build of issue #94; see "Scaling" below). For thesis figures,
+compare modes **within one binary** — e.g.
+`--ds-build column-trie=incremental` against the default.
+kermit-lab back-fills `incremental` on pre-#84 ColumnTrie reports, and
+`serial` on pre-#91 HashTrie and pre-#94 TreeTrie reports, but those
 rows are for continuity only: reports carry no binary identity, so a
 difference between an old row and a new one mixes the build mode with every
 other change between the two binaries. A build mode only changes the build,
@@ -261,7 +267,7 @@ samples.
 kermit bench --name col-bulk --report-json bench-runs/col-bulk.json \
   ds -r data.parquet -i column-trie -m insertion
 kermit bench --name col-incr --report-json bench-runs/col-incr.json \
-  ds -r data.parquet -i column-trie -m insertion --ds-build incremental
+  ds -r data.parquet -i column-trie -m insertion --ds-build column-trie=incremental
 ```
 
 The full optimization model (Layout / Config / BuildMode, how to add one, and
@@ -272,7 +278,7 @@ walkthrough is in
 
 ### Scaling: measuring a parallel build
 
-`--ds-build parallel:N` builds a `TreeTrie` on N threads (#94). The trie is
+`--ds-build tree-trie=parallel:N` builds a `TreeTrie` on N threads (#94). The trie is
 identical to the serial build's, so only `insertion` and `end_to_end` can
 move. Run one arm per thread count within one binary, each with its own
 `--name`, then plot the speedup over `serial`:
@@ -281,7 +287,7 @@ move. Run one arm per thread count within one binary, each with its own
 for mode in serial parallel:1 parallel:2 parallel:4 parallel:8 parallel:16; do
   name="tt-${mode/:/-}"
   kermit bench --name "$name" --report-json "bench-runs/$name.json" \
-    ds -r data.parquet -i tree-trie -m insertion --ds-build "$mode"
+    ds -r data.parquet -i tree-trie -m insertion --ds-build "tree-trie=$mode"
 done
 uv --directory python/kermit-lab run kermit-lab speedup "$PWD"/bench-runs/tt-*.json \
   --criterion-root "$PWD"/target/criterion --out "$PWD"/speedup.pdf

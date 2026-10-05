@@ -1,17 +1,47 @@
 //! CLI option groups for the optimisation axes (`--ds-layout-*`,
-//! `--ds-config`, `--ds-build`) and the places the Layout products are
+//! `--ds-config`, `--ds-build`), the planner (`--optimiser`,
+//! `--column-orders`), and the places the Layout products are
 //! monomorphised: `with_hash_trie_layout!` and `with_sorted_trie_layout!`.
 
 use {
     crate::IndexStructureSelector,
     clap::{Args, ValueEnum},
+    kermit_algos::{ColumnOrderPolicy, Optimiser, Planner},
     kermit_ds::{
-        ColumnTrieBuildMode, HashTrieConfig, IndexStructure, LoadFactor, PruningPolicy,
-        SeekStrategy, Threads, TreeTrieBuildMode,
+        ColumnTrieBuildMode, ExpansionPolicy, HashTrieBuildMode, HashTrieConfig, IndexStructure,
+        LoadFactor, PruningPolicy, SeekStrategy, TreeTrieBuildMode,
     },
     kermit_iters::{HashStrategy, LayoutOption},
     std::fmt,
 };
+
+/// How a join is planned: the optimiser and the column-order policy.
+/// Flattened into `join`, `bench join` and `bench run`; `bench ds` joins
+/// nothing and has neither flag.
+#[derive(Args, Copy, Clone, Debug)]
+pub(crate) struct PlannerArgs {
+    /// Query optimiser (plans the join's variable ordering). Long-only:
+    /// `-o` belongs to `--output`.
+    #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
+    pub(crate) optimiser: Optimiser,
+
+    /// Column orders the planner may bind an atom's columns in: `stored`
+    /// reads each relation in its stored column order, so a plan binds
+    /// every atom's columns left to right; `any` lets the planner choose,
+    /// and an atom whose plan disagrees with the stored order runs over a
+    /// per-query copy with the columns permuted, built before the timed
+    /// join (`copies`) and dropped after the query.
+    #[arg(long, value_enum, default_value_t = ColumnOrderPolicy::Stored)]
+    pub(crate) column_orders: ColumnOrderPolicy,
+}
+
+impl PlannerArgs {
+    /// The planner these flags select. A `Planner` owns its optimiser, so
+    /// each family gets its own.
+    pub(crate) fn instantiate(self) -> Planner {
+        Planner::new(self.optimiser.instantiate(), self.column_orders)
+    }
+}
 
 /// One `--ds-*` flag. Each sets an axis that only some index structures
 /// have, so a flag given for a run with none of them would be silently
@@ -25,13 +55,15 @@ pub(crate) enum DsFlag {
     LayoutHasher,
     /// `--ds-layout-pruning`.
     LayoutPruning,
+    /// `--ds-layout-expansion`.
+    LayoutExpansion,
     /// `--ds-layout-seek`.
     LayoutSeek,
     /// `--ds-config`.
     Config,
-    /// `--ds-build`, with the value given: which structures have its axis
-    /// depends on the value.
-    Build(BuildChoice),
+    /// `--ds-build <structure>=…`: one per pair, each reaching only its
+    /// structure.
+    Build(IndexStructure),
 }
 
 impl DsFlag {
@@ -52,11 +84,13 @@ impl DsFlag {
     /// listed here.
     pub(crate) fn structures(self) -> &'static [IndexStructure] {
         match self {
-            | Self::LayoutHasher | Self::LayoutPruning | Self::Config => {
+            | Self::LayoutHasher | Self::LayoutPruning | Self::LayoutExpansion | Self::Config => {
                 &[IndexStructure::HashTrie]
             },
             | Self::LayoutSeek => &[IndexStructure::TreeTrie, IndexStructure::ColumnTrie],
-            | Self::Build(choice) => choice.structures(),
+            | Self::Build(IndexStructure::TreeTrie) => &[IndexStructure::TreeTrie],
+            | Self::Build(IndexStructure::ColumnTrie) => &[IndexStructure::ColumnTrie],
+            | Self::Build(IndexStructure::HashTrie) => &[IndexStructure::HashTrie],
         }
     }
 
@@ -65,12 +99,7 @@ impl DsFlag {
     pub(crate) fn structures_label(self) -> String {
         self.structures()
             .iter()
-            .map(|ds| {
-                ds.to_possible_value()
-                    .expect("every IndexStructure is a CLI value")
-                    .get_name()
-                    .to_owned()
-            })
+            .map(|&ds| cli_name(ds))
             .collect::<Vec<_>>()
             .join(" or ")
     }
@@ -81,11 +110,20 @@ impl fmt::Display for DsFlag {
         match self {
             | Self::LayoutHasher => f.write_str("--ds-layout-hasher"),
             | Self::LayoutPruning => f.write_str("--ds-layout-pruning"),
+            | Self::LayoutExpansion => f.write_str("--ds-layout-expansion"),
             | Self::LayoutSeek => f.write_str("--ds-layout-seek"),
             | Self::Config => f.write_str("--ds-config"),
-            | Self::Build(choice) => write!(f, "--ds-build {choice}"),
+            | Self::Build(ds) => write!(f, "--ds-build {}", cli_name(*ds)),
         }
     }
+}
+
+/// `ds` as `-i` spells it: `"hash-trie"`.
+fn cli_name(ds: IndexStructure) -> String {
+    ds.to_possible_value()
+        .expect("every IndexStructure is a CLI value")
+        .get_name()
+        .to_owned()
 }
 
 /// The first of `given` that none of `structures` has the axis of: a flag
@@ -224,6 +262,53 @@ pub(crate) fn pruning_of<P: PruningPolicy>() -> PruningChoice {
     })
 }
 
+/// CLI-side selector for `--ds-layout-expansion`: the `ExpansionPolicy`
+/// monomorphised into `HashTrie<H, P, E>`. `Eager` builds every level at
+/// construction, the structure that existed before the parameter. `Lazy`
+/// builds each child below the root on the first probe that reaches it
+/// (SIGMOD 2020 Figure 6).
+///
+/// Like [`HasherChoice`], this flag only applies when the selected index
+/// structure is `hash-trie`; `validate_layout_choices` rejects it elsewhere.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ExpansionChoice {
+    /// Every level built at construction (`EagerExpansion`), the default.
+    #[default]
+    Eager,
+    /// Children built on first probe (`LazyExpansion`).
+    Lazy,
+}
+
+impl ExpansionChoice {
+    /// The choice that monomorphises to the [`ExpansionPolicy`] marker
+    /// whose [`LayoutOption::NAME`] is `name`, or `None` if no CLI choice
+    /// does. The counterpart of [`HasherChoice::from_layout_name`].
+    pub(crate) fn from_layout_name(name: &str) -> Option<Self> {
+        match name {
+            | "eager" => Some(Self::Eager),
+            | "lazy" => Some(Self::Lazy),
+            | _ => None,
+        }
+    }
+}
+
+/// The `--ds-layout-expansion` label of the [`ExpansionPolicy`] a code path
+/// was monomorphised over. The counterpart of [`hasher_of`].
+///
+/// # Panics
+///
+/// Panics if `E`'s layout name has no [`ExpansionChoice`], with the same
+/// caveat about what the round-trip test covers; see [`hasher_of`].
+pub(crate) fn expansion_of<E: ExpansionPolicy>() -> ExpansionChoice {
+    let name = <E as LayoutOption>::NAME;
+    ExpansionChoice::from_layout_name(name).unwrap_or_else(|| {
+        panic!(
+            "no --ds-layout-expansion choice for expansion policy {name:?} ({})",
+            std::any::type_name::<E>()
+        )
+    })
+}
+
 /// CLI-side selector for `--ds-layout-seek`: the [`SeekStrategy`]
 /// monomorphised into `TreeTrie<S>` / `ColumnTrie<S>`. `Galloping` is the
 /// default; `Binary` is the `partition_point` search both sorted tries used
@@ -276,7 +361,7 @@ pub(crate) fn seek_of<S: SeekStrategy>() -> SeekChoice {
 }
 
 /// Layout-axis CLI choices flattened into every subcommand whose dispatch
-/// monomorphises over a Layout-parameterised structure (`HashTrie<H, P>`,
+/// monomorphises over a Layout-parameterised structure (`HashTrie<H, P, E>`,
 /// `TreeTrie<S>`, `ColumnTrie<S>`). Each field is named `<axis>` and surfaces
 /// as the long flag `--ds-layout-<axis>` so the prefix matches the bench-report
 /// axis namespace described in CLAUDE.md → "JSON bench reports".
@@ -284,8 +369,9 @@ pub(crate) fn seek_of<S: SeekStrategy>() -> SeekChoice {
 /// Every field is an `Option<…>` rather than a clap-defaulted value so we
 /// can distinguish "not provided" from "explicitly defaulted". The
 /// `*_explicit` accessors consult that for the `validate_layout_choices`
-/// checks that reject e.g. `--ds-layout-hasher fxhash -i tree-trie` or
-/// `--ds-layout-pruning on -i tree-trie`, while the `*_resolved` accessors
+/// checks that reject e.g. `--ds-layout-hasher fxhash -i tree-trie`,
+/// `--ds-layout-pruning on -i tree-trie` or `--ds-layout-expansion lazy -i
+/// tree-trie`, while the `*_resolved` accessors
 /// supply the default at dispatch time.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct LayoutChoices {
@@ -297,6 +383,10 @@ pub(crate) struct LayoutChoices {
     /// valid when `--indexstructure hash-trie` is selected.
     #[arg(long = "ds-layout-pruning", value_name = "PRUNING", value_enum)]
     hash_trie_pruning: Option<PruningChoice>,
+    /// Child-expansion Layout of `HashTrie<H, P, E>` (default: `eager`).
+    /// Only valid when `--indexstructure hash-trie` is selected.
+    #[arg(long = "ds-layout-expansion", value_name = "EXPANSION", value_enum)]
+    hash_trie_expansion: Option<ExpansionChoice>,
     /// Seek strategy of `TreeTrie<S>` / `ColumnTrie<S>` (default:
     /// `galloping`). Only valid when `--indexstructure tree-trie` or
     /// `column-trie` (or `all`) is selected, and not on `bench ds`, none of
@@ -328,6 +418,16 @@ impl LayoutChoices {
     /// Returns whether the user explicitly passed `--ds-layout-pruning`.
     pub(crate) fn hash_trie_pruning_explicit(&self) -> bool { self.hash_trie_pruning.is_some() }
 
+    /// Returns the `ExpansionChoice` to monomorphise on, applying the
+    /// `ExpansionChoice::default()` when none was supplied on the command
+    /// line. Use this at dispatch sites.
+    pub(crate) fn hash_trie_expansion_resolved(&self) -> ExpansionChoice {
+        self.hash_trie_expansion.unwrap_or_default()
+    }
+
+    /// Returns whether the user explicitly passed `--ds-layout-expansion`.
+    pub(crate) fn hash_trie_expansion_explicit(&self) -> bool { self.hash_trie_expansion.is_some() }
+
     /// Returns the `SeekChoice` to monomorphise on, applying
     /// `SeekChoice::default()` when none was supplied on the command line.
     /// Use this at dispatch sites.
@@ -343,6 +443,7 @@ impl LayoutChoices {
         [
             (DsFlag::LayoutHasher, self.hash_trie_hasher_explicit()),
             (DsFlag::LayoutPruning, self.hash_trie_pruning_explicit()),
+            (DsFlag::LayoutExpansion, self.hash_trie_expansion_explicit()),
             (DsFlag::LayoutSeek, self.sorted_trie_seek_explicit()),
         ]
         .into_iter()
@@ -353,12 +454,12 @@ impl LayoutChoices {
 
 /// Rejects `LayoutChoices` flags that are incompatible with the chosen
 /// `IndexStructureSelector`. Each flag names a Layout of particular
-/// structures ([`DsFlag::structures`]): `--ds-layout-hasher` and
-/// `--ds-layout-pruning` belong to `hash-trie`, and `--ds-layout-seek` to
-/// `tree-trie` and `column-trie`. A flag on a structure without its Layout
-/// is a usage error: it would be silently ignored, producing a benchmark
-/// report whose `ds_layout_*` axis disagrees with the actual structure used.
-/// `all` passes here; see [`validate_ds_flags`].
+/// structures ([`DsFlag::structures`]): `--ds-layout-hasher`,
+/// `--ds-layout-pruning` and `--ds-layout-expansion` belong to `hash-trie`, and
+/// `--ds-layout-seek` to `tree-trie` and `column-trie`. A flag on a structure
+/// without its Layout is a usage error: it would be silently ignored, producing
+/// a benchmark report whose `ds_layout_*` axis disagrees with the actual
+/// structure used. `all` passes here; see [`validate_ds_flags`].
 pub(crate) fn validate_layout_choices(
     indexstructure: IndexStructureSelector, layout: &LayoutChoices,
 ) -> anyhow::Result<()> {
@@ -372,38 +473,98 @@ pub(crate) fn validate_layout_choices(
 /// `bench/ds.rs` and `bench/run.rs`) and `load_query_runner` (in `main.rs`)
 /// all go through here, so the Layout product is written out once rather
 /// than once per caller. It is not free of the product, though: the arms
-/// *are* the cells,
-/// so a third Layout dimension doubles them (2^n in general) and also costs
-/// a `LayoutChoices` field, a `DsChoices` field, an `Execution::HashHtj`
+/// *are* the cells, so each Layout dimension doubles them (2^n in general).
+/// The third, expansion (#92), took them to 8, and also cost a
+/// `LayoutChoices` field, a `DsChoices` field, an `Execution::HashHtj`
 /// field, and a type parameter (with its `*_of::<X>()` label) on `HashHtj`
-/// and `HashTrieFamily`. Before a
-/// fourth dimension, reach for a nested macro that expands one dimension at
-/// a time, or a builder — not another hand-written 16-arm match.
+/// and `HashTrieFamily`. Before a fourth dimension, reach for a nested macro
+/// that expands one dimension at a time, or a builder — not another
+/// hand-written 16-arm match.
 ///
 /// Hygiene contract: the identifiers named in the closure-like pattern
 /// become *type aliases* scoped to the whole arm, so `$body` must not need
-/// a different type of either name.
+/// a different type of any of those names.
 macro_rules! with_hash_trie_layout {
-    ($hasher:expr, $pruning:expr, | $H:ident, $P:ident | $body:expr) => {
-        match ($hasher, $pruning) {
-            | ($crate::options::HasherChoice::Sip, $crate::options::PruningChoice::Off) => {
+    ($hasher:expr, $pruning:expr, $expansion:expr, | $H:ident, $P:ident, $E:ident | $body:expr) => {
+        match ($hasher, $pruning, $expansion) {
+            | (
+                $crate::options::HasherChoice::Sip,
+                $crate::options::PruningChoice::Off,
+                $crate::options::ExpansionChoice::Eager,
+            ) => {
                 type $H = ::kermit_iters::SipHashStrategy;
                 type $P = ::kermit_ds::NoPruning;
+                type $E = ::kermit_ds::EagerExpansion;
                 $body
             },
-            | ($crate::options::HasherChoice::Sip, $crate::options::PruningChoice::On) => {
+            | (
+                $crate::options::HasherChoice::Sip,
+                $crate::options::PruningChoice::Off,
+                $crate::options::ExpansionChoice::Lazy,
+            ) => {
+                type $H = ::kermit_iters::SipHashStrategy;
+                type $P = ::kermit_ds::NoPruning;
+                type $E = ::kermit_ds::LazyExpansion;
+                $body
+            },
+            | (
+                $crate::options::HasherChoice::Sip,
+                $crate::options::PruningChoice::On,
+                $crate::options::ExpansionChoice::Eager,
+            ) => {
                 type $H = ::kermit_iters::SipHashStrategy;
                 type $P = ::kermit_ds::SingletonPruning;
+                type $E = ::kermit_ds::EagerExpansion;
                 $body
             },
-            | ($crate::options::HasherChoice::Fxhash, $crate::options::PruningChoice::Off) => {
+            | (
+                $crate::options::HasherChoice::Sip,
+                $crate::options::PruningChoice::On,
+                $crate::options::ExpansionChoice::Lazy,
+            ) => {
+                type $H = ::kermit_iters::SipHashStrategy;
+                type $P = ::kermit_ds::SingletonPruning;
+                type $E = ::kermit_ds::LazyExpansion;
+                $body
+            },
+            | (
+                $crate::options::HasherChoice::Fxhash,
+                $crate::options::PruningChoice::Off,
+                $crate::options::ExpansionChoice::Eager,
+            ) => {
                 type $H = ::kermit_iters::FxHashStrategy;
                 type $P = ::kermit_ds::NoPruning;
+                type $E = ::kermit_ds::EagerExpansion;
                 $body
             },
-            | ($crate::options::HasherChoice::Fxhash, $crate::options::PruningChoice::On) => {
+            | (
+                $crate::options::HasherChoice::Fxhash,
+                $crate::options::PruningChoice::Off,
+                $crate::options::ExpansionChoice::Lazy,
+            ) => {
+                type $H = ::kermit_iters::FxHashStrategy;
+                type $P = ::kermit_ds::NoPruning;
+                type $E = ::kermit_ds::LazyExpansion;
+                $body
+            },
+            | (
+                $crate::options::HasherChoice::Fxhash,
+                $crate::options::PruningChoice::On,
+                $crate::options::ExpansionChoice::Eager,
+            ) => {
                 type $H = ::kermit_iters::FxHashStrategy;
                 type $P = ::kermit_ds::SingletonPruning;
+                type $E = ::kermit_ds::EagerExpansion;
+                $body
+            },
+            | (
+                $crate::options::HasherChoice::Fxhash,
+                $crate::options::PruningChoice::On,
+                $crate::options::ExpansionChoice::Lazy,
+            ) => {
+                type $H = ::kermit_iters::FxHashStrategy;
+                type $P = ::kermit_ds::SingletonPruning;
+                type $E = ::kermit_ds::LazyExpansion;
                 $body
             },
         }
@@ -532,124 +693,168 @@ pub(crate) fn validate_config_choices(
     validate_ds_flags(indexstructure, config.given().as_slice())
 }
 
-/// One `--ds-build` value. `ColumnTrie`'s and `TreeTrie`'s modes share the
-/// flag; which structures a value reaches is
-/// [`structures`](Self::structures).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BuildChoice {
-    /// `bulk`: `ColumnTrie`'s one-pass build, its default.
-    Bulk,
-    /// `incremental`: `ColumnTrie`'s build before #84.
-    Incremental,
-    /// `serial`: `TreeTrie`'s single-threaded build, its default.
-    Serial,
-    /// `parallel:N`: `TreeTrie`'s morsel-driven build on `N` threads.
-    Parallel(Threads),
-}
-
-impl BuildChoice {
-    /// The structures that have this value's build mode: the `--ds-build`
-    /// row of [`DsFlag::structures`].
-    pub(crate) fn structures(self) -> &'static [IndexStructure] {
-        match self {
-            | Self::Bulk | Self::Incremental => &[IndexStructure::ColumnTrie],
-            | Self::Serial | Self::Parallel(_) => &[IndexStructure::TreeTrie],
-        }
-    }
-}
-
-impl fmt::Display for BuildChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            | Self::Bulk => f.write_str("bulk"),
-            | Self::Incremental => f.write_str("incremental"),
-            | Self::Serial => f.write_str("serial"),
-            | Self::Parallel(threads) => write!(f, "parallel:{}", threads.get()),
-        }
-    }
-}
-
-/// Parses a `--ds-build` value: `bulk`, `incremental`, `serial`, or
-/// `parallel:N` with `N` a whole number of threads from 1 to
-/// [`Threads::MAX`].
-pub(crate) fn parse_build_choice(value: &str) -> Result<BuildChoice, String> {
-    match value {
-        | "bulk" => Ok(BuildChoice::Bulk),
-        | "incremental" => Ok(BuildChoice::Incremental),
-        | "serial" => Ok(BuildChoice::Serial),
-        | other => {
-            let threads = other.strip_prefix("parallel:").ok_or_else(|| {
-                format!("expected bulk, incremental, serial or parallel:N, got {other:?}")
-            })?;
-            threads
-                .parse::<usize>()
-                .ok()
-                .and_then(Threads::new)
-                .map(BuildChoice::Parallel)
-                .ok_or_else(|| {
-                    format!(
-                        "parallel:N needs a whole number of threads N from 1 to {}, got {other:?}",
-                        Threads::MAX
-                    )
-                })
-        },
-    }
-}
-
-/// Every structure's build mode, resolved from `--ds-build`: the value
-/// reaches the structures that have it, and every other structure keeps its
-/// default.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BuildModes {
-    /// `ColumnTrie`'s build: `bulk` (default) or `incremental`.
-    pub column: ColumnTrieBuildMode,
-    /// `TreeTrie`'s build: `serial` (default) or `parallel:N`.
-    pub tree: TreeTrieBuildMode,
-}
-
-/// BuildMode-axis CLI choice, flattened beside [`LayoutChoices`] and
-/// [`ConfigChoices`] into `bench ds`, `bench run` and `bench join`. Every
-/// build mode builds the same structure, so the flag changes build time
-/// only. `kermit join` takes no `--ds-build`, for the same reason it takes
-/// no `--ds-config`: it cannot change a query's answers.
+/// BuildMode-axis CLI choices, flattened beside [`LayoutChoices`] and
+/// [`ConfigChoices`] into `bench ds`, `bench run` and `bench join`. One flag,
+/// `--ds-build`, takes comma-separated `structure=mode` pairs, resolved per
+/// structure by [`resolved`](Self::resolved). Every build mode builds the
+/// same structure, so the flag changes build time only. `kermit join` takes
+/// no `--ds-build`, for the same reason it takes no `--ds-config`: it cannot
+/// change a query's answers.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct BuildChoices {
-    /// How the selected structure is built from its tuples: `bulk` (default)
-    /// or `incremental` for `column-trie`; `serial` (default) or `parallel:N`
-    /// (N threads, 1 to 1024) for `tree-trie`. A value is only valid with a
-    /// structure that has it (or `all`).
-    #[arg(long = "ds-build", value_name = "MODE", value_parser = parse_build_choice)]
-    build: Option<BuildChoice>,
+    /// How each named structure is built from its tuples, as
+    /// `structure=mode` pairs: `tree-trie=serial|parallel:<threads>` (default
+    /// `serial`; threads in 1..=1024), `column-trie=bulk|incremental` (default
+    /// `bulk`; `incremental` is the build before the one-pass bulk build) and
+    /// `hash-trie=serial|radix:<bits>` (default `serial`; bits in 1..=16).
+    /// A pair is only valid when `--indexstructure` selects its structure
+    /// (or `all`).
+    #[arg(
+        long = "ds-build",
+        value_name = "STRUCTURE=MODE,...",
+        value_delimiter = ','
+    )]
+    ds_build: Vec<String>,
 }
 
 impl BuildChoices {
-    /// Every structure's build mode: `--ds-build` reaches the structures that
-    /// have its value, and the rest keep their defaults.
-    pub(crate) fn resolved(&self) -> BuildModes {
-        let mut modes = BuildModes::default();
-        match self.build {
-            | None => {},
-            | Some(BuildChoice::Bulk) => modes.column = ColumnTrieBuildMode::Bulk,
-            | Some(BuildChoice::Incremental) => modes.column = ColumnTrieBuildMode::Incremental,
-            | Some(BuildChoice::Serial) => modes.tree = TreeTrieBuildMode::Serial,
-            | Some(BuildChoice::Parallel(threads)) => {
-                modes.tree = TreeTrieBuildMode::Parallel(threads)
-            },
-        }
-        modes
+    /// The structures that have a build mode, as `--ds-build` keys.
+    const STRUCTURES: &'static [IndexStructure] = &[
+        IndexStructure::TreeTrie,
+        IndexStructure::ColumnTrie,
+        IndexStructure::HashTrie,
+    ];
+
+    /// One [`DsFlag::Build`] per pair whose key names a structure with a
+    /// build mode, each reaching only that structure. Malformed pairs yield
+    /// no flag here; [`resolved`](Self::resolved) rejects them.
+    fn given(&self) -> Vec<DsFlag> {
+        self.ds_build
+            .iter()
+            .filter_map(|pair| {
+                let (key, _) = pair.split_once('=')?;
+                let ds = <IndexStructure as ValueEnum>::from_str(key, false).ok()?;
+                Self::STRUCTURES.contains(&ds).then_some(DsFlag::Build(ds))
+            })
+            .collect()
     }
 
-    /// `--ds-build` if the user passed it. See [`DsFlag::given`].
-    fn given(&self) -> Option<DsFlag> { self.build.map(DsFlag::Build) }
+    /// Resolves the pairs into each structure's mode, starting from the
+    /// defaults. A bare mode, a structure without build modes, an unknown
+    /// structure or mode, and a repeated structure are usage errors.
+    pub(crate) fn resolved(&self) -> anyhow::Result<BuildModes> {
+        let mut modes = BuildModes::default();
+        let mut seen = Vec::new();
+        for pair in &self.ds_build {
+            let Some((key, mode)) = pair.split_once('=') else {
+                anyhow::bail!(
+                    "--ds-build expects structure=mode pairs; got {pair:?}{}",
+                    bare_mode_hint(pair)
+                );
+            };
+            let ds = <IndexStructure as ValueEnum>::from_str(key, false).map_err(|_| {
+                anyhow::anyhow!(
+                    "--ds-build: unknown structure {key:?}; structures with build modes: {}",
+                    Self::structures_label()
+                )
+            })?;
+            if !Self::STRUCTURES.contains(&ds) {
+                anyhow::bail!(
+                    "--ds-build: {key} has a single build process; structures with build modes: {}",
+                    Self::structures_label()
+                );
+            }
+            if seen.contains(&ds) {
+                anyhow::bail!("--ds-build: {key} given more than once");
+            }
+            seen.push(ds);
+            match ds {
+                | IndexStructure::TreeTrie => {
+                    modes.tree_trie = mode
+                        .parse()
+                        .map_err(|why| anyhow::anyhow!("--ds-build tree-trie: {why}"))?;
+                },
+                | IndexStructure::ColumnTrie => {
+                    modes.column_trie = <ColumnTrieBuildMode as ValueEnum>::from_str(mode, false)
+                        .map_err(|_| {
+                        anyhow::anyhow!(
+                            "--ds-build column-trie: unknown mode {mode:?}; expected {}",
+                            column_trie_mode_names().join(" or ")
+                        )
+                    })?;
+                },
+                | IndexStructure::HashTrie => {
+                    modes.hash_trie = mode
+                        .parse()
+                        .map_err(|why| anyhow::anyhow!("--ds-build hash-trie: {why}"))?;
+                },
+            }
+        }
+        Ok(modes)
+    }
+
+    /// [`STRUCTURES`](Self::STRUCTURES) as `-i` spells them.
+    fn structures_label() -> String {
+        Self::STRUCTURES
+            .iter()
+            .map(|&ds| cli_name(ds))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
-/// Rejects a `--ds-build` value on index structures that lack that value's
-/// build mode, so a report can never carry a `ds_build_mode` the build
-/// ignored. Same discipline as [`validate_config_choices`].
+/// `ColumnTrieBuildMode`'s modes as `--ds-build column-trie=` spells them.
+fn column_trie_mode_names() -> Vec<String> {
+    ColumnTrieBuildMode::value_variants()
+        .iter()
+        .map(|mode| {
+            mode.to_possible_value()
+                .expect("every ColumnTrieBuildMode is a CLI value")
+                .get_name()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The rest of the error for a bare `--ds-build` mode: the keyed spelling
+/// for each structure that has that mode, or an example when none does.
+fn bare_mode_hint(mode: &str) -> String {
+    let mut keyed = Vec::new();
+    if mode.parse::<TreeTrieBuildMode>().is_ok() {
+        keyed.push(format!("tree-trie={mode}"));
+    }
+    if <ColumnTrieBuildMode as ValueEnum>::from_str(mode, false).is_ok() {
+        keyed.push(format!("column-trie={mode}"));
+    }
+    if mode.parse::<HashTrieBuildMode>().is_ok() {
+        keyed.push(format!("hash-trie={mode}"));
+    }
+    if keyed.is_empty() {
+        "; for example --ds-build column-trie=incremental,hash-trie=radix:8".to_owned()
+    } else {
+        format!("; did you mean --ds-build {}?", keyed.join(" or "))
+    }
+}
+
+/// Rejects a `--ds-build` pair whose structure `indexstructure` does not
+/// select, so a report can never carry a `ds_build_mode` the build ignored.
+/// Same discipline as [`validate_config_choices`].
 pub(crate) fn validate_build_choices(
     indexstructure: IndexStructureSelector, build: &BuildChoices,
 ) -> anyhow::Result<()> {
-    validate_ds_flags(indexstructure, build.given().as_slice())
+    validate_ds_flags(indexstructure, &build.given())
+}
+
+/// The build mode of every structure that has one: what `--ds-build`
+/// resolves to, with each structure's default where no pair names it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BuildModes {
+    /// Reaches the tree-trie cell only.
+    pub tree_trie: TreeTrieBuildMode,
+    /// Reaches the column-trie cell only.
+    pub column_trie: ColumnTrieBuildMode,
+    /// Reaches the hash-trie cell only.
+    pub hash_trie: HashTrieBuildMode,
 }
 
 /// The resolved value of every `--ds-*` option for one command — what the
@@ -662,11 +867,13 @@ pub(crate) struct DsChoices {
     pub hasher: HasherChoice,
     /// `--ds-layout-pruning`; reaches the hash-trie cell only.
     pub pruning: PruningChoice,
+    /// `--ds-layout-expansion`; reaches the hash-trie cell only.
+    pub expansion: ExpansionChoice,
     /// `--ds-layout-seek`; reaches the two sorted-trie cells.
     pub seek: SeekChoice,
     /// `--ds-config`; reaches the hash-trie cell only.
     pub config: HashTrieConfig,
-    /// `--ds-build`; each sorted structure's mode reaches its own cell.
+    /// `--ds-build`; each structure's mode reaches its own cell.
     pub build: BuildModes,
 }
 
@@ -677,7 +884,7 @@ impl DsChoices {
     /// # Errors
     ///
     /// Returns an error if a flag was given for a structure that lacks its
-    /// axis, or if `--ds-config` is malformed.
+    /// axis, or if `--ds-config` or `--ds-build` is malformed.
     pub(crate) fn resolve(
         indexstructure: IndexStructureSelector, layout: &LayoutChoices, config: &ConfigChoices,
         build: &BuildChoices,
@@ -688,9 +895,10 @@ impl DsChoices {
         Ok(Self {
             hasher: layout.hash_trie_hasher_resolved(),
             pruning: layout.hash_trie_pruning_resolved(),
+            expansion: layout.hash_trie_expansion_resolved(),
             seek: layout.sorted_trie_seek_resolved(),
             config: config.hash_trie_config_resolved()?,
-            build: build.resolved(),
+            build: build.resolved()?,
         })
     }
 }
@@ -699,8 +907,11 @@ impl DsChoices {
 mod tests {
     use {
         super::*,
-        clap::ValueEnum,
-        kermit_ds::{BinarySeek, GallopingSeek, LinearSeek, NoPruning, SingletonPruning},
+        clap::{Parser, ValueEnum},
+        kermit_ds::{
+            BinarySeek, EagerExpansion, GallopingSeek, LazyExpansion, LinearSeek, NoPruning,
+            SingletonPruning, Threads,
+        },
         kermit_iters::{BuildMode, FxHashStrategy, SipHashStrategy},
     };
 
@@ -725,24 +936,25 @@ mod tests {
         assert_eq!(hasher_of::<FxHashStrategy>(), HasherChoice::Fxhash);
     }
 
-    /// Every `with_hash_trie_layout!` arm binds the marker pair its
-    /// `(HasherChoice, PruningChoice)` pattern names. Reading the labels
-    /// back out of the aliases the macro defines pins the four pairings
-    /// against `hasher_of`/`pruning_of`, so a transposed arm fails here
-    /// rather than silently mislabelling a bench report.
+    /// Every `with_hash_trie_layout!` arm binds the marker triple its
+    /// `(HasherChoice, PruningChoice, ExpansionChoice)` pattern names.
+    /// Reading the labels back out of the aliases the macro defines pins
+    /// the eight cells against `hasher_of` / `pruning_of` / `expansion_of`,
+    /// so a transposed arm fails here rather than silently mislabelling a
+    /// bench report.
     #[test]
-    fn layout_macro_binds_the_marker_pair_its_arm_names() {
-        for (hasher, pruning) in [
-            (HasherChoice::Sip, PruningChoice::Off),
-            (HasherChoice::Sip, PruningChoice::On),
-            (HasherChoice::Fxhash, PruningChoice::Off),
-            (HasherChoice::Fxhash, PruningChoice::On),
-        ] {
-            let bound = with_hash_trie_layout!(hasher, pruning, |H, P| (
-                hasher_of::<H>(),
-                pruning_of::<P>()
-            ));
-            assert_eq!(bound, (hasher, pruning));
+    fn layout_macro_binds_the_marker_triple_its_arm_names() {
+        for &hasher in HasherChoice::value_variants() {
+            for &pruning in PruningChoice::value_variants() {
+                for &expansion in ExpansionChoice::value_variants() {
+                    let bound = with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| (
+                        hasher_of::<H>(),
+                        pruning_of::<P>(),
+                        expansion_of::<E>()
+                    ));
+                    assert_eq!(bound, (hasher, pruning, expansion));
+                }
+            }
         }
     }
 
@@ -762,6 +974,57 @@ mod tests {
         }
         assert_eq!(pruning_of::<NoPruning>(), PruningChoice::Off);
         assert_eq!(pruning_of::<SingletonPruning>(), PruningChoice::On);
+    }
+
+    /// The same round trip for `--ds-layout-expansion` and `ExpansionPolicy`.
+    #[test]
+    fn expansion_choices_round_trip_through_layout_names() {
+        const TABLE: &[(ExpansionChoice, &str)] = &[
+            (
+                ExpansionChoice::Eager,
+                <EagerExpansion as LayoutOption>::NAME,
+            ),
+            (ExpansionChoice::Lazy, <LazyExpansion as LayoutOption>::NAME),
+        ];
+        for choice in ExpansionChoice::value_variants() {
+            let (_, name) = TABLE
+                .iter()
+                .find(|(c, _)| c == choice)
+                .expect("every ExpansionChoice has a marker");
+            assert_eq!(ExpansionChoice::from_layout_name(name), Some(*choice));
+        }
+        assert_eq!(expansion_of::<EagerExpansion>(), ExpansionChoice::Eager);
+        assert_eq!(expansion_of::<LazyExpansion>(), ExpansionChoice::Lazy);
+    }
+
+    #[test]
+    fn validate_layout_choices_rejects_explicit_expansion_on_non_hash_trie() {
+        let layout = LayoutChoices {
+            hash_trie_expansion: Some(ExpansionChoice::Lazy),
+            ..LayoutChoices::default()
+        };
+        assert!(validate_layout_choices(IndexStructureSelector::HashTrie, &layout).is_ok());
+        assert!(validate_layout_choices(IndexStructureSelector::All, &layout).is_ok());
+        for sel in [
+            IndexStructureSelector::TreeTrie,
+            IndexStructureSelector::ColumnTrie,
+        ] {
+            let msg = validate_layout_choices(sel, &layout)
+                .unwrap_err()
+                .to_string();
+            assert!(msg.contains("--ds-layout-expansion"), "{sel:?}: {msg}");
+            assert!(msg.contains("hash-trie"), "{sel:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn expansion_choice_default_is_eager() {
+        assert_eq!(ExpansionChoice::default(), ExpansionChoice::Eager);
+        assert_eq!(
+            LayoutChoices::default().hash_trie_expansion_resolved(),
+            ExpansionChoice::Eager
+        );
+        assert!(!LayoutChoices::default().hash_trie_expansion_explicit());
     }
 
     #[test]
@@ -985,6 +1248,7 @@ mod tests {
         .unwrap();
         assert_eq!(choices.hasher, HasherChoice::Fxhash);
         assert_eq!(choices.pruning, PruningChoice::Off);
+        assert_eq!(choices.expansion, ExpansionChoice::Eager);
         assert_eq!(choices.config.load_factor, LoadFactor::percent(50).unwrap());
         assert_eq!(
             DsChoices::resolve(
@@ -1029,99 +1293,247 @@ mod tests {
         assert!(msg.contains("--ds-config"), "{msg}");
     }
 
-    /// Each `--ds-build` value reaches the structures that have it, and
-    /// `all`, and no other. Until #94's second plan only `TreeTrie` has
-    /// `serial` and `parallel:N`.
+    fn build(pairs: &[&str]) -> BuildChoices {
+        BuildChoices {
+            ds_build: pairs.iter().map(|pair| pair.to_string()).collect(),
+        }
+    }
+
     #[test]
-    fn validate_build_choices_accepts_each_value_on_its_structures_or_all() {
-        let incremental = BuildChoices {
-            build: Some(BuildChoice::Incremental),
-        };
-        let parallel = BuildChoices {
-            build: Some(BuildChoice::Parallel(Threads::new(4).unwrap())),
-        };
-        for (build, home, others, named) in [
-            (
-                &incremental,
-                IndexStructureSelector::ColumnTrie,
-                [
-                    IndexStructureSelector::TreeTrie,
-                    IndexStructureSelector::HashTrie,
-                ],
-                "column-trie",
-            ),
-            (
-                &parallel,
-                IndexStructureSelector::TreeTrie,
-                [
-                    IndexStructureSelector::ColumnTrie,
-                    IndexStructureSelector::HashTrie,
-                ],
-                "tree-trie",
-            ),
-        ] {
-            assert!(validate_build_choices(home, build).is_ok(), "{home:?}");
-            assert!(validate_build_choices(IndexStructureSelector::All, build).is_ok());
-            for sel in others {
-                let msg = validate_build_choices(sel, build).unwrap_err().to_string();
-                assert!(msg.contains("--ds-build"), "{msg}");
-                assert!(msg.contains(named), "{msg}");
-                assert!(validate_build_choices(sel, &BuildChoices::default()).is_ok());
+    fn build_choices_resolve_keyed_pairs_per_structure() {
+        let radix8 = HashTrieBuildMode::Radix(kermit_ds::RadixBits::new(8).unwrap());
+        let parallel2 = TreeTrieBuildMode::Parallel(Threads::new(2).unwrap());
+        assert_eq!(build(&[]).resolved().unwrap(), BuildModes::default());
+        assert_eq!(
+            build(&["hash-trie=serial"]).resolved().unwrap(),
+            BuildModes::default()
+        );
+        assert_eq!(
+            build(&["tree-trie=serial"]).resolved().unwrap(),
+            BuildModes::default()
+        );
+        assert_eq!(
+            build(&["hash-trie=radix:8"]).resolved().unwrap(),
+            BuildModes {
+                tree_trie: TreeTrieBuildMode::Serial,
+                column_trie: ColumnTrieBuildMode::Bulk,
+                hash_trie: radix8,
             }
+        );
+        assert_eq!(
+            build(&["tree-trie=parallel:2"]).resolved().unwrap(),
+            BuildModes {
+                tree_trie: parallel2,
+                column_trie: ColumnTrieBuildMode::Bulk,
+                hash_trie: HashTrieBuildMode::Serial,
+            }
+        );
+        assert_eq!(
+            build(&[
+                "column-trie=incremental",
+                "hash-trie=radix:8",
+                "tree-trie=parallel:2"
+            ])
+            .resolved()
+            .unwrap(),
+            BuildModes {
+                tree_trie: parallel2,
+                column_trie: ColumnTrieBuildMode::Incremental,
+                hash_trie: radix8,
+            }
+        );
+    }
+
+    /// Every malformed `--ds-build` is a usage error naming what is wrong.
+    #[test]
+    fn build_choices_reject_malformed_pairs() {
+        let cases: &[(&[&str], &str)] = &[
+            (
+                &["incremental"],
+                "did you mean --ds-build column-trie=incremental?",
+            ),
+            (&["radix:8"], "did you mean --ds-build hash-trie=radix:8?"),
+            (
+                &["parallel:8"],
+                "did you mean --ds-build tree-trie=parallel:8?",
+            ),
+            (
+                &["serial"],
+                "did you mean --ds-build tree-trie=serial or hash-trie=serial?",
+            ),
+            (&["fast"], "for example --ds-build"),
+            (&["tree-trie=bulk"], "unknown tree-trie build mode \"bulk\""),
+            (
+                &["tree-trie=radix:8"],
+                "unknown tree-trie build mode \"radix:8\"",
+            ),
+            (&["tree-trie=parallel"], "parallel needs a thread count"),
+            (&["tree-trie=parallel:0"], "between 1 and 1024, got 0"),
+            (&["tree-trie=parallel:1025"], "between 1 and 1024, got 1025"),
+            (
+                &["tree-trie=serial", "tree-trie=parallel:2"],
+                "tree-trie given more than once",
+            ),
+            (&["b-tree=bulk"], "unknown structure \"b-tree\""),
+            (
+                &["hash-trie=serial", "hash-trie=radix:4"],
+                "hash-trie given more than once",
+            ),
+            (&["hash-trie=bulk"], "unknown hash-trie build mode \"bulk\""),
+            (
+                &["column-trie=radix:8"],
+                "unknown mode \"radix:8\"; expected incremental or bulk",
+            ),
+            (&["hash-trie=radix"], "radix needs a bit count"),
+            (&["hash-trie=radix:0"], "between 1 and 16"),
+            (&["hash-trie=radix:17"], "between 1 and 16"),
+            (&["hash-trie=radix:x"], "whole number"),
+        ];
+        for &(pairs, expected) in cases {
+            let msg = build(pairs).resolved().unwrap_err().to_string();
+            assert!(msg.contains("--ds-build"), "{pairs:?}: {msg}");
+            assert!(msg.contains(expected), "{pairs:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn validate_build_choices_accepts_each_key_on_its_structure_or_all() {
+        use IndexStructureSelector::{All, ColumnTrie, HashTrie, TreeTrie};
+        let tree = build(&["tree-trie=parallel:4"]);
+        let column = build(&["column-trie=incremental"]);
+        let hash = build(&["hash-trie=radix:4"]);
+        for (choices, key, home) in [
+            (&tree, "tree-trie", TreeTrie),
+            (&column, "column-trie", ColumnTrie),
+            (&hash, "hash-trie", HashTrie),
+        ] {
+            assert!(validate_build_choices(home, choices).is_ok());
+            assert!(validate_build_choices(All, choices).is_ok());
+            for sel in [TreeTrie, ColumnTrie, HashTrie] {
+                if sel == home {
+                    continue;
+                }
+                let msg = validate_build_choices(sel, choices)
+                    .unwrap_err()
+                    .to_string();
+                assert!(msg.contains(&format!("--ds-build {key}")), "{msg}");
+                assert!(msg.contains(&format!("--indexstructure {key}")), "{msg}");
+            }
+        }
+        for sel in [TreeTrie, ColumnTrie, HashTrie, All] {
+            assert!(validate_build_choices(sel, &BuildChoices::default()).is_ok());
         }
     }
 
     #[test]
     fn ds_choices_resolve_carries_the_build_mode() {
-        let incremental = BuildChoices {
-            build: Some(BuildChoice::Incremental),
-        };
-        let choices = DsChoices::resolve(
-            IndexStructureSelector::ColumnTrie,
-            &LayoutChoices::default(),
-            &ConfigChoices::default(),
-            &incremental,
-        )
-        .unwrap();
-        assert_eq!(choices.build, BuildModes {
-            column: ColumnTrieBuildMode::Incremental,
-            tree: TreeTrieBuildMode::Serial,
-        });
-
-        let four = Threads::new(4).unwrap();
-        let parallel = BuildChoices {
-            build: Some(BuildChoice::Parallel(four)),
-        };
+        let radix = HashTrieBuildMode::Radix(kermit_ds::RadixBits::new(4).unwrap());
+        let parallel = TreeTrieBuildMode::Parallel(Threads::new(4).unwrap());
         let choices = DsChoices::resolve(
             IndexStructureSelector::All,
             &LayoutChoices::default(),
             &ConfigChoices::default(),
-            &parallel,
+            &build(&[
+                "tree-trie=parallel:4",
+                "column-trie=incremental",
+                "hash-trie=radix:4",
+            ]),
         )
         .unwrap();
         assert_eq!(choices.build, BuildModes {
-            column: ColumnTrieBuildMode::Bulk,
-            tree: TreeTrieBuildMode::Parallel(four),
+            tree_trie: parallel,
+            column_trie: ColumnTrieBuildMode::Incremental,
+            hash_trie: radix,
         });
-
-        assert_eq!(DsChoices::default().build, BuildModes {
-            column: ColumnTrieBuildMode::Bulk,
-            tree: TreeTrieBuildMode::Serial,
-        });
+        assert_eq!(DsChoices::default().build, BuildModes::default());
+        assert_eq!(BuildModes::default().tree_trie, TreeTrieBuildMode::Serial);
+        assert_eq!(BuildModes::default().column_trie, ColumnTrieBuildMode::Bulk);
+        assert_eq!(BuildModes::default().hash_trie, HashTrieBuildMode::Serial);
         assert!(DsChoices::resolve(
             IndexStructureSelector::TreeTrie,
             &LayoutChoices::default(),
             &ConfigChoices::default(),
-            &incremental,
+            &build(&["column-trie=incremental"]),
         )
         .is_err());
         assert!(DsChoices::resolve(
             IndexStructureSelector::ColumnTrie,
             &LayoutChoices::default(),
             &ConfigChoices::default(),
-            &parallel,
+            &build(&["tree-trie=parallel:4"]),
         )
         .is_err());
+    }
+
+    /// Every structure's `--ds-build` modes resolve to that structure's mode
+    /// alone, whose report label is the mode as typed; every other structure
+    /// keeps its default. The table is checked against
+    /// `IndexStructure::value_variants()`, so a structure added to
+    /// [`BuildChoices::STRUCTURES`] fails here until its modes are listed
+    /// and [`BuildModes`] carries them.
+    #[test]
+    fn build_choices_resolve_to_each_structures_labels() {
+        fn labels(modes: &BuildModes) -> [(IndexStructure, String); 3] {
+            [
+                (IndexStructure::TreeTrie, modes.tree_trie.axis_value()),
+                (IndexStructure::ColumnTrie, modes.column_trie.axis_value()),
+                (IndexStructure::HashTrie, modes.hash_trie.axis_value()),
+            ]
+        }
+        const TABLE: &[(IndexStructure, &[&str])] = &[
+            (IndexStructure::TreeTrie, &[
+                "serial",
+                "parallel:1",
+                "parallel:3",
+            ]),
+            (IndexStructure::ColumnTrie, &["bulk", "incremental"]),
+            (IndexStructure::HashTrie, &["serial", "radix:1", "radix:16"]),
+        ];
+        let defaults = labels(&BuildModes::default());
+        for ds in IndexStructure::value_variants() {
+            assert!(
+                BuildChoices::STRUCTURES.contains(ds),
+                "{ds:?} has no --ds-build key"
+            );
+            let (_, modes) = TABLE
+                .iter()
+                .find(|(listed, _)| listed == ds)
+                .unwrap_or_else(|| panic!("{ds:?} is missing from the mode table"));
+            for mode in *modes {
+                let pair = format!("{}={mode}", cli_name(*ds));
+                let resolved = build(&[&pair]).resolved().unwrap();
+                for ((structure, label), (_, default)) in labels(&resolved).iter().zip(&defaults) {
+                    if structure == ds {
+                        assert_eq!(label, mode, "{pair} on {structure:?}");
+                    } else {
+                        assert_eq!(
+                            label, default,
+                            "{pair} must leave {structure:?} on its default"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The `--ds-build` help states the thread range `Threads::MAX` bounds.
+    #[test]
+    fn ds_build_help_names_the_thread_limit() {
+        let command = BuildChoices::augment_args(clap::Command::new("test"));
+        let help = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "ds_build")
+            .and_then(|arg| arg.get_help())
+            .expect("--ds-build has help")
+            .to_string();
+        assert!(help.contains(&format!("1..={}", Threads::MAX)), "{help}");
+    }
+
+    #[test]
+    fn ds_build_flag_names_its_structure() {
+        let flag = DsFlag::Build(IndexStructure::TreeTrie);
+        assert_eq!(flag.to_string(), "--ds-build tree-trie");
+        assert_eq!(flag.structures_label(), "tree-trie");
     }
 
     /// The same round trip for `--ds-layout-seek` and `SeekStrategy`.
@@ -1187,38 +1599,62 @@ mod tests {
         let layout = LayoutChoices {
             hash_trie_hasher: Some(HasherChoice::Fxhash),
             hash_trie_pruning: Some(PruningChoice::On),
+            hash_trie_expansion: Some(ExpansionChoice::Lazy),
             sorted_trie_seek: Some(SeekChoice::Binary),
         };
         let config = ConfigChoices {
             ds_config: vec!["load-factor=0.5".into()],
         };
-        let build = BuildChoices {
-            build: Some(BuildChoice::Incremental),
-        };
-        assert_eq!(DsFlag::given(&layout, &config, &build), vec![
+        let builds = build(&[
+            "column-trie=incremental",
+            "hash-trie=radix:4",
+            "tree-trie=parallel:2",
+        ]);
+        assert_eq!(DsFlag::given(&layout, &config, &builds), vec![
             DsFlag::LayoutHasher,
             DsFlag::LayoutPruning,
+            DsFlag::LayoutExpansion,
             DsFlag::LayoutSeek,
             DsFlag::Config,
-            DsFlag::Build(BuildChoice::Incremental),
+            DsFlag::Build(IndexStructure::ColumnTrie),
+            DsFlag::Build(IndexStructure::HashTrie),
+            DsFlag::Build(IndexStructure::TreeTrie),
         ]);
         let seek_only = LayoutChoices {
             sorted_trie_seek: Some(SeekChoice::Linear),
             ..LayoutChoices::default()
         };
         assert_eq!(
-            DsFlag::given(&seek_only, &ConfigChoices::default(), &build),
-            vec![DsFlag::LayoutSeek, DsFlag::Build(BuildChoice::Incremental)]
+            DsFlag::given(&seek_only, &ConfigChoices::default(), &builds),
+            vec![
+                DsFlag::LayoutSeek,
+                DsFlag::Build(IndexStructure::ColumnTrie),
+                DsFlag::Build(IndexStructure::HashTrie),
+                DsFlag::Build(IndexStructure::TreeTrie)
+            ]
+        );
+        // Malformed pairs yield no flag; `resolved` rejects them.
+        assert_eq!(
+            DsFlag::given(
+                &LayoutChoices::default(),
+                &ConfigChoices::default(),
+                &build(&["incremental", "tree-trie", "b-tree=x"])
+            ),
+            vec![]
         );
     }
 
     #[test]
     fn unreached_flag_is_the_first_flag_no_structure_has() {
-        let incremental = DsFlag::Build(BuildChoice::Incremental);
-        let parallel = DsFlag::Build(BuildChoice::Parallel(Threads::new(2).unwrap()));
         let sorted = [IndexStructure::TreeTrie, IndexStructure::ColumnTrie];
         assert_eq!(
-            unreached_flag(&[DsFlag::LayoutSeek, incremental], &sorted),
+            unreached_flag(
+                &[
+                    DsFlag::LayoutSeek,
+                    DsFlag::Build(IndexStructure::ColumnTrie)
+                ],
+                &sorted
+            ),
             None
         );
         assert_eq!(
@@ -1228,18 +1664,28 @@ mod tests {
             ),
             Some(DsFlag::Config)
         );
-        // A `--ds-build` value reaches only the structures that have it.
+        // A build pair reaches only its own structure: a column-trie pair
+        // not TreeTrie, a tree-trie pair not ColumnTrie.
         assert_eq!(
-            unreached_flag(&[incremental], &[IndexStructure::TreeTrie]),
-            Some(incremental)
+            unreached_flag(&[DsFlag::Build(IndexStructure::ColumnTrie)], &[
+                IndexStructure::TreeTrie
+            ]),
+            Some(DsFlag::Build(IndexStructure::ColumnTrie))
         );
         assert_eq!(
-            unreached_flag(&[parallel], &[IndexStructure::TreeTrie]),
+            unreached_flag(&[DsFlag::Build(IndexStructure::TreeTrie)], &sorted),
             None
         );
         assert_eq!(
-            unreached_flag(&[parallel], &[IndexStructure::ColumnTrie]),
-            Some(parallel)
+            unreached_flag(&[DsFlag::Build(IndexStructure::TreeTrie)], &[
+                IndexStructure::ColumnTrie
+            ]),
+            Some(DsFlag::Build(IndexStructure::TreeTrie))
+        );
+        // A hash-trie build pair reaches no sorted trie.
+        assert_eq!(
+            unreached_flag(&[DsFlag::Build(IndexStructure::HashTrie)], &sorted),
+            Some(DsFlag::Build(IndexStructure::HashTrie))
         );
         assert_eq!(unreached_flag(&[], &[]), None);
     }
@@ -1269,108 +1715,30 @@ mod tests {
     }
 
     #[test]
-    fn build_choices_parse_and_display_round_trip() {
-        for text in ["bulk", "incremental", "serial", "parallel:1", "parallel:16"] {
-            assert_eq!(parse_build_choice(text).unwrap().to_string(), text);
+    fn planner_args_default_to_lexicographic_stored() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            planner: PlannerArgs,
         }
+        let cli = Cli::parse_from(["kermit"]);
+        assert_eq!(cli.planner.optimiser, Optimiser::Lexicographic);
+        assert_eq!(cli.planner.column_orders, ColumnOrderPolicy::Stored);
         assert_eq!(
-            parse_build_choice("parallel:8"),
-            Ok(BuildChoice::Parallel(Threads::new(8).unwrap()))
+            cli.planner.instantiate().column_orders(),
+            ColumnOrderPolicy::Stored
         );
-    }
-
-    /// Every malformed value names the form it expected.
-    #[test]
-    fn build_choices_reject_malformed_values() {
-        for bad in [
-            "parallel",
-            "parallel:",
-            "parallel:0",
-            "parallel:x",
-            "parallel:-1",
-            "parallel:1025",
-            "Serial",
-            "threads:4",
-            "",
-        ] {
-            let msg = parse_build_choice(bad).unwrap_err();
-            assert!(msg.contains("parallel:N"), "{bad:?}: {msg}");
-        }
-    }
-
-    /// Which structures each value reaches. `HashTrie` joins `serial` and
-    /// `parallel:N` in #94's second plan.
-    #[test]
-    fn build_choice_structures_are_pinned() {
-        assert_eq!(BuildChoice::Bulk.structures(), &[
-            IndexStructure::ColumnTrie
+        let cli = Cli::parse_from([
+            "kermit",
+            "--column-orders",
+            "any",
+            "--optimiser",
+            "cost-based",
         ]);
-        assert_eq!(BuildChoice::Incremental.structures(), &[
-            IndexStructure::ColumnTrie
-        ]);
-        assert_eq!(BuildChoice::Serial.structures(), &[
-            IndexStructure::TreeTrie
-        ]);
+        assert_eq!(cli.planner.optimiser, Optimiser::CostBased);
         assert_eq!(
-            BuildChoice::Parallel(Threads::new(2).unwrap()).structures(),
-            &[IndexStructure::TreeTrie]
+            cli.planner.instantiate().column_orders(),
+            ColumnOrderPolicy::Any
         );
-    }
-
-    #[test]
-    fn ds_build_flag_names_its_value() {
-        let flag = DsFlag::Build(BuildChoice::Parallel(Threads::new(2).unwrap()));
-        assert_eq!(flag.to_string(), "--ds-build parallel:2");
-        assert_eq!(flag.structures_label(), "tree-trie");
-    }
-
-    /// Every `--ds-build` value resolves to the matching mode on exactly the
-    /// structures that have it, and that mode's report label is the value as
-    /// typed; every other structure keeps its default. This ties the parser,
-    /// `Display`, `structures` and `resolved` to kermit-ds's axis labels.
-    #[test]
-    fn build_choices_resolve_to_each_structures_labels() {
-        let defaults = BuildModes::default();
-        for text in ["bulk", "incremental", "serial", "parallel:3"] {
-            let choice = parse_build_choice(text).unwrap();
-            let modes = BuildChoices {
-                build: Some(choice),
-            }
-            .resolved();
-            for (structure, label, default_label) in [
-                (
-                    IndexStructure::ColumnTrie,
-                    modes.column.axis_value(),
-                    defaults.column.axis_value(),
-                ),
-                (
-                    IndexStructure::TreeTrie,
-                    modes.tree.axis_value(),
-                    defaults.tree.axis_value(),
-                ),
-            ] {
-                if choice.structures().contains(&structure) {
-                    assert_eq!(label, text, "{text} on {structure:?}");
-                } else {
-                    assert_eq!(
-                        label, default_label,
-                        "{text} must leave {structure:?} on its default"
-                    );
-                }
-            }
-        }
-    }
-
-    /// The `--ds-build` help states the thread limit `Threads::MAX` enforces.
-    #[test]
-    fn ds_build_help_names_the_thread_limit() {
-        let command = BuildChoices::augment_args(clap::Command::new("test"));
-        let help = command
-            .get_arguments()
-            .find(|arg| arg.get_id() == "build")
-            .and_then(|arg| arg.get_help())
-            .expect("--ds-build has help")
-            .to_string();
-        assert!(help.contains(&Threads::MAX.to_string()), "{help}");
     }
 }

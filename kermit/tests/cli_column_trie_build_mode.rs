@@ -1,10 +1,11 @@
-//! CLI smoke test for the sorted tries' `ds_build_mode` axis (issues #84,
-//! #94). Every `ColumnTrie` report says which build made its relations, so
-//! kermit-lab can read a `ColumnTrie` report *without* the axis as the pre-#84
-//! incremental build; every `TreeTrie` report does too (`serial` unless
-//! `--ds-build parallel:N`). `HashTrie` has a single build and carries no such
-//! axis until #94's second plan. It also covers selecting `ColumnTrie`'s mode
-//! with `--ds-build` and rejecting its values on other structures.
+//! CLI smoke test for `ColumnTrie`'s `ds_build_mode` axis (issue #84), and
+//! for every structure reporting its own. Every `ColumnTrie` report says which
+//! build made its relations, so kermit-lab can read a `ColumnTrie` report
+//! *without* the axis as the pre-#84 incremental build. `TreeTrie` and
+//! `HashTrie` report theirs (`serial` by default — see
+//! `cli_tree_trie_build_mode.rs` and `cli_hash_trie_build_mode.rs`). It also
+//! covers selecting the mode with `--ds-build` and rejecting a column-trie
+//! pair on another structure.
 
 mod common;
 
@@ -22,7 +23,7 @@ fn cli_bench_ds_column_trie_records_bulk_build_mode() {
 }
 
 #[test]
-fn cli_bench_ds_tree_trie_records_serial_and_hash_trie_no_build_mode() {
+fn cli_bench_ds_tree_trie_records_serial_build_mode() {
     let (output, report) = bench_ds("tree-trie", &[]);
     assert!(
         output.status.success(),
@@ -30,19 +31,10 @@ fn cli_bench_ds_tree_trie_records_serial_and_hash_trie_no_build_mode() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(axes_of(&report)["ds_build_mode"], "serial");
-
-    let (output, report) = bench_ds("hash-trie", &[]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let axes = axes_of(&report);
-    assert!(axes.get("ds_build_mode").is_none(), "{axes}");
 }
 
 #[test]
-fn cli_bench_run_sweep_reports_each_cells_build_mode() {
+fn cli_bench_run_sweep_reports_each_structures_build_mode() {
     let (output, report) = bench_run("triangle", &["-i", "all", "-a", "all", "-m", "space"]);
     assert!(
         output.status.success(),
@@ -55,8 +47,9 @@ fn cli_bench_run_sweep_reports_each_cells_build_mode() {
         let axes = &r["axes"];
         match axes["data_structure"].as_str() {
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
-            | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
-            | Some("HashTrie") => assert!(axes.get("ds_build_mode").is_none(), "{axes}"),
+            | Some("TreeTrie" | "HashTrie") => {
+                assert_eq!(axes["ds_build_mode"], "serial", "{axes}")
+            },
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }
@@ -75,7 +68,7 @@ fn cli_bench_join_column_trie_records_bulk_build_mode() {
 
 #[test]
 fn cli_bench_ds_with_incremental_build_records_axis() {
-    let (output, report) = bench_ds("column-trie", &["--ds-build", "incremental"]);
+    let (output, report) = bench_ds("column-trie", &["--ds-build", "column-trie=incremental"]);
     assert!(
         output.status.success(),
         "{}",
@@ -85,14 +78,22 @@ fn cli_bench_ds_with_incremental_build_records_axis() {
 }
 
 #[test]
-fn cli_bench_ds_rejects_bulk_off_column_trie() {
+fn cli_bench_ds_rejects_a_column_trie_pair_off_column_trie() {
     for ds in ["tree-trie", "hash-trie"] {
-        let (output, _) = bench_ds(ds, &["--ds-build", "bulk"]);
-        assert!(!output.status.success(), "{ds} accepted --ds-build");
+        let (output, _) = bench_ds(ds, &["--ds-build", "column-trie=bulk"]);
+        assert!(!output.status.success(), "{ds} accepted a column-trie pair");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("--ds-build bulk"), "{ds}: {stderr}");
-        assert!(stderr.contains("column-trie"), "{ds}: {stderr}");
+        assert!(stderr.contains("--ds-build column-trie"), "{ds}: {stderr}");
     }
+}
+
+/// The pre-#91 bare spelling is a usage error that names the keyed one.
+#[test]
+fn cli_bench_ds_rejects_the_bare_spelling_with_a_hint() {
+    let (output, _) = bench_ds("column-trie", &["--ds-build", "incremental"]);
+    assert!(!output.status.success(), "bare --ds-build was accepted");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("column-trie=incremental"), "{stderr}");
 }
 
 #[test]
@@ -105,7 +106,7 @@ fn cli_bench_run_sweep_carries_incremental_only_to_column_trie_cells() {
         "-m",
         "space",
         "--ds-build",
-        "incremental",
+        "column-trie=incremental",
     ]);
     assert!(
         output.status.success(),
@@ -118,8 +119,9 @@ fn cli_bench_run_sweep_carries_incremental_only_to_column_trie_cells() {
         let axes = &r["axes"];
         match axes["data_structure"].as_str() {
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "incremental", "{axes}"),
-            | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
-            | Some("HashTrie") => assert!(axes.get("ds_build_mode").is_none(), "{axes}"),
+            | Some("TreeTrie" | "HashTrie") => {
+                assert_eq!(axes["ds_build_mode"], "serial", "{axes}")
+            },
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }
@@ -131,7 +133,7 @@ fn cli_bench_join_with_incremental_build_records_axis() {
         "-m",
         "space",
         "--ds-build",
-        "incremental",
+        "column-trie=incremental",
     ]);
     assert!(
         output.status.success(),

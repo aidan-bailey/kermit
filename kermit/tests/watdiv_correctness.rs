@@ -5,22 +5,24 @@
 //! every query from the emitted YAML against the committed Parquet
 //! relations, comparing tuple counts to the hand-verified
 //! `expected.json`. Exercises the full Const-view rewrite path in
-//! [`lftj_join`] without any network or Python dependency at test time.
-//! Every query runs under every optimiser, because a plan changes the
-//! descent order, never the answer.
+//! `kermit::db::lftj_join` without any network or Python dependency at test
+//! time. Every query runs under every optimiser and column-order policy,
+//! because a plan changes the descent order, and under `--column-orders any`
+//! the atoms it reads through reordered copies, never the answer.
+
+mod common;
 
 use {
     clap::ValueEnum,
-    kermit::db::{lftj_join, Database, SortedFamily},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser},
+    common::utils::{join_under_planner, load_parquet_relations, JoinEntry},
+    kermit_algos::{ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, RelationFileExt,
-        TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, TreeTrie,
     },
     kermit_iters::TrieIterable,
     std::{
-        collections::{BTreeMap, HashMap},
+        collections::HashMap,
         path::{Path, PathBuf},
     },
 };
@@ -41,21 +43,19 @@ fn load_expected(dir: &Path) -> HashMap<String, usize> {
 }
 
 /// Loads the fixture's relations as `R` and checks every query's result
-/// count, planned by `optimiser`, against `expected.json`.
-fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Optimiser) {
+/// count, planned by `optimiser` under `policy`, against `expected.json`.
+fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(
+    optimiser: Optimiser, policy: ColumnOrderPolicy,
+) {
     let dir = artifacts_dir();
     let bench = load_yaml(&dir);
     let expected = load_expected(&dir);
 
-    let mut relations: BTreeMap<String, R> = BTreeMap::new();
-    for rel in &bench.relations {
-        let path = dir.join(format!("{}.parquet", rel.name));
-        let trie =
-            R::from_parquet(&path).unwrap_or_else(|e| panic!("failed to load {path:?}: {e}"));
-        relations.insert(rel.name.clone(), trie);
-    }
-    let planner = optimiser.instantiate();
-    let relations = Database::new::<SortedFamily>(relations, planner.required_statistics());
+    let (relations, inputs) =
+        load_parquet_relations::<R>(&dir, bench.relations.iter().map(|r| r.name.as_str()));
+    let planner = Planner::new(optimiser.instantiate(), policy);
+    let mut database =
+        <LeapfrogTriejoin as JoinEntry<R>>::database(relations, planner.required_statistics());
 
     for q in &bench.queries {
         let key = format!("{}::{}", bench.name, q.name);
@@ -64,15 +64,17 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Opti
             .unwrap_or_else(|| panic!("no expected entry for {key}"));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let got = lftj_join::<R, LeapfrogTriejoin>(&relations, parsed, planner.as_ref())
-            .unwrap_or_else(|e| panic!("query {}: {e}", q.name))
-            .len();
+        let (rows, _) =
+            join_under_planner::<R, LeapfrogTriejoin>(&mut database, &inputs, parsed, &planner)
+                .unwrap_or_else(|e| panic!("query {}: {e}", q.name));
+        let got = rows.len();
 
         assert_eq!(
             got,
             want,
-            "cardinality mismatch on {key} ({} / {}): got {got}, expected {want}\nquery: {}",
+            "cardinality mismatch on {key} ({} / {} / {}): got {got}, expected {want}\nquery: {}",
             optimiser.axis_value(),
+            policy.axis_value(),
             std::any::type_name::<R>(),
             q.query
         );
@@ -83,12 +85,14 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Opti
 fn watdiv_mini_cardinalities_match() {
     // The plan an optimiser picks changes the descent order, never the
     // answer; iterating the CLI enum covers optimisers added later.
-    for &optimiser in Optimiser::value_variants() {
-        check_cardinalities::<TreeTrie<LinearSeek>>(optimiser);
-        check_cardinalities::<TreeTrie<BinarySeek>>(optimiser);
-        check_cardinalities::<TreeTrie<GallopingSeek>>(optimiser);
-        check_cardinalities::<ColumnTrie<LinearSeek>>(optimiser);
-        check_cardinalities::<ColumnTrie<BinarySeek>>(optimiser);
-        check_cardinalities::<ColumnTrie<GallopingSeek>>(optimiser);
+    for &policy in ColumnOrderPolicy::value_variants() {
+        for &optimiser in Optimiser::value_variants() {
+            check_cardinalities::<TreeTrie<LinearSeek>>(optimiser, policy);
+            check_cardinalities::<TreeTrie<BinarySeek>>(optimiser, policy);
+            check_cardinalities::<TreeTrie<GallopingSeek>>(optimiser, policy);
+            check_cardinalities::<ColumnTrie<LinearSeek>>(optimiser, policy);
+            check_cardinalities::<ColumnTrie<BinarySeek>>(optimiser, policy);
+            check_cardinalities::<ColumnTrie<GallopingSeek>>(optimiser, policy);
+        }
     }
 }

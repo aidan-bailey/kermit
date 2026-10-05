@@ -73,6 +73,9 @@ pub trait PruningPolicy: LayoutOption + Copy + Default + 'static {
 /// pin it: `node_does_not_grow_under_the_pruning_policy` (in
 /// `implementation.rs`) and `off_frame_is_the_bare_table_pair` (in
 /// `hash_trie_iter.rs`).
+///
+/// Also the eager payload of `HashTrieNode::Unexpanded` (see
+/// `expansion.rs`), for the same reason.
 #[derive(Copy, Clone, Debug)]
 pub enum Never {}
 

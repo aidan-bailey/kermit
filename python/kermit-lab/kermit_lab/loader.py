@@ -120,12 +120,16 @@ def load_reports(
     return out
 
 
-TIME_PHASES: tuple[str, ...] = ("insertion", "iteration", "end_to_end")
+TIME_PHASES: tuple[str, ...] = ("insertion", "copies", "iteration", "end_to_end")
 
 
 def phase_of(function_id: str) -> str | None:
-    """Return the time phase (``"insertion"`` / ``"iteration"`` /
-    ``"end_to_end"``) if ``function_id`` encodes one.
+    """Return the time phase (``"insertion"`` / ``"copies"`` /
+    ``"iteration"`` / ``"end_to_end"``) if ``function_id`` encodes one.
+
+    ``copies`` is the reordered copies a query needs under
+    ``--column-orders any``, emitted beside ``insertion`` when the plan
+    needs one (#93).
 
     `bench ds` writes ``"{ds}/<phase>"``; `bench run` writes the bare
     ``"<phase>"``. Both end with the phase token, so a final-segment check

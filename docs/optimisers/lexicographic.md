@@ -39,6 +39,19 @@ shape). Canonical indices: `Y = 0` (head), `K = 1`. Constraint DAG:
 `variable_ordering = [1, 0]` — the constant's variable binds first even
 though the head variable is canonically smaller.
 
+## Column orders
+
+`--column-orders stored` (the default) pins every atom to its stored
+column order: the plan binds each atom's columns left to right, as every
+plan did before issue #93. `--column-orders any` pins nothing
+(`CatalogStats::is_pinned`, read through `Precedence::for_query`), so the
+ranking alone decides, and an atom whose plan disagrees with its stored
+order is read through a reordered copy
+(`docs/specs/2026-10-05-column-orders-design.md`).
+
+Under `any` the plan is the canonical order itself: head variables in
+head order, then body-only variables by first appearance.
+
 ## CLI
 
     kermit bench run triangle -i tree-trie -a leapfrog-triejoin --optimiser lexicographic

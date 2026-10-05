@@ -56,8 +56,16 @@ fn ds_layout_pruning_is_rejected_when_lftj_leaves_no_hash_trie_cell() {
 
 #[test]
 fn ds_build_is_rejected_when_htj_leaves_no_column_trie_cell() {
-    let (output, report) = narrowed_sweep("hash-triejoin", &["--ds-build", "incremental"]);
-    assert_rejected_unreached(&output, &report, "--ds-build");
+    let (output, report) =
+        narrowed_sweep("hash-triejoin", &["--ds-build", "column-trie=incremental"]);
+    assert_rejected_unreached(&output, &report, "--ds-build column-trie");
+}
+
+#[test]
+fn ds_build_hash_trie_is_rejected_when_lftj_leaves_no_hash_trie_cell() {
+    let (output, report) =
+        narrowed_sweep("leapfrog-triejoin", &["--ds-build", "hash-trie=radix:4"]);
+    assert_rejected_unreached(&output, &report, "--ds-build hash-trie");
 }
 
 #[test]
@@ -119,7 +127,7 @@ fn every_flag_reaches_its_cell_under_all_all() {
         "--ds-config",
         "load-factor=0.5",
         "--ds-build",
-        "incremental",
+        "column-trie=incremental,hash-trie=radix:2",
     ]);
     assert!(
         output.status.success(),
@@ -135,6 +143,7 @@ fn every_flag_reaches_its_cell_under_all_all() {
                 assert_eq!(axes["ds_layout_hasher"], "fxhash", "{axes}");
                 assert_eq!(axes["ds_layout_pruning"], "on", "{axes}");
                 assert_eq!(axes["ds_config_load_factor"], 0.5, "{axes}");
+                assert_eq!(axes["ds_build_mode"], "radix:2", "{axes}");
             },
             | Some("ColumnTrie") => {
                 assert_eq!(axes["ds_layout_seek"], "binary", "{axes}");

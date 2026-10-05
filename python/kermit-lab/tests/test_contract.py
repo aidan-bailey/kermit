@@ -76,7 +76,7 @@ def test_bench_ds_column_trie_reports_its_build_mode(tmp_path: Path) -> None:
     _run(
         tmp_path, report,
         "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "column-trie", "-m", "space",
-        "--ds-build", "incremental",
+        "--ds-build", "column-trie=incremental",
     )
     # Without the back-fill, so a missing key cannot pass as "incremental".
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
@@ -103,10 +103,44 @@ def test_bench_ds_tree_trie_reports_its_parallel_build(tmp_path: Path) -> None:
     _run(
         tmp_path, report,
         "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "tree-trie", "-m", "space",
-        "--ds-build", "parallel:2",
+        "--ds-build", "tree-trie=parallel:2",
     )
     # Without the back-fill, so a missing key cannot pass as "serial".
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
     assert len(df) == 1
     assert df.iloc[0]["ds_build_mode"] == "parallel:2"
     assert df.iloc[0]["threads"] == 2
+
+
+def test_bench_join_reports_its_column_orders(tmp_path: Path) -> None:
+    report = tmp_path / "join.json"
+    _run(
+        tmp_path, report,
+        "join", "--relations", str(FIXTURES / "first.csv"), str(FIXTURES / "second.csv"),
+        "--query", str(FIXTURES / "intersect_query.dl"),
+        "-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "space",
+        "--column-orders", "any",
+    )
+    # Without the back-fill, so a missing key cannot pass as "stored".
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
+    assert len(df) >= 1
+    assert set(df["column_orders"]) == {"any"}
+
+
+def test_bench_join_copies_reach_the_frame(tmp_path: Path) -> None:
+    """A query `stored` rejects runs under `any` over a reordered copy: the
+    real binary's `copies` function loads as the `copies` phase and the
+    copy's footprint as `space/Index_1_0_edge` (#93)."""
+    query = tmp_path / "mutual.dl"
+    query.write_text("Q(X, Y) :- edge(X, Y), edge(Y, X).\n")
+    report = tmp_path / "join.json"
+    _run(
+        tmp_path, report,
+        "join", "--relations", str(FIXTURES / "edge.csv"), "--query", str(query),
+        "-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "insertion", "space",
+        "--column-orders", "any",
+    )
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
+    assert set(df["phase"].dropna()) == {"insertion", "copies"}
+    space = set(df.loc[df["metric"] == "space", "criterion_function"])
+    assert space == {"space/edge", "space/Index_1_0_edge"}

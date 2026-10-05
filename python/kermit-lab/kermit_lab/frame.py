@@ -32,6 +32,7 @@ _AXIS_STR_KEYS: tuple[str, ...] = (
     "data_structure",
     "algorithm",
     "optimiser",
+    "column_orders",
     "query",
     "benchmark",
     "relation_path",

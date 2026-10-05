@@ -10,10 +10,11 @@ use {clap::ValueEnum, std::str::FromStr};
 pub use {
     column_trie::{ColumnTrie, ColumnTrieBuildMode},
     hash_trie::{
-        HashTrie, HashTrieConfig, InvalidLoadFactor, LoadFactor, NoPruning, PruningPolicy,
-        SingletonPruning,
+        EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
+        InvalidLoadFactor, InvalidRadixBits, LazyExpansion, LoadFactor, NoPruning,
+        ParseHashTrieBuildModeError, PruningPolicy, RadixBits, SingletonPruning,
     },
-    tree_trie::{TreeTrie, TreeTrieBuildMode},
+    tree_trie::{ParseTreeTrieBuildModeError, TreeTrie, TreeTrieBuildMode},
 };
 
 /// The available trie-based index structures for storing relations.

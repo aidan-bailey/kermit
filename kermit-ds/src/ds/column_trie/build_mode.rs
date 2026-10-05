@@ -33,10 +33,9 @@ impl kermit_iters::BuildMode for ColumnTrieBuildMode {
 mod tests {
     use {super::*, clap::ValueEnum, kermit_iters::BuildMode};
 
-    /// Pins `axis_value` to clap's derived value name. `--ds-build` itself
-    /// parses through the binary's `BuildChoice` (#94), whose
-    /// `build_choices_resolve_to_each_structures_labels` test ties the value
-    /// typed to these labels.
+    /// Pins `axis_value` to clap's derived value name, so a report's
+    /// `ds_build_mode` is always the mode the user typed in
+    /// `--ds-build column-trie=<mode>`.
     #[test]
     fn axis_values_match_clap_value_names() {
         for mode in ColumnTrieBuildMode::value_variants() {

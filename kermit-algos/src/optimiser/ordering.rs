@@ -1,7 +1,7 @@
 //! Constraint-respecting topological ordering shared by all optimisers.
 
 use {
-    crate::analyse,
+    crate::{analyse, optimiser::CatalogStats},
     kermit_parser::JoinQuery,
     std::{
         cmp::Reverse,
@@ -9,15 +9,18 @@ use {
     },
 };
 
-/// Computes a *global attribute order* (GAO): a permutation of
-/// `0..num_vars` in which every relation's variables appear in physical
-/// column order.
+/// Computes a *global attribute order* (GAO): a permutation of the
+/// query's variables in which every *pinned* relation's variables appear
+/// in physical column order.
 ///
 /// Trie-descending joins bind each relation one physical column per depth,
-/// so a relation `r(K, Y)` participates correctly only if its first column
-/// `K` is bound before its second column `Y`. Each relation contributes
-/// edges `col[i] -> col[i+1]` (a variable repeated within one predicate
-/// imposes no self-constraint); Kahn's algorithm yields a valid order.
+/// so a relation `r(K, Y)` read in its stored order participates correctly
+/// only if its first column `K` is bound before its second column `Y`.
+/// `precedence` holds those edges ([`Precedence::for_query`]: one
+/// `col[i] -> col[i+1]` edge per adjacent pair of each pinned atom's
+/// variables; a variable repeated within one predicate imposes no
+/// self-constraint; under `--column-orders any` no atom is pinned and the
+/// graph is empty). Kahn's algorithm yields a valid order.
 ///
 /// `rank` maps a candidate variable to an [`Ord`] key; among the variables
 /// whose constraints are currently satisfied (the *ready set*), the
@@ -29,16 +32,16 @@ use {
 ///
 /// # Panics
 ///
-/// Panics if the constraints are cyclic (e.g. `r(X, Y), s(Y, X)`):
-/// answering such a query would require a relation sorted in two different
-/// column orders at once, which a single fixed trie order cannot provide.
-pub fn topological_order<K: Ord>(
-    num_vars: usize, predicate_variables: &[Vec<usize>], rank: impl Fn(usize) -> K,
-) -> Vec<usize> {
-    let order = Precedence::new(num_vars, predicate_variables).kahn(rank);
+/// Panics if the constraints are cyclic (e.g. `r(X, Y), s(Y, X)` under
+/// `stored`): answering such a query would require a relation sorted in
+/// two different column orders at once, which a single fixed trie order
+/// cannot provide. `kermit::db` rejects such a query before planning
+/// ([`check_attribute_order`]), and under `any` the graph has no cycle.
+pub fn topological_order<K: Ord>(precedence: &Precedence, rank: impl Fn(usize) -> K) -> Vec<usize> {
+    let order = precedence.kahn(rank);
     assert_eq!(
         order.len(),
-        num_vars,
+        precedence.num_vars(),
         "query imposes a cyclic global attribute order; the join cannot answer it with a single \
          trie column order per relation"
     );
@@ -46,11 +49,14 @@ pub fn topological_order<K: Ord>(
 }
 
 /// The column-order constraint graph: one edge `col[i] -> col[i+1]` per
-/// adjacent pair of a relation's variables. Shared by
-/// [`topological_order`], which orders it, and [`check_attribute_order`],
-/// which reports a cycle in it, so the two cannot disagree about which
-/// queries are answerable.
-pub(crate) struct Precedence {
+/// adjacent pair of a pinned relation's variables. The one place those
+/// edges are built, shared by [`topological_order`], which orders it,
+/// [`check_attribute_order`], which reports a cycle in it, and the
+/// cost-based search, which reads its
+/// [`predecessor_masks`](Self::predecessor_masks), so none of them can
+/// disagree about which plans are valid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Precedence {
     /// `adjacency[v]`: the variables that must be bound after `v`.
     adjacency: Vec<HashSet<usize>>,
     /// Number of distinct variables that must be bound before each one.
@@ -58,10 +64,31 @@ pub(crate) struct Precedence {
 }
 
 impl Precedence {
+    /// The graph of `query` under the policy `stats` carry: only atoms
+    /// [`CatalogStats::is_pinned`] says are pinned add edges. `query` is
+    /// the rewritten query, as
+    /// [`QueryOptimiser::plan`](super::QueryOptimiser::plan) receives it.
+    pub fn for_query(query: &JoinQuery, stats: &CatalogStats) -> Self {
+        let analysis = analyse(query);
+        let pinned = query
+            .body
+            .iter()
+            .zip(&analysis.predicate_variables)
+            .filter(|(atom, _)| stats.is_pinned(&atom.name))
+            .map(|(_, vars)| vars);
+        Self::build(analysis.num_vars, pinned)
+    }
+
+    /// The graph with every atom pinned: what `stored` plans under, and
+    /// what [`check_attribute_order`] reports cycles in.
     pub(crate) fn new(num_vars: usize, predicate_variables: &[Vec<usize>]) -> Self {
+        Self::build(num_vars, predicate_variables)
+    }
+
+    fn build<'v>(num_vars: usize, atoms: impl IntoIterator<Item = &'v Vec<usize>>) -> Self {
         let mut adjacency: Vec<HashSet<usize>> = vec![HashSet::new(); num_vars];
         let mut in_degree: Vec<usize> = vec![0; num_vars];
-        for vars in predicate_variables {
+        for vars in atoms {
             for pair in vars.windows(2) {
                 let (earlier, later) = (pair[0], pair[1]);
                 if earlier != later && adjacency[earlier].insert(later) {
@@ -75,12 +102,18 @@ impl Precedence {
         }
     }
 
+    /// The number of variables the graph orders.
+    pub fn num_vars(&self) -> usize { self.in_degree.len() }
+
+    /// Whether the graph has no edge at all, so every order is valid.
+    pub fn is_free(&self) -> bool { self.in_degree.iter().all(|&d| d == 0) }
+
     /// The variables each variable must follow, as one bitmask per variable:
     /// bit `u` of entry `v` is set when `u -> v` is an edge. A set of bound
     /// variables `S` can bind `v` next exactly when `masks[v] & !S == 0`.
     /// `None` past 64 variables, which a `u64` cannot index.
-    pub(crate) fn predecessor_masks(&self) -> Option<Vec<u64>> {
-        let num_vars = self.in_degree.len();
+    pub fn predecessor_masks(&self) -> Option<Vec<u64>> {
+        let num_vars = self.num_vars();
         if num_vars > 64 {
             return None;
         }
@@ -125,9 +158,11 @@ pub struct CyclicAttributeOrder {
     pub atoms: Vec<usize>,
 }
 
-/// Checks that `query` admits a global attribute order, i.e. that
-/// [`topological_order`] would not panic on it, and otherwise names the
-/// body atoms on one cycle of its column-order constraints.
+/// Checks that `query` admits a global attribute order under `stored`,
+/// i.e. that [`topological_order`] over every atom's column-order edges
+/// would not panic on it, and otherwise names the body atoms on one cycle
+/// of those constraints. Under `--column-orders any` no atom is pinned, so
+/// there is nothing to check and `kermit::db` skips this.
 ///
 /// Each atom is matched one column at a time, left to right, so `r(X, Y)`
 /// needs `X` bound before `Y`; `r(X, Y), s(Y, X)` then needs both orders
@@ -198,13 +233,19 @@ pub fn check_attribute_order(query: &JoinQuery) -> Result<(), CyclicAttributeOrd
 
 #[cfg(test)]
 mod tests {
-    use {super::*, kermit_parser::JoinQuery};
+    use {
+        super::*,
+        crate::optimiser::{CatalogStats, ColumnOrderPolicy},
+        kermit_parser::JoinQuery,
+    };
 
     #[test]
     fn identity_rank_reproduces_lexicographic_order() {
         // Triangle: R(0,1), S(1,2), T(0,2) — edges 0->1, 1->2, 0->2.
         let preds = vec![vec![0, 1], vec![1, 2], vec![0, 2]];
-        assert_eq!(topological_order(3, &preds, |v| v), vec![0, 1, 2]);
+        assert_eq!(topological_order(&Precedence::new(3, &preds), |v| v), vec![
+            0, 1, 2
+        ]);
     }
 
     #[test]
@@ -212,7 +253,9 @@ mod tests {
         // r(K, Y) with K canonical index 1, Y index 0: edge 1 -> 0.
         // The subject-position-constant shape — K must come first.
         let preds = vec![vec![1, 0], vec![1]];
-        assert_eq!(topological_order(2, &preds, |v| v), vec![1, 0]);
+        assert_eq!(topological_order(&Precedence::new(2, &preds), |v| v), vec![
+            1, 0
+        ]);
     }
 
     #[test]
@@ -220,7 +263,7 @@ mod tests {
         // Star: R(0,1), S(0,2). After 0, both 1 and 2 are ready; the rank
         // function prefers 2.
         let preds = vec![vec![0, 1], vec![0, 2]];
-        let order = topological_order(3, &preds, |v| {
+        let order = topological_order(&Precedence::new(3, &preds), |v| {
             if v == 2 {
                 0
             } else {
@@ -228,6 +271,41 @@ mod tests {
             }
         });
         assert_eq!(order, vec![0, 2, 1]);
+    }
+
+    fn stats(q: &JoinQuery, policy: ColumnOrderPolicy) -> CatalogStats {
+        CatalogStats::for_query(q, policy, |_| None)
+    }
+
+    /// Under `stored`, `for_query` builds the same graph as `new` over
+    /// every atom.
+    #[test]
+    fn under_stored_every_atom_adds_its_edges() {
+        let q: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).".parse().unwrap();
+        let analysis = analyse(&q);
+        let from_query = Precedence::for_query(&q, &stats(&q, ColumnOrderPolicy::Stored));
+        assert_eq!(
+            from_query,
+            Precedence::new(analysis.num_vars, &analysis.predicate_variables)
+        );
+        assert!(!from_query.is_free());
+        assert_eq!(from_query.predecessor_masks().unwrap(), vec![
+            0b000, 0b001, 0b011
+        ]);
+    }
+
+    /// Under `any` nothing is pinned: no edges, every order valid, and a
+    /// query that is cyclic under `stored` orders fine.
+    #[test]
+    fn under_any_no_atom_adds_an_edge() {
+        let q: JoinQuery = "Q(X, Y) :- edge(X, Y), edge(Y, X).".parse().unwrap();
+        let precedence = Precedence::for_query(&q, &stats(&q, ColumnOrderPolicy::Any));
+        assert!(precedence.is_free());
+        assert_eq!(precedence.num_vars(), 2);
+        assert_eq!(precedence.predecessor_masks().unwrap(), vec![0, 0]);
+        assert_eq!(topological_order(&precedence, |v| v), vec![0, 1]);
+        // The rank alone decides.
+        assert_eq!(topological_order(&precedence, |v| 1 - v), vec![1, 0]);
     }
 
     fn check(q: &str) -> Result<(), CyclicAttributeOrder> {
@@ -309,6 +387,6 @@ mod tests {
     fn cyclic_constraints_panic() {
         // r(X, Y), s(Y, X): edges 0->1 and 1->0.
         let preds = vec![vec![0, 1], vec![1, 0]];
-        topological_order(2, &preds, |v| v);
+        topological_order(&Precedence::new(2, &preds), |v| v);
     }
 }

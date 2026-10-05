@@ -2,7 +2,7 @@
 
 use {
     kermit_parser::{JoinQuery, Term},
-    std::collections::HashMap,
+    std::collections::{HashMap, HashSet},
 };
 
 /// Structural facts about a [`JoinQuery`]: the canonical variable
@@ -87,6 +87,28 @@ pub fn analyse(query: &JoinQuery) -> QueryAnalysis {
     }
 }
 
+/// The variables of `query` by canonical index: `names[i]` is the variable
+/// [`analyse`] numbers `i`. The same two passes, head then body in first
+/// appearance, so the two always agree. The orientation rewrite
+/// ([`crate::orient`]) uses it to carry a plan across a renumbering.
+pub fn canonical_names(query: &JoinQuery) -> Vec<String> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut names: Vec<String> = Vec::new();
+    let terms = query
+        .head
+        .terms
+        .iter()
+        .chain(query.body.iter().flat_map(|pred| pred.terms.iter()));
+    for term in terms {
+        if let Term::Var(name) = term {
+            if seen.insert(name) {
+                names.push(name.clone());
+            }
+        }
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +140,19 @@ mod tests {
         let analysis = analyse(&query);
         assert_eq!(analysis.num_vars, 1);
         assert_eq!(analysis.predicate_variables, vec![vec![0], vec![0]]);
+    }
+
+    #[test]
+    fn canonical_names_agree_with_analyse() {
+        let q: JoinQuery = "Q(Y, X) :- r(X, K0, Y), s(Y, Z), Const_c5(K0)."
+            .parse()
+            .unwrap();
+        let names = canonical_names(&q);
+        assert_eq!(names, vec!["Y", "X", "K0", "Z"]);
+        let analysis = analyse(&q);
+        assert_eq!(names.len(), analysis.num_vars);
+        // `r(X, K0, Y)` in canonical indices is [1, 2, 0].
+        assert_eq!(analysis.predicate_variables[0], vec![1, 2, 0]);
     }
 
     #[test]

@@ -8,6 +8,7 @@ matplotlib.use("Agg")
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import pandas as pd
 import pytest
 
 import kermit_lab as kl
@@ -74,7 +75,8 @@ def test_ablation_preset_refuses_build_mode_outside_build_phases(
         fixture_build_mode_tree["paths"],
         criterion_root=fixture_build_mode_tree["criterion_root"],
     )
-    assert set(df["ds_build_mode"].dropna()) == {"incremental", "bulk"}
+    # ColumnTrie's two builds, and HashTrie's back-filled pre-#91 build.
+    assert set(df["ds_build_mode"].dropna()) == {"incremental", "bulk", "serial"}
     with pytest.raises(InsufficientAxesError, match="built"):
         presets.ablation(df, axis="ds_build_mode", phase="iteration")
 
@@ -95,21 +97,27 @@ def test_ablation_preset_lets_build_mode_through_on_end_to_end(
 def test_build_mode_ablation_leaves_out_structures_without_the_axis(
     fixture_build_mode_tree,
 ) -> None:
-    """HashTrie rows keep NaN for ``ds_build_mode`` (it has no build mode
-    until #94's second plan); charting them would add a bar for a structure
-    that has none."""
+    """Rows without ``ds_build_mode`` belong to a structure without a build
+    mode; charting them would add a bar for a structure that has none. Every
+    structure back-fills a mode since #91 and #94 (HashTrie's report here
+    loads as ``serial``), so the HashTrie rows are blanked to stand in for
+    such a structure."""
     df = kl.load(
         fixture_build_mode_tree["paths"],
         criterion_root=fixture_build_mode_tree["criterion_root"],
     )
-    assert df.loc[df["data_structure"] == "HashTrie", "ds_build_mode"].isna().all()
+    hash_trie = df["data_structure"] == "HashTrie"
+    assert (df.loc[hash_trie, "ds_build_mode"] == "serial").all()
+    df.loc[hash_trie, "ds_build_mode"] = pd.NA
     fig = presets.ablation(df, axis="ds_build_mode", phase="insertion")
     labels = {t.get_text() for ax in fig.axes for t in ax.get_xticklabels()}
     plt.close(fig)
     assert labels == {"bulk", "incremental"}
 
 
-_HASH_TRIE_AXES = ("ds_layout_hasher", "ds_layout_pruning", "ds_config_load_factor")
+_HASH_TRIE_AXES = (
+    "ds_layout_hasher", "ds_layout_pruning", "ds_layout_expansion", "ds_config_load_factor",
+)
 
 
 def test_hash_trie_ablations_are_drawn_for_a_mixed_sweep(
