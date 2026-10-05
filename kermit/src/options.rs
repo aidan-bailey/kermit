@@ -1355,7 +1355,7 @@ mod tests {
             (&["radix:8"], "did you mean --ds-build hash-trie=radix:8?"),
             (
                 &["parallel:8"],
-                "did you mean --ds-build tree-trie=parallel:8?",
+                "did you mean --ds-build tree-trie=parallel:8 or hash-trie=parallel:8?",
             ),
             (
                 &["serial"],
