@@ -643,9 +643,9 @@ impl BuildChoices {
     fn given(&self) -> Option<DsFlag> { self.build.map(DsFlag::Build) }
 }
 
-/// Rejects `--ds-build` on index structures that have no BuildMode axis, so
-/// a report can never carry a `ds_build_mode` the build ignored. Same
-/// discipline as [`validate_config_choices`].
+/// Rejects a `--ds-build` value on index structures that lack that value's
+/// build mode, so a report can never carry a `ds_build_mode` the build
+/// ignored. Same discipline as [`validate_config_choices`].
 pub(crate) fn validate_build_choices(
     indexstructure: IndexStructureSelector, build: &BuildChoices,
 ) -> anyhow::Result<()> {
@@ -701,7 +701,7 @@ mod tests {
         super::*,
         clap::ValueEnum,
         kermit_ds::{BinarySeek, GallopingSeek, LinearSeek, NoPruning, SingletonPruning},
-        kermit_iters::{FxHashStrategy, SipHashStrategy},
+        kermit_iters::{BuildMode, FxHashStrategy, SipHashStrategy},
     };
 
     /// Every `--ds-layout-hasher` choice names exactly one `HashStrategy`
@@ -1322,5 +1322,55 @@ mod tests {
         let flag = DsFlag::Build(BuildChoice::Parallel(Threads::new(2).unwrap()));
         assert_eq!(flag.to_string(), "--ds-build parallel:2");
         assert_eq!(flag.structures_label(), "tree-trie");
+    }
+
+    /// Every `--ds-build` value resolves to the matching mode on exactly the
+    /// structures that have it, and that mode's report label is the value as
+    /// typed; every other structure keeps its default. This ties the parser,
+    /// `Display`, `structures` and `resolved` to kermit-ds's axis labels.
+    #[test]
+    fn build_choices_resolve_to_each_structures_labels() {
+        let defaults = BuildModes::default();
+        for text in ["bulk", "incremental", "serial", "parallel:3"] {
+            let choice = parse_build_choice(text).unwrap();
+            let modes = BuildChoices {
+                build: Some(choice),
+            }
+            .resolved();
+            for (structure, label, default_label) in [
+                (
+                    IndexStructure::ColumnTrie,
+                    modes.column.axis_value(),
+                    defaults.column.axis_value(),
+                ),
+                (
+                    IndexStructure::TreeTrie,
+                    modes.tree.axis_value(),
+                    defaults.tree.axis_value(),
+                ),
+            ] {
+                if choice.structures().contains(&structure) {
+                    assert_eq!(label, text, "{text} on {structure:?}");
+                } else {
+                    assert_eq!(
+                        label, default_label,
+                        "{text} must leave {structure:?} on its default"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The `--ds-build` help states the thread limit `Threads::MAX` enforces.
+    #[test]
+    fn ds_build_help_names_the_thread_limit() {
+        let command = BuildChoices::augment_args(clap::Command::new("test"));
+        let help = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "build")
+            .and_then(|arg| arg.get_help())
+            .expect("--ds-build has help")
+            .to_string();
+        assert!(help.contains(&Threads::MAX.to_string()), "{help}");
     }
 }

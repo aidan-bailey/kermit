@@ -19,11 +19,15 @@ fn cli_bench_ds_tree_trie_records_a_parallel_build() {
 
 #[test]
 fn cli_bench_join_tree_trie_records_a_parallel_build() {
+    let csv = tempfile::NamedTempFile::new().expect("temp csv");
+    let csv_path = csv.path().to_str().expect("utf-8 temp path");
     let (output, report) = bench_join("tree-trie", "leapfrog-triejoin", &[
         "-m",
         "space",
         "--ds-build",
         "parallel:3",
+        "--output",
+        csv_path,
     ]);
     assert!(
         output.status.success(),
@@ -94,6 +98,7 @@ fn cli_bench_ds_rejects_parallel_off_tree_trie() {
     for ds in ["column-trie", "hash-trie"] {
         let (output, _) = bench_ds(ds, &["--ds-build", "parallel:2"]);
         assert!(!output.status.success(), "{ds} accepted parallel:2");
+        assert_eq!(output.status.code(), Some(1), "{ds}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("--ds-build parallel:2"), "{ds}: {stderr}");
         assert!(stderr.contains("tree-trie"), "{ds}: {stderr}");
@@ -105,6 +110,11 @@ fn cli_rejects_malformed_parallel_values() {
     for bad in ["parallel", "parallel:0", "parallel:1025", "parallel:x"] {
         let (output, _) = bench_ds("tree-trie", &["--ds-build", bad]);
         assert!(!output.status.success(), "accepted {bad}");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{bad}: a malformed value is a usage error"
+        );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("parallel:N"), "{bad}: {stderr}");
     }

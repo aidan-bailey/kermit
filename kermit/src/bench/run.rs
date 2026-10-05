@@ -501,6 +501,8 @@ mod tests {
             (
                 JoinAlgorithmSelector::HashTriejoin,
                 &[LayoutHasher, LayoutPruning, Config],
+                // plan 2 of #94 gives HashTrie serial | parallel:N; this row
+                // flips then
                 &[LayoutSeek, incremental, parallel],
             ),
             (

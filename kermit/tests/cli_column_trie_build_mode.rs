@@ -85,12 +85,12 @@ fn cli_bench_ds_with_incremental_build_records_axis() {
 }
 
 #[test]
-fn cli_bench_ds_rejects_ds_build_off_column_trie() {
+fn cli_bench_ds_rejects_bulk_off_column_trie() {
     for ds in ["tree-trie", "hash-trie"] {
         let (output, _) = bench_ds(ds, &["--ds-build", "bulk"]);
         assert!(!output.status.success(), "{ds} accepted --ds-build");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("--ds-build"), "{ds}: {stderr}");
+        assert!(stderr.contains("--ds-build bulk"), "{ds}: {stderr}");
         assert!(stderr.contains("column-trie"), "{ds}: {stderr}");
     }
 }

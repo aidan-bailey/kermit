@@ -946,6 +946,14 @@ mod tests {
                 build: TreeTrieBuildMode::Serial,
             })
         );
+        let four = TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(4).unwrap());
+        assert_eq!(
+            TrieLftj::<TreeTrie>::new(four, Optimiser::Lexicographic).execution(),
+            Execution::TrieLftj(SortedTrie::TreeTrie {
+                seek: SeekChoice::Galloping,
+                build: four,
+            })
+        );
         let column =
             TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::Incremental, Optimiser::Lexicographic);
         assert_eq!(
