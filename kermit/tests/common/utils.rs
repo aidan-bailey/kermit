@@ -10,7 +10,8 @@ use {
     kermit::db::{hash_join, hash_join_for_each, lftj_join, lftj_join_for_each, JoinError},
     kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, QueryOptimiser},
     kermit_ds::{
-        Cardinality, ConfigProvider, Configured, HashTrie, HashTrieConfig, PruningPolicy, Relation,
+        BuildModeProvider, BuiltWith, Cardinality, ConfigProvider, Configured, HashTrie,
+        HashTrieBuildMode, HashTrieConfig, PruningPolicy, Relation,
     },
     kermit_iters::{HashStrategy, TrieIterable},
     std::collections::BTreeMap,
@@ -86,6 +87,31 @@ impl<H: HashStrategy, P: PruningPolicy, C: ConfigProvider<HashTrieConfig>>
     ) -> Result<usize, JoinError> {
         let mut rows = 0;
         hash_join_for_each::<Configured<HashTrie<H, P>, C>, H>(
+            relations,
+            query,
+            optimiser,
+            |_| rows += 1,
+        )?;
+        Ok(rows)
+    }
+}
+
+impl<H: HashStrategy, P: PruningPolicy, B: BuildModeProvider<HashTrieBuildMode>>
+    JoinEntry<BuiltWith<HashTrie<H, P>, B>> for HashTriejoin
+{
+    fn join(
+        relations: &BTreeMap<String, BuiltWith<HashTrie<H, P>, B>>, query: JoinQuery,
+        optimiser: &dyn QueryOptimiser,
+    ) -> Result<Vec<Vec<usize>>, JoinError> {
+        hash_join::<BuiltWith<HashTrie<H, P>, B>, H>(relations, query, optimiser)
+    }
+
+    fn count(
+        relations: &BTreeMap<String, BuiltWith<HashTrie<H, P>, B>>, query: JoinQuery,
+        optimiser: &dyn QueryOptimiser,
+    ) -> Result<usize, JoinError> {
+        let mut rows = 0;
+        hash_join_for_each::<BuiltWith<HashTrie<H, P>, B>, H>(
             relations,
             query,
             optimiser,

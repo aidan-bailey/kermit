@@ -4,8 +4,8 @@ use {
     kermit_algos::{CardinalityOptimiser, HashTriejoin, LeapfrogTriejoin, LexicographicOptimiser},
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, ColumnTrie,
-        ColumnTrieBuildMode, GallopingSeek, HashTrie, HashTrieConfig, LinearSeek, LoadFactor,
-        SingletonPruning, TreeTrie,
+        ColumnTrieBuildMode, GallopingSeek, HashTrie, HashTrieBuildMode, HashTrieConfig,
+        LinearSeek, LoadFactor, RadixBits, SingletonPruning, TreeTrie,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -103,4 +103,41 @@ define_multiway_join_test_suite_for_build_mode!(
     LeapfrogTriejoin,
     CardinalityOptimiser,
     Incremental
+);
+
+// ── BuildMode axis: HashTrie's build ────────────────────────────────────
+// The plain HashTrie invocations above build `serial` (the default); these
+// run the radix build, which must build the identical trie (issue #91). Two
+// bits make four partitions, so the 3–5 tuple fixtures spread over several
+// partitions with several keys in each. Sip/off and Fx/on cover both
+// hashers and both pruning policies.
+define_build_mode_provider!(
+    Radix2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Radix(RadixBits::new(2).unwrap())
+);
+
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    LexicographicOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    CardinalityOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    LexicographicOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    CardinalityOptimiser,
+    Radix2
 );
