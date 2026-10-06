@@ -799,9 +799,14 @@ mod tests {
     fn presized_parallel_builds_are_equivalent_under_siphash() {
         let shared = |arity: usize| inputs(arity);
         check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
-        check_presized::<SipHashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
-        check_presized::<SipHashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
         check_presized::<SipHashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
+        // Miri runs the two above, which cover both pruning policies and both
+        // expansion policies; the threads and the region runs are the same
+        // code under the other two.
+        if !cfg!(miri) {
+            check_presized::<SipHashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
+            check_presized::<SipHashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
+        }
     }
 
     #[test]
