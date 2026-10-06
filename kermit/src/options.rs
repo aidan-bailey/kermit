@@ -9,7 +9,7 @@ use {
     kermit_algos::{ColumnOrderPolicy, Optimiser, Planner},
     kermit_ds::{
         ColumnTrieBuildMode, ExpansionPolicy, HashTrieBuildMode, HashTrieConfig, IndexStructure,
-        LoadFactor, PruningPolicy, SeekStrategy, TreeTrieBuildMode,
+        LoadFactor, PruningPolicy, RootCapacity, SeekStrategy, TreeTrieBuildMode,
     },
     kermit_iters::{HashStrategy, LayoutOption},
     std::fmt,
@@ -611,8 +611,8 @@ pub(crate) use with_sorted_trie_layout;
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct ConfigChoices {
     /// Runtime values for the selected index structure, as `key=value`
-    /// pairs. `HashTrie` accepts `load-factor=<decimal in (0, 1)>`. Only
-    /// valid with
+    /// pairs. `HashTrie` accepts `load-factor=<decimal in (0, 1)>` and
+    /// `root-capacity=grow|tuples`. Only valid with
     /// `--indexstructure hash-trie` (or `all`).
     #[arg(
         long = "ds-config",
@@ -625,7 +625,7 @@ pub(crate) struct ConfigChoices {
 impl ConfigChoices {
     /// The `--ds-config` keys `HashTrie` accepts, named in the usage error
     /// raised for any other key.
-    pub(crate) const HASH_TRIE_KEYS: &'static [&'static str] = &["load-factor"];
+    pub(crate) const HASH_TRIE_KEYS: &'static [&'static str] = &["load-factor", "root-capacity"];
 
     /// Whether the user passed any `--ds-config` pair.
     pub(crate) fn explicit(&self) -> bool { !self.ds_config.is_empty() }
@@ -650,6 +650,11 @@ impl ConfigChoices {
             match key {
                 | "load-factor" => {
                     config.load_factor = parse_load_factor(value)
+                        .map_err(|why| anyhow::anyhow!("--ds-config {key}: {why}"))?;
+                },
+                | "root-capacity" => {
+                    config.root_capacity = value
+                        .parse::<RootCapacity>()
                         .map_err(|why| anyhow::anyhow!("--ds-config {key}: {why}"))?;
                 },
                 | other => anyhow::bail!(
@@ -1155,6 +1160,42 @@ mod tests {
     }
 
     #[test]
+    fn config_choices_parse_root_capacity() {
+        let tuples = ConfigChoices {
+            ds_config: vec!["root-capacity=tuples".into()],
+        };
+        assert_eq!(
+            tuples.hash_trie_config_resolved().unwrap().root_capacity,
+            RootCapacity::Tuples
+        );
+        let both = ConfigChoices {
+            ds_config: vec!["load-factor=0.5".into(), "root-capacity=grow".into()],
+        };
+        let resolved = both.hash_trie_config_resolved().unwrap();
+        assert_eq!(resolved.root_capacity, RootCapacity::Grow);
+        assert_eq!(resolved.load_factor, LoadFactor::percent(50).unwrap());
+        assert_eq!(
+            ConfigChoices::default()
+                .hash_trie_config_resolved()
+                .unwrap()
+                .root_capacity,
+            RootCapacity::Grow
+        );
+    }
+
+    #[test]
+    fn config_choices_reject_bad_root_capacities() {
+        for bad in ["", "Grow", "presize", "1024"] {
+            let choices = ConfigChoices {
+                ds_config: vec![format!("root-capacity={bad}")],
+            };
+            let msg = choices.hash_trie_config_resolved().unwrap_err().to_string();
+            assert!(msg.contains("root-capacity"), "{bad:?}: {msg}");
+            assert!(msg.contains("expected grow or tuples"), "{bad:?}: {msg}");
+        }
+    }
+
+    #[test]
     fn config_choices_reject_unknown_key_and_bad_value() {
         // `singleton-pruning` is now a Layout flag, so it is exactly the
         // kind of key `--ds-config` must reject.
@@ -1193,7 +1234,7 @@ mod tests {
     /// `HASH_TRIE_KEYS` cannot drift from the `match` that consumes it.
     #[test]
     fn every_advertised_hash_trie_key_is_accepted() {
-        const SAMPLE: &[(&str, &str)] = &[("load-factor", "0.5")];
+        const SAMPLE: &[(&str, &str)] = &[("load-factor", "0.5"), ("root-capacity", "tuples")];
         assert_eq!(
             SAMPLE.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
             ConfigChoices::HASH_TRIE_KEYS

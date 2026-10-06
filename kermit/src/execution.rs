@@ -905,7 +905,7 @@ mod tests {
         kermit_algos::{ColumnOrderPolicy, IndexSpec, LexicographicOptimiser, Optimiser},
         kermit_ds::{
             ConfigurableRelation, EagerExpansion, LazyExpansion, LoadFactor, NoPruning, RadixBits,
-            SingletonPruning,
+            RootCapacity, SingletonPruning,
         },
         kermit_iters::{LayoutOption, SipHashStrategy},
         std::cell::Cell,
@@ -1424,6 +1424,28 @@ mod tests {
             .get("ds_config_load_factor"),
             Some(&serde_json::Value::from(0.5_f64))
         );
+    }
+
+    /// Under `root-capacity=tuples` the family's build sizes the root from
+    /// the tuple count, so a report labelled `"tuples"` timed a presized
+    /// root. 100 tuples sharing one first value hold one root key: the
+    /// grown root keeps 4 buckets, while the presized one has room for 100.
+    #[test]
+    fn hash_family_build_relation_presizes_the_root_under_tuples() {
+        let heap = |root_capacity| {
+            let family = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+                HashTrieConfig {
+                    root_capacity,
+                    ..HashTrieConfig::default()
+                },
+                HashTrieBuildMode::Serial,
+                Planner::stored(LexicographicOptimiser),
+            );
+            let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
+            let tuples = (0..100).map(|b| vec![1, b]).collect();
+            family.build_relation(header, tuples).heap_size_bytes()
+        };
+        assert!(heap(RootCapacity::Tuples) > heap(RootCapacity::Grow));
     }
 
     /// The pruning Layout reaches the relations the family builds, so a

@@ -711,10 +711,10 @@ In `kermit-ds/src/ds/mod.rs`, add `ParseRootCapacityError` and `RootCapacity` to
         ]);
 ```
 
-- [ ] **Step 6: Give every config literal the new field's default.** Each multi-line `HashTrieConfig { load_factor: X, }` literal in code gains `..HashTrieConfig::default(),` after its `load_factor` line. Run:
+- [ ] **Step 6: Give every config literal the new field's default.** Each multi-line `HashTrieConfig { load_factor: X, }` literal in code gains `..HashTrieConfig::default()` (no trailing comma: Rust rejects one after the base) after its `load_factor` line. Run:
 
 ```bash
-perl -0pi -e 's/(HashTrieConfig \{\n(\s*)load_factor: [^\n]*,\n)(\s*\})/$1$2..HashTrieConfig::default(),\n$3/g' \
+perl -0pi -e 's/(HashTrieConfig \{\n(\s*)load_factor: [^\n]*,\n)(\s*\})/$1$2..HashTrieConfig::default()\n$3/g' \
   kermit-ds/src/configured.rs kermit-ds/src/ds/hash_trie/config.rs \
   kermit-ds/src/ds/hash_trie/implementation.rs kermit-ds/src/ds/hash_trie/radix.rs \
   kermit-ds/tests/hash_trie_tests.rs kermit-ds/tests/parquet_tests.rs \
@@ -722,7 +722,7 @@ perl -0pi -e 's/(HashTrieConfig \{\n(\s*)load_factor: [^\n]*,\n)(\s*\})/$1$2..Ha
 grep -rn -A2 "HashTrieConfig {" kermit-ds/src kermit-ds/tests kermit/src kermit/tests | grep -v "^--$"
 ```
 
-Inspect the grep output. Every literal must now end with `..HashTrieConfig::default(),` or set `root_capacity` explicitly. One site is a single line: the doc comment in `kermit/tests/common/macros.rs:496`. Edit it by hand to:
+Inspect the grep output. Every literal must now end with `..HashTrieConfig::default()` or set `root_capacity` explicitly. One site is a single line: the doc comment in `kermit/tests/common/macros.rs:496`. Edit it by hand to:
 
 ```rust
 /// define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig { load_factor: LoadFactor::percent(50).unwrap(), ..HashTrieConfig::default() });
@@ -1047,7 +1047,7 @@ The other four PASS before and after the change: they pin behaviour the change m
     }
 
     /// [`make_root`](Self::make_root) at `2^log2_capacity` buckets.
-    fn make_root_sized(arity: usize, log2_capacity: u32) -> HashTrieNode<P, E> {
+    pub(super) fn make_root_sized(arity: usize, log2_capacity: u32) -> HashTrieNode<P, E> {
         HashTrieNode::new_table_sized(arity <= 1, log2_capacity)
     }
 
@@ -1688,7 +1688,7 @@ Claude-Session: https://claude.ai/code/session_01JRkiMxoczrRC2wDKRphkU2"
 > **Second concrete example (implemented).** The root capacity (#88). The root table's starting capacity was the constant 4 buckets; `HashTrieConfig::root_capacity` replaces it with a value read once per build: 4 under `grow`, or under `tuples` the smallest power of two that holds the build's tuple count under the load factor (Algorithm 2, line 3, applied to the root). One `match` per trie construction, no per-insert branch, no new node variant.
 ```
 
-(d) In the walkthrough's step 7, the `define_config_provider!(HalfFull, …)` code block gains `..HashTrieConfig::default(),` after the `load_factor` line. Add one sentence after the block: "A config struct literal names the fields it sets and takes the rest from `..HashTrieConfig::default()`, so adding a value does not break every provider."
+(d) In the walkthrough's step 7, the `define_config_provider!(HalfFull, …)` code block gains `..HashTrieConfig::default()` after the `load_factor` line. Add one sentence after the block: "A config struct literal names the fields it sets and takes the rest from `..HashTrieConfig::default()`, so adding a value does not break every provider."
 
 (e) "Where to look": after the "First Config consumer (load-factor cap)" row, add:
 
@@ -1766,3 +1766,13 @@ setsid nohup nix develop --command env MIRIFLAGS=-Zmiri-disable-isolation CARGO_
 Wait for it to finish, then `tail -30` the log. Expected: `test result: ok` for every target.
 
 - [ ] **Step 7: Report.** List the commits (`git log --oneline origin/master..HEAD`) and the gate results. Remind the user that nothing is pushed: landing follows the loom recipe (fetch, merge origin/master in, re-run the gate, push `HEAD:master`) and needs their word.
+
+---
+
+## Execution notes (2026-10-06)
+
+- **Tasks 3–10 were written before they were compiled.** Two timed benchmark runs (HashTrie scaling, TreeTrie profile) held the host, and the user chose to keep compiles off it. Each task's diff was saved as a patch and replayed in order once the host was free. Every task was formatted, built, tested and mutation-checked as it was committed.
+- **Tasks 3 and 4 are one commit** (`daa4a4c`). On its own, the Config value would leave `root_log2_capacity` and `new_table_sized` with no caller, and `clippy -Dwarnings` rejects the commit.
+- **The root-capacity tests are a top-level `#[cfg(test)] mod root_capacity_tests`** in `implementation.rs`, beside `tests`, `cardinality_tests` and `lazy_tests`, not a module nested inside `tests`.
+- **`make_root_sized` is `pub(super)`**, at the `hash-trie-parallel` session's request: its presized parallel build calls it.
+- **Plan errata, fixed above:** a struct literal's base takes no trailing comma (`..HashTrieConfig::default()`), and the hash-table tests' one-line `if cfg!(miri) { … } else { … }` must be the five-line form (`single_line_if_else_max_width=0`; fixed in `3efc992`).
