@@ -61,6 +61,7 @@ fn run_ds_bench<F: RelationFamily>(
         MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
         MetadataLine::new("tuples", tuple_count),
         MetadataLine::new("arity", header.arity()),
+        MetadataLine::new("allocator", crate::ALLOCATOR),
     ];
     if metrics.contains(&Metric::EndToEnd) {
         metadata.push(MetadataLine::new("queries per build", queries_per_build));

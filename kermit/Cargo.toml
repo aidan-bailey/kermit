@@ -10,6 +10,13 @@ publish.workspace = true
 readme.workspace = true
 repository.workspace = true
 
+[features]
+default = ["jemalloc"]
+# Link jemalloc as the binary's global allocator (#112). Without it the binary
+# runs on the system allocator (glibc on Linux), whose cross-thread frees cap
+# the parallel builds. Every bench report records which ran (`allocator`).
+jemalloc = ["dep:tikv-jemallocator"]
+
 [dependencies]
 kermit-ds = { version = "0.2.0", path = "../kermit-ds" }
 kermit-iters = { version = "0.0.10", path = "../kermit-iters" }
@@ -24,6 +31,8 @@ dirs = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+# Bundles jemalloc 5.3.1, the version #112 measured.
+tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
 allocation-counter = "0.8"

@@ -217,6 +217,7 @@ fn run_benchmark<F: ExecutionFamily>(
             MetadataLine::new("query", &query_def.name),
             MetadataLine::new("data structure", ds_name),
             MetadataLine::new("algorithm", algo_name),
+            MetadataLine::new("allocator", crate::ALLOCATOR),
         ];
         for spec in &specs {
             metadata.push(MetadataLine::new("index", spec.describe()));

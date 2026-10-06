@@ -31,3 +31,11 @@ kermit-derive = { path = "kermit-derive" }
 kermit-bench = { path = "kermit-bench" }
 kermit-parser = { path = "kermit-parser" }
 kermit-rdf = { path = "kermit-rdf" }
+
+# jemalloc (the `kermit` binary's allocator, #112) runs its configure probes with
+# -Werror. Where the C compiler defines _FORTIFY_SOURCE by default (nix's gcc
+# wrapper does), glibc warns that it needs optimisation, so at the dev profile's
+# -O0 every probe fails ("cannot determine return type of strerror_r"). Build it
+# optimised in every profile; release already is.
+[profile.dev.package.tikv-jemalloc-sys]
+opt-level = 3

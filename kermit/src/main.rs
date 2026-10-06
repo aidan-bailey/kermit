@@ -46,6 +46,28 @@ use {
     },
 };
 
+/// The process-wide allocator: jemalloc, unless the default `jemalloc` feature
+/// is off (#112). glibc returns a freed chunk to the arena that allocated it,
+/// so the parallel builds, whose workers free input tuples the calling thread
+/// allocated, serialise on that arena: `TreeTrie` `parallel:N` stops near 1.9x
+/// on 10⁷ tuples under glibc. See `docs/data-structures/parallel-build.md`.
+///
+/// Not in this crate's own unit tests: they count allocations through
+/// `allocation_counter`, which installs its own global allocator.
+#[cfg(all(feature = "jemalloc", not(test)))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// The allocator this binary runs on, as every bench report's `allocator`
+/// axis records it: `"jemalloc"`, or `"system"` (the platform's malloc, glibc
+/// on Linux) when built without the `jemalloc` feature. The integration tests
+/// check the real binary reports `"jemalloc"` under the feature.
+const ALLOCATOR: &str = if cfg!(all(feature = "jemalloc", not(test))) {
+    "jemalloc"
+} else {
+    "system"
+};
+
 /// Default Criterion group name when `--name` is omitted on `bench run`.
 /// `bench run` treats `--name` as a *prefix* on the auto-generated
 /// `{benchmark}/{query}/{ds}/{algo}` identity (see CLAUDE.md "bench `--name`

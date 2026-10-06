@@ -154,7 +154,8 @@ pub struct BenchReport {
     pub metadata: Vec<ReportField>,
     /// Structured axis values for downstream tooling (e.g. plot grouping).
     /// Conventional keys: `data_structure`, `algorithm`, `query`,
-    /// `benchmark`, `relation_path`, `relation_bytes`, `tuples`, `arity`.
+    /// `benchmark`, `relation_path`, `relation_bytes`, `tuples`, `arity`, and
+    /// `allocator`, which [`BenchReport::new`] adds to every report.
     /// `BTreeMap` so JSON output is deterministically ordered.
     pub axes: BTreeMap<String, serde_json::Value>,
     /// One entry per Criterion `bench_function` that ran. Multiple entries
@@ -167,10 +168,14 @@ impl BenchReport {
     /// Construct a report from the same `&[MetadataLine]` slice that
     /// [`write_metadata_block`] consumes, the structured `axes` map, and the
     /// list of Criterion functions that were run.
+    ///
+    /// Adds the `allocator` axis itself: every timing depends on the
+    /// allocator (#112), so no report may leave it out.
     pub fn new(
-        kind: BenchKind, metadata: &[MetadataLine], axes: BTreeMap<String, serde_json::Value>,
+        kind: BenchKind, metadata: &[MetadataLine], mut axes: BTreeMap<String, serde_json::Value>,
         criterion_groups: Vec<CriterionGroupRef>,
     ) -> Self {
+        axes.insert("allocator".to_string(), serde_json::json!(crate::ALLOCATOR));
         Self {
             schema_version: REPORT_SCHEMA_VERSION,
             kind,
@@ -406,6 +411,19 @@ mod tests {
         assert_eq!(json[0]["axes"]["middle"], 42);
         assert_eq!(json[0]["axes"]["zeta"], true);
         assert_eq!(json[0]["axes"]["nested"]["k"][1], 2);
+    }
+
+    /// Every report records the allocator the binary runs on (#112), whatever
+    /// axes its caller passed, under one of the documented values. Unit tests
+    /// run on `allocation_counter`'s allocator, so the feature's `"jemalloc"`
+    /// is checked on the real binary (`tests/cli_bench_join_axes.rs`).
+    #[test]
+    fn every_report_records_the_allocator() {
+        assert!(["jemalloc", "system"].contains(&crate::ALLOCATOR));
+        for kind in [BenchKind::Join, BenchKind::Ds, BenchKind::Run] {
+            let report = BenchReport::new(kind, &[], std::collections::BTreeMap::new(), vec![]);
+            assert_eq!(report.axes["allocator"], crate::ALLOCATOR, "{kind:?}");
+        }
     }
 
     fn report(kind: BenchKind, tag: &str) -> BenchReport {
