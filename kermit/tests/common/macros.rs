@@ -493,7 +493,7 @@ macro_rules! define_multiway_join_test_suite {
 /// `kermit_ds::define_config_provider!`.
 ///
 /// ```ignore
-/// define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig { load_factor: LoadFactor::percent(50).unwrap() });
+/// define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig { load_factor: LoadFactor::percent(50).unwrap(), ..HashTrieConfig::default() });
 /// define_multiway_join_test_suite_with_config!(HashTrieSip, HashTriejoin, LexicographicOptimiser, HalfFull);
 /// // → tests named e.g. `triangle_hashtriesiphalffull_hashtriejoin_lexicographicoptimiser`
 /// ```

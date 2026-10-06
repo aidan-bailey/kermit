@@ -26,7 +26,7 @@ mod radix;
 pub(crate) use parallel::take_parallel_builds;
 pub use {
     build_mode::{HashTrieBuildMode, InvalidRadixBits, ParseHashTrieBuildModeError, RadixBits},
-    config::{HashTrieConfig, InvalidLoadFactor, LoadFactor},
+    config::{HashTrieConfig, InvalidLoadFactor, LoadFactor, ParseRootCapacityError, RootCapacity},
     expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
     implementation::HashTrie,
     pruning::{NoPruning, PruningPolicy, SingletonPruning},

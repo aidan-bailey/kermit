@@ -46,6 +46,7 @@ pub trait ConfigProvider<C> {
 ///
 /// define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
 ///     load_factor: LoadFactor::percent(50).unwrap(),
+///     ..HashTrieConfig::default()
 /// });
 ///
 /// type HashTrieSipHalfFull = Configured<HashTrie<SipHashStrategy>, HalfFull>;
@@ -168,6 +169,7 @@ mod tests {
 
     crate::define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
         load_factor: LoadFactor::percent(50).unwrap(),
+        ..HashTrieConfig::default()
     });
 
     type HalfFullTrie = Configured<HashTrie<SipHashStrategy>, HalfFull>;

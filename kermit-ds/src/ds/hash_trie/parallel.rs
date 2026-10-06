@@ -205,9 +205,8 @@ mod tests {
         crate::{
             ds::hash_trie::{
                 build_mode::{HashTrieBuildMode, RadixBits},
-                config::HashTrieConfig,
+                config::{HashTrieConfig, RootCapacity},
                 expansion::{EagerExpansion, LazyExpansion},
-                hash_table::HashTable,
                 identity::{
                     assert_equivalent_root, assert_same_node, assert_same_trie, inputs,
                     LOAD_PERCENTS,
@@ -240,42 +239,54 @@ mod tests {
     /// whole trie). Miri runs the second only.
     fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
-            for &percent in LOAD_PERCENTS {
-                let config = HashTrieConfig {
-                    load_factor: LoadFactor::percent(percent).unwrap(),
-                };
-                for (input, tuples) in inputs(arity) {
-                    let serial = HashTrie::<H, P, E>::from_tuples_with_config(
-                        arity.into(),
-                        config,
-                        tuples.clone(),
-                    );
-                    for &t in THREADS {
-                        let label = format!(
-                            "{}/{}/{} arity {arity}, load {percent}%, parallel:{t}, {input}",
-                            H::NAME,
-                            P::NAME,
-                            E::NAME
-                        );
-                        if !cfg!(miri) {
-                            let built = HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
-                                arity.into(),
-                                config,
-                                HashTrieBuildMode::Parallel(threads(t)),
-                                tuples.clone(),
-                            );
-                            assert_same_trie(&serial, &built, &label);
-                        }
-                        let mut root = HashTrie::<H, P, E>::make_root(arity);
-                        fill_root_in_morsels::<H, P, E>(
-                            &mut root,
-                            arity,
+            for root_capacity in [RootCapacity::Grow, RootCapacity::Tuples] {
+                for &percent in LOAD_PERCENTS {
+                    let config = HashTrieConfig {
+                        load_factor: LoadFactor::percent(percent).unwrap(),
+                        root_capacity,
+                    };
+                    for (input, tuples) in inputs(arity) {
+                        let serial = HashTrie::<H, P, E>::from_tuples_with_config(
+                            arity.into(),
+                            config,
                             tuples.clone(),
-                            threads(t),
-                            7,
-                            config.load_factor,
                         );
-                        assert_same_node(serial.root(), &root, &format!("{label}, morsels of 7"));
+                        for &t in THREADS {
+                            let label = format!(
+                                "{}/{}/{} arity {arity}, {root_capacity:?}, load {percent}%, \
+                                 parallel:{t}, {input}",
+                                H::NAME,
+                                P::NAME,
+                                E::NAME
+                            );
+                            if !cfg!(miri) {
+                                let built =
+                                    HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+                                        arity.into(),
+                                        config,
+                                        HashTrieBuildMode::Parallel(threads(t)),
+                                        tuples.clone(),
+                                    );
+                                assert_same_trie(&serial, &built, &label);
+                            }
+                            let mut root = HashTrie::<H, P, E>::make_root_sized(
+                                arity,
+                                config.root_log2_capacity(tuples.len()),
+                            );
+                            fill_root_in_morsels::<H, P, E>(
+                                &mut root,
+                                arity,
+                                tuples.clone(),
+                                threads(t),
+                                7,
+                                config.load_factor,
+                            );
+                            assert_same_node(
+                                serial.root(),
+                                &root,
+                                &format!("{label}, morsels of 7"),
+                            );
+                        }
                     }
                 }
             }
@@ -455,27 +466,17 @@ mod tests {
         );
     }
 
-    /// The log2 capacity of a built trie's root.
-    fn root_log2<P: PruningPolicy, E: ExpansionPolicy>(root: &HashTrieNode<P, E>) -> u32 {
-        match root {
-            | HashTrieNode::Inner(table) => table.buckets_len().trailing_zeros(),
-            | HashTrieNode::Leaf(table) => table.buckets_len().trailing_zeros(),
-            | _ => unreachable!("a root is never pruned or unexpanded"),
-        }
-    }
-
     /// The mirrored root step, alone: one run over the whole presized root,
     /// the overflow inserted afterwards in input order. Below the root it
     /// must build serial's trie exactly; the root is equivalent
     /// (Amendment 2). A drift between `insert_at`'s root level and its
-    /// mirror shows here before any threading is involved. The root is
-    /// presized to the capacity serial's root grew to, which linear
-    /// probing's order independence makes equivalent.
+    /// mirror shows here before any threading is involved.
     fn check_root_step<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
             for &percent in LOAD_PERCENTS {
                 let config = HashTrieConfig {
                     load_factor: LoadFactor::percent(percent).unwrap(),
+                    root_capacity: RootCapacity::Tuples,
                 };
                 for (input, tuples) in inputs(arity) {
                     let label = format!(
@@ -489,12 +490,8 @@ mod tests {
                         config,
                         tuples.clone(),
                     );
-                    let log2 = root_log2(serial.root());
-                    let mut root: HashTrieNode<P, E> = if arity == 1 {
-                        HashTrieNode::Leaf(HashTable::with_log2_capacity(log2))
-                    } else {
-                        HashTrieNode::Inner(HashTable::with_log2_capacity(log2))
-                    };
+                    let log2 = config.root_log2_capacity(tuples.len());
+                    let mut root = HashTrie::<H, P, E>::make_root_sized(arity, log2);
                     let lf = config.load_factor;
                     let tail: Vec<Vec<usize>> = match &mut root {
                         | HashTrieNode::Inner(table) => {

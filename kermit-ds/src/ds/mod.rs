@@ -16,7 +16,8 @@ pub use {
     hash_trie::{
         EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
         InvalidLoadFactor, InvalidRadixBits, LazyExpansion, LoadFactor, NoPruning,
-        ParseHashTrieBuildModeError, PruningPolicy, RadixBits, SingletonPruning,
+        ParseHashTrieBuildModeError, ParseRootCapacityError, PruningPolicy, RadixBits,
+        RootCapacity, SingletonPruning,
     },
     tree_trie::{ParseTreeTrieBuildModeError, TreeTrie, TreeTrieBuildMode},
 };

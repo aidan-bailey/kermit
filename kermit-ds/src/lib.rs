@@ -42,9 +42,9 @@ pub use {
     ds::{
         ColumnTrie, ColumnTrieBuildMode, EagerExpansion, ExpansionPolicy, HashTrie,
         HashTrieBuildMode, HashTrieConfig, IndexStructure, InvalidLoadFactor, InvalidRadixBits,
-        LazyExpansion, LoadFactor, NoPruning, ParseHashTrieBuildModeError,
-        ParseTreeTrieBuildModeError, PruningPolicy, RadixBits, SingletonPruning, TreeTrie,
-        TreeTrieBuildMode,
+        LazyExpansion, LoadFactor, NoPruning, ParseHashTrieBuildModeError, ParseRootCapacityError,
+        ParseTreeTrieBuildModeError, PruningPolicy, RadixBits, RootCapacity, SingletonPruning,
+        TreeTrie, TreeTrieBuildMode,
     },
     heap_size::HeapSize,
     morsel::Threads,

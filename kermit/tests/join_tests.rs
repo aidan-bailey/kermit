@@ -87,6 +87,7 @@ define_multiway_join_test_suite!(HashTrieFxPrunedLazy, HashTriejoin, CostBasedOp
 // baseline; these are the alternate (standard: baseline + ≥1 per flag).
 define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
     load_factor: LoadFactor::percent(50).unwrap(),
+    ..HashTrieConfig::default()
 });
 
 define_multiway_join_test_suite_with_config!(

@@ -58,6 +58,7 @@ type HashTrieMod10Pruned = HashTrie<Mod10HashStrategy, SingletonPruning>;
 // ── Config variant: a dense load factor ─────────────────────────────────
 define_config_provider!(NinetyPercent, HashTrieConfig, HashTrieConfig {
     load_factor: LoadFactor::percent(90).unwrap(),
+    ..HashTrieConfig::default()
 });
 
 type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;
@@ -340,6 +341,7 @@ mod lazy_expansion {
     fn assert_lazy_walks_like_eager<H: HashStrategy, P: PruningPolicy>(load_factor: u8) {
         let config = HashTrieConfig {
             load_factor: LoadFactor::percent(load_factor).unwrap(),
+            ..HashTrieConfig::default()
         };
         for arity in [2, 3] {
             for seed in 1..=20u64 {
