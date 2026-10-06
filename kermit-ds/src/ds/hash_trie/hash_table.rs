@@ -745,7 +745,11 @@ mod tests {
     /// one less would not be.
     #[test]
     fn log2_capacity_for_is_the_smallest_sufficient_capacity() {
-        let most_keys = if cfg!(miri) { 64 } else { 2_000 };
+        let most_keys = if cfg!(miri) {
+            64
+        } else {
+            2_000
+        };
         for percent in [1u8, 10, 25, 50, 70, 80, 95, 99] {
             let lf = LoadFactor::percent(percent).unwrap();
             for keys in 0..most_keys {
@@ -791,7 +795,11 @@ mod tests {
     /// root-capacity Config (#88) rests on.
     #[test]
     fn a_presized_table_never_grows_for_its_keys() {
-        let most_keys = if cfg!(miri) { 100 } else { 1_000 };
+        let most_keys = if cfg!(miri) {
+            100
+        } else {
+            1_000
+        };
         for percent in [1u8, 10, 25, 50, 70, 95, 99] {
             let lf = LoadFactor::percent(percent).unwrap();
             for keys in [0, 1, 2, 3, 7, most_keys] {
