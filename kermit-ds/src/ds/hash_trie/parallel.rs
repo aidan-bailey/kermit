@@ -207,8 +207,13 @@ mod tests {
                 build_mode::{HashTrieBuildMode, RadixBits},
                 config::HashTrieConfig,
                 expansion::{EagerExpansion, LazyExpansion},
-                identity::{assert_same_node, assert_same_trie, inputs, LOAD_PERCENTS},
+                hash_table::HashTable,
+                identity::{
+                    assert_equivalent_root, assert_same_node, assert_same_trie, inputs,
+                    LOAD_PERCENTS,
+                },
                 implementation::HashTrie,
+                node::HashTrieNode,
                 pruning::{NoPruning, SingletonPruning},
             },
             relation::{BuildModeRelation, ConfigurableRelation, Relation},
@@ -448,5 +453,95 @@ mod tests {
             HashTrieBuildMode::Parallel(threads(2)),
             vec![vec![1, 2], vec![3]],
         );
+    }
+
+    /// The log2 capacity of a built trie's root.
+    fn root_log2<P: PruningPolicy, E: ExpansionPolicy>(root: &HashTrieNode<P, E>) -> u32 {
+        match root {
+            | HashTrieNode::Inner(table) => table.buckets_len().trailing_zeros(),
+            | HashTrieNode::Leaf(table) => table.buckets_len().trailing_zeros(),
+            | _ => unreachable!("a root is never pruned or unexpanded"),
+        }
+    }
+
+    /// The mirrored root step, alone: one run over the whole presized root,
+    /// the overflow inserted afterwards in input order. Below the root it
+    /// must build serial's trie exactly; the root is equivalent
+    /// (Amendment 2). A drift between `insert_at`'s root level and its
+    /// mirror shows here before any threading is involved. The root is
+    /// presized to the capacity serial's root grew to, which linear
+    /// probing's order independence makes equivalent.
+    fn check_root_step<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
+        for arity in 1..=3 {
+            for &percent in LOAD_PERCENTS {
+                let config = HashTrieConfig {
+                    load_factor: LoadFactor::percent(percent).unwrap(),
+                };
+                for (input, tuples) in inputs(arity) {
+                    let label = format!(
+                        "{}/{}/{} arity {arity}, load {percent}%, {input}",
+                        H::NAME,
+                        P::NAME,
+                        E::NAME
+                    );
+                    let serial = HashTrie::<H, P, E>::from_tuples_with_config(
+                        arity.into(),
+                        config,
+                        tuples.clone(),
+                    );
+                    let log2 = root_log2(serial.root());
+                    let mut root: HashTrieNode<P, E> = if arity == 1 {
+                        HashTrieNode::Leaf(HashTable::with_log2_capacity(log2))
+                    } else {
+                        HashTrieNode::Inner(HashTable::with_log2_capacity(log2))
+                    };
+                    let lf = config.load_factor;
+                    let tail: Vec<Vec<usize>> = match &mut root {
+                        | HashTrieNode::Inner(table) => {
+                            table.with_runs(1, 1 << log2, |mut runs| {
+                                tuples
+                                    .iter()
+                                    .cloned()
+                                    .filter_map(|t| {
+                                        HashTrie::<H, P, E>::insert_at_inner_root_in_run(
+                                            &mut runs[0],
+                                            arity,
+                                            t,
+                                            lf,
+                                        )
+                                        .err()
+                                    })
+                                    .collect()
+                            })
+                        },
+                        | HashTrieNode::Leaf(table) => table.with_runs(1, 1 << log2, |mut runs| {
+                            tuples
+                                .iter()
+                                .cloned()
+                                .filter_map(|t| {
+                                    HashTrie::<H, P, E>::insert_at_leaf_root_in_run(&mut runs[0], t)
+                                        .err()
+                                })
+                                .collect()
+                        }),
+                        | _ => unreachable!("a root is never pruned or unexpanded"),
+                    };
+                    for t in tail {
+                        HashTrie::<H, P, E>::insert_at(&mut root, 0, arity, t, lf);
+                    }
+                    assert_equivalent_root(serial.root(), &root, &label);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_root_step_builds_the_serial_trie_below_the_root() {
+        check_root_step::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_root_step::<SipHashStrategy, SingletonPruning, EagerExpansion>();
+        check_root_step::<SipHashStrategy, NoPruning, LazyExpansion>();
+        check_root_step::<SipHashStrategy, SingletonPruning, LazyExpansion>();
+        check_root_step::<FxHashStrategy, SingletonPruning, LazyExpansion>();
+        check_root_step::<Mod10HashStrategy, SingletonPruning, EagerExpansion>();
     }
 }

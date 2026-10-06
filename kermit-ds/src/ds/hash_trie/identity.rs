@@ -8,7 +8,7 @@
 use {
     super::{
         expansion::{ExpansionPolicy, PendingChild},
-        hash_table::HashTable,
+        hash_table::{home_bucket, HashTable},
         implementation::HashTrie,
         node::HashTrieNode,
         pruning::{PruningPolicy, SingletonPayload},
@@ -148,4 +148,64 @@ pub(super) fn inputs(arity: usize) -> Vec<(&'static str, Vec<Vec<usize>>)> {
         ),
         ("random", random),
     ]
+}
+
+/// The equivalence Amendment 2 asks of a build that may place root keys in
+/// other buckets. The root has the same capacity, allocation and length,
+/// occupies the same buckets, and has the same total probe displacement.
+/// Every key's child or chain is array-identical.
+pub(super) fn assert_equivalent_root<P: PruningPolicy, E: ExpansionPolicy>(
+    a: &HashTrieNode<P, E>, b: &HashTrieNode<P, E>, label: &str,
+) {
+    match (a, b) {
+        | (HashTrieNode::Inner(x), HashTrieNode::Inner(y)) => {
+            assert_equivalent_table(x, y, label, &|x, y, path| assert_same_node(x, y, path))
+        },
+        | (HashTrieNode::Leaf(x), HashTrieNode::Leaf(y)) => {
+            assert_equivalent_table(x, y, label, &|x, y, path| assert_same_chain(x, y, path))
+        },
+        | _ => panic!("{label}: root variants differ"),
+    }
+}
+
+fn assert_equivalent_table<V>(
+    a: &HashTable<V>, b: &HashTable<V>, path: &str, same_value: &dyn Fn(&V, &V, &str),
+) {
+    assert_eq!(a.buckets_len(), b.buckets_len(), "{path}: capacity");
+    assert_eq!(
+        a.shell_heap_bytes(),
+        b.shell_heap_bytes(),
+        "{path}: bucket allocation"
+    );
+    assert_eq!(a.len(), b.len(), "{path}: len");
+    let cap = a.buckets_len();
+    let log2 = cap.trailing_zeros();
+    let occupied = |t: &HashTable<V>| {
+        (0..cap)
+            .filter(|&i| t.hash_at(i).is_some())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(occupied(a), occupied(b), "{path}: occupied buckets");
+    let displacement = |t: &HashTable<V>| {
+        (0..cap)
+            .filter_map(|i| t.hash_at(i).map(|h| (i + cap - home_bucket(h, log2)) % cap))
+            .sum::<usize>()
+    };
+    assert_eq!(
+        displacement(a),
+        displacement(b),
+        "{path}: total displacement"
+    );
+    for idx in 0..cap {
+        if let (Some(hash), Some(x)) = (a.hash_at(idx), a.value_at(idx)) {
+            let j = b
+                .index_of(hash)
+                .unwrap_or_else(|| panic!("{path}: hash {hash:#x} missing"));
+            same_value(
+                x,
+                b.value_at(j).expect("index_of found it"),
+                &format!("{path}/{hash:#x}"),
+            );
+        }
+    }
 }

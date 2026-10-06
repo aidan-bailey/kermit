@@ -23,6 +23,7 @@ use {
         build_mode::HashTrieBuildMode,
         config::{HashTrieConfig, LoadFactor},
         expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
+        hash_table::{BucketRun, RunEntry},
         node::HashTrieNode,
         parallel,
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
@@ -304,6 +305,103 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                 )
             },
         }
+    }
+
+    /// [`insert_at`](Self::insert_at)'s `Leaf` arm at the root (arity 1),
+    /// inside one [`BucketRun`] of a presized root: the presized parallel
+    /// build's root step (`parallel.rs`). Returns the tuple if its key's
+    /// probe ran off its region, for the caller to insert afterwards.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "called by the presized parallel build, which lands next"
+        )
+    )]
+    pub(super) fn insert_at_leaf_root_in_run(
+        run: &mut BucketRun<'_, Vec<Vec<usize>>>, tuple: Vec<usize>,
+    ) -> Result<(), Vec<usize>> {
+        let hash = H::hash(tuple[0]);
+        match run.entry(hash) {
+            | Ok(RunEntry::Occupied(chain)) => chain.push(tuple),
+            | Ok(RunEntry::Vacant(slot)) => slot.insert(Vec::new()).push(tuple),
+            | Err(_) => return Err(tuple),
+        }
+        Ok(())
+    }
+
+    /// [`insert_at`](Self::insert_at)'s `Inner` arm at the root (arity
+    /// ≥ 2), inside one [`BucketRun`] of a presized root: the presized
+    /// parallel build's root step. It mirrors `insert_at` decision for
+    /// decision. A fresh key becomes a `Singleton` (pruning), an
+    /// `Unexpanded` child (lazy), or a new table that `insert_at` descends
+    /// into. An existing key unprunes, appends to its pending list, or
+    /// descends. Every level below the root is `insert_at`, unchanged.
+    /// `the_root_step_builds_the_serial_trie_below_the_root` guards the
+    /// mirror. Returns the tuple if its key's probe ran off its region.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "called by the presized parallel build, which lands next"
+        )
+    )]
+    pub(super) fn insert_at_inner_root_in_run(
+        run: &mut BucketRun<'_, HashTrieNode<P, E>>, arity: usize, tuple: Vec<usize>,
+        load_factor: LoadFactor,
+    ) -> Result<(), Vec<usize>> {
+        let hash = H::hash(tuple[0]);
+        let child_is_leaf = Self::is_leaf_depth(1, arity);
+        let child = match run.entry(hash) {
+            | Err(_) => return Err(tuple),
+            | Ok(RunEntry::Occupied(child)) => child,
+            | Ok(RunEntry::Vacant(slot)) => {
+                if P::ENABLED {
+                    slot.insert(HashTrieNode::Singleton(P::Payload::from_tuple(tuple)));
+                    return Ok(());
+                }
+                if E::LAZY {
+                    slot.insert(HashTrieNode::Unexpanded(E::Pending::from_tuples(vec![
+                        tuple,
+                    ])));
+                    return Ok(());
+                }
+                slot.insert(HashTrieNode::new_table(child_is_leaf))
+            },
+        };
+        if E::LAZY {
+            match child {
+                | HashTrieNode::Unexpanded(pending) => match pending.built_mut() {
+                    | Some(built) => Self::insert_at(built, 1, arity, tuple, load_factor),
+                    | None => pending.push(tuple),
+                },
+                | HashTrieNode::Singleton(_) => {
+                    let list =
+                        HashTrieNode::Unexpanded(E::Pending::from_tuples(Vec::with_capacity(2)));
+                    let HashTrieNode::Singleton(evicted) = std::mem::replace(child, list) else {
+                        unreachable!("matched Singleton above")
+                    };
+                    let HashTrieNode::Unexpanded(pending) = child else {
+                        unreachable!("replaced by an Unexpanded child just above")
+                    };
+                    pending.push(evicted.into_tuple());
+                    pending.push(tuple);
+                },
+                | HashTrieNode::Inner(_) | HashTrieNode::Leaf(_) => {
+                    unreachable!("a lazy Inner bucket holds a Singleton or an Unexpanded child")
+                },
+            }
+            return Ok(());
+        }
+        if P::ENABLED && matches!(child, HashTrieNode::Singleton(_)) {
+            let replacement = HashTrieNode::new_table(child_is_leaf);
+            let HashTrieNode::Singleton(evicted) = std::mem::replace(child, replacement) else {
+                unreachable!("matched Singleton above")
+            };
+            Self::insert_at(child, 1, arity, evicted.into_tuple(), load_factor);
+        }
+        Self::insert_at(child, 1, arity, tuple, load_factor);
+        Ok(())
     }
 
     /// Builds the table a lazy child at `depth` would have held, from its
