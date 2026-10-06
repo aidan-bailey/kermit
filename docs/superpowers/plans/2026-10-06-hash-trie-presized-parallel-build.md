@@ -1010,8 +1010,12 @@ pub(crate) fn take_parallel_builds() -> Vec<ParallelBuild> {
     fn presized_parallel_builds_are_equivalent_under_fxhash_and_colliding_hashes() {
         let shared = |arity: usize| inputs(arity);
         check_presized::<FxHashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<FxHashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<FxHashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
         check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
         check_presized::<Mod10HashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<Mod10HashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<Mod10HashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
         check_presized::<Mod10HashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
     }
 
