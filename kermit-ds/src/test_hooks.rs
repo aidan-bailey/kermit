@@ -17,13 +17,17 @@ pub fn take_tree_trie_parallel_builds() -> Vec<(usize, Vec<usize>)> {
     crate::ds::take_tree_trie_parallel_builds()
 }
 
+pub use crate::ds::HashTrieParallelBuild;
+
 /// Takes the record of every [`HashTrieBuildMode::Parallel`] build run on
-/// the calling thread since the last call, oldest first: each build's thread
-/// count and the size of each of its partitions, empty ones (which it does
-/// not build) included. Every other mode adds nothing, and neither does a
-/// parallel build of no tuples, which returns before partitioning.
+/// the calling thread since the last call, oldest first. Each
+/// [`HashTrieParallelBuild`] records the build's thread count, the size of
+/// each of its partitions (empty ones included), and, for the presized build
+/// of `root-capacity=tuples`, how many tuples it deferred to the calling
+/// thread. Every other mode adds nothing, and neither does a parallel build
+/// of no tuples, which returns before partitioning.
 ///
 /// [`HashTrieBuildMode::Parallel`]: crate::HashTrieBuildMode::Parallel
-pub fn take_hash_trie_parallel_builds() -> Vec<(usize, Vec<usize>)> {
+pub fn take_hash_trie_parallel_builds() -> Vec<HashTrieParallelBuild> {
     crate::ds::take_hash_trie_parallel_builds()
 }

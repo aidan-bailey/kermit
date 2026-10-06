@@ -21,7 +21,7 @@
 use {
     super::{
         build_mode::HashTrieBuildMode,
-        config::{HashTrieConfig, LoadFactor},
+        config::{HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
         hash_table::{BucketRun, RunEntry, INITIAL_LOG2_CAPACITY},
         node::HashTrieNode,
@@ -335,13 +335,6 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// inside one [`BucketRun`] of a presized root: the presized parallel
     /// build's root step (`parallel.rs`). Returns the tuple if its key's
     /// probe ran off its region, for the caller to insert afterwards.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by the presized parallel build, which lands next"
-        )
-    )]
     pub(super) fn insert_at_leaf_root_in_run(
         run: &mut BucketRun<'_, Vec<Vec<usize>>>, tuple: Vec<usize>,
     ) -> Result<(), Vec<usize>> {
@@ -363,13 +356,6 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// descends. Every level below the root is `insert_at`, unchanged.
     /// `the_root_step_builds_the_serial_trie_below_the_root` guards the
     /// mirror. Returns the tuple if its key's probe ran off its region.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by the presized parallel build, which lands next"
-        )
-    )]
     pub(super) fn insert_at_inner_root_in_run(
         run: &mut BucketRun<'_, HashTrieNode<P, E>>, arity: usize, tuple: Vec<usize>,
         load_factor: LoadFactor,
@@ -560,7 +546,25 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             },
             | HashTrieBuildMode::Parallel(threads) => {
                 Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
-                    parallel::fill_root::<H, P, E>(root, arity, tuples, threads, config.load_factor)
+                    match config.root_capacity {
+                        // The root's size depends on the distinct keys, so
+                        // it is filled after them, in first-appearance order.
+                        | RootCapacity::Grow => parallel::fill_root::<H, P, E>(
+                            root,
+                            arity,
+                            tuples,
+                            threads,
+                            config.load_factor,
+                        ),
+                        // The root is presized (#88): the paper's build.
+                        | RootCapacity::Tuples => parallel::fill_presized_root::<H, P, E>(
+                            root,
+                            arity,
+                            tuples,
+                            threads,
+                            config.load_factor,
+                        ),
+                    }
                 })
             },
         }

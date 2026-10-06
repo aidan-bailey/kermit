@@ -9,6 +9,8 @@ mod tree_trie;
 #[cfg(feature = "test-hooks")]
 pub(crate) use hash_trie::take_parallel_builds as take_hash_trie_parallel_builds;
 #[cfg(feature = "test-hooks")]
+pub use hash_trie::ParallelBuild as HashTrieParallelBuild;
+#[cfg(feature = "test-hooks")]
 pub(crate) use tree_trie::take_parallel_builds as take_tree_trie_parallel_builds;
 use {clap::ValueEnum, std::str::FromStr};
 pub use {

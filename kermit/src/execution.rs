@@ -1856,7 +1856,7 @@ mod tests {
                 build();
                 kermit_ds::test_hooks::take_hash_trie_parallel_builds()
                     .into_iter()
-                    .map(|(threads, _)| threads)
+                    .map(|build| build.threads)
                     .collect::<Vec<_>>()
             };
             let config = HashTrieConfig::default();

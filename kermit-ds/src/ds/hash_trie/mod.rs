@@ -24,6 +24,8 @@ mod radix;
 
 #[cfg(feature = "test-hooks")]
 pub(crate) use parallel::take_parallel_builds;
+#[cfg(feature = "test-hooks")]
+pub use parallel::ParallelBuild;
 pub use {
     build_mode::{HashTrieBuildMode, InvalidRadixBits, ParseHashTrieBuildModeError, RadixBits},
     config::{HashTrieConfig, InvalidLoadFactor, LoadFactor, ParseRootCapacityError, RootCapacity},

@@ -209,3 +209,17 @@ fn assert_equivalent_table<V>(
         }
     }
 }
+
+/// [`assert_equivalent_root`] for whole tries, plus heap size and tuple
+/// count.
+pub(super) fn assert_equivalent_trie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
+) {
+    assert_equivalent_root(a.root(), b.root(), label);
+    assert_eq!(
+        a.heap_size_bytes(),
+        b.heap_size_bytes(),
+        "{label}: heap size"
+    );
+    assert_eq!(a.tuple_count(), b.tuple_count(), "{label}: tuple count");
+}

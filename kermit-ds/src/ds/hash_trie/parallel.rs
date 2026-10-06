@@ -19,37 +19,65 @@
 //! serial build's `insert_at` calls; and the root receives its new keys in
 //! the serial order. Equal 64-bit hashes share a root entry and also a
 //! partition, because the partition is a function of the hash.
+//!
+//! Under `root-capacity=tuples` (#88) the root is presized, and
+//! `parallel:N` builds it the paper's way instead ([`fill_presized_root`];
+//! `docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`). The
+//! partitions are contiguous runs of the root's fixed-size regions, by each
+//! tuple's home bucket, and each worker inserts every tuple of its partition
+//! once, straight into its run of the root. A tuple whose key's probe would
+//! cross its region's end is deferred, and the calling thread inserts the
+//! deferred tuples afterwards, in input order. Root keys may then sit in
+//! other buckets than the serial build's, so this trie is equivalent rather
+//! than identical (Amendment 2): the root has the same capacity, occupied
+//! buckets and total displacement, and every subtrie is identical. Regions,
+//! not threads, decide which tuples are deferred, so the trie is the same for
+//! every N.
 
 use {
     super::{
         config::LoadFactor,
         expansion::ExpansionPolicy,
-        hash_table::HashTable,
+        hash_table::{home_bucket, BucketRun, HashTable},
+        implementation::HashTrie,
         node::HashTrieNode,
         pruning::PruningPolicy,
         radix::{self, Arrival},
     },
-    crate::morsel::{dispatch, scatter, Partition, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD},
+    crate::morsel::{
+        dispatch, scatter, Partition, Positioned, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD,
+    },
     kermit_iters::HashStrategy,
     std::{cmp::Reverse, collections::BinaryHeap},
 };
 
+/// One parallel build, as the test hooks record it.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelBuild {
+    /// The `N` of `parallel:N`.
+    pub threads: usize,
+    /// The size of each partition, empty ones included.
+    pub partition_sizes: Vec<usize>,
+    /// `None` for the exact build (`root-capacity=grow`). For the presized
+    /// build, the number of tuples deferred to the calling thread.
+    pub deferred: Option<usize>,
+}
+
 #[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
-    /// The `(threads, partition sizes)` of every parallel build on this
-    /// thread: the size of each of its P partitions, empty ones (which the
-    /// build skips) included. Every build mode builds the same trie, so only
-    /// this record can tell a test which build ran, and where it put its
-    /// tuples. Other crates' tests read it through `test_hooks` (the
-    /// `test-hooks` feature).
-    static PARALLEL_BUILDS: std::cell::RefCell<Vec<(usize, Vec<usize>)>> =
+    /// Every parallel build on this thread. Every build mode builds an
+    /// equivalent trie, so only this record can tell a test which build
+    /// ran and where it put its tuples. Other crates' tests read it through
+    /// `test_hooks` (the `test-hooks` feature).
+    static PARALLEL_BUILDS: std::cell::RefCell<Vec<ParallelBuild>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Takes this thread's record of parallel builds, oldest first, leaving it
-/// empty: the `(threads, partition sizes)` of each.
+/// empty.
 #[cfg(feature = "test-hooks")]
-pub(crate) fn take_parallel_builds() -> Vec<(usize, Vec<usize>)> {
+pub(crate) fn take_parallel_builds() -> Vec<ParallelBuild> {
     PARALLEL_BUILDS.with(|builds| builds.take())
 }
 
@@ -137,7 +165,11 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     #[cfg(any(test, feature = "test-hooks"))]
     PARALLEL_BUILDS.with(|builds| {
         let sizes = partitions.iter().map(Partition::len).collect();
-        builds.borrow_mut().push((threads.get(), sizes));
+        builds.borrow_mut().push(ParallelBuild {
+            threads: threads.get(),
+            partition_sizes: sizes,
+            deferred: None,
+        });
     });
     // An empty partition would build and drop an empty scratch root; the
     // radix build skips them too.
@@ -198,6 +230,127 @@ fn merge_in_first_appearance_order<V>(
     }
 }
 
+/// Buckets per region of a presized root. A probe during the parallel fill
+/// never crosses a region's end, and a key whose probe would is deferred to
+/// the calling thread. Regions, not partitions, decide that, so the layout
+/// is the same for every thread count. 4096 buckets keep the deferred share
+/// small at load factors up to 0.95, and keep a region's buckets within a
+/// worker's cache.
+const REGION_BUCKETS: usize = 4096;
+
+/// Fills the presized, empty `root` with `tuples` by the `parallel:threads`
+/// build of a presized root: the paper's partitioned build
+/// (`docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`).
+/// Every tuple must have `arity` attributes; the caller checks.
+pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    root: &mut HashTrieNode<P, E>, arity: usize, tuples: Vec<Vec<usize>>, threads: Threads,
+    load_factor: LoadFactor,
+) {
+    fill_presized_root_in::<H, P, E>(
+        root,
+        arity,
+        tuples,
+        threads,
+        MORSEL_TUPLES,
+        REGION_BUCKETS,
+        load_factor,
+    );
+}
+
+/// [`fill_presized_root`] with the morsel and region sizes as parameters, so
+/// tests can cut a small input into many morsels and regions.
+///
+/// 1. **Partition**: `scatter` by the top bits of each tuple's home bucket, so
+///    partition k is a contiguous run of regions, in input order.
+/// 2. **Fill**: each worker takes a partition with its run of the root and
+///    inserts every tuple once, through the root step; tuples whose key's probe
+///    runs off its region are deferred.
+/// 3. **Tail**: the calling thread inserts the deferred tuples in input order,
+///    with ordinary probing. The paper does not say how a probe crossing a
+///    partition's end is handled; this is kermit's answer.
+fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    root: &mut HashTrieNode<P, E>, arity: usize, tuples: Vec<Vec<usize>>, threads: Threads,
+    morsel_tuples: usize, region_buckets: usize, load_factor: LoadFactor,
+) {
+    if tuples.is_empty() {
+        return;
+    }
+    let capacity = match root {
+        | HashTrieNode::Inner(table) => table.buckets_len(),
+        | HashTrieNode::Leaf(table) => table.buckets_len(),
+        | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
+            unreachable!("a root is never pruned or unexpanded")
+        },
+    };
+    let log2 = capacity.trailing_zeros();
+    let region_buckets = region_buckets.min(capacity);
+    let parts = (PARTITIONS_PER_THREAD * threads.get())
+        .next_power_of_two()
+        .min(capacity / region_buckets);
+    let shift = log2 - parts.trailing_zeros();
+    // 1. Partition by the home bucket's top bits: whole runs of regions.
+    let partitions = scatter(threads, tuples, morsel_tuples, parts, |tuple| {
+        home_bucket(H::hash(tuple[0]), log2) >> shift
+    });
+    #[cfg(any(test, feature = "test-hooks"))]
+    let partition_sizes: Vec<usize> = partitions.iter().map(Partition::len).collect();
+    // 2. Fill each run of regions in parallel.
+    let mut deferred = match root {
+        | HashTrieNode::Inner(table) => {
+            fill_runs(table, threads, partitions, region_buckets, |run, tuple| {
+                HashTrie::<H, P, E>::insert_at_inner_root_in_run(run, arity, tuple, load_factor)
+            })
+        },
+        | HashTrieNode::Leaf(table) => {
+            fill_runs(table, threads, partitions, region_buckets, |run, tuple| {
+                HashTrie::<H, P, E>::insert_at_leaf_root_in_run(run, tuple)
+            })
+        },
+        | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
+            unreachable!("a root is never pruned or unexpanded")
+        },
+    };
+    #[cfg(any(test, feature = "test-hooks"))]
+    PARALLEL_BUILDS.with(|builds| {
+        builds.borrow_mut().push(ParallelBuild {
+            threads: threads.get(),
+            partition_sizes,
+            deferred: Some(deferred.len()),
+        });
+    });
+    // 3. The tail, in input order. The root is presized for every tuple, so it
+    //    does not grow here.
+    deferred.sort_unstable_by_key(|&(position, _)| position);
+    for (_, tuple) in deferred {
+        HashTrie::<H, P, E>::insert_at(root, 0, arity, tuple, load_factor);
+    }
+}
+
+/// Lends `table`'s runs to the workers: partition k fills run k through
+/// `step`, in input order, and the tuples `step` hands back are returned
+/// with their input positions.
+fn fill_runs<V: Send>(
+    table: &mut HashTable<V>, threads: Threads, partitions: Vec<Partition>, region_buckets: usize,
+    step: impl Fn(&mut BucketRun<'_, V>, Vec<usize>) -> Result<(), Vec<usize>> + Sync,
+) -> Vec<Positioned> {
+    let parts = partitions.len();
+    table.with_runs(parts, region_buckets, |runs| {
+        let work: Vec<_> = partitions.into_iter().zip(runs).collect();
+        dispatch(threads, work, |(partition, mut run)| {
+            let mut deferred = Vec::new();
+            for (position, tuple) in partition.into_tuples() {
+                if let Err(tuple) = step(&mut run, tuple) {
+                    deferred.push((position, tuple));
+                }
+            }
+            deferred
+        })
+        .into_iter()
+        .flatten()
+        .collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use {
@@ -208,8 +361,8 @@ mod tests {
                 config::{HashTrieConfig, RootCapacity},
                 expansion::{EagerExpansion, LazyExpansion},
                 identity::{
-                    assert_equivalent_root, assert_same_node, assert_same_trie, inputs,
-                    LOAD_PERCENTS,
+                    assert_equivalent_root, assert_equivalent_trie, assert_same_node,
+                    assert_same_trie, inputs, LOAD_PERCENTS,
                 },
                 implementation::HashTrie,
                 node::HashTrieNode,
@@ -420,12 +573,20 @@ mod tests {
             ),
             (
                 HashTrieBuildMode::Parallel(threads(2)),
-                vec![(2, vec![8; 8])],
+                vec![ParallelBuild {
+                    threads: 2,
+                    partition_sizes: vec![8; 8],
+                    deferred: None,
+                }],
                 vec![2, 2],
             ),
             (
                 HashTrieBuildMode::Parallel(threads(3)),
-                vec![(3, [8, 0].repeat(8))],
+                vec![ParallelBuild {
+                    threads: 3,
+                    partition_sizes: [8, 0].repeat(8),
+                    deferred: None,
+                }],
                 vec![3, 3],
             ),
         ] {
@@ -540,5 +701,234 @@ mod tests {
         check_root_step::<SipHashStrategy, SingletonPruning, LazyExpansion>();
         check_root_step::<FxHashStrategy, SingletonPruning, LazyExpansion>();
         check_root_step::<Mod10HashStrategy, SingletonPruning, EagerExpansion>();
+    }
+
+    /// Thread counts for the presized matrix; Miri runs two.
+    const PRESIZED_THREADS: &[usize] = if cfg!(miri) {
+        &[2]
+    } else {
+        &[1, 2, 3, 8]
+    };
+
+    /// Load factors under test, 80 % (the paper's sizing) included.
+    const PRESIZED_LOAD_PERCENTS: &[u8] = if cfg!(miri) {
+        &[70]
+    } else {
+        &[50, 70, 80, 95]
+    };
+
+    fn tuples_config(percent: u8) -> HashTrieConfig {
+        HashTrieConfig {
+            load_factor: LoadFactor::percent(percent).unwrap(),
+            root_capacity: RootCapacity::Tuples,
+        }
+    }
+
+    /// The presized build through the public constructor, and through the
+    /// test entry with morsels of 7 and 8-bucket regions, so small inputs
+    /// span many regions and overflow. Both must be equivalent to serial
+    /// under `Tuples` (Amendment 2), and identical to their own `parallel:1`
+    /// for every N.
+    fn check_presized<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        inputs: &dyn Fn(usize) -> Vec<(&'static str, Vec<Vec<usize>>)>,
+        arities: std::ops::RangeInclusive<usize>,
+    ) {
+        for arity in arities {
+            for &percent in PRESIZED_LOAD_PERCENTS {
+                let config = tuples_config(percent);
+                for (input, tuples) in inputs(arity) {
+                    let serial = HashTrie::<H, P, E>::from_tuples_with_config(
+                        arity.into(),
+                        config,
+                        tuples.clone(),
+                    );
+                    // `parallel:1`'s two builds, which every N must match.
+                    let mut first = None;
+                    for &t in PRESIZED_THREADS {
+                        let label = format!(
+                            "{}/{}/{} arity {arity}, load {percent}%, parallel:{t}, {input}",
+                            H::NAME,
+                            P::NAME,
+                            E::NAME
+                        );
+                        let built = HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+                            arity.into(),
+                            config,
+                            HashTrieBuildMode::Parallel(threads(t)),
+                            tuples.clone(),
+                        );
+                        assert_equivalent_trie(&serial, &built, &label);
+                        let log2 = config.root_log2_capacity(tuples.len());
+                        let mut small = HashTrie::<H, P, E>::make_root_sized(arity, log2);
+                        fill_presized_root_in::<H, P, E>(
+                            &mut small,
+                            arity,
+                            tuples.clone(),
+                            threads(t),
+                            7,
+                            8,
+                            config.load_factor,
+                        );
+                        assert_equivalent_root(
+                            serial.root(),
+                            &small,
+                            &format!("{label}, small regions"),
+                        );
+                        match &first {
+                            | None => first = Some((built, small)),
+                            | Some((built_1, small_1)) => {
+                                assert_same_trie(
+                                    built_1,
+                                    &built,
+                                    &format!("{label} vs parallel:1"),
+                                );
+                                assert_same_node(
+                                    small_1,
+                                    &small,
+                                    &format!("{label} vs parallel:1, small regions"),
+                                );
+                            },
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn presized_parallel_builds_are_equivalent_under_siphash() {
+        let shared = |arity: usize| inputs(arity);
+        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<SipHashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<SipHashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
+        check_presized::<SipHashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "threads are slow under Miri; the SipHash matrix runs the same code"
+    )]
+    fn presized_parallel_builds_are_equivalent_under_fxhash_and_colliding_hashes() {
+        let shared = |arity: usize| inputs(arity);
+        check_presized::<FxHashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<FxHashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<FxHashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
+        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
+        check_presized::<Mod10HashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<Mod10HashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
+        check_presized::<Mod10HashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
+        check_presized::<Mod10HashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
+    }
+
+    /// Arity 4, a first key holding half the tuples, and three morsels at
+    /// the real morsel size.
+    #[test]
+    #[cfg_attr(miri, ignore = "tens of thousands of inserts")]
+    fn presized_parallel_builds_are_equivalent_on_large_and_skewed_inputs() {
+        let large = |arity: usize| {
+            let n = 2 * MORSEL_TUPLES + 7_000;
+            let mut lcg = Lcg(0x94);
+            let random: Vec<Vec<usize>> = (0..n)
+                .map(|_| (0..arity).map(|_| lcg.next_usize() % 5_000).collect())
+                .collect();
+            let skewed: Vec<Vec<usize>> = (0..n)
+                .map(|i| {
+                    let first = if i % 2 == 0 {
+                        7
+                    } else {
+                        lcg.next_usize() % 5_000
+                    };
+                    std::iter::once(first)
+                        .chain((1..arity).map(|_| lcg.next_usize() % 50))
+                        .collect()
+                })
+                .collect();
+            vec![("random", random), ("half one key", skewed)]
+        };
+        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&large, 1..=4);
+        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&large, 1..=4);
+    }
+
+    /// Every key homes at bucket 7, the last of the first 8-bucket region of
+    /// a 32-bucket root (16 tuples at 70 %): the first key takes bucket 7,
+    /// and every later distinct key overflows to the tail.
+    #[derive(Copy, Clone, Default, Debug)]
+    struct EndOfRegionHash;
+
+    impl LayoutOption for EndOfRegionHash {
+        const NAME: &'static str = "end-of-region";
+    }
+
+    impl HashStrategy for EndOfRegionHash {
+        fn hash(key: usize) -> u64 { super::super::hash_table::hash_with_home(7, 5, key as u64) }
+    }
+
+    #[test]
+    fn keys_that_cannot_fit_their_region_go_to_the_tail() {
+        let config = tuples_config(70);
+        let tuples: Vec<Vec<usize>> = (0..16).map(|i| vec![i % 4, i]).collect();
+        assert_eq!(
+            config.root_log2_capacity(tuples.len()),
+            5,
+            "a 32-bucket root"
+        );
+        let serial: HashTrie<EndOfRegionHash> =
+            HashTrie::from_tuples_with_config(2.into(), config, tuples.clone());
+        let mut root = HashTrie::<EndOfRegionHash>::make_root_sized(2, 5);
+        PARALLEL_BUILDS.with(|b| b.borrow_mut().clear());
+        fill_presized_root_in::<EndOfRegionHash, NoPruning, EagerExpansion>(
+            &mut root,
+            2,
+            tuples,
+            threads(2),
+            7,
+            8,
+            config.load_factor,
+        );
+        // Four distinct keys, each with four tuples: the first key's
+        // tuples stay in the region, the other three keys' twelve go to
+        // the tail.
+        let builds = PARALLEL_BUILDS.with(|b| b.take());
+        assert_eq!(builds.len(), 1);
+        assert_eq!(builds[0].deferred, Some(12));
+        assert_equivalent_root(serial.root(), &root, "end of region");
+    }
+
+    /// The presized build reaches its own path, at the thread count asked:
+    /// two worker runs (scatter, then the regions), and a record with a
+    /// deferred count.
+    #[test]
+    fn root_capacity_selects_the_parallel_path() {
+        let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 16, i]).collect();
+        for (root_capacity, presized) in [(RootCapacity::Grow, false), (RootCapacity::Tuples, true)]
+        {
+            let config = HashTrieConfig {
+                root_capacity,
+                ..HashTrieConfig::default()
+            };
+            PARALLEL_BUILDS.with(|b| b.borrow_mut().clear());
+            crate::morsel::take_worker_runs();
+            let _: HashTrie = HashTrie::from_tuples_with_config_and_build_mode(
+                2.into(),
+                config,
+                HashTrieBuildMode::Parallel(threads(3)),
+                tuples.clone(),
+            );
+            let builds = PARALLEL_BUILDS.with(|b| b.take());
+            assert_eq!(builds.len(), 1, "{root_capacity:?}");
+            assert_eq!(builds[0].threads, 3, "{root_capacity:?}");
+            assert_eq!(builds[0].deferred.is_some(), presized, "{root_capacity:?}");
+            assert_eq!(
+                builds[0].partition_sizes.iter().sum::<usize>(),
+                64,
+                "{root_capacity:?}"
+            );
+            assert_eq!(
+                crate::morsel::take_worker_runs(),
+                vec![3, 3],
+                "{root_capacity:?}"
+            );
+        }
     }
 }
