@@ -931,4 +931,41 @@ mod tests {
             );
         }
     }
+
+    /// Roots dense enough that many keys overflow their 8-bucket region,
+    /// with 32 regions, more than any thread count here cuts partitions, so
+    /// N changes how regions are grouped. The trie must still be the same for
+    /// every N: regions alone decide what is deferred, and the tail goes in
+    /// input order. The matrix's small inputs make at most four partitions
+    /// at every N, and its large ones fill their roots to a few percent, so
+    /// neither has a tail whose order or contents could depend on N.
+    #[test]
+    #[cfg_attr(miri, ignore = "compares thread counts; Miri runs one")]
+    fn presized_parallel_builds_are_the_same_for_every_n_on_dense_roots() {
+        let dense = |arity: usize| {
+            let mut lcg = Lcg(0xD5);
+            let mut tuple = |first: usize| -> Vec<usize> {
+                std::iter::once(first)
+                    .chain((1..arity).map(|_| lcg.next_usize() % 4))
+                    .collect()
+            };
+            let distinct: Vec<Vec<usize>> = (0..240).map(&mut tuple).collect();
+            let pairs: Vec<Vec<usize>> = (0..240).map(|i| tuple(i / 2)).collect();
+            vec![("240 distinct keys", distinct), ("120 keys twice", pairs)]
+        };
+        PARALLEL_BUILDS.with(|b| b.borrow_mut().clear());
+        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&dense, 1..=3);
+        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&dense, 1..=3);
+        let builds = PARALLEL_BUILDS.with(|b| b.take());
+        let partition_counts: std::collections::BTreeSet<usize> =
+            builds.iter().map(|b| b.partition_sizes.len()).collect();
+        assert!(
+            partition_counts.is_superset(&[4, 8, 16, 32].into()),
+            "the thread counts did not cut the regions differently: {partition_counts:?}"
+        );
+        assert!(
+            builds.iter().any(|b| b.deferred.is_some_and(|d| d > 0)),
+            "nothing was deferred; the test proves nothing"
+        );
+    }
 }
