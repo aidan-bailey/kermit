@@ -50,8 +50,8 @@ pub use {
     morsel::Threads,
     relation::{
         read_csv, read_csv_header, read_parquet, read_parquet_header, BuildModeRelation,
-        ConfigurableRelation, ModelType, Projectable, Relation, RelationError, RelationFileExt,
-        RelationHeader,
+        ConfigurableRelation, ConfiguredBuildModeRelation, ModelType, Projectable, Relation,
+        RelationError, RelationFileExt, RelationHeader,
     },
     seek::{BinarySeek, GallopingSeek, LinearSeek, SeekStrategy},
     tuple_scan::TupleScan,

@@ -336,6 +336,18 @@ pub trait BuildModeRelation: Relation {
     ) -> Self;
 }
 
+/// A relation with both a Config and a BuildMode, and the one constructor
+/// that takes both, so the two test markers can stack:
+/// `BuiltWith<Configured<R, C>, M>` builds by `M`'s mode under `C`'s config.
+pub trait ConfiguredBuildModeRelation: ConfigurableRelation + BuildModeRelation {
+    /// Builds `tuples` by `mode` under `config`. Same contract as
+    /// [`BuildModeRelation::from_tuples_with_build_mode`].
+    fn from_tuples_with_config_and_build_mode(
+        header: RelationHeader, config: Self::Config, mode: Self::BuildMode,
+        tuples: Vec<Vec<usize>>,
+    ) -> Self;
+}
+
 /// Loads a [`Relation`] from a CSV or Parquet file.
 ///
 /// Defined as an extension trait (with a blanket impl over every

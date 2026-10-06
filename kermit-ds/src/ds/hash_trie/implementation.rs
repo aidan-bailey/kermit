@@ -29,7 +29,10 @@ use {
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
         radix,
     },
-    crate::relation::{BuildModeRelation, ConfigurableRelation, Relation, RelationHeader},
+    crate::relation::{
+        BuildModeRelation, ConfigurableRelation, ConfiguredBuildModeRelation, Relation,
+        RelationHeader,
+    },
     kermit_iters::{ConfigOption, HashStrategy, JoinIterable, LayoutOption, SipHashStrategy},
     std::marker::PhantomData,
 };
@@ -616,6 +619,20 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
             mode,
             tuples,
         )
+    }
+}
+
+/// The inherent
+/// [`from_tuples_with_config_and_build_mode`](HashTrie::from_tuples_with_config_and_build_mode),
+/// so `BuiltWith` can stack on `Configured` in the test suites.
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfiguredBuildModeRelation
+    for HashTrie<H, P, E>
+{
+    fn from_tuples_with_config_and_build_mode(
+        header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
+        tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(header, config, mode, tuples)
     }
 }
 

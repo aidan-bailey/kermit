@@ -164,6 +164,22 @@ hash_trie_test_suite!(HashTrieSipLazyParallel2, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieFxPrunedParallel2, FxHashStrategy);
 
+// ── BuildMode × Config: the presized parallel build ─────────────────────
+// Under `root-capacity=tuples` (#88, `PresizedRoot` above), `parallel:2`
+// fills the root by region (the paper's build, #94). The trie is equivalent
+// to serial's (Amendment 2), so the iterator contract holds unchanged.
+type HashTrieSipLazyPresized = Configured<HashTrieSipLazy, PresizedRoot>;
+type HashTrieFxPrunedPresized = Configured<HashTrieFxPruned, PresizedRoot>;
+type HashTrieSipPresizedParallel2 = BuiltWith<HashTrieSipPresized, HashParallel2>;
+type HashTrieSipLazyPresizedParallel2 = BuiltWith<HashTrieSipLazyPresized, HashParallel2>;
+type HashTrieFxPrunedPresizedParallel2 = BuiltWith<HashTrieFxPrunedPresized, HashParallel2>;
+
+hash_trie_test_suite!(HashTrieSipPresizedParallel2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipLazyPresizedParallel2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieFxPrunedPresizedParallel2, FxHashStrategy);
+
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"
 /// invariant from `docs/data-structures/hash-trie.md`: the trie itself never

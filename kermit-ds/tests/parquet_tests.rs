@@ -158,3 +158,16 @@ fn sorted_tuples_parallel(relation: &HashTrieSipParallel2) -> Vec<Vec<usize>> {
 }
 
 parquet_test_suite!(HashTrieSipParallel2, sorted_tuples_parallel);
+
+// …and the presized parallel build under root-capacity=tuples (#94, #88).
+type HashTrieSipPresizedParallel2 = BuiltWith<HashTrieSipPresized, HashParallel2>;
+
+fn sorted_tuples_presized_parallel(relation: &HashTrieSipPresizedParallel2) -> Vec<Vec<usize>> {
+    // Two derefs: `BuiltWith` → `Configured` → `HashTrie`.
+    sorted_tuples(relation)
+}
+
+parquet_test_suite!(
+    HashTrieSipPresizedParallel2,
+    sorted_tuples_presized_parallel
+);
