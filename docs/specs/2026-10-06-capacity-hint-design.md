@@ -299,8 +299,9 @@ beside the existing back-fill tests.
   25 % at small capacities, one doubling is not enough. At 10 %, a 4-bucket
   table holding its first key grows to 8 buckets and sits at 12.5 %. The
   table soon catches up and probing still terminates, so this is harmless.
-  But it contradicts the documented cap, so it should be filed separately
-  rather than fixed here (Priority 6).
+  But it contradicts the documented cap. It is filed separately as
+  [#104](https://github.com/aidan-bailey/kermit/issues/104) rather than
+  fixed here (Priority 6).
 
 ## Coordination with the parallel build
 
