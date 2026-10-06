@@ -12,7 +12,7 @@ use {
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BuiltWith, ConfigurableRelation,
         Configured, HashTrie, HashTrieBuildMode, HashTrieConfig, LazyExpansion, LoadFactor,
-        NoPruning, PruningPolicy, RadixBits, SingletonPruning,
+        NoPruning, PruningPolicy, RadixBits, RootCapacity, SingletonPruning,
     },
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
@@ -66,6 +66,16 @@ type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;
 // and resolves by probing, so a 90 % cap stresses the probe loops hardest.
 type HashTrieMod10Dense = Configured<HashTrieMod10, NinetyPercent>;
 
+// ── Config variant: a presized root ─────────────────────────────────────
+// Under `root-capacity=tuples` the root is sized once from the tuple count
+// (#88), so the contract must hold over a root sparser than the grown one.
+define_config_provider!(PresizedRoot, HashTrieConfig, HashTrieConfig {
+    root_capacity: RootCapacity::Tuples,
+    ..HashTrieConfig::default()
+});
+
+type HashTrieSipPresized = Configured<HashTrieSip, PresizedRoot>;
+
 // ── Layout variant: lazy child expansion ────────────────────────────────
 //
 // Each hasher × pruning alias again, with every child below the root built
@@ -113,6 +123,8 @@ hash_trie_test_suite!(HashTrieFxPrunedLazy, FxHashStrategy);
 hash_trie_test_suite!(HashTrieMod10PrunedLazy, Mod10HashStrategy);
 
 hash_trie_test_suite!(HashTrieSipDenseLazy, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipPresized, SipHashStrategy);
 
 // ── BuildMode: the radix build ──────────────────────────────────────────
 // Every build mode builds the identical trie (issue #91), so the iterator
