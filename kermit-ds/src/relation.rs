@@ -311,9 +311,11 @@ pub trait ConfigurableRelation: Relation {
 /// tuples — the BuildMode category of the optimization standard
 /// (`docs/specs/optimization-standard.md`).
 ///
-/// Every mode must build the *same* relation: same contents, same layout,
-/// same [`HeapSize`](crate::HeapSize). Only the construction process
-/// differs. [`Relation::from_tuples`] must equal
+/// Every mode must build an *equivalent* relation: the same contents and the
+/// same capacities, hence the same [`HeapSize`](crate::HeapSize). Placement
+/// the structure leaves free, such as the slot a key takes in a hash table,
+/// may differ between modes (the optimization standard's Amendment 2). Only
+/// the construction process differs. [`Relation::from_tuples`] must equal
 /// `from_tuples_with_build_mode(header, Self::BuildMode::default(), tuples)`.
 /// Wrapper types that exist to inject a mode (see `BuiltWith` in
 /// `built_with.rs`) deliberately do not implement this.

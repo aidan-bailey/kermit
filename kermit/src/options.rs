@@ -696,8 +696,9 @@ pub(crate) fn validate_config_choices(
 /// BuildMode-axis CLI choices, flattened beside [`LayoutChoices`] and
 /// [`ConfigChoices`] into `bench ds`, `bench run` and `bench join`. One flag,
 /// `--ds-build`, takes comma-separated `structure=mode` pairs, resolved per
-/// structure by [`resolved`](Self::resolved). Every build mode builds the
-/// same structure, so the flag changes build time only. `kermit join` takes
+/// structure by [`resolved`](Self::resolved). Every build mode builds an
+/// equivalent structure (the same contents and capacities), so the flag
+/// changes build time, and placement at most. `kermit join` takes
 /// no `--ds-build`, for the same reason it takes no `--ds-config`: it cannot
 /// change a query's answers.
 #[derive(Args, Clone, Debug, Default)]

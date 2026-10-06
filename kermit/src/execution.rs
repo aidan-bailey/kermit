@@ -432,7 +432,7 @@ pub trait RelationFamily {
 
     /// The `ds_build_mode` axis of the relations this family builds, merged
     /// into the report's axes. A build mode describes the build, and every
-    /// mode builds the same structure, so the family that ran the build
+    /// mode builds an equivalent structure, so the family that ran the build
     /// reports it rather than the relation. Empty for structures with a
     /// single build process. Required, with no default, so no family can omit
     /// the axis by accident.

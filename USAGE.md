@@ -202,8 +202,9 @@ kermit bench ds -r data.csv -i tree-trie -m end-to-end --queries-per-build 4
 `serial`; threads in 1..=1024, the calling thread included),
 `column-trie=bulk|incremental` (default `bulk`) and
 `hash-trie=serial|radix:<bits>|parallel:<threads>` (default `serial`; bits
-in 1..=16, threads in 1..=1024). Every mode builds the identical structure,
-so the flag changes the `insertion` and `end-to-end` timings only; the report
+in 1..=16, threads in 1..=1024). Every mode builds an equivalent structure
+(the same contents and capacities), so answers and `space` never change; the
+`insertion` and `end-to-end` timings do, and `iteration` may. The report
 records it as `ds_build_mode`. A pair is valid only when `-i` selects its
 structure (or `all`), and each structure takes only its own modes
 (`tree-trie=bulk` is rejected). `bench run` and `bench join` accept it too.

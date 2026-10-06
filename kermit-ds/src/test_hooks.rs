@@ -1,10 +1,10 @@
 //! Observation points for other crates' tests, behind the `test-hooks`
 //! feature, which only `kermit`'s dev-dependency enables.
 //!
-//! Every build mode of a structure builds the identical structure (the
-//! BuildMode rule), so a test outside this crate cannot tell from the result
-//! which build ran. These hooks expose the records the builds already keep
-//! for this crate's own tests.
+//! Every build mode of a structure builds an equivalent structure (the
+//! BuildMode rule: the same contents and capacities), so a test outside this
+//! crate cannot tell from the result which build ran. These hooks expose the
+//! records the builds already keep for this crate's own tests.
 
 /// Takes the record of every [`TreeTrieBuildMode::Parallel`] build run on
 /// the calling thread since the last call, oldest first: each build's thread

@@ -8,8 +8,9 @@ use {
 };
 
 /// How a [`HashTrie`](super::HashTrie) is built from a known set of tuples.
-/// Every mode builds the identical trie — the same buckets and the same
-/// capacities — so the mode changes how long the build takes, never the
+/// Every mode builds an equivalent trie, the same contents with the same
+/// capacities (the BuildMode rule), and every mode here also puts each key in
+/// the same bucket, so the mode changes how long the build takes, never the
 /// trie it builds (issues #91, #94).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HashTrieBuildMode {

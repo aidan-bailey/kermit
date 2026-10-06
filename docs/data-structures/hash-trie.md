@@ -320,9 +320,12 @@ optimizations are classified into Layout, Config, or BuildMode.
 
 ### Build modes
 
-Every mode builds the identical trie — the same buckets, the same
+Every mode here builds the identical trie — the same buckets, the same
 capacities, the same `heap_size_bytes` — so the mode changes the
 `insertion` and `end_to_end` timings and nothing else (issues #91, #94).
+That is stronger than the BuildMode rule, which since Amendment 2
+(2026-10-06) asks only for the same contents and capacities; a future mode
+may place keys in other buckets.
 
 | Mode | `--ds-build` | Method |
 |---|---|---|

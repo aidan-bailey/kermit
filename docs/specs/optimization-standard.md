@@ -103,7 +103,7 @@ A **Config** option is a *value* field on a config struct, read on a code path t
 
 ### BuildMode — *changes how the structure is built*
 
-A **BuildMode** changes the construction process but leaves the resulting in-memory representation unchanged. Modes produce *equivalent results* on the same input — they're a perf knob, not a semantic change.
+A **BuildMode** changes the construction process, not the structure: every mode builds the same contents with the same capacities, so answers and `space` cannot change. Placement that the structure itself leaves free, such as the slot a key takes in a hash table, may differ between modes (Amendment 2, 2026-10-06). Modes are a perf knob, not a semantic change.
 
 > **Concrete example (implemented).** ColumnTrie's build. `ColumnTrie::from_tuples_with_build_mode(header, ColumnTrieBuildMode::Incremental, tuples)` sorts the tuples and inserts them one at a time (the build before issue #84, O(n · a · b)); `ColumnTrieBuildMode::Bulk`, the default, builds every layer in one pass (O(n · a)). Both build identical arrays with identical capacities, which an array-level test pins.
 
@@ -112,10 +112,10 @@ A **BuildMode** changes the construction process but leaves the resulting in-mem
 | Runtime cost | None at query time (build-only) |
 | Binary size cost | One constructor variant per mode |
 | Type system enforcement | Weak (mode is just a parameter) |
-| Output equivalence | Required: every mode builds the same structure — same contents **and** the same `HeapSize` — so a build mode can move only the build-timing metrics (`insertion`, `end_to_end`), never `iteration` or `space`. kermit-lab relies on this when it limits `ds_build_mode` ablations to the build phases. |
+| Output equivalence | Required: every mode builds an *equivalent* structure — the same contents **and** the same capacities at every level, hence the same `HeapSize` — so `space` cannot move. Placement the structure leaves free (a key's slot in a hash table) may differ, and every mode's allocations land at addresses of their own, so `iteration` and `end_to_end` can move and are measured per mode, never assumed unchanged. A sorted trie leaves no placement free, so for it equivalence is array-level identity. Amendment 2 (2026-10-06, [`2026-10-05-parallel-build-design.md`](2026-10-05-parallel-build-design.md) § Amendment 2) relaxed this from array-level identity for every structure. |
 | Bench axis key | `ds_build_mode` (single key with mode + params) |
 | Examples | ColumnTrie bulk / incremental ✓, HashTrie radix partitioning ✓, TreeTrie serial / parallel:N ✓, HashTrie serial / parallel:N ✓ |
-| Test obligation | Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an array-level test that every mode builds the identical structure, capacities included |
+| Test obligation | Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an equivalence test over every mode: the same contents and capacities at every level and the same `HeapSize`. Array-level where the structure fixes placement, as it does for every mode landed so far; map-level (each hash table compared by hash, not by slot) where it leaves placement free |
 
 ---
 
@@ -317,7 +317,7 @@ impl BuildMode for ColumnTrieBuildMode {
 }
 ```
 
-Unlike a Layout or Config axis, the `ds_build_mode` axis is **not** emitted by the relation's `HasOptimizationAxes`: every mode builds the same relation, so the relation cannot know. The bench family that ran the build reports it, through `RelationFamily::build_mode_axes` (`kermit/src/execution.rs`).
+Unlike a Layout or Config axis, the `ds_build_mode` axis is **not** emitted by the relation's `HasOptimizationAxes`: every mode builds an equivalent relation, so the relation cannot know. The bench family that ran the build reports it, through `RelationFamily::build_mode_axes` (`kermit/src/execution.rs`).
 
 ### `HasOptimizationAxes`
 
@@ -382,8 +382,8 @@ wraps an `R: BuildModeRelation` with a zero-sized
 `P: BuildModeProvider<R::BuildMode>`, declared with
 `kermit_ds::define_build_mode_provider!`, so macro suites can name a mode as a
 type. Unlike `Configured`, it needs no rule that `project` preserve the mode:
-projection rebuilds through the default mode, and every mode builds the same
-relation. It forwards `HasOptimizationAxes` to the wrapped relation, as
+projection rebuilds through the default mode, and every mode builds an
+equivalent relation. It forwards `HasOptimizationAxes` to the wrapped relation, as
 `Configured` does, so a wrapped `ColumnTrie<S>` still reports its Layout axis
 (`ds_layout_seek`); the build mode stays a family axis.
 
@@ -630,8 +630,11 @@ ColumnTrie's build (`ColumnTrieBuildMode`) is the worked example. A BuildMode
 is a process, not a shape: the structure gains no type parameter, and its axis
 is never read off the relation.
 
-1. **Classify.** Every mode must build the same structure: the same contents
-   and the same `HeapSize`. A mode that changes capacities is not a BuildMode.
+1. **Classify.** Every mode must build an equivalent structure: the same
+   contents and the same capacities, hence the same `HeapSize`. A mode that
+   changes capacities is not a BuildMode (a capacity knob is a Config). A mode
+   may place differently only where the structure leaves placement free
+   (Amendment 2).
 2. **Define the mode** (`kermit-ds/src/ds/<name>/build_mode.rs`): a
    `Default + clap::ValueEnum` enum whose `BuildMode::axis_value` is the clap name.
    A mode that carries a value (HashTrie's `Radix(RadixBits)`, TreeTrie's
@@ -641,8 +644,10 @@ is never read off the relation.
 3. **Implement `BuildModeRelation`**, and make `Relation::from_tuples` call it
    with the default mode. TreeTrie keeps `from_tuples` as its serial build and
    dispatches in `from_tuples_with_build_mode` instead.
-4. **Pin equivalence** with an array-level test over every mode, capacities
-   included (`bulk_and_incremental_builds_are_identical`).
+4. **Pin equivalence** with a test over every mode: contents and capacities
+   at every level, and `HeapSize`. Test at array level where placement is fixed
+   (`bulk_and_incremental_builds_are_identical`), and as a map of maps where it
+   is free.
 5. **Carry the mode on the cell and family.** Implement `SortedTrieRelation`'s
    `BuildMode`, `kind`, `build_with` and `build_mode_axes`; the `SortedTrie`
    variant and `TrieLftj::new(build, planner)` hold it, and the axis comes
@@ -780,6 +785,7 @@ This is semantically correct — pre-standard HashTrie runs were SipHash-only. S
 | CLI smoke tests | [`kermit/tests/cli_hash_trie_hasher_choice.rs`](../../kermit/tests/cli_hash_trie_hasher_choice.rs), [`kermit/tests/cli_hash_trie_layout_pruning.rs`](../../kermit/tests/cli_hash_trie_layout_pruning.rs), [`kermit/tests/cli_hash_trie_layout_expansion.rs`](../../kermit/tests/cli_hash_trie_layout_expansion.rs), [`kermit/tests/cli_hash_trie_config_choice.rs`](../../kermit/tests/cli_hash_trie_config_choice.rs), [`kermit/tests/cli_sorted_trie_layout_seek.rs`](../../kermit/tests/cli_sorted_trie_layout_seek.rs) |
 | First Config consumer (load-factor cap) | [`kermit-ds/src/ds/hash_trie/config.rs`](../../kermit-ds/src/ds/hash_trie/config.rs) |
 | The classification rule and why pruning moved | [`docs/specs/2026-09-08-singleton-pruning-config-design.md`](2026-09-08-singleton-pruning-config-design.md) § Amendment 1 |
+| Why BuildMode equivalence is contents and capacities, not array identity | [`docs/specs/2026-10-05-parallel-build-design.md`](2026-10-05-parallel-build-design.md) § Amendment 2 |
 | Config-injection seam (`ConfigurableRelation`) | [`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs) |
 | `Configured` / `ConfigProvider` / `define_config_provider!` | [`kermit-ds/src/configured.rs`](../../kermit-ds/src/configured.rs) |
 | Config-aware construction in `bench run` | [`kermit/src/execution.rs`](../../kermit/src/execution.rs) — `ExecutionFamily::build_relation`, with `load` defaulting to read-then-`build_relation` |
