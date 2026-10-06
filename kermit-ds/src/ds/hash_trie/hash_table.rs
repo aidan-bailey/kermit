@@ -44,6 +44,101 @@ pub(crate) struct Entry<V> {
     pub value: V,
 }
 
+/// The home bucket of `hash` in a table of `2^log2_capacity` buckets: the
+/// index [`HashTable::bucket_index`] computes, as a free function so a
+/// [`BucketRun`] can compute it without its table. The two are pinned
+/// together by `home_bucket_matches_bucket_index`; `bucket_index` keeps its
+/// own body, so the serial path's code is unchanged.
+pub(super) fn home_bucket(hash: u64, log2_capacity: u32) -> usize {
+    let mixed = hash.wrapping_mul(MULTIPLIERS[log2_capacity as usize]);
+    (mixed >> (64 - log2_capacity)) as usize
+}
+
+/// A probe that reached the end of its region (see [`BucketRun`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Overflow;
+
+/// A contiguous run of a table's buckets, lent to one worker by
+/// [`HashTable::with_runs`]. A run probes only within the
+/// `region_buckets`-sized region that holds a key's home bucket, and never
+/// grows: a probe that would cross the region's end is refused with
+/// [`Overflow`], for the caller to insert afterwards with ordinary probing.
+/// Regions, not runs, bound a probe, so which keys overflow does not depend
+/// on how many runs the table is split into.
+pub(super) struct BucketRun<'a, V> {
+    /// The index, in the whole table, of `buckets[0]`.
+    first: usize,
+    /// Regions are this many buckets, aligned to multiples of it.
+    region_buckets: usize,
+    log2_capacity: u32,
+    buckets: &'a mut [Option<Entry<V>>],
+    /// Keys this run inserted; [`HashTable::with_runs`] adds them to `len`.
+    inserted: &'a mut usize,
+}
+
+/// What [`BucketRun::entry`] found: the key's value, or the empty bucket
+/// where the key would go.
+pub(super) enum RunEntry<'r, V> {
+    Occupied(&'r mut V),
+    Vacant(VacantBucket<'r, V>),
+}
+
+/// An empty bucket inside a run, ready to take one key.
+pub(super) struct VacantBucket<'r, V> {
+    slot: &'r mut Option<Entry<V>>,
+    hash: u64,
+    inserted: &'r mut usize,
+}
+
+impl<'r, V> VacantBucket<'r, V> {
+    /// Stores `value` under the probed hash and returns it.
+    pub(super) fn insert(self, value: V) -> &'r mut V {
+        *self.inserted += 1;
+        &mut self
+            .slot
+            .insert(Entry {
+                hash: self.hash,
+                value,
+            })
+            .value
+    }
+}
+
+impl<V> BucketRun<'_, V> {
+    /// Probes for `hash` from its home bucket to the end of the home's
+    /// region: the key's value if it is there, the first empty bucket if it
+    /// is not, or [`Overflow`] if neither comes before the region's end.
+    /// The run must hold the key's home bucket.
+    pub(super) fn entry(&mut self, hash: u64) -> Result<RunEntry<'_, V>, Overflow> {
+        let home = home_bucket(hash, self.log2_capacity);
+        debug_assert!(
+            (self.first..self.first + self.buckets.len()).contains(&home),
+            "bucket {home} is outside this run"
+        );
+        let region_end = (home / self.region_buckets + 1) * self.region_buckets;
+        let position = (home - self.first..region_end - self.first)
+            .find(|&idx| {
+                self.buckets[idx]
+                    .as_ref()
+                    .is_none_or(|entry| entry.hash == hash)
+            })
+            .ok_or(Overflow)?;
+        Ok(match self.buckets[position] {
+            | Some(_) => RunEntry::Occupied(
+                &mut self.buckets[position]
+                    .as_mut()
+                    .expect("matched Some just above")
+                    .value,
+            ),
+            | None => RunEntry::Vacant(VacantBucket {
+                slot: &mut self.buckets[position],
+                hash,
+                inserted: &mut *self.inserted,
+            }),
+        })
+    }
+}
+
 /// The log2 capacity a table starts at unless it is built at another: 4
 /// buckets.
 pub(crate) const INITIAL_LOG2_CAPACITY: u32 = 2;
@@ -342,6 +437,69 @@ impl<V> HashTable<V> {
     /// by the radix build to move each scratch entry out exactly once, by
     /// the position `index_of` reported for it.
     pub fn into_buckets(self) -> Vec<Option<Entry<V>>> { self.buckets }
+
+    /// Lends `fill` the bucket array as `parts` contiguous [`BucketRun`]s,
+    /// each a whole number of `region_buckets`-sized regions (a region is
+    /// the whole table when that is smaller), and adds the keys they insert
+    /// to `len` when `fill` returns. The presized parallel build hands one
+    /// run to each worker; scoping the runs here keeps `len` right.
+    ///
+    /// # Panics
+    ///
+    /// Unless `parts` and `region_buckets` are powers of two and every run
+    /// holds whole regions.
+    pub(super) fn with_runs<R>(
+        &mut self, parts: usize, region_buckets: usize,
+        fill: impl FnOnce(Vec<BucketRun<'_, V>>) -> R,
+    ) -> R {
+        let capacity = self.buckets.len();
+        assert!(parts.is_power_of_two() && region_buckets.is_power_of_two());
+        let region_buckets = region_buckets.min(capacity);
+        assert!(
+            parts * region_buckets <= capacity,
+            "{parts} runs of whole {region_buckets}-bucket regions do not fit {capacity} buckets"
+        );
+        let run_len = capacity / parts;
+        let log2_capacity = self.log2_capacity;
+        let mut inserted = vec![0usize; parts];
+        let runs = self
+            .buckets
+            .chunks_mut(run_len)
+            .zip(inserted.iter_mut())
+            .enumerate()
+            .map(|(k, (buckets, inserted))| BucketRun {
+                first: k * run_len,
+                region_buckets,
+                log2_capacity,
+                buckets,
+                inserted,
+            })
+            .collect();
+        let result = fill(runs);
+        self.len += inserted.iter().sum::<usize>();
+        result
+    }
+}
+
+/// A hash whose home bucket in a table of `2^log2_capacity` buckets is
+/// `home`. Distinct `low` values give distinct hashes with the same home.
+/// The bucket index multiplies by an odd `MULTIPLIERS[p]`, so it is
+/// inverted by multiplying by its inverse modulo `2^64`.
+#[cfg(test)]
+pub(super) fn hash_with_home(home: usize, log2_capacity: u32, low: u64) -> u64 {
+    assert!(
+        low >> (64 - log2_capacity) == 0,
+        "low bits must stay below the index"
+    );
+    let m = MULTIPLIERS[log2_capacity as usize];
+    // Newton's iteration for 1/m mod 2^64: m·m ≡ 1 (mod 8) for odd m, and
+    // each step doubles the correct low bits (3 → 6 → 12 → 24 → 48 → 96).
+    let mut inverse = m;
+    for _ in 0..5 {
+        inverse = inverse.wrapping_mul(2u64.wrapping_sub(m.wrapping_mul(inverse)));
+    }
+    debug_assert_eq!(m.wrapping_mul(inverse), 1);
+    (((home as u64) << (64 - log2_capacity)) | low).wrapping_mul(inverse)
 }
 
 #[cfg(test)]
@@ -819,5 +977,160 @@ mod tests {
                 assert_eq!(t.len(), keys);
             }
         }
+    }
+
+    /// A table of `2^log2` buckets holding nothing yet, for the run tests.
+    fn empty(log2: u32) -> HashTable<u32> { HashTable::with_log2_capacity(log2) }
+
+    /// Occupied bucket indices, in order.
+    fn occupied<V>(t: &HashTable<V>) -> Vec<usize> {
+        (0..t.buckets_len())
+            .filter(|&i| t.hash_at(i).is_some())
+            .collect()
+    }
+
+    /// Σ over occupied buckets of how far each key sits past its home.
+    fn total_displacement<V>(t: &HashTable<V>) -> usize {
+        let cap = t.buckets_len();
+        let log2 = cap.trailing_zeros();
+        (0..cap)
+            .filter_map(|i| t.hash_at(i).map(|h| (i + cap - home_bucket(h, log2)) % cap))
+            .sum()
+    }
+
+    #[test]
+    fn home_bucket_matches_bucket_index() {
+        let mut lcg = crate::test_support::Lcg(0x88);
+        for log2 in 1..20 {
+            let table = empty(log2);
+            for _ in 0..200 {
+                let hash = lcg.next_usize() as u64;
+                assert_eq!(
+                    home_bucket(hash, log2),
+                    table.bucket_index(hash),
+                    "2^{log2}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hash_with_home_lands_where_it_says() {
+        for log2 in [2u32, 5, 12] {
+            for home in [0usize, 1, (1 << log2) - 1] {
+                for low in [0u64, 1, 7] {
+                    assert_eq!(home_bucket(hash_with_home(home, log2, low), log2), home);
+                }
+            }
+        }
+    }
+
+    /// Two runs of one 8-bucket region each in a 16-bucket table: a run
+    /// finds a key it already holds, inserts at the first empty bucket, and
+    /// counts its inserts into `len`.
+    #[test]
+    fn a_run_finds_a_key_or_inserts_at_the_first_empty_bucket() {
+        let (a, b) = (hash_with_home(2, 4, 1), hash_with_home(2, 4, 2));
+        let mut table = empty(4);
+        table.with_runs(2, 8, |mut runs| {
+            let run = &mut runs[0];
+            let RunEntry::Vacant(slot) = run.entry(a).unwrap() else {
+                panic!("a is new")
+            };
+            slot.insert(10);
+            let RunEntry::Vacant(slot) = run.entry(b).unwrap() else {
+                panic!("b is new")
+            };
+            slot.insert(20);
+            let RunEntry::Occupied(value) = run.entry(a).unwrap() else {
+                panic!("a is held")
+            };
+            assert_eq!(*value, 10);
+        });
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.index_of(a), Some(2));
+        assert_eq!(table.index_of(b), Some(3));
+        assert_eq!(table.get(b), Some(&20));
+    }
+
+    /// A probe that reaches its region's end is refused, at the end of a
+    /// middle region and at the table's last bucket alike: a run never
+    /// wraps and never spills into the next region.
+    #[test]
+    fn a_run_overflows_at_its_region_end_and_never_wraps() {
+        let mut table = empty(4);
+        table.with_runs(2, 8, |mut runs| {
+            for (run, home) in [(0, 7), (1, 15)] {
+                let first = hash_with_home(home, 4, 1);
+                let RunEntry::Vacant(slot) = runs[run].entry(first).unwrap() else {
+                    panic!("{home}: first key is new")
+                };
+                slot.insert(1);
+                let second = hash_with_home(home, 4, 2);
+                assert!(
+                    runs[run].entry(second).is_err(),
+                    "{home}: second key overflows"
+                );
+            }
+        });
+        assert_eq!(table.len(), 2);
+        assert_eq!(occupied(&table), vec![7, 15]);
+    }
+
+    /// Filling by runs, then inserting the overflow by ordinary probing,
+    /// occupies exactly the buckets that inserting every key one at a time
+    /// occupies, with the same total displacement. That is linear probing's
+    /// order independence (Knuth, TAOCP §6.4), and what the presized
+    /// parallel build relies on.
+    #[test]
+    fn runs_and_tail_fill_what_sequential_insertion_fills() {
+        let lf = LoadFactor::percent(70).unwrap();
+        let seeds = if cfg!(miri) {
+            2
+        } else {
+            40
+        };
+        let mut overflowed = 0;
+        for seed in 0..seeds {
+            let mut lcg = crate::test_support::Lcg(seed);
+            let keys: Vec<u64> = (0..85).map(|_| lcg.next_usize() as u64).collect();
+            let mut sequential = empty(7);
+            for &k in &keys {
+                sequential.entry_or_insert_with(k, lf, || 0);
+            }
+            let mut by_runs = empty(7);
+            let tail: Vec<u64> = by_runs.with_runs(4, 16, |mut runs| {
+                let mut tail = Vec::new();
+                for &k in &keys {
+                    let run = &mut runs[home_bucket(k, 7) / 32];
+                    match run.entry(k) {
+                        | Ok(RunEntry::Vacant(slot)) => {
+                            slot.insert(0);
+                        },
+                        | Ok(RunEntry::Occupied(_)) => {},
+                        | Err(Overflow) => tail.push(k),
+                    }
+                }
+                tail
+            });
+            overflowed += tail.len();
+            for k in tail {
+                by_runs.entry_or_insert_with(k, lf, || 0);
+            }
+            assert_eq!(by_runs.len(), sequential.len(), "seed {seed}");
+            assert_eq!(occupied(&by_runs), occupied(&sequential), "seed {seed}");
+            assert_eq!(
+                total_displacement(&by_runs),
+                total_displacement(&sequential),
+                "seed {seed}"
+            );
+            for &k in &keys {
+                assert!(by_runs.index_of(k).is_some(), "seed {seed}: {k:#x} lost");
+            }
+        }
+        assert!(
+            overflowed > 0,
+            "no seed overflowed a region; the test proves nothing"
+        );
     }
 }
