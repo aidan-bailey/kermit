@@ -53,10 +53,21 @@ two-pass radix partitioning, morsel-driven).
 **kermit grows.** A table starts at 4 buckets and doubles whenever the load factor would
 be exceeded. The root's final size is therefore a function of D, known only after
 grouping, and the bucket index is the top p bits of `hash × MULTIPLIERS[p]` (#66). #88
-adds a non-default Config that sizes the root from the tuple count n: the smallest power
-of two ≥ 4 that holds n keys under the load factor. Since D ≤ n, a `from_tuples` build
-then never grows the root, and its size is a function of (n, load factor), known before
-partitioning. That is the precondition for this design.
+(`docs/specs/2026-10-06-capacity-hint-design.md`, confirmed 2026-10-06) adds the Config
+`--ds-config root-capacity=grow|tuples` (axis `ds_config_root_capacity`, default
+`grow`). Under `tuples`, a build from n tuples gives the root 2^p buckets, with p the
+smallest integer ≥ 2 such that n·100 ≤ 2^p·percent. At load factor 0.8 that is the
+paper's ⌈log₂(1.25·n)⌉. Since len + 1 ≤ D ≤ n, the build never grows the root, so its
+size is a function of (n, load factor), known before partitioning. That is the
+precondition for this design.
+
+#88's crate-visible pieces, which this design uses:
+
+- `HashTrieConfig::root_log2_capacity(self, tuple_count)`, built on
+  `hash_table::log2_capacity_for(keys, load_factor)`;
+- `HashTable::with_log2_capacity(p)`;
+- `HashTrie::with_config_for(header, config, tuple_count)`, the one presizing
+  constructor, which `from_tuples_partitioned` calls.
 
 ## Design
 
@@ -65,8 +76,8 @@ partitioning. That is the precondition for this design.
 ```text
 parallel:N under tuple-count root sizing:
   checks (from_tuples_partitioned, as now); no tuples → the empty root, no workers
-  p = root capacity exponent for (n, load factor)       // #88
-  root = a table of 2^p buckets, allocated once         // #88; it does not grow here
+  p = config.root_log2_capacity(n)                      // #88
+  root = with_config_for(header, config, n)'s root      // #88: 2^p buckets, no growth here
   regions: fixed blocks of REGION_BUCKETS = 4096 buckets (the whole table if smaller)
   P = 4·N rounded up to a power of two, capped at the region count;
       partition k is a contiguous run of regions
@@ -163,8 +174,8 @@ The scratch roots and the D-key merge are gone. The sequential remainder is the 
 
 ## CLI and kermit-lab
 
-- No new flags. The design runs under `--ds-config <#88's key>=tuples --ds-build
-  hash-trie=parallel:N`; #88's spec names the key.
+- No new flags. The design runs under `--ds-config root-capacity=tuples --ds-build
+  hash-trie=parallel:N`.
 - kermit-lab needs no change: `threads_of` already reads `parallel:N`.
 
 ## Testing
