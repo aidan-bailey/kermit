@@ -14,16 +14,21 @@ locality).
 ## Motivation
 
 The HashTrie half of the #94 scaling run (2026-10-06,
-`kermit-bench-runs/hash-trie-scaling-2026-10-06/`; preliminary, replicates 1–3) shows
-the merge into the root as `parallel:N`'s limit. That merge runs on the calling thread,
+`kermit-bench-runs/hash-trie-scaling-2026-10-06/`, 5 replicates) shows the merge into
+the root as `parallel:N`'s limit. That merge runs on the calling thread,
 which inserts D root keys one at a time in first-appearance order, D being the number
 of distinct first-attribute hashes. Karp–Flatt serial fractions:
 
 | Relation | Speedup at N=16 | Karp–Flatt (N ≥ 8) |
 |---|---|---|
-| unary-1e7 | 1.00× | ≈ 1.0 |
-| price (every first key distinct) | 0.91× | 1.1–1.6 |
-| binary-1e7 (about 10 tuples per first key) | 4.09× | 0.19 |
+| unary-1e7 | 1.00× | 1.07 (N=8), 1.005 (N=16) |
+| price (every first key distinct) | 0.91× | 1.65 (N=8), 1.11 (N=16) |
+| binary-1e7 (about 10 tuples per first key) | 4.11× | 0.21 (N=8), 0.19 (N=16) |
+
+The partitioning machinery itself is cheap: `parallel:1` runs at 0.87–1.05× `radix:2`,
+the same partitioning single-threaded. At N=16, `parallel:N` beats `radix:2` by 4.06×
+on binary-1e7 and 1.81× on unary-1e7, so threads speed up everything except the
+merge.
 
 Amendment 2 (2026-10-06) relaxed the BuildMode rule to "the same contents and
 capacities". Slot placement may now differ, so the root can be filled in parallel. The
@@ -163,6 +168,34 @@ With n tuples, D distinct first-attribute hashes and N threads:
 The scratch roots and the D-key merge are gone. The sequential remainder is the checks,
 `scatter`'s merge of per-morsel buckets, and the tail.
 
+## Parity with the paper
+
+This design closes the build's parallelism gap on #105's board. It does not by itself
+reach parity even on the build row.
+
+| Element | Paper | Parity |
+|---|---|---|
+| Root sized once from the tuple count, never grown | Algorithm 2, line 3 | ✓ only at `load-factor=0.8`: the paper's 1.25·\|L\| is a 0.8 load factor, and kermit's default 0.7 gives a root up to twice the paper's |
+| Input partitioned so that partitions are contiguous root regions, filled in parallel | §3.3.2 | ✓ in substance. kermit partitions in one morsel-driven `scatter` pass, the paper in Balkesen's two-pass radix partitioning; both partition by hash bits |
+| One insert per tuple at the root | Algorithm 2 | ✓ |
+| Children built by `insert_at`, descending at once, growing from 4 | Algorithm 2 puts tuples into the root's bucket lists, then builds each child once, sized from its list | ✗ deferred to #107 (layer 2). The region primitive is an entry handle, so under #107 a bucket holds a list where it holds a child today |
+| Regions found from hash × a per-capacity multiplier | The hash's raw top bits | ✗ the #66 departure; #105 asks for a revisit once every table is presized |
+| Keys that probe past their region's end are deferred to the calling thread | Not described | — a kermit mechanism where the paper is silent. The thesis must not present it as Umbra's |
+| The same layout for every N | Not stated | — a kermit addition, consistent with the paper |
+| Tuple payloads left in file order | §3.3.2 partitions the tuples themselves into contiguous buffers | ✗ deferred to #101 (layer 3) |
+| Default config: today's exact merge | — | The paper's build applies only when selected |
+
+**The closest-to-paper configuration** after this design:
+
+```text
+--ds-config root-capacity=tuples,load-factor=0.8 --ds-build hash-trie=parallel:N
+```
+
+It gives the paper's root sizing and its partitioned parallel root fill. It still
+differs below the root (#107), in tuple storage (#101) and in bucket layout (#106).
+Results should be reported at both load factors: 0.8 for parity with the paper, and 0.7
+as kermit's default.
+
 ## Placement under the standard
 
 - **Category:** still a BuildMode, axis `ds_build_mode = "parallel:N"`.
@@ -221,7 +254,8 @@ The scratch roots and the D-key merge are gone. The sequential remainder is the 
 
 - **Protocol:** one binary, the #94 protocol and the 2026-10-06 run's scripts.
 - **The presized curve:** `serial` and `parallel:{1,2,4,8,16}`, both under tuple-count
-  sizing, on the same 12 relations, with `iteration` measured too (Amendment 2).
+  sizing, on the same 12 relations, with `iteration` measured too (Amendment 2). It runs
+  at `load-factor=0.8` (parity with the paper) and at 0.7 (kermit's default).
 - **Comparisons:**
   - presized `parallel:N` against presized `serial` is this design's scaling result;
   - against the default-config curve of 2026-10-06, the effect of removing the serial
