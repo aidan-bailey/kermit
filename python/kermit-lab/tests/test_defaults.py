@@ -77,18 +77,38 @@ def test_every_default_names_a_known_structure() -> None:
 
 def test_the_registries_are_scoped() -> None:
     """A structure-blind registry stamps an axis on every structure (#85):
-    an optimization-axis default goes in `SCOPED_AXIS_DEFAULTS`. The one
-    registry beside it, `JOIN_AXIS_DEFAULTS`, is scoped too, to join rows
-    (those with an `algorithm`), for planner axes every structure's joins
-    share; it must never hold an optimization axis."""
+    an optimization-axis default goes in `SCOPED_AXIS_DEFAULTS`. Of the two
+    registries beside it, `JOIN_AXIS_DEFAULTS` is scoped to join rows (those
+    with an `algorithm`), for planner axes every structure's joins share, and
+    `BINARY_AXIS_DEFAULTS` fills every row, for properties of the binary that
+    wrote the report. Neither may hold an optimization axis."""
     registries = sorted(
         name for name, value in vars(defaults).items()
         if name.isupper() and isinstance(value, dict)
     )
-    assert registries == ["JOIN_AXIS_DEFAULTS", "SCOPED_AXIS_DEFAULTS"]
-    assert not any(
-        axis.startswith(("ds_", "algo_")) for axis in defaults.JOIN_AXIS_DEFAULTS
-    )
+    assert registries == ["BINARY_AXIS_DEFAULTS", "JOIN_AXIS_DEFAULTS", "SCOPED_AXIS_DEFAULTS"]
+    for registry in (defaults.JOIN_AXIS_DEFAULTS, defaults.BINARY_AXIS_DEFAULTS):
+        assert not any(axis.startswith(("ds_", "algo_")) for axis in registry)
+
+
+def test_allocator_backfills_every_row_that_lacks_it() -> None:
+    """Every report before #112 ran on the system allocator, whatever its
+    kind or structure, so the fill ignores both. A row that carries the axis
+    keeps it. An all-NaN float column (only pre-#112 rows) is filled too."""
+    df = pd.DataFrame({
+        "data_structure": ["TreeTrie", "HashTrie", "ColumnTrie", pd.NA],
+        "algorithm": [pd.NA, "HashTriejoin", "LeapfrogTriejoin", pd.NA],
+        "allocator": [pd.NA, "jemalloc", pd.NA, pd.NA],
+    })
+    out = apply_axis_defaults(df)
+    assert out["allocator"].tolist() == ["system", "jemalloc", "system", "system"]
+    assert defaults.BINARY_AXIS_DEFAULTS["allocator"] == "system"
+
+    old = pd.DataFrame({
+        "data_structure": ["TreeTrie"],
+        "allocator": pd.Series([float("nan")]),
+    })
+    assert apply_axis_defaults(old)["allocator"].tolist() == ["system"]
 
 
 def test_build_mode_backfills_each_structures_pre_axis_build() -> None:

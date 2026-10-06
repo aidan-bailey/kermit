@@ -84,6 +84,18 @@ def test_bench_ds_column_trie_reports_its_build_mode(tmp_path: Path) -> None:
     assert df.iloc[0]["ds_build_mode"] == "incremental"
 
 
+def test_bench_ds_reports_its_allocator(tmp_path: Path) -> None:
+    report = tmp_path / "ds.json"
+    _run(
+        tmp_path, report,
+        "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "tree-trie", "-m", "space",
+    )
+    # Without the back-fill, so a missing key cannot pass as "system" (#112).
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
+    assert len(df) == 1
+    assert df.iloc[0]["allocator"] in {"jemalloc", "system"}
+
+
 def test_bench_join_reports_its_seek_strategy(tmp_path: Path) -> None:
     report = tmp_path / "join.json"
     _run(

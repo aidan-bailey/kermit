@@ -10,10 +10,12 @@ Every optimization-axis default is scoped to the data structure that has the
 axis (`SCOPED_AXIS_DEFAULTS`). A row of any other structure keeps NaN, which
 is what lets `presets.ablation` leave those structures out. A
 structure-blind fill once stamped HashTrie's axes on TreeTrie and ColumnTrie
-rows, so the ablations charted the sorted tries as "sip" (#85). The one
-other registry, `JOIN_AXIS_DEFAULTS`, is scoped to join rows instead: it
+rows, so the ablations charted the sorted tries as "sip" (#85). Two other
+registries sit beside it. `JOIN_AXIS_DEFAULTS` is scoped to join rows: it
 holds planner axes every structure's joins share, and a `bench ds` row, which
-joins nothing, keeps NaN.
+joins nothing, keeps NaN. `BINARY_AXIS_DEFAULTS` fills every row: it holds
+properties of the binary that wrote the report, such as its allocator, which
+were the same for every row a pre-axis binary wrote.
 
 See `docs/specs/bench-report-schema.md` ("Standard axis prefixes").
 """
@@ -61,17 +63,31 @@ JOIN_AXIS_DEFAULTS: dict[str, object] = {
 }
 
 
+# Axis -> value to substitute for NaN on *every* row: properties of the binary
+# that wrote the report, not of a structure or a join, so no row is exempt.
+# Never an optimization axis (#85).
+BINARY_AXIS_DEFAULTS: dict[str, object] = {
+    # The binary linked no allocator of its own before #112, so every earlier
+    # report ran on the system allocator (glibc on the hosts measured).
+    "allocator": "system",
+}
+
+
 def apply_axis_defaults(df: pd.DataFrame) -> pd.DataFrame:
     """Return ``df`` with documented axis defaults filled in for NaN cells.
 
     Each optimization-axis default fills only the rows of its data
     structure, and each join default (:data:`JOIN_AXIS_DEFAULTS`) only rows
     whose ``algorithm`` is set, so a frame without the column a default keys
-    on is left alone by it. Only columns present in ``df`` are touched;
-    absent columns are ignored. Mutates a copy, leaving the caller's frame
+    on is left alone by it. A binary default (:data:`BINARY_AXIS_DEFAULTS`)
+    fills every row. Only columns present in ``df`` are touched; absent
+    columns are ignored. Mutates a copy, leaving the caller's frame
     unchanged.
     """
     out = df.copy()
+    for col, default in BINARY_AXIS_DEFAULTS.items():
+        if col in out.columns:
+            out[col] = out[col].mask(out[col].isna(), default)
     if "algorithm" in out.columns:
         joined = out["algorithm"].notna()
         for col, default in JOIN_AXIS_DEFAULTS.items():
