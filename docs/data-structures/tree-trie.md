@@ -88,7 +88,7 @@ Iteration walk (`trie_iter().into_iter()`):
 
 The strategy changes only how `seek` searches; it changes no stored data, no build and no `heap_size_bytes`. Details: [seek strategies](seek-strategies.md).
 
-The build mode changes only how long the build takes: `parallel:N` builds the identical trie, down to every `Vec`'s capacity, on N threads. Details: [parallel builds](parallel-build.md).
+The build mode changes only how long the build takes: `parallel:N` builds the identical trie, down to every `Vec`'s capacity, on N threads. Details: [parallel builds](parallel-build.md); measured speedups: [its scaling result](parallel-build.md#scaling-result-treetrie-2026-10-05).
 
 ## See also
 
