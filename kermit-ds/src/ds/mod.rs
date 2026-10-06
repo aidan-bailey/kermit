@@ -7,6 +7,10 @@ mod tree_trie;
 // touches one file for both the type and its CLI spelling. The cost is `clap`
 // in this crate's dependency tree. Decided in aidan-bailey/kermit#60 (item 5).
 #[cfg(feature = "test-hooks")]
+pub(crate) use hash_trie::take_parallel_builds as take_hash_trie_parallel_builds;
+#[cfg(feature = "test-hooks")]
+pub use hash_trie::ParallelBuild as HashTrieParallelBuild;
+#[cfg(feature = "test-hooks")]
 pub(crate) use tree_trie::take_parallel_builds as take_tree_trie_parallel_builds;
 use {clap::ValueEnum, std::str::FromStr};
 pub use {
@@ -14,7 +18,8 @@ pub use {
     hash_trie::{
         EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
         InvalidLoadFactor, InvalidRadixBits, LazyExpansion, LoadFactor, NoPruning,
-        ParseHashTrieBuildModeError, PruningPolicy, RadixBits, SingletonPruning,
+        ParseHashTrieBuildModeError, ParseRootCapacityError, PruningPolicy, RadixBits,
+        RootCapacity, SingletonPruning,
     },
     tree_trie::{ParseTreeTrieBuildModeError, TreeTrie, TreeTrieBuildMode},
 };

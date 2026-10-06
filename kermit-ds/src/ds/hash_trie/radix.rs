@@ -26,7 +26,7 @@ type Indexed = (usize, Vec<usize>);
 
 /// A root entry ready to merge: the input position at which its key first
 /// appeared, its hash, and its finished value.
-type Arrival<V> = (usize, u64, V);
+pub(super) type Arrival<V> = (usize, u64, V);
 
 /// Fills the empty `root` with `tuples` by the `radix:bits` build. Every
 /// tuple must have `arity` attributes; the caller checks.
@@ -92,8 +92,8 @@ fn partition<H: HashStrategy>(tuples: Vec<Vec<usize>>, bits: RadixBits) -> Vec<V
 /// the serial build's own `insert_at`. Returns the scratch root and, for
 /// each key it holds, the input index of the tuple that introduced it and
 /// the key's hash, in arrival order.
-fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    partition: Vec<Indexed>, arity: usize, load_factor: LoadFactor,
+pub(super) fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    partition: impl IntoIterator<Item = Indexed>, arity: usize, load_factor: LoadFactor,
 ) -> (HashTrieNode<P, E>, Vec<(usize, u64)>) {
     let mut scratch = HashTrie::<H, P, E>::make_root(arity);
     let mut first_seen = Vec::new();
@@ -111,7 +111,7 @@ fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
 /// Moves every entry out of `scratch` into `out`, tagged with the input
 /// index at which its key first appeared. Bucket positions are read before
 /// the table is consumed, and each bucket is taken exactly once.
-fn take_in_arrival_order<V>(
+pub(super) fn take_in_arrival_order<V>(
     scratch: HashTable<V>, first_seen: &[(usize, u64)], out: &mut Vec<Arrival<V>>,
 ) {
     let positions: Vec<usize> = first_seen
@@ -148,117 +148,17 @@ mod tests {
     use {
         super::*,
         crate::{
-            cardinality::Cardinality,
             ds::hash_trie::{
                 build_mode::HashTrieBuildMode,
                 config::HashTrieConfig,
-                expansion::{EagerExpansion, LazyExpansion, PendingChild},
-                pruning::{NoPruning, SingletonPayload, SingletonPruning},
+                expansion::{EagerExpansion, LazyExpansion},
+                identity::{assert_same_trie, configs, inputs, rows},
+                pruning::{NoPruning, SingletonPruning},
             },
-            heap_size::HeapSize,
             relation::{BuildModeRelation, ConfigurableRelation, Relation},
-            test_support::{Lcg, Mod10HashStrategy},
+            test_support::Mod10HashStrategy,
         },
         kermit_iters::{FxHashStrategy, SipHashStrategy},
-    };
-
-    /// Asserts that two tables hold the same buckets: the same capacity
-    /// (array length and allocation), the same length, the same hash in
-    /// every bucket, and values that `same_value` accepts.
-    fn assert_same_table<V>(
-        a: &HashTable<V>, b: &HashTable<V>, path: &str, same_value: &dyn Fn(&V, &V, &str),
-    ) {
-        assert_eq!(a.buckets_len(), b.buckets_len(), "{path}: capacity");
-        assert_eq!(
-            a.shell_heap_bytes(),
-            b.shell_heap_bytes(),
-            "{path}: bucket allocation"
-        );
-        assert_eq!(a.len(), b.len(), "{path}: len");
-        for idx in 0..a.buckets_len() {
-            assert_eq!(a.hash_at(idx), b.hash_at(idx), "{path}: bucket {idx}");
-            if let (Some(x), Some(y)) = (a.value_at(idx), b.value_at(idx)) {
-                same_value(x, y, &format!("{path}/{idx}"));
-            }
-        }
-    }
-
-    // `&Vec`, not a slice: the comparison reads `capacity()`.
-    #[allow(clippy::ptr_arg)]
-    fn assert_same_chain(a: &Vec<Vec<usize>>, b: &Vec<Vec<usize>>, path: &str) {
-        assert_eq!(a, b, "{path}: chain");
-        assert_eq!(a.capacity(), b.capacity(), "{path}: chain capacity");
-        for (i, (x, y)) in a.iter().zip(b).enumerate() {
-            assert_eq!(x.capacity(), y.capacity(), "{path}: tuple {i} capacity");
-        }
-    }
-
-    fn assert_same_node<P: PruningPolicy, E: ExpansionPolicy>(
-        a: &HashTrieNode<P, E>, b: &HashTrieNode<P, E>, path: &str,
-    ) {
-        match (a, b) {
-            | (HashTrieNode::Inner(x), HashTrieNode::Inner(y)) => {
-                assert_same_table(x, y, path, &|x, y, path| assert_same_node(x, y, path))
-            },
-            | (HashTrieNode::Leaf(x), HashTrieNode::Leaf(y)) => {
-                assert_same_table(x, y, path, &|x, y, path| assert_same_chain(x, y, path))
-            },
-            | (HashTrieNode::Singleton(x), HashTrieNode::Singleton(y)) => {
-                assert_eq!(x.tuple(), y.tuple(), "{path}: singleton");
-                assert_eq!(
-                    x.tuple().capacity(),
-                    y.tuple().capacity(),
-                    "{path}: singleton capacity"
-                );
-            },
-            | (HashTrieNode::Unexpanded(x), HashTrieNode::Unexpanded(y)) => {
-                // Building expands nothing, so both children are still the
-                // pending lists `insert_at` appended to.
-                assert!(
-                    x.built().is_none() && y.built().is_none(),
-                    "{path}: expanded during the build"
-                );
-                assert_same_chain(&x.pending(), &y.pending(), &format!("{path}: pending"));
-            },
-            | _ => panic!("{path}: node variants differ"),
-        }
-    }
-
-    /// The array-level identity the standard requires of a BuildMode:
-    /// every table's buckets and capacity, every chain and tuple capacity,
-    /// every singleton and pending list, the heap size and the tuple count.
-    fn assert_same_trie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-        a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
-    ) {
-        assert_same_node(a.root(), b.root(), label);
-        assert_eq!(
-            a.heap_size_bytes(),
-            b.heap_size_bytes(),
-            "{label}: heap size"
-        );
-        assert_eq!(a.tuple_count(), b.tuple_count(), "{label}: tuple count");
-    }
-
-    /// Rows of up to three columns, cut to `arity`.
-    fn rows(arity: usize, rows: &[[usize; 3]]) -> Vec<Vec<usize>> {
-        rows.iter().map(|row| row[..arity].to_vec()).collect()
-    }
-
-    /// Enough distinct first values to double the root several times (three
-    /// times under Miri), with repeats so subtries and chains hold several
-    /// tuples. The build is safe Rust, so Miri runs a small matrix: the full
-    /// one took almost five minutes there.
-    const RANDOM_TUPLES: usize = if cfg!(miri) {
-        48
-    } else {
-        3_000
-    };
-
-    /// Load factors under test, in percent. Miri runs the default only.
-    const LOAD_PERCENTS: &[u8] = if cfg!(miri) {
-        &[70]
-    } else {
-        &[70, 50]
     };
 
     /// Bit counts under test. Sixteen bits make 65,536 partitions, too slow
@@ -269,48 +169,11 @@ mod tests {
         &[1, 4, 16]
     };
 
-    fn inputs(arity: usize) -> Vec<(&'static str, Vec<Vec<usize>>)> {
-        let mut lcg = Lcg(0x91);
-        let random = (0..RANDOM_TUPLES)
-            .map(|_| {
-                let row = [
-                    lcg.next_usize() % (RANDOM_TUPLES / 4),
-                    lcg.next_usize() % 50,
-                    lcg.next_usize() % 7,
-                ];
-                row[..arity].to_vec()
-            })
-            .collect();
-        vec![
-            ("empty", vec![]),
-            ("one tuple", rows(arity, &[[1, 2, 3]])),
-            (
-                "duplicates",
-                rows(arity, &[[1, 2, 3], [1, 2, 3], [1, 2, 3]]),
-            ),
-            (
-                "interleaved",
-                rows(arity, &[
-                    [1, 2, 3],
-                    [2, 3, 4],
-                    [1, 5, 6],
-                    [3, 1, 1],
-                    [2, 3, 9],
-                    [1, 2, 7],
-                ]),
-            ),
-            ("random", random),
-        ]
-    }
-
     /// `radix:K` builds the trie `serial` builds, for every arity, load
-    /// factor, bit count and input.
+    /// factor, root capacity, bit count and input.
     fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
-            for &percent in LOAD_PERCENTS {
-                let config = HashTrieConfig {
-                    load_factor: LoadFactor::percent(percent).unwrap(),
-                };
+            for config in configs() {
                 for &bits in BITS {
                     let radix = HashTrieBuildMode::Radix(RadixBits::new(bits).unwrap());
                     for (input, tuples) in inputs(arity) {
@@ -323,10 +186,12 @@ mod tests {
                             )
                         };
                         let label = format!(
-                            "{}/{}/{} arity {arity}, load {percent}%, radix:{bits}, {input}",
+                            "{}/{}/{} arity {arity}, load {}%, root {}, radix:{bits}, {input}",
                             H::NAME,
                             P::NAME,
-                            E::NAME
+                            E::NAME,
+                            config.load_factor.numerator(),
+                            config.root_capacity.axis_value(),
                         );
                         assert_same_trie(&build(HashTrieBuildMode::Serial), &build(radix), &label);
                     }

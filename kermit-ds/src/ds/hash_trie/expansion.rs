@@ -54,8 +54,10 @@ pub trait PendingChild<N>: Sized {
 /// policies and the pairing is checked here, once.
 pub trait ExpansionPolicy: LayoutOption + Copy + Default + 'static {
     /// What a `HashTrieNode::Unexpanded` holds under this policy, for a
-    /// node type `N`.
-    type Pending<N>: PendingChild<N>;
+    /// node type `N`. `Send` whenever `N` is, so a parallel build can move
+    /// finished subtries between threads: `LazyChild`'s cells are `Send`,
+    /// only `!Sync`.
+    type Pending<N: Send>: PendingChild<N> + Send;
     /// Folded by the compiler: `insert_at`'s lazy branches are
     /// `if E::LAZY { … }`.
     const LAZY: bool;
@@ -134,7 +136,7 @@ impl LayoutOption for EagerExpansion {
 }
 
 impl ExpansionPolicy for EagerExpansion {
-    type Pending<N> = Never;
+    type Pending<N: Send> = Never;
 
     const LAZY: bool = false;
 }
@@ -148,7 +150,7 @@ impl LayoutOption for LazyExpansion {
 }
 
 impl ExpansionPolicy for LazyExpansion {
-    type Pending<N> = Box<LazyChild<N>>;
+    type Pending<N: Send> = Box<LazyChild<N>>;
 
     const LAZY: bool = true;
 }

@@ -213,7 +213,8 @@ kl.plot(df, kind="bar", x="ds_layout_hasher", y="time",
 `--ds-build` works the same way for the build modes, as `structure=mode`
 pairs: ColumnTrie's (`column-trie=bulk` by default, `column-trie=incremental`
 for the build before issue #84), HashTrie's (`hash-trie=serial` by default,
-`hash-trie=radix:<bits>` for the radix-partitioned build of issue #91) and
+`hash-trie=radix:<bits>` for the radix-partitioned build of issue #91 and
+`hash-trie=parallel:N` for the parallel build of issue #94) and
 TreeTrie's (`tree-trie=serial` by default, `tree-trie=parallel:N` for the
 parallel build of issue #94; see "Scaling" below). For thesis figures,
 compare modes **within one binary** — e.g.
@@ -278,8 +279,9 @@ walkthrough is in
 
 ### Scaling: measuring a parallel build
 
-`--ds-build tree-trie=parallel:N` builds a `TreeTrie` on N threads (#94). The trie is
-identical to the serial build's, so only `insertion` and `end_to_end` can
+`--ds-build tree-trie=parallel:N` builds a `TreeTrie` on N threads, and
+`hash-trie=parallel:N` a `HashTrie` (#94). The trie is identical to the
+serial build's, so only `insertion` and `end_to_end` can
 move. Run one arm per thread count within one binary, each with its own
 `--name`, then plot the speedup over `serial`:
 
@@ -306,6 +308,12 @@ each arm has two.
 saving (P smaller sorts take about n·log₂P fewer comparisons than one big
 one), so `parallel:1` can come out ahead. The same saving can make a speedup
 superlinear (above N), which makes the Karp–Flatt fraction negative.
+For HashTrie, `parallel:1` against `serial` is the cost of partitioning
+with no sort saving, so it is normally above 1; `radix:2` is the same
+partitioning, run serially. `kl.speedup_table(df, baseline="radix:K")`
+measures the threads alone. Expect the Karp–Flatt fraction to be highest
+where most first-attribute values are distinct, and for unary relations,
+because the root merge runs on one thread.
 `N = 16` on an 8-core host measures SMT, not more cores. The protocol behind
 reported numbers is in
 [`docs/specs/2026-10-05-parallel-build-design.md`](docs/specs/2026-10-05-parallel-build-design.md).

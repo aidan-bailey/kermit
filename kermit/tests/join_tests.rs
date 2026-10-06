@@ -9,7 +9,7 @@ use {
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
         ColumnTrieBuildMode, Configured, GallopingSeek, HashTrie, HashTrieBuildMode,
-        HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning, RadixBits,
+        HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning, RadixBits, RootCapacity,
         SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
@@ -87,6 +87,7 @@ define_multiway_join_test_suite!(HashTrieFxPrunedLazy, HashTriejoin, CostBasedOp
 // baseline; these are the alternate (standard: baseline + ≥1 per flag).
 define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
     load_factor: LoadFactor::percent(50).unwrap(),
+    ..HashTrieConfig::default()
 });
 
 define_multiway_join_test_suite_with_config!(
@@ -137,6 +138,67 @@ define_multiway_join_test_suite_with_config!(
     HashTriejoin,
     CostBasedOptimiser,
     HalfFull
+);
+
+// ── Config axis: root capacity ──────────────────────────────────────────
+// The default-config invocations above are the `ds_config_root_capacity:
+// "grow"` baseline; these are the alternate (#88). Under `tuples` each
+// fixture's root is sized once from its tuple count instead of growing from
+// 4 buckets.
+define_config_provider!(PresizedRoot, HashTrieConfig, HashTrieConfig {
+    root_capacity: RootCapacity::Tuples,
+    ..HashTrieConfig::default()
+});
+
+define_multiway_join_test_suite_with_config!(
+    HashTrieSip,
+    HashTriejoin,
+    LexicographicOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSip,
+    HashTriejoin,
+    CardinalityOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSip,
+    HashTriejoin,
+    CostBasedOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieFx,
+    HashTriejoin,
+    LexicographicOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieFx,
+    HashTriejoin,
+    CardinalityOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieFx,
+    HashTriejoin,
+    CostBasedOptimiser,
+    PresizedRoot
+);
+// The root is never lazy, so a lazy trie's presized root holds unexpanded
+// children like any other.
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipLazy,
+    HashTriejoin,
+    LexicographicOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipLazy,
+    HashTriejoin,
+    CostBasedOptimiser,
+    PresizedRoot
 );
 
 // ── BuildMode axis: ColumnTrie's build ──────────────────────────────────
@@ -260,6 +322,132 @@ define_multiway_join_test_suite_for_build_mode!(
     HashTriejoin,
     CostBasedOptimiser,
     Radix2
+);
+
+// ── BuildMode axis: HashTrie's parallel build ───────────────────────────
+// These build on two threads, in eight partitions. Every mode must build
+// the identical trie (issue #94). The same three Layouts as the radix rows
+// above (Sip/off/eager, Fx/on/eager, Sip/on/lazy), under every optimiser.
+// TreeTrie's provider is `Parallel2`, so this one is `HashParallel2`.
+define_build_mode_provider!(
+    HashParallel2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSip,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPruned,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+
+// ── BuildMode × Config: the presized parallel build ─────────────────────
+// Under root-capacity=tuples (#88, `PresizedRoot` above), parallel:2 is the
+// paper's partitioned build (#94), which builds an equivalent trie
+// (Amendment 2). The same three Layouts, under every optimiser.
+type HashTrieFxPrunedPresized = Configured<HashTrieFxPruned, PresizedRoot>;
+type HashTrieSipPrunedLazyPresized = Configured<HashTrieSipPrunedLazy, PresizedRoot>;
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPresized,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPresized,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPresized,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPrunedPresized,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPrunedPresized,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieFxPrunedPresized,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyPresized,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyPresized,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyPresized,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
 );
 
 // ── Column orders: every alias × optimiser under `any` (issue #93) ─────
@@ -443,9 +631,14 @@ define_multiway_join_test_suite_with_column_orders!(
 type HashTrieSipHalfFull = Configured<HashTrieSip, HalfFull>;
 type HashTrieFxHalfFull = Configured<HashTrieFx, HalfFull>;
 type HashTrieSipLazyHalfFull = Configured<HashTrieSipLazy, HalfFull>;
+type HashTrieSipPresized = Configured<HashTrieSip, PresizedRoot>;
+type HashTrieFxPresized = Configured<HashTrieFx, PresizedRoot>;
+type HashTrieSipLazyPresized = Configured<HashTrieSipLazy, PresizedRoot>;
 type TreeTrieParallel2 = BuiltWith<TreeTrie, Parallel2>;
 type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;
 type HashTrieSipRadix2 = BuiltWith<HashTrieSip, Radix2>;
+type HashTrieSipParallel2 = BuiltWith<HashTrieSip, HashParallel2>;
+type HashTrieSipPresizedParallel2 = BuiltWith<HashTrieSipPresized, HashParallel2>;
 
 define_multiway_join_test_suite_with_column_orders!(
     HashTrieSipHalfFull,
@@ -513,6 +706,62 @@ define_multiway_join_test_suite_with_column_orders!(
     CardinalityOptimiser,
     AnyOrders,
     HashTrieSipRadix2,
+    HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieSipParallel2,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieSipParallel2,
+    HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieSipParallel2,
+    HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieSipPresizedParallel2,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieSipPresizedParallel2,
+    HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieSipPresizedParallel2,
+    HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieSipPresized,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieSipPresized,
+    HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieSipPresized,
+    HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieFxPresized,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieFxPresized,
+    HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieFxPresized,
+    HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieSipLazyPresized,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieSipLazyPresized,
     HashTriejoin,
     CostBasedOptimiser,
     AnyOrders,

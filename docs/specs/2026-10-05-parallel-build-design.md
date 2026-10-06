@@ -1,7 +1,8 @@
 # Parallel Builds for TreeTrie and HashTrie
 
 **Date:** 2026-10-05
-**Status:** Design approved (brainstormed 2026-10-05); not yet implemented
+**Status:** Design approved (brainstormed 2026-10-05); TreeTrie landed
+(plan 1, 00bcc88); HashTrie implemented by plan 2
 **Scope:** Issue #94. TreeTrie and HashTrie each gain a `parallel:N` build mode. The
 build is morsel-driven, runs on `std::thread::scope`, and produces exactly
 the trie the serial build produces. Serial stays the default. A scaling
@@ -236,6 +237,18 @@ axis values. Construction works like this:
 **Only one shared internal changes.** `HashTable::into_slots` is new, and
 the serial path never calls it.
 
+**As built (plan 2, after #91 and #92).** #91 landed first, so the
+HashTrie build reuses its radix steps: `HashTrieBuildMode` gained a
+`Parallel(Threads)` variant beside `Radix`, `from_tuples_with` is #91's
+`from_tuples_with_config_and_build_mode`, and `into_slots` is #91's
+`into_buckets` through `radix::take_in_arrival_order`. The radix build
+keeps its own serial partition, since changing its executed path would
+invalidate its recorded A/B; only `parallel:N` uses `scatter`. The
+policies' associated types gained `Send` bounds, because generic code
+cannot otherwise prove `HashTrieNode<P, E>: Send`. The CLI spelling is
+keyed (`hash-trie=parallel:N`, #91), and it is a new mode, not
+`radix:K:N` (user decision, 2026-10-05).
+
 ### Placement under the optimisation standard
 
 - **Category.** BuildMode, axis `ds_build_mode`.
@@ -406,7 +419,8 @@ the serial path never calls it.
 - ColumnTrie's parallel build.
 - A parallel fill of HashTrie's root. If Karp–Flatt shows the root
   dominating, it could become a separate, non-identical mode, behind an
-  amendment to the standard.
+  amendment to the standard. (It did, and Amendment 2 below is that
+  amendment; the mode itself is follow-up work.)
 - Thread pinning and NUMA placement.
 - Allocator changes.
 - A persistent thread pool shared across builds. Each build spawns its own
@@ -454,7 +468,7 @@ the serial path never calls it.
 ## Coordination
 
 - **#91 (radix partitioning)** reuses `scatter`. Whichever lands second
-  builds on the other's `morsel.rs`.
+  builds on the other's `morsel.rs`. (It did not: see "As built" above.)
 - **#92 (lazy child expansion).** The build step moves finished children
   between threads, so values must be `Send`. `OnceCell` is `Send` (it is
   only `!Sync`), and no trie is ever shared between threads.
@@ -479,3 +493,64 @@ the serial path never calls it.
 - [ ] The scaling protocol has run, and its results are published with
   `env.txt`: speedup, efficiency, overhead, crossover and Karp–Flatt
   fractions.
+
+## Amendment 2 (2026-10-06): BuildMode equivalence is contents and capacities
+
+**Decision (user, 2026-10-06).** The optimization standard's BuildMode rule is
+relaxed from array-level identity to *equivalence*:
+
+- **Still required:** every mode builds the same contents with the same
+  capacities at every level, hence the same `HeapSize`. Answers and `space`
+  cannot change between modes.
+- **Now allowed:** placement that the structure itself leaves free may differ.
+  The case in view is the slot a key takes in a hash table. A sorted trie
+  leaves no placement free, so for TreeTrie and ColumnTrie the rule is
+  unchanged in effect.
+- **Consequence:** `iteration` and `end_to_end` can move between modes, so
+  they are measured per mode, never assumed unchanged. kermit-lab stops
+  confining `ds_build_mode` to the build phases.
+
+**Why.**
+
+- The strict rule existed because it came free with the first BuildMode
+  (#84, ColumnTrie's bulk and incremental builds produce byte-identical
+  arrays). It entered the standard on 2026-10-03 in 1ca4f27. The original
+  standard (2026-05-27) asked only that a mode not change "the in-memory
+  representation".
+- Its main promise, that a build mode cannot move `iteration`, did not hold
+  anyway. The TreeTrie half of the scaling run (2026-10-05) measured
+  `parallel:1` against `serial` 9–15% apart on lubm-reference `end_to_end`
+  with a provably identical trie. The suspect is where worker threads'
+  allocations land in memory.
+- Its cost fell on HashTrie. A serial-identical root needs the root's new
+  keys inserted one at a time in first-appearance order, so the merge cannot
+  be parallelised. Preliminary results of the HashTrie half (replicates 1–3)
+  show that merge as the limit: Karp–Flatt ≈ 1.0 for unary relations at
+  N ≥ 8, 1.1–1.6 for `price` (every first key distinct), and 0.13–0.20 for
+  binary relations at 1e6–1e7.
+- Contents plus capacities keeps everything the rule protected that still
+  held: identical answers, comparable `space`, an exact test oracle (now
+  map-level where placement is free), and no query-time cost for the knob.
+
+**What changes.**
+
+- `docs/specs/optimization-standard.md`: the BuildMode definition, its
+  output-equivalence and test-obligation rows, and walkthrough steps 1 and 4.
+- `BuildModeRelation`'s contract and CLAUDE.md.
+- kermit-lab: `ds_build_mode` leaves `AXIS_PHASES`, so ablations and the
+  `speedup` preset accept every time phase.
+
+**What does not change.** Every landed mode still builds array-identical
+structures, and their array-level tests stay, as stronger checks than the
+rule requires:
+
+- ColumnTrie `incremental`;
+- TreeTrie `parallel:N`;
+- HashTrie `radix:K` and `parallel:N`.
+
+The report schema stays at 3: no field changes meaning.
+
+**Follow-up.** A HashTrie mode that fills the root in parallel becomes
+admissible, as a new mode beside `parallel:N`. It would pre-size the root to
+the serial capacity and give each worker a disjoint range of buckets. Its
+design starts by checking what TUM-I2082 §3.3.2 does with the root.

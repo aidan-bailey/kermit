@@ -1,7 +1,7 @@
-//! CLI smoke test: `bench ds` with `--ds-config load-factor=0.5` records
-//! the Config axis, and the flag is rejected where it cannot apply.
-//! Mirrors `cli_hash_trie_hasher_choice.rs` for the Config category of the
-//! optimization standard: CLI parser -> `ConfigChoices` ->
+//! CLI smoke test: `bench ds` with `--ds-config` (`load-factor`,
+//! `root-capacity`) records the Config axis, and the flag is rejected where it
+//! cannot apply. Mirrors `cli_hash_trie_hasher_choice.rs` for the Config
+//! category of the optimization standard: CLI parser -> `ConfigChoices` ->
 //! `run_ds_bench::<HashTrieFamily<H, P>>` -> `RelationFamily::build_relation`
 //! -> `HashTrie::from_tuples_with_config` ->
 //! `HasOptimizationAxes::optimization_axes()` -> `BenchReport.axes` -> JSON.
@@ -48,4 +48,50 @@ fn cli_bench_ds_default_load_factor_is_seventy_percent() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(axes_of(&report)["ds_config_load_factor"], 0.7);
+}
+
+#[test]
+fn cli_bench_ds_with_root_capacity_records_axis() {
+    let (output, report) = bench_ds("hash-trie", &["--ds-config", "root-capacity=tuples"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(axes_of(&report)["ds_config_root_capacity"], "tuples");
+}
+
+#[test]
+fn cli_bench_ds_default_root_capacity_is_grow() {
+    let (output, report) = bench_ds("hash-trie", &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(axes_of(&report)["ds_config_root_capacity"], "grow");
+}
+
+#[test]
+fn cli_bench_ds_rejects_a_malformed_root_capacity() {
+    let (output, _) = bench_ds("hash-trie", &["--ds-config", "root-capacity=1024"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("expected grow or tuples"), "{stderr}");
+}
+
+#[test]
+fn cli_bench_ds_takes_both_config_keys() {
+    let (output, report) = bench_ds("hash-trie", &[
+        "--ds-config",
+        "load-factor=0.5,root-capacity=tuples",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let axes = axes_of(&report);
+    assert_eq!(axes["ds_config_load_factor"], 0.5);
+    assert_eq!(axes["ds_config_root_capacity"], "tuples");
 }

@@ -149,6 +149,43 @@ impl<
     }
 }
 
+impl<
+        H: HashStrategy,
+        P: PruningPolicy,
+        E: ExpansionPolicy,
+        C: ConfigProvider<HashTrieConfig>,
+        B: BuildModeProvider<HashTrieBuildMode>,
+    > JoinEntry<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>> for HashTriejoin
+{
+    fn database(
+        relations: BTreeMap<String, BuiltWith<Configured<HashTrie<H, P, E>, C>, B>>,
+        level: StatisticsLevel,
+    ) -> Database<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>> {
+        Database::new::<HashFamily<H>>(relations, level)
+    }
+
+    fn join(
+        database: &Database<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>>, query: JoinQuery,
+        planner: &Planner,
+    ) -> Result<Vec<Vec<usize>>, JoinError> {
+        hash_join::<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>, H>(database, query, planner)
+    }
+
+    fn count(
+        database: &Database<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>>, query: JoinQuery,
+        planner: &Planner,
+    ) -> Result<usize, JoinError> {
+        let mut rows = 0;
+        hash_join_for_each::<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>, H>(
+            database,
+            query,
+            planner,
+            |_| rows += 1,
+        )?;
+        Ok(rows)
+    }
+}
+
 /// The column-order policy a macro-generated suite runs under, lifted to
 /// a type so `define_multiway_join_test_suite!` can name it, as
 /// `ConfigProvider` and `BuildModeProvider` lift a Config and a BuildMode.

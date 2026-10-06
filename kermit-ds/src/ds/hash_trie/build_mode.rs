@@ -2,12 +2,16 @@
 //! known set of tuples — the BuildMode category of the optimization standard
 //! (`docs/specs/optimization-standard.md`).
 
-use std::{fmt, str::FromStr};
+use {
+    crate::morsel::Threads,
+    std::{fmt, str::FromStr},
+};
 
 /// How a [`HashTrie`](super::HashTrie) is built from a known set of tuples.
-/// Every mode builds the identical trie — the same buckets and the same
-/// capacities — so the mode changes how long the build takes, never the
-/// trie it builds (issue #91).
+/// Every mode builds an equivalent trie, the same contents with the same
+/// capacities (the BuildMode rule), and every mode here also puts each key in
+/// the same bucket, so the mode changes how long the build takes, never the
+/// trie it builds (issues #91, #94).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HashTrieBuildMode {
     /// One insert per tuple, in input order: Algorithm 2 of the paper, and
@@ -18,6 +22,10 @@ pub enum HashTrieBuildMode {
     /// attribute's hash, build each partition separately, then merge
     /// (SIGMOD 2020 §3.3.2).
     Radix(RadixBits),
+    /// The radix build's partition and build steps on this many threads,
+    /// the calling thread included: the morsel-driven parallel build
+    /// (`docs/data-structures/parallel-build.md`, issue #94).
+    Parallel(Threads),
 }
 
 /// The radix bits of a `radix` build: `2^bits` partitions, `bits` in
@@ -74,16 +82,24 @@ impl fmt::Display for ParseHashTrieBuildModeError {
 impl std::error::Error for ParseHashTrieBuildModeError {}
 
 /// Parses the strings [`axis_value`](kermit_iters::BuildMode::axis_value)
-/// returns: `serial` and `radix:<bits>`.
+/// returns: `serial`, `radix:<bits>` and `parallel:<threads>`.
 impl FromStr for HashTrieBuildMode {
     type Err = ParseHashTrieBuildModeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        const EXPECTED: &str = "expected serial or radix:<bits>, bits in 1..=16";
-        let error = |why: String| ParseHashTrieBuildModeError(format!("{why}; {EXPECTED}"));
+        let error = |why: String| {
+            ParseHashTrieBuildModeError(format!(
+                "{why}; expected serial, radix:<bits> or parallel:<threads>; bits in {}..={}, \
+                 threads in 1..={}",
+                RadixBits::MIN,
+                RadixBits::MAX,
+                Threads::MAX
+            ))
+        };
         match s.split_once(':') {
             | None if s == "serial" => Ok(Self::Serial),
             | None if s == "radix" => Err(error("radix needs a bit count".to_owned())),
+            | None if s == "parallel" => Err(error("parallel needs a thread count".to_owned())),
             | Some(("radix", bits)) => {
                 let n: u32 = bits.parse().map_err(|_| {
                     error(format!("radix bits must be a whole number, got {bits:?}"))
@@ -100,6 +116,28 @@ impl FromStr for HashTrieBuildMode {
                         ))
                     })
             },
+            | Some(("parallel", threads)) => {
+                // TreeTrie's rule (`tree_trie/build_mode.rs`), so both tries
+                // accept and reject the same thread counts.
+                if threads.is_empty() || !threads.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(error(format!(
+                        "parallel threads must be a whole number, got {threads:?}"
+                    )));
+                }
+                // All digits, so a failed parse is a count too large for
+                // `usize`: out of range, like any count above the limit.
+                threads
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(Threads::new)
+                    .map(Self::Parallel)
+                    .ok_or_else(|| {
+                        error(format!(
+                            "parallel threads must be between 1 and {}, got {threads}",
+                            Threads::MAX
+                        ))
+                    })
+            },
             | _ => Err(error(format!("unknown hash-trie build mode {s:?}"))),
         }
     }
@@ -110,6 +148,7 @@ impl kermit_iters::BuildMode for HashTrieBuildMode {
         match self {
             | Self::Serial => "serial".to_owned(),
             | Self::Radix(bits) => format!("radix:{}", bits.get()),
+            | Self::Parallel(threads) => format!("parallel:{}", threads.get()),
         }
     }
 }
@@ -122,12 +161,18 @@ mod tests {
         HashTrieBuildMode::Radix(RadixBits::new(bits).unwrap())
     }
 
+    fn parallel(n: usize) -> HashTrieBuildMode {
+        HashTrieBuildMode::Parallel(Threads::new(n).unwrap())
+    }
+
     /// What a report's `ds_build_mode` says is what `--ds-build hash-trie=…`
     /// parses back, for every mode.
     #[test]
     fn axis_values_round_trip_through_from_str() {
         let mut modes = vec![HashTrieBuildMode::Serial];
         modes.extend((RadixBits::MIN..=RadixBits::MAX).map(radix));
+        modes.extend((1..=8).map(parallel));
+        modes.push(parallel(Threads::MAX));
         for mode in modes {
             assert_eq!(mode.axis_value().parse::<HashTrieBuildMode>(), Ok(mode));
         }
@@ -139,6 +184,10 @@ mod tests {
     fn axis_values_and_default_are_pinned() {
         assert_eq!(HashTrieBuildMode::Serial.axis_value(), "serial");
         assert_eq!(radix(8).axis_value(), "radix:8");
+        assert_eq!(
+            HashTrieBuildMode::Parallel(Threads::new(8).unwrap()).axis_value(),
+            "parallel:8"
+        );
         assert_eq!(HashTrieBuildMode::default(), HashTrieBuildMode::Serial);
     }
 
@@ -164,12 +213,23 @@ mod tests {
             ("radix:0", "between 1 and 16, got 0"),
             ("radix:17", "between 1 and 16, got 17"),
             ("radix:300", "between 1 and 16, got 300"),
+            ("parallel", "parallel needs a thread count"),
+            ("parallel:", "whole number"),
+            ("parallel:x", "whole number"),
+            ("parallel:-1", "whole number"),
+            ("parallel:2:1", "whole number"),
+            ("parallel:0", "between 1 and 1024, got 0"),
+            ("parallel:1025", "between 1 and 1024, got 1025"),
+            (
+                "parallel:99999999999999999999999",
+                "between 1 and 1024, got 99999999999999999999999",
+            ),
         ];
         for (input, why) in cases {
             let msg = input.parse::<HashTrieBuildMode>().unwrap_err().to_string();
             assert!(msg.contains(why), "{input:?}: {msg}");
             assert!(
-                msg.contains("expected serial or radix:<bits>"),
+                msg.contains("expected serial, radix:<bits> or parallel:<threads>"),
                 "{input:?}: {msg}"
             );
         }

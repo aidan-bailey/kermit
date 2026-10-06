@@ -17,7 +17,10 @@ use {
     crate::{
         cardinality::Cardinality,
         heap_size::HeapSize,
-        relation::{ConfigurableRelation, Projectable, Relation, RelationHeader},
+        relation::{
+            BuildModeRelation, ConfigurableRelation, ConfiguredBuildModeRelation, Projectable,
+            Relation, RelationHeader,
+        },
     },
     kermit_iters::{
         HasOptimizationAxes, HashTrieIterable, HashTrieIterator, JoinIterable, TrieIterable,
@@ -46,6 +49,7 @@ pub trait ConfigProvider<C> {
 ///
 /// define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
 ///     load_factor: LoadFactor::percent(50).unwrap(),
+///     ..HashTrieConfig::default()
 /// });
 ///
 /// type HashTrieSipHalfFull = Configured<HashTrie<SipHashStrategy>, HalfFull>;
@@ -129,6 +133,28 @@ where
     fn insert_all(&mut self, tuples: Vec<Vec<usize>>) { self.inner.insert_all(tuples) }
 }
 
+/// `Configured` under [`BuiltWith`](crate::BuiltWith): the mode comes from
+/// the outer marker, the config from `P`, so both reach the relation's one
+/// constructor that takes both.
+impl<R, P> BuildModeRelation for Configured<R, P>
+where
+    R: ConfiguredBuildModeRelation,
+    P: ConfigProvider<R::Config>,
+{
+    type BuildMode = R::BuildMode;
+
+    fn from_tuples_with_build_mode(
+        header: RelationHeader, mode: R::BuildMode, tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        Self::wrap(R::from_tuples_with_config_and_build_mode(
+            header,
+            P::config(),
+            mode,
+            tuples,
+        ))
+    }
+}
+
 impl<R: HeapSize, P> HeapSize for Configured<R, P> {
     fn heap_size_bytes(&self) -> usize { self.inner.heap_size_bytes() }
 }
@@ -168,6 +194,7 @@ mod tests {
 
     crate::define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
         load_factor: LoadFactor::percent(50).unwrap(),
+        ..HashTrieConfig::default()
     });
 
     type HalfFullTrie = Configured<HashTrie<SipHashStrategy>, HalfFull>;
@@ -207,5 +234,28 @@ mod tests {
         tuples.sort();
         assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);
         assert_eq!(crate::Cardinality::tuple_count(&r), 2);
+    }
+
+    crate::define_config_provider!(Presized, HashTrieConfig, HashTrieConfig {
+        root_capacity: crate::ds::RootCapacity::Tuples,
+        ..HashTrieConfig::default()
+    });
+    crate::define_build_mode_provider!(
+        TwoThreads,
+        crate::ds::HashTrieBuildMode,
+        crate::ds::HashTrieBuildMode::Parallel(crate::Threads::new(2).unwrap())
+    );
+
+    /// The two markers stack: the config reaches the relation, and so does
+    /// the build mode (the presized path presizes the root).
+    #[test]
+    fn built_with_stacks_on_configured() {
+        type Stacked =
+            crate::BuiltWith<Configured<HashTrie<SipHashStrategy>, Presized>, TwoThreads>;
+        let r = Stacked::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(r.config().root_capacity, crate::ds::RootCapacity::Tuples);
+        let mut tuples = r.collect_tuples();
+        tuples.sort();
+        assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);
     }
 }

@@ -14,6 +14,7 @@ from matplotlib.figure import Figure
 
 from .analysis import SPEEDUP_MEASURES, speedup_table
 from .facet import finish, make_grid
+from .loader import TIME_PHASES
 from .plot import plot
 from .plots_errors import InsufficientAxesError
 from .styles import apply as apply_style
@@ -79,12 +80,13 @@ class AxisScope:
 # its scope: two values there time the same code, so any difference between
 # them is noise or binary drift, not the optimisation. Give a new axis an
 # entry when its effect is confined to some phases.
+#
+# `ds_build_mode` has no entry. A BuildMode builds the same contents and
+# capacities, so it cannot move `space` (not a time phase), but it may place
+# keys in other slots of a hash table, and its allocations land elsewhere in
+# memory, so it can move every time phase, `iteration` included (the
+# optimization standard's Amendment 2, 2026-10-06).
 AXIS_PHASES: dict[str, AxisScope] = {
-    # A BuildMode changes how a structure is built, never the structure (#84).
-    "ds_build_mode": AxisScope(
-        frozenset({"insertion", "end_to_end"}),
-        "it changes only how a structure is built",
-    ),
     # A seek strategy changes how a built trie is searched; no build calls
     # seek (#80).
     "ds_layout_seek": AxisScope(
@@ -128,14 +130,15 @@ def speedup(
     each doubling of threads is one step and the ideal is a straight line. Load
     one binary's reports only (see :func:`~kermit_lab.analysis.speedup_table`).
 
-    Raises :class:`InsufficientAxesError` for a phase no build mode can
-    affect, or when no case has both a baseline and a ``parallel:N`` row.
+    Raises :class:`InsufficientAxesError` for a phase that is not a time
+    phase, or when no case has both a baseline and a ``parallel:N`` row. Every
+    time phase is allowed: a build mode may move ``iteration`` too
+    (Amendment 2).
     """
-    scope = AXIS_PHASES["ds_build_mode"]
-    if phase not in scope.phases:
-        allowed = " or ".join(repr(p) for p in sorted(scope.phases))
+    if phase not in TIME_PHASES:
+        allowed = " or ".join(repr(p) for p in TIME_PHASES)
         raise InsufficientAxesError(
-            f"ds_build_mode cannot affect phase {phase!r}: {scope.reason}; plot it on {allowed}"
+            f"speedup compares time phases, not {phase!r}; plot it on {allowed}"
         )
     try:
         table = speedup_table(df, phase=phase, baseline=baseline)

@@ -14,14 +14,21 @@ mod expansion;
 #[allow(dead_code)]
 mod hash_table;
 mod hash_trie_iter;
+#[cfg(test)]
+mod identity;
 mod implementation;
 mod node;
+mod parallel;
 mod pruning;
 mod radix;
 
+#[cfg(feature = "test-hooks")]
+pub(crate) use parallel::take_parallel_builds;
+#[cfg(feature = "test-hooks")]
+pub use parallel::ParallelBuild;
 pub use {
     build_mode::{HashTrieBuildMode, InvalidRadixBits, ParseHashTrieBuildModeError, RadixBits},
-    config::{HashTrieConfig, InvalidLoadFactor, LoadFactor},
+    config::{HashTrieConfig, InvalidLoadFactor, LoadFactor, ParseRootCapacityError, RootCapacity},
     expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
     implementation::HashTrie,
     pruning::{NoPruning, PruningPolicy, SingletonPruning},

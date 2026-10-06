@@ -21,13 +21,18 @@
 use {
     super::{
         build_mode::HashTrieBuildMode,
-        config::{HashTrieConfig, LoadFactor},
+        config::{HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
+        hash_table::{BucketRun, RunEntry, INITIAL_LOG2_CAPACITY},
         node::HashTrieNode,
+        parallel,
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
         radix,
     },
-    crate::relation::{BuildModeRelation, ConfigurableRelation, Relation, RelationHeader},
+    crate::relation::{
+        BuildModeRelation, ConfigurableRelation, ConfiguredBuildModeRelation, Relation,
+        RelationHeader,
+    },
     kermit_iters::{ConfigOption, HashStrategy, JoinIterable, LayoutOption, SipHashStrategy},
     std::marker::PhantomData,
 };
@@ -61,9 +66,12 @@ use {
 /// (via [`ConfigurableRelation`](crate::relation::ConfigurableRelation)) are
 /// the config-carrying constructors; `new` / `from_tuples` are thin wrappers
 /// over them that supply the default configuration. A known set of tuples
-/// can also be built by the `radix:K` BuildMode
+/// can also be built by the `radix:K` and `parallel:N` BuildModes
 /// ([`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
-/// or [`BuildModeRelation`]), which builds the identical trie.
+/// or [`BuildModeRelation`]), which build the identical trie.
+/// `HashTrieConfig::root_capacity` decides the root's starting size: 4
+/// buckets (`grow`, the default), or sized once from the tuples a build is
+/// given (`tuples`), so that it never grows during that build (#88).
 ///
 /// # Layout parameters
 ///
@@ -111,10 +119,31 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// supported arity and additionally treats the unsupported nullary case
     /// as a leaf.)
     pub(super) fn make_root(arity: usize) -> HashTrieNode<P, E> {
-        if arity <= 1 {
-            HashTrieNode::new_leaf()
-        } else {
-            HashTrieNode::new_inner()
+        Self::make_root_sized(arity, INITIAL_LOG2_CAPACITY)
+    }
+
+    /// [`make_root`](Self::make_root) at `2^log2_capacity` buckets.
+    pub(super) fn make_root_sized(arity: usize, log2_capacity: u32) -> HashTrieNode<P, E> {
+        HashTrieNode::new_table_sized(arity <= 1, log2_capacity)
+    }
+
+    /// An empty trie holding `config`, its root sized for a build from
+    /// `tuple_count` tuples by [`HashTrieConfig::root_log2_capacity`]: 4
+    /// buckets under `RootCapacity::Grow`, and under `Tuples` a capacity at
+    /// which `tuple_count` keys never make it grow. Every constructor creates
+    /// its root here, so no build path computes a capacity itself. A trie
+    /// created empty passes 0.
+    pub(super) fn with_config_for(
+        header: RelationHeader, config: HashTrieConfig, tuple_count: usize,
+    ) -> Self {
+        let root = Self::make_root_sized(header.arity(), config.root_log2_capacity(tuple_count));
+        Self {
+            header,
+            root,
+            // Counts the tuples inserted so far; the builds add to it.
+            tuple_count: 0,
+            config,
+            _layout: PhantomData,
         }
     }
 
@@ -305,6 +334,89 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         }
     }
 
+    /// [`insert_at`](Self::insert_at)'s `Leaf` arm at the root (arity 1),
+    /// inside one [`BucketRun`] of a presized root: the presized parallel
+    /// build's root step (`parallel.rs`). Returns the tuple if its key's
+    /// probe ran off its region, for the caller to insert afterwards.
+    pub(super) fn insert_at_leaf_root_in_run(
+        run: &mut BucketRun<'_, Vec<Vec<usize>>>, tuple: Vec<usize>,
+    ) -> Result<(), Vec<usize>> {
+        let hash = H::hash(tuple[0]);
+        match run.entry(hash) {
+            | Ok(RunEntry::Occupied(chain)) => chain.push(tuple),
+            | Ok(RunEntry::Vacant(slot)) => slot.insert(Vec::new()).push(tuple),
+            | Err(_) => return Err(tuple),
+        }
+        Ok(())
+    }
+
+    /// [`insert_at`](Self::insert_at)'s `Inner` arm at the root (arity
+    /// ≥ 2), inside one [`BucketRun`] of a presized root: the presized
+    /// parallel build's root step. It mirrors `insert_at` decision for
+    /// decision. A fresh key becomes a `Singleton` (pruning), an
+    /// `Unexpanded` child (lazy), or a new table that `insert_at` descends
+    /// into. An existing key unprunes, appends to its pending list, or
+    /// descends. Every level below the root is `insert_at`, unchanged.
+    /// `the_root_step_builds_the_serial_trie_below_the_root` guards the
+    /// mirror. Returns the tuple if its key's probe ran off its region.
+    pub(super) fn insert_at_inner_root_in_run(
+        run: &mut BucketRun<'_, HashTrieNode<P, E>>, arity: usize, tuple: Vec<usize>,
+        load_factor: LoadFactor,
+    ) -> Result<(), Vec<usize>> {
+        let hash = H::hash(tuple[0]);
+        let child_is_leaf = Self::is_leaf_depth(1, arity);
+        let child = match run.entry(hash) {
+            | Err(_) => return Err(tuple),
+            | Ok(RunEntry::Occupied(child)) => child,
+            | Ok(RunEntry::Vacant(slot)) => {
+                if P::ENABLED {
+                    slot.insert(HashTrieNode::Singleton(P::Payload::from_tuple(tuple)));
+                    return Ok(());
+                }
+                if E::LAZY {
+                    slot.insert(HashTrieNode::Unexpanded(E::Pending::from_tuples(vec![
+                        tuple,
+                    ])));
+                    return Ok(());
+                }
+                slot.insert(HashTrieNode::new_table(child_is_leaf))
+            },
+        };
+        if E::LAZY {
+            match child {
+                | HashTrieNode::Unexpanded(pending) => match pending.built_mut() {
+                    | Some(built) => Self::insert_at(built, 1, arity, tuple, load_factor),
+                    | None => pending.push(tuple),
+                },
+                | HashTrieNode::Singleton(_) => {
+                    let list =
+                        HashTrieNode::Unexpanded(E::Pending::from_tuples(Vec::with_capacity(2)));
+                    let HashTrieNode::Singleton(evicted) = std::mem::replace(child, list) else {
+                        unreachable!("matched Singleton above")
+                    };
+                    let HashTrieNode::Unexpanded(pending) = child else {
+                        unreachable!("replaced by an Unexpanded child just above")
+                    };
+                    pending.push(evicted.into_tuple());
+                    pending.push(tuple);
+                },
+                | HashTrieNode::Inner(_) | HashTrieNode::Leaf(_) => {
+                    unreachable!("a lazy Inner bucket holds a Singleton or an Unexpanded child")
+                },
+            }
+            return Ok(());
+        }
+        if P::ENABLED && matches!(child, HashTrieNode::Singleton(_)) {
+            let replacement = HashTrieNode::new_table(child_is_leaf);
+            let HashTrieNode::Singleton(evicted) = std::mem::replace(child, replacement) else {
+                unreachable!("matched Singleton above")
+            };
+            Self::insert_at(child, 1, arity, evicted.into_tuple(), load_factor);
+        }
+        Self::insert_at(child, 1, arity, tuple, load_factor);
+        Ok(())
+    }
+
     /// Builds the table a lazy child at `depth` would have held, from its
     /// pending `tuples`, through the same `insert_at` construction uses.
     /// Two consequences:
@@ -382,21 +494,14 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
     type Config = HashTrieConfig;
 
     fn with_config(header: RelationHeader, config: HashTrieConfig) -> Self {
-        let root = Self::make_root(header.arity());
-        Self {
-            header,
-            root,
-            tuple_count: 0,
-            config,
-            _layout: PhantomData,
-        }
+        Self::with_config_for(header, config, 0)
     }
 
     fn from_tuples_with_config(
         header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
     ) -> Self {
         let arity = header.arity();
-        let mut trie = Self::with_config(header, config);
+        let mut trie = Self::with_config_for(header, config, tuples.len());
         for tuple in tuples {
             assert_eq!(
                 tuple.len(),
@@ -420,11 +525,13 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// Creates a trie holding `config`, populated with `tuples` and built by
     /// `mode` — the one constructor that takes both the Config and the
-    /// BuildMode. Every mode builds the identical trie (issue #91), so
+    /// BuildMode. Every mode builds the identical trie (issues #91, #94), so
     /// `mode` changes only how long this takes.
     ///
     /// `Serial` is [`ConfigurableRelation::from_tuples_with_config`],
-    /// unchanged; `Radix` partitions first (see `radix.rs`).
+    /// unchanged; `Radix` partitions first (see `radix.rs`), and
+    /// `Parallel` runs the radix build's partition and build steps on threads
+    /// (see `parallel.rs`).
     ///
     /// # Panics
     ///
@@ -436,29 +543,59 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         match mode {
             | HashTrieBuildMode::Serial => Self::from_tuples_with_config(header, config, tuples),
             | HashTrieBuildMode::Radix(bits) => {
-                let arity = header.arity();
-                for tuple in &tuples {
-                    assert_eq!(
-                        tuple.len(),
-                        arity,
-                        "from_tuples: tuple arity {} does not match header arity {}",
-                        tuple.len(),
-                        arity,
-                    );
-                }
-                let tuple_count = tuples.len();
-                let mut trie = Self::with_config(header, config);
-                radix::fill_root::<H, P, E>(
-                    &mut trie.root,
-                    arity,
-                    tuples,
-                    bits,
-                    config.load_factor,
-                );
-                trie.tuple_count = tuple_count;
-                trie
+                Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
+                    radix::fill_root::<H, P, E>(root, arity, tuples, bits, config.load_factor)
+                })
+            },
+            | HashTrieBuildMode::Parallel(threads) => {
+                Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
+                    match config.root_capacity {
+                        // The root's size depends on the distinct keys, so
+                        // it is filled after them, in first-appearance order.
+                        | RootCapacity::Grow => parallel::fill_root::<H, P, E>(
+                            root,
+                            arity,
+                            tuples,
+                            threads,
+                            config.load_factor,
+                        ),
+                        // The root is presized (#88): the paper's build.
+                        | RootCapacity::Tuples => parallel::fill_presized_root::<H, P, E>(
+                            root,
+                            arity,
+                            tuples,
+                            threads,
+                            config.load_factor,
+                        ),
+                    }
+                })
             },
         }
+    }
+
+    /// What the partitioned builds share (`radix:K`, `parallel:N`): the
+    /// serial build's arity check, with its message, then `fill` on the
+    /// empty root (presized under `root-capacity=tuples`, as the serial
+    /// build's is), then the multiset count the serial build keeps.
+    fn from_tuples_partitioned(
+        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
+        fill: impl FnOnce(&mut HashTrieNode<P, E>, usize, Vec<Vec<usize>>),
+    ) -> Self {
+        let arity = header.arity();
+        for tuple in &tuples {
+            assert_eq!(
+                tuple.len(),
+                arity,
+                "from_tuples: tuple arity {} does not match header arity {}",
+                tuple.len(),
+                arity,
+            );
+        }
+        let tuple_count = tuples.len();
+        let mut trie = Self::with_config_for(header, config, tuple_count);
+        fill(&mut trie.root, arity, tuples);
+        trie.tuple_count = tuple_count;
+        trie
     }
 }
 
@@ -482,6 +619,20 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
             mode,
             tuples,
         )
+    }
+}
+
+/// The inherent
+/// [`from_tuples_with_config_and_build_mode`](HashTrie::from_tuples_with_config_and_build_mode),
+/// so `BuiltWith` can stack on `Configured` in the test suites.
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfiguredBuildModeRelation
+    for HashTrie<H, P, E>
+{
+    fn from_tuples_with_config_and_build_mode(
+        header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
+        tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(header, config, mode, tuples)
     }
 }
 
@@ -831,6 +982,7 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, vec![
             "ds_config_load_factor",
+            "ds_config_root_capacity",
             "ds_layout_expansion",
             "ds_layout_hasher",
             "ds_layout_pruning"
@@ -850,6 +1002,7 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, vec![
             "ds_config_load_factor",
+            "ds_config_root_capacity",
             "ds_layout_expansion",
             "ds_layout_hasher",
             "ds_layout_pruning"
@@ -865,6 +1018,7 @@ mod tests {
         use crate::relation::ConfigurableRelation;
         let dense = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let trie: HashTrie = HashTrie::with_config(2.into(), dense);
         assert_eq!(*trie.config(), dense);
@@ -877,6 +1031,7 @@ mod tests {
         use crate::relation::{ConfigurableRelation, Projectable};
         let dense = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let trie: HashTrie =
             HashTrie::from_tuples_with_config(2.into(), dense, vec![vec![1, 2], vec![3, 4]]);
@@ -892,6 +1047,7 @@ mod tests {
         use {crate::relation::ConfigurableRelation, kermit_iters::HasOptimizationAxes};
         let dense = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let trie: HashTrie = HashTrie::with_config(2.into(), dense);
         let axes = trie.optimization_axes();
@@ -922,6 +1078,7 @@ mod tests {
         use crate::relation::ConfigurableRelation;
         let dense = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let mut trie: HashTrie = HashTrie::with_config(2.into(), dense);
         trie.insert(vec![1, 2]);
@@ -1173,6 +1330,19 @@ mod tests {
         fn sync<T: Sync>() {}
         sync::<HashTrie>();
         sync::<HashTrie<SipHashStrategy, SingletonPruning>>();
+    }
+
+    /// Every Layout's nodes are `Send`, so the `parallel:N` build can hand a
+    /// worker's finished scratch root to the calling thread (#94). Lazy
+    /// tries stay `!Sync` (their cells) but are `Send`. Generic, so it pins
+    /// the policies' bounds rather than today's two policies of each kind.
+    #[test]
+    fn nodes_are_send_under_every_layout() {
+        use super::super::{expansion::LazyExpansion, pruning::SingletonPruning};
+        fn send<T: Send>() {}
+        fn node_is_send<P: PruningPolicy, E: ExpansionPolicy>() { send::<HashTrieNode<P, E>>(); }
+        node_is_send::<NoPruning, EagerExpansion>();
+        node_is_send::<SingletonPruning, LazyExpansion>();
     }
 
     #[test]
@@ -1461,5 +1631,272 @@ mod lazy_tests {
                 .get("ds_layout_expansion"),
             Some(&serde_json::Value::String("lazy".into()))
         );
+    }
+}
+
+/// The root-capacity Config (#88). Under `tuples` a build sizes the root
+/// once, from its tuple count. Under `grow`, the default, nothing
+/// changes.
+#[cfg(test)]
+mod root_capacity_tests {
+    use {
+        crate::{
+            cardinality::Cardinality,
+            ds::hash_trie::{
+                config::{HashTrieConfig, LoadFactor, RootCapacity},
+                expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
+                identity::{assert_same_node, assert_same_trie, inputs},
+                implementation::HashTrie,
+                node::HashTrieNode,
+                pruning::{NoPruning, PruningPolicy, SingletonPruning},
+            },
+            relation::{ConfigurableRelation, Relation},
+            test_support::Mod10HashStrategy,
+        },
+        kermit_iters::{FxHashStrategy, HashStrategy, SipHashStrategy},
+    };
+
+    fn config(percent: u8, root_capacity: RootCapacity) -> HashTrieConfig {
+        HashTrieConfig {
+            load_factor: LoadFactor::percent(percent).unwrap(),
+            root_capacity,
+        }
+    }
+
+    /// Load factors under test, in percent.
+    const PERCENTS: &[u8] = &[50, 70, 95];
+
+    /// Distinct keys in the D = n inputs. Small under Miri.
+    const DISTINCT: usize = if cfg!(miri) {
+        40
+    } else {
+        1_000
+    };
+
+    /// The root's capacity, as a log2.
+    fn root_log2<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        trie: &HashTrie<H, P, E>,
+    ) -> u32 {
+        trie.root().buckets_len().trailing_zeros()
+    }
+
+    fn label<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(rest: &str) -> String {
+        format!("{}/{}/{} {rest}", H::NAME, P::NAME, E::NAME)
+    }
+
+    /// Runs `$check` under every pruning × expansion Layout for each
+    /// hasher listed.
+    macro_rules! under_every_layout {
+        ($check:ident, $($hasher:ty),+) => {$(
+            $check::<$hasher, NoPruning, EagerExpansion>();
+            $check::<$hasher, SingletonPruning, EagerExpansion>();
+            $check::<$hasher, NoPruning, LazyExpansion>();
+            $check::<$hasher, SingletonPruning, LazyExpansion>();
+        )+};
+    }
+
+    /// At the default, `from_tuples` builds the trie that `with_config`
+    /// plus one `insert` per tuple builds. That second path is the loop
+    /// `from_tuples_with_config` ran before #88, and it never sees a
+    /// tuple count, so the default build does not presize.
+    fn check_default_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
+        for arity in 1..=3 {
+            for (input, tuples) in inputs(arity) {
+                let built = HashTrie::<H, P, E>::from_tuples(arity.into(), tuples.clone());
+                let mut inserted =
+                    HashTrie::<H, P, E>::with_config(arity.into(), HashTrieConfig::default());
+                inserted.insert_all(tuples);
+                assert_same_trie(
+                    &built,
+                    &inserted,
+                    &label::<H, P, E>(&format!("arity {arity}, {input}")),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_builds_the_trie_it_built_before() {
+        under_every_layout!(
+            check_default_identity,
+            SipHashStrategy,
+            FxHashStrategy,
+            Mod10HashStrategy
+        );
+    }
+
+    /// Under `tuples` the root ends at `root_log2_capacity(n)`. Where the
+    /// keys are fewer than the tuples, growth from 4 would stop below
+    /// that, so the root was presized. Where every key is distinct
+    /// (D = n, the most keys n tuples can bring), `hash_table`'s
+    /// `a_presized_table_never_grows_for_its_keys` shows that a table at
+    /// that capacity takes them all without growing.
+    fn check_root_is_presized<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
+        for &percent in PERCENTS {
+            let config = config(percent, RootCapacity::Tuples);
+            for n in [0, 1, 2, 3, DISTINCT] {
+                let unary = (0..n).map(|k| vec![k]).collect();
+                let trie = HashTrie::<H, P, E>::from_tuples_with_config(1.into(), config, unary);
+                assert_eq!(
+                    root_log2(&trie),
+                    config.root_log2_capacity(n),
+                    "{}",
+                    label::<H, P, E>(&format!("{percent}%, {n} distinct unary keys"))
+                );
+            }
+            for arity in 2..=3 {
+                for (input, tuples) in inputs(arity) {
+                    let n = tuples.len();
+                    let trie =
+                        HashTrie::<H, P, E>::from_tuples_with_config(arity.into(), config, tuples);
+                    assert_eq!(
+                        root_log2(&trie),
+                        config.root_log2_capacity(n),
+                        "{}",
+                        label::<H, P, E>(&format!("{percent}%, arity {arity}, {input}"))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tuples_sizes_the_root_from_the_tuple_count() {
+        under_every_layout!(
+            check_root_is_presized,
+            SipHashStrategy,
+            FxHashStrategy,
+            Mod10HashStrategy
+        );
+    }
+
+    /// With every first value distinct (D = n) and a load factor of at
+    /// least 25 %, `tuples` presizes the root to the capacity `grow`
+    /// reaches. It changes when the root reaches its size, not the size.
+    /// Below 25 % one doubling can leave a small table over its cap
+    /// (#104), so the two can differ there. The colliding strategy is
+    /// left out, because its distinct keys share hashes (D < n).
+    fn check_distinct_keys_reach_the_same_capacity<
+        H: HashStrategy,
+        P: PruningPolicy,
+        E: ExpansionPolicy,
+    >() {
+        let most = if cfg!(miri) {
+            40
+        } else {
+            300
+        };
+        for percent in [25, 50, 70, 95] {
+            for n in 0..=most {
+                let tuples: Vec<Vec<usize>> = (0..n).map(|k| vec![k, k % 7]).collect();
+                let build = |root_capacity| {
+                    HashTrie::<H, P, E>::from_tuples_with_config(
+                        2.into(),
+                        config(percent, root_capacity),
+                        tuples.clone(),
+                    )
+                };
+                assert_eq!(
+                    root_log2(&build(RootCapacity::Tuples)),
+                    root_log2(&build(RootCapacity::Grow)),
+                    "{}",
+                    label::<H, P, E>(&format!("{percent}%, {n} distinct first values"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn distinct_keys_reach_the_capacity_grow_reaches() {
+        under_every_layout!(
+            check_distinct_keys_reach_the_same_capacity,
+            SipHashStrategy,
+            FxHashStrategy
+        );
+    }
+
+    /// `tuples` sizes the root only. Under it, every root entry holds the
+    /// subtrie (or chain) it holds under `grow`, array for array.
+    fn check_children_unchanged<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
+        for &percent in PERCENTS {
+            for arity in 1..=3 {
+                for (input, tuples) in inputs(arity) {
+                    let label = label::<H, P, E>(&format!("{percent}%, arity {arity}, {input}"));
+                    let build = |root_capacity| {
+                        HashTrie::<H, P, E>::from_tuples_with_config(
+                            arity.into(),
+                            config(percent, root_capacity),
+                            tuples.clone(),
+                        )
+                    };
+                    let (grow, presized) = (build(RootCapacity::Grow), build(RootCapacity::Tuples));
+                    let (g, t) = (grow.root(), presized.root());
+                    assert_eq!(g.len(), t.len(), "{label}: root keys");
+                    assert_eq!(
+                        grow.tuple_count(),
+                        presized.tuple_count(),
+                        "{label}: tuples"
+                    );
+                    for idx in 0..g.buckets_len() {
+                        let Some(hash) = g.hash_at(idx) else {
+                            continue;
+                        };
+                        let at = t
+                            .index_of(hash)
+                            .unwrap_or_else(|| panic!("{label}: root key {hash:#x} missing"));
+                        match (g, t) {
+                            | (HashTrieNode::Inner(a), HashTrieNode::Inner(b)) => assert_same_node(
+                                a.value_at(idx).unwrap(),
+                                b.value_at(at).unwrap(),
+                                &format!("{label}/{hash:#x}"),
+                            ),
+                            | (HashTrieNode::Leaf(a), HashTrieNode::Leaf(b)) => assert_eq!(
+                                a.value_at(idx),
+                                b.value_at(at),
+                                "{label}/{hash:#x}: chain"
+                            ),
+                            | _ => panic!("{label}: root kinds differ"),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tuples_leaves_every_subtrie_as_grow_builds_it() {
+        under_every_layout!(
+            check_children_unchanged,
+            SipHashStrategy,
+            FxHashStrategy,
+            Mod10HashStrategy
+        );
+    }
+
+    /// A trie created empty is sized for no tuples, which is 4 buckets
+    /// under either value.
+    #[test]
+    fn a_trie_created_empty_starts_at_four_buckets() {
+        for root_capacity in [RootCapacity::Grow, RootCapacity::Tuples] {
+            let trie: HashTrie = HashTrie::with_config(2.into(), config(70, root_capacity));
+            assert_eq!(trie.root().buckets_len(), 4, "{root_capacity:?}");
+        }
+    }
+
+    /// `project` rebuilds through `from_tuples_with_config`, so a
+    /// projection of a presized trie is presized for its own tuples. The
+    /// projection keeps all 100 tuples (bag semantics) but holds only 3
+    /// distinct values: grown, its root would stop at 2^3 buckets;
+    /// presized for 100 tuples at 70 % it has 2^8.
+    #[test]
+    fn a_projection_is_presized_too() {
+        use crate::relation::Projectable;
+        let config = config(70, RootCapacity::Tuples);
+        let tuples: Vec<Vec<usize>> = (0..100).map(|k| vec![k, k % 3]).collect();
+        let trie: HashTrie = HashTrie::from_tuples_with_config(2.into(), config, tuples);
+        let projected = trie.project(vec![1]);
+        assert_eq!(projected.tuple_count(), 100);
+        assert_eq!(root_log2(&projected), config.root_log2_capacity(100));
+        assert_eq!(config.root_log2_capacity(100), 8);
     }
 }

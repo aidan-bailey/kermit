@@ -51,15 +51,15 @@ def test_emits_ablation_for_opt_axis(fixture_opt_tree, tmp_path: Path) -> None:
     assert any("ablation-ds_layout_hasher" in n for n in names)
 
 
-def test_build_mode_ablation_is_drawn_only_for_build_phases(
+def test_build_mode_ablation_is_drawn_for_every_time_phase(
     fixture_build_mode_tree, tmp_path: Path
 ) -> None:
-    """Old ColumnTrie rows back-fill to ``incremental`` beside new ``bulk``
-    ones, but both builds produce the same trie: an iteration-time
-    "build-mode ablation" would chart drift, not the build mode."""
+    """A build mode builds the same contents and capacities but may place
+    keys and allocations elsewhere, so it can move ``iteration`` as well as
+    the build phases (Amendment 2): the ablation is drawn on both."""
     plt.close("all")  # earlier tests leave figures open; stay under pyplot's cap of 20
     reports = load_reports(fixture_build_mode_tree["paths"])
-    for phase, drawn in (("iteration", False), ("insertion", True)):
+    for phase, drawn in (("iteration", True), ("insertion", True)):
         out = tmp_path / phase
         out.mkdir()
         render_all(reports, out, fixture_build_mode_tree["criterion_root"], "pdf", phase=phase)
@@ -68,17 +68,20 @@ def test_build_mode_ablation_is_drawn_only_for_build_phases(
         assert ("ablation-ds_build_mode.pdf" in names) is drawn, (phase, names)
 
 
-def test_ablation_preset_refuses_build_mode_outside_build_phases(
+def test_ablation_preset_lets_build_mode_through_on_iteration(
     fixture_build_mode_tree,
 ) -> None:
+    """A build mode may place keys elsewhere, and its allocations land
+    elsewhere, so ``iteration`` can move and is plotted, not refused
+    (Amendment 2)."""
     df = kl.load(
         fixture_build_mode_tree["paths"],
         criterion_root=fixture_build_mode_tree["criterion_root"],
     )
     # ColumnTrie's two builds, and HashTrie's back-filled pre-#91 build.
     assert set(df["ds_build_mode"].dropna()) == {"incremental", "bulk", "serial"}
-    with pytest.raises(InsufficientAxesError, match="built"):
-        presets.ablation(df, axis="ds_build_mode", phase="iteration")
+    fig = presets.ablation(df, axis="ds_build_mode", phase="iteration")
+    assert fig.axes
 
 
 def test_ablation_preset_lets_build_mode_through_on_end_to_end(

@@ -670,7 +670,7 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
 /// `kermit join` deliberately carries neither `--ds-config` nor `--ds-build`:
 /// it resolves their defaults, because neither can change a query's answers
 /// (the one Config value trades space against probe length, and every build
-/// mode builds the same structure).
+/// mode builds an equivalent structure: the same contents and capacities).
 fn query_cell(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Execution> {
     Execution::for_pair(args.indexstructure, args.algorithm, choices).ok_or_else(|| {
         anyhow::anyhow!(

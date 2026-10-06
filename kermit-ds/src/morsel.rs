@@ -250,7 +250,7 @@ mod tests {
     }
 
     /// Tuples are moved, not copied: each keeps its heap buffer, and so its
-    /// capacity, which a trie that stores tuples (HashTrie, plan 2) counts in
+    /// capacity, which a trie that stores tuples (HashTrie) counts in
     /// `heap_size_bytes`.
     #[test]
     fn scatter_moves_tuples_without_reallocating() {

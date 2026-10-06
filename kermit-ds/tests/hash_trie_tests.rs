@@ -12,7 +12,7 @@ use {
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BuiltWith, ConfigurableRelation,
         Configured, HashTrie, HashTrieBuildMode, HashTrieConfig, LazyExpansion, LoadFactor,
-        NoPruning, PruningPolicy, RadixBits, SingletonPruning,
+        NoPruning, PruningPolicy, RadixBits, RootCapacity, SingletonPruning, Threads,
     },
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
@@ -58,12 +58,23 @@ type HashTrieMod10Pruned = HashTrie<Mod10HashStrategy, SingletonPruning>;
 // ── Config variant: a dense load factor ─────────────────────────────────
 define_config_provider!(NinetyPercent, HashTrieConfig, HashTrieConfig {
     load_factor: LoadFactor::percent(90).unwrap(),
+    ..HashTrieConfig::default()
 });
 
 type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;
 // A dense table under the colliding strategy: every hash lands in bucket 0
 // and resolves by probing, so a 90 % cap stresses the probe loops hardest.
 type HashTrieMod10Dense = Configured<HashTrieMod10, NinetyPercent>;
+
+// ── Config variant: a presized root ─────────────────────────────────────
+// Under `root-capacity=tuples` the root is sized once from the tuple count
+// (#88), so the contract must hold over a root sparser than the grown one.
+define_config_provider!(PresizedRoot, HashTrieConfig, HashTrieConfig {
+    root_capacity: RootCapacity::Tuples,
+    ..HashTrieConfig::default()
+});
+
+type HashTrieSipPresized = Configured<HashTrieSip, PresizedRoot>;
 
 // ── Layout variant: lazy child expansion ────────────────────────────────
 //
@@ -113,6 +124,8 @@ hash_trie_test_suite!(HashTrieMod10PrunedLazy, Mod10HashStrategy);
 
 hash_trie_test_suite!(HashTrieSipDenseLazy, SipHashStrategy);
 
+hash_trie_test_suite!(HashTrieSipPresized, SipHashStrategy);
+
 // ── BuildMode: the radix build ──────────────────────────────────────────
 // Every build mode builds the identical trie (issue #91), so the iterator
 // contract must hold unchanged, eager or lazy. Two bits make four
@@ -130,6 +143,42 @@ type HashTrieSipLazyRadix2 = BuiltWith<HashTrieSipLazy, Radix2>;
 hash_trie_test_suite!(HashTrieSipRadix2, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieSipLazyRadix2, SipHashStrategy);
+
+// ── BuildMode: the parallel build ───────────────────────────────────────
+// `parallel:2` builds eight partitions on two threads and must build the
+// identical trie (issue #94), so the iterator contract holds unchanged,
+// eager or lazy, pruned or not.
+define_build_mode_provider!(
+    HashParallel2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+
+type HashTrieSipParallel2 = BuiltWith<HashTrieSip, HashParallel2>;
+type HashTrieSipLazyParallel2 = BuiltWith<HashTrieSipLazy, HashParallel2>;
+type HashTrieFxPrunedParallel2 = BuiltWith<HashTrieFxPruned, HashParallel2>;
+
+hash_trie_test_suite!(HashTrieSipParallel2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipLazyParallel2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieFxPrunedParallel2, FxHashStrategy);
+
+// ── BuildMode × Config: the presized parallel build ─────────────────────
+// Under `root-capacity=tuples` (#88, `PresizedRoot` above), `parallel:2`
+// fills the root by region (the paper's build, #94). The trie is equivalent
+// to serial's (Amendment 2), so the iterator contract holds unchanged.
+type HashTrieSipLazyPresized = Configured<HashTrieSipLazy, PresizedRoot>;
+type HashTrieFxPrunedPresized = Configured<HashTrieFxPruned, PresizedRoot>;
+type HashTrieSipPresizedParallel2 = BuiltWith<HashTrieSipPresized, HashParallel2>;
+type HashTrieSipLazyPresizedParallel2 = BuiltWith<HashTrieSipLazyPresized, HashParallel2>;
+type HashTrieFxPrunedPresizedParallel2 = BuiltWith<HashTrieFxPrunedPresized, HashParallel2>;
+
+hash_trie_test_suite!(HashTrieSipPresizedParallel2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipLazyPresizedParallel2, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieFxPrunedPresizedParallel2, FxHashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"
@@ -320,6 +369,7 @@ mod lazy_expansion {
     fn assert_lazy_walks_like_eager<H: HashStrategy, P: PruningPolicy>(load_factor: u8) {
         let config = HashTrieConfig {
             load_factor: LoadFactor::percent(load_factor).unwrap(),
+            ..HashTrieConfig::default()
         };
         for arity in [2, 3] {
             for seed in 1..=20u64 {

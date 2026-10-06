@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -210,6 +211,23 @@ def test_speedup_table_warns_about_parallel_rows_without_a_baseline() -> None:
     with pytest.warns(UserWarning, match="no 'serial' row"):
         table = speedup_table(df)
     assert table["threads"].tolist() == [2]
+
+
+def test_speedup_table_reads_hash_trie_parallel_rows_beside_radix() -> None:
+    """HashTrie has a third mode, ``radix:K``: neither baseline nor arm, so
+    it is left out silently. It can also be the baseline, which measures
+    the parallel build against the single-threaded partitioned build."""
+    df = _build_mode_rows({"serial": [100.0], "radix:8": [120.0], "parallel:2": [50.0]}).assign(
+        data_structure="HashTrie", criterion_function="HashTrie/insertion"
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        table = speedup_table(df)
+    # The radix row is not a `parallel:N` row left without a baseline.
+    assert not [w for w in caught if "parallel:N row" in str(w.message)]
+    assert table["threads"].tolist() == [2]
+    assert table["speedup"].tolist() == pytest.approx([2.0])
+    assert speedup_table(df, baseline="radix:8")["speedup"].tolist() == pytest.approx([2.4])
 
 
 def test_speedup_table_pairs_runs_differing_only_in_verified_or_queries_per_build() -> None:

@@ -3,7 +3,8 @@ use {
         define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
         ColumnTrieBuildMode, Configured, ExpansionPolicy, GallopingSeek, HashTrie,
         HashTrieBuildMode, HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning,
-        PruningPolicy, RadixBits, SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode,
+        PruningPolicy, RadixBits, RootCapacity, SingletonPruning, Threads, TreeTrie,
+        TreeTrieBuildMode,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -99,6 +100,7 @@ parquet_test_suite!(HashTrieFxPrunedLazy, sorted_tuples);
 // …and under the Config axis: a dense load factor keeps the round-trip whole.
 define_config_provider!(NinetyPercent, HashTrieConfig, HashTrieConfig {
     load_factor: LoadFactor::percent(90).unwrap(),
+    ..HashTrieConfig::default()
 });
 
 type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;
@@ -110,6 +112,20 @@ fn sorted_tuples_dense(relation: &HashTrieSipDense) -> Vec<Vec<usize>> {
 }
 
 parquet_test_suite!(HashTrieSipDense, sorted_tuples_dense);
+
+// …and with a root presized from the tuple count (#88).
+define_config_provider!(PresizedRoot, HashTrieConfig, HashTrieConfig {
+    root_capacity: RootCapacity::Tuples,
+    ..HashTrieConfig::default()
+});
+
+type HashTrieSipPresized = Configured<HashTrieSip, PresizedRoot>;
+
+fn sorted_tuples_presized(relation: &HashTrieSipPresized) -> Vec<Vec<usize>> {
+    sorted_tuples(relation)
+}
+
+parquet_test_suite!(HashTrieSipPresized, sorted_tuples_presized);
 
 // …and under the radix BuildMode, which must load the same trie (issue #91).
 define_build_mode_provider!(
@@ -126,3 +142,32 @@ fn sorted_tuples_radix(relation: &HashTrieSipRadix2) -> Vec<Vec<usize>> {
 }
 
 parquet_test_suite!(HashTrieSipRadix2, sorted_tuples_radix);
+
+// …and under the parallel BuildMode, which must load the same trie (#94).
+define_build_mode_provider!(
+    HashParallel2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Parallel(Threads::new(2).expect("2 is not zero"))
+);
+
+type HashTrieSipParallel2 = BuiltWith<HashTrieSip, HashParallel2>;
+
+fn sorted_tuples_parallel(relation: &HashTrieSipParallel2) -> Vec<Vec<usize>> {
+    // `BuiltWith` derefs to the inner `HashTrie`, as `Configured` does.
+    sorted_tuples(relation)
+}
+
+parquet_test_suite!(HashTrieSipParallel2, sorted_tuples_parallel);
+
+// …and the presized parallel build under root-capacity=tuples (#94, #88).
+type HashTrieSipPresizedParallel2 = BuiltWith<HashTrieSipPresized, HashParallel2>;
+
+fn sorted_tuples_presized_parallel(relation: &HashTrieSipPresizedParallel2) -> Vec<Vec<usize>> {
+    // Two derefs: `BuiltWith` → `Configured` → `HashTrie`.
+    sorted_tuples(relation)
+}
+
+parquet_test_suite!(
+    HashTrieSipPresizedParallel2,
+    sorted_tuples_presized_parallel
+);

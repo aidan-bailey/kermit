@@ -57,8 +57,9 @@ pub trait SingletonFrame<'a>: Sized {
 /// this private module, so [`NoPruning`] and [`SingletonPruning`] are the
 /// only policies that can ever exist and the pairing is checked once, here.
 pub trait PruningPolicy: LayoutOption + Copy + Default + 'static {
-    /// What a `HashTrieNode::Singleton` holds under this policy.
-    type Payload: SingletonPayload;
+    /// What a `HashTrieNode::Singleton` holds under this policy. `Send`, so
+    /// a parallel build can move finished subtries between threads.
+    type Payload: SingletonPayload + Send;
     /// The iterator frame standing in for a pruned level.
     type Frame<'a>: SingletonFrame<'a>;
     /// Folded by the compiler: `insert_at`'s prune and unprune branches are

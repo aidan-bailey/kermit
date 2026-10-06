@@ -432,7 +432,7 @@ pub trait RelationFamily {
 
     /// The `ds_build_mode` axis of the relations this family builds, merged
     /// into the report's axes. A build mode describes the build, and every
-    /// mode builds the same structure, so the family that ran the build
+    /// mode builds an equivalent structure, so the family that ran the build
     /// reports it rather than the relation. Empty for structures with a
     /// single build process. Required, with no default, so no family can omit
     /// the axis by accident.
@@ -905,7 +905,7 @@ mod tests {
         kermit_algos::{ColumnOrderPolicy, IndexSpec, LexicographicOptimiser, Optimiser},
         kermit_ds::{
             ConfigurableRelation, EagerExpansion, LazyExpansion, LoadFactor, NoPruning, RadixBits,
-            SingletonPruning,
+            RootCapacity, SingletonPruning,
         },
         kermit_iters::{LayoutOption, SipHashStrategy},
         std::cell::Cell,
@@ -1063,6 +1063,7 @@ mod tests {
         );
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
         assert_eq!(
@@ -1127,6 +1128,7 @@ mod tests {
         );
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
         let hash = HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning, EagerExpansion>::new(
@@ -1248,6 +1250,7 @@ mod tests {
     fn hash_family_builds_relations_with_its_config() {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
@@ -1272,6 +1275,7 @@ mod tests {
     fn hash_family_load_honours_its_config() {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
@@ -1403,6 +1407,7 @@ mod tests {
     fn hash_family_build_relation_honours_its_config() {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
@@ -1419,6 +1424,28 @@ mod tests {
             .get("ds_config_load_factor"),
             Some(&serde_json::Value::from(0.5_f64))
         );
+    }
+
+    /// Under `root-capacity=tuples` the family's build sizes the root from
+    /// the tuple count, so a report labelled `"tuples"` timed a presized
+    /// root. 100 tuples sharing one first value hold one root key: the
+    /// grown root keeps 4 buckets, while the presized one has room for 100.
+    #[test]
+    fn hash_family_build_relation_presizes_the_root_under_tuples() {
+        let heap = |root_capacity| {
+            let family = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+                HashTrieConfig {
+                    root_capacity,
+                    ..HashTrieConfig::default()
+                },
+                HashTrieBuildMode::Serial,
+                Planner::stored(LexicographicOptimiser),
+            );
+            let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
+            let tuples = (0..100).map(|b| vec![1, b]).collect();
+            family.build_relation(header, tuples).heap_size_bytes()
+        };
+        assert!(heap(RootCapacity::Tuples) > heap(RootCapacity::Grow));
     }
 
     /// The pruning Layout reaches the relations the family builds, so a
@@ -1733,6 +1760,24 @@ mod tests {
             .build_mode_axes(),
             build_mode_axis("radix:4")
         );
+        let hash_two = HashTrieBuildMode::Parallel(kermit_ds::Threads::new(2).unwrap());
+        assert_eq!(
+            HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+                HashTrieConfig::default(),
+                hash_two
+            )
+            .build_mode_axes(),
+            build_mode_axis("parallel:2")
+        );
+        assert_eq!(
+            HashHtj::<SipHashStrategy, NoPruning, LazyExpansion>::new(
+                HashTrieConfig::default(),
+                hash_two,
+                Planner::stored(LexicographicOptimiser)
+            )
+            .build_mode_axes(),
+            build_mode_axis("parallel:2")
+        );
     }
 
     thread_local! {
@@ -1808,6 +1853,93 @@ mod tests {
                      {serial}: the mode did not reach the build",
                     E::NAME
                 );
+            }
+        }
+        check::<EagerExpansion>();
+        check::<LazyExpansion>();
+    }
+
+    /// The real `HashTrie`, not the counting spy, which cannot tell
+    /// `parallel:N` from `radix:K`: only kermit-ds's record of parallel
+    /// builds (the `test-hooks` feature) shows that the family's mode reached
+    /// the build, on every route a relation is built, copies included,
+    /// eager or lazy (#94).
+    #[test]
+    fn hash_trie_families_build_with_their_parallel_mode() {
+        fn check<E: ExpansionPolicy>() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("r.csv");
+            std::fs::write(&path, "a,b\n1,2\n2,1\n3,4\n").expect("write csv");
+            let header = || RelationHeader::new_positional("r", 2);
+            let tuples = || vec![vec![1, 2], vec![2, 1], vec![3, 4]];
+            // The record of every parallel build `build` runs.
+            let parallel_builds = |build: &dyn Fn()| {
+                kermit_ds::test_hooks::take_hash_trie_parallel_builds();
+                build();
+                kermit_ds::test_hooks::take_hash_trie_parallel_builds()
+            };
+            let presized = HashTrieConfig {
+                root_capacity: RootCapacity::Tuples,
+                ..HashTrieConfig::default()
+            };
+            let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
+            // Three threads, not two: a refactor that dropped N on the way to
+            // the build would show here as well as in kermit-ds.
+            let three = HashTrieBuildMode::Parallel(kermit_ds::Threads::new(3).unwrap());
+            // Under `root-capacity=tuples`, `parallel:N` must take the
+            // presized path (#94), whose records carry a deferred count.
+            for config in [HashTrieConfig::default(), presized] {
+                let presized = config.root_capacity == RootCapacity::Tuples;
+                for (mode, expected) in [
+                    (HashTrieBuildMode::Serial, vec![]),
+                    (radix, vec![]),
+                    (three, vec![3]),
+                ] {
+                    let structure =
+                        HashTrieFamily::<SipHashStrategy, NoPruning, E>::new(config, mode);
+                    let join = HashHtj::<SipHashStrategy, NoPruning, E>::new(
+                        config,
+                        mode,
+                        Planner::stored(LexicographicOptimiser),
+                    );
+                    let routes: [(&str, &dyn Fn()); 6] = [
+                        ("HashTrieFamily::build_relation", &|| {
+                            structure.build_relation(header(), tuples());
+                        }),
+                        ("HashTrieFamily::load_with_tuples", &|| {
+                            structure.load_with_tuples(&path).expect("load");
+                        }),
+                        ("HashHtj::build_relation", &|| {
+                            join.build_relation(header(), tuples());
+                        }),
+                        ("HashHtj::load", &|| {
+                            join.load(&path).expect("load");
+                        }),
+                        ("HashHtj::build_from_tuples", &|| {
+                            join.build_from_tuples(vec![(header(), tuples())]);
+                        }),
+                        ("HashHtj::add_index", &|| {
+                            let mut engine = join.build(Vec::new());
+                            let spec = IndexSpec::new("r", vec![1, 0]);
+                            join.add_index(&mut engine, spec, &header(), &tuples());
+                        }),
+                    ];
+                    for (route, build) in routes {
+                        let builds = parallel_builds(build);
+                        let threads: Vec<usize> = builds.iter().map(|b| b.threads).collect();
+                        assert_eq!(
+                            threads,
+                            expected,
+                            "{} {route} under {mode:?}, {config:?}",
+                            E::NAME
+                        );
+                        assert!(
+                            builds.iter().all(|b| b.deferred.is_some() == presized),
+                            "{} {route} under {mode:?}, {config:?}: wrong path",
+                            E::NAME
+                        );
+                    }
+                }
             }
         }
         check::<EagerExpansion>();
@@ -1949,6 +2081,7 @@ mod tests {
 
         let config = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,

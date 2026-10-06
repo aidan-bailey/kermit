@@ -69,7 +69,7 @@ macro_rules! define_build_mode_provider {
 /// `R` built by the mode `P::build_mode()`.
 ///
 /// Derefs to `R`. Unlike [`Configured`](crate::Configured), nothing in the
-/// built relation records the mode — every mode builds the same relation —
+/// built relation records the mode — every mode builds an equivalent relation —
 /// so there is no value for the marker to drift from, and
 /// [`Projectable::project`] may rebuild through the default mode without
 /// changing anything observable.
