@@ -32,6 +32,8 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
     ("ds_layout_expansion", "HashTrie"): "eager",
     # Pre-Config HashTrie reports used the historical load factor.
     ("ds_config_load_factor", "HashTrie"): 0.7,
+    # Every HashTrie root grew from 4 buckets before issue #88.
+    ("ds_config_root_capacity", "HashTrie"): "grow",
     # ColumnTrie's build before issue #84 inserted tuple by tuple. Every
     # ColumnTrie report since carries the axis ("bulk" by default).
     ("ds_build_mode", "ColumnTrie"): "incremental",

@@ -27,6 +27,8 @@ def test_ignores_absent_columns() -> None:
         ("ds_layout_pruning", "off", "on"),
         # Pre-Config reports used the historical load factor.
         ("ds_config_load_factor", 0.7, 0.5),
+        # Every HashTrie root grew from 4 buckets before #88.
+        ("ds_config_root_capacity", "grow", "tuples"),
         # Pre-#92 reports built every level eagerly.
         ("ds_layout_expansion", "eager", "lazy"),
     ],
