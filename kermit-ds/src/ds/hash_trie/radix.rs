@@ -152,7 +152,7 @@ mod tests {
                 build_mode::HashTrieBuildMode,
                 config::HashTrieConfig,
                 expansion::{EagerExpansion, LazyExpansion},
-                identity::{assert_same_trie, inputs, rows, LOAD_PERCENTS},
+                identity::{assert_same_trie, configs, inputs, rows},
                 pruning::{NoPruning, SingletonPruning},
             },
             relation::{BuildModeRelation, ConfigurableRelation, Relation},
@@ -170,14 +170,10 @@ mod tests {
     };
 
     /// `radix:K` builds the trie `serial` builds, for every arity, load
-    /// factor, bit count and input.
+    /// factor, root capacity, bit count and input.
     fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
-            for &percent in LOAD_PERCENTS {
-                let config = HashTrieConfig {
-                    load_factor: LoadFactor::percent(percent).unwrap(),
-                    ..HashTrieConfig::default()
-                };
+            for config in configs() {
                 for &bits in BITS {
                     let radix = HashTrieBuildMode::Radix(RadixBits::new(bits).unwrap());
                     for (input, tuples) in inputs(arity) {
@@ -190,10 +186,12 @@ mod tests {
                             )
                         };
                         let label = format!(
-                            "{}/{}/{} arity {arity}, load {percent}%, radix:{bits}, {input}",
+                            "{}/{}/{} arity {arity}, load {}%, root {}, radix:{bits}, {input}",
                             H::NAME,
                             P::NAME,
-                            E::NAME
+                            E::NAME,
+                            config.load_factor.numerator(),
+                            config.root_capacity.axis_value(),
                         );
                         assert_same_trie(&build(HashTrieBuildMode::Serial), &build(radix), &label);
                     }

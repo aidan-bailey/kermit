@@ -7,6 +7,7 @@
 
 use {
     super::{
+        config::{HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{ExpansionPolicy, PendingChild},
         hash_table::HashTable,
         implementation::HashTrie,
@@ -115,6 +116,21 @@ pub(super) const LOAD_PERCENTS: &[u8] = if cfg!(miri) {
 } else {
     &[70, 50]
 };
+
+/// The configs a build-mode identity test runs under: each load factor in
+/// [`LOAD_PERCENTS`] with each root capacity. Every build mode must build
+/// the same trie under every config (#88).
+pub(super) fn configs() -> Vec<HashTrieConfig> {
+    LOAD_PERCENTS
+        .iter()
+        .flat_map(|&percent| {
+            [RootCapacity::Grow, RootCapacity::Tuples].map(|root_capacity| HashTrieConfig {
+                load_factor: LoadFactor::percent(percent).unwrap(),
+                root_capacity,
+            })
+        })
+        .collect()
+}
 
 pub(super) fn inputs(arity: usize) -> Vec<(&'static str, Vec<Vec<usize>>)> {
     let mut lcg = Lcg(0x91);
