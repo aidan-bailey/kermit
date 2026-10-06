@@ -131,6 +131,10 @@ recorded below.
 
 ### Scaling result: TreeTrie (2026-10-05)
 
+These are **glibc** numbers. The binary predates #112, which made jemalloc the
+binary's allocator. At 10⁷ tuples the glibc curve is bound by the allocator,
+not by the build (see the reading below and "Under jemalloc").
+
 **Setup.**
 - **Binary:** built at d3c7945 (sha256 `7713fbf56e851b51…`).
 - **Host:** AMD Ryzen 7 7700X, 8 cores and 16 threads (SMT), 32 MB L3, one
@@ -209,15 +213,30 @@ geometric mean over the 14 queries of each query's speedup):
 **Reading.**
 - **Peak:** the build is fastest at about 10⁶ tuples: 3.4× on 8 threads,
   and 4.0× on `friendof`, whose input arrives grouped by first key.
-- **Plateau at 10⁷:** both arities flatten to about 1.8–1.9×, and
-  `parallel:1` falls to 0.67 for unary. A 10⁶ partition's working set
-  roughly fits in L3; a 10⁷ one does not, so every extra pass of the
-  parallel path goes to DRAM.
-- **Allocator:** a second cost the protocol names. Every insert frees its
-  input tuple on a worker thread, and those tuples were allocated on the
-  calling thread, so glibc serialises the frees on one arena. These two
-  are hypotheses: no timers go into the build, and the steps were not
-  profiled.
+- **Plateau at 10⁷: glibc's allocator (#112).** Both arities flatten to
+  about 1.8–1.9×. Every insert frees its input tuple at the leaf, on a
+  worker thread, but the calling thread allocated those tuples (in
+  Criterion's setup clone), so glibc returns all 10⁷ chunks to the main
+  arena. Profiled on binary 10⁷ at `:16` (2026-10-06):
+  - The dispatch phase (sort, insert, frees) takes 1.44 s of a ~1.5 s
+    build. Scatter takes 27 ms, the merge 16 ms.
+  - The workers spend 52 % of their cycles in glibc's fastbin push (a
+    contended `lock cmpxchg`) and sleep on the arena mutex 68 % of the
+    time.
+  - The calling thread, worker 0, spends 90 % of its dispatch cycles
+    consolidating the freed chunks under that mutex.
+
+  The same binary under jemalloc reaches 7.5× (binary) and 4.5× (unary)
+  at `:16`, so neither DRAM traffic nor a sequential step is the cap.
+  Inserting allocates nothing per level: `collect()` reuses the tuple's
+  buffer.
+- **`parallel:1` at 0.67 for unary 10⁷ is a glibc timing artefact.** A
+  unary build makes no small allocation, so a serial build's 10⁷ frees
+  wait in glibc's fastbins and are consolidated in Criterion's *untimed*
+  setup. `parallel:1`'s per-partition allocations trigger that
+  consolidation inside the timed build. Both spend the same CPU per step,
+  and under jemalloc unary `:1` is 0.90. Unary 10⁷ `serial` therefore
+  understates the build by about 1 s here.
 - **Assemble is not the cap at these sizes.**
   - Unary (k ≈ 0.63 n) and binary (k = n / 10) reach the same speedup at 10⁶
     and at 10⁷.
@@ -225,8 +244,8 @@ geometric mean over the 14 queries of each query's speedup):
     estimated ≤ 0.1 s of a 1.2 s build.
   - Binary 10⁷'s Karp–Flatt rises with N, which the spec reads as a cost that
     grows with N rather than a fixed sequential step.
-- **16 threads:** slower than 8 everywhere but 10⁷, where both are
-  memory-bound. The extra 8 threads are SMT siblings, not cores.
+- **16 threads:** slower than 8 everywhere but 10⁷, where both are bound
+  by glibc (above). The extra 8 threads are SMT siblings, not cores.
 - **Small inputs:** below the crossover, the 2·(N − 1) thread starts cost
   more than the whole serial build.
 - **Open question:**
@@ -234,14 +253,48 @@ geometric mean over the 14 queries of each query's speedup):
     yet `end_to_end` (one build plus one query) is 12 % faster on every one of
     the 14 queries.
   - The trie is identical, so the suspect is heap placement: workers allocate
-    nodes from their own arenas, apart from the freed input tuples.
+    nodes from their own arenas, apart from the freed input tuples. But `:1`
+    starts no worker threads, so glibc's deferred consolidation (above) is
+    the likelier suspect. Neither is tested, and nor is the effect under
+    jemalloc.
   - If an `iteration` A/B confirms it, a build mode can move `iteration`,
     which the BuildMode rule assumes it cannot. That A/B has not been run.
 
 **Threats to validity** (the spec's list): boost clocks favour one thread;
-16 threads are 8 cores with SMT; workers allocate concurrently; a single
-NUMA node; the synthetic keys are uniform, so partition imbalance is barely
-exercised.
+16 threads are 8 cores with SMT; the allocator, which at 10⁷ under glibc
+sets the curve (above); a single NUMA node; the synthetic keys are uniform,
+so partition imbalance is barely exercised.
+
+### Under jemalloc (#112, 2026-10-06)
+
+The `kermit` binary links jemalloc by default since #112. These rows compare
+the #112 source built both ways, with the protocol above at `serial`, `:8`
+and `:16` (speedup over the same build's `serial`; the median of each step's
+10 builds, then the median over replicates):
+
+| Relation | Build | `serial` | `:8` | `:16` |
+|---|---|---|---|---|
+| binary 10⁷ | `--no-default-features` (glibc) | 2.90 s | 1.88 | 1.89 |
+| binary 10⁷ | default (jemalloc) | **2.39 s** | **5.08** | **7.21** |
+| unary 10⁷ | `--no-default-features` (glibc) | 2.20 s | 1.74 | 1.87 |
+| unary 10⁷ | default (jemalloc) | **2.07 s** | **4.19** | **4.59** |
+
+- **Replicates:** three per cell, less nine invocations that overlapped other
+  sessions' Miri and test runs (other load above two cores). That leaves
+  binary 10⁷'s glibc `:8` and `:16` with one replicate each and five cells
+  with two.
+- **Cross-check:** the same arms with jemalloc and mimalloc preloaded into the
+  2026-10-05 binary (three replicates each) agree. jemalloc gives 7.46× and
+  4.53× at `:16`, mimalloc 6.59× and 4.19×.
+- **Run directory:** `kermit-bench-runs/tree-trie-profile-2026-10-06/`
+  (`FINDINGS.md`; `analysis.txt` holds the preload matrix, `analysis-verify.txt`
+  these rows).
+- **Serial got faster too:** 17 % less time on binary 10⁷. glibc spent ~17 %
+  of the serial step's cycles in its free-chunk bookkeeping (`unlink_chunk`,
+  `_int_malloc`, `malloc_consolidate`).
+- **What stops unary near 4.6×** (8 → 16 adds little) is not measured.
+  The candidate is the sequential assemble step, about 6.3M node pushes onto
+  a 268 MB root, which the design predicted for unary inputs.
 
 ## See also
 
