@@ -352,18 +352,19 @@ optimizations are classified into Layout, Config, or BuildMode.
 
 ### Build modes
 
-Every mode here builds the identical trie — the same buckets, the same
-capacities, the same `heap_size_bytes` — so the mode changes the
-`insertion` and `end_to_end` timings and nothing else (issues #91, #94).
-That is stronger than the BuildMode rule, which since Amendment 2
-(2026-10-06) asks only for the same contents and capacities; a future mode
-may place keys in other buckets.
+Under the default config every mode here builds the identical trie — the
+same buckets, the same capacities, the same `heap_size_bytes` — so the mode
+changes the `insertion` and `end_to_end` timings and nothing else (issues
+#91, #94). The BuildMode rule asks less since Amendment 2 (2026-10-06): the
+same contents and capacities. `parallel:N` under `root-capacity=tuples` uses
+that freedom; it may place root keys in other buckets, so `iteration` is
+measured for it.
 
 | Mode | `--ds-build` | Method |
 |---|---|---|
 | `Serial` (default) | `hash-trie=serial` | one `insert_at` per tuple, in input order (Algorithm 2) |
 | `Radix(K)` | `hash-trie=radix:K`, K in 1..=16 | radix-partition on the top K bits of the first attribute's hash, build each partition into a scratch root, merge (SIGMOD 2020 §3.3.2) |
-| `Parallel(N)` | `hash-trie=parallel:N`, N in 1..=1024 | the radix build's partition and build steps on N threads (P = 4·N partitions, rounded up to a power of two), then a k-way merge into the root on the calling thread (§3.3.2, morsel-driven) |
+| `Parallel(N)` | `hash-trie=parallel:N`, N in 1..=1024 | the radix build's partition and build steps on N threads (P = 4·N partitions, rounded up to a power of two), then a k-way merge into the root on the calling thread (§3.3.2, morsel-driven); under `root-capacity=tuples` (#88), the paper's build: partitions are root regions, one insert per tuple, a tail on the calling thread |
 
 **The radix build** ([`radix.rs`](../../kermit-ds/src/ds/hash_trie/radix.rs)):
 
@@ -415,6 +416,18 @@ first-appearance positions. The trie is the radix build's, and so the
 serial build's. Steps, identity argument, complexity and a worked example:
 [`parallel-build.md`](./parallel-build.md#hashtrie).
 
+**The presized parallel build.** Under `--ds-config root-capacity=tuples`,
+`parallel:N` partitions the input into contiguous regions of the presized
+root, and each worker inserts every tuple of its regions once (the paper's
+§3.3.2 build). Keys whose probe would cross their region's end are finished
+by the calling thread. The paper does not say how it handles that case, so
+this is kermit's answer. The trie is equivalent to serial's (Amendment 2):
+every subtrie and chain is array-identical; the root has the same capacity,
+the same occupied buckets and the same total displacement; and it is the
+same for every N. The closest-to-paper configuration is
+`--ds-config root-capacity=tuples,load-factor=0.8`. Details:
+[`parallel-build.md`](./parallel-build.md#the-presized-build-root-capacitytuples).
+
 - **Axis:** `ds_build_mode` (`serial` / `radix:K` / `parallel:N`), on every
   HashTrie report. The bench family that ran the build emits it, because the
   trie cannot tell how it was built. kermit-lab reads a HashTrie row without
@@ -442,16 +455,33 @@ serial build's. Steps, identity argument, complexity and a worked example:
     `HashTrieSipParallel2` in `parquet_tests.rs`), and
     `define_multiway_join_test_suite_for_build_mode!` with `HashParallel2`
     in `join_tests.rs`.
+  - `presized_parallel_builds_are_equivalent_*` and
+    `presized_parallel_builds_are_the_same_for_every_n_on_dense_roots` in
+    `parallel.rs`: equivalence with serial under `root-capacity=tuples` and
+    identity with `parallel:1`, for every Layout, load factors 50–95 % and
+    N ∈ {1, 2, 3, 8}, at 8-bucket regions and at the real size;
+    `keys_that_cannot_fit_their_region_go_to_the_tail` (a hash that homes
+    every key at a region's last bucket defers 12 of 16 tuples); and
+    `the_root_step_builds_the_serial_trie_below_the_root`, which guards the
+    root step's mirror of `insert_at`.
+  - The `HashTrieSipPresizedParallel2`, `HashTrieSipLazyPresizedParallel2`
+    and `HashTrieFxPrunedPresizedParallel2` aliases in `hash_trie_tests.rs`
+    (and `HashTrieSipPresizedParallel2` in `parquet_tests.rs`), and the
+    presized `define_multiway_join_test_suite_for_build_mode!` invocations
+    in `join_tests.rs`.
   - `hash_trie_families_build_with_their_parallel_mode` in
-    `kermit/src/execution.rs` (the mode reaches the build on every route)
-    and `kermit/tests/cli_hash_trie_build_mode.rs`.
+    `kermit/src/execution.rs` (the mode reaches the build on every route,
+    and `root-capacity=tuples` reaches the presized path) and
+    `kermit/tests/cli_hash_trie_build_mode.rs`.
 - **Measured effect:** on inputs that arrive grouped by their first
   attribute, slower single-threaded, with identical space: 1.12–1.14×
   `serial`'s `insertion` time on `friendof` and 1.93–2.28× on `price`. On
   `friendof` with its rows shuffled, `radix:12` is 0.90× `serial`, the only
   arm that wins. See [Radix build A/B](#radix-build-ab) and
   [its shuffled-input run](#radix-build-ab-shuffled-input).
-  `parallel:N` is not measured yet; that is #94's scaling run.
+  `parallel:N` was measured by #94's scaling run of 2026-10-06 (summarised
+  in `docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`,
+  § Motivation); the presized build is not measured yet.
 
 #### Radix build A/B
 

@@ -1,7 +1,11 @@
 # HashTrie Parallel Build, Presized Root: the Paper's Design
 
 **Date:** 2026-10-06
-**Status:** Design approved (brainstormed 2026-10-06); waits for #88
+**Status:** Design approved (2026-10-06); implemented
+(`docs/superpowers/plans/2026-10-06-hash-trie-presized-parallel-build.md`). As
+implemented, a run's probe is `BucketRun::entry` (an entry API returning `Overflow`),
+and the root step is two functions, `insert_at_leaf_root_in_run` and
+`insert_at_inner_root_in_run`, one per root kind.
 **Scope:** HashTrie's `parallel:N` gains a second process, used when #88's tuple-count
 root sizing is on. The input is partitioned into contiguous regions of the presized
 root, and each worker inserts every tuple of its regions once, straight into the root.
