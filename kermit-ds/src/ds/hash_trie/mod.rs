@@ -14,6 +14,8 @@ mod expansion;
 #[allow(dead_code)]
 mod hash_table;
 mod hash_trie_iter;
+#[cfg(test)]
+mod identity;
 mod implementation;
 mod node;
 mod pruning;
