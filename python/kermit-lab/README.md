@@ -132,10 +132,11 @@ including one ablation figure per optimization axis (`ds_layout_*`,
 `ds_config_*`, `ds_build_mode`) that carries ≥2 distinct values. Rows without
 an axis belong to structures that do not have it and are left out of its
 figure. An axis whose effect is confined to some phases is drawn only for them
-(`AXIS_PHASES` in `kermit_lab/presets.py`): `ds_build_mode` for `insertion` and
-`end_to_end` (a build mode changes how a structure is built, not the
-structure), and `ds_layout_seek` for `iteration` and `end_to_end` (every seek
-strategy builds the same trie). On any other phase its figure is skipped. The
+(`AXIS_PHASES` in `kermit_lab/presets.py`): `ds_layout_seek` for `iteration` and
+`end_to_end` (every seek strategy builds the same trie). `ds_build_mode` is drawn
+for every phase: a build mode builds the same contents and capacities but may
+place keys and allocations elsewhere, so it can move `iteration` too (the
+optimization standard's Amendment 2). On any other phase its figure is skipped. The
 CLI's `--phase` offers every time phase a report records: `insertion`,
 `iteration` (the default) and `end_to_end`. Shapes that lack the necessary
 axes are skipped with an info-level log message rather than erroring. Each

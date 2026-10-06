@@ -96,8 +96,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_speedup = sub.add_parser("speedup", help="parallel-build speedup over serial vs threads")
     _add_common(p_speedup)
-    p_speedup.add_argument("--phase", choices=["insertion", "end_to_end"], default="insertion",
-                           help="build phase to compare (default: insertion)")
+    p_speedup.add_argument("--phase", choices=TIME_PHASES, default="insertion",
+                           help="time phase to compare (default: insertion)")
 
     p_render_all = sub.add_parser("render-all", help="render every applicable shape into --out-dir")
     p_render_all.add_argument("reports", nargs="+", type=Path)

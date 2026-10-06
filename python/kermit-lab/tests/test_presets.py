@@ -99,9 +99,15 @@ def test_speedup(fixture_parallel_build_tree) -> None:
     assert {"TreeTrie", "ideal"} <= labels
 
 
-def test_speedup_refuses_phases_a_build_mode_cannot_affect(fixture_parallel_build_tree) -> None:
+def test_speedup_refuses_a_phase_that_is_not_a_time_phase(fixture_parallel_build_tree) -> None:
+    """Every time phase is a speedup phase, ``iteration`` included (a build
+    mode may move it, Amendment 2); ``space`` is not a time phase."""
     df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
-    with pytest.raises(InsufficientAxesError, match="built"):
+    with pytest.raises(InsufficientAxesError, match="time phases, not 'space'"):
+        presets.speedup(df, phase="space")
+    # The fixture times insertion only, so an iteration speedup passes the
+    # phase check and finds no case to compare.
+    with pytest.raises(InsufficientAxesError, match="no case"):
         presets.speedup(df, phase="iteration")
 
 

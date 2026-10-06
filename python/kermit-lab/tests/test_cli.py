@@ -121,9 +121,14 @@ def test_speedup_preset_subcommand(fixture_parallel_build_tree, tmp_path: Path) 
     assert out.exists() and out.stat().st_size > 0
 
 
-def test_speedup_subcommand_refuses_search_phases() -> None:
+def test_speedup_subcommand_takes_every_time_phase_and_nothing_else() -> None:
+    """A build mode may move ``iteration`` (Amendment 2), so every time phase
+    is a speedup phase; ``space`` is not a time phase."""
+    for phase in ("insertion", "copies", "iteration", "end_to_end"):
+        args = _build_parser().parse_args(["speedup", "r.json", "--out", "s.pdf", "--phase", phase])
+        assert args.phase == phase
     with pytest.raises(SystemExit):
-        _build_parser().parse_args(["speedup", "r.json", "--out", "s.pdf", "--phase", "iteration"])
+        _build_parser().parse_args(["speedup", "r.json", "--out", "s.pdf", "--phase", "space"])
 
 
 def test_speedup_subcommand_prints_its_table(
