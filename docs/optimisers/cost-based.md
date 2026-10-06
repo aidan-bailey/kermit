@@ -143,8 +143,10 @@ pin these numbers.
 | q0070 | 3.17e3 | 3.21e3 | 1.01× worse |
 
 The workload total falls from 3.85e11 to 2.64e11 bindings. The search is
-exact for its cost model, so each regression is an estimate that ranks a
-worse plan as cheaper.
+exact for its cost model (`the_search_finds_the_cheapest_valid_order`
+checks it against brute force on random queries, under both column-order
+policies), so each regression is an estimate that ranks a worse plan as
+cheaper.
 
 **Parity with the prototype.** Given the same statistics (#68's
 `relstats.txt`), kermit's plans equal the prototype's on all 124
@@ -198,10 +200,14 @@ Under `any` every subset of the variables is a DP state (2ⁿ − 1), so the
 default budget covers up to 14 variables and the search falls back to
 `cardinality` above. None of the 124 `watdiv-stress-100-test-1` templates
 exceeds it: counting each constant as the variable the rewrite gives it,
-the largest has 13 variables (8,191 states). The estimate reads the
+the largest has 13 variables (8,191 states).
+`every_committed_query_fits_the_budget_under_any` checks all 12,400
+committed queries, and `q0034_under_any_fits_the_budget` that the
+largest plans as the unbounded search does. The estimate reads the
 distinct counts of an atom's bound columns as a set, which under `stored`
 is always a prefix, so plans under `stored` are unchanged
-(`cost_based_watdiv_plans.rs` still pins them).
+(`cost_based_watdiv_plans.rs` still pins them). The same file pins the
+`any` plans of q0264, q0085 and q0008, and the copies each reads.
 
 **On real data.** The 10 templates `stored` leaves above 3.7e7 bindings
 (q0264, q0079, q0017, q0030, q0306, q0409, q0035, q0010, q0008, q0085)

@@ -321,7 +321,7 @@ fn cheapest_order(
 mod tests {
     use {
         super::*,
-        crate::optimiser::{ColumnOrderPolicy, RelationStats},
+        crate::optimiser::{check_attribute_order, ColumnOrderPolicy, RelationStats},
         kermit_parser::JoinQuery,
     };
 
@@ -623,5 +623,250 @@ mod tests {
             .variable_ordering,
             vec![0, 1, 2]
         );
+    }
+
+    /// A 64-bit linear congruential generator (Knuth's MMIX constants), as
+    /// `kermit/tests/column_orders_equivalence.rs` has: seeded, so a
+    /// failing case reproduces, with no new dependency.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+
+        /// A value in `0..n`.
+        fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
+    }
+
+    /// Relations as `(name, tuples, per-column distinct counts)`.
+    type Relations = Vec<(String, usize, Vec<usize>)>;
+
+    /// How [`random_case`] draws a relation's counts.
+    #[derive(Debug, Clone, Copy)]
+    enum Counts {
+        /// Zero or a power of two up to 8. Every estimate is then a power
+        /// of two (or zero) in a range `f64` sums exactly, so plans that tie
+        /// mathematically tie in floating point too, and ties are common.
+        SmallPowersOfTwo,
+        /// Tuples and distinct counts spread log-uniformly up to millions,
+        /// so plans' costs differ by orders of magnitude, as real
+        /// statistics' do.
+        Wide,
+    }
+
+    /// A count spread log-uniformly over 1 to 9,000,000.
+    fn log_uniform(rng: &mut Lcg) -> usize { (1 + rng.below(9)) * 10usize.pow(rng.below(7) as u32) }
+
+    /// A random query as the planner receives it, and its statistics: two
+    /// to four atoms over three relations of arity 1–3, each atom's columns
+    /// distinct variables (the selection rewrite leaves no repeat) drawn
+    /// from six, and the head every variable used.
+    fn random_case(rng: &mut Lcg, counts: Counts) -> (String, Relations) {
+        let relations: Relations = (0..3)
+            .map(|i| {
+                let arity = 1 + rng.below(3);
+                let (tuples, distinct) = match counts {
+                    | Counts::SmallPowersOfTwo => {
+                        let tuples: usize = match rng.below(5) {
+                            | 0 => 0,
+                            | k => 1 << (k - 1),
+                        };
+                        let distinct = (0..arity)
+                            .map(|_| {
+                                if tuples == 0 {
+                                    0
+                                } else {
+                                    1 << rng.below(tuples.trailing_zeros() as usize + 1)
+                                }
+                            })
+                            .collect();
+                        (tuples, distinct)
+                    },
+                    | Counts::Wide => {
+                        let tuples = log_uniform(rng);
+                        let distinct = (0..arity).map(|_| log_uniform(rng).min(tuples)).collect();
+                        (tuples, distinct)
+                    },
+                };
+                (format!("r{i}"), tuples, distinct)
+            })
+            .collect();
+        let mut used: Vec<String> = Vec::new();
+        let atoms: Vec<String> = (0..2 + rng.below(3))
+            .map(|_| {
+                let (name, _, distinct) = &relations[rng.below(relations.len())];
+                let mut pool: Vec<usize> = (0..6).collect();
+                let terms: Vec<String> = (0..distinct.len())
+                    .map(|_| {
+                        let v = format!("V{}", pool.remove(rng.below(pool.len())));
+                        if !used.contains(&v) {
+                            used.push(v.clone());
+                        }
+                        v
+                    })
+                    .collect();
+                format!("{name}({})", terms.join(", "))
+            })
+            .collect();
+        let text = format!("Q({}) :- {}.", used.join(", "), atoms.join(", "));
+        (text, relations)
+    }
+
+    /// Every order of the variables that binds each after its
+    /// `predecessors`, in lexicographic order.
+    fn valid_orders(predecessors: &[u64]) -> Vec<Vec<usize>> {
+        fn extend(predecessors: &[u64], order: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+            if order.len() == predecessors.len() {
+                out.push(order.clone());
+                return;
+            }
+            let bound = order.iter().fold(0, |set, &v| set | bit(v));
+            for v in 0..predecessors.len() {
+                if !contains(bound, v) && predecessors[v] & !bound == 0 {
+                    order.push(v);
+                    extend(predecessors, order, out);
+                    order.pop();
+                }
+            }
+        }
+        let mut out = Vec::new();
+        extend(predecessors, &mut Vec::new(), &mut out);
+        out
+    }
+
+    /// `Σ_k est(S_k)` for `order`, summed in the order the search sums it.
+    fn cost_of(model: &CostModel<'_>, order: &[usize]) -> f64 {
+        let mut bound = 0;
+        order.iter().fold(0.0, |cost, &v| {
+            bound |= bit(v);
+            cost + model.estimate(bound)
+        })
+    }
+
+    /// The search's plan for one random case and what brute force finds.
+    struct Searched {
+        plan: Vec<usize>,
+        plan_cost: f64,
+        /// The cheapest valid order, ties to the lexicographically smaller.
+        cheapest: Vec<usize>,
+        least: f64,
+    }
+
+    /// Plans `q` under `policy` and enumerates every order the column-order
+    /// constraints allow. `None` when `stored` finds `q` cyclic.
+    fn search_and_enumerate(
+        q: &JoinQuery, relations: &Relations, policy: ColumnOrderPolicy,
+    ) -> Option<Searched> {
+        if policy == ColumnOrderPolicy::Stored && check_attribute_order(q).is_err() {
+            return None;
+        }
+        let relations: Vec<(&str, usize, &[usize])> = relations
+            .iter()
+            .map(|(name, tuples, distinct)| (name.as_str(), *tuples, distinct.as_slice()))
+            .collect();
+        let stats = stats_under(q, policy, &relations);
+        let analysis = analyse(q);
+        let model = CostModel::new(q, &analysis.predicate_variables, analysis.num_vars, &stats);
+        let predecessors = Precedence::for_query(q, &stats)
+            .predecessor_masks()
+            .unwrap();
+        let mut best: Option<(f64, Vec<usize>)> = None;
+        for order in valid_orders(&predecessors) {
+            let cost = cost_of(&model, &order);
+            if best.as_ref().is_none_or(|(least, _)| cost < *least) {
+                best = Some((cost, order));
+            }
+        }
+        let (least, cheapest) = best.expect("an acyclic query has a valid order");
+        let plan = CostBasedOptimiser::default()
+            .plan(q, &stats)
+            .variable_ordering;
+        Some(Searched {
+            plan_cost: cost_of(&model, &plan),
+            plan,
+            cheapest,
+            least,
+        })
+    }
+
+    /// The seeds each random-query test plans.
+    const SEARCH_SEEDS: u64 = 300;
+
+    /// The search is exact for its cost model: on random queries whose
+    /// statistics span orders of magnitude, under both policies, its plan
+    /// costs what the cheapest order the column-order constraints allow
+    /// does, as brute force over every valid order finds it. Exactly,
+    /// although `f64` rounds: the search sums each order's estimates in the
+    /// order `cost_of` does, and rounding is monotonic, so no order can come
+    /// out cheaper than the plan. And `any`, which allows every order
+    /// `stored` does, never plans dearer.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "enumerates every valid order, minutes under Miri; the tests above run the \
+                  search there"
+    )]
+    fn the_search_finds_the_cheapest_valid_order() {
+        // Cases searched under `stored` (the rest are cyclic there), and
+        // cases where `any` found a strictly cheaper plan.
+        let (mut stored_cases, mut any_cheaper) = (0, 0);
+        for seed in 0..SEARCH_SEEDS {
+            let (text, relations) = random_case(&mut Lcg(seed), Counts::Wide);
+            let q: JoinQuery = text.parse().unwrap();
+            let mut least = Vec::new();
+            for policy in [ColumnOrderPolicy::Stored, ColumnOrderPolicy::Any] {
+                let Some(searched) = search_and_enumerate(&q, &relations, policy) else {
+                    continue;
+                };
+                assert_eq!(
+                    searched.plan_cost, searched.least,
+                    "seed {seed}, {policy:?}: {text}: planned {:?}, cheapest {:?}",
+                    searched.plan, searched.cheapest
+                );
+                least.push(searched.least);
+            }
+            if let [stored, any] = least[..] {
+                assert!(any <= stored, "seed {seed}: {text}");
+                stored_cases += 1;
+                any_cheaper += usize::from(any < stored);
+            }
+        }
+        // The first 300 seeds give 249 queries `stored` can plan (the other
+        // 51 are cyclic there), 136 of which `any` plans cheaper. The bounds
+        // catch a generator that stops producing cases where the policies
+        // differ.
+        assert!(
+            stored_cases >= 200 && any_cheaper >= 80,
+            "stored {stored_cases}, any cheaper {any_cheaper}"
+        );
+    }
+
+    /// Among plans of equal cost the search takes the lexicographically
+    /// smallest order, as brute force does, on random queries whose
+    /// statistics make ties common and exact.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "enumerates every valid order, minutes under Miri; the tests above run the \
+                  search there"
+    )]
+    fn random_ties_take_the_lexicographically_smaller_order() {
+        for seed in 0..SEARCH_SEEDS {
+            let (text, relations) = random_case(&mut Lcg(seed), Counts::SmallPowersOfTwo);
+            let q: JoinQuery = text.parse().unwrap();
+            for policy in [ColumnOrderPolicy::Stored, ColumnOrderPolicy::Any] {
+                if let Some(searched) = search_and_enumerate(&q, &relations, policy) {
+                    assert_eq!(
+                        searched.plan, searched.cheapest,
+                        "seed {seed}, {policy:?}: {text}"
+                    );
+                }
+            }
+        }
     }
 }

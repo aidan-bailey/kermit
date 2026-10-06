@@ -44,10 +44,47 @@ pub(crate) struct Entry<V> {
     pub value: V,
 }
 
+/// The log2 capacity a table starts at unless it is built at another: 4
+/// buckets.
+pub(crate) const INITIAL_LOG2_CAPACITY: u32 = 2;
+
+/// The smallest log2 capacity, at least [`INITIAL_LOG2_CAPACITY`], at which
+/// a table holds `keys` keys without its load-factor cap firing: the
+/// smallest `p ≥ 2` with `keys · den ≤ 2^p · num`.
+///
+/// [`HashTable::entry_or_insert_with`] grows when
+/// `(len + 1) · den > capacity · num`, and `len + 1 ≤ keys` for every insert
+/// up to the `keys`-th distinct hash. So a table built at this capacity
+/// never grows while it receives at most `keys` distinct hashes. At an 80 %
+/// cap this is the paper's `⌈log2(1.25·keys)⌉` (Algorithm 2, line 3), except
+/// that it never goes below 4 buckets.
+///
+/// # Panics
+///
+/// If the table would need `2^64` buckets or more, which no `Vec` can hold.
+pub(crate) fn log2_capacity_for(keys: usize, load_factor: LoadFactor) -> u32 {
+    // `u128`, so `keys · den` cannot overflow for any `usize`.
+    let num = load_factor.numerator() as u128;
+    let den = load_factor.denominator() as u128;
+    let buckets_needed = (keys as u128 * den).div_ceil(num);
+    let p = buckets_needed
+        .next_power_of_two()
+        .trailing_zeros()
+        .max(INITIAL_LOG2_CAPACITY);
+    assert!(
+        p < 64,
+        "capacity overflow: {keys} keys at a {}% load factor need 2^{p} buckets",
+        load_factor.numerator()
+    );
+    p
+}
+
 /// Open-addressing hash table.
 ///
-/// Capacity is always `2^log2_capacity`. The initial capacity is 4
-/// (`log2_capacity = 2`). The table grows by doubling when occupancy
+/// Capacity is always `2^log2_capacity`. A table starts at 4 buckets
+/// (`log2_capacity = 2`) unless built at another capacity with
+/// [`with_log2_capacity`](Self::with_log2_capacity). The table grows by
+/// doubling when occupancy
 /// exceeds the configured load factor, 70 % by default.
 pub(crate) struct HashTable<V> {
     log2_capacity: u32,
@@ -56,12 +93,26 @@ pub(crate) struct HashTable<V> {
 }
 
 impl<V> HashTable<V> {
-    /// Initial capacity 4.
-    pub fn new() -> Self {
+    /// An empty table of 4 buckets.
+    pub fn new() -> Self { Self::with_log2_capacity(INITIAL_LOG2_CAPACITY) }
+
+    /// An empty table of `2^log2_capacity` buckets.
+    ///
+    /// # Panics
+    ///
+    /// Unless `1 ≤ log2_capacity < 64`: [`bucket_index`](Self::bucket_index)
+    /// shifts by `64 - log2_capacity`, and `MULTIPLIERS` covers exponents
+    /// below 64.
+    pub fn with_log2_capacity(log2_capacity: u32) -> Self {
+        assert!(
+            (1..64).contains(&log2_capacity),
+            "log2 capacity must be in 1..64, got {log2_capacity}"
+        );
+        let capacity = 1usize << log2_capacity;
         Self {
-            log2_capacity: 2,
+            log2_capacity,
             len: 0,
-            buckets: (0..4).map(|_| None).collect(),
+            buckets: (0..capacity).map(|_| None).collect(),
         }
     }
 
@@ -654,6 +705,111 @@ mod tests {
         assert_eq!(buckets.iter().flatten().count(), 3);
         for (idx, hash) in positions {
             assert_eq!(buckets[idx].as_ref().map(|e| e.hash), Some(hash));
+        }
+    }
+
+    #[test]
+    fn with_log2_capacity_builds_that_many_empty_buckets() {
+        for p in 1..=10 {
+            let t: HashTable<u32> = HashTable::with_log2_capacity(p);
+            assert_eq!(t.buckets_len(), 1 << p);
+            assert_eq!(t.len(), 0);
+            assert_eq!(t.log2_capacity, p);
+            assert_eq!(
+                t.shell_heap_bytes(),
+                (1 << p) * std::mem::size_of::<Option<Entry<u32>>>()
+            );
+        }
+        let new: HashTable<u32> = HashTable::new();
+        assert_eq!(new.log2_capacity, INITIAL_LOG2_CAPACITY);
+        assert_eq!(
+            new.shell_heap_bytes(),
+            HashTable::<u32>::with_log2_capacity(INITIAL_LOG2_CAPACITY).shell_heap_bytes()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "log2 capacity must be in 1..64")]
+    fn with_log2_capacity_rejects_zero() {
+        let _: HashTable<u32> = HashTable::with_log2_capacity(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "log2 capacity must be in 1..64")]
+    fn with_log2_capacity_rejects_sixty_four() {
+        let _: HashTable<u32> = HashTable::with_log2_capacity(64);
+    }
+
+    /// `log2_capacity_for(keys, lf)` is the smallest log2 capacity of at
+    /// least 2 whose table holds `keys` keys under the cap: sufficient, and
+    /// one less would not be.
+    #[test]
+    fn log2_capacity_for_is_the_smallest_sufficient_capacity() {
+        let most_keys = if cfg!(miri) { 64 } else { 2_000 };
+        for percent in [1u8, 10, 25, 50, 70, 80, 95, 99] {
+            let lf = LoadFactor::percent(percent).unwrap();
+            for keys in 0..most_keys {
+                let p = log2_capacity_for(keys, lf);
+                let holds = |p: u32| keys * 100 <= (1usize << p) * usize::from(percent);
+                assert!(
+                    p >= INITIAL_LOG2_CAPACITY,
+                    "{percent}%, {keys} keys: below 4 buckets"
+                );
+                assert!(holds(p), "{percent}%, {keys} keys: 2^{p} is too small");
+                assert!(
+                    p == INITIAL_LOG2_CAPACITY || !holds(p - 1),
+                    "{percent}%, {keys} keys: 2^{p} is not the smallest"
+                );
+            }
+        }
+    }
+
+    /// At an 80 % cap the capacity is the paper's `2^⌈log2(1.25·|L|)⌉`
+    /// (Algorithm 2, line 3), apart from the 4-bucket floor.
+    #[test]
+    fn log2_capacity_for_at_eighty_percent_is_the_papers_sizing() {
+        let lf = LoadFactor::percent(80).unwrap();
+        for keys in 2..2_000usize {
+            // ⌈log2(1.25·keys)⌉ = ⌈log2(⌈5·keys/4⌉)⌉, since 2^p is a whole
+            // number; for keys ≥ 2 it is at least 2, so the floor is moot.
+            let paper = (5 * keys).div_ceil(4).next_power_of_two().trailing_zeros();
+            assert_eq!(log2_capacity_for(keys, lf), paper, "{keys} keys");
+        }
+        // The paper allocates 2 buckets for one tuple; kermit never goes
+        // below 4.
+        assert_eq!(log2_capacity_for(1, lf), INITIAL_LOG2_CAPACITY);
+    }
+
+    #[test]
+    #[should_panic(expected = "capacity overflow")]
+    fn log2_capacity_for_rejects_an_unallocatable_capacity() {
+        log2_capacity_for(usize::MAX, LoadFactor::percent(1).unwrap());
+    }
+
+    /// A table built at `log2_capacity_for(keys, lf)` takes `keys` distinct
+    /// inserts without growing, at every load factor: the guarantee the
+    /// root-capacity Config (#88) rests on.
+    #[test]
+    fn a_presized_table_never_grows_for_its_keys() {
+        let most_keys = if cfg!(miri) { 100 } else { 1_000 };
+        for percent in [1u8, 10, 25, 50, 70, 95, 99] {
+            let lf = LoadFactor::percent(percent).unwrap();
+            for keys in [0, 1, 2, 3, 7, most_keys] {
+                let p = log2_capacity_for(keys, lf);
+                let mut t: HashTable<usize> = HashTable::with_log2_capacity(p);
+                // A full-period LCG, so every hash is distinct.
+                let mut hash: u64 = 1;
+                for k in 0..keys {
+                    t.entry_or_insert_with(hash, lf, || k);
+                    assert_eq!(
+                        t.buckets_len(),
+                        1 << p,
+                        "{percent}%: grew on key {k} of {keys}"
+                    );
+                    hash = hash.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+                }
+                assert_eq!(t.len(), keys);
+            }
         }
     }
 }
