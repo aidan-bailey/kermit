@@ -1,8 +1,9 @@
 //! CLI smoke test for `HashTrie`'s `ds_build_mode` axis (issues #91, #94).
 //! Every `HashTrie` report says which build made its relations: `serial` by
 //! default, `radix:<bits>` or `parallel:<threads>` under `--ds-build
-//! hash-trie=…`. Every mode builds the identical trie, so only the axis (and
-//! build time) shows which ran.
+//! hash-trie=…`. Every mode builds an equivalent trie (the identical one,
+//! except `parallel:N` under `root-capacity=tuples`, whose root keys may sit
+//! in other buckets), so only the axis (and build time) shows which ran.
 
 mod common;
 
@@ -190,6 +191,60 @@ fn cli_bench_ds_rejects_malformed_hash_trie_modes() {
         assert!(
             stderr.contains("expected serial, radix:<bits> or parallel:<threads>"),
             "{pair}: {stderr}"
+        );
+    }
+}
+
+/// Under `root-capacity=tuples`, `parallel:N` is the paper's presized
+/// build. One report records both the config and the mode.
+#[test]
+fn cli_bench_ds_records_a_presized_parallel_build() {
+    let (output, report) = bench_ds("hash-trie", &[
+        "--ds-config",
+        "root-capacity=tuples",
+        "--ds-build",
+        "hash-trie=parallel:2",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let axes = axes_of(&report);
+    assert_eq!(axes["ds_build_mode"], "parallel:2", "{axes}");
+    assert_eq!(axes["ds_config_root_capacity"], "tuples", "{axes}");
+}
+
+/// `--verify` checks the answers of presized parallel builds, eager and
+/// lazy, at the paper's load factor.
+#[test]
+fn cli_bench_run_verifies_presized_parallel_builds() {
+    for expansion in ["eager", "lazy"] {
+        let (output, report) = bench_run("triangle", &[
+            "-i",
+            "hash-trie",
+            "-a",
+            "hash-triejoin",
+            "-m",
+            "iteration",
+            "--verify",
+            "--ds-layout-expansion",
+            expansion,
+            "--ds-config",
+            "root-capacity=tuples,load-factor=0.8",
+            "--ds-build",
+            "hash-trie=parallel:3",
+        ]);
+        assert!(
+            output.status.success(),
+            "{expansion}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let axes = axes_of(&report);
+        assert_eq!(axes["verified"], true, "{expansion}: {axes}");
+        assert_eq!(
+            axes["ds_config_root_capacity"], "tuples",
+            "{expansion}: {axes}"
         );
     }
 }
