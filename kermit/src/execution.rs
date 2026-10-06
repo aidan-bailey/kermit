@@ -1063,6 +1063,7 @@ mod tests {
         );
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
         assert_eq!(
@@ -1127,6 +1128,7 @@ mod tests {
         );
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
         let hash = HashHtj::<kermit_iters::FxHashStrategy, SingletonPruning, EagerExpansion>::new(
@@ -1248,6 +1250,7 @@ mod tests {
     fn hash_family_builds_relations_with_its_config() {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
@@ -1272,6 +1275,7 @@ mod tests {
     fn hash_family_load_honours_its_config() {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
@@ -1403,6 +1407,7 @@ mod tests {
     fn hash_family_build_relation_honours_its_config() {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
@@ -1949,6 +1954,7 @@ mod tests {
 
         let config = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
         };
         let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,

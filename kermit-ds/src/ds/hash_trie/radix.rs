@@ -176,6 +176,7 @@ mod tests {
             for &percent in LOAD_PERCENTS {
                 let config = HashTrieConfig {
                     load_factor: LoadFactor::percent(percent).unwrap(),
+                    ..HashTrieConfig::default()
                 };
                 for &bits in BITS {
                     let radix = HashTrieBuildMode::Radix(RadixBits::new(bits).unwrap());

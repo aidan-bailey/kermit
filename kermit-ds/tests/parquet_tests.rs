@@ -99,6 +99,7 @@ parquet_test_suite!(HashTrieFxPrunedLazy, sorted_tuples);
 // …and under the Config axis: a dense load factor keeps the round-trip whole.
 define_config_provider!(NinetyPercent, HashTrieConfig, HashTrieConfig {
     load_factor: LoadFactor::percent(90).unwrap(),
+    ..HashTrieConfig::default()
 });
 
 type HashTrieSipDense = Configured<HashTrieSip, NinetyPercent>;

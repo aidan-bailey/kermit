@@ -64,6 +64,17 @@ impl<P: PruningPolicy, E: ExpansionPolicy> HashTrieNode<P, E> {
         }
     }
 
+    /// [`new_table`](Self::new_table) at `2^log2_capacity` buckets instead
+    /// of 4. Used for the root, which a build may size from its tuple count
+    /// (`HashTrieConfig::root_log2_capacity`).
+    pub(crate) fn new_table_sized(is_leaf: bool, log2_capacity: u32) -> Self {
+        if is_leaf {
+            HashTrieNode::Leaf(HashTable::with_log2_capacity(log2_capacity))
+        } else {
+            HashTrieNode::Inner(HashTable::with_log2_capacity(log2_capacity))
+        }
+    }
+
     /// The table accessors below are only meaningful on `Inner` / `Leaf`.
     /// `HashTrieIter` never places a `Singleton` in a table frame, so
     /// reaching this is a broken internal invariant, not a user error.

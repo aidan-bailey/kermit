@@ -366,6 +366,7 @@ mod tests {
 
     kermit_ds::define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
         load_factor: LoadFactor::percent(50).unwrap(),
+        ..HashTrieConfig::default()
     });
 
     thread_local! {
