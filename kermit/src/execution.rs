@@ -904,8 +904,8 @@ mod tests {
         clap::ValueEnum,
         kermit_algos::{ColumnOrderPolicy, IndexSpec, LexicographicOptimiser, Optimiser},
         kermit_ds::{
-            ConfigurableRelation, EagerExpansion, LazyExpansion, LoadFactor, NoPruning, RadixBits,
-            RootCapacity, SingletonPruning,
+            ChildCapacity, ConfigurableRelation, EagerExpansion, LazyExpansion, LoadFactor,
+            NoPruning, RadixBits, RootCapacity, SingletonPruning,
         },
         kermit_iters::{LayoutOption, SipHashStrategy},
         std::cell::Cell,
@@ -1446,6 +1446,29 @@ mod tests {
             family.build_relation(header, tuples).heap_size_bytes()
         };
         assert!(heap(RootCapacity::Tuples) > heap(RootCapacity::Grow));
+    }
+
+    /// Under `child-capacity=tuples` the family's build sizes children from
+    /// their lists, so a report labelled `"tuples"` timed sized children.
+    /// Three equal tuples share one child: grown, it keeps 4 buckets; sized
+    /// for its 3 tuples at 70 % it has 8.
+    #[test]
+    fn hash_family_build_relation_sizes_children_under_tuples() {
+        let heap = |child_capacity| {
+            let family = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+                HashTrieConfig {
+                    child_capacity,
+                    ..HashTrieConfig::default()
+                },
+                HashTrieBuildMode::Bulk,
+                Planner::stored(LexicographicOptimiser),
+            );
+            let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
+            family
+                .build_relation(header, vec![vec![1, 1]; 3])
+                .heap_size_bytes()
+        };
+        assert!(heap(ChildCapacity::Tuples) > heap(ChildCapacity::Grow));
     }
 
     /// The pruning Layout reaches the relations the family builds, so a

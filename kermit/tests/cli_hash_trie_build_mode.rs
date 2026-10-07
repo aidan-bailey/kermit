@@ -201,6 +201,54 @@ fn cli_bench_ds_rejects_malformed_hash_trie_modes() {
     }
 }
 
+/// `serial` named the per-tuple build until #107; the CLI rejects it and
+/// names what replaced it.
+#[test]
+fn cli_rejects_the_retired_serial_build() {
+    let (output, _) = bench_ds("hash-trie", &["--ds-build", "hash-trie=serial"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("serial was renamed incremental in #107"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("the default is now bulk (Algorithm 2)"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn cli_bench_ds_records_the_incremental_build() {
+    let (output, report) = bench_ds("hash-trie", &["--ds-build", "hash-trie=incremental"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(axes_of(&report)["ds_build_mode"], "incremental");
+}
+
+/// `incremental` cannot size a child it creates on its first tuple.
+#[test]
+fn cli_rejects_incremental_with_sized_children() {
+    let (output, _) = bench_ds("hash-trie", &[
+        "--ds-config",
+        "child-capacity=tuples",
+        "--ds-build",
+        "hash-trie=incremental",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "--ds-build hash-trie=incremental requires --ds-config child-capacity=grow; got \
+             child-capacity=tuples"
+        ),
+        "{stderr}"
+    );
+}
+
 /// `presized:N` is the paper's presized build; it requires
 /// `root-capacity=tuples`. One report records both.
 #[test]
@@ -302,4 +350,41 @@ fn cli_rejects_presized_without_a_presized_root() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains(MESSAGE), "bench join: {stderr}");
+}
+
+/// `--verify` checks the answers of the closest-to-paper configuration,
+/// pruned, eager and lazy (#107).
+#[test]
+fn cli_bench_run_verifies_the_papers_configuration() {
+    for expansion in ["eager", "lazy"] {
+        let (output, report) = bench_run("triangle", &[
+            "-i",
+            "hash-trie",
+            "-a",
+            "hash-triejoin",
+            "-m",
+            "iteration",
+            "--verify",
+            "--ds-layout-pruning",
+            "on",
+            "--ds-layout-expansion",
+            expansion,
+            "--ds-config",
+            "root-capacity=tuples,child-capacity=tuples,load-factor=0.8",
+            "--ds-build",
+            "hash-trie=presized:3",
+        ]);
+        assert!(
+            output.status.success(),
+            "{expansion}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let axes = axes_of(&report);
+        assert_eq!(axes["verified"], true, "{expansion}: {axes}");
+        assert_eq!(
+            axes["ds_config_child_capacity"], "tuples",
+            "{expansion}: {axes}"
+        );
+        assert_eq!(axes["ds_build_mode"], "presized:3", "{expansion}: {axes}");
+    }
 }
