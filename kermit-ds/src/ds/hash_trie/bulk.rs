@@ -99,8 +99,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
 
     /// The node a bucket's `list` becomes, at `depth`: a `Singleton` when
     /// pruning is on and one tuple lives below (§3.3.1), an `Unexpanded`
-    /// child under lazy expansion (§3.3.1; a probe builds its table later,
-    /// through `HashTrie::resolve`), and otherwise the table line 11 builds.
+    /// child under lazy expansion (§3.3.1; `HashTrie::resolve` builds its
+    /// table by [`build`](Self::build) on the first probe), and otherwise the
+    /// table line 11 builds.
     pub(super) fn child(
         depth: usize, arity: usize, mut list: TupleList, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
