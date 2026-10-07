@@ -1221,6 +1221,15 @@ one commit.
 
 ## Task 6 [P1]: The presized fold: group in runs, then children in runs
 
+> **As executed** (e24ccc9, fbe3fb7): after review, `from_tuples_partitioned`'s
+> `fill` receives the root's log2 capacity rather than a root
+> (`FnOnce(u32, usize, Vec<Vec<usize>>) -> HashTrieNode`), so `presized:N`
+> never allocates a presized root only to drop it; radix and parallel build
+> theirs with `make_root_sized` in their closures, and `fill_presized_root(_in)`
+> take `log2_capacity` (tests pass `log2`). The docs credit the paper only
+> with hash partitioning (§3.3.2) and Algorithm 2; regions, the tail and the
+> per-run children are kermit's.
+
 **Files:**
 - Modify: `kermit-ds/src/ds/hash_trie/implementation.rs` (`from_tuples_partitioned`
   fills by value; the three partitioned arms; delete
