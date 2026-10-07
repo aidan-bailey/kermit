@@ -201,6 +201,11 @@ kermit bench run triangle -i hash-trie -a hash-triejoin \
     --ds-layout-hasher fxhash \
     --ds-layout-pruning on \
     --ds-config load-factor=0.5
+
+# The paper's sizing: every table sized once, the root for its tuples and each
+# child for its list (#88, #107)
+kermit bench run triangle -i hash-trie -a hash-triejoin \
+    --ds-config root-capacity=tuples,child-capacity=tuples,load-factor=0.8
 ```
 
 The BuildMode category has three consumers: ColumnTrie (#84), HashTrie (#91) and TreeTrie (#94). `--ds-build` takes `structure=mode` pairs:
@@ -208,6 +213,9 @@ The BuildMode category has three consumers: ColumnTrie (#84), HashTrie (#91) and
 ```bash
 # The pre-#84 ColumnTrie build, to reproduce its insertion numbers
 kermit bench run triangle -i column-trie -a leapfrog-triejoin --ds-build column-trie=incremental
+
+# HashTrie's per-tuple build (`serial` before #107), to reproduce its insertion numbers
+kermit bench run triangle -i hash-trie -a hash-triejoin --ds-build hash-trie=incremental
 
 # HashTrie's radix-partitioned build (#91), 2^8 partitions
 kermit bench run triangle -i hash-trie -a hash-triejoin --ds-build hash-trie=radix:8

@@ -269,6 +269,12 @@ define_multiway_join_test_suite_with_config!(
 define_multiway_join_test_suite_with_config!(
     HashTrieSipLazy,
     HashTriejoin,
+    CardinalityOptimiser,
+    SizedChildren
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipLazy,
+    HashTriejoin,
     CostBasedOptimiser,
     SizedChildren
 );
@@ -610,6 +616,7 @@ define_config_provider!(PaperSizing, HashTrieConfig, HashTrieConfig {
     child_capacity: ChildCapacity::Tuples,
 });
 type HashTrieSipSizedChildren = Configured<HashTrieSip, SizedChildren>;
+type HashTrieFxSizedChildren = Configured<HashTrieFx, SizedChildren>;
 type HashTrieSipLazySizedChildren = Configured<HashTrieSipLazy, SizedChildren>;
 type HashTrieSipPrunedLazyPaper = Configured<HashTrieSipPrunedLazy, PaperSizing>;
 define_multiway_join_test_suite_for_build_mode!(
@@ -1000,6 +1007,30 @@ define_multiway_join_test_suite_with_column_orders!(
     CardinalityOptimiser,
     AnyOrders,
     HashTrieSipSizedChildren,
+    HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieFxSizedChildren,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieFxSizedChildren,
+    HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieFxSizedChildren,
+    HashTriejoin,
+    CostBasedOptimiser,
+    AnyOrders,
+    HashTrieSipLazySizedChildren,
+    HashTriejoin,
+    LexicographicOptimiser,
+    AnyOrders,
+    HashTrieSipLazySizedChildren,
+    HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieSipLazySizedChildren,
     HashTriejoin,
     CostBasedOptimiser,
     AnyOrders,
