@@ -201,8 +201,10 @@ kermit bench ds -r data.csv -i tree-trie -m end-to-end --queries-per-build 4
 `structure=mode` pairs: `tree-trie=serial|parallel:<threads>` (default
 `serial`; threads in 1..=1024, the calling thread included),
 `column-trie=bulk|incremental` (default `bulk`) and
-`hash-trie=serial|radix:<bits>|parallel:<threads>` (default `serial`; bits
-in 1..=16, threads in 1..=1024). Every mode builds an equivalent structure
+`hash-trie=serial|radix:<bits>|parallel:<threads>|presized:<threads>`
+(default `serial`; bits in 1..=16, threads in 1..=1024; `presized:<threads>`,
+the paper's presized build, requires `--ds-config root-capacity=tuples`, and
+is rejected without it). Every mode builds an equivalent structure
 (the same contents and capacities), so answers and `space` never change; the
 `insertion` and `end-to-end` timings do, and `iteration` may. The report
 records it as `ds_build_mode`. A pair is valid only when `-i` selects its
@@ -214,10 +216,12 @@ kermit bench ds -r data.csv -i tree-trie -m insertion --ds-build tree-trie=paral
 kermit bench ds -r data.csv -i column-trie -m insertion --ds-build column-trie=incremental
 kermit bench ds -r data.csv -i hash-trie -m insertion --ds-build hash-trie=radix:8
 kermit bench ds -r data.csv -i hash-trie -m insertion --ds-build hash-trie=parallel:4
+kermit bench run triangle -i hash-trie -a hash-triejoin --ds-config root-capacity=tuples --ds-build hash-trie=presized:8
 ```
 
 See `BENCHMARKING.md` § "Scaling: measuring a parallel build" for the
-`tree-trie=parallel:N` and `hash-trie=parallel:N` speedup workflow.
+`tree-trie=parallel:N`, `hash-trie=parallel:N` and `hash-trie=presized:N`
+speedup workflow.
 
 `--ds-layout-seek` is rejected here: none of `bench ds`'s metrics calls `seek`.
 

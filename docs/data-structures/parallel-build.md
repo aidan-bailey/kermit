@@ -1,14 +1,15 @@
-# Parallel builds (`--ds-build tree-trie=parallel:N`, `hash-trie=parallel:N`)
+# Parallel builds (`--ds-build tree-trie=parallel:N`, `hash-trie=parallel:N`, `hash-trie=presized:N`)
 
 `TreeTrie` and `HashTrie` can each be built on several threads (issue
 #94). The build is morsel-driven in the sense of Leis et al. (*Morsel-Driven
 Parallelism*, SIGMOD 2014): the input is cut into small morsels, and
-whichever thread is free takes the next unit of work. Under the default
-config it produces exactly the trie the serial build produces, so only the
-build-timing metrics (`insertion`, `end_to_end`) can move. HashTrie's
-presized build (`--ds-config root-capacity=tuples`) builds an equivalent
-trie whose root keys may sit in other buckets, so `iteration` is measured
-for it too (Amendment 2).
+whichever thread is free takes the next unit of work. `parallel:N`
+produces exactly the trie the serial build produces under the same config,
+so only the build-timing metrics (`insertion`, `end_to_end`) can move.
+HashTrie's presized build (`hash-trie=presized:N`, which requires
+`--ds-config root-capacity=tuples`) builds an equivalent trie whose root
+keys may sit in other buckets, so `iteration` is measured for it too
+(Amendment 2).
 
 | Mode | `--ds-build` | `ds_build_mode` | Default |
 |---|---|---|---|
@@ -16,6 +17,7 @@ for it too (Amendment 2).
 | `TreeTrieBuildMode::Parallel(n)` | `tree-trie=parallel:N` | `"parallel:N"` | |
 | `HashTrieBuildMode::Serial` | `hash-trie=serial` | `"serial"` | ✓ |
 | `HashTrieBuildMode::Parallel(n)` | `hash-trie=parallel:N` | `"parallel:N"` | |
+| `HashTrieBuildMode::Presized(n)` | `hash-trie=presized:N` (requires `root-capacity=tuples`) | `"presized:N"` | |
 
 `N` counts every thread the build uses, the calling one included. So
 `parallel:1` runs the parallel code on one thread. For TreeTrie, against
@@ -27,8 +29,8 @@ everything, so `parallel:1` can beat `serial`. HashTrie has no such saving
 The shared steps live in `kermit-ds/src/morsel.rs` (`scatter`, `dispatch`).
 The TreeTrie build is `TreeTrie::build_parallel` in
 `kermit-ds/src/ds/tree_trie/implementation.rs`.
-The HashTrie builds are `parallel::fill_root` and, under
-`root-capacity=tuples`, `parallel::fill_presized_root`, both in
+The HashTrie builds are `parallel::fill_root` (`parallel:N`) and
+`parallel::fill_presized_root` (`presized:N`), both in
 `kermit-ds/src/ds/hash_trie/parallel.rs`.
 
 ## TreeTrie
@@ -135,17 +137,16 @@ the trie `from_tuples` builds from the same input.
 
 ## HashTrie
 
-HashTrie has two parallel builds, chosen by `--ds-config root-capacity`
-(#88):
+HashTrie has two parallel builds, each its own mode:
 
-- Under `grow`, the default, it is the **exact build**: the radix build of
-  #91 ([`hash-trie.md`](./hash-trie.md#build-modes), `radix.rs`) with its
-  first two steps on N threads. It builds the serial trie, bucket for
-  bucket.
-- Under `tuples`, the root is presized from the tuple count, and it is the
-  **presized build** (the paper's, §3.3.2), described
-  [below](#the-presized-build-root-capacitytuples). It builds an equivalent
-  trie.
+- `parallel:N` is the **exact build**: the radix build of #91
+  ([`hash-trie.md`](./hash-trie.md#build-modes), `radix.rs`) with its first
+  two steps on N threads, under every root capacity. It builds the serial
+  trie, bucket for bucket.
+- `presized:N` is the **presized build** (the paper's, §3.3.2), described
+  [below](#the-presized-build-presizedn). It requires
+  `root-capacity=tuples` (#88), since it fills a root presized from the
+  tuple count, and it builds an equivalent trie.
 
 ### The three steps (exact build)
 
@@ -181,8 +182,9 @@ parallel_build(tuples, N):
 ### Invariant (exact build)
 
 Every `parallel:N` build is identical to the serial build of the same
-tuples, bucket for bucket and capacity for capacity, under every Layout and
-load factor. `parallel_builds_the_serial_trie_*` in `parallel.rs` pins it
+tuples, bucket for bucket and capacity for capacity, under every Layout,
+load factor and root capacity. `parallel_builds_the_serial_trie_*` in
+`parallel.rs` pins it
 for N ∈ {1, 2, 3, 8}, with morsels of 7 tuples and of 16 384 (three
 morsels, two of them full, in `…_on_large_and_skewed_inputs`).
 
@@ -246,7 +248,7 @@ The merge takes positions 0, 1 and 2 in turn, inserting 3, then 1, then 2:
 the order in which the serial build first meets them, so the root's buckets
 are the serial root's.
 
-### The presized build (root-capacity=tuples)
+### The presized build (presized:N)
 
 When the root is presized, its capacity is known before any tuple arrives,
 so workers can fill it directly. The root is cut into fixed regions of
@@ -254,7 +256,7 @@ so workers can fill it directly. The root is cut into fixed regions of
 partition is a contiguous run of regions.
 
 ```text
-parallel:N under root-capacity=tuples:
+presized:N (requires root-capacity=tuples):
     check arities; no tuples → the empty root, no worker started
     root = 2^p buckets, p = config.root_log2_capacity(n)    // #88; never grows here
     P = 4·N rounded up to a power of two, capped at the region count
@@ -316,7 +318,7 @@ The deferred share grows with the load factor and shrinks with the region
 size; at 4096-bucket regions it is a small fraction of n. Each region's
 buckets stay within one worker's cache.
 
-**Worked example.** `parallel:2` over `[1,a] [2,b] [3,c] [1,d]` (positions
+**Worked example.** `presized:2` over `[1,a] [2,b] [3,c] [1,d]` (positions
 0–3) under `root-capacity=tuples`: n = 4 at 70 % gives an 8-bucket root.
 Real regions are 4096 buckets; for the example, take 4-bucket regions, so
 there are 2 regions and 2 runs. Say the keys' home buckets are 3 for key 1,
@@ -341,8 +343,8 @@ See `BENCHMARKING.md`, "Scaling: measuring a parallel build", and kermit-lab's
 `kl.speedup_table` / `kermit-lab speedup`. Compare build modes within one
 binary. For HashTrie, `kl.speedup_table(df, baseline="radix:K")`
 measures the parallel build against the single-threaded partitioned one.
-The presized curve compares presized `parallel:N` with presized `serial`,
-both under `root-capacity=tuples`, at load factors 0.8 (the paper's) and 0.7
+The presized curve compares `presized:N` with `serial`, both under
+`root-capacity=tuples`, at load factors 0.8 (the paper's) and 0.7
 (kermit's default), and measures `iteration` as well, since the presized
 build may place root keys in other buckets.
 The protocol is the spec's "Scaling protocol"; its TreeTrie half is
@@ -532,7 +534,14 @@ comparable with these, since glibc capped every parallel build.
 - **Curves:** `--ds-config root-capacity=tuples,load-factor=0.8` (the paper's
   sizing), `root-capacity=tuples,load-factor=0.7`, and
   `root-capacity=grow,load-factor=0.7` (the default config). Each has arms
-  `serial` and `parallel:{1,2,4,8,16}`, default Layout.
+  `serial` and `parallel:{1,2,4,8,16}`, default Layout. At b882bd6 the
+  presized arms were spelled `--ds-build hash-trie=parallel:N` under
+  `root-capacity=tuples`; since 2026-10-07 that build is
+  `--ds-build hash-trie=presized:N` (still under `root-capacity=tuples`,
+  which is now required). The `grow` curve's `parallel:N` arms were the
+  exact build then and still are, so only the `tuples` curves' reports carry
+  the old spelling: `ds_build_mode: parallel:N` beside
+  `ds_config_root_capacity: tuples`.
 - **Measurement:** `bench ds -m insertion iteration` at `--sample-size 10
   --measurement-time 3 --warm-up-time 1`, plus `space` in replicate 1. Five
   replicates; within each, per relation, the three curves and the arms in an

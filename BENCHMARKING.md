@@ -213,8 +213,10 @@ kl.plot(df, kind="bar", x="ds_layout_hasher", y="time",
 `--ds-build` works the same way for the build modes, as `structure=mode`
 pairs: ColumnTrie's (`column-trie=bulk` by default, `column-trie=incremental`
 for the build before issue #84), HashTrie's (`hash-trie=serial` by default,
-`hash-trie=radix:<bits>` for the radix-partitioned build of issue #91 and
-`hash-trie=parallel:N` for the parallel build of issue #94) and
+`hash-trie=radix:<bits>` for the radix-partitioned build of issue #91,
+`hash-trie=parallel:N` for the parallel build of issue #94 and
+`hash-trie=presized:N` for the paper's presized build, which requires
+`--ds-config root-capacity=tuples`) and
 TreeTrie's (`tree-trie=serial` by default, `tree-trie=parallel:N` for the
 parallel build of issue #94; see "Scaling" below). For thesis figures,
 compare modes **within one binary** — e.g.
@@ -282,7 +284,11 @@ walkthrough is in
 `--ds-build tree-trie=parallel:N` builds a `TreeTrie` on N threads, and
 `hash-trie=parallel:N` a `HashTrie` (#94). The trie is identical to the
 serial build's, so only `insertion` and `end_to_end` can
-move. Run one arm per thread count within one binary, each with its own
+move. HashTrie's presized build is `--ds-build hash-trie=presized:N`, which
+requires `--ds-config root-capacity=tuples`; it builds an equivalent, not
+identical, trie, so `iteration` is measured for it too, and its speedup
+baseline is `serial` under the same `root-capacity=tuples` config.
+Run one arm per thread count within one binary, each with its own
 `--name`, then plot the speedup over `serial`:
 
 ```bash
@@ -296,7 +302,7 @@ uv --directory python/kermit-lab run kermit-lab speedup "$PWD"/bench-runs/tt-*.j
 ```
 
 `kl.speedup_table(df)` gives the numbers behind the plot (`kermit-lab speedup`
-prints the same table): speedup and efficiency per thread count, with CIs, and
+prints the same table): speedup and efficiency per build mode and thread count, with CIs, and
 the Karp–Flatt serial fraction.
 A flat Karp–Flatt fraction means a fixed sequential share (the assemble
 step) limits the build; a rising one means a cost that grows with N: thread
@@ -327,7 +333,7 @@ provides five helpers:
 | --- | --- | --- |
 | `summary` | `summary(df, *, rows, cols, value="mean_ns")` | Pivot many runs into a readable 2-D table (e.g. DS × size). |
 | `compare` | `compare(df, *, baseline, target, group_by="data_structure")` | Pair every baseline row with its target and compute speedup per workload. |
-| `speedup_table` | `speedup_table(df, *, phase="insertion", baseline="serial")` | Speedup, efficiency and Karp–Flatt fraction of every `parallel:N` build over `serial`, with CIs ("Scaling" above). |
+| `speedup_table` | `speedup_table(df, *, phase="insertion", baseline="serial")` | Speedup, efficiency and Karp–Flatt fraction of every `parallel:N` / `presized:N` build over `serial`, with CIs ("Scaling" above). |
 | `bootstrap_ratio_ci` | `bootstrap_ratio_ci(a, b, *, ci=0.95, rng=…)` | Percentile-bootstrap CI for `mean(a)/mean(b)` from per-iter samples — "is this speedup real?" |
 | `mannwhitney_u` | `mannwhitney_u(a, b)` → `(U, p)` | Non-parametric test that two sample distributions differ; pair with a violin plot. |
 

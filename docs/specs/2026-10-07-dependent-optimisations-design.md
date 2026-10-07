@@ -1,7 +1,7 @@
 # Dependent Optimisations: Prerequisites Between Axes
 
 **Date:** 2026-10-07
-**Status:** design, approved in conversation 2026-10-07
+**Status:** design, approved 2026-10-07; implemented on branch `aidanb/dependent-optimisations` (as-implemented notes below)
 **Amends:** [`optimization-standard.md`](optimization-standard.md) (Amendment 3)
 **Retrofits:** the presized parallel build of
 [`2026-10-06-hash-trie-presized-parallel-build-design.md`](2026-10-06-hash-trie-presized-parallel-build-design.md)
@@ -52,8 +52,10 @@ An optimisation's behaviour is a function of its own axis value. Concretely:
   branch.
 
 The sentence the presized design promised the standard, "a mode may pick its
-process by Config value", is withdrawn (it was never written into the
-standard; the promise is in that design's § Placement). The BuildMode
+process by Config value", is withdrawn. It was written into the standard:
+`optimization-standard.md`'s BuildMode table said a mode may choose its
+process by a Config value (added in 64b8823, from that design's
+§ Placement), and this branch removes it. The BuildMode
 equivalence rule (Amendment 2) is unchanged: every mode builds the same
 contents and capacities as `serial` *under the same config*.
 
@@ -184,8 +186,10 @@ flag it does take is covered.
 
 The CLI is the only place that can reject a run, but the constructor is a
 public API and a test can call it with any pair. A dependent value under a
-missing prerequisite is a broken invariant at the constructor: it panics with
-the same sentence the CLI prints, as `from_tuples` already panics on an arity
+missing prerequisite is a broken invariant at the constructor: it panics on
+the same condition, with a message naming the prerequisite
+(`hash-trie=presized:N requires root-capacity=tuples; got
+root-capacity=<v>`), as `from_tuples` already panics on an arity
 mismatch (Priorities item 5: internal panics on broken invariants are
 acceptable; the CLI makes them unreachable). For the retrofit, in
 `HashTrie::from_tuples_with_config_and_build_mode`:
@@ -248,10 +252,16 @@ key, like `radix:8` and `parallel:N` before it. `bench-report-schema.md`'s
 kermit-lab:
 
 - `frame.threads_of` recognises `presized:N` as well as `parallel:N`, so the
-  `threads` column and `analysis.speedup_table` cover the presized curve. The
-  speedup's baseline stays `serial`; its case keys already include
-  `ds_config_root_capacity`, so `presized:N` is compared with `serial` under
-  `tuples`, which is the comparison the scaling record makes.
+  `threads` column covers the presized curve, and `frame.build_of` names a
+  threaded mode's build (`parallel` or `presized`). The speedup's baseline
+  stays `serial`, and its case keys include `ds_config_root_capacity`, so
+  `presized:N` is compared with `serial` under `tuples`, which is the
+  comparison the scaling record makes. The case keys alone do not keep the
+  arms apart: `analysis.speedup_table` keys its arms by build mode and
+  threads and emits `ds_build_mode` in each row, since by `threads` alone
+  `parallel:4` and `presized:4` under `tuples` would have been pooled. The
+  `speedup` preset draws one line per build and titles a presized-only
+  figure "Presized build speedup".
 - No mirror of the prerequisite table. A report is written by a binary that
   already rejected every invalid pair, so kermit-lab never sees one.
 - No rewrite of old values. `SCOPED_AXIS_DEFAULTS` back-fills *missing* axes
@@ -297,7 +307,7 @@ algorithm changes; `fill_presized_root` and `fill_root` are untouched.
 |---|---|
 | `kermit-ds/src/ds/hash_trie/build_mode.rs` | `Presized(Threads)` variant; `FromStr` arm sharing `parallel`'s digit rule; `axis_value` → `presized:N`; round-trip and pinned-value tests |
 | `kermit-ds/src/ds/hash_trie/implementation.rs` | `from_tuples_with_config_and_build_mode`: `Parallel` arm always `fill_root`; new `Presized` arm asserts `Tuples` then `fill_presized_root`; `from_tuples_partitioned` doc |
-| `kermit-ds/src/ds/hash_trie/parallel.rs` | module doc: two modes, not one mode under two configs; `root_capacity_selects_the_parallel_path` becomes `presized_requires_a_presized_root` (`#[should_panic]`) plus `parallel_fills_by_merge_under_every_root_capacity`; `ParallelBuild.deferred` stays `Option` (`Some` iff presized) |
+| `kermit-ds/src/ds/hash_trie/parallel.rs` | module doc: two modes, not one mode under two configs; `root_capacity_selects_the_parallel_path` becomes `presized_build_reaches_its_own_path`, `presized_build_requires_a_presized_root` (`#[should_panic]`) and `parallel_build_merges_under_every_root_capacity`; `ParallelBuild.deferred` stays `Option` (`Some` iff presized) |
 | `kermit-ds/src/ds/hash_trie/identity.rs` | comments naming the mode |
 | `kermit-ds/src/configured.rs` | the `BuiltWith<Configured<…, Presized>, TwoThreads>` test uses `Presized(2)` |
 | `kermit-ds/tests/hash_trie_tests.rs`, `parquet_tests.rs` | `*PresizedParallel2` aliases build with `Presized(2)` |
@@ -351,3 +361,31 @@ parallel:N / presized:N (requires `root-capacity=tuples`) ✓".
 - Any change to `fill_presized_root`, `fill_root`, the equivalence
   guarantees, or the paper-parity board (#105); the presized build's row on
   the board is spelled `presized:N` from now on, nothing else moves.
+
+## As implemented (2026-10-07)
+
+What landed differs from the sketches above in these places:
+
+- `Violation` derives `Clone, Debug, PartialEq, Eq`, so tests compare it
+  whole. The guard test `every_prerequisite_is_reachable` is row-generic:
+  each row supplies a violating and a satisfying `DsChoices` and the
+  `Violation` it must report, and every row is checked not to fire on the
+  default `DsChoices`. Its sibling `ds_choices_resolve_rejects_a_violated_prerequisite`
+  pins the message through `DsChoices::resolve`, for a default and an
+  explicit `root-capacity=grow`.
+- `Prerequisite::ALL`'s doc warns that nothing checks it against the enum,
+  so a variant missing there is never checked.
+- The parser has one arm per threaded mode, both over a shared
+  `parse_threads`.
+- The test aliases are `HashTrieSipPresized2`, `HashTrieSipLazyPresized2` and
+  `HashTrieFxPrunedPresized2` (not `*PresizedParallel2`), built with a
+  `HashPresized2` provider; `join_tests.rs` also runs `HashTrieSipPresized2`
+  under `AnyOrders`.
+- Files touched beyond the retrofit table: `hash_table.rs` (comments naming
+  the mode); `relation.rs` (the `BuildModeRelation` panic doc);
+  `hash_trie/mod.rs` and `ds/mod.rs`, which widen the parallel-build drain's
+  cfg to `any(test, feature = "test-hooks")`; `configured.rs`, whose
+  stacked-marker test now asserts the presized record; `BENCHMARKING.md`;
+  `USAGE.md`; kermit-lab's `analysis.py`, `presets.py` and `README.md`; and
+  `CLAUDE.md`'s Priority 1 sentence, recipe step and gotcha.
+- The 2026-10-06 design's note also supersedes its § CLI and kermit-lab.

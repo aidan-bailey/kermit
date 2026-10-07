@@ -15,6 +15,14 @@ Under the default config, `parallel:N` keeps today's exact build.
 and its § Amendment 2), #88 (initial-capacity hint), #101 (why partitioned builds lose
 locality).
 
+**Superseded in spelling (2026-10-07):** the build this design adds is now its own mode,
+`--ds-build hash-trie=presized:N`, which requires `--ds-config root-capacity=tuples`;
+`parallel:N` is the exact merge build under every config. The "new rule" in
+§ Placement under the standard is withdrawn by Amendment 3
+(`2026-10-07-dependent-optimisations-design.md`).
+Everything below about the process, the equivalence argument and the tests still holds,
+except § CLI and kermit-lab, which this note supersedes.
+
 ## Motivation
 
 The HashTrie half of the #94 scaling run (2026-10-06,
