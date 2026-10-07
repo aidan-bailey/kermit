@@ -243,17 +243,28 @@ mod tests {
     crate::define_build_mode_provider!(
         TwoThreads,
         crate::ds::HashTrieBuildMode,
-        crate::ds::HashTrieBuildMode::Parallel(crate::Threads::new(2).unwrap())
+        crate::ds::HashTrieBuildMode::Presized(crate::Threads::new(2).unwrap())
     );
 
     /// The two markers stack: the config reaches the relation, and so does
-    /// the build mode (the presized path presizes the root).
+    /// the build mode. The serial trie is equivalent to the presized build's,
+    /// so only the build record can tell that `presized:2` ran: exactly one
+    /// record, on two threads, with a deferred count (the presized build
+    /// needs the config's root capacity, so a wrong stack would panic here).
     #[test]
     fn built_with_stacks_on_configured() {
         type Stacked =
             crate::BuiltWith<Configured<HashTrie<SipHashStrategy>, Presized>, TwoThreads>;
+        crate::ds::take_hash_trie_parallel_builds();
         let r = Stacked::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
         assert_eq!(r.config().root_capacity, crate::ds::RootCapacity::Tuples);
+        let builds = crate::ds::take_hash_trie_parallel_builds();
+        assert_eq!(builds.len(), 1, "one presized build: {builds:?}");
+        assert_eq!(builds[0].threads, 2, "{builds:?}");
+        assert!(
+            builds[0].deferred.is_some(),
+            "the presized record: {builds:?}"
+        );
         let mut tuples = r.collect_tuples();
         tuples.sort();
         assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);

@@ -6,7 +6,7 @@ mod tree_trie;
 // the registry enum beside the implementations it names, so adding a structure
 // touches one file for both the type and its CLI spelling. The cost is `clap`
 // in this crate's dependency tree. Decided in aidan-bailey/kermit#60 (item 5).
-#[cfg(feature = "test-hooks")]
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use hash_trie::take_parallel_builds as take_hash_trie_parallel_builds;
 #[cfg(feature = "test-hooks")]
 pub use hash_trie::ParallelBuild as HashTrieParallelBuild;

@@ -164,21 +164,28 @@ hash_trie_test_suite!(HashTrieSipLazyParallel2, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieFxPrunedParallel2, FxHashStrategy);
 
-// ── BuildMode × Config: the presized parallel build ─────────────────────
-// Under `root-capacity=tuples` (#88, `PresizedRoot` above), `parallel:2`
-// fills the root by region (the paper's build, #94). The trie is equivalent
-// to serial's (Amendment 2), so the iterator contract holds unchanged.
+// ── BuildMode × Config: the presized build ──────────────────────────────
+// `presized:2` requires `root-capacity=tuples` (`PresizedRoot` above), so
+// it is only ever stacked on a presized alias. It fills the root by region
+// (the paper's build, #94); the trie is equivalent to serial's (Amendment
+// 2), so the iterator contract holds unchanged.
+define_build_mode_provider!(
+    HashPresized2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Presized(Threads::new(2).expect("2 is not zero"))
+);
+
 type HashTrieSipLazyPresized = Configured<HashTrieSipLazy, PresizedRoot>;
 type HashTrieFxPrunedPresized = Configured<HashTrieFxPruned, PresizedRoot>;
-type HashTrieSipPresizedParallel2 = BuiltWith<HashTrieSipPresized, HashParallel2>;
-type HashTrieSipLazyPresizedParallel2 = BuiltWith<HashTrieSipLazyPresized, HashParallel2>;
-type HashTrieFxPrunedPresizedParallel2 = BuiltWith<HashTrieFxPrunedPresized, HashParallel2>;
+type HashTrieSipPresized2 = BuiltWith<HashTrieSipPresized, HashPresized2>;
+type HashTrieSipLazyPresized2 = BuiltWith<HashTrieSipLazyPresized, HashPresized2>;
+type HashTrieFxPrunedPresized2 = BuiltWith<HashTrieFxPrunedPresized, HashPresized2>;
 
-hash_trie_test_suite!(HashTrieSipPresizedParallel2, SipHashStrategy);
+hash_trie_test_suite!(HashTrieSipPresized2, SipHashStrategy);
 
-hash_trie_test_suite!(HashTrieSipLazyPresizedParallel2, SipHashStrategy);
+hash_trie_test_suite!(HashTrieSipLazyPresized2, SipHashStrategy);
 
-hash_trie_test_suite!(HashTrieFxPrunedPresizedParallel2, FxHashStrategy);
+hash_trie_test_suite!(HashTrieFxPrunedPresized2, FxHashStrategy);
 
 /// What the structure does when two distinct values really do hash to the
 /// same `u64`. These pin the "leaf chains preserve hash collisions"

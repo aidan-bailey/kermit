@@ -389,65 +389,72 @@ define_multiway_join_test_suite_for_build_mode!(
     HashParallel2
 );
 
-// ── BuildMode × Config: the presized parallel build ─────────────────────
-// Under root-capacity=tuples (#88, `PresizedRoot` above), parallel:2 is the
-// paper's partitioned build (#94), which builds an equivalent trie
-// (Amendment 2). The same three Layouts, under every optimiser.
+// ── BuildMode × Config: the presized build ──────────────────────────────
+// `presized:2` requires root-capacity=tuples (#88, `PresizedRoot` above),
+// so it is stacked on the presized aliases only: the paper's partitioned
+// build (#94), which builds an equivalent trie (Amendment 2). The same
+// three Layouts, under every optimiser. This is the stacked cell the
+// standard's prerequisite rule asks for.
+define_build_mode_provider!(
+    HashPresized2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Presized(Threads::new(2).expect("2 is not zero"))
+);
 type HashTrieFxPrunedPresized = Configured<HashTrieFxPruned, PresizedRoot>;
 type HashTrieSipPrunedLazyPresized = Configured<HashTrieSipPrunedLazy, PresizedRoot>;
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieSipPresized,
     HashTriejoin,
     LexicographicOptimiser,
-    HashParallel2
+    HashPresized2
 );
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieSipPresized,
     HashTriejoin,
     CardinalityOptimiser,
-    HashParallel2
+    HashPresized2
 );
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieSipPresized,
     HashTriejoin,
     CostBasedOptimiser,
-    HashParallel2
+    HashPresized2
 );
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieFxPrunedPresized,
     HashTriejoin,
     LexicographicOptimiser,
-    HashParallel2
+    HashPresized2
 );
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieFxPrunedPresized,
     HashTriejoin,
     CardinalityOptimiser,
-    HashParallel2
+    HashPresized2
 );
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieFxPrunedPresized,
     HashTriejoin,
     CostBasedOptimiser,
-    HashParallel2
+    HashPresized2
 );
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieSipPrunedLazyPresized,
     HashTriejoin,
     LexicographicOptimiser,
-    HashParallel2
+    HashPresized2
 );
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieSipPrunedLazyPresized,
     HashTriejoin,
     CardinalityOptimiser,
-    HashParallel2
+    HashPresized2
 );
 define_multiway_join_test_suite_for_build_mode!(
     HashTrieSipPrunedLazyPresized,
     HashTriejoin,
     CostBasedOptimiser,
-    HashParallel2
+    HashPresized2
 );
 
 // ── Column orders: every alias × optimiser under `any` (issue #93) ─────
@@ -638,7 +645,7 @@ type TreeTrieParallel2 = BuiltWith<TreeTrie, Parallel2>;
 type ColumnTrieIncremental = BuiltWith<ColumnTrie, Incremental>;
 type HashTrieSipRadix2 = BuiltWith<HashTrieSip, Radix2>;
 type HashTrieSipParallel2 = BuiltWith<HashTrieSip, HashParallel2>;
-type HashTrieSipPresizedParallel2 = BuiltWith<HashTrieSipPresized, HashParallel2>;
+type HashTrieSipPresized2 = BuiltWith<HashTrieSipPresized, HashPresized2>;
 
 define_multiway_join_test_suite_with_column_orders!(
     HashTrieSipHalfFull,
@@ -721,15 +728,15 @@ define_multiway_join_test_suite_with_column_orders!(
     HashTriejoin,
     CostBasedOptimiser,
     AnyOrders,
-    HashTrieSipPresizedParallel2,
+    HashTrieSipPresized2,
     HashTriejoin,
     LexicographicOptimiser,
     AnyOrders,
-    HashTrieSipPresizedParallel2,
+    HashTrieSipPresized2,
     HashTriejoin,
     CardinalityOptimiser,
     AnyOrders,
-    HashTrieSipPresizedParallel2,
+    HashTrieSipPresized2,
     HashTriejoin,
     CostBasedOptimiser,
     AnyOrders,

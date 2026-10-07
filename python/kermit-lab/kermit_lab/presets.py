@@ -14,6 +14,7 @@ from matplotlib.figure import Figure
 
 from .analysis import SPEEDUP_MEASURES, speedup_table
 from .facet import finish, make_grid
+from .frame import build_of
 from .loader import TIME_PHASES
 from .plot import plot
 from .plots_errors import InsufficientAxesError
@@ -125,15 +126,18 @@ def speedup(
 ) -> Figure:
     """Build speedup over the ``baseline`` build against thread count (#94).
 
-    One line per case of :func:`~kermit_lab.analysis.speedup_table`, with its
-    CI as a band, and the ideal ``speedup = N`` dashed. Both axes are log2, so
-    each doubling of threads is one step and the ideal is a straight line. Load
-    one binary's reports only (see :func:`~kermit_lab.analysis.speedup_table`).
+    One line per case of :func:`~kermit_lab.analysis.speedup_table` and build
+    (``parallel`` or ``presized``, the label naming the build when both
+    appear), with its CI as a band, and the ideal ``speedup = N`` dashed. Both
+    axes are log2, so each doubling of threads is one step and the ideal is a
+    straight line. The title names the presized build when it is the only one
+    plotted. Load one binary's reports only (see
+    :func:`~kermit_lab.analysis.speedup_table`).
 
     Raises :class:`InsufficientAxesError` for a phase that is not a time
-    phase, or when no case has both a baseline and a ``parallel:N`` row. Every
-    time phase is allowed: a build mode may move ``iteration`` too
-    (Amendment 2).
+    phase, or when no case has both a baseline and a ``parallel:N`` /
+    ``presized:N`` row. Every time phase is allowed: a build mode may move
+    ``iteration`` too (Amendment 2).
     """
     if phase not in TIME_PHASES:
         allowed = " or ".join(repr(p) for p in TIME_PHASES)
@@ -150,6 +154,12 @@ def speedup(
     ax = axes[0]
     identity = [c for c in table.columns if c not in SPEEDUP_MEASURES]
     varying = [c for c in identity if table[c].nunique(dropna=False) > 1] or ["data_structure"]
+    # A line runs over thread counts, so it is keyed by the build
+    # (`build_of`), not by `ds_build_mode`, which carries N: `parallel:N` and
+    # `presized:N` are then two lines, never one through both.
+    build = table["ds_build_mode"].map(build_of).rename("build")
+    if build.nunique() > 1:
+        varying = [*varying, build]
     for key, line in table.groupby(varying, dropna=False, sort=True):
         line = line.sort_values("threads")
         parts = key if isinstance(key, tuple) else (key,)
@@ -166,5 +176,9 @@ def speedup(
     ax.set_xticks(ticks, labels=[str(t) for t in ticks])
     ax.set_xlabel("threads")
     ax.set_ylabel(f"speedup over {baseline} ({phase})")
-    finish(fig, axes, title="Parallel build speedup", out=out)
+    # A figure of presized arms alone says so; parallel-only and mixed figures
+    # keep the title they always had.
+    lone_presized = set(build) == {"presized"}
+    title = "Presized build speedup" if lone_presized else "Parallel build speedup"
+    finish(fig, axes, title=title, out=out)
     return fig

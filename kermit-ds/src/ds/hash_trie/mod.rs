@@ -30,7 +30,7 @@ mod parallel;
 mod pruning;
 mod radix;
 
-#[cfg(feature = "test-hooks")]
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use parallel::take_parallel_builds;
 #[cfg(feature = "test-hooks")]
 pub use parallel::ParallelBuild;

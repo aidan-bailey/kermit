@@ -119,19 +119,46 @@ def discover_opt_columns(df: pd.DataFrame) -> list[str]:
     return sorted(c for c in df.columns if _OPT_AXIS_RE.match(c))
 
 
+_THREADED_MODES = ("parallel:", "presized:")
+
+
+def _threaded(build_mode: object) -> tuple[str, int] | None:
+    """``(build, N)`` of a well-formed ``parallel:N`` / ``presized:N`` mode."""
+    if isinstance(build_mode, str):
+        for prefix in _THREADED_MODES:
+            if build_mode.startswith(prefix):
+                count = build_mode.removeprefix(prefix)
+                # ASCII only: `"²".isdigit()` holds, but `int("²")` raises.
+                if count.isascii() and count.isdigit():
+                    return prefix.removesuffix(":"), int(count)
+    return None
+
+
 def threads_of(build_mode: object) -> int | None:
-    """The thread count of a ``parallel:N`` build mode, else ``None``.
+    """The thread count of a ``parallel:N`` or ``presized:N`` build mode, else ``None``.
 
     ``serial``, ColumnTrie's ``bulk`` / ``incremental``, a missing mode and a
-    malformed ``parallel:`` value are not thread counts, so they become
-    ``<NA>`` in the ``threads`` column.
+    malformed threaded value are not thread counts, so they become ``<NA>``
+    in the ``threads`` column. ``presized:N`` is HashTrie's presized build,
+    which requires ``root-capacity=tuples``.
     """
-    if isinstance(build_mode, str) and build_mode.startswith("parallel:"):
-        count = build_mode.removeprefix("parallel:")
-        # ASCII only: `"²".isdigit()` holds, but `int("²")` raises.
-        if count.isascii() and count.isdigit():
-            return int(count)
-    return None
+    threaded = _threaded(build_mode)
+    return None if threaded is None else threaded[1]
+
+
+def build_of(build_mode: object) -> str | None:
+    """The build of a ``parallel:N`` or ``presized:N`` mode, ``"parallel"`` or
+    ``"presized"``, else ``None``: exactly the modes :func:`threads_of` reads.
+
+    A speedup curve runs over thread counts, so it is keyed by the build, not
+    by ``ds_build_mode``, whose value carries ``N``. Reports written before
+    2026-10-07 that carry ``parallel:N`` with ``ds_config_root_capacity:
+    "tuples"`` timed the presized build (``bench-report-schema.md``'s
+    2026-10-07 history row); reports carry no binary revision, so kermit-lab
+    labels them ``parallel``.
+    """
+    threaded = _threaded(build_mode)
+    return None if threaded is None else threaded[0]
 
 
 def _summary_from_reports(
@@ -206,7 +233,8 @@ def load(
     ``(report × criterion_group)``. Columns: ``kind``, ``metric``, ``phase``,
     the axis columns (conventional + discovered optimization axes), a derived
     ``threads`` column right after ``ds_build_mode`` when the reports have that
-    axis (the ``N`` of a ``parallel:N`` build, ``<NA>`` for every other mode),
+    axis (the ``N`` of a ``parallel:N`` or ``presized:N`` build, ``<NA>`` for
+    every other mode),
     ``mean_*``/``median_*`` estimates, plus
     ``criterion_group`` / ``criterion_function`` join keys into
     :func:`load_samples`. ``allow_mixed_schema`` passes through to

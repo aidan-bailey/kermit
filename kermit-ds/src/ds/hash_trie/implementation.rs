@@ -66,9 +66,11 @@ use {
 /// (via [`ConfigurableRelation`](crate::relation::ConfigurableRelation)) are
 /// the config-carrying constructors; `new` / `from_tuples` are thin wrappers
 /// over them that supply the default configuration. A known set of tuples
-/// can also be built by the `radix:K` and `parallel:N` BuildModes
+/// can also be built by the `radix:K`, `parallel:N` and `presized:N`
+/// BuildModes
 /// ([`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
-/// or [`BuildModeRelation`]), which build the identical trie.
+/// or [`BuildModeRelation`]), which build the identical trie (`presized:N`
+/// an equivalent one, Amendment 2).
 /// `HashTrieConfig::root_capacity` decides the root's starting size: 4
 /// buckets (`grow`, the default), or sized once from the tuples a build is
 /// given (`tuples`), so that it never grows during that build (#88).
@@ -335,9 +337,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     }
 
     /// [`insert_at`](Self::insert_at)'s `Leaf` arm at the root (arity 1),
-    /// inside one [`BucketRun`] of a presized root: the presized parallel
-    /// build's root step (`parallel.rs`). Returns the tuple if its key's
-    /// probe ran off its region, for the caller to insert afterwards.
+    /// inside one [`BucketRun`] of a presized root: the `presized:N` build's
+    /// root step (`parallel.rs`). Returns the tuple if its key's probe ran
+    /// off its region, for the caller to insert afterwards.
     pub(super) fn insert_at_leaf_root_in_run(
         run: &mut BucketRun<'_, Vec<Vec<usize>>>, tuple: Vec<usize>,
     ) -> Result<(), Vec<usize>> {
@@ -351,8 +353,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     }
 
     /// [`insert_at`](Self::insert_at)'s `Inner` arm at the root (arity
-    /// ≥ 2), inside one [`BucketRun`] of a presized root: the presized
-    /// parallel build's root step. It mirrors `insert_at` decision for
+    /// ≥ 2), inside one [`BucketRun`] of a presized root: the `presized:N`
+    /// build's root step. It mirrors `insert_at` decision for
     /// decision. A fresh key becomes a `Singleton` (pruning), an
     /// `Unexpanded` child (lazy), or a new table that `insert_at` descends
     /// into. An existing key unprunes, appends to its pending list, or
@@ -509,17 +511,21 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// Creates a trie holding `config`, populated with `tuples` and built by
     /// `mode` — the one constructor that takes both the Config and the
-    /// BuildMode. Every mode builds the identical trie (issues #91, #94), so
+    /// BuildMode. Every mode builds an equivalent trie (issues #91, #94;
+    /// `Presized` may place root keys in other buckets, Amendment 2), so
     /// `mode` changes only how long this takes.
     ///
     /// `Serial` is [`ConfigurableRelation::from_tuples_with_config`],
-    /// unchanged; `Radix` partitions first (see `radix.rs`), and
-    /// `Parallel` runs the radix build's partition and build steps on threads
-    /// (see `parallel.rs`).
+    /// unchanged; `Radix` partitions first (see `radix.rs`), `Parallel` runs
+    /// the radix build's partition and build steps on threads, and
+    /// `Presized` fills a presized root by region, the paper's build (both
+    /// in `parallel.rs`).
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
+    /// Panics if any tuple's length does not equal `header.arity()`, or if
+    /// `mode` is `Presized` and `config.root_capacity` is not
+    /// [`RootCapacity::Tuples`], the mode's prerequisite.
     pub fn from_tuples_with_config_and_build_mode(
         header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
         tuples: Vec<Vec<usize>>,
@@ -533,25 +539,30 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             },
             | HashTrieBuildMode::Parallel(threads) => {
                 Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
-                    match config.root_capacity {
-                        // The root's size depends on the distinct keys, so
-                        // it is filled after them, in first-appearance order.
-                        | RootCapacity::Grow => parallel::fill_root::<H, P, E>(
-                            root,
-                            arity,
-                            tuples,
-                            threads,
-                            config.load_factor,
-                        ),
-                        // The root is presized (#88): the paper's build.
-                        | RootCapacity::Tuples => parallel::fill_presized_root::<H, P, E>(
-                            root,
-                            arity,
-                            tuples,
-                            threads,
-                            config.load_factor,
-                        ),
-                    }
+                    parallel::fill_root::<H, P, E>(root, arity, tuples, threads, config.load_factor)
+                })
+            },
+            | HashTrieBuildMode::Presized(threads) => {
+                // The prerequisite
+                // (docs/specs/2026-10-07-dependent-optimisations-design.md):
+                // the regions are cut from a root sized before any tuple
+                // arrives. The CLI rejects the pair first; here it is a
+                // broken invariant, like a wrong arity.
+                assert_eq!(
+                    config.root_capacity,
+                    RootCapacity::Tuples,
+                    "hash-trie=presized:{} requires root-capacity=tuples; got root-capacity={}",
+                    threads.get(),
+                    config.root_capacity.axis_value(),
+                );
+                Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
+                    parallel::fill_presized_root::<H, P, E>(
+                        root,
+                        arity,
+                        tuples,
+                        threads,
+                        config.load_factor,
+                    )
                 })
             },
         }
@@ -636,10 +647,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         trie
     }
 
-    /// What the partitioned builds share (`radix:K`, `parallel:N`): the
-    /// serial build's arity check, with its message, then `fill` on the
-    /// empty root (presized under `root-capacity=tuples`, as the serial
-    /// build's is), then the multiset count the serial build keeps.
+    /// What the partitioned builds share (`radix:K`, `parallel:N`,
+    /// `presized:N`): the serial build's arity check, with its message, then
+    /// `fill` on the empty root (presized under `root-capacity=tuples`, as
+    /// the serial build's is), then the multiset count the serial build
+    /// keeps.
     fn from_tuples_partitioned(
         header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
         fill: impl FnOnce(&mut HashTrieNode<P, E>, usize, Vec<Vec<usize>>),
@@ -664,7 +676,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
+    /// Panics if any tuple's length does not equal `header.arity()`, and for
+    /// [`HashTrieBuildMode::Presized`], which requires `root-capacity=tuples`:
+    /// this seam builds with the default config (`root-capacity=grow`), so
+    /// use [`HashTrie::from_tuples_with_config_and_build_mode`] (or
+    /// `BuiltWith<Configured<…>, …>`) instead.
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: HashTrieBuildMode, tuples: Vec<Vec<usize>>,
     ) -> Self {

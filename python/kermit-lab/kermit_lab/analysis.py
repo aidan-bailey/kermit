@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import bootstrap, mannwhitneyu
 
+from .frame import build_of
+
 # Columns that are not "natural grouping" keys for `compare`: provenance and
 # any value-family column (mean/median estimates and their CI bounds).
 _PROVENANCE_COLS: frozenset[str] = frozenset({
@@ -21,8 +23,11 @@ _VALUE_FAMILY: frozenset[str] = frozenset({
     "mean_ns", "mean_lo", "mean_hi", "mean_se",
     "median_ns", "median_lo", "median_hi",
 })
-# Columns `kl.load` derives from another column. `threads` varies exactly when
-# `ds_build_mode` does, so it is never a key that pairs rows.
+# Columns `kl.load` derives from another column. `threads` is a function of
+# `ds_build_mode` (`parallel:4` and `presized:4` share it), so it is never a key
+# that pairs rows. Where the mode is a key, `threads` adds nothing; where the
+# mode is `compare`'s `group_by`, it would keep `serial` from pairing with a
+# threaded mode.
 _DERIVED_COLS: frozenset[str] = frozenset({"threads"})
 
 
@@ -167,8 +172,8 @@ _SPEEDUP_NON_KEYS: frozenset[str] = (
 
 #: The columns `speedup_table` adds after a case's identifying columns.
 SPEEDUP_MEASURES: tuple[str, ...] = (
-    "threads", "speedup", "speedup_lo", "speedup_hi", "efficiency", "karp_flatt",
-    "baseline_runs", "runs",
+    "ds_build_mode", "threads", "speedup", "speedup_lo", "speedup_hi", "efficiency",
+    "karp_flatt", "baseline_runs", "runs",
 )
 
 
@@ -181,11 +186,14 @@ def speedup_table(
     n_resamples: int = 9999,
     rng: int | np.random.Generator | None = 0,
 ) -> pd.DataFrame:
-    """Speedup of every ``parallel:N`` build over the ``baseline`` build.
+    """Speedup of every ``parallel:N`` / ``presized:N`` build over the ``baseline`` build.
 
     A *case* is everything a row says apart from its build mode and
     provenance: one structure, workload and relation, measured under several
-    build modes. Whether ``--verify`` ran does not identify a case, nor does
+    build modes. Config axes are part of the case, so an arm pairs with the
+    ``baseline`` row of its own config: a ``presized:N`` arm, which requires
+    ``root-capacity=tuples``, with ``serial`` under ``tuples``, never under
+    ``grow``. Whether ``--verify`` ran does not identify a case, nor does
     ``queries_per_build`` on any phase but ``end_to_end``, the only one it
     shapes. Replicates of one case and mode (one report each, told apart by
     ``criterion_group`` / ``source_path``) are pooled; rows that read one
@@ -193,12 +201,21 @@ def speedup_table(
     reports only, or codegen drift between binaries enters the speedup, and
     load with ``apply_defaults=False`` (as ``kermit-lab speedup`` does): that
     keeps TreeTrie reports from before #94 out of the baseline, where
-    back-filling would count them as ``serial``.
+    back-filling would count them as ``serial``. Reports written before
+    2026-10-07 that carry ``parallel:N`` with ``ds_config_root_capacity:
+    "tuples"`` timed the presized build (``bench-report-schema.md``'s
+    2026-10-07 history row); reports carry no binary revision, so kermit-lab
+    labels them ``parallel``.
 
-    One row per case and thread count ``N``, with the case's columns followed
-    by :data:`SPEEDUP_MEASURES`:
+    One row per case, build mode and thread count ``N``, with the case's
+    columns followed by :data:`SPEEDUP_MEASURES`:
 
-    - ``speedup``: mean baseline ``value`` over mean ``parallel:N`` ``value``;
+    - ``ds_build_mode`` / ``threads``: the arm. ``parallel:N`` and
+      ``presized:N`` share ``N`` but are two builds (Amendment 3), so they are
+      two arms, each against the case's own ``baseline`` row, never pooled.
+      Within a case the arms run by build, then by ``N``;
+    - ``speedup``: mean baseline ``value`` over mean ``parallel:N`` /
+      ``presized:N`` ``value``;
       above 1 means the parallel build is faster;
     - ``speedup_lo`` / ``speedup_hi``: a percentile-bootstrap CI over the
       replicates when both sides have at least two runs. Otherwise the widest
@@ -218,9 +235,9 @@ def speedup_table(
 
     Raises ``ValueError`` when a needed column is missing, when rows share a
     Criterion directory (runs that shared a ``--name`` overwrote each other),
-    or when no case has both a baseline row and a ``parallel:N`` row on
-    ``phase``. Warns about ``parallel:N`` rows whose case has no baseline row,
-    and leaves them out.
+    or when no case has both a baseline row and a ``parallel:N`` /
+    ``presized:N`` row on ``phase``. Warns about ``parallel:N`` /
+    ``presized:N`` rows whose case has no baseline row, and leaves them out.
     """
     value_lo, value_hi = _ci_columns_for(value)
     needed = [
@@ -258,7 +275,15 @@ def speedup_table(
         if base.empty:
             continue
         identity = dict(zip(case_keys, key if isinstance(key, tuple) else (key,)))
-        for threads, arm in case[case["threads"].notna()].groupby("threads", sort=True):
+        threaded = case[case["threads"].notna()]
+        # One arm per build mode and thread count: `threads` alone would pool
+        # `parallel:4` with `presized:4`. The build (`build_of`) leads the key
+        # only to order the arms; it splits no group the mode
+        # does not, and `threads` then sorts as a number, so `:16` follows `:2`.
+        build = threaded["ds_build_mode"].map(build_of)
+        for (_, threads, mode), arm in threaded.groupby(
+            [build, "threads", "ds_build_mode"], sort=True
+        ):
             paired.update(arm.index)
             n = int(threads)
             speedup = base[value].mean() / arm[value].mean()
@@ -274,6 +299,7 @@ def speedup_table(
                 hi = base[value_hi].max() / arm[value_lo].min()
             records.append({
                 **identity,
+                "ds_build_mode": mode,
                 "threads": n,
                 "speedup": speedup,
                 "speedup_lo": lo,
@@ -287,13 +313,14 @@ def speedup_table(
     if not orphans.empty:
         reports = ", ".join(sorted(set(orphans["source_path"].astype(str))))
         warnings.warn(
-            f"{len(orphans)} parallel:N row(s) on {phase!r} have no {baseline!r} row in "
-            f"their case and are left out (a key such as relation_path, optimiser or "
-            f"a layout axis differs): {reports}",
+            f"{len(orphans)} parallel:N / presized:N row(s) on {phase!r} have no "
+            f"{baseline!r} row in their case and are left out (a key such as "
+            f"relation_path, optimiser, a layout axis or a config axis such as "
+            f"root_capacity differs): {reports}",
             stacklevel=2,
         )
     if not records:
         raise ValueError(
-            f"no case has both a {baseline!r} row and a parallel:N row on {phase!r}"
+            f"no case has both a {baseline!r} row and a parallel:N / presized:N row on {phase!r}"
         )
     return pd.DataFrame.from_records(records)
