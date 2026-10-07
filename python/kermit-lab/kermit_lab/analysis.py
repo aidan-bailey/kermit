@@ -177,16 +177,26 @@ SPEEDUP_MEASURES: tuple[str, ...] = (
 )
 
 
+# The default single-threaded build of each structure with a parallel one:
+# what `speedup_table` divides by when it is given no `baseline`.
+BASELINE_BUILD_MODES: dict[str, str] = {
+    "TreeTrie": "serial",
+    "HashTrie": "bulk",
+}
+
+
 def speedup_table(
     df: pd.DataFrame,
     *,
     phase: str = "insertion",
-    baseline: str = "serial",
+    baseline: str | None = None,
     value: str = "mean_ns",
     n_resamples: int = 9999,
     rng: int | np.random.Generator | None = 0,
 ) -> pd.DataFrame:
-    """Speedup of every ``parallel:N`` / ``presized:N`` build over the ``baseline`` build.
+    """Speedup of every threaded build over the baseline build: ``baseline`` if
+    given, else the structure's default single-threaded build
+    (:data:`BASELINE_BUILD_MODES`: TreeTrie ``serial``, HashTrie ``bulk``).
 
     A *case* is everything a row says apart from its build mode and
     provenance: one structure, workload and relation, measured under several
@@ -252,6 +262,15 @@ def speedup_table(
     # index repeats.
     rows = df[on_phase & df["ds_build_mode"].notna()].reset_index(drop=True)
 
+    def baseline_of(data_structure: object) -> str:
+        if baseline is not None:
+            return baseline
+        return BASELINE_BUILD_MODES.get(data_structure, "serial")
+
+    def baselines_named(frame: pd.DataFrame) -> str:
+        structures = frame["data_structure"] if "data_structure" in frame.columns else [None]
+        return " or ".join(repr(m) for m in sorted({baseline_of(s) for s in structures}))
+
     # Rows that read one Criterion directory are one measurement, not
     # replicates: runs that shared a `--name` overwrote each other.
     shared = rows.duplicated(["criterion_group", "criterion_function"], keep=False)
@@ -271,10 +290,10 @@ def speedup_table(
     paired: set = set()
     records: list[dict] = []
     for key, case in rows.groupby(case_keys, dropna=False, sort=True):
-        base = case[case["ds_build_mode"] == baseline]
+        identity = dict(zip(case_keys, key if isinstance(key, tuple) else (key,)))
+        base = case[case["ds_build_mode"] == baseline_of(identity.get("data_structure"))]
         if base.empty:
             continue
-        identity = dict(zip(case_keys, key if isinstance(key, tuple) else (key,)))
         threaded = case[case["threads"].notna()]
         # One arm per build mode and thread count: `threads` alone would pool
         # `parallel:4` with `presized:4`. The build (`build_of`) leads the key
@@ -314,13 +333,14 @@ def speedup_table(
         reports = ", ".join(sorted(set(orphans["source_path"].astype(str))))
         warnings.warn(
             f"{len(orphans)} parallel:N / presized:N row(s) on {phase!r} have no "
-            f"{baseline!r} row in their case and are left out (a key such as "
+            f"{baselines_named(orphans)} row in their case and are left out (a key such as "
             f"relation_path, optimiser, a layout axis or a config axis such as "
             f"root_capacity differs): {reports}",
             stacklevel=2,
         )
     if not records:
         raise ValueError(
-            f"no case has both a {baseline!r} row and a parallel:N / presized:N row on {phase!r}"
+            f"no case has both a {baselines_named(rows)} row and a parallel:N / presized:N row on "
+            f"{phase!r}"
         )
     return pd.DataFrame.from_records(records)

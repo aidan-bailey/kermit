@@ -105,36 +105,60 @@ def test_mannwhitney_identical_samples_not_significant():
 # --- speedup_table ---------------------------------------------------------
 
 
-def _build_mode_rows(arms: dict[str, list[float]]) -> pd.DataFrame:
-    """One summary row per run: TreeTrie insertion on one relation, under each
-    build mode in ``arms`` (mode -> one mean per replicate)."""
+def _build_mode_rows(
+    arms: dict[str, list[float]], *, data_structure: str = "TreeTrie"
+) -> pd.DataFrame:
+    """One summary row per run: ``data_structure`` insertion on one relation,
+    under each build mode in ``arms`` (mode -> one mean per replicate)."""
     rows = []
     for mode, times in arms.items():
         threads = threads_of(mode)
         for run, t in enumerate(times):
             rows.append({
                 "kind": "ds", "metric": "time", "phase": "insertion",
-                "data_structure": "TreeTrie", "relation_path": "r.parquet",
+                "data_structure": data_structure, "relation_path": "r.parquet",
                 "ds_build_mode": mode, "threads": threads,
                 "mean_ns": t, "mean_lo": t * 0.99, "mean_hi": t * 1.01,
                 "source_path": f"{mode}-{run}.json", "criterion_group": f"{mode}-{run}",
-                "criterion_function": "TreeTrie/insertion",
+                "criterion_function": f"{data_structure}/insertion",
             })
     df = pd.DataFrame(rows)
     df["threads"] = df["threads"].astype("Int64")
     return df
 
 
+def test_speedup_table_divides_a_hash_trie_by_its_bulk_build() -> None:
+    df = _build_mode_rows(
+        {"bulk": [100.0], "incremental": [90.0], "parallel:2": [50.0]},
+        data_structure="HashTrie",
+    )
+    assert speedup_table(df).iloc[0]["speedup"] == pytest.approx(2.0)
+
+
+def test_speedup_table_baseline_overrides_the_structures_default() -> None:
+    df = _build_mode_rows(
+        {"bulk": [100.0], "incremental": [80.0], "parallel:2": [40.0]},
+        data_structure="HashTrie",
+    )
+    assert speedup_table(df, baseline="incremental").iloc[0]["speedup"] == pytest.approx(2.0)
+
+
+def test_speedup_table_names_the_structures_baseline_when_unpaired() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]}, data_structure="HashTrie")
+    with pytest.warns(UserWarning, match="no 'bulk' row"), pytest.raises(
+        ValueError, match="no case"
+    ):
+        speedup_table(df)
+
+
 def test_speedup_table_keeps_parallel_and_presized_arms_apart() -> None:
     """`parallel:4` and `presized:4` share a thread count but are two builds
     (Amendment 3), so under one `root-capacity=tuples` case they are two arms,
-    each against the same `serial` row, never one pooled arm."""
+    each against the same `bulk` row, never one pooled arm."""
     df = _build_mode_rows(
-        {"serial": [8000.0], "parallel:4": [4000.0], "presized:4": [1000.0]}
-    ).assign(
-        data_structure="HashTrie", ds_config_root_capacity="tuples",
-        criterion_function="HashTrie/insertion",
-    )
+        {"bulk": [8000.0], "parallel:4": [4000.0], "presized:4": [1000.0]},
+        data_structure="HashTrie",
+    ).assign(ds_config_root_capacity="tuples")
     table = speedup_table(df)
     assert table["ds_build_mode"].tolist() == ["parallel:4", "presized:4"]
     assert table["threads"].tolist() == [4, 4]
@@ -143,18 +167,18 @@ def test_speedup_table_keeps_parallel_and_presized_arms_apart() -> None:
     assert table["baseline_runs"].tolist() == [1, 1]
 
 
-def test_speedup_table_pairs_presized_with_serial_under_the_same_root_capacity() -> None:
+def test_speedup_table_pairs_presized_with_bulk_under_the_same_root_capacity() -> None:
     """The 2026-10-06 run's shape: `grow` and `tuples` curves loaded together.
-    `ds_config_root_capacity` is a case key, so each arm divides the `serial`
+    `ds_config_root_capacity` is a case key, so each arm divides the `bulk`
     row of its own config, and `presized:4` (which requires `tuples`) never
     meets the `grow` baseline."""
-    hash_trie = {"data_structure": "HashTrie", "criterion_function": "HashTrie/insertion"}
-    grow = _build_mode_rows({"serial": [8000.0], "parallel:4": [4000.0]}).assign(
-        ds_config_root_capacity="grow", **hash_trie
-    )
+    grow = _build_mode_rows(
+        {"bulk": [8000.0], "parallel:4": [4000.0]}, data_structure="HashTrie"
+    ).assign(ds_config_root_capacity="grow")
     tuples = _build_mode_rows(
-        {"serial": [6000.0], "parallel:4": [3000.0], "presized:4": [1000.0]}
-    ).assign(ds_config_root_capacity="tuples", **hash_trie)
+        {"bulk": [6000.0], "parallel:4": [3000.0], "presized:4": [1000.0]},
+        data_structure="HashTrie",
+    ).assign(ds_config_root_capacity="tuples")
     tuples = tuples.assign(
         criterion_group=tuples["criterion_group"] + "-tuples",
         source_path=tuples["source_path"] + "-tuples",
@@ -271,8 +295,8 @@ def test_speedup_table_reads_hash_trie_parallel_rows_beside_radix() -> None:
     """HashTrie has a third mode, ``radix:K``: neither baseline nor arm, so
     it is left out silently. It can also be the baseline, which measures
     the parallel build against the single-threaded partitioned build."""
-    df = _build_mode_rows({"serial": [100.0], "radix:8": [120.0], "parallel:2": [50.0]}).assign(
-        data_structure="HashTrie", criterion_function="HashTrie/insertion"
+    df = _build_mode_rows(
+        {"bulk": [100.0], "radix:8": [120.0], "parallel:2": [50.0]}, data_structure="HashTrie"
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

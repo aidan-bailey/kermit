@@ -5,7 +5,11 @@ import pandas as pd
 import pytest
 
 from kermit_lab import defaults
-from kermit_lab.defaults import SCOPED_AXIS_DEFAULTS, apply_axis_defaults
+from kermit_lab.defaults import (
+    SCOPED_AXIS_DEFAULTS,
+    apply_axis_defaults,
+    apply_renamed_axis_values,
+)
 
 # The `data_structure` labels a report can carry, pinned on the Rust side by
 # `IndexStructure::axis_value`.
@@ -79,16 +83,20 @@ def test_every_default_names_a_known_structure() -> None:
 
 def test_the_registries_are_scoped() -> None:
     """A structure-blind registry stamps an axis on every structure (#85):
-    an optimization-axis default goes in `SCOPED_AXIS_DEFAULTS`. Of the two
+    an optimization-axis default goes in `SCOPED_AXIS_DEFAULTS`. Of the
     registries beside it, `JOIN_AXIS_DEFAULTS` is scoped to join rows (those
     with an `algorithm`), for planner axes every structure's joins share, and
     `BINARY_AXIS_DEFAULTS` fills every row, for properties of the binary that
-    wrote the report. Neither may hold an optimization axis."""
+    wrote the report. Neither may hold an optimization axis.
+    `RENAMED_AXIS_VALUES` holds no default at all: it rewrites a value."""
     registries = sorted(
         name for name, value in vars(defaults).items()
         if name.isupper() and isinstance(value, dict)
     )
-    assert registries == ["BINARY_AXIS_DEFAULTS", "JOIN_AXIS_DEFAULTS", "SCOPED_AXIS_DEFAULTS"]
+    assert registries == [
+        "BINARY_AXIS_DEFAULTS", "JOIN_AXIS_DEFAULTS", "RENAMED_AXIS_VALUES",
+        "SCOPED_AXIS_DEFAULTS",
+    ]
     for registry in (defaults.JOIN_AXIS_DEFAULTS, defaults.BINARY_AXIS_DEFAULTS):
         assert not any(axis.startswith(("ds_", "algo_")) for axis in registry)
 
@@ -116,7 +124,8 @@ def test_allocator_backfills_every_row_that_lacks_it() -> None:
 def test_build_mode_backfills_each_structures_pre_axis_build() -> None:
     """Each structure back-fills its own pre-axis build: ColumnTrie's pre-#84
     ``incremental``, TreeTrie's pre-#94 ``serial`` and HashTrie's pre-#91
-    ``serial``. A row that carries the axis keeps it."""
+    per-tuple build, ``incremental`` since #107. A row that carries the axis
+    keeps it."""
     df = pd.DataFrame({
         "data_structure": [
             "ColumnTrie", "ColumnTrie", "TreeTrie", "TreeTrie", "HashTrie", "HashTrie",
@@ -125,11 +134,34 @@ def test_build_mode_backfills_each_structures_pre_axis_build() -> None:
     })
     out = apply_axis_defaults(df)
     assert out["ds_build_mode"].tolist() == [
-        "incremental", "bulk", "serial", "parallel:4", "serial", "radix:8",
+        "incremental", "bulk", "serial", "parallel:4", "incremental", "radix:8",
     ]
     assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "ColumnTrie")] == "incremental"
     assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "TreeTrie")] == "serial"
-    assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "HashTrie")] == "serial"
+    assert SCOPED_AXIS_DEFAULTS[("ds_build_mode", "HashTrie")] == "incremental"
+
+
+def test_renamed_values_rewrite_hash_tries_old_serial_only() -> None:
+    """HashTrie's per-tuple build was ``serial`` until #107 and is
+    ``incremental`` since; TreeTrie's ``serial`` is another build."""
+    df = pd.DataFrame({
+        "data_structure": ["HashTrie", "HashTrie", "TreeTrie", "HashTrie"],
+        "ds_build_mode": ["serial", "bulk", "serial", pd.NA],
+    })
+    out = apply_renamed_axis_values(df)
+    assert out["ds_build_mode"].tolist()[:3] == ["incremental", "bulk", "serial"]
+    assert pd.isna(out["ds_build_mode"].iloc[3])
+    assert df["ds_build_mode"].iloc[0] == "serial", "the caller's frame is untouched"
+
+
+def test_child_capacity_backfills_grow_on_hash_trie_only() -> None:
+    df = pd.DataFrame({
+        "data_structure": ["HashTrie", "TreeTrie"],
+        "ds_config_child_capacity": [pd.NA, pd.NA],
+    })
+    out = apply_axis_defaults(df)
+    assert out["ds_config_child_capacity"].iloc[0] == "grow"
+    assert pd.isna(out["ds_config_child_capacity"].iloc[1])
 
 
 def test_build_mode_backfills_an_all_nan_float_column() -> None:

@@ -78,8 +78,9 @@ def test_ablation_preset_lets_build_mode_through_on_iteration(
         fixture_build_mode_tree["paths"],
         criterion_root=fixture_build_mode_tree["criterion_root"],
     )
-    # ColumnTrie's two builds, and HashTrie's back-filled pre-#91 build.
-    assert set(df["ds_build_mode"].dropna()) == {"incremental", "bulk", "serial"}
+    # ColumnTrie's two builds, and HashTrie's back-filled pre-#91 build
+    # (``incremental``).
+    assert set(df["ds_build_mode"].dropna()) == {"incremental", "bulk"}
     fig = presets.ablation(df, axis="ds_build_mode", phase="iteration")
     assert fig.axes
 
@@ -103,14 +104,14 @@ def test_build_mode_ablation_leaves_out_structures_without_the_axis(
     """Rows without ``ds_build_mode`` belong to a structure without a build
     mode; charting them would add a bar for a structure that has none. Every
     structure back-fills a mode since #91 and #94 (HashTrie's report here
-    loads as ``serial``), so the HashTrie rows are blanked to stand in for
+    loads as ``incremental``), so the HashTrie rows are blanked to stand in for
     such a structure."""
     df = kl.load(
         fixture_build_mode_tree["paths"],
         criterion_root=fixture_build_mode_tree["criterion_root"],
     )
     hash_trie = df["data_structure"] == "HashTrie"
-    assert (df.loc[hash_trie, "ds_build_mode"] == "serial").all()
+    assert (df.loc[hash_trie, "ds_build_mode"] == "incremental").all()
     df.loc[hash_trie, "ds_build_mode"] = pd.NA
     fig = presets.ablation(df, axis="ds_build_mode", phase="insertion")
     labels = {t.get_text() for ax in fig.axes for t in ax.get_xticklabels()}

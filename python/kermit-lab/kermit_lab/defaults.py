@@ -10,12 +10,14 @@ Every optimization-axis default is scoped to the data structure that has the
 axis (`SCOPED_AXIS_DEFAULTS`). A row of any other structure keeps NaN, which
 is what lets `presets.ablation` leave those structures out. A
 structure-blind fill once stamped HashTrie's axes on TreeTrie and ColumnTrie
-rows, so the ablations charted the sorted tries as "sip" (#85). Two other
+rows, so the ablations charted the sorted tries as "sip" (#85). Three other
 registries sit beside it. `JOIN_AXIS_DEFAULTS` is scoped to join rows: it
 holds planner axes every structure's joins share, and a `bench ds` row, which
 joins nothing, keeps NaN. `BINARY_AXIS_DEFAULTS` fills every row: it holds
 properties of the binary that wrote the report, such as its allocator, which
-were the same for every row a pre-axis binary wrote.
+were the same for every row a pre-axis binary wrote. A third,
+`RENAMED_AXIS_VALUES`, rewrites a value a later change renamed; the loader
+applies it even without back-filling.
 
 See `docs/specs/bench-report-schema.md` ("Standard axis prefixes").
 """
@@ -36,12 +38,15 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
     ("ds_config_load_factor", "HashTrie"): 0.7,
     # Every HashTrie root grew from 4 buckets before issue #88.
     ("ds_config_root_capacity", "HashTrie"): "grow",
+    # Every HashTrie child grew from 4 buckets before issue #107.
+    ("ds_config_child_capacity", "HashTrie"): "grow",
     # ColumnTrie's build before issue #84 inserted tuple by tuple. Every
     # ColumnTrie report since carries the axis ("bulk" by default).
     ("ds_build_mode", "ColumnTrie"): "incremental",
-    # HashTrie built one insert per tuple before issue #91. Every HashTrie
-    # report since carries the axis ("serial" by default).
-    ("ds_build_mode", "HashTrie"): "serial",
+    # HashTrie built one insert per tuple before issue #91: the build named
+    # `serial` until #107 and `incremental` since. Every HashTrie report since
+    # #91 carries the axis (`bulk`, Algorithm 2, by default since #107).
+    ("ds_build_mode", "HashTrie"): "incremental",
     # TreeTrie built serially until #94 added `--ds-build
     # tree-trie=parallel:N`. Every TreeTrie report since carries the axis
     # ("serial" by default).
@@ -73,6 +78,31 @@ BINARY_AXIS_DEFAULTS: dict[str, object] = {
     # report ran on the system allocator (glibc on the hosts measured).
     "allocator": "system",
 }
+
+
+# (axis column, data_structure, old value) -> new value, for an axis value a
+# later change renamed. Unlike a default this rewrites a value the report
+# carries, and the loader applies it whether or not it back-fills defaults:
+# the old value named the same build, so the new name is ground truth.
+RENAMED_AXIS_VALUES: dict[tuple[str, str, object], object] = {
+    # HashTrie's per-tuple build was `serial` until #107, which made
+    # Algorithm 2 (`bulk`) the default and renamed it `incremental`.
+    ("ds_build_mode", "HashTrie", "serial"): "incremental",
+}
+
+
+def apply_renamed_axis_values(df: pd.DataFrame) -> pd.DataFrame:
+    """Return ``df`` with every renamed axis value replaced by its new
+    name, on rows of the structure that renamed it. Mutates a copy, leaving
+    the caller's frame unchanged."""
+    out = df.copy()
+    if "data_structure" not in out.columns:
+        return out
+    for (col, data_structure, old), new in RENAMED_AXIS_VALUES.items():
+        if col in out.columns:
+            hit = out["data_structure"].isin([data_structure]) & out[col].isin([old])
+            out.loc[hit, col] = new
+    return out
 
 
 def apply_axis_defaults(df: pd.DataFrame) -> pd.DataFrame:

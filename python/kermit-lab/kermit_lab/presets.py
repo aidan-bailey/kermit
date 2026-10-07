@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 import pandas as pd
 from matplotlib.figure import Figure
 
-from .analysis import SPEEDUP_MEASURES, speedup_table
+from .analysis import BASELINE_BUILD_MODES, SPEEDUP_MEASURES, speedup_table
 from .facet import finish, make_grid
 from .frame import build_of
 from .loader import TIME_PHASES
@@ -121,10 +121,11 @@ def ablation(
 
 
 def speedup(
-    df: pd.DataFrame, *, phase: str = "insertion", baseline: str = "serial",
+    df: pd.DataFrame, *, phase: str = "insertion", baseline: str | None = None,
     out: Optional[Path] = None,
 ) -> Figure:
-    """Build speedup over the ``baseline`` build against thread count (#94).
+    """Build speedup over the baseline build against thread count (#94): each
+    structure's default single-threaded build unless ``baseline`` is given.
 
     One line per case of :func:`~kermit_lab.analysis.speedup_table` and build
     (``parallel`` or ``presized``, the label naming the build when both
@@ -175,7 +176,11 @@ def speedup(
     ax.set_yscale("log", base=2)
     ax.set_xticks(ticks, labels=[str(t) for t in ticks])
     ax.set_xlabel("threads")
-    ax.set_ylabel(f"speedup over {baseline} ({phase})")
+    over = baseline
+    if over is None:
+        structures = table["data_structure"] if "data_structure" in table.columns else [None]
+        over = " / ".join(sorted({BASELINE_BUILD_MODES.get(s, "serial") for s in structures}))
+    ax.set_ylabel(f"speedup over {over} ({phase})")
     # A figure of presized arms alone says so; parallel-only and mixed figures
     # keep the title they always had.
     lone_presized = set(build) == {"presized"}

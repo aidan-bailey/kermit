@@ -137,10 +137,11 @@ def _threaded(build_mode: object) -> tuple[str, int] | None:
 def threads_of(build_mode: object) -> int | None:
     """The thread count of a ``parallel:N`` or ``presized:N`` build mode, else ``None``.
 
-    ``serial``, ColumnTrie's ``bulk`` / ``incremental``, a missing mode and a
-    malformed threaded value are not thread counts, so they become ``<NA>``
-    in the ``threads`` column. ``presized:N`` is HashTrie's presized build,
-    which requires ``root-capacity=tuples``.
+    TreeTrie's ``serial``, ColumnTrie's and HashTrie's ``bulk`` /
+    ``incremental``, a missing mode and a malformed threaded value are not
+    thread counts, so they become ``<NA>`` in the ``threads`` column.
+    ``presized:N`` is HashTrie's presized build, which requires
+    ``root-capacity=tuples``.
     """
     threaded = _threaded(build_mode)
     return None if threaded is None else threaded[1]
@@ -169,7 +170,7 @@ def _summary_from_reports(
 ) -> pd.DataFrame:
     """Build the summary DataFrame: fixed core columns, then the discovered
     optimization tail, then the stat/join columns."""
-    from .defaults import apply_axis_defaults
+    from .defaults import apply_axis_defaults, apply_renamed_axis_values
 
     opt_axes = _discover_opt_axes(reports)
     rows = [
@@ -186,6 +187,9 @@ def _summary_from_reports(
         non_null = df[key].dropna()
         if len(non_null) and non_null.map(lambda v: isinstance(v, bool)).all():
             df[key] = df[key].astype("boolean")
+    # A renamed value names the build that ran, so it is rewritten whether
+    # or not defaults are back-filled.
+    df = apply_renamed_axis_values(df)
     if apply_defaults:
         df = apply_axis_defaults(df)
     if "ds_build_mode" in df.columns:

@@ -138,6 +138,21 @@ def test_bench_ds_hash_trie_reports_its_parallel_build(tmp_path: Path) -> None:
     assert df.iloc[0]["threads"] == 2
 
 
+def test_bench_ds_hash_trie_reports_the_bulk_build_and_its_child_capacity(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "ds.json"
+    _run(
+        tmp_path, report,
+        "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "hash-trie", "-m", "space",
+    )
+    # Without the back-fill, so the binary's own labels are what is read.
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
+    assert len(df) == 1
+    assert df.iloc[0]["ds_build_mode"] == "bulk"
+    assert df.iloc[0]["ds_config_child_capacity"] == "grow"
+
+
 def test_bench_join_reports_its_column_orders(tmp_path: Path) -> None:
     report = tmp_path / "join.json"
     _run(

@@ -94,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_phase(p_ablation)
     p_ablation.add_argument("--axis", required=True, help="optimization axis column name")
 
-    p_speedup = sub.add_parser("speedup", help="parallel-build speedup over serial vs threads")
+    p_speedup = sub.add_parser("speedup", help="parallel-build speedup over the default build vs threads")
     _add_common(p_speedup)
     p_speedup.add_argument("--phase", choices=TIME_PHASES, default="insertion",
                            help="time phase to compare (default: insertion)")

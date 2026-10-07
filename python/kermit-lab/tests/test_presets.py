@@ -99,6 +99,32 @@ def test_speedup(fixture_parallel_build_tree) -> None:
     assert {"TreeTrie", "ideal"} <= labels
 
 
+def test_speedup_labels_its_axis_with_each_structures_default_baseline(
+    fixture_parallel_build_tree,
+) -> None:
+    """The baseline is per structure unless ``baseline`` is given: TreeTrie
+    divides by ``serial``, HashTrie by ``bulk``, and the label names both."""
+    tree = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
+    tree = tree[tree["data_structure"] == "TreeTrie"]
+    hash_trie = tree.assign(
+        data_structure="HashTrie",
+        ds_build_mode=tree["ds_build_mode"].replace("serial", "bulk"),
+        criterion_group=tree["criterion_group"] + "-hash",
+        source_path=tree["source_path"] + "-hash",
+    )
+
+    def ylabel(df: pd.DataFrame, **kwargs) -> str:
+        fig = presets.speedup(df, **kwargs)
+        label = fig.axes[0].get_ylabel()
+        plt.close(fig)
+        return label
+
+    assert ylabel(tree) == "speedup over serial (insertion)"
+    assert ylabel(hash_trie) == "speedup over bulk (insertion)"
+    assert ylabel(pd.concat([tree, hash_trie])) == "speedup over bulk / serial (insertion)"
+    assert ylabel(tree, baseline="parallel:2") == "speedup over parallel:2 (insertion)"
+
+
 def test_speedup_refuses_a_phase_that_is_not_a_time_phase(fixture_parallel_build_tree) -> None:
     """Every time phase is a speedup phase, ``iteration`` included (a build
     mode may move it, Amendment 2); ``space`` is not a time phase."""

@@ -516,7 +516,8 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
 
     The old ColumnTrie report carries no ``ds_build_mode`` (back-filled to
     ``incremental`` on load); the new one carries ``"bulk"``. The HashTrie
-    report carries none either, so it loads as its pre-#91 ``serial``. Each times
+    report carries none either, so it loads as its pre-#91
+    per-tuple build, ``incremental``. Each times
     insertion and iteration (plus space), so the build-mode axis has two
     values and applies to one time phase but not the other.
     """
