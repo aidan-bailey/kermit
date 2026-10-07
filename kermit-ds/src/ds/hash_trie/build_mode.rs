@@ -117,8 +117,8 @@ impl FromStr for HashTrieBuildMode {
             | None if s == "bulk" => Ok(Self::Bulk),
             | None if s == "incremental" => Ok(Self::Incremental),
             | None if s == "serial" => Err(error(
-                "hash-trie has no serial build since #107: the default is bulk (Algorithm 2), and \
-                 the per-tuple build is incremental"
+                "serial was renamed incremental in #107 (the per-tuple build); the default is now \
+                 bulk (Algorithm 2)"
                     .to_owned(),
             )),
             | None if s == "radix" => Err(error("radix needs a bit count".to_owned())),
@@ -248,7 +248,7 @@ mod tests {
     fn malformed_modes_are_rejected_with_the_accepted_forms() {
         let cases = [
             ("", "unknown hash-trie build mode \"\""),
-            ("serial", "hash-trie has no serial build since #107"),
+            ("serial", "serial was renamed incremental in #107"),
             ("Bulk", "unknown hash-trie build mode \"Bulk\""),
             ("radix", "radix needs a bit count"),
             ("radix:", "whole number"),
@@ -288,14 +288,17 @@ mod tests {
     }
 
     /// `serial` named the per-tuple build until #107; its rejection names
-    /// the two builds that replaced the name.
+    /// the build's new name and the new default.
     #[test]
     fn serial_is_rejected_with_its_replacements() {
         let msg = "serial"
             .parse::<HashTrieBuildMode>()
             .unwrap_err()
             .to_string();
-        assert!(msg.contains("the default is bulk (Algorithm 2)"), "{msg}");
-        assert!(msg.contains("the per-tuple build is incremental"), "{msg}");
+        assert!(msg.contains("serial was renamed incremental"), "{msg}");
+        assert!(
+            msg.contains("the default is now bulk (Algorithm 2)"),
+            "{msg}"
+        );
     }
 }

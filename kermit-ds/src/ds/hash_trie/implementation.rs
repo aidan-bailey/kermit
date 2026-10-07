@@ -232,11 +232,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         }
     }
 
-    /// Insert one tuple at the appropriate depth, descending at once: the
-    /// per-tuple build (`incremental`) and `Relation::insert`. The paper's
-    /// build, Algorithm 2, groups before it recurses (`bulk.rs`); under
-    /// every config both builds accept, they build the identical trie. The
-    /// singleton-pruning extension of §3.3.1 (Figure 5) applies when the
+    /// Insert one tuple at the appropriate depth, descending at once. It is
+    /// used by the per-tuple build (`incremental`) and by `Relation::insert`.
+    /// The paper's build, Algorithm 2, groups before it recurses (`bulk.rs`);
+    /// under every config both builds accept, they build the identical trie.
+    /// The singleton-pruning extension of §3.3.1 (Figure 5) applies when the
     /// policy `P` enables it. `P::ENABLED` is a constant, so under
     /// `NoPruning` both pruning branches are compiled out and this is the
     /// pre-pruning insert. An unprune is a single extra O(arity) chain, not
@@ -514,6 +514,14 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
     fn config(&self) -> &HashTrieConfig { &self.config }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many tries this thread has built by Algorithm 2: the one
+    /// record that tells `bulk` from `incremental`, which build the
+    /// identical trie.
+    pub(super) static BULK_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// Creates a trie holding `config`, populated with `tuples` and built by
     /// `mode` — the one constructor that takes both the Config and the
@@ -602,6 +610,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     pub(super) fn from_tuples_in_bulk(
         header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
     ) -> Self {
+        #[cfg(test)]
+        BULK_BUILDS.with(|n| n.set(n.get() + 1));
         let arity = header.arity();
         Self::assert_arities(arity, &tuples);
         let tuple_count = tuples.len();
@@ -845,6 +855,59 @@ mod tests {
     // through the `<H = SipHashStrategy>` default in type position. The
     // default cannot be selected from a path expression alone, so
     // type-annotated bindings are necessary on nightly Rust.
+
+    /// `bulk` and `incremental` build the identical trie, so only this
+    /// record shows which ran: the default, `from_tuples_with_config` and
+    /// `Bulk` take Algorithm 2, and `Incremental` the per-tuple build.
+    #[test]
+    fn each_build_mode_runs_its_own_build() {
+        let tuples = || vec![vec![1, 2], vec![1, 3], vec![2, 2]];
+        let builds = |build: &dyn Fn()| {
+            BULK_BUILDS.with(|n| n.set(0));
+            build();
+            BULK_BUILDS.with(std::cell::Cell::get)
+        };
+        assert_eq!(
+            builds(&|| {
+                let _: HashTrie = HashTrie::from_tuples(2.into(), tuples());
+            }),
+            1,
+            "from_tuples"
+        );
+        assert_eq!(
+            builds(&|| {
+                let _: HashTrie = HashTrie::from_tuples_with_config(
+                    2.into(),
+                    HashTrieConfig::default(),
+                    tuples(),
+                );
+            }),
+            1,
+            "from_tuples_with_config"
+        );
+        assert_eq!(
+            builds(&|| {
+                let _: HashTrie = HashTrie::from_tuples_with_build_mode(
+                    2.into(),
+                    HashTrieBuildMode::Bulk,
+                    tuples(),
+                );
+            }),
+            1,
+            "bulk"
+        );
+        assert_eq!(
+            builds(&|| {
+                let _: HashTrie = HashTrie::from_tuples_with_build_mode(
+                    2.into(),
+                    HashTrieBuildMode::Incremental,
+                    tuples(),
+                );
+            }),
+            0,
+            "incremental"
+        );
+    }
 
     #[test]
     fn new_arity_2_creates_inner_root() {

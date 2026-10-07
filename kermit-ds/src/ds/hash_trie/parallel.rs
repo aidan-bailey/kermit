@@ -403,7 +403,7 @@ mod tests {
                         root_capacity,
                     };
                     for (input, tuples) in inputs(arity) {
-                        let serial = HashTrie::<H, P, E>::from_tuples_with_config(
+                        let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
                             arity.into(),
                             config,
                             tuples.clone(),
@@ -424,7 +424,7 @@ mod tests {
                                         HashTrieBuildMode::Parallel(threads(t)),
                                         tuples.clone(),
                                     );
-                                assert_same_trie(&serial, &built, &label);
+                                assert_same_trie(&bulk, &built, &label);
                             }
                             let mut root = HashTrie::<H, P, E>::make_root_sized(
                                 arity,
@@ -438,11 +438,7 @@ mod tests {
                                 7,
                                 config.load_factor,
                             );
-                            assert_same_node(
-                                serial.root(),
-                                &root,
-                                &format!("{label}, morsels of 7"),
-                            );
+                            assert_same_node(bulk.root(), &root, &format!("{label}, morsels of 7"));
                         }
                     }
                 }
@@ -520,7 +516,7 @@ mod tests {
                     })
                     .collect();
                 for (input, tuples) in [("random", random), ("half one key", skewed)] {
-                    let serial = HashTrie::<H, P, E>::from_tuples(arity.into(), tuples.clone());
+                    let bulk = HashTrie::<H, P, E>::from_tuples(arity.into(), tuples.clone());
                     for t in [2, 5] {
                         let built = HashTrie::<H, P, E>::from_tuples_with_build_mode(
                             arity.into(),
@@ -533,7 +529,7 @@ mod tests {
                             P::NAME,
                             E::NAME
                         );
-                        assert_same_trie(&serial, &built, &label);
+                        assert_same_trie(&bulk, &built, &label);
                     }
                 }
             }
@@ -556,8 +552,10 @@ mod tests {
     }
 
     /// Every mode builds the same trie, so only the records show which build
-    /// ran, and that `parallel:N` spreads its work: N workers in both steps
-    /// (two `run_workers` calls), and the tuples spread over the partitions.
+    /// ran (`bulk` and `incremental` record nothing here;
+    /// `each_build_mode_runs_its_own_build` tells them apart), and that
+    /// `parallel:N` spreads its work: N workers in both steps (two
+    /// `run_workers` calls), and the tuples spread over the partitions.
     /// Eight first keys of eight tuples each fill the eight partitions of
     /// `parallel:2` evenly. `parallel:3` aims at 12 partitions, rounded up to
     /// 16, so key k lands in partition 2k: every other partition is empty,
@@ -567,7 +565,7 @@ mod tests {
     #[test]
     fn build_modes_reach_their_builds() {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 8, i]).collect();
-        let serial: HashTrie<TopBitsHash> = HashTrie::from_tuples(2.into(), tuples.clone());
+        let bulk: HashTrie<TopBitsHash> = HashTrie::from_tuples(2.into(), tuples.clone());
         for (mode, builds, worker_runs) in [
             (HashTrieBuildMode::Bulk, vec![], vec![]),
             (HashTrieBuildMode::Incremental, vec![], vec![]),
@@ -601,7 +599,7 @@ mod tests {
                 HashTrie::from_tuples_with_build_mode(2.into(), mode, tuples.clone());
             assert_eq!(PARALLEL_BUILDS.with(|b| b.take()), builds, "{mode:?}");
             assert_eq!(crate::morsel::take_worker_runs(), worker_runs, "{mode:?}");
-            assert_same_trie(&serial, &built, &format!("{mode:?}"));
+            assert_same_trie(&bulk, &built, &format!("{mode:?}"));
         }
     }
 

@@ -2,10 +2,10 @@
 //! for every structure reporting its own. Every `ColumnTrie` report says which
 //! build made its relations, so kermit-lab can read a `ColumnTrie` report
 //! *without* the axis as the pre-#84 incremental build. `TreeTrie` and
-//! `HashTrie` report theirs (`serial` and `bulk` by default — see
-//! `cli_tree_trie_build_mode.rs` and `cli_hash_trie_build_mode.rs`). It also
-//! covers selecting the mode with `--ds-build` and rejecting a column-trie
-//! pair on another structure.
+//! `HashTrie` report theirs (`serial` and `bulk` by default respectively —
+//! see `cli_tree_trie_build_mode.rs` and `cli_hash_trie_build_mode.rs`). It
+//! also covers selecting the mode with `--ds-build` and rejecting a
+//! column-trie pair on another structure.
 
 mod common;
 

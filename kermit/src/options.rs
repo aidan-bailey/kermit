@@ -1488,7 +1488,7 @@ mod tests {
             ),
             (
                 &["hash-trie=serial"],
-                "hash-trie has no serial build since #107",
+                "serial was renamed incremental in #107",
             ),
             (
                 &["bulk"],

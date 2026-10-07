@@ -183,8 +183,8 @@ hash_trie_test_suite!(HashTrieFxPrunedParallel2, FxHashStrategy);
 // ── BuildMode × Config: the presized build ──────────────────────────────
 // `presized:2` requires `root-capacity=tuples` (`PresizedRoot` above), so
 // it is only ever stacked on a presized alias. It fills the root by region
-// (the paper's build, #94); the trie is equivalent to serial's (Amendment
-// 2), so the iterator contract holds unchanged.
+// (the paper's build, #94); the trie is equivalent to bulk's (Amendment 2),
+// so the iterator contract holds unchanged.
 define_build_mode_provider!(
     HashPresized2,
     HashTrieBuildMode,
