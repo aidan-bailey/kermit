@@ -3031,11 +3031,12 @@ paper.
   CARGO_BUILD_JOBS=2 nix develop $WT --command env RUSTDOCFLAGS=-Dwarnings cargo doc --workspace
   CARGO_BUILD_JOBS=2 nix develop $WT --command cargo test --workspace 2>&1 | grep -E '^test result' | awk '{p+=$4; f+=$6; i+=$8} END {print "cargo "p" passed, "f" failed, "i" ignored"}'
   KERMIT_BIN=$WT/target/debug/kermit uv --directory $WT/python/kermit-lab run pytest -q
-  setsid nohup env -C $WT nix develop $WT --command cargo miri test -p kermit-ds > $SCRATCH/miri-final.log 2>&1 & disown
+  # No Miri: the user dropped it, CI job included, on 2026-10-07 (no unsafe in the workspace).
   ```
   If `flake.lock` changed, commit it separately ("chore(nix): refresh
   rust-overlay") only if the user agrees; otherwise revert it before the
-  checkpoint. Compare the test count with `$SCRATCH/baseline.txt`.
+  checkpoint. Compare the test count with `$SCRATCH/baseline.txt`. (Miri was
+  dropped on 2026-10-07; P1 and P2 ran it clean at e24ccc9 and 346603a.)
 
 - [ ] **Step 2: Scope diff.**
   ```bash
@@ -3080,7 +3081,7 @@ paper.
   a go/no-go question for the user.
 
 - [ ] **Step 4: Checkpoint 3 (controller → user).** Report: the SHAs, the gate
-  (counts, Miri time), the scope diff, the mutants (M2a–M9), the smoke ratios,
+  (counts), the scope diff, the mutants (M2a–M9), the smoke ratios,
   and anything the plan did differently from the spec, with reasons. Ask
   whether to land.
 
