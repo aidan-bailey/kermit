@@ -111,7 +111,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// Whether a node at `depth` is the leaf level, i.e. the last attribute.
     /// Written `depth + 1 == arity` rather than `depth == arity - 1` to avoid
     /// the `usize` underflow at `arity == 0`.
-    fn is_leaf_depth(depth: usize, arity: usize) -> bool { depth + 1 == arity }
+    pub(super) fn is_leaf_depth(depth: usize, arity: usize) -> bool { depth + 1 == arity }
 
     /// Construct the root node appropriate for `arity` — Inner for arity ≥ 2,
     /// Leaf for arity = 1. (The root sits at depth 0, so it is a leaf exactly
@@ -130,9 +130,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// An empty trie holding `config`, its root sized for a build from
     /// `tuple_count` tuples by [`HashTrieConfig::root_log2_capacity`]: 4
     /// buckets under `RootCapacity::Grow`, and under `Tuples` a capacity at
-    /// which `tuple_count` keys never make it grow. Every constructor creates
-    /// its root here, so no build path computes a capacity itself. A trie
-    /// created empty passes 0.
+    /// which `tuple_count` keys never make it grow. Every constructor that
+    /// starts from an empty root creates it here; the bulk build sizes its root
+    /// by the same `root_log2_capacity`. A trie created empty passes 0.
     pub(super) fn with_config_for(
         header: RelationHeader, config: HashTrieConfig, tuple_count: usize,
     ) -> Self {
@@ -500,23 +500,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
     fn from_tuples_with_config(
         header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
     ) -> Self {
-        let arity = header.arity();
-        let mut trie = Self::with_config_for(header, config, tuples.len());
-        for tuple in tuples {
-            assert_eq!(
-                tuple.len(),
-                arity,
-                "from_tuples: tuple arity {} does not match header arity {}",
-                tuple.len(),
-                arity,
-            );
-            Self::insert_at(&mut trie.root, 0, arity, tuple, config.load_factor);
-            // from_tuples bypasses insert(), so count here. If this loop is
-            // ever refactored to route through insert(), drop this increment
-            // or the counter double-counts.
-            trie.tuple_count += 1;
-        }
-        trie
+        Self::from_tuples_incrementally(header, config, tuples)
     }
 
     fn config(&self) -> &HashTrieConfig { &self.config }
@@ -573,6 +557,85 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         }
     }
 
+    /// The serial build's arity check, with its message, for the builds
+    /// that read their whole input before building any of it.
+    fn assert_arities(arity: usize, tuples: &[Vec<usize>]) {
+        for tuple in tuples {
+            assert_eq!(
+                tuple.len(),
+                arity,
+                "from_tuples: tuple arity {} does not match header arity {}",
+                tuple.len(),
+                arity,
+            );
+        }
+    }
+
+    /// The `bulk` build: Algorithm 2 from the root (`bulk.rs`), the root
+    /// sized as every build sizes it, by
+    /// [`HashTrieConfig::root_log2_capacity`] (#88).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "tests reach the bulk build until it is the default build"
+        )
+    )]
+    pub(super) fn from_tuples_in_bulk(
+        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        let arity = header.arity();
+        Self::assert_arities(arity, &tuples);
+        let tuple_count = tuples.len();
+        let root = Self::build(
+            0,
+            arity,
+            tuples,
+            config.root_log2_capacity(tuple_count),
+            config,
+        );
+        Self {
+            header,
+            root,
+            tuple_count,
+            config,
+            _layout: PhantomData,
+        }
+    }
+
+    /// The `incremental` build: one [`insert_at`](Self::insert_at) per
+    /// tuple, in input order. This is the build `from_tuples_with_config`
+    /// ran before #107, unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any tuple's length does not equal `header.arity()`.
+    pub(super) fn from_tuples_incrementally(
+        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
+    ) -> Self {
+        let arity = header.arity();
+        let mut trie = Self::with_config_for(header, config, tuples.len());
+        for tuple in tuples {
+            assert_eq!(
+                tuple.len(),
+                arity,
+                "from_tuples: tuple arity {} does not match header arity {}",
+                tuple.len(),
+                arity,
+            );
+            Self::insert_at(&mut trie.root, 0, arity, tuple, config.load_factor);
+            // from_tuples bypasses insert(), so count here. If this loop is
+            // ever refactored to route through insert(), drop this increment
+            // or the counter double-counts.
+            trie.tuple_count += 1;
+        }
+        trie
+    }
+
     /// What the partitioned builds share (`radix:K`, `parallel:N`): the
     /// serial build's arity check, with its message, then `fill` on the
     /// empty root (presized under `root-capacity=tuples`, as the serial
@@ -582,15 +645,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         fill: impl FnOnce(&mut HashTrieNode<P, E>, usize, Vec<Vec<usize>>),
     ) -> Self {
         let arity = header.arity();
-        for tuple in &tuples {
-            assert_eq!(
-                tuple.len(),
-                arity,
-                "from_tuples: tuple arity {} does not match header arity {}",
-                tuple.len(),
-                arity,
-            );
-        }
+        Self::assert_arities(arity, &tuples);
         let tuple_count = tuples.len();
         let mut trie = Self::with_config_for(header, config, tuple_count);
         fill(&mut trie.root, arity, tuples);
