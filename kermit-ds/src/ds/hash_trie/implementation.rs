@@ -557,7 +557,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         }
     }
 
-    /// The serial build's arity check, with its message, for the builds
+    /// The per-tuple build's arity check, with its message, for the builds
     /// that read their whole input before building any of it.
     fn assert_arities(arity: usize, tuples: &[Vec<usize>]) {
         for tuple in tuples {

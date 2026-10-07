@@ -37,8 +37,9 @@
 //!
 //! Algorithm 2 builds the trie the per-tuple build (`insert_at`, the
 //! `incremental` mode) builds, array for array. A table's layout depends
-//! only on the order its new keys arrive, and every list keeps input order,
-//! so each table receives its keys in the order `insert_at` sends them.
+//! only on the order its new keys arrive. Here every list keeps input order,
+//! because a `Vec` push appends, so each table receives its keys in the
+//! order `insert_at` sends them.
 
 use {
     super::{
@@ -66,9 +67,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     }
 
     /// Lines 3–7: a table of `2^log2_capacity` buckets holding `list`'s
-    /// tuples, each pushed onto the list in the bucket of its attribute at
-    /// `depth`. The table grows under the load factor if its keys outgrow
-    /// it, as `insert_at`'s tables do.
+    /// tuples, each pushed onto the list in the bucket of its attribute's
+    /// hash at `depth`. The table grows under the load factor if its keys
+    /// outgrow it, as `insert_at`'s tables do.
     pub(super) fn group(
         depth: usize, list: TupleList, log2_capacity: u32, config: HashTrieConfig,
     ) -> HashTable<TupleList> {
@@ -88,7 +89,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     pub(super) fn build_nested(
         depth: usize, arity: usize, lists: HashTable<TupleList>, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
-        if Self::is_leaf_depth(depth, arity) {
+        // `>=`, as `make_root`'s `arity <= 1`, so the unsupported nullary
+        // root is a leaf under both builds.
+        if depth + 1 >= arity {
             return HashTrieNode::Leaf(lists);
         }
         HashTrieNode::Inner(lists.map(|list| Self::child(depth + 1, arity, list, config)))
@@ -96,9 +99,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
 
     /// The node a bucket's `list` becomes, at `depth`: a `Singleton` when
     /// pruning is on and one tuple lives below (§3.3.1), an `Unexpanded`
-    /// child under lazy expansion (§3.3.1; `HashTrie::resolve` builds it by
-    /// [`build`](Self::build) on the first probe), and otherwise the table
-    /// line 11 builds.
+    /// child under lazy expansion (§3.3.1; a probe builds its table later,
+    /// through `HashTrie::resolve`), and otherwise the table line 11 builds.
     pub(super) fn child(
         depth: usize, arity: usize, mut list: TupleList, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
@@ -112,7 +114,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             // from empty reaches capacity 4 on its first push, and from there
             // both grow alike. Shrinking the two short cases keeps the trie
             // byte-identical to `incremental`'s, so `space` cannot move, and
-            // keeps a one-tuple pending list at one slot.
+            // keeps a one-tuple pending list at one slot. Both the first
+            // capacity of 4 and `shrink_to`'s exact result are std
+            // implementation details; the identity tests pin them.
             let first_capacity = if P::ENABLED {
                 2
             } else {
@@ -200,6 +204,45 @@ mod tests {
         check_identity::<Mod10HashStrategy, SingletonPruning, EagerExpansion>();
         check_identity::<Mod10HashStrategy, NoPruning, LazyExpansion>();
         check_identity::<Mod10HashStrategy, SingletonPruning, LazyExpansion>();
+    }
+
+    /// Chain order, explicitly: under the colliding strategy, first keys 1
+    /// and 11 share a root bucket and last keys 3 and 13 share a leaf chain,
+    /// so distinct tuples meet in one chain, which must list them in input
+    /// order as the per-tuple build does. Under SipHash or FxHash a chain
+    /// holds only equal tuples, so only a colliding fixture can see its order.
+    #[test]
+    fn bulk_keeps_chain_order_under_colliding_hashes() {
+        let tuples = vec![vec![1, 3], vec![11, 13], vec![1, 13], vec![11, 3], vec![
+            1, 3,
+        ]];
+        fn check<P: PruningPolicy, E: ExpansionPolicy>(tuples: &[Vec<usize>]) {
+            for config in configs() {
+                let incremental = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_incrementally(
+                    2.into(),
+                    config,
+                    tuples.to_vec(),
+                );
+                let bulk = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_in_bulk(
+                    2.into(),
+                    config,
+                    tuples.to_vec(),
+                );
+                assert_same_trie(
+                    &incremental,
+                    &bulk,
+                    &label::<Mod10HashStrategy, P, E>(2, config, "colliding chain"),
+                );
+            }
+        }
+        check::<NoPruning, EagerExpansion>(&tuples);
+        check::<SingletonPruning, EagerExpansion>(&tuples);
+        check::<NoPruning, LazyExpansion>(&tuples);
+        check::<SingletonPruning, LazyExpansion>(&tuples);
+        // The eager trie's one chain holds all five tuples, in input order.
+        let bulk: HashTrie<Mod10HashStrategy> =
+            HashTrie::from_tuples_in_bulk(2.into(), HashTrieConfig::default(), tuples.clone());
+        assert_eq!(bulk.collect_tuples(), tuples);
     }
 
     /// Arity 4 and a first key holding half the tuples, which the shared
