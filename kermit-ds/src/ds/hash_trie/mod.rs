@@ -9,13 +9,6 @@
 // now live: singleton pruning probes buckets with it.) Keep the dead-code gate
 // on `hash_table` until that wiring lands.
 mod build_mode;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "tests reach the bulk build until it is the default build"
-    )
-)]
 mod bulk;
 mod config;
 mod expansion;

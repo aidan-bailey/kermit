@@ -773,9 +773,9 @@ pub(crate) struct BuildChoices {
     /// `structure=mode` pairs: `tree-trie=serial|parallel:<threads>` (default
     /// `serial`; threads in 1..=1024), `column-trie=bulk|incremental` (default
     /// `bulk`; `incremental` is the build before the one-pass bulk build) and
-    /// `hash-trie=serial|radix:<bits>|parallel:<threads>|presized:<threads>`
-    /// (default `serial`; bits in 1..=16, threads in 1..=1024; `presized`
-    /// requires `--ds-config root-capacity=tuples`).
+    /// `hash-trie=bulk|incremental|radix:<bits>|parallel:<threads>|presized:
+    /// <threads>` (default `bulk`; bits in 1..=16, threads in 1..=1024;
+    /// `presized` requires `--ds-config root-capacity=tuples`).
     /// A pair is only valid when `--indexstructure` selects its structure
     /// (or `all`).
     #[arg(
@@ -1415,7 +1415,7 @@ mod tests {
         let parallel2 = TreeTrieBuildMode::Parallel(Threads::new(2).unwrap());
         assert_eq!(build(&[]).resolved().unwrap(), BuildModes::default());
         assert_eq!(
-            build(&["hash-trie=serial"]).resolved().unwrap(),
+            build(&["hash-trie=bulk"]).resolved().unwrap(),
             BuildModes::default()
         );
         assert_eq!(
@@ -1435,7 +1435,7 @@ mod tests {
             BuildModes {
                 tree_trie: parallel2,
                 column_trie: ColumnTrieBuildMode::Bulk,
-                hash_trie: HashTrieBuildMode::Serial,
+                hash_trie: HashTrieBuildMode::Bulk,
             }
         );
         assert_eq!(
@@ -1460,17 +1460,14 @@ mod tests {
         let cases: &[(&[&str], &str)] = &[
             (
                 &["incremental"],
-                "did you mean --ds-build column-trie=incremental?",
+                "did you mean --ds-build column-trie=incremental or hash-trie=incremental?",
             ),
             (&["radix:8"], "did you mean --ds-build hash-trie=radix:8?"),
             (
                 &["parallel:8"],
                 "did you mean --ds-build tree-trie=parallel:8 or hash-trie=parallel:8?",
             ),
-            (
-                &["serial"],
-                "did you mean --ds-build tree-trie=serial or hash-trie=serial?",
-            ),
+            (&["serial"], "did you mean --ds-build tree-trie=serial?"),
             (&["fast"], "for example --ds-build"),
             (&["tree-trie=bulk"], "unknown tree-trie build mode \"bulk\""),
             (
@@ -1486,10 +1483,17 @@ mod tests {
             ),
             (&["b-tree=bulk"], "unknown structure \"b-tree\""),
             (
-                &["hash-trie=serial", "hash-trie=radix:4"],
+                &["hash-trie=bulk", "hash-trie=radix:4"],
                 "hash-trie given more than once",
             ),
-            (&["hash-trie=bulk"], "unknown hash-trie build mode \"bulk\""),
+            (
+                &["hash-trie=serial"],
+                "hash-trie has no serial build since #107",
+            ),
+            (
+                &["bulk"],
+                "did you mean --ds-build column-trie=bulk or hash-trie=bulk?",
+            ),
             (
                 &["column-trie=radix:8"],
                 "unknown mode \"radix:8\"; expected incremental or bulk",
@@ -1562,7 +1566,7 @@ mod tests {
         assert_eq!(DsChoices::default().build, BuildModes::default());
         assert_eq!(BuildModes::default().tree_trie, TreeTrieBuildMode::Serial);
         assert_eq!(BuildModes::default().column_trie, ColumnTrieBuildMode::Bulk);
-        assert_eq!(BuildModes::default().hash_trie, HashTrieBuildMode::Serial);
+        assert_eq!(BuildModes::default().hash_trie, HashTrieBuildMode::Bulk);
         assert!(DsChoices::resolve(
             IndexStructureSelector::TreeTrie,
             &LayoutChoices::default(),
@@ -1679,7 +1683,8 @@ mod tests {
             ]),
             (IndexStructure::ColumnTrie, &["bulk", "incremental"]),
             (IndexStructure::HashTrie, &[
-                "serial",
+                "bulk",
+                "incremental",
                 "radix:1",
                 "radix:16",
                 "parallel:1",

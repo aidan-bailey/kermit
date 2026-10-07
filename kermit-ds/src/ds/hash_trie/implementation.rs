@@ -61,13 +61,16 @@ use {
 /// # Construction
 ///
 /// Use `from_tuples` (batch) or `new` followed by `insert` (incremental).
-/// Both funnel through `insert` for a single tuple, faithful to
-/// Algorithm 2 from the paper. `with_config` / `from_tuples_with_config`
+/// `from_tuples` builds by Algorithm 2 of the paper (`bulk.rs`): a table's
+/// tuples are grouped into its buckets, then each bucket's child is built
+/// from its list. `insert` places one tuple by `insert_at`, which the
+/// `incremental` build mode runs once per tuple; both build the identical
+/// trie. `with_config` / `from_tuples_with_config`
 /// (via [`ConfigurableRelation`](crate::relation::ConfigurableRelation)) are
 /// the config-carrying constructors; `new` / `from_tuples` are thin wrappers
 /// over them that supply the default configuration. A known set of tuples
-/// can also be built by the `radix:K`, `parallel:N` and `presized:N`
-/// BuildModes
+/// can also be built by the `incremental`, `radix:K`, `parallel:N` and
+/// `presized:N` BuildModes
 /// ([`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
 /// or [`BuildModeRelation`]), which build the identical trie (`presized:N`
 /// an equivalent one, Amendment 2).
@@ -229,8 +232,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         }
     }
 
-    /// Insert one tuple at the appropriate depth. Algorithm 2 of the paper,
-    /// plus the singleton-pruning extension of §3.3.1 (Figure 5) when the
+    /// Insert one tuple at the appropriate depth, descending at once: the
+    /// per-tuple build (`incremental`) and `Relation::insert`. The paper's
+    /// build, Algorithm 2, groups before it recurses (`bulk.rs`); under
+    /// every config both builds accept, they build the identical trie. The
+    /// singleton-pruning extension of §3.3.1 (Figure 5) applies when the
     /// policy `P` enables it. `P::ENABLED` is a constant, so under
     /// `NoPruning` both pruning branches are compiled out and this is the
     /// pre-pruning insert. An unprune is a single extra O(arity) chain, not
@@ -502,7 +508,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
     fn from_tuples_with_config(
         header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
     ) -> Self {
-        Self::from_tuples_incrementally(header, config, tuples)
+        Self::from_tuples_in_bulk(header, config, tuples)
     }
 
     fn config(&self) -> &HashTrieConfig { &self.config }
@@ -515,8 +521,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// `Presized` may place root keys in other buckets, Amendment 2), so
     /// `mode` changes only how long this takes.
     ///
-    /// `Serial` is [`ConfigurableRelation::from_tuples_with_config`],
-    /// unchanged; `Radix` partitions first (see `radix.rs`), `Parallel` runs
+    /// `Bulk` is [`ConfigurableRelation::from_tuples_with_config`]
+    /// (Algorithm 2); `Incremental` is the per-tuple build; `Radix`
+    /// partitions first (see `radix.rs`), `Parallel` runs
     /// the radix build's partition and build steps on threads, and
     /// `Presized` fills a presized root by region, the paper's build (both
     /// in `parallel.rs`).
@@ -531,7 +538,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         tuples: Vec<Vec<usize>>,
     ) -> Self {
         match mode {
-            | HashTrieBuildMode::Serial => Self::from_tuples_with_config(header, config, tuples),
+            | HashTrieBuildMode::Bulk => Self::from_tuples_in_bulk(header, config, tuples),
+            | HashTrieBuildMode::Incremental => {
+                Self::from_tuples_incrementally(header, config, tuples)
+            },
             | HashTrieBuildMode::Radix(bits) => {
                 Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
                     radix::fill_root::<H, P, E>(root, arity, tuples, bits, config.load_factor)
@@ -589,13 +599,6 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// # Panics
     ///
     /// Panics if any tuple's length does not equal `header.arity()`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "tests reach the bulk build until it is the default build"
-        )
-    )]
     pub(super) fn from_tuples_in_bulk(
         header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
     ) -> Self {

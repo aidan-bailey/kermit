@@ -1,7 +1,8 @@
 //! CLI smoke test for `HashTrie`'s `ds_build_mode` axis (issues #91, #94).
-//! Every `HashTrie` report says which build made its relations: `serial` by
-//! default, `radix:<bits>`, `parallel:<threads>` or `presized:<threads>`
-//! under `--ds-build hash-trie=…`. Every mode builds an equivalent trie (the
+//! Every `HashTrie` report says which build made its relations: `bulk` by
+//! default (`incremental` is the per-tuple build), `radix:<bits>`,
+//! `parallel:<threads>` or `presized:<threads>` under
+//! `--ds-build hash-trie=…`. Every mode builds an equivalent trie (the
 //! identical one, except `presized:N`, whose root keys may sit in other
 //! buckets), so only the axis (and build time) shows which ran.
 
@@ -10,14 +11,14 @@ mod common;
 use common::cli::{axes_of, bench_ds, bench_join, bench_run, reports_of};
 
 #[test]
-fn cli_bench_ds_hash_trie_records_serial_build_mode() {
+fn cli_bench_ds_hash_trie_records_bulk_build_mode() {
     let (output, report) = bench_ds("hash-trie", &[]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(axes_of(&report)["ds_build_mode"], "serial");
+    assert_eq!(axes_of(&report)["ds_build_mode"], "bulk");
 }
 
 #[test]
@@ -177,7 +178,7 @@ fn cli_bench_ds_rejects_malformed_hash_trie_modes() {
         "radix",
         "radix:0",
         "radix:17",
-        "bulk",
+        "serial",
         "parallel",
         "parallel:0",
         "parallel:1025",
@@ -192,7 +193,8 @@ fn cli_bench_ds_rejects_malformed_hash_trie_modes() {
         assert!(stderr.contains("--ds-build hash-trie"), "{pair}: {stderr}");
         assert!(
             stderr.contains(
-                "expected serial, radix:<bits>, parallel:<threads> or presized:<threads>"
+                "expected bulk, incremental, radix:<bits>, parallel:<threads> or \
+                 presized:<threads>"
             ),
             "{pair}: {stderr}"
         );

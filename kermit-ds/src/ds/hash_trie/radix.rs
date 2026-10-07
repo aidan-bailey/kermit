@@ -3,7 +3,7 @@
 //! scratch root, then merge the scratch roots into the real one (SIGMOD 2020
 //! §3.3.2; issue #91).
 //!
-//! The result is the trie the serial build makes, bucket for bucket and
+//! The result is the trie the bulk build makes, bucket for bucket and
 //! capacity for capacity. A table's final layout depends only on the order
 //! in which its *new* keys arrive — `HashTable::entry_or_insert_with`
 //! returns an existing entry before its resize check — so the merge inserts
@@ -169,7 +169,7 @@ mod tests {
         &[1, 4, 16]
     };
 
-    /// `radix:K` builds the trie `serial` builds, for every arity, load
+    /// `radix:K` builds the trie `bulk` builds, for every arity, load
     /// factor, root capacity, bit count and input.
     fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
@@ -193,7 +193,7 @@ mod tests {
                             config.load_factor.numerator(),
                             config.root_capacity.axis_value(),
                         );
-                        assert_same_trie(&build(HashTrieBuildMode::Serial), &build(radix), &label);
+                        assert_same_trie(&build(HashTrieBuildMode::Bulk), &build(radix), &label);
                     }
                 }
             }
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn radix_builds_the_serial_trie_under_siphash() {
+    fn radix_builds_the_bulk_trie_under_siphash() {
         check_identity::<SipHashStrategy, NoPruning, EagerExpansion>();
         check_identity::<SipHashStrategy, SingletonPruning, EagerExpansion>();
         check_identity::<SipHashStrategy, NoPruning, LazyExpansion>();
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn radix_builds_the_serial_trie_under_fxhash() {
+    fn radix_builds_the_bulk_trie_under_fxhash() {
         check_identity::<FxHashStrategy, NoPruning, EagerExpansion>();
         check_identity::<FxHashStrategy, SingletonPruning, EagerExpansion>();
         check_identity::<FxHashStrategy, NoPruning, LazyExpansion>();
@@ -219,7 +219,7 @@ mod tests {
     /// Every hash is below 10, so every tuple lands in partition 0, and
     /// distinct keys share full hashes, root entries and leaf chains.
     #[test]
-    fn radix_builds_the_serial_trie_under_colliding_hashes() {
+    fn radix_builds_the_bulk_trie_under_colliding_hashes() {
         check_identity::<Mod10HashStrategy, NoPruning, EagerExpansion>();
         check_identity::<Mod10HashStrategy, SingletonPruning, EagerExpansion>();
         check_identity::<Mod10HashStrategy, NoPruning, LazyExpansion>();

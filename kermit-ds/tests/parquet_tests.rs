@@ -143,6 +143,21 @@ fn sorted_tuples_radix(relation: &HashTrieSipRadix2) -> Vec<Vec<usize>> {
 
 parquet_test_suite!(HashTrieSipRadix2, sorted_tuples_radix);
 
+// …and under the per-tuple build, which must load the same trie (#107).
+define_build_mode_provider!(
+    HashIncremental,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Incremental
+);
+
+type HashTrieSipIncremental = BuiltWith<HashTrieSip, HashIncremental>;
+
+fn sorted_tuples_incremental(relation: &HashTrieSipIncremental) -> Vec<Vec<usize>> {
+    sorted_tuples(relation)
+}
+
+parquet_test_suite!(HashTrieSipIncremental, sorted_tuples_incremental);
+
 // …and under the parallel BuildMode, which must load the same trie (#94).
 define_build_mode_provider!(
     HashParallel2,

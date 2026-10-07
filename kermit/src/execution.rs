@@ -683,8 +683,8 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFa
     }
 
     /// Every `HashTrie` report says which build made it, so kermit-lab can
-    /// read a `HashTrie` report without the axis as the `serial` build, the
-    /// only one before issue #91.
+    /// read a `HashTrie` report without the axis, or with the pre-#107
+    /// `serial`, as the `incremental` build, the only one before issue #91.
     fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
         BTreeMap::from([(
             "ds_build_mode".to_string(),
@@ -987,7 +987,7 @@ mod tests {
                 pruning: PruningChoice::Off,
                 expansion: ExpansionChoice::Eager,
                 config: HashTrieConfig::default(),
-                build: HashTrieBuildMode::Serial,
+                build: HashTrieBuildMode::Bulk,
             })
         );
     }
@@ -1007,7 +1007,7 @@ mod tests {
                     .map(|column_trie| (tree_trie, column_trie))
             })
             .flat_map(|(tree_trie, column_trie)| {
-                [HashTrieBuildMode::Serial, radix].map(|hash_trie| BuildModes {
+                [HashTrieBuildMode::Bulk, radix].map(|hash_trie| BuildModes {
                     tree_trie,
                     column_trie,
                     hash_trie,
@@ -1159,7 +1159,7 @@ mod tests {
         ) -> (HasherChoice, PruningChoice, ExpansionChoice) {
             match HashHtj::<H, P, E>::new(
                 HashTrieConfig::default(),
-                HashTrieBuildMode::Serial,
+                HashTrieBuildMode::Bulk,
                 Planner::stored(LexicographicOptimiser),
             )
             .execution()
@@ -1254,7 +1254,7 @@ mod tests {
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
-            HashTrieBuildMode::Serial,
+            HashTrieBuildMode::Bulk,
             Planner::stored(LexicographicOptimiser),
         );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
@@ -1279,7 +1279,7 @@ mod tests {
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
-            HashTrieBuildMode::Serial,
+            HashTrieBuildMode::Bulk,
             Planner::stored(LexicographicOptimiser),
         );
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1411,7 +1411,7 @@ mod tests {
         };
         let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
-            HashTrieBuildMode::Serial,
+            HashTrieBuildMode::Bulk,
             Planner::stored(LexicographicOptimiser),
         );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
@@ -1438,7 +1438,7 @@ mod tests {
                     root_capacity,
                     ..HashTrieConfig::default()
                 },
-                HashTrieBuildMode::Serial,
+                HashTrieBuildMode::Bulk,
                 Planner::stored(LexicographicOptimiser),
             );
             let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
@@ -1455,7 +1455,7 @@ mod tests {
         let family =
             HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning, EagerExpansion>::new(
                 HashTrieConfig::default(),
-                HashTrieBuildMode::Serial,
+                HashTrieBuildMode::Bulk,
                 Planner::stored(LexicographicOptimiser),
             );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
@@ -1502,7 +1502,7 @@ mod tests {
             );
             let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
                 HashTrieConfig::default(),
-                HashTrieBuildMode::Serial,
+                HashTrieBuildMode::Bulk,
                 planner(),
             );
             let built = hash.build(vec![hash.build_relation(header(), edges())]);
@@ -1541,7 +1541,7 @@ mod tests {
 
         let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
             HashTrieConfig::default(),
-            HashTrieBuildMode::Serial,
+            HashTrieBuildMode::Bulk,
             Planner::stored(LexicographicOptimiser),
         );
         let engine = hash.build_from_tuples(inputs());
@@ -1741,7 +1741,7 @@ mod tests {
         assert_eq!(
             HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::default()
                 .build_mode_axes(),
-            build_mode_axis("serial")
+            build_mode_axis("bulk")
         );
         assert_eq!(
             HashTrieFamily::<SipHashStrategy, NoPruning, LazyExpansion>::new(
@@ -1785,7 +1785,7 @@ mod tests {
     }
 
     /// SipHash that counts its calls. The radix build hashes each tuple's
-    /// first attribute once more than the serial build, and the two build
+    /// first attribute once more than the bulk build, and the two build
     /// identical tries, so the count is the only way to see which one ran.
     #[derive(Copy, Clone, Default, Debug)]
     struct CountingHash;
@@ -1845,12 +1845,12 @@ mod tests {
             };
             let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
             for (route, build) in routes {
-                let serial = hashes(&|| build(HashTrieBuildMode::Serial));
+                let bulk = hashes(&|| build(HashTrieBuildMode::Bulk));
                 let radixed = hashes(&|| build(radix));
                 assert!(
-                    radixed > serial,
-                    "{} {route}: the radix build hashed {radixed} times and the serial build \
-                     {serial}: the mode did not reach the build",
+                    radixed > bulk,
+                    "{} {route}: the radix build hashed {radixed} times and the bulk build \
+                     {bulk}: the mode did not reach the build",
                     E::NAME
                 );
             }
@@ -1893,13 +1893,13 @@ mod tests {
             for (config, mode, expected, deferred) in [
                 (
                     HashTrieConfig::default(),
-                    HashTrieBuildMode::Serial,
+                    HashTrieBuildMode::Bulk,
                     vec![],
                     false,
                 ),
                 (HashTrieConfig::default(), radix, vec![], false),
                 (HashTrieConfig::default(), parallel_three, vec![3], false),
-                (presized_root, HashTrieBuildMode::Serial, vec![], false),
+                (presized_root, HashTrieBuildMode::Bulk, vec![], false),
                 (presized_root, radix, vec![], false),
                 (presized_root, parallel_three, vec![3], false),
                 (presized_root, presized_three, vec![3], true),
@@ -2092,7 +2092,7 @@ mod tests {
         };
         let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
             config,
-            HashTrieBuildMode::Serial,
+            HashTrieBuildMode::Bulk,
             Planner::stored(LexicographicOptimiser),
         );
         let mut engine = hash.build(vec![hash.build_relation(header.clone(), edges.clone())]);

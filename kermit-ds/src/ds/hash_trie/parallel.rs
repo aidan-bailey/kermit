@@ -386,7 +386,7 @@ mod tests {
         &[1, 2, 3, 8]
     };
 
-    /// `parallel:N` builds the trie `serial` builds, for every arity, root
+    /// `parallel:N` builds the trie `bulk` builds, for every arity, root
     /// capacity, load factor, thread count and input; its `Tuples` loop is
     /// the array-level evidence that `parallel:N` under
     /// `root-capacity=tuples` is the exact merge build. Each case runs
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_builds_the_serial_trie_under_siphash() {
+    fn parallel_builds_the_bulk_trie_under_siphash() {
         check_identity::<SipHashStrategy, NoPruning, EagerExpansion>();
         check_identity::<SipHashStrategy, SingletonPruning, EagerExpansion>();
         check_identity::<SipHashStrategy, NoPruning, LazyExpansion>();
@@ -463,7 +463,7 @@ mod tests {
         miri,
         ignore = "threads are slow under Miri; the SipHash matrix runs the same code"
     )]
-    fn parallel_builds_the_serial_trie_under_fxhash() {
+    fn parallel_builds_the_bulk_trie_under_fxhash() {
         check_identity::<FxHashStrategy, NoPruning, EagerExpansion>();
         check_identity::<FxHashStrategy, SingletonPruning, EagerExpansion>();
         check_identity::<FxHashStrategy, NoPruning, LazyExpansion>();
@@ -477,7 +477,7 @@ mod tests {
         miri,
         ignore = "threads are slow under Miri; the SipHash matrix runs the same code"
     )]
-    fn parallel_builds_the_serial_trie_under_colliding_hashes() {
+    fn parallel_builds_the_bulk_trie_under_colliding_hashes() {
         check_identity::<Mod10HashStrategy, NoPruning, EagerExpansion>();
         check_identity::<Mod10HashStrategy, SingletonPruning, EagerExpansion>();
         check_identity::<Mod10HashStrategy, NoPruning, LazyExpansion>();
@@ -499,7 +499,7 @@ mod tests {
     /// (16 384 tuples).
     #[test]
     #[cfg_attr(miri, ignore = "tens of thousands of inserts")]
-    fn parallel_builds_the_serial_trie_on_large_and_skewed_inputs() {
+    fn parallel_builds_the_bulk_trie_on_large_and_skewed_inputs() {
         fn check<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
             let n = 2 * MORSEL_TUPLES + 7_000;
             let mut lcg = Lcg(0x94);
@@ -569,7 +569,8 @@ mod tests {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 8, i]).collect();
         let serial: HashTrie<TopBitsHash> = HashTrie::from_tuples(2.into(), tuples.clone());
         for (mode, builds, worker_runs) in [
-            (HashTrieBuildMode::Serial, vec![], vec![]),
+            (HashTrieBuildMode::Bulk, vec![], vec![]),
+            (HashTrieBuildMode::Incremental, vec![], vec![]),
             (
                 HashTrieBuildMode::Radix(RadixBits::new(3).unwrap()),
                 vec![],

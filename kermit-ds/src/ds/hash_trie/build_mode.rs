@@ -9,16 +9,20 @@ use {
 
 /// How a [`HashTrie`](super::HashTrie) is built from a known set of tuples.
 /// Every mode builds an equivalent trie, the same contents with the same
-/// capacities (the BuildMode rule). `Serial`, `Radix` and `Parallel` also
-/// put each key in the same bucket; `Presized` may place root keys in other
-/// buckets (Amendment 2). The mode changes how long the build takes, never
-/// the trie's contents (issues #91, #94).
+/// capacities (the BuildMode rule). `Bulk`, `Incremental`, `Radix` and
+/// `Parallel` also put each key in the same bucket; `Presized` may place root
+/// keys in other buckets (Amendment 2). The mode changes how long the build
+/// takes, never the trie's contents (issues #91, #94, #107).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HashTrieBuildMode {
-    /// One insert per tuple, in input order: Algorithm 2 of the paper, and
-    /// the only build before issue #91.
+    /// Algorithm 2 of the paper (VLDB 2020, §3.2.2): a table's tuples are
+    /// grouped into its buckets, then each bucket's child is built from its
+    /// list (`bulk.rs`, #107). The default.
     #[default]
-    Serial,
+    Bulk,
+    /// One `insert_at` per tuple, in input order: the only build before
+    /// #91, and the default, spelled `serial`, until #107.
+    Incremental,
     /// Radix-partition the tuples on the top bits of their first
     /// attribute's hash, build each partition separately, then merge
     /// (SIGMOD 2020 §3.3.2).
@@ -94,7 +98,7 @@ impl fmt::Display for ParseHashTrieBuildModeError {
 impl std::error::Error for ParseHashTrieBuildModeError {}
 
 /// Parses the strings [`axis_value`](kermit_iters::BuildMode::axis_value)
-/// returns: `serial`, `radix:<bits>`, `parallel:<threads>` and
+/// returns: `bulk`, `incremental`, `radix:<bits>`, `parallel:<threads>` and
 /// `presized:<threads>`.
 impl FromStr for HashTrieBuildMode {
     type Err = ParseHashTrieBuildModeError;
@@ -102,15 +106,21 @@ impl FromStr for HashTrieBuildMode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let error = |why: String| {
             ParseHashTrieBuildModeError(format!(
-                "{why}; expected serial, radix:<bits>, parallel:<threads> or presized:<threads>; \
-                 bits in {}..={}, threads in 1..={}",
+                "{why}; expected bulk, incremental, radix:<bits>, parallel:<threads> or \
+                 presized:<threads>; bits in {}..={}, threads in 1..={}",
                 RadixBits::MIN,
                 RadixBits::MAX,
                 Threads::MAX
             ))
         };
         match s.split_once(':') {
-            | None if s == "serial" => Ok(Self::Serial),
+            | None if s == "bulk" => Ok(Self::Bulk),
+            | None if s == "incremental" => Ok(Self::Incremental),
+            | None if s == "serial" => Err(error(
+                "hash-trie has no serial build since #107: the default is bulk (Algorithm 2), and \
+                 the per-tuple build is incremental"
+                    .to_owned(),
+            )),
             | None if s == "radix" => Err(error("radix needs a bit count".to_owned())),
             | None if s == "parallel" => Err(error("parallel needs a thread count".to_owned())),
             | None if s == "presized" => Err(error("presized needs a thread count".to_owned())),
@@ -170,7 +180,8 @@ fn parse_threads(
 impl kermit_iters::BuildMode for HashTrieBuildMode {
     fn axis_value(&self) -> String {
         match self {
-            | Self::Serial => "serial".to_owned(),
+            | Self::Bulk => "bulk".to_owned(),
+            | Self::Incremental => "incremental".to_owned(),
             | Self::Radix(bits) => format!("radix:{}", bits.get()),
             | Self::Parallel(threads) => format!("parallel:{}", threads.get()),
             | Self::Presized(threads) => format!("presized:{}", threads.get()),
@@ -198,7 +209,7 @@ mod tests {
     /// parses back, for every mode.
     #[test]
     fn axis_values_round_trip_through_from_str() {
-        let mut modes = vec![HashTrieBuildMode::Serial];
+        let mut modes = vec![HashTrieBuildMode::Bulk, HashTrieBuildMode::Incremental];
         modes.extend((RadixBits::MIN..=RadixBits::MAX).map(radix));
         modes.extend((1..=8).map(parallel));
         modes.push(parallel(Threads::MAX));
@@ -209,18 +220,19 @@ mod tests {
         }
     }
 
-    /// The labels name every HashTrie report's `ds_build_mode`, and
-    /// kermit-lab reads a missing axis as `"serial"`.
+    /// The labels name every HashTrie report's `ds_build_mode`. kermit-lab
+    /// reads a missing axis, and the pre-#107 `"serial"`, as `"incremental"`.
     #[test]
     fn axis_values_and_default_are_pinned() {
-        assert_eq!(HashTrieBuildMode::Serial.axis_value(), "serial");
+        assert_eq!(HashTrieBuildMode::Bulk.axis_value(), "bulk");
+        assert_eq!(HashTrieBuildMode::Incremental.axis_value(), "incremental");
         assert_eq!(radix(8).axis_value(), "radix:8");
         assert_eq!(
             HashTrieBuildMode::Parallel(Threads::new(8).unwrap()).axis_value(),
             "parallel:8"
         );
         assert_eq!(presized(8).axis_value(), "presized:8");
-        assert_eq!(HashTrieBuildMode::default(), HashTrieBuildMode::Serial);
+        assert_eq!(HashTrieBuildMode::default(), HashTrieBuildMode::Bulk);
     }
 
     #[test]
@@ -236,8 +248,8 @@ mod tests {
     fn malformed_modes_are_rejected_with_the_accepted_forms() {
         let cases = [
             ("", "unknown hash-trie build mode \"\""),
-            ("bulk", "unknown hash-trie build mode \"bulk\""),
-            ("Serial", "unknown hash-trie build mode \"Serial\""),
+            ("serial", "hash-trie has no serial build since #107"),
+            ("Bulk", "unknown hash-trie build mode \"Bulk\""),
             ("radix", "radix needs a bit count"),
             ("radix:", "whole number"),
             ("radix:x", "whole number"),
@@ -267,10 +279,23 @@ mod tests {
             assert!(msg.contains(why), "{input:?}: {msg}");
             assert!(
                 msg.contains(
-                    "expected serial, radix:<bits>, parallel:<threads> or presized:<threads>"
+                    "expected bulk, incremental, radix:<bits>, parallel:<threads> or \
+                     presized:<threads>"
                 ),
                 "{input:?}: {msg}"
             );
         }
+    }
+
+    /// `serial` named the per-tuple build until #107; its rejection names
+    /// the two builds that replaced the name.
+    #[test]
+    fn serial_is_rejected_with_its_replacements() {
+        let msg = "serial"
+            .parse::<HashTrieBuildMode>()
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("the default is bulk (Algorithm 2)"), "{msg}");
+        assert!(msg.contains("the per-tuple build is incremental"), "{msg}");
     }
 }

@@ -144,6 +144,22 @@ hash_trie_test_suite!(HashTrieSipRadix2, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieSipLazyRadix2, SipHashStrategy);
 
+// ── BuildMode: the per-tuple build ──────────────────────────────────────
+// `incremental` is the build before #107, one `insert_at` per tuple. It
+// builds the trie `bulk` builds, so the contract holds unchanged.
+define_build_mode_provider!(
+    HashIncremental,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Incremental
+);
+
+type HashTrieSipIncremental = BuiltWith<HashTrieSip, HashIncremental>;
+type HashTrieSipPrunedLazyIncremental = BuiltWith<HashTrieSipPrunedLazy, HashIncremental>;
+
+hash_trie_test_suite!(HashTrieSipIncremental, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipPrunedLazyIncremental, SipHashStrategy);
+
 // ── BuildMode: the parallel build ───────────────────────────────────────
 // `parallel:2` builds eight partitions on two threads and must build the
 // identical trie (issue #94), so the iterator contract holds unchanged,

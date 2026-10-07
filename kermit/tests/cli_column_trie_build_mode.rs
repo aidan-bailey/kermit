@@ -2,7 +2,7 @@
 //! for every structure reporting its own. Every `ColumnTrie` report says which
 //! build made its relations, so kermit-lab can read a `ColumnTrie` report
 //! *without* the axis as the pre-#84 incremental build. `TreeTrie` and
-//! `HashTrie` report theirs (`serial` by default — see
+//! `HashTrie` report theirs (`serial` and `bulk` by default — see
 //! `cli_tree_trie_build_mode.rs` and `cli_hash_trie_build_mode.rs`). It also
 //! covers selecting the mode with `--ds-build` and rejecting a column-trie
 //! pair on another structure.
@@ -47,9 +47,8 @@ fn cli_bench_run_sweep_reports_each_structures_build_mode() {
         let axes = &r["axes"];
         match axes["data_structure"].as_str() {
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
-            | Some("TreeTrie" | "HashTrie") => {
-                assert_eq!(axes["ds_build_mode"], "serial", "{axes}")
-            },
+            | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
+            | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }
@@ -119,9 +118,8 @@ fn cli_bench_run_sweep_carries_incremental_only_to_column_trie_cells() {
         let axes = &r["axes"];
         match axes["data_structure"].as_str() {
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "incremental", "{axes}"),
-            | Some("TreeTrie" | "HashTrie") => {
-                assert_eq!(axes["ds_build_mode"], "serial", "{axes}")
-            },
+            | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
+            | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }

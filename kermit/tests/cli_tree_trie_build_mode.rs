@@ -87,7 +87,7 @@ fn cli_bench_run_sweep_carries_parallel_only_to_tree_trie_cells() {
         match axes["data_structure"].as_str() {
             | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "parallel:2", "{axes}"),
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
-            | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
+            | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }
