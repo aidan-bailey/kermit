@@ -178,8 +178,9 @@ CLI check that runs first; the row and the CLI check are still required.
 
 ## What this looks like at the CLI
 
-Today (two Layout dimensions — hasher and pruning — plus the load-factor
-Config are implemented):
+Every implemented optimization has its own flag; [What's implemented
+today](#whats-implemented-today-whats-available) lists them. The HashTrie
+Layout and Config flags, for example:
 
 ```bash
 # Default — Sip, no pruning, load factor 0.7
@@ -431,8 +432,10 @@ a runtime value, which is what makes it Config rather than Layout.
 
 `kermit_ds::BuildModeRelation` ([`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs))
 adds `from_tuples_with_build_mode(header, mode, tuples)`. Every mode must build
-the same relation, and `Relation::from_tuples` must use the default mode.
-`ColumnTrie` and `HashTrie` implement it. HashTrie also has a Config, and
+an equivalent relation (the same contents and capacities; see the BuildMode
+rule above), and `Relation::from_tuples` must use the default mode.
+`TreeTrie`, `ColumnTrie` and `HashTrie` implement it, and `Configured<R, P>`
+forwards it to the relation it wraps. HashTrie also has a Config, and
 each trait's constructor fixes the other axis to its default, so it adds one
 inherent constructor that takes both,
 `from_tuples_with_config_and_build_mode`. A mode with a Config prerequisite
