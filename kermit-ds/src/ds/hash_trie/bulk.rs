@@ -31,7 +31,7 @@
 //!
 //! - A list is a `Vec` per bucket. Umbra threads its lists through an 8-byte
 //!   chain pointer reserved in each materialised tuple (§3.3.2), which needs
-//!   contiguous tuple storage (#101).
+//!   the flat tuple buffer of #111 (#101 layer 3).
 //! - Line 3's size is a Config value whose default (`grow`) is not the paper's;
 //!   `child-capacity=tuples` at `load-factor=0.8` is the paper's sizing
 //!   exactly. The root's is `root-capacity` (#88), and each child's is
