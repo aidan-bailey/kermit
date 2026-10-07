@@ -136,6 +136,12 @@ define_multiway_join_test_suite_with_config!(
 define_multiway_join_test_suite_with_config!(
     HashTrieSipLazy,
     HashTriejoin,
+    CardinalityOptimiser,
+    HalfFull
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipLazy,
+    HashTriejoin,
     CostBasedOptimiser,
     HalfFull
 );
@@ -192,6 +198,12 @@ define_multiway_join_test_suite_with_config!(
     HashTrieSipLazy,
     HashTriejoin,
     LexicographicOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipLazy,
+    HashTriejoin,
+    CardinalityOptimiser,
     PresizedRoot
 );
 define_multiway_join_test_suite_with_config!(
@@ -678,6 +690,10 @@ define_multiway_join_test_suite_with_column_orders!(
     AnyOrders,
     HashTrieSipLazyHalfFull,
     HashTriejoin,
+    CardinalityOptimiser,
+    AnyOrders,
+    HashTrieSipLazyHalfFull,
+    HashTriejoin,
     CostBasedOptimiser,
     AnyOrders,
     TreeTrieParallel2,
@@ -767,6 +783,10 @@ define_multiway_join_test_suite_with_column_orders!(
     HashTrieSipLazyPresized,
     HashTriejoin,
     LexicographicOptimiser,
+    AnyOrders,
+    HashTrieSipLazyPresized,
+    HashTriejoin,
+    CardinalityOptimiser,
     AnyOrders,
     HashTrieSipLazyPresized,
     HashTriejoin,
