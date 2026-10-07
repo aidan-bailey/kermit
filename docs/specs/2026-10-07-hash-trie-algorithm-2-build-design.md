@@ -194,8 +194,11 @@ any mode; the expanded table does not (above).
 - `HashTrieConfig::child_log2_capacity(len)` sits beside `root_log2_capacity`. The
   shared `hash_table::log2_capacity_for` takes its floor as a parameter (2 for the
   root, 1 for children), so the two rules read side by side.
-- A child created later by `Relation::insert` starts at 4 buckets, as #88's root does
-  for a trie created empty ("sized for no tuples").
+- After the build, a child that `Relation::insert` creates starts at 4 buckets under
+  eager expansion, as #88's root does for a trie created empty; under lazy expansion it
+  is sized from its pending list when a probe first reaches it. So under `tuples`, an
+  eager and a lazy trie that `insert` has changed since their build may differ in
+  capacity (joins and benches never insert after building).
 - `HashTrieConfig::axes` gains `("child_capacity", "grow" | "tuples")`.
 
 ### Build modes

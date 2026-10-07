@@ -1541,6 +1541,17 @@ setsid nohup env -C $WT nix develop $WT --command cargo miri test -p kermit-ds >
 
 ## Task 7 [P2]: `ChildCapacity`, sized children, and `incremental`'s prerequisite
 
+> **As executed** (346603a, ab795e5, 4eb2080): sizing lives in
+> `build_child_table` (Task 4); all three bulk-vs-incremental tests use
+> `incremental_configs()`. After review: the docs qualify "an expanded child is
+> the eager child" (it holds for a trie no `insert` has changed since its build,
+> and always under `grow`; under `tuples` a lazily expanded child is sized from
+> its pending list, an eagerly inserted one starts at 4); `check_presized` takes
+> a `child_capacities` slice (`BOTH_CHILD_CAPACITIES` for the shared inputs),
+> and the large presized test runs Sip/NoPruning/Eager × `tuples` and
+> Fx/Pruned/Lazy × `grow` (a lazy build leaves children pending, so only the
+> eager layout sizes them), keeping `hash_trie`'s lib tests at ~28 s.
+
 **Files:**
 - Modify: `kermit-ds/src/ds/hash_trie/config.rs`
 - Modify: `kermit-ds/src/ds/hash_trie/hash_table.rs` (`log2_capacity_for`'s floor; `PAPER_MIN_LOG2_CAPACITY`; tests)
@@ -2749,6 +2760,9 @@ paper.
   1. **Representation**, the `Unexpanded` paragraph: "moves them into a table
      built by the same `insert_at`, one level deep" → "moves them into a
      table built by Algorithm 2's `build` (`bulk.rs`), one level deep".
+     Wherever `hash-trie.md` says an expanded child *is* the eager table
+     (~57, ~216), qualify it as the code docs now do: for a trie no `insert`
+     has changed since its build, and always under `child-capacity=grow`.
   2. **A new `### Construction` subsection** at the end of Representation:
      ```markdown
      ### Construction
@@ -2822,8 +2836,9 @@ paper.
          `child-capacity=grow`: the per-tuple build creates a child on its first
          tuple, before the child's list is known.
        - **Rust:** `HashTrieConfig { child_capacity: ChildCapacity::Tuples, ..HashTrieConfig::default() }`;
-         `HashTrieConfig::child_log2_capacity`. A child that `insert` creates
-         after a build starts at 4 buckets.
+         `HashTrieConfig::child_log2_capacity`. After the build, a child that
+         `insert` creates starts at 4 buckets under eager expansion; under lazy
+         expansion it is sized from its pending list when first probed.
        - **Bench axis value:** the JSON string `"grow"` / `"tuples"`.
        - **Expected effect:** `insertion` falls where children would rehash as
          they grow. `space` rises where a child's list holds more tuples than
