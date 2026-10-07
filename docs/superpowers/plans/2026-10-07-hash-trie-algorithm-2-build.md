@@ -1923,19 +1923,24 @@ setsid nohup env -C $WT nix develop $WT --command cargo miri test -p kermit-ds >
   Find every call with `git -C $WT grep -n 'log2_capacity_for(' -- kermit-ds`.
 
 - [ ] **Step 5: Sizing in the build.**
-  - `bulk.rs`, `child`'s last line:
+  - `bulk.rs`, the body of `build_child_table` (Task 4's fix-loop added it as
+    the one definition of a child's table, called by `child`'s eager branch
+    and by `resolve`, so this is the only sizing site):
     ```rust
         let log2_capacity = config.child_log2_capacity(list.len());
         Self::build(depth, arity, list, log2_capacity, config)
     ```
-    and drop `INITIAL_LOG2_CAPACITY` from its imports. In the module doc,
+    and drop `INITIAL_LOG2_CAPACITY` from its imports. In `child`'s doc, the
+    lazy parenthesis names the function `resolve` calls: "(§3.3.1;
+    `HashTrie::resolve` builds its table by
+    [`build_child_table`](Self::build_child_table) on the first probe)". In
+    the module doc,
     replace the second bullet with: "Line 3's size is a Config value: the
     root's is `root-capacity` (#88), and each child's is `child-capacity`:
     4 buckets that grow (`grow`, the default), or sized once from its list
     (`tuples`), the paper's sizing at a load factor of 0.8."
-  - `implementation.rs`, `resolve`: replace `INITIAL_LOG2_CAPACITY` by
-    `self.config.child_log2_capacity(tuples.len())` (compute it into a `let`
-    before the `build` call, since `tuples` moves into it).
+  - `implementation.rs`, `resolve`: no change; it calls `build_child_table`,
+    which now sizes.
   - `implementation.rs`, the `Incremental` arm:
     ```rust
             | HashTrieBuildMode::Incremental => {
@@ -2040,12 +2045,14 @@ setsid nohup env -C $WT nix develop $WT --command cargo miri test -p kermit-ds >
   git -C $WT add -u kermit-ds
   git -C $WT commit -m "feat(hash-trie): child-capacity=grow|tuples sizes every child from its list (#107)"
   ```
-  - **M7a, `child` ignores the config:** `config.child_log2_capacity(list.len())`
-    → `INITIAL_LOG2_CAPACITY` in `child`. Fails:
+  - **M7a, children ignore the config:** `config.child_log2_capacity(list.len())`
+    → `INITIAL_LOG2_CAPACITY` in `build_child_table`. Fails:
     `tuples_sizes_every_child_from_its_list`.
-  - **M7b, expansion ignores the config:** the same in `resolve`. Fails:
-    `tuples_sizes_every_child_from_its_list` (its lazy cases) and
-    `lazy_walks_like_eager_with_children_sized_from_their_lists`.
+  - **M7b, expansion bypasses the shared definition:** in `resolve`, call
+    `Self::build(depth, self.header.arity(), tuples, INITIAL_LOG2_CAPACITY,
+    self.config)` instead of `build_child_table`. Fails:
+    `lazy_walks_like_eager_with_children_sized_from_their_lists` and the lazy
+    cases of `tuples_sizes_every_child_from_its_list`.
   - **M7c, the prerequisite dropped:** delete the `assert_eq!` in the
     `Incremental` arm. Fails: `incremental_requires_growing_children`.
 
@@ -2766,7 +2773,8 @@ paper.
      the same load factor and child capacity as the eager build".
   4. **Complexity**: the `from_tuples(n)` row's notes → "Algorithm 2, the
      default `bulk` build: n hashes and moves per level, a list allocation per
-     inner bucket holding ≥ 2 tuples, and one transient table of lists per
+     inner bucket (a one-tuple list too, freed again when pruning makes it a
+     `Singleton`), and one transient table of lists per
      table (about 32 B a bucket, the root's the largest). Expected cost holds
      for input in another `HashTrie`'s iteration order, or any subset of it;
      the bucket-index invariant names the one order it does not cover". Add a
