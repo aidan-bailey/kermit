@@ -154,7 +154,7 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     morsel_tuples: usize, config: HashTrieConfig,
 ) {
     if tuples.is_empty() {
-        // The serial build of nothing is the empty root: start no worker.
+        // The bulk build of nothing is the empty root: start no worker.
         return;
     }
     // 1. Partition, on `threads` workers, by the top bits of the first
@@ -203,8 +203,8 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
 }
 
 /// Inserts every partition's entries into the real root in the order their
-/// keys first appeared in the input, the order the serial build inserts
-/// them, so the root's buckets, length and capacity are the serial
+/// keys first appeared in the input, the order the bulk build inserts
+/// them, so the root's buckets, length and capacity are the bulk
 /// build's. Each list is already in that order, so a k-way merge suffices:
 /// a heap pop and push per entry over at most P lists, where the radix
 /// build sorts every entry. It runs on the calling thread: the build's
@@ -927,7 +927,7 @@ mod tests {
 
     /// `parallel:N` is the exact merge build under every root capacity: a
     /// presized root changes the root's size, not the process, and the
-    /// result is identical to serial's under the same config.
+    /// result is identical to bulk's under the same config.
     #[test]
     fn parallel_build_merges_under_every_root_capacity() {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 16, i]).collect();
@@ -936,7 +936,7 @@ mod tests {
                 root_capacity,
                 ..HashTrieConfig::default()
             };
-            let serial: HashTrie =
+            let bulk: HashTrie =
                 HashTrie::from_tuples_with_config(2.into(), config, tuples.clone());
             PARALLEL_BUILDS.with(|b| b.borrow_mut().clear());
             crate::morsel::take_worker_runs();
@@ -958,7 +958,7 @@ mod tests {
                 vec![3, 3],
                 "{root_capacity:?}"
             );
-            assert_same_trie(&serial, &built, &format!("{root_capacity:?}"));
+            assert_same_trie(&bulk, &built, &format!("{root_capacity:?}"));
         }
     }
 

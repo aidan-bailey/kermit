@@ -89,7 +89,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     pub(super) fn build_nested(
         depth: usize, arity: usize, lists: HashTable<TupleList>, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
-        // `>=`, as `make_root`'s `arity <= 1`, so the unsupported nullary
+        // `>=`, as `make_root_sized`'s `arity <= 1`, so the unsupported nullary
         // root is a leaf under both builds.
         if depth + 1 >= arity {
             return HashTrieNode::Leaf(lists);
