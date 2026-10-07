@@ -823,7 +823,10 @@ one commit.
 **Files:**
 - Modify: `kermit-ds/src/ds/hash_trie/build_mode.rs`
 - Modify: `kermit-ds/src/ds/hash_trie/implementation.rs` (mode arms;
-  `from_tuples_with_config`; the struct and `insert_at` docs)
+  `from_tuples_with_config`; the struct and `insert_at` docs; the
+  `expect(dead_code)` on `from_tuples_in_bulk`)
+- Modify: `kermit-ds/src/ds/hash_trie/mod.rs` (the `expect(dead_code)` on
+  `mod bulk;`)
 - Modify: `kermit-ds/src/ds/hash_trie/{radix,parallel,identity}.rs` (renames)
 - Modify: `kermit-ds/tests/hash_trie_tests.rs`, `kermit-ds/tests/parquet_tests.rs`
   (an `incremental` alias)
@@ -911,6 +914,12 @@ one commit.
 - [ ] **Step 4: Route the modes.** In `implementation.rs`:
   - `ConfigurableRelation::from_tuples_with_config` →
     `Self::from_tuples_in_bulk(header, config, tuples)`.
+  - Delete the two `#[cfg_attr(not(test), expect(dead_code, reason = "tests
+    reach the bulk build until it is the default build"))]` attributes Task 2
+    added: on `mod bulk;` in `mod.rs`, and on `from_tuples_in_bulk`. The bulk
+    build is now reached outside tests, so the expectations would go
+    unfulfilled and fail clippy under `-Dwarnings` (plain `cargo test` only
+    warns).
   - In `from_tuples_with_config_and_build_mode`, replace the `Serial` arm by
     ```rust
             | HashTrieBuildMode::Bulk => Self::from_tuples_in_bulk(header, config, tuples),
@@ -1075,7 +1084,9 @@ one commit.
   ```
   `resolve`'s doc keeps its text; add "The table is built by Algorithm 2
   (`bulk.rs`) from the pending list, which keeps insertion order, so it is the
-  eager table at this position." In the struct's `# Invariants`, "(see
+  eager table at this position." Now that it is true, `child`'s doc in
+  `bulk.rs` names it: "(§3.3.1; `HashTrie::resolve` builds its table by
+  [`build`](Self::build) on the first probe)". In the struct's `# Invariants`, "(see
   `expand_level`)" → "(see `resolve`)". If `INITIAL_LOG2_CAPACITY` is no
   longer imported in `implementation.rs`, keep its import (`make_root` uses it).
 
@@ -1433,8 +1444,9 @@ one commit.
               .push(tuple);
       }
       // 4. Every bucket's child, a run per worker. At arity 1 the lists are the
-      //    chains, and the table of lists is the root.
-      if HashTrie::<H, P, E>::is_leaf_depth(0, arity) {
+      //    chains, and the table of lists is the root. `arity <= 1`, as
+      //    `build_nested` decides at depth 0 (`depth + 1 >= arity`).
+      if arity <= 1 {
           return HashTrieNode::Leaf(lists);
       }
       HashTrieNode::Inner(lists.map_in_runs(parts, |runs| {
@@ -3001,6 +3013,13 @@ scripts as the template
    load factors 0.8 and 0.7, under `bulk` and `presized:16`;
 3. lazy `iteration`, across binaries (before and after this plan), with
    TreeTrie as the control, since expansion changed process in every mode.
+
+Costs to look for, from the Task 2 review (build time only; the finished trie
+is unchanged): under pruning, each single-tuple key allocates and frees a
+4-slot list that `insert_at` never makes; under lazy expansion, each 1- or
+2-tuple pending list pays one extra reallocation for the capacity fix; `map`
+holds two bucket arrays at once; and the input buffer and the root's lists
+coexist through the root's `group`.
 
 Record the results in `docs/data-structures/hash-trie.md` and post them to
 #107 and #105.
