@@ -342,8 +342,8 @@ there are 2 regions and 2 runs. Say the keys' home buckets are 3 for key 1,
 The tail then pushes `[2,b]` by ordinary probing from its home, bucket 3.
 Bucket 3 is taken and bucket 4 is free, so key 2 lands at 4. The children
 are then built a run at a time: run 0's task builds key 1's from
-`[1,a] [1,d]`, and run 1's builds key 2's and key 3's. The bulk build would have put key 1 at 3, key 2 at 4 and key 3 at
-5: the same occupied buckets,
+`[1,a] [1,d]`, and run 1's builds key 2's and key 3's. The bulk build would
+have put key 1 at 3, key 2 at 4 and key 3 at 5: the same occupied buckets,
 and here even the same slots. They differ only when a deferred key and a
 later region's key compete for the same bucket.
 
