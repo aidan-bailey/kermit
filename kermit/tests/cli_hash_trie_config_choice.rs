@@ -107,7 +107,10 @@ fn cli_bench_ds_rejects_a_malformed_child_capacity() {
     let (output, _) = bench_ds("hash-trie", &["--ds-config", "child-capacity=keys"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("expected grow or tuples"), "{stderr}");
+    assert!(
+        stderr.contains("--ds-config child-capacity: expected grow or tuples"),
+        "{stderr}"
+    );
 }
 
 #[test]

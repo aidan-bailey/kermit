@@ -382,9 +382,15 @@ fn cli_bench_run_verifies_the_papers_configuration() {
         let axes = axes_of(&report);
         assert_eq!(axes["verified"], true, "{expansion}: {axes}");
         assert_eq!(
+            axes["ds_config_root_capacity"], "tuples",
+            "{expansion}: {axes}"
+        );
+        assert_eq!(
             axes["ds_config_child_capacity"], "tuples",
             "{expansion}: {axes}"
         );
+        assert_eq!(axes["ds_config_load_factor"], 0.8, "{expansion}: {axes}");
+        assert_eq!(axes["ds_layout_pruning"], "on", "{expansion}: {axes}");
         assert_eq!(axes["ds_build_mode"], "presized:3", "{expansion}: {axes}");
     }
 }
