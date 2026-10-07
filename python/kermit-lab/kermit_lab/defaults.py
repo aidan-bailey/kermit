@@ -101,7 +101,7 @@ def apply_renamed_axis_values(df: pd.DataFrame) -> pd.DataFrame:
     for (col, data_structure, old), new in RENAMED_AXIS_VALUES.items():
         if col in out.columns:
             hit = out["data_structure"].isin([data_structure]) & out[col].isin([old])
-            out.loc[hit, col] = new
+            out[col] = out[col].mask(hit, new)
     return out
 
 

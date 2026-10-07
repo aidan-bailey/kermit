@@ -665,7 +665,7 @@ def fixture_parallel_build_tree(tmp_path: Path) -> dict:
     """``bench ds`` reports of one relation: TreeTrie under ``serial``,
     ``parallel:2`` and ``parallel:4``, two replicates each (distinct
     ``--name``, so distinct Criterion groups), plus a ColumnTrie ``bulk``
-    case with no serial baseline. Insertion time halves per thread
+    case with no threaded build. Insertion time halves per thread
     doubling, so the expected speedups are 2 and 4 exactly.
     """
     criterion_root = tmp_path / "target" / "criterion"

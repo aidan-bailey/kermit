@@ -177,12 +177,31 @@ SPEEDUP_MEASURES: tuple[str, ...] = (
 )
 
 
-# The default single-threaded build of each structure with a parallel one:
-# what `speedup_table` divides by when it is given no `baseline`.
+# Each structure's default single-threaded build: what `speedup_table` divides
+# by when it is given no `baseline`. One entry per `data_structure` a report
+# can carry (`IndexStructure::axis_value`), so a new structure must name its
+# baseline here.
 BASELINE_BUILD_MODES: dict[str, str] = {
     "TreeTrie": "serial",
+    "ColumnTrie": "bulk",
     "HashTrie": "bulk",
 }
+
+
+def baseline_build_mode(data_structure: object) -> str:
+    """The default single-threaded build of ``data_structure``
+    (:data:`BASELINE_BUILD_MODES`).
+
+    Raises ``ValueError`` for a structure the map does not list, rather than
+    assume a build it may not have: pass ``baseline=`` to name one.
+    """
+    try:
+        return BASELINE_BUILD_MODES[data_structure]
+    except KeyError:
+        raise ValueError(
+            f"no default baseline build for data_structure {data_structure!r} "
+            f"(known: {BASELINE_BUILD_MODES}); pass baseline= to name one"
+        ) from None
 
 
 def speedup_table(
@@ -196,22 +215,26 @@ def speedup_table(
 ) -> pd.DataFrame:
     """Speedup of every threaded build over the baseline build: ``baseline`` if
     given, else the structure's default single-threaded build
-    (:data:`BASELINE_BUILD_MODES`: TreeTrie ``serial``, HashTrie ``bulk``).
+    (:data:`BASELINE_BUILD_MODES`: TreeTrie ``serial``, ColumnTrie and
+    HashTrie ``bulk``).
 
     A *case* is everything a row says apart from its build mode and
     provenance: one structure, workload and relation, measured under several
     build modes. Config axes are part of the case, so an arm pairs with the
     ``baseline`` row of its own config: a ``presized:N`` arm, which requires
-    ``root-capacity=tuples``, with ``serial`` under ``tuples``, never under
+    ``root-capacity=tuples``, with ``bulk`` under ``tuples``, never under
     ``grow``. Whether ``--verify`` ran does not identify a case, nor does
     ``queries_per_build`` on any phase but ``end_to_end``, the only one it
     shapes. Replicates of one case and mode (one report each, told apart by
     ``criterion_group`` / ``source_path``) are pooled; rows that read one
     Criterion directory are one measurement, not replicates. Load one binary's
     reports only, or codegen drift between binaries enters the speedup, and
-    load with ``apply_defaults=False`` (as ``kermit-lab speedup`` does): that
+    load with ``apply_defaults=False`` (as ``kermit-lab speedup`` does). That
     keeps TreeTrie reports from before #94 out of the baseline, where
-    back-filling would count them as ``serial``. Reports written before
+    back-filling would count them as ``serial``, and it keeps a HashTrie
+    ``parallel:N`` from before #107 apart from a newer one: back-filling
+    ``child_capacity=grow`` would put the two in one case, though the older
+    build did not construct its subtries with Algorithm 2. Reports written before
     2026-10-07 that carry ``parallel:N`` with ``ds_config_root_capacity:
     "tuples"`` timed the presized build (``bench-report-schema.md``'s
     2026-10-07 history row); reports carry no binary revision, so kermit-lab
@@ -263,13 +286,12 @@ def speedup_table(
     rows = df[on_phase & df["ds_build_mode"].notna()].reset_index(drop=True)
 
     def baseline_of(data_structure: object) -> str:
-        if baseline is not None:
-            return baseline
-        return BASELINE_BUILD_MODES.get(data_structure, "serial")
+        return baseline if baseline is not None else baseline_build_mode(data_structure)
 
     def baselines_named(frame: pd.DataFrame) -> str:
         structures = frame["data_structure"] if "data_structure" in frame.columns else [None]
-        return " or ".join(repr(m) for m in sorted({baseline_of(s) for s in structures}))
+        modes = sorted({baseline_of(s) for s in structures})
+        return " or ".join(repr(m) for m in modes) or "baseline"
 
     # Rows that read one Criterion directory are one measurement, not
     # replicates: runs that shared a `--name` overwrote each other.
@@ -331,11 +353,23 @@ def speedup_table(
     orphans = rows[rows["threads"].notna() & ~rows.index.isin(paired)]
     if not orphans.empty:
         reports = ", ".join(sorted(set(orphans["source_path"].astype(str))))
+        hint = ""
+        if baseline is None and "data_structure" in rows.columns:
+            hash_trie_modes = rows.loc[rows["data_structure"] == "HashTrie", "ds_build_mode"]
+            if (
+                (orphans["data_structure"] == "HashTrie").any()
+                and (hash_trie_modes == "incremental").any()
+                and not (hash_trie_modes == "bulk").any()
+            ):
+                hint = (
+                    ". A HashTrie report from before #107 has no 'bulk' build: "
+                    "pass baseline='incremental'"
+                )
         warnings.warn(
             f"{len(orphans)} parallel:N / presized:N row(s) on {phase!r} have no "
             f"{baselines_named(orphans)} row in their case and are left out (a key such as "
             f"relation_path, optimiser, a layout axis or a config axis such as "
-            f"root_capacity differs): {reports}",
+            f"root_capacity differs): {reports}{hint}",
             stacklevel=2,
         )
     if not records:

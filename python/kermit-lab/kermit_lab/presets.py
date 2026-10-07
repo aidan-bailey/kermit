@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 import pandas as pd
 from matplotlib.figure import Figure
 
-from .analysis import BASELINE_BUILD_MODES, SPEEDUP_MEASURES, speedup_table
+from .analysis import SPEEDUP_MEASURES, baseline_build_mode, speedup_table
 from .facet import finish, make_grid
 from .frame import build_of
 from .loader import TIME_PHASES
@@ -178,8 +178,7 @@ def speedup(
     ax.set_xlabel("threads")
     over = baseline
     if over is None:
-        structures = table["data_structure"] if "data_structure" in table.columns else [None]
-        over = " / ".join(sorted({BASELINE_BUILD_MODES.get(s, "serial") for s in structures}))
+        over = " / ".join(sorted({baseline_build_mode(s) for s in table["data_structure"]}))
     ax.set_ylabel(f"speedup over {over} ({phase})")
     # A figure of presized arms alone says so; parallel-only and mixed figures
     # keep the title they always had.

@@ -137,9 +137,10 @@ def test_speedup_refuses_a_phase_that_is_not_a_time_phase(fixture_parallel_build
         presets.speedup(df, phase="iteration")
 
 
-def test_speedup_without_a_serial_baseline_is_insufficient_axes(fixture_build_mode_tree) -> None:
+def test_speedup_without_a_threaded_build_is_insufficient_axes(fixture_build_mode_tree) -> None:
+    """ColumnTrie and HashTrie rows, each with a baseline but no `parallel:N`."""
     df = load(fixture_build_mode_tree["paths"], fixture_build_mode_tree["criterion_root"])
-    with pytest.raises(InsufficientAxesError, match="no case"):
+    with pytest.raises(InsufficientAxesError, match="no case has both a 'bulk' row"):
         presets.speedup(df)
 
 

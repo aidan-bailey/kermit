@@ -75,7 +75,7 @@ def _subcommands_taking_phase() -> set[str]:
 
 def test_every_time_shape_is_covered() -> None:
     """A new time-using shape must join the end_to_end test below. `speedup`
-    is the exception: it needs a `parallel:N` row beside a serial one, which
+    is the exception: it needs a `parallel:N` row beside its baseline build, which
     that test's fixture lacks, so `test_speedup_preset_subcommand` covers it
     (#94)."""
     assert _subcommands_taking_phase() == {*_TIME_SHAPES, "render-all", "speedup"}
@@ -160,7 +160,7 @@ def test_speedup_subcommand_warns_once_about_unpaired_runs(
     """The preset and the printed table both build the table; the warning is the
     preset's, and the table must not repeat it."""
     for path in fixture_parallel_build_tree["paths"]:
-        if "parallel-4" in path.name:  # another relation, so no serial row to pair with
+        if "parallel-4" in path.name:  # another relation, so no baseline row to pair with
             report = json.loads(path.read_text())
             report[0]["axes"]["relation_path"] = "/data/other.parquet"
             path.write_text(json.dumps(report))

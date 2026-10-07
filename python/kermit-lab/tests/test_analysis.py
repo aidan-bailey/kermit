@@ -9,7 +9,14 @@ import pandas as pd
 import pytest
 
 import kermit_lab as kl
-from kermit_lab.analysis import SPEEDUP_MEASURES, bootstrap_ratio_ci, compare, speedup_table
+from kermit_lab.analysis import (
+    BASELINE_BUILD_MODES,
+    SPEEDUP_MEASURES,
+    baseline_build_mode,
+    bootstrap_ratio_ci,
+    compare,
+    speedup_table,
+)
 from kermit_lab.frame import threads_of
 
 
@@ -143,12 +150,86 @@ def test_speedup_table_baseline_overrides_the_structures_default() -> None:
     assert speedup_table(df, baseline="incremental").iloc[0]["speedup"] == pytest.approx(2.0)
 
 
+def test_baseline_build_modes_cover_every_structure_kermit_reports() -> None:
+    """The `data_structure` labels a report can carry, pinned on the Rust side
+    by `IndexStructure::axis_value`."""
+    assert set(BASELINE_BUILD_MODES) == {"TreeTrie", "ColumnTrie", "HashTrie"}
+    assert baseline_build_mode("ColumnTrie") == "bulk"
+
+
+def test_baseline_build_mode_refuses_a_structure_it_does_not_list() -> None:
+    for unlisted in ("SkipList", pd.NA, float("nan"), None):
+        with pytest.raises(ValueError, match="no default baseline build"):
+            baseline_build_mode(unlisted)
+
+
+def test_speedup_table_divides_a_column_trie_by_its_bulk_build() -> None:
+    df = _build_mode_rows(
+        {"bulk": [100.0], "incremental": [90.0], "parallel:2": [25.0]},
+        data_structure="ColumnTrie",
+    )
+    assert speedup_table(df).iloc[0]["speedup"] == pytest.approx(4.0)
+
+
+def test_speedup_table_divides_each_structure_by_its_own_baseline() -> None:
+    tree = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    hash_trie = _build_mode_rows(
+        {"bulk": [90.0], "incremental": [60.0], "parallel:2": [30.0]}, data_structure="HashTrie"
+    )
+    table = speedup_table(pd.concat([tree, hash_trie], ignore_index=True))
+    assert table.set_index("data_structure")["speedup"].to_dict() == pytest.approx(
+        {"TreeTrie": 2.0, "HashTrie": 3.0}
+    )
+
+
+def test_speedup_table_refuses_a_structure_without_a_default_baseline() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]}, data_structure="SkipList")
+    with pytest.raises(ValueError, match="no default baseline build for data_structure 'SkipList'"):
+        speedup_table(df)
+    # An explicit baseline needs no default.
+    assert speedup_table(df, baseline="serial").iloc[0]["speedup"] == pytest.approx(2.0)
+
+
 def test_speedup_table_names_the_structures_baseline_when_unpaired() -> None:
-    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]}, data_structure="HashTrie")
-    with pytest.warns(UserWarning, match="no 'bulk' row"), pytest.raises(
-        ValueError, match="no case"
+    """An old HashTrie report: its per-tuple build loads as `incremental`, and
+    it has no `bulk` row, so the warning says which to pass instead."""
+    df = _build_mode_rows({"incremental": [100.0], "parallel:2": [50.0]}, data_structure="HashTrie")
+    with pytest.warns(UserWarning, match="no 'bulk' row") as caught, pytest.raises(
+        ValueError, match="no case has both a 'bulk' row"
     ):
         speedup_table(df)
+    assert "pass baseline='incremental'" in str(caught[0].message)
+
+
+def test_speedup_table_names_every_baseline_when_structures_differ() -> None:
+    """Rows of two structures, none paired: both defaults are named."""
+    df = pd.concat([
+        _build_mode_rows({"parallel:2": [50.0]}),
+        _build_mode_rows({"parallel:2": [40.0]}, data_structure="HashTrie"),
+    ], ignore_index=True)
+    with pytest.warns(UserWarning, match="no 'bulk' or 'serial' row"), pytest.raises(
+        ValueError, match="no case has both a 'bulk' or 'serial' row"
+    ):
+        speedup_table(df)
+
+
+def test_speedup_table_names_a_baseline_when_no_row_is_on_the_phase() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    with pytest.raises(ValueError, match="no case has both a baseline row"):
+        speedup_table(df, phase="end_to_end")
+
+
+def test_speedup_table_hints_at_incremental_only_for_a_hash_trie_without_bulk() -> None:
+    """A HashTrie that has a `bulk` row, whose arm differs only by relation, is
+    not a pre-#107 report: the hint would mislead."""
+    df = _build_mode_rows(
+        {"bulk": [100.0], "incremental": [90.0], "parallel:2": [50.0], "parallel:4": [30.0]},
+        data_structure="HashTrie",
+    )
+    df.loc[df["ds_build_mode"] == "parallel:4", "relation_path"] = "other.parquet"
+    with pytest.warns(UserWarning, match="no 'bulk' row") as caught:
+        speedup_table(df)
+    assert "baseline='incremental'" not in str(caught[0].message)
 
 
 def test_speedup_table_keeps_parallel_and_presized_arms_apart() -> None:
@@ -194,9 +275,9 @@ def test_speedup_table_orders_arms_by_mode_then_thread_count() -> None:
     """Within a case the arms run by build (`parallel`, then `presized`), then
     by thread count as a number, so `:16` follows `:2`."""
     df = _build_mode_rows({
-        "serial": [100.0], "presized:16": [10.0], "parallel:16": [20.0],
+        "bulk": [100.0], "presized:16": [10.0], "parallel:16": [20.0],
         "presized:2": [40.0], "parallel:2": [50.0],
-    })
+    }, data_structure="HashTrie")
     assert speedup_table(df)["ds_build_mode"].tolist() == [
         "parallel:2", "parallel:16", "presized:2", "presized:16",
     ]

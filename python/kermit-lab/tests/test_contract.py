@@ -131,7 +131,7 @@ def test_bench_ds_hash_trie_reports_its_parallel_build(tmp_path: Path) -> None:
         "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "hash-trie", "-m", "space",
         "--ds-build", "hash-trie=parallel:2",
     )
-    # Without the back-fill, so a missing key cannot pass as "serial".
+    # Without the back-fill, so a missing key cannot pass as "incremental".
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
     assert len(df) == 1
     assert df.iloc[0]["ds_build_mode"] == "parallel:2"
