@@ -7,7 +7,7 @@
 
 use {
     super::{
-        config::{HashTrieConfig, LoadFactor, RootCapacity},
+        config::{ChildCapacity, HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{ExpansionPolicy, PendingChild},
         hash_table::{home_bucket, HashTable},
         implementation::HashTrie,
@@ -118,17 +118,30 @@ pub(super) const LOAD_PERCENTS: &[u8] = if cfg!(miri) {
 };
 
 /// The configs a build-mode identity test runs under: each load factor in
-/// [`LOAD_PERCENTS`] with each root capacity. Every build mode must build
-/// the same trie under every config (#88).
+/// [`LOAD_PERCENTS`] with each root capacity and each child capacity.
+/// Every build mode must build the same trie under every config (#88,
+/// #107).
 pub(super) fn configs() -> Vec<HashTrieConfig> {
-    LOAD_PERCENTS
-        .iter()
-        .flat_map(|&percent| {
-            [RootCapacity::Grow, RootCapacity::Tuples].map(|root_capacity| HashTrieConfig {
-                load_factor: LoadFactor::percent(percent).unwrap(),
-                root_capacity,
-            })
-        })
+    let mut configs = Vec::new();
+    for &percent in LOAD_PERCENTS {
+        for root_capacity in [RootCapacity::Grow, RootCapacity::Tuples] {
+            for child_capacity in [ChildCapacity::Grow, ChildCapacity::Tuples] {
+                configs.push(HashTrieConfig {
+                    load_factor: LoadFactor::percent(percent).unwrap(),
+                    root_capacity,
+                    child_capacity,
+                });
+            }
+        }
+    }
+    configs
+}
+
+/// The [`configs`] the `incremental` build accepts: children that grow.
+pub(super) fn incremental_configs() -> Vec<HashTrieConfig> {
+    configs()
+        .into_iter()
+        .filter(|config| config.child_capacity == ChildCapacity::Grow)
         .collect()
 }
 

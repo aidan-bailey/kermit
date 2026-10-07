@@ -29,7 +29,10 @@ pub(crate) use parallel::take_parallel_builds;
 pub use parallel::ParallelBuild;
 pub use {
     build_mode::{HashTrieBuildMode, InvalidRadixBits, ParseHashTrieBuildModeError, RadixBits},
-    config::{HashTrieConfig, InvalidLoadFactor, LoadFactor, ParseRootCapacityError, RootCapacity},
+    config::{
+        ChildCapacity, HashTrieConfig, InvalidLoadFactor, LoadFactor, ParseChildCapacityError,
+        ParseRootCapacityError, RootCapacity,
+    },
     expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
     implementation::HashTrie,
     pruning::{NoPruning, PruningPolicy, SingletonPruning},

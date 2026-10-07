@@ -10,9 +10,10 @@
 
 use {
     kermit_ds::{
-        define_build_mode_provider, define_config_provider, BuiltWith, ConfigurableRelation,
-        Configured, HashTrie, HashTrieBuildMode, HashTrieConfig, LazyExpansion, LoadFactor,
-        NoPruning, PruningPolicy, RadixBits, RootCapacity, SingletonPruning, Threads,
+        define_build_mode_provider, define_config_provider, BuiltWith, ChildCapacity,
+        ConfigurableRelation, Configured, HashTrie, HashTrieBuildMode, HashTrieConfig,
+        LazyExpansion, LoadFactor, NoPruning, PruningPolicy, RadixBits, RootCapacity,
+        SingletonPruning, Threads,
     },
     kermit_iters::{FxHashStrategy, HashStrategy, LayoutOption, SipHashStrategy},
 };
@@ -91,6 +92,19 @@ type HashTrieMod10PrunedLazy = HashTrie<Mod10HashStrategy, SingletonPruning, Laz
 // the trie was configured with.
 type HashTrieSipDenseLazy = Configured<HashTrieSipLazy, NinetyPercent>;
 
+// ── Config variant: children sized from their lists ─────────────────────
+// Under `child-capacity=tuples` every table below the root is sized once
+// from its list (#107), so the contract must hold over children sparser
+// than grown ones, eager or lazy.
+define_config_provider!(SizedChildren, HashTrieConfig, HashTrieConfig {
+    child_capacity: ChildCapacity::Tuples,
+    ..HashTrieConfig::default()
+});
+
+type HashTrieSipSizedChildren = Configured<HashTrieSip, SizedChildren>;
+type HashTrieSipLazySizedChildren = Configured<HashTrieSipLazy, SizedChildren>;
+type HashTrieMod10PrunedSizedChildren = Configured<HashTrieMod10Pruned, SizedChildren>;
+
 hash_trie_test_suite!(HashTrieSip, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieFx, FxHashStrategy);
@@ -125,6 +139,12 @@ hash_trie_test_suite!(HashTrieMod10PrunedLazy, Mod10HashStrategy);
 hash_trie_test_suite!(HashTrieSipDenseLazy, SipHashStrategy);
 
 hash_trie_test_suite!(HashTrieSipPresized, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipSizedChildren, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieSipLazySizedChildren, SipHashStrategy);
+
+hash_trie_test_suite!(HashTrieMod10PrunedSizedChildren, Mod10HashStrategy);
 
 // ── BuildMode: the radix build ──────────────────────────────────────────
 // Every build mode builds the identical trie (issue #91), so the iterator
@@ -389,9 +409,12 @@ mod lazy_expansion {
             .collect()
     }
 
-    fn assert_lazy_walks_like_eager<H: HashStrategy, P: PruningPolicy>(load_factor: u8) {
+    fn assert_lazy_walks_like_eager<H: HashStrategy, P: PruningPolicy>(
+        load_factor: u8, child_capacity: ChildCapacity,
+    ) {
         let config = HashTrieConfig {
             load_factor: LoadFactor::percent(load_factor).unwrap(),
+            child_capacity,
             ..HashTrieConfig::default()
         };
         for arity in [2, 3] {
@@ -419,38 +442,58 @@ mod lazy_expansion {
 
     #[test]
     fn sip_lazy_walks_like_eager() {
-        assert_lazy_walks_like_eager::<SipHashStrategy, NoPruning>(70);
+        assert_lazy_walks_like_eager::<SipHashStrategy, NoPruning>(70, ChildCapacity::Grow);
     }
 
     #[test]
-    fn fx_lazy_walks_like_eager() { assert_lazy_walks_like_eager::<FxHashStrategy, NoPruning>(70); }
+    fn fx_lazy_walks_like_eager() {
+        assert_lazy_walks_like_eager::<FxHashStrategy, NoPruning>(70, ChildCapacity::Grow);
+    }
 
     #[test]
     fn mod10_lazy_walks_like_eager() {
-        assert_lazy_walks_like_eager::<Mod10HashStrategy, NoPruning>(70);
+        assert_lazy_walks_like_eager::<Mod10HashStrategy, NoPruning>(70, ChildCapacity::Grow);
     }
 
     #[test]
     fn sip_pruned_lazy_walks_like_eager() {
-        assert_lazy_walks_like_eager::<SipHashStrategy, SingletonPruning>(70);
+        assert_lazy_walks_like_eager::<SipHashStrategy, SingletonPruning>(70, ChildCapacity::Grow);
     }
 
     #[test]
     fn fx_pruned_lazy_walks_like_eager() {
-        assert_lazy_walks_like_eager::<FxHashStrategy, SingletonPruning>(70);
+        assert_lazy_walks_like_eager::<FxHashStrategy, SingletonPruning>(70, ChildCapacity::Grow);
     }
 
     #[test]
     fn mod10_pruned_lazy_walks_like_eager() {
-        assert_lazy_walks_like_eager::<Mod10HashStrategy, SingletonPruning>(70);
+        assert_lazy_walks_like_eager::<Mod10HashStrategy, SingletonPruning>(
+            70,
+            ChildCapacity::Grow,
+        );
     }
 
     /// Expansion reads the configured cap: a lazy child built under 50 % or
     /// 90 % must match the eager table built under the same cap.
     #[test]
     fn lazy_walks_like_eager_under_other_load_factors() {
-        assert_lazy_walks_like_eager::<SipHashStrategy, NoPruning>(50);
-        assert_lazy_walks_like_eager::<Mod10HashStrategy, SingletonPruning>(90);
+        assert_lazy_walks_like_eager::<SipHashStrategy, NoPruning>(50, ChildCapacity::Grow);
+        assert_lazy_walks_like_eager::<Mod10HashStrategy, SingletonPruning>(
+            90,
+            ChildCapacity::Grow,
+        );
+    }
+
+    /// Under `child-capacity=tuples` an expanded child is sized from its
+    /// pending list, as the eager build sizes it from the same list.
+    #[test]
+    fn lazy_walks_like_eager_with_children_sized_from_their_lists() {
+        assert_lazy_walks_like_eager::<SipHashStrategy, NoPruning>(70, ChildCapacity::Tuples);
+        assert_lazy_walks_like_eager::<FxHashStrategy, SingletonPruning>(80, ChildCapacity::Tuples);
+        assert_lazy_walks_like_eager::<Mod10HashStrategy, SingletonPruning>(
+            90,
+            ChildCapacity::Tuples,
+        );
     }
 
     /// Two iterators interleaved on one lazy trie: whichever reaches a child

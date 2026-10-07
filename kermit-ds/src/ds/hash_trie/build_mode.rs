@@ -21,7 +21,10 @@ pub enum HashTrieBuildMode {
     #[default]
     Bulk,
     /// One `insert_at` per tuple, in input order: the only build before
-    /// #91, and the default, spelled `serial`, until #107.
+    /// #91, and the default, spelled `serial`, until #107. It creates a child
+    /// on its first tuple, before the child's list is known, so it **requires
+    /// `child-capacity=grow`**; the constructor panics without it, and the CLI
+    /// rejects it first.
     Incremental,
     /// Radix-partition the tuples on the top bits of their first
     /// attribute's hash, build each partition separately, then merge

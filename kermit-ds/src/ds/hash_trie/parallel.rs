@@ -385,11 +385,11 @@ mod tests {
         crate::{
             ds::hash_trie::{
                 build_mode::{HashTrieBuildMode, RadixBits},
-                config::{HashTrieConfig, RootCapacity},
+                config::{ChildCapacity, HashTrieConfig, RootCapacity},
                 expansion::{EagerExpansion, LazyExpansion},
                 identity::{
                     assert_equivalent_root, assert_equivalent_trie, assert_same_node,
-                    assert_same_trie, inputs, LOAD_PERCENTS,
+                    assert_same_trie, configs, inputs, LOAD_PERCENTS,
                 },
                 implementation::HashTrie,
                 pruning::{NoPruning, SingletonPruning},
@@ -410,60 +410,57 @@ mod tests {
         &[1, 2, 3, 8]
     };
 
-    /// `parallel:N` builds the trie `bulk` builds, for every arity, root
-    /// capacity, load factor, thread count and input; its `Tuples` loop is
-    /// the array-level evidence that `parallel:N` under
-    /// `root-capacity=tuples` is the exact merge build. Each case runs
+    /// `parallel:N` builds the trie `bulk` builds, for every arity, config
+    /// (load factor, root capacity and child capacity), thread count and
+    /// input; its `root-capacity=tuples` configs are the array-level
+    /// evidence that `parallel:N` under `root-capacity=tuples` is the exact
+    /// merge build. Each case runs
     /// twice: through the public constructor (morsels of 16 384 tuples, the
     /// whole trie compared), and with morsels of 7 tuples, which make the
     /// partition step cut the input many times (the root compared, which
     /// holds the whole trie). Miri runs the second only.
     fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
-            for root_capacity in [RootCapacity::Grow, RootCapacity::Tuples] {
-                for &percent in LOAD_PERCENTS {
-                    let config = HashTrieConfig {
-                        load_factor: LoadFactor::percent(percent).unwrap(),
-                        root_capacity,
-                    };
-                    for (input, tuples) in inputs(arity) {
-                        let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
-                            arity.into(),
-                            config,
-                            tuples.clone(),
+            for config in configs() {
+                for (input, tuples) in inputs(arity) {
+                    let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
+                        arity.into(),
+                        config,
+                        tuples.clone(),
+                    );
+                    for &t in THREADS {
+                        let label = format!(
+                            "{}/{}/{} arity {arity}, root {}, load {}%, children {}, \
+                             parallel:{t}, {input}",
+                            H::NAME,
+                            P::NAME,
+                            E::NAME,
+                            config.root_capacity.axis_value(),
+                            config.load_factor.numerator(),
+                            config.child_capacity.axis_value(),
                         );
-                        for &t in THREADS {
-                            let label = format!(
-                                "{}/{}/{} arity {arity}, {root_capacity:?}, load {percent}%, \
-                                 parallel:{t}, {input}",
-                                H::NAME,
-                                P::NAME,
-                                E::NAME
-                            );
-                            if !cfg!(miri) {
-                                let built =
-                                    HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
-                                        arity.into(),
-                                        config,
-                                        HashTrieBuildMode::Parallel(threads(t)),
-                                        tuples.clone(),
-                                    );
-                                assert_same_trie(&bulk, &built, &label);
-                            }
-                            let mut root = HashTrie::<H, P, E>::make_root_sized(
-                                arity,
-                                config.root_log2_capacity(tuples.len()),
-                            );
-                            fill_root_in_morsels::<H, P, E>(
-                                &mut root,
-                                arity,
-                                tuples.clone(),
-                                threads(t),
-                                7,
+                        if !cfg!(miri) {
+                            let built = HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+                                arity.into(),
                                 config,
+                                HashTrieBuildMode::Parallel(threads(t)),
+                                tuples.clone(),
                             );
-                            assert_same_node(bulk.root(), &root, &format!("{label}, morsels of 7"));
+                            assert_same_trie(&bulk, &built, &label);
                         }
+                        let mut root = HashTrie::<H, P, E>::make_root_sized(
+                            arity,
+                            config.root_log2_capacity(tuples.len()),
+                        );
+                        fill_root_in_morsels::<H, P, E>(
+                            &mut root,
+                            arity,
+                            tuples.clone(),
+                            threads(t),
+                            7,
+                            config,
+                        );
+                        assert_same_node(bulk.root(), &root, &format!("{label}, morsels of 7"));
                     }
                 }
             }
@@ -661,35 +658,38 @@ mod tests {
     fn check_one_run<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
             for &percent in LOAD_PERCENTS {
-                let config = tuples_config(percent);
-                for (input, tuples) in inputs(arity) {
-                    let label = format!(
-                        "{}/{}/{} arity {arity}, load {percent}%, {input}",
-                        H::NAME,
-                        P::NAME,
-                        E::NAME
-                    );
-                    let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
-                        arity.into(),
-                        config,
-                        tuples.clone(),
-                    );
-                    let log2 = config.root_log2_capacity(tuples.len());
-                    let mut lists: HashTable<TupleList> = HashTable::with_log2_capacity(log2);
-                    let tail: Vec<Vec<usize>> = lists.with_runs(1, 1 << log2, |mut runs| {
-                        tuples
-                            .iter()
-                            .cloned()
-                            .filter_map(|t| push_in_run::<H>(&mut runs[0], t).err())
-                            .collect()
-                    });
-                    for t in tail {
-                        lists
-                            .entry_or_insert_with(H::hash(t[0]), config.load_factor, Vec::new)
-                            .push(t);
+                for child_capacity in [ChildCapacity::Grow, ChildCapacity::Tuples] {
+                    let config = tuples_config(percent, child_capacity);
+                    for (input, tuples) in inputs(arity) {
+                        let label = format!(
+                            "{}/{}/{} arity {arity}, load {percent}%, children {}, {input}",
+                            H::NAME,
+                            P::NAME,
+                            E::NAME,
+                            child_capacity.axis_value(),
+                        );
+                        let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
+                            arity.into(),
+                            config,
+                            tuples.clone(),
+                        );
+                        let log2 = config.root_log2_capacity(tuples.len());
+                        let mut lists: HashTable<TupleList> = HashTable::with_log2_capacity(log2);
+                        let tail: Vec<Vec<usize>> = lists.with_runs(1, 1 << log2, |mut runs| {
+                            tuples
+                                .iter()
+                                .cloned()
+                                .filter_map(|t| push_in_run::<H>(&mut runs[0], t).err())
+                                .collect()
+                        });
+                        for t in tail {
+                            lists
+                                .entry_or_insert_with(H::hash(t[0]), config.load_factor, Vec::new)
+                                .push(t);
+                        }
+                        let root = HashTrie::<H, P, E>::build_nested(0, arity, lists, config);
+                        assert_equivalent_root(bulk.root(), &root, &label);
                     }
-                    let root = HashTrie::<H, P, E>::build_nested(0, arity, lists, config);
-                    assert_equivalent_root(bulk.root(), &root, &label);
                 }
             }
         }
@@ -719,10 +719,11 @@ mod tests {
         &[50, 70, 80, 95]
     };
 
-    fn tuples_config(percent: u8) -> HashTrieConfig {
+    fn tuples_config(percent: u8, child_capacity: ChildCapacity) -> HashTrieConfig {
         HashTrieConfig {
             load_factor: LoadFactor::percent(percent).unwrap(),
             root_capacity: RootCapacity::Tuples,
+            child_capacity,
         }
     }
 
@@ -737,58 +738,62 @@ mod tests {
     ) {
         for arity in arities {
             for &percent in PRESIZED_LOAD_PERCENTS {
-                let config = tuples_config(percent);
-                for (input, tuples) in inputs(arity) {
-                    let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
-                        arity.into(),
-                        config,
-                        tuples.clone(),
-                    );
-                    // `presized:1`'s two builds, which every N must match.
-                    let mut first = None;
-                    for &t in PRESIZED_THREADS {
-                        let label = format!(
-                            "{}/{}/{} arity {arity}, load {percent}%, presized:{t}, {input}",
-                            H::NAME,
-                            P::NAME,
-                            E::NAME
-                        );
-                        let built = HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+                for child_capacity in [ChildCapacity::Grow, ChildCapacity::Tuples] {
+                    let config = tuples_config(percent, child_capacity);
+                    for (input, tuples) in inputs(arity) {
+                        let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
                             arity.into(),
                             config,
-                            HashTrieBuildMode::Presized(threads(t)),
                             tuples.clone(),
                         );
-                        assert_equivalent_trie(&bulk, &built, &label);
-                        let log2 = config.root_log2_capacity(tuples.len());
-                        let small = fill_presized_root_in::<H, P, E>(
-                            log2,
-                            arity,
-                            tuples.clone(),
-                            threads(t),
-                            7,
-                            8,
-                            config,
-                        );
-                        assert_equivalent_root(
-                            bulk.root(),
-                            &small,
-                            &format!("{label}, small regions"),
-                        );
-                        match &first {
-                            | None => first = Some((built, small)),
-                            | Some((built_1, small_1)) => {
-                                assert_same_trie(
-                                    built_1,
-                                    &built,
-                                    &format!("{label} vs presized:1"),
-                                );
-                                assert_same_node(
-                                    small_1,
-                                    &small,
-                                    &format!("{label} vs presized:1, small regions"),
-                                );
-                            },
+                        // `presized:1`'s two builds, which every N must match.
+                        let mut first = None;
+                        for &t in PRESIZED_THREADS {
+                            let label = format!(
+                                "{}/{}/{} arity {arity}, load {percent}%, children {}, \
+                                 presized:{t}, {input}",
+                                H::NAME,
+                                P::NAME,
+                                E::NAME,
+                                child_capacity.axis_value(),
+                            );
+                            let built = HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+                                arity.into(),
+                                config,
+                                HashTrieBuildMode::Presized(threads(t)),
+                                tuples.clone(),
+                            );
+                            assert_equivalent_trie(&bulk, &built, &label);
+                            let log2 = config.root_log2_capacity(tuples.len());
+                            let small = fill_presized_root_in::<H, P, E>(
+                                log2,
+                                arity,
+                                tuples.clone(),
+                                threads(t),
+                                7,
+                                8,
+                                config,
+                            );
+                            assert_equivalent_root(
+                                bulk.root(),
+                                &small,
+                                &format!("{label}, small regions"),
+                            );
+                            match &first {
+                                | None => first = Some((built, small)),
+                                | Some((built_1, small_1)) => {
+                                    assert_same_trie(
+                                        built_1,
+                                        &built,
+                                        &format!("{label} vs presized:1"),
+                                    );
+                                    assert_same_node(
+                                        small_1,
+                                        &small,
+                                        &format!("{label} vs presized:1, small regions"),
+                                    );
+                                },
+                            }
                         }
                     }
                 }
@@ -872,7 +877,7 @@ mod tests {
 
     #[test]
     fn keys_that_cannot_fit_their_region_go_to_the_tail() {
-        let config = tuples_config(70);
+        let config = tuples_config(70, ChildCapacity::Grow);
         let tuples: Vec<Vec<usize>> = (0..16).map(|i| vec![i % 4, i]).collect();
         assert_eq!(
             config.root_log2_capacity(tuples.len()),
@@ -910,7 +915,7 @@ mod tests {
         crate::morsel::take_worker_runs();
         let _: HashTrie = HashTrie::from_tuples_with_config_and_build_mode(
             2.into(),
-            tuples_config(70),
+            tuples_config(70, ChildCapacity::Grow),
             HashTrieBuildMode::Presized(threads(3)),
             tuples,
         );

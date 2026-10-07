@@ -32,20 +32,23 @@
 //! - A list is a `Vec` per bucket. Umbra threads its lists through an 8-byte
 //!   chain pointer reserved in each materialised tuple (§3.3.2), which needs
 //!   contiguous tuple storage (#101).
-//! - Line 3's size: the root's comes from `root-capacity` (#88); every child
-//!   starts at 4 buckets and grows, as under the per-tuple build.
+//! - Line 3's size is a Config value: the root's is `root-capacity` (#88), and
+//!   each child's is `child-capacity`: 4 buckets that grow (`grow`, the
+//!   default), or sized once from its list (`tuples`), the paper's sizing at a
+//!   load factor of 0.8.
 //!
-//! Algorithm 2 builds the trie the per-tuple build (`insert_at`, the
-//! `incremental` mode) builds, array for array. A table's layout depends
-//! only on the order its new keys arrive. Here every list keeps input order,
-//! because a `Vec` push appends, so each table receives its keys in the
-//! order `insert_at` sends them.
+//! Under `child-capacity=grow`, Algorithm 2 builds the trie the per-tuple
+//! build (`insert_at`, the `incremental` mode, which requires `grow`)
+//! builds, array for array. A table's layout depends only on the order its
+//! new keys arrive. Here every list keeps input order, because a `Vec` push
+//! appends, so each table receives its keys in the order `insert_at` sends
+//! them.
 
 use {
     super::{
         config::HashTrieConfig,
         expansion::{ExpansionPolicy, PendingChild},
-        hash_table::{HashTable, INITIAL_LOG2_CAPACITY},
+        hash_table::HashTable,
         implementation::HashTrie,
         node::HashTrieNode,
         pruning::{PruningPolicy, SingletonPayload},
@@ -100,8 +103,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// The node a bucket's `list` becomes, at `depth`: a `Singleton` when
     /// pruning is on and one tuple lives below (§3.3.1), an `Unexpanded`
     /// child under lazy expansion (§3.3.1; `HashTrie::resolve` builds its
-    /// table by [`build`](Self::build) on the first probe), and otherwise the
-    /// table line 11 builds.
+    /// table by [`build_child_table`](Self::build_child_table) on the first
+    /// probe), and otherwise the table line 11 builds.
     pub(super) fn child(
         depth: usize, arity: usize, mut list: TupleList, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
@@ -138,7 +141,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     pub(super) fn build_child_table(
         depth: usize, arity: usize, list: TupleList, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
-        Self::build(depth, arity, list, INITIAL_LOG2_CAPACITY, config)
+        let log2_capacity = config.child_log2_capacity(list.len());
+        Self::build(depth, arity, list, log2_capacity, config)
     }
 }
 
@@ -148,10 +152,14 @@ mod tests {
         super::*,
         crate::{
             ds::hash_trie::{
+                build_mode::{HashTrieBuildMode, RadixBits},
+                config::{ChildCapacity, LoadFactor, RootCapacity},
                 expansion::{EagerExpansion, LazyExpansion},
-                identity::{assert_same_trie, configs, inputs},
+                identity::{assert_same_trie, incremental_configs, inputs},
                 pruning::{NoPruning, SingletonPruning},
             },
+            morsel::Threads,
+            relation::ConfigurableRelation,
             test_support::{Lcg, Mod10HashStrategy},
         },
         kermit_iters::{FxHashStrategy, SipHashStrategy},
@@ -161,12 +169,13 @@ mod tests {
         arity: usize, config: HashTrieConfig, input: &str,
     ) -> String {
         format!(
-            "{}/{}/{} arity {arity}, load {}%, root {}, {input}",
+            "{}/{}/{} arity {arity}, load {}%, root {}, children {}, {input}",
             H::NAME,
             P::NAME,
             E::NAME,
             config.load_factor.numerator(),
             config.root_capacity.axis_value(),
+            config.child_capacity.axis_value(),
         )
     }
 
@@ -176,7 +185,7 @@ mod tests {
     /// two-tuple child, the two lengths whose pending lists `child` shrinks.
     fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
-            for config in configs() {
+            for config in incremental_configs() {
                 for (input, tuples) in inputs(arity) {
                     let incremental = HashTrie::<H, P, E>::from_tuples_incrementally(
                         arity.into(),
@@ -228,7 +237,7 @@ mod tests {
             1, 3,
         ]];
         fn check<P: PruningPolicy, E: ExpansionPolicy>(tuples: &[Vec<usize>]) {
-            for config in configs() {
+            for config in incremental_configs() {
                 let incremental = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_incrementally(
                     2.into(),
                     config,
@@ -280,7 +289,7 @@ mod tests {
                     })
                     .collect();
                 for (input, tuples) in [("random", random), ("half one key", skewed)] {
-                    for config in configs() {
+                    for config in incremental_configs() {
                         let incremental = HashTrie::<H, P, E>::from_tuples_incrementally(
                             arity.into(),
                             config,
@@ -304,6 +313,117 @@ mod tests {
         check::<SipHashStrategy, SingletonPruning, LazyExpansion>();
         check::<FxHashStrategy, NoPruning, LazyExpansion>();
         check::<FxHashStrategy, SingletonPruning, EagerExpansion>();
+    }
+
+    /// The tuples stored below `node`, built or pending.
+    fn tuples_below<P: PruningPolicy, E: ExpansionPolicy>(node: &HashTrieNode<P, E>) -> usize {
+        match node {
+            | HashTrieNode::Inner(table) => {
+                table.iter().map(|(_, child)| tuples_below(child)).sum()
+            },
+            | HashTrieNode::Leaf(table) => table.iter().map(|(_, chain)| chain.len()).sum(),
+            | HashTrieNode::Singleton(_) => 1,
+            | HashTrieNode::Unexpanded(pending) => match pending.built() {
+                | Some(built) => tuples_below(built),
+                | None => pending.pending().len(),
+            },
+        }
+    }
+
+    /// Every table below `node` has the capacity `child_log2_capacity` gives
+    /// the tuples below it, expanding lazy children on the way by `resolve`,
+    /// as a probe would. A table starts at that capacity and growth only
+    /// enlarges it, so equality also shows that it never grew.
+    fn assert_children_sized<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        trie: &HashTrie<H, P, E>, node: &HashTrieNode<P, E>, depth: usize, label: &str,
+    ) {
+        let HashTrieNode::Inner(table) = node else {
+            return;
+        };
+        for (hash, child) in table.iter() {
+            let child = trie.resolve(child, depth + 1);
+            if matches!(child, HashTrieNode::Inner(_) | HashTrieNode::Leaf(_)) {
+                assert_eq!(
+                    child.buckets_len(),
+                    1 << trie.config().child_log2_capacity(tuples_below(child)),
+                    "{label}: the child at depth {} under {hash:#x}",
+                    depth + 1
+                );
+                assert_children_sized(trie, child, depth + 1, label);
+            }
+        }
+    }
+
+    /// Under `child-capacity=tuples` every mode sizes every child once from
+    /// its list, eager or lazy, pruned or not. Miri leaves out the threaded
+    /// modes.
+    fn check_children_sized<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
+        let percents: &[u8] = if cfg!(miri) {
+            &[70]
+        } else {
+            &[50, 70, 80]
+        };
+        for &percent in percents {
+            for root_capacity in [RootCapacity::Grow, RootCapacity::Tuples] {
+                let config = HashTrieConfig {
+                    load_factor: LoadFactor::percent(percent).unwrap(),
+                    root_capacity,
+                    child_capacity: ChildCapacity::Tuples,
+                };
+                let mut modes = vec![
+                    HashTrieBuildMode::Bulk,
+                    HashTrieBuildMode::Radix(RadixBits::new(2).unwrap()),
+                ];
+                if !cfg!(miri) {
+                    modes.push(HashTrieBuildMode::Parallel(Threads::new(2).unwrap()));
+                    if root_capacity == RootCapacity::Tuples {
+                        modes.push(HashTrieBuildMode::Presized(Threads::new(2).unwrap()));
+                    }
+                }
+                for arity in 1..=3 {
+                    for (input, tuples) in inputs(arity) {
+                        for &mode in &modes {
+                            let trie = HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+                                arity.into(),
+                                config,
+                                mode,
+                                tuples.clone(),
+                            );
+                            let label =
+                                format!("{} {mode:?}", label::<H, P, E>(arity, config, input));
+                            assert_children_sized(&trie, trie.root(), 0, &label);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tuples_sizes_every_child_from_its_list() {
+        check_children_sized::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_children_sized::<SipHashStrategy, SingletonPruning, EagerExpansion>();
+        check_children_sized::<SipHashStrategy, NoPruning, LazyExpansion>();
+        check_children_sized::<SipHashStrategy, SingletonPruning, LazyExpansion>();
+        check_children_sized::<FxHashStrategy, SingletonPruning, LazyExpansion>();
+        check_children_sized::<Mod10HashStrategy, NoPruning, EagerExpansion>();
+    }
+
+    /// `incremental` creates a child on its first tuple, before its list is
+    /// known, so it cannot size it. The CLI rejects the pair first; here it
+    /// is a broken invariant, like a wrong arity.
+    #[test]
+    #[should_panic(expected = "hash-trie=incremental requires child-capacity=grow")]
+    fn incremental_requires_growing_children() {
+        let _: HashTrie = HashTrie::from_tuples_with_config_and_build_mode(
+            2.into(),
+            HashTrieConfig {
+                child_capacity: ChildCapacity::Tuples,
+                ..HashTrieConfig::default()
+            },
+            HashTrieBuildMode::Incremental,
+            vec![vec![1, 2]],
+        );
     }
 
     #[test]

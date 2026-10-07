@@ -21,7 +21,7 @@
 use {
     super::{
         build_mode::HashTrieBuildMode,
-        config::{HashTrieConfig, LoadFactor, RootCapacity},
+        config::{ChildCapacity, HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
         node::HashTrieNode,
         parallel,
@@ -437,9 +437,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`, or if
+    /// Panics if any tuple's length does not equal `header.arity()`, if
     /// `mode` is `Presized` and `config.root_capacity` is not
-    /// [`RootCapacity::Tuples`], the mode's prerequisite.
+    /// [`RootCapacity::Tuples`], or if `mode` is `Incremental` and
+    /// `config.child_capacity` is not [`ChildCapacity::Grow`]: each mode's
+    /// prerequisite.
     pub fn from_tuples_with_config_and_build_mode(
         header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
         tuples: Vec<Vec<usize>>,
@@ -447,6 +449,16 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         match mode {
             | HashTrieBuildMode::Bulk => Self::from_tuples_in_bulk(header, config, tuples),
             | HashTrieBuildMode::Incremental => {
+                // The prerequisite: `insert_at` creates a child on its first
+                // tuple, before the child's list is known, so it cannot size
+                // it. The CLI rejects the pair first; here it is a broken
+                // invariant, like a wrong arity.
+                assert_eq!(
+                    config.child_capacity,
+                    ChildCapacity::Grow,
+                    "hash-trie=incremental requires child-capacity=grow; got child-capacity={}",
+                    config.child_capacity.axis_value(),
+                );
                 Self::from_tuples_incrementally(header, config, tuples)
             },
             | HashTrieBuildMode::Radix(bits) => {
@@ -1019,6 +1031,7 @@ mod tests {
         let mut keys: Vec<&str> = axes.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, vec![
+            "ds_config_child_capacity",
             "ds_config_load_factor",
             "ds_config_root_capacity",
             "ds_layout_expansion",
@@ -1039,6 +1052,7 @@ mod tests {
         let mut keys: Vec<&str> = axes.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, vec![
+            "ds_config_child_capacity",
             "ds_config_load_factor",
             "ds_config_root_capacity",
             "ds_layout_expansion",
@@ -1681,7 +1695,7 @@ mod root_capacity_tests {
         crate::{
             cardinality::Cardinality,
             ds::hash_trie::{
-                config::{HashTrieConfig, LoadFactor, RootCapacity},
+                config::{ChildCapacity, HashTrieConfig, LoadFactor, RootCapacity},
                 expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
                 identity::{assert_same_node, assert_same_trie, inputs},
                 implementation::HashTrie,
@@ -1698,6 +1712,7 @@ mod root_capacity_tests {
         HashTrieConfig {
             load_factor: LoadFactor::percent(percent).unwrap(),
             root_capacity,
+            child_capacity: ChildCapacity::Grow,
         }
     }
 

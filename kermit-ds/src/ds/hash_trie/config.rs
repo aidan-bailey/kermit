@@ -3,7 +3,7 @@
 //! (`docs/specs/optimization-standard.md`).
 
 use {
-    super::hash_table::{log2_capacity_for, INITIAL_LOG2_CAPACITY},
+    super::hash_table::{log2_capacity_for, INITIAL_LOG2_CAPACITY, PAPER_MIN_LOG2_CAPACITY},
     kermit_iters::ConfigOption,
     serde_json::Value,
     std::{fmt, str::FromStr},
@@ -118,6 +118,62 @@ impl FromStr for RootCapacity {
     }
 }
 
+/// How large a build makes each table below the root (#107).
+///
+/// A value, not a shape: it replaces a child table's starting capacity, the
+/// constant 4 buckets, on the path every `bulk` build takes, and is read
+/// once per child. The root's is [`RootCapacity`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChildCapacity {
+    /// Start at 4 buckets and double as keys arrive: the only behaviour
+    /// before #107.
+    #[default]
+    Grow,
+    /// Size each child once, from the number of tuples in the list it is
+    /// built from, so that it never grows during the build: Algorithm 2,
+    /// line 3, with the paper's own minimum of 2 buckets. Only a build that
+    /// groups before it recurses knows that number, so the `incremental`
+    /// build rejects this value. A child that `Relation::insert` creates
+    /// after the build starts at 4 buckets.
+    Tuples,
+}
+
+impl ChildCapacity {
+    /// The value the bench axis reports and `--ds-config child-capacity=`
+    /// parses.
+    pub fn axis_value(self) -> &'static str {
+        match self {
+            | Self::Grow => "grow",
+            | Self::Tuples => "tuples",
+        }
+    }
+}
+
+/// A string that names no [`ChildCapacity`]. Its message names both values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseChildCapacityError(String);
+
+impl fmt::Display for ParseChildCapacityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "expected grow or tuples, got {:?}", self.0)
+    }
+}
+
+impl std::error::Error for ParseChildCapacityError {}
+
+/// Parses the strings [`ChildCapacity::axis_value`] returns.
+impl FromStr for ChildCapacity {
+    type Err = ParseChildCapacityError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            | "grow" => Ok(Self::Grow),
+            | "tuples" => Ok(Self::Tuples),
+            | other => Err(ParseChildCapacityError(other.to_owned())),
+        }
+    }
+}
+
 /// Runtime values read by `HashTrie` while it is built.
 ///
 /// A Config is a *value* on a path the code already takes (the resize
@@ -133,6 +189,9 @@ pub struct HashTrieConfig {
     /// How large a build makes the root. Bench axis
     /// `ds_config_root_capacity` (`"grow"` or `"tuples"`).
     pub root_capacity: RootCapacity,
+    /// How large a build makes every table below the root. Bench axis
+    /// `ds_config_child_capacity` (`"grow"` or `"tuples"`).
+    pub child_capacity: ChildCapacity,
 }
 
 impl HashTrieConfig {
@@ -147,7 +206,24 @@ impl HashTrieConfig {
     pub(crate) fn root_log2_capacity(self, tuple_count: usize) -> u32 {
         match self.root_capacity {
             | RootCapacity::Grow => INITIAL_LOG2_CAPACITY,
-            | RootCapacity::Tuples => log2_capacity_for(tuple_count, self.load_factor),
+            | RootCapacity::Tuples => {
+                log2_capacity_for(tuple_count, self.load_factor, INITIAL_LOG2_CAPACITY)
+            },
+        }
+    }
+
+    /// A child's log2 capacity for a build that gives it a list of
+    /// `list_len` tuples: 4 buckets under [`ChildCapacity::Grow`], and under
+    /// [`ChildCapacity::Tuples`] the smallest capacity, of at least 2
+    /// buckets, at which `list_len` keys never make it grow. At a load factor
+    /// of 0.8 that is the paper's `2^⌈log2(1.25·|L|)⌉` exactly (Algorithm 2,
+    /// line 3), one-tuple lists included.
+    pub(crate) fn child_log2_capacity(self, list_len: usize) -> u32 {
+        match self.child_capacity {
+            | ChildCapacity::Grow => INITIAL_LOG2_CAPACITY,
+            | ChildCapacity::Tuples => {
+                log2_capacity_for(list_len, self.load_factor, PAPER_MIN_LOG2_CAPACITY)
+            },
         }
     }
 }
@@ -159,6 +235,10 @@ impl ConfigOption for HashTrieConfig {
             (
                 "root_capacity",
                 Value::from(self.root_capacity.axis_value()),
+            ),
+            (
+                "child_capacity",
+                Value::from(self.child_capacity.axis_value()),
             ),
         ]
     }
@@ -245,10 +325,74 @@ mod tests {
             assert_eq!(grow.root_log2_capacity(n), INITIAL_LOG2_CAPACITY);
             assert_eq!(
                 tuples.root_log2_capacity(n),
-                log2_capacity_for(n, grow.load_factor)
+                log2_capacity_for(n, grow.load_factor, INITIAL_LOG2_CAPACITY)
             );
         }
         // 1,000 keys at 70 % need ⌈1000 / 0.7⌉ = 1,429 buckets: 2^11.
         assert_eq!(tuples.root_log2_capacity(1_000), 11);
+    }
+
+    #[test]
+    fn default_child_capacity_is_grow() {
+        assert_eq!(
+            HashTrieConfig::default().child_capacity,
+            ChildCapacity::Grow
+        );
+        assert_eq!(ChildCapacity::default(), ChildCapacity::Grow);
+    }
+
+    /// What a report's `ds_config_child_capacity` says is what
+    /// `--ds-config child-capacity=…` parses back.
+    #[test]
+    fn child_capacity_axis_values_round_trip() {
+        assert_eq!(ChildCapacity::Grow.axis_value(), "grow");
+        assert_eq!(ChildCapacity::Tuples.axis_value(), "tuples");
+        for value in [ChildCapacity::Grow, ChildCapacity::Tuples] {
+            assert_eq!(value.axis_value().parse::<ChildCapacity>(), Ok(value));
+        }
+    }
+
+    #[test]
+    fn malformed_child_capacities_name_both_values() {
+        for bad in ["", "Grow", "keys", "1024"] {
+            let msg = bad.parse::<ChildCapacity>().unwrap_err().to_string();
+            assert!(msg.contains("expected grow or tuples"), "{bad:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn axes_report_child_capacity_as_a_string() {
+        let tuples = HashTrieConfig {
+            child_capacity: ChildCapacity::Tuples,
+            ..HashTrieConfig::default()
+        };
+        assert!(tuples
+            .axes()
+            .contains(&("child_capacity", Value::from("tuples"))));
+        assert!(HashTrieConfig::default()
+            .axes()
+            .contains(&("child_capacity", Value::from("grow"))));
+    }
+
+    /// Under `grow` a child starts at 4 buckets; under `tuples` it is sized
+    /// for its list with the paper's 2-bucket minimum, so a one-tuple list
+    /// gets 2 buckets.
+    #[test]
+    fn child_log2_capacity_is_four_buckets_under_grow_and_sized_under_tuples() {
+        let grow = HashTrieConfig::default();
+        let tuples = HashTrieConfig {
+            child_capacity: ChildCapacity::Tuples,
+            ..grow
+        };
+        for n in [1, 2, 3, 1_000] {
+            assert_eq!(grow.child_log2_capacity(n), INITIAL_LOG2_CAPACITY);
+            assert_eq!(
+                tuples.child_log2_capacity(n),
+                log2_capacity_for(n, grow.load_factor, PAPER_MIN_LOG2_CAPACITY)
+            );
+        }
+        assert_eq!(tuples.child_log2_capacity(1), 1);
+        // 3 tuples at 70 % need ⌈300 / 70⌉ = 5 buckets: 2^3.
+        assert_eq!(tuples.child_log2_capacity(3), 3);
     }
 }

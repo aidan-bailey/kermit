@@ -185,7 +185,7 @@ mod tests {
     };
 
     /// `radix:K` builds the trie `bulk` builds, for every arity, load
-    /// factor, root capacity, bit count and input.
+    /// factor, root capacity, child capacity, bit count and input.
     fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
             for config in configs() {
@@ -201,12 +201,14 @@ mod tests {
                             )
                         };
                         let label = format!(
-                            "{}/{}/{} arity {arity}, load {}%, root {}, radix:{bits}, {input}",
+                            "{}/{}/{} arity {arity}, load {}%, root {}, children {}, \
+                             radix:{bits}, {input}",
                             H::NAME,
                             P::NAME,
                             E::NAME,
                             config.load_factor.numerator(),
                             config.root_capacity.axis_value(),
+                            config.child_capacity.axis_value(),
                         );
                         assert_same_trie(&build(HashTrieBuildMode::Bulk), &build(radix), &label);
                     }

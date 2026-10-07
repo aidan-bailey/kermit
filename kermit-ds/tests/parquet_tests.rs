@@ -1,7 +1,7 @@
 use {
     kermit_ds::{
-        define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ColumnTrie,
-        ColumnTrieBuildMode, Configured, ExpansionPolicy, GallopingSeek, HashTrie,
+        define_build_mode_provider, define_config_provider, BinarySeek, BuiltWith, ChildCapacity,
+        ColumnTrie, ColumnTrieBuildMode, Configured, ExpansionPolicy, GallopingSeek, HashTrie,
         HashTrieBuildMode, HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning,
         PruningPolicy, RadixBits, RootCapacity, SingletonPruning, Threads, TreeTrie,
         TreeTrieBuildMode,
@@ -126,6 +126,20 @@ fn sorted_tuples_presized(relation: &HashTrieSipPresized) -> Vec<Vec<usize>> {
 }
 
 parquet_test_suite!(HashTrieSipPresized, sorted_tuples_presized);
+
+// …and with children sized from their lists (#107).
+define_config_provider!(SizedChildren, HashTrieConfig, HashTrieConfig {
+    child_capacity: ChildCapacity::Tuples,
+    ..HashTrieConfig::default()
+});
+
+type HashTrieSipSizedChildren = Configured<HashTrieSip, SizedChildren>;
+
+fn sorted_tuples_sized_children(relation: &HashTrieSipSizedChildren) -> Vec<Vec<usize>> {
+    sorted_tuples(relation)
+}
+
+parquet_test_suite!(HashTrieSipSizedChildren, sorted_tuples_sized_children);
 
 // …and under the radix BuildMode, which must load the same trie (issue #91).
 define_build_mode_provider!(
