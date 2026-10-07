@@ -1040,8 +1040,9 @@ mod tests {
                 "{keys} keys"
             );
         }
-        // The paper allocates 2 buckets for one tuple; kermit never goes
-        // below 4.
+        // The paper allocates 2 buckets for one tuple; the root never goes
+        // below 4 buckets; children sized from their lists may
+        // (`PAPER_MIN_LOG2_CAPACITY`).
         assert_eq!(
             log2_capacity_for(1, lf, INITIAL_LOG2_CAPACITY),
             INITIAL_LOG2_CAPACITY

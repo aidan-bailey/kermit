@@ -27,15 +27,16 @@
 //! `Singleton` (§3.3.1), an `Unexpanded` child under lazy expansion
 //! (§3.3.1), or the table line 11 builds.
 //!
-//! Two differences from the paper, both kermit's:
+//! Two things that are kermit's:
 //!
 //! - A list is a `Vec` per bucket. Umbra threads its lists through an 8-byte
 //!   chain pointer reserved in each materialised tuple (§3.3.2), which needs
 //!   contiguous tuple storage (#101).
-//! - Line 3's size is a Config value: the root's is `root-capacity` (#88), and
-//!   each child's is `child-capacity`: 4 buckets that grow (`grow`, the
-//!   default), or sized once from its list (`tuples`), the paper's sizing at a
-//!   load factor of 0.8.
+//! - Line 3's size is a Config value whose default (`grow`) is not the paper's;
+//!   `child-capacity=tuples` at `load-factor=0.8` is the paper's sizing
+//!   exactly. The root's is `root-capacity` (#88), and each child's is
+//!   `child-capacity`: 4 buckets that grow (`grow`), or sized once from its
+//!   list (`tuples`).
 //!
 //! Under `child-capacity=grow`, Algorithm 2 builds the trie the per-tuple
 //! build (`insert_at`, the `incremental` mode, which requires `grow`)
@@ -136,8 +137,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
 
     /// The table a bucket's `list` becomes at `depth` when it is built
     /// (line 11): eagerly by [`child`](Self::child), or on the first probe by
-    /// `HashTrie::resolve` under lazy expansion. One definition, so an
-    /// expanded child is the eager child, size included.
+    /// `HashTrie::resolve` under lazy expansion. One definition, so a child
+    /// expanded from a list is the eager child built from that list, size
+    /// included.
     pub(super) fn build_child_table(
         depth: usize, arity: usize, list: TupleList, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {

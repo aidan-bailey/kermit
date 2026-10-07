@@ -719,6 +719,9 @@ mod tests {
         &[50, 70, 80, 95]
     };
 
+    /// Both child capacities, for the presized matrices on small inputs.
+    const BOTH_CHILD_CAPACITIES: &[ChildCapacity] = &[ChildCapacity::Grow, ChildCapacity::Tuples];
+
     fn tuples_config(percent: u8, child_capacity: ChildCapacity) -> HashTrieConfig {
         HashTrieConfig {
             load_factor: LoadFactor::percent(percent).unwrap(),
@@ -729,16 +732,16 @@ mod tests {
 
     /// The presized build through the public constructor, and through the
     /// test entry with morsels of 7 and 8-bucket regions, so small inputs
-    /// span many regions and overflow. Both must be equivalent to bulk
-    /// under `Tuples` (Amendment 2), and identical to their own `presized:1`
-    /// for every N.
+    /// span many regions and overflow, under each of `child_capacities`. Both
+    /// must be equivalent to bulk under `Tuples` (Amendment 2), and identical
+    /// to their own `presized:1` for every N.
     fn check_presized<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
         inputs: &dyn Fn(usize) -> Vec<(&'static str, Vec<Vec<usize>>)>,
-        arities: std::ops::RangeInclusive<usize>,
+        arities: std::ops::RangeInclusive<usize>, child_capacities: &[ChildCapacity],
     ) {
         for arity in arities {
             for &percent in PRESIZED_LOAD_PERCENTS {
-                for child_capacity in [ChildCapacity::Grow, ChildCapacity::Tuples] {
+                for &child_capacity in child_capacities {
                     let config = tuples_config(percent, child_capacity);
                     for (input, tuples) in inputs(arity) {
                         let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
@@ -804,14 +807,30 @@ mod tests {
     #[test]
     fn presized_parallel_builds_are_equivalent_under_siphash() {
         let shared = |arity: usize| inputs(arity);
-        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
-        check_presized::<SipHashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
+        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<SipHashStrategy, SingletonPruning, LazyExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
         // Miri runs the two above, which cover both pruning policies and both
         // expansion policies; the threads and the region runs are the same
         // code under the other two.
         if !cfg!(miri) {
-            check_presized::<SipHashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
-            check_presized::<SipHashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
+            check_presized::<SipHashStrategy, SingletonPruning, EagerExpansion>(
+                &shared,
+                1..=3,
+                BOTH_CHILD_CAPACITIES,
+            );
+            check_presized::<SipHashStrategy, NoPruning, LazyExpansion>(
+                &shared,
+                1..=3,
+                BOTH_CHILD_CAPACITIES,
+            );
         }
     }
 
@@ -822,18 +841,51 @@ mod tests {
     )]
     fn presized_parallel_builds_are_equivalent_under_fxhash_and_colliding_hashes() {
         let shared = |arity: usize| inputs(arity);
-        check_presized::<FxHashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
-        check_presized::<FxHashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
-        check_presized::<FxHashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
-        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
-        check_presized::<Mod10HashStrategy, NoPruning, EagerExpansion>(&shared, 1..=3);
-        check_presized::<Mod10HashStrategy, SingletonPruning, EagerExpansion>(&shared, 1..=3);
-        check_presized::<Mod10HashStrategy, NoPruning, LazyExpansion>(&shared, 1..=3);
-        check_presized::<Mod10HashStrategy, SingletonPruning, LazyExpansion>(&shared, 1..=3);
+        check_presized::<FxHashStrategy, NoPruning, EagerExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<FxHashStrategy, SingletonPruning, EagerExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<FxHashStrategy, NoPruning, LazyExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<Mod10HashStrategy, NoPruning, EagerExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<Mod10HashStrategy, SingletonPruning, EagerExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<Mod10HashStrategy, NoPruning, LazyExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<Mod10HashStrategy, SingletonPruning, LazyExpansion>(
+            &shared,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
     }
 
     /// Arity 4, a first key holding half the tuples, and three morsels at
-    /// the real morsel size.
+    /// the real morsel size. Each child capacity runs under one layout only
+    /// (a diagonal), since the full product is the slowest test here.
     #[test]
     #[cfg_attr(miri, ignore = "tens of thousands of inserts")]
     fn presized_parallel_builds_are_equivalent_on_large_and_skewed_inputs() {
@@ -857,8 +909,12 @@ mod tests {
                 .collect();
             vec![("random", random), ("half one key", skewed)]
         };
-        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&large, 1..=4);
-        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&large, 1..=4);
+        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&large, 1..=4, &[
+            ChildCapacity::Grow,
+        ]);
+        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&large, 1..=4, &[
+            ChildCapacity::Tuples,
+        ]);
     }
 
     /// Every key homes at bucket 7, the last of the first 8-bucket region of
@@ -999,8 +1055,16 @@ mod tests {
             vec![("240 distinct keys", distinct), ("120 keys twice", pairs)]
         };
         PARALLEL_BUILDS.with(|b| b.borrow_mut().clear());
-        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&dense, 1..=3);
-        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&dense, 1..=3);
+        check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(
+            &dense,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
+        check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(
+            &dense,
+            1..=3,
+            BOTH_CHILD_CAPACITIES,
+        );
         let builds = PARALLEL_BUILDS.with(|b| b.take());
         let partition_counts: std::collections::BTreeSet<usize> =
             builds.iter().map(|b| b.partition_sizes.len()).collect();

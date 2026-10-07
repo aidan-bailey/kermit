@@ -10,11 +10,12 @@
 //! A [`Frame::Table`] is `(node, bucket_index)` on an `Inner` / `Leaf`
 //! node. Under `LazyExpansion`, `open` first resolves an unexpanded child
 //! into its table (`HashTrie::resolve`), so frames, keys, lookups and leaf
-//! chains are those of the eager trie. A [`Frame::Singleton`] carries the
-//! singleton frame type the pruning policy `P` chooses: under
-//! `SingletonPruning` it emulates the one-entry table a pruned level would have
-//! held (see `pruning.rs`), and under `NoPruning` it is uninhabited, so the
-//! variant vanishes and a frame is exactly the `(node, bucket_index)` pair.
+//! chains are those of the eager trie, under the conditions `resolve` states. A
+//! [`Frame::Singleton`] carries the singleton frame type the pruning policy `P`
+//! chooses: under `SingletonPruning` it emulates the one-entry table a pruned
+//! level would have held (see `pruning.rs`), and under `NoPruning` it is
+//! uninhabited, so the variant vanishes and a frame is exactly the `(node,
+//! bucket_index)` pair.
 //!
 //! On every `open`, we descend either into the root (when the stack is
 //! empty) or into the child of the current bucket. In the table case we

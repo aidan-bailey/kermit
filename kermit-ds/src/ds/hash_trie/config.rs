@@ -121,7 +121,8 @@ impl FromStr for RootCapacity {
 /// How large a build makes each table below the root (#107).
 ///
 /// A value, not a shape: it replaces a child table's starting capacity, the
-/// constant 4 buckets, on the path every `bulk` build takes, and is read
+/// constant 4 buckets, on the path every build that groups takes (`bulk`,
+/// `radix:K`, `parallel:N`, `presized:N`, and lazy expansion), and is read
 /// once per child. The root's is [`RootCapacity`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChildCapacity {
@@ -131,10 +132,13 @@ pub enum ChildCapacity {
     Grow,
     /// Size each child once, from the number of tuples in the list it is
     /// built from, so that it never grows during the build: Algorithm 2,
-    /// line 3, with the paper's own minimum of 2 buckets. Only a build that
-    /// groups before it recurses knows that number, so the `incremental`
-    /// build rejects this value. A child that `Relation::insert` creates
-    /// after the build starts at 4 buckets.
+    /// line 3, with the paper's own minimum of 2 buckets, exactly
+    /// `2^⌈log2(1.25·|L|)⌉` at `load-factor=0.8`. Only a build that groups
+    /// before it recurses knows that number, so the `incremental` build
+    /// rejects this value. After the build, a child that `Relation::insert`
+    /// creates starts at 4 buckets under eager expansion; under lazy
+    /// expansion it is sized from its pending list when a probe first
+    /// reaches it.
     Tuples,
 }
 
@@ -178,9 +182,9 @@ impl FromStr for ChildCapacity {
 ///
 /// A Config is a *value* on a path the code already takes (the resize
 /// comparison runs on every insert; the root's capacity is set on every
-/// build); replacing a constant with it adds no branch, so non-users pay
-/// nothing. See the shape/value/process rule in
-/// `docs/specs/optimization-standard.md`.
+/// build; a child's capacity, on every child a build makes); replacing a
+/// constant with it adds no branch, so non-users pay nothing. See the
+/// shape/value/process rule in `docs/specs/optimization-standard.md`.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HashTrieConfig {
     /// Occupancy cap before a level's table doubles. Bench axis

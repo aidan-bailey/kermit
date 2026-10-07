@@ -53,9 +53,10 @@ use {
 ///   identical to pre-pruning builds.
 /// - With `LazyExpansion`, every `Inner` bucket holds a `Singleton` (pruning
 ///   on, exactly one tuple below it) or an `Unexpanded` child, never a table,
-///   and an expanded child's table is the eager table at that position (see
-///   `resolve`). Under `EagerExpansion` no `Unexpanded` child can be
-///   constructed.
+///   and an expanded child's table is the eager table at that position for a
+///   trie no `insert` has changed since its build, or under
+///   `child-capacity=grow` always (see `resolve`). Under `EagerExpansion` no
+///   `Unexpanded` child can be constructed.
 ///
 /// # Construction
 ///
@@ -289,7 +290,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                             // becomes the unexpanded list of both. The evicted
                             // tuple goes first, as an eager unprune re-inserts
                             // it first, so expansion later builds the eager
-                            // table.
+                            // table (under `child-capacity=grow`; see
+                            // `resolve`).
                             let list = HashTrieNode::Unexpanded(E::Pending::from_tuples(
                                 Vec::with_capacity(2),
                             ));
@@ -343,11 +345,20 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     ///
     /// The table is built by Algorithm 2 (`bulk.rs`) from the pending list,
     /// which keeps insertion order, so it is the eager table at this position,
-    /// bucket for bucket: linear probing places keys by insertion order under
-    /// the same load factor. Its own children come out `Unexpanded` (or
-    /// `Singleton`), so each expansion builds exactly one level (§3.3.1;
-    /// SIGMOD 2020 Figure 6). The trace-equivalence tests in
-    /// `kermit-ds/tests/hash_trie_tests.rs` pin this.
+    /// bucket for bucket, for a trie no `insert` has changed since its build
+    /// (or under `child-capacity=grow`, always): linear probing places keys
+    /// by insertion order under the same load factor, from the same starting
+    /// capacity. Its own children come out `Unexpanded` (or `Singleton`), so
+    /// each expansion builds exactly one level (§3.3.1; SIGMOD 2020 Figure 6).
+    /// The trace-equivalence tests in `kermit-ds/tests/hash_trie_tests.rs` pin
+    /// this.
+    ///
+    /// After an `insert` under `child-capacity=tuples`, an unexpanded child and
+    /// its eager twin can differ in capacity. The eager child started at the
+    /// size of its build-time list, or at 4 buckets if `insert` created or
+    /// unpruned it, and grew from there. This one is sized from its whole
+    /// pending list. Joins and benches never insert after building, so no
+    /// measurement sees the difference.
     ///
     /// `HashTrieIter::open` is the only caller, so only a probe expands
     /// anything. Every read-only walk (`collect_tuples`, `for_each_tuple`,
