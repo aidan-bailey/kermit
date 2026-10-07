@@ -104,6 +104,32 @@ impl<'r, V> VacantBucket<'r, V> {
     }
 }
 
+/// One contiguous run of a table that [`HashTable::map_in_runs`] is
+/// mapping: its buckets, and the mapped table's buckets at the same
+/// positions.
+pub(super) struct MapRun<'a, V, W> {
+    source: &'a mut [Option<Entry<V>>],
+    target: &'a mut [Option<Entry<W>>],
+}
+
+impl<V, W> MapRun<'_, V, W> {
+    /// Moves each value of the run, as `f(value)`, into the same bucket of
+    /// the mapped table, in bucket order.
+    pub(super) fn map(self, mut f: impl FnMut(V) -> W) {
+        for (source, target) in self.source.iter_mut().zip(self.target.iter_mut()) {
+            *target = source.take().map(
+                |Entry {
+                     hash,
+                     value,
+                 }| Entry {
+                    hash,
+                    value: f(value),
+                },
+            );
+        }
+    }
+}
+
 impl<V> BucketRun<'_, V> {
     /// Probes for `hash` from its home bucket to the end of the home's
     /// region: the key's value if it is there, the first empty bucket if it
@@ -437,6 +463,73 @@ impl<V> HashTable<V> {
     /// by the radix build to move each scratch entry out exactly once, by
     /// the position `index_of` reported for it.
     pub fn into_buckets(self) -> Vec<Option<Entry<V>>> { self.buckets }
+
+    /// The table with every value replaced by `f(value)`, called in bucket
+    /// order: the same capacity, the same `len`, and every key in the bucket
+    /// it occupied. Algorithm 2's "store `M_next` in `B`" (line 12) for a
+    /// whole table: a table of tuple lists cannot hold the children built
+    /// from them in place, since the two value types differ.
+    pub(super) fn map<W>(self, mut f: impl FnMut(V) -> W) -> HashTable<W> {
+        HashTable {
+            log2_capacity: self.log2_capacity,
+            len: self.len,
+            buckets: self
+                .buckets
+                .into_iter()
+                .map(|slot| {
+                    slot.map(
+                        |Entry {
+                             hash,
+                             value,
+                         }| Entry {
+                            hash,
+                            value: f(value),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// [`map`](Self::map) for a parallel caller: lends `map_runs` the table
+    /// as `parts` contiguous [`MapRun`]s, one per worker, and returns the
+    /// mapped table once `map_runs` has returned.
+    ///
+    /// # Panics
+    ///
+    /// Unless `parts` is a power of two no larger than the capacity, and if
+    /// `map_runs` returns without mapping every run, whose values would
+    /// otherwise be lost.
+    pub(super) fn map_in_runs<W>(
+        mut self, parts: usize, map_runs: impl FnOnce(Vec<MapRun<'_, V, W>>),
+    ) -> HashTable<W> {
+        let capacity = self.buckets.len();
+        assert!(
+            parts.is_power_of_two() && parts <= capacity,
+            "{parts} runs do not split {capacity} buckets"
+        );
+        let mut buckets: Vec<Option<Entry<W>>> = (0..capacity).map(|_| None).collect();
+        let run_len = capacity / parts;
+        map_runs(
+            self.buckets
+                .chunks_mut(run_len)
+                .zip(buckets.chunks_mut(run_len))
+                .map(|(source, target)| MapRun {
+                    source,
+                    target,
+                })
+                .collect(),
+        );
+        assert!(
+            self.buckets.iter().all(Option::is_none),
+            "map_in_runs: a run was left unmapped"
+        );
+        HashTable {
+            log2_capacity: self.log2_capacity,
+            len: self.len,
+            buckets,
+        }
+    }
 
     /// Lends `fill` the bucket array as `parts` contiguous [`BucketRun`]s,
     /// each a whole number of `region_buckets`-sized regions (a region is
@@ -1132,5 +1225,94 @@ mod tests {
             overflowed > 0,
             "no seed overflowed a region; the test proves nothing"
         );
+    }
+
+    /// A table of 40 hashes (two of which share a home bucket at 4
+    /// buckets), each valued by the order it was inserted in.
+    fn filled() -> HashTable<usize> {
+        let mut t = HashTable::new();
+        let (first, second) = colliding_pair(&t);
+        t.entry_or_insert_with(first, LoadFactor::default(), || 0);
+        t.entry_or_insert_with(second, LoadFactor::default(), || 1);
+        let mut hash: u64 = 1;
+        for k in 2..40 {
+            t.entry_or_insert_with(hash, LoadFactor::default(), || k);
+            hash = hash.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+        }
+        t
+    }
+
+    /// `map` keeps the table's shape and every key in its bucket, and
+    /// replaces each value.
+    #[test]
+    fn map_keeps_every_key_in_its_bucket() {
+        let t = filled();
+        let (cap, len) = (t.buckets_len(), t.len());
+        let before: Vec<(Option<u64>, Option<usize>)> = (0..cap)
+            .map(|i| (t.hash_at(i), t.value_at(i).copied()))
+            .collect();
+        let mapped: HashTable<String> = t.map(|v| format!("v{v}"));
+        assert_eq!(mapped.buckets_len(), cap);
+        assert_eq!(mapped.len(), len);
+        assert_eq!(
+            mapped.shell_heap_bytes(),
+            cap * std::mem::size_of::<Option<Entry<String>>>()
+        );
+        for (i, (hash, value)) in before.into_iter().enumerate() {
+            assert_eq!(mapped.hash_at(i), hash, "bucket {i}");
+            assert_eq!(
+                mapped.value_at(i).cloned(),
+                value.map(|v| format!("v{v}")),
+                "bucket {i}"
+            );
+        }
+    }
+
+    /// `map` calls `f` in bucket order, the order in which Algorithm 2's
+    /// line 9 visits the populated buckets.
+    #[test]
+    fn map_calls_f_in_bucket_order() {
+        let t = filled();
+        let order: Vec<usize> = t.iter().map(|(_, &v)| v).collect();
+        let mut seen = Vec::new();
+        let _ = t.map(|v| seen.push(v));
+        assert_eq!(seen, order);
+    }
+
+    /// Mapping in runs builds what `map` builds, however the table is cut.
+    #[test]
+    fn map_in_runs_matches_map() {
+        let serial = filled().map(|v| v * 10);
+        for parts in [1, 2, 4, 8, serial.buckets_len()] {
+            let in_runs = filled().map_in_runs(parts, |runs| {
+                assert_eq!(runs.len(), parts);
+                for run in runs {
+                    run.map(|v| v * 10);
+                }
+            });
+            assert_eq!(in_runs.buckets_len(), serial.buckets_len(), "{parts} runs");
+            assert_eq!(in_runs.len(), serial.len(), "{parts} runs");
+            for i in 0..serial.buckets_len() {
+                assert_eq!(
+                    in_runs.hash_at(i),
+                    serial.hash_at(i),
+                    "{parts} runs, bucket {i}"
+                );
+                assert_eq!(
+                    in_runs.value_at(i),
+                    serial.value_at(i),
+                    "{parts} runs, bucket {i}"
+                );
+            }
+        }
+    }
+
+    /// A run left unmapped would lose its values, so `map_in_runs` refuses.
+    #[test]
+    #[should_panic(expected = "a run was left unmapped")]
+    fn map_in_runs_refuses_to_lose_a_run() {
+        let _ = filled().map_in_runs(2, |mut runs: Vec<MapRun<'_, usize, usize>>| {
+            runs.pop().expect("two runs").map(|v| v);
+        });
     }
 }
