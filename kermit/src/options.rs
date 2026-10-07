@@ -8,8 +8,8 @@ use {
     clap::{Args, ValueEnum},
     kermit_algos::{ColumnOrderPolicy, Optimiser, Planner},
     kermit_ds::{
-        ColumnTrieBuildMode, ExpansionPolicy, HashTrieBuildMode, HashTrieConfig, IndexStructure,
-        LoadFactor, PruningPolicy, RootCapacity, SeekStrategy, TreeTrieBuildMode,
+        ChildCapacity, ColumnTrieBuildMode, ExpansionPolicy, HashTrieBuildMode, HashTrieConfig,
+        IndexStructure, LoadFactor, PruningPolicy, RootCapacity, SeekStrategy, TreeTrieBuildMode,
     },
     kermit_iters::{HashStrategy, LayoutOption},
     std::fmt,
@@ -132,13 +132,20 @@ pub(crate) enum Prerequisite {
     /// before any tuple arrives, so it needs `--ds-config
     /// root-capacity=tuples`.
     PresizedBuildNeedsPresizedRoot,
+    /// `--ds-build hash-trie=incremental` creates each child on its first
+    /// tuple, before the child's list is known, so it cannot size it: it
+    /// needs `--ds-config child-capacity=grow` (#107).
+    IncrementalBuildNeedsGrowingChildren,
 }
 
 impl Prerequisite {
     /// Every variant, in declaration order. Nothing checks this list against
     /// the enum: a variant missing here is never checked, so add each new
     /// variant here as well as its `violated` arm and its guard-test fixture.
-    pub(crate) const ALL: &'static [Prerequisite] = &[Self::PresizedBuildNeedsPresizedRoot];
+    pub(crate) const ALL: &'static [Prerequisite] = &[
+        Self::PresizedBuildNeedsPresizedRoot,
+        Self::IncrementalBuildNeedsGrowingChildren,
+    ];
 
     /// `Some(violation)` when `choices` selects the dependent value without
     /// its prerequisite.
@@ -159,6 +166,21 @@ impl Prerequisite {
                             } else {
                                 ""
                             }
+                        ),
+                    })
+                },
+                | _ => None,
+            },
+            | Self::IncrementalBuildNeedsGrowingChildren => match choices.build.hash_trie {
+                | HashTrieBuildMode::Incremental
+                    if choices.config.child_capacity != ChildCapacity::Grow =>
+                {
+                    Some(Violation {
+                        dependent: "--ds-build hash-trie=incremental".to_owned(),
+                        requires: "--ds-config child-capacity=grow",
+                        actual: format!(
+                            "child-capacity={}",
+                            choices.config.child_capacity.axis_value()
                         ),
                     })
                 },
@@ -672,9 +694,9 @@ pub(crate) use with_sorted_trie_layout;
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct ConfigChoices {
     /// Runtime values for the selected index structure, as `key=value`
-    /// pairs. `HashTrie` accepts `load-factor=<decimal in (0, 1)>` and
-    /// `root-capacity=grow|tuples`. Only valid with
-    /// `--indexstructure hash-trie` (or `all`).
+    /// pairs. `HashTrie` accepts `load-factor=<decimal in (0, 1)>`,
+    /// `root-capacity=grow|tuples` and `child-capacity=grow|tuples`. Only
+    /// valid with `--indexstructure hash-trie` (or `all`).
     #[arg(
         long = "ds-config",
         value_name = "KEY=VALUE,...",
@@ -686,7 +708,8 @@ pub(crate) struct ConfigChoices {
 impl ConfigChoices {
     /// The `--ds-config` keys `HashTrie` accepts, named in the usage error
     /// raised for any other key.
-    pub(crate) const HASH_TRIE_KEYS: &'static [&'static str] = &["load-factor", "root-capacity"];
+    pub(crate) const HASH_TRIE_KEYS: &'static [&'static str] =
+        &["load-factor", "root-capacity", "child-capacity"];
 
     /// Whether the user passed any `--ds-config` pair.
     pub(crate) fn explicit(&self) -> bool { !self.ds_config.is_empty() }
@@ -716,6 +739,11 @@ impl ConfigChoices {
                 | "root-capacity" => {
                     config.root_capacity = value
                         .parse::<RootCapacity>()
+                        .map_err(|why| anyhow::anyhow!("--ds-config {key}: {why}"))?;
+                },
+                | "child-capacity" => {
+                    config.child_capacity = value
+                        .parse::<ChildCapacity>()
                         .map_err(|why| anyhow::anyhow!("--ds-config {key}: {why}"))?;
                 },
                 | other => anyhow::bail!(
@@ -775,7 +803,8 @@ pub(crate) struct BuildChoices {
     /// `bulk`; `incremental` is the build before the one-pass bulk build) and
     /// `hash-trie=bulk` (the default), `incremental`, `radix:<bits>`,
     /// `parallel:<threads>` or `presized:<threads>` (bits in 1..=16, threads
-    /// in 1..=1024; `presized` requires `--ds-config root-capacity=tuples`).
+    /// in 1..=1024; `presized` requires `--ds-config root-capacity=tuples`,
+    /// and `incremental` requires `--ds-config child-capacity=grow`).
     /// A pair is only valid when `--indexstructure` selects its structure
     /// (or `all`).
     #[arg(
@@ -1263,6 +1292,47 @@ mod tests {
     }
 
     #[test]
+    fn config_choices_parse_child_capacity() {
+        let tuples = ConfigChoices {
+            ds_config: vec!["child-capacity=tuples".into()],
+        };
+        assert_eq!(
+            tuples.hash_trie_config_resolved().unwrap().child_capacity,
+            ChildCapacity::Tuples
+        );
+        let all = ConfigChoices {
+            ds_config: vec![
+                "load-factor=0.8".into(),
+                "root-capacity=tuples".into(),
+                "child-capacity=tuples".into(),
+            ],
+        };
+        let resolved = all.hash_trie_config_resolved().unwrap();
+        assert_eq!(resolved.child_capacity, ChildCapacity::Tuples);
+        assert_eq!(resolved.root_capacity, RootCapacity::Tuples);
+        assert_eq!(resolved.load_factor, LoadFactor::percent(80).unwrap());
+        assert_eq!(
+            ConfigChoices::default()
+                .hash_trie_config_resolved()
+                .unwrap()
+                .child_capacity,
+            ChildCapacity::Grow
+        );
+    }
+
+    #[test]
+    fn config_choices_reject_bad_child_capacities() {
+        for bad in ["", "Grow", "keys", "1024"] {
+            let choices = ConfigChoices {
+                ds_config: vec![format!("child-capacity={bad}")],
+            };
+            let msg = choices.hash_trie_config_resolved().unwrap_err().to_string();
+            assert!(msg.contains("child-capacity"), "{bad:?}: {msg}");
+            assert!(msg.contains("expected grow or tuples"), "{bad:?}: {msg}");
+        }
+    }
+
+    #[test]
     fn config_choices_reject_unknown_key_and_bad_value() {
         // `singleton-pruning` is now a Layout flag, so it is exactly the
         // kind of key `--ds-config` must reject.
@@ -1301,7 +1371,11 @@ mod tests {
     /// `HASH_TRIE_KEYS` cannot drift from the `match` that consumes it.
     #[test]
     fn every_advertised_hash_trie_key_is_accepted() {
-        const SAMPLE: &[(&str, &str)] = &[("load-factor", "0.5"), ("root-capacity", "tuples")];
+        const SAMPLE: &[(&str, &str)] = &[
+            ("load-factor", "0.5"),
+            ("root-capacity", "tuples"),
+            ("child-capacity", "tuples"),
+        ];
         assert_eq!(
             SAMPLE.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
             ConfigChoices::HASH_TRIE_KEYS
@@ -1603,6 +1677,18 @@ mod tests {
                         actual: "root-capacity=grow (the default)".to_owned(),
                     })
                 },
+                | Prerequisite::IncrementalBuildNeedsGrowingChildren => {
+                    let mut violating = DsChoices::default();
+                    violating.build.hash_trie = HashTrieBuildMode::Incremental;
+                    violating.config.child_capacity = ChildCapacity::Tuples;
+                    let mut satisfied = violating;
+                    satisfied.config.child_capacity = ChildCapacity::Grow;
+                    (violating, satisfied, Violation {
+                        dependent: "--ds-build hash-trie=incremental".to_owned(),
+                        requires: "--ds-config child-capacity=grow",
+                        actual: "child-capacity=tuples".to_owned(),
+                    })
+                },
             };
             assert_eq!(row.violated(&violating), Some(expected), "{row:?}");
             assert!(
@@ -1658,6 +1744,33 @@ mod tests {
             HashTrieBuildMode::Presized(Threads::new(2).unwrap())
         );
         assert_eq!(ok.config.root_capacity, RootCapacity::Tuples);
+    }
+
+    /// `incremental` under sized children is rejected with the flag to add.
+    #[test]
+    fn ds_choices_resolve_rejects_incremental_with_sized_children() {
+        let err = DsChoices::resolve(
+            IndexStructureSelector::HashTrie,
+            &LayoutChoices::default(),
+            &ConfigChoices {
+                ds_config: vec!["child-capacity=tuples".into()],
+            },
+            &build(&["hash-trie=incremental"]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--ds-build hash-trie=incremental requires --ds-config child-capacity=grow; got \
+             child-capacity=tuples"
+        );
+        let ok = DsChoices::resolve(
+            IndexStructureSelector::HashTrie,
+            &LayoutChoices::default(),
+            &ConfigChoices::default(),
+            &build(&["hash-trie=incremental"]),
+        )
+        .unwrap();
+        assert_eq!(ok.build.hash_trie, HashTrieBuildMode::Incremental);
     }
 
     /// Every structure's `--ds-build` modes resolve to that structure's mode
