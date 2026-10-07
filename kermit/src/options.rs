@@ -773,9 +773,9 @@ pub(crate) struct BuildChoices {
     /// `structure=mode` pairs: `tree-trie=serial|parallel:<threads>` (default
     /// `serial`; threads in 1..=1024), `column-trie=bulk|incremental` (default
     /// `bulk`; `incremental` is the build before the one-pass bulk build) and
-    /// `hash-trie=bulk|incremental|radix:<bits>|parallel:<threads>|presized:
-    /// <threads>` (default `bulk`; bits in 1..=16, threads in 1..=1024;
-    /// `presized` requires `--ds-config root-capacity=tuples`).
+    /// `hash-trie=bulk` (the default), `incremental`, `radix:<bits>`,
+    /// `parallel:<threads>` or `presized:<threads>` (bits in 1..=16, threads
+    /// in 1..=1024; `presized` requires `--ds-config root-capacity=tuples`).
     /// A pair is only valid when `--indexstructure` selects its structure
     /// (or `all`).
     #[arg(
