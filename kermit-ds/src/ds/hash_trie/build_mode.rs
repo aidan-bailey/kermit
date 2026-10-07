@@ -33,11 +33,12 @@ pub enum HashTrieBuildMode {
     /// merge build under every root capacity: a presized root changes the
     /// root's size, never the process.
     Parallel(Threads),
-    /// The paper's partitioned build (SIGMOD 2020 §3.3.2) on this many
-    /// threads: the root is cut into regions, each worker inserts every
-    /// tuple of its regions straight into the root, and a tail of deferred
-    /// tuples is inserted by the calling thread. The root must be sized
-    /// before any tuple arrives, so this mode **requires
+    /// The partitioned build of a presized root on this many threads: the
+    /// input partitioned by its first attribute's hash, as the paper does
+    /// (VLDB 2020 §3.3.2); each worker groups its run of the root's regions,
+    /// a tail of deferred tuples goes to the calling thread, then each worker
+    /// builds its run's children (kermit's scheme, `parallel.rs`). The root
+    /// must be sized before any tuple arrives, so this mode **requires
     /// `root-capacity=tuples`**
     /// (`docs/specs/2026-10-07-dependent-optimisations-design.md`);
     /// the constructor panics without it, and the CLI rejects it first.

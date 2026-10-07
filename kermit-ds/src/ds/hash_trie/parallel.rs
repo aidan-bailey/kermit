@@ -23,20 +23,21 @@
 //!
 //! `presized:N`
 //! (`docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`;
-//! spelled `parallel:N` under `root-capacity=tuples` until 2026-10-07) is
-//! the paper's build of a presized root ([`fill_presized_root`]), and
-//! requires `root-capacity=tuples` (#88). The partitions are contiguous runs
-//! of the root's fixed-size regions, by each tuple's home bucket, and each
-//! worker pushes every tuple of its partition onto its bucket's list in its
-//! run of a presized table of lists. A tuple whose key's probe would cross
-//! its region's end is deferred, and the calling thread pushes the deferred
-//! tuples afterwards, in input order. After the tail, each worker builds the
-//! children of its run's buckets by Algorithm 2. Root keys may then sit in
-//! other buckets than the bulk build's, so this trie is equivalent rather
-//! than identical (Amendment 2): the root has the same capacity, occupied
-//! buckets and total displacement, and every subtrie is identical. Regions,
-//! not threads, decide which tuples are deferred, so the trie is the same
-//! for every N.
+//! spelled `parallel:N` under `root-capacity=tuples` until 2026-10-07;
+//! [`fill_presized_root`]) follows the paper where the paper describes it:
+//! the input is partitioned by its first attribute's hash (§3.3.2), and
+//! Algorithm 2 groups it into a root sized before any tuple arrives
+//! (line 3; `root-capacity=tuples`, #88) and builds each bucket's child.
+//! How this runs on threads is kermit's: each partition is a contiguous run
+//! of the root's fixed-size regions, grouped by one worker into its run of
+//! a presized table of lists; a tuple whose probe would cross its region's
+//! end is deferred to the calling thread, which pushes the deferred tuples
+//! in input order; then each worker builds the children of one run's
+//! buckets at a time. Root keys may then sit in other buckets than the bulk
+//! build's, so this trie is equivalent rather than identical (Amendment 2):
+//! the root has the same capacity, occupied buckets and total displacement,
+//! and every subtrie is identical. Regions, not threads, decide which tuples
+//! are deferred, so the trie is the same for every N.
 
 use {
     super::{
@@ -243,17 +244,19 @@ fn merge_in_first_appearance_order<V>(
 /// worker's cache.
 const REGION_BUCKETS: usize = 4096;
 
-/// Fills the presized, empty `root` with `tuples` by `presized:threads`,
-/// the paper's partitioned build
-/// (`docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`),
-/// with every child built by Algorithm 2 (#107), and returns it. Every
-/// tuple must have `arity` attributes; the caller checks.
+/// Builds the root of `2^log2_capacity` buckets over `tuples` by
+/// `presized:threads` and returns it: the partitioned build of a presized
+/// root (the paper's partitioning and Algorithm 2; kermit's regions, tail
+/// and per-run children;
+/// `docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`),
+/// with every child built by Algorithm 2 (#107). Every tuple must have
+/// `arity` attributes; the caller checks.
 pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    root: HashTrieNode<P, E>, arity: usize, tuples: Vec<Vec<usize>>, threads: Threads,
+    log2_capacity: u32, arity: usize, tuples: Vec<Vec<usize>>, threads: Threads,
     config: HashTrieConfig,
 ) -> HashTrieNode<P, E> {
     fill_presized_root_in::<H, P, E>(
-        root,
+        log2_capacity,
         arity,
         tuples,
         threads,
@@ -279,31 +282,26 @@ pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: Expansion
 ///    buckets, by the bulk build's `child`. The paper does not say how the
 ///    recursion is spread over threads; one run per worker is kermit's choice.
 fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    root: HashTrieNode<P, E>, arity: usize, tuples: Vec<Vec<usize>>, threads: Threads,
+    log2_capacity: u32, arity: usize, tuples: Vec<Vec<usize>>, threads: Threads,
     morsel_tuples: usize, region_buckets: usize, config: HashTrieConfig,
 ) -> HashTrieNode<P, E> {
     if tuples.is_empty() {
-        return root;
+        return HashTrie::<H, P, E>::make_root_sized(arity, log2_capacity);
     }
-    // Only the root's capacity is used: its tuples are grouped into a table
-    // of lists of that size, which step 4 turns into the root. The empty
-    // root is dropped before that table is allocated.
-    let log2 = root.buckets_len().trailing_zeros();
-    drop(root);
-    let capacity = 1usize << log2;
+    let capacity = 1usize << log2_capacity;
     let region_buckets = region_buckets.min(capacity);
     let parts = (PARTITIONS_PER_THREAD * threads.get())
         .next_power_of_two()
         .min(capacity / region_buckets);
-    let shift = log2 - parts.trailing_zeros();
+    let shift = log2_capacity - parts.trailing_zeros();
     // 1. Partition by the home bucket's top bits: whole runs of regions.
     let partitions = scatter(threads, tuples, morsel_tuples, parts, |tuple| {
-        home_bucket(H::hash(tuple[0]), log2) >> shift
+        home_bucket(H::hash(tuple[0]), log2_capacity) >> shift
     });
     #[cfg(any(test, feature = "test-hooks"))]
     let partition_sizes: Vec<usize> = partitions.iter().map(Partition::len).collect();
     // 2. Group each run of regions in parallel.
-    let mut lists: HashTable<TupleList> = HashTable::with_log2_capacity(log2);
+    let mut lists: HashTable<TupleList> = HashTable::with_log2_capacity(log2_capacity);
     let mut deferred = fill_runs(
         &mut lists,
         threads,
@@ -764,7 +762,7 @@ mod tests {
                         assert_equivalent_trie(&bulk, &built, &label);
                         let log2 = config.root_log2_capacity(tuples.len());
                         let small = fill_presized_root_in::<H, P, E>(
-                            HashTrie::<H, P, E>::make_root_sized(arity, log2),
+                            log2,
                             arity,
                             tuples.clone(),
                             threads(t),
@@ -885,7 +883,7 @@ mod tests {
             HashTrie::from_tuples_with_config(2.into(), config, tuples.clone());
         PARALLEL_BUILDS.with(|b| b.borrow_mut().clear());
         let root = fill_presized_root_in::<EndOfRegionHash, NoPruning, EagerExpansion>(
-            HashTrie::<EndOfRegionHash>::make_root_sized(2, 5),
+            5,
             2,
             tuples,
             threads(2),

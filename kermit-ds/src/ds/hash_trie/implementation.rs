@@ -129,9 +129,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// An empty trie holding `config`, its root sized for a build from
     /// `tuple_count` tuples by [`HashTrieConfig::root_log2_capacity`]: 4
     /// buckets under `RootCapacity::Grow`, and under `Tuples` a capacity at
-    /// which `tuple_count` keys never make it grow. Every constructor that
-    /// starts from an empty root creates it here; the bulk build sizes its root
-    /// by the same `root_log2_capacity`. A trie created empty passes 0.
+    /// which `tuple_count` keys never make it grow. The per-tuple build and
+    /// [`ConfigurableRelation::with_config`] create their empty root here; the
+    /// bulk and partitioned builds size theirs by the same
+    /// `root_log2_capacity`. A trie created empty passes 0.
     pub(super) fn with_config_for(
         header: RelationHeader, config: HashTrieConfig, tuple_count: usize,
     ) -> Self {
@@ -431,8 +432,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// (Algorithm 2); `Incremental` is the per-tuple build; `Radix`
     /// partitions first (see `radix.rs`), `Parallel` runs
     /// the radix build's partition and build steps on threads, and
-    /// `Presized` fills a presized root by region, the paper's build (both
-    /// in `parallel.rs`).
+    /// `Presized` groups a presized root by region, then builds its children
+    /// in runs (both in `parallel.rs`).
     ///
     /// # Panics
     ///
@@ -449,13 +450,15 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                 Self::from_tuples_incrementally(header, config, tuples)
             },
             | HashTrieBuildMode::Radix(bits) => {
-                Self::from_tuples_partitioned(header, config, tuples, |mut root, arity, tuples| {
+                Self::from_tuples_partitioned(header, config, tuples, |log2, arity, tuples| {
+                    let mut root = Self::make_root_sized(arity, log2);
                     radix::fill_root::<H, P, E>(&mut root, arity, tuples, bits, config);
                     root
                 })
             },
             | HashTrieBuildMode::Parallel(threads) => {
-                Self::from_tuples_partitioned(header, config, tuples, |mut root, arity, tuples| {
+                Self::from_tuples_partitioned(header, config, tuples, |log2, arity, tuples| {
+                    let mut root = Self::make_root_sized(arity, log2);
                     parallel::fill_root::<H, P, E>(&mut root, arity, tuples, threads, config);
                     root
                 })
@@ -473,8 +476,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     threads.get(),
                     config.root_capacity.axis_value(),
                 );
-                Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
-                    parallel::fill_presized_root::<H, P, E>(root, arity, tuples, threads, config)
+                Self::from_tuples_partitioned(header, config, tuples, |log2, arity, tuples| {
+                    parallel::fill_presized_root::<H, P, E>(log2, arity, tuples, threads, config)
                 })
             },
         }
@@ -555,21 +558,25 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     }
 
     /// What the partitioned builds share (`radix:K`, `parallel:N`,
-    /// `presized:N`): the per-tuple build's arity check, with its message, then
-    /// `fill` on the empty root (presized under `root-capacity=tuples`, as
-    /// the bulk build's is), which returns the filled root, then the multiset
-    /// count the other builds keep.
+    /// `presized:N`): the per-tuple build's arity check, with its message,
+    /// then `fill`, which builds the root at the capacity every build gives it
+    /// (`HashTrieConfig::root_log2_capacity`, presized under
+    /// `root-capacity=tuples`), then the multiset count the other builds keep.
     fn from_tuples_partitioned(
         header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
-        fill: impl FnOnce(HashTrieNode<P, E>, usize, Vec<Vec<usize>>) -> HashTrieNode<P, E>,
+        fill: impl FnOnce(u32, usize, Vec<Vec<usize>>) -> HashTrieNode<P, E>,
     ) -> Self {
         let arity = header.arity();
         Self::assert_arities(arity, &tuples);
         let tuple_count = tuples.len();
-        let mut trie = Self::with_config_for(header, config, tuple_count);
-        trie.root = fill(trie.root, arity, tuples);
-        trie.tuple_count = tuple_count;
-        trie
+        let root = fill(config.root_log2_capacity(tuple_count), arity, tuples);
+        Self {
+            header,
+            root,
+            tuple_count,
+            config,
+            _layout: PhantomData,
+        }
     }
 }
 
