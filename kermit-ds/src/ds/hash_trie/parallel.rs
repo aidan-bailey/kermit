@@ -7,18 +7,18 @@
 //! 1. **Partition.** [`scatter`] moves every tuple, with its input position,
 //!    into one of P partitions by the top log₂P bits of its first attribute's
 //!    hash; P is four per thread, rounded up to a power of two.
-//! 2. **Build.** [`dispatch`] builds each non-empty partition into a scratch
-//!    root by the serial build's own `insert_at`, then takes the scratch root's
-//!    entries out, each tagged with the input position at which its key first
-//!    appeared.
+//! 2. **Build.** [`dispatch`] groups each non-empty partition into a scratch
+//!    root and builds its children, as `bulk` does
+//!    (`radix::build_scratch_root`), then takes the scratch root's entries out,
+//!    each tagged with the input position at which its key first appeared.
 //! 3. **Merge.** The calling thread inserts every entry into the real root in
 //!    first-appearance order, by a k-way merge of the partitions' lists.
 //!
-//! The result is the serial trie, bucket for bucket and capacity for
+//! The result is the bulk trie, bucket for bucket and capacity for
 //! capacity, for the reasons the radix build's is. Each partition lists its
-//! tuples in input order (`scatter` keeps it), so each subtrie receives the
-//! serial build's `insert_at` calls; and the root receives its new keys in
-//! the serial order. Equal 64-bit hashes share a root entry and also a
+//! tuples in input order (`scatter` keeps it), so each child is built from
+//! the list `bulk` builds it from; and the root receives its new keys in
+//! the bulk order. Equal 64-bit hashes share a root entry and also a
 //! partition, because the partition is a function of the hash.
 //!
 //! `presized:N`
@@ -38,7 +38,7 @@
 
 use {
     super::{
-        config::LoadFactor,
+        config::{HashTrieConfig, LoadFactor},
         expansion::ExpansionPolicy,
         hash_table::{home_bucket, BucketRun, HashTable},
         implementation::HashTrie,
@@ -142,16 +142,16 @@ fn partition_bits(threads: Threads) -> u32 {
 /// Every tuple must have `arity` attributes; the caller checks.
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     root: &mut HashTrieNode<P, E>, arity: usize, tuples: Vec<Vec<usize>>, threads: Threads,
-    load_factor: LoadFactor,
+    config: HashTrieConfig,
 ) {
-    fill_root_in_morsels::<H, P, E>(root, arity, tuples, threads, MORSEL_TUPLES, load_factor);
+    fill_root_in_morsels::<H, P, E>(root, arity, tuples, threads, MORSEL_TUPLES, config);
 }
 
 /// [`fill_root`] with the morsel size as a parameter, so tests can cut a
 /// small input into many morsels.
 fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     root: &mut HashTrieNode<P, E>, arity: usize, tuples: Vec<Vec<usize>>, threads: Threads,
-    morsel_tuples: usize, load_factor: LoadFactor,
+    morsel_tuples: usize, config: HashTrieConfig,
 ) {
     if tuples.is_empty() {
         // The serial build of nothing is the empty root: start no worker.
@@ -183,18 +183,18 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     //    entries then leave in the order their keys arrived.
     let entries = dispatch(threads, partitions, |partition| {
         let (scratch, first_seen) =
-            radix::build_scratch_root::<H, P, E>(partition.into_tuples(), arity, load_factor);
+            radix::build_scratch_root::<H, P, E>(partition.into_tuples(), arity, config);
         Entries::take_from(scratch, &first_seen)
     });
     // 3. Merge, on this thread, in first-appearance order.
     match root {
         | HashTrieNode::Inner(table) => {
             let lists = entries.into_iter().map(Entries::into_children).collect();
-            merge_in_first_appearance_order(table, lists, load_factor);
+            merge_in_first_appearance_order(table, lists, config.load_factor);
         },
         | HashTrieNode::Leaf(table) => {
             let lists = entries.into_iter().map(Entries::into_chains).collect();
-            merge_in_first_appearance_order(table, lists, load_factor);
+            merge_in_first_appearance_order(table, lists, config.load_factor);
         },
         | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
             unreachable!("a root is never pruned or unexpanded")
@@ -436,7 +436,7 @@ mod tests {
                                 tuples.clone(),
                                 threads(t),
                                 7,
-                                config.load_factor,
+                                config,
                             );
                             assert_same_node(bulk.root(), &root, &format!("{label}, morsels of 7"));
                         }

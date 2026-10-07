@@ -23,7 +23,7 @@ use {
         build_mode::HashTrieBuildMode,
         config::{HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
-        hash_table::{BucketRun, RunEntry, INITIAL_LOG2_CAPACITY},
+        hash_table::{BucketRun, RunEntry},
         node::HashTrieNode,
         parallel,
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
@@ -119,15 +119,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     pub(super) fn is_leaf_depth(depth: usize, arity: usize) -> bool { depth + 1 == arity }
 
     /// Construct the root node appropriate for `arity` — Inner for arity ≥ 2,
-    /// Leaf for arity = 1. (The root sits at depth 0, so it is a leaf exactly
-    /// when `is_leaf_depth(0, arity)`; `arity <= 1` matches that for every
-    /// supported arity and additionally treats the unsupported nullary case
-    /// as a leaf.)
-    pub(super) fn make_root(arity: usize) -> HashTrieNode<P, E> {
-        Self::make_root_sized(arity, INITIAL_LOG2_CAPACITY)
-    }
-
-    /// [`make_root`](Self::make_root) at `2^log2_capacity` buckets.
+    /// Leaf for arity = 1 — at `2^log2_capacity` buckets. (The root sits at
+    /// depth 0, so it is a leaf exactly when `is_leaf_depth(0, arity)`;
+    /// `arity <= 1` matches that for every supported arity and additionally
+    /// treats the unsupported nullary case as a leaf.)
     pub(super) fn make_root_sized(arity: usize, log2_capacity: u32) -> HashTrieNode<P, E> {
         HashTrieNode::new_table_sized(arity <= 1, log2_capacity)
     }
@@ -539,12 +534,12 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             },
             | HashTrieBuildMode::Radix(bits) => {
                 Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
-                    radix::fill_root::<H, P, E>(root, arity, tuples, bits, config.load_factor)
+                    radix::fill_root::<H, P, E>(root, arity, tuples, bits, config)
                 })
             },
             | HashTrieBuildMode::Parallel(threads) => {
                 Self::from_tuples_partitioned(header, config, tuples, |root, arity, tuples| {
-                    parallel::fill_root::<H, P, E>(root, arity, tuples, threads, config.load_factor)
+                    parallel::fill_root::<H, P, E>(root, arity, tuples, threads, config)
                 })
             },
             | HashTrieBuildMode::Presized(threads) => {

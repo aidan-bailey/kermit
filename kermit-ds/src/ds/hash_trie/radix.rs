@@ -1,21 +1,26 @@
 //! The `radix:K` build of a [`HashTrie`](super::HashTrie): radix-partition
-//! the tuples on their first attribute's hash, build each partition into a
-//! scratch root, then merge the scratch roots into the real one (SIGMOD 2020
-//! §3.3.2; issue #91).
+//! the tuples on their first attribute's hash, group each partition into a
+//! scratch root and build its children by Algorithm 2 (`bulk.rs`), then merge
+//! the scratch roots into the real one (SIGMOD 2020 §3.3.2; issue #91).
 //!
 //! The result is the trie the bulk build makes, bucket for bucket and
 //! capacity for capacity. A table's final layout depends only on the order
 //! in which its *new* keys arrive — `HashTable::entry_or_insert_with`
 //! returns an existing entry before its resize check — so the merge inserts
 //! the distinct root keys in the order they first appear in the input, as
-//! the serial build does. Below the root nothing needs care: the partition
-//! is stable, so each root key's subtrie is built by the same `insert_at`
-//! calls, on the same tuples in the same order, as in the serial build.
+//! the bulk build does. Below the root nothing needs care: the partition
+//! is stable, so each root key's child is built from the same list, in input
+//! order, as in the bulk build.
 
 use {
     super::{
-        build_mode::RadixBits, config::LoadFactor, expansion::ExpansionPolicy,
-        hash_table::HashTable, implementation::HashTrie, node::HashTrieNode,
+        build_mode::RadixBits,
+        bulk::TupleList,
+        config::{HashTrieConfig, LoadFactor},
+        expansion::ExpansionPolicy,
+        hash_table::HashTable,
+        implementation::HashTrie,
+        node::HashTrieNode,
         pruning::PruningPolicy,
     },
     kermit_iters::HashStrategy,
@@ -32,7 +37,7 @@ pub(super) type Arrival<V> = (usize, u64, V);
 /// tuple must have `arity` attributes; the caller checks.
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     root: &mut HashTrieNode<P, E>, arity: usize, tuples: Vec<Vec<usize>>, bits: RadixBits,
-    load_factor: LoadFactor,
+    config: HashTrieConfig,
 ) {
     // One of the two stays empty: the root is `Inner` for arity ≥ 2 (values
     // are subtries, or under lazy expansion their pending lists) and `Leaf`
@@ -43,7 +48,7 @@ pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
         if partition.is_empty() {
             continue;
         }
-        let (scratch, first_seen) = build_scratch_root::<H, P, E>(partition, arity, load_factor);
+        let (scratch, first_seen) = build_scratch_root::<H, P, E>(partition, arity, config);
         match scratch {
             | HashTrieNode::Inner(table) => {
                 take_in_arrival_order(table, &first_seen, &mut subtries)
@@ -56,9 +61,11 @@ pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     }
     match root {
         | HashTrieNode::Inner(table) => {
-            insert_in_first_appearance_order(table, subtries, load_factor)
+            insert_in_first_appearance_order(table, subtries, config.load_factor)
         },
-        | HashTrieNode::Leaf(table) => insert_in_first_appearance_order(table, chains, load_factor),
+        | HashTrieNode::Leaf(table) => {
+            insert_in_first_appearance_order(table, chains, config.load_factor)
+        },
         | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
             unreachable!("a root is never pruned or unexpanded")
         },
@@ -69,7 +76,7 @@ pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
 /// `H::hash(tuple[0])`. A histogram pass sizes each partition exactly; a
 /// scatter pass then moves every tuple into its partition with its input
 /// index. Stable — each partition keeps input order — which is what keeps
-/// every subtrie identical to the serial build's.
+/// every child identical to the bulk build's.
 fn partition<H: HashStrategy>(tuples: Vec<Vec<usize>>, bits: RadixBits) -> Vec<Vec<Indexed>> {
     let shift = 64 - u32::from(bits.get());
     // `bits <= 16`, so a partition number fits a `u16`.
@@ -88,23 +95,31 @@ fn partition<H: HashStrategy>(tuples: Vec<Vec<usize>>, bits: RadixBits) -> Vec<V
     partitions
 }
 
-/// Builds one partition into a scratch root of the real root's kind, by
-/// the serial build's own `insert_at`. Returns the scratch root and, for
-/// each key it holds, the input index of the tuple that introduced it and
-/// the key's hash, in arrival order.
+/// Builds one partition into a scratch root of the real root's kind by
+/// Algorithm 2 (`bulk.rs`): the partition's tuples grouped at the root,
+/// recording for each key the input index of the tuple that introduced it
+/// and the key's hash, in arrival order; then each key's child built from
+/// its list, as the bulk build builds it.
 pub(super) fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    partition: impl IntoIterator<Item = Indexed>, arity: usize, load_factor: LoadFactor,
+    partition: impl IntoIterator<Item = Indexed>, arity: usize, config: HashTrieConfig,
 ) -> (HashTrieNode<P, E>, Vec<(usize, u64)>) {
-    let mut scratch = HashTrie::<H, P, E>::make_root(arity);
+    // Lines 3–7 at the root. The scratch root starts at 4 buckets and
+    // grows: its entries move into the real root, so its size is never
+    // seen.
+    let mut lists: HashTable<TupleList> = HashTable::new();
     let mut first_seen = Vec::new();
     for (index, tuple) in partition {
-        let key = tuple[0];
-        let keys_before = scratch.len();
-        HashTrie::<H, P, E>::insert_at(&mut scratch, 0, arity, tuple, load_factor);
-        if scratch.len() > keys_before {
-            first_seen.push((index, H::hash(key)));
+        let hash = H::hash(tuple[0]);
+        let keys_before = lists.len();
+        lists
+            .entry_or_insert_with(hash, config.load_factor, Vec::new)
+            .push(tuple);
+        if lists.len() > keys_before {
+            first_seen.push((index, hash));
         }
     }
+    // Lines 8–15.
+    let scratch = HashTrie::<H, P, E>::build_nested(0, arity, lists, config);
     (scratch, first_seen)
 }
 
@@ -131,8 +146,8 @@ pub(super) fn take_in_arrival_order<V>(
 }
 
 /// Inserts the merged entries into the real root in the order their keys
-/// first appeared in the input — the order the serial build inserts them —
-/// so the root's buckets, length and capacity are the serial build's.
+/// first appeared in the input — the order the bulk build inserts them —
+/// so the root's buckets, length and capacity are the bulk build's.
 fn insert_in_first_appearance_order<V>(
     root: &mut HashTable<V>, mut arrivals: Vec<Arrival<V>>, load_factor: LoadFactor,
 ) {
