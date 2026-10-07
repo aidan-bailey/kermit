@@ -288,8 +288,8 @@ kermit's default.
   `ConfigChoices::HASH_TRIE_KEYS` (`kermit/src/options.rs:628`), beside `load-factor`
   and `root-capacity`.
 - **`--ds-build hash-trie=bulk|incremental|radix:K|parallel:N|presized:N`.**
-  `hash-trie=serial` is rejected: "hash-trie has no serial build since #107: the
-  default is bulk (Algorithm 2), and the per-tuple build is incremental". TreeTrie's
+  `hash-trie=serial` is rejected: "serial was renamed incremental in #107 (the
+  per-tuple build); the default is now bulk (Algorithm 2)". TreeTrie's
   `serial` is unchanged.
 - **Reports, no schema bump.** Every HashTrie report gains `ds_config_child_capacity`,
   and its `ds_build_mode` takes the values above. Both changes are additive except the

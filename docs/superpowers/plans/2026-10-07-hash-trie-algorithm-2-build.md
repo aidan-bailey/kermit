@@ -820,6 +820,15 @@ mod tests {
 The variant `Serial` disappears, so every crate that names it changes in this
 one commit.
 
+> **As executed** (718a55d, fcf2f54, e2ed4ff): the rejection message became
+> "serial was renamed incremental in #107 (the per-tuple build); the default
+> is now bulk (Algorithm 2)" after review, superseding the text below; a
+> test-only `BULK_BUILDS` record and `each_build_mode_runs_its_own_build`
+> pin which build each mode runs (the two build the identical trie, so
+> nothing else can); the sed was scoped to `kermit` and `kermit-ds`; the
+> struct doc names `insert_at` without an intra-doc link (it is
+> `pub(super)`).
+
 **Files:**
 - Modify: `kermit-ds/src/ds/hash_trie/build_mode.rs`
 - Modify: `kermit-ds/src/ds/hash_trie/implementation.rs` (mode arms;
@@ -1304,6 +1313,11 @@ one commit.
     (scatter, the regions' lists, then the regions' children)", and it expects
     `vec![3, 3, 3]`.
 
+  - In the presized tests (`check_presized`, `keys_that_cannot_fit_their_region_go_to_the_tail`
+    and the rest of the presized block), rename the `serial` bindings to
+    `bulk` and "equivalent to serial" / "serial's" in their docs and labels
+    to `bulk`, as Task 3 did for the exact-build tests.
+
 - [ ] **Step 2: Run them to verify they fail.**
   ```bash
   CARGO_BUILD_JOBS=2 nix develop $WT --command cargo test -p kermit-ds --lib hash_trie::parallel
@@ -1315,7 +1329,7 @@ one commit.
   `implementation.rs`:
   ```rust
     /// What the partitioned builds share (`radix:K`, `parallel:N`,
-    /// `presized:N`): the serial build's arity check, with its message, then
+    /// `presized:N`): the per-tuple build's arity check, with its message, then
     /// `fill` on the empty root (presized under `root-capacity=tuples`, as
     /// the bulk build's is), which returns the filled root, then the multiset
     /// count the other builds keep.
@@ -2255,8 +2269,8 @@ minutes locally, propose which matrix to trim before going on.
       let (output, _) = bench_ds("hash-trie", &["--ds-build", "hash-trie=serial"]);
       assert!(!output.status.success());
       let stderr = String::from_utf8_lossy(&output.stderr);
-      assert!(stderr.contains("hash-trie has no serial build since #107"), "{stderr}");
-      assert!(stderr.contains("the per-tuple build is incremental"), "{stderr}");
+      assert!(stderr.contains("serial was renamed incremental in #107"), "{stderr}");
+      assert!(stderr.contains("the default is now bulk (Algorithm 2)"), "{stderr}");
   }
 
   #[test]
@@ -2477,6 +2491,7 @@ minutes locally, propose which matrix to trim before going on.
 - Modify: `python/kermit-lab/kermit_lab/frame.py` (`_summary_from_reports`, `threads_of` doc)
 - Modify: `python/kermit-lab/kermit_lab/analysis.py` (`speedup_table`, `BASELINE_BUILD_MODES`)
 - Modify: `python/kermit-lab/kermit_lab/presets.py` (`speedup`)
+- Modify: `python/kermit-lab/README.md` (the `speedup` row, ~line 128)
 - Test: `python/kermit-lab/tests/{test_defaults,test_analysis,test_render_all,test_contract}.py`
 
 - [ ] **Step 1: Write the failing tests.**
@@ -2661,6 +2676,10 @@ minutes locally, propose which matrix to trim before going on.
     {baselines_named(rows)} row`; the rest of both messages is unchanged. The
     existing tests that match `"no 'serial' row"` use TreeTrie rows, so they
     still pass.
+  - `README.md`, the `speedup` row: "build speedup over each structure's
+    default single-threaded build (TreeTrie `serial`, HashTrie `bulk`) vs
+    `threads` …", and its requirement column: "that baseline's and
+    `parallel:N` / `presized:N` `ds_build_mode` rows of one case".
   - `presets.py`, `speedup`: `baseline: str | None = None`, docstring "over the
     baseline build (each structure's default single-threaded build unless
     ``baseline`` is given)". The y-axis label, `f"speedup over {baseline}
@@ -2701,6 +2720,7 @@ paper.
 - Modify: `docs/specs/optimization-standard.md`
 - Modify: `docs/specs/bench-report-schema.md`
 - Modify: `CLAUDE.md`
+- Modify: `USAGE.md`, `BENCHMARKING.md`, `ARCHITECTURE.md`
 - Modify: `docs/specs/2026-10-07-hash-trie-algorithm-2-build-design.md` (status line)
 
 - [ ] **Step 1: `hash-trie.md`.**
@@ -2899,6 +2919,43 @@ paper.
     "`HashTrieConfig::child_capacity` (`--ds-config child-capacity=tuples`,
     axis `ds_config_child_capacity`, default `grow`; #107), read by the bulk
     build's `child` and by lazy `resolve`" to its list of Config values.
+
+- [ ] **Step 5b: `USAGE.md`, `BENCHMARKING.md`, `ARCHITECTURE.md`.** Each
+  still gives `hash-trie=serial` as the default, a spelling the binary now
+  rejects.
+  - `USAGE.md` (~202–206, the `--ds-build` paragraph): the HashTrie clause
+    becomes "`hash-trie=bulk` (the default, Algorithm 2), `incremental` (the
+    per-tuple build, `serial` before #107; requires `--ds-config
+    child-capacity=grow`), `radix:<bits>`, `parallel:<threads>` or
+    `presized:<threads>` (…the rest as it stands)". Wherever `USAGE.md`
+    lists the `--ds-config` keys (`git grep -n root-capacity USAGE.md`), add
+    `child-capacity=grow|tuples`.
+  - `BENCHMARKING.md`:
+    - ~215: "HashTrie's (`hash-trie=bulk` by default, Algorithm 2;
+      `hash-trie=incremental` for the per-tuple build, `serial` before
+      #107; …".
+    - The Scaling section: "The trie is identical to the serial build's" →
+      "to the structure's single-threaded build's (TreeTrie `serial`,
+      HashTrie `bulk`)"; the presized baseline "is `serial` under the same
+      `root-capacity=tuples` config" → "is `bulk` under the same
+      `root-capacity=tuples` config"; "plot the speedup over `serial`" →
+      "plot the speedup over the single-threaded build (`kl.speedup_table`
+      picks TreeTrie `serial`, HashTrie `bulk`)"; in the HashTrie
+      paragraph, "`parallel:1` against `serial`" → "`parallel:1` against
+      `bulk`". The TreeTrie shell loop stays as it is.
+    - The kermit-lab table row for `speedup_table`: signature
+      `speedup_table(df, *, phase="insertion", baseline=None)`, "over each
+      structure's default build (TreeTrie `serial`, HashTrie `bulk`)".
+    - Wherever it lists the `--ds-config` keys, add `child-capacity`.
+  - `ARCHITECTURE.md` ~228: the sentence on `HashTrie`'s axes, already stale
+    (it predates #92 and #88), becomes "`HashTrie<H, P, E>` has three Layout
+    axes — the hasher `H` (`SipHashStrategy` default, `FxHashStrategy`), the
+    pruning policy `P` and the expansion policy `E` — and three Config axes,
+    the load factor, the root capacity and the child capacity; its
+    `HasOptimizationAxes` impl reports `ds_layout_hasher`,
+    `ds_layout_pruning`, `ds_layout_expansion`, `ds_config_load_factor`,
+    `ds_config_root_capacity` and `ds_config_child_capacity`." Keep the rest
+    of the paragraph.
 
 - [ ] **Step 6: The spec's status line.** In
   `docs/specs/2026-10-07-hash-trie-algorithm-2-build-design.md`: "**Status:**
