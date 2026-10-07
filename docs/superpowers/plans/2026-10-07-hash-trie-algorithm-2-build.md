@@ -1120,6 +1120,12 @@ one commit.
 
 ## Task 5 [P1]: `radix:K` and `parallel:N` build their scratch roots by Algorithm 2
 
+> **As executed** (b136e9d, d0d45b1): `HashTrie::make_root` lost its last
+> caller (the old scratch root) and was deleted, with its doc moved to
+> `make_root_sized`; `implementation.rs` no longer imports
+> `INITIAL_LOG2_CAPACITY` (Task 4's note to keep it is superseded). The
+> exact-merge path's docs and test bindings call the reference build `bulk`.
+
 **Files:**
 - Modify: `kermit-ds/src/ds/hash_trie/radix.rs` (`fill_root`, `build_scratch_root`, module doc)
 - Modify: `kermit-ds/src/ds/hash_trie/parallel.rs` (`fill_root`, `fill_root_in_morsels`, module doc, one test call)
@@ -2762,7 +2768,10 @@ paper.
      off) and a two-tuple one (pruning on) to the capacities `insert_at` gives
      them. That is kermit's, for `space`'s sake, not the paper's.
      ```
-  3. **Invariants**, "Load factor cap", last sentence → "Every table starts
+  3. **Invariants**, "Path depth = arity": "Enforced at construction time by
+     `HashTrie::make_root` and `insert_at`" → "Enforced at construction time
+     by `make_root_sized` and the builds (`build_nested`, `insert_at`)"
+     (`make_root` was deleted in Task 5). "Load factor cap", last sentence → "Every table starts
      at 4 buckets except in a build from a known set of tuples, where
      `--ds-config root-capacity=tuples` sizes the root once for the tuple
      count, and `child-capacity=tuples` sizes every child once for its list
