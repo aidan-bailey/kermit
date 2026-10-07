@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from kermit_lab.frame import (
+    build_of,
     discover_opt_columns,
     load,
     load_samples,
@@ -269,12 +270,24 @@ def test_threads_column_is_derived_from_the_build_mode(fixture_parallel_build_tr
     assert (df.loc[df["ds_build_mode"] == "parallel:4", "threads"] == 4).all()
 
 
-def test_threads_of_reads_only_well_formed_parallel_modes() -> None:
+def test_threads_of_reads_only_well_formed_threaded_modes() -> None:
     assert threads_of("parallel:8") == 8
     assert threads_of("parallel:1024") == 1024
+    assert threads_of("presized:4") == 4
+    assert threads_of("presized:1024") == 1024
     # `"²".isdigit()` holds but `int("²")` raises, so a Unicode digit must not get through.
     for not_a_thread_count in (
         "serial", "bulk", "incremental", "parallel:", "parallel:x", "parallel:2x",
-        "parallel:-1", "parallel:²", pd.NA, None, float("nan"),
+        "parallel:-1", "parallel:²", "presized:", "presized:x", pd.NA, None, float("nan"),
     ):
         assert threads_of(not_a_thread_count) is None, not_a_thread_count
+
+
+def test_build_of_names_exactly_the_modes_threads_of_reads() -> None:
+    assert build_of("parallel:8") == "parallel"
+    assert build_of("presized:1024") == "presized"
+    for mode in (
+        "parallel:8", "presized:4", "serial", "bulk", "incremental", "radix:8",
+        "parallel:", "presized:x", "parallel:²", pd.NA, None, float("nan"),
+    ):
+        assert (build_of(mode) is None) == (threads_of(mode) is None), mode

@@ -10,6 +10,7 @@ import pytest
 
 import kermit_lab as kl
 from kermit_lab.analysis import SPEEDUP_MEASURES, bootstrap_ratio_ci, compare, speedup_table
+from kermit_lab.frame import threads_of
 
 
 @pytest.fixture
@@ -109,7 +110,7 @@ def _build_mode_rows(arms: dict[str, list[float]]) -> pd.DataFrame:
     build mode in ``arms`` (mode -> one mean per replicate)."""
     rows = []
     for mode, times in arms.items():
-        threads = int(mode.removeprefix("parallel:")) if mode.startswith("parallel:") else pd.NA
+        threads = threads_of(mode)
         for run, t in enumerate(times):
             rows.append({
                 "kind": "ds", "metric": "time", "phase": "insertion",
@@ -122,6 +123,59 @@ def _build_mode_rows(arms: dict[str, list[float]]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     df["threads"] = df["threads"].astype("Int64")
     return df
+
+
+def test_speedup_table_keeps_parallel_and_presized_arms_apart() -> None:
+    """`parallel:4` and `presized:4` share a thread count but are two builds
+    (Amendment 3), so under one `root-capacity=tuples` case they are two arms,
+    each against the same `serial` row, never one pooled arm."""
+    df = _build_mode_rows(
+        {"serial": [8000.0], "parallel:4": [4000.0], "presized:4": [1000.0]}
+    ).assign(
+        data_structure="HashTrie", ds_config_root_capacity="tuples",
+        criterion_function="HashTrie/insertion",
+    )
+    table = speedup_table(df)
+    assert table["ds_build_mode"].tolist() == ["parallel:4", "presized:4"]
+    assert table["threads"].tolist() == [4, 4]
+    assert table["speedup"].tolist() == pytest.approx([2.0, 8.0])
+    assert table["runs"].tolist() == [1, 1]
+    assert table["baseline_runs"].tolist() == [1, 1]
+
+
+def test_speedup_table_pairs_presized_with_serial_under_the_same_root_capacity() -> None:
+    """The 2026-10-06 run's shape: `grow` and `tuples` curves loaded together.
+    `ds_config_root_capacity` is a case key, so each arm divides the `serial`
+    row of its own config, and `presized:4` (which requires `tuples`) never
+    meets the `grow` baseline."""
+    hash_trie = {"data_structure": "HashTrie", "criterion_function": "HashTrie/insertion"}
+    grow = _build_mode_rows({"serial": [8000.0], "parallel:4": [4000.0]}).assign(
+        ds_config_root_capacity="grow", **hash_trie
+    )
+    tuples = _build_mode_rows(
+        {"serial": [6000.0], "parallel:4": [3000.0], "presized:4": [1000.0]}
+    ).assign(ds_config_root_capacity="tuples", **hash_trie)
+    tuples = tuples.assign(
+        criterion_group=tuples["criterion_group"] + "-tuples",
+        source_path=tuples["source_path"] + "-tuples",
+    )
+    table = speedup_table(pd.concat([grow, tuples], ignore_index=True))
+    assert table["ds_config_root_capacity"].tolist() == ["grow", "tuples", "tuples"]
+    assert table["ds_build_mode"].tolist() == ["parallel:4", "parallel:4", "presized:4"]
+    assert table["speedup"].tolist() == pytest.approx([2.0, 2.0, 6.0])
+    assert table["baseline_runs"].tolist() == [1, 1, 1]
+
+
+def test_speedup_table_orders_arms_by_mode_then_thread_count() -> None:
+    """Within a case the arms run by build (`parallel`, then `presized`), then
+    by thread count as a number, so `:16` follows `:2`."""
+    df = _build_mode_rows({
+        "serial": [100.0], "presized:16": [10.0], "parallel:16": [20.0],
+        "presized:2": [40.0], "parallel:2": [50.0],
+    })
+    assert speedup_table(df)["ds_build_mode"].tolist() == [
+        "parallel:2", "parallel:16", "presized:2", "presized:16",
+    ]
 
 
 def test_speedup_table_reports_speedup_efficiency_and_karp_flatt() -> None:
@@ -223,8 +277,9 @@ def test_speedup_table_reads_hash_trie_parallel_rows_beside_radix() -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         table = speedup_table(df)
-    # The radix row is not a `parallel:N` row left without a baseline.
-    assert not [w for w in caught if "parallel:N row" in str(w.message)]
+    # The radix row is not a threaded row left without a baseline, so nothing
+    # warns; checked by category, so a reworded warning cannot slip past.
+    assert not [w for w in caught if issubclass(w.category, UserWarning)]
     assert table["threads"].tolist() == [2]
     assert table["speedup"].tolist() == pytest.approx([2.0])
     assert speedup_table(df, baseline="radix:8")["speedup"].tolist() == pytest.approx([2.4])
@@ -259,5 +314,5 @@ def test_speedup_table_counts_unpaired_rows_in_a_frame_with_a_repeated_index() -
     unpaired = _build_mode_rows({"parallel:4": [30.0, 31.0]}).assign(relation_path="other.parquet")
     df = pd.concat([paired, unpaired])
     assert not df.index.is_unique
-    with pytest.warns(UserWarning, match="2 parallel:N row"):
+    with pytest.warns(UserWarning, match=r"^2 .* are left out"):
         speedup_table(df)

@@ -125,7 +125,7 @@ kermit-lab render-all  <report.json>... --out-dir DIR [--format ...]
 | `dist`        | violin / box of per-iter samples               | `sample.json` per group |
 | `bar-queries` | bar across `query` for one `(DS, algo)`        | `--ds`, `--algo` matches |
 | `ablation`    | bar of time vs an optimization axis            | `--axis` column present in frame |
-| `speedup`     | build speedup over `serial` vs `threads` (log2 axes, ideal dashed); prints the speedup, efficiency and Karp–Flatt table | `serial` and `parallel:N` `ds_build_mode` rows of one case on `--phase` |
+| `speedup`     | build speedup over `serial` vs `threads` (log2 axes, ideal dashed); prints the speedup, efficiency and Karp–Flatt table | `serial` and `parallel:N` / `presized:N` `ds_build_mode` rows of one case on `--phase` |
 
 `render-all` emits every shape for which the input set has sufficient axes,
 including one ablation figure per optimization axis (`ds_layout_*`,
