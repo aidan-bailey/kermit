@@ -884,8 +884,12 @@ mod tests {
     }
 
     /// Arity 4, a first key holding half the tuples, and three morsels at
-    /// the real morsel size. Each child capacity runs under one layout only
-    /// (a diagonal), since the full product is the slowest test here.
+    /// the real morsel size. Each child capacity runs under one layout only,
+    /// since the full product is the slowest test here. A lazy build leaves
+    /// its children pending, so only the eager layout sizes them; large eager
+    /// `grow` children stay covered by
+    /// `parallel_builds_the_bulk_trie_on_large_and_skewed_inputs` and the
+    /// bulk-vs-incremental wide and skewed test.
     #[test]
     #[cfg_attr(miri, ignore = "tens of thousands of inserts")]
     fn presized_parallel_builds_are_equivalent_on_large_and_skewed_inputs() {
@@ -910,10 +914,10 @@ mod tests {
             vec![("random", random), ("half one key", skewed)]
         };
         check_presized::<SipHashStrategy, NoPruning, EagerExpansion>(&large, 1..=4, &[
-            ChildCapacity::Grow,
+            ChildCapacity::Tuples,
         ]);
         check_presized::<FxHashStrategy, SingletonPruning, LazyExpansion>(&large, 1..=4, &[
-            ChildCapacity::Tuples,
+            ChildCapacity::Grow,
         ]);
     }
 
