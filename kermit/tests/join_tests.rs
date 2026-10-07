@@ -389,6 +389,8 @@ define_multiway_join_test_suite_for_build_mode!(
 // default); these run `incremental`, the build before #107, which builds
 // the identical trie. The same three Layouts as the radix rows.
 // ColumnTrie's provider is `Incremental`, so this one is `HashIncremental`.
+// `incremental` requires `child-capacity=grow` (it cannot size a child before
+// its list is known), so it runs under the default config only.
 define_build_mode_provider!(
     HashIncremental,
     HashTrieBuildMode,
@@ -584,9 +586,11 @@ define_multiway_join_test_suite_for_build_mode!(
 
 // ── BuildMode × Config: sized children under every partitioned build ────
 // Under `child-capacity=tuples` (#107) the partitioned builds size every
-// child as `bulk` does. The last three are the closest-to-paper
-// configuration: root and children sized at a load factor of 0.8, pruned
-// and lazy, under `presized:2`.
+// child as `bulk` does (at build time in the radix row, at expansion in the
+// two lazy rows). The last three are the closest-to-paper configuration:
+// root and children sized at a load factor of 0.8, pruned and lazy, under
+// `presized:2`. `presized:N` requires `root-capacity=tuples`, so only the
+// paper cell (`PaperSizing`) stacks it.
 define_config_provider!(PaperSizing, HashTrieConfig, HashTrieConfig {
     load_factor: LoadFactor::percent(80).unwrap(),
     root_capacity: RootCapacity::Tuples,
