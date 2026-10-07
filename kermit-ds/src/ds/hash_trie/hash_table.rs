@@ -104,32 +104,6 @@ impl<'r, V> VacantBucket<'r, V> {
     }
 }
 
-/// One contiguous run of a table that [`HashTable::map_in_runs`] is
-/// mapping: its buckets, and the mapped table's buckets at the same
-/// positions.
-pub(super) struct MapRun<'a, V, W> {
-    source: &'a mut [Option<Entry<V>>],
-    target: &'a mut [Option<Entry<W>>],
-}
-
-impl<V, W> MapRun<'_, V, W> {
-    /// Moves each value of the run, as `f(value)`, into the same bucket of
-    /// the mapped table, in bucket order.
-    pub(super) fn map(self, mut f: impl FnMut(V) -> W) {
-        for (source, target) in self.source.iter_mut().zip(self.target.iter_mut()) {
-            *target = source.take().map(
-                |Entry {
-                     hash,
-                     value,
-                 }| Entry {
-                    hash,
-                    value: f(value),
-                },
-            );
-        }
-    }
-}
-
 impl<V> BucketRun<'_, V> {
     /// Probes for `hash` from its home bucket to the end of the home's
     /// region: the key's value if it is there, the first empty bucket if it
@@ -162,6 +136,32 @@ impl<V> BucketRun<'_, V> {
                 inserted: &mut *self.inserted,
             }),
         })
+    }
+}
+
+/// One contiguous run of a table that [`HashTable::map_in_runs`] is
+/// mapping: its buckets, and the mapped table's buckets at the same
+/// positions.
+pub(super) struct MapRun<'a, V, W> {
+    source: &'a mut [Option<Entry<V>>],
+    target: &'a mut [Option<Entry<W>>],
+}
+
+impl<V, W> MapRun<'_, V, W> {
+    /// Moves each value of the run, as `f(value)`, into the same bucket of
+    /// the mapped table, in bucket order.
+    pub(super) fn map(self, mut f: impl FnMut(V) -> W) {
+        for (source, target) in self.source.iter_mut().zip(self.target.iter_mut()) {
+            *target = source.take().map(
+                |Entry {
+                     hash,
+                     value,
+                 }| Entry {
+                    hash,
+                    value: f(value),
+                },
+            );
+        }
     }
 }
 
@@ -470,24 +470,25 @@ impl<V> HashTable<V> {
     /// whole table: a table of tuple lists cannot hold the children built
     /// from them in place, since the two value types differ.
     pub(super) fn map<W>(self, mut f: impl FnMut(V) -> W) -> HashTable<W> {
+        // Allocated, not collected: `collect` reuses the source allocation
+        // when `Entry<W>` is no larger than `Entry<V>`, and
+        // `shell_heap_bytes` would count the spare room.
+        let mut buckets = Vec::with_capacity(self.buckets.len());
+        buckets.extend(self.buckets.into_iter().map(|slot| {
+            slot.map(
+                |Entry {
+                     hash,
+                     value,
+                 }| Entry {
+                    hash,
+                    value: f(value),
+                },
+            )
+        }));
         HashTable {
             log2_capacity: self.log2_capacity,
             len: self.len,
-            buckets: self
-                .buckets
-                .into_iter()
-                .map(|slot| {
-                    slot.map(
-                        |Entry {
-                             hash,
-                             value,
-                         }| Entry {
-                            hash,
-                            value: f(value),
-                        },
-                    )
-                })
-                .collect(),
+            buckets,
         }
     }
 
@@ -498,8 +499,8 @@ impl<V> HashTable<V> {
     /// # Panics
     ///
     /// Unless `parts` is a power of two no larger than the capacity, and if
-    /// `map_runs` returns without mapping every run, whose values would
-    /// otherwise be lost.
+    /// `map_runs` returns without mapping every run that holds a value,
+    /// whose values would otherwise be lost.
     pub(super) fn map_in_runs<W>(
         mut self, parts: usize, map_runs: impl FnOnce(Vec<MapRun<'_, V, W>>),
     ) -> HashTable<W> {
@@ -1239,6 +1240,7 @@ mod tests {
             t.entry_or_insert_with(hash, LoadFactor::default(), || k);
             hash = hash.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
         }
+        assert_eq!(t.len(), 40, "every hash distinct");
         t
     }
 
@@ -1292,6 +1294,11 @@ mod tests {
             });
             assert_eq!(in_runs.buckets_len(), serial.buckets_len(), "{parts} runs");
             assert_eq!(in_runs.len(), serial.len(), "{parts} runs");
+            assert_eq!(
+                in_runs.shell_heap_bytes(),
+                serial.shell_heap_bytes(),
+                "{parts} runs"
+            );
             for i in 0..serial.buckets_len() {
                 assert_eq!(
                     in_runs.hash_at(i),
@@ -1305,6 +1312,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `map` allocates exactly its buckets even when the new values are
+    /// smaller, where `collect` would reuse, and over-count, the source's
+    /// allocation.
+    #[test]
+    fn map_to_a_smaller_value_allocates_exactly_its_buckets() {
+        let t = filled();
+        let cap = t.buckets_len();
+        let mapped: HashTable<()> = t.map(|_| ());
+        assert_eq!(
+            mapped.shell_heap_bytes(),
+            cap * std::mem::size_of::<Option<Entry<()>>>()
+        );
     }
 
     /// A run left unmapped would lose its values, so `map_in_runs` refuses.
