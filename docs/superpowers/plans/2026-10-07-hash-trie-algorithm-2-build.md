@@ -64,7 +64,13 @@ the kermit-ds and kermit test macros, Python 3.13 + uv + pytest
     `presized_build_requires_a_presized_root`;
   - the `HashPresized2` build-mode provider in `kermit/tests/join_tests.rs`
     and `kermit-ds/tests/hash_trie_tests.rs`;
-  - `threads_of` reading `presized:N` in kermit-lab.
+  - `threads_of` reading `presized:N` in kermit-lab, `build_of` beside it,
+    and `speedup_table` keying its arms by build mode and thread count;
+  - the row-generic `every_prerequisite_is_reachable`, whose `match row`
+    arms each return `(violating, satisfied, expected: Violation)`.
+
+  Checked against the branch tip `fbe1a60` on 2026-10-07 (not yet on
+  origin/master then); Tasks 8 and 11 are written against that code.
 
   If a name differs, use the landed one and record the difference in the P1
   report. **Do not start Task 1 before Task 0 is done.**
@@ -2100,55 +2106,26 @@ minutes locally, propose which matrix to trim before going on.
         assert_eq!(ok.build.hash_trie, HashTrieBuildMode::Incremental);
     }
   ```
-  and rewrite `every_prerequisite_is_reachable` so each row names its own
-  expected violation:
+  and give the row-generic guard `every_prerequisite_is_reachable` (as landed
+  by dependent-optimisations: each arm of its `match row` returns
+  `(violating, satisfied, expected: Violation)`) the new row's arm, after
+  the `PresizedBuildNeedsPresizedRoot` arm:
   ```rust
-    /// Every row of the prerequisite table can fire and can be satisfied:
-    /// a row whose `violated` arm never matches would be dead.
-    #[test]
-    fn every_prerequisite_is_reachable() {
-        for &row in Prerequisite::ALL {
-            let (violating, satisfied, dependent, requires, actual) = match row {
-                | Prerequisite::PresizedBuildNeedsPresizedRoot => {
-                    let mut violating = DsChoices::default();
-                    violating.build.hash_trie =
-                        HashTrieBuildMode::Presized(Threads::new(2).unwrap());
-                    let mut satisfied = violating;
-                    satisfied.config.root_capacity = RootCapacity::Tuples;
-                    (
-                        violating,
-                        satisfied,
-                        "--ds-build hash-trie=presized:2",
-                        "--ds-config root-capacity=tuples",
-                        "root-capacity=grow (the default)",
-                    )
-                },
                 | Prerequisite::IncrementalBuildNeedsGrowingChildren => {
                     let mut violating = DsChoices::default();
                     violating.build.hash_trie = HashTrieBuildMode::Incremental;
                     violating.config.child_capacity = ChildCapacity::Tuples;
                     let mut satisfied = violating;
                     satisfied.config.child_capacity = ChildCapacity::Grow;
-                    (
-                        violating,
-                        satisfied,
-                        "--ds-build hash-trie=incremental",
-                        "--ds-config child-capacity=grow",
-                        "child-capacity=tuples",
-                    )
+                    (violating, satisfied, Violation {
+                        dependent: "--ds-build hash-trie=incremental".to_owned(),
+                        requires: "--ds-config child-capacity=grow",
+                        actual: "child-capacity=tuples".to_owned(),
+                    })
                 },
-            };
-            let v = row
-                .violated(&violating)
-                .unwrap_or_else(|| panic!("{row:?} never fires"));
-            assert_eq!(v.dependent, dependent, "{row:?}");
-            assert_eq!(v.requires, requires, "{row:?}");
-            assert_eq!(v.actual, actual, "{row:?}");
-            assert!(row.violated(&satisfied).is_none(), "{row:?} fires when satisfied");
-            assert!(row.violated(&DsChoices::default()).is_none(), "{row:?} fires by default");
-        }
-    }
   ```
+  (The match is exhaustive, so until Step 3 adds the variant this arm is a
+  compile error; that is the failing test.)
 
 - [ ] **Step 2: Run them to verify they fail.**
   ```bash
@@ -2655,7 +2632,10 @@ minutes locally, propose which matrix to trim before going on.
             structures = frame["data_structure"] if "data_structure" in frame.columns else [None]
             return " or ".join(repr(m) for m in sorted({baseline_of(s) for s in structures}))
     ```
-    In the loop, compute `identity` first and select the case's baseline by it:
+    The loop as dependent-optimisations landed it selects `base` before it
+    computes `identity`; compute `identity` first and select the case's
+    baseline by it (the rest of the loop, `threaded` / `build_of` arms
+    included, is unchanged):
     ```python
         for key, case in rows.groupby(case_keys, dropna=False, sort=True):
             identity = dict(zip(case_keys, key if isinstance(key, tuple) else (key,)))
@@ -2663,12 +2643,24 @@ minutes locally, propose which matrix to trim before going on.
             if base.empty:
                 continue
     ```
-    The orphan warning reads `f"… have no {baselines_named(orphans)} row in
-    their case …"`, and the final error `f"no case has both a
-    {baselines_named(rows)} row and a parallel:N row on {phase!r}"`.
+    In the orphan warning, `have no {baseline!r} row in their case` becomes
+    `have no {baselines_named(orphans)} row in their case`, and in the final
+    error `no case has both a {baseline!r} row` becomes `no case has both a
+    {baselines_named(rows)} row`; the rest of both messages is unchanged. The
+    existing tests that match `"no 'serial' row"` use TreeTrie rows, so they
+    still pass.
   - `presets.py`, `speedup`: `baseline: str | None = None`, docstring "over the
     baseline build (each structure's default single-threaded build unless
-    ``baseline`` is given)".
+    ``baseline`` is given)". The y-axis label, `f"speedup over {baseline}
+    ({phase})"`, names the defaults when none is given:
+    ```python
+        over = baseline
+        if over is None:
+            structures = table["data_structure"] if "data_structure" in table.columns else [None]
+            over = " / ".join(sorted({BASELINE_BUILD_MODES.get(s, "serial") for s in structures}))
+        ax.set_ylabel(f"speedup over {over} ({phase})")
+    ```
+    (import `BASELINE_BUILD_MODES` from `.analysis` beside `speedup_table`).
 
 - [ ] **Step 4: Run.** Same commands as Step 2. Expected: all pass, the
   contract test included.
