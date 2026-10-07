@@ -270,6 +270,22 @@ def test_threads_column_is_derived_from_the_build_mode(fixture_parallel_build_tr
     assert (df.loc[df["ds_build_mode"] == "parallel:4", "threads"] == 4).all()
 
 
+@pytest.mark.parametrize("apply_defaults", [True, False])
+def test_load_reads_a_hash_tries_old_serial_as_incremental(
+    fixture_serial_build_tree, apply_defaults: bool
+) -> None:
+    """The rename is not a default, so it holds without the back-fill too; a
+    TreeTrie's ``serial`` is a different build and keeps its name."""
+    df = load(
+        fixture_serial_build_tree["paths"],
+        fixture_serial_build_tree["criterion_root"],
+        apply_defaults=apply_defaults,
+    )
+    assert df.set_index("data_structure")["ds_build_mode"].to_dict() == {
+        "HashTrie": "incremental", "TreeTrie": "serial",
+    }
+
+
 def test_threads_of_reads_only_well_formed_threaded_modes() -> None:
     assert threads_of("parallel:8") == 8
     assert threads_of("parallel:1024") == 1024

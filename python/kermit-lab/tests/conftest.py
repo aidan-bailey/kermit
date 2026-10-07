@@ -571,6 +571,44 @@ def fixture_build_mode_tree(tmp_path: Path) -> dict:
 
 
 @pytest.fixture
+def fixture_serial_build_tree(tmp_path: Path) -> dict:
+    """``bench ds`` reports written before #107, each carrying
+    ``ds_build_mode: "serial"``: a HashTrie one, whose per-tuple build was
+    named that, and a TreeTrie one, whose ``serial`` is another build."""
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for data_structure in ("HashTrie", "TreeTrie"):
+        group = f"ds-{data_structure}"
+        function = f"{data_structure}/insertion"
+        samples = [(i + 1, 1000.0 * (i + 1)) for i in range(10)]
+        _write_function_dir(
+            criterion_root, _FunctionSpec(group, function, "time", 1000.0, samples)
+        )
+        axes = {
+            "data_structure": data_structure,
+            "relation_path": "/data/edge.parquet",
+            "tuples": 1000,
+            "arity": 2,
+            "ds_build_mode": "serial",
+        }
+        paths.append(
+            _write_report(
+                reports_dir, group, kind="ds", axes=axes, metadata=[],
+                groups=[(group, function, "time")],
+            )
+        )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }
+
+
+@pytest.fixture
 def fixture_seek_tree(tmp_path: Path) -> dict:
     """TreeTrie reports under two seek strategies, for the seek ablation
     guard (#80).
