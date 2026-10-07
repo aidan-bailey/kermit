@@ -330,7 +330,9 @@ pub trait BuildModeRelation: Relation {
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
+    /// Panics if any tuple's length does not equal `header.arity()`, or if
+    /// `mode` has a prerequisite the default config lacks (`HashTrie`'s
+    /// `presized:N` requires `root-capacity=tuples`).
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: Self::BuildMode, tuples: Vec<Vec<usize>>,
     ) -> Self;

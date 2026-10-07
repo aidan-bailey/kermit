@@ -1,9 +1,9 @@
 //! CLI smoke test for `HashTrie`'s `ds_build_mode` axis (issues #91, #94).
 //! Every `HashTrie` report says which build made its relations: `serial` by
-//! default, `radix:<bits>` or `parallel:<threads>` under `--ds-build
-//! hash-trie=…`. Every mode builds an equivalent trie (the identical one,
-//! except `parallel:N` under `root-capacity=tuples`, whose root keys may sit
-//! in other buckets), so only the axis (and build time) shows which ran.
+//! default, `radix:<bits>`, `parallel:<threads>` or `presized:<threads>`
+//! under `--ds-build hash-trie=…`. Every mode builds an equivalent trie (the
+//! identical one, except `presized:N`, whose root keys may sit in other
+//! buckets), so only the axis (and build time) shows which ran.
 
 mod common;
 
@@ -182,6 +182,8 @@ fn cli_bench_ds_rejects_malformed_hash_trie_modes() {
         "parallel:0",
         "parallel:1025",
         "parallel:x",
+        "presized",
+        "presized:0",
     ] {
         let pair = format!("hash-trie={mode}");
         let (output, _) = bench_ds("hash-trie", &["--ds-build", &pair]);
@@ -189,21 +191,23 @@ fn cli_bench_ds_rejects_malformed_hash_trie_modes() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("--ds-build hash-trie"), "{pair}: {stderr}");
         assert!(
-            stderr.contains("expected serial, radix:<bits> or parallel:<threads>"),
+            stderr.contains(
+                "expected serial, radix:<bits>, parallel:<threads> or presized:<threads>"
+            ),
             "{pair}: {stderr}"
         );
     }
 }
 
-/// Under `root-capacity=tuples`, `parallel:N` is the paper's presized
-/// build. One report records both the config and the mode.
+/// `presized:N` is the paper's presized build; it requires
+/// `root-capacity=tuples`. One report records both.
 #[test]
 fn cli_bench_ds_records_a_presized_parallel_build() {
     let (output, report) = bench_ds("hash-trie", &[
         "--ds-config",
         "root-capacity=tuples",
         "--ds-build",
-        "hash-trie=parallel:2",
+        "hash-trie=presized:2",
     ]);
     assert!(
         output.status.success(),
@@ -211,7 +215,7 @@ fn cli_bench_ds_records_a_presized_parallel_build() {
         String::from_utf8_lossy(&output.stderr)
     );
     let axes = axes_of(&report);
-    assert_eq!(axes["ds_build_mode"], "parallel:2", "{axes}");
+    assert_eq!(axes["ds_build_mode"], "presized:2", "{axes}");
     assert_eq!(axes["ds_config_root_capacity"], "tuples", "{axes}");
 }
 
@@ -233,7 +237,7 @@ fn cli_bench_run_verifies_presized_parallel_builds() {
             "--ds-config",
             "root-capacity=tuples,load-factor=0.8",
             "--ds-build",
-            "hash-trie=parallel:3",
+            "hash-trie=presized:3",
         ]);
         assert!(
             output.status.success(),
@@ -241,10 +245,59 @@ fn cli_bench_run_verifies_presized_parallel_builds() {
             String::from_utf8_lossy(&output.stderr)
         );
         let axes = axes_of(&report);
+        assert_eq!(axes["ds_build_mode"], "presized:3", "{expansion}: {axes}");
         assert_eq!(axes["verified"], true, "{expansion}: {axes}");
         assert_eq!(
             axes["ds_config_root_capacity"], "tuples",
             "{expansion}: {axes}"
         );
     }
+}
+
+/// `presized:N` requires `root-capacity=tuples`: the prerequisite table
+/// (`Prerequisite` in `kermit/src/options.rs`) rejects the pair before
+/// anything is built, on every command, naming the flag to add.
+#[test]
+fn cli_rejects_presized_without_a_presized_root() {
+    const MESSAGE: &str = "--ds-build hash-trie=presized:2 requires --ds-config \
+                           root-capacity=tuples; got root-capacity=grow (the default)";
+    let (output, _) = bench_ds("hash-trie", &["--ds-build", "hash-trie=presized:2"]);
+    assert!(
+        !output.status.success(),
+        "bench ds accepted presized:2 under grow"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(MESSAGE), "bench ds: {stderr}");
+
+    let (output, _) = bench_run("triangle", &[
+        "-i",
+        "all",
+        "-a",
+        "all",
+        "-m",
+        "space",
+        "--ds-config",
+        "root-capacity=grow",
+        "--ds-build",
+        "hash-trie=presized:2",
+    ]);
+    assert!(
+        !output.status.success(),
+        "bench run accepted presized:2 under grow"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(MESSAGE), "bench run: {stderr}");
+
+    let (output, _) = bench_join("hash-trie", "hash-triejoin", &[
+        "-m",
+        "space",
+        "--ds-build",
+        "hash-trie=presized:2",
+    ]);
+    assert!(
+        !output.status.success(),
+        "bench join accepted presized:2 under grow"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(MESSAGE), "bench join: {stderr}");
 }

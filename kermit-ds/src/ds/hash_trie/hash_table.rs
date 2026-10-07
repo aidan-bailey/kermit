@@ -441,8 +441,8 @@ impl<V> HashTable<V> {
     /// Lends `fill` the bucket array as `parts` contiguous [`BucketRun`]s,
     /// each a whole number of `region_buckets`-sized regions (a region is
     /// the whole table when that is smaller), and adds the keys they insert
-    /// to `len` when `fill` returns. The presized parallel build hands one
-    /// run to each worker; scoping the runs here keeps `len` right.
+    /// to `len` when `fill` returns. The `presized:N` build hands one run
+    /// to each worker; scoping the runs here keeps `len` right.
     ///
     /// # Panics
     ///
@@ -1080,8 +1080,8 @@ mod tests {
     /// Filling by runs, then inserting the overflow by ordinary probing,
     /// occupies exactly the buckets that inserting every key one at a time
     /// occupies, with the same total displacement. That is linear probing's
-    /// order independence (Knuth, TAOCP §6.4), and what the presized
-    /// parallel build relies on.
+    /// order independence (Knuth, TAOCP §6.4), and what the `presized:N`
+    /// build relies on.
     #[test]
     fn runs_and_tail_fill_what_sequential_insertion_fills() {
         let lf = LoadFactor::percent(70).unwrap();

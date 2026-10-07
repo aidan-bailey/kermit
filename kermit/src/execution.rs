@@ -1863,7 +1863,7 @@ mod tests {
     /// `parallel:N` from `radix:K`: only kermit-ds's record of parallel
     /// builds (the `test-hooks` feature) shows that the family's mode reached
     /// the build, on every route a relation is built, copies included,
-    /// eager or lazy (#94).
+    /// eager or lazy, and `presized:N` reached the presized fill (#94).
     #[test]
     fn hash_trie_families_build_with_their_parallel_mode() {
         fn check<E: ExpansionPolicy>() {
@@ -1878,67 +1878,74 @@ mod tests {
                 build();
                 kermit_ds::test_hooks::take_hash_trie_parallel_builds()
             };
-            let presized = HashTrieConfig {
+            let presized_root = HashTrieConfig {
                 root_capacity: RootCapacity::Tuples,
                 ..HashTrieConfig::default()
             };
             let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
             // Three threads, not two: a refactor that dropped N on the way to
             // the build would show here as well as in kermit-ds.
-            let three = HashTrieBuildMode::Parallel(kermit_ds::Threads::new(3).unwrap());
-            // Under `root-capacity=tuples`, `parallel:N` must take the
-            // presized path (#94), whose records carry a deferred count.
-            for config in [HashTrieConfig::default(), presized] {
-                let presized = config.root_capacity == RootCapacity::Tuples;
-                for (mode, expected) in [
-                    (HashTrieBuildMode::Serial, vec![]),
-                    (radix, vec![]),
-                    (three, vec![3]),
-                ] {
-                    let structure =
-                        HashTrieFamily::<SipHashStrategy, NoPruning, E>::new(config, mode);
-                    let join = HashHtj::<SipHashStrategy, NoPruning, E>::new(
-                        config,
-                        mode,
-                        Planner::stored(LexicographicOptimiser),
+            let parallel_three = HashTrieBuildMode::Parallel(kermit_ds::Threads::new(3).unwrap());
+            let presized_three = HashTrieBuildMode::Presized(kermit_ds::Threads::new(3).unwrap());
+            // `presized:N` requires `root-capacity=tuples`, so it is only
+            // paired with `presized_root`; `parallel:N` runs the exact merge
+            // build under both configs. Only `presized:N` defers tuples.
+            for (config, mode, expected, deferred) in [
+                (
+                    HashTrieConfig::default(),
+                    HashTrieBuildMode::Serial,
+                    vec![],
+                    false,
+                ),
+                (HashTrieConfig::default(), radix, vec![], false),
+                (HashTrieConfig::default(), parallel_three, vec![3], false),
+                (presized_root, HashTrieBuildMode::Serial, vec![], false),
+                (presized_root, radix, vec![], false),
+                (presized_root, parallel_three, vec![3], false),
+                (presized_root, presized_three, vec![3], true),
+            ] {
+                let structure = HashTrieFamily::<SipHashStrategy, NoPruning, E>::new(config, mode);
+                let join = HashHtj::<SipHashStrategy, NoPruning, E>::new(
+                    config,
+                    mode,
+                    Planner::stored(LexicographicOptimiser),
+                );
+                let routes: [(&str, &dyn Fn()); 6] = [
+                    ("HashTrieFamily::build_relation", &|| {
+                        structure.build_relation(header(), tuples());
+                    }),
+                    ("HashTrieFamily::load_with_tuples", &|| {
+                        structure.load_with_tuples(&path).expect("load");
+                    }),
+                    ("HashHtj::build_relation", &|| {
+                        join.build_relation(header(), tuples());
+                    }),
+                    ("HashHtj::load", &|| {
+                        join.load(&path).expect("load");
+                    }),
+                    ("HashHtj::build_from_tuples", &|| {
+                        join.build_from_tuples(vec![(header(), tuples())]);
+                    }),
+                    ("HashHtj::add_index", &|| {
+                        let mut engine = join.build(Vec::new());
+                        let spec = IndexSpec::new("r", vec![1, 0]);
+                        join.add_index(&mut engine, spec, &header(), &tuples());
+                    }),
+                ];
+                for (route, build) in routes {
+                    let builds = parallel_builds(build);
+                    let threads: Vec<usize> = builds.iter().map(|b| b.threads).collect();
+                    assert_eq!(
+                        threads,
+                        expected,
+                        "{} {route} under {mode:?}, {config:?}",
+                        E::NAME
                     );
-                    let routes: [(&str, &dyn Fn()); 6] = [
-                        ("HashTrieFamily::build_relation", &|| {
-                            structure.build_relation(header(), tuples());
-                        }),
-                        ("HashTrieFamily::load_with_tuples", &|| {
-                            structure.load_with_tuples(&path).expect("load");
-                        }),
-                        ("HashHtj::build_relation", &|| {
-                            join.build_relation(header(), tuples());
-                        }),
-                        ("HashHtj::load", &|| {
-                            join.load(&path).expect("load");
-                        }),
-                        ("HashHtj::build_from_tuples", &|| {
-                            join.build_from_tuples(vec![(header(), tuples())]);
-                        }),
-                        ("HashHtj::add_index", &|| {
-                            let mut engine = join.build(Vec::new());
-                            let spec = IndexSpec::new("r", vec![1, 0]);
-                            join.add_index(&mut engine, spec, &header(), &tuples());
-                        }),
-                    ];
-                    for (route, build) in routes {
-                        let builds = parallel_builds(build);
-                        let threads: Vec<usize> = builds.iter().map(|b| b.threads).collect();
-                        assert_eq!(
-                            threads,
-                            expected,
-                            "{} {route} under {mode:?}, {config:?}",
-                            E::NAME
-                        );
-                        assert!(
-                            builds.iter().all(|b| b.deferred.is_some() == presized),
-                            "{} {route} under {mode:?}, {config:?}: wrong path",
-                            E::NAME
-                        );
-                    }
+                    assert!(
+                        builds.iter().all(|b| b.deferred.is_some() == deferred),
+                        "{} {route} under {mode:?}, {config:?}: wrong path",
+                        E::NAME
+                    );
                 }
             }
         }

@@ -1,7 +1,7 @@
 //! Array-level identity checks for the HashTrie builds (#91, #94, #88).
 //! Every build mode must build the trie the serial build does, the
 //! root-capacity Config must leave every subtrie as it was, and the
-//! presized parallel build must be equivalent (Amendment 2), so the
+//! `presized:N` build must be equivalent (Amendment 2), so the
 //! radix, parallel and root-capacity tests share these assertions and
 //! inputs.
 

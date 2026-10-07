@@ -118,6 +118,67 @@ impl fmt::Display for DsFlag {
     }
 }
 
+/// A `--ds-*` value that is valid only under another: the one table of
+/// prerequisites between optimisation axes
+/// (`docs/specs/optimization-standard.md` § Dependencies between
+/// optimisations). An axis value means one thing under every other axis,
+/// so the only dependency the standard admits is a prerequisite, and the
+/// only answer to a missing one is this usage error: no flag implies
+/// another. A row applies on the structure that has both axes, which the
+/// per-structure checks have already established.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Prerequisite {
+    /// `--ds-build hash-trie=presized:N` cuts its regions from a root sized
+    /// before any tuple arrives, so it needs `--ds-config
+    /// root-capacity=tuples`.
+    PresizedBuildNeedsPresizedRoot,
+}
+
+impl Prerequisite {
+    /// Every variant, in declaration order. Nothing checks this list against
+    /// the enum: a variant missing here is never checked, so add each new
+    /// variant here as well as its `violated` arm and its guard-test fixture.
+    pub(crate) const ALL: &'static [Prerequisite] = &[Self::PresizedBuildNeedsPresizedRoot];
+
+    /// `Some(violation)` when `choices` selects the dependent value without
+    /// its prerequisite.
+    pub(crate) fn violated(self, choices: &DsChoices) -> Option<Violation> {
+        match self {
+            | Self::PresizedBuildNeedsPresizedRoot => match choices.build.hash_trie {
+                | HashTrieBuildMode::Presized(threads)
+                    if choices.config.root_capacity != RootCapacity::Tuples =>
+                {
+                    Some(Violation {
+                        dependent: format!("--ds-build hash-trie=presized:{}", threads.get()),
+                        requires: "--ds-config root-capacity=tuples",
+                        actual: format!(
+                            "root-capacity={}{}",
+                            choices.config.root_capacity.axis_value(),
+                            if choices.config.root_capacity == RootCapacity::default() {
+                                " (the default)"
+                            } else {
+                                ""
+                            }
+                        ),
+                    })
+                },
+                | _ => None,
+            },
+        }
+    }
+}
+
+/// What a violated [`Prerequisite`] reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Violation {
+    /// The flag and value the user gave: `--ds-build hash-trie=presized:8`.
+    pub dependent: String,
+    /// The flag and value it needs: `--ds-config root-capacity=tuples`.
+    pub requires: &'static str,
+    /// What the required axis resolved to: `root-capacity=grow (the default)`.
+    pub actual: String,
+}
+
 /// `ds` as `-i` spells it: `"hash-trie"`.
 fn cli_name(ds: IndexStructure) -> String {
     ds.to_possible_value()
@@ -712,8 +773,9 @@ pub(crate) struct BuildChoices {
     /// `structure=mode` pairs: `tree-trie=serial|parallel:<threads>` (default
     /// `serial`; threads in 1..=1024), `column-trie=bulk|incremental` (default
     /// `bulk`; `incremental` is the build before the one-pass bulk build) and
-    /// `hash-trie=serial|radix:<bits>|parallel:<threads>` (default `serial`;
-    /// bits in 1..=16, threads in 1..=1024).
+    /// `hash-trie=serial|radix:<bits>|parallel:<threads>|presized:<threads>`
+    /// (default `serial`; bits in 1..=16, threads in 1..=1024; `presized`
+    /// requires `--ds-config root-capacity=tuples`).
     /// A pair is only valid when `--indexstructure` selects its structure
     /// (or `all`).
     #[arg(
@@ -891,7 +953,8 @@ impl DsChoices {
     /// # Errors
     ///
     /// Returns an error if a flag was given for a structure that lacks its
-    /// axis, or if `--ds-config` or `--ds-build` is malformed.
+    /// axis, if `--ds-config` or `--ds-build` is malformed, or if a value's
+    /// prerequisite is missing ([`Prerequisite`]).
     pub(crate) fn resolve(
         indexstructure: IndexStructureSelector, layout: &LayoutChoices, config: &ConfigChoices,
         build: &BuildChoices,
@@ -899,14 +962,18 @@ impl DsChoices {
         validate_layout_choices(indexstructure, layout)?;
         validate_config_choices(indexstructure, config)?;
         validate_build_choices(indexstructure, build)?;
-        Ok(Self {
+        let choices = Self {
             hasher: layout.hash_trie_hasher_resolved(),
             pruning: layout.hash_trie_pruning_resolved(),
             expansion: layout.hash_trie_expansion_resolved(),
             seek: layout.sorted_trie_seek_resolved(),
             config: config.hash_trie_config_resolved()?,
             build: build.resolved()?,
-        })
+        };
+        if let Some(v) = Prerequisite::ALL.iter().find_map(|p| p.violated(&choices)) {
+            anyhow::bail!("{} requires {}; got {}", v.dependent, v.requires, v.actual);
+        }
+        Ok(choices)
     }
 }
 
@@ -1512,6 +1579,83 @@ mod tests {
         .is_err());
     }
 
+    /// Every row of the prerequisite table can fire and can be satisfied:
+    /// a row whose `violated` arm never matches would be dead. Each row
+    /// supplies its own fixtures, one `DsChoices` that violates it and one
+    /// that satisfies it, and the `Violation` it must report.
+    #[test]
+    fn every_prerequisite_is_reachable() {
+        for &row in Prerequisite::ALL {
+            let (violating, satisfied, expected) = match row {
+                | Prerequisite::PresizedBuildNeedsPresizedRoot => {
+                    let mut violating = DsChoices::default();
+                    violating.build.hash_trie =
+                        HashTrieBuildMode::Presized(Threads::new(2).unwrap());
+                    let mut satisfied = violating;
+                    satisfied.config.root_capacity = RootCapacity::Tuples;
+                    (violating, satisfied, Violation {
+                        dependent: "--ds-build hash-trie=presized:2".to_owned(),
+                        requires: "--ds-config root-capacity=tuples",
+                        actual: "root-capacity=grow (the default)".to_owned(),
+                    })
+                },
+            };
+            assert_eq!(row.violated(&violating), Some(expected), "{row:?}");
+            assert!(
+                row.violated(&satisfied).is_none(),
+                "{row:?} fires when satisfied"
+            );
+            assert!(
+                row.violated(&DsChoices::default()).is_none(),
+                "{row:?} fires by default"
+            );
+        }
+    }
+
+    /// The check runs last in `resolve`, on the resolved values, and its
+    /// message names the flag to add.
+    #[test]
+    fn ds_choices_resolve_rejects_a_violated_prerequisite() {
+        let err = DsChoices::resolve(
+            IndexStructureSelector::HashTrie,
+            &LayoutChoices::default(),
+            &ConfigChoices::default(),
+            &build(&["hash-trie=presized:2"]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--ds-build hash-trie=presized:2 requires --ds-config root-capacity=tuples; got \
+             root-capacity=grow (the default)"
+        );
+        let explicit = DsChoices::resolve(
+            IndexStructureSelector::All,
+            &LayoutChoices::default(),
+            &ConfigChoices {
+                ds_config: vec!["root-capacity=grow".into()],
+            },
+            &build(&["hash-trie=presized:2"]),
+        )
+        .unwrap_err();
+        assert!(explicit
+            .to_string()
+            .ends_with("got root-capacity=grow (the default)"));
+        let ok = DsChoices::resolve(
+            IndexStructureSelector::All,
+            &LayoutChoices::default(),
+            &ConfigChoices {
+                ds_config: vec!["root-capacity=tuples".into()],
+            },
+            &build(&["hash-trie=presized:2"]),
+        )
+        .unwrap();
+        assert_eq!(
+            ok.build.hash_trie,
+            HashTrieBuildMode::Presized(Threads::new(2).unwrap())
+        );
+        assert_eq!(ok.config.root_capacity, RootCapacity::Tuples);
+    }
+
     /// Every structure's `--ds-build` modes resolve to that structure's mode
     /// alone, whose report label is the mode as typed; every other structure
     /// keeps its default. The table is checked against
@@ -1540,6 +1684,8 @@ mod tests {
                 "radix:16",
                 "parallel:1",
                 "parallel:3",
+                "presized:1",
+                "presized:3",
             ]),
         ];
         let defaults = labels(&BuildModes::default());
