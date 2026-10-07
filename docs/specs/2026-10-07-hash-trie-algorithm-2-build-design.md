@@ -206,7 +206,7 @@ any mode; the expanded table does not (above).
 | `Incremental` | `hash-trie=incremental` | one `insert_at` per tuple, in input order: the build named `serial` before #107, code unchanged | array-identical (rung 3) |
 | `Radix(K)` | `radix:K` | partition; each scratch root by `build`'s grouping step, recording the input position at which each key first appears, then `map` to children; merge in first-appearance order | array-identical, every config |
 | `Parallel(N)` | `parallel:N` | the same on N threads | array-identical, every config |
-| `Presized(N)` | `presized:N` | phase 1: workers push each tuple onto its bucket's list in their regions of the presized root, the deferred tail on the calling thread; phase 2 (arity ≥ 2): workers map their runs' lists to children with `child` | rung 2, as today |
+| `Presized(N)` | `presized:N` | phase 1: workers push each tuple onto its bucket's list in their runs of a presized table of lists (cut into the root's regions), the deferred tail on the calling thread; phase 2 (arity ≥ 2): workers map their runs' lists to children with `child` | rung 2, as today |
 
 - **The presized fold.** Phase 1 replaces both mirrored root steps (about 80 lines that
   copy `insert_at`'s decisions) with one "push onto the list" step for both arities, as
@@ -234,12 +234,14 @@ With n tuples and arity a:
 | | `bulk` | `incremental` |
 |---|---|---|
 | Hashes and tuple moves | n per level, O(n · a) | the same |
-| Allocations | one list per inner bucket holding ≥ 2 tuples, per level, plus the tables | the tables |
+| Allocations | one list per inner bucket, per level (a one-tuple list too, freed again when pruning makes it a `Singleton`), plus the tables | the tables |
 | Transient memory | one grouping array per table (about 32 B a bucket), alive until its `map` finishes | none |
 | Access order | one bucket's subtree at a time | each tuple's whole path, interleaved |
 
 The largest transient array is the root's: about 512 MiB at 2²⁴ buckets, the presized
-root of a 10⁷-tuple relation at load factor 0.7. Umbra avoids the list allocations and
+root of a 10⁷-tuple relation at load factor 0.7. `presized:N` holds the same: its table
+of lists and the mapped node table coexist until its children phase ends, 32 B a bucket
+more than the presized build before #107, and equal to `bulk`'s peak. Umbra avoids the list allocations and
 the transient arrays with its intrusive chain pointer, which needs contiguous tuple
 storage (#101).
 
@@ -254,7 +256,8 @@ storage (#101).
 | Recursion over the populated buckets of M | line 9 | ✓ bucket order |
 | Lazy expansion builds a nested table on first access | §3.3.1 | ✓ one level of `build` per expansion, sized from its list under `tuples` |
 | Singleton pruning | §3.3.1 | ✓ a one-tuple list becomes a `Singleton` directly |
-| Parallel build: morsel-driven radix partitioning, partitions are root regions | §3.3.2 | ✓ as #94 layer 1 |
+| The input partitioned by the first attribute's hash, morsel-driven, before Algorithm 2 runs | §3.3.2 | ✓ as #94 layer 1 |
+| Partitions as contiguous runs of the root's regions, each grouped by one worker, with a deferred tail | not described: §3.3.2 partitions for locality and does not say how Algorithm 2 runs on threads | — kermit's. The thesis must not present it as Umbra's |
 | How the recursion is spread across threads | not described | — kermit's: phase 2 maps each region's lists on a worker. The thesis must not present it as Umbra's |
 | Bucket index = the hash's top bits | §3.3.1 | ✗ the #66 multiplier. #105 asked to revisit it once no table grows; under the parity configuration none does, so the revisit is unblocked (out of scope here) |
 
