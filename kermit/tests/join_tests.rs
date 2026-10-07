@@ -518,8 +518,9 @@ define_multiway_join_test_suite_for_build_mode!(
 
 // ── BuildMode × Config: the presized build ──────────────────────────────
 // `presized:2` requires root-capacity=tuples (#88, `PresizedRoot` above),
-// so it is stacked on the presized aliases only: the paper's partitioned
-// build (#94), which builds an equivalent trie (Amendment 2). The same
+// so it is stacked on the presized aliases only: the presized build (#94;
+// regions and a tail are kermit's, the hash partitioning is §3.3.2's), which
+// builds an equivalent trie (Amendment 2). The same
 // three Layouts, under every optimiser. This is the stacked cell the
 // standard's prerequisite rule asks for.
 define_build_mode_provider!(

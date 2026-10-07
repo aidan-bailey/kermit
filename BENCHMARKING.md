@@ -213,8 +213,8 @@ kl.plot(df, kind="bar", x="ds_layout_hasher", y="time",
 `--ds-build` works the same way for the build modes, as `structure=mode`
 pairs: ColumnTrie's (`column-trie=bulk` by default, `column-trie=incremental`
 for the build before issue #84), HashTrie's (`hash-trie=bulk` by default,
-Algorithm 2; `hash-trie=incremental` for the per-tuple build, `serial` before
-#107, which requires `--ds-config child-capacity=grow`;
+Algorithm 2; `hash-trie=incremental` for the per-tuple build (it requires
+`--ds-config child-capacity=grow`, and was `serial` before #107);
 `hash-trie=radix:<bits>` for the radix-partitioned build of issue #91,
 `hash-trie=parallel:N` for the parallel build of issue #94 and
 `hash-trie=presized:N` for the presized build, which requires

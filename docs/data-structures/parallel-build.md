@@ -147,7 +147,7 @@ HashTrie has two parallel builds, each its own mode:
   trie, bucket for bucket.
 - `presized:N` is the **presized build** (the paper's hash partitioning,
   §3.3.2, and Algorithm 2 into a root presized from the tuple count; the
-  regions, the tail and the per-run recursion are kermit's), described
+  regions, the tail and the parallel recursion are kermit's), described
   [below](#the-presized-build-presizedn). It requires
   `root-capacity=tuples` (#88), since it fills that root, and it builds an
   equivalent trie.
@@ -162,9 +162,9 @@ parallel_build(tuples, N):
     partitions = scatter(tuples, morsels of 16 384)   // step 1, N workers
         // tuple t goes to partition H(t[0]) >> (64 − b), with its position
     lists = dispatch(non-empty partitions):            // step 2, N workers
-        group into a scratch root in input order, then build each key's
-            child from its list (Algorithm 2),
+        group into a scratch root in input order,
             noting (position, hash) whenever it gains a key
+        build each key's child from its list (Algorithm 2)
         take its entries out in that order
         -> [(first position, hash, subtrie or chain)]
     root = empty                                       // step 3, the caller
@@ -275,18 +275,19 @@ presized:N (requires root-capacity=tuples):
                 push_in_run(run k, tuple)        lines 6–7, onto its bucket's list
                     off the region's end → defer
     tail: push each deferred tuple, in input order, by ordinary probing
-    children: each worker maps its run's lists to children (`child`, lines 8–12)
+    children: dispatch over the P runs: map a run's lists to children (`child`, lines 8–12)
 ```
 
 The root step is `push_in_run`: Algorithm 2's lines 6–7 inside a run, the
 same for every arity. Children are built after the tail, by the bulk
-build's `child`, one run of buckets per worker (`HashTable::map_in_runs`);
-the paper does not say how the recursion is spread over threads, so this is
-kermit's. A `BucketRun` (`hash_table.rs`) probes from a key's home bucket
-to the end of the home's region and never wraps or grows. The regions and
-the deferred tail are kermit's mechanisms too: the paper (§3.3.2) partitions
-by hash for locality, and does not say how a probe that crosses a
-partition's end is handled.
+build's `child`, a run of buckets at a time (`HashTable::map_in_runs`), the
+P runs handed to whichever worker is free; the paper does not say how the
+recursion is spread over threads, so this is kermit's. A `BucketRun`
+(`hash_table.rs`) probes from a key's home bucket to the end of the home's
+region and never wraps or grows. The regions and the deferred tail are
+kermit's mechanisms too: the paper (§3.3.2) partitions by hash for
+locality, and does not say how a probe that crosses a partition's end is
+handled.
 
 **Why it is correct** (Amendment 2's equivalence, pinned by
 `presized_parallel_builds_are_*` in `parallel.rs`):
@@ -319,7 +320,7 @@ partition's end is handled.
 | Partition | O(n) hashes and moves | N workers |
 | Group (lines 4–7) | O(n) expected, one push per tuple | N workers |
 | Tail | the deferred tuples, sorted and pushed | the calling thread |
-| Children (lines 8–12) | O(n · a) expected, one run of buckets per worker | N workers |
+| Children (lines 8–12) | O(n · a) expected, a run of buckets per task | N workers |
 
 The deferred share grows with the load factor and shrinks with the region
 size; at 4096-bucket regions it is a small fraction of n. Each region's
@@ -339,10 +340,9 @@ there are 2 regions and 2 runs. Say the keys' home buckets are 3 for key 1,
 | 0 | `[1,d]`@3 | key 1 is found at 3: `[1,d]` is pushed onto its list | 3 |
 
 The tail then pushes `[2,b]` by ordinary probing from its home, bucket 3.
-Bucket 3 is taken and bucket 4 is free, so key 2 lands at 4. Each worker
-then builds the children of the buckets in its run from their lists: run 0's
-worker builds key 1's from `[1,a] [1,d]`, and run 1's builds key 2's and
-key 3's. The bulk build would have put key 1 at 3, key 2 at 4 and key 3 at
+Bucket 3 is taken and bucket 4 is free, so key 2 lands at 4. The children
+are then built a run at a time: run 0's task builds key 1's from
+`[1,a] [1,d]`, and run 1's builds key 2's and key 3's. The bulk build would have put key 1 at 3, key 2 at 4 and key 3 at
 5: the same occupied buckets,
 and here even the same slots. They differ only when a deferred key and a
 later region's key compete for the same bucket.
@@ -357,7 +357,7 @@ The presized curve compares `presized:N` with `bulk`, both under
 `root-capacity=tuples`, at load factors 0.8 (the paper's) and 0.7
 (kermit's default), and measures `iteration` as well, since the presized
 build may place root keys in other buckets. (The 2026-10-06 record below
-compared with the per-tuple build, then `serial`.)
+predates #107: its arms, `serial` included, built per tuple.)
 The protocol is the spec's "Scaling protocol"; its TreeTrie half is
 recorded below.
 
@@ -531,7 +531,7 @@ of each step's 10 builds, then the median over replicates):
 
 ### Scaling result: HashTrie, presized and grown (2026-10-06)
 
-> **2026-10-07 (#107):** `serial` in this record is the per-tuple build, `incremental` since #107. The default build is now `bulk` (Algorithm 2), which these numbers predate.
+> **2026-10-07 (#107):** Every arm in this record built its subtries per tuple, by `insert_at`. `serial` is the per-tuple build, `incremental` since #107, and `parallel:N` and the presized arms (spelled `parallel:N` under `root-capacity=tuples` then) built that way too. Today's modes of those names group first and build children by Algorithm 2, so none of these numbers measures a post-#107 mode.
 
 The presized build against the default config, on the jemalloc binary of #112.
 An earlier HashTrie run on glibc measured the default config alone

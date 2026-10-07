@@ -903,10 +903,10 @@ values and six BuildModes:
 | HashTrie child capacity (grow / tuples) | Config | `ds_config_child_capacity` | §3.2.2, Algorithm 2 line 3 (issue #107) |
 | ColumnTrie build (bulk / incremental) | BuildMode | `ds_build_mode` | (kermit-specific, issue #84) |
 | HashTrie Algorithm 2 build (bulk, the default; incremental is the per-tuple one) | BuildMode | `ds_build_mode` | §3.2.2 (issue #107) |
-| HashTrie radix-partitioned build (bulk / incremental / radix:K) | BuildMode | `ds_build_mode` | §3.3.2 (issue #91) |
+| HashTrie radix-partitioned build (bulk / incremental / radix:K) | BuildMode | `ds_build_mode` | §3.3.2 hash partitioning only; the scratch roots and the merge are kermit's (issue #91) |
 | TreeTrie build (serial / parallel:N) | BuildMode | `ds_build_mode` | §3.3.2 (morsel-driven; issue #94) |
-| HashTrie parallel build (bulk / parallel:N) | BuildMode | `ds_build_mode` | §3.3.2 (morsel-driven, exact; issue #94) |
-| HashTrie presized build (presized:N; requires root-capacity=tuples) | BuildMode | `ds_build_mode` | §3.3.2 hash partitioning, §3.2.2 Algorithm 2; the regions, the tail and the per-run children are kermit's (issues #94, #107, Amendment 3) |
+| HashTrie parallel build (bulk / parallel:N) | BuildMode | `ds_build_mode` | §3.3.2 morsel-driven partitioning; the scratch-root build and the merge are kermit's (exact; issue #94) |
+| HashTrie presized build (presized:N; requires root-capacity=tuples) | BuildMode | `ds_build_mode` | §3.3.2 hash partitioning, §3.2.2 Algorithm 2; the regions, the tail and the run-wise children are kermit's (issues #94, #107, Amendment 3) |
 
 `define_multiway_join_test_suite_for_build_mode!` landed with the first
 BuildMode consumer, ColumnTrie's build, and covers every consumer.

@@ -249,8 +249,9 @@ fn cli_rejects_incremental_with_sized_children() {
     );
 }
 
-/// `presized:N` is the paper's presized build; it requires
-/// `root-capacity=tuples`. One report records both.
+/// `presized:N` is the presized build (regions and a tail are kermit's, the
+/// hash partitioning is §3.3.2's); it requires `root-capacity=tuples`. One
+/// report records both.
 #[test]
 fn cli_bench_ds_records_a_presized_parallel_build() {
     let (output, report) = bench_ds("hash-trie", &[
