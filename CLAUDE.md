@@ -50,7 +50,6 @@ cargo run -- bench run --all -i all -a all                         # Every bench
 cargo run -- bench run watdiv-example -i tree-trie -a leapfrog-triejoin --force  # Force-regenerate a generator-driven benchmark
 cargo run -- bench gen watdiv --scale 100 --tag dev                # Generate WatDiv benchmark on the fly (imperative)
 cargo run -- bench gen lubm --scale 1 --tag dev                    # Generate LUBM benchmark on the fly (imperative)
-MIRIFLAGS="-Zmiri-disable-isolation" cargo miri setup && cargo miri test  # Check for UB (flag matches CI)
 ```
 
 Analysis lives in Python, not Cargo — run these from `python/kermit-lab/`:
@@ -72,7 +71,7 @@ A Nix flake provides the recommended dev shell: `nix develop`. It sets up nightl
 
 ## CI Checks (PR gate)
 
-All of these must pass: `cargo test`, `cargo clippy` (warnings are errors), `cargo fmt --check`, `cargo doc` (doc warnings are errors), `cargo miri test`, and the `python` job runs `kermit-lab`'s pytest with `KERMIT_BIN` set, including the real-binary contract test.
+All of these must pass: `cargo test`, `cargo clippy` (warnings are errors), `cargo fmt --check`, `cargo doc` (doc warnings are errors), and the `python` job runs `kermit-lab`'s pytest with `KERMIT_BIN` set, including the real-binary contract test.
 
 ## Workspace Architecture
 
@@ -292,7 +291,7 @@ Per Priorities item 3, every algorithm and index structure has a dedicated doc.
 
 ## Gotchas
 
-- **Miri isolation**: CI runs miri with `MIRIFLAGS="-Zmiri-disable-isolation"` and excludes `kermit` and `kermit-bench` from miri tests (Criterion and network code). Use the same flag locally or tests may fail differently. Miri also can't model `fchmod`, so tests using `std::fs::set_permissions` or `std::fs::copy` need `#[cfg_attr(miri, ignore = "...")]` (the kermit-rdf driver fs tests are gated this way).
+- **No Miri gate (dropped 2026-10-07)**: the workspace has no `unsafe` code, and Miri never found a bug here, so CI no longer runs it (the `pr.yml` job is gone). The `#[cfg_attr(miri, ignore = …)]` gates and `cfg!(miri)` trims in tests are inert but kept, and `rust-toolchain.toml` still installs the component, so `MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test -p <crate>` (the flake sets the flag) works by hand. Bring the job back with any `unsafe` (e.g. #106's tagged pointers).
 - **git-cliff**: `cliff.toml` configures changelog generation via [git-cliff](https://git-cliff.org/). The release workflow auto-generates changelogs from conventional commits.
 - **NEVER run `cargo fmt` outside `nix develop`**: `rustfmt.toml` uses nightly-only settings, and stable rustfmt rewrites ~30+ files (collapses match patterns, expands single-line fns) instead of just printing warnings. Use `nix develop --command cargo fmt --all`. `cargo +nightly fmt --all` works only with rustup nightly (NixOS hosts typically don't have it).
 - **The flake's nightly must track CI's**: `rust-toolchain.toml` says `channel = "nightly"`, but the flake resolves that through the `rust-overlay` input pinned in `flake.lock`, while the workflows resolve it fresh at job time (`dtolnay/rust-toolchain` with `toolchain: nightly`). A stale lock therefore gives a *different* rustfmt from CI's, and since `rustfmt.toml` sets the unstable `wrap_comments` / `comment_width=80`, comment re-wrapping is exactly where the two diverge — a green local `cargo fmt --all --check` then sits next to a red CI `Check` job. Refresh with `nix flake update rust-overlay` before trusting a local fmt run, and expect a bump to surface new clippy lints too (`RUSTFLAGS=-Dwarnings` makes them errors).
