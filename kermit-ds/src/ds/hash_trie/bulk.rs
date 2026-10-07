@@ -128,6 +128,16 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             }
             return HashTrieNode::Unexpanded(E::Pending::from_tuples(list));
         }
+        Self::build_child_table(depth, arity, list, config)
+    }
+
+    /// The table a bucket's `list` becomes at `depth` when it is built
+    /// (line 11): eagerly by [`child`](Self::child), or on the first probe by
+    /// `HashTrie::resolve` under lazy expansion. One definition, so an
+    /// expanded child is the eager child, size included.
+    pub(super) fn build_child_table(
+        depth: usize, arity: usize, list: TupleList, config: HashTrieConfig,
+    ) -> HashTrieNode<P, E> {
         Self::build(depth, arity, list, INITIAL_LOG2_CAPACITY, config)
     }
 }

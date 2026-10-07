@@ -433,9 +433,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// which keeps insertion order, so it is the eager table at this position,
     /// bucket for bucket: linear probing places keys by insertion order under
     /// the same load factor. Its own children come out `Unexpanded` (or
-    /// `Singleton`), so each expansion builds exactly one level (Figure 6).
-    /// The trace-equivalence tests in `kermit-ds/tests/hash_trie_tests.rs` pin
-    /// this.
+    /// `Singleton`), so each expansion builds exactly one level (§3.3.1;
+    /// SIGMOD 2020 Figure 6). The trace-equivalence tests in
+    /// `kermit-ds/tests/hash_trie_tests.rs` pin this.
     ///
     /// `HashTrieIter::open` is the only caller, so only a probe expands
     /// anything. Every read-only walk (`collect_tuples`, `for_each_tuple`,
@@ -445,16 +445,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     ) -> &'t HashTrieNode<P, E> {
         match node {
             | HashTrieNode::Unexpanded(pending) => pending.expand(|tuples| {
-                // One level of Algorithm 2: the child's own children come out
-                // unexpanded (or pruned), as the paper's lazy expansion builds
-                // a nested table only when a probe first reaches it.
-                Self::build(
-                    depth,
-                    self.header.arity(),
-                    tuples,
-                    INITIAL_LOG2_CAPACITY,
-                    self.config,
-                )
+                Self::build_child_table(depth, self.header.arity(), tuples, self.config)
             }),
             | other => other,
         }
