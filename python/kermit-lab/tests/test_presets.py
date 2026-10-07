@@ -90,6 +90,15 @@ def test_ablation_lets_seek_through_on_end_to_end(fixture_seek_tree) -> None:
         presets.ablation(df, axis="ds_layout_seek", phase="end_to_end")
 
 
+def _as_hash_trie(tree: pd.DataFrame) -> pd.DataFrame:
+    """TreeTrie rows relabelled as HashTrie's: ``presized:N`` is HashTrie's
+    build, which TreeTrie has no counterpart of, and HashTrie's baseline is
+    ``bulk``, not ``serial``."""
+    return tree.assign(
+        data_structure="HashTrie", ds_build_mode=tree["ds_build_mode"].replace("serial", "bulk")
+    )
+
+
 def test_speedup(fixture_parallel_build_tree) -> None:
     df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
     fig = presets.speedup(df)
@@ -106,9 +115,7 @@ def test_speedup_labels_its_axis_with_each_structures_default_baseline(
     divides by ``serial``, HashTrie by ``bulk``, and the label names both."""
     tree = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
     tree = tree[tree["data_structure"] == "TreeTrie"]
-    hash_trie = tree.assign(
-        data_structure="HashTrie",
-        ds_build_mode=tree["ds_build_mode"].replace("serial", "bulk"),
+    hash_trie = _as_hash_trie(tree).assign(
         criterion_group=tree["criterion_group"] + "-hash",
         source_path=tree["source_path"] + "-hash",
     )
@@ -165,38 +172,38 @@ def test_speedup_draws_parallel_and_presized_as_separate_lines(
     """`parallel:N` and `presized:N` arms of one case are two curves over the
     same thread counts, each labelled by its build, never one merged line."""
     df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
-    tree = df[df["data_structure"] == "TreeTrie"]
-    threaded = tree[tree["threads"].notna()]
+    hash_trie = _as_hash_trie(df[df["data_structure"] == "TreeTrie"])
+    threaded = hash_trie[hash_trie["threads"].notna()]
     presized = threaded.assign(
         ds_build_mode="presized:" + threaded["threads"].astype(str),
         criterion_group=threaded["criterion_group"] + "-presized",
     )
-    fig = presets.speedup(pd.concat([tree, presized], ignore_index=True))
+    fig = presets.speedup(pd.concat([hash_trie, presized], ignore_index=True))
     lines = {
         line.get_label(): sorted(line.get_xdata())
         for line in fig.axes[0].get_lines() if line.get_label() != "ideal"
     }
     plt.close(fig)
-    assert lines == {"TreeTrie / parallel": [2, 4], "TreeTrie / presized": [2, 4]}
+    assert lines == {"HashTrie / parallel": [2, 4], "HashTrie / presized": [2, 4]}
 
 
 def test_speedup_title_names_a_lone_presized_build(fixture_parallel_build_tree) -> None:
     """A figure of `presized:N` arms alone says so; parallel-only and mixed
     figures keep the title they always had."""
     df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
-    tree = df[df["data_structure"] == "TreeTrie"]
-    threaded = tree["threads"].notna()
-    presized = tree.assign(
-        ds_build_mode=tree["ds_build_mode"].where(
-            ~threaded, "presized:" + tree["threads"].astype(str)
+    hash_trie = _as_hash_trie(df[df["data_structure"] == "TreeTrie"])
+    threaded = hash_trie["threads"].notna()
+    presized = hash_trie.assign(
+        ds_build_mode=hash_trie["ds_build_mode"].where(
+            ~threaded, "presized:" + hash_trie["threads"].astype(str)
         ),
     )
     mixed = pd.concat([
-        tree,
+        hash_trie,
         presized[threaded].assign(criterion_group=lambda d: d["criterion_group"] + "-presized"),
     ], ignore_index=True)
     titles = {}
-    for name, frame in (("parallel", tree), ("presized", presized), ("mixed", mixed)):
+    for name, frame in (("parallel", hash_trie), ("presized", presized), ("mixed", mixed)):
         fig = presets.speedup(frame)
         titles[name] = fig.get_suptitle()
         plt.close(fig)
