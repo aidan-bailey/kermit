@@ -481,7 +481,12 @@ same for every N. The closest-to-paper configuration is
   [its shuffled-input run](#radix-build-ab-shuffled-input).
   `parallel:N` was measured by #94's scaling run of 2026-10-06 (summarised
   in `docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`,
-  § Motivation); the presized build is not measured yet.
+  § Motivation). The presized build's curve, against the default config on
+  the same jemalloc binary, is in
+  [`parallel-build.md`](./parallel-build.md#scaling-result-hashtrie-presized-and-grown-2026-10-06):
+  where first keys rarely repeat it reaches 2.2–2.7× at `:16`, where the
+  grown build stays at about 1×; where they repeat, tuple-count sizing makes it
+  slower than the grown build.
 
 #### Radix build A/B
 

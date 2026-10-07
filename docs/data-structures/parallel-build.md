@@ -516,6 +516,129 @@ of each step's 10 builds, then the median over replicates):
   The candidate is the sequential assemble step, about 6.3M node pushes onto
   a 268 MB root, which the design predicted for unary inputs.
 
+### Scaling result: HashTrie, presized and grown (2026-10-06)
+
+The presized build against the default config, on the jemalloc binary of #112.
+An earlier HashTrie run on glibc measured the default config alone
+(`kermit-bench-runs/hash-trie-scaling-2026-10-06/`); its numbers are not
+comparable with these, since glibc capped every parallel build.
+
+**Setup.**
+- **Binary:** origin/master b882bd6 (#88, the presized build, #112), default
+  features, so jemalloc 5.3.1 (sha256 `540ef597af70c26b…`).
+- **Host, inputs, statistics and quiet gate:** as for TreeTrie above, with the
+  same 12 relations. Contention was judged on the load besides the benchmark;
+  no invocation overlapped any, so none was re-run.
+- **Curves:** `--ds-config root-capacity=tuples,load-factor=0.8` (the paper's
+  sizing), `root-capacity=tuples,load-factor=0.7`, and
+  `root-capacity=grow,load-factor=0.7` (the default config). Each has arms
+  `serial` and `parallel:{1,2,4,8,16}`, default Layout.
+- **Measurement:** `bench ds -m insertion iteration` at `--sample-size 10
+  --measurement-time 3 --warm-up-time 1`, plus `space` in replicate 1. Five
+  replicates; within each, per relation, the three curves and the arms in an
+  order rotated one place per replicate, so the curves share the host's drift.
+- **Run directory:** `kermit-bench-runs/hash-trie-presized-scaling-2026-10-06/`
+  (README, `env.txt`, `analysis.txt`, `figures/`).
+
+`space` was identical across the arms of every curve for all 12 relations, as
+Amendment 2 requires. Presizing by the tuple count costs heap where first keys
+repeat: 1.54× the grown trie's bytes on `friendof` and 1.3–1.5× on the binary
+relations, but 1.00× on unary 10⁷ and `price`, whose grown roots reach the
+same size.
+
+Insertion, presized at load factor 0.8 (speedup over the same curve's
+`serial`):
+
+| Relation | `serial` | `:1` | `:2` | `:4` | `:8` [95 % CI] | `:16` |
+|---|---|---|---|---|---|---|
+| unary 10³ | 0.021 ms | 0.74 | 0.37 | 0.14 | 0.12 [0.11, 0.12] | 0.06 |
+| unary 10⁴ | 0.228 ms | 0.73 | 0.70 | 0.45 | 0.44 [0.43, 0.45] | 0.42 |
+| unary 10⁵ | 3.3 ms | 0.85 | 1.00 | 1.30 | 1.43 [1.37, 1.49] | 1.61 |
+| unary 10⁶ | 80.5 ms | 1.01 | 1.32 | 1.72 | 2.05 [2.02, 2.08] | 2.14 |
+| unary 10⁷ | 939 ms | 0.99 | 1.47 | 2.12 | 2.46 [2.43, 2.49] | 2.68 |
+| binary 10³ | 0.049 ms | 0.89 | 0.59 | 0.24 | 0.22 [0.21, 0.23] | 0.15 |
+| binary 10⁴ | 0.600 ms | 0.89 | 0.86 | 0.84 | 0.79 [0.78, 0.79] | 0.77 |
+| binary 10⁵ | 9.4 ms | 0.96 | 1.30 | 1.65 | 2.35 [2.09, 2.60] | 2.30 |
+| binary 10⁶ | 206 ms | 1.40 | 1.91 | 2.59 | 3.21 [3.17, 3.26] | 3.67 |
+| binary 10⁷ | 2.78 s | 1.10 | 1.77 | 2.79 | 3.88 [3.71, 4.07] | 4.86 |
+| `price` | 33.9 ms | 0.99 | 1.20 | 1.52 | 1.95 [1.93, 1.96] | 2.22 |
+| `friendof` | 413 ms | 0.89 | 1.22 | 1.64 | 1.92 [1.90, 1.95] | 2.18 |
+
+Insertion, the default config (`grow`, load factor 0.7):
+
+| Relation | `serial` | `:1` | `:2` | `:4` | `:8` [95 % CI] | `:16` |
+|---|---|---|---|---|---|---|
+| unary 10³ | 0.024 ms | 0.36 | 0.22 | 0.13 | 0.10 [0.10, 0.11] | 0.06 |
+| unary 10⁴ | 0.319 ms | 0.38 | 0.43 | 0.32 | 0.32 [0.32, 0.33] | 0.29 |
+| unary 10⁵ | 4.4 ms | 0.48 | 0.58 | 0.68 | 0.72 [0.70, 0.74] | 0.72 |
+| unary 10⁶ | 82.6 ms | 0.56 | 0.75 | 0.90 | 0.99 [0.97, 1.00] | 1.00 |
+| unary 10⁷ | 1.46 s | 0.49 | 0.71 | 0.92 | 1.03 [1.02, 1.03] | 1.07 |
+| binary 10³ | 0.045 ms | 0.68 | 0.42 | 0.26 | 0.20 [0.20, 0.20] | 0.12 |
+| binary 10⁴ | 0.604 ms | 0.75 | 0.84 | 0.72 | 0.80 [0.80, 0.80] | 0.74 |
+| binary 10⁵ | 7.8 ms | 0.82 | 1.12 | 1.57 | 2.15 [2.13, 2.17] | 2.45 |
+| binary 10⁶ | 164 ms | 1.14 | 1.63 | 2.52 | 3.35 [3.31, 3.40] | 4.01 |
+| binary 10⁷ | 2.64 s | 0.97 | 1.62 | 2.77 | 4.08 [4.04, 4.13] | 5.04 |
+| `price` | 40.7 ms | 0.57 | 0.76 | 0.82 | 0.90 [0.89, 0.91] | 0.92 |
+| `friendof` | 295 ms | 0.77 | 1.21 | 2.02 | 2.97 [2.92, 3.02] | 3.90 |
+
+The presized build against the default config in absolute time: the grown
+build's time over the presized build's, both at load factor 0.7 (above 1, the
+presized build is faster; the `serial` column is #88's own effect):
+
+| Relation | `serial` | `:1` | `:8` | `:16` [95 % CI] |
+|---|---|---|---|---|
+| unary 10⁵ | 0.78 | 1.42 | 1.33 | 1.38 [1.36, 1.40] |
+| unary 10⁶ | 1.02 | 1.91 | 2.18 | 2.31 [2.30, 2.33] |
+| unary 10⁷ | 1.54 | 3.12 | 3.73 | 3.89 [3.86, 3.91] |
+| binary 10⁵ | 0.63 | 0.79 | 0.52 | 0.48 [0.47, 0.48] |
+| binary 10⁶ | 0.79 | 0.96 | 0.76 | 0.72 [0.71, 0.72] |
+| binary 10⁷ | 0.97 | 1.07 | 0.89 | 0.91 [0.89, 0.94] |
+| `price` | 1.21 | 2.08 | 2.62 | 2.92 [2.90, 2.94] |
+| `friendof` | 0.72 | 0.85 | 0.48 | 0.40 [0.40, 0.41] |
+
+Iteration (Amendment 2 has it measured, since the presized build may place
+root keys in other buckets), at load factor 0.7:
+
+| Relation | presized `:16` over presized `serial` | grown over presized, `serial` | grown over presized, `:16` |
+|---|---|---|---|
+| unary 10⁶ | 1.03 | 0.72 | 0.74 |
+| unary 10⁷ | 1.05 | 1.00 | 1.07 |
+| binary 10⁶ | 1.17 | 0.69 | 0.80 |
+| binary 10⁷ | 1.20 | 0.76 | 0.92 |
+| `price` | 1.05 | 1.01 | 1.05 |
+| `friendof` | 1.08 | 0.70 | 0.77 |
+
+**Reading.**
+- **The distinct-key ceiling is gone.** Where first keys rarely repeat, the
+  grown build's root merge kept `parallel:N` at or below 1× (unary 10⁷ 1.07×,
+  `price` 0.92× at `:16`; Karp–Flatt 0.93–1.10). Presized, each worker fills
+  its own regions of the root, and the same relations reach 2.2–2.7× at `:16`
+  (Karp–Flatt 0.33–0.43). Unary crosses 1× at 10⁵ from `:4` on, where the
+  grown build crossed only at 10⁷. In absolute time unary 10⁷ builds 3.9×
+  faster than under the default config, `price` 2.9×.
+- **Where first keys repeat, presizing costs more than it gains.** The root is
+  sized by the tuple count (the paper's |L| = n), not by the distinct keys, so
+  `friendof` gets 2²³ buckets for 39,781 keys and binary 10⁶ about ten times
+  the buckets it fills. Presized `serial` is then slower (`friendof` 28 %,
+  binary 10⁶ 21 %), and so is presized `parallel:16` against the grown build's
+  (`friendof` 2.5×, binary 10⁶ 1.4×), whose exact build already parallelises
+  these inputs well. Without repeats it is faster: no rehash, unary 10⁷
+  `serial` 1.54×.
+- **Load factor 0.8 against 0.7:** within 2 % at 10⁶ and 10⁷, where both
+  usually round to the same power-of-two root; at 10⁵, 0.8 halves the root and
+  is 1.7–2.2× faster.
+- **Iteration:** the grown curve is flat across N, as identical tries must be.
+  Presized tries built in parallel iterate up to 1.2× faster than presized
+  `serial` ones on binary relations, plausibly because each worker allocates
+  its regions' subtries together, which the scan then reads in order (not
+  profiled). The sparse presized root also makes iteration 20–30 % slower than
+  over the grown trie where keys repeat; unary 10⁷ and `price` are equal.
+- **Small inputs:** below the crossover, thread starts cost more than the
+  build, as for TreeTrie.
+
+**Threats to validity:** as for TreeTrie, plus that `bench ds` times the build
+alone. A query's `end_to_end` adds the iteration differences above.
+
 ## See also
 
 - [`TreeTrie`](./tree-trie.md), whose Optimizations table lists the mode.
