@@ -1,11 +1,15 @@
 # HashTrie Build by Algorithm 2: Group, Then Recurse, Every Table Sized Once
 
 **Date:** 2026-10-07
-**Status:** Design approved in conversation (2026-10-07); not implemented.
-Implementation waits for the dependent-optimisations design
-(`docs/specs/2026-10-07-dependent-optimisations-design.md`, branch
-`aidanb/dependent-optimisations`) to land, since it uses that design's
-`Prerequisite` table and `presized:N` spelling.
+**Status:** Design approved in conversation (2026-10-07); implemented
+(`docs/superpowers/plans/2026-10-07-hash-trie-algorithm-2-build.md`), on top of
+the dependent-optimisations design
+(`docs/specs/2026-10-07-dependent-optimisations-design.md`), whose
+`Prerequisite` table and `presized:N` spelling it uses. Algorithm 2 lives in
+`bulk.rs`, as designed. The plan settled two things the design left open: the
+run-wise form of `map` is `HashTable::map_in_runs`, and the presized fill is
+given the root's log2 capacity and returns the finished root by value, so no
+root is allocated only to be dropped.
 **Scope:** HashTrie's default build becomes the paper's Algorithm 2: put a list's
 tuples into the buckets of a table, then build each bucket's child from its list.
 A new Config value, `child-capacity=tuples`, sizes every child once from its list.

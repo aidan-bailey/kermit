@@ -167,7 +167,8 @@ tooling relies on them for cross-DS comparison.
   (e.g., `ds_layout_hasher`, `ds_layout_pruning`, `ds_layout_expansion`,
   `ds_layout_seek`, `ds_layout_pointer_encoding`).
 - `ds_config_<flag>` — runtime configuration value on the data structure
-  (e.g., `ds_config_load_factor`).
+  (e.g., `ds_config_load_factor`, `ds_config_root_capacity`,
+  `ds_config_child_capacity`).
 - `ds_build_mode` — construction-time build mode for the data structure
   (single key; value is a `<mode>[:<params>]` string, e.g., `bulk`,
   `radix:8`). Emitted on every report of a structure with a build mode —
@@ -176,12 +177,14 @@ tooling relies on them for cross-DS comparison.
   structure. ColumnTrie values: `bulk` (default) and `incremental`
   (`--ds-build column-trie=incremental`). TreeTrie values: `serial` (default)
   and `parallel:N` (`--ds-build tree-trie=parallel:N`, N threads in
-  1..=1024). HashTrie values: `serial` (default), `radix:<bits>`
-  (`--ds-build hash-trie=radix:<bits>`, bits in 1..=16), `parallel:N`
-  (`--ds-build hash-trie=parallel:N`, N threads in 1..=1024) and
-  `presized:N` (`--ds-build hash-trie=presized:N`, N threads in 1..=1024;
-  valid only with `ds_config_root_capacity: "tuples"`, which the CLI
-  enforces).
+  1..=1024). HashTrie values: `bulk` (default, Algorithm 2), `incremental`
+  (the per-tuple build, `serial` before #107; valid only with
+  `ds_config_child_capacity: "grow"`, which the CLI enforces),
+  `radix:<bits>` (`--ds-build hash-trie=radix:<bits>`, bits in 1..=16),
+  `parallel:N` (`--ds-build hash-trie=parallel:N`, N threads in 1..=1024)
+  and `presized:N` (`--ds-build hash-trie=presized:N`, N threads in
+  1..=1024; valid only with `ds_config_root_capacity: "tuples"`, which the
+  CLI enforces).
 - `algo_layout_<dim>`, `algo_config_<flag>`, `algo_build_mode` — analogous
   prefixes for algorithm-level optimizations (reserved; not yet used).
 
@@ -191,11 +194,15 @@ When pivoting bench reports in kermit-lab, downstream code should:
   pre-standard reports predating this change, back-fill, on HashTrie rows,
   `ds_layout_hasher == "sip"` (the historical hash function),
   `ds_layout_pruning == "off"`, `ds_layout_expansion == "eager"` (every
-  HashTrie before #92) and `ds_config_load_factor == 0.7` (the
-  historical constant), and, on ColumnTrie rows, `ds_build_mode ==
-  "incremental"` (ColumnTrie's build before issue #84; every ColumnTrie
-  report since carries the axis), and, on TreeTrie rows, `ds_build_mode ==
-  "serial"` (TreeTrie's only build before issue #94). `data_structure` has named HashTrie as
+  HashTrie before #92), `ds_config_load_factor == 0.7` (the
+  historical constant), `ds_config_child_capacity == "grow"` and
+  `ds_build_mode == "incremental"` (HashTrie's per-tuple build, the only one
+  before #91); a HashTrie `ds_build_mode` of `serial` reads as `incremental`
+  (`RENAMED_AXIS_VALUES` in kermit-lab's `defaults.py`). On ColumnTrie rows,
+  back-fill `ds_build_mode == "incremental"` (ColumnTrie's build before issue
+  #84; every ColumnTrie report since carries the axis), and, on TreeTrie rows,
+  `ds_build_mode == "serial"` (TreeTrie's only build before issue #94).
+  `data_structure` has named HashTrie as
   `"HashTrie"` in every report since the `axes` map was added, so the
   scoped fill misses no HashTrie row.
 - Group on the relevant prefix to perform ablation analysis.
@@ -252,3 +259,4 @@ bump — the `axes` field is an open map.
 | 3 (no bump) | 2026-10-06 | Every HashTrie report carries `ds_config_root_capacity` (#88): `"grow"` (the default, the only behaviour before) or `"tuples"` (`--ds-config root-capacity=tuples`, the root sized once from the tuple count). Under `grow` every metric measures the same build as before, so `schema_version` stays `3`; kermit-lab back-fills `"grow"` on earlier HashTrie rows. `tuples` changes the root's capacity, so it may move `space` and `iteration` as well as the build metrics. |
 | 3 (no bump) | 2026-10-06 | Every report carries the `allocator` conventional `axes` key and an `allocator` metadata line (#112): the binary now links jemalloc by default (`"jemalloc"`), or the system allocator under `--no-default-features` (`"system"`). Every timing moves with the allocator, but each row records which one it ran on, as with the 2026-10-05 seek-default switch, so `schema_version` stays `3`. kermit-lab back-fills `"system"` on every earlier row (`BINARY_AXIS_DEFAULTS`). Compare allocators within one binary's source, built both ways. |
 | 3 (no bump) | 2026-10-07 | HashTrie's presized parallel build is its own `ds_build_mode` value, `presized:N` (`--ds-build hash-trie=presized:N`, requires `--ds-config root-capacity=tuples`); `parallel:N` is the exact merge build under every root capacity. A new value of an existing key, so `schema_version` stays `3`. Reports written before this change carry `parallel:N` with `ds_config_root_capacity: "tuples"` for the presized build (the 2026-10-06 scaling run); kermit-lab does not rewrite them. |
+| 3 (no bump) | 2026-10-07 | HashTrie builds by Algorithm 2 (#107): its default `ds_build_mode` is `bulk`, and the per-tuple build is `incremental`, spelled `serial` until now; kermit-lab reads old HashTrie `serial` rows as `incremental`, so they stay correctly labelled. Every HashTrie report gains `ds_config_child_capacity` (`grow` by default). The trie each existing config builds is unchanged, so `space` and `iteration` keep their meaning; `insertion` and `end_to_end` of the default and of `radix:K` / `parallel:N` / `presized:N` now time Algorithm 2, so compare them within one binary, as every timing already is. Additive, so `schema_version` stays `3`. |

@@ -4,8 +4,9 @@
 #94). The build is morsel-driven in the sense of Leis et al. (*Morsel-Driven
 Parallelism*, SIGMOD 2014): the input is cut into small morsels, and
 whichever thread is free takes the next unit of work. `parallel:N`
-produces exactly the trie the serial build produces under the same config,
-so only the build-timing metrics (`insertion`, `end_to_end`) can move.
+produces exactly the trie the structure's single-threaded build produces
+(TreeTrie `serial`, HashTrie `bulk`) under the same config, so only the
+build-timing metrics (`insertion`, `end_to_end`) can move.
 HashTrie's presized build (`hash-trie=presized:N`, which requires
 `--ds-config root-capacity=tuples`) builds an equivalent trie whose root
 keys may sit in other buckets, so `iteration` is measured for it too
@@ -15,7 +16,8 @@ keys may sit in other buckets, so `iteration` is measured for it too
 |---|---|---|---|
 | `TreeTrieBuildMode::Serial` | `tree-trie=serial` | `"serial"` | ✓ |
 | `TreeTrieBuildMode::Parallel(n)` | `tree-trie=parallel:N` | `"parallel:N"` | |
-| `HashTrieBuildMode::Serial` | `hash-trie=serial` | `"serial"` | ✓ |
+| `HashTrieBuildMode::Bulk` | `hash-trie=bulk` | `"bulk"` | ✓ |
+| `HashTrieBuildMode::Incremental` | `hash-trie=incremental` | `"incremental"` | |
 | `HashTrieBuildMode::Parallel(n)` | `hash-trie=parallel:N` | `"parallel:N"` | |
 | `HashTrieBuildMode::Presized(n)` | `hash-trie=presized:N` (requires `root-capacity=tuples`) | `"presized:N"` | |
 
@@ -141,12 +143,14 @@ HashTrie has two parallel builds, each its own mode:
 
 - `parallel:N` is the **exact build**: the radix build of #91
   ([`hash-trie.md`](./hash-trie.md#build-modes), `radix.rs`) with its first
-  two steps on N threads, under every root capacity. It builds the serial
+  two steps on N threads, under every root capacity. It builds the bulk
   trie, bucket for bucket.
-- `presized:N` is the **presized build** (the paper's, §3.3.2), described
+- `presized:N` is the **presized build** (the paper's hash partitioning,
+  §3.3.2, and Algorithm 2 into a root presized from the tuple count; the
+  regions, the tail and the per-run recursion are kermit's), described
   [below](#the-presized-build-presizedn). It requires
-  `root-capacity=tuples` (#88), since it fills a root presized from the
-  tuple count, and it builds an equivalent trie.
+  `root-capacity=tuples` (#88), since it fills that root, and it builds an
+  equivalent trie.
 
 ### The three steps (exact build)
 
@@ -158,7 +162,8 @@ parallel_build(tuples, N):
     partitions = scatter(tuples, morsels of 16 384)   // step 1, N workers
         // tuple t goes to partition H(t[0]) >> (64 − b), with its position
     lists = dispatch(non-empty partitions):            // step 2, N workers
-        build a scratch root by insert_at, in input order,
+        group into a scratch root in input order, then build each key's
+            child from its list (Algorithm 2),
             noting (position, hash) whenever it gains a key
         take its entries out in that order
         -> [(first position, hash, subtrie or chain)]
@@ -172,7 +177,7 @@ parallel_build(tuples, N):
   poorly), so there are no splitters to sample, and each tuple keeps its
   input position.
 - **Build.** A worker builds a whole partition into a scratch root of the
-  real root's kind, by the serial build's own `insert_at`, then moves the
+  real root's kind, by Algorithm 2, as the bulk build does, then moves the
   scratch root's entries out in the order their keys arrived.
 - **Merge.** The calling thread inserts every entry into the real root in
   the order its key first appeared in the input. Each list is already in
@@ -181,21 +186,21 @@ parallel_build(tuples, N):
 
 ### Invariant (exact build)
 
-Every `parallel:N` build is identical to the serial build of the same
+Every `parallel:N` build is identical to the bulk build of the same
 tuples, bucket for bucket and capacity for capacity, under every Layout,
-load factor and root capacity. `parallel_builds_the_serial_trie_*` in
-`parallel.rs` pins it
-for N ∈ {1, 2, 3, 8}, with morsels of 7 tuples and of 16 384 (three
+load factor, root capacity and child capacity.
+`parallel_builds_the_bulk_trie_*` in `parallel.rs` pins it for
+N ∈ {1, 2, 3, 8}, with morsels of 7 tuples and of 16 384 (three
 morsels, two of them full, in `…_on_large_and_skewed_inputs`).
 
 - A table's final layout depends only on the order in which its *new* keys
   arrive, because `HashTable::entry_or_insert_with` returns an existing
   entry before its resize check.
 - `scatter` keeps each partition in input order, so each root key's subtrie
-  is built by the serial build's `insert_at` calls, on the same tuples in
-  the same order. That covers every `Singleton` and unprune, every chain,
-  every capacity and, under lazy expansion, every pending list.
-- The merge inserts the root's keys in first-appearance order, the serial
+  is built from the same list, the same tuples in the same order. That
+  covers every `Singleton`, every chain, every capacity and, under lazy
+  expansion, every pending list.
+- The merge inserts the root's keys in first-appearance order, the bulk
   order. Equal 64-bit hashes share a root entry and also a partition,
   because the partition is a function of the hash.
 
@@ -227,11 +232,12 @@ root. Thread starts are as for TreeTrie, 2·(N − 1) per build. Partition
 sizes follow the hash, so balance comes from P > N rather than from
 splitters, and a dominant first key still fills one partition.
 
-`parallel:1` against `serial` is what partitioning costs on one thread, as
-`radix:2` measures it: #91 found the radix build slower than `serial` on
-inputs grouped by their first attribute, and faster only on shuffled ones.
-There is no sort saving to offset it, unlike TreeTrie's, so expect
-`parallel:1` to be slower than `serial` on grouped inputs.
+`parallel:1` against `bulk` is what partitioning costs on one thread, as
+`radix:2` measures it: #91 found the radix build slower than the per-tuple
+build (then called `serial`, now `incremental`) on inputs grouped by their
+first attribute, and faster only on shuffled ones. There is no sort saving
+to offset it, unlike TreeTrie's, so expect `parallel:1` to be slower than
+`bulk` on grouped inputs. #91's measurement predates `bulk`.
 
 ### Worked micro-example (exact build)
 
@@ -245,8 +251,8 @@ those bits are `10` for 3 and 1, and `01` for 2:
 | 2 (`10`) | `[3,1]`@0, `[1,2]`@1, `[1,1]`@3 | 3, 1 | (0, h(3), {1}), (1, h(1), {2, 1}) |
 
 The merge takes positions 0, 1 and 2 in turn, inserting 3, then 1, then 2:
-the order in which the serial build first meets them, so the root's buckets
-are the serial root's.
+the order in which the bulk build first meets them, so the root's buckets
+are the bulk root's.
 
 ### The presized build (presized:N)
 
@@ -266,20 +272,21 @@ presized:N (requires root-capacity=tuples):
     root.with_runs(P, REGION_BUCKETS, |runs|               // step 2, N workers
         dispatch over (partition k, run k):
             for each tuple, in input order:
-                insert_at_{leaf,inner}_root_in_run(run k, tuple)
-                    found or inserted → below the root, insert_at as usual
-                    probe reached its region's end → defer (position, tuple))
-    sort the deferred tuples by position                  // step 3, the caller
-    insert each by the ordinary insert_at
+                push_in_run(run k, tuple)        lines 6–7, onto its bucket's list
+                    off the region's end → defer
+    tail: push each deferred tuple, in input order, by ordinary probing
+    children: each worker maps its run's lists to children (`child`, lines 8–12)
 ```
 
-The root step (`insert_at_leaf_root_in_run` / `insert_at_inner_root_in_run`
-in `implementation.rs`) is `insert_at`'s depth-0 arm, decision for
-decision, probing one `BucketRun` instead of the whole table. A `BucketRun`
-(`hash_table.rs`) probes from a key's home bucket to the end of the home's
-region and never wraps or grows. The deferred tail is kermit's mechanism:
-the paper does not say how a probe that crosses a partition's end is
-handled.
+The root step is `push_in_run`: Algorithm 2's lines 6–7 inside a run, the
+same for every arity. Children are built after the tail, by the bulk
+build's `child`, one run of buckets per worker (`HashTable::map_in_runs`);
+the paper does not say how the recursion is spread over threads, so this is
+kermit's. A `BucketRun` (`hash_table.rs`) probes from a key's home bucket
+to the end of the home's region and never wraps or grows. The regions and
+the deferred tail are kermit's mechanisms too: the paper (§3.3.2) partitions
+by hash for locality, and does not say how a probe that crosses a
+partition's end is handled.
 
 **Why it is correct** (Amendment 2's equivalence, pinned by
 `presized_parallel_builds_are_*` in `parallel.rs`):
@@ -287,15 +294,14 @@ handled.
 - **Linear probing stays valid.** Every bucket between a key's home and its
   slot is occupied: inside a region by construction, and for a deferred key
   because the tail probes normally from its home. Nothing is deleted.
-- **Subtries are serial's.** A key's tuples reach `insert_at` in input
-  order, all inside its region or all in the tail: once a key is deferred
-  it cannot be found in its region, so its later tuples are deferred too.
-  Every subtrie, chain, singleton and pending list is built by the serial
-  build's calls, in its order.
-- **The root matches serial in everything but slots.** Serial presizes the
-  root the same way and inserts its keys in input order without growing.
-  The parallel root equals sequential insertion in another order (each
-  region's keys, then the deferred keys), so by linear probing's order
+- **Subtries are bulk's.** A key's tuples reach its bucket's list in input
+  order, all inside its region or all in the tail, so its child is built
+  from the list `bulk` builds it from: once a key is deferred it cannot be
+  found in its region, so its later tuples are deferred too.
+- **The root matches bulk's in everything but slots.** The bulk build
+  presizes the root the same way and pushes its keys in input order without
+  growing. The parallel root equals sequential insertion in another order
+  (each region's keys, then the deferred keys), so by linear probing's order
   independence (Knuth, TAOCP §6.4) it occupies the same buckets with the
   same total displacement. Keys sit in other slots only where a deferred
   key and a later region's key compete for a bucket.
@@ -311,8 +317,9 @@ handled.
 |---|---|---|
 | Checks, sizing | O(n) | the calling thread |
 | Partition | O(n) hashes and moves | N workers |
-| Region inserts, and every subtrie below | O(n · a) expected, one insert per tuple | N workers |
-| Tail | the deferred tuples, sorted and inserted | the calling thread |
+| Group (lines 4–7) | O(n) expected, one push per tuple | N workers |
+| Tail | the deferred tuples, sorted and pushed | the calling thread |
+| Children (lines 8–12) | O(n · a) expected, one run of buckets per worker | N workers |
 
 The deferred share grows with the load factor and shrinks with the region
 size; at 4096-bucket regions it is a small fraction of n. Each region's
@@ -326,14 +333,17 @@ there are 2 regions and 2 runs. Say the keys' home buckets are 3 for key 1,
 
 | Run | Tuples (position) | Step | Bucket |
 |---|---|---|---|
-| 0 (buckets 0–3) | `[1,a]`@0 | key 1 is new: its child table, then `a` | 3 |
+| 0 (buckets 0–3) | `[1,a]`@0 | key 1 is new: its list starts with `[1,a]` | 3 |
 | 0 | `[2,b]`@1 | key 2 probes 3 (taken), and 4 is past its region's end | deferred |
 | 1 (buckets 4–7) | `[3,c]`@2 | key 3 is new | 5 |
-| 0 | `[1,d]`@3 | key 1 is found at 3: `d` goes into its child | 3 |
+| 0 | `[1,d]`@3 | key 1 is found at 3: `[1,d]` is pushed onto its list | 3 |
 
-The tail then inserts `[2,b]` by ordinary probing from its home, bucket 3.
-Bucket 3 is taken and bucket 4 is free, so key 2 lands at 4. Serial would
-have put key 1 at 3, key 2 at 4 and key 3 at 5: the same occupied buckets,
+The tail then pushes `[2,b]` by ordinary probing from its home, bucket 3.
+Bucket 3 is taken and bucket 4 is free, so key 2 lands at 4. Each worker
+then builds the children of the buckets in its run from their lists: run 0's
+worker builds key 1's from `[1,a] [1,d]`, and run 1's builds key 2's and
+key 3's. The bulk build would have put key 1 at 3, key 2 at 4 and key 3 at
+5: the same occupied buckets,
 and here even the same slots. They differ only when a deferred key and a
 later region's key compete for the same bucket.
 
@@ -343,10 +353,11 @@ See `BENCHMARKING.md`, "Scaling: measuring a parallel build", and kermit-lab's
 `kl.speedup_table` / `kermit-lab speedup`. Compare build modes within one
 binary. For HashTrie, `kl.speedup_table(df, baseline="radix:K")`
 measures the parallel build against the single-threaded partitioned one.
-The presized curve compares `presized:N` with `serial`, both under
+The presized curve compares `presized:N` with `bulk`, both under
 `root-capacity=tuples`, at load factors 0.8 (the paper's) and 0.7
 (kermit's default), and measures `iteration` as well, since the presized
-build may place root keys in other buckets.
+build may place root keys in other buckets. (The 2026-10-06 record below
+compared with the per-tuple build, then `serial`.)
 The protocol is the spec's "Scaling protocol"; its TreeTrie half is
 recorded below.
 
@@ -519,6 +530,8 @@ of each step's 10 builds, then the median over replicates):
   a 268 MB root, which the design predicted for unary inputs.
 
 ### Scaling result: HashTrie, presized and grown (2026-10-06)
+
+> **2026-10-07 (#107):** `serial` in this record is the per-tuple build, `incremental` since #107. The default build is now `bulk` (Algorithm 2), which these numbers predate.
 
 The presized build against the default config, on the jemalloc binary of #112.
 An earlier HashTrie run on glibc measured the default config alone

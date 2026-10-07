@@ -212,17 +212,20 @@ kl.plot(df, kind="bar", x="ds_layout_hasher", y="time",
 
 `--ds-build` works the same way for the build modes, as `structure=mode`
 pairs: ColumnTrie's (`column-trie=bulk` by default, `column-trie=incremental`
-for the build before issue #84), HashTrie's (`hash-trie=serial` by default,
+for the build before issue #84), HashTrie's (`hash-trie=bulk` by default,
+Algorithm 2; `hash-trie=incremental` for the per-tuple build, `serial` before
+#107, which requires `--ds-config child-capacity=grow`;
 `hash-trie=radix:<bits>` for the radix-partitioned build of issue #91,
 `hash-trie=parallel:N` for the parallel build of issue #94 and
-`hash-trie=presized:N` for the paper's presized build, which requires
+`hash-trie=presized:N` for the presized build, which requires
 `--ds-config root-capacity=tuples`) and
 TreeTrie's (`tree-trie=serial` by default, `tree-trie=parallel:N` for the
 parallel build of issue #94; see "Scaling" below). For thesis figures,
 compare modes **within one binary** — e.g.
 `--ds-build column-trie=incremental` against the default.
-kermit-lab back-fills `incremental` on pre-#84 ColumnTrie reports, and
-`serial` on pre-#91 HashTrie and pre-#94 TreeTrie reports, but those
+kermit-lab back-fills `incremental` on pre-#84 ColumnTrie reports and on
+HashTrie rows without the axis (and reads a HashTrie `serial` as
+`incremental`), and `serial` on pre-#94 TreeTrie reports, but those
 rows are for continuity only: reports carry no binary identity, so a
 difference between an old row and a new one mixes the build mode with every
 other change between the two binaries. A build mode only changes the build,
@@ -283,13 +286,15 @@ walkthrough is in
 
 `--ds-build tree-trie=parallel:N` builds a `TreeTrie` on N threads, and
 `hash-trie=parallel:N` a `HashTrie` (#94). The trie is identical to the
-serial build's, so only `insertion` and `end_to_end` can
+structure's single-threaded build's (TreeTrie `serial`, HashTrie `bulk`), so
+only `insertion` and `end_to_end` can
 move. HashTrie's presized build is `--ds-build hash-trie=presized:N`, which
 requires `--ds-config root-capacity=tuples`; it builds an equivalent, not
 identical, trie, so `iteration` is measured for it too, and its speedup
-baseline is `serial` under the same `root-capacity=tuples` config.
+baseline is `bulk` under the same `root-capacity=tuples` config.
 Run one arm per thread count within one binary, each with its own
-`--name`, then plot the speedup over `serial`:
+`--name`, then plot the speedup over the single-threaded build
+(`kl.speedup_table` picks TreeTrie `serial`, HashTrie `bulk`):
 
 ```bash
 for mode in serial parallel:1 parallel:2 parallel:4 parallel:8 parallel:16; do
@@ -314,7 +319,7 @@ each arm has two.
 saving (P smaller sorts take about n·log₂P fewer comparisons than one big
 one), so `parallel:1` can come out ahead. The same saving can make a speedup
 superlinear (above N), which makes the Karp–Flatt fraction negative.
-For HashTrie, `parallel:1` against `serial` is the cost of partitioning
+For HashTrie, `parallel:1` against `bulk` is the cost of partitioning
 with no sort saving, so it is normally above 1; `radix:2` is the same
 partitioning, run serially. `kl.speedup_table(df, baseline="radix:K")`
 measures the threads alone. Expect the Karp–Flatt fraction to be highest
@@ -333,7 +338,7 @@ provides five helpers:
 | --- | --- | --- |
 | `summary` | `summary(df, *, rows, cols, value="mean_ns")` | Pivot many runs into a readable 2-D table (e.g. DS × size). |
 | `compare` | `compare(df, *, baseline, target, group_by="data_structure")` | Pair every baseline row with its target and compute speedup per workload. |
-| `speedup_table` | `speedup_table(df, *, phase="insertion", baseline="serial")` | Speedup, efficiency and Karp–Flatt fraction of every `parallel:N` / `presized:N` build over `serial`, with CIs ("Scaling" above). |
+| `speedup_table` | `speedup_table(df, *, phase="insertion", baseline=None)` | Speedup, efficiency and Karp–Flatt fraction of every `parallel:N` / `presized:N` build over each structure's default build (TreeTrie `serial`, HashTrie `bulk`), with CIs ("Scaling" above). |
 | `bootstrap_ratio_ci` | `bootstrap_ratio_ci(a, b, *, ci=0.95, rng=…)` | Percentile-bootstrap CI for `mean(a)/mean(b)` from per-iter samples — "is this speedup real?" |
 | `mannwhitney_u` | `mannwhitney_u(a, b)` → `(U, p)` | Non-parametric test that two sample distributions differ; pair with a violin plot. |
 
