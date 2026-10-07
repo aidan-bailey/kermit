@@ -175,6 +175,8 @@ impl Prerequisite {
                 | HashTrieBuildMode::Incremental
                     if choices.config.child_capacity != ChildCapacity::Grow =>
                 {
+                    // `grow`, the required value, is the default, so the actual
+                    // value here is never the default.
                     Some(Violation {
                         dependent: "--ds-build hash-trie=incremental".to_owned(),
                         requires: "--ds-config child-capacity=grow",
@@ -1771,6 +1773,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok.build.hash_trie, HashTrieBuildMode::Incremental);
+        // The row fires only under `incremental`.
+        let bulk = DsChoices::resolve(
+            IndexStructureSelector::HashTrie,
+            &LayoutChoices::default(),
+            &ConfigChoices {
+                ds_config: vec!["child-capacity=tuples".into()],
+            },
+            &BuildChoices::default(),
+        )
+        .unwrap();
+        assert_eq!(bulk.config.child_capacity, ChildCapacity::Tuples);
     }
 
     /// Every structure's `--ds-build` modes resolve to that structure's mode
