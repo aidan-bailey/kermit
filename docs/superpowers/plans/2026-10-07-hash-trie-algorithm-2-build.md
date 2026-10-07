@@ -3075,6 +3075,12 @@ paper.
   if anything came in, re-run Task 13's gate (Step 1).
 - [ ] **Step 2:** `git -C $WT push origin HEAD:master` (the user's established
   path for loom work; never force).
+- [ ] **Step 3a (user decision, 2026-10-07):** on #105, reword the Build table's
+  parallel-build row so it credits the paper only with hash partitioning
+  (§3.3.2): "Input partitioned by the first attribute's hash, morsel-driven
+  (§3.3.2) ✓; partitions as contiguous root regions filled in parallel, and the
+  deferred tail, are kermit's". The 2026-10-06 presized spec carries a dated
+  note to the same effect (d0a6df6's sibling commit).
 - [ ] **Step 3:** On #107, comment the landing SHA, the closest-to-paper
   configuration and the smoke ratios (labelled as a smoke run). On #105, tick
   "each table sized once" (with the configuration) and "Algorithm 2", and mark

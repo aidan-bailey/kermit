@@ -189,6 +189,7 @@ reach parity even on the build row.
 |---|---|---|
 | Root sized once from the tuple count, never grown | Algorithm 2, line 3 | ✓ only at `load-factor=0.8`: the paper's 1.25·\|L\| is a 0.8 load factor, and kermit's default 0.7 gives a root up to twice the paper's |
 | Input partitioned so that partitions are contiguous root regions, filled in parallel | §3.3.2 | ✓ in substance. kermit partitions in one morsel-driven `scatter` pass, the paper in Balkesen's two-pass radix partitioning; both partition by hash bits |
+| *Note, 2026-10-07 (#107 review).* | | The row above claims more than the paper says. VLDB 2020 §3.3.2 partitions the input by the first join attribute's hash, for locality, before Algorithm 2 runs; it does not describe partitions as contiguous root regions or how they are filled on threads. Only the hash partitioning is the paper's (✓); the regions, the parallel fill and the deferred tail are kermit's (—). |
 | One insert per tuple at the root | Algorithm 2 | ✓ |
 | Children built by `insert_at`, descending at once, growing from 4 | Algorithm 2 puts tuples into the root's bucket lists, then builds each child once, sized from its list | ✗ deferred to #107 (layer 2). The region primitive is an entry handle, so under #107 a bucket holds a list where it holds a child today |
 | Regions found from hash × a per-capacity multiplier | The hash's raw top bits | ✗ the #66 departure; #105 asks for a revisit once every table is presized |
