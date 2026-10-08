@@ -79,8 +79,11 @@ pub fn write_metadata_block<W: Write>(
 /// Schema version for the JSON report. Bump on any breaking change to
 /// [`BenchReport`] field names or value types, or to what a metric
 /// measures. 3: `iteration` / `end_to_end` time a streamed join whose rows
-/// are counted, never materialised (issue #65).
-pub const REPORT_SCHEMA_VERSION: u32 = 3;
+/// are counted, never materialised (issue #65). 4: every structure builds
+/// from one flat tuple buffer, so `insertion`, `copies` and `end_to_end` time
+/// a different input path and sort, and HashTrie's `space` counts row ids
+/// into that buffer instead of a `Vec` per tuple (issue #111).
+pub const REPORT_SCHEMA_VERSION: u32 = 4;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).
@@ -370,7 +373,7 @@ mod tests {
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(json.is_array());
-        assert_eq!(json[0]["schema_version"], 3);
+        assert_eq!(json[0]["schema_version"], 4);
         assert_eq!(json[0]["kind"], "ds");
         assert_eq!(json[0]["metadata"][0]["label"], "data structure");
         assert_eq!(json[0]["metadata"][0]["value"], "TreeTrie");

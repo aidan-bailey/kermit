@@ -39,9 +39,10 @@ def test_scaling_preset_subcommand(fixture_tree, tmp_path: Path) -> None:
     assert out.exists()
 
 
-def test_mixed_schema_reports_exit_with_code_4(tmp_path: Path) -> None:
+@pytest.mark.parametrize("versions", [(2, 3), (3, 4)])
+def test_mixed_schema_reports_exit_with_code_4(tmp_path: Path, versions: tuple[int, int]) -> None:
     paths = []
-    for version in (2, 3):
+    for version in versions:
         p = tmp_path / f"v{version}.json"
         p.write_text(json.dumps([{"schema_version": version, "kind": "run",
                                   "metadata": [], "axes": {}, "criterion_groups": []}]))

@@ -166,12 +166,13 @@ CI runs it on every pull request.
 
 ## Schema
 
-`kermit-lab` parses `BenchReport` JSON up to v3 (see
+`kermit-lab` parses `BenchReport` JSON up to v4 (see
 `docs/specs/bench-report-schema.md`). The loader refuses to parse unknown
-major versions. It also refuses to mix reports from both sides of v3 in one
-load, because `iteration` and `end_to_end` changed meaning there; pass
+major versions. It also refuses to mix reports from both sides of v3, or of
+v4, in one load: at v3 `iteration` and `end_to_end` changed meaning, and at
+v4 `insertion`, `copies`, `end_to_end` and HashTrie's `space` did (#111). Pass
 `allow_mixed_schema=True` to `kl.load` / `kl.load_samples` to override, for
-example to compare `space` only. Fixed axis columns (`data_structure`, `algorithm`, `query`,
+example to compare `space` across v3. Fixed axis columns (`data_structure`, `algorithm`, `query`,
 `tuples`, etc.) are listed in `kermit_lab/frame.py`; optimization axes
 (`ds_layout_*`, `ds_config_*`, `ds_build_mode`) are discovered dynamically
 from the reports and added as additional DataFrame columns. Use

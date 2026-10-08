@@ -176,10 +176,27 @@ def test_allow_mixed_schema_loads_both_sides(tmp_path: Path) -> None:
 
 
 def test_single_sided_loads_are_unaffected(tmp_path: Path) -> None:
-    v2 = [_versioned_report(tmp_path / f"a{i}.json", 2) for i in range(2)]
-    v3 = [_versioned_report(tmp_path / f"b{i}.json", 3) for i in range(2)]
-    assert len(load_reports(v2)) == 2
-    assert len(load_reports(v3)) == 2
+    for version in (2, 3, 4):
+        same = [_versioned_report(tmp_path / f"v{version}_{i}.json", version) for i in range(2)]
+        assert len(load_reports(same)) == 2
+
+
+def test_refuses_to_mix_reports_across_the_flat_tuples_boundary(tmp_path: Path) -> None:
+    old = _versioned_report(tmp_path / "v3.json", 3)
+    new = _versioned_report(tmp_path / "v4.json", 4)
+    with pytest.raises(SchemaError, match="refusing to mix schema_version 3"):
+        load_reports([old, new])
+    with pytest.raises(SchemaError, match="flat tuple buffer"):
+        load_reports([new, old])
+    reports = load_reports([old, new], allow_mixed_schema=True)
+    assert [r.schema_version for r in reports] == [3, 4]
+
+
+def test_a_load_straddling_both_boundaries_names_the_first(tmp_path: Path) -> None:
+    v2 = _versioned_report(tmp_path / "v2.json", 2)
+    v4 = _versioned_report(tmp_path / "v4.json", 4)
+    with pytest.raises(SchemaError, match="streamed, counted join"):
+        load_reports([v2, v4])
 
 
 def test_phase_of_recognises_copies() -> None:

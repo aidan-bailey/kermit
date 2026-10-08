@@ -256,7 +256,7 @@ both Layout axes and its Config axis, so `ds_layout_pruning` and
 ```json
 [
   {
-    "schema_version": 3,
+    "schema_version": 4,
     "kind": "ds",
     "axes": {
       "data_structure": "HashTrie",

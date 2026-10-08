@@ -1,6 +1,6 @@
 # `BenchReport` JSON schema
 
-**Current schema version:** `3`
+**Current schema version:** `4`
 **Source of truth:** `kermit/src/bench_report.rs`
 
 ## Top-level shape
@@ -19,7 +19,7 @@ always parse a list.
 ```json
 [
   {
-    "schema_version": 3,
+    "schema_version": 4,
     "kind": "ds",
     "metadata": [
       { "label": "data structure", "value": "TreeTrie" },
@@ -46,7 +46,7 @@ always parse a list.
 
 | Field              | Type                         | Description |
 |--------------------|------------------------------|-------------|
-| `schema_version`   | u32                          | Currently `3`. Consumers should refuse unknown majors. |
+| `schema_version`   | u32                          | Currently `4`. Consumers should refuse unknown majors. |
 | `kind`             | `"join"` \| `"ds"` \| `"run"` | Which `bench` subcommand produced the report. |
 | `metadata`         | Array of `{label, value}`    | Human-readable label/value pairs mirroring the stderr block. Both fields are strings (numerics get stringified for stderr alignment). |
 | `axes`             | Object (string → JSON value) | Structured axis values for downstream tooling. Numeric axes are kept numeric; alphabetically ordered (`BTreeMap`) so JSON diffs are deterministic. |
@@ -230,13 +230,15 @@ bump — the `axes` field is an open map.
   pinned to it), or restructuring nesting.
 - **Also bump** when what a metric measures changes, even if every field
   keeps its name and type: values on either side are no longer comparable.
-  v3 is such a bump.
+  v3 and v4 are such bumps.
 - **No bump** for additive changes: new `axes` keys, new optional fields on
   `CriterionGroupRef`, new conventional values for `kind` or `metric`.
 - Consumers should refuse to parse if `schema_version` is missing or
   greater than the highest version they know about. kermit-lab also
-  refuses to load reports from both sides of version 3 in one call,
-  because the `iteration` and `end_to_end` values changed meaning there.
+  refuses to load reports from both sides of version 3, or of version 4,
+  in one call: at 3 the `iteration` and `end_to_end` values changed
+  meaning, and at 4 `insertion`, `copies`, `end_to_end` and HashTrie's
+  `space` did.
 
 ## Change log
 
@@ -260,3 +262,4 @@ bump — the `axes` field is an open map.
 | 3 (no bump) | 2026-10-06 | Every report carries the `allocator` conventional `axes` key and an `allocator` metadata line (#112): the binary now links jemalloc by default (`"jemalloc"`), or the system allocator under `--no-default-features` (`"system"`). Every timing moves with the allocator, but each row records which one it ran on, as with the 2026-10-05 seek-default switch, so `schema_version` stays `3`. kermit-lab back-fills `"system"` on every earlier row (`BINARY_AXIS_DEFAULTS`). Compare allocators within one binary's source, built both ways. |
 | 3 (no bump) | 2026-10-07 | HashTrie's presized parallel build is its own `ds_build_mode` value, `presized:N` (`--ds-build hash-trie=presized:N`, requires `--ds-config root-capacity=tuples`); `parallel:N` is the exact merge build under every root capacity. A new value of an existing key, so `schema_version` stays `3`. Reports written before this change carry `parallel:N` with `ds_config_root_capacity: "tuples"` for the presized build (the 2026-10-06 scaling run); kermit-lab does not rewrite them. |
 | 3 (no bump) | 2026-10-07 | HashTrie builds by Algorithm 2 (#107): its default `ds_build_mode` is `bulk`, and the per-tuple build is `incremental`, spelled `serial` until now; kermit-lab reads old HashTrie `serial` rows as `incremental`, so they stay correctly labelled. Every HashTrie report gains `ds_config_child_capacity` (`grow` by default). The trie each existing config builds is unchanged, so `space` keeps its meaning, and so does `iteration` over an eagerly expanded trie; `insertion` and `end_to_end` of the default and of `radix:K` / `parallel:N` / `presized:N` now time Algorithm 2, and under `ds_layout_expansion=lazy` `iteration` and `end_to_end` time child expansion, which `resolve` now does by Algorithm 2 rather than `insert_at`. Compare these timings within one binary, as every timing already is. Additive, so `schema_version` stays `3`. |
+| 4       | 2026-10-08 | What `insertion`, `copies`, `end_to_end` and HashTrie's `space` measure changed, so they are not comparable with v3, and kermit-lab refuses to load v3 and v4 reports together unless `allow_mixed_schema=True` (#111). Every relation's tuples travel from the reader to every structure's build as one row-major buffer (`Tuples`) instead of a `Vec` per tuple: each `insertion` / `end_to_end` setup clone copies one buffer; TreeTrie and ColumnTrie sort it with one shared `Tuples::sort` and free one buffer where they freed a `Vec` per tuple; `bench run`'s `copies` metric (`--column-orders any`) times `permute_all` plus the copies' builds, which now copy one buffer and build from rows; and HashTrie keeps the buffer, so its `space` counts the buffer (capacity × 8 B), its row-id lists and chains (capacity × 4 B) and its tables, where it counted a `Vec` per tuple. HashTrie's `bench ds` `iteration` still walks the trie, now reading each row through its id, so it may move; #111's measurement records by how much. TreeTrie and ColumnTrie `space` and `bench run` / `bench join` `iteration` keep their meaning (the join's leaf product reads HashTrie chains through `LeafRows`; compare `iteration` within the codegen bound). No field or axis changed. |

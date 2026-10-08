@@ -23,8 +23,30 @@ class SchemaError(ValueError):
 
 STREAMED_JOIN_SCHEMA = 3
 """First schema version whose ``iteration`` / ``end_to_end`` phases time a
-streamed join with counted, never-materialised rows (issue #65). Reports on
-either side of it measure different things, so one load may not mix them."""
+streamed join with counted, never-materialised rows (issue #65)."""
+
+FLAT_TUPLES_SCHEMA = 4
+"""First schema version whose structures build from one flat tuple buffer
+(issue #111): ``insertion``, ``copies`` and ``end_to_end`` time a different
+input path and sort, and HashTrie's ``space`` counts row ids into the buffer
+instead of a ``Vec`` per tuple."""
+
+MEANING_CHANGES: tuple[tuple[int, str, str], ...] = (
+    (
+        STREAMED_JOIN_SCHEMA,
+        "the iteration and end_to_end phases time a streamed, counted join",
+        "space",
+    ),
+    (
+        FLAT_TUPLES_SCHEMA,
+        "every structure builds from one flat tuple buffer, which changes insertion, "
+        "copies, end_to_end and HashTrie's space",
+        "bench run iteration",
+    ),
+)
+"""Every schema version from which a metric changed meaning: the version,
+what changed, and what stays comparable across it. Reports on either side of
+one measure different things, so one load may not mix them."""
 
 
 @dataclass(frozen=True)
@@ -86,17 +108,17 @@ def _parse_one(obj: dict, source_path: Path) -> BenchReport:
 
 
 def _refuse_mixed_schema(reports: Sequence[BenchReport]) -> None:
-    older = next((r for r in reports if r.schema_version < STREAMED_JOIN_SCHEMA), None)
-    newer = next((r for r in reports if r.schema_version >= STREAMED_JOIN_SCHEMA), None)
-    if older is not None and newer is not None:
-        raise SchemaError(
-            f"refusing to mix schema_version {older.schema_version} ({older.source_path}) "
-            f"with schema_version {newer.schema_version} ({newer.source_path}): from "
-            f"v{STREAMED_JOIN_SCHEMA} the iteration and end_to_end phases time a streamed, "
-            "counted join, so their values are not comparable with earlier reports. Load "
-            "each side separately, or (Python API) pass allow_mixed_schema=True to compare "
-            "space only."
-        )
+    for boundary, change, comparable in MEANING_CHANGES:
+        older = next((r for r in reports if r.schema_version < boundary), None)
+        newer = next((r for r in reports if r.schema_version >= boundary), None)
+        if older is not None and newer is not None:
+            raise SchemaError(
+                f"refusing to mix schema_version {older.schema_version} ({older.source_path}) "
+                f"with schema_version {newer.schema_version} ({newer.source_path}): from "
+                f"v{boundary} {change}, so those values are not comparable with earlier "
+                "reports. Load each side separately, or (Python API) pass "
+                f"allow_mixed_schema=True to compare {comparable} only."
+            )
 
 
 def load_reports(
@@ -104,8 +126,8 @@ def load_reports(
 ) -> list[BenchReport]:
     """Load all reports from one or more JSON files; flattens the array shape.
 
-    Raises :class:`SchemaError` when the reports straddle
-    :data:`STREAMED_JOIN_SCHEMA`, unless ``allow_mixed_schema`` is true.
+    Raises :class:`SchemaError` when the reports straddle a version in
+    :data:`MEANING_CHANGES`, unless ``allow_mixed_schema`` is true.
     """
     out: list[BenchReport] = []
     for path in paths:
