@@ -170,7 +170,7 @@ pub(crate) fn scatter(
 /// order reads the partition in input order, so its ids ascend.
 #[derive(Debug, Default)]
 pub(crate) struct RowPartition {
-    pub(crate) segments: Vec<Vec<RowId>>,
+    segments: Vec<Vec<RowId>>,
 }
 
 impl RowPartition {

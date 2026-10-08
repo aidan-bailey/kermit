@@ -15,9 +15,9 @@ use {
 };
 
 /// Inserts a tuple into a sorted list of children nodes, recursing for the
-/// remaining keys on the rest of the slice, so no level allocates. Duplicate
-/// tuples are silently absorbed: when a key already exists at this level we
-/// descend into its children instead of allocating a new node. Returns
+/// remaining keys on the rest of the slice, so no level copies the suffix.
+/// Duplicate tuples are silently absorbed: when a key already exists at this
+/// level we descend into its children instead of allocating a new node. Returns
 /// `true` iff the tuple was not already present (some level created a new
 /// node).
 fn insert_into_children(children: &mut Vec<TrieNode>, tuple: &[usize]) -> bool {
@@ -187,9 +187,13 @@ impl<S: SeekStrategy> TreeTrie<S> {
     /// 1. **Partition**: [`scatter_rows`] the row ids into first-key ranges cut
     ///    at [`first_key_splitters`]; the batch itself stays where it is.
     /// 2. **Build**: [`dispatch`] each partition to a worker, which gathers its
-    ///    rows into a [`Tuples`] of its own (its ids ascend, so the reads
-    ///    mostly move forward), sorts it, and inserts its rows one at a time,
-    ///    as the serial build does with the whole batch.
+    ///    rows into a [`Tuples`] of its own (its ids strictly ascend, so the
+    ///    reads always move forward, skipping other partitions' rows), sorts
+    ///    it, and inserts its rows one at a time, as the serial build does with
+    ///    the whole batch. The gather copies each row once (`arity` × 8 bytes),
+    ///    in parallel; with unordered first keys every partition reads across
+    ///    the whole batch, so read traffic grows by up to the rows per cache
+    ///    line (about 4× at arity 2).
     /// 3. **Assemble**: push every partition's top-level nodes onto the root,
     ///    in key order, one at a time.
     ///
@@ -273,10 +277,12 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
 
     /// Builds a `TreeTrie` from a batch of tuples.
     ///
-    /// Sorts the batch in place with [`Tuples::sort`] (lexicographic), the
-    /// most efficient input order for the sorted-children invariant: every
-    /// new key then lands at the end of its sibling list. Then inserts each
-    /// row as a slice; the batch's one buffer is freed when the build returns.
+    /// Sorts the batch with [`Tuples::sort`] (lexicographic; in place up to
+    /// arity 4, into a new buffer of exactly the rows' size for wider rows),
+    /// the most efficient input order for the sorted-children invariant:
+    /// every new key then lands at the end of its sibling list. Then inserts
+    /// each row as a slice; the batch's buffer is freed when the build
+    /// returns.
     ///
     /// # Panics
     ///
@@ -604,11 +610,12 @@ mod parallel_build_tests {
     /// `Vec` capacity, depend only on the tuple set (`Vec::insert` grows a
     /// list exactly as `push` does), so no build's sort, and no form the
     /// tuples arrive in, can change the trie or its `heap_size_bytes`
-    /// (#111).
+    /// (#111). Arity 5 takes [`Tuples::sort`]'s permutation path, and the
+    /// parallel build's gather of wide rows.
     #[test]
     fn builds_match_inserting_in_arrival_order() {
         let mut rng = Lcg(0x5EED);
-        for arity in 0..=4 {
+        for arity in 0..=5 {
             for key_range in [1, 3, 50] {
                 for n in [0, 1, 17, 300] {
                     let tuples: Vec<Vec<usize>> = (0..n)
