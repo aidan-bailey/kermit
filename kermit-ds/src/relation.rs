@@ -10,7 +10,7 @@
 //! stores raw strings or domain values directly.
 use {
     arrow::array::AsArray,
-    kermit_iters::{JoinIterable, Tuples},
+    kermit_iters::{JoinIterable, RowId, Tuples},
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     std::{fmt, fs::File, path::Path},
 };
@@ -392,7 +392,8 @@ pub trait RelationFileExt: Relation {
     ///   the reader cannot be constructed.
     /// - [`RelationError::Arrow`] — a record batch fails to decode.
     /// - [`RelationError::InvalidData`] — an `Int64` value cannot be converted
-    ///   to `usize` (e.g. it is negative).
+    ///   to `usize` (e.g. it is negative), or the file holds more than
+    ///   [`RowId::MAX`] rows.
     fn from_parquet<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError>
     where
         Self: Sized;
@@ -408,9 +409,11 @@ pub trait RelationFileExt: Relation {
     /// Returns a [`RelationError`] if any of the following occur:
     /// - [`RelationError::Io`] — the file cannot be opened.
     /// - [`RelationError::Csv`] — the CSV reader cannot parse the header or a
-    ///   row (e.g. inconsistent column count).
-    /// - [`RelationError::InvalidData`] — a field cannot be parsed as a
-    ///   `usize`; the message identifies the offending row and column.
+    ///   row.
+    /// - [`RelationError::InvalidData`] — a row is not as wide as the header,
+    ///   or a field cannot be parsed as a `usize` (the message identifies the
+    ///   offending row, and column), or the file holds more than [`RowId::MAX`]
+    ///   rows.
     fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError>
     where
         Self: Sized;
@@ -436,7 +439,9 @@ fn open_csv(path: &Path) -> Result<(RelationHeader, csv::Reader<File>), Relation
         .delimiter(b',')
         .double_quote(false)
         .escape(Some(b'\\'))
-        .flexible(false)
+        // `read_csv` checks each row's width against the header itself, so
+        // the error names the row and both widths.
+        .flexible(true)
         .comment(Some(b'#'))
         .from_reader(file);
     let attrs: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
@@ -453,6 +458,15 @@ fn open_csv(path: &Path) -> Result<(RelationHeader, csv::Reader<File>), Relation
 /// [`RelationError::Csv`] if the header row cannot be parsed.
 pub fn read_csv_header<P: AsRef<Path>>(filepath: P) -> Result<RelationHeader, RelationError> {
     open_csv(filepath.as_ref()).map(|(header, _)| header)
+}
+
+/// The error for a relation file with more rows than a [`Tuples`] batch
+/// can address: its rows are numbered by [`RowId`].
+fn too_many_rows() -> RelationError {
+    RelationError::InvalidData(format!(
+        "more than {} rows: a relation holds at most RowId::MAX rows",
+        RowId::MAX
+    ))
 }
 
 /// Reads a CSV file into a header (attribute names from the header row,
@@ -474,9 +488,18 @@ pub fn read_csv<P: AsRef<Path>>(filepath: P) -> Result<(RelationHeader, Tuples),
     let mut data: Vec<usize> = Vec::new();
     let mut rows = 0;
     let mut record = csv::StringRecord::new();
-    // `flexible(false)` (see `open_csv`) makes every record as wide as the
-    // header, so the buffer holds exactly `arity` values per row.
     while rdr.read_record(&mut record)? {
+        // The buffer holds exactly `arity` values per row, and `Tuples`
+        // numbers at most `RowId::MAX` rows.
+        if record.len() != arity {
+            return Err(RelationError::InvalidData(format!(
+                "row {rows}: {} fields, but the header has {arity}",
+                record.len()
+            )));
+        }
+        if rows == RowId::MAX as usize {
+            return Err(too_many_rows());
+        }
         for (col_idx, field) in record.iter().enumerate() {
             let value = field.parse::<usize>().map_err(|_| {
                 RelationError::InvalidData(format!(
@@ -530,8 +553,9 @@ pub fn read_parquet_header<P: AsRef<Path>>(filepath: P) -> Result<RelationHeader
 /// non-default configuration
 /// ([`ConfigurableRelation::from_tuples_with_config`]).
 ///
-/// The footer's row count sizes the buffer once, and each record batch's
-/// columns are transposed into it, so nothing is allocated per row (#111).
+/// The footer's row count sizes the buffer once (when the allocator grants
+/// it), and each record batch's columns are transposed into it, so nothing
+/// is allocated per row (#111).
 ///
 /// # Errors
 ///
@@ -543,10 +567,21 @@ pub fn read_parquet<P: AsRef<Path>>(
     let arity = header.arity();
     let expected_rows = usize::try_from(builder.metadata().file_metadata().num_rows()).unwrap_or(0);
     let reader = builder.build()?;
-    let mut data: Vec<usize> = Vec::with_capacity(expected_rows * arity);
+    // The footer's count is a hint, not a promise: a corrupt one could
+    // overflow `rows × arity` or ask for more memory than there is, which
+    // would abort the process. So reserve only a size that computes, and
+    // only if the allocator grants it. The buffer still grows if the count
+    // was low, and `shrink_to_fit` below trims it if the count was high.
+    let mut data: Vec<usize> = Vec::new();
+    if let Some(values) = expected_rows.checked_mul(arity) {
+        let _ = data.try_reserve_exact(values);
+    }
     let mut rows = 0;
     for batch_result in reader {
         let batch = batch_result?;
+        if rows + batch.num_rows() > RowId::MAX as usize {
+            return Err(too_many_rows());
+        }
         // A batch is columnar and the buffer row-major: column `c` fills
         // position `c` of each of the batch's rows.
         let start = data.len();
@@ -556,9 +591,12 @@ pub fn read_parquet<P: AsRef<Path>>(
             let values = column
                 .as_primitive::<arrow::datatypes::Int64Type>()
                 .values();
-            for (row_idx, &value) in values.iter().enumerate() {
-                block[row_idx * arity + col_idx] = usize::try_from(value).map_err(|_| {
-                    RelationError::InvalidData("failed to convert Parquet value to usize".into())
+            for (row_idx, (row, &value)) in block.chunks_exact_mut(arity).zip(values).enumerate() {
+                row[col_idx] = usize::try_from(value).map_err(|_| {
+                    RelationError::InvalidData(format!(
+                        "row {}, column {col_idx}: cannot convert {value} to usize",
+                        rows + row_idx,
+                    ))
                 })?;
             }
         }
@@ -797,11 +835,12 @@ mod tests {
 
     /// Both readers hand back a buffer at its exact size: a `HashTrie` keeps
     /// it, so its `space` must not depend on how the reader grew it (#111).
-    /// Five 2-ary rows are 10 values, which a doubling buffer holds in 16.
+    /// 2 500 2-ary rows are 5 000 values, which a doubling buffer holds in
+    /// 8 192; the Parquet file is read as three 1 024-row record batches.
     #[test]
     fn readers_return_a_buffer_sized_to_its_rows() {
         let dir = tempfile::tempdir().unwrap();
-        let rows: Vec<Vec<i64>> = (0..5).map(|i| vec![i, 10 + i]).collect();
+        let rows: Vec<Vec<i64>> = (0..2_500).map(|i| vec![i, 10 + i]).collect();
         let csv = dir.path().join("edge.csv");
         let body: String = rows
             .iter()
@@ -814,11 +853,11 @@ mod tests {
             ("read_csv", read_csv(&csv).unwrap().1),
             ("read_parquet", read_parquet(&parquet).unwrap().1),
         ] {
-            assert_eq!(tuples.len(), 5, "{reader}");
+            assert_eq!(tuples.len(), 2_500, "{reader}");
             assert_eq!(tuples.arity(), 2, "{reader}");
             assert_eq!(
                 tuples.heap_size_bytes(),
-                5 * 2 * std::mem::size_of::<usize>(),
+                2_500 * 2 * std::mem::size_of::<usize>(),
                 "{reader}"
             );
         }
@@ -841,16 +880,37 @@ mod tests {
         assert_eq!(tuples.to_vecs(), want);
     }
 
-    /// A negative value has no `usize`, in any column.
+    /// A negative value has no `usize`, in any column; the error names its
+    /// row and column, as `read_csv`'s parse error does.
     #[test]
     fn read_parquet_rejects_a_negative_value() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("signed.parquet");
         write_parquet(&path, &["a", "b"], &[vec![1, 2], vec![3, -4]]);
-        assert!(matches!(
-            read_parquet(&path),
-            Err(RelationError::InvalidData(_))
-        ));
+        match read_parquet(&path) {
+            | Err(RelationError::InvalidData(message)) => {
+                assert!(message.starts_with("row 1, column 1:"), "{message}");
+            },
+            | other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    /// A row narrower or wider than the header is an error naming the row
+    /// and both widths, never a short or long row in the buffer.
+    #[test]
+    fn read_csv_rejects_a_row_of_the_wrong_width() {
+        let dir = tempfile::tempdir().unwrap();
+        for (body, fields) in [("1,2\n3\n", 1), ("1,2\n3,4,5\n", 3)] {
+            let path = dir.path().join("edge.csv");
+            std::fs::write(&path, format!("a,b\n{body}")).unwrap();
+            match read_csv(&path) {
+                | Err(RelationError::InvalidData(message)) => assert_eq!(
+                    message,
+                    format!("row 1: {fields} fields, but the header has 2")
+                ),
+                | other => panic!("expected InvalidData, got {other:?}"),
+            }
+        }
     }
 
     /// A header-only CSV is an empty batch of the header's arity, as an empty

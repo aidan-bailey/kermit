@@ -602,8 +602,8 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
         }
     }
 
-    /// The trie's stored count ([`Cardinality`], a bound of
-    /// `SortedTrieRelation`), so counting walks and allocates nothing.
+    /// An O(1) read of the stored count ([`Cardinality`], a bound of
+    /// `SortedTrieRelation`): no walk, no allocation.
     fn tuple_count(rel: &R) -> usize { Cardinality::tuple_count(rel) }
 
     /// The relation's own Layout axes (`ds_layout_seek`), read from the type

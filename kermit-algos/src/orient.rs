@@ -513,10 +513,11 @@ mod tests {
     #[test]
     fn specs_permute_tuples_and_describe_themselves() {
         let spec = IndexSpec::new("edge", vec![1, 0]);
-        let copy = spec.permute_all(&Tuples::from(vec![vec![1, 2], vec![3, 4]]));
-        assert_eq!(copy, Tuples::from(vec![vec![2, 1], vec![4, 3]]));
-        // One buffer at its exact size: four values, one allocation.
-        assert_eq!(copy.heap_size_bytes(), 4 * std::mem::size_of::<usize>());
+        let copy = spec.permute_all(&Tuples::from(vec![vec![1, 2], vec![3, 4], vec![5, 6]]));
+        assert_eq!(copy, Tuples::from(vec![vec![2, 1], vec![4, 3], vec![6, 5]]));
+        // One buffer at its exact size: six values, which a doubling buffer
+        // would hold in eight.
+        assert_eq!(copy.heap_size_bytes(), 6 * std::mem::size_of::<usize>());
         assert_eq!(spec.describe(), "edge (1, 0)");
         assert!(is_index_predicate(&spec.name));
         assert!(!is_index_predicate("edge"));
