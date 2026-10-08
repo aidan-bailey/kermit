@@ -1,7 +1,7 @@
 use {
     super::build_mode::TreeTrieBuildMode,
     crate::{
-        morsel::{dispatch, scatter, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD},
+        morsel::{dispatch, scatter_rows, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD},
         relation::{BuildModeRelation, Relation, RelationHeader},
         seek::{seek_axes, GallopingSeek, SeekStrategy},
     },
@@ -15,22 +15,22 @@ use {
 };
 
 /// Inserts a tuple into a sorted list of children nodes, recursing for the
-/// remaining keys. Duplicate tuples are silently absorbed: when a key already
-/// exists at this level we descend into its children instead of allocating a
-/// new node. Returns `true` iff the tuple was not already present (some
-/// level created a new node).
-fn insert_into_children(children: &mut Vec<TrieNode>, tuple: Vec<usize>) -> bool {
-    let mut key_iter = tuple.into_iter();
-    let Some(key) = key_iter.next() else {
+/// remaining keys on the rest of the slice, so no level allocates. Duplicate
+/// tuples are silently absorbed: when a key already exists at this level we
+/// descend into its children instead of allocating a new node. Returns
+/// `true` iff the tuple was not already present (some level created a new
+/// node).
+fn insert_into_children(children: &mut Vec<TrieNode>, tuple: &[usize]) -> bool {
+    let Some((&key, rest)) = tuple.split_first() else {
         // Exhausted every key along an already-existing path — duplicate.
         return false;
     };
 
     match children.binary_search_by(|node| node.key().cmp(&key)) {
-        | Ok(pos) => insert_into_children(children[pos].children_mut(), key_iter.collect()),
+        | Ok(pos) => insert_into_children(children[pos].children_mut(), rest),
         | Err(pos) => {
             let mut new_node = TrieNode::new(key);
-            insert_into_children(new_node.children_mut(), key_iter.collect());
+            insert_into_children(new_node.children_mut(), rest);
             children.insert(pos, new_node);
             true
         },
@@ -145,13 +145,9 @@ const SPLITTER_SAMPLES_PER_PARTITION: usize = 128;
 /// `splitters.partition_point(|&s| s <= tuple[0])`, so partitions are
 /// ordered by first key. The splitters move work between partitions, never
 /// the trie.
-fn first_key_splitters(tuples: &[Vec<usize>], partitions: usize) -> Vec<usize> {
+fn first_key_splitters(tuples: &Tuples, partitions: usize) -> Vec<usize> {
     let stride = (tuples.len() / (SPLITTER_SAMPLES_PER_PARTITION * partitions)).max(1);
-    let mut sample: Vec<usize> = tuples
-        .iter()
-        .step_by(stride)
-        .map(|tuple| tuple[0])
-        .collect();
+    let mut sample: Vec<usize> = tuples.rows().step_by(stride).map(|row| row[0]).collect();
     sample.sort_unstable();
     let mut splitters: Vec<usize> = (1..partitions)
         .map(|p| sample[p * sample.len() / partitions])
@@ -180,9 +176,7 @@ pub(crate) fn take_parallel_builds() -> Vec<(usize, Vec<usize>)> {
 impl<S: SeekStrategy> TreeTrie<S> {
     /// The `parallel:N` build (`docs/data-structures/parallel-build.md`):
     /// the trie [`Relation::from_tuples`] builds, built on `threads` threads.
-    fn from_tuples_parallel(
-        header: RelationHeader, threads: Threads, tuples: Vec<Vec<usize>>,
-    ) -> Self {
+    fn from_tuples_parallel(header: RelationHeader, threads: Threads, tuples: Tuples) -> Self {
         Self::build_parallel(header, threads, MORSEL_TUPLES, tuples)
     }
 
@@ -190,11 +184,12 @@ impl<S: SeekStrategy> TreeTrie<S> {
     /// size as a parameter, so tests can cut a small input into many
     /// morsels.
     ///
-    /// 1. **Partition**: [`scatter`] the tuples into first-key ranges cut at
-    ///    [`first_key_splitters`].
-    /// 2. **Build**: [`dispatch`] each partition to a worker, which sorts it
-    ///    and inserts its tuples one at a time, as the serial build does with
-    ///    the whole input.
+    /// 1. **Partition**: [`scatter_rows`] the row ids into first-key ranges cut
+    ///    at [`first_key_splitters`]; the batch itself stays where it is.
+    /// 2. **Build**: [`dispatch`] each partition to a worker, which gathers its
+    ///    rows into a [`Tuples`] of its own (its ids ascend, so the reads
+    ///    mostly move forward), sorts it, and inserts its rows one at a time,
+    ///    as the serial build does with the whole batch.
     /// 3. **Assemble**: push every partition's top-level nodes onto the root,
     ///    in key order, one at a time.
     ///
@@ -203,20 +198,19 @@ impl<S: SeekStrategy> TreeTrie<S> {
     /// grows by one push per first key, as the serial insert-at-the-end
     /// does. Every node and every `Vec` capacity therefore matches.
     fn build_parallel(
-        header: RelationHeader, threads: Threads, morsel_tuples: usize, tuples: Vec<Vec<usize>>,
+        header: RelationHeader, threads: Threads, morsel_rows: usize, tuples: Tuples,
     ) -> Self {
         if tuples.is_empty() {
             return Self::new(header);
         }
-        // The serial build's checks, with its messages.
-        let arity = tuples[0].len();
+        // The serial build's check, with its message.
+        let arity = tuples.arity();
         assert_eq!(
             arity,
             header.arity(),
             "from_tuples: tuple arity {arity} does not match header arity {}",
             header.arity()
         );
-        assert!(tuples.iter().all(|tuple| tuple.len() == arity));
         if arity == 0 {
             // A nullary tuple inserts nothing, so the serial build of any
             // number of them is the empty trie.
@@ -224,39 +218,27 @@ impl<S: SeekStrategy> TreeTrie<S> {
         }
 
         let splitters = first_key_splitters(&tuples, PARTITIONS_PER_THREAD * threads.get());
-        let partitions = scatter(
-            threads,
-            tuples,
-            morsel_tuples,
-            splitters.len() + 1,
-            |tuple| splitters.partition_point(|&splitter| splitter <= tuple[0]),
-        );
+        let partitions = scatter_rows(threads, &tuples, morsel_rows, splitters.len() + 1, |row| {
+            splitters.partition_point(|&splitter| splitter <= row[0])
+        });
         #[cfg(any(test, feature = "test-hooks"))]
         PARALLEL_BUILDS.with(|builds| {
             let sizes = partitions.iter().map(|partition| partition.len()).collect();
             builds.borrow_mut().push((threads.get(), sizes));
         });
         let built = dispatch(threads, partitions, |partition| {
-            let mut tuples: Vec<Vec<usize>> = Vec::with_capacity(partition.len());
-            tuples.extend(partition.into_tuples().map(|(_, tuple)| tuple));
-            // The serial build's hand-rolled comparator, kept as in
-            // `from_tuples` (and ColumnTrie's build), so a comparison costs the
-            // same in both builds and `parallel:N` against `serial` measures
-            // the build process, not a cheaper sort.
-            tuples.sort_unstable_by(|a, b| {
-                for i in 0..a.len() {
-                    match a[i].cmp(&b[i]) {
-                        | std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
-                        | std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
-                        | std::cmp::Ordering::Equal => continue,
-                    }
-                }
-                std::cmp::Ordering::Equal
-            });
+            let mut gathered = Tuples::with_capacity(arity, partition.len());
+            for id in partition.ids() {
+                gathered.push(tuples.row(id));
+            }
+            // `Tuples::sort`, the serial build's sort (and ColumnTrie's), so
+            // a comparison costs the same in both builds and `parallel:N`
+            // against `serial` measures the build process, not a cheaper sort.
+            gathered.sort();
             let mut nodes = Vec::new();
             let mut count = 0;
-            for tuple in tuples {
-                if insert_into_children(&mut nodes, tuple) {
+            for row in gathered.rows() {
+                if insert_into_children(&mut nodes, row) {
                     count += 1;
                 }
             }
@@ -291,47 +273,37 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
 
     /// Builds a `TreeTrie` from a batch of tuples.
     ///
-    /// Tuples are sorted lexicographically before insertion, which is the most
-    /// efficient input order for the sorted-children invariant.
+    /// Sorts the batch in place with [`Tuples::sort`] (lexicographic), the
+    /// most efficient input order for the sorted-children invariant: every
+    /// new key then lands at the end of its sibling list. Then inserts each
+    /// row as a slice; the batch's one buffer is freed when the build returns.
     ///
     /// # Panics
     ///
-    /// Panics if the input tuples have mixed arity, or if any tuple's arity
-    /// does not match `header.arity()` (propagated from
-    /// [`insert`](Self::insert)).
+    /// Panics if the batch is non-empty and its arity does not match
+    /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
+    /// earlier, while converting to [`Tuples`].
     fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
-        // One `Vec` per tuple, the form this build takes until it builds
-        // from row slices (#111).
-        let mut tuples = Tuples::into_vecs(tuples.into());
+        let mut tuples: Tuples = tuples.into();
         if tuples.is_empty() {
             return Self::new(header);
         }
 
-        let arity = tuples[0].len();
+        let arity = tuples.arity();
         assert_eq!(
             arity,
             header.arity(),
             "from_tuples: tuple arity {arity} does not match header arity {}",
             header.arity()
         );
-        assert!(tuples.iter().all(|tuple| tuple.len() == arity));
 
-        // Sort tuples for efficient insertion. Reproduces the derived
-        // `Vec<usize>` lexicographic order (kept hand-rolled here rather than
-        // `sort_unstable()`).
-        tuples.sort_unstable_by(|a, b| {
-            for i in 0..a.len() {
-                match a[i].cmp(&b[i]) {
-                    | std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
-                    | std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
-                    | std::cmp::Ordering::Equal => continue,
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
+        // One sort, `Tuples::sort`, in every sorted-trie build (`parallel:N`'s
+        // workers and ColumnTrie's builds run it too), so a comparison costs
+        // the same in each and `insertion` compares build routines, not sorts.
+        tuples.sort();
 
         let mut trie = Self::new(header);
-        for tuple in tuples {
+        for tuple in tuples.rows() {
             trie.insert(tuple);
         }
         trie
@@ -350,8 +322,7 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
             self.header().arity(),
             "tuple arity must match relation arity"
         );
-        // #111 interim: the recursion takes an owned `Vec`, removed in T5.
-        if insert_into_children(&mut self.children, tuple.to_vec()) {
+        if insert_into_children(&mut self.children, tuple) {
             self.tuple_count += 1;
         }
     }
@@ -382,11 +353,11 @@ impl<S: SeekStrategy> BuildModeRelation for TreeTrie<S> {
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: TreeTrieBuildMode, tuples: impl Into<Tuples>,
     ) -> Self {
+        let tuples: Tuples = tuples.into();
         match mode {
             | TreeTrieBuildMode::Serial => Self::from_tuples(header, tuples),
             | TreeTrieBuildMode::Parallel(threads) => {
-                // One `Vec` per tuple until the build reads rows (#111).
-                Self::from_tuples_parallel(header, threads, Tuples::into_vecs(tuples.into()))
+                Self::from_tuples_parallel(header, threads, tuples)
             },
         }
     }
@@ -589,7 +560,7 @@ mod parallel_build_tests {
                                     arity.into(),
                                     threads(t),
                                     morsel,
-                                    tuples.clone(),
+                                    Tuples::from(tuples.clone()),
                                 );
                                 assert_identical(&parallel, &serial, &case);
                             }
@@ -628,24 +599,72 @@ mod parallel_build_tests {
         }
     }
 
+    /// Every build mode builds the trie that one `insert` per tuple, in
+    /// arrival order and unsorted, builds. A node's children, and so every
+    /// `Vec` capacity, depend only on the tuple set (`Vec::insert` grows a
+    /// list exactly as `push` does), so no build's sort, and no form the
+    /// tuples arrive in, can change the trie or its `heap_size_bytes`
+    /// (#111).
     #[test]
-    #[should_panic(expected = "does not match header arity")]
-    fn parallel_build_rejects_a_first_tuple_of_the_wrong_arity() {
-        let _: TreeTrie = TreeTrie::from_tuples_parallel(2.into(), threads(2), vec![vec![1, 2, 3]]);
+    fn builds_match_inserting_in_arrival_order() {
+        let mut rng = Lcg(0x5EED);
+        for arity in 0..=4 {
+            for key_range in [1, 3, 50] {
+                for n in [0, 1, 17, 300] {
+                    let tuples: Vec<Vec<usize>> = (0..n)
+                        .map(|_| (0..arity).map(|_| rng.next_usize() % key_range).collect())
+                        .collect();
+                    let mut one_by_one: TreeTrie = TreeTrie::new(arity.into());
+                    for tuple in &tuples {
+                        one_by_one.insert(tuple);
+                    }
+                    let case = format!("arity {arity}, keys < {key_range}, n {n}");
+                    for mode in [
+                        TreeTrieBuildMode::Serial,
+                        TreeTrieBuildMode::Parallel(threads(3)),
+                    ] {
+                        let built: TreeTrie = TreeTrie::from_tuples_with_build_mode(
+                            arity.into(),
+                            mode,
+                            tuples.clone(),
+                        );
+                        assert_identical(&built, &one_by_one, &format!("{case}, {mode:?}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// A batch is accepted when it is empty, whatever its arity (an empty
+    /// literal carries none), or when its arity is the header's.
+    #[test]
+    fn an_empty_batch_of_any_arity_builds_the_empty_trie() {
+        for mode in [
+            TreeTrieBuildMode::Serial,
+            TreeTrieBuildMode::Parallel(threads(2)),
+        ] {
+            let built: TreeTrie =
+                TreeTrie::from_tuples_with_build_mode(2.into(), mode, Tuples::new(5));
+            assert_identical(&built, &TreeTrie::new(2.into()), &format!("{mode:?}"));
+        }
     }
 
     #[test]
-    #[should_panic(expected = "tuple.len() == arity")]
-    fn parallel_build_rejects_mixed_arity() {
+    #[should_panic(expected = "does not match header arity")]
+    fn parallel_build_rejects_a_first_tuple_of_the_wrong_arity() {
         let _: TreeTrie =
-            TreeTrie::from_tuples_parallel(2.into(), threads(2), vec![vec![1, 2], vec![3]]);
+            TreeTrie::from_tuples_parallel(2.into(), threads(2), vec![vec![1, 2, 3]].into());
     }
 
     /// The splitters are strictly increasing first keys, at most
     /// `partitions − 1` of them.
     #[test]
     fn splitters_are_increasing_first_keys() {
-        let tuples: Vec<Vec<usize>> = (0..1000).map(|i| vec![(i * 7) % 100, i]).collect();
+        let tuples = Tuples::from(
+            (0..1000)
+                .map(|i| vec![(i * 7) % 100, i])
+                .collect::<Vec<_>>(),
+        );
         let splitters = first_key_splitters(&tuples, 8);
         assert!(
             !splitters.is_empty() && splitters.len() <= 7,
@@ -656,7 +675,8 @@ mod parallel_build_tests {
             "{splitters:?}"
         );
         assert!(splitters.iter().all(|&s| s < 100), "{splitters:?}");
-        assert_eq!(first_key_splitters(&[vec![5, 1], vec![5, 2]], 4), vec![5]);
+        let one_key = Tuples::from(vec![vec![5, 1], vec![5, 2]]);
+        assert_eq!(first_key_splitters(&one_key, 4), vec![5]);
     }
 
     /// The splitters share out the tuples, not the distinct keys: no
@@ -668,20 +688,21 @@ mod parallel_build_tests {
     #[cfg_attr(miri, ignore = "large inputs; plain arithmetic, no threads")]
     fn splitters_share_out_the_tuples() {
         let partitions = 8;
-        let largest_partition = |tuples: &[Vec<usize>]| {
+        let largest_partition = |tuples: &Tuples| {
             let splitters = first_key_splitters(tuples, partitions);
             let mut counts = vec![0usize; splitters.len() + 1];
-            for tuple in tuples {
-                counts[splitters.partition_point(|&s| s <= tuple[0])] += 1;
+            for row in tuples.rows() {
+                counts[splitters.partition_point(|&s| s <= row[0])] += 1;
             }
             counts.into_iter().max().unwrap()
         };
 
         // Uniform first keys: no key is heavy.
         let mut rng = Lcg(7);
-        let uniform: Vec<Vec<usize>> = (0..100_000)
-            .map(|_| vec![rng.next_usize() % 10_000])
-            .collect();
+        let mut uniform = Tuples::with_capacity(1, 100_000);
+        for _ in 0..100_000 {
+            uniform.push(&[rng.next_usize() % 10_000]);
+        }
         let share = uniform.len() / partitions;
         let largest = largest_partition(&uniform);
         assert!(
@@ -691,9 +712,12 @@ mod parallel_build_tests {
 
         // Skewed first keys: key k appears 10 000 / (k + 1) times, so the
         // heaviest keys have the lowest ids.
-        let skewed: Vec<Vec<usize>> = (0..1000usize)
-            .flat_map(|k| std::iter::repeat_n(vec![k], 10_000 / (k + 1)))
-            .collect();
+        let mut skewed = Tuples::new(1);
+        for k in 0..1000usize {
+            for _ in 0..10_000 / (k + 1) {
+                skewed.push(&[k]);
+            }
+        }
         let share = skewed.len() / partitions;
         let heaviest = 10_000;
         let largest = largest_partition(&skewed);

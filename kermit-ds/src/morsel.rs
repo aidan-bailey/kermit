@@ -5,7 +5,9 @@
 //! mutex-guarded queue, hands the next unit of work to whichever worker is
 //! free, so a slow worker never stalls the rest. A build uses it twice:
 //!
-//! 1. [`scatter`] moves tuples into partitions, one morsel at a time;
+//! 1. [`scatter`] moves tuples into partitions, one morsel at a time
+//!    ([`scatter_rows`] sends the ids of a [`Tuples`] batch's rows instead,
+//!    leaving the batch where it is);
 //! 2. [`dispatch`] then runs one task per partition.
 //!
 //! Neither result depends on scheduling. A partition lists its tuples in
@@ -17,7 +19,10 @@
 //! them. Every worker is joined before a call returns, and a worker's panic
 //! is re-raised in the caller.
 
-use std::{num::NonZeroUsize, panic, sync::Mutex, thread};
+use {
+    kermit_iters::{RowId, Tuples},
+    std::{num::NonZeroUsize, panic, sync::Mutex, thread},
+};
 
 #[cfg(test)]
 thread_local! {
@@ -160,6 +165,81 @@ pub(crate) fn scatter(
     out
 }
 
+/// The row ids [`scatter_rows`] sent to one partition: one segment per
+/// morsel that contributed any, in morsel order. Reading the segments in
+/// order reads the partition in input order, so its ids ascend.
+#[derive(Debug, Default)]
+pub(crate) struct RowPartition {
+    pub(crate) segments: Vec<Vec<RowId>>,
+}
+
+impl RowPartition {
+    /// How many rows the partition holds.
+    pub(crate) fn len(&self) -> usize { self.segments.iter().map(Vec::len).sum() }
+
+    /// The partition's row ids in input order, ascending.
+    pub(crate) fn ids(&self) -> impl Iterator<Item = RowId> + '_ {
+        self.segments.iter().flatten().copied()
+    }
+}
+
+/// One morsel's row ids, split by partition.
+type RowBuckets = Vec<Vec<RowId>>;
+
+/// `position` as a [`RowId`]. A [`Tuples`] batch holds at most `RowId::MAX`
+/// rows, so every position up to its length fits. Crate-visible: HashTrie's
+/// builds convert their row positions with it too.
+pub(crate) fn row_id(position: usize) -> RowId {
+    RowId::try_from(position).expect("a `Tuples` batch holds at most `RowId::MAX` rows")
+}
+
+/// Sends the id of every row of `tuples` to partition `partition_of(row)`,
+/// which must be below `partitions`. The batch stays where it is: workers
+/// read its rows through `&Tuples`, and only 4-byte ids move.
+///
+/// `threads` workers take morsels of `morsel_rows` consecutive rows from a
+/// shared queue, so a worker that finishes early takes more. Every
+/// partition lists its ids in input order, whatever order the morsels ran
+/// in, as [`scatter`] lists its tuples.
+///
+/// # Panics
+///
+/// Panics if `morsel_rows` is zero, or if `partition_of` returns
+/// `partitions` or more, or panics itself.
+pub(crate) fn scatter_rows(
+    threads: Threads, tuples: &Tuples, morsel_rows: usize, partitions: usize,
+    partition_of: impl Fn(&[usize]) -> usize + Sync,
+) -> Vec<RowPartition> {
+    let len = tuples.len();
+    let queue = Mutex::new((0..len).step_by(morsel_rows).enumerate());
+    let mut morsels: Vec<(usize, RowBuckets)> = run_workers(threads, || {
+        let mut scattered = Vec::new();
+        while let Some((index, first)) = take_next(&queue) {
+            let end = first + morsel_rows.min(len - first);
+            let mut buckets: RowBuckets = (0..partitions).map(|_| Vec::new()).collect();
+            for id in row_id(first)..row_id(end) {
+                buckets[partition_of(tuples.row(id))].push(id);
+            }
+            scattered.push((index, buckets));
+        }
+        scattered
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    morsels.sort_unstable_by_key(|&(index, _)| index);
+
+    let mut out: Vec<RowPartition> = (0..partitions).map(|_| RowPartition::default()).collect();
+    for (_, buckets) in morsels {
+        for (partition, bucket) in out.iter_mut().zip(buckets) {
+            if !bucket.is_empty() {
+                partition.segments.push(bucket);
+            }
+        }
+    }
+    out
+}
+
 /// Runs `task` on every item of `items` and returns the results in item
 /// order. `threads` workers take the next item from a shared queue whenever
 /// they are free.
@@ -270,6 +350,79 @@ mod tests {
         }
     }
 
+    /// `n` rows `[i % 7, i]`, as one batch.
+    fn numbered_rows(n: usize) -> Tuples {
+        let mut tuples = Tuples::with_capacity(2, n);
+        for i in 0..n {
+            tuples.push(&[i % 7, i]);
+        }
+        tuples
+    }
+
+    /// Every row's id lands exactly once, in the partition `partition_of`
+    /// names, and each partition lists its ids in input order, whatever the
+    /// thread count and however the morsels divide the input.
+    #[test]
+    fn scatter_rows_keeps_every_row_once_in_input_order() {
+        let n = 1000;
+        let input = numbered_rows(n);
+        for t in [1, 2, 3, 8] {
+            for morsel in [1, 4, 5, n, n + 1] {
+                let case = format!("threads {t}, morsel {morsel}");
+                let partitions = scatter_rows(threads(t), &input, morsel, 3, |row| row[0] % 3);
+                assert_eq!(partitions.len(), 3, "{case}");
+                let mut seen: Vec<RowId> = Vec::new();
+                for (p, partition) in partitions.iter().enumerate() {
+                    let ids: Vec<RowId> = partition.ids().collect();
+                    assert_eq!(partition.len(), ids.len(), "{case}: partition {p} length");
+                    assert!(
+                        ids.windows(2).all(|pair| pair[0] < pair[1]),
+                        "{case}: partition {p} is out of input order"
+                    );
+                    for &id in &ids {
+                        assert_eq!(input.row(id)[0] % 3, p, "{case}: row {id} in partition {p}");
+                    }
+                    seen.extend(ids);
+                }
+                seen.sort_unstable();
+                let every: Vec<RowId> = (0..).take(n).collect();
+                assert_eq!(seen, every, "{case}: every row exactly once");
+            }
+        }
+    }
+
+    /// A partition holds one segment per morsel that sent it any row, in
+    /// morsel order, and no empty segment. Ten rows in morsels of 3 are rows
+    /// 0–2, 3–5, 6–8 and 9; split by parity, the last morsel sends the even
+    /// partition nothing.
+    #[test]
+    fn scatter_rows_cuts_one_segment_per_contributing_morsel() {
+        let input = numbered_rows(10);
+        let partitions = scatter_rows(threads(2), &input, 3, 2, |row| row[1] % 2);
+        assert_eq!(partitions[0].segments, vec![vec![0, 2], vec![4], vec![
+            6, 8
+        ]]);
+        assert_eq!(partitions[1].segments, vec![
+            vec![1],
+            vec![3, 5],
+            vec![7],
+            vec![9]
+        ]);
+    }
+
+    /// A nullary row is an empty slice but still has an id, so a batch of
+    /// them scatters like any other.
+    #[test]
+    fn scatter_rows_sends_nullary_rows_by_id() {
+        let mut input = Tuples::new(0);
+        for _ in 0..5 {
+            input.push(&[]);
+        }
+        let partitions = scatter_rows(threads(2), &input, 2, 2, |row| row.len());
+        assert_eq!(partitions[0].ids().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+        assert_eq!(partitions[1].len(), 0);
+    }
+
     #[test]
     fn dispatch_returns_results_in_item_order() {
         let n = if cfg!(miri) {
@@ -320,6 +473,11 @@ mod tests {
         assert!(partitions
             .into_iter()
             .all(|partition| partition.into_tuples().next().is_none()));
+        let partitions = scatter_rows(threads(4), &Tuples::new(2), 8, 3, |_| 0);
+        assert_eq!(partitions.len(), 3);
+        assert!(partitions
+            .iter()
+            .all(|partition| partition.ids().next().is_none()));
     }
 
     #[test]
