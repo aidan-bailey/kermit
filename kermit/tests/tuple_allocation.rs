@@ -284,8 +284,8 @@ fn hash_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
 /// The bound also counts the root's list and `radix:2`'s four partitions as
 /// growing lists, but only as an upper bound: the root's list is `all_rows`,
 /// a `Range` never built, and `radix::partition` sizes each partition
-/// exactly from a histogram, so those five never grow. They are the bound's
-/// slack, 5 × 7 = 35 allocations.
+/// exactly from a histogram, so those five never grow. They are part of the
+/// bound's slack, 5 × 7 = 35 allocations.
 #[test]
 fn hash_trie_builds_allocate_per_list_not_per_row() {
     let lists = (1 + KEYS + KEYS * KEYS + 4) as u64;
