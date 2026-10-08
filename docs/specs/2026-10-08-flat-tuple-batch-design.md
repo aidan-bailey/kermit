@@ -1,8 +1,12 @@
 # Flat Tuple Batches: One Buffer per Relation, Row Ids in HashTrie
 
 **Date:** 2026-10-08
-**Status:** Design approved in conversation (2026-10-08), section by section; not yet
-planned.
+**Status:** Design approved in conversation (2026-10-08), section by section. Amended
+while planning, the same day, in three places:
+- `HashTrie::for_each_tuple` stays a trie walk, because it is what `bench ds iteration` times;
+  only `scan_tuples` scans the buffer.
+- ColumnTrie's `previous` is a borrowed row, not an index.
+- Part A of the measurement also times HashTrie's `iteration`.
 **Scope:** Issue #111. Every relation's tuples travel from the file readers to every
 structure's build as one row-major buffer (`Tuples`) instead of a `Vec<usize>` per
 tuple. TreeTrie and ColumnTrie build from row slices. HashTrie keeps the buffer it is
@@ -178,7 +182,8 @@ pub struct HashTrie<H, P, E> {
 
 - **Identity.** Two builds of one input own identical buffers, so equal id lists mean equal tuples. `assert_same_trie` and `assert_same_chain` compare ids, as strictly as they compare tuples today. Every mode stays array-identical (`presized:N` equivalent, Amendment 2).
 - **Reading back:**
-  - `for_each_tuple` / `scan_tuples` iterate the buffer in input order: no trie walk, and still no lazy expansion.
+  - `for_each_tuple` stays a depth-first walk of the trie, reading each row through its chain or singleton id. It is what `bench ds`'s `iteration` and `end_to_end` metrics time (#79), so it must keep traversing the structure. Swapping in a buffer scan would turn the metric into an array scan with nothing to compare against the sorted tries. It still never expands a lazy trie.
+  - `TupleScan::scan_tuples` (statistics, which need only the multiset) scans the buffer in input order, without walking the trie.
   - `collect_tuples` copies the buffer.
   - `project` builds its projected buffer from it.
 
@@ -234,7 +239,7 @@ pub trait HashTrieIterator: … {
   - Each worker gathers its partition's rows into a local `Tuples` (ascending ids, so mostly forward reads), sorts it and builds its subtrie.
 
 **ColumnTrie:**
-- `from_sorted` iterates row slices. Its `previous: Option<Vec<usize>>` becomes the previous row's index.
+- `from_sorted` iterates row slices. Its `previous: Option<Vec<usize>>` becomes the previous row, borrowed from the batch (`Option<&[usize]>`), so nothing is allocated.
 - `incremental` (`internal_insert(&[usize])`) is already slice-based.
 
 Neither keeps the buffer, so their `space` is unchanged.
@@ -308,7 +313,7 @@ A replicated A/B in the #107 style, after landing, in its own run directory:
 - 5 replicates with alternating order, a distinct `--name` per step, the quiet gate and the host sampler.
 
 **Parts:**
-- **A — `insertion` and `space`:**
+- **A — `insertion` and `space`, plus `bench ds` `iteration` for HashTrie** (its trie walk now reads rows through ids):
   - TreeTrie `serial` and `parallel:16`;
   - ColumnTrie `bulk` and `incremental`;
   - HashTrie `bulk`, `radix:12`, `parallel:16` and `presized:16` (with `root-capacity=tuples`);
@@ -365,7 +370,7 @@ The full sweep's binary predates this change, so its `insertion` and `space` num
   - `HeapSize`;
   - the Construction table's "the lists themselves" row (still kermit's, now `Vec<RowId>`, until Spec B);
   - the parity rows;
-  - `scan_tuples`' order.
+  - `scan_tuples`' order (input order, from the buffer; `for_each_tuple` still walks the trie).
 - **`tree-trie.md`, `column-trie.md` and `parallel-build.md`:** the shared sort, row slices and id scatter.
 - **`docs/algorithms/hash-triejoin.md`:** the leaf product reads `LeafRows`.
 - **`docs/specs/bench-report-schema.md`:** v4, and what changed.
