@@ -205,11 +205,6 @@ impl Tuples {
     /// `usize`s.
     pub fn heap_size_bytes(&self) -> usize { self.data.capacity() * std::mem::size_of::<usize>() }
 
-    /// Every row as its own `Vec`, one allocation per row: the bridge for
-    /// builds that still take one `Vec` per tuple. Temporary (#111): removed
-    /// once every structure builds from row slices.
-    pub fn into_vecs(self) -> Vec<Vec<usize>> { self.to_vecs() }
-
     /// Every row as its own `Vec`, for tests and diagnostics.
     pub fn to_vecs(&self) -> Vec<Vec<usize>> { self.rows().map(<[usize]>::to_vec).collect() }
 }
@@ -320,7 +315,7 @@ mod tests {
         assert!(tuples.is_empty());
         assert_eq!(tuples.rows().len(), 0);
         assert_eq!(tuples, Tuples::default());
-        assert_eq!(tuples.into_vecs(), Vec::<Vec<usize>>::new());
+        assert_eq!(tuples.to_vecs(), Vec::<Vec<usize>>::new());
     }
 
     #[test]
@@ -386,9 +381,8 @@ mod tests {
         let tuples = Tuples::from(rows.clone());
         assert_eq!(tuples.to_vecs(), rows);
         assert_eq!(Tuples::from(tuples.to_vecs()), tuples);
-        assert_eq!(tuples.clone().into_vecs(), rows);
         let nullary = Tuples::from(vec![vec![]; 2]);
-        assert_eq!(nullary.into_vecs(), vec![Vec::<usize>::new(); 2]);
+        assert_eq!(nullary.to_vecs(), vec![Vec::<usize>::new(); 2]);
     }
 
     #[test]
