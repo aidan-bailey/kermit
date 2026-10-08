@@ -10,7 +10,8 @@
 //! [`JoinIterable`] unifies data structures that may participate in joins.
 //!
 //! A relation is built from a [`Tuples`] batch: its tuples row-major in one
-//! buffer, each row addressed by a [`RowId`].
+//! buffer, each row addressed by a [`RowId`]. [`LeafRows`] reads a hash-trie
+//! leaf chain's rows from such a buffer through their ids.
 //!
 //! # Example
 //!
@@ -41,6 +42,7 @@ mod hash_strategy;
 mod hash_trie;
 mod joinable;
 mod key_type;
+mod leaf_rows;
 mod linear;
 mod optimization;
 mod trie;
@@ -51,6 +53,7 @@ pub use {
     hash_trie::{HashTrieIterable, HashTrieIterator},
     joinable::JoinIterable,
     key_type::Key,
+    leaf_rows::LeafRows,
     linear::{LinearIterable, LinearIterator},
     optimization::{BuildMode, ConfigOption, HasOptimizationAxes, LayoutOption},
     trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},

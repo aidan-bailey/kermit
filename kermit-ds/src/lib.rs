@@ -47,7 +47,7 @@ pub use {
         RootCapacity, SingletonPruning, TreeTrie, TreeTrieBuildMode,
     },
     heap_size::HeapSize,
-    kermit_iters::{RowId, Tuples},
+    kermit_iters::{LeafRows, RowId, Tuples},
     morsel::Threads,
     relation::{
         read_csv, read_csv_header, read_parquet, read_parquet_header, BuildModeRelation,
