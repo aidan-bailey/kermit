@@ -595,6 +595,19 @@ mod tests {
         assert_equivalent_trie(&a, &b, "reordered");
     }
 
+    /// `equivalent_trie_rejects_a_chain_in_another_order` at arity 1, where
+    /// the root is a `Leaf`: `[1]` and `[11]` share hash 1, so they share
+    /// the root's one chain, in the other order.
+    #[test]
+    #[should_panic(expected = "chain rows")]
+    fn equivalent_trie_rejects_an_arity_1_chain_in_another_order() {
+        let a: HashTrie<Mod10HashStrategy> =
+            HashTrie::from_tuples(1.into(), rows(1, &[[1, 0, 0], [11, 0, 0]]));
+        let b: HashTrie<Mod10HashStrategy> =
+            HashTrie::from_tuples(1.into(), rows(1, &[[11, 0, 0], [1, 0, 0]]));
+        assert_equivalent_trie(&a, &b, "reordered");
+    }
+
     /// The same trie over a buffer with spare capacity: equal nodes and
     /// rows, another capacity.
     #[test]
