@@ -311,11 +311,18 @@ mod hash_trie_collisions {
         assert_eq!(iter.leaf_tuples().map(sorted), Some(vec![vec![2]]));
     }
 
+    /// The trie walk recovers every colliding tuple from the chains it
+    /// shares (`collect_tuples` would only copy back the input buffer).
     #[test]
-    fn collect_tuples_recovers_colliding_tuples() {
+    fn the_walk_recovers_colliding_tuples() {
         let tuples = vec![vec![1, 2], vec![11, 12], vec![21, 2], vec![1, 12]];
         let trie = HashTrieMod10::from_tuples(2.into(), tuples.clone());
-        assert_eq!(trie.collect_tuples().to_vecs(), tuples);
+        let mut walked = Vec::new();
+        trie.for_each_tuple(|t| walked.push(t.to_vec()));
+        walked.sort();
+        let mut expected = tuples;
+        expected.sort();
+        assert_eq!(walked, expected);
     }
 
     /// Under pruning, two tuples that collide on every attribute start as

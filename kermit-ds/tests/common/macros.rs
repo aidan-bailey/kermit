@@ -1089,17 +1089,24 @@ macro_rules! hash_trie_construction_tests {
 
             use super::*;
 
+            /// The tuples the trie walk (`for_each_tuple`) lends, sorted:
+            /// what the trie stores. `collect_tuples` would only copy back
+            /// the buffer it was built from, so it cannot be the oracle.
+            fn walked_sorted(relation: &$relation_type) -> Vec<Vec<usize>> {
+                let mut walked = Vec::new();
+                relation.for_each_tuple(|t| walked.push(t.to_vec()));
+                walked.sort();
+                walked
+            }
+
             fn assert_round_trip(arity: usize, tuples: Vec<Vec<usize>>) {
                 use kermit_ds::Relation;
                 let relation = $relation_type::from_tuples(arity.into(), tuples.clone());
-                // `HashTrie` has no tuple-shaped iterator; `collect_tuples`
-                // copies its buffer, in arrival order. Compare as sorted
-                // multisets, as for any multiset structure.
-                let mut collected = relation.collect_tuples().to_vecs();
-                collected.sort();
+                // Compare as sorted multisets, as for any multiset
+                // structure.
                 let mut expected = tuples;
                 expected.sort();
-                assert_eq!(collected, expected);
+                assert_eq!(walked_sorted(&relation), expected);
             }
 
             #[test]
@@ -1127,12 +1134,11 @@ macro_rules! hash_trie_construction_tests {
                 let tuples = vec![vec![1, 2], vec![1, 3], vec![2, 4]];
                 let batch = $relation_type::from_tuples(2.into(), tuples.clone());
                 let mut incremental = $relation_type::new(2.into());
-                incremental.insert_all(tuples);
-                let mut a = batch.collect_tuples().to_vecs();
-                let mut b = incremental.collect_tuples().to_vecs();
-                a.sort();
-                b.sort();
-                assert_eq!(a, b);
+                incremental.insert_all(tuples.clone());
+                let mut expected = tuples;
+                expected.sort();
+                assert_eq!(walked_sorted(&batch), expected);
+                assert_eq!(walked_sorted(&incremental), walked_sorted(&batch));
             }
         }
     };

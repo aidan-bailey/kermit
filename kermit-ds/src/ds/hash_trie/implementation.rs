@@ -108,13 +108,13 @@ use {
 ///
 /// `P` is a [`PruningPolicy`] selecting whether singleton pruning is part
 /// of the representation: [`SingletonPruning`](super::SingletonPruning)
-/// stores a one-tuple subtrie as that tuple, [`NoPruning`] (the default)
-/// makes the `Singleton` variant uninhabited so the instantiation compiles
-/// to the pre-pruning structure. Bench axis `ds_layout_pruning`.
+/// stores a one-tuple subtrie as that tuple's row id, [`NoPruning`] (the
+/// default) makes the `Singleton` variant uninhabited so the instantiation
+/// compiles to the pre-pruning structure. Bench axis `ds_layout_pruning`.
 ///
 /// `E` is an [`ExpansionPolicy`] selecting whether children are built
 /// lazily: [`LazyExpansion`](super::LazyExpansion) keeps every child below
-/// the root as its tuples until a probe first opens it (SIGMOD 2020
+/// the root as its tuples' row ids until a probe first opens it (SIGMOD 2020
 /// Figure 6), while [`EagerExpansion`] (the default) makes the
 /// `Unexpanded` variant uninhabited, so the instantiation compiles to the
 /// eager structure. Bench axis `ds_layout_expansion`.
@@ -1087,6 +1087,18 @@ mod tests {
         assert_eq!(chain, &vec![0, 1]);
     }
 
+    /// An empty literal carries no arity, so `from_tuples` stores an empty
+    /// batch of the header's instead (`batch_for_header`), and a later
+    /// `insert` pushes its row into a buffer of the right arity.
+    #[test]
+    fn insert_into_a_trie_built_from_an_empty_batch() {
+        use crate::cardinality::Cardinality;
+        let mut trie: HashTrie = HashTrie::from_tuples(2.into(), vec![]);
+        trie.insert(vec![1, 2]);
+        assert_eq!(walked_sorted(&trie), vec![vec![1, 2]]);
+        assert_eq!(trie.tuple_count(), 1);
+    }
+
     #[test]
     fn project_drops_columns() {
         use crate::relation::Projectable;
@@ -1261,6 +1273,19 @@ mod tests {
         Pruned::from_tuples(arity.into(), tuples)
     }
 
+    /// The tuples the trie walk (`for_each_tuple`) lends, sorted: the
+    /// multiset stored in the trie's chains, singletons and pending lists.
+    /// The oracle for a trie's contents, since `collect_tuples` only copies
+    /// back the buffer the trie was built from (#111).
+    pub(super) fn walked_sorted<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        trie: &HashTrie<H, P, E>,
+    ) -> Vec<Vec<usize>> {
+        let mut visited = Vec::new();
+        trie.for_each_tuple(|t| visited.push(t.to_vec()));
+        visited.sort();
+        visited
+    }
+
     /// Walks `trie`, asserting the pruning invariant at every inner bucket
     /// and returning the number of tuples stored below the root.
     ///
@@ -1350,34 +1375,28 @@ mod tests {
         let trie = pruned(1, vec![vec![1], vec![2]]);
         assert_eq!(check_pruning_invariant(&trie), 2);
         assert!(matches!(trie.root, HashTrieNode::Leaf(_)));
-        assert_eq!(trie.collect_tuples().to_vecs(), vec![vec![1], vec![2]]);
+        assert_eq!(walked_sorted(&trie), vec![vec![1], vec![2]]);
     }
 
     #[test]
     fn unprune_when_second_tuple_diverges_one_level_down() {
         let trie = pruned(3, vec![vec![1, 2, 3], vec![1, 4, 5]]);
         assert_eq!(check_pruning_invariant(&trie), 2);
-        assert_eq!(trie.collect_tuples().to_vecs(), vec![vec![1, 2, 3], vec![
-            1, 4, 5
-        ]]);
+        assert_eq!(walked_sorted(&trie), vec![vec![1, 2, 3], vec![1, 4, 5]]);
     }
 
     #[test]
     fn unprune_when_second_tuple_shares_hashes_to_the_leaf() {
         let trie = pruned(3, vec![vec![1, 2, 3], vec![1, 2, 4]]);
         assert_eq!(check_pruning_invariant(&trie), 2);
-        assert_eq!(trie.collect_tuples().to_vecs(), vec![vec![1, 2, 3], vec![
-            1, 2, 4
-        ]]);
+        assert_eq!(walked_sorted(&trie), vec![vec![1, 2, 3], vec![1, 2, 4]]);
     }
 
     #[test]
     fn unprune_on_exact_duplicate_keeps_multiset() {
         let trie = pruned(2, vec![vec![1, 2], vec![1, 2]]);
         assert_eq!(check_pruning_invariant(&trie), 2);
-        assert_eq!(trie.collect_tuples().to_vecs(), vec![vec![1, 2], vec![
-            1, 2
-        ]]);
+        assert_eq!(walked_sorted(&trie), vec![vec![1, 2], vec![1, 2]]);
     }
 
     #[test]
@@ -1397,15 +1416,12 @@ mod tests {
         use crate::heap_size::HeapSize;
         let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
         let forward = pruned(3, tuples.clone());
-        let backward = pruned(3, tuples.into_iter().rev().collect());
+        let backward = pruned(3, tuples.iter().rev().cloned().collect());
         assert_eq!(forward.heap_size_bytes(), backward.heap_size_bytes());
-        let (mut a, mut b) = (
-            forward.collect_tuples().to_vecs(),
-            backward.collect_tuples().to_vecs(),
-        );
-        a.sort();
-        b.sort();
-        assert_eq!(a, b);
+        let mut expected = tuples;
+        expected.sort();
+        assert_eq!(walked_sorted(&forward), expected);
+        assert_eq!(walked_sorted(&backward), expected);
     }
 
     #[test]
@@ -1521,11 +1537,14 @@ mod tests {
     }
 
     #[test]
-    fn pruned_and_plain_collect_the_same_tuples() {
+    fn pruned_and_plain_walk_the_same_tuples() {
         let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
         let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
-        let compact = pruned(3, tuples);
-        assert_eq!(plain.collect_tuples(), compact.collect_tuples());
+        let compact = pruned(3, tuples.clone());
+        let mut expected = tuples;
+        expected.sort();
+        assert_eq!(walked_sorted(&plain), expected);
+        assert_eq!(walked_sorted(&compact), walked_sorted(&plain));
     }
 
     /// The tuples `for_each_tuple` lends, in the order it lends them.
@@ -1599,7 +1618,10 @@ mod tests {
 
 #[cfg(test)]
 mod cardinality_tests {
-    use {super::*, crate::cardinality::Cardinality};
+    use {
+        super::{tests::walked_sorted, *},
+        crate::cardinality::Cardinality,
+    };
 
     #[test]
     fn empty_relation_has_zero_tuples() {
@@ -1608,11 +1630,11 @@ mod cardinality_tests {
     }
 
     #[test]
-    fn tuple_count_matches_collect_tuples_len() {
+    fn tuple_count_matches_the_walk() {
         let trie: HashTrie =
             HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         assert_eq!(trie.tuple_count(), 3);
-        assert_eq!(trie.collect_tuples().len(), 3);
+        assert_eq!(walked_sorted(&trie).len(), 3);
     }
 
     #[test]
@@ -1623,7 +1645,7 @@ mod cardinality_tests {
         let mut trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         trie.insert(vec![1, 2]);
         assert_eq!(trie.tuple_count(), 2);
-        assert_eq!(trie.collect_tuples().len(), 2);
+        assert_eq!(walked_sorted(&trie), vec![vec![1, 2], vec![1, 2]]);
     }
 
     #[test]
@@ -1633,7 +1655,7 @@ mod cardinality_tests {
         // insert()), so duplicates must count there too.
         let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 2]]);
         assert_eq!(trie.tuple_count(), 2);
-        assert_eq!(trie.collect_tuples().len(), 2);
+        assert_eq!(walked_sorted(&trie), vec![vec![1, 2], vec![1, 2]]);
     }
 }
 
@@ -1805,7 +1827,7 @@ mod lazy_tests {
 
     /// Fully expanded, a lazy arity-2 trie is the eager trie plus one
     /// `LazyChild` box per root child. The tables are identical, the
-    /// tuples are moved rather than copied, and the emptied pending lists
+    /// pending ids are moved rather than copied, and the emptied pending lists
     /// hold no heap.
     #[test]
     fn expanded_heap_is_the_eager_heap_plus_one_box_per_child() {
