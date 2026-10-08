@@ -369,7 +369,7 @@ recorded below.
 
 ### Scaling result: TreeTrie (2026-10-05)
 
-> **2026-10-08 (#111):** This record and the jemalloc one below predate flat tuple batches: every arm read its input as a `Vec` per tuple, and the workers freed those tuples. Since #111 the input is one `Tuples` batch, freed once by the calling thread, and each worker gathers its partition into a local `Tuples`, so the plateau's mechanism below no longer applies to the input path.
+> **2026-10-08 (#111):** This record and the jemalloc one below predate flat tuple batches: every arm read its input as a `Vec` per tuple and freed those tuples one by one (`serial` on the calling thread, `parallel:N` on its workers). Since #111 the input is one `Tuples` batch, freed once by the calling thread, and each worker gathers its partition into a local `Tuples`, so neither the plateau's mechanism nor the `parallel:1` artefact below (both from those 10⁷ frees) applies to the input path any more.
 
 These are **glibc** numbers. The binary predates #112, which made jemalloc the
 binary's allocator. At 10⁷ tuples the glibc curve is bound by the allocator,
@@ -473,9 +473,9 @@ geometric mean over the 14 queries of each query's speedup):
   thread at all: the batch is one buffer, freed once, and each worker
   gathers its partition into a local `Tuples` that it frees itself.
 - **`parallel:1` at 0.67 for unary 10⁷ is a glibc timing artefact.** A
-  unary build makes no small allocation, so a serial build's 10⁷ frees
-  wait in glibc's fastbins and are consolidated in Criterion's *untimed*
-  setup. `parallel:1`'s per-partition allocations trigger that
+  unary build made no small allocation, so a serial build's 10⁷ frees
+  waited in glibc's fastbins and were consolidated in Criterion's *untimed*
+  setup. `parallel:1`'s per-partition allocations triggered that
   consolidation inside the timed build. Both spend the same CPU per step,
   and under jemalloc unary `:1` is 0.90. Unary 10⁷ `serial` therefore
   understates the build by about 1 s here.
