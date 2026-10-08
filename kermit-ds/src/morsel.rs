@@ -5,12 +5,14 @@
 //! mutex-guarded queue, hands the next unit of work to whichever worker is
 //! free, so a slow worker never stalls the rest. A build uses it twice:
 //!
-//! 1. [`scatter_rows`] sends row ids into partitions, one morsel at a time;
+//! 1. [`scatter_rows`] sends row ids into partitions, one morsel at a time, or
+//!    [`partition_rows`] copies the rows themselves into partition order (the
+//!    paper's materialisation step, #101);
 //! 2. [`dispatch`] then runs one task per partition.
 //!
-//! Neither result depends on scheduling. A partition lists its row ids in
-//! input order, and task results come back in task order, so a parallel
-//! build can reproduce its serial counterpart exactly
+//! No result depends on scheduling. A partition lists its rows in input
+//! order, and task results come back in task order, so a parallel build
+//! can reproduce its serial counterpart exactly
 //! (`docs/data-structures/parallel-build.md`).
 //!
 //! The workers are [`std::thread::scope`] threads, the calling thread among
@@ -19,7 +21,7 @@
 
 use {
     kermit_iters::{RowId, Tuples},
-    std::{num::NonZeroUsize, panic, sync::Mutex, thread},
+    std::{mem, num::NonZeroUsize, ops::Range, panic, sync::Mutex, thread},
 };
 
 #[cfg(test)]
@@ -167,6 +169,218 @@ pub(crate) fn scatter_rows(
     out
 }
 
+/// A batch's rows copied into partition order by [`partition_rows`]: the
+/// paper's materialisation step, which partitions the tuples so "that
+/// tuples with similar join key hash values reside in physically close
+/// memory locations" (Freitag et al., VLDB 2020, §3.3.2). Partition `p`'s
+/// rows are the rows `offsets[p]..offsets[p + 1]` of `tuples`, in input
+/// order.
+#[allow(dead_code)] // No caller until the radix family copies its rows (#101).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Partitioned {
+    /// The partition-ordered copy. Its buffer reserves the input buffer's
+    /// capacity ([`Tuples::value_capacity`]), so a trie that keeps it in
+    /// place of the input holds the same bytes.
+    pub(crate) tuples: Tuples,
+    /// `partitions + 1` prefix sums of the partition sizes: `offsets[0]` is
+    /// 0 and the last is the row count.
+    pub(crate) offsets: Vec<usize>,
+    /// `origin[r]` is the input position of the copy's row `r`.
+    pub(crate) origin: Vec<RowId>,
+}
+
+#[allow(dead_code)] // No caller until the radix family copies its rows (#101).
+impl Partitioned {
+    /// How many partitions the rows were copied into.
+    pub(crate) fn partitions(&self) -> usize { self.offsets.len() - 1 }
+
+    /// Partition `p`'s rows in the copy: consecutive ids, whose rows keep
+    /// input order.
+    pub(crate) fn ids(&self, p: usize) -> Range<RowId> {
+        row_id(self.offsets[p])..row_id(self.offsets[p + 1])
+    }
+}
+
+/// The unwritten front of one range of [`partition_rows`]' copy: its values
+/// and the matching `origin` slots. Ranges are disjoint `&mut` borrows of
+/// the two buffers, so workers write them without a lock.
+struct Cursor<'a> {
+    values: &'a mut [usize],
+    origin: &'a mut [RowId],
+}
+
+impl<'a> Cursor<'a> {
+    /// Cuts the next `rows` rows of `arity` values off the front, as a range
+    /// of their own.
+    fn split_off_front(&mut self, rows: usize, arity: usize) -> Cursor<'a> {
+        let (values, rest) = mem::take(&mut self.values).split_at_mut(rows * arity);
+        self.values = rest;
+        let (origin, rest) = mem::take(&mut self.origin).split_at_mut(rows);
+        self.origin = rest;
+        Cursor {
+            values,
+            origin,
+        }
+    }
+
+    /// Writes `row`, copied from input position `id`, at the front, and
+    /// moves the front past it.
+    fn write(&mut self, row: &[usize], id: RowId) {
+        let (slot, rest) = mem::take(&mut self.origin)
+            .split_first_mut()
+            .expect("the histogram counted every row a morsel sends to this range");
+        *slot = id;
+        self.origin = rest;
+        let (values, rest) = mem::take(&mut self.values).split_at_mut(row.len());
+        values.copy_from_slice(row);
+        self.values = rest;
+    }
+}
+
+/// Copies the rows of `tuples` into partition order: partition `p` holds,
+/// in input order, the rows that `partition_of` sends to `p`, which must be
+/// below `partitions`, and the partitions follow one another in order. A
+/// classic histogram-and-scatter radix partition, in three steps:
+///
+/// 1. **Histogram.** `threads` workers take morsels of `morsel_rows`
+///    consecutive rows from a shared queue, as in [`scatter_rows`]. For each
+///    morsel they call `partition_of` once per row, keep the row's partition
+///    number, and count the morsel's rows per partition.
+/// 2. **Offsets.** Prefix sums over (partition, morsel) pairs, partition by
+///    partition, give every pair its own range of the copy: a partition's
+///    ranges lie side by side, in morsel order.
+/// 3. **Scatter.** The copy and `origin` are allocated once and cut into those
+///    ranges with `split_at_mut`, grouped by morsel. Workers take the morsels
+///    again, each with its ranges and its rows' partition numbers, and write
+///    every row at the front of its partition's range, its input position into
+///    `origin` alongside. The ranges are disjoint, so no write needs a lock or
+///    an atomic.
+///
+/// `partition_of` runs exactly once per row: the scatter reads the numbers
+/// the histogram kept (4 bytes a row, freed as each morsel is scattered)
+/// instead of calling it again. A build whose `partition_of` hashes
+/// therefore hashes each row once here, as it did when it partitioned ids.
+///
+/// The copy does not depend on the thread count or on which worker took
+/// which morsel: a partition's ranges are in morsel order, and a morsel's
+/// rows are written in input order. Its buffer reserves the input buffer's
+/// capacity ([`Tuples::value_capacity`]). Any arity works, nullary
+/// included.
+///
+/// It starts workers exactly twice, one `run_workers` call per pass
+/// (histogram, then scatter), each on `threads` workers, even for an empty
+/// batch; a caller that must start none checks for that first.
+///
+/// Two costs are known and accepted:
+///
+/// - **The zero-fill.** The copy is zero-filled before the scatter overwrites
+///   it, since safe Rust cannot hand out uninitialised `&mut` ranges. The fill
+///   runs at memset speed.
+/// - **The bookkeeping** is one count and one range per (partition, morsel)
+///   pair. A one-thread caller gains nothing from several morsels and passes
+///   the whole batch as one (`tuples.len().max(1)`): the classic one-thread
+///   radix partition, one histogram and one scatter.
+///
+/// # Panics
+///
+/// Panics if `morsel_rows` is zero, if `partitions` exceeds `u32::MAX`, or
+/// if `partition_of` returns `partitions` or more, or panics itself.
+#[allow(dead_code)] // No caller until the radix family copies its rows (#101).
+pub(crate) fn partition_rows(
+    threads: Threads, tuples: &Tuples, morsel_rows: usize, partitions: usize,
+    partition_of: impl Fn(&[usize]) -> usize + Sync,
+) -> Partitioned {
+    assert!(
+        morsel_rows > 0,
+        "partition_rows: a morsel holds at least one row"
+    );
+    // A row's partition number is kept as a `u32` between the two passes.
+    assert!(
+        u32::try_from(partitions).is_ok(),
+        "partition_rows: at most `u32::MAX` partitions"
+    );
+    let (len, arity) = (tuples.len(), tuples.arity());
+    let morsels = len.div_ceil(morsel_rows);
+    let morsel_ids = |m: usize| {
+        let first = m * morsel_rows;
+        row_id(first)..row_id(first + morsel_rows.min(len - first))
+    };
+
+    // 1. Histogram: `counts[m][p]` of morsel `m`'s rows go to partition `p`,
+    //    and `numbers[m]` holds each of its rows' partition, in row order.
+    let queue = Mutex::new(0..morsels);
+    let mut counts: Vec<Vec<usize>> = vec![Vec::new(); morsels];
+    let mut numbers: Vec<Vec<u32>> = vec![Vec::new(); morsels];
+    let counted = run_workers(threads, || {
+        let mut counted = Vec::new();
+        while let Some(m) = take_next(&queue) {
+            let ids = morsel_ids(m);
+            let mut histogram = vec![0; partitions];
+            // Sized from the morsel's row count, so it never grows.
+            let mut morsel_numbers = Vec::with_capacity(ids.len());
+            for id in ids {
+                let p = partition_of(tuples.row(id));
+                histogram[p] += 1;
+                // Lossless: the index above checked `p < partitions`, and
+                // the assertion at the top `partitions <= u32::MAX`.
+                morsel_numbers.push(p as u32);
+            }
+            counted.push((m, histogram, morsel_numbers));
+        }
+        counted
+    });
+    for (m, histogram, morsel_numbers) in counted.into_iter().flatten() {
+        counts[m] = histogram;
+        numbers[m] = morsel_numbers;
+    }
+
+    // 2. Offsets, and the copy cut into one range per (partition, morsel) pair,
+    //    partition by partition: `ranges[m][p]` is where morsel `m` writes its
+    //    rows of partition `p`.
+    let mut values = Vec::with_capacity(tuples.value_capacity());
+    values.resize(len * arity, 0);
+    let mut origin: Vec<RowId> = vec![0; len];
+    let mut offsets = Vec::with_capacity(partitions + 1);
+    offsets.push(0);
+    {
+        let mut unassigned = Cursor {
+            values: values.as_mut_slice(),
+            origin: origin.as_mut_slice(),
+        };
+        let mut ranges: Vec<Vec<Cursor<'_>>> = (0..morsels)
+            .map(|_| Vec::with_capacity(partitions))
+            .collect();
+        let mut end = 0;
+        for p in 0..partitions {
+            for (morsel_ranges, morsel_counts) in ranges.iter_mut().zip(&counts) {
+                let rows = morsel_counts[p];
+                morsel_ranges.push(unassigned.split_off_front(rows, arity));
+                end += rows;
+            }
+            offsets.push(end);
+        }
+        debug_assert_eq!(end, len, "the histograms count every row once");
+
+        // 3. Scatter: each worker takes a morsel with its ranges and its rows'
+        //    partition numbers, and writes every row at the front of its
+        //    partition's range. `partition_of` is not called again.
+        let queue = Mutex::new(ranges.into_iter().zip(numbers).enumerate());
+        run_workers(threads, || {
+            while let Some((m, (mut ranges, morsel_numbers))) = take_next(&queue) {
+                for (id, p) in morsel_ids(m).zip(morsel_numbers) {
+                    ranges[p as usize].write(tuples.row(id), id);
+                }
+            }
+        });
+        // The ranges borrow `values` and `origin` until this block ends.
+    }
+    Partitioned {
+        tuples: Tuples::from_flat(arity, len, values),
+        offsets,
+        origin,
+    }
+}
+
 /// Runs `task` on every item of `items` and returns the results in item
 /// order. `threads` workers take the next item from a shared queue whenever
 /// they are free.
@@ -281,6 +495,235 @@ mod tests {
         let partitions = scatter_rows(threads(2), &input, 2, 2, |row| row.len());
         assert_eq!(partitions[0].ids().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
         assert_eq!(partitions[1].len(), 0);
+    }
+
+    /// `n` rows of `arity` values (at most 3): `[i % 7, i, n - i]`, cut to
+    /// `arity`. At arity 1 rows repeat; at arity 3 every row is distinct.
+    fn rows_of_arity(n: usize, arity: usize) -> Tuples {
+        let mut tuples = Tuples::with_capacity(arity, n);
+        for i in 0..n {
+            tuples.push(&[i % 7, i, n - i][..arity]);
+        }
+        tuples
+    }
+
+    /// Partitions in the `partition_rows` tests. [`first_mod_3`] never sends
+    /// a row to the last one, so an empty partition is always among them.
+    const PARTITIONS: usize = 4;
+
+    /// The partition the `partition_rows` tests send a row to.
+    fn first_mod_3(row: &[usize]) -> usize { row[0] % 3 }
+
+    /// `partition_rows` at arities 1 and 3, on 1 to 8 threads, with morsels
+    /// from one row to more than the whole batch: each case's label, input
+    /// and output.
+    fn partitioned_cases() -> Vec<(String, Tuples, Partitioned)> {
+        let n = 100;
+        let mut cases = Vec::new();
+        for arity in [1, 3] {
+            let input = rows_of_arity(n, arity);
+            for t in [1, 2, 3, 8] {
+                for morsel in [1, 3, 5, n, n + 1] {
+                    let out = partition_rows(threads(t), &input, morsel, PARTITIONS, first_mod_3);
+                    let case = format!("arity {arity}, threads {t}, morsel {morsel}");
+                    cases.push((case, input.clone(), out));
+                }
+            }
+        }
+        cases
+    }
+
+    /// `offsets` are the prefix sums of the partition sizes, the empty last
+    /// partition included, and the copy and `origin` hold every row.
+    #[test]
+    fn partition_rows_offsets_are_the_prefix_sums_of_the_partition_sizes() {
+        for (case, input, out) in partitioned_cases() {
+            let mut expected = vec![0];
+            let mut end = 0;
+            for p in 0..PARTITIONS {
+                end += input.rows().filter(|&row| first_mod_3(row) == p).count();
+                expected.push(end);
+            }
+            assert_eq!(out.offsets, expected, "{case}");
+            assert_eq!(out.partitions(), PARTITIONS, "{case}");
+            assert_eq!(out.tuples.arity(), input.arity(), "{case}");
+            assert_eq!(out.tuples.len(), input.len(), "{case}");
+            assert_eq!(out.origin.len(), input.len(), "{case}");
+        }
+    }
+
+    /// Each copied row lies in the range of the partition `partition_of`
+    /// names. With the sizes above and `origin` a permutation, partition
+    /// `p` holds exactly the rows sent to `p`.
+    #[test]
+    fn partition_rows_puts_each_row_in_its_partition() {
+        for (case, _, out) in partitioned_cases() {
+            for p in 0..out.partitions() {
+                for id in out.ids(p) {
+                    assert_eq!(first_mod_3(out.tuples.row(id)), p, "{case}: row {id}");
+                }
+            }
+        }
+    }
+
+    /// Within a partition, rows keep input order: their input positions
+    /// ascend, across morsels as within one.
+    #[test]
+    fn partition_rows_keeps_input_order_within_a_partition() {
+        for (case, _, out) in partitioned_cases() {
+            for (p, bounds) in out.offsets.windows(2).enumerate() {
+                let from = &out.origin[bounds[0]..bounds[1]];
+                assert!(
+                    from.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{case}: partition {p} is out of input order: {from:?}"
+                );
+            }
+        }
+    }
+
+    /// `origin` maps each copied row to the input row it was copied from,
+    /// and names every input position exactly once.
+    #[test]
+    fn partition_rows_origin_maps_each_copied_row_to_its_input_row() {
+        for (case, input, out) in partitioned_cases() {
+            for (id, &from) in (0..).zip(&out.origin) {
+                assert_eq!(out.tuples.row(id), input.row(from), "{case}: row {id}");
+            }
+            let mut positions = out.origin.clone();
+            positions.sort_unstable();
+            let every: Vec<RowId> = (0..).take(input.len()).collect();
+            assert_eq!(positions, every, "{case}: every input row exactly once");
+        }
+    }
+
+    /// The copy is the same, byte for byte, on every thread count and with
+    /// every morsel size: which worker took which morsel cannot show.
+    #[test]
+    fn partition_rows_is_the_same_on_every_thread_count() {
+        for arity in [1, 3] {
+            let input = rows_of_arity(100, arity);
+            let one = partition_rows(threads(1), &input, 3, PARTITIONS, first_mod_3);
+            for t in [2, 3, 8] {
+                for morsel in [1, 3, 7, 101] {
+                    assert_eq!(
+                        partition_rows(threads(t), &input, morsel, PARTITIONS, first_mod_3),
+                        one,
+                        "arity {arity}, threads {t}, morsel {morsel}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `partition_of` runs exactly once per row: the histogram pass keeps
+    /// each row's partition number and the scatter reads it back, so a
+    /// caller that hashes in `partition_of` hashes each row once here.
+    #[test]
+    fn partition_rows_calls_partition_of_once_per_row() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let input = rows_of_arity(100, 3);
+        for t in [1, 3] {
+            for morsel in [1, 7, 101] {
+                let calls = AtomicUsize::new(0);
+                let out = partition_rows(threads(t), &input, morsel, PARTITIONS, |row| {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    first_mod_3(row)
+                });
+                assert_eq!(calls.into_inner(), 100, "threads {t}, morsel {morsel}");
+                assert_eq!(out.offsets[PARTITIONS], 100, "threads {t}, morsel {morsel}");
+            }
+        }
+    }
+
+    /// Two worker runs, the histogram then the scatter, each on `threads`
+    /// workers, an empty batch included. The radix family's worker-run pins
+    /// (`build_modes_reach_their_builds`, `presized_build_reaches_its_own_path`
+    /// and `parallel_build_merges_under_every_root_capacity` in
+    /// `hash_trie/parallel.rs`) count on it.
+    #[test]
+    fn partition_rows_starts_workers_twice() {
+        for t in [1, 3] {
+            take_worker_runs();
+            let _ = partition_rows(
+                threads(t),
+                &rows_of_arity(10, 2),
+                4,
+                PARTITIONS,
+                first_mod_3,
+            );
+            assert_eq!(take_worker_runs(), vec![t, t], "threads {t}");
+            let _ = partition_rows(threads(t), &Tuples::new(2), 4, PARTITIONS, first_mod_3);
+            assert_eq!(take_worker_runs(), vec![t, t], "threads {t}, empty batch");
+        }
+    }
+
+    #[test]
+    fn partition_rows_of_nothing_is_empty() {
+        let out = partition_rows(threads(4), &Tuples::new(2), 8, 3, |_| 0);
+        assert_eq!(out.offsets, vec![0, 0, 0, 0]);
+        assert_eq!((out.tuples.arity(), out.tuples.len()), (2, 0));
+        assert!(out.origin.is_empty());
+        assert!((0..3).all(|p| out.ids(p).is_empty()));
+    }
+
+    /// The copy reserves the input buffer's capacity, spare capacity
+    /// included, so a trie that keeps the copy holds the bytes the input
+    /// held.
+    #[test]
+    fn partition_rows_reserves_the_inputs_capacity() {
+        let mut input = Tuples::with_capacity(3, 40);
+        for i in 0..10 {
+            input.push(&[i, i, i]);
+        }
+        assert!(
+            input.value_capacity() > input.as_flat().len(),
+            "the input has spare capacity"
+        );
+        for t in [1, 3] {
+            let out = partition_rows(threads(t), &input, 4, PARTITIONS, first_mod_3);
+            assert_eq!(
+                out.tuples.value_capacity(),
+                input.value_capacity(),
+                "threads {t}"
+            );
+        }
+        let empty = Tuples::with_capacity(2, 5);
+        let out = partition_rows(threads(2), &empty, 4, PARTITIONS, first_mod_3);
+        assert_eq!(out.tuples.value_capacity(), empty.value_capacity());
+    }
+
+    /// With one partition the copy is the input, `origin` is the identity
+    /// and the partition is every row.
+    #[test]
+    fn one_partition_is_the_input_order() {
+        for arity in [1, 3] {
+            let input = rows_of_arity(50, arity);
+            for t in [1, 3] {
+                let case = format!("arity {arity}, threads {t}");
+                let out = partition_rows(threads(t), &input, 7, 1, |_| 0);
+                assert_eq!(out.tuples, input, "{case}");
+                assert_eq!(out.origin, (0..50).collect::<Vec<RowId>>(), "{case}");
+                assert_eq!(out.offsets, vec![0, 50], "{case}");
+                assert_eq!(out.ids(0), 0..50, "{case}");
+            }
+        }
+    }
+
+    /// A nullary row is an empty slice but still has an input position, so
+    /// a batch of them partitions like any other.
+    #[test]
+    fn partition_rows_copies_nullary_rows_by_position() {
+        let input = Tuples::from_flat(0, 5, Vec::new());
+        let out = partition_rows(threads(2), &input, 2, 2, |row| row.len());
+        assert_eq!((out.tuples.arity(), out.tuples.len()), (0, 5));
+        assert_eq!(out.offsets, vec![0, 5, 5]);
+        assert_eq!(out.origin, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "partition_rows: a morsel holds at least one row")]
+    fn partition_rows_rejects_empty_morsels() {
+        let _ = partition_rows(threads(1), &rows_of_arity(4, 1), 0, PARTITIONS, first_mod_3);
     }
 
     #[test]

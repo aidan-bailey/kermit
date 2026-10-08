@@ -201,6 +201,13 @@ impl Tuples {
     /// [`heap_size_bytes`](Self::heap_size_bytes) counts exactly the rows.
     pub fn shrink_to_fit(&mut self) { self.data.shrink_to_fit() }
 
+    /// How many values the buffer has room for before it grows: its
+    /// capacity in `usize`s, not rows, spare capacity included. A copy that
+    /// reserves it holds as many heap bytes
+    /// ([`heap_size_bytes`](Self::heap_size_bytes)) as this batch.
+    #[inline]
+    pub fn value_capacity(&self) -> usize { self.data.capacity() }
+
     /// Heap bytes the buffer holds: its capacity, not its length, in
     /// `usize`s.
     pub fn heap_size_bytes(&self) -> usize { self.data.capacity() * std::mem::size_of::<usize>() }
@@ -435,5 +442,21 @@ mod tests {
         tuples.push(&[4, 5, 6]);
         tuples.shrink_to_fit();
         assert_eq!(tuples.heap_size_bytes(), 6 * std::mem::size_of::<usize>());
+    }
+
+    /// `value_capacity` is the buffer's capacity in values, not rows, spare
+    /// capacity included: what a copy reserves to hold the same heap bytes.
+    #[test]
+    fn value_capacity_counts_values_spare_capacity_included() {
+        let mut tuples = Tuples::with_capacity(3, 10);
+        tuples.push(&[1, 2, 3]);
+        assert!(tuples.value_capacity() >= 30);
+        assert_eq!(
+            tuples.heap_size_bytes(),
+            tuples.value_capacity() * std::mem::size_of::<usize>()
+        );
+        tuples.shrink_to_fit();
+        assert_eq!(tuples.value_capacity(), 3);
+        assert_eq!(Tuples::from(vec![vec![], vec![]]).value_capacity(), 0);
     }
 }
