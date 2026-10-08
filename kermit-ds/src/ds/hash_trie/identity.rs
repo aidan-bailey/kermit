@@ -562,7 +562,7 @@ mod tests {
 
     /// Under lazy expansion every root child is a pending list.
     #[test]
-    #[should_panic(expected = "pending")]
+    #[should_panic(expected = "pending: chain rows")]
     fn same_contents_rejects_a_pending_row_that_hashes_alike() {
         check_rows_that_hash_alike::<NoPruning, LazyExpansion>(3);
     }
@@ -578,6 +578,21 @@ mod tests {
         let b: HashTrie<Mod10HashStrategy> =
             HashTrie::from_tuples(2.into(), rows(2, &[[1, 12, 0], [1, 2, 0]]));
         assert_same_contents(&a, &b, "reordered");
+    }
+
+    /// `assert_equivalent_trie` reads each side's chains through its own
+    /// buffer. The pair of `same_contents_rejects_a_chain_in_another_order`
+    /// has the same buffer multiset, capacity and root buckets, and equal
+    /// ids in the chain, so only the rows those ids name tell the tries
+    /// apart. (The hash-alike pair would fail the buffer check first.)
+    #[test]
+    #[should_panic(expected = "chain rows")]
+    fn equivalent_trie_rejects_a_chain_in_another_order() {
+        let a: HashTrie<Mod10HashStrategy> =
+            HashTrie::from_tuples(2.into(), rows(2, &[[1, 2, 0], [1, 12, 0]]));
+        let b: HashTrie<Mod10HashStrategy> =
+            HashTrie::from_tuples(2.into(), rows(2, &[[1, 12, 0], [1, 2, 0]]));
+        assert_equivalent_trie(&a, &b, "reordered");
     }
 
     /// The same trie over a buffer with spare capacity: equal nodes and
