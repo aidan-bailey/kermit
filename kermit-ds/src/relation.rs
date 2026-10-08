@@ -254,12 +254,14 @@ pub trait Relation: JoinIterable + Projectable {
     /// # Panics
     ///
     /// Panics if `tuples` is not empty and its arity does not equal
-    /// `header.arity()`.
+    /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
+    /// earlier, while converting to [`Tuples`].
     fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self;
 
     /// Inserts a tuple, given as anything that lends a slice of keys
-    /// (`&[usize]`, `Vec<usize>`, an array). Duplicate tuples are silently
-    /// absorbed (the relation behaves as a set).
+    /// (`&[usize]`, `Vec<usize>`, an array). Sorted tries absorb duplicates
+    /// (a set); `HashTrie` keeps them (a multiset, see
+    /// [`Cardinality`](crate::Cardinality)).
     ///
     /// # Panics
     ///
@@ -273,7 +275,8 @@ pub trait Relation: JoinIterable + Projectable {
     /// # Panics
     ///
     /// Panics if `tuples` is not empty and its arity does not match the
-    /// relation's arity.
+    /// relation's arity. A `Vec<Vec<usize>>` of mixed arities panics
+    /// earlier, while converting to [`Tuples`].
     fn insert_all(&mut self, tuples: impl Into<Tuples>);
 }
 
@@ -305,7 +308,8 @@ pub trait ConfigurableRelation: Relation {
     /// # Panics
     ///
     /// Panics if `tuples` is not empty and its arity does not equal
-    /// `header.arity()`.
+    /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
+    /// earlier, while converting to [`Tuples`].
     fn from_tuples_with_config(
         header: RelationHeader, config: Self::Config, tuples: impl Into<Tuples>,
     ) -> Self;
@@ -339,7 +343,9 @@ pub trait BuildModeRelation: Relation {
     ///
     /// Panics if `tuples` is not empty and its arity does not equal
     /// `header.arity()`, or if `mode` has a prerequisite the default config
-    /// lacks (`HashTrie`'s `presized:N` requires `root-capacity=tuples`).
+    /// lacks (`HashTrie`'s `presized:N` requires `root-capacity=tuples`). A
+    /// `Vec<Vec<usize>>` of mixed arities panics earlier, while converting
+    /// to [`Tuples`].
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: Self::BuildMode, tuples: impl Into<Tuples>,
     ) -> Self;
@@ -351,6 +357,13 @@ pub trait BuildModeRelation: Relation {
 pub trait ConfiguredBuildModeRelation: ConfigurableRelation + BuildModeRelation {
     /// Builds `tuples` by `mode` under `config`. Same contract as
     /// [`BuildModeRelation::from_tuples_with_build_mode`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tuples` is not empty and its arity does not equal
+    /// `header.arity()`, or if `mode` has a prerequisite `config` lacks. A
+    /// `Vec<Vec<usize>>` of mixed arities panics earlier, while converting
+    /// to [`Tuples`].
     fn from_tuples_with_config_and_build_mode(
         header: RelationHeader, config: Self::Config, mode: Self::BuildMode,
         tuples: impl Into<Tuples>,

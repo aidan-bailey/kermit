@@ -398,6 +398,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
             self.header.arity()
         );
         let arity = self.header.arity();
+        // #111 interim: `insert_at` stores an owned `Vec`, removed in T7.
         Self::insert_at(
             &mut self.root,
             0,

@@ -206,8 +206,8 @@ impl Tuples {
     pub fn heap_size_bytes(&self) -> usize { self.data.capacity() * std::mem::size_of::<usize>() }
 
     /// Every row as its own `Vec`, one allocation per row: the bridge for
-    /// builds that still take one `Vec` per tuple, until they build from
-    /// row slices (#111).
+    /// builds that still take one `Vec` per tuple. Temporary (#111): removed
+    /// once every structure builds from row slices.
     pub fn into_vecs(self) -> Vec<Vec<usize>> { self.to_vecs() }
 
     /// Every row as its own `Vec`, for tests and diagnostics.
@@ -225,6 +225,10 @@ fn sort_rows<const N: usize>(data: &mut [usize]) {
 /// One `Vec` per tuple, as test fixtures write them. The arity is the first
 /// tuple's; an empty `Vec` is the empty batch of arity 0. The buffer is
 /// reserved once, at exactly the rows' size.
+///
+/// This must stay the only `From<Vec<_>>` impl: an empty literal, as in
+/// `from_tuples(header, vec![])`, infers its element type through it, and a
+/// second one would leave that call ambiguous.
 ///
 /// # Panics
 ///

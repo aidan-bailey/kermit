@@ -350,6 +350,7 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
             self.header().arity(),
             "tuple arity must match relation arity"
         );
+        // #111 interim: the recursion takes an owned `Vec`, removed in T5.
         if insert_into_children(&mut self.children, tuple.to_vec()) {
             self.tuple_count += 1;
         }
