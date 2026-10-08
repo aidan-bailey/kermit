@@ -213,6 +213,8 @@ impl<'a> Cursor<'a> {
     /// Cuts the next `rows` rows of `arity` values off the front, as a range
     /// of their own.
     fn split_off_front(&mut self, rows: usize, arity: usize) -> Cursor<'a> {
+        // `mem::take` moves the `&'a mut` slice out, leaving `&mut []`, so both
+        // halves keep `'a`, not the lifetime of this call's `&mut self`.
         let (values, rest) = mem::take(&mut self.values).split_at_mut(rows * arity);
         self.values = rest;
         let (origin, rest) = mem::take(&mut self.origin).split_at_mut(rows);
@@ -257,7 +259,7 @@ impl<'a> Cursor<'a> {
 ///    an atomic.
 ///
 /// `partition_of` runs exactly once per row: the scatter reads the numbers
-/// the histogram kept (4 bytes a row, freed as each morsel is scattered)
+/// the histogram kept (2 bytes a row, freed as each morsel is scattered)
 /// instead of calling it again. A build whose `partition_of` hashes
 /// therefore hashes each row once here, as it did when it partitioned ids.
 ///
@@ -273,9 +275,11 @@ impl<'a> Cursor<'a> {
 ///
 /// Two costs are known and accepted:
 ///
-/// - **The zero-fill.** The copy is zero-filled before the scatter overwrites
-///   it, since safe Rust cannot hand out uninitialised `&mut` ranges. The fill
-///   runs at memset speed.
+/// - **The zero-fill.** The copy starts zeroed, since safe Rust cannot hand out
+///   uninitialised `&mut` ranges. It costs nothing up front: `vec!` asks the
+///   allocator for zeroed memory (`alloc_zeroed`), and for a large batch glibc
+///   and jemalloc both return fresh zero pages, so no serial memset runs; the
+///   pages' first-touch faults land in the parallel scatter.
 /// - **The bookkeeping** is one count and one range per (partition, morsel)
 ///   pair. A one-thread caller gains nothing from several morsels and passes
 ///   the whole batch as one (`tuples.len().max(1)`): the classic one-thread
@@ -283,8 +287,9 @@ impl<'a> Cursor<'a> {
 ///
 /// # Panics
 ///
-/// Panics if `morsel_rows` is zero, if `partitions` exceeds `u32::MAX`, or
-/// if `partition_of` returns `partitions` or more, or panics itself.
+/// Panics if `morsel_rows` is zero, if `partitions` exceeds 2¹⁶ (65 536, the
+/// most any build uses: `radix:16`), or if `partition_of` returns
+/// `partitions` or more, or panics itself.
 #[allow(dead_code)] // No caller until the radix family copies its rows (#101).
 pub(crate) fn partition_rows(
     threads: Threads, tuples: &Tuples, morsel_rows: usize, partitions: usize,
@@ -294,10 +299,11 @@ pub(crate) fn partition_rows(
         morsel_rows > 0,
         "partition_rows: a morsel holds at least one row"
     );
-    // A row's partition number is kept as a `u32` between the two passes.
+    // A row's partition number is kept as a `u16` between the two passes, as
+    // the radix build kept it before it copied the rows (#101).
     assert!(
-        u32::try_from(partitions).is_ok(),
-        "partition_rows: at most `u32::MAX` partitions"
+        partitions <= 1 << 16,
+        "partition_rows: at most 65,536 partitions, got {partitions}"
     );
     let (len, arity) = (tuples.len(), tuples.arity());
     let morsels = len.div_ceil(morsel_rows);
@@ -307,10 +313,11 @@ pub(crate) fn partition_rows(
     };
 
     // 1. Histogram: `counts[m][p]` of morsel `m`'s rows go to partition `p`,
-    //    and `numbers[m]` holds each of its rows' partition, in row order.
+    //    and `partition_numbers[m]` holds each of its rows' partition, in row
+    //    order.
     let queue = Mutex::new(0..morsels);
     let mut counts: Vec<Vec<usize>> = vec![Vec::new(); morsels];
-    let mut numbers: Vec<Vec<u32>> = vec![Vec::new(); morsels];
+    let mut partition_numbers: Vec<Vec<u16>> = vec![Vec::new(); morsels];
     let counted = run_workers(threads, || {
         let mut counted = Vec::new();
         while let Some(m) = take_next(&queue) {
@@ -320,10 +327,13 @@ pub(crate) fn partition_rows(
             let mut morsel_numbers = Vec::with_capacity(ids.len());
             for id in ids {
                 let p = partition_of(tuples.row(id));
+                assert!(
+                    p < partitions,
+                    "partition_rows: partition_of returned {p} for {partitions} partitions"
+                );
                 histogram[p] += 1;
-                // Lossless: the index above checked `p < partitions`, and
-                // the assertion at the top `partitions <= u32::MAX`.
-                morsel_numbers.push(p as u32);
+                // Lossless: `p < partitions <= 2^16`, by the two assertions.
+                morsel_numbers.push(p as u16);
             }
             counted.push((m, histogram, morsel_numbers));
         }
@@ -331,14 +341,17 @@ pub(crate) fn partition_rows(
     });
     for (m, histogram, morsel_numbers) in counted.into_iter().flatten() {
         counts[m] = histogram;
-        numbers[m] = morsel_numbers;
+        partition_numbers[m] = morsel_numbers;
     }
 
     // 2. Offsets, and the copy cut into one range per (partition, morsel) pair,
     //    partition by partition: `ranges[m][p]` is where morsel `m` writes its
     //    rows of partition `p`.
-    let mut values = Vec::with_capacity(tuples.value_capacity());
-    values.resize(len * arity, 0);
+    // `vec!` of zeros allocates through `alloc_zeroed`, at exactly the input's
+    // capacity; `truncate` keeps that capacity. `origin` is zeroed the same
+    // way.
+    let mut values = vec![0usize; tuples.value_capacity()];
+    values.truncate(len * arity);
     let mut origin: Vec<RowId> = vec![0; len];
     let mut offsets = Vec::with_capacity(partitions + 1);
     offsets.push(0);
@@ -364,7 +377,7 @@ pub(crate) fn partition_rows(
         // 3. Scatter: each worker takes a morsel with its ranges and its rows'
         //    partition numbers, and writes every row at the front of its
         //    partition's range. `partition_of` is not called again.
-        let queue = Mutex::new(ranges.into_iter().zip(numbers).enumerate());
+        let queue = Mutex::new(ranges.into_iter().zip(partition_numbers).enumerate());
         run_workers(threads, || {
             while let Some((m, (mut ranges, morsel_numbers))) = take_next(&queue) {
                 for (id, p) in morsel_ids(m).zip(morsel_numbers) {
@@ -724,6 +737,20 @@ mod tests {
     #[should_panic(expected = "partition_rows: a morsel holds at least one row")]
     fn partition_rows_rejects_empty_morsels() {
         let _ = partition_rows(threads(1), &rows_of_arity(4, 1), 0, PARTITIONS, first_mod_3);
+    }
+
+    /// Partition numbers are kept as `u16`s, so 2¹⁶ partitions is the most
+    /// it takes. The check runs first, an empty batch included.
+    #[test]
+    #[should_panic(expected = "partition_rows: at most 65,536 partitions, got 65537")]
+    fn partition_rows_rejects_more_than_2_16_partitions() {
+        let _ = partition_rows(threads(1), &Tuples::new(2), 4, (1 << 16) + 1, |_| 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "partition_rows: partition_of returned 2 for 2 partitions")]
+    fn partition_rows_rejects_a_partition_out_of_range() {
+        let _ = partition_rows(threads(1), &rows_of_arity(4, 1), 4, 2, |_| 2);
     }
 
     #[test]
