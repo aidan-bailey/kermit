@@ -108,7 +108,9 @@ fn small_and_large(read: fn(&Path) -> Tuples, file: &str) -> (u64, u64) {
 
 /// One buffer grows with the rows; the record that holds each row is reused.
 /// The buffer doubles, so ten times the rows costs at most ⌈log₂ 10⌉ = 4 more
-/// allocations; 2 more allow for the final shrink and the record's growth.
+/// allocations. The final `shrink_to_fit` reallocates at both sizes, so it
+/// cancels out of the difference; 2 more allow for the reused
+/// `StringRecord` growing to hold the larger input's wider fields.
 #[test]
 fn read_csv_allocates_independently_of_its_row_count() {
     let (small, large) = small_and_large(csv_tuples, "r.csv");
@@ -277,9 +279,13 @@ fn hash_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
 /// Under the default `root-capacity=grow` every table's size depends on its
 /// keys alone (`tuples` would size the root from the row count), so the
 /// tables, the chains and the lazy pending lists are the same at both
-/// repetitions. Only the row-id lists hold more ids: the root's list, one per
-/// first key, one chain per distinct tuple and `radix:2`'s four partitions,
-/// each by at most ⌈log₂ 100⌉ = 7 growth steps.
+/// repetitions. Only the row-id lists hold more ids: one per first key and
+/// one chain per distinct tuple, each by at most ⌈log₂ 100⌉ = 7 growth steps.
+/// The bound also counts the root's list and `radix:2`'s four partitions as
+/// growing lists, but only as an upper bound: the root's list is `all_rows`,
+/// a `Range` never built, and `radix::partition` sizes each partition
+/// exactly from a histogram, so those five never grow. They are the bound's
+/// slack, 5 × 7 = 35 allocations.
 #[test]
 fn hash_trie_builds_allocate_per_list_not_per_row() {
     let lists = (1 + KEYS + KEYS * KEYS + 4) as u64;
