@@ -175,7 +175,6 @@ pub(crate) fn scatter_rows(
 /// memory locations" (Freitag et al., VLDB 2020, §3.3.2). Partition `p`'s
 /// rows are the rows `offsets[p]..offsets[p + 1]` of `tuples`, in input
 /// order.
-#[allow(dead_code)] // No caller until the radix family copies its rows (#101).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Partitioned {
     /// The partition-ordered copy. Its buffer reserves the input buffer's
@@ -189,7 +188,6 @@ pub(crate) struct Partitioned {
     pub(crate) origin: Vec<RowId>,
 }
 
-#[allow(dead_code)] // No caller until the radix family copies its rows (#101).
 impl Partitioned {
     /// How many partitions the rows were copied into.
     pub(crate) fn partitions(&self) -> usize { self.offsets.len() - 1 }
@@ -290,7 +288,6 @@ impl<'a> Cursor<'a> {
 /// Panics if `morsel_rows` is zero, if `partitions` exceeds 2¹⁶ (65 536, the
 /// most any build uses: `radix:16`), or if `partition_of` returns
 /// `partitions` or more, or panics itself.
-#[allow(dead_code)] // No caller until the radix family copies its rows (#101).
 pub(crate) fn partition_rows(
     threads: Threads, tuples: &Tuples, morsel_rows: usize, partitions: usize,
     partition_of: impl Fn(&[usize]) -> usize + Sync,

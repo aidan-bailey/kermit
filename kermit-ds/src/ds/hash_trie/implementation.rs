@@ -69,9 +69,12 @@ use {
 ///
 /// # Storage
 ///
-/// The trie owns its tuples as one row-major buffer ([`Tuples`], #111), in
-/// arrival order: the batch a build is given, kept as is, then every row
-/// `insert` appends. Below the tables everything names a tuple by its
+/// The trie owns its tuples as one row-major buffer ([`Tuples`], #111): the
+/// batch a build is given, then every row `insert` appends. `bulk` and
+/// `incremental` keep the batch as is, in arrival order; `radix:K` keeps
+/// its copy of the batch instead, in partition order, so each partition's
+/// rows are contiguous (#101). Below the tables everything names a tuple
+/// by its
 /// [`RowId`]: a leaf chain is a `Vec<RowId>`, a pruned `Singleton` one
 /// `RowId`, an unexpanded child's pending list a `Vec<RowId>`. The paper's
 /// leaves likewise point into a materialised buffer (VLDB 2020 §3.3.2); its
@@ -93,8 +96,10 @@ use {
 /// can also be built by the `incremental`, `radix:K`, `parallel:N` and
 /// `presized:N` BuildModes
 /// ([`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
-/// or [`BuildModeRelation`]), which build the identical trie (`presized:N`
-/// an equivalent one, Amendment 2).
+/// or [`BuildModeRelation`]), which build an equivalent trie (Amendment 2):
+/// the same contents and capacities. `presized:N` may place root keys in
+/// other buckets, and `radix:K` stores its rows in partition order, under
+/// other ids.
 /// `HashTrieConfig::root_capacity` decides the root's starting size: 4
 /// buckets (`grow`, the default), or sized once from the tuples a build is
 /// given (`tuples`), so that it never grows during that build (#88).
@@ -124,9 +129,10 @@ pub struct HashTrie<
     E: ExpansionPolicy = EagerExpansion,
 > {
     header: RelationHeader,
-    /// Every stored tuple, in arrival order; its length is the multiset
-    /// count (duplicates count). Chains, singletons and pending lists hold
-    /// ids of its rows.
+    /// Every stored tuple: the build's batch, or its partitioned copy (see
+    /// Storage), then every inserted row. Its length is the multiset count
+    /// (duplicates count). Chains, singletons and pending lists hold ids of
+    /// its rows.
     tuples: Tuples,
     root: HashTrieNode<P, E>,
     /// Runtime values, fixed at construction; read by `insert_at`.
@@ -174,15 +180,17 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// (in the same crate) to navigate the trie via shared references.
     pub(crate) fn root(&self) -> &HashTrieNode<P, E> { &self.root }
 
-    /// The trie's buffer: every stored tuple, in arrival order. Chains,
-    /// singletons and pending lists hold ids of its rows; `HashTrieIter`
-    /// lends a chain's rows from it (`LeafRows`).
+    /// The trie's buffer: every stored tuple, in the order Storage
+    /// describes. Chains, singletons and pending lists hold ids of its rows;
+    /// `HashTrieIter` lends a chain's rows from it (`LeafRows`).
     pub(crate) fn tuples(&self) -> &Tuples { &self.tuples }
 
-    /// A copy of every stored tuple, in arrival order: the trie's buffer,
-    /// cloned (#111). O(n · arity) time and space; to visit the tuples
-    /// without copying them, use [`for_each_tuple`](Self::for_each_tuple)
-    /// (a walk of the trie) or `TupleScan::scan_tuples` (the buffer).
+    /// A copy of every stored tuple, in the buffer's order (arrival order,
+    /// or partition order after a build that copies its rows, #101): the
+    /// trie's buffer, cloned (#111). O(n · arity) time and space; to visit
+    /// the tuples without copying them, use
+    /// [`for_each_tuple`](Self::for_each_tuple) (a walk of the trie) or
+    /// `TupleScan::scan_tuples` (the buffer).
     pub fn collect_tuples(&self) -> Tuples { self.tuples.clone() }
 
     /// Walk the trie depth-first, lending every stored tuple to `visit`:
@@ -505,15 +513,15 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             | HashTrieBuildMode::Radix(bits) => {
                 Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
                     let mut root = Self::make_root_sized(arity, log2);
-                    radix::fill_root::<H, P, E>(tuples, &mut root, arity, bits, config);
-                    root
+                    let copy = radix::fill_root::<H, P, E>(tuples, &mut root, arity, bits, config);
+                    (copy, root)
                 })
             },
             | HashTrieBuildMode::Parallel(threads) => {
                 Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
                     let mut root = Self::make_root_sized(arity, log2);
-                    parallel::fill_root::<H, P, E>(tuples, &mut root, arity, threads, config);
-                    root
+                    parallel::fill_root::<H, P, E>(&tuples, &mut root, arity, threads, config);
+                    (tuples, root)
                 })
             },
             | HashTrieBuildMode::Presized(threads) => {
@@ -530,7 +538,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     config.root_capacity.axis_value(),
                 );
                 Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
-                    parallel::fill_presized_root::<H, P, E>(tuples, log2, arity, threads, config)
+                    let root = parallel::fill_presized_root::<H, P, E>(
+                        &tuples, log2, arity, threads, config,
+                    );
+                    (tuples, root)
                 })
             },
         }
@@ -616,14 +627,18 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// `presized:N`): the batch's arity check, then `fill`, which builds the
     /// root over the batch at the capacity every build gives it
     /// (`HashTrieConfig::root_log2_capacity`, presized under
-    /// `root-capacity=tuples`). The trie keeps the batch as its buffer.
+    /// `root-capacity=tuples`) and returns it with the trie's buffer: the
+    /// batch itself, or, from a build that materialises its partitions, the
+    /// batch's rows copied into partition order (`morsel::partition_rows`,
+    /// #101), the batch then freed.
     fn from_tuples_partitioned(
         header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
-        fill: impl FnOnce(&Tuples, u32, usize) -> HashTrieNode<P, E>,
+        fill: impl FnOnce(Tuples, u32, usize) -> (Tuples, HashTrieNode<P, E>),
     ) -> Self {
         let arity = header.arity();
         let tuples = Self::batch_for_header(arity, tuples);
-        let root = fill(&tuples, config.root_log2_capacity(tuples.len()), arity);
+        let log2_capacity = config.root_log2_capacity(tuples.len());
+        let (tuples, root) = fill(tuples, log2_capacity, arity);
         Self {
             header,
             tuples,
@@ -698,8 +713,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::relation::Pro
         } else {
             RelationHeader::new_nameless(projected_attrs)
         };
-        // One buffer for the projection, in arrival order; one scratch row,
-        // reused, so nothing is allocated per tuple.
+        // One buffer for the projection, in the trie's row order; one
+        // scratch row, reused, so nothing is allocated per tuple.
         let mut projected = Tuples::with_capacity(columns.len(), self.tuples.len());
         let mut row = Vec::with_capacity(columns.len());
         for tuple in self.tuples.rows() {
@@ -724,7 +739,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::heap_size::He
     }
 }
 
-/// The trie's buffer, in arrival order (#111): statistics need only the
+/// The trie's buffer, in its row order (#111): statistics need only the
 /// multiset, so the scan reads the rows without walking the trie, and it
 /// probes nothing, so it expands no unexpanded child.
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::tuple_scan::TupleScan

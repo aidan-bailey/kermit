@@ -147,10 +147,10 @@ hash_trie_test_suite!(HashTrieSipLazySizedChildren, SipHashStrategy);
 hash_trie_test_suite!(HashTrieMod10PrunedSizedChildren, Mod10HashStrategy);
 
 // ── BuildMode: the radix build ──────────────────────────────────────────
-// Every build mode builds the identical trie (issue #91), so the iterator
-// contract must hold unchanged, eager or lazy. Two bits make four
-// partitions, so the 3–5 tuple fixtures spread over several partitions
-// with several keys in each.
+// Every build mode builds an equivalent trie (issue #91; `radix:K` stores
+// its rows in partition order since #101), so the iterator contract must
+// hold unchanged, eager or lazy. Two bits make four partitions, so the 3–5
+// tuple fixtures spread over several partitions with several keys in each.
 define_build_mode_provider!(
     Radix2,
     HashTrieBuildMode,

@@ -51,7 +51,7 @@ use {
         radix::{self, Arrival},
     },
     crate::morsel::{
-        dispatch, scatter_rows, RowPartition, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD,
+        dispatch, row_id, scatter_rows, RowPartition, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD,
     },
     kermit_iters::{HashStrategy, RowId, Tuples},
     std::{cmp::Reverse, collections::BinaryHeap},
@@ -184,11 +184,14 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
         .into_iter()
         .filter(|partition| partition.len() > 0)
         .collect();
+    // This build partitions row ids, not rows, so a row's id is its input
+    // position: `origin` is the identity.
+    let origin: Vec<RowId> = (0..row_id(tuples.len())).collect();
     // 2. Build, on `threads` workers: each partition into a scratch root, whose
     //    entries then leave in the order their keys arrived.
     let entries = dispatch(threads, partitions, |partition| {
         let (scratch, first_seen) =
-            radix::build_scratch_root::<H, P, E>(tuples, partition.ids(), arity, config);
+            radix::build_scratch_root::<H, P, E>(tuples, partition.ids(), &origin, arity, config);
         Entries::take_from(scratch, &first_seen)
     });
     // 3. Merge, on this thread, in first-appearance order.
@@ -389,8 +392,8 @@ mod tests {
                 config::{ChildCapacity, HashTrieConfig, RootCapacity},
                 expansion::{EagerExpansion, LazyExpansion},
                 identity::{
-                    assert_equivalent_root, assert_equivalent_trie, assert_same_node,
-                    assert_same_trie, configs, inputs, LOAD_PERCENTS,
+                    assert_equivalent_root, assert_equivalent_trie, assert_same_contents,
+                    assert_same_node, assert_same_trie, configs, inputs, LOAD_PERCENTS,
                 },
                 implementation::HashTrie,
                 pruning::{NoPruning, SingletonPruning},
@@ -573,8 +576,8 @@ mod tests {
         fn hash(key: usize) -> u64 { (key as u64) << 61 }
     }
 
-    /// Every mode builds the same trie, so only the records show which build
-    /// ran (`bulk` and `incremental` record nothing here;
+    /// Every mode builds the same contents, so only the records show which
+    /// build ran (`bulk` and `incremental` record nothing here;
     /// `each_build_mode_runs_its_own_build` tells them apart), and that
     /// `parallel:N` spreads its work: N workers in both steps (two
     /// `run_workers` calls), and the tuples spread over the partitions.
@@ -582,8 +585,9 @@ mod tests {
     /// `parallel:2` evenly. `parallel:3` aims at 12 partitions, rounded up to
     /// 16, so key k lands in partition 2k: every other partition is empty,
     /// and the record lists those too. A second thread count is what shows
-    /// that N itself reaches the build. The radix build partitions too, but
-    /// serially.
+    /// that N itself reaches the build. The radix build partitions too, on
+    /// the calling thread alone: `partition_rows`' histogram and scatter
+    /// passes, one worker each, and no record.
     #[test]
     fn build_modes_reach_their_builds() {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 8, i]).collect();
@@ -594,7 +598,7 @@ mod tests {
             (
                 HashTrieBuildMode::Radix(RadixBits::new(3).unwrap()),
                 vec![],
-                vec![],
+                vec![1, 1],
             ),
             (
                 HashTrieBuildMode::Parallel(threads(2)),
@@ -621,7 +625,7 @@ mod tests {
                 HashTrie::from_tuples_with_build_mode(2.into(), mode, tuples.clone());
             assert_eq!(PARALLEL_BUILDS.with(|b| b.take()), builds, "{mode:?}");
             assert_eq!(crate::morsel::take_worker_runs(), worker_runs, "{mode:?}");
-            assert_same_trie(&bulk, &built, &format!("{mode:?}"));
+            assert_same_contents(&bulk, &built, &format!("{mode:?}"));
         }
     }
 

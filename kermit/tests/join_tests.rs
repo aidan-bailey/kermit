@@ -337,9 +337,10 @@ define_multiway_join_test_suite_for_build_mode!(
 
 // ── BuildMode axis: HashTrie's build ────────────────────────────────────
 // The plain HashTrie invocations above build `bulk` (Algorithm 2, the
-// default); these run the radix build, which must build the identical trie
-// (issue #91). Two bits make four partitions, so the 3–5 tuple fixtures
-// spread over several partitions with several keys in each. Sip/off/eager,
+// default); these run the radix build, which must build an equivalent trie
+// (issue #91): the same contents, its rows stored in partition order
+// (#101). Two bits make four partitions, so the 3–5 tuple fixtures spread
+// over several partitions with several keys in each. Sip/off/eager,
 // Fx/on/eager and Sip/on/lazy cover both hashers, both pruning policies and
 // both expansion policies, each under every optimiser.
 define_build_mode_provider!(
