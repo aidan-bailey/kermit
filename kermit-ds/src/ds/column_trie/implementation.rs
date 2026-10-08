@@ -461,10 +461,11 @@ impl<S: SeekStrategy> Relation for ColumnTrie<S> {
 impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
     type BuildMode = ColumnTrieBuildMode;
 
-    /// Sorts the batch in place with [`Tuples::sort`], then builds the layers
-    /// by `mode`: one pass over the sorted rows for `Bulk` (see
-    /// `from_sorted`), one `insert` per row for `Incremental` (see
-    /// `from_sorted_by_insertion`).
+    /// Sorts the batch with [`Tuples::sort`] (lexicographic; in place up to
+    /// arity 4, into a new buffer of exactly the rows' size for wider rows),
+    /// then builds the layers by `mode`: one pass over the sorted rows for
+    /// `Bulk` (see `from_sorted`), one `insert` per row for `Incremental`
+    /// (see `from_sorted_by_insertion`).
     ///
     /// # Panics
     ///
@@ -475,8 +476,8 @@ impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
         header: RelationHeader, mode: ColumnTrieBuildMode, tuples: impl Into<Tuples>,
     ) -> Self {
         let mut tuples: Tuples = tuples.into();
-        // An empty batch carries no arity of its own (an empty literal has
-        // none), so only a non-empty one must match the header.
+        // An empty batch's arity need not match (`vec![]` converts to arity
+        // 0), so only a non-empty one must match the header.
         if !tuples.is_empty() {
             let arity = tuples.arity();
             assert_eq!(
@@ -794,7 +795,7 @@ mod tests {
         };
         for &seed in seeds {
             let mut rng = Lcg(seed);
-            for arity in 1..=4 {
+            for arity in 0..=5 {
                 for key_range in [2, 5, 50] {
                     for &n in sizes {
                         let tuples: Vec<Vec<usize>> = (0..n)
@@ -871,6 +872,14 @@ mod tests {
     #[should_panic(expected = "from_tuples: tuple arity 3 does not match header arity 2")]
     fn bulk_build_rejects_a_batch_of_the_wrong_arity() {
         let _: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2, 3], vec![4, 5, 6]]);
+    }
+
+    /// Narrower than the header: `from_sorted` would index only the batch's
+    /// columns, leaving the deeper layers empty, a corrupt trie.
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 1 does not match header arity 2")]
+    fn bulk_build_rejects_a_narrow_batch() {
+        let _: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1], vec![2]]);
     }
 
     #[test]
