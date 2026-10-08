@@ -409,11 +409,10 @@ pub trait RelationFileExt: Relation {
     /// Returns a [`RelationError`] if any of the following occur:
     /// - [`RelationError::Io`] — the file cannot be opened.
     /// - [`RelationError::Csv`] — the CSV reader cannot parse the header or a
-    ///   row.
-    /// - [`RelationError::InvalidData`] — a row is not as wide as the header,
-    ///   or a field cannot be parsed as a `usize` (the message identifies the
-    ///   offending row, and column), or the file holds more than [`RowId::MAX`]
-    ///   rows.
+    ///   row (e.g. inconsistent column count).
+    /// - [`RelationError::InvalidData`] — a field cannot be parsed as a `usize`
+    ///   (the message identifies the offending row and column), or the file
+    ///   holds more than [`RowId::MAX`] rows.
     fn from_csv<P: AsRef<Path>>(filepath: P) -> Result<Self, RelationError>
     where
         Self: Sized;
@@ -439,9 +438,8 @@ fn open_csv(path: &Path) -> Result<(RelationHeader, csv::Reader<File>), Relation
         .delimiter(b',')
         .double_quote(false)
         .escape(Some(b'\\'))
-        // `read_csv` checks each row's width against the header itself, so
-        // the error names the row and both widths.
-        .flexible(true)
+        // The flat buffer relies on this (pinned by `read_csv_rejects_a_row_of_the_wrong_width`).
+        .flexible(false)
         .comment(Some(b'#'))
         .from_reader(file);
     let attrs: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
@@ -489,14 +487,9 @@ pub fn read_csv<P: AsRef<Path>>(filepath: P) -> Result<(RelationHeader, Tuples),
     let mut rows = 0;
     let mut record = csv::StringRecord::new();
     while rdr.read_record(&mut record)? {
-        // The buffer holds exactly `arity` values per row, and `Tuples`
-        // numbers at most `RowId::MAX` rows.
-        if record.len() != arity {
-            return Err(RelationError::InvalidData(format!(
-                "row {rows}: {} fields, but the header has {arity}",
-                record.len()
-            )));
-        }
+        // `flexible(false)` (see `open_csv`) makes every record as wide as
+        // the header, so the buffer holds exactly `arity` values per row;
+        // `Tuples` numbers at most `RowId::MAX` rows.
         if rows == RowId::MAX as usize {
             return Err(too_many_rows());
         }
@@ -895,21 +888,20 @@ mod tests {
         }
     }
 
-    /// A row narrower or wider than the header is an error naming the row
-    /// and both widths, never a short or long row in the buffer.
+    /// A row narrower or wider than the header is the csv reader's error
+    /// (`flexible(false)` in `open_csv`), never a short or long row in the
+    /// flat buffer, which holds exactly `arity` values per row.
     #[test]
     fn read_csv_rejects_a_row_of_the_wrong_width() {
         let dir = tempfile::tempdir().unwrap();
-        for (body, fields) in [("1,2\n3\n", 1), ("1,2\n3,4,5\n", 3)] {
+        for body in ["1,2\n3\n", "1,2\n3,4,5\n"] {
             let path = dir.path().join("edge.csv");
             std::fs::write(&path, format!("a,b\n{body}")).unwrap();
-            match read_csv(&path) {
-                | Err(RelationError::InvalidData(message)) => assert_eq!(
-                    message,
-                    format!("row 1: {fields} fields, but the header has 2")
-                ),
-                | other => panic!("expected InvalidData, got {other:?}"),
-            }
+            let result = read_csv(&path);
+            assert!(
+                matches!(result, Err(RelationError::Csv(_))),
+                "{body:?}: {result:?}"
+            );
         }
     }
 
