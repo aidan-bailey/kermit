@@ -199,13 +199,23 @@ mod tests {
 
     type HalfFullTrie = Configured<HashTrie<SipHashStrategy>, HalfFull>;
 
+    /// Every tuple `trie` stores, read by walking it and sorted: its
+    /// contents, where `collect_tuples` would only copy back the buffer it
+    /// was built from (#111).
+    fn walked(trie: &HashTrie<SipHashStrategy>) -> Vec<Vec<usize>> {
+        let mut visited = Vec::new();
+        trie.for_each_tuple(|t| visited.push(t.to_vec()));
+        visited.sort();
+        visited
+    }
+
     #[test]
     fn constructors_inject_the_provider_config() {
         let a = HalfFullTrie::new(2.into());
         assert_eq!(a.config().load_factor, LoadFactor::percent(50).unwrap());
         let b = HalfFullTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         assert_eq!(b.config().load_factor, LoadFactor::percent(50).unwrap());
-        assert_eq!(b.collect_tuples().to_vecs(), vec![vec![1, 2]]);
+        assert_eq!(walked(&b), vec![vec![1, 2]]);
     }
 
     #[test]
@@ -230,7 +240,7 @@ mod tests {
         let mut r = HalfFullTrie::new(2.into());
         r.insert(vec![1, 2]);
         r.insert_all(vec![vec![3, 4]]);
-        assert_eq!(r.collect_tuples().to_vecs(), vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(walked(&r), vec![vec![1, 2], vec![3, 4]]);
         assert_eq!(crate::Cardinality::tuple_count(&r), 2);
     }
 
@@ -263,6 +273,6 @@ mod tests {
             builds[0].deferred.is_some(),
             "the presized record: {builds:?}"
         );
-        assert_eq!(r.collect_tuples().to_vecs(), vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(walked(&r), vec![vec![1, 2], vec![3, 4]]);
     }
 }

@@ -268,7 +268,9 @@ pub trait Relation: JoinIterable + Projectable {
     ///
     /// # Panics
     ///
-    /// Panics if the tuple's length is not `self.header().arity()`.
+    /// Panics if the tuple's length is not `self.header().arity()`, and, in a
+    /// structure that keeps its tuples in a [`Tuples`] buffer (`HashTrie`), if
+    /// it already holds `RowId::MAX` rows ([`Tuples::push`]).
     fn insert(&mut self, tuple: impl AsRef<[usize]>);
 
     /// Inserts every row of `tuples`. Equivalent to calling

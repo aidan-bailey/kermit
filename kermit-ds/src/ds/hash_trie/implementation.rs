@@ -398,6 +398,12 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
 
     /// Appends `tuple` to the buffer, then places the new row's id by
     /// `insert_at`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tuple`'s length is not the relation's arity, or if the
+    /// trie already holds `RowId::MAX` rows, the most a row id can name
+    /// ([`Tuples::push`]).
     fn insert(&mut self, tuple: impl AsRef<[usize]>) {
         let tuple = tuple.as_ref();
         let arity = self.header.arity();
@@ -1667,6 +1673,7 @@ mod lazy_tests {
                 expansion::{LazyChild, LazyExpansion, PendingChild},
                 pruning::SingletonPruning,
             },
+            tests::walked_sorted,
             *,
         },
         crate::{cardinality::Cardinality, heap_size::HeapSize, relation::Projectable},
@@ -1841,10 +1848,12 @@ mod lazy_tests {
         assert_eq!(lazy.heap_size_bytes(), eager.heap_size_bytes() + boxes);
     }
 
+    /// The projection's trie, walked, not its buffer: `collect_tuples` would
+    /// only copy back the rows the projection was built from.
     #[test]
     fn projection_of_a_lazy_trie_holds_the_projected_tuples() {
         let trie = Lazy::from_tuples(3.into(), tuples());
-        assert_eq!(trie.project(vec![2, 0]).collect_tuples().to_vecs(), vec![
+        assert_eq!(walked_sorted(&trie.project(vec![2, 0])), vec![
             vec![3, 1],
             vec![4, 1],
             vec![6, 1],

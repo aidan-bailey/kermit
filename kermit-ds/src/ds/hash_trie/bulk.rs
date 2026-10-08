@@ -64,8 +64,8 @@ use {
 pub(super) type TupleList = Vec<RowId>;
 
 /// Every row id of `tuples`, in input order: Algorithm 2's first list,
-/// which is never materialised. `row_id` (T5's, in `morsel.rs`) converts
-/// the length; a batch never holds more than `RowId::MAX` rows.
+/// which is never materialised. `row_id` (in `morsel.rs`) converts the
+/// length; a batch never holds more than `RowId::MAX` rows.
 pub(super) fn all_rows(tuples: &Tuples) -> std::ops::Range<RowId> { 0..row_id(tuples.len()) }
 
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
