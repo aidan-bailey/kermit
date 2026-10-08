@@ -62,6 +62,35 @@
 | `kermit/tests/tuple_allocation.rs` (new), `kermit/src/execution.rs` tests | the input path allocates O(1) per relation | T9 |
 | docs (ARCHITECTURE.md, CLAUDE.md, component docs, BENCHMARKING.md) | | T11 |
 
+## Execution chunks
+
+The unit a subagent implements and reviewers check. Each chunk is given its task text
+with the ground rules, the file map and the merge notes. T7 is too large for one unit,
+so it runs as five chunks, each also given T7's preamble (state assumed, the identity
+argument, the capacity table).
+- **The tree compiles only after C07e.** C07a to C07d leave it uncompiled and
+  uncommitted, and reviewers check their diffs against the chunk's text.
+- **C07e** sweeps, builds, runs the tests, commits once, and runs the mutation checks.
+
+| Chunk | Plan text | Compiles and commits |
+| --- | --- | --- |
+| C01 | Task 1 | yes |
+| C02 | Task 2 | yes |
+| C03 | Task 3 | yes |
+| C04 | Task 4 | yes |
+| C05 | Task 5 | yes |
+| C06 | Task 6 | yes |
+| C07a | Task 7, Steps 1–6 (failing storage tests; `pruning.rs` payload; `node.rs`; `expansion.rs`; `bulk.rs`) | no |
+| C07b | Task 7, Step 7 (`implementation.rs`) | no |
+| C07c | Task 7, Steps 8–12 (`radix.rs`; `parallel.rs`; `identity.rs`; the old scatter deleted; outside `collect_tuples` tests) | no |
+| C07d | Task 7, Steps 13–21 (`leaf_tuples` → `LeafRows`; `SingletonFrame`; `HashTrieIter`; suites; `kermit-algos` views; `emit_leaf`) | no |
+| C07e | Task 7, Steps 22–25 (sweeps; build and run; commit; mutation checks) | yes, Task 7's one commit |
+| C08 | Task 8 | yes |
+| C09 | Task 9 | yes |
+| C10 | Task 10 | yes |
+| C11 | Task 11 | yes |
+| C12 | Final gate | runs the gate |
+
 ### Task 1: `Tuples` and `RowId` in kermit-iters
 
 Additive: nothing uses the type yet. It is the batch every later task builds from, so the
