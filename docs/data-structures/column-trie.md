@@ -32,7 +32,7 @@ Compared to [`TreeTrie`](./tree-trie.md), this layout avoids per-node allocation
 
 ### Construction
 
-`from_tuples` sorts the tuples lexicographically, then builds every layer in one pass (`ColumnTrie::from_sorted`). Each tuple shares some leading keys with the tuple before it; call that count its *divergence depth* `d`. Those keys are already stored, so the tuple appends one key to every layer from `d` down. Every key it appends above the last layer is a new parent, so the layer below first opens a child interval for it (`interval.push(data.len())`). A tuple whose divergence depth equals the arity duplicates its predecessor and appends nothing. The first tuple also opens the root layer's single interval.
+`from_tuples` sorts the batch's rows with `Tuples::sort` (lexicographic; in place up to arity 4, into a new buffer of the rows' exact size for wider rows; the sort TreeTrie's builds run too, so a comparison costs the same in both, #111), then builds every layer in one pass over the row slices (`ColumnTrie::from_sorted`), remembering the previous row as a slice borrowed from the batch. Each tuple shares some leading keys with the tuple before it; call that count its *divergence depth* `d`. Those keys are already stored, so the tuple appends one key to every layer from `d` down. Every key it appends above the last layer is a new parent, so the layer below first opens a child interval for it (`interval.push(data.len())`). A tuple whose divergence depth equals the arity duplicates its predecessor and appends nothing. The first tuple also opens the root layer's single interval.
 
 For `{(1, 2), (1, 3), (2, 4)}` the divergence depths are 0, 1 and 0:
 
@@ -62,7 +62,7 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | Operation | Time | Space | Notes |
 |---|---|---|---|
 | `insert(tuple)` | O(a · b) worst-case | O(1) extra | linear search within interval; insertions in early layers shift later-layer offsets (`insert_key_and_shift_intervals`) |
-| `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort lexicographically (O(n · a · log n)), then build every layer in one pass (O(n · a)); see Construction. Before issue #84 it inserted tuple by tuple, O(n · a · b) |
+| `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort the batch with `Tuples::sort` (O(n · a · log n)), then build every layer in one pass over its row slices (O(n · a), no allocation per tuple); see Construction. Before issue #84 it inserted tuple by tuple, O(n · a · b) |
 | `TrieIterator::key()` | O(1) | | slice index |
 | `TrieIterator::next()` | O(1) | | `rel_data_i += 1` |
 | `TrieIterator::seek(target)` | `S`-dependent: linear O(d), binary O(log r), galloping O(log d) | | `S::partition_point` over the `r` remaining keys of the interval slice; `d` is the distance moved. See [seek strategies](seek-strategies.md) |

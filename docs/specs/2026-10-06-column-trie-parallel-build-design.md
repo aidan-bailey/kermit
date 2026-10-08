@@ -38,6 +38,8 @@ workers allocate a few large buffers each, not millions of small ones.
 | Schema version | Stays at 3. `parallel:N` is a new value of an existing axis. |
 | Tracking | Issue #103, referencing #94, so #94 can close without waiting on ColumnTrie. |
 
+> **2026-10-08 (#111):** `morsel::scatter` no longer exists. `morsel::scatter_rows` replaced it: it sends a `Tuples` batch's row ids to partitions (`RowPartition`, input order), and each worker gathers its partition's rows into a local `Tuples` and sorts it with `Tuples::sort`, as TreeTrie's `parallel:N` does. Read "Shared steps" above and the pseudocode below with that substitution.
+
 ## Background: why `bulk` can be reproduced exactly
 
 `from_tuples_with_build_mode` checks every tuple's arity, sorts the tuples

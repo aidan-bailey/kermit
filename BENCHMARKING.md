@@ -83,6 +83,18 @@ you pass `allow_mixed_schema=True`.
 `--verify` counts rows the same way, so verifying a result of billions of
 rows needs no more memory than a small one.
 
+Reports with `schema_version` 3 and 4 are not comparable in `insertion`,
+`copies`, `end_to_end` or HashTrie's `space`. From v4 (#111) every
+relation's tuples reach every build as one row-major buffer (`Tuples`)
+instead of a `Vec` per tuple, and HashTrie keeps that buffer and stores
+4-byte row ids where it stored a `Vec` per tuple. TreeTrie and ColumnTrie
+`space` and the joins' `iteration` keep their meaning; HashTrie's `bench ds`
+`iteration` walk now reads rows through their ids, so compare it across the
+boundary only through a measured A/B. The v4 row of
+[`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md)
+lists the changes, and `kermit-lab` refuses to load v3 and v4 reports
+together unless you pass `allow_mixed_schema=True`.
+
 The end-to-end phase exists because summing `insertion + K × iteration` after
 the fact assumes the phases are independent — precisely the assumption a
 build-then-query crossover study is testing (e.g. cache effects across the

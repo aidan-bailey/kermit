@@ -77,7 +77,8 @@ All of these must pass: `cargo test`, `cargo clippy` (warnings are errors), `car
 ## Workspace Architecture
 
 ```
-kermit-iters    → Core iterator traits (LinearIterator, TrieIterator). Zero dependencies.
+kermit-iters    → Core iterator traits (LinearIterator, TrieIterator) and the tuple batch
+                  (Tuples, RowId, LeafRows; #111). Zero dependencies.
 kermit-derive   → Proc macros (#[derive(IntoTrieIter)]) for iterator boilerplate.
 kermit-parser   → Datalog query parser (winnow). Parses "Q(X,Z) :- R(X,Y), S(Y,Z)."
 kermit-ds       → Data structures: TreeTrie (pointer-based), ColumnTrie (column-oriented),
@@ -136,8 +137,9 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|lis
 
 - **JoinIterable** (marker) → **LinearIterable** → **LinearIterator** (`key`, `next`, `seek`, `at_end`)
 - **JoinIterable** (marker) → **TrieIterable** → **TrieIterator** : LinearIterator + `open`, `up`
-- **JoinIterable** (marker) → **HashTrieIterable** → **HashTrieIterator** (`u64` hash keys, exact-match `lookup`, plus `size`, `open`, `up`, `leaf_tuples`) — a **parallel family, not a `TrieIterator` subtrait**. `LinearIterator::seek` is least-upper-bound and needs sorted data; hash navigation is exact-match, so the contracts cannot merge (rationale in `kermit-iters/src/hash_trie.rs`, citing SIGMOD 2020). The fork propagates up the whole stack — separate algorithm, separate join entry point (`lftj_join` vs `hash_join`, sharing one body via the `JoinFamily` trait), separate test suites — and leaves exactly 3 valid `(structure, algorithm)` pairs.
-- **Relation**: JoinIterable + Projectable — core data abstraction (`new`, `from_tuples`, `insert`, `insert_all`, `header`)
+- **JoinIterable** (marker) → **HashTrieIterable** → **HashTrieIterator** (`u64` hash keys, exact-match `lookup`, plus `size`, `open`, `up`, and `leaf_tuples`, which lends the current leaf chain as a `LeafRows` view) — a **parallel family, not a `TrieIterator` subtrait**. `LinearIterator::seek` is least-upper-bound and needs sorted data; hash navigation is exact-match, so the contracts cannot merge (rationale in `kermit-iters/src/hash_trie.rs`, citing SIGMOD 2020). The fork propagates up the whole stack — separate algorithm, separate join entry point (`lftj_join` vs `hash_join`, sharing one body via the `JoinFamily` trait), separate test suites — and leaves exactly 3 valid `(structure, algorithm)` pairs.
+- **Relation**: JoinIterable + Projectable — core data abstraction (`new`, `from_tuples(header, impl Into<Tuples>)`, `insert(impl AsRef<[usize]>)`, `insert_all(impl Into<Tuples>)`, `header`). The Config and BuildMode constructors below take `impl Into<Tuples>` too, so test fixtures still pass one `Vec<usize>` per tuple (`From<Vec<Vec<usize>>>`, which panics on mixed arity); an empty batch is accepted under any header.
+- **Tuples** / **RowId** / **LeafRows** (`kermit-iters/src/{tuples,leaf_rows}.rs`, re-exported by `kermit-ds`; #111): a relation's tuples as one row-major buffer of one arity, with an explicit row count (a nullary batch keeps its count) and at most `u32::MAX` rows, each addressed by a 4-byte `RowId`. `read_csv` / `read_parquet` return one at its exact size; `Tuples::sort` is the one sort of both sorted tries; `HashTrie` keeps its batch and holds row ids in its chains, singletons and pending lists. `LeafRows<'a>` is the `Copy` view of one chain (ids over the buffer) that `HashTrieIterator::leaf_tuples` returns; its rows borrow the buffer, so the leaf product allocates nothing. `to_vecs()` (both) is for tests and diagnostics.
 - **JoinAlgo\<DS\>**: algorithm trait decoupled from data structures
 - **HeapSize**: heap-allocated byte count for space benchmarking (`heap_size_bytes()`)
 - **QueryOptimiser**: plans a `QueryPlan` (the LFTJ global attribute order) from a query + `CatalogStats` (`optimiser/stats.rs`); consumed by `JoinAlgo::join_for_each`. `QueryPlan` is the only type crossing planner → executor; the canonical variable numbering both sides agree on lives one level up in `kermit-algos/src/analysis.rs`. Implementations: `LexicographicOptimiser` (default), `CardinalityOptimiser`, `CostBasedOptimiser` (System R–style DP over bound-variable sets). Each declares what it reads (`required_statistics() -> StatisticsLevel`: `TupleCounts` by default, `ColumnDistinct` for cost-based); the engine's `Database` gathers exactly that when it is built, and the entry points return `JoinError::MissingStatistics` rather than plan from less.
@@ -148,7 +150,7 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|lis
 - **SeekStrategy**: the sorted tries' seek Layout (`kermit-ds/src/seek.rs`): `partition_point(remaining, below)`, which every strategy must answer exactly as `slice::partition_point` does. `LinearSeek`, `BinarySeek` and `GallopingSeek` (the default since 2026-10-05; `binary` before), axis `ds_layout_seek`.
 - **ExpansionPolicy**: HashTrie's third Layout (`kermit-ds/src/ds/hash_trie/expansion.rs`): `EagerExpansion` (default) or `LazyExpansion`, whose children below the root are built on the first `open` that reaches them (`HashTrie::resolve`); axis `ds_layout_expansion`. Its payload `Pending<N>` is generic over the node type so the public policy traits never name the crate-private `HashTrieNode` (`private_interfaces`).
 - **Cardinality**: stored-tuple count for optimiser statistics (`tuple_count()`; `HashTrie` counts multiset size)
-- **TupleScan**: lend every stored tuple without probing (`scan_tuples`); implemented by `HashTrie` and `Configured`. The hash family's statistics walk uses it because a lazy `HashTrie`'s probes build children (#92).
+- **TupleScan**: lend every stored tuple without probing (`scan_tuples`); implemented by `HashTrie` and `Configured`. The hash family's statistics walk uses it because a lazy `HashTrie`'s probes build children (#92). `HashTrie` scans its tuple buffer in arrival order (#111); `HashTrie::for_each_tuple`, which `bench ds` times (#79), still walks the trie, reading rows through their ids.
 
 ## Testing Patterns
 

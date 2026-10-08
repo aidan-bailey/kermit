@@ -28,7 +28,9 @@ partitions takes about n·log₂P fewer comparisons than one sort of
 everything, so `parallel:1` can beat `serial`. HashTrie has no such saving
 (see [HashTrie](#hashtrie)). N ranges from 1 to 1024 (`Threads::MAX`).
 
-The shared steps live in `kermit-ds/src/morsel.rs` (`scatter`, `dispatch`).
+The shared steps live in `kermit-ds/src/morsel.rs` (`scatter_rows`, `dispatch`).
+`scatter_rows` sends the 4-byte row ids of a `Tuples` batch to partitions
+(`RowPartition`, its ids in input order); the batch itself never moves (#111).
 The TreeTrie build is `TreeTrie::build_parallel` in
 `kermit-ds/src/ds/tree_trie/implementation.rs`.
 The HashTrie builds are `parallel::fill_root` (`parallel:N`) and
@@ -43,20 +45,24 @@ The HashTrie builds are `parallel::fill_root` (`parallel:N`) and
 parallel_build(tuples, N):
     check arities                                   // the serial checks, on the caller
     splitters = quantiles of a sample of first keys  // duplicates kept; aiming at P = 4·N partitions
-    partitions = scatter(tuples, morsels of 16 384)  // step 1, N workers
-        // tuple t goes to partition_point(splitters, s <= t[0])
+    partitions = scatter_rows(tuples, morsels of 16 384)  // step 1, N workers
+        // row t's id goes to partition_point(splitters, s <= t[0])
     built = dispatch(partitions):                    // step 2, N workers
-        sort the partition; insert its tuples one at a time
+        gather the partition's rows into a local Tuples (ids ascend);
+        sort it (Tuples::sort); insert its rows one at a time
         -> (its top-level nodes, its distinct tuples)
     root = []                                        // step 3, the caller
     for (nodes, count) in built, in key order:
         push each node onto root, one at a time
 ```
 
-- **Partition.** Workers take morsels from a mutex-guarded queue and move
-  each tuple, without copying it, into its partition's bucket for that
-  morsel. A partition is its buckets in morsel order, so it lists its tuples
-  in input order.
+- **Partition.** Workers take morsels from a mutex-guarded queue and push
+  each row's id into its partition's bucket for that morsel; the rows stay
+  in the batch. A partition is its buckets in morsel order, so it lists its
+  ids in input order, strictly ascending. Each build worker then gathers its
+  partition's rows into a buffer of its own, always reading forward and
+  skipping other partitions' rows, and frees it when done; the calling
+  thread frees the input batch once.
 - **Build.** Workers take whole partitions from the same kind of queue.
   There are usually more partitions than threads (fewer only when heavy keys
   merge splitters), so a worker that drew a small partition takes another.
@@ -101,7 +107,7 @@ With `n` tuples of arity `a`, `k` distinct first keys and `N` threads:
 |---|---|---|
 | Checks and sampling | O(n), plus sorting a sample of 128–256 keys per partition (fewer for small inputs) | the calling thread |
 | Partition | O(n log P) | N workers |
-| Build | O(n · a · log n): sorting and inserting, split across partitions | N workers |
+| Build | O(n · a · log n): gathering, sorting and inserting, split across partitions | N workers |
 | Assemble | O(k) moves | the calling thread |
 
 The sequential share is the checks, the sampling and the assemble step.
@@ -127,12 +133,12 @@ superlinear, and the fraction then goes negative.
 sample is `1 1 2 3`; its quantiles for 8 partitions are `1 1 1 2 2 3 3`,
 which merge to the splitters `[1, 2, 3]`, so there are four partitions:
 
-| Partition | First keys | Tuples (input order) | After sorting and inserting |
+| Partition | First keys | Row ids → rows (input order) | After gathering, sorting and inserting |
 |---|---|---|---|
 | 0 | `< 1` | — | — |
-| 1 | `1` | `[1,2] [1,1]` | `1 → {1, 2}` |
-| 2 | `2` | `[2,9]` | `2 → {9}` |
-| 3 | `≥ 3` | `[3,1]` | `3 → {1}` |
+| 1 | `1` | 1 → `[1,2]`, 3 → `[1,1]` | `1 → {1, 2}` |
+| 2 | `2` | 2 → `[2,9]` | `2 → {9}` |
+| 3 | `≥ 3` | 0 → `[3,1]` | `3 → {1}` |
 
 Pushing the nodes of partitions 1, 2 and 3 in order gives the root `1, 2, 3`:
 the trie `from_tuples` builds from the same input.
@@ -159,8 +165,8 @@ parallel_build(tuples, N):
     check arities                                     // the serial check, on the caller
     if no tuples: return the empty root               // no worker started
     P = 4·N rounded up to a power of two; b = log₂ P
-    partitions = scatter(tuples, morsels of 16 384)   // step 1, N workers
-        // tuple t goes to partition H(t[0]) >> (64 − b), with its position
+    partitions = scatter_rows(tuples, morsels of 16 384)   // step 1, N workers
+        // row t's id (its position) goes to partition H(t[0]) >> (64 − b)
     lists = dispatch(non-empty partitions):            // step 2, N workers
         group into a scratch root in input order,
             noting (position, hash) whenever it gains a key
@@ -174,8 +180,8 @@ parallel_build(tuples, N):
 
 - **Partition.** As for TreeTrie, but by the top b bits of the first
   attribute's hash (the radix build's rule; FxHash mixes its low bits
-  poorly), so there are no splitters to sample, and each tuple keeps its
-  input position.
+  poorly), so there are no splitters to sample. A row's id is its input
+  position, so the partitions carry nothing else.
 - **Build.** A worker builds a whole partition into a scratch root of the
   real root's kind, by Algorithm 2, as the bulk build does, then moves the
   scratch root's entries out in the order their keys arrived.
@@ -196,9 +202,9 @@ morsels, two of them full, in `…_on_large_and_skewed_inputs`).
 - A table's final layout depends only on the order in which its *new* keys
   arrive, because `HashTable::entry_or_insert_with` returns an existing
   entry before its resize check.
-- `scatter` keeps each partition in input order, so each root key's subtrie
-  is built from the same list, the same tuples in the same order. That
-  covers every `Singleton`, every chain, every capacity and, under lazy
+- `scatter_rows` keeps each partition in input order, so each root key's
+  subtrie is built from the same list, the same row ids in the same order.
+  That covers every `Singleton`, every chain, every capacity and, under lazy
   expansion, every pending list.
 - The merge inserts the root's keys in first-appearance order, the bulk
   order. Equal 64-bit hashes share a root entry and also a partition,
@@ -220,7 +226,7 @@ threads (`P` = 4·N rounded up to a power of two):
 | Step | Work | Runs on |
 |---|---|---|
 | Checks | O(n) | the calling thread |
-| Partition | O(n) hashes and moves | N workers |
+| Partition | O(n) hashes and 4-byte id pushes | N workers |
 | Build | O(n · a) expected probes and inserts, split across partitions, plus O(D) to take the entries out | N workers |
 | Merge | O(D log P) heap operations and D root inserts (expected O(1) each, plus the root's resizes) | the calling thread |
 
@@ -266,15 +272,15 @@ presized:N (requires root-capacity=tuples):
     check arities; no tuples → the empty root, no worker started
     root = 2^p buckets, p = config.root_log2_capacity(n)    // #88; never grows here
     P = 4·N rounded up to a power of two, capped at the region count
-    partitions = scatter(tuples, morsels of 16 384)        // step 1, N workers
-        // tuple t goes to partition home_bucket(H(t[0]), p) >> (p − log₂ P),
-        // with its position: partition k is run k of the root
+    partitions = scatter_rows(tuples, morsels of 16 384)   // step 1, N workers
+        // row t's id goes to partition home_bucket(H(t[0]), p) >> (p − log₂ P):
+        // partition k is run k of the root
     root.with_runs(P, REGION_BUCKETS, |runs|               // step 2, N workers
         dispatch over (partition k, run k):
-            for each tuple, in input order:
-                push_in_run(run k, tuple)        lines 6–7, onto its bucket's list
+            for each row id, in input order:
+                push_in_run(run k, id)           lines 6–7, onto its bucket's list
                     off the region's end → defer
-    tail: push each deferred tuple, in input order, by ordinary probing
+    tail: push each deferred id, in input (id) order, by ordinary probing
     children: dispatch over the P runs: map a run's lists to children (`child`, lines 8–12)
 ```
 
@@ -317,7 +323,7 @@ handled.
 | Step | Work | Runs on |
 |---|---|---|
 | Checks, sizing | O(n) | the calling thread |
-| Partition | O(n) hashes and moves | N workers |
+| Partition | O(n) hashes and 4-byte id pushes | N workers |
 | Group (lines 4–7) | O(n) expected, one push per tuple | N workers |
 | Tail | the deferred tuples, sorted and pushed | the calling thread |
 | Children (lines 8–12) | O(n · a) expected, a run of buckets per task | N workers |
@@ -326,25 +332,25 @@ The deferred share grows with the load factor and shrinks with the region
 size; at 4096-bucket regions it is a small fraction of n. Each region's
 buckets stay within one worker's cache.
 
-**Worked example.** `presized:2` over `[1,a] [2,b] [3,c] [1,d]` (positions
+**Worked example.** `presized:2` over `[1,a] [2,b] [3,c] [1,d]` (rows
 0–3) under `root-capacity=tuples`: n = 4 at 70 % gives an 8-bucket root.
 Real regions are 4096 buckets; for the example, take 4-bucket regions, so
 there are 2 regions and 2 runs. Say the keys' home buckets are 3 for key 1,
 3 for key 2, and 5 for key 3.
 
-| Run | Tuples (position) | Step | Bucket |
+| Run | Row (id) | Step | Bucket |
 |---|---|---|---|
-| 0 (buckets 0–3) | `[1,a]`@0 | key 1 is new: its list starts with `[1,a]` | 3 |
+| 0 (buckets 0–3) | `[1,a]`@0 | key 1 is new: its list starts with id 0 | 3 |
 | 0 | `[2,b]`@1 | key 2 probes 3 (taken), and 4 is past its region's end | deferred |
 | 1 (buckets 4–7) | `[3,c]`@2 | key 3 is new | 5 |
-| 0 | `[1,d]`@3 | key 1 is found at 3: `[1,d]` is pushed onto its list | 3 |
+| 0 | `[1,d]`@3 | key 1 is found at 3: id 3 is pushed onto its list | 3 |
 
-The tail then pushes `[2,b]` by ordinary probing from its home, bucket 3.
-Bucket 3 is taken and bucket 4 is free, so key 2 lands at 4. The children
-are then built a run at a time: run 0's task builds key 1's from
-`[1,a] [1,d]`, and run 1's builds key 2's and key 3's. The bulk build would
-have put key 1 at 3, key 2 at 4 and key 3 at 5: the same occupied buckets,
-and here even the same slots. They differ only when a deferred key and a
+The tail then pushes id 1 (`[2,b]`) by ordinary probing from its home,
+bucket 3. Bucket 3 is taken and bucket 4 is free, so key 2 lands at 4. The
+children are then built a run at a time: run 0's task builds key 1's from
+ids `[0, 3]` (`[1,a] [1,d]`), and run 1's builds key 2's and key 3's. The
+bulk build would have put key 1 at 3, key 2 at 4 and key 3 at 5: the same
+occupied buckets, and here even the same slots. They differ only when a deferred key and a
 later region's key compete for the same bucket.
 
 ## Measuring
@@ -362,6 +368,8 @@ The protocol is the spec's "Scaling protocol"; its TreeTrie half is
 recorded below.
 
 ### Scaling result: TreeTrie (2026-10-05)
+
+> **2026-10-08 (#111):** This record and the jemalloc one below predate flat tuple batches: every arm read its input as a `Vec` per tuple, and the workers freed those tuples. Since #111 the input is one `Tuples` batch, freed once by the calling thread, and each worker gathers its partition into a local `Tuples`, so the plateau's mechanism below no longer applies to the input path.
 
 These are **glibc** numbers. The binary predates #112, which made jemalloc the
 binary's allocator. At 10⁷ tuples the glibc curve is bound by the allocator,
@@ -446,10 +454,10 @@ geometric mean over the 14 queries of each query's speedup):
 - **Peak:** the build is fastest at about 10⁶ tuples: 3.4× on 8 threads,
   and 4.0× on `friendof`, whose input arrives grouped by first key.
 - **Plateau at 10⁷: glibc's allocator (#112).** Both arities flatten to
-  about 1.8–1.9×. Every insert frees its input tuple at the leaf, on a
-  worker thread, but the calling thread allocated those tuples (in
-  Criterion's setup clone), so glibc returns all 10⁷ chunks to the main
-  arena. Profiled on binary 10⁷ at `:16` (2026-10-06):
+  about 1.8–1.9×. Before #111 every insert freed its input tuple at the
+  leaf, on a worker thread, but the calling thread had allocated those
+  tuples (in Criterion's setup clone), so glibc returned all 10⁷ chunks to
+  the main arena. Profiled on binary 10⁷ at `:16` (2026-10-06):
   - The dispatch phase (sort, insert, frees) takes 1.44 s of a ~1.5 s
     build. Scatter takes 27 ms, the merge 16 ms.
   - The workers spend 52 % of their cycles in glibc's fastbin push (a
@@ -460,8 +468,10 @@ geometric mean over the 14 queries of each query's speedup):
 
   The same binary under jemalloc reaches 7.5× (binary) and 4.5× (unary)
   at `:16`, so neither DRAM traffic nor a sequential step is the cap.
-  Inserting allocates nothing per level: `collect()` reuses the tuple's
-  buffer.
+  Inserting allocated nothing per level even then: `collect()` reused the
+  tuple's buffer. Since #111 the input path frees no tuple on a worker
+  thread at all: the batch is one buffer, freed once, and each worker
+  gathers its partition into a local `Tuples` that it frees itself.
 - **`parallel:1` at 0.67 for unary 10⁷ is a glibc timing artefact.** A
   unary build makes no small allocation, so a serial build's 10⁷ frees
   wait in glibc's fastbins and are consolidated in Criterion's *untimed*

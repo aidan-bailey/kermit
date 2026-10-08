@@ -39,7 +39,7 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | Operation | Time | Space | Notes |
 |---|---|---|---|
 | `insert(tuple)` | O(a · log b + b) | O(a) | binary search locates the slot at each level (a · log b); a diverging key shifts trailing siblings once at the divergence level via `Vec::insert` (b); absorbs duplicates |
-| `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort lexicographically, then insert |
+| `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort the batch with `Tuples::sort` (lexicographic; in place up to arity 4, into a new buffer of the rows' exact size for wider rows; one sort for both sorted tries, #111), then insert each row as a slice: the input costs no allocation per tuple or per level (new nodes allocate as before), and the batch is freed once |
 | `TrieIterator::key()` | O(1) | | slice index |
 | `TrieIterator::next()` | O(1) | | `sibling_idx += 1` |
 | `TrieIterator::seek(target)` | `S`-dependent: linear O(d), binary O(log r), galloping O(log d) | | `S::partition_point` over the `r` remaining siblings; `d` is the distance moved. See [seek strategies](seek-strategies.md) |

@@ -4,26 +4,26 @@
 
 ## Representation
 
-`HashTrie` is a hash-based trie: each level is a hash table whose keys are 64-bit hashes of attribute values, and whose values are either child nodes (inner levels) or tuple chains (leaf level).
+`HashTrie` is a hash-based trie: each level is a hash table whose keys are 64-bit hashes of attribute values, and whose values are either child nodes (inner levels) or tuple chains (leaf level). A chain holds the row ids of its tuples; the tuples themselves live once, in the trie's buffer.
 
 ```rust
 HashTrie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> {
     header:      RelationHeader,
+    tuples:      Tuples,            // every stored tuple, arrival order; len() = multiset size
     root:        HashTrieNode<P, E>,
-    tuple_count: usize,             // multiset size, for Cardinality
     config:      HashTrieConfig,
     _layout:     PhantomData<(H, P, E)>,
 }
 
 enum HashTrieNode<P: PruningPolicy, E: ExpansionPolicy> {
     Inner(HashTable<HashTrieNode<P, E>>),     // depths 0..arity-1
-    Leaf(HashTable<Vec<Vec<usize>>>),         // depth arity-1
+    Leaf(HashTable<Vec<RowId>>),              // depth arity-1: chains of row ids
     Singleton(P::Payload),                    // pruned subtrie, depths 1..arity
     Unexpanded(E::Pending<HashTrieNode<P, E>>), // lazy child, depths 1..arity
 }
 
 struct LazyChild<N> {                         // E::Pending<N> under LazyExpansion (boxed)
-    pending: RefCell<Vec<Vec<usize>>>,        // tuples below the bucket, insertion order
+    pending: RefCell<Vec<RowId>>,             // row ids below the bucket, insertion order
     built:   OnceCell<N>,                     // the table, once a probe reached it
 }
 
@@ -36,13 +36,24 @@ struct HashTable<V> {
 struct Entry<V> { hash: u64, value: V }
 ```
 
-The `Singleton` payload is the second Layout parameter's associated type: `Vec<usize>` under `SingletonPruning`, and the uninhabited `Never` under the default `NoPruning` — so with pruning off the variant cannot be constructed and every `Singleton` arm is dead code the compiler drops. rustc omits uninhabited variants when it computes a layout, so in practice the enum is laid out exactly as it was before pruning existed — an optimisation rustc performs, not a language guarantee, which is why the two size tests `node_does_not_grow_under_the_pruning_policy` (in `implementation.rs`) and `off_frame_is_the_bare_table_pair` (in `hash_trie_iter.rs`) pin it. See [Layout options](#layout-options).
+The `Singleton` payload is the second Layout parameter's associated type: the `RowId` of its one tuple under `SingletonPruning`, and the uninhabited `Never` under the default `NoPruning` — so with pruning off the variant cannot be constructed and every `Singleton` arm is dead code the compiler drops. rustc omits uninhabited variants when it computes a layout, so in practice the enum is laid out exactly as it was before pruning existed — an optimisation rustc performs, not a language guarantee, which is why the two size tests `node_does_not_grow_under_the_pruning_policy` (in `implementation.rs`) and `off_frame_is_the_bare_table_pair` (in `hash_trie_iter.rs`) pin it. See [Layout options](#layout-options).
 
-The `Unexpanded` payload is the third Layout parameter's associated type, by the same device: `Box<LazyChild<N>>` under `LazyExpansion` and `Never` under the default `EagerExpansion`, pinned by `node_does_not_grow_under_the_expansion_policy`. Under lazy expansion only the root is built at construction; every child below it keeps its tuples in `pending` until `HashTrieIter::open` first enters it, and `HashTrie::resolve` then moves them into a table built by Algorithm 2's `build` (`bulk.rs`), one level deep (its own children start unexpanded). `collect_tuples`, `for_each_tuple` and `heap_size_bytes` read `built` if present and `pending` otherwise, and never expand.
+The `Unexpanded` payload is the third Layout parameter's associated type, by the same device: `Box<LazyChild<N>>` under `LazyExpansion` and `Never` under the default `EagerExpansion`, pinned by `node_does_not_grow_under_the_expansion_policy`. Under lazy expansion only the root is built at construction; every child below it keeps its tuples' row ids in `pending` until `HashTrieIter::open` first enters it, and `HashTrie::resolve` then moves them into a table built by Algorithm 2's `build` (`bulk.rs`), one level deep (its own children start unexpanded). `for_each_tuple` and `heap_size_bytes` read `built` if present and `pending` otherwise; `collect_tuples` and `scan_tuples` read the buffer; none of them expands anything.
+
+**The tuple buffer** (#111). The trie owns its relation's tuples as one row-major `Tuples` batch, in arrival order: the batch a build is given, kept without a copy, then every row `insert` appends. Below the tables every tuple is named by its `RowId` (`u32`, an index into the buffer): a leaf chain is a `Vec<RowId>` in input order, a pruned `Singleton` one `RowId`, a lazy pending list a `Vec<RowId>`. `HashTrieIterator::leaf_tuples` lends a chain as a `LeafRows` view over the buffer. Two builds of one input own equal buffers, so the BuildMode identity tests compare ids, after checking the buffers are equal. Reading back: `for_each_tuple` walks the trie depth-first, reading each row through its id (`bench ds` times it, #79); `TupleScan::scan_tuples` (statistics, which need only the multiset) scans the buffer in arrival order; `collect_tuples` copies the buffer.
+
+| Element (VLDB 2020 §3.3.1–3.3.2, Fig. 3) | kermit since #111 |
+| --- | --- |
+| Tuples in one contiguous buffer, fixed-length layout | ✓ the relation's buffer, row-major |
+| Leaves, singletons and lazy children refer to tuple memory | ✓ by row id (4 B, kermit's; the paper's pointers are 8 B) |
+| A leaf is a list threaded through an 8-byte chain pointer per tuple | ✗ a `Vec<RowId>` per chain (kermit's), until #101 layer 3 |
+| Tuples partitioned by the first key's hash as they are materialised | ✗ arrival order, until #101 layer 3 |
+
+The paper's buffer is a copy its build makes. HashTrie takes the relation's buffer without copying it, so the build pays nothing for it; #101 layer 3 adds the partitioned copy, and with it the paper's cost.
 
 Bucket index: the high `p` bits of `hash × MULTIPLIERS[p]`, where `p = log2_capacity` and `MULTIPLIERS` holds one odd constant per capacity. The paper takes the high bits of the hash itself; multiplying first is this implementation's one departure, and the [bucket-index invariant](#invariants) explains it. Collisions are resolved by linear probing within the bucket array. Each occupied bucket stores the full 64-bit hash for disambiguation during probes.
 
-The iterator `HashTrieIter` carries a stack of frames from the root to the current depth. A table frame is `Table { node, idx }` — a bucket within an `Inner` or `Leaf` node; a singleton frame is `Singleton(P::Frame<'_>)`, whose type is chosen by the pruning Layout parameter: `SingletonFrameOn { tuple, hash, exhausted }` under `SingletonPruning`, emulating the one-entry table a pruned level would have held and hashing the tuple's attribute for that level once when the frame is pushed (the depth itself is the frame's position in the stack, not a stored field); `Never` under `NoPruning`, which makes the variant uninhabited and collapses the frame to the bare `(node, idx)` pair. The deepest frame is the iterator's current position; `HashTrieIter::descent` decides what `open()` descends into (`Descent::Node`, `Descent::Deeper`, or `Descent::Blocked`), so a `Singleton` is never placed in a table frame.
+The iterator `HashTrieIter` carries a stack of frames from the root to the current depth. A table frame is `Table { node, idx }` — a bucket within an `Inner` or `Leaf` node; a singleton frame is `Singleton(P::Frame<'_>)`, whose type is chosen by the pruning Layout parameter: `SingletonFrameOn { row, hash, exhausted }` under `SingletonPruning`, emulating the one-entry table a pruned level would have held and hashing the attribute of its row (read from the buffer through the row id) for that level once when the frame is pushed (the depth itself is the frame's position in the stack, not a stored field); `Never` under `NoPruning`, which makes the variant uninhabited and collapses the frame to the bare `(node, idx)` pair. The deepest frame is the iterator's current position; `HashTrieIter::descent` decides what `open()` descends into (`Descent::Node`, `Descent::Deeper`, or `Descent::Blocked`), so a `Singleton` is never placed in a table frame.
 
 Compared to [`TreeTrie`](./tree-trie.md) and [`ColumnTrie`](./column-trie.md), this structure trades sorted-order navigation for constant-time hash lookup. The cost: hash collisions can produce false-positive intersections at inner levels, which the join algorithm verifies at the leaf via [`verify_and_construct`](../algorithms/hash-triejoin.md).
 
@@ -61,7 +72,7 @@ child, recursively. This is the `bulk` build mode, the default.
 | lines 4–7, push each tuple onto its bucket's list | `HashTrie::group` |
 | lines 8–12, build each bucket's child from its list | `HashTrie::build_nested`, through `HashTable::map` and `HashTrie::child` |
 | line 15, return the list | the last attribute's table of lists is the `Leaf`, its lists the chains |
-| the lists themselves | a `Vec` per bucket (kermit's); Umbra threads them through an 8-byte chain pointer in each tuple (§3.3.2), which needs the flat tuple buffer of #111 (#101 layer 3) |
+| the lists themselves | a `Vec<RowId>` per bucket: 4-byte ids of rows in the trie's tuple buffer (#111; kermit's). Umbra threads them through an 8-byte chain pointer in each materialised tuple (§3.3.2), which needs the partitioned copy of the buffer (#101 layer 3) |
 
 `child` decides what a bucket's list becomes: a `Singleton` under pruning
 (§3.3.1), an `Unexpanded` child under lazy expansion (§3.3.1), and
@@ -83,7 +94,7 @@ paper's.
 - **Hash function consistency.** The hashing convention is the compile-time `HashStrategy` parameter `H`, whose single-argument method `H::hash(key: usize) -> u64` (defined in `kermit_iters::hash_strategy`; `SipHashStrategy` is the default, `FxHashStrategy` the alternative — see [Layout options](#layout-options)) hashes only the attribute value. There is no per-depth parameter: cross-attribute aliasing isn't an issue because attribute positions live in physically distinct hash tables — a value at column 0 and the same value at column 1 are stored in different tables and cannot collide. `HashTrie::insert_at` calls `H::hash(key)` directly; `SingletonHashTrieIter` is handed a precomputed hash by `kermit::db::hash_join`, which uses the same `H`. Both paths must hash with the same `H`, or queries against constants silently break.
 - **Multiset semantics.** Duplicate tuples are preserved (added to the same leaf chain) rather than absorbed. This is a deliberate divergence from `TreeTrie`'s set behavior, motivated by the paper's "bag semantics" treatment in §3.2.4. Future enhancement: optional deduplication via a `with_set_semantics` flag.
 - **Load factor cap.** Each `HashTable` resizes (doubles) when an insert would push occupancy above the configured cap — `HashTrieConfig::load_factor`, default 0.7 (see [Config flags](#config-flags)). The test is exact integer arithmetic, `(len + 1) * 100 > capacity * percent`. After resize, all entries are rehashed. Every table starts at 4 buckets except in a build from a known set of tuples, where `--ds-config root-capacity=tuples` sizes the root once for the tuple count, and `child-capacity=tuples` sizes every child once for its list (see [Config flags](#config-flags)).
-- **Bucket index varies with capacity.** A table with `2^p` buckets indexes by the high `p` bits of `hash × MULTIPLIERS[p]` (`HashTable::bucket_index`), and each capacity has its own multiplier: an odd SplitMix64 output, so the multiply loses none of the hash and different capacities' multipliers are unrelated. The paper's `hash >> (64 - p)` is a *prefix* of the index at every larger capacity, so a table's iteration order is also sorted by the index of every smaller capacity. A table rebuilt in that order, such as a `HashTrie` rebuilt from another's `collect_tuples()` or from a projection of it, passes through those smaller capacities as it doubles, and at each one its keys share the lowest buckets. Linear probing turned that into one cluster spanning most of the keys the table held, making the build quadratic in the keys per table (issue #66). A salt fixed per trie depth would not help: the source and the rebuilt table share it. The multiplier covers a rebuild from one table's iteration order or any subset of it. Input that concatenates the iteration orders of two or more large tables of the same capacity, with mostly different keys, still clusters, because their densities add up in the low buckets. No index computed from the hash and the capacity alone can prevent that; only a seed that differs per table instance could. The multiplier costs one table load and one multiply per probe sequence and no space, keeps the structure deterministic, and leaves `heap_size_bytes` unchanged. Pinned by the `rebuilding_*_costs_no_more_than_key_order` tests in [`hash_table.rs`](../../kermit-ds/src/ds/hash_trie/hash_table.rs), which count build probes: the finished table cannot show the difference, because under linear probing a key set's total displacement does not depend on insertion order.
+- **Bucket index varies with capacity.** A table with `2^p` buckets indexes by the high `p` bits of `hash × MULTIPLIERS[p]` (`HashTable::bucket_index`), and each capacity has its own multiplier: an odd SplitMix64 output, so the multiply loses none of the hash and different capacities' multipliers are unrelated. The paper's `hash >> (64 - p)` is a *prefix* of the index at every larger capacity, so a table's iteration order is also sorted by the index of every smaller capacity. A table rebuilt in that order, such as a `HashTrie` rebuilt from another's `for_each_tuple` walk (or, before #111, from its `collect_tuples()` or a projection of it, which walked the trie too; both now read its buffer in arrival order), passes through those smaller capacities as it doubles, and at each one its keys share the lowest buckets. Linear probing turned that into one cluster spanning most of the keys the table held, making the build quadratic in the keys per table (issue #66). A salt fixed per trie depth would not help: the source and the rebuilt table share it. The multiplier covers a rebuild from one table's iteration order or any subset of it. Input that concatenates the iteration orders of two or more large tables of the same capacity, with mostly different keys, still clusters, because their densities add up in the low buckets. No index computed from the hash and the capacity alone can prevent that; only a seed that differs per table instance could. The multiplier costs one table load and one multiply per probe sequence and no space, keeps the structure deterministic, and leaves `heap_size_bytes` unchanged. Pinned by the `rebuilding_*_costs_no_more_than_key_order` tests in [`hash_table.rs`](../../kermit-ds/src/ds/hash_trie/hash_table.rs), which count build probes: the finished table cannot show the difference, because under linear probing a key set's total displacement does not depend on insertion order.
 - **Leaf chains preserve hash collisions.** Two tuples with identical hash signatures (collisions on every attribute) end up in the same leaf chain. Verification at join time (paper §3.2.3 line 18) distinguishes true matches from false positives. Pinned by the `hash_trie_collisions` tests in [`kermit-ds/tests/hash_trie_tests.rs`](../../kermit-ds/tests/hash_trie_tests.rs), which build the trie under a test-only `hash(k) = k mod 10` strategy so the collisions are real rather than simulated.
 - **Lazy buckets hold no tables.** Under the `LazyExpansion` Layout, every `Inner` bucket holds a `Singleton` (pruning on, exactly one tuple below it) or an `Unexpanded` child, never a table; a table appears only inside an `Unexpanded` child a probe has built. An expanded child's table is the eager table at that position, bucket for bucket, for a trie no `insert` has changed since its build, and always under `child-capacity=grow`: it is built by Algorithm 2 from its pending list, which keeps insertion order, under the same load factor and child capacity as the eager build. Pinned by the `lazy_expansion` trace tests in [`kermit-ds/tests/hash_trie_tests.rs`](../../kermit-ds/tests/hash_trie_tests.rs), which require identical probe traces from an eager and a lazy trie.
 - **Pruned iff exactly one tuple.** Under the `SingletonPruning` Layout, a child node is `Singleton` iff exactly one tuple lives below it; the shape is insertion-order independent, and a second tuple (including a duplicate or a full hash collision) unprunes the node back into tables. Under `NoPruning` no `Singleton` can exist — its payload is uninhabited — and the structure is identical to pre-pruning builds. Pinned by `check_pruning_invariant` in the [`implementation.rs`](../../kermit-ds/src/ds/hash_trie/implementation.rs) tests.
@@ -95,7 +106,7 @@ Let `n` = tuple count, `a` = arity, `b` = max chain length at a leaf bucket.
 | Operation | Time | Space | Notes |
 |---|---|---|---|
 | `insert(tuple)` | O(a) amortized | O(a) | per-level: one hash + one probe + at most one resize; amortized O(1) per level |
-| `from_tuples(n)` | O(n · a) | O(n · a) | Algorithm 2, the default `bulk` build: n hashes and moves per level, a list allocation per inner bucket (a one-tuple list too, freed again when pruning makes it a `Singleton`), and one transient table of lists per inner table (about 32 B a bucket, the root's the largest; the last attribute's table of lists stays as the `Leaf`). Expected cost holds for input in another `HashTrie`'s iteration order, or any subset of it; the bucket-index invariant names the one order it does not cover |
+| `from_tuples(n)` | O(n · a) | O(n · a) | Algorithm 2, the default `bulk` build: n hashes and row-id pushes per level (the tuples stay in the buffer), a list allocation of 4-byte ids per inner bucket (a one-tuple list too, freed again when pruning makes it a `Singleton`), and one transient table of lists per inner table (about 32 B a bucket, the root's the largest; the last attribute's table of lists stays as the `Leaf`). Expected cost holds for input in another `HashTrie`'s iteration order, or any subset of it; the bucket-index invariant names the one order it does not cover |
 | `from_tuples` under `incremental` | O(n · a) | O(n · a) | loops `insert` over the input: the build before #107 |
 | `from_tuples` under `radix:K` | O(n · a + D log D) | O(n · a) | the bulk build, plus two partition passes, a second first-attribute hash per tuple and a sort of the D distinct root keys; builds the identical trie |
 | `HashTrieIterator::key()` | O(1) | | array access at the deepest stack entry |
@@ -107,43 +118,44 @@ Let `n` = tuple count, `a` = arity, `b` = max chain length at a leaf bucket.
 | `HashTrieIterator::open()` into an unexpanded child (lazy) | O(k) first time, O(1) after | O(k) | builds the child's one-level table from its `k` pending tuples (`HashTrie::resolve`); later `open`s find it built |
 | `insert(tuple)` under `LazyExpansion` | O(1) amortized | O(a) | one root-level hash and probe, then a push onto the child's pending list; recurses only into a child a probe has already expanded |
 | `HashTrieIterator::up()` | O(1) | | pops the stack |
-| `HashTrieIterator::leaf_tuples()` | O(1) | | slice of the current bucket's tuple chain |
-| `HeapSize::heap_size_bytes()` | O(node count) | | walks the trie recursively summing `HashTable` shell + tuple-chain bytes |
-| `for_each_tuple(visit)` | O(n) | O(a) stack | depth-first walk lending each stored tuple from its leaf chain or pruned `Singleton`, in `collect_tuples()` order; allocates nothing per tuple, so `bench ds` times it (issue #79). `collect_tuples()` is the same walk, cloning each tuple into a `Vec` |
+| `HashTrieIterator::leaf_tuples()` | O(1) | | a `LeafRows` view: the current bucket's chain of row ids over the trie's buffer; copies nothing |
+| `HeapSize::heap_size_bytes()` | O(node count) | | the buffer (capacity × 8 B), plus a recursive walk summing each `HashTable` shell and each id list (chains and pending lists, capacity × 4 B). A tuple is counted once, in the buffer; at arity 2 that is 16 B plus a 4-byte id, where a `Vec` per tuple cost 40 B before #111 |
+| `for_each_tuple(visit)` | O(n) | O(a) stack | depth-first walk of the trie lending each stored tuple, read from the buffer through its chain or pruned `Singleton` id; allocates nothing per tuple, so `bench ds` times it (issue #79). `collect_tuples()` copies the buffer, in arrival order, and `TupleScan::scan_tuples` scans it in place: neither walks the trie |
 
 The "amortized O(1)" claims assume good hash distribution (no chronic clustering on linear probes). For pathologically bad inputs (e.g., all keys hashing to the same bucket), `lookup` degrades to O(capacity). The hash function is a Layout choice, not a fixed cost: `fxhash` (`FxHashStrategy`) is implemented and selectable with `--ds-layout-hasher fxhash` — see [Layout options](#layout-options). Other non-cryptographic alternatives (`ahash`, AquaHash) remain unimplemented.
 
 ## Worked micro-example
 
-Tuples `{(1, 2), (1, 3), (2, 4)}` build (for some specific hash values — the actual hashes depend on the platform's `DefaultHasher`):
+Tuples `(1, 2), (1, 3), (2, 4)`, arriving in that order as rows 0, 1 and 2 of the trie's buffer, build (for some specific hash values — the actual hashes depend on the platform's `DefaultHasher`):
 
 ```
 HashTrie {
   arity: 2,
+  tuples: [1, 2, 1, 3, 2, 4],          // rows 0, 1, 2, row-major
   root: Inner(HashTable {
     bucket[i₁]: Some(Entry { hash: h(1), value: Leaf(HashTable {
-      bucket[j₁]: Some(Entry { hash: h(2), value: [[1, 2]] }),
-      bucket[j₂]: Some(Entry { hash: h(3), value: [[1, 3]] }),
+      bucket[j₁]: Some(Entry { hash: h(2), value: [0] }),   // row 0 = (1, 2)
+      bucket[j₂]: Some(Entry { hash: h(3), value: [1] }),   // row 1 = (1, 3)
     })}),
     bucket[i₂]: Some(Entry { hash: h(2), value: Leaf(HashTable {
-      bucket[j₃]: Some(Entry { hash: h(4), value: [[2, 4]] }),
+      bucket[j₃]: Some(Entry { hash: h(4), value: [2] }),   // row 2 = (2, 4)
     })}),
   })
 }
 ```
 
-That is the unpruned shape (`--ds-layout-pruning off`, i.e. `HashTrie<H, NoPruning>`, the default). Under `HashTrie<H, SingletonPruning>`, the child for `1` holds two tuples and stays a `Leaf` table, while the child for `2` holds exactly one and collapses to `Singleton([2, 4])` — so step 6 below pushes a `Singleton` frame instead of a `Table` frame, and its `key()` / `leaf_tuples()` answers are unchanged.
+That is the unpruned shape (`--ds-layout-pruning off`, i.e. `HashTrie<H, NoPruning>`, the default). Under `HashTrie<H, SingletonPruning>`, the child for `1` holds two tuples and stays a `Leaf` table, while the child for `2` holds exactly one and collapses to `Singleton(2)`, the row id of `(2, 4)` — so step 6 below pushes a `Singleton` frame instead of a `Table` frame, and its `key()` / `leaf_tuples()` answers are unchanged.
 
-Under `HashTrie<H, NoPruning, LazyExpansion>` (`--ds-layout-expansion lazy`), construction stops at the root: bucket `i₁` holds `Unexpanded { pending: [[1, 2], [1, 3]] }` and bucket `i₂` holds `Unexpanded { pending: [[2, 4]] }`. Step 2 below builds the first child's `Leaf` table from its two tuples (exactly the table shown above) before pushing the frame, and step 6 builds the second's; the walk's keys and leaf chains are unchanged. A join that never enters `h(2)`'s child never builds it.
+Under `HashTrie<H, NoPruning, LazyExpansion>` (`--ds-layout-expansion lazy`), construction stops at the root: bucket `i₁` holds `Unexpanded { pending: [0, 1] }` and bucket `i₂` holds `Unexpanded { pending: [2] }`. Step 2 below builds the first child's `Leaf` table from its two rows (exactly the table shown above) before pushing the frame, and step 6 builds the second's; the walk's keys and leaf chains are unchanged. A join that never enters `h(2)`'s child never builds it.
 
 Iteration walk (`hash_trie_iter()`):
 
 1. `open()` → stack: `[Table(root, i₁)]`. `key()` returns `h(1)`.
-2. `open()` → stack: `[Table(root, i₁), Table(child_for_1, j₁)]`. `key()` returns `h(2)`. `leaf_tuples()` returns `&[[1, 2]]`.
-3. `next()` → stack deepest: `Table(child_for_1, j₂)`. `key()` returns `h(3)`. `leaf_tuples()` returns `&[[1, 3]]`.
+2. `open()` → stack: `[Table(root, i₁), Table(child_for_1, j₁)]`. `key()` returns `h(2)`. `leaf_tuples()` returns a `LeafRows` over ids `[0]`, whose one row is `(1, 2)`.
+3. `next()` → stack deepest: `Table(child_for_1, j₂)`. `key()` returns `h(3)`. `leaf_tuples()` returns a `LeafRows` over ids `[1]`, whose one row is `(1, 3)`.
 4. `next()` → at end at depth 2. `up()` → stack: `[Table(root, i₁)]`.
 5. `next()` → stack: `[Table(root, i₂)]`. `key()` returns `h(2)`.
-6. `open()` → stack deepest: `Table(child_for_2, j₃)`. `key()` returns `h(4)`. `leaf_tuples()` returns `&[[2, 4]]`. (Under `SingletonPruning`: a `Singleton` frame at depth 1 over `[2, 4]`, with the same `key()` and `leaf_tuples()`.)
+6. `open()` → stack deepest: `Table(child_for_2, j₃)`. `key()` returns `h(4)`. `leaf_tuples()` returns a `LeafRows` over ids `[2]`, whose one row is `(2, 4)`. (Under `SingletonPruning`: a `Singleton` frame at depth 1 over row 2, with the same `key()` and `leaf_tuples()`.)
 7. `up()`, `up()`, `next()` → empty stack. Done.
 
 ## When to prefer this structure
@@ -187,7 +199,7 @@ optimizations are classified into Layout, Config, or BuildMode.
   - **Type-level:** `HashTrie<H, P: PruningPolicy>` where `P` is
     `NoPruning` or `SingletonPruning` (in
     [`pruning.rs`](../../kermit-ds/src/ds/hash_trie/pruning.rs)).
-    `P::Payload` is what `HashTrieNode::Singleton` holds: `Vec<usize>` when
+    `P::Payload` is what `HashTrieNode::Singleton` holds: a `RowId` when
     on, the uninhabited `Never` when off. The `off` instantiation compiles
     to the pre-pruning code (pinned by
     `node_does_not_grow_under_the_pruning_policy` and
@@ -214,9 +226,9 @@ optimizations are classified into Layout, Config, or BuildMode.
     kermit-lab.
 
 - **Lazy child expansion** (`ds_layout_expansion`): builds only the root
-  table at construction. Every child below it keeps its tuples as a list
-  until a probe first opens it, and then that child's table is built, one
-  level at a time (paper §3.3.1, Figure 6). It is a *shape*: an unexpanded
+  table at construction. Every child below it keeps its tuples' row ids as a
+  list until a probe first opens it, and then that child's table is built,
+  one level at a time (paper §3.3.1, Figure 6). It is a *shape*: an unexpanded
   child is a node state that eager tries must not carry, so it is a Layout.
   - **CLI:** `-i hash-trie --ds-layout-expansion <eager|lazy>` (on
     `kermit join`, `bench join`, `bench run` and `bench ds`).
@@ -226,7 +238,7 @@ optimizations are classified into Layout, Config, or BuildMode.
   - **Type-level:** `HashTrie<H, P, E: ExpansionPolicy>` (in
     [`expansion.rs`](../../kermit-ds/src/ds/hash_trie/expansion.rs)).
     `HashTrieNode::Unexpanded` holds `E::Pending<Node>`:
-    - under `lazy`, a `Box<LazyChild>` with the pending tuples in a
+    - under `lazy`, a `Box<LazyChild>` with the pending row ids in a
       `RefCell` and the built table in a `OnceCell`;
     - under `eager`, the uninhabited `Never`, so eager tries keep their node
       and frame sizes (pinned by
@@ -238,10 +250,11 @@ optimizations are classified into Layout, Config, or BuildMode.
     naming `HashTrieNode`, so the policy traits stay free of crate-private
     types (`private_interfaces`).
   - **Who expands:** only `HashTrieIter::open`, through `HashTrie::resolve`.
-    `collect_tuples`, `for_each_tuple`, `heap_size_bytes`, `project` and the
-    Parquet round-trip read the pending list and expand nothing. A
-    `for_each_tuple` visitor that opens an iterator on the same trie and
-    reaches a child being visited panics (`BorrowMutError`).
+    `for_each_tuple` and `heap_size_bytes` read the pending list;
+    `collect_tuples`, `scan_tuples`, `project` and the Parquet round-trip
+    read the buffer; none of them expands anything. A `for_each_tuple`
+    visitor that opens an iterator on the same trie and reaches a child
+    being visited panics (`BorrowMutError`).
   - **With pruning:** a bucket with one tuple below it is a `Singleton` and
     never expands; two or more make an `Unexpanded` list, the evicted
     singleton tuple first.
@@ -454,11 +467,12 @@ for it.
 **The radix build** ([`radix.rs`](../../kermit-ds/src/ds/hash_trie/radix.rs)):
 
 1. **Partition.** A histogram pass, then a stable scatter pass, puts every
-   tuple in one of 2^K partitions, together with its input index.
-2. **Scratch roots.** Each non-empty partition's tuples are grouped into a
+   row's id in one of 2^K partitions. A row's id is its input index, so
+   nothing else travels with it, and the rows stay in the buffer.
+2. **Scratch roots.** Each non-empty partition's ids are grouped into a
    scratch root of the real root's kind (Algorithm 2, lines 4–7), recording
-   the input index of the tuple that introduced each key; then each key's
-   child is built from its list, as the bulk build builds it.
+   the id of the row that introduced each key; then each key's child is
+   built from its list, as the bulk build builds it.
 3. **Merge.** Every scratch entry moves into the real root, in the order of
    those first-appearance indices.
 
@@ -481,8 +495,9 @@ build pays for:
 - two partition passes;
 - a second hash of each tuple's first attribute;
 - a sort of the D merge entries;
-- transient memory: 2 bytes per tuple for its partition number, 32 bytes
-  per tuple for the partitioned `(index, tuple)` pairs, and the scratch
+- transient memory: 2 bytes per tuple for its partition number, 4 bytes
+  per tuple for its row id in the partitioned lists (32 bytes of
+  `(index, tuple)` pair before #111), and the scratch
   tables.
 
 **The #66 input shape.** A scratch root receives keys that share their top
@@ -493,7 +508,7 @@ constant added to every key's product, so the partition does not cluster.
 without the multiplier, one partition costs about 90× the probes.
 
 **The parallel build** (`parallel.rs`) runs the radix build's partition
-step through `morsel::scatter` and its build step through
+step through `morsel::scatter_rows` and its build step through
 `morsel::dispatch`, so each runs on N threads. The calling thread then
 merges the partitions' entries into the root by a k-way merge on their
 first-appearance positions. The trie is the radix build's, and so the
@@ -504,8 +519,8 @@ bulk build's. Steps, identity argument, complexity and a worked example:
 since its regions are cut from a root sized before any tuple arrives; the
 CLI rejects the pair otherwise and the constructor panics. It partitions the
 input by the first attribute's hash (§3.3.2) into contiguous regions of the
-presized root, and each worker pushes every tuple of its regions onto its
-bucket's list. Keys whose probe would cross their region's end are finished
+presized root, and each worker pushes the id of every row of its regions
+onto its bucket's list. Keys whose probe would cross their region's end are finished
 by the calling thread, in a tail. The paper does not say how it handles
 that case, so this is kermit's answer. After the tail, the children are
 built by Algorithm 2 a run of buckets at a time, the runs handed to

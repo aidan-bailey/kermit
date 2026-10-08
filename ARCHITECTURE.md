@@ -15,7 +15,7 @@ Goal 2 is about *recognisable, additive* extension, not zero edits. Adding a com
 
 ```
 kermit/
-├── kermit-iters/    # Core iterator traits (no dependencies)
+├── kermit-iters/    # Core iterator traits and the tuple batch (no dependencies)
 ├── kermit-derive/   # Proc macros for iterator boilerplate
 ├── kermit-parser/   # Datalog query parser
 ├── kermit-ds/       # Data structures (tries, relations)
@@ -132,15 +132,21 @@ pub trait HashTrieIterator {
     fn at_end(&self) -> bool;
     fn open(&mut self) -> bool;
     fn up(&mut self) -> bool;
-    fn leaf_tuples(&self) -> Option<&[Vec<usize>]>;
+    fn leaf_tuples(&self) -> Option<LeafRows<'_>>; // the chain: row ids over the tuple buffer
 }
 ```
 
-Because a per-level key is a hash rather than a value, `HashTrieIterable` does *not* require `IntoIterator<Item = Vec<usize>>` the way `TrieIterable` does — hash traversal is not naturally tuple-shaped. `HashTrie` exposes `collect_tuples()` for materialisation instead, and hashing means a descent can produce false positives, so the join must verify shared variables against the real tuples at the leaf.
+Because a per-level key is a hash rather than a value, `HashTrieIterable` does *not* require `IntoIterator<Item = Vec<usize>>` the way `TrieIterable` does — hash traversal is not naturally tuple-shaped. `HashTrie` exposes `collect_tuples()` for materialisation instead (a copy of its tuple buffer), and hashing means a descent can produce false positives, so the join must verify shared variables against the real tuples at the leaf, which `leaf_tuples` lends as a [`LeafRows`](#tuple-batches-tuples-and-leafrows) view.
 
 #### TrieIteratorWrapper
 
 Converts any `TrieIterator` into a standard Rust `Iterator<Item = Vec<usize>>` that yields complete tuples. It handles the stack management for depth-first traversal automatically. `advance()` is the allocation-free form: it lends each tuple from the wrapper's own stack, and `Iterator::next` copies that slice. `#[derive(IntoTrieIter)]` (from `kermit-derive`) generates the `IntoIterator` impl that wraps an iterator type in it. There is no hash-family equivalent, per the note above.
+
+#### Tuple batches: `Tuples` and `LeafRows`
+
+A relation's tuples travel from the file readers to every structure's build as one `Tuples` batch (`kermit-iters/src/tuples.rs`, #111): tuples of one arity, row-major in one `Vec<usize>`, with an explicit row count, so a batch of nullary tuples keeps its count. Each row is addressed by a `RowId` (`u32`), so a batch holds at most `u32::MAX` rows. `read_csv` and `read_parquet` return one at its exact size; every constructor takes `impl Into<Tuples>` (test fixtures pass one `Vec<usize>` per tuple, which converts); and every setup clone in `bench ds` and `bench run` copies one buffer. TreeTrie and ColumnTrie sort the batch with `Tuples::sort` (in place up to arity 4), one sort for both, and build from row slices. HashTrie keeps the batch and stores row ids.
+
+`LeafRows<'a>` (`kermit-iters/src/leaf_rows.rs`) is a `Copy` view of one hash-trie leaf chain: its row ids, in chain order, over the buffer they index. `HashTrieIterator::leaf_tuples` returns it. The rows it lends borrow the buffer, not the view, so HashTriejoin's leaf product reads its candidates without copying or allocating.
 
 ### Data Structures (`kermit-ds`)
 
@@ -152,9 +158,9 @@ The core abstraction for relational data:
 pub trait Relation: JoinIterable + Projectable {
     fn header(&self) -> &RelationHeader;
     fn new(header: RelationHeader) -> Self;
-    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self;
-    fn insert(&mut self, tuple: Vec<usize>);
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>);
+    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self;
+    fn insert(&mut self, tuple: impl AsRef<[usize]>);
+    fn insert_all(&mut self, tuples: impl Into<Tuples>);
 }
 ```
 
@@ -209,21 +215,21 @@ A hash-based trie, generic over a `HashStrategy` layout parameter. Each level is
 ```rust
 struct HashTrie<H: HashStrategy = SipHashStrategy> {
     header: RelationHeader,
+    tuples: Tuples,         // every stored tuple, arrival order; len() is the multiset count
     root: HashTrieNode,
-    tuple_count: usize,     // multiset: duplicates count
     _hasher: PhantomData<H>,
 }
 
 enum HashTrieNode {
     Inner(HashTable<HashTrieNode>),    // child nodes
-    Leaf(HashTable<Vec<Vec<usize>>>),  // full materialised tuple chains
+    Leaf(HashTable<Vec<RowId>>),       // chains: ids of rows in `tuples`
 }
 ```
 
 Tables use linear probing with power-of-two capacity, doubling above a 0.7 load factor. Two differences from the sorted tries matter:
 
 - **Multiset semantics.** Tuples with identical hash signatures chain in the same leaf bucket rather than deduplicating, so `Cardinality::tuple_count` counts multiset size where `TreeTrie` and `ColumnTrie` count distinct tuples.
-- **Leaves hold whole tuples.** Because inner levels store only hashes, the real values are needed at the leaf to reject hash collisions.
+- **Leaves reach whole tuples.** Because inner levels store only hashes, the real values are needed at the leaf to reject hash collisions. The trie keeps its relation's `Tuples` batch, and a chain holds the row ids of its tuples, read through `LeafRows` (#111). The ids are 4 bytes where the paper's tuple pointers are 8.
 
 `HashTrie<H, P, E>` has three Layout axes — the hasher `H` (`SipHashStrategy` default, `FxHashStrategy`), the pruning policy `P` and the expansion policy `E` — and three Config axes, the load factor, the root capacity and the child capacity; its `HasOptimizationAxes` impl reports `ds_layout_hasher`, `ds_layout_pruning`, `ds_layout_expansion`, `ds_config_load_factor`, `ds_config_root_capacity` and `ds_config_child_capacity`. `TreeTrie<S>` and `ColumnTrie<S>` implement `HasOptimizationAxes` too, reporting their seek-strategy Layout `S` (`LinearSeek`, `BinarySeek` (the default until 2026-10-05), `GallopingSeek` (the default since); see [`docs/data-structures/seek-strategies.md`](docs/data-structures/seek-strategies.md)) as `ds_layout_seek`. Each structure's BuildMode axis, `ds_build_mode` (`ColumnTrie`: `bulk` / `incremental`; `TreeTrie`: `serial` / `parallel:N`; `HashTrie`: `bulk` / `incremental` / `radix:<bits>` / `parallel:N` / `presized:N`), is reported by its bench family instead, because the built trie is the same under every mode.
 
@@ -458,7 +464,7 @@ Consequently `-i all -a all` runs exactly the three valid cells, announcing each
 
 ### JSON bench reports
 
-Every `kermit bench` invocation writes a `BenchReport` JSON array to disk. The default path is `bench-runs/{kind}-{unix-millis}.json` (the directory is auto-created and gitignored at the workspace root); pass `--report-json <PATH>` to override. Each report carries `metadata` (label/value pairs mirroring stderr), `axes` (a structured map for tooling: `data_structure`, `algorithm`, `query`, `tuples`, …), and `criterion_groups` pointers resolving to per-function `target/criterion/{group}/{dir}/` artefacts. The schema is versioned by `schema_version` (currently `2`) and lives in `kermit/src/bench_report.rs`; the full key catalogue is documented in `docs/specs/bench-report-schema.md`.
+Every `kermit bench` invocation writes a `BenchReport` JSON array to disk. The default path is `bench-runs/{kind}-{unix-millis}.json` (the directory is auto-created and gitignored at the workspace root); pass `--report-json <PATH>` to override. Each report carries `metadata` (label/value pairs mirroring stderr), `axes` (a structured map for tooling: `data_structure`, `algorithm`, `query`, `tuples`, …), and `criterion_groups` pointers resolving to per-function `target/criterion/{group}/{dir}/` artefacts. The schema is versioned by `schema_version` (currently `4`) and lives in `kermit/src/bench_report.rs`; the full key catalogue is documented in `docs/specs/bench-report-schema.md`.
 
 ## Analysis (`python/kermit-lab`)
 
