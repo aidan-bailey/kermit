@@ -5,7 +5,7 @@ use {
         relation::{BuildModeRelation, Relation, RelationHeader},
         seek::{seek_axes, GallopingSeek, SeekStrategy},
     },
-    kermit_iters::{HasOptimizationAxes, JoinIterable},
+    kermit_iters::{HasOptimizationAxes, JoinIterable, Tuples},
     serde_json::Value,
     std::{
         collections::BTreeMap,
@@ -299,7 +299,10 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
     /// Panics if the input tuples have mixed arity, or if any tuple's arity
     /// does not match `header.arity()` (propagated from
     /// [`insert`](Self::insert)).
-    fn from_tuples(header: RelationHeader, mut tuples: Vec<Vec<usize>>) -> Self {
+    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
+        // One `Vec` per tuple, the form this build takes until it builds
+        // from row slices (#111).
+        let mut tuples = Tuples::into_vecs(tuples.into());
         if tuples.is_empty() {
             return Self::new(header);
         }
@@ -340,25 +343,27 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
     /// # Panics
     ///
     /// Panics if `tuple.len()` does not match the arity of the relation.
-    fn insert(&mut self, tuple: Vec<usize>) {
+    fn insert(&mut self, tuple: impl AsRef<[usize]>) {
+        let tuple = tuple.as_ref();
         assert_eq!(
             tuple.len(),
             self.header().arity(),
             "tuple arity must match relation arity"
         );
-        if insert_into_children(&mut self.children, tuple) {
+        if insert_into_children(&mut self.children, tuple.to_vec()) {
             self.tuple_count += 1;
         }
     }
 
-    /// Inserts every tuple in `tuples`.
+    /// Inserts every row of `tuples`.
     ///
     /// # Panics
     ///
     /// Panics if any tuple's arity does not match the relation's arity
     /// (propagated from [`insert`](Self::insert)).
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
-        for tuple in tuples {
+    fn insert_all(&mut self, tuples: impl Into<Tuples>) {
+        let tuples: Tuples = tuples.into();
+        for tuple in tuples.rows() {
             self.insert(tuple);
         }
     }
@@ -374,12 +379,13 @@ impl<S: SeekStrategy> BuildModeRelation for TreeTrie<S> {
     ///
     /// As [`Relation::from_tuples`].
     fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: TreeTrieBuildMode, tuples: Vec<Vec<usize>>,
+        header: RelationHeader, mode: TreeTrieBuildMode, tuples: impl Into<Tuples>,
     ) -> Self {
         match mode {
             | TreeTrieBuildMode::Serial => Self::from_tuples(header, tuples),
             | TreeTrieBuildMode::Parallel(threads) => {
-                Self::from_tuples_parallel(header, threads, tuples)
+                // One `Vec` per tuple until the build reads rows (#111).
+                Self::from_tuples_parallel(header, threads, Tuples::into_vecs(tuples.into()))
             },
         }
     }

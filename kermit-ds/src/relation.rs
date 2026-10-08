@@ -10,7 +10,7 @@
 //! stores raw strings or domain values directly.
 use {
     arrow::array::AsArray,
-    kermit_iters::JoinIterable,
+    kermit_iters::{JoinIterable, Tuples},
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     std::{fmt, fs::File, path::Path},
 };
@@ -244,31 +244,37 @@ pub trait Relation: JoinIterable + Projectable {
     fn new(header: RelationHeader) -> Self;
 
     /// Creates a relation populated with `tuples`, matching `header`.
+    /// `tuples` is a [`Tuples`] batch, or anything that converts into one:
+    /// test fixtures pass one `Vec<usize>` per tuple, whose conversion
+    /// panics on mixed arity. An empty batch is accepted under any header.
     /// Implementations may sort or deduplicate during bulk construction;
     /// prefer this over `new` followed by repeated `insert` calls when all
     /// tuples are known up front.
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
-    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self;
+    /// Panics if `tuples` is not empty and its arity does not equal
+    /// `header.arity()`.
+    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self;
 
-    /// Inserts a tuple. Duplicate tuples are silently absorbed (the relation
-    /// behaves as a set).
+    /// Inserts a tuple, given as anything that lends a slice of keys
+    /// (`&[usize]`, `Vec<usize>`, an array). Duplicate tuples are silently
+    /// absorbed (the relation behaves as a set).
     ///
     /// # Panics
     ///
-    /// Panics if `tuple.len() != self.header().arity()`.
-    fn insert(&mut self, tuple: Vec<usize>);
+    /// Panics if the tuple's length is not `self.header().arity()`.
+    fn insert(&mut self, tuple: impl AsRef<[usize]>);
 
-    /// Inserts every tuple in `tuples`. Equivalent to calling
-    /// [`insert`](Self::insert) in a loop; provided so implementations can
-    /// specialise bulk insertion.
+    /// Inserts every row of `tuples`. Equivalent to calling
+    /// [`insert`](Self::insert) on each row in a loop; provided so
+    /// implementations can specialise bulk insertion.
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not match the relation's arity.
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>);
+    /// Panics if `tuples` is not empty and its arity does not match the
+    /// relation's arity.
+    fn insert_all(&mut self, tuples: impl Into<Tuples>);
 }
 
 /// A [`Relation`] with runtime configuration — the Config category of the
@@ -298,9 +304,10 @@ pub trait ConfigurableRelation: Relation {
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
+    /// Panics if `tuples` is not empty and its arity does not equal
+    /// `header.arity()`.
     fn from_tuples_with_config(
-        header: RelationHeader, config: Self::Config, tuples: Vec<Vec<usize>>,
+        header: RelationHeader, config: Self::Config, tuples: impl Into<Tuples>,
     ) -> Self;
 
     /// The configuration this relation was built with.
@@ -330,11 +337,11 @@ pub trait BuildModeRelation: Relation {
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`, or if
-    /// `mode` has a prerequisite the default config lacks (`HashTrie`'s
-    /// `presized:N` requires `root-capacity=tuples`).
+    /// Panics if `tuples` is not empty and its arity does not equal
+    /// `header.arity()`, or if `mode` has a prerequisite the default config
+    /// lacks (`HashTrie`'s `presized:N` requires `root-capacity=tuples`).
     fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: Self::BuildMode, tuples: Vec<Vec<usize>>,
+        header: RelationHeader, mode: Self::BuildMode, tuples: impl Into<Tuples>,
     ) -> Self;
 }
 
@@ -346,7 +353,7 @@ pub trait ConfiguredBuildModeRelation: ConfigurableRelation + BuildModeRelation 
     /// [`BuildModeRelation::from_tuples_with_build_mode`].
     fn from_tuples_with_config_and_build_mode(
         header: RelationHeader, config: Self::Config, mode: Self::BuildMode,
-        tuples: Vec<Vec<usize>>,
+        tuples: impl Into<Tuples>,
     ) -> Self;
 }
 
@@ -768,5 +775,126 @@ mod tests {
         assert_eq!(header.name(), "edge");
         assert_eq!(header.arity(), 2);
         assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);
+    }
+
+    // ── constructors take a batch (#111) ──────────────────────────────
+
+    crate::define_config_provider!(
+        DefaultConfig,
+        crate::HashTrieConfig,
+        crate::HashTrieConfig::default()
+    );
+    crate::define_build_mode_provider!(
+        ColumnIncremental,
+        crate::ColumnTrieBuildMode,
+        crate::ColumnTrieBuildMode::Incremental
+    );
+
+    /// A sorted trie's tuples, in its (sorted) iteration order.
+    fn trie_rows(relation: &impl kermit_iters::TrieIterable) -> Vec<Vec<usize>> {
+        relation.trie_iter().into_iter().collect()
+    }
+
+    /// A hash trie's tuples, sorted (a hash trie lends them in hash order).
+    fn hash_rows(relation: &crate::ds::HashTrie) -> Vec<Vec<usize>> {
+        let mut rows = relation.collect_tuples();
+        rows.sort();
+        rows
+    }
+
+    /// Every constructor takes a [`Tuples`] batch as well as one `Vec` per
+    /// tuple, and `insert` takes a slice or an array as well as a `Vec`;
+    /// every form builds the same relation.
+    #[test]
+    fn every_constructor_takes_a_batch() {
+        use crate::{
+            ds::{
+                ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieBuildMode, HashTrieConfig,
+                TreeTrie, TreeTrieBuildMode,
+            },
+            BuiltWith, Cardinality, Configured, HeapSize, Threads,
+        };
+        let vecs = vec![vec![3, 4], vec![1, 2], vec![1, 2], vec![1, 5]];
+        let batch = Tuples::from(vecs.clone());
+        let two = || Threads::new(2).unwrap();
+
+        // Sorted tries: a set.
+        let tree: TreeTrie = TreeTrie::from_tuples(2.into(), vecs);
+        let set = trie_rows(&tree);
+        assert_eq!(set, vec![vec![1, 2], vec![1, 5], vec![3, 4]]);
+        let tree_batch: TreeTrie = TreeTrie::from_tuples(2.into(), batch.clone());
+        assert_eq!(trie_rows(&tree_batch), set);
+        assert_eq!(tree_batch.heap_size_bytes(), tree.heap_size_bytes());
+        let tree_parallel: TreeTrie = TreeTrie::from_tuples_with_build_mode(
+            2.into(),
+            TreeTrieBuildMode::Parallel(two()),
+            batch.clone(),
+        );
+        assert_eq!(trie_rows(&tree_parallel), set);
+        let mut tree_inserted: TreeTrie = TreeTrie::new(2.into());
+        for row in batch.rows() {
+            tree_inserted.insert(row);
+        }
+        tree_inserted.insert([1, 5]);
+        assert_eq!(trie_rows(&tree_inserted), set);
+        let mut tree_all: TreeTrie = TreeTrie::new(2.into());
+        tree_all.insert_all(batch.clone());
+        assert_eq!(trie_rows(&tree_all), set);
+
+        let column: ColumnTrie = ColumnTrie::from_tuples(2.into(), batch.clone());
+        assert_eq!(trie_rows(&column), set);
+        let column_incremental: ColumnTrie = ColumnTrie::from_tuples_with_build_mode(
+            2.into(),
+            ColumnTrieBuildMode::Incremental,
+            batch.clone(),
+        );
+        assert_eq!(trie_rows(&column_incremental), set);
+        let built_with =
+            BuiltWith::<ColumnTrie, ColumnIncremental>::from_tuples(2.into(), batch.clone());
+        assert_eq!(trie_rows(&built_with), set);
+        let mut column_all: ColumnTrie = ColumnTrie::new(2.into());
+        column_all.insert_all(batch.clone());
+        column_all.insert(&[1, 5][..]);
+        assert_eq!(trie_rows(&column_all), set);
+
+        // The hash trie: a multiset.
+        let multiset = vec![vec![1, 2], vec![1, 2], vec![1, 5], vec![3, 4]];
+        let hash: HashTrie = HashTrie::from_tuples(2.into(), batch.clone());
+        assert_eq!(hash_rows(&hash), multiset);
+        let hash_config: HashTrie =
+            HashTrie::from_tuples_with_config(2.into(), HashTrieConfig::default(), batch.clone());
+        assert_eq!(hash_rows(&hash_config), multiset);
+        let hash_incremental: HashTrie = HashTrie::from_tuples_with_build_mode(
+            2.into(),
+            HashTrieBuildMode::Incremental,
+            batch.clone(),
+        );
+        assert_eq!(hash_rows(&hash_incremental), multiset);
+        let hash_both: HashTrie = HashTrie::from_tuples_with_config_and_build_mode(
+            2.into(),
+            HashTrieConfig::default(),
+            HashTrieBuildMode::Parallel(two()),
+            batch.clone(),
+        );
+        assert_eq!(hash_rows(&hash_both), multiset);
+        let configured =
+            Configured::<HashTrie, DefaultConfig>::from_tuples(2.into(), batch.clone());
+        assert_eq!(hash_rows(&configured), multiset);
+        let mut hash_inserted: HashTrie = HashTrie::new(2.into());
+        for row in batch.rows() {
+            hash_inserted.insert(row);
+        }
+        assert_eq!(hash_rows(&hash_inserted), multiset);
+        hash_inserted.insert_all(batch);
+        assert_eq!(hash_inserted.tuple_count(), 8);
+    }
+
+    /// A batch carries one arity, so a mixed-arity input is rejected while
+    /// it converts, before any build sees it.
+    #[test]
+    #[should_panic(expected = "Tuples::from: row 1 has arity 1")]
+    fn mixed_arity_vectors_are_rejected_before_the_build() {
+        use crate::ds::TreeTrie;
+        let _: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3]]);
     }
 }

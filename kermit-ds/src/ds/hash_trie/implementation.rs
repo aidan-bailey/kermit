@@ -32,7 +32,9 @@ use {
         BuildModeRelation, ConfigurableRelation, ConfiguredBuildModeRelation, Relation,
         RelationHeader,
     },
-    kermit_iters::{ConfigOption, HashStrategy, JoinIterable, LayoutOption, SipHashStrategy},
+    kermit_iters::{
+        ConfigOption, HashStrategy, JoinIterable, LayoutOption, SipHashStrategy, Tuples,
+    },
     std::marker::PhantomData,
 };
 
@@ -382,11 +384,12 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
 
     fn new(header: RelationHeader) -> Self { Self::with_config(header, HashTrieConfig::default()) }
 
-    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
+    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
         Self::from_tuples_with_config(header, HashTrieConfig::default(), tuples)
     }
 
-    fn insert(&mut self, tuple: Vec<usize>) {
+    fn insert(&mut self, tuple: impl AsRef<[usize]>) {
+        let tuple = tuple.as_ref();
         assert_eq!(
             tuple.len(),
             self.header.arity(),
@@ -395,12 +398,19 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
             self.header.arity()
         );
         let arity = self.header.arity();
-        Self::insert_at(&mut self.root, 0, arity, tuple, self.config.load_factor);
+        Self::insert_at(
+            &mut self.root,
+            0,
+            arity,
+            tuple.to_vec(),
+            self.config.load_factor,
+        );
         self.tuple_count += 1;
     }
 
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
-        for tuple in tuples {
+    fn insert_all(&mut self, tuples: impl Into<Tuples>) {
+        let tuples: Tuples = tuples.into();
+        for tuple in tuples.rows() {
             self.insert(tuple);
         }
     }
@@ -416,9 +426,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
     }
 
     fn from_tuples_with_config(
-        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
+        header: RelationHeader, config: HashTrieConfig, tuples: impl Into<Tuples>,
     ) -> Self {
-        Self::from_tuples_in_bulk(header, config, tuples)
+        // One `Vec` per tuple, the form this build takes until it holds row
+        // ids (#111).
+        Self::from_tuples_in_bulk(header, config, Tuples::into_vecs(tuples.into()))
     }
 
     fn config(&self) -> &HashTrieConfig { &self.config }
@@ -455,8 +467,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// prerequisite.
     pub fn from_tuples_with_config_and_build_mode(
         header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
-        tuples: Vec<Vec<usize>>,
+        tuples: impl Into<Tuples>,
     ) -> Self {
+        // One `Vec` per tuple, the form these builds take until they hold
+        // row ids (#111).
+        let tuples = Tuples::into_vecs(tuples.into());
         match mode {
             | HashTrieBuildMode::Bulk => Self::from_tuples_in_bulk(header, config, tuples),
             | HashTrieBuildMode::Incremental => {
@@ -619,7 +634,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
     /// use [`HashTrie::from_tuples_with_config_and_build_mode`] (or
     /// `BuiltWith<Configured<…>, …>`) instead.
     fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: HashTrieBuildMode, tuples: Vec<Vec<usize>>,
+        header: RelationHeader, mode: HashTrieBuildMode, tuples: impl Into<Tuples>,
     ) -> Self {
         Self::from_tuples_with_config_and_build_mode(
             header,
@@ -638,7 +653,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfiguredBuildModeR
 {
     fn from_tuples_with_config_and_build_mode(
         header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
-        tuples: Vec<Vec<usize>>,
+        tuples: impl Into<Tuples>,
     ) -> Self {
         HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(header, config, mode, tuples)
     }
@@ -1799,7 +1814,7 @@ mod root_capacity_tests {
         for &percent in PERCENTS {
             let config = config(percent, RootCapacity::Tuples);
             for n in [0, 1, 2, 3, DISTINCT] {
-                let unary = (0..n).map(|k| vec![k]).collect();
+                let unary: Vec<Vec<usize>> = (0..n).map(|k| vec![k]).collect();
                 let trie = HashTrie::<H, P, E>::from_tuples_with_config(1.into(), config, unary);
                 assert_eq!(
                     root_log2(&trie),

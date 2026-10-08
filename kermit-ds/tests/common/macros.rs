@@ -505,7 +505,7 @@ macro_rules! trie_seek_tests {
                 };
                 const FAN_OUT: usize = 1000;
                 const LAST_KEY: usize = 2 * (FAN_OUT - 1);
-                let tuples = (0..FAN_OUT).map(|i| vec![1, 2 * i]).collect();
+                let tuples: Vec<Vec<usize>> = (0..FAN_OUT).map(|i| vec![1, 2 * i]).collect();
                 let relation = $relation_type::from_tuples(2_usize.into(), tuples);
                 let mut iter = relation.trie_iter();
                 assert!(iter.open());
@@ -541,7 +541,7 @@ macro_rules! trie_seek_tests {
                     kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
                 };
                 const FAN_OUT: usize = 1000;
-                let tuples = (0..FAN_OUT).map(|i| vec![1, 2 * i]).collect();
+                let tuples: Vec<Vec<usize>> = (0..FAN_OUT).map(|i| vec![1, 2 * i]).collect();
                 let relation = $relation_type::from_tuples(2_usize.into(), tuples);
                 let mut iter = relation.trie_iter();
                 assert!(iter.open());
@@ -634,7 +634,7 @@ macro_rules! trie_seek_tests {
                     start.elapsed()
                 }
 
-                let tuples = (0..FAN_OUT).map(|k| vec![k]).collect();
+                let tuples: Vec<Vec<usize>> = (0..FAN_OUT).map(|k| vec![k]).collect();
                 let relation = $relation_type::from_tuples(1_usize.into(), tuples);
                 let mut iter = relation.trie_iter();
                 let (near_target, far_target) = (1, FAN_OUT - 1);

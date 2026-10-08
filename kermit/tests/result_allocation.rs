@@ -550,12 +550,12 @@ const MANY_DEAD_ENDS: usize = 10_000;
 /// costs a successful descent, a failed one and an ascent, and adds no
 /// row.
 fn descent_relations<Rel: Relation>(dead_ends: usize) -> BTreeMap<String, Rel> {
-    let r = (0..=dead_ends).map(|x| vec![x, x]).collect();
-    let s = (0..DESCENT_ROWS)
+    let r: Vec<Vec<usize>> = (0..=dead_ends).map(|x| vec![x, x]).collect();
+    let s: Vec<Vec<usize>> = (0..DESCENT_ROWS)
         .map(|z| vec![0, z])
         .chain((1..=dead_ends).map(|x| vec![x, DESCENT_ROWS]))
         .collect();
-    let t = (0..DESCENT_ROWS).map(|z| vec![z]).collect();
+    let t: Vec<Vec<usize>> = (0..DESCENT_ROWS).map(|z| vec![z]).collect();
     BTreeMap::from([
         ("R".to_string(), Rel::from_tuples(2.into(), r)),
         ("S".to_string(), Rel::from_tuples(2.into(), s)),

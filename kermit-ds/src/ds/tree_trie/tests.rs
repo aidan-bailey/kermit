@@ -287,7 +287,7 @@ fn default_seek_strategy_is_galloping() {
 #[test]
 fn seek_hands_the_strategy_only_the_unpassed_siblings() {
     let trie: TreeTrie<SpySeek> =
-        TreeTrie::from_tuples(1.into(), (0..10).map(|k| vec![k]).collect());
+        TreeTrie::from_tuples(1.into(), (0..10).map(|k| vec![k]).collect::<Vec<_>>());
     let mut iter = trie.trie_iter();
     take_spy_lengths();
     assert!(iter.open());

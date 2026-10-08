@@ -250,7 +250,7 @@ mod tests {
             2.into(),
             HashTrieConfig::default(),
             HashTrieBuildMode::Radix(RadixBits::new(4).unwrap()),
-            vec![vec![1, 2], vec![3]],
+            vec![vec![1, 2, 3], vec![4, 5, 6]],
         );
     }
 

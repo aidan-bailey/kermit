@@ -22,7 +22,7 @@ use {
     },
     kermit_iters::{
         HasOptimizationAxes, HashTrieIterable, HashTrieIterator, JoinIterable, TrieIterable,
-        TrieIterator,
+        TrieIterator, Tuples,
     },
     serde_json::Value,
     std::{collections::BTreeMap, marker::PhantomData, ops::Deref},
@@ -112,7 +112,7 @@ where
     /// An empty relation has nothing to build, so no mode applies.
     fn new(header: RelationHeader) -> Self { Self::wrap(R::new(header)) }
 
-    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
+    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
         Self::wrap(R::from_tuples_with_build_mode(
             header,
             P::build_mode(),
@@ -120,9 +120,9 @@ where
         ))
     }
 
-    fn insert(&mut self, tuple: Vec<usize>) { self.inner.insert(tuple) }
+    fn insert(&mut self, tuple: impl AsRef<[usize]>) { self.inner.insert(tuple) }
 
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) { self.inner.insert_all(tuples) }
+    fn insert_all(&mut self, tuples: impl Into<Tuples>) { self.inner.insert_all(tuples) }
 }
 
 impl<R: HeapSize, P> HeapSize for BuiltWith<R, P> {

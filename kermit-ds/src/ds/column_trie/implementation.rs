@@ -4,7 +4,7 @@ use {
         relation::{BuildModeRelation, Relation, RelationHeader},
         seek::{seek_axes, GallopingSeek, SeekStrategy},
     },
-    kermit_iters::{HasOptimizationAxes, JoinIterable},
+    kermit_iters::{HasOptimizationAxes, JoinIterable, Tuples},
     serde_json::Value,
     std::{collections::BTreeMap, fmt, marker::PhantomData},
 };
@@ -433,7 +433,7 @@ impl<S: SeekStrategy> Relation for ColumnTrie<S> {
     /// # Panics
     ///
     /// Panics if any tuple's length does not equal `header.arity()`.
-    fn from_tuples(header: RelationHeader, tuples: Vec<Vec<usize>>) -> Self {
+    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
         Self::from_tuples_with_build_mode(header, ColumnTrieBuildMode::default(), tuples)
     }
 
@@ -441,20 +441,22 @@ impl<S: SeekStrategy> Relation for ColumnTrie<S> {
     ///
     /// # Panics
     ///
-    /// Panics if `tuple.len()` does not match the relation's arity.
-    fn insert(&mut self, tuple: Vec<usize>) {
+    /// Panics if the tuple's length does not match the relation's arity.
+    fn insert(&mut self, tuple: impl AsRef<[usize]>) {
+        let tuple = tuple.as_ref();
         assert_eq!(
             tuple.len(),
             self.header().arity(),
             "tuple arity must match relation arity"
         );
-        if self.internal_insert(&tuple) {
+        if self.internal_insert(tuple) {
             self.tuple_count += 1;
         }
     }
 
-    fn insert_all(&mut self, tuples: Vec<Vec<usize>>) {
-        for tuple in tuples {
+    fn insert_all(&mut self, tuples: impl Into<Tuples>) {
+        let tuples: Tuples = tuples.into();
+        for tuple in tuples.rows() {
             self.insert(tuple);
         }
     }
@@ -471,8 +473,11 @@ impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
     ///
     /// Panics if any tuple's length does not equal `header.arity()`.
     fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: ColumnTrieBuildMode, mut tuples: Vec<Vec<usize>>,
+        header: RelationHeader, mode: ColumnTrieBuildMode, tuples: impl Into<Tuples>,
     ) -> Self {
+        // One `Vec` per tuple, the form this build takes until it builds
+        // from row slices (#111).
+        let mut tuples = Tuples::into_vecs(tuples.into());
         let arity = header.arity();
         // Checked before the sort: its comparator indexes `b` by `a`'s
         // length, so a shorter tuple would panic there with an index error
@@ -872,10 +877,12 @@ mod tests {
         assert_eq!(trie.layers[1].interval, vec![0, 2]);
     }
 
+    /// A batch has one arity (mixed arity is `Tuples`' to reject), so the
+    /// wrong arity here is the whole batch's.
     #[test]
     #[should_panic(expected = "does not match header arity")]
     fn bulk_build_rejects_a_tuple_of_the_wrong_arity() {
-        let _: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3]]);
+        let _: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2, 3], vec![4, 5, 6]]);
     }
 
     /// See `TreeTrie`'s `seek_strategy_adds_no_state`.
@@ -923,7 +930,7 @@ mod tests {
     #[test]
     fn seek_hands_the_strategy_only_the_unpassed_keys() {
         let trie: ColumnTrie<SpySeek> =
-            ColumnTrie::from_tuples(1.into(), (0..10).map(|k| vec![k]).collect());
+            ColumnTrie::from_tuples(1.into(), (0..10).map(|k| vec![k]).collect::<Vec<_>>());
         let mut iter = trie.trie_iter();
         take_spy_lengths();
         assert!(iter.open());
@@ -1010,8 +1017,8 @@ mod heap_size_tests {
     #[test]
     fn more_tuples_means_more_heap() {
         let small: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2]]);
-        let large: ColumnTrie =
-            ColumnTrie::from_tuples(2.into(), (0..100).map(|i| vec![i, i + 1]).collect());
+        let rows: Vec<Vec<usize>> = (0..100).map(|i| vec![i, i + 1]).collect();
+        let large: ColumnTrie = ColumnTrie::from_tuples(2.into(), rows);
         assert!(large.heap_size_bytes() > small.heap_size_bytes());
     }
 
