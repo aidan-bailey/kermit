@@ -305,6 +305,14 @@ optimizations are classified into Layout, Config, or BuildMode.
       narrows every gap, consistent with less work being left to defer: a
       bucket with one tuple below it is a `Singleton` under both
       expansions.
+    - *Since #107* (2026-10-07, same workload, b9d1d6e over a58317d; see
+      [Algorithm 2 A/B](#algorithm-2-ab-107), C): expansion now builds each
+      child by Algorithm 2.
+      - Lazy `insertion` is 0.93× [0.92, 0.94] with pruning off and 0.91×
+        [0.90, 0.91] with it on.
+      - Lazy `iteration` is 1.05× [1.04, 1.06] / 1.04× [1.03, 1.07].
+      - Eager `iteration` is unchanged, and so is TreeTrie, the control.
+      - The numbers above predate #107.
 
 ### Config flags
 
@@ -396,8 +404,17 @@ optimizations are classified into Layout, Config, or BuildMode.
     for the root, and falls for one-tuple children with pruning off: at a
     load factor of 50 % or more `tuples` gives them 2 buckets against
     `grow`'s 4 (`log2_capacity_for(1, …)` with the paper's 2-bucket minimum),
-    which is common in sparse binary relations. Unmeasured as of this
-    writing.
+    which is common in sparse binary relations.
+  - **Measured effect** (2026-10-07, [Algorithm 2 A/B](#algorithm-2-ab-107),
+    under `root-capacity=tuples`):
+    - Under `bulk`, `insertion` is 0.95× `grow` by geomean, and 0.86–0.94×
+      on the binary relations.
+    - Under `presized:16` it is unchanged (0.99×).
+    - `iteration` and `space` are unchanged except on `price`, whose
+      one-tuple children take 2 buckets: `iteration` is 0.83× there and
+      `space` 0.82×.
+    - The predicted rise did not appear: these relations are sets, so a
+      child's |L| equals its D.
 
 ### Deferred follow-ups
 
@@ -571,7 +588,15 @@ Details:
 - **When `incremental` is useful:** reproducing pre-#107 `insertion`
   numbers, and measuring what Algorithm 2's order buys over the per-tuple
   descent (the locality #101 is about).
-- **Measured effect:** *(2026-10-07, #107: every arm in these records built
+- **Measured effect of `bulk`** (2026-10-07, [Algorithm 2 A/B](#algorithm-2-ab-107)):
+  over `incremental`, `insertion` depends on the input's shape.
+  - Faster where first keys repeat in random order: 0.80× on `binary-1e7`
+    and 0.89× on `binary-1e6`.
+  - About even on unary relations and on shuffled `friendof` (0.96–0.99×).
+  - Slower where the input arrives grouped by first key (1.19× on
+    `friendof`) and where every first key is distinct (1.62× on `price`).
+  - The geomean over 13 relations is 1.02×. `space` is identical.
+- **Measured effect, earlier modes:** *(2026-10-07, #107: every arm in these records built
   its subtries per tuple, by `insert_at`. `serial` is the per-tuple build,
   `incremental` since #107, and `radix:K`, `parallel:N` and the presized
   arms (then spelled `parallel:N`) built that way too. Today's modes of
@@ -674,6 +699,121 @@ radix helps more as K grows, and at `radix:12` it beats `serial` by 10 %,
 the only case where radix wins at all. It does not remove the order
 penalty, though. `radix:12` cuts it from 2.79× to 2.22×. What makes up the
 remaining penalty was not measured.
+
+#### Algorithm 2 A/B (#107)
+
+The replicated measurement of #107, run 2026-10-07 after the landing, on an
+AMD Ryzen 7 7700X with jemalloc. Run directory:
+`kermit-bench-runs/hash-trie-algorithm-2-2026-10-07/` (README, `run.sh`,
+`analyse.py`, `analysis.txt`). It used two binaries, each built from a
+`git archive` in its own target directory with one toolchain:
+- NEW is b9d1d6e, the landing (sha256 `640d3436d8c8f0da…`).
+- OLD is a58317d, master just before it (sha256 `71388ef3fb6e6065…`).
+
+**Method.**
+- Each arm ran 5 replicates, with the arm order rotated per replicate.
+- Every invocation waited behind a quiet gate and a memory guard.
+- Times are the median of the per-replicate Criterion means. Ratios are
+  medians, with the 95 % bootstrap CI of the mean ratio in brackets.
+- 42 of the 660 steps overlapped a busy host sample (another session's
+  work). They are left out and were not re-run, so some cells rest on fewer
+  than 5 replicates (`n` in `analysis.txt`). `binary-1e7` in part A has 2
+  `incremental` and 3 `bulk`.
+- Compare these numbers within this record only: the radix records above
+  ran on a glibc binary (596f218, before #112).
+
+**A. `bulk` over `incremental`** (NEW binary; `bench ds -m insertion`;
+default config and Layout). The inputs are the 2026-10-06 runs' 12
+relations plus `friendof` shuffled with seed `0x91`:
+- `binary-N` has about 10 tuples per first key, in random order.
+- `unary-N` is a single random column.
+- `friendof` and `price` are as in the radix A/B: grouped, and all keys
+  distinct.
+
+| Relation | `incremental` (ms) | `bulk` (ms) | `bulk` ÷ `incremental` |
+|---|---|---|---|
+| `unary-1e3` | 0.025 | 0.024 | 0.96× [0.94, 1.00] |
+| `binary-1e3` | 0.046 | 0.049 | 1.07× [1.05, 1.10] |
+| `unary-1e4` | 0.315 | 0.305 | 0.97× [0.93, 0.98] |
+| `binary-1e4` | 0.616 | 0.625 | 1.02× [1.00, 1.03] |
+| `unary-1e5` | 4.34 | 4.29 | 0.99× [0.94, 1.01] |
+| `binary-1e5` | 7.89 | 7.93 | 1.01× [0.98, 1.03] |
+| `unary-1e6` | 85.0 | 82.2 | 0.97× [0.93, 1.00] |
+| `binary-1e6` | 174.7 | 155.7 | 0.89× [0.84, 0.95] |
+| `price` | 41.5 | 67.2 | 1.62× [1.59, 1.72] |
+| `friendof` | 282.0 | 334.5 | 1.19× [1.15, 1.25] |
+| `unary-1e7` | 1,473 | 1,434 | 0.97× [0.95, 1.01] |
+| `binary-1e7` | 2,826 | 2,260 | 0.80× [0.79, 0.84] |
+| `friendof`, shuffled | 764 | 736 | 0.96× [0.92, 1.00] |
+
+The geomean over the 13 is 1.02×. `space` is identical between the two
+builds on every relation whose `space` replicate was clean (10 of 10), as
+the BuildMode identity requires.
+
+**C. NEW over OLD** (`bench run oxford-uniform-s3 -q triangle`). The
+Criterion settings and workload are those of the lazy-expansion record
+above. `insertion` is summed over the workload's 8 relations. The default
+build changed between the two binaries, from per-tuple to `bulk`.
+TreeTrie's code did not change, so its ratio is the codegen bound.
+
+| Layout | `insertion` | `iteration` |
+|---|---|---|
+| pruning off, eager | 1.15× [1.14, 1.16] | 1.00× [0.99, 1.01] |
+| pruning off, lazy | 0.93× [0.92, 0.94] | 1.05× [1.04, 1.06] |
+| pruning on, eager | 1.09× [1.08, 1.09] | 1.00× [0.99, 1.00] |
+| pruning on, lazy | 0.91× [0.90, 0.91] | 1.04× [1.03, 1.07] |
+| TreeTrie/LFTJ (control) | 1.00× [1.00, 1.01] | 0.99× [0.97, 0.99] |
+
+`space` is identical across the binaries in all five cells.
+
+**B. `child-capacity=tuples` over `grow`** (NEW binary;
+`bench ds -m insertion iteration`, `space` in the first replicate). Every
+cell ran with `root-capacity=tuples`, so only the children differ: `bulk`
+and `presized:16`, each at load factors 0.7 and 0.8.
+
+| Cell | `insertion`, geomean | `friendof` | `binary-1e7` | `price` | `iteration`, geomean |
+|---|---|---|---|---|---|
+| `bulk`, 0.7 | 0.95× | 0.91× [0.85, 0.94] | 0.93× [0.91, 0.94] | 0.97× [0.96, 0.97] | 0.99× |
+| `bulk`, 0.8 | 0.95× | 0.88× [0.84, 0.88] | 0.94× [0.92, 0.95] | 0.97× [0.96, 1.00] | 0.99× |
+| `presized:16`, 0.7 | 0.99× | 0.99× [0.98, 1.00] | 1.00× [0.99, 1.01] | 0.97× [0.97, 0.98] | 0.99× |
+| `presized:16`, 0.8 | 0.99× | 1.00× [0.99, 1.01] | 0.99× [0.98, 1.03] | 0.97× [0.97, 0.98] | 0.98× |
+
+- Under `bulk`, the other binary relations move by 0.86–0.93×. The unary
+  ones move by 0.99–1.02×; they have no children.
+- `iteration` is within 2 % of `grow` everywhere except `price`, where it
+  is 0.83–0.84× in every cell.
+- `space` is 1.000× `grow` everywhere except `price`, at 0.82×, and
+  `binary-1e3`, at 1.002×.
+
+**Reading.**
+- **Order and grouping.** Algorithm 2's grouping pays where the input gives
+  each first key no locality: shuffled order with repeated keys
+  (`binary-1e6`, `binary-1e7` and shuffled `friendof`). It costs where the
+  per-tuple descent already had that locality, as in grouped `friendof`,
+  the same finding as the radix A/B.
+- **All keys distinct.** On `price` every list holds one tuple. The build
+  then allocates and frees a one-tuple list per key, which the per-tuple
+  descent never makes. Umbra threads its lists through an 8-byte chain
+  pointer in each tuple (§3.3.2), so the paper pays no such cost. In
+  kermit it is the price of a `Vec` per bucket (#101, #111).
+- **Unary relations.** Here the root is the leaf, so the two builds do the
+  same work.
+- **Small inputs.** Where everything fits in cache, grouping's locality
+  buys nothing and only its extra pass shows: `binary-1e3` is 1.07×, and
+  `oxford-uniform-s3`'s small relations build 1.09–1.15× slower eagerly
+  (C).
+- **Lazy expansion.** The lazy build got 7–9 % faster; the mechanism was
+  not isolated. The lazy join got 4–5 % slower. The one part of its path
+  that changed is expansion: each child it reaches is now built by
+  group-then-build instead of by re-inserting its few tuples.
+- **`child-capacity=tuples` under `bulk`.** Sized children skip their
+  rehashes. Under `presized:16` it changes nothing measurable; why was not
+  investigated.
+- **Expected effects that did not show.** The `space` rise predicted under
+  Config flags (|L| > D) did not appear: these binary relations are sets, so
+  a depth-1 list holds one tuple per distinct key. The predicted fall did
+  appear, on `price`. Its one-tuple children get 2 buckets instead of 4,
+  which saves 18 % of the space and cuts its iteration time by 16 %.
 
 ## See also
 
