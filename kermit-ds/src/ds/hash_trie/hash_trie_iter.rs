@@ -32,7 +32,7 @@ use {
         pruning::{NoPruning, PruningPolicy, SingletonFrame, SingletonPayload},
     },
     crate::relation::Relation,
-    kermit_iters::{HashStrategy, HashTrieIterator, SipHashStrategy},
+    kermit_iters::{HashStrategy, HashTrieIterator, LeafRows, RowId, SipHashStrategy},
 };
 
 /// One opened level of the trie.
@@ -64,9 +64,9 @@ impl<P: PruningPolicy, E: ExpansionPolicy> Frame<'_, P, E> {
 enum Descent<'a, P: PruningPolicy, E: ExpansionPolicy> {
     /// A table node to descend into.
     Node(&'a HashTrieNode<P, E>),
-    /// Stay inside a pruned subtrie: emulate the next level down for
-    /// `tuple`. The depth is the one `open` already computed.
-    Deeper(&'a Vec<usize>),
+    /// Stay inside a pruned subtrie: emulate the next level down for the
+    /// row with id `*row`. The depth is the one `open` already computed.
+    Deeper(&'a RowId),
     /// Nothing below (leaf level, empty bucket, or exhausted).
     Blocked,
 }
@@ -107,7 +107,7 @@ impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIter<'a,
     fn frame_for(&self, child: &'a HashTrieNode<P, E>, depth: usize) -> Frame<'a, P, E> {
         let trie: &'a HashTrie<H, P, E> = self.trie;
         match trie.resolve(child, depth) {
-            | HashTrieNode::Singleton(payload) => Self::singleton_frame(payload.tuple(), depth),
+            | HashTrieNode::Singleton(payload) => self.singleton_frame(payload.row(), depth),
             | table => Frame::Table {
                 node: table,
                 idx: table.next_occupied(0),
@@ -115,17 +115,23 @@ impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIter<'a,
         }
     }
 
-    // `&'a Vec`, not `&'a [usize]`: `SingletonFrame::new` stores the borrow
-    // and hands it back from `tuple()`, which feeds `leaf_tuples`'
-    // `&[Vec<usize>]` via `slice::from_ref`.
-    #[allow(clippy::ptr_arg)]
-    fn singleton_frame(tuple: &'a Vec<usize>, depth: usize) -> Frame<'a, P, E> {
-        Frame::Singleton(P::Frame::new(tuple, depth, H::hash(tuple[depth])))
+    /// The frame for a pruned subtrie's row `*row` at `depth`: the
+    /// one-entry table that level would have held, keyed by the hash of the
+    /// row's `depth`-th value. `row` is borrowed from the payload with the
+    /// trie lifetime `'a`, so `leaf_tuples` can lend it as a one-id chain.
+    fn singleton_frame(&self, row: &'a RowId, depth: usize) -> Frame<'a, P, E> {
+        let tuple = self.trie.tuples().row(*row);
+        debug_assert!(
+            depth < tuple.len(),
+            "singleton frame at depth {depth} below a {}-attribute tuple",
+            tuple.len()
+        );
+        Frame::Singleton(P::Frame::new(row, H::hash(tuple[depth])))
     }
 
     /// Where `open` would go from the current position.
     ///
-    /// Matches on `*node` and copies the singleton's `tuple` reference out
+    /// Matches on `*node` and copies the singleton's row-id reference out
     /// of the frame so the returned references carry the trie lifetime
     /// `'a`, not the shorter borrow of `self.stack`.
     fn descent(&self) -> Descent<'a, P, E> {
@@ -151,7 +157,7 @@ impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIter<'a,
                 if s.at_end() || self.stack.len() >= self.arity() {
                     Descent::Blocked
                 } else {
-                    Descent::Deeper(s.tuple())
+                    Descent::Deeper(s.row())
                 }
             },
         }
@@ -234,7 +240,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIterator
         let depth = self.stack.len();
         let frame = match self.descent() {
             | Descent::Node(child) => self.frame_for(child, depth),
-            | Descent::Deeper(tuple) => Self::singleton_frame(tuple, depth),
+            | Descent::Deeper(row) => self.singleton_frame(row, depth),
             | Descent::Blocked => return false,
         };
         let opened = !frame.at_end();
@@ -244,13 +250,16 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIterator
 
     fn up(&mut self) -> bool { self.stack.pop().is_some() }
 
-    fn leaf_tuples(&self) -> Option<&[Vec<usize>]> {
+    fn leaf_tuples(&self) -> Option<LeafRows<'_>> {
+        let tuples = self.trie.tuples();
         match self.stack.last()? {
             | Frame::Table {
                 node,
                 idx,
             } => match *node {
-                | HashTrieNode::Leaf(t) => t.value_at(*idx).map(|v| v.as_slice()),
+                | HashTrieNode::Leaf(t) => {
+                    t.value_at(*idx).map(|chain| LeafRows::new(tuples, chain))
+                },
                 | HashTrieNode::Inner(_) => None,
                 | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => unreachable!(
                     "Table frame holds a Singleton or Unexpanded node; frame_for routes pruned \
@@ -258,9 +267,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIterator
                 ),
             },
             // The top frame stands at depth `stack.len() - 1`, so it is the
-            // leaf level exactly when `stack.len() == arity`.
+            // leaf level exactly when `stack.len() == arity`. Its chain is
+            // the one row the pruned subtrie holds.
             | Frame::Singleton(s) => (!s.at_end() && self.stack.len() == self.arity())
-                .then(|| std::slice::from_ref(s.tuple())),
+                .then(|| LeafRows::new(tuples, std::slice::from_ref(s.row()))),
         }
     }
 }
@@ -470,7 +480,10 @@ mod tests {
 
         assert!(it.open()); // singleton frame at depth 2 (leaf depth)
         assert_eq!(it.key(), Some(h(3)));
-        assert_eq!(it.leaf_tuples(), Some(&[vec![1, 2, 3]][..]));
+        assert_eq!(
+            it.leaf_tuples().map(|rows| rows.to_vecs()),
+            Some(vec![vec![1, 2, 3]])
+        );
         assert!(!it.open()); // no level below the leaf
 
         assert!(it.up());
@@ -511,7 +524,7 @@ mod tests {
         let mut leaves = Vec::new();
         while !it.at_end() {
             assert!(it.open());
-            leaves.extend_from_slice(it.leaf_tuples().expect("singleton at leaf depth"));
+            leaves.extend(it.leaf_tuples().expect("singleton at leaf depth").to_vecs());
             it.up();
             it.next();
         }
@@ -560,7 +573,10 @@ mod tests {
         it.open();
         it.open(); // singleton frame at leaf depth
         assert_eq!(it.size(), 1);
-        assert_eq!(it.leaf_tuples(), Some(&[vec![1, 2]][..]));
+        assert_eq!(
+            it.leaf_tuples().map(|rows| rows.to_vecs()),
+            Some(vec![vec![1, 2]])
+        );
     }
 
     #[test]
@@ -572,7 +588,10 @@ mod tests {
         assert!(it.lookup(h(2)));
         assert!(it.open()); // singleton frame at depth 2 (leaf)
         assert_eq!(it.key(), Some(h(3)));
-        assert_eq!(it.leaf_tuples(), Some(&[vec![1, 2, 3]][..]));
+        assert_eq!(
+            it.leaf_tuples().map(|rows| rows.to_vecs()),
+            Some(vec![vec![1, 2, 3]])
+        );
     }
 
     #[test]
@@ -658,5 +677,45 @@ mod tests {
         assert!(!it.lookup(h(99)));
         assert!(!it.open());
         assert_eq!(expanded_root_children(&trie), 0);
+    }
+
+    // ── Leaf views ─────────────────────────────────────────────────────
+
+    #[test]
+    fn a_leaf_chain_lends_row_ids_into_the_trie_buffer() {
+        // The two copies of (1, 2) share one chain. Its ids are their
+        // input positions, in input order, and its rows are read from the
+        // trie's own buffer, never copied.
+        let trie: HashTrie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4], vec![1, 2]]);
+        let mut it = HashTrieIter::new(&trie);
+        assert!(it.open());
+        assert!(it.lookup(h(1)));
+        assert!(it.open());
+        assert!(it.lookup(h(2)));
+        let rows = it.leaf_tuples().expect("the chain of (1, 2)");
+        assert_eq!(rows.ids(), &[0, 2]);
+        assert_eq!(rows.arity(), 2);
+        assert_eq!(rows.to_vecs(), vec![vec![1, 2], vec![1, 2]]);
+        assert_eq!(rows.data().as_ptr(), trie.tuples().as_flat().as_ptr());
+    }
+
+    #[test]
+    fn singleton_frames_lend_their_row_id() {
+        // (4, 5, 6) is alone below 4, so under pruning both levels below
+        // the root are singleton frames. `frame_for` builds the first and
+        // `open`'s `Descent::Deeper` the second. The leaf one lends its
+        // payload's row id, 2, over the trie's buffer.
+        let trie = Pruned::from_tuples(3.into(), vec![vec![1, 2, 3], vec![1, 2, 7], vec![4, 5, 6]]);
+        let mut it = HashTrieIter::new(&trie);
+        assert!(it.open());
+        assert!(it.lookup(h(4)));
+        assert!(it.open());
+        assert!(it.open());
+        assert!(matches!(it.stack.last(), Some(Frame::Singleton(_))));
+        let rows = it.leaf_tuples().expect("singleton at leaf depth");
+        assert_eq!(rows.ids(), &[2]);
+        assert_eq!(rows.to_vecs(), vec![vec![4, 5, 6]]);
+        assert_eq!(rows.data().as_ptr(), trie.tuples().as_flat().as_ptr());
     }
 }

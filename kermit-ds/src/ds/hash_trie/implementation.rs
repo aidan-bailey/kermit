@@ -21,6 +21,7 @@
 use {
     super::{
         build_mode::HashTrieBuildMode,
+        bulk::{all_rows, TupleList},
         config::{ChildCapacity, HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
         node::HashTrieNode,
@@ -28,12 +29,15 @@ use {
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
         radix,
     },
-    crate::relation::{
-        BuildModeRelation, ConfigurableRelation, ConfiguredBuildModeRelation, Relation,
-        RelationHeader,
+    crate::{
+        morsel::row_id,
+        relation::{
+            BuildModeRelation, ConfigurableRelation, ConfiguredBuildModeRelation, Relation,
+            RelationHeader,
+        },
     },
     kermit_iters::{
-        ConfigOption, HashStrategy, JoinIterable, LayoutOption, SipHashStrategy, Tuples,
+        ConfigOption, HashStrategy, JoinIterable, LayoutOption, RowId, SipHashStrategy, Tuples,
     },
     std::marker::PhantomData,
 };
@@ -59,6 +63,21 @@ use {
 ///   trie no `insert` has changed since its build, or under
 ///   `child-capacity=grow` always (see `resolve`). Under `EagerExpansion` no
 ///   `Unexpanded` child can be constructed.
+/// - Every [`RowId`] in the trie (chain entry, `Singleton`, pending list)
+///   indexes a row of the buffer, and every row of the buffer is named by
+///   exactly one of them.
+///
+/// # Storage
+///
+/// The trie owns its tuples as one row-major buffer ([`Tuples`], #111), in
+/// arrival order: the batch a build is given, kept as is, then every row
+/// `insert` appends. Below the tables everything names a tuple by its
+/// [`RowId`]: a leaf chain is a `Vec<RowId>`, a pruned `Singleton` one
+/// `RowId`, an unexpanded child's pending list a `Vec<RowId>`. The paper's
+/// leaves likewise point into a materialised buffer (VLDB 2020 §3.3.2); its
+/// pointers are 8 bytes where these ids are 4, and it threads each list
+/// through the tuples where these are a `Vec` per list (both kermit's; the
+/// second until #101 layer 3).
 ///
 /// # Construction
 ///
@@ -105,10 +124,11 @@ pub struct HashTrie<
     E: ExpansionPolicy = EagerExpansion,
 > {
     header: RelationHeader,
+    /// Every stored tuple, in arrival order; its length is the multiset
+    /// count (duplicates count). Chains, singletons and pending lists hold
+    /// ids of its rows.
+    tuples: Tuples,
     root: HashTrieNode<P, E>,
-    /// Number of stored tuples (multiset: duplicates count); maintained
-    /// by `insert` and `from_tuples`.
-    tuple_count: usize,
     /// Runtime values, fixed at construction; read by `insert_at`.
     config: HashTrieConfig,
     _layout: PhantomData<(H, P, E)>,
@@ -129,22 +149,22 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         HashTrieNode::new_table_sized(arity <= 1, log2_capacity)
     }
 
-    /// An empty trie holding `config`, its root sized for a build from
-    /// `tuple_count` tuples by [`HashTrieConfig::root_log2_capacity`]: 4
+    /// A trie holding `config` and owning `tuples`, with an empty root sized
+    /// for a build from them by [`HashTrieConfig::root_log2_capacity`]: 4
     /// buckets under `RootCapacity::Grow`, and under `Tuples` a capacity at
-    /// which `tuple_count` keys never make it grow. The per-tuple build and
-    /// [`ConfigurableRelation::with_config`] create their empty root here; the
-    /// bulk and partitioned builds size theirs by the same
-    /// `root_log2_capacity`. A trie created empty passes 0.
+    /// which `tuples.len()` keys never make it grow. The per-tuple build
+    /// passes its batch and then inserts every row (until it has, the buffer
+    /// holds rows the root does not); [`ConfigurableRelation::with_config`]
+    /// passes an empty batch. The bulk and partitioned builds size their
+    /// roots by the same `root_log2_capacity`.
     pub(super) fn with_config_for(
-        header: RelationHeader, config: HashTrieConfig, tuple_count: usize,
+        header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
     ) -> Self {
-        let root = Self::make_root_sized(header.arity(), config.root_log2_capacity(tuple_count));
+        let root = Self::make_root_sized(header.arity(), config.root_log2_capacity(tuples.len()));
         Self {
             header,
+            tuples,
             root,
-            // Counts the tuples inserted so far; the builds add to it.
-            tuple_count: 0,
             config,
             _layout: PhantomData,
         }
@@ -154,118 +174,99 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// (in the same crate) to navigate the trie via shared references.
     pub(crate) fn root(&self) -> &HashTrieNode<P, E> { &self.root }
 
-    /// Walk the trie depth-first and return every materialized tuple.
-    ///
-    /// Used by [`crate::relation::Projectable::project`] and tests.
-    /// Allocates a fresh `Vec<Vec<usize>>`; for large relations this is
-    /// O(n · arity) in both time and space. To visit the tuples without
-    /// materialising them, use [`for_each_tuple`](Self::for_each_tuple).
-    pub fn collect_tuples(&self) -> Vec<Vec<usize>> {
-        let mut out = Vec::new();
-        Self::collect_at(&self.root, &mut out);
-        out
-    }
+    /// The trie's buffer: every stored tuple, in arrival order. Chains,
+    /// singletons and pending lists hold ids of its rows; `HashTrieIter`
+    /// lends a chain's rows from it (`LeafRows`).
+    pub(crate) fn tuples(&self) -> &Tuples { &self.tuples }
 
-    /// Walk the trie depth-first, lending every stored tuple to `visit` in
-    /// the order [`collect_tuples`](Self::collect_tuples) returns them.
+    /// A copy of every stored tuple, in arrival order: the trie's buffer,
+    /// cloned (#111). O(n · arity) time and space; to visit the tuples
+    /// without copying them, use [`for_each_tuple`](Self::for_each_tuple)
+    /// (a walk of the trie) or `TupleScan::scan_tuples` (the buffer).
+    pub fn collect_tuples(&self) -> Tuples { self.tuples.clone() }
+
+    /// Walk the trie depth-first, lending every stored tuple to `visit`:
+    /// each leaf chain's rows in chain order, and each pruned `Singleton`'s
+    /// row, read from the trie's buffer through its row id.
     ///
-    /// Each tuple is borrowed from its leaf chain (or pruned `Singleton`)
-    /// for that call only, so the walk allocates nothing per tuple: O(n)
-    /// time, O(arity) stack. The CLI's `bench ds` `iteration` and
-    /// `end_to_end` metrics time this walk (issue #79).
+    /// The walk allocates nothing per tuple: O(n) time, O(arity) stack.
+    /// The CLI's `bench ds` `iteration` and `end_to_end` metrics time this
+    /// walk (issue #79), so it traverses the structure; scanning the buffer
+    /// instead would time an array scan. `TupleScan::scan_tuples` is that
+    /// scan, for callers that need only the multiset (#111).
     ///
-    /// Under `LazyExpansion` an unexpanded child lends its pending tuples in
+    /// Under `LazyExpansion` an unexpanded child lends its pending rows in
     /// insertion order, and the walk expands nothing. A `visit` that opens
     /// an iterator on this same trie and reaches such a child panics
     /// (`BorrowMutError`).
     pub fn for_each_tuple<V: FnMut(&[usize])>(&self, mut visit: V) {
-        Self::visit_at(&self.root, &mut visit);
+        Self::visit_at(&self.tuples, &self.root, &mut visit);
     }
 
-    fn visit_at<V: FnMut(&[usize])>(node: &HashTrieNode<P, E>, visit: &mut V) {
+    fn visit_at<V: FnMut(&[usize])>(tuples: &Tuples, node: &HashTrieNode<P, E>, visit: &mut V) {
         match node {
             | HashTrieNode::Inner(table) => {
                 for (_, child) in table.iter() {
-                    Self::visit_at(child, visit);
+                    Self::visit_at(tuples, child, visit);
                 }
             },
             | HashTrieNode::Leaf(table) => {
                 for (_, chain) in table.iter() {
-                    for tuple in chain {
-                        visit(tuple);
+                    for &row in chain {
+                        visit(tuples.row(row));
                     }
                 }
             },
-            | HashTrieNode::Singleton(payload) => visit(payload.tuple()),
+            | HashTrieNode::Singleton(payload) => visit(tuples.row(*payload.row())),
             | HashTrieNode::Unexpanded(pending) => match pending.built() {
-                | Some(built) => Self::visit_at(built, visit),
+                | Some(built) => Self::visit_at(tuples, built, visit),
                 | None => {
-                    for tuple in pending.pending().iter() {
-                        visit(tuple);
+                    for &row in pending.pending().iter() {
+                        visit(tuples.row(row));
                     }
                 },
             },
         }
     }
 
-    fn collect_at(node: &HashTrieNode<P, E>, out: &mut Vec<Vec<usize>>) {
-        match node {
-            | HashTrieNode::Inner(table) => {
-                for (_, child) in table.iter() {
-                    Self::collect_at(child, out);
-                }
-            },
-            | HashTrieNode::Leaf(table) => {
-                for (_, chain) in table.iter() {
-                    for tuple in chain {
-                        out.push(tuple.clone());
-                    }
-                }
-            },
-            | HashTrieNode::Singleton(payload) => out.push(payload.tuple().clone()),
-            | HashTrieNode::Unexpanded(pending) => match pending.built() {
-                | Some(built) => Self::collect_at(built, out),
-                | None => out.extend(pending.pending().iter().cloned()),
-            },
-        }
-    }
-
-    /// Insert one tuple at the appropriate depth, descending at once. It is
-    /// used by the per-tuple build (`incremental`) and by `Relation::insert`.
-    /// The paper's build, Algorithm 2, groups before it recurses (`bulk.rs`);
-    /// under every config both builds accept, they build the identical trie.
-    /// The singleton-pruning extension of §3.3.1 (Figure 5) applies when the
-    /// policy `P` enables it. `P::ENABLED` is a constant, so under
-    /// `NoPruning` both pruning branches are compiled out and this is the
-    /// pre-pruning insert. An unprune is a single extra O(arity) chain, not
-    /// a fan-out: the evicted tuple stops as a new `Singleton` where the two
-    /// diverge while only the new tuple keeps descending.
+    /// Insert the row `row` of `tuples` at the appropriate depth, descending
+    /// at once. It is used by the per-tuple build (`incremental`) and by
+    /// `Relation::insert`. The paper's build, Algorithm 2, groups before it
+    /// recurses (`bulk.rs`); under every config both builds accept, they
+    /// build the identical trie. The singleton-pruning extension of §3.3.1
+    /// (Figure 5) applies when the policy `P` enables it. `P::ENABLED` is a
+    /// constant, so under `NoPruning` both pruning branches are compiled out
+    /// and this is the pre-pruning insert. An unprune is a single extra
+    /// O(arity) chain, not a fan-out: the evicted tuple stops as a new
+    /// `Singleton` where the two diverge while only the new tuple keeps
+    /// descending.
     pub(super) fn insert_at(
-        node: &mut HashTrieNode<P, E>, depth: usize, arity: usize, tuple: Vec<usize>,
+        tuples: &Tuples, node: &mut HashTrieNode<P, E>, depth: usize, arity: usize, row: RowId,
         load_factor: LoadFactor,
     ) {
-        let key = tuple[depth];
+        let key = tuples.row(row)[depth];
         let hash = H::hash(key);
         match node {
             | HashTrieNode::Inner(table) => {
                 if P::ENABLED && table.get(hash).is_none() {
                     // Fresh bucket: the subtrie below holds exactly one tuple,
-                    // so store the tuple itself instead of one table per
-                    // remaining level. The closure always runs — absence was
-                    // just proven — so this is two O(1) probes, kept over a
+                    // so store its row id instead of one table per remaining
+                    // level. The closure always runs — absence was just
+                    // proven — so this is two O(1) probes, kept over a
                     // special-cased insert for readability.
                     table.entry_or_insert_with(hash, load_factor, || {
-                        HashTrieNode::Singleton(P::Payload::from_tuple(tuple))
+                        HashTrieNode::Singleton(P::Payload::from_row(row))
                     });
                     return;
                 }
                 if E::LAZY && table.get(hash).is_none() {
                     // Fresh bucket, pruning off: defer the child's table
-                    // (Figure 6). The tuple waits in the child's list until a
-                    // probe opens it; `resolve` then builds the table. With
-                    // pruning on, the block above stored a `Singleton` first.
+                    // (Figure 6). The row's id waits in the child's list
+                    // until a probe opens it; `resolve` then builds the
+                    // table. With pruning on, the block above stored a
+                    // `Singleton` first.
                     table.entry_or_insert_with(hash, load_factor, || {
-                        HashTrieNode::Unexpanded(E::Pending::from_tuples(vec![tuple]))
+                        HashTrieNode::Unexpanded(E::Pending::from_rows(vec![row]))
                     });
                     return;
                 }
@@ -283,18 +284,17 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     match child {
                         | HashTrieNode::Unexpanded(pending) => match pending.built_mut() {
                             | Some(built) => {
-                                Self::insert_at(built, depth + 1, arity, tuple, load_factor)
+                                Self::insert_at(tuples, built, depth + 1, arity, row, load_factor)
                             },
-                            | None => pending.push(tuple),
+                            | None => pending.push(row),
                         },
                         | HashTrieNode::Singleton(_) => {
                             // A second tuple below a pruned bucket: the child
                             // becomes the unexpanded list of both. The evicted
-                            // tuple goes first, as an eager unprune re-inserts
-                            // it first, so expansion later builds the eager
-                            // table (under `child-capacity=grow`; see
-                            // `resolve`).
-                            let list = HashTrieNode::Unexpanded(E::Pending::from_tuples(
+                            // id goes first, as an eager unprune re-inserts it
+                            // first, so expansion later builds the eager table
+                            // (under `child-capacity=grow`; see `resolve`).
+                            let list = HashTrieNode::Unexpanded(E::Pending::from_rows(
                                 Vec::with_capacity(2),
                             ));
                             let HashTrieNode::Singleton(evicted) = std::mem::replace(child, list)
@@ -304,8 +304,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                             let HashTrieNode::Unexpanded(pending) = child else {
                                 unreachable!("replaced by an Unexpanded child just above")
                             };
-                            pending.push(evicted.into_tuple());
-                            pending.push(tuple);
+                            pending.push(evicted.into_row());
+                            pending.push(row);
                         },
                         | HashTrieNode::Inner(_) | HashTrieNode::Leaf(_) => unreachable!(
                             "a lazy Inner bucket holds a Singleton or an Unexpanded child"
@@ -316,7 +316,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                 if P::ENABLED && matches!(child, HashTrieNode::Singleton(_)) {
                     // Unprune: a second tuple has arrived, so the subtrie no
                     // longer holds exactly one. Swap in the table this level
-                    // would have had and re-insert the evicted tuple ahead of
+                    // would have had and re-insert the evicted row ahead of
                     // the new one; the recursion re-prunes wherever the two
                     // diverge.
                     let replacement = HashTrieNode::new_table(child_is_leaf);
@@ -324,13 +324,20 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     else {
                         unreachable!("matched Singleton above")
                     };
-                    Self::insert_at(child, depth + 1, arity, evicted.into_tuple(), load_factor);
+                    Self::insert_at(
+                        tuples,
+                        child,
+                        depth + 1,
+                        arity,
+                        evicted.into_row(),
+                        load_factor,
+                    );
                 }
-                Self::insert_at(child, depth + 1, arity, tuple, load_factor);
+                Self::insert_at(tuples, child, depth + 1, arity, row, load_factor);
             },
             | HashTrieNode::Leaf(table) => {
                 let chain = table.entry_or_insert_with(hash, load_factor, Vec::new);
-                chain.push(tuple);
+                chain.push(row);
             },
             | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
                 unreachable!(
@@ -363,14 +370,15 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// measurement sees the difference.
     ///
     /// `HashTrieIter::open` is the only caller, so only a probe expands
-    /// anything. Every read-only walk (`collect_tuples`, `for_each_tuple`,
-    /// `heap_size_bytes`) reads the pending list instead.
+    /// anything. `for_each_tuple` and `heap_size_bytes` read the pending
+    /// list, and `collect_tuples` and `scan_tuples` the buffer, so no
+    /// read-only call expands a child.
     pub(crate) fn resolve<'t>(
         &'t self, node: &'t HashTrieNode<P, E>, depth: usize,
     ) -> &'t HashTrieNode<P, E> {
         match node {
-            | HashTrieNode::Unexpanded(pending) => pending.expand(|tuples| {
-                Self::build_child_table(depth, self.header.arity(), tuples, self.config)
+            | HashTrieNode::Unexpanded(pending) => pending.expand(|rows| {
+                Self::build_child_table(&self.tuples, depth, self.header.arity(), rows, self.config)
             }),
             | other => other,
         }
@@ -388,25 +396,28 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
         Self::from_tuples_with_config(header, HashTrieConfig::default(), tuples)
     }
 
+    /// Appends `tuple` to the buffer, then places the new row's id by
+    /// `insert_at`.
     fn insert(&mut self, tuple: impl AsRef<[usize]>) {
         let tuple = tuple.as_ref();
+        let arity = self.header.arity();
         assert_eq!(
             tuple.len(),
-            self.header.arity(),
+            arity,
             "tuple arity {} does not match relation arity {}",
             tuple.len(),
-            self.header.arity()
+            arity
         );
-        let arity = self.header.arity();
-        // #111 interim: `insert_at` stores an owned `Vec`, removed in T7.
+        self.tuples.push(tuple);
+        let row = row_id(self.tuples.len() - 1);
         Self::insert_at(
+            &self.tuples,
             &mut self.root,
             0,
             arity,
-            tuple.to_vec(),
+            row,
             self.config.load_factor,
         );
-        self.tuple_count += 1;
     }
 
     fn insert_all(&mut self, tuples: impl Into<Tuples>) {
@@ -423,15 +434,14 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
     type Config = HashTrieConfig;
 
     fn with_config(header: RelationHeader, config: HashTrieConfig) -> Self {
-        Self::with_config_for(header, config, 0)
+        let arity = header.arity();
+        Self::with_config_for(header, config, Tuples::new(arity))
     }
 
     fn from_tuples_with_config(
         header: RelationHeader, config: HashTrieConfig, tuples: impl Into<Tuples>,
     ) -> Self {
-        // One `Vec` per tuple, the form this build takes until it holds row
-        // ids (#111).
-        Self::from_tuples_in_bulk(header, config, Tuples::into_vecs(tuples.into()))
+        Self::from_tuples_in_bulk(header, config, tuples.into())
     }
 
     fn config(&self) -> &HashTrieConfig { &self.config }
@@ -461,8 +471,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`, if
-    /// `mode` is `Presized` and `config.root_capacity` is not
+    /// Panics if `tuples` holds rows of another arity than `header.arity()`,
+    /// if `mode` is `Presized` and `config.root_capacity` is not
     /// [`RootCapacity::Tuples`], or if `mode` is `Incremental` and
     /// `config.child_capacity` is not [`ChildCapacity::Grow`]: each mode's
     /// prerequisite.
@@ -470,9 +480,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
         tuples: impl Into<Tuples>,
     ) -> Self {
-        // One `Vec` per tuple, the form these builds take until they hold
-        // row ids (#111).
-        let tuples = Tuples::into_vecs(tuples.into());
+        let tuples: Tuples = tuples.into();
         match mode {
             | HashTrieBuildMode::Bulk => Self::from_tuples_in_bulk(header, config, tuples),
             | HashTrieBuildMode::Incremental => {
@@ -489,16 +497,16 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                 Self::from_tuples_incrementally(header, config, tuples)
             },
             | HashTrieBuildMode::Radix(bits) => {
-                Self::from_tuples_partitioned(header, config, tuples, |log2, arity, tuples| {
+                Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
                     let mut root = Self::make_root_sized(arity, log2);
-                    radix::fill_root::<H, P, E>(&mut root, arity, tuples, bits, config);
+                    radix::fill_root::<H, P, E>(tuples, &mut root, arity, bits, config);
                     root
                 })
             },
             | HashTrieBuildMode::Parallel(threads) => {
-                Self::from_tuples_partitioned(header, config, tuples, |log2, arity, tuples| {
+                Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
                     let mut root = Self::make_root_sized(arity, log2);
-                    parallel::fill_root::<H, P, E>(&mut root, arity, tuples, threads, config);
+                    parallel::fill_root::<H, P, E>(tuples, &mut root, arity, threads, config);
                     root
                 })
             },
@@ -515,104 +523,105 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     threads.get(),
                     config.root_capacity.axis_value(),
                 );
-                Self::from_tuples_partitioned(header, config, tuples, |log2, arity, tuples| {
-                    parallel::fill_presized_root::<H, P, E>(log2, arity, tuples, threads, config)
+                Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
+                    parallel::fill_presized_root::<H, P, E>(tuples, log2, arity, threads, config)
                 })
             },
         }
     }
 
-    /// The per-tuple build's arity check, with its message, for the builds
-    /// that read their whole input before building any of it.
-    fn assert_arities(arity: usize, tuples: &[Vec<usize>]) {
-        for tuple in tuples {
-            assert_eq!(
-                tuple.len(),
-                arity,
-                "from_tuples: tuple arity {} does not match header arity {}",
-                tuple.len(),
-                arity,
-            );
-        }
-    }
-
-    /// The `bulk` build: Algorithm 2 from the root (`bulk.rs`), the root
-    /// sized as every build sizes it, by
-    /// [`HashTrieConfig::root_log2_capacity`] (#88).
+    /// The batch a trie of `arity` stores: `tuples` itself, or, when it holds
+    /// no rows and has another arity, an empty batch of `arity`: an empty
+    /// literal carries no arity, and `insert` must later push rows of the
+    /// header's.
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
+    /// Panics if `tuples` holds rows of another arity, with the message the
+    /// per-tuple check gave before #111.
+    fn batch_for_header(arity: usize, tuples: Tuples) -> Tuples {
+        if tuples.is_empty() && tuples.arity() != arity {
+            return Tuples::new(arity);
+        }
+        assert_eq!(
+            tuples.arity(),
+            arity,
+            "from_tuples: tuple arity {} does not match header arity {}",
+            tuples.arity(),
+            arity,
+        );
+        tuples
+    }
+
+    /// The `bulk` build: Algorithm 2 from the root (`bulk.rs`) over every
+    /// row id of `tuples`, in input order, the root sized as every build
+    /// sizes it, by [`HashTrieConfig::root_log2_capacity`] (#88). The trie
+    /// keeps `tuples` as its buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `tuples` holds rows of another arity than `header.arity()`.
     pub(super) fn from_tuples_in_bulk(
-        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
+        header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
     ) -> Self {
         #[cfg(test)]
         BULK_BUILDS.with(|n| n.set(n.get() + 1));
         let arity = header.arity();
-        Self::assert_arities(arity, &tuples);
-        let tuple_count = tuples.len();
-        let root = Self::build(
-            0,
-            arity,
-            tuples,
-            config.root_log2_capacity(tuple_count),
-            config,
-        );
+        let tuples = Self::batch_for_header(arity, tuples);
+        let log2_capacity = config.root_log2_capacity(tuples.len());
+        let root = Self::build(&tuples, 0, arity, all_rows(&tuples), log2_capacity, config);
         Self {
             header,
+            tuples,
             root,
-            tuple_count,
             config,
             _layout: PhantomData,
         }
     }
 
-    /// The `incremental` build: one [`insert_at`](Self::insert_at) per
-    /// tuple, in input order. This is the build `from_tuples_with_config`
-    /// ran before #107, unchanged.
+    /// The `incremental` build: one [`insert_at`](Self::insert_at) per row,
+    /// in input order. This is the build `from_tuples_with_config` ran
+    /// before #107; since #111 it places ids of rows of the batch it keeps,
+    /// and checks the batch's arity once, before building.
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
+    /// Panics if `tuples` holds rows of another arity than `header.arity()`.
     pub(super) fn from_tuples_incrementally(
-        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
+        header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
     ) -> Self {
         let arity = header.arity();
-        let mut trie = Self::with_config_for(header, config, tuples.len());
-        for tuple in tuples {
-            assert_eq!(
-                tuple.len(),
+        let tuples = Self::batch_for_header(arity, tuples);
+        let mut trie = Self::with_config_for(header, config, tuples);
+        for row in all_rows(&trie.tuples) {
+            Self::insert_at(
+                &trie.tuples,
+                &mut trie.root,
+                0,
                 arity,
-                "from_tuples: tuple arity {} does not match header arity {}",
-                tuple.len(),
-                arity,
+                row,
+                config.load_factor,
             );
-            Self::insert_at(&mut trie.root, 0, arity, tuple, config.load_factor);
-            // from_tuples bypasses insert(), so count here. If this loop is
-            // ever refactored to route through insert(), drop this increment
-            // or the counter double-counts.
-            trie.tuple_count += 1;
         }
         trie
     }
 
     /// What the partitioned builds share (`radix:K`, `parallel:N`,
-    /// `presized:N`): the per-tuple build's arity check, with its message,
-    /// then `fill`, which builds the root at the capacity every build gives it
+    /// `presized:N`): the batch's arity check, then `fill`, which builds the
+    /// root over the batch at the capacity every build gives it
     /// (`HashTrieConfig::root_log2_capacity`, presized under
-    /// `root-capacity=tuples`), then the multiset count the other builds keep.
+    /// `root-capacity=tuples`). The trie keeps the batch as its buffer.
     fn from_tuples_partitioned(
-        header: RelationHeader, config: HashTrieConfig, tuples: Vec<Vec<usize>>,
-        fill: impl FnOnce(u32, usize, Vec<Vec<usize>>) -> HashTrieNode<P, E>,
+        header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
+        fill: impl FnOnce(&Tuples, u32, usize) -> HashTrieNode<P, E>,
     ) -> Self {
         let arity = header.arity();
-        Self::assert_arities(arity, &tuples);
-        let tuple_count = tuples.len();
-        let root = fill(config.root_log2_capacity(tuple_count), arity, tuples);
+        let tuples = Self::batch_for_header(arity, tuples);
+        let root = fill(&tuples, config.root_log2_capacity(tuples.len()), arity);
         Self {
             header,
+            tuples,
             root,
-            tuple_count,
             config,
             _layout: PhantomData,
         }
@@ -629,10 +638,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`, and for
-    /// [`HashTrieBuildMode::Presized`], which requires `root-capacity=tuples`:
-    /// this seam builds with the default config (`root-capacity=grow`), so
-    /// use [`HashTrie::from_tuples_with_config_and_build_mode`] (or
+    /// Panics if `tuples` holds rows of another arity than `header.arity()`,
+    /// and for [`HashTrieBuildMode::Presized`], which requires
+    /// `root-capacity=tuples`: this seam builds with the default config
+    /// (`root-capacity=grow`), so use
+    /// [`HashTrie::from_tuples_with_config_and_build_mode`] (or
     /// `BuiltWith<Configured<…>, …>`) instead.
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: HashTrieBuildMode, tuples: impl Into<Tuples>,
@@ -682,33 +692,49 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::relation::Pro
         } else {
             RelationHeader::new_nameless(projected_attrs)
         };
-        let projected_tuples: Vec<Vec<usize>> = self
-            .collect_tuples()
-            .into_iter()
-            .map(|tuple| columns.iter().map(|&c| tuple[c]).collect())
-            .collect();
-        HashTrie::<H, P, E>::from_tuples_with_config(new_header, self.config, projected_tuples)
+        // One buffer for the projection, in arrival order; one scratch row,
+        // reused, so nothing is allocated per tuple.
+        let mut projected = Tuples::with_capacity(columns.len(), self.tuples.len());
+        let mut row = Vec::with_capacity(columns.len());
+        for tuple in self.tuples.rows() {
+            row.clear();
+            row.extend(columns.iter().map(|&c| tuple[c]));
+            projected.push(&row);
+        }
+        HashTrie::<H, P, E>::from_tuples_with_config(new_header, self.config, projected)
     }
 }
 
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::heap_size::HeapSize
     for HashTrie<H, P, E>
 {
-    fn heap_size_bytes(&self) -> usize { node_heap_bytes(&self.root) }
+    /// The buffer (capacity × 8 bytes), every table's bucket array, and
+    /// every id list's capacity × 4 bytes: the chains, and the pending lists
+    /// of unexpanded children. A pruned `Singleton`'s id lives inside its
+    /// parent's bucket and adds nothing; each tuple is counted once, in the
+    /// buffer.
+    fn heap_size_bytes(&self) -> usize {
+        self.tuples.heap_size_bytes() + node_heap_bytes(&self.root)
+    }
 }
 
-/// The trie's own walk, [`HashTrie::for_each_tuple`], which reads unexpanded
-/// children's pending tuples instead of building them.
+/// The trie's buffer, in arrival order (#111): statistics need only the
+/// multiset, so the scan reads the rows without walking the trie, and it
+/// probes nothing, so it expands no unexpanded child.
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::tuple_scan::TupleScan
     for HashTrie<H, P, E>
 {
-    fn scan_tuples(&self, visit: impl FnMut(&[usize])) { self.for_each_tuple(visit) }
+    fn scan_tuples(&self, mut visit: impl FnMut(&[usize])) {
+        for tuple in self.tuples.rows() {
+            visit(tuple);
+        }
+    }
 }
 
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::cardinality::Cardinality
     for HashTrie<H, P, E>
 {
-    fn tuple_count(&self) -> usize { self.tuple_count }
+    fn tuple_count(&self) -> usize { self.tuples.len() }
 }
 
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> kermit_iters::HashTrieIterable
@@ -763,9 +789,8 @@ fn node_heap_bytes<P: PruningPolicy, E: ExpansionPolicy>(node: &HashTrieNode<P, 
                 .sum();
             shell + chains
         },
-        | HashTrieNode::Singleton(payload) => {
-            payload.tuple().capacity() * std::mem::size_of::<usize>()
-        },
+        // The id is stored in the bucket; its row is in the buffer.
+        | HashTrieNode::Singleton(_) => 0,
         | HashTrieNode::Unexpanded(pending) => {
             let below = match pending.built() {
                 | Some(built) => node_heap_bytes(built),
@@ -776,15 +801,12 @@ fn node_heap_bytes<P: PruningPolicy, E: ExpansionPolicy>(node: &HashTrieNode<P, 
     }
 }
 
-/// Heap bytes of a list of tuples: the list's buffer plus each tuple's.
+/// Heap bytes of a list of row ids: its buffer's capacity. The rows live
+/// in the trie's buffer and are counted there, once.
 // `&Vec`, not a slice: the list's own buffer is counted by `capacity()`.
 #[allow(clippy::ptr_arg)]
-fn tuple_list_heap_bytes(list: &Vec<Vec<usize>>) -> usize {
-    list.capacity() * std::mem::size_of::<Vec<usize>>()
-        + list
-            .iter()
-            .map(|t| t.capacity() * std::mem::size_of::<usize>())
-            .sum::<usize>()
+fn tuple_list_heap_bytes(list: &TupleList) -> usize {
+    list.capacity() * std::mem::size_of::<RowId>()
 }
 
 #[cfg(test)]
@@ -963,22 +985,24 @@ mod tests {
         assert_eq!(a_root_len, b_root_len);
     }
 
+    /// `collect_tuples` copies the trie's buffer: every stored tuple, in
+    /// arrival order, an `insert`ed duplicate included (#111).
     #[test]
-    fn collect_tuples_recovers_input_as_multiset() {
+    fn collect_tuples_returns_the_stored_tuples_in_arrival_order() {
         let mut trie: HashTrie =
             HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
-        let mut collected = trie.collect_tuples();
-        collected.sort();
-        assert_eq!(collected, vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
-
-        // Adding a tuple with full collision-equal hash signature: same value
-        // at each attribute => same hash path => stored on the same leaf chain.
+        assert_eq!(trie.collect_tuples().to_vecs(), vec![
+            vec![1, 2],
+            vec![1, 3],
+            vec![2, 4]
+        ]);
         trie.insert(vec![1, 2]);
-        let mut collected = trie.collect_tuples();
-        collected.sort();
-        assert_eq!(collected, vec![vec![1, 2], vec![1, 2], vec![1, 3], vec![
-            2, 4
-        ]]);
+        assert_eq!(trie.collect_tuples().to_vecs(), vec![
+            vec![1, 2],
+            vec![1, 3],
+            vec![2, 4],
+            vec![1, 2]
+        ]);
     }
 
     #[test]
@@ -1011,6 +1035,58 @@ mod tests {
         assert_eq!(trie_a.heap_size_bytes(), trie_b.heap_size_bytes());
     }
 
+    /// `space` after #111: the buffer, every table's bucket array, and four
+    /// bytes per id slot of every chain. A tuple is counted once, in the
+    /// buffer; no chain holds a `Vec` per tuple.
+    #[test]
+    fn heap_size_counts_the_buffer_the_tables_and_four_bytes_per_id() {
+        use crate::HeapSize;
+        let trie: HashTrie =
+            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![4, 5]]);
+        let HashTrieNode::Inner(root) = &trie.root else {
+            panic!("arity 2 has an Inner root")
+        };
+        let mut tables = root.shell_heap_bytes();
+        let mut id_slots = 0;
+        for (_, child) in root.iter() {
+            let HashTrieNode::Leaf(leaf) = child else {
+                panic!("depth 1 of arity 2 is the leaf")
+            };
+            tables += leaf.shell_heap_bytes();
+            id_slots += leaf
+                .iter()
+                .map(|(_, chain)| chain.capacity())
+                .sum::<usize>();
+        }
+        // Three one-row chains, each grown from empty to std's first
+        // capacity of 4.
+        assert_eq!(id_slots, 12);
+        assert!(trie.tuples().heap_size_bytes() >= 6 * std::mem::size_of::<usize>());
+        assert_eq!(
+            trie.heap_size_bytes(),
+            trie.tuples().heap_size_bytes() + tables + id_slots * std::mem::size_of::<RowId>()
+        );
+    }
+
+    /// `insert` appends its tuple to the buffer and places the new row's id:
+    /// a duplicate joins its twin's chain, after it.
+    #[test]
+    fn insert_appends_its_row_and_chains_the_new_id() {
+        let mut trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        trie.insert(vec![1, 2]);
+        assert_eq!(trie.tuples().to_vecs(), vec![vec![1, 2], vec![1, 2]]);
+        let HashTrieNode::Inner(root) = &trie.root else {
+            panic!("arity 2 has an Inner root")
+        };
+        let Some((_, HashTrieNode::Leaf(leaf))) = root.iter().next() else {
+            panic!("one root key, whose child is the leaf")
+        };
+        let Some((_, chain)) = leaf.iter().next() else {
+            panic!("one leaf key")
+        };
+        assert_eq!(chain, &vec![0, 1]);
+    }
+
     #[test]
     fn project_drops_columns() {
         use crate::relation::Projectable;
@@ -1019,11 +1095,13 @@ mod tests {
         // π_0 (first column only)
         let projected = trie.project(vec![0]);
         assert_eq!(projected.header().arity(), 1);
-        let mut collected = projected.collect_tuples();
-        collected.sort();
         // Duplicate `1`s collapse only if from_tuples deduplicates — HashTrie
         // is a multiset, so we expect duplicates to survive.
-        assert_eq!(collected, vec![vec![1], vec![1], vec![2]]);
+        assert_eq!(projected.collect_tuples().to_vecs(), vec![
+            vec![1],
+            vec![1],
+            vec![2]
+        ]);
     }
 
     #[test]
@@ -1031,9 +1109,10 @@ mod tests {
         use crate::relation::Projectable;
         let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
         let projected = trie.project(vec![1, 0]);
-        let mut collected = projected.collect_tuples();
-        collected.sort();
-        assert_eq!(collected, vec![vec![2, 1], vec![4, 3]]);
+        assert_eq!(projected.collect_tuples().to_vecs(), vec![
+            vec![2, 1],
+            vec![4, 3]
+        ]);
     }
 
     #[test]
@@ -1116,9 +1195,7 @@ mod tests {
             HashTrie::from_tuples_with_config(2.into(), dense, vec![vec![1, 2], vec![3, 4]]);
         let projected = trie.project(vec![1]);
         assert_eq!(*projected.config(), dense);
-        let mut got = projected.collect_tuples();
-        got.sort();
-        assert_eq!(got, vec![vec![2], vec![4]]);
+        assert_eq!(projected.collect_tuples().to_vecs(), vec![vec![2], vec![4]]);
     }
 
     #[test]
@@ -1184,21 +1261,21 @@ mod tests {
         Pruned::from_tuples(arity.into(), tuples)
     }
 
-    /// Walks `root`, asserting the pruning invariant at every inner bucket
-    /// and returning the number of tuples stored below it.
+    /// Walks `trie`, asserting the pruning invariant at every inner bucket
+    /// and returning the number of tuples stored below the root.
     ///
     /// Invariant: under `SingletonPruning` a child is `Singleton` iff
     /// exactly one tuple lives below it; under `NoPruning` no `Singleton`
     /// exists. The root is never a `Singleton`, and a `Singleton` sits
-    /// under the buckets its own tuple hashes to.
+    /// under the buckets its own row hashes to.
     fn check_pruning_invariant<P: PruningPolicy, E: ExpansionPolicy>(
-        root: &HashTrieNode<P, E>,
+        trie: &HashTrie<SipHashStrategy, P, E>,
     ) -> usize {
         assert!(
-            !matches!(root, HashTrieNode::Singleton(_)),
+            !matches!(trie.root, HashTrieNode::Singleton(_)),
             "the root is never a Singleton"
         );
-        check_pruning_invariant_at(root, &mut Vec::new())
+        check_pruning_invariant_at(&trie.tuples, &trie.root, &mut Vec::new())
     }
 
     /// Recursive half of [`check_pruning_invariant`]. `prefix` is the
@@ -1206,12 +1283,12 @@ mod tests {
     /// `Singleton` reached here must hash to every one of them — that is
     /// what pins it to the right *place*, not merely the right count.
     fn check_pruning_invariant_at<P: PruningPolicy, E: ExpansionPolicy>(
-        node: &HashTrieNode<P, E>, prefix: &mut Vec<u64>,
+        tuples: &Tuples, node: &HashTrieNode<P, E>, prefix: &mut Vec<u64>,
     ) -> usize {
         match node {
             | HashTrieNode::Singleton(payload) => {
                 assert!(P::ENABLED, "Singleton found with pruning off");
-                let tuple = payload.tuple();
+                let tuple = tuples.row(*payload.row());
                 for (d, &expected) in prefix.iter().enumerate() {
                     assert_eq!(
                         <SipHashStrategy as HashStrategy>::hash(tuple[d]),
@@ -1229,7 +1306,7 @@ mod tests {
                 .iter()
                 .map(|(hash, child)| {
                     prefix.push(hash);
-                    let below = check_pruning_invariant_at(child, prefix);
+                    let below = check_pruning_invariant_at(tuples, child, prefix);
                     prefix.pop();
                     if P::ENABLED {
                         assert_eq!(
@@ -1248,13 +1325,13 @@ mod tests {
     fn pruning_off_never_creates_singletons() {
         let trie: HashTrie =
             HashTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![1, 2, 4], vec![5, 6, 7]]);
-        assert_eq!(check_pruning_invariant(&trie.root), 3);
+        assert_eq!(check_pruning_invariant(&trie), 3);
     }
 
     #[test]
     fn pruning_on_single_tuple_subtries_are_singletons() {
         let trie = pruned(3, vec![vec![1, 2, 3], vec![5, 6, 7]]);
-        assert_eq!(check_pruning_invariant(&trie.root), 2);
+        assert_eq!(check_pruning_invariant(&trie), 2);
         match &trie.root {
             | HashTrieNode::Inner(t) => {
                 assert_eq!(t.len(), 2);
@@ -1271,50 +1348,48 @@ mod tests {
         // The root is the only node an arity-1 trie has, and the root is
         // never pruned — tuples land straight in leaf chains.
         let trie = pruned(1, vec![vec![1], vec![2]]);
-        assert_eq!(check_pruning_invariant(&trie.root), 2);
+        assert_eq!(check_pruning_invariant(&trie), 2);
         assert!(matches!(trie.root, HashTrieNode::Leaf(_)));
-        let mut got = trie.collect_tuples();
-        got.sort();
-        assert_eq!(got, vec![vec![1], vec![2]]);
+        assert_eq!(trie.collect_tuples().to_vecs(), vec![vec![1], vec![2]]);
     }
 
     #[test]
     fn unprune_when_second_tuple_diverges_one_level_down() {
         let trie = pruned(3, vec![vec![1, 2, 3], vec![1, 4, 5]]);
-        assert_eq!(check_pruning_invariant(&trie.root), 2);
-        let mut got = trie.collect_tuples();
-        got.sort();
-        assert_eq!(got, vec![vec![1, 2, 3], vec![1, 4, 5]]);
+        assert_eq!(check_pruning_invariant(&trie), 2);
+        assert_eq!(trie.collect_tuples().to_vecs(), vec![vec![1, 2, 3], vec![
+            1, 4, 5
+        ]]);
     }
 
     #[test]
     fn unprune_when_second_tuple_shares_hashes_to_the_leaf() {
         let trie = pruned(3, vec![vec![1, 2, 3], vec![1, 2, 4]]);
-        assert_eq!(check_pruning_invariant(&trie.root), 2);
-        let mut got = trie.collect_tuples();
-        got.sort();
-        assert_eq!(got, vec![vec![1, 2, 3], vec![1, 2, 4]]);
+        assert_eq!(check_pruning_invariant(&trie), 2);
+        assert_eq!(trie.collect_tuples().to_vecs(), vec![vec![1, 2, 3], vec![
+            1, 2, 4
+        ]]);
     }
 
     #[test]
     fn unprune_on_exact_duplicate_keeps_multiset() {
         let trie = pruned(2, vec![vec![1, 2], vec![1, 2]]);
-        assert_eq!(check_pruning_invariant(&trie.root), 2);
-        let mut got = trie.collect_tuples();
-        got.sort();
-        assert_eq!(got, vec![vec![1, 2], vec![1, 2]]);
+        assert_eq!(check_pruning_invariant(&trie), 2);
+        assert_eq!(trie.collect_tuples().to_vecs(), vec![vec![1, 2], vec![
+            1, 2
+        ]]);
     }
 
     #[test]
     fn incremental_insert_unprunes_like_bulk_build() {
         let mut trie = Pruned::new(3.into());
         trie.insert(vec![1, 2, 3]);
-        assert_eq!(check_pruning_invariant(&trie.root), 1);
+        assert_eq!(check_pruning_invariant(&trie), 1);
         trie.insert(vec![1, 2, 4]);
-        assert_eq!(check_pruning_invariant(&trie.root), 2);
+        assert_eq!(check_pruning_invariant(&trie), 2);
         trie.insert(vec![9, 9, 9]);
-        assert_eq!(check_pruning_invariant(&trie.root), 3);
-        assert_eq!(trie.tuple_count, 3);
+        assert_eq!(check_pruning_invariant(&trie), 3);
+        assert_eq!(trie.tuples.len(), 3);
     }
 
     #[test]
@@ -1324,7 +1399,10 @@ mod tests {
         let forward = pruned(3, tuples.clone());
         let backward = pruned(3, tuples.into_iter().rev().collect());
         assert_eq!(forward.heap_size_bytes(), backward.heap_size_bytes());
-        let (mut a, mut b) = (forward.collect_tuples(), backward.collect_tuples());
+        let (mut a, mut b) = (
+            forward.collect_tuples().to_vecs(),
+            backward.collect_tuples().to_vecs(),
+        );
         a.sort();
         b.sort();
         assert_eq!(a, b);
@@ -1344,7 +1422,7 @@ mod tests {
         );
     }
 
-    /// A growth guard, not the elision witness: the `Vec` payload is
+    /// A growth guard, not the elision witness: the `RowId` payload is
     /// smaller than either table variant, so the pruned node was never
     /// going to be the larger of the two. What pins the claim that
     /// `NoPruning` costs nothing is `off_frame_is_the_bare_table_pair` in
@@ -1376,13 +1454,13 @@ mod tests {
         #[allow(dead_code)]
         enum Mirror {
             Inner(HashTable<()>),
-            Leaf(HashTable<Vec<Vec<usize>>>),
+            Leaf(HashTable<Vec<RowId>>),
         }
         #[allow(dead_code)]
         enum PrunedMirror {
             Inner(HashTable<()>),
-            Leaf(HashTable<Vec<Vec<usize>>>),
-            Singleton(Vec<usize>),
+            Leaf(HashTable<Vec<RowId>>),
+            Singleton(RowId),
         }
         assert_eq!(
             size_of::<HashTrieNode<NoPruning, EagerExpansion>>(),
@@ -1447,38 +1525,74 @@ mod tests {
         let tuples = vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6], vec![7, 8, 9]];
         let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
         let compact = pruned(3, tuples);
-        let (mut a, mut b) = (plain.collect_tuples(), compact.collect_tuples());
-        a.sort();
-        b.sort();
-        assert_eq!(a, b);
+        assert_eq!(plain.collect_tuples(), compact.collect_tuples());
     }
 
-    /// `for_each_tuple` is the borrowed form of `collect_tuples` (issue
-    /// #79): it must lend exactly the tuples `collect_tuples` returns, in the
-    /// same order — a duplicate in one leaf chain, and (pruned) a
-    /// `Singleton` subtrie, included.
+    /// The tuples `for_each_tuple` lends, in the order it lends them.
+    fn walked<P: PruningPolicy>(trie: &HashTrie<SipHashStrategy, P>) -> Vec<Vec<usize>> {
+        let mut visited = Vec::new();
+        trie.for_each_tuple(|t| visited.push(t.to_vec()));
+        visited
+    }
+
+    /// The tuples `TupleScan::scan_tuples` lends, in the order it lends them.
+    fn scanned<P: PruningPolicy>(trie: &HashTrie<SipHashStrategy, P>) -> Vec<Vec<usize>> {
+        use crate::tuple_scan::TupleScan;
+        let mut visited = Vec::new();
+        trie.scan_tuples(|t| visited.push(t.to_vec()));
+        visited
+    }
+
+    /// `for_each_tuple` walks the trie (`bench ds` times it, #79), reading
+    /// each row through its chain or `Singleton` id: it lends the stored
+    /// multiset, a duplicate in one leaf chain and (pruned) a `Singleton`
+    /// subtrie included, one subtrie at a time. `scan_tuples` lends the
+    /// same multiset straight from the buffer, in arrival order, which is
+    /// what `collect_tuples` copies (#111).
     #[test]
-    fn for_each_tuple_visits_what_collect_tuples_returns() {
+    fn for_each_tuple_walks_the_trie_and_scan_tuples_reads_the_buffer() {
+        // Arrival order interleaves first keys 1 and 7, so only a walk
+        // visits each first key's tuples together.
         let tuples = vec![
             vec![1, 2, 3],
-            vec![1, 2, 3],
-            vec![1, 2, 4],
-            vec![1, 5, 6],
             vec![7, 8, 9],
+            vec![1, 2, 3],
+            vec![1, 5, 6],
+            vec![1, 2, 4],
         ];
+        let mut multiset = tuples.clone();
+        multiset.sort();
         let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
-        let compact = pruned(3, tuples);
-        for (name, collected, mut visited) in [
-            ("NoPruning", plain.collect_tuples(), Vec::new()),
-            ("SingletonPruning", compact.collect_tuples(), Vec::new()),
+        let compact = pruned(3, tuples.clone());
+        for (name, mut walk, scan, collected) in [
+            (
+                "NoPruning",
+                walked(&plain),
+                scanned(&plain),
+                plain.collect_tuples().to_vecs(),
+            ),
+            (
+                "SingletonPruning",
+                walked(&compact),
+                scanned(&compact),
+                compact.collect_tuples().to_vecs(),
+            ),
         ] {
-            if name == "NoPruning" {
-                plain.for_each_tuple(|t| visited.push(t.to_vec()));
-            } else {
-                compact.for_each_tuple(|t| visited.push(t.to_vec()));
-            }
-            assert_eq!(visited, collected, "{name}");
-            assert_eq!(visited.len(), 5, "{name}");
+            assert_eq!(scan, tuples, "{name}: scan_tuples reads the buffer");
+            assert_eq!(
+                collected, tuples,
+                "{name}: collect_tuples copies the buffer"
+            );
+            // One run of first keys per root bucket: 1 and 7 hash apart, so
+            // a walk lends two runs where the buffer holds three.
+            let mut first_keys: Vec<usize> = walk.iter().map(|t| t[0]).collect();
+            first_keys.dedup();
+            assert_eq!(first_keys.len(), 2, "{name}: for_each_tuple walks the trie");
+            walk.sort();
+            assert_eq!(
+                walk, multiset,
+                "{name}: for_each_tuple lends the stored multiset"
+            );
         }
     }
 }
@@ -1552,13 +1666,18 @@ mod lazy_tests {
         }
     }
 
-    /// The pending tuples of an unexpanded child, or `None` for any other
-    /// node or an expanded child.
+    /// The pending tuples of an unexpanded child, read through `trie`'s
+    /// buffer, or `None` for any other node or an expanded child.
     fn pending_of<P: PruningPolicy>(
-        node: &HashTrieNode<P, LazyExpansion>,
+        trie: &HashTrie<SipHashStrategy, P, LazyExpansion>, node: &HashTrieNode<P, LazyExpansion>,
     ) -> Option<Vec<Vec<usize>>> {
         match node {
-            | HashTrieNode::Unexpanded(p) if p.built().is_none() => Some(p.pending().clone()),
+            | HashTrieNode::Unexpanded(p) if p.built().is_none() => Some(
+                p.pending()
+                    .iter()
+                    .map(|&row| trie.tuples().row(row).to_vec())
+                    .collect(),
+            ),
             | _ => None,
         }
     }
@@ -1571,17 +1690,24 @@ mod lazy_tests {
     fn lazy_build_leaves_every_root_child_unexpanded() {
         let trie = Lazy::from_tuples(3.into(), tuples());
         assert_eq!(
-            pending_of(child(&trie, 1)),
+            pending_of(&trie, child(&trie, 1)),
             Some(vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6]])
         );
-        assert_eq!(pending_of(child(&trie, 7)), Some(vec![vec![7, 8, 9]]));
+        assert_eq!(
+            pending_of(&trie, child(&trie, 7)),
+            Some(vec![vec![7, 8, 9]])
+        );
+        let HashTrieNode::Unexpanded(pending) = child(&trie, 1) else {
+            panic!("a lazy root bucket holds an Unexpanded child")
+        };
+        assert_eq!(*pending.pending(), vec![0, 1, 2], "row ids, in input order");
     }
 
     #[test]
     fn lazy_pruned_build_keeps_one_tuple_children_as_singletons() {
         let trie = LazyPruned::from_tuples(3.into(), tuples());
         assert_eq!(
-            pending_of(child(&trie, 1)),
+            pending_of(&trie, child(&trie, 1)),
             Some(vec![vec![1, 2, 3], vec![1, 2, 4], vec![1, 5, 6]])
         );
         assert!(matches!(child(&trie, 7), HashTrieNode::Singleton(_)));
@@ -1592,7 +1718,7 @@ mod lazy_tests {
         let mut trie = LazyPruned::from_tuples(2.into(), vec![vec![1, 2]]);
         trie.insert(vec![1, 3]);
         assert_eq!(
-            pending_of(child(&trie, 1)),
+            pending_of(&trie, child(&trie, 1)),
             Some(vec![vec![1, 2], vec![1, 3]])
         );
     }
@@ -1608,17 +1734,20 @@ mod lazy_tests {
         assert_eq!(level.len(), 2); // second attributes 2 and 5
         for (_, grandchild) in level.iter() {
             assert!(
-                pending_of(grandchild).is_some(),
+                pending_of(&trie, grandchild).is_some(),
                 "grandchildren stay unexpanded"
             );
         }
-        assert!(pending_of(node).is_none(), "the child is expanded now");
+        assert!(
+            pending_of(&trie, node).is_none(),
+            "the child is expanded now"
+        );
         assert!(
             std::ptr::eq(trie.resolve(node, 1), built),
             "expansion happens once"
         );
         assert!(
-            pending_of(child(&trie, 7)).is_some(),
+            pending_of(&trie, child(&trie, 7)).is_some(),
             "siblings are untouched"
         );
     }
@@ -1642,32 +1771,35 @@ mod lazy_tests {
         };
         assert_eq!(p.built().expect("expanded").len(), 3);
         assert_eq!(
-            pending_of(child(&trie, 9)),
+            pending_of(&trie, child(&trie, 9)),
             Some(vec![vec![9, 9], vec![9, 8]])
         );
         assert_eq!(trie.tuple_count(), 5);
-        let mut all = trie.collect_tuples();
-        all.sort();
-        assert_eq!(all, vec![
+        assert_eq!(trie.collect_tuples().to_vecs(), vec![
             vec![1, 2],
             vec![1, 3],
+            vec![9, 9],
             vec![1, 4],
-            vec![9, 8],
-            vec![9, 9]
+            vec![9, 8]
         ]);
     }
 
     #[test]
     fn walks_read_pending_tuples_without_expanding() {
+        use crate::tuple_scan::TupleScan;
         let trie = Lazy::from_tuples(3.into(), tuples());
         let before = trie.heap_size_bytes();
-        let mut collected = trie.collect_tuples();
-        collected.sort();
-        assert_eq!(collected, tuples());
-        let mut visited = 0;
-        trie.for_each_tuple(|_| visited += 1);
-        assert_eq!(visited, 4);
-        assert!(pending_of(child(&trie, 1)).is_some());
+        assert_eq!(trie.collect_tuples().to_vecs(), tuples());
+        // The trie walk reads each unexpanded child's pending row ids.
+        let mut walked = Vec::new();
+        trie.for_each_tuple(|t| walked.push(t.to_vec()));
+        walked.sort();
+        assert_eq!(walked, tuples());
+        // The scan reads the buffer, in arrival order.
+        let mut scanned = Vec::new();
+        trie.scan_tuples(|t| scanned.push(t.to_vec()));
+        assert_eq!(scanned, tuples());
+        assert!(pending_of(&trie, child(&trie, 1)).is_some());
         assert_eq!(trie.heap_size_bytes(), before, "a walk changes nothing");
     }
 
@@ -1690,11 +1822,12 @@ mod lazy_tests {
     #[test]
     fn projection_of_a_lazy_trie_holds_the_projected_tuples() {
         let trie = Lazy::from_tuples(3.into(), tuples());
-        let mut projected = trie.project(vec![2, 0]).collect_tuples();
-        projected.sort();
-        assert_eq!(projected, vec![vec![3, 1], vec![4, 1], vec![6, 1], vec![
-            9, 7
-        ]]);
+        assert_eq!(trie.project(vec![2, 0]).collect_tuples().to_vecs(), vec![
+            vec![3, 1],
+            vec![4, 1],
+            vec![6, 1],
+            vec![9, 7]
+        ]);
     }
 
     #[test]
@@ -1724,7 +1857,7 @@ mod root_capacity_tests {
             ds::hash_trie::{
                 config::{ChildCapacity, HashTrieConfig, LoadFactor, RootCapacity},
                 expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
-                identity::{assert_same_node, assert_same_trie, inputs},
+                identity::{assert_same_node, inputs},
                 implementation::HashTrie,
                 node::HashTrieNode,
                 pruning::{NoPruning, PruningPolicy, SingletonPruning},
@@ -1782,14 +1915,20 @@ mod root_capacity_tests {
     fn check_default_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
             for (input, tuples) in inputs(arity) {
+                let label = label::<H, P, E>(&format!("arity {arity}, {input}"));
                 let built = HashTrie::<H, P, E>::from_tuples(arity.into(), tuples.clone());
                 let mut inserted =
                     HashTrie::<H, P, E>::with_config(arity.into(), HashTrieConfig::default());
                 inserted.insert_all(tuples);
-                assert_same_trie(
-                    &built,
-                    &inserted,
-                    &label::<H, P, E>(&format!("arity {arity}, {input}")),
+                // `insert` grows the buffer by amortised doubling, so the two
+                // buffers hold the same rows at different capacities. The
+                // trie, which holds only ids, must be identical.
+                assert_eq!(built.tuples(), inserted.tuples(), "{label}: buffer");
+                assert_same_node(built.root(), inserted.root(), &label);
+                assert_eq!(
+                    built.tuple_count(),
+                    inserted.tuple_count(),
+                    "{label}: tuples"
                 );
             }
         }

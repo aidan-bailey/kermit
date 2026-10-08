@@ -4,9 +4,17 @@
 //! `presized:N` build must be equivalent (Amendment 2), so the
 //! radix, parallel and root-capacity tests share these assertions and
 //! inputs.
+//!
+//! A trie keeps the batch it is built from as its buffer, unchanged, and its
+//! chains, singletons and pending lists hold row ids into it (#111). Two
+//! builds of one input therefore own equal buffers, so equal id lists name
+//! equal tuples, and comparing ids is as strict as comparing tuples was.
+//! [`assert_same_trie`] and [`assert_equivalent_trie`] compare the buffers
+//! first, so that premise is checked, not assumed.
 
 use {
     super::{
+        bulk::TupleList,
         config::{ChildCapacity, HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{ExpansionPolicy, PendingChild},
         hash_table::{home_bucket, HashTable},
@@ -15,7 +23,7 @@ use {
         pruning::{PruningPolicy, SingletonPayload},
     },
     crate::{cardinality::Cardinality, heap_size::HeapSize, test_support::Lcg},
-    kermit_iters::HashStrategy,
+    kermit_iters::{HashStrategy, Tuples},
 };
 
 /// Asserts that two tables hold the same buckets: the same capacity
@@ -39,14 +47,13 @@ fn assert_same_table<V>(
     }
 }
 
+/// Two chains or pending lists: the same row ids, in the same order, at
+/// the same capacity.
 // `&Vec`, not a slice: the comparison reads `capacity()`.
 #[allow(clippy::ptr_arg)]
-fn assert_same_chain(a: &Vec<Vec<usize>>, b: &Vec<Vec<usize>>, path: &str) {
+fn assert_same_chain(a: &TupleList, b: &TupleList, path: &str) {
     assert_eq!(a, b, "{path}: chain");
     assert_eq!(a.capacity(), b.capacity(), "{path}: chain capacity");
-    for (i, (x, y)) in a.iter().zip(b).enumerate() {
-        assert_eq!(x.capacity(), y.capacity(), "{path}: tuple {i} capacity");
-    }
 }
 
 pub(super) fn assert_same_node<P: PruningPolicy, E: ExpansionPolicy>(
@@ -60,12 +67,7 @@ pub(super) fn assert_same_node<P: PruningPolicy, E: ExpansionPolicy>(
             assert_same_table(x, y, path, &|x, y, path| assert_same_chain(x, y, path))
         },
         | (HashTrieNode::Singleton(x), HashTrieNode::Singleton(y)) => {
-            assert_eq!(x.tuple(), y.tuple(), "{path}: singleton");
-            assert_eq!(
-                x.tuple().capacity(),
-                y.tuple().capacity(),
-                "{path}: singleton capacity"
-            );
+            assert_eq!(x.row(), y.row(), "{path}: singleton");
         },
         | (HashTrieNode::Unexpanded(x), HashTrieNode::Unexpanded(y)) => {
             // Building expands nothing, so both children are still the
@@ -80,12 +82,27 @@ pub(super) fn assert_same_node<P: PruningPolicy, E: ExpansionPolicy>(
     }
 }
 
-/// The array-level identity the standard requires of a BuildMode:
-/// every table's buckets and capacity, every chain and tuple capacity,
-/// every singleton and pending list, the heap size and the tuple count.
+/// The premise of every id comparison: the two tries own equal buffers,
+/// row for row and at the same capacity.
+fn assert_same_buffer<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
+) {
+    assert_eq!(a.tuples(), b.tuples(), "{label}: buffer");
+    assert_eq!(
+        a.tuples().heap_size_bytes(),
+        b.tuples().heap_size_bytes(),
+        "{label}: buffer capacity"
+    );
+}
+
+/// The array-level identity the standard requires of a BuildMode: the
+/// buffer, every table's buckets and capacity, every chain and its
+/// capacity, every singleton and pending list, the heap size and the tuple
+/// count.
 pub(super) fn assert_same_trie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
 ) {
+    assert_same_buffer(a, b, label);
     assert_same_node(a.root(), b.root(), label);
     assert_eq!(
         a.heap_size_bytes(),
@@ -95,9 +112,14 @@ pub(super) fn assert_same_trie<H: HashStrategy, P: PruningPolicy, E: ExpansionPo
     assert_eq!(a.tuple_count(), b.tuple_count(), "{label}: tuple count");
 }
 
-/// Rows of up to three columns, cut to `arity`.
-pub(super) fn rows(arity: usize, rows: &[[usize; 3]]) -> Vec<Vec<usize>> {
-    rows.iter().map(|row| row[..arity].to_vec()).collect()
+/// Rows of up to three columns, cut to `arity`, as a batch whose capacity
+/// is exactly its rows, so a batch and its clone have equal capacities.
+pub(super) fn rows(arity: usize, rows: &[[usize; 3]]) -> Tuples {
+    let mut tuples = Tuples::with_capacity(arity, rows.len());
+    for row in rows {
+        tuples.push(&row[..arity]);
+    }
+    tuples
 }
 
 /// Enough distinct first values to double the root several times (three
@@ -145,20 +167,22 @@ pub(super) fn incremental_configs() -> Vec<HashTrieConfig> {
         .collect()
 }
 
-pub(super) fn inputs(arity: usize) -> Vec<(&'static str, Vec<Vec<usize>>)> {
+/// The shared inputs, each a batch of `arity` whose capacity is exactly its
+/// rows (see [`rows`]). The random rows are the draws made before #111, in
+/// the same order.
+pub(super) fn inputs(arity: usize) -> Vec<(&'static str, Tuples)> {
     let mut lcg = Lcg(0x91);
-    let random = (0..RANDOM_TUPLES)
-        .map(|_| {
-            let row = [
-                lcg.next_usize() % (RANDOM_TUPLES / 4),
-                lcg.next_usize() % 50,
-                lcg.next_usize() % 7,
-            ];
-            row[..arity].to_vec()
-        })
-        .collect();
+    let mut random = Tuples::with_capacity(arity, RANDOM_TUPLES);
+    for _ in 0..RANDOM_TUPLES {
+        let row = [
+            lcg.next_usize() % (RANDOM_TUPLES / 4),
+            lcg.next_usize() % 50,
+            lcg.next_usize() % 7,
+        ];
+        random.push(&row[..arity]);
+    }
     vec![
-        ("empty", vec![]),
+        ("empty", Tuples::new(arity)),
         ("one tuple", rows(arity, &[[1, 2, 3]])),
         (
             "duplicates",
@@ -239,11 +263,12 @@ fn assert_equivalent_table<V>(
     }
 }
 
-/// [`assert_equivalent_root`] for whole tries, plus heap size and tuple
-/// count.
+/// [`assert_equivalent_root`] for whole tries, plus the buffer, heap size
+/// and tuple count.
 pub(super) fn assert_equivalent_trie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
 ) {
+    assert_same_buffer(a, b, label);
     assert_equivalent_root(a.root(), b.root(), label);
     assert_eq!(
         a.heap_size_bytes(),

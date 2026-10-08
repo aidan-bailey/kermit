@@ -715,7 +715,7 @@ macro_rules! relation_trie_test_suite {
 /// `parquet_test_suite!(Type, collector)` takes an explicit
 /// `fn(&Type) -> Vec<Vec<usize>>` for structures without a tuple-shaped
 /// iterator — `HashTrie` passes a closure over `collect_tuples()` that sorts
-/// the (hash-ordered) result.
+/// the result (its buffer, in arrival order).
 ///
 /// `Type` is resolved via `use super::*`, so aliases such as `HashTrieSip`
 /// work as long as the invoking file brings them into scope.
@@ -1072,9 +1072,10 @@ macro_rules! hash_trie_test_helpers {
             hashes
         }
 
-        /// A leaf chain as a sorted `Vec`, for comparison against literals.
-        fn sorted(chain: &[Vec<usize>]) -> Vec<Vec<usize>> {
-            let mut tuples = chain.to_vec();
+        /// A leaf chain's tuples as a sorted `Vec`, for comparison against
+        /// literals.
+        fn sorted(chain: kermit_iters::LeafRows<'_>) -> Vec<Vec<usize>> {
+            let mut tuples = chain.to_vecs();
             tuples.sort();
             tuples
         }
@@ -1092,9 +1093,9 @@ macro_rules! hash_trie_construction_tests {
                 use kermit_ds::Relation;
                 let relation = $relation_type::from_tuples(arity.into(), tuples.clone());
                 // `HashTrie` has no tuple-shaped iterator; `collect_tuples`
-                // is its depth-first materialisation. Order is
-                // hash-dependent, so compare as sorted multisets.
-                let mut collected = relation.collect_tuples();
+                // copies its buffer, in arrival order. Compare as sorted
+                // multisets, as for any multiset structure.
+                let mut collected = relation.collect_tuples().to_vecs();
                 collected.sort();
                 let mut expected = tuples;
                 expected.sort();
@@ -1127,8 +1128,8 @@ macro_rules! hash_trie_construction_tests {
                 let batch = $relation_type::from_tuples(2.into(), tuples.clone());
                 let mut incremental = $relation_type::new(2.into());
                 incremental.insert_all(tuples);
-                let mut a = batch.collect_tuples();
-                let mut b = incremental.collect_tuples();
+                let mut a = batch.collect_tuples().to_vecs();
+                let mut b = incremental.collect_tuples().to_vecs();
                 a.sort();
                 b.sort();
                 assert_eq!(a, b);
@@ -1245,7 +1246,7 @@ macro_rules! hash_trie_traversal_tests {
                     while let Some(key) = iter.key() {
                         let chain = iter.leaf_tuples().expect("leaf level");
                         assert_eq!(chain.len(), 1);
-                        assert_eq!(h(chain[0][0]), key);
+                        assert_eq!(h(chain.row(0)[0]), key);
                         assert!(!iter.open()); // every bucket here is a leaf
                         seen.push(key);
                         iter.next();

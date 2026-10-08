@@ -29,9 +29,10 @@
 //!
 //! Two things that are kermit's:
 //!
-//! - A list is a `Vec` per bucket. Umbra threads its lists through an 8-byte
-//!   chain pointer reserved in each materialised tuple (§3.3.2), which needs
-//!   the flat tuple buffer of #111 (#101 layer 3).
+//! - A list is a `Vec<RowId>` per bucket: 4-byte ids of rows in the trie's
+//!   buffer (`Tuples`, #111). Umbra threads its lists through an 8-byte chain
+//!   pointer reserved in each materialised tuple (§3.3.2); that needs the
+//!   partitioned copy of the buffer (#101 layer 3).
 //! - Line 3's size is a Config value whose default (`grow`) is not the paper's;
 //!   `child-capacity=tuples` at `load-factor=0.8` is the paper's sizing
 //!   exactly. The root's is `root-capacity` (#88), and each child's is
@@ -54,35 +55,44 @@ use {
         node::HashTrieNode,
         pruning::{PruningPolicy, SingletonPayload},
     },
-    kermit_iters::HashStrategy,
+    crate::morsel::row_id,
+    kermit_iters::{HashStrategy, RowId, Tuples},
 };
 
-/// A list of tuples in input order: Algorithm 2's `L`.
-pub(super) type TupleList = Vec<Vec<usize>>;
+/// A list of row ids in input order: Algorithm 2's `L`. The rows live in
+/// the trie's buffer.
+pub(super) type TupleList = Vec<RowId>;
+
+/// Every row id of `tuples`, in input order: Algorithm 2's first list,
+/// which is never materialised. `row_id` (T5's, in `morsel.rs`) converts
+/// the length; a batch never holds more than `RowId::MAX` rows.
+pub(super) fn all_rows(tuples: &Tuples) -> std::ops::Range<RowId> { 0..row_id(tuples.len()) }
 
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
-    /// Algorithm 2: the table at `depth` over `list`, allocated at
-    /// `2^log2_capacity` buckets.
+    /// Algorithm 2: the table at `depth` over the rows of `tuples` that
+    /// `list` names, allocated at `2^log2_capacity` buckets.
     pub(super) fn build(
-        depth: usize, arity: usize, list: TupleList, log2_capacity: u32, config: HashTrieConfig,
+        tuples: &Tuples, depth: usize, arity: usize, list: impl IntoIterator<Item = RowId>,
+        log2_capacity: u32, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
-        let lists = Self::group(depth, list, log2_capacity, config);
-        Self::build_nested(depth, arity, lists, config)
+        let lists = Self::group(tuples, depth, list, log2_capacity, config);
+        Self::build_nested(tuples, depth, arity, lists, config)
     }
 
-    /// Lines 3–7: a table of `2^log2_capacity` buckets holding `list`'s
-    /// tuples, each pushed onto the list in the bucket of its attribute's
+    /// Lines 3–7: a table of `2^log2_capacity` buckets holding `list`'s row
+    /// ids, each pushed onto the list in the bucket of its row's attribute
     /// hash at `depth`. The table grows under the load factor if its keys
     /// outgrow it, as `insert_at`'s tables do.
     pub(super) fn group(
-        depth: usize, list: TupleList, log2_capacity: u32, config: HashTrieConfig,
+        tuples: &Tuples, depth: usize, list: impl IntoIterator<Item = RowId>, log2_capacity: u32,
+        config: HashTrieConfig,
     ) -> HashTable<TupleList> {
         let mut lists = HashTable::with_log2_capacity(log2_capacity);
-        for tuple in list {
-            let hash = H::hash(tuple[depth]);
+        for row in list {
+            let hash = H::hash(tuples.row(row)[depth]);
             lists
                 .entry_or_insert_with(hash, config.load_factor, Vec::new)
-                .push(tuple);
+                .push(row);
         }
         lists
     }
@@ -91,14 +101,15 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// in bucket order (line 9). At the last attribute each list is stored
     /// itself (line 15), so the table of lists is the leaf.
     pub(super) fn build_nested(
-        depth: usize, arity: usize, lists: HashTable<TupleList>, config: HashTrieConfig,
+        tuples: &Tuples, depth: usize, arity: usize, lists: HashTable<TupleList>,
+        config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
         // `>=`, as `make_root_sized`'s `arity <= 1`, so the unsupported nullary
         // root is a leaf under both builds.
         if depth + 1 >= arity {
             return HashTrieNode::Leaf(lists);
         }
-        HashTrieNode::Inner(lists.map(|list| Self::child(depth + 1, arity, list, config)))
+        HashTrieNode::Inner(lists.map(|list| Self::child(tuples, depth + 1, arity, list, config)))
     }
 
     /// The node a bucket's `list` becomes, at `depth`: a `Singleton` when
@@ -107,19 +118,20 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// table by [`build_child_table`](Self::build_child_table) on the first
     /// probe), and otherwise the table line 11 builds.
     pub(super) fn child(
-        depth: usize, arity: usize, mut list: TupleList, config: HashTrieConfig,
+        tuples: &Tuples, depth: usize, arity: usize, mut list: TupleList, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
         if P::ENABLED && list.len() == 1 {
-            let tuple = list.pop().expect("the list holds one tuple");
-            return HashTrieNode::Singleton(P::Payload::from_tuple(tuple));
+            return HashTrieNode::Singleton(P::Payload::from_row(list[0]));
         }
         if E::LAZY {
-            // `insert_at` starts a pending list as `vec![tuple]`, capacity
-            // 1, or after an unprune as `Vec::with_capacity(2)`. A list grown
-            // from empty reaches capacity 4 on its first push, and from there
+            // `insert_at` starts a pending list as `vec![row]`, capacity 1,
+            // or after an unprune as `Vec::with_capacity(2)`. A list grown
+            // from empty reaches capacity 4 on its first push (std's
+            // smallest non-zero capacity for a 4-byte `RowId`, as for the
+            // 24-byte tuples the lists held before #111), and from there
             // both grow alike. Shrinking the two short cases keeps the trie
             // byte-identical to `incremental`'s, so `space` cannot move, and
-            // keeps a one-tuple pending list at one slot. Both the first
+            // keeps a one-row pending list at one slot. Both the first
             // capacity of 4 and `shrink_to`'s exact result are std
             // implementation details; the identity tests pin them.
             let first_capacity = if P::ENABLED {
@@ -130,9 +142,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             if list.len() == first_capacity {
                 list.shrink_to(first_capacity);
             }
-            return HashTrieNode::Unexpanded(E::Pending::from_tuples(list));
+            return HashTrieNode::Unexpanded(E::Pending::from_rows(list));
         }
-        Self::build_child_table(depth, arity, list, config)
+        Self::build_child_table(tuples, depth, arity, list, config)
     }
 
     /// The table a bucket's `list` becomes at `depth` when it is built
@@ -141,10 +153,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// expanded from a list is the eager child built from that list, size
     /// included.
     pub(super) fn build_child_table(
-        depth: usize, arity: usize, list: TupleList, config: HashTrieConfig,
+        tuples: &Tuples, depth: usize, arity: usize, list: TupleList, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
         let log2_capacity = config.child_log2_capacity(list.len());
-        Self::build(depth, arity, list, log2_capacity, config)
+        Self::build(tuples, depth, arity, list, log2_capacity, config)
     }
 }
 
@@ -230,9 +242,10 @@ mod tests {
 
     /// Chain order, explicitly: under the colliding strategy, first keys 1
     /// and 11 share a root bucket and last keys 3 and 13 share a leaf chain,
-    /// so distinct tuples meet in one chain, which must list them in input
-    /// order as the per-tuple build does. Under SipHash or FxHash a chain
-    /// holds only equal tuples, so only a colliding fixture can see its order.
+    /// so distinct tuples meet in one chain, which must list their ids in
+    /// input order as the per-tuple build does. Under SipHash or FxHash a
+    /// chain holds only equal tuples, so only a colliding fixture can see
+    /// its order.
     #[test]
     fn bulk_keeps_chain_order_under_colliding_hashes() {
         let tuples = vec![vec![1, 3], vec![11, 13], vec![1, 13], vec![11, 3], vec![
@@ -243,12 +256,12 @@ mod tests {
                 let incremental = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_incrementally(
                     2.into(),
                     config,
-                    tuples.to_vec(),
+                    Tuples::from(tuples.to_vec()),
                 );
                 let bulk = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_in_bulk(
                     2.into(),
                     config,
-                    tuples.to_vec(),
+                    Tuples::from(tuples.to_vec()),
                 );
                 assert_same_trie(
                     &incremental,
@@ -261,10 +274,24 @@ mod tests {
         check::<SingletonPruning, EagerExpansion>(&tuples);
         check::<NoPruning, LazyExpansion>(&tuples);
         check::<SingletonPruning, LazyExpansion>(&tuples);
-        // The eager trie's one chain holds all five tuples, in input order.
-        let bulk: HashTrie<Mod10HashStrategy> =
-            HashTrie::from_tuples_in_bulk(2.into(), HashTrieConfig::default(), tuples.clone());
-        assert_eq!(bulk.collect_tuples(), tuples);
+        // The eager trie's one chain holds all five ids, in input order.
+        let bulk: HashTrie<Mod10HashStrategy> = HashTrie::from_tuples_in_bulk(
+            2.into(),
+            HashTrieConfig::default(),
+            Tuples::from(tuples),
+        );
+        let HashTrieNode::Inner(root) = bulk.root() else {
+            panic!("arity 2 has an Inner root")
+        };
+        assert_eq!(root.len(), 1, "1 and 11 share a root bucket");
+        let Some((_, HashTrieNode::Leaf(leaf))) = root.iter().next() else {
+            panic!("the root's one child is the leaf")
+        };
+        assert_eq!(leaf.len(), 1, "3 and 13 share a leaf chain");
+        let Some((_, chain)) = leaf.iter().next() else {
+            panic!("one chain")
+        };
+        assert_eq!(chain, &vec![0, 1, 2, 3, 4]);
     }
 
     /// Arity 4 and a first key holding half the tuples, which the shared
@@ -290,7 +317,10 @@ mod tests {
                             .collect()
                     })
                     .collect();
-                for (input, tuples) in [("random", random), ("half one key", skewed)] {
+                for (input, tuples) in [
+                    ("random", Tuples::from(random)),
+                    ("half one key", Tuples::from(skewed)),
+                ] {
                     for config in incremental_configs() {
                         let incremental = HashTrie::<H, P, E>::from_tuples_incrementally(
                             arity.into(),
@@ -428,12 +458,15 @@ mod tests {
         );
     }
 
+    /// A batch of another arity. (A batch of mixed arities never reaches a
+    /// build: `Tuples::from` refuses it.)
     #[test]
     #[should_panic(expected = "does not match header arity")]
     fn bulk_build_rejects_a_wrong_arity() {
-        let _: HashTrie = HashTrie::from_tuples_in_bulk(2.into(), HashTrieConfig::default(), vec![
-            vec![1, 2],
-            vec![3],
-        ]);
+        let _: HashTrie = HashTrie::from_tuples_in_bulk(
+            2.into(),
+            HashTrieConfig::default(),
+            Tuples::from(vec![vec![1, 2, 3]]),
+        );
     }
 }

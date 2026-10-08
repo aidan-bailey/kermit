@@ -187,8 +187,10 @@ fn enumerate<IT: HashTrieIterator, S: FnMut(&[usize])>(
 /// Algorithm 3 lines 16–19. Cross-product the leaf chains of every
 /// iterator and emit each verified candidate.
 ///
-/// Allocates nothing: each chain is re-borrowed through `leaf_tuples()`
-/// rather than collected, and the cursor and output row live in `scratch`.
+/// Allocates nothing: each chain is re-borrowed through `leaf_tuples()` as
+/// a `LeafRows` view (row ids over its relation's tuple buffer) rather than
+/// collected, a candidate's tuples are slices of those buffers, and the
+/// cursor and output row live in `scratch`.
 fn emit_leaf<IT: HashTrieIterator, S: FnMut(&[usize])>(
     iters: &[IT], predicate_variables: &[Vec<usize>], scratch: &mut LeafScratch, emit: &mut S,
 ) {
@@ -210,7 +212,7 @@ fn emit_leaf<IT: HashTrieIterator, S: FnMut(&[usize])>(
             .cursor
             .iter()
             .enumerate()
-            .map(|(k, &i)| chain(k)[i].as_slice());
+            .map(|(k, &i)| chain(k).row(i));
         if verify_and_construct(
             candidate,
             predicate_variables,
@@ -439,17 +441,12 @@ mod tests {
         // Both chains hold one tuple; together they form the only candidate.
         let r_chain = r_it.leaf_tuples().expect("R at leaf");
         let s_chain = s_it.leaf_tuples().expect("S at leaf");
-        assert_eq!(r_chain.to_vec(), vec![vec![1, 2]]);
-        assert_eq!(s_chain.to_vec(), vec![vec![12, 3]]);
+        assert_eq!(r_chain.to_vecs(), vec![vec![1, 2]]);
+        assert_eq!(s_chain.to_vecs(), vec![vec![12, 3]]);
         let pv = vec![vec![0, 1], vec![1, 2]];
         let (mut row, mut bound) = (vec![0; 3], vec![false; 3]);
         assert!(
-            !verify_and_construct(
-                [r_chain[0].as_slice(), s_chain[0].as_slice()],
-                &pv,
-                &mut row,
-                &mut bound
-            ),
+            !verify_and_construct([r_chain.row(0), s_chain.row(0)], &pv, &mut row, &mut bound),
             "Y = 2 in R but 12 in S: the leaf-level check must reject it"
         );
     }

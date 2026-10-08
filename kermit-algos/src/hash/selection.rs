@@ -13,7 +13,10 @@
 //! [`HashTriejoin`](crate::HashTriejoin) invariant) applies inside the view
 //! as well as across relations.
 
-use {crate::selection_rewrite::ColumnEquality, kermit_iters::HashTrieIterator};
+use {
+    crate::selection_rewrite::ColumnEquality,
+    kermit_iters::{HashTrieIterator, LeafRows, RowId},
+};
 
 /// Bookkeeping for one open level of the inner iterator.
 #[derive(Debug, Clone, Copy)]
@@ -49,11 +52,16 @@ pub struct EqualitySelectionHashTrieIter<IT: HashTrieIterator> {
     source_of: Vec<Option<usize>>,
     /// One frame per open level; `frames.len()` is the current depth.
     frames: Vec<Frame>,
-    /// Value-filtered copy of the inner leaf chain, `Some` iff the inner
-    /// sits on an occupied leaf bucket. Owned because
-    /// [`HashTrieIterator::leaf_tuples`] hands out a borrowed slice; the
-    /// copy is paid only by selected atoms, once per leaf bucket visited.
-    leaf: Option<Vec<Vec<usize>>>,
+    /// Ids of the inner leaf chain's rows that satisfy every equality, in
+    /// chain order; meaningful only while `at_leaf`. Owned, since the
+    /// filter is the view's own. [`HashTrieIterator::leaf_tuples`] lends
+    /// them over the inner chain's buffer, so a selected atom copies 4-byte
+    /// ids, never tuples, once per leaf bucket visited, into an allocation
+    /// it reuses across buckets.
+    leaf_ids: Vec<RowId>,
+    /// `true` iff the inner sat on an occupied leaf bucket when `leaf_ids`
+    /// was last refreshed.
+    at_leaf: bool,
 }
 
 impl<IT: HashTrieIterator> EqualitySelectionHashTrieIter<IT> {
@@ -70,7 +78,8 @@ impl<IT: HashTrieIterator> EqualitySelectionHashTrieIter<IT> {
             equalities: equalities.to_vec(),
             source_of,
             frames: Vec::new(),
-            leaf: None,
+            leaf_ids: Vec::new(),
+            at_leaf: false,
         }
     }
 
@@ -80,16 +89,23 @@ impl<IT: HashTrieIterator> EqualitySelectionHashTrieIter<IT> {
         top.admitted.map(|h| (h, top.exhausted))
     }
 
-    /// Recomputes the filtered leaf chain for the inner's current bucket.
+    /// Recomputes the filtered leaf chain for the inner's current bucket:
+    /// the ids of its rows that satisfy every equality, in chain order.
     fn refresh_leaf(&mut self) {
-        let equalities = &self.equalities;
-        self.leaf = self.inner.leaf_tuples().map(|chain| {
-            chain
-                .iter()
-                .filter(|t| equalities.iter().all(|e| t[e.source] == t[e.repeat]))
-                .cloned()
-                .collect()
-        });
+        self.leaf_ids.clear();
+        let chain = self.inner.leaf_tuples();
+        self.at_leaf = chain.is_some();
+        if let Some(chain) = chain {
+            let equalities = &self.equalities;
+            self.leaf_ids.extend(
+                chain
+                    .ids()
+                    .iter()
+                    .zip(chain.iter())
+                    .filter(|(_, t)| equalities.iter().all(|e| t[e.source] == t[e.repeat]))
+                    .map(|(&id, _)| id),
+            );
+        }
     }
 }
 
@@ -105,7 +121,7 @@ impl<IT: HashTrieIterator> HashTrieIterator for EqualitySelectionHashTrieIter<IT
         if let Some(top) = self.frames.last_mut() {
             if top.admitted.is_some() {
                 top.exhausted = true;
-                self.leaf = None;
+                self.at_leaf = false;
                 return None;
             }
         }
@@ -174,14 +190,24 @@ impl<IT: HashTrieIterator> HashTrieIterator for EqualitySelectionHashTrieIter<IT
             return false;
         }
         self.frames.pop();
-        self.leaf = None;
+        self.at_leaf = false;
         true
     }
 
-    fn leaf_tuples(&self) -> Option<&[Vec<usize>]> {
+    fn leaf_tuples(&self) -> Option<LeafRows<'_>> {
         match self.constrained_top() {
             | Some((_, true)) => None,
-            | _ => self.leaf.as_deref(),
+            | _ if !self.at_leaf => None,
+            | _ => {
+                // The filtered ids index the inner chain's buffer: lend
+                // that buffer with them.
+                let chain = self.inner.leaf_tuples()?;
+                Some(LeafRows::from_parts(
+                    chain.data(),
+                    chain.arity(),
+                    &self.leaf_ids,
+                ))
+            },
         }
     }
 }
@@ -232,7 +258,9 @@ mod tests {
             }
             while !it.at_end() {
                 if depth + 1 == arity {
-                    out.extend(it.leaf_tuples().unwrap_or(&[]).iter().cloned());
+                    if let Some(rows) = it.leaf_tuples() {
+                        out.extend(rows.iter().map(<[usize]>::to_vec));
+                    }
                 } else {
                     go(it, depth + 1, arity, out);
                 }
@@ -272,7 +300,10 @@ mod tests {
         assert_eq!(it.size(), 1);
         assert_eq!(it.key(), Some(h(1)));
         assert!(!it.at_end());
-        assert_eq!(it.leaf_tuples(), Some(&[vec![1, 1]][..]));
+        assert_eq!(
+            it.leaf_tuples().map(|rows| rows.to_vecs()),
+            Some(vec![vec![1, 1]])
+        );
         assert_eq!(it.next(), None);
         assert!(it.at_end());
         assert_eq!(it.size(), 0);
@@ -347,7 +378,10 @@ mod tests {
         let mut it = view(&r, &[eq(0, 1)]);
         assert!(it.open());
         assert!(it.open(), "the colliding bucket is admitted by hash");
-        assert_eq!(it.leaf_tuples(), Some(&[][..]));
+        assert_eq!(
+            it.leaf_tuples().map(|rows| rows.to_vecs()),
+            Some(Vec::<Vec<usize>>::new())
+        );
         assert_eq!(
             collect(&mut view(&r, &[eq(0, 1)]), 2),
             Vec::<Vec<usize>>::new()
@@ -360,6 +394,28 @@ mod tests {
             CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 11], vec![1, 1], vec![1, 21]]);
         let mut it = view(&r, &[eq(0, 1)]);
         assert_eq!(collect(&mut it, 2), vec![vec![1, 1]]);
+    }
+
+    #[test]
+    fn selected_leaf_lends_the_inner_buffer_with_filtered_ids() {
+        // All three tuples collide into one leaf chain, ids 0, 1 and 2. The
+        // view keeps id 1, the true diagonal, and reads it from the
+        // relation's buffer instead of copying the tuple.
+        let r =
+            CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 11], vec![1, 1], vec![1, 21]]);
+        let mut it = view(&r, &[eq(0, 1)]);
+        assert!(it.open());
+        assert!(it.open());
+        let rows = it.leaf_tuples().expect("the admitted leaf bucket");
+        assert_eq!(rows.ids(), &[1]);
+        assert_eq!(rows.to_vecs(), vec![vec![1, 1]]);
+
+        let mut plain = r.hash_trie_iter();
+        assert!(plain.open());
+        assert!(plain.open());
+        let chain = plain.leaf_tuples().expect("the same bucket, unfiltered");
+        assert_eq!(chain.ids(), &[0, 1, 2]);
+        assert_eq!(rows.data().as_ptr(), chain.data().as_ptr());
     }
 
     #[test]

@@ -56,15 +56,15 @@ parquet_test_suite!(TreeTrieParallel2);
 
 // `HashTrie` has no tuple-shaped iterator (it is `HashTrieIterable`, not
 // `TrieIterable`), so the round-trip is checked through `collect_tuples()`,
-// whose order is hash-dependent and therefore sorted before comparison. One
-// invocation per Layout alias, matching `kermit/tests/join_tests.rs`.
+// a copy of its buffer in arrival (file) order, sorted before comparison.
+// One invocation per Layout alias, matching `kermit/tests/join_tests.rs`.
 type HashTrieSip = HashTrie<SipHashStrategy>;
 type HashTrieFx = HashTrie<FxHashStrategy>;
 
 fn sorted_tuples<H: kermit_iters::HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     relation: &HashTrie<H, P, E>,
 ) -> Vec<Vec<usize>> {
-    let mut tuples = relation.collect_tuples();
+    let mut tuples = relation.collect_tuples().to_vecs();
     tuples.sort();
     tuples
 }

@@ -5,7 +5,7 @@
 //! See SIGMOD 2020 "Combining Worst-Case Optimal and Traditional Binary
 //! Join Processing" §3.2 for the conceptual interface (Table 1).
 
-use crate::joinable::JoinIterable;
+use crate::{joinable::JoinIterable, LeafRows};
 
 /// Iterator over a hash trie. Navigates nested hash tables level by level.
 ///
@@ -28,8 +28,8 @@ use crate::joinable::JoinIterable;
 ///   bucket.
 /// - [`open`](Self::open) — descend into the child node at the current bucket.
 /// - [`up`](Self::up) — ascend to the parent node.
-/// - [`leaf_tuples`](Self::leaf_tuples) — at the leaf level, the tuple chain at
-///   the current bucket; `None` at inner levels.
+/// - [`leaf_tuples`](Self::leaf_tuples) — at the leaf level, a [`LeafRows`]
+///   view of the tuple chain at the current bucket; `None` at inner levels.
 ///
 /// # Not a `LinearIterator`
 ///
@@ -64,10 +64,12 @@ pub trait HashTrieIterator {
     /// Ascend to the parent node. Returns `false` at the root.
     fn up(&mut self) -> bool;
 
-    /// Tuple chain at the current leaf bucket. Returns `Some(&[…])` iff the
-    /// current node is a leaf and the current bucket is occupied;
-    /// otherwise `None`.
-    fn leaf_tuples(&self) -> Option<&[Vec<usize>]>;
+    /// Tuple chain at the current leaf bucket, as a [`LeafRows`] view: the
+    /// chain's row ids, in chain order, over the tuple buffer they index.
+    /// Returns `Some` iff the current node is a leaf and the current bucket
+    /// is occupied; otherwise `None`. The view borrows the iterator, so
+    /// reading a chain copies and allocates nothing.
+    fn leaf_tuples(&self) -> Option<LeafRows<'_>>;
 }
 
 /// Marker for types that expose a [`HashTrieIterator`].

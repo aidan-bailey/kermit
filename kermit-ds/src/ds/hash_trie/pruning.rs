@@ -1,41 +1,45 @@
 //! Pruning policy — the second Layout dimension of
 //! [`HashTrie`](super::HashTrie).
 //!
-//! Singleton pruning (SIGMOD 2020 §3.3.1, Figure 5) stores a subtrie that
-//! holds exactly one tuple as that tuple instead of one hash table per
+//! Singleton pruning (SIGMOD 2020 §3.3.1, Figure 5) stores a subtrie that holds
+//! exactly one tuple as that tuple's row id instead of one hash table per
 //! remaining level. It is a *shape*: fixed at construction, it changes which
 //! node variants exist. Encoding it as a type parameter lets the `NoPruning`
-//! instantiation compile to the pre-pruning code — the `Singleton` payload
-//! and the iterator's singleton frame are uninhabited there, so every arm
-//! that handles them is dead code the compiler removes. Bench axis:
+//! instantiation compile to the pre-pruning code — the `Singleton` payload and
+//! the iterator's singleton frame are uninhabited there, so every arm that
+//! handles them is dead code the compiler removes. Bench axis:
 //! `ds_layout_pruning`.
 
-use kermit_iters::LayoutOption;
+use kermit_iters::{LayoutOption, RowId};
 
-/// The tuple a `HashTrieNode::Singleton` stores. `Vec<usize>` when pruning
-/// is on; [`Never`] when it is off, which makes the variant uninhabited.
+/// What a `HashTrieNode::Singleton` stores: the [`RowId`] of its one tuple,
+/// in the trie's buffer, when pruning is on; [`Never`] when it is off, which
+/// makes the variant uninhabited.
 pub trait SingletonPayload {
-    /// Wrap `tuple` as the payload of a pruned subtrie.
-    fn from_tuple(tuple: Vec<usize>) -> Self;
-    /// The tuple stored below the pruned node.
-    fn tuple(&self) -> &Vec<usize>;
-    /// Consume the payload, yielding the tuple it stored.
-    fn into_tuple(self) -> Vec<usize>;
+    /// Wrap `row` as the payload of a pruned subtrie.
+    fn from_row(row: RowId) -> Self;
+    /// The id of the row stored below the pruned node. A reference into the
+    /// node, so an iterator frame can hold it for the trie's lifetime and
+    /// lend it as a one-id chain (`slice::from_ref`).
+    fn row(&self) -> &RowId;
+    /// Consume the payload, yielding the id it stored.
+    fn into_row(self) -> RowId;
 }
 
 /// The iterator's stand-in for the one-entry table a pruned level would
 /// have held. One implementor per policy; the `NoPruning` one is [`Never`],
 /// so the iterator's singleton arms vanish in that instantiation.
 pub trait SingletonFrame<'a>: Sized {
-    /// A frame at `depth` for `tuple`, positioned on its single entry.
-    /// `hash == H::hash(tuple[depth])`, computed once by the caller.
-    // `&'a Vec`, not `&'a [usize]`: the frame stores the borrow and hands it
-    // back from `tuple()`, which feeds `leaf_tuples`' `&[Vec<usize>]` via
-    // `slice::from_ref`.
-    #[allow(clippy::ptr_arg)]
-    fn new(tuple: &'a Vec<usize>, depth: usize, hash: u64) -> Self;
-    /// The tuple stored below the pruned node.
-    fn tuple(&self) -> &'a Vec<usize>;
+    /// A frame for the pruned subtrie's row `row`, positioned on its single
+    /// entry. `hash` is the hash of the row's value at the frame's depth,
+    /// computed once by the caller (`HashTrieIter::singleton_frame`, which
+    /// reads the row and checks the depth).
+    // A borrow of the payload's id, as the frame borrowed its tuple before:
+    // `row()` hands it back with the trie lifetime, and `leaf_tuples` lends
+    // it as a one-id chain via `slice::from_ref`.
+    fn new(row: &'a RowId, hash: u64) -> Self;
+    /// The row id of the tuple stored below the pruned node.
+    fn row(&self) -> &'a RowId;
     /// `Some(hash)` unless exhausted.
     fn key(&self) -> Option<u64>;
     /// Advance past the single entry.
@@ -51,7 +55,7 @@ pub trait SingletonFrame<'a>: Sized {
 /// The two associated types and the constant must agree: `ENABLED == false`
 /// requires `Payload` and `Frame` to be uninhabited (so no `Singleton` node
 /// or frame can exist), and `ENABLED == true` requires them inhabited (so
-/// the prune and unprune paths can actually store a tuple). Nothing in the
+/// the prune and unprune paths can actually store a row id). Nothing in the
 /// type system enforces that pairing, which is why the implementor set is
 /// closed by design: `SingletonPayload` and `SingletonFrame` live in
 /// this private module, so [`NoPruning`] and [`SingletonPruning`] are the
@@ -81,21 +85,21 @@ pub trait PruningPolicy: LayoutOption + Copy + Default + 'static {
 pub enum Never {}
 
 impl SingletonPayload for Never {
-    fn from_tuple(_tuple: Vec<usize>) -> Self {
+    fn from_row(_row: RowId) -> Self {
         unreachable!("NoPruning never constructs a Singleton (P::ENABLED is false)")
     }
 
-    fn tuple(&self) -> &Vec<usize> { match *self {} }
+    fn row(&self) -> &RowId { match *self {} }
 
-    fn into_tuple(self) -> Vec<usize> { match self {} }
+    fn into_row(self) -> RowId { match self {} }
 }
 
 impl<'a> SingletonFrame<'a> for Never {
-    fn new(_tuple: &'a Vec<usize>, _depth: usize, _hash: u64) -> Self {
+    fn new(_row: &'a RowId, _hash: u64) -> Self {
         unreachable!("NoPruning never pushes a singleton frame")
     }
 
-    fn tuple(&self) -> &'a Vec<usize> { match *self {} }
+    fn row(&self) -> &'a RowId { match *self {} }
 
     fn key(&self) -> Option<u64> { match *self {} }
 
@@ -106,43 +110,38 @@ impl<'a> SingletonFrame<'a> for Never {
     fn at_end(&self) -> bool { match *self {} }
 }
 
-impl SingletonPayload for Vec<usize> {
-    fn from_tuple(tuple: Vec<usize>) -> Self { tuple }
+impl SingletonPayload for RowId {
+    fn from_row(row: RowId) -> Self { row }
 
-    fn tuple(&self) -> &Vec<usize> { self }
+    fn row(&self) -> &RowId { self }
 
-    fn into_tuple(self) -> Vec<usize> { self }
+    fn into_row(self) -> RowId { self }
 }
 
-/// One emulated level of a pruned subtrie holding `tuple`; `exhausted`
-/// plays the role of a table frame's past-end bucket index.
+/// One emulated level of a pruned subtrie holding the row `row`;
+/// `exhausted` plays the role of a table frame's past-end bucket index.
 ///
 /// The level itself is not stored: a frame's depth is its position in the
 /// iterator's stack, which `HashTrieIter` reads off `stack.len()`.
 #[derive(Debug)]
 pub struct SingletonFrameOn<'a> {
-    // `&Vec`, not `&[usize]`: `leaf_tuples` returns `&[Vec<usize>]` via
-    // `slice::from_ref`.
-    tuple: &'a Vec<usize>,
+    // Borrowed from the payload: `leaf_tuples` lends it as a one-id chain
+    // via `slice::from_ref`.
+    row: &'a RowId,
     hash: u64,
     exhausted: bool,
 }
 
 impl<'a> SingletonFrame<'a> for SingletonFrameOn<'a> {
-    fn new(tuple: &'a Vec<usize>, depth: usize, hash: u64) -> Self {
-        debug_assert!(
-            depth < tuple.len(),
-            "singleton frame at depth {depth} below a {}-attribute tuple",
-            tuple.len()
-        );
+    fn new(row: &'a RowId, hash: u64) -> Self {
         Self {
-            tuple,
+            row,
             hash,
             exhausted: false,
         }
     }
 
-    fn tuple(&self) -> &'a Vec<usize> { self.tuple }
+    fn row(&self) -> &'a RowId { self.row }
 
     fn key(&self) -> Option<u64> { (!self.exhausted).then_some(self.hash) }
 
@@ -184,7 +183,7 @@ impl LayoutOption for SingletonPruning {
 
 impl PruningPolicy for SingletonPruning {
     type Frame<'a> = SingletonFrameOn<'a>;
-    type Payload = Vec<usize>;
+    type Payload = RowId;
 
     const ENABLED: bool = true;
 }
@@ -206,10 +205,10 @@ mod tests {
     }
 
     #[test]
-    fn vec_payload_round_trips_the_tuple() {
-        let p = <Vec<usize> as SingletonPayload>::from_tuple(vec![1, 2, 3]);
-        assert_eq!(p.tuple(), &vec![1, 2, 3]);
-        assert_eq!(p.into_tuple(), vec![1, 2, 3]);
+    fn row_payload_round_trips_the_id() {
+        let p = <RowId as SingletonPayload>::from_row(7);
+        assert_eq!(p.row(), &7);
+        assert_eq!(p.into_row(), 7);
     }
 
     #[test]
@@ -223,8 +222,8 @@ mod tests {
 
     #[test]
     fn frame_emulates_a_one_entry_table() {
-        let tuple = vec![7, 8, 9];
-        let mut f = <SingletonFrameOn<'_> as SingletonFrame<'_>>::new(&tuple, 1, 0xBEEF);
+        let row: RowId = 7;
+        let mut f = <SingletonFrameOn<'_> as SingletonFrame<'_>>::new(&row, 0xBEEF);
         assert_eq!(f.key(), Some(0xBEEF));
         assert!(!f.at_end());
         assert!(!f.lookup(0xDEAD));
@@ -234,7 +233,7 @@ mod tests {
         assert!(!f.at_end());
         f.exhaust();
         assert!(f.at_end());
-        assert_eq!(f.tuple(), &tuple);
+        assert_eq!(f.row(), &row);
     }
 
     #[test]

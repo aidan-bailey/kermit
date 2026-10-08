@@ -9,7 +9,7 @@ use {
         hash::{selection::EqualitySelectionHashTrieIter, singleton::SingletonHashTrieIter},
         selection_rewrite::ColumnEquality,
     },
-    kermit_iters::{HashTrieIterable, HashTrieIterator, JoinIterable},
+    kermit_iters::{HashTrieIterable, HashTrieIterator, JoinIterable, LeafRows},
 };
 
 /// Either borrows a real `HashTrieIterable` relation, owns a synthetic
@@ -107,7 +107,7 @@ where
         }
     }
 
-    fn leaf_tuples(&self) -> Option<&[Vec<usize>]> {
+    fn leaf_tuples(&self) -> Option<LeafRows<'_>> {
         match self {
             | Self::Relation(it) => it.leaf_tuples(),
             | Self::Singleton(it) => it.leaf_tuples(),
@@ -175,6 +175,9 @@ mod tests {
         assert!(it.open());
         assert!(it.open());
         assert_eq!(it.key(), Some(SipHashStrategy::hash(1)));
-        assert_eq!(it.leaf_tuples(), Some(&[vec![1, 1]][..]));
+        assert_eq!(
+            it.leaf_tuples().map(|rows| rows.to_vecs()),
+            Some(vec![vec![1, 1]])
+        );
     }
 }

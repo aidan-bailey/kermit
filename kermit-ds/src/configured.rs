@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(a.config().load_factor, LoadFactor::percent(50).unwrap());
         let b = HalfFullTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         assert_eq!(b.config().load_factor, LoadFactor::percent(50).unwrap());
-        assert_eq!(b.collect_tuples(), vec![vec![1, 2]]);
+        assert_eq!(b.collect_tuples().to_vecs(), vec![vec![1, 2]]);
     }
 
     #[test]
@@ -230,9 +230,7 @@ mod tests {
         let mut r = HalfFullTrie::new(2.into());
         r.insert(vec![1, 2]);
         r.insert_all(vec![vec![3, 4]]);
-        let mut tuples = r.collect_tuples();
-        tuples.sort();
-        assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(r.collect_tuples().to_vecs(), vec![vec![1, 2], vec![3, 4]]);
         assert_eq!(crate::Cardinality::tuple_count(&r), 2);
     }
 
@@ -265,8 +263,6 @@ mod tests {
             builds[0].deferred.is_some(),
             "the presized record: {builds:?}"
         );
-        let mut tuples = r.collect_tuples();
-        tuples.sort();
-        assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(r.collect_tuples().to_vecs(), vec![vec![1, 2], vec![3, 4]]);
     }
 }

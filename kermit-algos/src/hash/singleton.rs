@@ -9,7 +9,7 @@
 //! [`kermit_iters::HashStrategy`] before constructing the singleton; this
 //! file does not depend on any strategy.
 
-use kermit_iters::{HashTrieIterable, HashTrieIterator, JoinIterable};
+use kermit_iters::{HashTrieIterable, HashTrieIterator, JoinIterable, LeafRows, RowId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -25,17 +25,14 @@ enum State {
 /// if it were a real hash-trie-backed relation.
 #[derive(Debug, Clone)]
 pub struct SingletonHashTrieIter {
-    // Kept as a sentinel of the constructed value; the join algorithm and
-    // `leaf_tuples` consume the cached `chain` instead. Phase 7 may grow
-    // direct uses (e.g., diagnostics) — allow until then.
-    #[allow(dead_code)]
-    value: usize,
     hash: u64,
-    /// Cached one-tuple chain returned by [`HashTrieIterator::leaf_tuples`]
-    /// once the iterator has been [`open`](HashTrieIterator::open)ed.
-    /// Pre-materialized in [`new`] so the trait method can hand out a
-    /// `&[Vec<usize>]` without allocating or holding interior mutability.
-    chain: Vec<Vec<usize>>,
+    /// The one-row tuple buffer: the value itself, as a unary tuple.
+    data: [usize; 1],
+    /// The chain [`HashTrieIterator::leaf_tuples`] lends over `data` once
+    /// the iterator has been [`open`](HashTrieIterator::open)ed: its one
+    /// row, id 0. Inline, like `data`, so neither the trait method nor
+    /// constructing or cloning the iterator allocates.
+    rows: [RowId; 1],
     state: State,
 }
 
@@ -50,9 +47,9 @@ impl SingletonHashTrieIter {
     /// the singleton with the same hash function.
     pub fn new(value: usize, hash: u64) -> Self {
         Self {
-            value,
             hash,
-            chain: vec![vec![value]],
+            data: [value],
+            rows: [0],
             state: State::Root,
         }
     }
@@ -114,9 +111,9 @@ impl HashTrieIterator for SingletonHashTrieIter {
         }
     }
 
-    fn leaf_tuples(&self) -> Option<&[Vec<usize>]> {
+    fn leaf_tuples(&self) -> Option<LeafRows<'_>> {
         if self.state == State::AtValue {
-            Some(self.chain.as_slice())
+            Some(LeafRows::from_parts(&self.data, 1, &self.rows))
         } else {
             None
         }
@@ -184,7 +181,9 @@ mod tests {
         let mut it = SingletonHashTrieIter::new(42, h(42));
         it.open();
         let chain = it.leaf_tuples().expect("singleton's leaf chain after open");
-        assert_eq!(chain, &[vec![42]]);
+        assert_eq!(chain.to_vecs(), vec![vec![42]]);
+        assert_eq!(chain.ids(), &[0]);
+        assert_eq!(chain.arity(), 1);
     }
 
     #[test]

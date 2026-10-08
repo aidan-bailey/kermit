@@ -1,6 +1,7 @@
 //! Recursive node type for the hash trie. Inner levels carry child node
-//! tables; the deepest (leaf) level carries tuple chains; a pruned subtrie
-//! carries its single tuple directly.
+//! tables; the deepest (leaf) level carries chains of row ids; a pruned
+//! subtrie carries its single tuple's row id directly. Every row id indexes
+//! the trie's buffer (`HashTrie::tuples`, #111).
 //!
 //! The table variant is fixed by depth: inner nodes live at depths
 //! `0..arity-1`, the leaf node at depth `arity-1`. A `Singleton` may stand
@@ -11,7 +12,10 @@
 //! No runtime check polices the depth rule — `HashTrie::insert_at`
 //! constructs the right variant based on the caller's known arity.
 
-use super::{expansion::ExpansionPolicy, hash_table::HashTable, pruning::PruningPolicy};
+use {
+    super::{expansion::ExpansionPolicy, hash_table::HashTable, pruning::PruningPolicy},
+    kermit_iters::RowId,
+};
 
 /// A node in a hash trie, parameterised by the pruning and expansion
 /// policies so that the `Singleton` variant is uninhabited (and costs
@@ -20,28 +24,30 @@ use super::{expansion::ExpansionPolicy, hash_table::HashTable, pruning::PruningP
 pub(crate) enum HashTrieNode<P: PruningPolicy, E: ExpansionPolicy> {
     /// Inner level: hash table whose values are child nodes.
     Inner(HashTable<HashTrieNode<P, E>>),
-    /// Leaf level: hash table whose values are tuple chains. Each chain
-    /// holds the full materialized tuples whose attribute hashes match the
-    /// path of hashes from the root to this bucket.
-    Leaf(HashTable<Vec<Vec<usize>>>),
+    /// Leaf level: hash table whose values are chains. Each chain holds the
+    /// row ids, in input order, of the tuples whose attribute hashes match
+    /// the path of hashes from the root to this bucket; the tuples
+    /// themselves live in the trie's buffer.
+    Leaf(HashTable<Vec<RowId>>),
     /// Pruned subtrie: exactly one tuple lives below this point, so the
     /// remaining levels are not materialised. The iterator emulates them
     /// from the tuple (see `hash_trie_iter.rs`). Never the root.
     ///
-    /// Holds `P::Payload`: the tuple when pruning is on, the uninhabited
-    /// `Never` when it is off. rustc's layout omits uninhabited variants,
-    /// so under `NoPruning` this variant costs nothing and every arm
-    /// handling it compiles to the pre-pruning code path. The two size
+    /// Holds `P::Payload`: the tuple's row id when pruning is on, the
+    /// uninhabited `Never` when it is off. rustc's layout omits uninhabited
+    /// variants, so under `NoPruning` this variant costs nothing and every
+    /// arm handling it compiles to the pre-pruning code path. The two size
     /// tests pin that: `node_does_not_grow_under_the_pruning_policy`
     /// (`implementation.rs`) and `off_frame_is_the_bare_table_pair`
     /// (`hash_trie_iter.rs`).
     Singleton(P::Payload),
     /// Unexpanded child (lazy child expansion, SIGMOD 2020 Figure 6): the
-    /// tuples below this bucket, kept as a list until a probe first opens
-    /// it, then the table built from them. Never the root. Holds
-    /// `E::Pending<Self>`: `Box<LazyChild<Self>>` when lazy, the uninhabited
-    /// `Never` when eager, so under `EagerExpansion` this variant costs
-    /// nothing (pinned by `node_does_not_grow_under_the_expansion_policy`).
+    /// row ids of the tuples below this bucket, kept as a list until a
+    /// probe first opens it, then the table built from them. Never the
+    /// root. Holds `E::Pending<Self>`: `Box<LazyChild<Self>>` when lazy, the
+    /// uninhabited `Never` when eager, so under `EagerExpansion` this variant
+    /// costs nothing (pinned by
+    /// `node_does_not_grow_under_the_expansion_policy`).
     /// `HashTrie::resolve` is the one place that expands it.
     Unexpanded(E::Pending<HashTrieNode<P, E>>),
 }

@@ -233,13 +233,13 @@ mod hash_trie_collisions {
     use {
         super::*,
         kermit_ds::Relation,
-        kermit_iters::{HashTrieIterable, HashTrieIterator},
+        kermit_iters::{HashTrieIterable, HashTrieIterator, LeafRows},
     };
 
     fn h(key: usize) -> u64 { Mod10HashStrategy::hash(key) }
 
-    fn sorted(chain: &[Vec<usize>]) -> Vec<Vec<usize>> {
-        let mut tuples = chain.to_vec();
+    fn sorted(chain: LeafRows<'_>) -> Vec<Vec<usize>> {
+        let mut tuples = chain.to_vecs();
         tuples.sort();
         tuples
     }
@@ -315,11 +315,7 @@ mod hash_trie_collisions {
     fn collect_tuples_recovers_colliding_tuples() {
         let tuples = vec![vec![1, 2], vec![11, 12], vec![21, 2], vec![1, 12]];
         let trie = HashTrieMod10::from_tuples(2.into(), tuples.clone());
-        let mut collected = trie.collect_tuples();
-        collected.sort();
-        let mut expected = tuples;
-        expected.sort();
-        assert_eq!(collected, expected);
+        assert_eq!(trie.collect_tuples().to_vecs(), tuples);
     }
 
     /// Under pruning, two tuples that collide on every attribute start as
@@ -334,7 +330,7 @@ mod hash_trie_collisions {
         assert_eq!(it.size(), 1, "both tuples share hash(1) == hash(11)");
         assert!(it.open());
         assert_eq!(it.size(), 1, "both tuples share hash(2) == hash(12)");
-        let mut chain = it.leaf_tuples().expect("leaf chain").to_vec();
+        let mut chain = it.leaf_tuples().expect("leaf chain").to_vecs();
         chain.sort();
         assert_eq!(chain, vec![vec![1, 2], vec![11, 12]]);
     }
@@ -392,7 +388,7 @@ mod lazy_expansion {
             key: it.key(),
             size: it.size(),
             at_end: it.at_end(),
-            leaf: it.leaf_tuples().map(<[Vec<usize>]>::to_vec),
+            leaf: it.leaf_tuples().map(|rows| rows.to_vecs()),
         }
     }
 

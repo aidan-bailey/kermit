@@ -5,12 +5,10 @@
 //! mutex-guarded queue, hands the next unit of work to whichever worker is
 //! free, so a slow worker never stalls the rest. A build uses it twice:
 //!
-//! 1. [`scatter`] moves tuples into partitions, one morsel at a time
-//!    ([`scatter_rows`] sends the ids of a [`Tuples`] batch's rows instead,
-//!    leaving the batch where it is);
+//! 1. [`scatter_rows`] sends row ids into partitions, one morsel at a time;
 //! 2. [`dispatch`] then runs one task per partition.
 //!
-//! Neither result depends on scheduling. A partition lists its tuples in
+//! Neither result depends on scheduling. A partition lists its row ids in
 //! input order, and task results come back in task order, so a parallel
 //! build can reproduce its serial counterpart exactly
 //! (`docs/data-structures/parallel-build.md`).
@@ -70,30 +68,6 @@ pub(crate) const MORSEL_TUPLES: usize = 16_384;
 /// threads let [`dispatch`] balance partitions of uneven size.
 pub(crate) const PARTITIONS_PER_THREAD: usize = 4;
 
-/// A tuple and its position in the input.
-pub(crate) type Positioned = (usize, Vec<usize>);
-
-/// One morsel's tuples, split by partition.
-type Buckets = Vec<Vec<Positioned>>;
-
-/// The tuples [`scatter`] sent to one partition: one segment per morsel that
-/// contributed any, in morsel order. Reading the segments in order reads the
-/// partition in input order.
-#[derive(Debug, Default)]
-pub(crate) struct Partition {
-    segments: Vec<Vec<Positioned>>,
-}
-
-impl Partition {
-    /// How many tuples the partition holds.
-    pub(crate) fn len(&self) -> usize { self.segments.iter().map(Vec::len).sum() }
-
-    /// The partition's tuples in input order, each with its input position.
-    pub(crate) fn into_tuples(self) -> impl Iterator<Item = Positioned> {
-        self.segments.into_iter().flatten()
-    }
-}
-
 /// The queue's next item. The lock is held only while taking it — a guard
 /// in a `while let` condition would live through the loop body and
 /// serialise the workers.
@@ -116,53 +90,6 @@ fn run_workers<R: Send>(threads: Threads, work: impl Fn() -> R + Sync) -> Vec<R>
         }
         results
     })
-}
-
-/// Moves every tuple of `tuples` into partition `partition_of(tuple)`, which
-/// must be below `partitions`.
-///
-/// `threads` workers take morsels of `morsel_tuples` tuples from a shared
-/// queue, so a worker that finishes early takes more. Every partition lists
-/// its tuples in input order, whatever order the morsels ran in. Tuples are
-/// moved, not copied: each keeps its heap buffer and its capacity.
-///
-/// # Panics
-///
-/// Panics if `morsel_tuples` is zero, or if `partition_of` returns
-/// `partitions` or more, or panics itself.
-pub(crate) fn scatter(
-    threads: Threads, mut tuples: Vec<Vec<usize>>, morsel_tuples: usize, partitions: usize,
-    partition_of: impl Fn(&[usize]) -> usize + Sync,
-) -> Vec<Partition> {
-    let queue = Mutex::new(tuples.chunks_mut(morsel_tuples).enumerate());
-    let mut morsels: Vec<(usize, Buckets)> = run_workers(threads, || {
-        let mut scattered = Vec::new();
-        while let Some((index, morsel)) = take_next(&queue) {
-            let first = index * morsel_tuples;
-            let mut buckets: Buckets = (0..partitions).map(|_| Vec::new()).collect();
-            for (offset, slot) in morsel.iter_mut().enumerate() {
-                let tuple = std::mem::take(slot);
-                let partition = partition_of(&tuple);
-                buckets[partition].push((first + offset, tuple));
-            }
-            scattered.push((index, buckets));
-        }
-        scattered
-    })
-    .into_iter()
-    .flatten()
-    .collect();
-    morsels.sort_unstable_by_key(|&(index, _)| index);
-
-    let mut out: Vec<Partition> = (0..partitions).map(|_| Partition::default()).collect();
-    for (_, buckets) in morsels {
-        for (partition, bucket) in out.iter_mut().zip(buckets) {
-            if !bucket.is_empty() {
-                partition.segments.push(bucket);
-            }
-        }
-    }
-    out
 }
 
 /// The row ids [`scatter_rows`] sent to one partition: one segment per
@@ -200,7 +127,7 @@ pub(crate) fn row_id(position: usize) -> RowId {
 /// `threads` workers take morsels of `morsel_rows` consecutive rows from a
 /// shared queue, so a worker that finishes early takes more. Every
 /// partition lists its ids in input order, whatever order the morsels ran
-/// in, as [`scatter`] lists its tuples.
+/// in.
 ///
 /// # Panics
 ///
@@ -281,73 +208,6 @@ mod tests {
         assert_eq!(Threads::new(Threads::MAX + 1), None);
         assert_eq!(threads(3).get(), 3);
         assert_eq!(threads(Threads::MAX).get(), Threads::MAX);
-    }
-
-    /// Every tuple lands exactly once, in the partition `partition_of`
-    /// names, and each partition lists its tuples in input order with their
-    /// input positions — whatever the thread count, and however the
-    /// morsels divide the input.
-    #[test]
-    fn scatter_keeps_every_tuple_once_in_input_order() {
-        let n = if cfg!(miri) {
-            23
-        } else {
-            1000
-        };
-        let input: Vec<Vec<usize>> = (0..n).map(|i| vec![i % 7, i]).collect();
-        let thread_counts: &[usize] = if cfg!(miri) {
-            &[1, 3]
-        } else {
-            &[1, 2, 3, 8]
-        };
-        let morsel_sizes = if cfg!(miri) {
-            vec![1, 5, n + 1]
-        } else {
-            vec![1, 4, 5, n, n + 1]
-        };
-        for &t in thread_counts {
-            for &morsel in &morsel_sizes {
-                let case = format!("threads {t}, morsel {morsel}");
-                let partitions =
-                    scatter(threads(t), input.clone(), morsel, 3, |tuple| tuple[0] % 3);
-                assert_eq!(partitions.len(), 3, "{case}");
-                let mut seen = 0;
-                for (p, partition) in partitions.into_iter().enumerate() {
-                    let tuples: Vec<Positioned> = partition.into_tuples().collect();
-                    assert!(
-                        tuples.windows(2).all(|pair| pair[0].0 < pair[1].0),
-                        "{case}: partition {p} is out of input order"
-                    );
-                    for (position, tuple) in &tuples {
-                        assert_eq!(tuple, &input[*position], "{case}: position {position}");
-                        assert_eq!(tuple[0] % 3, p, "{case}: tuple {tuple:?} in partition {p}");
-                    }
-                    seen += tuples.len();
-                }
-                assert_eq!(seen, n, "{case}: every tuple exactly once");
-            }
-        }
-    }
-
-    /// Tuples are moved, not copied: each keeps its heap buffer, and so its
-    /// capacity, which a trie that stores tuples (HashTrie) counts in
-    /// `heap_size_bytes`.
-    #[test]
-    fn scatter_moves_tuples_without_reallocating() {
-        let input: Vec<Vec<usize>> = (0..10)
-            .map(|i| {
-                let mut tuple = Vec::with_capacity(9);
-                tuple.extend([i, i]);
-                tuple
-            })
-            .collect();
-        let buffers: Vec<*const usize> = input.iter().map(|tuple| tuple.as_ptr()).collect();
-        for partition in scatter(threads(2), input, 3, 2, |tuple| tuple[0] % 2) {
-            for (position, tuple) in partition.into_tuples() {
-                assert_eq!(tuple.capacity(), 9, "position {position}");
-                assert_eq!(tuple.as_ptr(), buffers[position], "position {position}");
-            }
-        }
     }
 
     /// `n` rows `[i % 7, i]`, as one batch.
@@ -468,16 +328,9 @@ mod tests {
     #[test]
     fn empty_input_needs_no_work() {
         assert!(dispatch(threads(4), Vec::<usize>::new(), |i| i).is_empty());
-        let partitions = scatter(threads(4), Vec::new(), 8, 3, |_| 0);
-        assert_eq!(partitions.len(), 3);
-        assert!(partitions
-            .into_iter()
-            .all(|partition| partition.into_tuples().next().is_none()));
         let partitions = scatter_rows(threads(4), &Tuples::new(2), 8, 3, |_| 0);
         assert_eq!(partitions.len(), 3);
-        assert!(partitions
-            .iter()
-            .all(|partition| partition.ids().next().is_none()));
+        assert!(partitions.iter().all(|partition| partition.len() == 0));
     }
 
     #[test]

@@ -2,13 +2,13 @@
 //! [`HashTrie`](super::HashTrie).
 //!
 //! Lazy child expansion (SIGMOD 2020 §3.3.1, Figure 6) builds only the root
-//! table at construction. Every child below it keeps its tuples as a list
-//! until a probe first opens it, and only then is that child's table built,
-//! one level at a time. It is a *shape*: an unexpanded child is a node
-//! state, so it is a Layout, not a Config. Under [`EagerExpansion`] the
-//! state's payload is the uninhabited [`Never`], the `Unexpanded` variant
-//! vanishes from the node's layout, and the instantiation compiles to the
-//! eager code. Bench axis: `ds_layout_expansion`.
+//! table at construction. Every child below it keeps its tuples' row ids as a
+//! list until a probe first opens it, and only then is that child's table
+//! built, one level at a time. It is a *shape*: an unexpanded child is a node
+//! state, so it is a Layout, not a Config. Under [`EagerExpansion`] the state's
+//! payload is the uninhabited [`Never`], the `Unexpanded` variant vanishes from
+//! the node's layout, and the instantiation compiles to the eager code. Bench
+//! axis: `ds_layout_expansion`.
 //!
 //! The payload is generic over the node type `N` rather than naming
 //! `HashTrieNode`. That keeps these two traits, public but in a private
@@ -17,31 +17,31 @@
 
 use {
     super::pruning::Never,
-    kermit_iters::LayoutOption,
+    kermit_iters::{LayoutOption, RowId},
     std::cell::{OnceCell, Ref, RefCell},
 };
 
 /// What a `HashTrieNode::Unexpanded` holds: `Box<LazyChild<N>>` under
 /// [`LazyExpansion`], [`Never`] under [`EagerExpansion`].
 pub trait PendingChild<N>: Sized {
-    /// An unexpanded child holding `tuples`, in insertion order.
-    fn from_tuples(tuples: Vec<Vec<usize>>) -> Self;
+    /// An unexpanded child holding `rows`, the row ids of its tuples in the
+    /// trie's buffer, in insertion order.
+    fn from_rows(rows: Vec<RowId>) -> Self;
     /// The built table, once a probe has expanded this child.
     fn built(&self) -> Option<&N>;
     /// [`built`](Self::built) for `insert`, which holds the trie mutably.
     fn built_mut(&mut self) -> Option<&mut N>;
-    /// The tuples not yet built into a table; empty once expanded.
-    fn pending(&self) -> Ref<'_, Vec<Vec<usize>>>;
-    /// Appends `tuple` to an unexpanded child. Callers check
+    /// The row ids not yet built into a table; empty once expanded.
+    fn pending(&self) -> Ref<'_, Vec<RowId>>;
+    /// Appends `row` to an unexpanded child. Callers check
     /// [`built_mut`](Self::built_mut) first.
-    fn push(&mut self, tuple: Vec<usize>);
-    /// The built table, building it first from the pending tuples if no
-    /// probe has yet. The tuples are moved into `build`, never copied, so
-    /// an expanded child stores each tuple once.
-    fn expand(&self, build: impl FnOnce(Vec<Vec<usize>>) -> N) -> &N;
+    fn push(&mut self, row: RowId);
+    /// The built table, building it first from the pending ids if no
+    /// probe has yet. The list is moved into `build`, never copied, so an
+    /// expanded child keeps no list.
+    fn expand(&self, build: impl FnOnce(Vec<RowId>) -> N) -> &N;
     /// Heap bytes of the payload itself (the box), excluding the pending
-    /// tuples and the built table, which `heap_size_bytes` counts
-    /// separately.
+    /// ids and the built table, which `heap_size_bytes` counts separately.
     fn own_heap_bytes(&self) -> usize;
 }
 
@@ -64,7 +64,7 @@ pub trait ExpansionPolicy: LayoutOption + Copy + Default + 'static {
 }
 
 impl<N> PendingChild<N> for Never {
-    fn from_tuples(_tuples: Vec<Vec<usize>>) -> Self {
+    fn from_rows(_rows: Vec<RowId>) -> Self {
         unreachable!("EagerExpansion never constructs an Unexpanded child (E::LAZY is false)")
     }
 
@@ -72,33 +72,34 @@ impl<N> PendingChild<N> for Never {
 
     fn built_mut(&mut self) -> Option<&mut N> { match *self {} }
 
-    fn pending(&self) -> Ref<'_, Vec<Vec<usize>>> { match *self {} }
+    fn pending(&self) -> Ref<'_, Vec<RowId>> { match *self {} }
 
-    fn push(&mut self, _tuple: Vec<usize>) { match *self {} }
+    fn push(&mut self, _row: RowId) { match *self {} }
 
-    fn expand(&self, _build: impl FnOnce(Vec<Vec<usize>>) -> N) -> &N { match *self {} }
+    fn expand(&self, _build: impl FnOnce(Vec<RowId>) -> N) -> &N { match *self {} }
 
     fn own_heap_bytes(&self) -> usize { match *self {} }
 }
 
-/// An unexpanded child: its tuples until a probe reaches it, the table built
-/// from them afterwards.
+/// An unexpanded child: its tuples' row ids until a probe reaches it, the
+/// table built from them afterwards.
 ///
 /// `RefCell` and `OnceCell` make lazy tries `!Sync` (still `Send`). Nothing
 /// in the workspace shares a relation across threads; a parallel prober
 /// would need a different cell.
 pub struct LazyChild<N> {
-    /// The tuples below this bucket, in insertion order. Moved into the
-    /// build by expansion, leaving an empty, unallocated vector.
-    pending: RefCell<Vec<Vec<usize>>>,
+    /// The row ids of the tuples below this bucket, in insertion order.
+    /// Moved into the build by expansion, leaving an empty, unallocated
+    /// vector.
+    pending: RefCell<Vec<RowId>>,
     /// The table this level would have held, once a probe has reached it.
     built: OnceCell<N>,
 }
 
 impl<N> PendingChild<N> for Box<LazyChild<N>> {
-    fn from_tuples(tuples: Vec<Vec<usize>>) -> Self {
+    fn from_rows(rows: Vec<RowId>) -> Self {
         Box::new(LazyChild {
-            pending: RefCell::new(tuples),
+            pending: RefCell::new(rows),
             built: OnceCell::new(),
         })
     }
@@ -107,18 +108,18 @@ impl<N> PendingChild<N> for Box<LazyChild<N>> {
 
     fn built_mut(&mut self) -> Option<&mut N> { self.built.get_mut() }
 
-    fn pending(&self) -> Ref<'_, Vec<Vec<usize>>> { self.pending.borrow() }
+    fn pending(&self) -> Ref<'_, Vec<RowId>> { self.pending.borrow() }
 
-    fn push(&mut self, tuple: Vec<usize>) {
+    fn push(&mut self, row: RowId) {
         debug_assert!(self.built.get().is_none(), "push into an expanded child");
-        self.pending.get_mut().push(tuple);
+        self.pending.get_mut().push(row);
     }
 
     // A visitor that opens an iterator on the same trie while
     // `for_each_tuple` holds `pending()` makes `borrow_mut` panic here
     // (`BorrowMutError`): a loud internal panic, not a wrong answer. No
     // caller in the workspace does that.
-    fn expand(&self, build: impl FnOnce(Vec<Vec<usize>>) -> N) -> &N {
+    fn expand(&self, build: impl FnOnce(Vec<RowId>) -> N) -> &N {
         self.built
             .get_or_init(|| build(std::mem::take(&mut *self.pending.borrow_mut())))
     }
@@ -159,7 +160,7 @@ impl ExpansionPolicy for LazyExpansion {
 mod tests {
     use super::*;
 
-    type Lazy = Box<LazyChild<Vec<Vec<usize>>>>;
+    type Lazy = Box<LazyChild<Vec<RowId>>>;
 
     #[test]
     fn policy_names_are_the_axis_values() {
@@ -174,17 +175,17 @@ mod tests {
     }
 
     #[test]
-    fn expand_moves_the_pending_tuples_once() {
-        let mut child = Lazy::from_tuples(vec![vec![1, 2]]);
-        child.push(vec![3, 4]);
+    fn expand_moves_the_pending_rows_once() {
+        let mut child = Lazy::from_rows(vec![0]);
+        child.push(1);
         assert!(child.built().is_none());
-        assert_eq!(*child.pending(), vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(*child.pending(), vec![0, 1]);
         let mut calls = 0;
-        let built = child.expand(|tuples| {
+        let built = child.expand(|rows| {
             calls += 1;
-            tuples
+            rows
         });
-        assert_eq!(built, &vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(built, &vec![0, 1]);
         // A second expand returns the same table without building again.
         let again = child.expand(|_| unreachable!("already built"));
         assert!(std::ptr::eq(built, again));
@@ -195,19 +196,19 @@ mod tests {
 
     #[test]
     fn built_mut_reaches_the_expanded_table() {
-        let mut child = Lazy::from_tuples(vec![vec![1]]);
+        let mut child = Lazy::from_rows(vec![0]);
         assert!(child.built_mut().is_none());
-        child.expand(|tuples| tuples);
-        child.built_mut().unwrap().push(vec![2]);
-        assert_eq!(child.built(), Some(&vec![vec![1], vec![2]]));
+        child.expand(|rows| rows);
+        child.built_mut().unwrap().push(1);
+        assert_eq!(child.built(), Some(&vec![0, 1]));
     }
 
     #[test]
     fn own_heap_bytes_is_the_box() {
-        let child = Lazy::from_tuples(Vec::new());
+        let child = Lazy::from_rows(Vec::new());
         assert_eq!(
             child.own_heap_bytes(),
-            std::mem::size_of::<LazyChild<Vec<Vec<usize>>>>()
+            std::mem::size_of::<LazyChild<Vec<RowId>>>()
         );
     }
 }
