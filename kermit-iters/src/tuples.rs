@@ -15,7 +15,7 @@
 pub type RowId = u32;
 
 /// Tuples of one arity, stored row-major: row `r` is
-/// `data[r * arity..(r + 1) * arity]`.
+/// `as_flat()[r * arity..(r + 1) * arity]` (see [`as_flat`](Self::as_flat)).
 ///
 /// The row count is kept explicitly, so a batch of nullary tuples (arity 0,
 /// an empty buffer) still knows how many it holds. A batch never holds more
@@ -94,12 +94,15 @@ impl Tuples {
     }
 
     /// The number of values in each row.
+    #[inline]
     pub fn arity(&self) -> usize { self.arity }
 
     /// The number of rows.
+    #[inline]
     pub fn len(&self) -> usize { self.len }
 
     /// Whether the batch holds no rows.
+    #[inline]
     pub fn is_empty(&self) -> bool { self.len == 0 }
 
     /// Row `r`: its `arity` values.
@@ -108,6 +111,7 @@ impl Tuples {
     ///
     /// Panics if `r` is not below [`len`](Self::len), also at arity 0,
     /// where every row is the empty slice.
+    #[inline]
     pub fn row(&self, r: RowId) -> &[usize] {
         let r = r as usize;
         assert!(
@@ -120,6 +124,7 @@ impl Tuples {
 
     /// Every row, in order: [`len`](Self::len) slices of
     /// [`arity`](Self::arity) values (empty slices at arity 0).
+    #[inline]
     pub fn rows(&self) -> impl ExactSizeIterator<Item = &[usize]> + '_ {
         let (data, arity) = (self.data.as_slice(), self.arity);
         (0..self.len).map(move |r| &data[r * arity..(r + 1) * arity])
@@ -131,6 +136,7 @@ impl Tuples {
     ///
     /// Panics if `row.len()` is not [`arity`](Self::arity), or if the batch
     /// already holds [`RowId::MAX`] rows.
+    #[inline]
     pub fn push(&mut self, row: &[usize]) {
         assert_eq!(
             row.len(),
@@ -148,9 +154,10 @@ impl Tuples {
     }
 
     /// The whole buffer, row after row.
+    #[inline]
     pub fn as_flat(&self) -> &[usize] { &self.data }
 
-    /// Sorts the rows lexicographically, in place: the order the sorted
+    /// Sorts the batch's rows lexicographically: the order the sorted
     /// tries build in, and one function for both, so the sort costs the
     /// same in TreeTrie's build and ColumnTrie's.
     ///
@@ -158,10 +165,12 @@ impl Tuples {
     /// lexicographically, so a comparison reads two adjacent rows instead
     /// of following two heap pointers (#111's profile: the pointer-chasing
     /// sort ran at 0.45–1.2 IPC). Wider rows sort a permutation of row ids
-    /// by row, then gather the rows into a new buffer of exactly their size.
-    /// Arity 0 has nothing to order. Equal rows are identical, so the result
-    /// does not depend on the sort being unstable: it is the order of the
-    /// hand-rolled comparator the sorted tries used before #111.
+    /// by row, then gather the rows into a new buffer of exactly their size:
+    /// at arity 5 and above `sort` replaces the buffer, so it drops any spare
+    /// capacity the old one held. Arity 0 has nothing to order. Equal rows are
+    /// identical, so the result does not depend on the sort being unstable:
+    /// it is the order of the hand-rolled comparator the sorted tries used
+    /// before #111.
     pub fn sort(&mut self) {
         match self.arity {
             | 0 => {},
@@ -219,13 +228,19 @@ fn sort_rows<const N: usize>(data: &mut [usize]) {
 ///
 /// # Panics
 ///
-/// Panics if a tuple's arity differs from the first one's (see
-/// [`Tuples::push`]).
+/// Panics if a tuple's arity differs from the first one's, or if there are
+/// more than [`RowId::MAX`] tuples (see [`Tuples::push`]).
 impl From<Vec<Vec<usize>>> for Tuples {
     fn from(rows: Vec<Vec<usize>>) -> Self {
         let arity = rows.first().map_or(0, Vec::len);
         let mut tuples = Tuples::with_capacity(arity, rows.len());
-        for row in &rows {
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(
+                row.len(),
+                arity,
+                "Tuples::from: row {i} has arity {}, the first row has {arity}",
+                row.len()
+            );
             tuples.push(row);
         }
         tuples
@@ -305,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "in a batch of arity 2")]
+    #[should_panic(expected = "Tuples::from: row 1 has arity 1, the first row has 2")]
     fn mixed_arity_vectors_panic() { let _ = Tuples::from(vec![vec![1, 2], vec![3]]); }
 
     #[test]
@@ -392,6 +407,20 @@ mod tests {
     fn a_push_past_the_last_row_id_panics() {
         let mut tuples = Tuples::from_flat(0, RowId::MAX as usize, Vec::new());
         tuples.push(&[]);
+    }
+
+    /// `arity * len` wraps to 0 here, which would match an empty buffer.
+    #[test]
+    #[should_panic(expected = "0 values do not make 2 rows of arity")]
+    fn from_flat_rejects_an_overflowing_row_size() {
+        let _ = Tuples::from_flat(usize::MAX / 2 + 1, 2, Vec::new());
+    }
+
+    /// `arity * rows` wraps to 0 here, which would reserve nothing.
+    #[test]
+    #[should_panic(expected = "Tuples::with_capacity: arity × rows overflows usize")]
+    fn with_capacity_rejects_an_overflowing_size() {
+        let _ = Tuples::with_capacity(usize::MAX / 2 + 1, 2);
     }
 
     #[test]
