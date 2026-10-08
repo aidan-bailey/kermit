@@ -9,6 +9,9 @@
 //! All keys are `usize` (dictionary-encoded); see [`Key`]. The marker trait
 //! [`JoinIterable`] unifies data structures that may participate in joins.
 //!
+//! A relation is built from a [`Tuples`] batch: its tuples row-major in one
+//! buffer, each row addressed by a [`RowId`].
+//!
 //! # Example
 //!
 //! `Vec<usize>` ships with a [`LinearIterable`] implementation, useful as a
@@ -41,6 +44,7 @@ mod key_type;
 mod linear;
 mod optimization;
 mod trie;
+mod tuples;
 
 pub use {
     hash_strategy::{FxHashStrategy, HashStrategy, SipHashStrategy},
@@ -50,4 +54,5 @@ pub use {
     linear::{LinearIterable, LinearIterator},
     optimization::{BuildMode, ConfigOption, HasOptimizationAxes, LayoutOption},
     trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
+    tuples::{RowId, Tuples},
 };
