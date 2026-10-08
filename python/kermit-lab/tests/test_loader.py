@@ -199,6 +199,30 @@ def test_a_load_straddling_both_boundaries_names_the_first(tmp_path: Path) -> No
         load_reports([v2, v4])
 
 
+def test_a_load_straddling_both_boundaries_offers_only_what_both_keep(tmp_path: Path) -> None:
+    v2 = _versioned_report(tmp_path / "v2.json", 2)
+    v4 = _versioned_report(tmp_path / "v4.json", 4)
+    with pytest.raises(SchemaError) as exc:
+        load_reports([v2, v4])
+    message = str(exc.value)
+    assert "also straddles v4, where every structure builds from one flat tuple buffer" in message
+    # HashTrie's space changed at v4 and iteration at v3: neither may be offered.
+    assert "to compare TreeTrie space and ColumnTrie space only" in message
+    assert "HashTrie space" not in message
+    assert "iteration only" not in message
+
+
+def test_each_boundary_names_what_stays_comparable_across_it(tmp_path: Path) -> None:
+    v2, v3, v4 = (_versioned_report(tmp_path / f"v{v}.json", v) for v in (2, 3, 4))
+    with pytest.raises(SchemaError, match="to compare TreeTrie space, ColumnTrie space and HashTrie space only"):
+        load_reports([v2, v3])
+    with pytest.raises(
+        SchemaError,
+        match="to compare TreeTrie space, ColumnTrie space, bench run iteration and bench join iteration only",
+    ):
+        load_reports([v3, v4])
+
+
 def test_phase_of_recognises_copies() -> None:
     from kermit_lab.loader import TIME_PHASES, phase_of
 

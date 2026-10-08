@@ -31,22 +31,29 @@ FLAT_TUPLES_SCHEMA = 4
 input path and sort, and HashTrie's ``space`` counts row ids into the buffer
 instead of a ``Vec`` per tuple."""
 
-MEANING_CHANGES: tuple[tuple[int, str, str], ...] = (
+MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (
         STREAMED_JOIN_SCHEMA,
         "the iteration and end_to_end phases time a streamed, counted join",
-        "space",
+        ("TreeTrie space", "ColumnTrie space", "HashTrie space"),
     ),
     (
         FLAT_TUPLES_SCHEMA,
         "every structure builds from one flat tuple buffer, which changes insertion, "
         "copies, end_to_end and HashTrie's space",
-        "bench run iteration",
+        (
+            "TreeTrie space",
+            "ColumnTrie space",
+            "bench run iteration",
+            "bench join iteration",
+        ),
     ),
 )
 """Every schema version from which a metric changed meaning: the version,
-what changed, and what stays comparable across it. Reports on either side of
-one measure different things, so one load may not mix them."""
+what changed, and the metrics that keep their meaning across it. Reports on
+either side of one measure different things, so one load may not mix them. A
+load that straddles several of these may compare only the metrics every
+straddled version keeps."""
 
 
 @dataclass(frozen=True)
@@ -107,18 +114,38 @@ def _parse_one(obj: dict, source_path: Path) -> BenchReport:
         raise SchemaError(f"{source_path}: malformed report ({exc})") from exc
 
 
+def _join_words(items: Sequence[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
 def _refuse_mixed_schema(reports: Sequence[BenchReport]) -> None:
-    for boundary, change, comparable in MEANING_CHANGES:
-        older = next((r for r in reports if r.schema_version < boundary), None)
-        newer = next((r for r in reports if r.schema_version >= boundary), None)
-        if older is not None and newer is not None:
-            raise SchemaError(
-                f"refusing to mix schema_version {older.schema_version} ({older.source_path}) "
-                f"with schema_version {newer.schema_version} ({newer.source_path}): from "
-                f"v{boundary} {change}, so those values are not comparable with earlier "
-                "reports. Load each side separately, or (Python API) pass "
-                f"allow_mixed_schema=True to compare {comparable} only."
-            )
+    straddled = [
+        (boundary, change, comparable)
+        for boundary, change, comparable in MEANING_CHANGES
+        if any(r.schema_version < boundary for r in reports)
+        and any(r.schema_version >= boundary for r in reports)
+    ]
+    if not straddled:
+        return
+    boundary, change, _ = straddled[0]
+    older = next(r for r in reports if r.schema_version < boundary)
+    newer = next(r for r in reports if r.schema_version >= boundary)
+    message = (
+        f"refusing to mix schema_version {older.schema_version} ({older.source_path}) "
+        f"with schema_version {newer.schema_version} ({newer.source_path}): from "
+        f"v{boundary} {change}, so those values are not comparable with earlier reports."
+    )
+    for later, later_change, _ in straddled[1:]:
+        message += f" This load also straddles v{later}, where {later_change}."
+    kept = [m for m in straddled[0][2] if all(m in comparable for _, _, comparable in straddled)]
+    if kept:
+        message += (
+            " Load each side separately, or (Python API) pass allow_mixed_schema=True "
+            f"to compare {_join_words(kept)} only."
+        )
+    else:
+        message += " Load each side separately: no metric is comparable across them all."
+    raise SchemaError(message)
 
 
 def load_reports(
