@@ -49,12 +49,9 @@ impl<'a> LeafRows<'a> {
     /// the end of `data` panics.
     #[inline]
     pub fn from_parts(data: &'a [usize], arity: usize, rows: &'a [RowId]) -> Self {
+        // At arity 0 only the empty buffer is a multiple of it.
         debug_assert!(
-            if arity == 0 {
-                data.is_empty()
-            } else {
-                data.len() % arity == 0
-            },
+            data.len().is_multiple_of(arity),
             "LeafRows::from_parts: {} values are not whole rows of arity {arity}",
             data.len()
         );
