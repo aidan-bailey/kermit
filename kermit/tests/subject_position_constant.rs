@@ -32,7 +32,7 @@ use {
     kermit_algos::{
         ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
     },
-    kermit_ds::{Cardinality, HashTrie, Relation, RelationHeader, TreeTrie},
+    kermit_ds::{Cardinality, HashTrie, Relation, RelationHeader, TreeTrie, Tuples},
     kermit_iters::SipHashStrategy,
     std::collections::BTreeMap,
 };
@@ -50,7 +50,8 @@ fn join<R: Relation + Cardinality, JA: JoinEntry<R>>(
 ) -> Vec<Vec<usize>> {
     let planner = Planner::new(optimiser.instantiate(), policy);
     let header = RelationHeader::new_positional("edge", 2);
-    let inputs: Inputs = BTreeMap::from([("edge".to_string(), (header.clone(), edges()))]);
+    let inputs: Inputs =
+        BTreeMap::from([("edge".to_string(), (header.clone(), Tuples::from(edges())))]);
     let store = BTreeMap::from([("edge".to_string(), R::from_tuples(header, edges()))]);
     let mut database = JA::database(store, planner.required_statistics());
     let q: JoinQuery = query.parse().expect("parse");

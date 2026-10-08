@@ -18,6 +18,7 @@ use {
     kermit_ds::{
         BuildModeProvider, BuiltWith, Cardinality, ConfigProvider, Configured, ExpansionPolicy,
         HashTrie, HashTrieBuildMode, HashTrieConfig, PruningPolicy, Relation, RelationHeader,
+        Tuples,
     },
     kermit_iters::{HashStrategy, TrieIterable},
     std::{collections::BTreeMap, path::Path},
@@ -211,7 +212,7 @@ impl ColumnOrderProvider for AnyOrders {
 
 /// A fixture's relations by name: the header the relation was built with
 /// and its tuples in fixture (file) order, which copies are built from.
-pub type Inputs = BTreeMap<String, (RelationHeader, Vec<Vec<usize>>)>;
+pub type Inputs = BTreeMap<String, (RelationHeader, Tuples)>;
 
 /// Reads each named Parquet relation in `dir` (`<name>.parquet`) once,
 /// returning the relations as `R`, keyed by name, and the [`Inputs`] the
@@ -305,7 +306,10 @@ pub fn test_join<R, JA, O, P>(
                 "fixture R{i}: every tuple must have one value per atom term"
             );
             let header = RelationHeader::new_positional(format!("R{i}"), rv.len());
-            inputs.insert(format!("R{i}"), (header.clone(), tuples.clone()));
+            inputs.insert(
+                format!("R{i}"),
+                (header.clone(), Tuples::from(tuples.clone())),
+            );
             (format!("R{i}"), R::from_tuples(header, tuples))
         })
         .collect();

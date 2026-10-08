@@ -13,7 +13,7 @@ use {
         options::{with_hash_trie_layout, with_sorted_trie_layout, DsChoices},
         BenchArgs,
     },
-    kermit_ds::{IndexStructure, Relation},
+    kermit_ds::{IndexStructure, Relation, Tuples},
     std::{collections::BTreeMap, fs, io, path::Path},
 };
 
@@ -41,7 +41,8 @@ fn run_ds_bench<F: RelationFamily>(
     // file order rather than reading them back off the built relation: file
     // order is the same whichever structure and Layout ran, so every one of
     // them is fed identical input (see `RelationFamily::load_with_tuples`).
-    let (relation, tuples): (F::Rel, Vec<Vec<usize>>) = family.load_with_tuples(relation_path)?;
+    // Each setup clone copies one buffer (#111).
+    let (relation, tuples): (F::Rel, Tuples) = family.load_with_tuples(relation_path)?;
     let header = relation.header().clone();
     // What the structure stores, which for a set-semantics structure can be
     // fewer than the file's rows; the `tuples` axis has always reported this.

@@ -16,7 +16,7 @@ use {
     kermit::db::{validate_query, JoinError},
     kermit_algos::{ColumnOrderPolicy, JoinAlgorithm, JoinQuery},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{IndexStructure, Relation, RelationHeader},
+    kermit_ds::{IndexStructure, Relation, RelationHeader, Tuples},
     kermit_parser::Term,
     std::{
         collections::BTreeMap,
@@ -623,7 +623,7 @@ fn build_join_runner<F: ExecutionFamily + 'static>(
         "dispatch built a different cell than the one resolved"
     );
     let mut relations = Vec::with_capacity(paths.len());
-    let mut inputs: BTreeMap<String, (RelationHeader, Vec<Vec<usize>>)> = BTreeMap::new();
+    let mut inputs: BTreeMap<String, (RelationHeader, Tuples)> = BTreeMap::new();
     for path in paths {
         if column_orders == ColumnOrderPolicy::Any {
             let (relation, tuples) = family.load_with_tuples(path)?;

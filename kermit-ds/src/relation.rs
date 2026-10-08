@@ -456,34 +456,41 @@ pub fn read_csv_header<P: AsRef<Path>>(filepath: P) -> Result<RelationHeader, Re
 }
 
 /// Reads a CSV file into a header (attribute names from the header row,
-/// relation name from the file stem) and its tuples. Shared by
-/// [`RelationFileExt::from_csv`] and by callers that need to build with a
-/// non-default configuration
+/// relation name from the file stem) and its tuples, one row-major buffer in
+/// file order. Shared by [`RelationFileExt::from_csv`] and by callers that
+/// need to build with a non-default configuration
 /// ([`ConfigurableRelation::from_tuples_with_config`]).
+///
+/// Every record is parsed through one reused [`csv::StringRecord`] straight
+/// into the buffer, so nothing is allocated per row (#111). The buffer grows
+/// by doubling and is shrunk to its exact size once, at the end.
 ///
 /// # Errors
 ///
 /// Same conditions as [`RelationFileExt::from_csv`].
-pub fn read_csv<P: AsRef<Path>>(
-    filepath: P,
-) -> Result<(RelationHeader, Vec<Vec<usize>>), RelationError> {
+pub fn read_csv<P: AsRef<Path>>(filepath: P) -> Result<(RelationHeader, Tuples), RelationError> {
     let (header, mut rdr) = open_csv(filepath.as_ref())?;
-
-    let mut tuples = Vec::new();
-    for (row_idx, result) in rdr.records().enumerate() {
-        let record = result?;
-        let mut tuple: Vec<usize> = Vec::with_capacity(record.len());
+    let arity = header.arity();
+    let mut data: Vec<usize> = Vec::new();
+    let mut rows = 0;
+    let mut record = csv::StringRecord::new();
+    // `flexible(false)` (see `open_csv`) makes every record as wide as the
+    // header, so the buffer holds exactly `arity` values per row.
+    while rdr.read_record(&mut record)? {
         for (col_idx, field) in record.iter().enumerate() {
             let value = field.parse::<usize>().map_err(|_| {
                 RelationError::InvalidData(format!(
-                    "row {row_idx}, column {col_idx}: cannot parse {:?} as usize",
-                    field,
+                    "row {rows}, column {col_idx}: cannot parse {field:?} as usize",
                 ))
             })?;
-            tuple.push(value);
+            data.push(value);
         }
-        tuples.push(tuple);
+        rows += 1;
     }
+    let mut tuples = Tuples::from_flat(arity, rows, data);
+    // A `HashTrie` keeps this buffer, so its `space` must not depend on how
+    // the reader grew it: one exact reallocation, outside every timed region.
+    tuples.shrink_to_fit();
     Ok((header, tuples))
 }
 
@@ -517,53 +524,50 @@ pub fn read_parquet_header<P: AsRef<Path>>(filepath: P) -> Result<RelationHeader
 }
 
 /// Reads a Parquet file into a header (column names from the schema,
-/// relation name from the file stem) and its tuples. Counterpart of
-/// [`read_csv`]. Shared by [`RelationFileExt::from_parquet`] and by callers
-/// that need to build with a non-default configuration
+/// relation name from the file stem) and its tuples, one row-major buffer in
+/// file order. Counterpart of [`read_csv`]. Shared by
+/// [`RelationFileExt::from_parquet`] and by callers that need to build with a
+/// non-default configuration
 /// ([`ConfigurableRelation::from_tuples_with_config`]).
+///
+/// The footer's row count sizes the buffer once, and each record batch's
+/// columns are transposed into it, so nothing is allocated per row (#111).
 ///
 /// # Errors
 ///
 /// Same conditions as [`RelationFileExt::from_parquet`].
 pub fn read_parquet<P: AsRef<Path>>(
     filepath: P,
-) -> Result<(RelationHeader, Vec<Vec<usize>>), RelationError> {
+) -> Result<(RelationHeader, Tuples), RelationError> {
     let (header, builder) = open_parquet(filepath.as_ref())?;
-
-    // Build the reader
+    let arity = header.arity();
+    let expected_rows = usize::try_from(builder.metadata().file_metadata().num_rows()).unwrap_or(0);
     let reader = builder.build()?;
-
-    // Collect all tuples first for efficient construction
-    let mut tuples = Vec::new();
-
-    // Read all record batches and collect tuples
+    let mut data: Vec<usize> = Vec::with_capacity(expected_rows * arity);
+    let mut rows = 0;
     for batch_result in reader {
         let batch = batch_result?;
-
-        let num_rows = batch.num_rows();
-        let num_cols = batch.num_columns();
-
-        // Convert columnar data to row format (tuples)
-        for row_idx in 0..num_rows {
-            let mut tuple: Vec<usize> = Vec::with_capacity(num_cols);
-
-            for col_idx in 0..num_cols {
-                let column = batch.column(col_idx);
-                let int_array = column.as_primitive::<arrow::datatypes::Int64Type>();
-
-                if let Ok(value) = usize::try_from(int_array.value(row_idx)) {
-                    tuple.push(value);
-                } else {
-                    return Err(RelationError::InvalidData(
-                        "failed to convert Parquet value to usize".into(),
-                    ));
-                }
+        // A batch is columnar and the buffer row-major: column `c` fills
+        // position `c` of each of the batch's rows.
+        let start = data.len();
+        data.resize(start + batch.num_rows() * arity, 0);
+        let block = &mut data[start..];
+        for (col_idx, column) in batch.columns().iter().enumerate() {
+            let values = column
+                .as_primitive::<arrow::datatypes::Int64Type>()
+                .values();
+            for (row_idx, &value) in values.iter().enumerate() {
+                block[row_idx * arity + col_idx] = usize::try_from(value).map_err(|_| {
+                    RelationError::InvalidData("failed to convert Parquet value to usize".into())
+                })?;
             }
-
-            tuples.push(tuple);
         }
+        rows += batch.num_rows();
     }
-
+    let mut tuples = Tuples::from_flat(arity, rows, data);
+    // A no-op when the footer's count was right; otherwise the one exact
+    // reallocation `read_csv` also makes.
+    tuples.shrink_to_fit();
     Ok((header, tuples))
 }
 
@@ -776,6 +780,7 @@ mod tests {
         assert_eq!(header.arity(), 2);
         let (full, tuples) = read_parquet(&path).unwrap();
         assert!(tuples.is_empty());
+        assert_eq!(tuples.arity(), 2);
         assert_eq!(header, full);
     }
 
@@ -787,7 +792,78 @@ mod tests {
         let (header, tuples) = read_csv(&path).unwrap();
         assert_eq!(header.name(), "edge");
         assert_eq!(header.arity(), 2);
-        assert_eq!(tuples, vec![vec![1, 2], vec![3, 4]]);
+        assert_eq!(tuples, Tuples::from(vec![vec![1, 2], vec![3, 4]]));
+    }
+
+    /// Both readers hand back a buffer at its exact size: a `HashTrie` keeps
+    /// it, so its `space` must not depend on how the reader grew it (#111).
+    /// Five 2-ary rows are 10 values, which a doubling buffer holds in 16.
+    #[test]
+    fn readers_return_a_buffer_sized_to_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows: Vec<Vec<i64>> = (0..5).map(|i| vec![i, 10 + i]).collect();
+        let csv = dir.path().join("edge.csv");
+        let body: String = rows
+            .iter()
+            .map(|r| format!("{},{}\n", r[0], r[1]))
+            .collect();
+        std::fs::write(&csv, format!("a,b\n{body}")).unwrap();
+        let parquet = dir.path().join("edge.parquet");
+        write_parquet(&parquet, &["a", "b"], &rows);
+        for (reader, tuples) in [
+            ("read_csv", read_csv(&csv).unwrap().1),
+            ("read_parquet", read_parquet(&parquet).unwrap().1),
+        ] {
+            assert_eq!(tuples.len(), 5, "{reader}");
+            assert_eq!(tuples.arity(), 2, "{reader}");
+            assert_eq!(
+                tuples.heap_size_bytes(),
+                5 * 2 * std::mem::size_of::<usize>(),
+                "{reader}"
+            );
+        }
+    }
+
+    /// More rows than one 1 024-row record batch, so the transpose writes at
+    /// three offsets into the buffer, and every row keeps file order.
+    #[test]
+    fn read_parquet_transposes_every_batch_in_file_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("triple.parquet");
+        let rows: Vec<Vec<i64>> = (0..2_500).map(|i| vec![i, 7 * i % 13, 2_500 - i]).collect();
+        write_parquet(&path, &["s", "p", "o"], &rows);
+        let (header, tuples) = read_parquet(&path).unwrap();
+        assert_eq!(header.arity(), 3);
+        let want: Vec<Vec<usize>> = rows
+            .iter()
+            .map(|row| row.iter().map(|&v| usize::try_from(v).unwrap()).collect())
+            .collect();
+        assert_eq!(tuples.to_vecs(), want);
+    }
+
+    /// A negative value has no `usize`, in any column.
+    #[test]
+    fn read_parquet_rejects_a_negative_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signed.parquet");
+        write_parquet(&path, &["a", "b"], &[vec![1, 2], vec![3, -4]]);
+        assert!(matches!(
+            read_parquet(&path),
+            Err(RelationError::InvalidData(_))
+        ));
+    }
+
+    /// A header-only CSV is an empty batch of the header's arity, as an empty
+    /// Parquet file is of its schema's.
+    #[test]
+    fn an_empty_csv_keeps_its_arity_from_the_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.csv");
+        std::fs::write(&path, "s,o\n").unwrap();
+        let (header, tuples) = read_csv(&path).unwrap();
+        assert_eq!(header.arity(), 2);
+        assert!(tuples.is_empty());
+        assert_eq!(tuples.arity(), 2);
     }
 
     // ── constructors take a batch (#111) ──────────────────────────────

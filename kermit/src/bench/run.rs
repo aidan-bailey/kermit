@@ -22,7 +22,7 @@ use {
     kermit::db::index_header,
     kermit_algos::{ColumnOrderPolicy, IndexSpec},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HeapSize, Relation, RelationHeader},
+    kermit_ds::{HeapSize, Relation, RelationHeader, Tuples},
     std::{
         collections::{hash_map::Entry, BTreeMap, HashMap},
         io,
@@ -109,7 +109,7 @@ fn run_benchmark<F: ExecutionFamily>(
         || (F::JOIN_MUTATES && (verify || metrics.contains(&Metric::Iteration)))
         || column_orders == ColumnOrderPolicy::Any;
     let mut relations: Vec<F::Rel> = Vec::with_capacity(workload.relation_paths.len());
-    let mut build_inputs: Vec<(RelationHeader, Vec<Vec<usize>>)> = Vec::new();
+    let mut build_inputs: Vec<(RelationHeader, Tuples)> = Vec::new();
     for path in &workload.relation_paths {
         if rebuilds {
             let (relation, tuples) = family.load_with_tuples(path)?;
@@ -122,7 +122,7 @@ fn run_benchmark<F: ExecutionFamily>(
     // Each query's reordered copies (`--column-orders any`) are built from
     // the same file-order tuples `insertion` rebuilds from, through the
     // same `build_relation`, into whichever engine the query reads.
-    let input_of = |base: &str| -> &(RelationHeader, Vec<Vec<usize>>) {
+    let input_of = |base: &str| -> &(RelationHeader, Tuples) {
         build_inputs
             .iter()
             .find(|(header, _)| header.name() == base)
@@ -284,6 +284,7 @@ fn run_benchmark<F: ExecutionFamily>(
             if metrics.contains(&Metric::Insertion) {
                 group.bench_function("insertion", |b| {
                     b.iter_batched(
+                        // One buffer copy per relation, untimed (#111).
                         || build_inputs.clone(),
                         |data| {
                             // Times the per-relation construction only —

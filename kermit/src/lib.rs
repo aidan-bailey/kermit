@@ -21,11 +21,11 @@ pub mod db;
 
 use {
     kermit_algos::{CatalogStats, JoinAlgo, JoinQuery, LexicographicOptimiser, QueryOptimiser},
-    kermit_ds::Relation,
+    kermit_ds::{Relation, Tuples},
     std::collections::HashMap,
 };
 
-/// Convenience function that builds relations from raw tuple vectors and runs a
+/// Convenience function that builds relations from raw tuple batches and runs a
 /// join, returning the result tuples.
 ///
 /// Constructs a synthetic Datalog query from the `variables` and
@@ -37,21 +37,19 @@ use {
 /// index within one entry. Use [`db::lftj_join`] / [`db::hash_join`] for
 /// queries that need them.
 pub fn compute_join<R, JA>(
-    input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
+    input: Vec<impl Into<Tuples>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
 ) -> Vec<Vec<usize>>
 where
     R: Relation,
     JA: JoinAlgo<R>,
 {
+    // Each relation's arity is its batch's: an empty `Vec` converts to an
+    // empty batch of arity 0, as `k` was 0 for an empty input before.
     let relations: Vec<_> = input
         .into_iter()
         .map(|tuples| {
-            let k = if tuples.is_empty() {
-                0
-            } else {
-                tuples[0].len()
-            };
-            R::from_tuples(k.into(), tuples)
+            let tuples: Tuples = tuples.into();
+            R::from_tuples(tuples.arity().into(), tuples)
         })
         .collect();
 

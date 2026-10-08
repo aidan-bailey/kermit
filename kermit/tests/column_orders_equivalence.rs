@@ -15,7 +15,7 @@ use {
     },
     kermit_ds::{
         Cardinality, ColumnTrie, HashTrie, LazyExpansion, NoPruning, Relation, RelationHeader,
-        SingletonPruning, TreeTrie,
+        SingletonPruning, TreeTrie, Tuples,
     },
     kermit_iters::SipHashStrategy,
     kermit_parser::{Predicate, Term},
@@ -94,7 +94,7 @@ fn rows<R: Relation + Cardinality, JA: JoinEntry<R>, O: QueryOptimiser + Default
     let mut store: BTreeMap<String, R> = BTreeMap::new();
     for (name, arity, tuples) in relations {
         let header = RelationHeader::new_positional(name, *arity);
-        inputs.insert(name.clone(), (header.clone(), tuples.clone()));
+        inputs.insert(name.clone(), (header.clone(), Tuples::from(tuples.clone())));
         store.insert(name.clone(), R::from_tuples(header, tuples.clone()));
     }
     let planner = Planner::new(Box::new(O::default()), policy);

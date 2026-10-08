@@ -57,7 +57,7 @@ use {
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie,
         LazyExpansion, LinearSeek, NoPruning, PruningPolicy, Relation, RelationHeader,
-        SingletonPruning, TreeTrie,
+        SingletonPruning, TreeTrie, Tuples,
     },
     kermit_iters::{
         FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -205,7 +205,7 @@ fn database_with_copies<Rel: Relation + Cardinality>(
     assert_eq!(specs.len(), 1, "the reversed R is read through one copy");
     for spec in specs {
         assert_eq!(spec.base, "R");
-        let copy = build_index(&spec, &r, &reversed_r());
+        let copy = build_index(&spec, &r, &Tuples::from(reversed_r()));
         database.add_index(spec, copy);
     }
     database

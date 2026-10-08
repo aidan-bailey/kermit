@@ -3,7 +3,7 @@
 use {
     super::{JoinFamily, RelationArities},
     kermit_algos::{distinct_per_column, IndexSpec, RelationStats, StatisticsLevel},
-    kermit_ds::{Cardinality, Relation, RelationHeader},
+    kermit_ds::{Cardinality, Relation, RelationHeader, Tuples},
     std::collections::BTreeMap,
 };
 
@@ -161,9 +161,7 @@ pub fn index_header(spec: &IndexSpec, base: &RelationHeader) -> RelationHeader {
 /// keeps its config or build mode. Never through `Projectable::project`,
 /// which rebuilds in the structure's own iteration order with a nameless
 /// header and drops the build mode.
-pub fn build_index<R: Relation>(
-    spec: &IndexSpec, base: &RelationHeader, tuples: &[Vec<usize>],
-) -> R {
+pub fn build_index<R: Relation>(spec: &IndexSpec, base: &RelationHeader, tuples: &Tuples) -> R {
     R::from_tuples(index_header(spec, base), spec.permute_all(tuples))
 }
 
@@ -316,7 +314,7 @@ mod tests {
 
         let spec = IndexSpec::new("edge", vec![1, 0]);
         let header = RelationHeader::new_positional("edge", 2);
-        let copy: TreeTrie = build_index(&spec, &header, &edges());
+        let copy: TreeTrie = build_index(&spec, &header, &Tuples::from(edges()));
         database.add_index(spec.clone(), copy);
         assert!(database.index("Index_1_0_edge").is_some());
         assert!(
@@ -355,7 +353,7 @@ mod tests {
     fn build_index_permutes_the_tuples_in_file_order() {
         let spec = IndexSpec::new("edge", vec![1, 0]);
         let header = RelationHeader::new_positional("edge", 2);
-        let copy: ColumnTrie = build_index(&spec, &header, &edges());
+        let copy: ColumnTrie = build_index(&spec, &header, &Tuples::from(edges()));
         assert_eq!(copy.header().name(), "Index_1_0_edge");
         let mut stored = Vec::new();
         SortedFamily::for_each_tuple(&copy, |t| stored.push(t.to_vec()));
@@ -393,7 +391,7 @@ mod tests {
         let header = RelationHeader::new_positional("edge", 2);
 
         let hashed: Configured<HashTrie<SipHashStrategy>, HalfFull> =
-            build_index(&spec, &header, &edges());
+            build_index(&spec, &header, &Tuples::from(edges()));
         assert_eq!(
             hashed.config().load_factor,
             LoadFactor::percent(50).unwrap()
@@ -402,7 +400,7 @@ mod tests {
 
         BUILD_CALLS.with(|calls| calls.set(0));
         let column: BuiltWith<ColumnTrie, CountedIncremental> =
-            build_index(&spec, &header, &edges());
+            build_index(&spec, &header, &Tuples::from(edges()));
         assert_eq!(
             BUILD_CALLS.with(Cell::get),
             1,

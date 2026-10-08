@@ -415,7 +415,7 @@ mod tests {
             CatalogStats, ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser,
             QueryOptimiser, QueryPlan, StatisticsLevel,
         },
-        kermit_ds::{HashTrie, Relation, TreeTrie},
+        kermit_ds::{HashTrie, Relation, TreeTrie, Tuples},
         kermit_iters::SipHashStrategy,
         std::{cell::RefCell, collections::BTreeMap, rc::Rc},
     };
@@ -830,7 +830,11 @@ mod tests {
         let specs = database.required_indexes(query, planner).unwrap();
         for spec in &specs {
             let base = database.get(&spec.base).unwrap().header().clone();
-            let copy = build_index(spec, &base, &tuples[spec.base.as_str()]);
+            let copy = build_index(
+                spec,
+                &base,
+                &Tuples::from(tuples[spec.base.as_str()].clone()),
+            );
             database.add_index(spec.clone(), copy);
         }
         specs

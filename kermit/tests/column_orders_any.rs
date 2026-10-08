@@ -15,7 +15,7 @@ use {
     },
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, GallopingSeek, HashTrie, LazyExpansion, LinearSeek,
-        NoPruning, Relation, RelationHeader, SingletonPruning, TreeTrie,
+        NoPruning, Relation, RelationHeader, SingletonPruning, TreeTrie, Tuples,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
     std::collections::BTreeMap,
@@ -165,7 +165,7 @@ fn check<R: Relation + Cardinality, JA: JoinEntry<R>, O: QueryOptimiser + Defaul
         .iter()
         .map(|(name, arity, tuples)| {
             let header = RelationHeader::new_positional(*name, *arity);
-            (name.to_string(), (header, tuples.clone()))
+            (name.to_string(), (header, Tuples::from(tuples.clone())))
         })
         .collect();
     let query: JoinQuery = pattern.query.parse().unwrap();
@@ -397,7 +397,7 @@ fn a_symmetric_relation_still_gets_its_redundant_copy() {
     let specs = check::<TreeTrie, LeapfrogTriejoin, LexicographicOptimiser>(&pattern);
     assert_eq!(specs, vec![IndexSpec::new("edge", vec![1, 0])]);
     let base = &pattern.relations[0].2;
-    let mut copied = specs[0].permute_all(base);
+    let mut copied = specs[0].permute_all(&Tuples::from(base.clone())).to_vecs();
     let mut original = base.clone();
     copied.sort();
     original.sort();

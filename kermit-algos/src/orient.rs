@@ -21,6 +21,7 @@ use {
         optimiser::{ColumnOrderPolicy, QueryPlan},
         selection_rewrite::{ColumnEquality, SelectionSpec},
     },
+    kermit_iters::Tuples,
     kermit_parser::JoinQuery,
     std::collections::{BTreeMap, HashMap},
 };
@@ -59,17 +60,16 @@ impl IndexSpec {
         }
     }
 
-    /// `tuple` of the base relation, reordered into the copy's columns.
-    pub fn permute(&self, tuple: &[usize]) -> Vec<usize> {
-        self.permutation
-            .iter()
-            .map(|&column| tuple[column])
-            .collect()
-    }
-
-    /// Every tuple of the base relation, reordered, in the same order.
-    pub fn permute_all(&self, tuples: &[Vec<usize>]) -> Vec<Vec<usize>> {
-        tuples.iter().map(|tuple| self.permute(tuple)).collect()
+    /// Every tuple of the base relation, reordered into the copy's columns,
+    /// in the same order: one buffer at its exact size, so a copy costs one
+    /// allocation however many tuples it holds (#111).
+    pub fn permute_all(&self, tuples: &Tuples) -> Tuples {
+        let arity = self.permutation.len();
+        let mut data = Vec::with_capacity(tuples.len() * arity);
+        for tuple in tuples.rows() {
+            data.extend(self.permutation.iter().map(|&column| tuple[column]));
+        }
+        Tuples::from_flat(arity, tuples.len(), data)
     }
 
     /// The copy for a human: `edge (1, 0)`. The `bench run` metadata line.
@@ -513,13 +513,27 @@ mod tests {
     #[test]
     fn specs_permute_tuples_and_describe_themselves() {
         let spec = IndexSpec::new("edge", vec![1, 0]);
-        assert_eq!(spec.permute(&[7, 9]), vec![9, 7]);
-        assert_eq!(spec.permute_all(&[vec![1, 2], vec![3, 4]]), vec![
-            vec![2, 1],
-            vec![4, 3]
-        ]);
+        let copy = spec.permute_all(&Tuples::from(vec![vec![1, 2], vec![3, 4]]));
+        assert_eq!(copy, Tuples::from(vec![vec![2, 1], vec![4, 3]]));
+        // One buffer at its exact size: four values, one allocation.
+        assert_eq!(copy.heap_size_bytes(), 4 * std::mem::size_of::<usize>());
         assert_eq!(spec.describe(), "edge (1, 0)");
         assert!(is_index_predicate(&spec.name));
         assert!(!is_index_predicate("edge"));
+    }
+
+    /// A 3-ary rotation keeps file order, and the copy of an empty base has
+    /// the copy's arity, whatever arity the empty batch carried.
+    #[test]
+    fn permute_all_keeps_file_order_and_the_copys_arity() {
+        let spec = IndexSpec::new("r", vec![2, 0, 1]);
+        let base = Tuples::from(vec![vec![1, 2, 3], vec![4, 5, 6]]);
+        assert_eq!(spec.permute_all(&base).to_vecs(), vec![
+            vec![3, 1, 2],
+            vec![6, 4, 5]
+        ]);
+        let empty = spec.permute_all(&Tuples::from(Vec::<Vec<usize>>::new()));
+        assert!(empty.is_empty());
+        assert_eq!(empty.arity(), 3);
     }
 }
