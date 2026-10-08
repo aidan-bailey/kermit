@@ -1323,6 +1323,41 @@ mod tests {
         assert_eq!(hash.header().name(), "r");
     }
 
+    /// `load_with_tuples` reads one buffer, keeps it and builds from one copy,
+    /// so nothing is allocated per row (#111). ColumnTrie is the probe: its
+    /// build owns only its layer arrays. At most five buffers grow with the
+    /// rows, the reader's and ColumnTrie's 2 · arity layer arrays, and each
+    /// doubles, so ten times the rows costs each at most ⌈log₂ 10⌉ = 4 more
+    /// allocations. A per-row allocation adds 9 000.
+    #[test]
+    fn load_with_tuples_allocates_independently_of_the_row_count() {
+        let allocations = |rows: usize| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("r.csv");
+            let mut csv = String::from("a,b\n");
+            for i in 0..rows {
+                csv.push_str(&format!("{},{}\n", i / 4, i % 4));
+            }
+            std::fs::write(&path, csv).expect("write csv");
+            let family = SortedTrieFamily::<ColumnTrie>::default();
+            // Unmeasured: a one-time initialisation must not count.
+            family.load_with_tuples(&path).expect("load");
+            let mut loaded = None;
+            let info = allocation_counter::measure(|| {
+                loaded = Some(family.load_with_tuples(&path).expect("load"));
+            });
+            let (relation, tuples) = loaded.expect("measured");
+            assert_eq!(tuples.len(), rows);
+            assert_eq!(SortedTrieFamily::<ColumnTrie>::tuple_count(&relation), rows);
+            info.count_total
+        };
+        let (small, large) = (allocations(1_000), allocations(10_000));
+        assert!(
+            large <= small + 5 * 4,
+            "load_with_tuples: {small} allocations for 1 000 rows, {large} for 10 000"
+        );
+    }
+
     /// Every tuple `F::for_each_tuple` lends, collected — the test-side
     /// stand-in for the materialising walk the families no longer offer.
     fn visited<F: RelationFamily>(rel: &F::Rel) -> Vec<Vec<usize>> {
