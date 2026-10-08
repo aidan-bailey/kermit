@@ -284,9 +284,9 @@ impl<S: SeekStrategy> ColumnTrie<S> {
     /// [`ColumnTrieBuildMode::Incremental`] so its measurements can be
     /// reproduced. Each `insert` scans its interval from the start, so this
     /// is O(n · a · b), `b` the average branching factor.
-    fn from_sorted_by_insertion(header: RelationHeader, sorted: Vec<Vec<usize>>) -> Self {
+    fn from_sorted_by_insertion(header: RelationHeader, sorted: &Tuples) -> Self {
         let mut trie = Self::new(header);
-        for tuple in sorted {
+        for tuple in sorted.rows() {
             trie.insert(tuple);
         }
         trie
@@ -311,7 +311,7 @@ impl<S: SeekStrategy> ColumnTrie<S> {
     /// The input must be sorted; debug builds check it.
     ///
     /// O(n · a) for n tuples of arity a.
-    fn from_sorted(header: RelationHeader, sorted: Vec<Vec<usize>>) -> Self {
+    fn from_sorted(header: RelationHeader, sorted: &Tuples) -> Self {
         let mut trie = Self::new(header);
         if sorted.is_empty() {
             return trie;
@@ -321,18 +321,14 @@ impl<S: SeekStrategy> ColumnTrie<S> {
         if let Some(root) = trie.layers.first_mut() {
             root.open_interval();
         }
-        let mut previous: Option<Vec<usize>> = None;
-        for tuple in sorted {
+        // The last row stored, borrowed from the batch: no copy per row.
+        let mut previous: Option<&[usize]> = None;
+        for tuple in sorted.rows() {
             // The depth at which this tuple leaves its predecessor's path:
             // the number of leading keys the two share.
-            let divergence_depth = previous
-                .as_deref()
-                .map_or(0, |prev| common_prefix_len(prev, &tuple));
-            if let Some(prev) = previous.as_deref() {
-                debug_assert!(
-                    prev <= tuple.as_slice(),
-                    "from_sorted: tuples are not sorted"
-                );
+            let divergence_depth = previous.map_or(0, |prev| common_prefix_len(prev, tuple));
+            if let Some(prev) = previous {
+                debug_assert!(prev <= tuple, "from_sorted: tuples are not sorted");
             }
             if divergence_depth == arity {
                 // Equal to its predecessor, so already stored.
@@ -432,7 +428,7 @@ impl<S: SeekStrategy> Relation for ColumnTrie<S> {
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
+    /// As [`from_tuples_with_build_mode`](BuildModeRelation::from_tuples_with_build_mode).
     fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
         Self::from_tuples_with_build_mode(header, ColumnTrieBuildMode::default(), tuples)
     }
@@ -465,48 +461,40 @@ impl<S: SeekStrategy> Relation for ColumnTrie<S> {
 impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
     type BuildMode = ColumnTrieBuildMode;
 
-    /// Sorts the tuples, then builds the layers by `mode`: one pass over
-    /// the sorted tuples for `Bulk` (see `from_sorted`), one `insert` per
-    /// tuple for `Incremental` (see `from_sorted_by_insertion`).
+    /// Sorts the batch in place with [`Tuples::sort`], then builds the layers
+    /// by `mode`: one pass over the sorted rows for `Bulk` (see
+    /// `from_sorted`), one `insert` per row for `Incremental` (see
+    /// `from_sorted_by_insertion`).
     ///
     /// # Panics
     ///
-    /// Panics if any tuple's length does not equal `header.arity()`.
+    /// Panics if the batch is non-empty and its arity does not match
+    /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
+    /// earlier, while converting to [`Tuples`].
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: ColumnTrieBuildMode, tuples: impl Into<Tuples>,
     ) -> Self {
-        // One `Vec` per tuple, the form this build takes until it builds
-        // from row slices (#111).
-        let mut tuples = Tuples::into_vecs(tuples.into());
-        let arity = header.arity();
-        // Checked before the sort: its comparator indexes `b` by `a`'s
-        // length, so a shorter tuple would panic there with an index error
-        // instead of this message.
-        for tuple in &tuples {
+        let mut tuples: Tuples = tuples.into();
+        // An empty batch carries no arity of its own (an empty literal has
+        // none), so only a non-empty one must match the header.
+        if !tuples.is_empty() {
+            let arity = tuples.arity();
             assert_eq!(
-                tuple.len(),
                 arity,
-                "from_tuples: tuple arity {} does not match header arity {arity}",
-                tuple.len()
+                header.arity(),
+                "from_tuples: tuple arity {arity} does not match header arity {}",
+                header.arity()
             );
         }
-        // The derived `Vec<usize>` lexicographic order, kept hand-rolled as
-        // in TreeTrie's `from_tuples`: the sort then costs the same in every
-        // ColumnTrie build and in TreeTrie's, so a change in the `insertion`
-        // metric measures the build routine alone.
-        tuples.sort_unstable_by(|a, b| {
-            for i in 0..a.len() {
-                match a[i].cmp(&b[i]) {
-                    | std::cmp::Ordering::Less => return std::cmp::Ordering::Less,
-                    | std::cmp::Ordering::Greater => return std::cmp::Ordering::Greater,
-                    | std::cmp::Ordering::Equal => continue,
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
+        // `Tuples::sort`, the one sort every sorted-trie build runs (TreeTrie's
+        // `serial` and `parallel:N` builds too): a comparison costs the same in
+        // every ColumnTrie build and in TreeTrie's, so a change in the
+        // `insertion` metric measures the build routine alone. Its order is
+        // the lexicographic order the hand-rolled comparator gave before #111.
+        tuples.sort();
         match mode {
-            | ColumnTrieBuildMode::Incremental => Self::from_sorted_by_insertion(header, tuples),
-            | ColumnTrieBuildMode::Bulk => Self::from_sorted(header, tuples),
+            | ColumnTrieBuildMode::Incremental => Self::from_sorted_by_insertion(header, &tuples),
+            | ColumnTrieBuildMode::Bulk => Self::from_sorted(header, &tuples),
         }
     }
 }
@@ -544,7 +532,7 @@ mod tests {
             test_support::{take_spy_lengths, Lcg, SpySeek},
             BinarySeek, GallopingSeek, HeapSize, LinearSeek, SeekStrategy,
         },
-        kermit_iters::{HasOptimizationAxes, LinearIterator, TrieIterable, TrieIterator},
+        kermit_iters::{HasOptimizationAxes, LinearIterator, TrieIterable, TrieIterator, Tuples},
     };
 
     #[test]
@@ -880,9 +868,30 @@ mod tests {
     /// A batch has one arity (mixed arity is `Tuples`' to reject), so the
     /// wrong arity here is the whole batch's.
     #[test]
-    #[should_panic(expected = "does not match header arity")]
-    fn bulk_build_rejects_a_tuple_of_the_wrong_arity() {
+    #[should_panic(expected = "from_tuples: tuple arity 3 does not match header arity 2")]
+    fn bulk_build_rejects_a_batch_of_the_wrong_arity() {
         let _: ColumnTrie = ColumnTrie::from_tuples(2.into(), vec![vec![1, 2, 3], vec![4, 5, 6]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 3 does not match header arity 2")]
+    fn incremental_build_rejects_a_batch_of_the_wrong_arity() {
+        let _: ColumnTrie = ColumnTrie::from_tuples_with_build_mode(
+            2.into(),
+            ColumnTrieBuildMode::Incremental,
+            vec![vec![1, 2, 3]],
+        );
+    }
+
+    /// A batch is accepted when it is empty, whatever its arity (an empty
+    /// literal carries none), or when its arity is the header's.
+    #[test]
+    fn an_empty_batch_of_any_arity_builds_the_empty_trie() {
+        for mode in [ColumnTrieBuildMode::Bulk, ColumnTrieBuildMode::Incremental] {
+            let built: ColumnTrie =
+                ColumnTrie::from_tuples_with_build_mode(2.into(), mode, Tuples::new(5));
+            assert_identical(&built, &ColumnTrie::new(2.into()), &format!("{mode:?}"));
+        }
     }
 
     /// See `TreeTrie`'s `seek_strategy_adds_no_state`.
