@@ -28,8 +28,10 @@ streamed join with counted, never-materialised rows (issue #65)."""
 FLAT_TUPLES_SCHEMA = 4
 """First schema version whose structures build from one flat tuple buffer
 (issue #111): ``insertion``, ``copies`` and ``end_to_end`` time a different
-input path and sort, and HashTrie's ``space`` counts row ids into the buffer
-instead of a ``Vec`` per tuple."""
+input path and sort, HashTrie's ``space`` counts row ids into the buffer
+instead of a ``Vec`` per tuple, and a lazy-expansion HashTrie's
+``iteration``, which runs on a fresh build and times child expansion, times
+Algorithm 2 grouping row ids and reading rows from the buffer."""
 
 MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (
@@ -40,12 +42,11 @@ MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (
         FLAT_TUPLES_SCHEMA,
         "every structure builds from one flat tuple buffer, which changes insertion, "
-        "copies, end_to_end and HashTrie's space",
+        "copies, end_to_end, HashTrie's space and lazy-expansion HashTrie's iteration",
         (
             "TreeTrie space",
             "ColumnTrie space",
-            "bench run iteration",
-            "bench join iteration",
+            "bench run / bench join iteration outside lazy-expansion HashTrie cells",
         ),
     ),
 )

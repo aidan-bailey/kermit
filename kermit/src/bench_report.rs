@@ -81,8 +81,10 @@ pub fn write_metadata_block<W: Write>(
 /// measures. 3: `iteration` / `end_to_end` time a streamed join whose rows
 /// are counted, never materialised (issue #65). 4: every structure builds
 /// from one flat tuple buffer, so `insertion`, `copies` and `end_to_end` time
-/// a different input path and sort, and HashTrie's `space` counts row ids
-/// into that buffer instead of a `Vec` per tuple (issue #111).
+/// a different input path and sort, HashTrie's `space` counts row ids into
+/// that buffer instead of a `Vec` per tuple, and a lazy-expansion HashTrie's
+/// `iteration`, which times child expansion, times it over that buffer
+/// (issue #111).
 pub const REPORT_SCHEMA_VERSION: u32 = 4;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case

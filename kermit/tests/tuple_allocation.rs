@@ -24,16 +24,25 @@
 //!   the row-id lists grow, by at most ⌈log₂ 100⌉ = 7 growth steps each. A
 //!   per-row allocation adds 9 900.
 //!
-//! The parallel builds (`parallel:N`, `presized:N`) are not measured: the
-//! counter sees only the calling thread, and their workers allocate on
-//! threads of their own.
+//! - **Parallel builds** (`parallel:N`, `presized:N`) are measured at one
+//!   thread. `run_workers` (`kermit_ds::morsel`) runs the work on the calling
+//!   thread and spawns `N − 1` helpers, so at `N = 1` every allocation is the
+//!   calling thread's and the counter sees all of it. At `N > 1` the helpers
+//!   allocate on threads of their own, which the counter cannot see, but they
+//!   run the same per-partition code. TreeTrie's `parallel:1` is bounded like
+//!   its serial build, plus each partition's lists; HashTrie's are measured at
+//!   both repetitions like its other builds.
 
 use {
     kermit_algos::IndexSpec,
     kermit_ds::{
+        test_hooks::{
+            take_hash_trie_parallel_builds, take_tree_trie_parallel_builds, HashTrieParallelBuild,
+        },
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, EagerExpansion,
-        ExpansionPolicy, HashTrie, HashTrieBuildMode, LazyExpansion, NoPruning, PruningPolicy,
-        RadixBits, Relation, SingletonPruning, TreeTrie, Tuples,
+        ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig, LazyExpansion, NoPruning,
+        PruningPolicy, RadixBits, Relation, RootCapacity, SingletonPruning, Threads, TreeTrie,
+        TreeTrieBuildMode, Tuples,
     },
     kermit_iters::SipHashStrategy,
     kermit_rdf::{parquet::write_relation, partition::PartitionedRelation},
@@ -210,6 +219,62 @@ fn tree_trie_build_allocates_once_per_inner_node() {
     );
 }
 
+/// The one thread of the measured parallel builds: `run_workers` spawns no
+/// helper, so the counter sees every allocation.
+fn one_thread() -> Threads { Threads::new(1).expect("one thread is a valid count") }
+
+/// Partitions of a one-thread parallel build: `PARTITIONS_PER_THREAD`
+/// (crate-private in `kermit_ds::morsel`) × 1. HashTrie's `parallel:1`
+/// rounds it to a power of two, still 4, and `presized:1` caps it at the
+/// root's regions.
+const ONE_THREAD_PARTITIONS: u64 = 4;
+
+/// What TreeTrie's one-thread parallel build allocates besides its trie and
+/// its partitions, at any input size. Each `run_workers` call (`scatter_rows`'
+/// and `dispatch`'s) allocates the scope's shared state, the worker's own
+/// results and the `Vec` holding them, and its caller merges the results
+/// into one more: 4 each. `scatter_rows` adds its one morsel's bucket list
+/// and the partition list (2), TreeTrie its splitter sample and splitters
+/// (2), and the test hook its record of the build (2).
+const ONE_THREAD_MACHINERY: u64 = 2 * 4 + 2 + 2 + 2;
+
+/// `parallel:1` builds the serial trie, down to each `Vec`'s capacity, so it
+/// allocates the serial build's inner nodes. On top of them it allocates,
+/// per partition, the row-id bucket `scatter_rows` grows one push per id
+/// (at most `doublings(rows)` steps), its segment list, the gathered rows
+/// (sized once) and the node list its rows insert into, grown one push per
+/// first key; and [`ONE_THREAD_MACHINERY`]. The fixture's 10 000 rows fit
+/// one 16 384-row morsel. A per-row allocation adds 10 000.
+#[test]
+fn tree_trie_parallel_build_on_one_thread_allocates_per_partition_not_per_row() {
+    let tuples = fanned_out();
+    let rows = tuples.len();
+    let mode = TreeTrieBuildMode::Parallel(one_thread());
+    let mut built: Option<TreeTrie> = None;
+    let info = allocation_counter::measure(|| {
+        built = Some(TreeTrie::from_tuples_with_build_mode(
+            2.into(),
+            mode,
+            tuples,
+        ));
+    });
+    assert_eq!(built.expect("measured").tuple_count(), rows);
+    let builds = take_tree_trie_parallel_builds();
+    assert!(
+        matches!(builds.as_slice(), [(1, _)]),
+        "parallel:1 ran one build on one thread: {builds:?}"
+    );
+    let nodes = FIRST_KEYS as u64 + doublings(FIRST_KEYS);
+    let partitions = ONE_THREAD_PARTITIONS * (doublings(rows) + 1 + 1 + doublings(FIRST_KEYS));
+    let bound = nodes + partitions + ONE_THREAD_MACHINERY + SCRATCH;
+    assert!(
+        info.count_total <= bound,
+        "TreeTrie parallel:1: {} allocations for {rows} rows, over {bound}: its inner nodes \
+         account for {nodes} and its partitions for {partitions}",
+        info.count_total
+    );
+}
+
 /// ColumnTrie owns its `layers` `Vec` and each layer's `data` and `interval`
 /// arrays, each at most one entry per row and grown one push at a time, under
 /// both build modes. Expected count: 1 + 11 + 1 + 13 + 11 = 37 of at most 57.
@@ -257,23 +322,43 @@ fn repeated(repeats: usize) -> Tuples {
 }
 
 /// Allocations of one `HashTrie<SipHashStrategy, P, E>` build of
-/// `repeated(repeats)` by `mode` under the default config, after checking it
-/// stored every row.
-fn hash_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
-    mode: HashTrieBuildMode, repeats: usize,
-) -> u64 {
+/// `repeated(repeats)` by `mode` under `config`, after checking it stored
+/// every row, and the record a parallel build left. Taking the record also
+/// empties the hook's `Vec`, so every measured build pushes onto an empty
+/// one.
+fn measure_hash_build<P: PruningPolicy, E: ExpansionPolicy>(
+    config: HashTrieConfig, mode: HashTrieBuildMode, repeats: usize,
+) -> (u64, Vec<HashTrieParallelBuild>) {
     let tuples = repeated(repeats);
     let rows = tuples.len();
     let mut built: Option<HashTrie<SipHashStrategy, P, E>> = None;
     let info = allocation_counter::measure(|| {
-        built = Some(HashTrie::from_tuples_with_build_mode(
+        built = Some(HashTrie::from_tuples_with_config_and_build_mode(
             2.into(),
+            config,
             mode,
             tuples,
         ));
     });
     assert_eq!(built.expect("measured").tuple_count(), rows);
-    info.count_total
+    (info.count_total, take_hash_trie_parallel_builds())
+}
+
+/// [`measure_hash_build`] under the default config, after checking that a
+/// `parallel:1` build ran as one build on one thread and no other mode ran
+/// a parallel build.
+fn hash_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
+    mode: HashTrieBuildMode, repeats: usize,
+) -> u64 {
+    let (allocations, builds) =
+        measure_hash_build::<P, E>(HashTrieConfig::default(), mode, repeats);
+    let threads: Vec<usize> = builds.iter().map(|build| build.threads).collect();
+    let expected = match mode {
+        | HashTrieBuildMode::Parallel(threads) => vec![threads.get()],
+        | _ => vec![],
+    };
+    assert_eq!(threads, expected, "{mode:?}: the parallel builds that ran");
+    allocations
 }
 
 /// Under the default `root-capacity=grow` every table's size depends on its
@@ -281,18 +366,21 @@ fn hash_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
 /// tables, the chains and the lazy pending lists are the same at both
 /// repetitions. Only the row-id lists hold more ids: one per first key and
 /// one chain per distinct tuple, each by at most ⌈log₂ 100⌉ = 7 growth steps.
-/// The bound also counts the root's list and `radix:2`'s four partitions as
-/// growing lists, but only as an upper bound: the root's list is `all_rows`,
-/// a `Range` never built, and `radix::partition` sizes each partition
-/// exactly from a histogram, so those five never grow. They are part of the
-/// bound's slack, 5 × 7 = 35 allocations.
+/// The bound also counts the root's list and four partition lists. Only
+/// `parallel:1`'s four partitions grow, one push per row id: `scatter_rows`
+/// keeps each in one list, as both inputs fit one 16 384-row morsel. The
+/// root's list is `all_rows`, a `Range` never built, and `radix::partition`
+/// sizes `radix:2`'s four partitions exactly from a histogram, so under
+/// every other mode those five lists are part of the bound's slack, 5 × 7 =
+/// 35 allocations. `parallel:1`'s workers, merge and test-hook record cost
+/// the same at both repetitions.
 #[test]
 fn hash_trie_builds_allocate_per_list_not_per_row() {
     let lists = (1 + KEYS + KEYS * KEYS + 4) as u64;
     let bound = lists * ceil_log2(REPEATS);
     let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
     type Measure = fn(HashTrieBuildMode, usize) -> u64;
-    let cells: [(&str, Measure, HashTrieBuildMode); 6] = [
+    let cells: [(&str, Measure, HashTrieBuildMode); 7] = [
         (
             "eager",
             hash_build_allocations::<NoPruning, EagerExpansion>,
@@ -323,6 +411,11 @@ fn hash_trie_builds_allocate_per_list_not_per_row() {
             hash_build_allocations::<NoPruning, EagerExpansion>,
             radix,
         ),
+        (
+            "eager",
+            hash_build_allocations::<NoPruning, EagerExpansion>,
+            HashTrieBuildMode::Parallel(one_thread()),
+        ),
     ];
     for (layout, allocations, mode) in cells {
         let (once, many) = (allocations(mode, 1), allocations(mode, REPEATS));
@@ -334,4 +427,46 @@ fn hash_trie_builds_allocate_per_list_not_per_row() {
             REPEATS * KEYS * KEYS
         );
     }
+}
+
+/// `presized:1` under `root-capacity=tuples`, its prerequisite. The root is
+/// sized once from the row count, one allocation at either repetition, and
+/// its lists and chains grow as under the other builds. Its partitions are
+/// whole runs of the root's 4 096-bucket regions, at most
+/// [`ONE_THREAD_PARTITIONS`]: the 100 rows' 256-bucket root is one region and
+/// one partition, the 10 000 rows' 16 384-bucket root four. So the larger
+/// build has three partitions more, each a row-id bucket grown from empty (at
+/// most `doublings(rows)` steps) and a segment list, and the one partition
+/// both builds share is one more growing list. The fixture's ten keys never
+/// probe past a region's end, so no row is deferred to the tail, whose list
+/// the bound does not count.
+#[test]
+fn hash_trie_presized_build_allocates_per_list_not_per_row() {
+    let config = HashTrieConfig {
+        root_capacity: RootCapacity::Tuples,
+        ..HashTrieConfig::default()
+    };
+    let mode = HashTrieBuildMode::Presized(one_thread());
+    let measure = |repeats| {
+        let (allocations, builds) =
+            measure_hash_build::<NoPruning, EagerExpansion>(config, mode, repeats);
+        let [build] = builds.as_slice() else {
+            panic!("presized:1 ran one build: {builds:?}");
+        };
+        assert_eq!(build.threads, 1, "presized:1 ran on one thread");
+        assert_eq!(build.deferred, Some(0), "no row is deferred to the tail");
+        (allocations, build.partition_sizes.len())
+    };
+    let ((once, once_partitions), (many, many_partitions)) = (measure(1), measure(REPEATS));
+    assert_eq!((once_partitions, many_partitions), (1, 4));
+    let rows = REPEATS * KEYS * KEYS;
+    let lists = (KEYS + KEYS * KEYS + 1) as u64;
+    let new_partitions = (many_partitions - once_partitions) as u64;
+    let bound = lists * ceil_log2(REPEATS) + new_partitions * (doublings(rows) + 1);
+    assert!(
+        many <= once + bound,
+        "HashTrie presized:1: {once} allocations for {} rows, {many} for {rows}, more than \
+         {bound} apart: some row allocates",
+        KEYS * KEYS,
+    );
 }

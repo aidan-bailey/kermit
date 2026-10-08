@@ -84,13 +84,16 @@ you pass `allow_mixed_schema=True`.
 rows needs no more memory than a small one.
 
 Reports with `schema_version` 3 and 4 are not comparable in `insertion`,
-`copies`, `end_to_end` or HashTrie's `space`. From v4 (#111) every
-relation's tuples reach every build as one row-major buffer (`Tuples`)
-instead of a `Vec` per tuple, and HashTrie keeps that buffer and stores
-4-byte row ids where it stored a `Vec` per tuple. TreeTrie and ColumnTrie
-`space` and the joins' `iteration` keep their meaning; HashTrie's `bench ds`
-`iteration` walk now reads rows through their ids, so compare it across the
-boundary only through a measured A/B. The v4 row of
+`copies`, `end_to_end`, HashTrie's `space` or lazy-expansion HashTrie's
+`iteration`. From v4 (#111) every relation's tuples reach every build as
+one row-major buffer (`Tuples`) instead of a `Vec` per tuple, and HashTrie
+keeps that buffer and stores 4-byte row ids where it stored a `Vec` per
+tuple. TreeTrie and ColumnTrie `space` and the joins' `iteration` keep their
+meaning, except on lazy-expansion HashTrie cells: their `iteration` runs on
+fresh builds and times child expansion, whose Algorithm 2 now groups row
+ids and reads rows from the buffer. HashTrie's `bench ds` `iteration` walk
+now reads rows through their ids, so compare it across the boundary only
+through a measured A/B. The v4 row of
 [`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md)
 lists the changes, and `kermit-lab` refuses to load v3 and v4 reports
 together unless you pass `allow_mixed_schema=True`.

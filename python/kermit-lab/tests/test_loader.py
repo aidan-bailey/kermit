@@ -216,11 +216,24 @@ def test_each_boundary_names_what_stays_comparable_across_it(tmp_path: Path) -> 
     v2, v3, v4 = (_versioned_report(tmp_path / f"v{v}.json", v) for v in (2, 3, 4))
     with pytest.raises(SchemaError, match="to compare TreeTrie space, ColumnTrie space and HashTrie space only"):
         load_reports([v2, v3])
-    with pytest.raises(
-        SchemaError,
-        match="to compare TreeTrie space, ColumnTrie space, bench run iteration and bench join iteration only",
-    ):
+    with pytest.raises(SchemaError) as exc:
         load_reports([v3, v4])
+    message = str(exc.value)
+    assert (
+        "to compare TreeTrie space, ColumnTrie space and bench run / bench join iteration "
+        "outside lazy-expansion HashTrie cells only" in message
+    )
+
+
+def test_the_flat_tuples_boundary_names_lazy_iteration_as_changed(tmp_path: Path) -> None:
+    # A lazy HashTrie's `iteration` runs on a fresh build and times child
+    # expansion, which v4 changed (#111): it must not be offered as comparable.
+    v3, v4 = (_versioned_report(tmp_path / f"v{v}.json", v) for v in (3, 4))
+    with pytest.raises(SchemaError) as exc:
+        load_reports([v3, v4])
+    message = str(exc.value)
+    assert "changes insertion, copies, end_to_end, HashTrie's space and lazy-expansion HashTrie's iteration" in message
+    assert "outside lazy-expansion HashTrie cells" in message
 
 
 def test_phase_of_recognises_copies() -> None:
