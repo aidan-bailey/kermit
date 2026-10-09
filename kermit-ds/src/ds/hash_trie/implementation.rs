@@ -1107,6 +1107,122 @@ mod tests {
         assert_eq!(chain, &vec![0, 1]);
     }
 
+    /// Rows in the partitioning-build fixture below.
+    const ROWS: usize = 1000;
+
+    /// 1000 rows of arity 2, `[(i * 7919) % 97, i]`, so about ten rows share
+    /// each of the 97 first keys. The batch is built with room for twice the
+    /// rows, and each call builds a fresh one: `Tuples::clone` drops spare
+    /// capacity.
+    fn spare_capacity_input() -> Tuples {
+        let mut batch = Tuples::with_capacity(2, 2 * ROWS);
+        for i in 0..ROWS {
+            batch.push(&[(i * 7919) % 97, i]);
+        }
+        batch
+    }
+
+    /// The three partitioning builds, each on a small thread or bit count.
+    fn partitioning_modes() -> [HashTrieBuildMode; 3] {
+        use crate::ds::hash_trie::build_mode::RadixBits;
+        let threads = crate::morsel::Threads::new(2).expect("two is a valid thread count");
+        [
+            HashTrieBuildMode::Radix(RadixBits::new(3).expect("three is a valid bit count")),
+            HashTrieBuildMode::Parallel(threads),
+            HashTrieBuildMode::Presized(threads),
+        ]
+    }
+
+    /// `mode` over a fresh [`spare_capacity_input`], under the one config
+    /// every mode accepts: `presized:N` requires `root-capacity=tuples`.
+    fn build_in(mode: HashTrieBuildMode) -> HashTrie {
+        let config = HashTrieConfig {
+            root_capacity: RootCapacity::Tuples,
+            ..HashTrieConfig::default()
+        };
+        HashTrie::from_tuples_with_config_and_build_mode(
+            2.into(),
+            config,
+            mode,
+            spare_capacity_input(),
+        )
+    }
+
+    /// The comparison a build owes `bulk` (Amendment 2, as amended by #101):
+    /// `radix:K` and `parallel:N` build `bulk`'s tables bucket for bucket,
+    /// and `presized:N` an equivalent trie.
+    fn assert_owes_bulk(mode: HashTrieBuildMode, bulk: &HashTrie, built: &HashTrie, label: &str) {
+        use crate::ds::hash_trie::identity::{assert_equivalent_trie, assert_same_contents};
+        match mode {
+            | HashTrieBuildMode::Presized(_) => assert_equivalent_trie(bulk, built, label),
+            | _ => assert_same_contents(bulk, built, label),
+        }
+    }
+
+    /// Every partitioning build keeps the input batch's spare capacity
+    /// through its copy (`partition_rows` sizes the copy at the input's
+    /// `value_capacity()`), so `space` is the same under every mode.
+    #[test]
+    fn partitioning_builds_keep_the_inputs_spare_capacity() {
+        use crate::HeapSize;
+        let capacity = spare_capacity_input().value_capacity();
+        assert!(
+            capacity > 2 * ROWS,
+            "the premise: the input has spare capacity"
+        );
+        let bulk = build_in(HashTrieBuildMode::Bulk);
+        assert_eq!(
+            bulk.tuples().value_capacity(),
+            capacity,
+            "bulk keeps the input"
+        );
+        for mode in partitioning_modes() {
+            let label = format!("{mode:?}");
+            let built = build_in(mode);
+            assert_eq!(
+                built.tuples().value_capacity(),
+                bulk.tuples().value_capacity(),
+                "{label}: the copy's capacity"
+            );
+            assert_eq!(
+                built.heap_size_bytes(),
+                bulk.heap_size_bytes(),
+                "{label}: heap size"
+            );
+            assert_owes_bulk(mode, &bulk, &built, &label);
+        }
+    }
+
+    /// `insert` after a partitioning build pushes its row onto the copy,
+    /// after every partition, and the trie stays equivalent to `bulk`'s after
+    /// the same inserts.
+    #[test]
+    fn insert_after_a_partitioning_build_appends_to_the_copy() {
+        for mode in partitioning_modes() {
+            let label = format!("{mode:?}");
+            let mut bulk = build_in(HashTrieBuildMode::Bulk);
+            let mut built = build_in(mode);
+            // A new first key, an existing first key with a new second value,
+            // and an exact duplicate of the input's first row.
+            for (n, row) in [[1000, 1], [0, 5000], [0, 0]].into_iter().enumerate() {
+                bulk.insert(row);
+                built.insert(row);
+                let rows = built.tuples();
+                assert_eq!(
+                    rows.len(),
+                    ROWS + n + 1,
+                    "{label}: insert {n}: the copy grew"
+                );
+                assert_eq!(
+                    rows.row(row_id(rows.len() - 1)),
+                    row.as_slice(),
+                    "{label}: insert {n}: the last row of the copy"
+                );
+            }
+            assert_owes_bulk(mode, &bulk, &built, &label);
+        }
+    }
+
     /// An empty literal carries no arity, so `from_tuples` stores an empty
     /// batch of the header's instead (`batch_for_header`), and a later
     /// `insert` pushes its row into a buffer of the right arity.
