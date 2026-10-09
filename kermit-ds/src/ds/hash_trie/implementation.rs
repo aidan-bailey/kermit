@@ -71,16 +71,17 @@ use {
 ///
 /// The trie owns its tuples as one row-major buffer ([`Tuples`], #111): the
 /// batch a build is given, then every row `insert` appends. `bulk` and
-/// `incremental` keep the batch as is, in arrival order; `radix:K` keeps
-/// its copy of the batch instead, in partition order, so each partition's
-/// rows are contiguous (#101). Below the tables everything names a tuple
-/// by its
-/// [`RowId`]: a leaf chain is a `Vec<RowId>`, a pruned `Singleton` one
-/// `RowId`, an unexpanded child's pending list a `Vec<RowId>`. The paper's
-/// leaves likewise point into a materialised buffer (VLDB 2020 §3.3.2); its
-/// pointers are 8 bytes where these ids are 4, and it threads each list
-/// through the tuples where these are a `Vec` per list (both kermit's; the
-/// second until #101 layer 3).
+/// `incremental` keep the batch as is, in arrival order. `radix:K`,
+/// `parallel:N` and `presized:N` copy it into partition order on the first
+/// attribute's hash (`morsel::partition_rows`, #101) and keep the copy
+/// instead, so each partition's rows are one contiguous range, in input
+/// order. Below the tables everything names a tuple by its [`RowId`]: a
+/// leaf chain is a `Vec<RowId>`, a pruned `Singleton` one `RowId`, an
+/// unexpanded child's pending list a `Vec<RowId>`. The paper's leaves
+/// likewise point into a materialised buffer, partitioned as it is
+/// materialised (VLDB 2020 §3.3.2); its pointers are 8 bytes where these
+/// ids are 4, and it threads each list through the tuples where these are a
+/// `Vec` per list (both kermit's; the second until #101 B2).
 ///
 /// # Construction
 ///
@@ -98,8 +99,8 @@ use {
 /// ([`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
 /// or [`BuildModeRelation`]), which build an equivalent trie (Amendment 2):
 /// the same contents and capacities. `presized:N` may place root keys in
-/// other buckets, and `radix:K` stores its rows in partition order, under
-/// other ids.
+/// other buckets, and `radix:K`, `parallel:N` and `presized:N` store their
+/// rows in partition order, under other ids (#101).
 /// `HashTrieConfig::root_capacity` decides the root's starting size: 4
 /// buckets (`grow`, the default), or sized once from the tuples a build is
 /// given (`tuples`), so that it never grows during that build (#88).
@@ -472,9 +473,11 @@ thread_local! {
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// Creates a trie holding `config`, populated with `tuples` and built by
     /// `mode` — the one constructor that takes both the Config and the
-    /// BuildMode. Every mode builds an equivalent trie (issues #91, #94;
-    /// `Presized` may place root keys in other buckets, Amendment 2), so
-    /// `mode` changes only how long this takes.
+    /// BuildMode. Every mode builds an equivalent trie (issues #91, #94,
+    /// #101; Amendment 2): `Radix`, `Parallel` and `Presized` store the
+    /// tuples in partition order, under other row ids, and `Presized` may
+    /// place root keys in other buckets. So `mode` changes how long this
+    /// takes and where tuples sit, never the trie's contents.
     ///
     /// `Bulk` is [`ConfigurableRelation::from_tuples_with_config`]
     /// (Algorithm 2); `Incremental` is the per-tuple build; `Radix`

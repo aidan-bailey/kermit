@@ -9,7 +9,7 @@
 ```rust
 HashTrie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> {
     header:      RelationHeader,
-    tuples:      Tuples,            // every stored tuple, arrival order; len() = multiset size
+    tuples:      Tuples,            // every stored tuple: arrival or partition order (below); len() = multiset size
     root:        HashTrieNode<P, E>,
     config:      HashTrieConfig,
     _layout:     PhantomData<(H, P, E)>,
@@ -40,16 +40,24 @@ The `Singleton` payload is the second Layout parameter's associated type: the `R
 
 The `Unexpanded` payload is the third Layout parameter's associated type, by the same device: `Box<LazyChild<N>>` under `LazyExpansion` and `Never` under the default `EagerExpansion`, pinned by `node_does_not_grow_under_the_expansion_policy`. Under lazy expansion only the root is built at construction; every child below it keeps its tuples' row ids in `pending` until `HashTrieIter::open` first enters it, and `HashTrie::resolve` then moves them into a table built by Algorithm 2's `build` (`bulk.rs`), one level deep (its own children start unexpanded). `for_each_tuple` and `heap_size_bytes` read `built` if present and `pending` otherwise; `collect_tuples` and `scan_tuples` read the buffer; none of them expands anything.
 
-**The tuple buffer** (#111). The trie owns its relation's tuples as one row-major `Tuples` batch, in arrival order: the batch a build is given, kept without a copy, then every row `insert` appends. Below the tables every tuple is named by its `RowId` (`u32`, an index into the buffer): a leaf chain is a `Vec<RowId>` in input order, a pruned `Singleton` one `RowId`, a lazy pending list a `Vec<RowId>`. `HashTrieIterator::leaf_tuples` lends a chain as a `LeafRows` view over the buffer. Two builds of one input own equal buffers, so the BuildMode identity tests compare ids, after checking the buffers are equal. Reading back: `for_each_tuple` walks the trie depth-first, reading each row through its id (`bench ds` times it, #79); `TupleScan::scan_tuples` (statistics, which need only the multiset) scans the buffer in arrival order; `collect_tuples` copies the buffer.
+**The tuple buffer** (#111, #101). The trie owns its relation's tuples as one row-major `Tuples` batch: the batch a build is given, then every row `insert` appends. `bulk` and `incremental` keep that batch without a copy, in arrival order. `radix:K`, `parallel:N` and `presized:N` copy it into partition order on the first attribute's hash (`morsel::partition_rows`, the paper's materialisation step, §3.3.2) and keep the copy, so each partition's rows are one contiguous range of the buffer, in input order; the input batch is freed once copied. Below the tables every tuple is named by its `RowId` (`u32`, an index into the buffer): a leaf chain is a `Vec<RowId>` in input order, a pruned `Singleton` one `RowId`, a lazy pending list a `Vec<RowId>`. `HashTrieIterator::leaf_tuples` lends a chain as a `LeafRows` view over the buffer. Two builds that keep their input own equal buffers, so the `bulk`/`incremental` identity tests compare ids, after checking the buffers are equal; the partitioning modes are compared by contents, each id read through its own trie's buffer (`identity::assert_same_contents`). Reading back: `for_each_tuple` walks the trie depth-first, reading each row through its id (`bench ds` times it, #79); `TupleScan::scan_tuples` (statistics, which need only the multiset) scans the buffer in its row order; `collect_tuples` copies the buffer.
 
-| Element (VLDB 2020 §3.3.1–3.3.2, Fig. 3) | kermit since #111 |
+| Element (VLDB 2020 §3.3.1–3.3.2, Fig. 3) | kermit since #101 B1 (2026-10-08) |
 | --- | --- |
-| Tuples in one contiguous buffer, fixed-length layout | ✓ the relation's buffer, row-major |
+| Tuples in one contiguous buffer, fixed-length layout | ✓ the relation's buffer, row-major (#111) |
 | Leaves, singletons and lazy children refer to tuple memory | ✓ by row id (4 B, kermit's; the paper's pointers are 8 B) |
-| A leaf is a list threaded through an 8-byte chain pointer per tuple | ✗ a `Vec<RowId>` per chain (kermit's), until #101 layer 3 |
-| Tuples partitioned by the first key's hash as they are materialised | ✗ arrival order, until #101 layer 3 |
+| Tuples partitioned by the first key's hash as they are materialised | ✓ in `radix:K`, `parallel:N` and `presized:N` (`morsel::partition_rows`); ✗ arrival order in `bulk` (the default) and `incremental` |
+| Partitioning morsel-driven, on N threads | ✓ the copy itself, in `parallel:N` and `presized:N` |
+| Two-pass radix partitioning (Balkesen et al.) | ✗ one round of partitions (kermit's: #101 found no fan-out cost at this scale, `radix:16` within 1.5 % of `radix:12`) |
+| A leaf is a list threaded through an 8-byte chain pointer per tuple | ✗ a `Vec<RowId>` per chain (kermit's), until #101 B2 |
 
-The paper's buffer is a copy its build makes. HashTrie takes the relation's buffer without copying it, so the build pays nothing for it; #101 layer 3 adds the partitioned copy, and with it the paper's cost.
+The paper's buffer is a copy its build makes. `bulk` and `incremental` take the relation's buffer without copying it, so they pay nothing for it but keep arrival order. The partitioning modes make the paper's copy and pay for it:
+- a histogram pass and a scatter of every row;
+- while the copy is made, the input and the copy both held (the input is freed before the build);
+- 4 bytes per row of `origin`, each copied row's input position, held until the build returns (`presized:N` frees it right after its tail), so the root merge and `presized:N`'s tail keep `bulk`'s order;
+- 2 bytes per row of partition numbers (`u16`), held between the histogram and the scatter, so each row is hashed once.
+
+Design: [`docs/specs/2026-10-08-hash-trie-partitioned-materialisation-design.md`](../specs/2026-10-08-hash-trie-partitioned-materialisation-design.md).
 
 Bucket index: the high `p` bits of `hash × MULTIPLIERS[p]`, where `p = log2_capacity` and `MULTIPLIERS` holds one odd constant per capacity. The paper takes the high bits of the hash itself; multiplying first is this implementation's one departure, and the [bucket-index invariant](#invariants) explains it. Collisions are resolved by linear probing within the bucket array. Each occupied bucket stores the full 64-bit hash for disambiguation during probes.
 
@@ -67,12 +75,13 @@ child, recursively. This is the `bulk` build mode, the default.
 
 | Algorithm 2 | kermit |
 |---|---|
+| before Algorithm 2, the input "materialized contiguously in an in-memory buffer" and "partitioned based on the hash values of the first join key attribute" (§3.3.2) | `bulk` and `incremental` keep the relation's batch, in arrival order, without a copy (kermit's); `radix:K`, `parallel:N` and `presized:N` copy it into partition order (`morsel::partition_rows`, #101) and keep the copy ([Build modes](#build-modes)) |
 | line 3, allocate `M` | `HashTable::with_log2_capacity`, at the capacity `root_log2_capacity` (the root) or `child_log2_capacity` (a child) gives |
 | line 3, the size of `M`, `2^⌈log2(1.25·\|L\|)⌉` | by default 4 buckets that double at the load factor as keys arrive, so a table is not allocated once (kermit's); `root-capacity=tuples,child-capacity=tuples` at `load-factor=0.8` is the paper's sizing, every table allocated once ([Config flags](#config-flags)) |
 | lines 4–7, push each tuple onto its bucket's list | `HashTrie::group` |
 | lines 8–12, build each bucket's child from its list | `HashTrie::build_nested`, through `HashTable::map` and `HashTrie::child` |
 | line 15, return the list | the last attribute's table of lists is the `Leaf`, its lists the chains |
-| the lists themselves | a `Vec<RowId>` per bucket: 4-byte ids of rows in the trie's tuple buffer (#111; kermit's). Umbra threads them through an 8-byte chain pointer in each materialised tuple (§3.3.2), which needs the partitioned copy of the buffer (#101 layer 3) |
+| the lists themselves | a `Vec<RowId>` per bucket: 4-byte ids of rows in the trie's tuple buffer (#111; kermit's). Umbra threads them through an 8-byte chain pointer in each materialised tuple (§3.3.2), which needs the partitioned copy of the buffer: the partitioning modes make it since #101 B1, and the chain pointer is #101 B2 |
 
 `child` decides what a bucket's list becomes: a `Singleton` under pruning
 (§3.3.1), an `Unexpanded` child under lazy expansion (§3.3.1), and
@@ -94,7 +103,7 @@ paper's.
 - **Hash function consistency.** The hashing convention is the compile-time `HashStrategy` parameter `H`, whose single-argument method `H::hash(key: usize) -> u64` (defined in `kermit_iters::hash_strategy`; `SipHashStrategy` is the default, `FxHashStrategy` the alternative — see [Layout options](#layout-options)) hashes only the attribute value. There is no per-depth parameter: cross-attribute aliasing isn't an issue because attribute positions live in physically distinct hash tables — a value at column 0 and the same value at column 1 are stored in different tables and cannot collide. `HashTrie::insert_at` calls `H::hash(key)` directly; `SingletonHashTrieIter` is handed a precomputed hash by `kermit::db::hash_join`, which uses the same `H`. Both paths must hash with the same `H`, or queries against constants silently break.
 - **Multiset semantics.** Duplicate tuples are preserved (added to the same leaf chain) rather than absorbed. This is a deliberate divergence from `TreeTrie`'s set behavior, motivated by the paper's "bag semantics" treatment in §3.2.4. Future enhancement: optional deduplication via a `with_set_semantics` flag.
 - **Load factor cap.** Each `HashTable` resizes (doubles) when an insert would push occupancy above the configured cap — `HashTrieConfig::load_factor`, default 0.7 (see [Config flags](#config-flags)). The test is exact integer arithmetic, `(len + 1) * 100 > capacity * percent`. After resize, all entries are rehashed. Every table starts at 4 buckets except in a build from a known set of tuples, where `--ds-config root-capacity=tuples` sizes the root once for the tuple count, and `child-capacity=tuples` sizes every child once for its list (see [Config flags](#config-flags)).
-- **Bucket index varies with capacity.** A table with `2^p` buckets indexes by the high `p` bits of `hash × MULTIPLIERS[p]` (`HashTable::bucket_index`), and each capacity has its own multiplier: an odd SplitMix64 output, so the multiply loses none of the hash and different capacities' multipliers are unrelated. The paper's `hash >> (64 - p)` is a *prefix* of the index at every larger capacity, so a table's iteration order is also sorted by the index of every smaller capacity. A table rebuilt in that order, such as a `HashTrie` rebuilt from another's `for_each_tuple` walk (or, before #111, from its `collect_tuples()` or a projection of it, which walked the trie too; both now read its buffer in arrival order), passes through those smaller capacities as it doubles, and at each one its keys share the lowest buckets. Linear probing turned that into one cluster spanning most of the keys the table held, making the build quadratic in the keys per table (issue #66). A salt fixed per trie depth would not help: the source and the rebuilt table share it. The multiplier covers a rebuild from one table's iteration order or any subset of it. Input that concatenates the iteration orders of two or more large tables of the same capacity, with mostly different keys, still clusters, because their densities add up in the low buckets. No index computed from the hash and the capacity alone can prevent that; only a seed that differs per table instance could. The multiplier costs one table load and one multiply per probe sequence and no space, keeps the structure deterministic, and leaves `heap_size_bytes` unchanged. Pinned by the `rebuilding_*_costs_no_more_than_key_order` tests in [`hash_table.rs`](../../kermit-ds/src/ds/hash_trie/hash_table.rs), which count build probes: the finished table cannot show the difference, because under linear probing a key set's total displacement does not depend on insertion order.
+- **Bucket index varies with capacity.** A table with `2^p` buckets indexes by the high `p` bits of `hash × MULTIPLIERS[p]` (`HashTable::bucket_index`), and each capacity has its own multiplier: an odd SplitMix64 output, so the multiply loses none of the hash and different capacities' multipliers are unrelated. The paper's `hash >> (64 - p)` is a *prefix* of the index at every larger capacity, so a table's iteration order is also sorted by the index of every smaller capacity. A table rebuilt in that order, such as a `HashTrie` rebuilt from another's `for_each_tuple` walk (or, before #111, from its `collect_tuples()` or a projection of it, which walked the trie too; both now read its buffer, in its row order), passes through those smaller capacities as it doubles, and at each one its keys share the lowest buckets. Linear probing turned that into one cluster spanning most of the keys the table held, making the build quadratic in the keys per table (issue #66). A salt fixed per trie depth would not help: the source and the rebuilt table share it. The multiplier covers a rebuild from one table's iteration order or any subset of it. Input that concatenates the iteration orders of two or more large tables of the same capacity, with mostly different keys, still clusters, because their densities add up in the low buckets. No index computed from the hash and the capacity alone can prevent that; only a seed that differs per table instance could. The multiplier costs one table load and one multiply per probe sequence and no space, keeps the structure deterministic, and leaves `heap_size_bytes` unchanged. Pinned by the `rebuilding_*_costs_no_more_than_key_order` tests in [`hash_table.rs`](../../kermit-ds/src/ds/hash_trie/hash_table.rs), which count build probes: the finished table cannot show the difference, because under linear probing a key set's total displacement does not depend on insertion order.
 - **Leaf chains preserve hash collisions.** Two tuples with identical hash signatures (collisions on every attribute) end up in the same leaf chain. Verification at join time (paper §3.2.3 line 18) distinguishes true matches from false positives. Pinned by the `hash_trie_collisions` tests in [`kermit-ds/tests/hash_trie_tests.rs`](../../kermit-ds/tests/hash_trie_tests.rs), which build the trie under a test-only `hash(k) = k mod 10` strategy so the collisions are real rather than simulated.
 - **Lazy buckets hold no tables.** Under the `LazyExpansion` Layout, every `Inner` bucket holds a `Singleton` (pruning on, exactly one tuple below it) or an `Unexpanded` child, never a table; a table appears only inside an `Unexpanded` child a probe has built. An expanded child's table is the eager table at that position, bucket for bucket, for a trie no `insert` has changed since its build, and always under `child-capacity=grow`: it is built by Algorithm 2 from its pending list, which keeps insertion order, under the same load factor and child capacity as the eager build. Pinned by the `lazy_expansion` trace tests in [`kermit-ds/tests/hash_trie_tests.rs`](../../kermit-ds/tests/hash_trie_tests.rs), which require identical probe traces from an eager and a lazy trie.
 - **Pruned iff exactly one tuple.** Under the `SingletonPruning` Layout, a child node is `Singleton` iff exactly one tuple lives below it; the shape is insertion-order independent, and a second tuple (including a duplicate or a full hash collision) unprunes the node back into tables. Under `NoPruning` no `Singleton` can exist — its payload is uninhabited — and the structure is identical to pre-pruning builds. Pinned by `check_pruning_invariant` in the [`implementation.rs`](../../kermit-ds/src/ds/hash_trie/implementation.rs) tests.
@@ -108,7 +117,7 @@ Let `n` = tuple count, `a` = arity, `b` = max chain length at a leaf bucket.
 | `insert(tuple)` | O(a) amortized | O(a) | per-level: one hash + one probe + at most one resize; amortized O(1) per level |
 | `from_tuples(n)` | O(n · a) | O(n · a) | Algorithm 2, the default `bulk` build: n hashes and row-id pushes per level (the tuples stay in the buffer), a list allocation of 4-byte ids per inner bucket (a one-tuple list too, freed again when pruning makes it a `Singleton`), and one transient table of lists per inner table (about 32 B a bucket, the root's the largest; the last attribute's table of lists stays as the `Leaf`). Expected cost holds for input in another `HashTrie`'s iteration order, or any subset of it; the bucket-index invariant names the one order it does not cover |
 | `from_tuples` under `incremental` | O(n · a) | O(n · a) | loops `insert` over the input: the build before #107 |
-| `from_tuples` under `radix:K` | O(n · a + D log D) | O(n · a) | the bulk build, plus two partition passes, a second first-attribute hash per tuple and a sort of the D distinct root keys; builds the identical trie |
+| `from_tuples` under `radix:K` | O(n · a + D log D) | O(n · a) | the bulk build over a partitioned copy: a histogram pass and a scatter copying every row (`partition_rows`, one first-attribute hash per tuple, kept for the scatter), a second first-attribute hash per tuple in the scratch roots, and a sort of the D distinct root keys; transiently the copy beside the input while it is made, and 4 B per tuple of `origin` and 2 B of partition number; builds an equivalent trie, the bulk trie's contents and root with the rows in partition order |
 | `HashTrieIterator::key()` | O(1) | | array access at the deepest stack entry |
 | `HashTrieIterator::next()` | O(1) amortized | | scans forward in the current node's bucket array; per-call amortized constant in practice |
 | `HashTrieIterator::lookup(h)` | O(1) expected | | linear probe; O(capacity) worst case |
@@ -120,7 +129,7 @@ Let `n` = tuple count, `a` = arity, `b` = max chain length at a leaf bucket.
 | `HashTrieIterator::up()` | O(1) | | pops the stack |
 | `HashTrieIterator::leaf_tuples()` | O(1) | | a `LeafRows` view: the current bucket's chain of row ids over the trie's buffer; copies nothing |
 | `HeapSize::heap_size_bytes()` | O(node count) | | the buffer (capacity × 8 B), plus a recursive walk summing each `HashTable` shell and each id list (chains and pending lists, capacity × 4 B), and under lazy expansion each unexpanded child's `Box<LazyChild>` (`own_heap_bytes`). A tuple is counted once, in the buffer; at arity 2 that is 16 B plus a 4-byte id, where a `Vec` per tuple cost 40 B before #111 |
-| `for_each_tuple(visit)` | O(n) | O(a) stack | depth-first walk of the trie lending each stored tuple, read from the buffer through its chain or pruned `Singleton` id; allocates nothing per tuple, so `bench ds` times it (issue #79). `collect_tuples()` copies the buffer, in arrival order, and `TupleScan::scan_tuples` scans it in place: neither walks the trie |
+| `for_each_tuple(visit)` | O(n) | O(a) stack | depth-first walk of the trie lending each stored tuple, read from the buffer through its chain or pruned `Singleton` id; allocates nothing per tuple, so `bench ds` times it (issue #79). `collect_tuples()` copies the buffer, in its row order, and `TupleScan::scan_tuples` scans it in place: neither walks the trie |
 
 The "amortized O(1)" claims assume good hash distribution (no chronic clustering on linear probes). For pathologically bad inputs (e.g., all keys hashing to the same bucket), `lookup` degrades to O(capacity). The hash function is a Layout choice, not a fixed cost: `fxhash` (`FxHashStrategy`) is implemented and selectable with `--ds-layout-hasher fxhash` — see [Layout options](#layout-options). Other non-cryptographic alternatives (`ahash`, AquaHash) remain unimplemented.
 
@@ -422,7 +431,8 @@ optimizations are classified into Layout, Config, or BuildMode.
     under `root-capacity=tuples`):
     - Under `bulk`, `insertion` is 0.95× `grow` by geomean, and 0.86–0.94×
       on the binary relations.
-    - Under `presized:16` it is unchanged (0.99×).
+    - Under `presized:16` it is unchanged (0.99×; measured before
+      `presized:N` copied its rows into partition order, #101 B1).
     - `iteration` and `space` are unchanged except on `price`, whose
       one-tuple children take 2 buckets: `iteration` is 0.83× there and
       `space` 0.82×.
@@ -447,58 +457,81 @@ optimizations are classified into Layout, Config, or BuildMode.
 
 ### Build modes
 
-Every mode here but `presized:N` builds the identical trie under the same
-config, under every config it accepts — the same buckets, the same
-capacities, the same `heap_size_bytes` — so the mode changes the
-`insertion` and `end_to_end` timings and nothing else (issues #91, #94,
-#107). The BuildMode rule asks less since Amendment 2
-(2026-10-06): the same contents and capacities. `presized:N` uses that
-freedom; it may place root keys in other buckets, so `iteration` is measured
-for it.
+Every mode here builds an equivalent trie under the same config, under
+every config it accepts: the same contents, the same capacities, the same
+`heap_size_bytes`. That is the BuildMode rule since Amendment 2
+(2026-10-06; issues #91, #94, #101, #107). The modes differ only in what
+the rule leaves free:
+- `bulk` and `incremental` build the identical trie, bucket for bucket and
+  id for id.
+- `radix:K`, `parallel:N` and `presized:N` copy their rows into partition
+  order and keep the copy as the trie's buffer (#101 B1, 2026-10-08). Every
+  chain, singleton and pending list holds the same tuples, in the same
+  order, under other row ids.
+- `radix:K`'s and `parallel:N`'s tables are `bulk`'s bucket for bucket, the
+  root included; `presized:N` may also place root keys in other buckets.
+
+So `iteration` is measured for the three partitioning modes, never assumed.
 
 | Mode | `--ds-build` | Method |
 |---|---|---|
 | `Bulk` (default) | `hash-trie=bulk` | Algorithm 2 (§3.2.2): each table's tuples grouped into its buckets, then each bucket's child built from its list ([Construction](#construction)) |
 | `Incremental` | `hash-trie=incremental` | one `insert_at` per tuple, in input order: the build named `serial` before #107; requires `child-capacity=grow` |
-| `Radix(K)` | `hash-trie=radix:K`, K in 1..=16 | radix-partition on the top K bits of the first attribute's hash (SIGMOD 2020 §3.3.2, the partitioning only), group each partition into a scratch root and build its children by Algorithm 2, merge the scratch roots (kermit's) |
-| `Parallel(N)` | `hash-trie=parallel:N`, N in 1..=1024 | the radix build's partition and build steps on N threads (P = 4·N partitions, rounded up to a power of two), then a k-way merge into the root on the calling thread (morsel-driven partitioning per §3.3.2; the scratch-root build and the merge are kermit's) |
-| `Presized(N)` | `hash-trie=presized:N`, N in 1..=1024; **requires `--ds-config root-capacity=tuples`** | the input partitioned by the first attribute's hash (§3.3.2) into regions of the presized root, each worker grouping its regions (Algorithm 2, lines 4–7), a tail of deferred tuples pushed on the calling thread, then the children built a run of buckets at a time by whichever worker is free; the regions, the tail and the parallel recursion are kermit's (Amendment 3 of the optimisation standard) |
+| `Radix(K)` | `hash-trie=radix:K`, K in 1..=16 | copy the rows into 2^K partitions on the top K bits of the first attribute's hash and keep the copy as the buffer (SIGMOD 2020 §3.3.2: the tuples partitioned as they are materialised, in one round, #101), group each partition into a scratch root and build its children by Algorithm 2, merge the scratch roots (kermit's) |
+| `Parallel(N)` | `hash-trie=parallel:N`, N in 1..=1024 | the radix build's partition step (the copy) and build step on N threads (P = 4·N partitions, rounded up to a power of two), then a k-way merge into the root on the calling thread (morsel-driven partitioning and materialisation per §3.3.2; the scratch-root build and the merge are kermit's) |
+| `Presized(N)` | `hash-trie=presized:N`, N in 1..=1024; **requires `--ds-config root-capacity=tuples`** | the input copied into partition order by the first attribute's hash (§3.3.2, #101), one partition per run of regions of the presized root, each worker grouping its regions (Algorithm 2, lines 4–7), a tail of deferred tuples pushed on the calling thread in input order, then the children built a run of buckets at a time by whichever worker is free; the regions, the tail and the parallel recursion are kermit's (Amendment 3 of the optimisation standard) |
 
 **The radix build** ([`radix.rs`](../../kermit-ds/src/ds/hash_trie/radix.rs)):
 
-1. **Partition.** A histogram pass, then a stable scatter pass, puts every
-   row's id in one of 2^K partitions. A row's id is its input index, so
-   nothing else travels with it, and the rows stay in the buffer.
+1. **Partition.** `morsel::partition_rows`, on the calling thread with the
+   whole batch as one morsel, copies every row into one of 2^K partitions
+   by the top K bits of its first attribute's hash: a histogram pass, which
+   keeps each row's partition number, then a stable scatter into one new
+   buffer, recording each copied row's input position (`origin`). The copy
+   becomes the trie's buffer and the input is freed, so partition p is the
+   contiguous id range `offsets[p]..offsets[p + 1]`, in input order (#101).
+   One morsel, because `partition_rows` keeps a count and a range per
+   (partition, morsel) pair: at `radix:16` over 10⁷ rows, 16 384-row
+   morsels would make about 40 million pairs.
 2. **Scratch roots.** Each non-empty partition's ids are grouped into a
    scratch root of the real root's kind (Algorithm 2, lines 4–7), recording
-   the id of the row that introduced each key; then each key's child is
-   built from its list, as the bulk build builds it.
+   the input position (`origin[id]`) of the row that introduced each key;
+   then each key's child is built from its list, as the bulk build builds
+   it, reading only that partition's rows.
 3. **Merge.** Every scratch entry moves into the real root, in the order of
-   those first-appearance indices.
+   those first-appearance positions.
 
-**Why it is identical.**
+**Why it is equivalent.**
 
 - A table's final layout depends only on the order in which its *new* keys
   arrive, because `entry_or_insert_with` returns an existing entry before
   its resize check.
 - The merge inserts the root's distinct keys in first-appearance order, as
-  the bulk build does.
-- Each root key's child is built from the same list, in input order,
-  because the partition is stable. That covers every `Singleton`, every
-  chain, every capacity and, under `LazyExpansion`, every pending list.
+  the bulk build does. It orders them by input position, not by id, since
+  ids in the copy run partition by partition, so the root is `bulk`'s,
+  bucket for bucket.
+- Each root key's child is built from the same tuples, in input order,
+  because the copy is stable. That covers every table, `Singleton`, chain
+  and capacity and, under `LazyExpansion`, every pending list. Only the ids
+  differ: a chain names its tuples by their positions in the copy.
 
 **Cost.** Every per-tuple probe and every child build stays inside one
-partition, about 1/2^K of the trie, and only the D merge inserts (one per
-distinct first-attribute hash) touch the real root at random. In return the
-build pays for:
+partition, about 1/2^K of the trie and one contiguous range of the buffer,
+and only the D merge inserts (one per distinct first-attribute hash) touch
+the real root at random. In return the build pays for:
 
-- two partition passes;
-- a second hash of each tuple's first attribute;
+- the copy: a histogram pass and a scatter of every row, into buffers
+  allocated zeroed (safe Rust cannot hand out uninitialised ranges; the
+  allocator's zero pages cost no serial memset);
+- a second hash of each tuple's first attribute (`partition_rows` hashes
+  each row once and keeps the number for its scatter);
 - a sort of the D merge entries;
-- transient memory: 2 bytes per tuple for its partition number, 4 bytes
-  per tuple for its row id in the partitioned lists (32 bytes of
-  `(index, tuple)` pair before #111), and the scratch
-  tables.
+- transient memory: the copy beside the input while it is made, 2 bytes
+  per tuple of partition number (between the two passes), 4 bytes per
+  tuple of `origin` (until the build returns), and the scratch tables.
+  Before #101 B1 the partitions held 2 bytes of partition number and 4 of
+  row id per tuple in lists instead of a copy of the rows, and 32 bytes of
+  `(index, tuple)` pair before #111.
 
 **The #66 input shape.** A scratch root receives keys that share their top
 K hash bits. The per-capacity multiplier turns that shared prefix into one
@@ -508,27 +541,35 @@ constant added to every key's product, so the partition does not cluster.
 without the multiplier, one partition costs about 90× the probes.
 
 **The parallel build** (`parallel.rs`) runs the radix build's partition
-step through `morsel::scatter_rows` and its build step through
-`morsel::dispatch`, so each runs on N threads. The calling thread then
-merges the partitions' entries into the root by a k-way merge on their
-first-appearance positions. The trie is the radix build's, and so the
-bulk build's. Steps, identity argument, complexity and a worked example:
+step through `morsel::partition_rows` and its build step through
+`morsel::dispatch`, so each runs on N threads: N workers make the copy,
+each scattering its morsels' rows into disjoint ranges of the one new
+buffer. The calling thread then merges the partitions' entries into the
+root by a k-way merge on their first-appearance positions (`origin`). The
+trie holds the radix build's contents and root, and so the bulk build's.
+Steps, equivalence argument, complexity and a worked example:
 [`parallel-build.md`](./parallel-build.md#hashtrie).
 
 **The presized build** (`presized:N`). It requires `root-capacity=tuples`,
 since its regions are cut from a root sized before any tuple arrives; the
-CLI rejects the pair otherwise and the constructor panics. It partitions the
-input by the first attribute's hash (§3.3.2) into contiguous regions of the
-presized root, and each worker pushes the id of every row of its regions
-onto its bucket's list. Keys whose probe would cross their region's end are finished
-by the calling thread, in a tail. The paper does not say how it handles
+CLI rejects the pair otherwise and the constructor panics. It copies the
+input into partition order by the first attribute's hash (§3.3.2, #101),
+one partition per contiguous run of regions of the presized root, and each
+worker pushes the id of every row of its partition, one contiguous range
+of the copy, onto its bucket's list. Keys whose probe would cross their
+region's end are finished by the calling thread, in a tail, in input order
+(by `origin`: ids in the copy run partition by partition, and the
+partition count depends on N). The paper does not say how it handles
 that case, so this is kermit's answer. After the tail, the children are
 built by Algorithm 2 a run of buckets at a time, the runs handed to
 whichever worker is free (how the recursion is spread over threads is
-kermit's choice; the paper is silent). The trie is
-equivalent to bulk's (Amendment 2): every subtrie and chain is
-array-identical; the root has the same capacity, the same occupied buckets
-and the same total displacement; and it is the same for every N. The
+kermit's choice; the paper is silent). `origin` and the partition offsets
+are freed right after the tail, before the children are built. The trie is
+equivalent to bulk's (Amendment 2): every subtrie and chain holds the same
+tuples in the same order; the root has the same capacity, the same
+occupied buckets and the same total displacement; and its contents are the
+same for every N, bucket for bucket, though each N's buffer is its own
+partitioned copy. The
 closest-to-paper configuration is
 `--ds-config root-capacity=tuples,child-capacity=tuples,load-factor=0.8
 --ds-build hash-trie=presized:N`, with pruning and lazy expansion on.
@@ -553,9 +594,15 @@ Details:
     `tuples_sizes_every_child_from_its_list` in `bulk.rs`, the
     `HashTrieSipIncremental` aliases, and the `HashIncremental`,
     `SizedChildren` and `PaperSizing` join suites.
-  - `radix_builds_the_bulk_trie_*` in `radix.rs`: array-level identity,
-    capacities included, across arity, pruning, expansion, hasher, K, load
-    factor and input. Miri runs a smaller matrix.
+  - `radix_builds_the_bulk_trie_*` in `radix.rs`: content-level identity
+    (`identity::assert_same_contents`: every table bucket for bucket, the
+    root included; every chain, singleton and pending list by the tuples
+    its ids name; the buffers as a multiset at the same capacity) and equal
+    heap size, across arity, pruning, expansion, hasher, K, load factor and
+    input. Miri runs a smaller matrix.
+    `radix_keeps_the_partitioned_copy_as_its_buffer` pins the buffer to
+    `morsel::partition_rows`' output, the one difference no content test
+    sees (#101).
   - The `HashTrieSipRadix2` and `HashTrieSipLazyRadix2` aliases in
     `kermit-ds/tests/hash_trie_tests.rs` (and `HashTrieSipRadix2` in
     `parquet_tests.rs`).
@@ -563,9 +610,11 @@ Details:
     `kermit/tests/join_tests.rs`, on Sip/off/eager, Fx/on/eager and
     Sip/on/lazy, under every optimiser.
   - `parallel_builds_the_bulk_trie_*` and `build_modes_reach_their_builds`
-    in `parallel.rs`: identity for N ∈ {1, 2, 3, 8}, morsels of 7 and of
-    16 384, arity 1–4 and a dominant key; and the record that shows which
-    build ran, with which N.
+    in `parallel.rs`: content-level identity for N ∈ {1, 2, 3, 8}, morsels
+    of 7 and of 16 384, arity 1–4 and a dominant key; and the record that
+    shows which build ran, with which N, and its worker runs.
+    `parallel_stores_its_partitioned_copy` pins the buffer to
+    `partition_rows`' output at `partition_bits(N)` partitions.
   - The `HashTrieSipParallel2`, `HashTrieSipLazyParallel2` and
     `HashTrieFxPrunedParallel2` aliases in `hash_trie_tests.rs` (and
     `HashTrieSipParallel2` in `parquet_tests.rs`), and
@@ -573,17 +622,22 @@ Details:
     in `join_tests.rs`.
   - `presized_parallel_builds_are_equivalent_*` and
     `presized_parallel_builds_are_the_same_for_every_n_on_dense_roots` in
-    `parallel.rs`: equivalence with bulk under `root-capacity=tuples` and
-    identity with `presized:1`, for every Layout, load factors 50–95 % and
+    `parallel.rs`: equivalence with bulk under `root-capacity=tuples`
+    (children compared by contents) and content identity with
+    `presized:1`, for every Layout, load factors 50–95 % and
     N ∈ {1, 2, 3, 8}, at 8-bucket regions and at the real size;
+    `presized_stores_its_partitioned_copy` (the buffer is
+    `partition_rows`' copy by home-bucket run);
+    `presized_tail_goes_in_input_order_for_every_n` (the tail is pushed by
+    `origin`, so a tail key's bucket is the same at N = 1 and N = 4);
     `keys_that_cannot_fit_their_region_go_to_the_tail` (a hash that homes
     every key at a region's last bucket defers 12 of 16 tuples); and
     `one_run_of_grouping_builds_the_bulk_root`, the grouping step without
     threads.
   - `presized_build_reaches_its_own_path` and
     `parallel_build_merges_under_every_root_capacity` in `parallel.rs`: each
-    mode reaches its own fill, and `parallel:N` is identical to bulk under
-    both root capacities; `presized_build_requires_a_presized_root`
+    mode reaches its own fill, and `parallel:N` holds bulk's contents and
+    root under both root capacities; `presized_build_requires_a_presized_root`
     (`parallel.rs`), `every_prerequisite_is_reachable` and
     `ds_choices_resolve_rejects_a_violated_prerequisite`
     (`kermit/src/options.rs`) and `cli_rejects_presized_without_a_presized_root`
@@ -600,6 +654,12 @@ Details:
     `kermit/src/execution.rs` (the mode reaches the build on every route,
     and `presized:N` reaches the presized fill) and
     `kermit/tests/cli_hash_trie_build_mode.rs`.
+  - `partition_rows_*` in `kermit-ds/src/morsel.rs`: offsets, membership,
+    stability, `origin`, the same copy for every thread count and morsel
+    size, the input's capacity, one `partition_of` call per row and two
+    worker runs. The `identity.rs` self-tests show that the content
+    comparison accepts a reversed buffer and rejects a row that differs
+    while hashing alike.
 - **When `incremental` is useful:** reproducing pre-#107 `insertion`
   numbers, and measuring what Algorithm 2's order buys over the per-tuple
   descent (the locality #101 is about).
@@ -616,7 +676,10 @@ Details:
   `incremental` since #107, and `radix:K`, `parallel:N` and the presized
   arms (then spelled `parallel:N`) built that way too. Today's modes of
   those names group first and build children by Algorithm 2, so none of
-  these numbers measures a post-#107 mode.)* On inputs that arrive grouped
+  these numbers measures a post-#107 mode. 2026-10-08, #101 B1: they also
+  partitioned row ids and left the rows in arrival order, where today's
+  `radix:K`, `parallel:N` and `presized:N` copy the rows into partition
+  order first.)* On inputs that arrive grouped
   by their first attribute, slower single-threaded, with identical space:
   1.12–1.14× `serial`'s `insertion` time on `friendof` and 1.93–2.28× on `price`. On
   `friendof` with its rows shuffled, `radix:12` is 0.90× `serial`, the only
@@ -635,6 +698,8 @@ Details:
 #### Radix build A/B
 
 > **2026-10-07 (#107):** Every arm in this record built its subtries per tuple, by `insert_at`. `serial` is the per-tuple build, `incremental` since #107, and the `radix:K` arms built that way too. Today's `radix:K` groups first and builds its children by Algorithm 2, and the default is now `bulk`, so none of these numbers measures a post-#107 mode.
+
+> **2026-10-08 (#101 B1):** These arms also partitioned row ids and left the rows in arrival order. Today's `radix:K` copies the rows into partition order (`morsel::partition_rows`) and keeps the copy as the trie's buffer, so each partition's build reads one contiguous range, and its `insertion` includes the copy. These numbers do not measure a post-B1 `radix:K` either.
 
 `bench ds -m insertion space` on two relations from the WatDiv cache
 `watdiv-stress-100-test-1`, on 2026-10-05. The binary was built at 596f218,
@@ -681,6 +746,8 @@ build. This A/B measures one thread only; parallel builds are #94.
 #### Radix build A/B, shuffled input
 
 > **2026-10-07 (#107):** Every arm in this record built its subtries per tuple, by `insert_at`. `serial` is the per-tuple build, `incremental` since #107, and the `radix:K` arms built that way too. Today's `radix:K` groups first and builds its children by Algorithm 2, and the default is now `bulk`, so none of these numbers measures a post-#107 mode.
+
+> **2026-10-08 (#101 B1):** These arms also partitioned row ids and left the rows in arrival order. #101's locality run (2026-10-08, `kermit-bench-runs/hash-trie-locality-2026-10-08/`) located the order penalty this record found in reads of tuple memory. Today's `radix:K` copies the rows into partition order first, so the shuffled column is the case #101 B1 targets; these numbers do not measure it.
 
 The paper's ablation (§5.4.2 of the technical report TUM-I2082) calls radix
 partitioning "arguably the most important optimization", because "it eliminates any
@@ -785,6 +852,8 @@ TreeTrie's code did not change, so its ratio is the codegen bound.
 `bench ds -m insertion iteration`, `space` in the first replicate). Every
 cell ran with `root-capacity=tuples`, so only the children differ: `bulk`
 and `presized:16`, each at load factors 0.7 and 0.8.
+
+> **2026-10-08 (#101 B1):** The `presized:16` cells built over the input in arrival order. Today's `presized:N` copies its rows into partition order first, so those cells do not measure a post-B1 build; the `bulk` cells do.
 
 | Cell | `insertion`, geomean | `friendof` | `binary-1e7` | `price` | `iteration`, geomean |
 |---|---|---|---|---|---|

@@ -300,13 +300,16 @@ walkthrough is in
 ### Scaling: measuring a parallel build
 
 `--ds-build tree-trie=parallel:N` builds a `TreeTrie` on N threads, and
-`hash-trie=parallel:N` a `HashTrie` (#94). The trie is identical to the
-structure's single-threaded build's (TreeTrie `serial`, HashTrie `bulk`), so
-only `insertion` and `end_to_end` can
-move. HashTrie's presized build is `--ds-build hash-trie=presized:N`, which
-requires `--ds-config root-capacity=tuples`; it builds an equivalent, not
-identical, trie, so `iteration` is measured for it too, and its speedup
-baseline is `bulk` under the same `root-capacity=tuples` config.
+`hash-trie=parallel:N` a `HashTrie` (#94). A TreeTrie's trie is identical
+to its `serial` build's, so only `insertion` and `end_to_end` can move.
+HashTrie's `parallel:N` holds `bulk`'s contents and root over a buffer of
+its own, since it copies its rows into partition order (#101), so
+`iteration` is measured for it too. HashTrie's presized build is
+`--ds-build hash-trie=presized:N`, which requires
+`--ds-config root-capacity=tuples`; it copies its rows the same way and
+builds an equivalent, not identical, trie, so `iteration` is measured for
+it too, and its speedup baseline is `bulk` under the same
+`root-capacity=tuples` config.
 Run one arm per thread count within one binary, each with its own
 `--name`, then plot the speedup over the single-threaded build
 (`kl.speedup_table` picks TreeTrie `serial`, HashTrie `bulk`):

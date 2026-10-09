@@ -2,9 +2,11 @@
 //! Every `HashTrie` report says which build made its relations: `bulk` by
 //! default (`incremental` is the per-tuple build), `radix:<bits>`,
 //! `parallel:<threads>` or `presized:<threads>` under
-//! `--ds-build hash-trie=…`. Every mode builds an equivalent trie (the
-//! identical one, except `presized:N`, whose root keys may sit in other
-//! buckets), so only the axis (and build time) shows which ran.
+//! `--ds-build hash-trie=…`. Every mode builds an equivalent trie, the same
+//! contents and capacities (`presized:N` may place root keys in other
+//! buckets, and `radix:K`, `parallel:N` and `presized:N` store their rows
+//! in partition order, #101), so only the axis (and build time) shows which
+//! ran.
 
 mod common;
 

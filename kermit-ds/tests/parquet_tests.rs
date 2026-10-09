@@ -141,7 +141,8 @@ fn sorted_tuples_sized_children(relation: &HashTrieSipSizedChildren) -> Vec<Vec<
 
 parquet_test_suite!(HashTrieSipSizedChildren, sorted_tuples_sized_children);
 
-// …and under the radix BuildMode, which must load the same trie (issue #91).
+// …and under the radix BuildMode, which must load an equivalent trie: the same
+// contents, the rows in partition order (issues #91, #101).
 define_build_mode_provider!(
     Radix2,
     HashTrieBuildMode,

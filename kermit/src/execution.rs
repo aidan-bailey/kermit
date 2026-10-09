@@ -1844,8 +1844,9 @@ mod tests {
     }
 
     /// SipHash that counts its calls. The radix build hashes each tuple's
-    /// first attribute once more than the bulk build, and the two build
-    /// identical tries, so the count is the only way to see which one ran.
+    /// first attribute once more than the bulk build (it partitions on that
+    /// hash first), and the two build tries of the same contents, so this
+    /// test tells them apart by the count.
     #[derive(Copy, Clone, Default, Debug)]
     struct CountingHash;
 
@@ -1860,9 +1861,9 @@ mod tests {
         }
     }
 
-    /// Both modes build identical tries, so only a spy can see whether the
-    /// family's mode reached the build, on every route a relation is built,
-    /// eager or lazy.
+    /// Both modes build tries of the same contents, so only a spy can see
+    /// whether the family's mode reached the build, on every route a
+    /// relation is built, eager or lazy.
     #[test]
     fn hash_families_build_with_their_mode() {
         fn check<E: ExpansionPolicy>() {

@@ -11,8 +11,11 @@ use {
 /// Every mode builds an equivalent trie, the same contents with the same
 /// capacities (the BuildMode rule). `Bulk`, `Incremental`, `Radix` and
 /// `Parallel` also put each key in the same bucket; `Presized` may place root
-/// keys in other buckets (Amendment 2). The mode changes how long the build
-/// takes, never the trie's contents (issues #91, #94, #107).
+/// keys in other buckets (Amendment 2). `Radix`, `Parallel` and `Presized`
+/// copy the tuples into partition order and keep the copy as the trie's
+/// buffer (#101), so their row ids differ from `Bulk`'s. The mode changes
+/// how long the build takes and where tuples sit, never the trie's contents
+/// (issues #91, #94, #101, #107).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HashTrieBuildMode {
     /// Algorithm 2 of the paper (VLDB 2020, §3.2.2): a table's tuples are
@@ -27,22 +30,24 @@ pub enum HashTrieBuildMode {
     /// rejects it first.
     Incremental,
     /// Radix-partition the tuples on the top bits of their first
-    /// attribute's hash, build each partition separately, then merge
+    /// attribute's hash, copying them into partition order (the trie's
+    /// buffer, #101), build each partition separately, then merge
     /// (SIGMOD 2020 §3.3.2).
     Radix(RadixBits),
     /// The radix build's partition and build steps on this many threads,
     /// the calling thread included: the morsel-driven parallel build
-    /// (`docs/data-structures/parallel-build.md`, issue #94). The exact
-    /// merge build under every root capacity: a presized root changes the
-    /// root's size, never the process.
+    /// (`docs/data-structures/parallel-build.md`, issue #94), whose workers
+    /// also make the copy into partition order (#101). The exact merge build
+    /// under every root capacity: a presized root changes the root's size,
+    /// never the process.
     Parallel(Threads),
     /// The partitioned build of a presized root on this many threads: the
-    /// input partitioned by its first attribute's hash, as the paper does
-    /// (VLDB 2020 §3.3.2); each worker groups its run of the root's regions,
-    /// a tail of deferred tuples goes to the calling thread, then each worker
-    /// builds its run's children (kermit's scheme, `parallel.rs`). The root
-    /// must be sized before any tuple arrives, so this mode **requires
-    /// `root-capacity=tuples`**
+    /// input copied into partition order by its first attribute's hash, as
+    /// the paper does (VLDB 2020 §3.3.2, #101); each worker groups its run of
+    /// the root's regions, a tail of deferred tuples goes to the calling
+    /// thread in input order, then each worker builds its run's children
+    /// (kermit's scheme, `parallel.rs`). The root must be sized before any
+    /// tuple arrives, so this mode **requires `root-capacity=tuples`**
     /// (`docs/specs/2026-10-07-dependent-optimisations-design.md`);
     /// the constructor panics without it, and the CLI rejects it first.
     Presized(Threads),
