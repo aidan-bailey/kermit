@@ -4,22 +4,33 @@
 //! of `crate::morsel` (Leis et al., SIGMOD 2014; SIGMOD 2020 §3.3.2; issue
 //! #94).
 //!
-//! 1. **Partition.** [`scatter_rows`] sends every row's id (its input position)
-//!    into one of P partitions by the top log₂P bits of the row's first
-//!    attribute's hash; P is four per thread, rounded up to a power of two.
-//! 2. **Build.** [`dispatch`] groups each non-empty partition into a scratch
-//!    root and builds its children, as `bulk` does
+//! 1. **Partition.** [`partition_rows`] copies every row into one of P
+//!    partitions by the top log₂P bits of the row's first attribute's hash, and
+//!    records each copied row's input position (`origin`); P is four per
+//!    thread, rounded up to a power of two. The copy is the paper's
+//!    materialisation step (§3.3.2, #101): it becomes the trie's buffer, the
+//!    input batch is freed, and each partition's rows are a contiguous range of
+//!    it, so every later read of a partition's rows is local.
+//! 2. **Build.** [`dispatch`] groups each non-empty partition's id range into a
+//!    scratch root and builds its children, as `bulk` does
 //!    (`radix::build_scratch_root`), then takes the scratch root's entries out,
 //!    each tagged with the input position at which its key first appeared.
 //! 3. **Merge.** The calling thread inserts every entry into the real root in
 //!    first-appearance order, by a k-way merge of the partitions' lists.
 //!
-//! The result is the bulk trie, bucket for bucket and capacity for
-//! capacity, for the reasons the radix build's is. Each partition lists its
-//! row ids in input order (`scatter_rows` keeps it), so each child is
-//! built from the list `bulk` builds it from; and the root receives its new
-//! keys in the bulk order. Equal 64-bit hashes share a root entry and also a
-//! partition, because the partition is a function of the hash.
+//! The result holds the bulk trie's contents, and its root is the bulk
+//! build's, bucket for bucket and capacity for capacity, for the reasons
+//! the radix build's is.
+//! - **Children.** A partition keeps its rows in input order (`partition_rows`
+//!   is stable), so each child is built from the tuples `bulk` builds it from,
+//!   in the same order, under partition-local ids.
+//! - **Root.** The root receives its new keys in the bulk order, because the
+//!   merge orders them by `origin`, not by id.
+//! - **Collisions.** Equal 64-bit hashes share a root entry and also a
+//!   partition, because the partition is a function of the hash.
+//!
+//! Only the ids differ, so the trie is equivalent to `bulk`'s rather than
+//! array-identical (Amendment 2).
 //!
 //! `presized:N`
 //! (`docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`;
@@ -51,7 +62,8 @@ use {
         radix::{self, Arrival},
     },
     crate::morsel::{
-        dispatch, row_id, scatter_rows, RowPartition, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD,
+        dispatch, partition_rows, scatter_rows, RowPartition, Threads, MORSEL_TUPLES,
+        PARTITIONS_PER_THREAD,
     },
     kermit_iters::{HashStrategy, RowId, Tuples},
     std::{cmp::Reverse, collections::BinaryHeap},
@@ -142,56 +154,72 @@ fn partition_bits(threads: Threads) -> u32 {
         .trailing_zeros()
 }
 
+/// The size of each partition of `partitioned`, empty ones included: the
+/// test hooks' [`ParallelBuild::partition_sizes`].
+#[cfg(any(test, feature = "test-hooks"))]
+fn partition_sizes(partitioned: &crate::morsel::Partitioned) -> Vec<usize> {
+    partitioned
+        .offsets
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect()
+}
+
 /// Fills the empty `root` with the rows of `tuples` by the
-/// `parallel:threads` build. Every row must have `arity` attributes; the
-/// caller checks.
+/// `parallel:threads` build, and returns the partitioned copy of `tuples`
+/// that the trie keeps as its buffer: every id in `root` names a row of
+/// it. `tuples` itself is freed once copied. Every row must have `arity`
+/// attributes; the caller checks.
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: &Tuples, root: &mut HashTrieNode<P, E>, arity: usize, threads: Threads,
+    tuples: Tuples, root: &mut HashTrieNode<P, E>, arity: usize, threads: Threads,
     config: HashTrieConfig,
-) {
-    fill_root_in_morsels::<H, P, E>(tuples, root, arity, threads, MORSEL_TUPLES, config);
+) -> Tuples {
+    fill_root_in_morsels::<H, P, E>(tuples, root, arity, threads, MORSEL_TUPLES, config)
 }
 
 /// [`fill_root`] with the morsel size as a parameter, so tests can cut a
 /// small input into many morsels.
 fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: &Tuples, root: &mut HashTrieNode<P, E>, arity: usize, threads: Threads,
+    tuples: Tuples, root: &mut HashTrieNode<P, E>, arity: usize, threads: Threads,
     morsel_tuples: usize, config: HashTrieConfig,
-) {
+) -> Tuples {
     if tuples.is_empty() {
-        // The bulk build of nothing is the empty root: start no worker.
-        return;
+        // The bulk build of nothing is the empty root over the empty batch:
+        // copy nothing and start no worker.
+        return tuples;
     }
     // 1. Partition, on `threads` workers, by the top bits of each row's first
-    //    attribute's hash; each partition lists its ids in input order.
+    //    attribute's hash. The rows are copied into partition order, each
+    //    partition's in input order, with each copy's input position in
+    //    `origin`. The copy is the trie's buffer from here on, so the input is
+    //    freed before the build steps.
     let bits = partition_bits(threads);
     let shift = 64 - bits;
-    let partitions = scatter_rows(threads, tuples, morsel_tuples, 1 << bits, |row| {
+    let partitioned = partition_rows(threads, &tuples, morsel_tuples, 1 << bits, |row| {
         (H::hash(row[0]) >> shift) as usize
     });
+    drop(tuples);
     #[cfg(any(test, feature = "test-hooks"))]
     PARALLEL_BUILDS.with(|builds| {
-        let sizes = partitions.iter().map(RowPartition::len).collect();
         builds.borrow_mut().push(ParallelBuild {
             threads: threads.get(),
-            partition_sizes: sizes,
+            partition_sizes: partition_sizes(&partitioned),
             deferred: None,
         });
     });
     // An empty partition would build and drop an empty scratch root; the
     // radix build skips them too.
-    let partitions: Vec<RowPartition> = partitions
-        .into_iter()
-        .filter(|partition| partition.len() > 0)
+    let ranges: Vec<_> = (0..partitioned.partitions())
+        .map(|p| partitioned.ids(p))
+        .filter(|ids| !ids.is_empty())
         .collect();
-    // This build partitions row ids, not rows, so a row's id is its input
-    // position: `origin` is the identity.
-    let origin: Vec<RowId> = (0..row_id(tuples.len())).collect();
-    // 2. Build, on `threads` workers: each partition into a scratch root, whose
-    //    entries then leave in the order their keys arrived.
-    let entries = dispatch(threads, partitions, |partition| {
+    // 2. Build, on `threads` workers: each partition's id range into a scratch
+    //    root, whose entries then leave in the order their keys arrived, each
+    //    tagged with its key's first input position (`origin`), not its id.
+    let (rows, origin) = (&partitioned.tuples, &partitioned.origin);
+    let entries = dispatch(threads, ranges, |ids| {
         let (scratch, first_seen) =
-            radix::build_scratch_root::<H, P, E>(tuples, partition.ids(), &origin, arity, config);
+            radix::build_scratch_root::<H, P, E>(rows, ids, origin, arity, config);
         Entries::take_from(scratch, &first_seen)
     });
     // 3. Merge, on this thread, in first-appearance order.
@@ -208,12 +236,16 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
             unreachable!("a root is never pruned or unexpanded")
         },
     }
+    partitioned.tuples
 }
 
 /// Inserts every partition's entries into the real root in the order their
 /// keys first appeared in the input, the order the bulk build inserts
 /// them, so the root's buckets, length and capacity are the bulk
-/// build's. Each list is already in that order, so a k-way merge suffices:
+/// build's. Each entry's tag is an input position (`origin`, through
+/// `radix::build_scratch_root`), not an id into the copy: ids run
+/// partition-major, so merging on them would insert each partition's keys
+/// in turn. Each list is already in that order, so a k-way merge suffices:
 /// a heap pop and push per entry over at most P lists, where the radix
 /// build sorts every entry. It runs on the calling thread: the build's
 /// sequential step.
@@ -414,15 +446,44 @@ mod tests {
         &[1, 2, 3, 8]
     };
 
-    /// `parallel:N` builds the trie `bulk` builds, for every arity, config
-    /// (load factor, root capacity and child capacity), thread count and
-    /// input; its `root-capacity=tuples` configs are the array-level
-    /// evidence that `parallel:N` under `root-capacity=tuples` is the exact
-    /// merge build. Each case runs
-    /// twice: through the public constructor (morsels of 16 384 tuples, the
-    /// whole trie compared), and with morsels of 7 tuples, which make the
-    /// partition step cut the input many times (the root compared, which
-    /// holds the whole trie). Miri runs the second only.
+    /// A `parallel:t` trie built through `HashTrie::from_tuples_partitioned`
+    /// with morsels of 7 tuples, which make the partition step cut a small
+    /// input many times.
+    fn parallel_in_small_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        arity: usize, config: HashTrieConfig, tuples: &Tuples, t: usize,
+    ) -> HashTrie<H, P, E> {
+        HashTrie::<H, P, E>::from_tuples_partitioned(
+            arity.into(),
+            config,
+            tuples.clone(),
+            |tuples, log2, arity| {
+                let mut root = HashTrie::<H, P, E>::make_root_sized(arity, log2);
+                let tuples = fill_root_in_morsels::<H, P, E>(
+                    tuples,
+                    &mut root,
+                    arity,
+                    threads(t),
+                    7,
+                    config,
+                );
+                (tuples, root)
+            },
+        )
+    }
+
+    /// `parallel:N` builds the trie `bulk` builds, content for content, for
+    /// every arity, config (load factor, root capacity and child capacity),
+    /// thread count and input. Every table, the root included, holds the
+    /// same hashes in the same buckets at the same capacity. Every chain,
+    /// singleton and pending list holds the same tuples in the same order,
+    /// each id read through its own trie's buffer (`assert_same_contents`).
+    /// The root being `bulk`'s bucket for bucket is the merge's
+    /// first-appearance order at work (`origin`). Its `root-capacity=tuples`
+    /// configs are the evidence that `parallel:N` under
+    /// `root-capacity=tuples` is the exact merge build. Each case runs twice:
+    /// through the public constructor (morsels of 16 384 tuples), and with
+    /// morsels of 7 tuples, which make the partition step cut the input many
+    /// times. Miri runs the second only.
     fn check_identity<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
             for config in configs() {
@@ -450,21 +511,10 @@ mod tests {
                                 HashTrieBuildMode::Parallel(threads(t)),
                                 tuples.clone(),
                             );
-                            assert_same_trie(&bulk, &built, &label);
+                            assert_same_contents(&bulk, &built, &label);
                         }
-                        let mut root = HashTrie::<H, P, E>::make_root_sized(
-                            arity,
-                            config.root_log2_capacity(tuples.len()),
-                        );
-                        fill_root_in_morsels::<H, P, E>(
-                            &tuples,
-                            &mut root,
-                            arity,
-                            threads(t),
-                            7,
-                            config,
-                        );
-                        assert_same_node(bulk.root(), &root, &format!("{label}, morsels of 7"));
+                        let small = parallel_in_small_morsels::<H, P, E>(arity, config, &tuples, t);
+                        assert_same_contents(&bulk, &small, &format!("{label}, morsels of 7"));
                     }
                 }
             }
@@ -514,6 +564,51 @@ mod tests {
         assert_eq!(partition_bits(threads(Threads::MAX)), 12);
     }
 
+    /// `parallel:N` stores the partitioned copy as its buffer: exactly what
+    /// `partition_rows` makes of the input at `parallel:N`'s partition count,
+    /// which `partition_bits` derives from N, at the input's capacity. A
+    /// build that skipped the copy would pass every content test, so this is
+    /// the test that sees it: the random input spreads over every partition,
+    /// so there the copy must differ from the input.
+    fn check_copy<H: HashStrategy>() {
+        for arity in 1..=3 {
+            for (input, tuples) in inputs(arity) {
+                for &t in THREADS {
+                    let label = format!("{} arity {arity}, parallel:{t}, {input}", H::NAME);
+                    let bits = partition_bits(threads(t));
+                    let copy =
+                        partition_rows(threads(t), &tuples, MORSEL_TUPLES, 1 << bits, |row| {
+                            (H::hash(row[0]) >> (64 - bits)) as usize
+                        });
+                    let built: HashTrie<H> = HashTrie::from_tuples_with_build_mode(
+                        arity.into(),
+                        HashTrieBuildMode::Parallel(threads(t)),
+                        tuples.clone(),
+                    );
+                    assert_eq!(built.tuples(), &copy.tuples, "{label}: buffer");
+                    assert_eq!(
+                        built.tuples().value_capacity(),
+                        tuples.value_capacity(),
+                        "{label}: buffer capacity"
+                    );
+                    if input == "random" {
+                        assert_ne!(
+                            built.tuples(),
+                            &tuples,
+                            "{label}: the copy is in partition order"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_stores_its_partitioned_copy() {
+        check_copy::<SipHashStrategy>();
+        check_copy::<FxHashStrategy>();
+    }
+
     /// Inputs the shared matrix leaves out (the spec's § Testing): arity 4,
     /// a first key holding half the tuples, and enough tuples (39 768) that
     /// the public constructor cuts them into three morsels, two of them full
@@ -554,7 +649,7 @@ mod tests {
                             P::NAME,
                             E::NAME
                         );
-                        assert_same_trie(&bulk, &built, &label);
+                        assert_same_contents(&bulk, &built, &label);
                     }
                 }
             }
@@ -576,18 +671,20 @@ mod tests {
         fn hash(key: usize) -> u64 { (key as u64) << 61 }
     }
 
-    /// Every mode builds the same contents, so only the records show which
-    /// build ran (`bulk` and `incremental` record nothing here;
-    /// `each_build_mode_runs_its_own_build` tells them apart), and that
-    /// `parallel:N` spreads its work: N workers in both steps (two
-    /// `run_workers` calls), and the tuples spread over the partitions.
-    /// Eight first keys of eight tuples each fill the eight partitions of
-    /// `parallel:2` evenly. `parallel:3` aims at 12 partitions, rounded up to
-    /// 16, so key k lands in partition 2k: every other partition is empty,
-    /// and the record lists those too. A second thread count is what shows
-    /// that N itself reaches the build. The radix build partitions too, on
-    /// the calling thread alone: `partition_rows`' histogram and scatter
-    /// passes, one worker each, and no record.
+    /// Every mode builds the bulk trie's contents, so only the records show
+    /// which build ran (`bulk` and `incremental` record nothing here;
+    /// `each_build_mode_runs_its_own_build` tells them apart). They also
+    /// show that `parallel:N` spreads its work:
+    /// - N workers in every step: three `run_workers` calls, `partition_rows`'
+    ///   histogram and scatter, then `dispatch`;
+    /// - the tuples spread over the partitions.
+    ///
+    /// The radix build partitions too, on one thread (two runs of one
+    /// worker), and records nothing. Eight first keys of eight tuples each
+    /// fill the eight partitions of `parallel:2` evenly. `parallel:3` aims at
+    /// 12 partitions, rounded up to 16, so key k lands in partition 2k: every
+    /// other partition is empty, and the record lists those too. A second
+    /// thread count is what shows that N itself reaches the build.
     #[test]
     fn build_modes_reach_their_builds() {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 8, i]).collect();
@@ -607,7 +704,7 @@ mod tests {
                     partition_sizes: vec![8; 8],
                     deferred: None,
                 }],
-                vec![2, 2],
+                vec![2, 2, 2],
             ),
             (
                 HashTrieBuildMode::Parallel(threads(3)),
@@ -616,7 +713,7 @@ mod tests {
                     partition_sizes: [8, 0].repeat(8),
                     deferred: None,
                 }],
-                vec![3, 3],
+                vec![3, 3, 3],
             ),
         ] {
             PARALLEL_BUILDS.with(|builds| builds.borrow_mut().clear());
@@ -1001,8 +1098,10 @@ mod tests {
     }
 
     /// `parallel:N` is the exact merge build under every root capacity: a
-    /// presized root changes the root's size, not the process, and the
-    /// result is identical to bulk's under the same config.
+    /// presized root changes the root's size, not the process. The result
+    /// holds bulk's contents under the same config, and its root is bulk's
+    /// bucket for bucket. Three worker runs: `partition_rows`' histogram
+    /// and scatter, then `dispatch`.
     #[test]
     fn parallel_build_merges_under_every_root_capacity() {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 16, i]).collect();
@@ -1030,10 +1129,10 @@ mod tests {
             );
             assert_eq!(
                 crate::morsel::take_worker_runs(),
-                vec![3, 3],
+                vec![3, 3, 3],
                 "{root_capacity:?}"
             );
-            assert_same_trie(&bulk, &built, &format!("{root_capacity:?}"));
+            assert_same_contents(&bulk, &built, &format!("{root_capacity:?}"));
         }
     }
 

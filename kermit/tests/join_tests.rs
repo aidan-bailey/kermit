@@ -471,10 +471,11 @@ define_multiway_join_test_suite_for_build_mode!(
 );
 
 // ── BuildMode axis: HashTrie's parallel build ───────────────────────────
-// These build on two threads, in eight partitions. Every mode must build
-// the identical trie (issue #94). The same three Layouts as the radix rows
-// above (Sip/off/eager, Fx/on/eager, Sip/on/lazy), under every optimiser.
-// TreeTrie's provider is `Parallel2`, so this one is `HashParallel2`.
+// These build on two threads, in eight partitions, copying the rows into
+// partition order (#101); the trie holds the bulk trie's contents (issue
+// #94). The same three Layouts as the radix rows above (Sip/off/eager,
+// Fx/on/eager, Sip/on/lazy), under every optimiser. TreeTrie's provider is
+// `Parallel2`, so this one is `HashParallel2`.
 define_build_mode_provider!(
     HashParallel2,
     HashTrieBuildMode,

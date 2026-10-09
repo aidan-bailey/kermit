@@ -181,9 +181,10 @@ hash_trie_test_suite!(HashTrieSipIncremental, SipHashStrategy);
 hash_trie_test_suite!(HashTrieSipPrunedLazyIncremental, SipHashStrategy);
 
 // ── BuildMode: the parallel build ───────────────────────────────────────
-// `parallel:2` builds eight partitions on two threads and must build the
-// identical trie (issue #94), so the iterator contract holds unchanged,
-// eager or lazy, pruned or not.
+// `parallel:2` builds eight partitions on two threads, copying the rows into
+// partition order (#101), and must build the bulk trie's contents over that
+// copy (issue #94), so the iterator contract holds unchanged, eager or lazy,
+// pruned or not.
 define_build_mode_provider!(
     HashParallel2,
     HashTrieBuildMode,

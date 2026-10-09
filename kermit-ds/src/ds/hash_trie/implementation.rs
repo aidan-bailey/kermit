@@ -520,7 +520,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             | HashTrieBuildMode::Parallel(threads) => {
                 Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
                     let mut root = Self::make_root_sized(arity, log2);
-                    parallel::fill_root::<H, P, E>(&tuples, &mut root, arity, threads, config);
+                    let tuples =
+                        parallel::fill_root::<H, P, E>(tuples, &mut root, arity, threads, config);
                     (tuples, root)
                 })
             },
@@ -630,8 +631,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// `root-capacity=tuples`) and returns it with the trie's buffer: the
     /// batch itself, or, from a build that materialises its partitions, the
     /// batch's rows copied into partition order (`morsel::partition_rows`,
-    /// #101), the batch then freed.
-    fn from_tuples_partitioned(
+    /// #101), the batch then freed. Tests in `parallel.rs` call it with small
+    /// morsels and regions.
+    pub(super) fn from_tuples_partitioned(
         header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
         fill: impl FnOnce(Tuples, u32, usize) -> (Tuples, HashTrieNode<P, E>),
     ) -> Self {
