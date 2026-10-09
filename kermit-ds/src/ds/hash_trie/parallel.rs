@@ -1155,7 +1155,13 @@ mod tests {
             if t == 1 {
                 assert_eq!(built.tuples(), &tuples, "{label}: the copy is the input");
             } else {
-                let first_row_of = |key: usize| built.tuples().rows().position(|r| r[0] == key);
+                let first_row_of = |key: usize| {
+                    built
+                        .tuples()
+                        .rows()
+                        .position(|r| r[0] == key)
+                        .unwrap_or_else(|| panic!("{label}: key {key} has rows"))
+                };
                 assert!(
                     first_row_of(4) < first_row_of(3),
                     "{label}: Y's rows come before X's in the copy"
