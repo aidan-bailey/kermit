@@ -292,9 +292,7 @@ const REGION_BUCKETS: usize = 4096;
 /// `region_buckets` (a region is the whole root when that is smaller).
 fn presized_parts(log2_capacity: u32, threads: Threads, region_buckets: usize) -> usize {
     let capacity = 1usize << log2_capacity;
-    (PARTITIONS_PER_THREAD * threads.get())
-        .next_power_of_two()
-        .min(capacity / region_buckets.min(capacity))
+    (1usize << partition_bits(threads)).min(capacity / region_buckets.min(capacity))
 }
 
 /// Builds the root of `2^log2_capacity` buckets over the rows of `tuples` by
@@ -336,9 +334,10 @@ pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: Expansion
 ///    (ascending `origin`), with ordinary probing. The paper does not say how a
 ///    probe crossing a partition's end is handled; this is kermit's answer.
 /// 4. **Children** (lines 8–12): each worker builds the children of its run's
-///    buckets, by the bulk build's `child`, reading only its partition's rows.
-///    The paper does not say how the recursion is spread over threads; one run
-///    per worker is kermit's choice.
+///    buckets, by the bulk build's `child`, reading its partition's rows, and
+///    those of any deferred key the tail placed in its run from another
+///    partition. The paper does not say how the recursion is spread over
+///    threads; one run per worker is kermit's choice.
 fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     tuples: Tuples, log2_capacity: u32, arity: usize, threads: Threads, morsel_tuples: usize,
     region_buckets: usize, config: HashTrieConfig,
@@ -383,6 +382,10 @@ fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
             .entry_or_insert_with(H::hash(rows.row(row)[0]), config.load_factor, Vec::new)
             .push(row);
     }
+    // Nothing reads `origin` or `offsets` past the tail: free them before the
+    // children are built, the build's most allocation-heavy phase.
+    drop(partitioned.origin);
+    drop(partitioned.offsets);
     // 4. Every bucket's child, a run per worker. At arity 1 the lists are the
     //    chains, and the table of lists is the root. `arity <= 1`, as
     //    `build_nested` decides at depth 0 (`depth + 1 >= arity`).
@@ -1145,6 +1148,19 @@ mod tests {
             let built = presized_in_small_regions::<TailOrderHash, NoPruning, EagerExpansion>(
                 2, config, &tuples, t, 2,
             );
+            // The premise of the doc above, so the test cannot pass vacuously
+            // if the partition function changes: presized:1's copy is the
+            // input, and presized:4's gives Y's rows (key 4) smaller ids than
+            // X's (key 3).
+            if t == 1 {
+                assert_eq!(built.tuples(), &tuples, "{label}: the copy is the input");
+            } else {
+                let first_row_of = |key: usize| built.tuples().rows().position(|r| r[0] == key);
+                assert!(
+                    first_row_of(4) < first_row_of(3),
+                    "{label}: Y's rows come before X's in the copy"
+                );
+            }
             let builds = PARALLEL_BUILDS.with(|b| b.take());
             assert_eq!(builds.len(), 1, "{label}");
             assert_eq!(builds[0].partition_sizes.len(), partitions, "{label}");
