@@ -366,17 +366,23 @@ fn hash_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
 /// tables, the chains and the lazy pending lists are the same at both
 /// repetitions. Only the row-id lists hold more ids: one per first key and
 /// one chain per distinct tuple, each by at most ⌈log₂ 100⌉ = 7 growth steps.
-/// The bound also counts the root's list and four partition lists. Only
-/// `parallel:1`'s four partitions grow, one push per row id: `scatter_rows`
-/// keeps each in one list, as both inputs fit one 16 384-row morsel. The
-/// root's list is `all_rows`, a `Range` never built, and `radix::partition`
-/// sizes `radix:2`'s four partitions exactly from a histogram, so under
-/// every other mode those five lists are part of the bound's slack, 5 × 7 =
-/// 35 allocations. `parallel:1`'s workers, merge and test-hook record cost
-/// the same at both repetitions.
+/// The bound also counts the root's list, which is `all_rows`, a `Range`
+/// never built: 7 allocations of slack under every mode.
+///
+/// The partitioning builds, `radix:2` and `parallel:1`, grow no list per
+/// partition (#101). `partition_rows` counts each partition's rows in a
+/// histogram pass, keeping each row's partition number in a `u16` list sized
+/// from its morsel, then copies the rows and their input positions
+/// (`origin`) into zeroed buffers sized once from the batch, and a partition
+/// is a range of the copy. `radix:2` passes its whole batch as one morsel,
+/// and both inputs fit one of `parallel:1`'s 16 384-row morsels, so the
+/// histogram, the partition numbers, the offsets and the morsel's ranges are
+/// one allocation each at both repetitions. So are the workers, the scratch
+/// roots' tables (sized by their keys), the merge, and `parallel:1`'s
+/// test-hook record.
 #[test]
 fn hash_trie_builds_allocate_per_list_not_per_row() {
-    let lists = (1 + KEYS + KEYS * KEYS + 4) as u64;
+    let lists = (1 + KEYS + KEYS * KEYS) as u64;
     let bound = lists * ceil_log2(REPEATS);
     let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
     type Measure = fn(HashTrieBuildMode, usize) -> u64;
@@ -431,15 +437,20 @@ fn hash_trie_builds_allocate_per_list_not_per_row() {
 
 /// `presized:1` under `root-capacity=tuples`, its prerequisite. The root is
 /// sized once from the row count, one allocation at either repetition, and
-/// its lists and chains grow as under the other builds. Its partitions are
-/// whole runs of the root's 4 096-bucket regions, at most
-/// [`ONE_THREAD_PARTITIONS`]: the 100 rows' 256-bucket root is one region and
-/// one partition, the 10 000 rows' 16 384-bucket root four. So the larger
-/// build has three partitions more, each a row-id bucket grown from empty (at
-/// most `doublings(rows)` steps) and a segment list, and the one partition
-/// both builds share is one more growing list. The fixture's ten keys never
-/// probe past a region's end, so no row is deferred to the tail, whose list
-/// the bound does not count.
+/// its lists and chains grow as under the other builds: one list per first
+/// key and one chain per distinct tuple, each by at most ⌈log₂ 100⌉ = 7
+/// growth steps. Its partitions are whole runs of the root's 4 096-bucket
+/// regions, at most [`ONE_THREAD_PARTITIONS`]: the 100 rows' 256-bucket
+/// root is one region and one partition, the 10 000 rows' 16 384-bucket
+/// root four.
+///
+/// The three extra partitions cost no allocation (#101). `partition_rows`
+/// sizes its histogram, partition numbers, offsets, copy and `origin`
+/// once, and a partition is a range of the copy. `with_runs` and
+/// `map_in_runs` size their run lists once, and each worker's result list
+/// holds four entries in its first allocation, so one partition or four
+/// cost the same. The fixture's ten keys never probe past a region's end,
+/// so no row is deferred to the tail, whose list the bound does not count.
 #[test]
 fn hash_trie_presized_build_allocates_per_list_not_per_row() {
     let config = HashTrieConfig {
@@ -460,9 +471,8 @@ fn hash_trie_presized_build_allocates_per_list_not_per_row() {
     let ((once, once_partitions), (many, many_partitions)) = (measure(1), measure(REPEATS));
     assert_eq!((once_partitions, many_partitions), (1, 4));
     let rows = REPEATS * KEYS * KEYS;
-    let lists = (KEYS + KEYS * KEYS + 1) as u64;
-    let new_partitions = (many_partitions - once_partitions) as u64;
-    let bound = lists * ceil_log2(REPEATS) + new_partitions * (doublings(rows) + 1);
+    let lists = (KEYS + KEYS * KEYS) as u64;
+    let bound = lists * ceil_log2(REPEATS);
     assert!(
         many <= once + bound,
         "HashTrie presized:1: {once} allocations for {} rows, {many} for {rows}, more than \

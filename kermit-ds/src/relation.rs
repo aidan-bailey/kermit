@@ -941,7 +941,8 @@ mod tests {
         relation.trie_iter().into_iter().collect()
     }
 
-    /// A hash trie's tuples, sorted (a hash trie keeps them in arrival order).
+    /// A hash trie's tuples, sorted: a hash trie keeps them in its buffer's
+    /// order, arrival order or a partitioning build's partition order.
     fn hash_rows(relation: &crate::ds::HashTrie) -> Vec<Vec<usize>> {
         let mut rows = relation.collect_tuples().to_vecs();
         rows.sort();
