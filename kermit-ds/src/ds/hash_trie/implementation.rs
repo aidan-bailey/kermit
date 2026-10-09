@@ -539,10 +539,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     config.root_capacity.axis_value(),
                 );
                 Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
-                    let root = parallel::fill_presized_root::<H, P, E>(
-                        &tuples, log2, arity, threads, config,
-                    );
-                    (tuples, root)
+                    parallel::fill_presized_root::<H, P, E>(tuples, log2, arity, threads, config)
                 })
             },
         }
