@@ -520,9 +520,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             | HashTrieBuildMode::Parallel(threads) => {
                 Self::from_tuples_partitioned(header, config, tuples, |tuples, log2, arity| {
                     let mut root = Self::make_root_sized(arity, log2);
-                    let tuples =
+                    let copy =
                         parallel::fill_root::<H, P, E>(tuples, &mut root, arity, threads, config);
-                    (tuples, root)
+                    (copy, root)
                 })
             },
             | HashTrieBuildMode::Presized(threads) => {

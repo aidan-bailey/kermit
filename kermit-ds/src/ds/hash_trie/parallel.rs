@@ -10,7 +10,9 @@
 //!    thread, rounded up to a power of two. The copy is the paper's
 //!    materialisation step (§3.3.2, #101): it becomes the trie's buffer, the
 //!    input batch is freed, and each partition's rows are a contiguous range of
-//!    it, so every later read of a partition's rows is local.
+//!    it, so every later read of a partition's rows is local. One round of
+//!    partitioning is kermit's choice; the paper adapts a two-pass radix
+//!    partitioning (Balkesen et al.).
 //! 2. **Build.** [`dispatch`] groups each non-empty partition's id range into a
 //!    scratch root and builds its children, as `bulk` does
 //!    (`radix::build_scratch_root`), then takes the scratch root's entries out,
@@ -23,14 +25,14 @@
 //! the radix build's is.
 //! - **Children.** A partition keeps its rows in input order (`partition_rows`
 //!   is stable), so each child is built from the tuples `bulk` builds it from,
-//!   in the same order, under partition-local ids.
+//!   in the same order, under the copy's row ids.
 //! - **Root.** The root receives its new keys in the bulk order, because the
 //!   merge orders them by `origin`, not by id.
 //! - **Collisions.** Equal 64-bit hashes share a root entry and also a
 //!   partition, because the partition is a function of the hash.
 //!
-//! Only the ids differ, so the trie is equivalent to `bulk`'s rather than
-//! array-identical (Amendment 2).
+//! Only the buffer's row order, and so the ids, differ, so the trie is
+//! equivalent to `bulk`'s rather than array-identical (Amendment 2).
 //!
 //! `presized:N`
 //! (`docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`;
@@ -458,7 +460,7 @@ mod tests {
             tuples.clone(),
             |tuples, log2, arity| {
                 let mut root = HashTrie::<H, P, E>::make_root_sized(arity, log2);
-                let tuples = fill_root_in_morsels::<H, P, E>(
+                let copy = fill_root_in_morsels::<H, P, E>(
                     tuples,
                     &mut root,
                     arity,
@@ -466,7 +468,7 @@ mod tests {
                     7,
                     config,
                 );
-                (tuples, root)
+                (copy, root)
             },
         )
     }
