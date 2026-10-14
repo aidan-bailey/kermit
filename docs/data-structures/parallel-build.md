@@ -270,8 +270,8 @@ the hash, so balance comes from P > N rather than from splitters, and a
 dominant first key still fills one partition.
 
 Memory: while the copy is made, the input and the copy are both held, so
-the build's peak holds the tuples twice. `origin` adds 4 bytes per tuple
-until the build returns, and the partition numbers 2 bytes per tuple
+for that stretch the tuples are held twice. `origin` adds 4 bytes per
+tuple until the build returns, and the partition numbers 2 bytes per tuple
 between the two passes.
 
 `parallel:1` against `bulk` is what partitioning costs on one thread, as

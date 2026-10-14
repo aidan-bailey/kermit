@@ -303,13 +303,12 @@ walkthrough is in
 `hash-trie=parallel:N` a `HashTrie` (#94). A TreeTrie's trie is identical
 to its `serial` build's, so only `insertion` and `end_to_end` can move.
 HashTrie's `parallel:N` holds `bulk`'s contents and root over a buffer of
-its own, since it copies its rows into partition order (#101), so
-`iteration` is measured for it too. HashTrie's presized build is
-`--ds-build hash-trie=presized:N`, which requires
-`--ds-config root-capacity=tuples`; it copies its rows the same way and
-builds an equivalent, not identical, trie, so `iteration` is measured for
-it too, and its speedup baseline is `bulk` under the same
-`root-capacity=tuples` config.
+its own, since it copies its rows into partition order (#101).
+HashTrie's presized build is `--ds-build hash-trie=presized:N`, which
+requires `--ds-config root-capacity=tuples`; it copies its rows the same
+way and builds an equivalent, not identical, trie, so `iteration` is
+measured for both HashTrie builds, and the presized build's speedup
+baseline is `bulk` under the same `root-capacity=tuples` config.
 Run one arm per thread count within one binary, each with its own
 `--name`, then plot the speedup over the single-threaded build
 (`kl.speedup_table` picks TreeTrie `serial`, HashTrie `bulk`):
@@ -337,8 +336,9 @@ each arm has two.
 saving (P smaller sorts take about n·log₂P fewer comparisons than one big
 one), so `parallel:1` can come out ahead. The same saving can make a speedup
 superlinear (above N), which makes the Karp–Flatt fraction negative.
-For HashTrie, `parallel:1` against `bulk` is the cost of partitioning
-with no sort saving, so it is normally above 1; `radix:2` is the same
+For HashTrie, `parallel:1` against `bulk` is the cost of partitioning,
+the copy included, with no sort saving: above 1 on grouped inputs,
+possibly below on shuffled ones (#101); `radix:2` is the same
 partitioning, run serially. `kl.speedup_table(df, baseline="radix:K")`
 measures the threads alone. Expect the Karp–Flatt fraction to be highest
 where most first-attribute values are distinct, and for unary relations,

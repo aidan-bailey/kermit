@@ -48,7 +48,7 @@ The `Unexpanded` payload is the third Layout parameter's associated type, by the
 | Leaves, singletons and lazy children refer to tuple memory | ✓ by row id (4 B, kermit's; the paper's pointers are 8 B) |
 | Tuples partitioned by the first key's hash as they are materialised | ✓ in `radix:K`, `parallel:N` and `presized:N` (`morsel::partition_rows`); ✗ arrival order in `bulk` (the default) and `incremental` |
 | Partitioning morsel-driven, on N threads | ✓ the copy itself, in `parallel:N` and `presized:N` |
-| Two-pass radix partitioning (Balkesen et al.) | ✗ one round of partitions (kermit's: #101 found no fan-out cost at this scale, `radix:16` within 1.5 % of `radix:12`) |
+| Two-pass radix partitioning (Balkesen et al.) | ✗ one round of partitions (kermit's: #101 found no fan-out cost at this scale, `radix:16` within 1.5 % of `radix:12` on grouped input) |
 | A leaf is a list threaded through an 8-byte chain pointer per tuple | ✗ a `Vec<RowId>` per chain (kermit's), until #101 B2 |
 
 The paper's buffer is a copy its build makes. `bulk` and `incremental` take the relation's buffer without copying it, so they pay nothing for it but keep arrival order. The partitioning modes make the paper's copy and pay for it:
@@ -477,7 +477,7 @@ So `iteration` is measured for the three partitioning modes, never assumed.
 |---|---|---|
 | `Bulk` (default) | `hash-trie=bulk` | Algorithm 2 (§3.2.2): each table's tuples grouped into its buckets, then each bucket's child built from its list ([Construction](#construction)) |
 | `Incremental` | `hash-trie=incremental` | one `insert_at` per tuple, in input order: the build named `serial` before #107; requires `child-capacity=grow` |
-| `Radix(K)` | `hash-trie=radix:K`, K in 1..=16 | copy the rows into 2^K partitions on the top K bits of the first attribute's hash and keep the copy as the buffer (SIGMOD 2020 §3.3.2: the tuples partitioned as they are materialised, in one round, #101), group each partition into a scratch root and build its children by Algorithm 2, merge the scratch roots (kermit's) |
+| `Radix(K)` | `hash-trie=radix:K`, K in 1..=16 | copy the rows into 2^K partitions on the top K bits of the first attribute's hash and keep the copy as the buffer (SIGMOD 2020 §3.3.2: the tuples partitioned as they are materialised; one round rather than the paper's two passes is kermit's, #101), group each partition into a scratch root and build its children by Algorithm 2, merge the scratch roots (kermit's) |
 | `Parallel(N)` | `hash-trie=parallel:N`, N in 1..=1024 | the radix build's partition step (the copy) and build step on N threads (P = 4·N partitions, rounded up to a power of two), then a k-way merge into the root on the calling thread (morsel-driven partitioning and materialisation per §3.3.2; the scratch-root build and the merge are kermit's) |
 | `Presized(N)` | `hash-trie=presized:N`, N in 1..=1024; **requires `--ds-config root-capacity=tuples`** | the input copied into partition order by the first attribute's hash (§3.3.2, #101), one partition per run of regions of the presized root, each worker grouping its regions (Algorithm 2, lines 4–7), a tail of deferred tuples pushed on the calling thread in input order, then the children built a run of buckets at a time by whichever worker is free; the regions, the tail and the parallel recursion are kermit's (Amendment 3 of the optimisation standard) |
 
@@ -522,7 +522,7 @@ the real root at random. In return the build pays for:
 
 - the copy: a histogram pass and a scatter of every row, into buffers
   allocated zeroed (safe Rust cannot hand out uninitialised ranges; the
-  allocator's zero pages cost no serial memset);
+  for a large batch, the allocator's zero pages cost no serial memset);
 - a second hash of each tuple's first attribute (`partition_rows` hashes
   each row once and keeps the number for its scatter);
 - a sort of the D merge entries;

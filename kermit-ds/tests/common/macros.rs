@@ -715,7 +715,7 @@ macro_rules! relation_trie_test_suite {
 /// `parquet_test_suite!(Type, collector)` takes an explicit
 /// `fn(&Type) -> Vec<Vec<usize>>` for structures without a tuple-shaped
 /// iterator — `HashTrie` passes a closure over `collect_tuples()` that sorts
-/// the result (its buffer, in arrival order).
+/// the result (its buffer, in its row order).
 ///
 /// `Type` is resolved via `use super::*`, so aliases such as `HashTrieSip`
 /// work as long as the invoking file brings them into scope.
