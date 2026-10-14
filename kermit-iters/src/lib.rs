@@ -11,7 +11,10 @@
 //!
 //! A relation is built from a [`Tuples`] batch: its tuples row-major in one
 //! buffer, each row addressed by a [`RowId`]. [`LeafRows`] reads a hash-trie
-//! leaf chain's rows from such a buffer through their ids.
+//! leaf chain's rows from such a buffer through their ids. [`ChainLinks`]
+//! gives each row of a batch a link to the next row of its list, so a hash
+//! trie can thread its lists through the batch rather than allocate one per
+//! list.
 //!
 //! # Example
 //!
@@ -38,6 +41,7 @@
 
 #![deny(missing_docs)]
 
+mod chain_links;
 mod hash_strategy;
 mod hash_trie;
 mod joinable;
@@ -49,6 +53,7 @@ mod trie;
 mod tuples;
 
 pub use {
+    chain_links::{ChainLinks, ChainWalk},
     hash_strategy::{FxHashStrategy, HashStrategy, SipHashStrategy},
     hash_trie::{HashTrieIterable, HashTrieIterator},
     joinable::JoinIterable,
