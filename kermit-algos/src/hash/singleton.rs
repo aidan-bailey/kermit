@@ -182,7 +182,7 @@ mod tests {
         it.open();
         let chain = it.leaf_tuples().expect("singleton's leaf chain after open");
         assert_eq!(chain.to_vecs(), vec![vec![42]]);
-        assert_eq!(chain.ids(), &[0]);
+        assert_eq!(chain.ids().collect::<Vec<_>>(), [0]);
         assert_eq!(chain.arity(), 1);
     }
 

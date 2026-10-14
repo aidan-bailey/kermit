@@ -1252,7 +1252,7 @@ macro_rules! hash_trie_traversal_tests {
                     while let Some(key) = iter.key() {
                         let chain = iter.leaf_tuples().expect("leaf level");
                         assert_eq!(chain.len(), 1);
-                        assert_eq!(h(chain.row(0)[0]), key);
+                        assert_eq!(h(chain.row_at(chain.first())[0]), key);
                         assert!(!iter.open()); // every bucket here is a leaf
                         seen.push(key);
                         iter.next();

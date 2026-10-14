@@ -694,7 +694,7 @@ mod tests {
         assert!(it.open());
         assert!(it.lookup(h(2)));
         let rows = it.leaf_tuples().expect("the chain of (1, 2)");
-        assert_eq!(rows.ids(), &[0, 2]);
+        assert_eq!(rows.ids().collect::<Vec<_>>(), [0, 2]);
         assert_eq!(rows.arity(), 2);
         assert_eq!(rows.to_vecs(), vec![vec![1, 2], vec![1, 2]]);
         assert_eq!(rows.data().as_ptr(), trie.tuples().as_flat().as_ptr());
@@ -714,7 +714,7 @@ mod tests {
         assert!(it.open());
         assert!(matches!(it.stack.last(), Some(Frame::Singleton(_))));
         let rows = it.leaf_tuples().expect("singleton at leaf depth");
-        assert_eq!(rows.ids(), &[2]);
+        assert_eq!(rows.ids().collect::<Vec<_>>(), [2]);
         assert_eq!(rows.to_vecs(), vec![vec![4, 5, 6]]);
         assert_eq!(rows.data().as_ptr(), trie.tuples().as_flat().as_ptr());
     }

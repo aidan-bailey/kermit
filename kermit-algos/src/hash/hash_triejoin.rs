@@ -12,7 +12,7 @@
 
 use {
     crate::{analysis::analyse, join_algo::JoinAlgo, optimiser::QueryPlan},
-    kermit_iters::{HashTrieIterable, HashTrieIterator},
+    kermit_iters::{HashTrieIterable, HashTrieIterator, LeafCursor, LeafRows},
     kermit_parser::JoinQuery,
     std::collections::HashMap,
 };
@@ -80,10 +80,9 @@ fn verify_and_construct<'t>(
 /// allocated once in `join_for_each` so that emitting a result tuple
 /// allocates nothing (issue #65).
 struct LeafScratch {
-    /// Mixed-base cursor: `cursor[k]` indexes the k-th iterator's leaf chain.
-    cursor: Vec<usize>,
-    /// `chain_lens[k]` is the length of the k-th iterator's current chain.
-    chain_lens: Vec<usize>,
+    /// The mixed-base odometer: `cursor[k]` is a position in the k-th
+    /// iterator's current leaf chain.
+    cursor: Vec<LeafCursor>,
     /// The candidate's output tuple, in canonical variable order.
     row: Vec<usize>,
     /// `bound[v]` records whether `row[v]` was written for this candidate.
@@ -92,11 +91,12 @@ struct LeafScratch {
 
 impl LeafScratch {
     /// Scratch for `relations` body predicates over `arity` distinct
-    /// variables.
+    /// variables. A cursor has no default position, so `cursor` starts empty
+    /// with room for every relation's, and `emit_leaf` fills it from each
+    /// chain's `first` without allocating.
     fn new(relations: usize, arity: usize) -> Self {
         Self {
-            cursor: vec![0; relations],
-            chain_lens: vec![0; relations],
+            cursor: Vec::with_capacity(relations),
             row: vec![0; arity],
             bound: vec![false; arity],
         }
@@ -187,32 +187,32 @@ fn enumerate<IT: HashTrieIterator, S: FnMut(&[usize])>(
 /// Algorithm 3 lines 16–19. Cross-product the leaf chains of every
 /// iterator and emit each verified candidate.
 ///
-/// Allocates nothing: each chain is re-borrowed through `leaf_tuples()` as
-/// a `LeafRows` view (row ids over its relation's tuple buffer) rather than
-/// collected, a candidate's tuples are slices of those buffers, and the
-/// cursor and output row live in `scratch`.
+/// The product is a mixed-base odometer of [`LeafCursor`]s, one per
+/// relation, so each chain is read in chain order and no row is reached by
+/// index: a linked chain's next row is one link away. Allocates nothing:
+/// each chain is re-borrowed through `leaf_tuples()` as a `LeafRows` view
+/// over its relation's tuple buffer rather than collected, a candidate's
+/// tuples are slices of those buffers, and the cursors and output row live
+/// in `scratch`, sized once per join.
 fn emit_leaf<IT: HashTrieIterator, S: FnMut(&[usize])>(
     iters: &[IT], predicate_variables: &[Vec<usize>], scratch: &mut LeafScratch, emit: &mut S,
 ) {
-    let chain = |k: usize| {
-        iters[k]
-            .leaf_tuples()
-            .expect("at leaf level for every participating iter")
-    };
-    for (k, len) in scratch.chain_lens.iter_mut().enumerate() {
-        *len = chain(k).len();
+    // Every cursor at its chain's first row. An empty chain leaves no
+    // candidate. `cursor` has room for every relation, so `push` never
+    // allocates.
+    scratch.cursor.clear();
+    for it in iters {
+        let chain = leaf_chain(it);
+        if chain.is_empty() {
+            return;
+        }
+        scratch.cursor.push(chain.first());
     }
-    if scratch.chain_lens.contains(&0) {
-        return;
-    }
-
-    scratch.cursor.fill(0);
     loop {
-        let candidate = scratch
-            .cursor
+        let candidate = iters
             .iter()
-            .enumerate()
-            .map(|(k, &i)| chain(k).row(i));
+            .zip(&scratch.cursor)
+            .map(|(it, &at)| leaf_chain(it).row_at(at));
         if verify_and_construct(
             candidate,
             predicate_variables,
@@ -221,27 +221,32 @@ fn emit_leaf<IT: HashTrieIterator, S: FnMut(&[usize])>(
         ) {
             emit(&scratch.row);
         }
-        if !advance_cursor(&mut scratch.cursor, &scratch.chain_lens) {
+        if !advance_cursor(iters, &mut scratch.cursor) {
             break;
         }
     }
 }
 
-/// Advance a mixed-base cursor over the chain lengths. Returns `false`
-/// once every position has been exhausted (overflow off the high end).
-fn advance_cursor(cursor: &mut [usize], chain_lens: &[usize]) -> bool {
-    let mut k = 0;
-    loop {
-        if k >= cursor.len() {
-            return false;
-        }
-        cursor[k] += 1;
-        if cursor[k] < chain_lens[k] {
+/// Advances the odometer by one candidate: the first relation's cursor steps
+/// along its chain, and a cursor that steps past its chain's last row
+/// restarts at the chain's first and carries into the next relation's.
+/// Returns `false` once every cursor has carried, after the last candidate.
+fn advance_cursor<IT: HashTrieIterator>(iters: &[IT], cursor: &mut [LeafCursor]) -> bool {
+    for (it, at) in iters.iter().zip(cursor) {
+        let chain = leaf_chain(it);
+        if chain.advance(at) {
             return true;
         }
-        cursor[k] = 0;
-        k += 1;
+        *at = chain.first();
     }
+    false
+}
+
+/// `it`'s current leaf chain: `emit_leaf` runs with every iterator on an
+/// occupied bucket of its leaf level.
+fn leaf_chain<IT: HashTrieIterator>(it: &IT) -> LeafRows<'_> {
+    it.leaf_tuples()
+        .expect("at leaf level for every participating iter")
 }
 
 /// Entry point for the hash-trie-join algorithm.
@@ -446,7 +451,15 @@ mod tests {
         let pv = vec![vec![0, 1], vec![1, 2]];
         let (mut row, mut bound) = (vec![0; 3], vec![false; 3]);
         assert!(
-            !verify_and_construct([r_chain.row(0), s_chain.row(0)], &pv, &mut row, &mut bound),
+            !verify_and_construct(
+                [
+                    r_chain.row_at(r_chain.first()),
+                    s_chain.row_at(s_chain.first())
+                ],
+                &pv,
+                &mut row,
+                &mut bound
+            ),
             "Y = 2 in R but 12 in S: the leaf-level check must reject it"
         );
     }
@@ -535,5 +548,73 @@ mod tests {
         HashTriejoin::join_for_each(&plan, query, ds, |tuple| out.push(tuple.to_vec()));
         out.sort();
         assert_eq!(out, vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]);
+    }
+
+    /// Algorithm 3 lines 16–19 over three leaf chains of lengths 1, 2 and 3:
+    /// `R`'s, `S`'s and `T`'s, one for each of `A`, `B` and `C` below the
+    /// shared `X`. `Mod10HashStrategy` puts `S`'s two `B` values (3 and 13)
+    /// in one leaf bucket and `T`'s three `C` values (4, 14 and 24) in
+    /// another, so the chains are that long, and every one of the 6
+    /// candidates verifies: `X` is 1 throughout, and `A`, `B` and `C` each
+    /// come from one relation. The odometer turns `R`'s cursor fastest.
+    /// `R`'s chain has one row, so every advance carries out of it, and `S`'s
+    /// every second advance: each carry must restart the cursor it leaves at
+    /// its chain's first row. The candidates come out in odometer order,
+    /// each exactly once, every chain in input order.
+    #[test]
+    fn emit_leaf_resets_each_cursor_on_carry() {
+        use kermit_ds::Relation;
+        let r = CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let s = CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 3], vec![1, 13]]);
+        let t =
+            CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 4], vec![1, 14], vec![1, 24]]);
+        let expected = vec![
+            vec![1, 2, 3, 4],
+            vec![1, 2, 13, 4],
+            vec![1, 2, 3, 14],
+            vec![1, 2, 13, 14],
+            vec![1, 2, 3, 24],
+            vec![1, 2, 13, 24],
+        ];
+
+        // `emit_leaf` itself, each iterator walked to its leaf as `enumerate`
+        // walks it: `X` at the root, then the relation's own variable.
+        let mut iters = vec![r.hash_trie_iter(), s.hash_trie_iter(), t.hash_trie_iter()];
+        for it in &mut iters {
+            assert!(it.open(), "the X level");
+            assert!(it.open(), "the relation's own variable: its leaf");
+        }
+        let lens: Vec<usize> = iters
+            .iter()
+            .map(|it| it.leaf_tuples().expect("at its leaf").len())
+            .collect();
+        assert_eq!(lens, [1, 2, 3], "the chains the test needs");
+        let predicate_variables = vec![vec![0, 1], vec![0, 2], vec![0, 3]];
+        let mut scratch = LeafScratch::new(iters.len(), 4);
+        let mut out = Vec::new();
+        emit_leaf(
+            &iters,
+            &predicate_variables,
+            &mut scratch,
+            &mut |row: &[usize]| out.push(row.to_vec()),
+        );
+        assert_eq!(out, expected, "every candidate once, in odometer order");
+
+        // The same product through the join. The lexicographic plan binds
+        // `X`, `A`, `B`, `C` in that order, so `R`, `S` and `T` reach their
+        // leaves at depths 1, 2 and 3, and `emit_leaf` runs once, at depth 4.
+        let query: JoinQuery = "Q(X, A, B, C) :- R(X, A), S(X, B), T(X, C)."
+            .parse()
+            .unwrap();
+        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+        assert_eq!(plan.variable_ordering, [0, 1, 2, 3]);
+        let ds: HashMap<String, &CollidingHashTrie> = HashMap::from([
+            ("R".to_string(), &r),
+            ("S".to_string(), &s),
+            ("T".to_string(), &t),
+        ]);
+        let mut joined = Vec::new();
+        HashTriejoin::join_for_each(&plan, query, ds, |row| joined.push(row.to_vec()));
+        assert_eq!(joined, expected);
     }
 }

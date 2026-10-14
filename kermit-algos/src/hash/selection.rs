@@ -100,10 +100,9 @@ impl<IT: HashTrieIterator> EqualitySelectionHashTrieIter<IT> {
             self.leaf_ids.extend(
                 chain
                     .ids()
-                    .iter()
                     .zip(chain.iter())
                     .filter(|(_, t)| equalities.iter().all(|e| t[e.source] == t[e.repeat]))
-                    .map(|(&id, _)| id),
+                    .map(|(id, _)| id),
             );
         }
     }
@@ -200,7 +199,9 @@ impl<IT: HashTrieIterator> HashTrieIterator for EqualitySelectionHashTrieIter<IT
             | _ if !self.at_leaf => None,
             | _ => {
                 // The filtered ids index the inner chain's buffer: lend
-                // that buffer with them.
+                // that buffer with them, as a listed view. The ids are the
+                // view's own; it cannot thread them through the trie's
+                // shared links.
                 let chain = self.inner.leaf_tuples()?;
                 Some(LeafRows::from_parts(
                     chain.data(),
@@ -407,14 +408,14 @@ mod tests {
         assert!(it.open());
         assert!(it.open());
         let rows = it.leaf_tuples().expect("the admitted leaf bucket");
-        assert_eq!(rows.ids(), &[1]);
+        assert_eq!(rows.ids().collect::<Vec<_>>(), [1]);
         assert_eq!(rows.to_vecs(), vec![vec![1, 1]]);
 
         let mut plain = r.hash_trie_iter();
         assert!(plain.open());
         assert!(plain.open());
         let chain = plain.leaf_tuples().expect("the same bucket, unfiltered");
-        assert_eq!(chain.ids(), &[0, 1, 2]);
+        assert_eq!(chain.ids().collect::<Vec<_>>(), [0, 1, 2]);
         assert_eq!(rows.data().as_ptr(), chain.data().as_ptr());
     }
 

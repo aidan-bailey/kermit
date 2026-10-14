@@ -65,10 +65,12 @@ pub trait HashTrieIterator {
     fn up(&mut self) -> bool;
 
     /// Tuple chain at the current leaf bucket, as a [`LeafRows`] view: the
-    /// chain's row ids, in chain order, over the tuple buffer they index.
-    /// Returns `Some` iff the current node is a leaf and the current bucket
-    /// is occupied; otherwise `None`. The view borrows the iterator, so
-    /// reading a chain copies and allocates nothing.
+    /// chain's rows, in chain order, over the tuple buffer that holds them,
+    /// named by a list of their ids or reached along their links
+    /// ([`ChainLinks`](crate::ChainLinks)). Returns `Some` iff the current
+    /// node is a leaf and the current bucket is occupied; otherwise `None`.
+    /// The view borrows the iterator, so reading a chain copies and
+    /// allocates nothing.
     fn leaf_tuples(&self) -> Option<LeafRows<'_>>;
 }
 
