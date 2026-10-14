@@ -1,5 +1,6 @@
 //! Issue #111: no tuple costs a heap allocation of its own between reading a
-//! file and building any structure, except HashTrie's chains.
+//! file and building any structure. HashTrie's lists were the one exception
+//! until #101's layer 3 threaded them through one link per row.
 //!
 //! Each test counts the calling thread's allocations with `allocation-counter`,
 //! whose counting global allocator this test binary links, as
@@ -18,11 +19,15 @@
 //! - **TreeTrie and ColumnTrie builds** are bounded by the heap objects the
 //!   built trie owns: TreeTrie a children `Vec` per inner node, ColumnTrie two
 //!   arrays per layer. A per-row allocation adds 10 000.
-//! - **HashTrie builds** keep a chain `Vec` per distinct tuple, by design until
-//!   #101's layer 3, so they are measured on the same 100 distinct tuples
-//!   repeated once and 100 times: the tables and chains are the same, and only
-//!   the row-id lists grow, by at most ⌈log₂ 100⌉ = 7 growth steps each. A
-//!   per-row allocation adds 9 900.
+//! - **HashTrie builds** thread every list through one 4-byte link per row
+//!   (#101's layer 3): Algorithm 2's lists, the leaf chains and the lazy
+//!   pending lists are `Chain`s stored in their buckets, so a build allocates
+//!   per table, never per list. They are measured on the same 100 distinct
+//!   tuples repeated once and 100 times: the tables are the same, and the links
+//!   and a partitioning build's copy are one allocation each at either size, so
+//!   the larger build may allocate no more than the smaller. A per-row
+//!   allocation adds 9 900, and a list grown one push per row, as each was
+//!   before, up to 7.
 //!
 //! - **Parallel builds** (`parallel:N`, `presized:N`) are measured at one
 //!   thread. `run_workers` (`kermit_ds::morsel`) runs the work on the calling
@@ -363,11 +368,16 @@ fn hash_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
 
 /// Under the default `root-capacity=grow` every table's size depends on its
 /// keys alone (`tuples` would size the root from the row count), so the
-/// tables, the chains and the lazy pending lists are the same at both
-/// repetitions. Only the row-id lists hold more ids: one per first key and
-/// one chain per distinct tuple, each by at most ⌈log₂ 100⌉ = 7 growth steps.
-/// The bound also counts the root's list, which is `all_rows`, a `Range`
-/// never built: 7 allocations of slack under every mode.
+/// tables, and under lazy expansion each root child's box, are the same at
+/// both repetitions. No list allocates (#101's layer 3): Algorithm 2's lists,
+/// the leaf chains and the lazy pending lists are `Chain`s, a head, a tail and
+/// a length in their bucket, threaded through the trie's links, one 4-byte
+/// link per row. The links are one allocation at either size: `bulk` and the
+/// partitioning builds allocate them at their full length
+/// (`ChainLinks::new`), and `incremental` reserves them once
+/// (`ChainLinks::with_capacity`) and pushes one link per row into that room.
+/// The buffer is the input batch, or a partitioning build's copy, one
+/// allocation sized from the batch.
 ///
 /// The partitioning builds, `radix:2` and `parallel:1`, grow no list per
 /// partition (#101). `partition_rows` counts each partition's rows in a
@@ -380,10 +390,16 @@ fn hash_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
 /// one allocation each at both repetitions. So are the workers, the scratch
 /// roots' tables (sized by their keys), the merge, and `parallel:1`'s
 /// test-hook record.
+///
+/// Nothing grows with the row count, so the larger build may make no more
+/// allocations than the smaller: 0 extra, where the bound was 777 (111 row-id
+/// lists of up to ⌈log₂ 100⌉ = 7 growth steps each) while the lists were
+/// `Vec`s. Every cell measured equal when the bound was set (the commit
+/// records the counts). The check is one-sided, like the other differential
+/// cells: a one-time initialisation on a path's first run would fall in the
+/// smaller build, which runs first.
 #[test]
-fn hash_trie_builds_allocate_per_list_not_per_row() {
-    let lists = (1 + KEYS + KEYS * KEYS) as u64;
-    let bound = lists * ceil_log2(REPEATS);
+fn hash_trie_builds_allocate_independently_of_their_row_count() {
     let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
     type Measure = fn(HashTrieBuildMode, usize) -> u64;
     let cells: [(&str, Measure, HashTrieBuildMode); 7] = [
@@ -426,9 +442,9 @@ fn hash_trie_builds_allocate_per_list_not_per_row() {
     for (layout, allocations, mode) in cells {
         let (once, many) = (allocations(mode, 1), allocations(mode, REPEATS));
         assert!(
-            many <= once + bound,
-            "HashTrie {layout} {mode:?}: {once} allocations for {} rows, {many} for {}, more than \
-             {bound} apart: some row allocates",
+            many <= once,
+            "HashTrie {layout} {mode:?}: {once} allocations for {} rows, {many} for {}: the \
+             larger build allocates more, so some row or list allocates",
             KEYS * KEYS,
             REPEATS * KEYS * KEYS
         );
@@ -437,22 +453,29 @@ fn hash_trie_builds_allocate_per_list_not_per_row() {
 
 /// `presized:1` under `root-capacity=tuples`, its prerequisite. The root is
 /// sized once from the row count, one allocation at either repetition, and
-/// its lists and chains grow as under the other builds: one list per first
-/// key and one chain per distinct tuple, each by at most ⌈log₂ 100⌉ = 7
-/// growth steps. Its partitions are whole runs of the root's 4 096-bucket
-/// regions, at most [`ONE_THREAD_PARTITIONS`]: the 100 rows' 256-bucket
-/// root is one region and one partition, the 10 000 rows' 16 384-bucket
-/// root four.
+/// the children's tables by their keys. No list allocates (#101's layer 3):
+/// the root's chains, the children's and the leaf chains are `Chain`s
+/// threaded through the trie's links, which `from_tuples_partitioned`
+/// allocates once at the row count. Its partitions are whole runs of the
+/// root's 4 096-bucket regions, at most [`ONE_THREAD_PARTITIONS`]: the 100
+/// rows' 256-bucket root is one region and one partition, the 10 000 rows'
+/// 16 384-bucket root four.
 ///
 /// The three extra partitions cost no allocation (#101). `partition_rows`
-/// sizes its histogram, partition numbers, offsets, copy and `origin`
-/// once, and a partition is a range of the copy. `with_runs` and
-/// `map_in_runs` size their run lists once, and each worker's result list
-/// holds four entries in its first allocation, so one partition or four
-/// cost the same. The fixture's ten keys never probe past a region's end,
-/// so no row is deferred to the tail, whose list the bound does not count.
+/// sizes its histogram, partition numbers, offsets, copy and `origin` once,
+/// and a partition is a range of the copy. `with_runs` and `map_in_runs` size
+/// their run lists once, and each worker's result list holds four entries in
+/// its first allocation, so one partition or four cost the same. The
+/// fixture's ten keys never probe past a region's end, so no row is deferred
+/// to the tail: its queue of deferred ids, the one `Vec` here grown a push at
+/// a time, never allocates.
+///
+/// So the larger build may allocate no more than the smaller: 0 extra, where
+/// the bound was 770 (110 row-id lists of up to 7 growth steps each) while
+/// the lists were `Vec`s. It measured equal when the bound was set (the
+/// commit records the counts).
 #[test]
-fn hash_trie_presized_build_allocates_per_list_not_per_row() {
+fn hash_trie_presized_build_allocates_independently_of_its_row_count() {
     let config = HashTrieConfig {
         root_capacity: RootCapacity::Tuples,
         ..HashTrieConfig::default()
@@ -471,12 +494,10 @@ fn hash_trie_presized_build_allocates_per_list_not_per_row() {
     let ((once, once_partitions), (many, many_partitions)) = (measure(1), measure(REPEATS));
     assert_eq!((once_partitions, many_partitions), (1, 4));
     let rows = REPEATS * KEYS * KEYS;
-    let lists = (KEYS + KEYS * KEYS) as u64;
-    let bound = lists * ceil_log2(REPEATS);
     assert!(
-        many <= once + bound,
-        "HashTrie presized:1: {once} allocations for {} rows, {many} for {rows}, more than \
-         {bound} apart: some row allocates",
+        many <= once,
+        "HashTrie presized:1: {once} allocations for {} rows, {many} for {rows}: the larger build \
+         allocates more, so some row or list allocates",
         KEYS * KEYS,
     );
 }
