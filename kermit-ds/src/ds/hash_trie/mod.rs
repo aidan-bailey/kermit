@@ -10,6 +10,7 @@
 // on `hash_table` until that wiring lands.
 mod build_mode;
 mod bulk;
+mod chain;
 mod config;
 mod expansion;
 #[allow(dead_code)]
