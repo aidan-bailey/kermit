@@ -1,8 +1,11 @@
-//! The `radix:K` build of a [`HashTrie`](super::HashTrie): copy the rows
-//! into `2^K` partitions on their first attribute's hash
-//! (`morsel::partition_rows`), group each partition into a scratch root and
+//! The `radix:K` build of a [`HashTrie`](super::HashTrie), and the steps it
+//! shares with `parallel:N` (`parallel.rs`): copy the rows into partitions
+//! on their first attribute's hash ([`partition_by_first_hash`], over
+//! `morsel::partition_rows`), group each partition into a scratch root and
 //! build its children by Algorithm 2 (`bulk.rs`), then merge the scratch
-//! roots into the real one (SIGMOD 2020 §3.3.2; issues #91, #101).
+//! roots into the real one ([`build_and_merge`]) (SIGMOD 2020 §3.3.2;
+//! issues #91, #101). `radix:K` cuts `2^K` partitions and runs every step on
+//! the calling thread; `parallel:N` runs the first two on N threads.
 //!
 //! The copy is the paper's materialisation step: "the tuples are
 //! partitioned based on the hash values of the first join key attribute"
@@ -21,9 +24,10 @@
 //! distinct root keys in the order they first appear in the input, as the
 //! bulk build does. The copy records each row's input position (`origin`),
 //! and each key is tagged with the position of the row that introduced it.
-//! Below the root nothing needs care: the copy is stable, so each root
-//! key's child is built from the same tuples, in input order, as in the
-//! bulk build.
+//! A partition's keys leave its scratch root in that order, so a k-way
+//! merge of the partitions' lists restores the input's. Below the root
+//! nothing needs care: the copy is stable, so each root key's child is
+//! built from the same tuples, in input order, as in the bulk build.
 
 use {
     super::{
@@ -36,75 +40,148 @@ use {
         node::HashTrieNode,
         pruning::PruningPolicy,
     },
-    crate::morsel::{partition_rows, Threads},
+    crate::morsel::{dispatch, partition_rows, Partitioned, Threads},
     kermit_iters::{HashStrategy, RowId, Tuples},
+    std::{cmp::Reverse, collections::BinaryHeap},
 };
 
 /// A root entry ready to merge: the input position of the row whose key
 /// first introduced it, its hash, and its finished value.
 pub(super) type Arrival<V> = (RowId, u64, V);
 
+/// One partition's root entries, each tagged with the input position at
+/// which its key first appeared, in that order. The root is `Inner` for
+/// arity ≥ 2, so its values are child nodes (subtries, or under pruning and
+/// lazy expansion their `Singleton`s and pending lists), and `Leaf` for
+/// arity 1, so its values are chains of row ids.
+pub(super) enum Entries<P: PruningPolicy, E: ExpansionPolicy> {
+    Children(Vec<Arrival<HashTrieNode<P, E>>>),
+    Chains(Vec<Arrival<TupleList>>),
+}
+
+impl<P: PruningPolicy, E: ExpansionPolicy> Entries<P, E> {
+    /// Moves every entry out of a finished scratch root, in the order its
+    /// keys arrived (`first_seen`, from [`build_scratch_root`]).
+    fn take_from(scratch: HashTrieNode<P, E>, first_seen: &[(RowId, u64)]) -> Self {
+        match scratch {
+            | HashTrieNode::Inner(table) => {
+                let mut children = Vec::with_capacity(first_seen.len());
+                take_in_arrival_order(table, first_seen, &mut children);
+                Self::Children(children)
+            },
+            | HashTrieNode::Leaf(table) => {
+                let mut chains = Vec::with_capacity(first_seen.len());
+                take_in_arrival_order(table, first_seen, &mut chains);
+                Self::Chains(chains)
+            },
+            | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
+                unreachable!("a root is never pruned or unexpanded")
+            },
+        }
+    }
+
+    fn into_children(self) -> Vec<Arrival<HashTrieNode<P, E>>> {
+        match self {
+            | Self::Children(children) => children,
+            | Self::Chains(_) => unreachable!("an Inner root's scratch roots are Inner"),
+        }
+    }
+
+    fn into_chains(self) -> Vec<Arrival<TupleList>> {
+        match self {
+            | Self::Chains(chains) => chains,
+            | Self::Children(_) => unreachable!("a Leaf root's scratch roots are Leaf"),
+        }
+    }
+}
+
 /// Fills the empty `root` with the rows of `tuples` by the `radix:bits`
-/// build and returns the trie's buffer: the rows copied into partition
-/// order. Every row must have `arity` attributes; the caller checks.
+/// build, every step on the calling thread, and returns the trie's buffer:
+/// the rows copied into partition order. Every row must have `arity`
+/// attributes; the caller checks.
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     tuples: Tuples, root: &mut HashTrieNode<P, E>, arity: usize, bits: RadixBits,
     config: HashTrieConfig,
 ) -> Tuples {
+    if tuples.is_empty() {
+        // The bulk build of nothing is the empty root over the empty batch:
+        // copy nothing and start no worker, as `parallel:N` does.
+        return tuples;
+    }
     // 1. Partition, on this thread: copy the rows into `2^bits` partitions on
     //    the top `bits` of their first attribute's hash. Each partition is one
     //    range of the copy, in input order. The whole batch is one morsel:
     //    `partition_rows` keeps a count and a range per (partition, morsel)
     //    pair, which one thread gains nothing from, and at `radix:16` over 10^7
     //    rows in `MORSEL_TUPLES`-row morsels would be about 40 million pairs.
-    let shift = 64 - u32::from(bits.get());
     let one = Threads::new(1).expect("one thread is a valid count");
-    let one_morsel = tuples.len().max(1);
-    let partitioned = partition_rows(one, &tuples, one_morsel, 1 << bits.get(), |row| {
-        (H::hash(row[0]) >> shift) as usize
-    });
+    let partitioned =
+        partition_by_first_hash::<H>(one, &tuples, tuples.len(), u32::from(bits.get()));
     // The copy is the buffer from here on: free the input before the build,
     // so the build holds the rows once.
     drop(tuples);
-    // 2. Build each partition into a scratch root. One of the two lists stays
-    //    empty: the root is `Inner` for arity ≥ 2 (values are subtries, or
-    //    under lazy expansion their pending lists) and `Leaf` for arity 1
-    //    (values are chains).
-    let mut subtries = Vec::new();
-    let mut chains = Vec::new();
-    for partition in 0..partitioned.partitions() {
-        let ids = partitioned.ids(partition);
-        if ids.is_empty() {
-            continue;
-        }
-        let (scratch, first_seen) = build_scratch_root::<H, P, E>(
-            &partitioned.tuples,
-            ids,
-            &partitioned.origin,
-            arity,
-            config,
-        );
-        match scratch {
-            | HashTrieNode::Inner(table) => {
-                take_in_arrival_order(table, &first_seen, &mut subtries)
-            },
-            | HashTrieNode::Leaf(table) => take_in_arrival_order(table, &first_seen, &mut chains),
-            | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
-                unreachable!("a root is never pruned or unexpanded")
-            },
-        }
-    }
+    // 2–3. Build each partition into a scratch root, then merge, both on
+    //      this thread.
+    build_and_merge::<H, P, E>(partitioned, root, arity, one, config)
+}
+
+/// Step 1 of `radix:K` and `parallel:N`: copies the rows of `tuples` into
+/// `2^bits` partitions on the top `bits` bits of their first attribute's
+/// hash, each partition's rows in input order, with each copied row's input
+/// position in `origin` (`morsel::partition_rows`, on `threads` workers over
+/// morsels of `morsel_rows` rows). `bits` must be in `1..=16`.
+pub(super) fn partition_by_first_hash<H: HashStrategy>(
+    threads: Threads, tuples: &Tuples, morsel_rows: usize, bits: u32,
+) -> Partitioned {
+    debug_assert!(
+        (1..=16).contains(&bits),
+        "partition_by_first_hash: {bits} bits, not 1 to 16"
+    );
+    let shift = 64 - bits;
+    partition_rows(threads, tuples, morsel_rows, 1 << bits, |row| {
+        (H::hash(row[0]) >> shift) as usize
+    })
+}
+
+/// Steps 2 and 3 of `radix:K` and `parallel:N`, over the rows `partitioned`
+/// copied. On `threads` workers ([`dispatch`]), each non-empty partition's
+/// id range is grouped into a scratch root of `root`'s kind and its
+/// children are built by Algorithm 2 ([`build_scratch_root`]); its entries
+/// then leave in the order their keys arrived, each tagged with its key's
+/// first input position (`origin`). On the calling thread, a k-way merge
+/// inserts every entry into the empty `root` in first-appearance order
+/// ([`merge_in_first_appearance_order`]). Returns the copy, the trie's
+/// buffer: every id in `root` names a row of it.
+pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+    partitioned: Partitioned, root: &mut HashTrieNode<P, E>, arity: usize, threads: Threads,
+    config: HashTrieConfig,
+) -> Tuples {
+    // An empty partition would build and drop an empty scratch root.
+    let ranges: Vec<_> = (0..partitioned.partitions())
+        .map(|p| partitioned.ids(p))
+        .filter(|ids| !ids.is_empty())
+        .collect();
+    // 2. Build, a partition per task: each id range into a scratch root, whose
+    //    entries then leave in the order their keys arrived, each tagged with
+    //    its key's first input position (`origin`), not its id.
+    let (rows, origin) = (&partitioned.tuples, &partitioned.origin);
+    let entries = dispatch(threads, ranges, |ids| {
+        let (scratch, first_seen) = build_scratch_root::<H, P, E>(rows, ids, origin, arity, config);
+        Entries::take_from(scratch, &first_seen)
+    });
     // Every key's first input position is in its entry now, so nothing reads
     // `origin` or `offsets` again: free them before the merge.
     drop(partitioned.origin);
     drop(partitioned.offsets);
-    // 3. Merge, in first-appearance order.
+    // 3. Merge, on this thread, in first-appearance order.
     match root {
         | HashTrieNode::Inner(table) => {
-            insert_in_first_appearance_order(table, subtries, config.load_factor)
+            let lists = entries.into_iter().map(Entries::into_children).collect();
+            merge_in_first_appearance_order(table, lists, config.load_factor);
         },
         | HashTrieNode::Leaf(table) => {
-            insert_in_first_appearance_order(table, chains, config.load_factor)
+            let lists = entries.into_iter().map(Entries::into_chains).collect();
+            merge_in_first_appearance_order(table, lists, config.load_factor);
         },
         | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
             unreachable!("a root is never pruned or unexpanded")
@@ -147,7 +224,7 @@ pub(super) fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: Expansion
 /// position of the row whose key first introduced it. Bucket positions are
 /// read before the table is consumed, and each bucket is taken exactly
 /// once.
-pub(super) fn take_in_arrival_order<V>(
+fn take_in_arrival_order<V>(
     scratch: HashTable<V>, first_seen: &[(RowId, u64)], out: &mut Vec<Arrival<V>>,
 ) {
     let positions: Vec<usize> = first_seen
@@ -166,17 +243,35 @@ pub(super) fn take_in_arrival_order<V>(
     }
 }
 
-/// Inserts the merged entries into the real root in the order their keys
-/// first appeared in the input — the order the bulk build inserts them —
-/// so the root's buckets, length and capacity are the bulk build's.
-fn insert_in_first_appearance_order<V>(
-    root: &mut HashTable<V>, mut arrivals: Vec<Arrival<V>>, load_factor: LoadFactor,
+/// Inserts every partition's entries into the real root in the order their
+/// keys first appeared in the input, the order the bulk build inserts
+/// them, so the root's buckets, length and capacity are the bulk build's.
+/// Each entry's tag is an input position (`origin`, through
+/// [`build_scratch_root`]), not an id into the copy: ids run
+/// partition-major, so merging on them would insert each partition's keys
+/// in turn. Each list is already in that order, so a k-way merge suffices:
+/// a heap pop and push per entry over at most P lists, O(D log P) for D
+/// root keys. It runs on the calling thread: the build's sequential step.
+fn merge_in_first_appearance_order<V>(
+    root: &mut HashTable<V>, lists: Vec<Vec<Arrival<V>>>, load_factor: LoadFactor,
 ) {
-    // Input positions are distinct (`origin` is a permutation), so the
-    // unstable sort is deterministic.
-    arrivals.sort_unstable_by_key(|&(first, ..)| first);
-    for (_, hash, value) in arrivals {
+    let mut lists: Vec<_> = lists
+        .into_iter()
+        .map(|list| list.into_iter().peekable())
+        .collect();
+    // Each list's next first-appearance position, smallest on top. Positions
+    // are distinct, so no two heads tie.
+    let mut heads: BinaryHeap<Reverse<(RowId, usize)>> = lists
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(list, entries)| entries.peek().map(|&(first, ..)| Reverse((first, list))))
+        .collect();
+    while let Some(Reverse((_, list))) = heads.pop() {
+        let (_, hash, value) = lists[list].next().expect("a head names a non-empty list");
         root.entry_or_insert_with(hash, load_factor, || value);
+        if let Some(&(first, ..)) = lists[list].peek() {
+            heads.push(Reverse((first, list)));
+        }
     }
 }
 
@@ -286,6 +381,21 @@ mod tests {
             HashTrieBuildMode::Radix(RadixBits::new(4).unwrap()),
             vec![vec![1, 2, 3], vec![4, 5, 6]],
         );
+    }
+
+    /// The radix build of nothing is the empty trie over the input batch,
+    /// built without partitioning or starting a worker, as `parallel:N`'s
+    /// is (`parallel_build_of_nothing_starts_no_worker`).
+    #[test]
+    fn radix_build_of_nothing_starts_no_worker() {
+        crate::morsel::take_worker_runs();
+        let built: HashTrie = HashTrie::from_tuples_with_build_mode(
+            2.into(),
+            HashTrieBuildMode::Radix(RadixBits::new(4).unwrap()),
+            vec![],
+        );
+        assert_same_trie(&HashTrie::from_tuples(2.into(), vec![]), &built, "empty");
+        assert!(crate::morsel::take_worker_runs().is_empty());
     }
 
     /// `BuildModeRelation` builds with the default config, and its default

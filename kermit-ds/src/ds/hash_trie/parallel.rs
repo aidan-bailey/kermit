@@ -1,8 +1,9 @@
 //! The `parallel:N` and `presized:N` builds of a [`HashTrie`](super::HashTrie):
-//! `parallel:N` is the radix build's three steps (`radix.rs`), with the
-//! partition and build steps run on N threads by the morsel-driven helpers
-//! of `crate::morsel` (Leis et al., SIGMOD 2014; SIGMOD 2020 §3.3.2; issue
-//! #94).
+//! `parallel:N` is the radix build's three steps, through the helpers it
+//! shares with `radix:K` (`radix::partition_by_first_hash` and
+//! `radix::build_and_merge`), with the partition and build steps run on N
+//! threads by the morsel-driven helpers of `crate::morsel` (Leis et al.,
+//! SIGMOD 2014; SIGMOD 2020 §3.3.2; issue #94).
 //!
 //! 1. **Partition.** [`partition_rows`] copies every row into one of P
 //!    partitions by the top log₂P bits of the row's first attribute's hash, and
@@ -18,7 +19,8 @@
 //!    (`radix::build_scratch_root`), then takes the scratch root's entries out,
 //!    each tagged with the input position at which its key first appeared.
 //! 3. **Merge.** The calling thread inserts every entry into the real root in
-//!    first-appearance order, by a k-way merge of the partitions' lists.
+//!    first-appearance order, by a k-way merge of the partitions' lists, as
+//!    `radix:K` merges its own.
 //!
 //! The result holds the bulk trie's contents, and its root is the bulk
 //! build's, bucket for bucket and capacity for capacity, for the reasons
@@ -62,17 +64,17 @@
 use {
     super::{
         bulk::TupleList,
-        config::{HashTrieConfig, LoadFactor},
+        config::HashTrieConfig,
         expansion::ExpansionPolicy,
         hash_table::{home_bucket, BucketRun, HashTable, Overflow, RunEntry},
         implementation::HashTrie,
         node::HashTrieNode,
         pruning::PruningPolicy,
-        radix::{self, Arrival},
+        radix,
     },
     crate::morsel::{dispatch, partition_rows, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD},
     kermit_iters::{HashStrategy, RowId, Tuples},
-    std::{cmp::Reverse, collections::BinaryHeap, ops::Range},
+    std::ops::Range,
 };
 
 /// One parallel build, as the test hooks record it.
@@ -103,52 +105,6 @@ thread_local! {
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn take_parallel_builds() -> Vec<ParallelBuild> {
     PARALLEL_BUILDS.with(|builds| builds.take())
-}
-
-/// One partition's root entries, each tagged with the input position at
-/// which its key first appeared, in that order. The root is `Inner` for
-/// arity ≥ 2, so its values are child nodes (subtries, or under pruning and
-/// lazy expansion their `Singleton`s and pending lists), and `Leaf` for
-/// arity 1, so its values are chains of row ids.
-enum Entries<P: PruningPolicy, E: ExpansionPolicy> {
-    Children(Vec<Arrival<HashTrieNode<P, E>>>),
-    Chains(Vec<Arrival<TupleList>>),
-}
-
-impl<P: PruningPolicy, E: ExpansionPolicy> Entries<P, E> {
-    /// Moves every entry out of a finished scratch root, in the order its
-    /// keys arrived (`first_seen`, from `radix::build_scratch_root`).
-    fn take_from(scratch: HashTrieNode<P, E>, first_seen: &[(RowId, u64)]) -> Self {
-        match scratch {
-            | HashTrieNode::Inner(table) => {
-                let mut children = Vec::with_capacity(first_seen.len());
-                radix::take_in_arrival_order(table, first_seen, &mut children);
-                Self::Children(children)
-            },
-            | HashTrieNode::Leaf(table) => {
-                let mut chains = Vec::with_capacity(first_seen.len());
-                radix::take_in_arrival_order(table, first_seen, &mut chains);
-                Self::Chains(chains)
-            },
-            | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
-                unreachable!("a root is never pruned or unexpanded")
-            },
-        }
-    }
-
-    fn into_children(self) -> Vec<Arrival<HashTrieNode<P, E>>> {
-        match self {
-            | Self::Children(children) => children,
-            | Self::Chains(_) => unreachable!("an Inner root's scratch roots are Inner"),
-        }
-    }
-
-    fn into_chains(self) -> Vec<Arrival<TupleList>> {
-        match self {
-            | Self::Chains(chains) => chains,
-            | Self::Children(_) => unreachable!("a Leaf root's scratch roots are Leaf"),
-        }
-    }
 }
 
 /// The radix bits for `threads`: [`PARTITIONS_PER_THREAD`] partitions per
@@ -199,11 +155,12 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     //    partition's in input order, with each copy's input position in
     //    `origin`. The copy is the trie's buffer from here on, so the input is
     //    freed before the build steps.
-    let bits = partition_bits(threads);
-    let shift = 64 - bits;
-    let partitioned = partition_rows(threads, &tuples, morsel_tuples, 1 << bits, |row| {
-        (H::hash(row[0]) >> shift) as usize
-    });
+    let partitioned = radix::partition_by_first_hash::<H>(
+        threads,
+        &tuples,
+        morsel_tuples,
+        partition_bits(threads),
+    );
     drop(tuples);
     #[cfg(any(test, feature = "test-hooks"))]
     PARALLEL_BUILDS.with(|builds| {
@@ -213,73 +170,9 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
             deferred: None,
         });
     });
-    // An empty partition would build and drop an empty scratch root; the
-    // radix build skips them too.
-    let ranges: Vec<_> = (0..partitioned.partitions())
-        .map(|p| partitioned.ids(p))
-        .filter(|ids| !ids.is_empty())
-        .collect();
-    // 2. Build, on `threads` workers: each partition's id range into a scratch
-    //    root, whose entries then leave in the order their keys arrived, each
-    //    tagged with its key's first input position (`origin`), not its id.
-    let (rows, origin) = (&partitioned.tuples, &partitioned.origin);
-    let entries = dispatch(threads, ranges, |ids| {
-        let (scratch, first_seen) =
-            radix::build_scratch_root::<H, P, E>(rows, ids, origin, arity, config);
-        Entries::take_from(scratch, &first_seen)
-    });
-    // Every key's first input position is in its entry now, so nothing reads
-    // `origin` or `offsets` again: free them before the merge.
-    drop(partitioned.origin);
-    drop(partitioned.offsets);
-    // 3. Merge, on this thread, in first-appearance order.
-    match root {
-        | HashTrieNode::Inner(table) => {
-            let lists = entries.into_iter().map(Entries::into_children).collect();
-            merge_in_first_appearance_order(table, lists, config.load_factor);
-        },
-        | HashTrieNode::Leaf(table) => {
-            let lists = entries.into_iter().map(Entries::into_chains).collect();
-            merge_in_first_appearance_order(table, lists, config.load_factor);
-        },
-        | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => {
-            unreachable!("a root is never pruned or unexpanded")
-        },
-    }
-    partitioned.tuples
-}
-
-/// Inserts every partition's entries into the real root in the order their
-/// keys first appeared in the input, the order the bulk build inserts
-/// them, so the root's buckets, length and capacity are the bulk
-/// build's. Each entry's tag is an input position (`origin`, through
-/// `radix::build_scratch_root`), not an id into the copy: ids run
-/// partition-major, so merging on them would insert each partition's keys
-/// in turn. Each list is already in that order, so a k-way merge suffices:
-/// a heap pop and push per entry over at most P lists, where the radix
-/// build sorts every entry. It runs on the calling thread: the build's
-/// sequential step.
-fn merge_in_first_appearance_order<V>(
-    root: &mut HashTable<V>, lists: Vec<Vec<Arrival<V>>>, load_factor: LoadFactor,
-) {
-    let mut lists: Vec<_> = lists
-        .into_iter()
-        .map(|list| list.into_iter().peekable())
-        .collect();
-    // Each list's next first-appearance position, smallest on top. Positions
-    // are distinct, so no two heads tie.
-    let mut heads: BinaryHeap<Reverse<(RowId, usize)>> = lists
-        .iter_mut()
-        .enumerate()
-        .filter_map(|(list, entries)| entries.peek().map(|&(first, ..)| Reverse((first, list))))
-        .collect();
-    while let Some(Reverse((_, list))) = heads.pop() {
-        let (_, hash, value) = lists[list].next().expect("a head names a non-empty list");
-        root.entry_or_insert_with(hash, load_factor, || value);
-        if let Some(&(first, ..)) = lists[list].peek() {
-            heads.push(Reverse((first, list)));
-        }
-    }
+    // 2–3. Build each partition into a scratch root on `threads` workers,
+    //      then merge on this thread.
+    radix::build_and_merge::<H, P, E>(partitioned, root, arity, threads, config)
 }
 
 /// Buckets per region of a presized root. A probe during the parallel fill
@@ -455,7 +348,7 @@ mod tests {
             ds::hash_trie::{
                 build_mode::{HashTrieBuildMode, RadixBits},
                 bulk::all_rows,
-                config::{ChildCapacity, HashTrieConfig, RootCapacity},
+                config::{ChildCapacity, HashTrieConfig, LoadFactor, RootCapacity},
                 expansion::{EagerExpansion, LazyExpansion},
                 identity::{
                     assert_equivalent_root, assert_equivalent_trie, assert_same_contents,
@@ -713,12 +606,13 @@ mod tests {
     ///   histogram and scatter, then `dispatch`;
     /// - the tuples spread over the partitions.
     ///
-    /// The radix build partitions too, on one thread (two runs of one
-    /// worker), and records nothing. Eight first keys of eight tuples each
-    /// fill the eight partitions of `parallel:2` evenly. `parallel:3` aims at
-    /// 12 partitions, rounded up to 16, so key k lands in partition 2k: every
-    /// other partition is empty, and the record lists those too. A second
-    /// thread count is what shows that N itself reaches the build.
+    /// The radix build runs the same three steps on one thread (three runs
+    /// of one worker: `partition_rows`' two, then `dispatch`), and records
+    /// nothing. Eight first keys of eight tuples each fill the eight
+    /// partitions of `parallel:2` evenly. `parallel:3` aims at 12 partitions,
+    /// rounded up to 16, so key k lands in partition 2k: every other
+    /// partition is empty, and the record lists those too. A second thread
+    /// count is what shows that N itself reaches the build.
     #[test]
     fn build_modes_reach_their_builds() {
         let tuples: Vec<Vec<usize>> = (0..64).map(|i| vec![i % 8, i]).collect();
@@ -729,7 +623,7 @@ mod tests {
             (
                 HashTrieBuildMode::Radix(RadixBits::new(3).unwrap()),
                 vec![],
-                vec![1, 1],
+                vec![1, 1, 1],
             ),
             (
                 HashTrieBuildMode::Parallel(threads(2)),
