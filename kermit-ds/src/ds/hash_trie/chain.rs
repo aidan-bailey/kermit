@@ -39,8 +39,6 @@ use {
 /// A list of rows threaded through the trie's `links`, in input order:
 /// Algorithm 2's `L`. The rows are ids into the trie's buffer; each row's
 /// successor is its link, and the tail's link is `NIL`.
-// No caller until the lists become chains (Task 5).
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chain {
     /// The first row, where a walk starts.
@@ -53,8 +51,6 @@ pub struct Chain {
     len: NonZeroU32,
 }
 
-// No caller until the lists become chains (Task 5).
-#[allow(dead_code)]
 impl Chain {
     /// The chain of the one row `row`. Writes `NIL` into `row`'s link.
     #[inline]
@@ -115,8 +111,6 @@ impl Chain {
 /// new (the table first grows under `load_factor` if a new key would
 /// overfill it). Returns whether it started one, i.e. whether `hash` is a
 /// new key of `lists`.
-// No caller until the lists become chains (Task 5).
-#[allow(dead_code)]
 #[inline]
 pub(super) fn push_row(
     lists: &mut HashTable<Chain>, hash: u64, load_factor: LoadFactor, links: &ChainLinks,

@@ -251,14 +251,16 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIterator
     fn up(&mut self) -> bool { self.stack.pop().is_some() }
 
     fn leaf_tuples(&self) -> Option<LeafRows<'_>> {
-        let tuples = self.trie.tuples();
+        // A leaf bucket lends its chain linked, walked through the trie's
+        // links; a singleton frame lends its one row id as a listed chain.
+        let (tuples, links) = (self.trie.tuples(), self.trie.links());
         match self.stack.last()? {
             | Frame::Table {
                 node,
                 idx,
             } => match *node {
                 | HashTrieNode::Leaf(t) => {
-                    t.value_at(*idx).map(|chain| LeafRows::new(tuples, chain))
+                    t.value_at(*idx).map(|chain| chain.leaf_rows(tuples, links))
                 },
                 | HashTrieNode::Inner(_) => None,
                 | HashTrieNode::Singleton(_) | HashTrieNode::Unexpanded(_) => unreachable!(
@@ -683,9 +685,11 @@ mod tests {
 
     #[test]
     fn a_leaf_chain_lends_row_ids_into_the_trie_buffer() {
-        // The two copies of (1, 2) share one chain. Its ids are their
-        // input positions, in input order, and its rows are read from the
-        // trie's own buffer, never copied.
+        // The two copies of (1, 2) share one chain. Its ids are their input
+        // positions, in input order, linked through the trie's links (row
+        // 0's link names row 2, whose link is `NIL`), and its rows are read
+        // from the trie's own buffer, never copied.
+        use kermit_iters::ChainLinks;
         let trie: HashTrie =
             HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4], vec![1, 2]]);
         let mut it = HashTrieIter::new(&trie);
@@ -694,10 +698,16 @@ mod tests {
         assert!(it.open());
         assert!(it.lookup(h(2)));
         let rows = it.leaf_tuples().expect("the chain of (1, 2)");
-        assert_eq!(rows.ids().collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.ids().collect::<Vec<_>>(), vec![0, 2]);
         assert_eq!(rows.arity(), 2);
         assert_eq!(rows.to_vecs(), vec![vec![1, 2], vec![1, 2]]);
         assert_eq!(rows.data().as_ptr(), trie.tuples().as_flat().as_ptr());
+        assert_eq!(trie.links().to_vec(), vec![
+            2,
+            ChainLinks::NIL,
+            ChainLinks::NIL
+        ]);
     }
 
     #[test]
@@ -705,7 +715,9 @@ mod tests {
         // (4, 5, 6) is alone below 4, so under pruning both levels below
         // the root are singleton frames. `frame_for` builds the first and
         // `open`'s `Descent::Deeper` the second. The leaf one lends its
-        // payload's row id, 2, over the trie's buffer.
+        // payload's row id, 2, as a listed chain over the trie's buffer. The
+        // row ends no chain, so its link is `NIL`.
+        use kermit_iters::ChainLinks;
         let trie = Pruned::from_tuples(3.into(), vec![vec![1, 2, 3], vec![1, 2, 7], vec![4, 5, 6]]);
         let mut it = HashTrieIter::new(&trie);
         assert!(it.open());
@@ -714,8 +726,9 @@ mod tests {
         assert!(it.open());
         assert!(matches!(it.stack.last(), Some(Frame::Singleton(_))));
         let rows = it.leaf_tuples().expect("singleton at leaf depth");
-        assert_eq!(rows.ids().collect::<Vec<_>>(), [2]);
+        assert_eq!(rows.ids().collect::<Vec<_>>(), vec![2]);
         assert_eq!(rows.to_vecs(), vec![vec![4, 5, 6]]);
         assert_eq!(rows.data().as_ptr(), trie.tuples().as_flat().as_ptr());
+        assert_eq!(trie.links().get(2), ChainLinks::NIL);
     }
 }

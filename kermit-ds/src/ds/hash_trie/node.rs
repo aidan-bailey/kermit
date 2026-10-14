@@ -1,7 +1,8 @@
 //! Recursive node type for the hash trie. Inner levels carry child node
-//! tables; the deepest (leaf) level carries chains of row ids; a pruned
-//! subtrie carries its single tuple's row id directly. Every row id indexes
-//! the trie's buffer (`HashTrie::tuples`, #111).
+//! tables; the deepest (leaf) level carries chains, lists of rows threaded
+//! through the trie's links (`chain.rs`, #101 B2); a pruned subtrie carries
+//! its single tuple's row id directly. Every row id indexes the trie's
+//! buffer (`HashTrie::tuples`, #111).
 //!
 //! The table variant is fixed by depth: inner nodes live at depths
 //! `0..arity-1`, the leaf node at depth `arity-1`. A `Singleton` may stand
@@ -12,9 +13,8 @@
 //! No runtime check polices the depth rule — `HashTrie::insert_at`
 //! constructs the right variant based on the caller's known arity.
 
-use {
-    super::{expansion::ExpansionPolicy, hash_table::HashTable, pruning::PruningPolicy},
-    kermit_iters::RowId,
+use super::{
+    chain::Chain, expansion::ExpansionPolicy, hash_table::HashTable, pruning::PruningPolicy,
 };
 
 /// A node in a hash trie, parameterised by the pruning and expansion
@@ -24,11 +24,12 @@ use {
 pub(crate) enum HashTrieNode<P: PruningPolicy, E: ExpansionPolicy> {
     /// Inner level: hash table whose values are child nodes.
     Inner(HashTable<HashTrieNode<P, E>>),
-    /// Leaf level: hash table whose values are chains. Each chain holds the
-    /// row ids, in input order, of the tuples whose attribute hashes match
-    /// the path of hashes from the root to this bucket; the tuples
-    /// themselves live in the trie's buffer.
-    Leaf(HashTable<Vec<RowId>>),
+    /// Leaf level: hash table whose values are chains. Each chain lists the
+    /// rows, in input order, of the tuples whose attribute hashes match the
+    /// path of hashes from the root to this bucket: its first and last rows
+    /// and its length, with each row's successor in the trie's links. The
+    /// tuples themselves live in the trie's buffer.
+    Leaf(HashTable<Chain>),
     /// Pruned subtrie: exactly one tuple lives below this point, so the
     /// remaining levels are not materialised. The iterator emulates them
     /// from the tuple (see `hash_trie_iter.rs`). Never the root.
@@ -42,9 +43,9 @@ pub(crate) enum HashTrieNode<P: PruningPolicy, E: ExpansionPolicy> {
     /// (`hash_trie_iter.rs`).
     Singleton(P::Payload),
     /// Unexpanded child (lazy child expansion, SIGMOD 2020 Figure 6): the
-    /// row ids of the tuples below this bucket, kept as a list until a
-    /// probe first opens it, then the table built from them. Never the
-    /// root. Holds `E::Pending<Self>`: `Box<LazyChild<Self>>` when lazy, the
+    /// chain of the tuples below this bucket, kept until a probe first
+    /// opens it, then the table built from its rows. Never the root. Holds
+    /// `E::Pending<Self>`: `Box<LazyChild<Self>>` when lazy, the
     /// uninhabited `Never` when eager, so under `EagerExpansion` this variant
     /// costs nothing (pinned by
     /// `node_does_not_grow_under_the_expansion_policy`).

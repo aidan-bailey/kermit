@@ -1,11 +1,11 @@
-//! The `radix:K` build of a [`HashTrie`](super::HashTrie), and the steps it
-//! shares with `parallel:N` (`parallel.rs`): copy the rows into partitions
-//! on their first attribute's hash ([`partition_by_first_hash`], over
-//! `morsel::partition_rows`), group each partition into a scratch root and
-//! build its children by Algorithm 2 (`bulk.rs`), then merge the scratch
-//! roots into the real one ([`build_and_merge`]) (SIGMOD 2020 §3.3.2;
-//! issues #91, #101). `radix:K` cuts `2^K` partitions and runs every step on
-//! the calling thread; `parallel:N` runs the first two on N threads.
+//! The `radix:K` build of a [`HashTrie`](super::HashTrie): copy the rows
+//! into `2^K` partitions on their first attribute's hash
+//! ([`partition_by_first_hash`]), group each partition into a scratch root
+//! and build its children by Algorithm 2 (`bulk.rs`), then merge the scratch
+//! roots into the real one ([`build_and_merge`]; SIGMOD 2020 §3.3.2; issues
+//! #91, #101). `parallel:N` (`parallel.rs`) runs the same steps on N
+//! threads; `radix:K` runs them on the calling thread, with the whole batch
+//! as one morsel.
 //!
 //! The copy is the paper's materialisation step: "the tuples are
 //! partitioned based on the hash values of the first join key attribute"
@@ -15,24 +15,34 @@
 //! partitions is kermit's choice; the paper adapts a two-pass radix
 //! partitioning (Balkesen et al.).
 //!
+//! Every list is a [`Chain`] threaded through the trie's links, one per row
+//! of the copy ([`ChainLinks`]): the paper's chain pointer (§3.3.2, Figure
+//! 3), kept as a 4-byte id in an array beside the buffer rather than 8 bytes
+//! inside each tuple (kermit's). A partition's scratch root threads the
+//! partition's rows into its root chains, and Algorithm 2 re-threads each
+//! chain into the next level's, so building a partition writes the links of
+//! its own rows and of no others: partitions build on separate threads with
+//! one writer per link. The merge moves `Chain` values and finished
+//! children, whose ids name rows of the copy, and writes no link.
+//!
 //! The result is equivalent to the bulk build's trie (Amendment 2): the
 //! same tables bucket for bucket and capacity for capacity, and the same
-//! tuples in every chain, singleton and pending list, under the copy's row
+//! tuples in every chain, singleton and pending chain, under the copy's row
 //! ids. A table's final layout depends only on the order in which its
 //! *new* keys arrive — `HashTable::entry_or_insert_with` returns an
 //! existing entry before its resize check — so the merge inserts the
 //! distinct root keys in the order they first appear in the input, as the
 //! bulk build does. The copy records each row's input position (`origin`),
-//! and each key is tagged with the position of the row that introduced it.
-//! A partition's keys leave its scratch root in that order, so a k-way
-//! merge of the partitions' lists restores the input's. Below the root
-//! nothing needs care: the copy is stable, so each root key's child is
-//! built from the same tuples, in input order, as in the bulk build.
+//! each key is tagged with the position of the row that introduced it, and
+//! [`merge_in_first_appearance_order`] merges the partitions' tagged lists
+//! k-way on that tag. Below the root nothing needs care: the copy is
+//! stable, so each root key's child is built from the same tuples, in input
+//! order, as in the bulk build.
 
 use {
     super::{
         build_mode::RadixBits,
-        bulk::TupleList,
+        chain::{self, Chain},
         config::{HashTrieConfig, LoadFactor},
         expansion::ExpansionPolicy,
         hash_table::HashTable,
@@ -41,7 +51,7 @@ use {
         pruning::PruningPolicy,
     },
     crate::morsel::{dispatch, partition_rows, Partitioned, Threads},
-    kermit_iters::{HashStrategy, RowId, Tuples},
+    kermit_iters::{ChainLinks, HashStrategy, RowId, Tuples},
     std::{cmp::Reverse, collections::BinaryHeap},
 };
 
@@ -52,11 +62,12 @@ pub(super) type Arrival<V> = (RowId, u64, V);
 /// One partition's root entries, each tagged with the input position at
 /// which its key first appeared, in that order. The root is `Inner` for
 /// arity ≥ 2, so its values are child nodes (subtries, or under pruning and
-/// lazy expansion their `Singleton`s and pending lists), and `Leaf` for
-/// arity 1, so its values are chains of row ids.
+/// lazy expansion their `Singleton`s and pending chains), and `Leaf` for
+/// arity 1, so its values are chains. Either way every id in them names a
+/// row of the copy, so they move into the real root as they are.
 pub(super) enum Entries<P: PruningPolicy, E: ExpansionPolicy> {
     Children(Vec<Arrival<HashTrieNode<P, E>>>),
-    Chains(Vec<Arrival<TupleList>>),
+    Chains(Vec<Arrival<Chain>>),
 }
 
 impl<P: PruningPolicy, E: ExpansionPolicy> Entries<P, E> {
@@ -87,7 +98,7 @@ impl<P: PruningPolicy, E: ExpansionPolicy> Entries<P, E> {
         }
     }
 
-    fn into_chains(self) -> Vec<Arrival<TupleList>> {
+    fn into_chains(self) -> Vec<Arrival<Chain>> {
         match self {
             | Self::Chains(chains) => chains,
             | Self::Children(_) => unreachable!("a Leaf root's scratch roots are Leaf"),
@@ -96,12 +107,12 @@ impl<P: PruningPolicy, E: ExpansionPolicy> Entries<P, E> {
 }
 
 /// Fills the empty `root` with the rows of `tuples` by the `radix:bits`
-/// build, every step on the calling thread, and returns the trie's buffer:
-/// the rows copied into partition order. Every row must have `arity`
-/// attributes; the caller checks.
+/// build, threading every list through `links` (one link per row of
+/// `tuples`), and returns the trie's buffer: the rows copied into partition
+/// order. Every row must have `arity` attributes; the caller checks.
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: Tuples, root: &mut HashTrieNode<P, E>, arity: usize, bits: RadixBits,
-    config: HashTrieConfig,
+    tuples: Tuples, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    bits: RadixBits, config: HashTrieConfig,
 ) -> Tuples {
     if tuples.is_empty() {
         // The bulk build of nothing is the empty root over the empty batch:
@@ -115,14 +126,13 @@ pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     //    pair, which one thread gains nothing from, and at `radix:16` over 10^7
     //    rows in `MORSEL_TUPLES`-row morsels would be about 40 million pairs.
     let one = Threads::new(1).expect("one thread is a valid count");
-    let partitioned =
-        partition_by_first_hash::<H>(one, &tuples, tuples.len(), u32::from(bits.get()));
+    let one_morsel = tuples.len();
+    let partitioned = partition_by_first_hash::<H>(one, &tuples, one_morsel, u32::from(bits.get()));
     // The copy is the buffer from here on: free the input before the build,
     // so the build holds the rows once.
     drop(tuples);
-    // 2–3. Build each partition into a scratch root, then merge, both on
-    //      this thread.
-    build_and_merge::<H, P, E>(partitioned, root, arity, one, config)
+    // 2 and 3, on this thread.
+    build_and_merge::<H, P, E>(partitioned, links, root, arity, one, config)
 }
 
 /// Step 1 of `radix:K` and `parallel:N`: copies the rows of `tuples` into
@@ -143,37 +153,40 @@ pub(super) fn partition_by_first_hash<H: HashStrategy>(
     })
 }
 
-/// Steps 2 and 3 of `radix:K` and `parallel:N`, over the rows `partitioned`
-/// copied. On `threads` workers ([`dispatch`]), each non-empty partition's
-/// id range is grouped into a scratch root of `root`'s kind and its
-/// children are built by Algorithm 2 ([`build_scratch_root`]); its entries
-/// then leave in the order their keys arrived, each tagged with its key's
-/// first input position (`origin`). On the calling thread, a k-way merge
-/// inserts every entry into the empty `root` in first-appearance order
-/// ([`merge_in_first_appearance_order`]). Returns the copy, the trie's
-/// buffer: every id in `root` names a row of it.
+/// Steps 2 and 3 of `radix:K` and `parallel:N`. Each non-empty partition
+/// of `partitioned` is built into a scratch root ([`build_scratch_root`])
+/// on one of `threads` workers, which threads that partition's rows, and
+/// only those, through `links`; then the calling thread merges the scratch
+/// roots' entries into the empty `root` in first-appearance order
+/// ([`merge_in_first_appearance_order`]), writing no link. Returns the
+/// copy, the trie's buffer: every id in `root` names a row of it, and
+/// `links` holds one link per row of it.
 pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    partitioned: Partitioned, root: &mut HashTrieNode<P, E>, arity: usize, threads: Threads,
-    config: HashTrieConfig,
+    partitioned: Partitioned, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    threads: Threads, config: HashTrieConfig,
 ) -> Tuples {
     // An empty partition would build and drop an empty scratch root.
     let ranges: Vec<_> = (0..partitioned.partitions())
         .map(|p| partitioned.ids(p))
         .filter(|ids| !ids.is_empty())
         .collect();
-    // 2. Build, a partition per task: each id range into a scratch root, whose
-    //    entries then leave in the order their keys arrived, each tagged with
-    //    its key's first input position (`origin`), not its id.
+    // 2. Build: each partition's id range into a scratch root, whose entries
+    //    then leave in the order their keys arrived, each tagged with its key's
+    //    first input position (`origin`), not its id. A partition's rows are in
+    //    exactly one of these builds, so each link has one writer, and the
+    //    relaxed atomics need no lock between the workers.
     let (rows, origin) = (&partitioned.tuples, &partitioned.origin);
     let entries = dispatch(threads, ranges, |ids| {
-        let (scratch, first_seen) = build_scratch_root::<H, P, E>(rows, ids, origin, arity, config);
+        let (scratch, first_seen) =
+            build_scratch_root::<H, P, E>(rows, links, ids, origin, arity, config);
         Entries::take_from(scratch, &first_seen)
     });
     // Every key's first input position is in its entry now, so nothing reads
     // `origin` or `offsets` again: free them before the merge.
     drop(partitioned.origin);
     drop(partitioned.offsets);
-    // 3. Merge, on this thread, in first-appearance order.
+    // 3. Merge, on this thread, in first-appearance order. The workers were
+    //    joined inside `dispatch`, so every link they wrote is visible here.
     match root {
         | HashTrieNode::Inner(table) => {
             let lists = entries.into_iter().map(Entries::into_children).collect();
@@ -191,32 +204,30 @@ pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPol
 }
 
 /// Builds one partition, the rows `ids` of `tuples`, into a scratch root of
-/// the real root's kind by Algorithm 2 (`bulk.rs`): the ids grouped at the
-/// root, recording for each key the input position of the row that
-/// introduced it (`origin[id]`) and the key's hash, in arrival order; then
-/// each key's child built from its list, as the bulk build builds it.
-/// `ids` must list the partition in input order.
+/// the real root's kind by Algorithm 2 (`bulk.rs`): each row pushed onto
+/// the chain in its key's bucket, threaded through `links` (lines 3–7),
+/// recording for each key the input position of the row that introduced it
+/// (`origin[id]`) and the key's hash, in arrival order; then each key's
+/// child built from its chain, as the bulk build builds it (lines 8–15).
+/// `ids` must list the partition in input order. Only the links of `ids`'
+/// rows are written, so partitions can build on separate threads.
 pub(super) fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: &Tuples, ids: impl IntoIterator<Item = RowId>, origin: &[RowId], arity: usize,
-    config: HashTrieConfig,
+    tuples: &Tuples, links: &ChainLinks, ids: impl IntoIterator<Item = RowId>, origin: &[RowId],
+    arity: usize, config: HashTrieConfig,
 ) -> (HashTrieNode<P, E>, Vec<(RowId, u64)>) {
     // Lines 3–7 at the root. The scratch root starts at 4 buckets and
     // grows: its entries move into the real root, so its size is never
-    // seen.
-    let mut lists: HashTable<TupleList> = HashTable::new();
+    // seen. `push_row` starts a chain exactly when the row's key is new.
+    let mut lists: HashTable<Chain> = HashTable::new();
     let mut first_seen = Vec::new();
     for row in ids {
         let hash = H::hash(tuples.row(row)[0]);
-        let keys_before = lists.len();
-        lists
-            .entry_or_insert_with(hash, config.load_factor, Vec::new)
-            .push(row);
-        if lists.len() > keys_before {
+        if chain::push_row(&mut lists, hash, config.load_factor, links, row) {
             first_seen.push((origin[row as usize], hash));
         }
     }
-    // Lines 8–15.
-    let scratch = HashTrie::<H, P, E>::build_nested(tuples, 0, arity, lists, config);
+    // Lines 8–15: each chain re-threaded into its child's chains.
+    let scratch = HashTrie::<H, P, E>::build_nested(tuples, links, 0, arity, lists, config);
     (scratch, first_seen)
 }
 
@@ -306,9 +317,10 @@ mod tests {
     /// factor, root capacity, child capacity, bit count and input.
     /// `assert_same_contents` compares every table bucket for bucket, so the
     /// root is `bulk`'s (Decision 3 of the partitioned-materialisation
-    /// design), and every chain, singleton and pending list holds the same
-    /// tuples in the same order under the copy's row ids. The heap size is
-    /// compared too: `space` must not move with the mode.
+    /// design), and every chain, singleton and pending chain holds the same
+    /// tuples in the same order under the copy's row ids, each chain walked
+    /// through its own trie's links. The heap size is compared too: `space`
+    /// must not move with the mode, and every mode keeps one link per row.
     fn check_contents<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
         for arity in 1..=3 {
             for config in configs() {
