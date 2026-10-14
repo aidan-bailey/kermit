@@ -228,6 +228,10 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
             radix::build_scratch_root::<H, P, E>(rows, ids, origin, arity, config);
         Entries::take_from(scratch, &first_seen)
     });
+    // Every key's first input position is in its entry now, so nothing reads
+    // `origin` or `offsets` again: free them before the merge.
+    drop(partitioned.origin);
+    drop(partitioned.offsets);
     // 3. Merge, on this thread, in first-appearance order.
     match root {
         | HashTrieNode::Inner(table) => {

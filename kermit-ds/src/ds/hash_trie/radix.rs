@@ -94,6 +94,10 @@ pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
             },
         }
     }
+    // Every key's first input position is in its entry now, so nothing reads
+    // `origin` or `offsets` again: free them before the merge.
+    drop(partitioned.origin);
+    drop(partitioned.offsets);
     // 3. Merge, in first-appearance order.
     match root {
         | HashTrieNode::Inner(table) => {

@@ -1113,15 +1113,21 @@ mod tests {
     /// Rows in the partitioning-build fixture below.
     const ROWS: usize = 1000;
 
-    /// 1000 rows of arity 2, `[(i * 7919) % 97, i]`, so about ten rows share
-    /// each of the 97 first keys. The batch is built with room for twice the
-    /// rows, and each call builds a fresh one: `Tuples::clone` drops spare
-    /// capacity.
+    /// The first key of the one row that has it to itself in
+    /// [`spare_capacity_input`]: under pruning that row is a `Singleton`.
+    const LONE_KEY: usize = 500;
+
+    /// 1000 rows of arity 2: `[(i * 7919) % 97, i]` for all but the last, so
+    /// about ten rows share each of the 97 first keys, and the last row
+    /// `[LONE_KEY, ROWS - 1]` alone under a key of its own. The batch is built
+    /// with room for twice the rows, and each call builds a fresh one:
+    /// `Tuples::clone` drops spare capacity.
     fn spare_capacity_input() -> Tuples {
         let mut batch = Tuples::with_capacity(2, 2 * ROWS);
-        for i in 0..ROWS {
+        for i in 0..ROWS - 1 {
             batch.push(&[(i * 7919) % 97, i]);
         }
+        batch.push(&[LONE_KEY, ROWS - 1]);
         batch
     }
 
@@ -1137,13 +1143,17 @@ mod tests {
     }
 
     /// `mode` over a fresh [`spare_capacity_input`], under the one config
-    /// every mode accepts: `presized:N` requires `root-capacity=tuples`.
-    fn build_in(mode: HashTrieBuildMode) -> HashTrie {
+    /// every mode accepts: `presized:N` requires `root-capacity=tuples`. The
+    /// trie's Layout is the caller's to name, so the same body runs under
+    /// every hasher, pruning and expansion policy.
+    fn build_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        mode: HashTrieBuildMode,
+    ) -> HashTrie<H, P, E> {
         let config = HashTrieConfig {
             root_capacity: RootCapacity::Tuples,
             ..HashTrieConfig::default()
         };
-        HashTrie::from_tuples_with_config_and_build_mode(
+        HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
             2.into(),
             config,
             mode,
@@ -1154,7 +1164,9 @@ mod tests {
     /// The comparison a build owes `bulk` (Amendment 2, as amended by #101):
     /// `radix:K` and `parallel:N` build `bulk`'s tables bucket for bucket,
     /// and `presized:N` an equivalent trie.
-    fn assert_owes_bulk(mode: HashTrieBuildMode, bulk: &HashTrie, built: &HashTrie, label: &str) {
+    fn assert_owes_bulk<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        mode: HashTrieBuildMode, bulk: &HashTrie<H, P, E>, built: &HashTrie<H, P, E>, label: &str,
+    ) {
         use crate::ds::hash_trie::identity::{assert_equivalent_trie, assert_same_contents};
         match mode {
             | HashTrieBuildMode::Presized(_) => assert_equivalent_trie(bulk, built, label),
@@ -1173,7 +1185,7 @@ mod tests {
             capacity > 2 * ROWS,
             "the premise: the input has spare capacity"
         );
-        let bulk = build_in(HashTrieBuildMode::Bulk);
+        let bulk: HashTrie = build_in(HashTrieBuildMode::Bulk);
         assert_eq!(
             bulk.tuples().value_capacity(),
             capacity,
@@ -1181,7 +1193,7 @@ mod tests {
         );
         for mode in partitioning_modes() {
             let label = format!("{mode:?}");
-            let built = build_in(mode);
+            let built: HashTrie = build_in(mode);
             assert_eq!(
                 built.tuples().value_capacity(),
                 bulk.tuples().value_capacity(),
@@ -1198,16 +1210,41 @@ mod tests {
 
     /// `insert` after a partitioning build pushes its row onto the copy,
     /// after every partition, and the trie stays equivalent to `bulk`'s after
-    /// the same inserts.
-    #[test]
-    fn insert_after_a_partitioning_build_appends_to_the_copy() {
+    /// the same inserts, under Layout `H`, `P`, `E`. Neither comparison
+    /// expands a lazy trie: both read a pending list as it stands.
+    fn check_insert_after_a_partitioning_build<
+        H: HashStrategy,
+        P: PruningPolicy,
+        E: ExpansionPolicy,
+    >() {
+        // A new first key; a second row under it, which unprunes the
+        // `Singleton` the first inserted (a new id from the copy's tail);
+        // a second row under `LONE_KEY`, which unprunes the build's own
+        // `Singleton` (an id from the partition-ordered copy); an existing
+        // first key with a new second value, an append to a pending list
+        // under lazy expansion; and an exact duplicate of the first row.
+        let inserts = [[1000, 1], [1000, 2], [LONE_KEY, 7], [0, 5000], [0, 0]];
         for mode in partitioning_modes() {
-            let label = format!("{mode:?}");
-            let mut bulk = build_in(HashTrieBuildMode::Bulk);
-            let mut built = build_in(mode);
-            // A new first key, an existing first key with a new second value,
-            // and an exact duplicate of the input's first row.
-            for (n, row) in [[1000, 1], [0, 5000], [0, 0]].into_iter().enumerate() {
+            let label = format!("{}/{}/{} {mode:?}", H::NAME, P::NAME, E::NAME);
+            let mut bulk: HashTrie<H, P, E> = build_in(HashTrieBuildMode::Bulk);
+            let mut built: HashTrie<H, P, E> = build_in(mode);
+            // The premise: `LONE_KEY`'s one row is a `Singleton` under
+            // pruning, and a pending list under lazy expansion.
+            let HashTrieNode::Inner(root) = built.root() else {
+                panic!("{label}: arity 2 has an Inner root")
+            };
+            let lone = root.get(H::hash(LONE_KEY)).expect("LONE_KEY is a root key");
+            assert_eq!(
+                matches!(lone, HashTrieNode::Singleton(_)),
+                P::ENABLED,
+                "{label}: the lone row's node"
+            );
+            assert_eq!(
+                matches!(lone, HashTrieNode::Unexpanded(_)),
+                E::LAZY && !P::ENABLED,
+                "{label}: the lone row's node"
+            );
+            for (n, row) in inserts.into_iter().enumerate() {
                 bulk.insert(row);
                 built.insert(row);
                 let rows = built.tuples();
@@ -1224,6 +1261,17 @@ mod tests {
             }
             assert_owes_bulk(mode, &bulk, &built, &label);
         }
+    }
+
+    #[test]
+    fn insert_after_a_partitioning_build_appends_to_the_copy() {
+        use crate::ds::hash_trie::{expansion::LazyExpansion, pruning::SingletonPruning};
+        check_insert_after_a_partitioning_build::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_insert_after_a_partitioning_build::<SipHashStrategy, SingletonPruning, EagerExpansion>(
+        );
+        check_insert_after_a_partitioning_build::<SipHashStrategy, NoPruning, LazyExpansion>();
+        check_insert_after_a_partitioning_build::<SipHashStrategy, SingletonPruning, LazyExpansion>(
+        );
     }
 
     /// An empty literal carries no arity, so `from_tuples` stores an empty
