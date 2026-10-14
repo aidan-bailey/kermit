@@ -83,15 +83,16 @@ use {
 /// attribute's hash (`morsel::partition_rows`, #101) and keep the copy
 /// instead, so each partition's rows are one contiguous range, in input
 /// order. Below the tables everything names a tuple by its [`RowId`]: a
-/// leaf chain, like an unexpanded child's pending chain, is its first and
-/// last rows and its length, with each row's successor in the links, one
-/// [`ChainLinks`] entry per row beside the buffer; a pruned `Singleton` is
-/// one `RowId`. The paper's leaves likewise point into a materialised
-/// buffer, partitioned as it is materialised, and thread each list through
-/// a chain pointer reserved in each tuple (VLDB 2020 §3.3.2, Figure 3). Its
-/// pointers are 8 bytes inside each tuple where these links are 4-byte ids
-/// in an array beside the buffer, and it pushes onto a list where these
-/// lists are appended to, in input order (both kermit's).
+/// pruned `Singleton` is one `RowId`, and every list (a leaf chain, an
+/// unexpanded child's pending chain, and each of Algorithm 2's per-bucket
+/// lists while a build runs) is a `Chain`: its first and last rows and its
+/// length, with each row's successor in `links`, one [`ChainLinks`] entry
+/// per row beside the buffer (#101 B2). The paper's leaves likewise point
+/// into a materialised buffer, partitioned as it is materialised, and
+/// thread each list through a chain pointer reserved in each tuple (VLDB
+/// 2020 §3.3.2, Figure 3). Its pointers are 8 bytes inside the tuple where
+/// these ids and links are 4 bytes beside it, and its push prepends where
+/// these lists append, keeping input order (both kermit's).
 ///
 /// # Construction
 ///

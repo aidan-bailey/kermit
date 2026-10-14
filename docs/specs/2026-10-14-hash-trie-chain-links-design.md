@@ -1,7 +1,9 @@
 # HashTrie Chain Links: Algorithm 2's Lists Threaded Through a Link per Row
 
 **Date:** 2026-10-14
-**Status:** Design approved in conversation (2026-10-14), section by section. Not yet planned.
+**Status:** Design approved in conversation (2026-10-14), section by section. Planned in
+`docs/superpowers/plans/2026-10-14-hash-trie-chain-links.md` and implemented (2026-10-14); see
+Amendment 1 for where the code differs from this text.
 **Scope:** Issue #101, layer 3, second half ("B2"). Every HashTrie list stops being a
 `Vec<RowId>`. That covers Algorithm 2's per-bucket lists, the leaf chains, lazy pending
 lists and the radix family's scratch lists. Each becomes a chain threaded through one link
@@ -412,3 +414,41 @@ per-policy link type.
   `insertion`, `space`, `iteration`, `end_to_end` and `copies`.
 - **Dated notes** on HashTrie records measured before B2.
 - **The #105 board and #101:** drafts shown to the user, and posted only on their word.
+
+## Amendment 1 (2026-10-14): as built
+
+Only where the code differs from the text above:
+
+- **`Chain` is nominally `pub`.** Its module is private, but
+  `PendingChild::from_chain` names it in a public trait reachable through
+  `ExpansionPolicy`, and a `pub(super)` type there trips
+  `private_interfaces`, an error under `-Dwarnings`. The same reason makes
+  the policy traits generic over the node type.
+- **`Chain::walk` returns a named `ChainWalk`** (`kermit-iters`), counted by
+  `len`: it never reads past the tail, and a debug build asserts the tail's
+  link is `NIL`.
+- **The per-row builds push their links.** `ChainLinks::new` allocates
+  zeroed links for the builds from tuples, as designed. `insert` and the
+  `incremental` build start from `ChainLinks::with_capacity` and push one
+  `NIL` link per row before placing it: zeroed links would leave a pruned
+  `Singleton`'s row at 0 where `bulk` writes `NIL`, and the array identity
+  with `bulk` would fail.
+- **`radix:K` merges as `parallel:N` does.** The shared helper
+  (`radix::build_and_merge`) gives `radix:K` the k-way merge over its 2^K
+  partitions' entry lists, O(D log P) heap operations, in place of a sort
+  of all D entries, as well as the early return on an empty batch. Its
+  worker runs are `[1, 1, 1]`.
+- **`LeafRows`' `Debug` is written by hand**, as the list of its rows, so a
+  linked view never prints its trie's whole links array.
+- **A re-entrant walk is no longer caught.** A `for_each_tuple` visitor that
+  expands a child the walk is still reading (by opening an iterator on the
+  same trie) re-threads rows under the walk, which may then lend wrong
+  rows or panic; it was a `BorrowMutError` before. Nothing in kermit does
+  that, and the walks' docs say so.
+- **One `Vec<RowId>` remains in `hash_trie/`.** Every list of the trie is a
+  `Chain`, as Acceptance asks, but `presized:N`'s queue of deferred ids
+  (`fill_runs`' result) stays a `Vec<RowId>`: it is sorted by `origin`
+  before the tail pushes it, so it cannot be a chain, and it is no list of
+  the trie.
+- **`fill_presized_root_in` takes `links` as an eighth parameter**, one past
+  clippy's `too_many_arguments`, and allows that lint with a reason.

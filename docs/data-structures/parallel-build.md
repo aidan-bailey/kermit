@@ -46,7 +46,9 @@ The TreeTrie build is `TreeTrie::build_parallel` in
 `kermit-ds/src/ds/tree_trie/implementation.rs`.
 The HashTrie builds are `parallel::fill_root` (`parallel:N`) and
 `parallel::fill_presized_root` (`presized:N`), both in
-`kermit-ds/src/ds/hash_trie/parallel.rs`.
+`kermit-ds/src/ds/hash_trie/parallel.rs`. `parallel:N` shares its
+partition, scratch-root and merge steps with `radix:K`
+(`radix::partition_by_first_hash`, `radix::build_and_merge`).
 
 ## TreeTrie
 
@@ -54,17 +56,25 @@ The HashTrie builds are `parallel::fill_root` (`parallel:N`) and
 
 ```text
 parallel_build(tuples, N):
-    check arities                                   // the serial checks, on the caller
-    splitters = quantiles of a sample of first keys  // duplicates kept; aiming at P = 4·N partitions
-    partitions = scatter_rows(tuples, morsels of 16 384)  // step 1, N workers
-        // row t's id goes to partition_point(splitters, s <= t[0])
-    built = dispatch(partitions):                    // step 2, N workers
-        gather the partition's rows into a local Tuples (ids ascend);
-        sort it (Tuples::sort); insert its rows one at a time
-        -> (its top-level nodes, its distinct tuples)
-    root = []                                        // step 3, the caller
-    for (nodes, count) in built, in key order:
-        push each node onto root, one at a time
+    check arities                                     // the serial check, on the caller
+    links = n zeroed links                            // one per row, shared by every worker (#101 B2)
+    if no tuples: return the empty root               // no worker started
+    P = 4·N rounded up to a power of two; b = log₂ P
+    copy = partition_rows(tuples, morsels of 16 384)  // step 1, N workers, two passes
+        // row t goes to partition H(t[0]) >> (64 − b): a histogram pass keeps
+        // each row's partition, then a scatter copies the rows into partition
+        // order, with origin[id] = the copied row's input position
+    free tuples                                       // the copy is the trie's buffer
+    lists = dispatch(non-empty partitions' id ranges): // step 2, N workers
+        group into a scratch root in id order (input order within a partition),
+            appending each id to its key's chain through links,
+            noting (origin[id], hash) whenever it gains a key
+        build each key's child from its chain (Algorithm 2), re-threading its ids
+        take its entries out in that order
+        -> [(first input position, hash, subtrie or chain)]
+    root = empty                                       // step 3, the caller
+    k-way merge the lists by first input position:
+        insert each (hash, value) into root
 ```
 
 - **Partition.** Workers take morsels from a mutex-guarded queue and push
@@ -205,13 +215,21 @@ parallel_build(tuples, N):
   copy, into a scratch root of the real root's kind, by Algorithm 2, as
   the bulk build does. It then moves the scratch root's entries out in the
   order their keys arrived, each tagged with its key's first input
-  position.
+  position. Grouping threads each row onto its key's chain, and each
+  child's build re-threads it (#101 B2). Only this worker writes those
+  rows' links: a row is in one list at a time, so each link has one
+  writer. The links are `AtomicU32`, accessed `Relaxed`, which makes that
+  race-free without proving which partition owns which links, and the
+  scoped threads' spawn and join order every worker's writes before
+  anything reads the chains again.
 - **Merge.** The calling thread inserts every entry into the real root in
   the order its key first appeared in the input, by `origin`. Ids in the
   copy run partition by partition, so merging on them would insert each
   partition's keys in turn. Each list is already in that order, so a k-way
-  merge over at most P lists suffices. (The radix build, single-threaded,
-  sorts its entries instead.)
+  merge over at most P lists suffices. It moves `Chain` values and
+  subtries unchanged: their ids are global. (The radix build,
+  single-threaded, runs the same merge over its 2^K partitions' lists;
+  `radix::build_and_merge` serves both.)
 
 ### Invariant (exact build)
 
@@ -242,7 +260,8 @@ is the partitioned copy, so the build is equivalent to `bulk`'s
 
 Finished subtries move from a worker to the caller, so every Layout's nodes
 are `Send` (the policies' associated types are bounded so); lazy tries are
-still `!Sync`, and no trie is ever shared between threads. The record of
+still `!Sync`, and no trie is ever shared between threads (the workers
+share only the build's `links` array, by reference; `AtomicU32` is `Sync`). The record of
 parallel builds works as TreeTrie's does, except that it also lists the
 empty partitions the build skips:
 `hash_trie_families_build_with_their_parallel_mode` reads it through
@@ -257,7 +276,7 @@ threads (`P` = 4·N rounded up to a power of two):
 |---|---|---|
 | Checks | O(n) | the calling thread |
 | Partition | O(n) hashes, then O(n · a) value copies into one new buffer (a histogram pass, then a scatter) | N workers |
-| Build | O(n · a) expected probes and inserts, split across partitions, plus O(D) to take the entries out | N workers |
+| Build | O(n · a) expected probes, inserts and link writes, split across partitions, plus O(D) to take the entries out | N workers |
 | Merge | O(D log P) heap operations and D root inserts (expected O(1) each, plus the root's resizes) | the calling thread |
 
 The sequential share is the checks, the prefix sums over the
@@ -273,7 +292,9 @@ Memory: while the copy is made, the input and the copy are both held, so
 for that stretch the tuples are held twice. `origin` adds 4 bytes per
 tuple until the scratch roots are built (it is freed before the merge,
 since each key's first input position is already in its entry), and the
-partition numbers 2 bytes per tuple between the two passes.
+partition numbers 2 bytes per tuple between the two passes. The trie's
+`links` add 4 bytes per tuple for its life, allocated zeroed once before
+the copy (#101 B2); no list allocates.
 
 `parallel:1` against `bulk` is what partitioning costs on one thread, as
 `radix:2` measures it, the copy now included: #91 found the radix build
@@ -311,6 +332,12 @@ buckets are the bulk root's. Key 1's child names ids 2 and 3 where bulk's
 names rows 1 and 3: the same tuples, `[1,2]` and `[1,1]`, in the same
 order. Had the merge keyed on ids, it would have inserted 2 (id 0) first.
 
+Partition 2's worker alone writes links 1–3. Grouping starts key 3's chain
+at id 1 and key 1's at id 2, then appends id 3 to key 1's (link 2 = 3,
+link 3 = `NIL`); building key 1's child re-threads ids 2 and 3 into one
+chain per second value (link 2 = `NIL`). Partition 1's worker writes link
+0 only.
+
 ### The presized build (presized:N)
 
 When the root is presized, its capacity is known before any tuple arrives,
@@ -321,6 +348,7 @@ partition is a contiguous run of regions.
 ```text
 presized:N (requires root-capacity=tuples):
     check arities; no tuples → the empty root, no worker started
+    links = n zeroed links                             // one per row, shared by every worker (#101 B2)
     root = 2^p buckets, p = config.root_log2_capacity(n)    // #88; never grows here
     P = 4·N rounded up to a power of two, capped at the region count
     copy = partition_rows(tuples, morsels of 16 384)   // step 1, N workers, two passes
@@ -331,11 +359,12 @@ presized:N (requires root-capacity=tuples):
     root.with_runs(P, REGION_BUCKETS, |runs|           // step 2, N workers
         dispatch over (partition k's id range, run k):
             for each id, in order (input order within the partition):
-                push_in_run(run k, id)           lines 6–7, onto its bucket's list
+                push_in_run(run k, id)           lines 6–7, onto its bucket's chain
                     off the region's end → defer
     tail: sort the deferred ids by origin, push each by ordinary probing
     free origin and offsets                            // nothing reads them past the tail
-    children: dispatch over the P runs: map a run's lists to children (`child`, lines 8–12)
+    children: dispatch over the P runs: map a run's chains to children (`child`, lines 8–12),
+        re-threading their ids                         // a tail key's ids may lie in another partition
 ```
 
 The root step is `push_in_run`: Algorithm 2's lines 6–7 inside a run, the
@@ -347,7 +376,13 @@ recursion is spread over threads, so this is kermit's. A `BucketRun`
 region and never wraps or grows. The regions and the deferred tail are
 kermit's mechanisms too: the paper (§3.3.2) partitions by hash for
 locality, and does not say how a probe that crosses a partition's end is
-handled.
+handled. Every row is in one list at a time, so each link has one writer however
+the runs are spread (#101 B2). A run's worker re-threads its buckets'
+chains, and a deferred key's chain, which the tail may have placed in a
+bucket of the next run's region, holds rows of the key's home partition:
+that run's worker re-threads rows of a partition it did not group. The
+links are relaxed atomics, and the scoped threads' spawn and join order
+each step's writes before the next step reads them.
 
 **Why it is correct** (Amendment 2's equivalence, pinned by
 `presized_parallel_builds_are_*` in `parallel.rs`):
@@ -387,7 +422,7 @@ handled.
 |---|---|---|
 | Checks, sizing | O(n) | the calling thread |
 | Partition | O(n) hashes, then O(n · a) value copies into one new buffer (a histogram pass, then a scatter) | N workers |
-| Group (lines 4–7) | O(n) expected, one push per tuple | N workers |
+| Group (lines 4–7) | O(n) expected, one chain push (one or two link writes) per tuple | N workers |
 | Tail | the deferred tuples, sorted by `origin` and pushed | the calling thread |
 | Children (lines 8–12) | O(n · a) expected, a run of buckets per task | N workers |
 
@@ -407,16 +442,19 @@ So the copy is `[1,a] [2,b] [1,d] [3,c]`, with `origin` `[0, 1, 3, 2]`.
 
 | Run | Tuple, id (`origin`) | Step | Bucket |
 |---|---|---|---|
-| 0 (buckets 0–3) | `[1,a]`, 0 (0) | key 1 is new: its list starts with id 0 | 3 |
+| 0 (buckets 0–3) | `[1,a]`, 0 (0) | key 1 is new: its chain starts at id 0 (link 0 = `NIL`) | 3 |
 | 0 | `[2,b]`, 1 (1) | key 2 probes 3 (taken), and 4 is past its region's end | deferred |
-| 0 | `[1,d]`, 2 (3) | key 1 is found at 3: id 2 is pushed onto its list | 3 |
+| 0 | `[1,d]`, 2 (3) | key 1 is found at 3: id 2 is appended to its chain (link 0 = 2, link 2 = `NIL`) | 3 |
 | 1 (buckets 4–7) | `[3,c]`, 3 (2) | key 3 is new | 5 |
 
 The tail then pushes id 1 (`[2,b]`, input position 1) by ordinary probing
 from its home, bucket 3. Bucket 3 is taken and bucket 4 is free, so key 2
 lands at 4. The children are then built a run at a time: run 0's task
-builds key 1's from ids `[0, 2]` (`[1,a] [1,d]`), and run 1's builds key
-2's and key 3's.
+builds key 1's by walking its chain, ids 0 then 2 (`[1,a] [1,d]`), and
+run 1's builds key 2's and key 3's. Key 2's chain sits in bucket 4, in
+run 1's region, but holds id 1, a row of partition 0: run 1's worker
+re-threads it, and no other task touches link 1 while the children are
+built.
 
 The bulk build would have put key 1 at 3, key 2 at 4 and key 3 at 5: the
 same occupied buckets, and here even the same slots. They differ only when
@@ -613,6 +651,8 @@ of each step's 10 builds, then the median over replicates):
 > **2026-10-07 (#107):** Every arm in this record built its subtries per tuple, by `insert_at`. `serial` is the per-tuple build, `incremental` since #107, and `parallel:N` and the presized arms (spelled `parallel:N` under `root-capacity=tuples` then) built that way too. Today's modes of those names group first and build children by Algorithm 2, so none of these numbers measures a post-#107 mode.
 
 > **2026-10-08 (#101 B1):** These arms also partitioned row ids and left the rows in arrival order. Today's `parallel:N` and `presized:N` copy the rows into partition order first (`morsel::partition_rows`), which adds the copy to `insertion` and moves the rows `iteration` reads, so these numbers do not measure a post-B1 build either.
+
+> **2026-10-14 (#101 B2):** These arms also kept every list as a `Vec` of its own. Today's lists are chains threaded through one 4-byte link per row of the trie, which the workers write through a shared reference, so no list allocates and `space` counts the links; these numbers do not measure a post-B2 build either.
 
 The presized build against the default config, on the jemalloc binary of #112.
 An earlier HashTrie run on glibc measured the default config alone

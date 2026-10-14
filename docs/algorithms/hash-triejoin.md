@@ -34,7 +34,7 @@ function enumerate(i):                              # Alg. 3 line 1
 Rust mapping:
 
 - `enumerate(i)` → `fn enumerate(i, arity, iters, predicate_variables, variable_to_iter_map, scratch, emit)` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs).
-- Lines 16–19 → `fn emit_leaf(iters, predicate_variables, scratch, emit)`.
+- Lines 16–19 → `fn emit_leaf(iters, predicate_variables, scratch, emit)`, an odometer of one `LeafCursor` per relation, advanced by `fn advance_cursor(iters, cursor)`.
 - Line 18's verification → `fn verify_and_construct(candidate, predicate_variables, row, bound)`, which writes into a per-join scratch row (`LeafScratch`).
 
 ## Invariants
@@ -46,7 +46,14 @@ Rust mapping:
 - **Singleton iterators participate normally.** The const-view rewrite produces synthetic unary predicates backed by `SingletonHashTrieIter`. These satisfy `HashTrieIterator`'s contract via the [`HashTrieIterKind::Singleton`](../../kermit-algos/src/hash/iter_kind.rs) variant.
 - **Placeholders never reach the join.** The entry point runs `rewrite_placeholders` ([placeholder_rewrite.rs](../../kermit-algos/src/placeholder_rewrite.rs)) first, so every `_` arrives as its own fresh variable and each atom carries one variable per column. `emit_leaf` relies on that — it expects every participating iterator at its leaf once the last variable is bound — and panicked on any placeholder before the rewrite (issue #73). Regression: the `trailing_placeholder` and `middle_placeholder` patterns of the standard suite.
 - **Repeated variables never reach the join.** The entry point also runs `rewrite_repeated_variables` ([selection_rewrite.rs](../../kermit-algos/src/selection_rewrite.rs)), so an atom such as `r(X, X)` arrives as `Select_0_r(X, K0)` backed by an [`EqualitySelectionHashTrieIter`](../../kermit-algos/src/hash/selection.rs) through the [`HashTrieIterKind::Selection`](../../kermit-algos/src/hash/iter_kind.rs) variant. At the repeat's level the view is a one-bucket table (`size() == 1`, so `enumerate` picks it as `I_scan`) admitting only the hash it passed at the source level. Hash equality is not value equality, so the view also filters its leaf chain by value — the "collision rejection is at the leaves" rule applies inside the view too, and a `hash(k) = k mod 10` test pins it. Before the rewrite the algorithm opened `r` once and panicked in `emit_leaf`.
-- **The result is streamed, not materialised.** `join_for_each` threads the caller's sink through `enumerate`; `emit_leaf` re-borrows each leaf chain through `leaf_tuples()` instead of collecting it, as a `LeafRows` view (the chain's row ids over its relation's tuple buffer, #111) whose `row(i)` is a slice of that buffer, and the cross-product cursor and output row are scratch buffers allocated once per join, so emitting a tuple allocates nothing. Algorithm 3 itself is unchanged — `output.push(t)` became `emit(&row)` (issue #65). `JoinAlgo::join_iter` is a provided method that collects through `join_for_each`, for callers that need the rows.
+- **The result is streamed, not materialised.** `join_for_each` threads the caller's sink through `enumerate`; `emit_leaf` re-borrows each leaf chain through `leaf_tuples()` instead of collecting it, as a `LeafRows` view (the chain over its relation's tuple buffer, #111, walked through the trie's links since #101 B2), whose rows are slices of that buffer, and the cross-product cursors and output row are scratch buffers allocated once per join, so emitting a tuple allocates nothing. Algorithm 3 itself is unchanged — `output.push(t)` became `emit(&row)` (issue #65). `JoinAlgo::join_iter` is a provided method that collects through `join_for_each`, for callers that need the rows.
+- **The leaf product walks cursors, never indices** (#101 B2). A trie's leaf chain is threaded through its links, so it has no random access: `row(i)` would cost O(i). `LeafScratch` therefore holds one `LeafCursor` per relation, an index into a view's own list of ids or the current row's id in a trie's chain, and `emit_leaf` runs Algorithm 3's lines 17–19 as an odometer over them:
+  - if any relation's chain `is_empty()`, the product is empty and it returns;
+  - otherwise every cursor starts at its chain's `first()`;
+  - a candidate is the row `row_at(cursor[k])` of each relation k;
+  - `advance_cursor` advances `cursor[0]`; when a chain's `advance` runs past its last row, that cursor is reset to `first()` and the carry moves to the next relation; the product ends when every digit has overflowed.
+
+  So every combination is visited once, in the order the index odometer visited it, and the first relation's chain is walked again for each step of the others. The cursors are sized once in `LeafScratch::new`, so the walk allocates nothing per result row (`kermit/tests/result_allocation.rs`). Pinned by `emit_leaf_resets_each_cursor_on_carry` (three relations with chains of lengths 1, 2 and 3): without the reset on carry, the product reads past a chain's end and panics.
 - **Variable ordering arrives as a plan, not a self-computed order.** `join_for_each` no longer derives the descent order itself (the earlier per-algorithm `build_variable_index`/`global_attribute_order` helper has been deleted); it receives a `QueryPlan` produced ahead of time by a [`QueryOptimiser`](../optimisers/), validates it with [`QueryPlan::validate`](../../kermit-algos/src/optimiser/plan.rs), and panics on an invalid plan. The default [`LexicographicOptimiser`](../optimisers/lexicographic.md) reproduces the previously hardcoded Kahn's-with-smallest-index order, so documented behaviour is unchanged by default. Under `--column-orders any` the plan may bind an atom's columns in any order: the orientation rewrite ([`orient`](../../kermit-algos/src/orient.rs)) reads such an atom through a reordered copy of its relation, so the term order of every atom HTJ sees still equals its hash trie's column order. Nothing in this algorithm changed for the policy. LFTJ shares the exact same `QueryPlan` contract.
 
 ## Complexity
@@ -60,7 +67,7 @@ In terms of cost per call:
 | Operation | Time | Notes |
 |---|---|---|
 | `enumerate(i)` per call | O(\|I_join\| · cost(lookup)) | sums over the loop body; `lookup` is O(1) expected |
-| `emit_leaf` | O(∏ chain_size · arity) | cross-product over leaf chains, verify each candidate in O(arity) |
+| `emit_leaf` | O(∏ chain_size · arity) | cross-product over leaf chains, verify each candidate in O(arity); each cursor step is one link load and one row read |
 | `verify_and_construct` | O(arity + ∑ \|E_j\|) | bounded by the total number of predicate variables |
 
 In the common case (no hash collisions, each chain has length 1), `emit_leaf` is O(arity) per result.

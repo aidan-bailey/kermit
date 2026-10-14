@@ -144,9 +144,9 @@ Converts any `TrieIterator` into a standard Rust `Iterator<Item = Vec<usize>>` t
 
 #### Tuple batches: `Tuples` and `LeafRows`
 
-A relation's tuples travel from the file readers to every structure's build as one `Tuples` batch (`kermit-iters/src/tuples.rs`, #111): tuples of one arity, row-major in one `Vec<usize>`, with an explicit row count, so a batch of nullary tuples keeps its count. Each row is addressed by a `RowId` (`u32`), so a batch holds at most `u32::MAX` rows. `read_csv` and `read_parquet` return one at its exact size; every constructor takes `impl Into<Tuples>` (test fixtures pass one `Vec<usize>` per tuple, which converts); and every setup clone in `bench ds` and `bench run` copies one buffer. TreeTrie and ColumnTrie sort the batch with `Tuples::sort` (in place up to arity 4), one sort for both, and build from row slices. HashTrie keeps the batch and stores row ids.
+A relation's tuples travel from the file readers to every structure's build as one `Tuples` batch (`kermit-iters/src/tuples.rs`, #111): tuples of one arity, row-major in one `Vec<usize>`, with an explicit row count, so a batch of nullary tuples keeps its count. Each row is addressed by a `RowId` (`u32`), so a batch holds at most `u32::MAX` rows. `read_csv` and `read_parquet` return one at its exact size; every constructor takes `impl Into<Tuples>` (test fixtures pass one `Vec<usize>` per tuple, which converts); and every setup clone in `bench ds` and `bench run` copies one buffer. TreeTrie and ColumnTrie sort the batch with `Tuples::sort` (in place up to arity 4), one sort for both, and build from row slices. HashTrie keeps the batch, stores row ids, and threads its lists through one 4-byte link per row (`ChainLinks`, `kermit-iters/src/chain_links.rs`, #101).
 
-`LeafRows<'a>` (`kermit-iters/src/leaf_rows.rs`) is a `Copy` view of one hash-trie leaf chain: its row ids, in chain order, over the buffer they index. `HashTrieIterator::leaf_tuples` returns it. The rows it lends borrow the buffer, not the view, so HashTriejoin's leaf product reads its candidates without copying or allocating.
+`LeafRows<'a>` (`kermit-iters/src/leaf_rows.rs`) is a `Copy` view of one hash-trie leaf chain over the buffer its row ids index, in one of two forms: *linked*, a trie's chain (its head and length, walked through the trie's `ChainLinks`), or *listed*, a slice of ids (a pruned level's one id, and the constant and selection views, which hold their own). `HashTrieIterator::leaf_tuples` returns it. It is read by walking, never by index: `iter()`, `ids()`, or a `LeafCursor` (`first`, `advance`, `row_at`), one per relation in HashTriejoin's leaf product. The rows it lends borrow the buffer, not the view, so the leaf product reads its candidates without copying or allocating.
 
 ### Data Structures (`kermit-ds`)
 
@@ -216,21 +216,22 @@ A hash-based trie, generic over a `HashStrategy` layout parameter. Each level is
 struct HashTrie<H: HashStrategy = SipHashStrategy> {
     header: RelationHeader,
     tuples: Tuples,         // every stored tuple, arrival or partition order (below); len() is the multiset count
+    links: ChainLinks,      // one 4-byte link per row: the next row in its list, or NIL
     root: HashTrieNode,
     _hasher: PhantomData<H>,
 }
 
 enum HashTrieNode {
     Inner(HashTable<HashTrieNode>),    // child nodes
-    Leaf(HashTable<Vec<RowId>>),       // chains: ids of rows in `tuples`
+    Leaf(HashTable<Chain>),            // chains: lists of rows in `tuples`, threaded through `links`
 }
 ```
 
 Tables use linear probing with power-of-two capacity, doubling above a 0.7 load factor. Two differences from the sorted tries matter:
 
 - **Multiset semantics.** Tuples with identical hash signatures chain in the same leaf bucket rather than deduplicating, so `Cardinality::tuple_count` counts multiset size where `TreeTrie` and `ColumnTrie` count distinct tuples.
-- **Leaves reach whole tuples.** Because inner levels store only hashes, the real values are needed at the leaf to reject hash collisions. The trie keeps its relation's `Tuples` batch, and a chain holds the row ids of its tuples, read through `LeafRows` (#111). The ids are 4 bytes where the paper's tuple pointers are 8.
-- **Construction.** `from_tuples` builds by the paper's Algorithm 2 (`bulk`, the default): each table's tuples are grouped into its buckets, then each bucket's child is built from its list. `bulk` and `incremental` keep the batch they are given as the buffer, in arrival order. The partitioning BuildModes (`radix:K`, `parallel:N`, `presized:N`) first copy the batch into partition order on the first attribute's hash, the paper's materialisation step (§3.3.2, #101). They do it through `morsel::partition_rows` and keep the copy, so each partition's rows are one contiguous range, and their tries hold the same contents under other row ids. See [`docs/data-structures/hash-trie.md`](docs/data-structures/hash-trie.md#build-modes).
+- **Leaves reach whole tuples.** Because inner levels store only hashes, the real values are needed at the leaf to reject hash collisions. The trie keeps its relation's `Tuples` batch, and a chain threads its tuples' row ids through the trie's links, one 4-byte link per row beside the buffer, read through `LeafRows` (#111, #101). The ids and links are 4 bytes where the paper's tuple pointers and chain pointers are 8, and the links sit in an array beside the tuples rather than inside them.
+- **Construction.** `from_tuples` builds by the paper's Algorithm 2 (`bulk`, the default): each table's tuples are grouped into its buckets, then each bucket's child is built from its list. `bulk` and `incremental` keep the batch they are given as the buffer, in arrival order. The partitioning BuildModes (`radix:K`, `parallel:N`, `presized:N`) first copy the batch into partition order on the first attribute's hash, the paper's materialisation step (§3.3.2, #101). They do it through `morsel::partition_rows` and keep the copy, so each partition's rows are one contiguous range, and their tries hold the same contents under other row ids. Every list is a `Chain { head, tail, len }` threaded through `links`, in input order; moving a row to the next level's list rewrites its link, as Algorithm 2 moves each tuple to exactly one child list, so a build allocates per table, never per list (#101 B2). See [`docs/data-structures/hash-trie.md`](docs/data-structures/hash-trie.md#build-modes).
 
 `HashTrie<H, P, E>` has three Layout axes — the hasher `H` (`SipHashStrategy` default, `FxHashStrategy`), the pruning policy `P` and the expansion policy `E` — and three Config axes, the load factor, the root capacity and the child capacity; its `HasOptimizationAxes` impl reports `ds_layout_hasher`, `ds_layout_pruning`, `ds_layout_expansion`, `ds_config_load_factor`, `ds_config_root_capacity` and `ds_config_child_capacity`. `TreeTrie<S>` and `ColumnTrie<S>` implement `HasOptimizationAxes` too, reporting their seek-strategy Layout `S` (`LinearSeek`, `BinarySeek` (the default until 2026-10-05), `GallopingSeek` (the default since); see [`docs/data-structures/seek-strategies.md`](docs/data-structures/seek-strategies.md)) as `ds_layout_seek`. Each structure's BuildMode axis, `ds_build_mode` (`ColumnTrie`: `bulk` / `incremental`; `TreeTrie`: `serial` / `parallel:N`; `HashTrie`: `bulk` / `incremental` / `radix:<bits>` / `parallel:N` / `presized:N`), is reported by its bench family instead, because the built trie holds the same contents under every mode.
 
@@ -306,7 +307,7 @@ Note one documented deviation from the paper: Veldhuizen keeps one persistent le
 1. **Descend**: open every iterator participating at this attribute position.
 2. **Choose a driver**: pick the iterator with the smallest hash table (`argmin size`) and scan it.
 3. **Probe**: `lookup` that hash in every other participating iterator; recurse on a match.
-4. **Emit**: at the leaf, cross-product the participating tuple chains, then **verify shared variables against the real tuple values** — hashing can produce false positives at any inner level, so equality must be re-checked before a tuple is emitted.
+4. **Emit**: at the leaf, cross-product the participating tuple chains (one `LeafCursor` per chain, an odometer whose overflow resets a cursor and carries), then **verify shared variables against the real tuple values** — hashing can produce false positives at any inner level, so equality must be re-checked before a tuple is emitted.
 5. **Ascend**: `up` exactly as many times as the descent opened, including on partial-open failure.
 
 Both algorithms stream. `JoinAlgo::join_for_each` passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result: LFTJ reorders each tuple that `TrieIteratorWrapper::advance` lends into one scratch row, and HashTriejoin's leaf cross product writes into scratch buffers allocated once per join. `join_iter` is a provided method that collects through `join_for_each`, for callers that need the rows; benchmarks never call it inside a timed region (issue #65).
