@@ -1,8 +1,9 @@
 # HashTrie Partitioned Materialisation: the Radix Family Copies Rows into Partition Order
 
 **Date:** 2026-10-08
-**Status:** Design approved in conversation (2026-10-08), section by section; not yet
-planned.
+**Status:** Design approved in conversation (2026-10-08), section by section. Planned in
+`docs/superpowers/plans/2026-10-08-hash-trie-partitioned-materialisation.md` and
+implemented (2026-10-14); see Amendment 1 for where the code differs from this text.
 **Scope:** Issue #101, layer 3, first half ("B1"). HashTrie's three partitioning build modes
 copy their rows into first-key-hash partition order. They are `radix:K`, `parallel:N` and
 `presized:N`, which today partition row ids and leave the rows in arrival order. The copy
@@ -342,3 +343,24 @@ plus host sampler.
 - **The #105 board:**
   - The parallel-build row's "still open: tuples stay in file order" closes.
   - The materialisation row is met by the radix family, with chain pointers B2's.
+
+## Amendment 1 (2026-10-14): as built
+
+Only where the code differs from the text above:
+
+- **`partition_rows` takes `morsel_rows`.** The signature is
+  `partition_rows(threads, tuples, morsel_rows, partitions, partition_of)`. `parallel:N` and
+  `presized:N` pass `MORSEL_TUPLES`; `radix:K` passes one morsel for the whole batch,
+  `tuples.len().max(1)`, since it runs on one thread and a count and a range per
+  (partition, morsel) pair would only cost.
+- **Partition numbers are `u16`.** The histogram keeps each row's partition number as a
+  `u16` between the two passes, so `partitions <= 1 << 16` is asserted (`radix:16` is the
+  most any build uses). The copy and `origin` come from zeroed allocations (`alloc_zeroed`),
+  since safe Rust cannot hand out uninitialised ranges.
+- **`partition_rows` is total at arity 0.** The text's "requires arity >= 1" does not hold:
+  a nullary row is an empty slice with an id and an input position, which the function
+  documents and a test pins.
+- **Every mode frees `origin` once nothing reads it.** `presized:N` frees `origin` and
+  `offsets` after its tail; `radix:K` and `parallel:N` free them right after the scratch
+  roots are built, before the merge, since each key's first input position is already in
+  its `first_seen` entry. None holds `origin` until the build returns.

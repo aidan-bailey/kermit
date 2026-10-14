@@ -274,14 +274,16 @@ impl<'a> Cursor<'a> {
 /// Two costs are known and accepted:
 ///
 /// - **The zero-fill.** The copy starts zeroed, since safe Rust cannot hand out
-///   uninitialised `&mut` ranges. It costs nothing up front: `vec!` asks the
-///   allocator for zeroed memory (`alloc_zeroed`), and for a large batch glibc
-///   and jemalloc both return fresh zero pages, so no serial memset runs; the
-///   pages' first-touch faults land in the parallel scatter.
+///   uninitialised `&mut` ranges. `vec!` asks the allocator for zeroed memory
+///   (`alloc_zeroed`), which costs no serial memset when the allocator hands
+///   out fresh pages, as it does for a large first allocation (a reused
+///   allocation may still be zeroed by the allocator), and the pages'
+///   first-touch faults land in the parallel scatter.
 /// - **The bookkeeping** is one count and one range per (partition, morsel)
-///   pair. A one-thread caller gains nothing from several morsels and passes
-///   the whole batch as one (`tuples.len().max(1)`): the classic one-thread
-///   radix partition, one histogram and one scatter.
+///   pair. The `radix:K` build, a one-thread caller, gains nothing from several
+///   morsels and passes the whole batch as one (`tuples.len().max(1)`): the
+///   classic one-thread radix partition, one histogram and one scatter;
+///   `parallel:1` and `presized:1` keep `MORSEL_TUPLES`-row morsels.
 ///
 /// # Panics
 ///

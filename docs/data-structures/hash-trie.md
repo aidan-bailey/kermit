@@ -54,7 +54,7 @@ The `Unexpanded` payload is the third Layout parameter's associated type, by the
 The paper's buffer is a copy its build makes. `bulk` and `incremental` take the relation's buffer without copying it, so they pay nothing for it but keep arrival order. The partitioning modes make the paper's copy and pay for it:
 - a histogram pass and a scatter of every row;
 - while the copy is made, the input and the copy both held (the input is freed before the build);
-- 4 bytes per row of `origin`, each copied row's input position, held until the build returns (`presized:N` frees it right after its tail), so the root merge and `presized:N`'s tail keep `bulk`'s order;
+- 4 bytes per row of `origin`, each copied row's input position, held until the scratch roots are built (`radix:K` and `parallel:N` free it before the merge, `presized:N` right after its tail), so the root merge and `presized:N`'s tail keep `bulk`'s order;
 - 2 bytes per row of partition numbers (`u16`), held between the histogram and the scatter, so each row is hashed once.
 
 Design: [`docs/specs/2026-10-08-hash-trie-partitioned-materialisation-design.md`](../specs/2026-10-08-hash-trie-partitioned-materialisation-design.md).
@@ -522,13 +522,17 @@ the real root at random. In return the build pays for:
 
 - the copy: a histogram pass and a scatter of every row, into buffers
   allocated zeroed (safe Rust cannot hand out uninitialised ranges; the
-  for a large batch, the allocator's zero pages cost no serial memset);
+  zeroing costs no serial memset when the allocator hands out fresh pages,
+  as it does for a large first allocation, though a reused allocation may
+  still be zeroed by the allocator);
 - a second hash of each tuple's first attribute (`partition_rows` hashes
   each row once and keeps the number for its scatter);
 - a sort of the D merge entries;
 - transient memory: the copy beside the input while it is made, 2 bytes
   per tuple of partition number (between the two passes), 4 bytes per
-  tuple of `origin` (until the build returns), and the scratch tables.
+  tuple of `origin` (freed before the merge, once the scratch roots hold
+  each key's first input position; `presized:N` frees it after its tail),
+  and the scratch tables.
   Before #101 B1 the partitions held 2 bytes of partition number and 4 of
   row id per tuple in lists instead of a copy of the rows, and 32 bytes of
   `(index, tuple)` pair before #111.

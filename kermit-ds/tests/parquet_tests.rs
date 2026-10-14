@@ -173,7 +173,8 @@ fn sorted_tuples_incremental(relation: &HashTrieSipIncremental) -> Vec<Vec<usize
 
 parquet_test_suite!(HashTrieSipIncremental, sorted_tuples_incremental);
 
-// …and under the parallel BuildMode, which must load the same trie (#94).
+// …and under the parallel BuildMode, which must load an equivalent trie: the
+// same contents, the rows in partition order (issues #94, #101).
 define_build_mode_provider!(
     HashParallel2,
     HashTrieBuildMode,

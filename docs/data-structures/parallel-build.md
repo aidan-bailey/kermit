@@ -271,8 +271,9 @@ dominant first key still fills one partition.
 
 Memory: while the copy is made, the input and the copy are both held, so
 for that stretch the tuples are held twice. `origin` adds 4 bytes per
-tuple until the build returns, and the partition numbers 2 bytes per tuple
-between the two passes.
+tuple until the scratch roots are built (it is freed before the merge,
+since each key's first input position is already in its entry), and the
+partition numbers 2 bytes per tuple between the two passes.
 
 `parallel:1` against `bulk` is what partitioning costs on one thread, as
 `radix:2` measures it, the copy now included: #91 found the radix build

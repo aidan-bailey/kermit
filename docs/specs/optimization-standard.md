@@ -734,8 +734,9 @@ is never read off the relation.
    dispatches in `from_tuples_with_build_mode` instead.
 4. **Pin equivalence** with a test over every mode: contents and capacities
    at every level, and `HeapSize`. Test at array level where placement is fixed
-   (`bulk_and_incremental_builds_are_identical`), and as a map of maps where it
-   is free.
+   (`bulk_and_incremental_builds_are_identical`), at content level where a mode
+   stores its rows in another order, and as a map of maps where placement is
+   free.
 5. **Carry the mode on the cell and family.** Implement `SortedTrieRelation`'s
    `BuildMode`, `kind`, `build_with` and `build_mode_axes`; the `SortedTrie`
    variant and `TrieLftj::new(build, planner)` hold it, and the axis comes
