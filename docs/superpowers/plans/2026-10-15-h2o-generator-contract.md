@@ -195,6 +195,11 @@ impl KeyPool {
 }
 ```
 
+- **Amended during execution (174061c, the manager's decision on Story 1's review):**
+  `KeyPlan` keeps `serde::Deserialize`, through `#[serde(try_from = "KeyPlanFields")]`. A
+  private `KeyPlanFields { rows, small, medium }` is converted by `TryFrom` through
+  `KeyPlan::new`, so a plan read back from `meta.json` holds the same invariants as a new
+  one. It is tested by `a_deserialized_plan_is_checked_like_a_new_one`.
 - **Error messages** name the field, its value and the bound:
   `"H2O plan: small = {small} is outside 1..={rows}"`, the same for `medium`, and
   `"H2O plan: rows = {rows} exceeds RowId::MAX = {max}"`. `RowId` is
