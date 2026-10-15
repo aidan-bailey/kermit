@@ -1098,3 +1098,4 @@ Changes made during execution, each after a review, so that the code differs fro
     nix develop --command env CARGO_BUILD_JOBS=2 cargo test -p kermit-bench --lib cache::tests::progress_prints_at_most_once_per_interval -- --exact
     git checkout -- kermit-bench/src/cache.rs
     ```
+- **T4, spec review (fix commit after edc92e7):** the CLAUDE.md bullet's last sentence now reads "A failed download removes its `.part` and leaves `dest` as it was (absent, for `ensure_cached`); a 4xx/5xx or a stalled body is `BenchError::Download`, …". The plan's text said a failure "leaves neither `dest` nor `.part`", which is false for `download_verified` over an existing `dest`, and it named only a stall as `Download`.
