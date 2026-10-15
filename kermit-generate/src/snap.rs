@@ -10,14 +10,24 @@
 mod counts;
 pub use counts::expected_counts;
 use {
+    crate::{
+        generator::{Generated, Generator},
+        sink::RelationSink,
+    },
     anyhow::{bail, Context},
     flate2::read::MultiGzDecoder,
+    kermit_bench::{
+        cache::{download_verified, sha256_hex},
+        QueryDefinition, SnapGraph, SnapQuery,
+    },
     kermit_ds::{RelationHeader, Tuples},
+    kermit_rdf::generator::Target,
+    serde::{Deserialize, Serialize},
     std::{
         collections::HashSet,
-        fs::File,
+        fs::{self, File},
         io::{BufRead, BufReader},
-        path::Path,
+        path::{Path, PathBuf},
     },
 };
 
@@ -144,11 +154,197 @@ pub fn url_stem(url: &str) -> Option<&str> {
     (!stem.is_empty()).then_some(stem)
 }
 
+/// The Datalog rule for `query` (the spec's § Workload, verbatim).
+///
+/// `cycle4` closes with `edge(A, D)`, not `edge(D, A)`: the stored column
+/// order rejects the latter with `CyclicAttributeOrder`, and on a symmetric
+/// relation the two hold the same tuples.
+pub fn rule(query: SnapQuery) -> &'static str {
+    match query {
+        | SnapQuery::Triangle => "T(A, B, C) :- edge(A, B), edge(B, C), edge(A, C).",
+        | SnapQuery::Path3 => "P(A, B, C, D) :- edge(A, B), edge(B, C), edge(C, D).",
+        | SnapQuery::Cycle4 => "C(A, B, C, D) :- edge(A, B), edge(B, C), edge(C, D), edge(A, D).",
+        | SnapQuery::Clique4 => {
+            "K(A, B, C, D) :- edge(A, B), edge(A, C), edge(A, D), edge(B, C), edge(B, D), edge(C, \
+             D)."
+        },
+    }
+}
+
+/// What a query's `expected` counts, for `benchmark.yml`.
+fn query_description(query: SnapQuery) -> &'static str {
+    match query {
+        | SnapQuery::Triangle => "6 × triangles",
+        | SnapQuery::Path3 => "3-step walks (vertices may repeat)",
+        | SnapQuery::Cycle4 => "closed 4-step walks, tr(A⁴): not 8 × 4-cycles",
+        | SnapQuery::Clique4 => "24 × 4-cliques",
+    }
+}
+
+/// Where a graph's `.gz` comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapSource {
+    /// A local `.gz` (tests).
+    Local(PathBuf),
+    /// A URL and its pinned SHA-256, fetched with
+    /// `kermit_bench::cache::download_verified`.
+    Remote {
+        /// Where to download the `.gz` from.
+        url: String,
+        /// The `.gz`'s SHA-256, 64 lowercase hex characters.
+        sha256: String,
+    },
+}
+
+impl SnapSource {
+    /// A named graph's pinned download.
+    pub fn named(graph: SnapGraph) -> Self {
+        let (url, sha256) = graph.source();
+        Self::Remote {
+            url: url.to_string(),
+            sha256: sha256.to_string(),
+        }
+    }
+}
+
+/// SNAP's own `meta.json` fields, flattened beside the common ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapExtras {
+    /// The named graph, or `None` for a URL or a local file.
+    pub graph: Option<SnapGraph>,
+    /// The URL the `.gz` came from; `None` for a local source.
+    pub source_url: Option<String>,
+    /// The SHA-256 of the `.gz` read, whichever its source.
+    pub gz_sha256: String,
+    /// Data lines read (comments excluded).
+    pub input_edges: u64,
+    /// Lines with the same source and destination, dropped.
+    pub dropped_self_loops: u64,
+    /// Lines repeating an unordered pair seen before, dropped.
+    pub dropped_duplicates: u64,
+}
+
+/// Generates a SNAP benchmark: one symmetric `edge` relation and up to four
+/// queries, each with the exact count the oracle computed.
+#[derive(Debug)]
+pub struct SnapGenerator<'a> {
+    target: Target<'a>,
+    /// `Some` for a named graph, recorded in `meta.json`.
+    graph: Option<SnapGraph>,
+    source: SnapSource,
+    /// Already defaulted to all four when the caller gave none.
+    queries: Vec<SnapQuery>,
+}
+
+impl<'a> SnapGenerator<'a> {
+    /// `queries: None` means [`SnapQuery::ALL`].
+    pub fn new(
+        target: Target<'a>, graph: Option<SnapGraph>, source: SnapSource,
+        queries: Option<&[SnapQuery]>,
+    ) -> Self {
+        Self {
+            target,
+            graph,
+            source,
+            queries: queries.map_or_else(|| SnapQuery::ALL.to_vec(), <[SnapQuery]>::to_vec),
+        }
+    }
+
+    /// What the benchmark's description calls the graph: its name, else the
+    /// stem of its URL or file name.
+    fn label(&self) -> &str {
+        if let Some(graph) = self.graph {
+            return graph.name();
+        }
+        let stem = match &self.source {
+            | SnapSource::Local(path) => path.to_str().and_then(url_stem),
+            | SnapSource::Remote {
+                url, ..
+            } => url_stem(url),
+        };
+        stem.unwrap_or("edge list")
+    }
+}
+
+impl Generator for SnapGenerator<'_> {
+    type Extras = SnapExtras;
+
+    const KIND: &'static str = "snap";
+
+    fn target(&self) -> Target<'_> { self.target }
+
+    fn generate(&self, sink: &mut RelationSink) -> anyhow::Result<Generated<SnapExtras>> {
+        let raw = sink.raw_dir()?;
+        let (gz, source_url) = match &self.source {
+            | SnapSource::Local(path) => {
+                let Some(name) = path.file_name() else {
+                    bail!("{} has no file name", path.display());
+                };
+                let dest = raw.join(name);
+                fs::copy(path, &dest)
+                    .with_context(|| format!("copying {} to {}", path.display(), dest.display()))?;
+                (dest, None)
+            },
+            | SnapSource::Remote {
+                url,
+                sha256,
+            } => {
+                let name = last_segment(url);
+                if matches!(name, "" | "." | "..") {
+                    bail!("{url} does not end in a file name");
+                }
+                let dest = raw.join(name);
+                download_verified(url, &dest, sha256)
+                    .with_context(|| format!("downloading {url}"))?;
+                (dest, Some(url.clone()))
+            },
+        };
+        let gz_sha256 = sha256_hex(&gz)?;
+
+        let parsed = parse_gz(&gz)?;
+        sink.write(&edge_header(), &parsed.tuples)?;
+
+        let counts = expected_counts(&parsed.tuples, &self.queries)?;
+        let queries = self
+            .queries
+            .iter()
+            .zip(counts)
+            .map(|(&query, count)| QueryDefinition {
+                name: query.name().to_string(),
+                description: query_description(query).to_string(),
+                query: rule(query).to_string(),
+                expected: Some(count),
+            })
+            .collect();
+
+        Ok(Generated {
+            description: format!(
+                "SNAP {}: one symmetric `edge` relation; queries count walks, not simple paths or \
+                 cycles",
+                self.label()
+            ),
+            queries,
+            extras: SnapExtras {
+                graph: self.graph,
+                source_url,
+                gz_sha256,
+                input_edges: parsed.input_edges,
+                dropped_self_loops: parsed.self_loops,
+                dropped_duplicates: parsed.duplicates,
+            },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {
         super::*,
+        crate::run::run,
         flate2::{write::GzEncoder, Compression},
+        kermit_bench::{BenchError, BenchmarkDefinition},
+        kermit_ds::read_parquet,
+        kermit_parser::{JoinQuery, Term},
         std::{fs, io::Write},
     };
 
@@ -304,5 +500,364 @@ mod tests {
         assert_eq!(url_stem("http://h/"), None);
         assert_eq!(url_stem("http://h/.gz"), None);
         assert_eq!(url_stem(""), None);
+    }
+
+    /// A header, a triangle with a tail (1-2-3, 3-4, 4-5), a 4-clique (6-9), a
+    /// self-loop (`5 5`), a reversed repeat (`4 3`) and an exact repeat
+    /// (`6 7`). Data lines: 14; kept edges: 11, so 22 rows.
+    ///
+    /// By hand, as the sum over its two components (the triangle with a tail,
+    /// then K4): triangle 6 + 24 = 30; path3 48 + 108 = 156; cycle4
+    /// 34 + 84 = 118 (8 * C4 + 2 * sum d^2 - 2m, with no 4-cycle in the first
+    /// component and three in K4); clique4 0 + 24 = 24.
+    const MINI: &str = "\
+# mini SNAP graph
+# Nodes: 9
+1\t2
+2\t3
+1\t3
+3\t4
+4\t3
+5\t5
+4\t5
+6\t7
+6\t8
+6\t9
+7\t8
+7\t9
+8\t9
+6\t7
+";
+
+    const MINI_COUNTS: [u64; 4] = [30, 156, 118, 24];
+
+    /// `<root>/snap-mini` is the output directory the tests give `run`.
+    fn target(out: &Path) -> Target<'_> {
+        Target {
+            out_dir: out,
+            bench_name: "snap-mini",
+            tag: "t",
+            spec_hash: None,
+        }
+    }
+
+    /// Gzips `text` into `<dir>/mini.ungraph.txt.gz`.
+    fn gz_file(dir: &Path, text: &str) -> PathBuf {
+        let path = dir.join("mini.ungraph.txt.gz");
+        fs::write(&path, gzip(text)).unwrap();
+        path
+    }
+
+    fn read_benchmark(out: &Path) -> BenchmarkDefinition {
+        serde_yaml::from_str(&fs::read_to_string(out.join("benchmark.yml")).unwrap()).unwrap()
+    }
+
+    /// Serves `body` as `200 OK` to every connection on a loopback port and
+    /// returns the URL of `file` there.
+    fn serve(body: Vec<u8>, file: &str) -> String {
+        use std::{io::Read, net::TcpListener};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/{file}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        | Ok(0) | Err(_) => break,
+                        | Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream
+                    .write_all(head.as_bytes())
+                    .and_then(|()| stream.write_all(&body));
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn rules_are_the_spec_queries() {
+        let expected = [
+            (
+                SnapQuery::Triangle,
+                "T(A, B, C) :- edge(A, B), edge(B, C), edge(A, C).",
+                (3, 3),
+            ),
+            (
+                SnapQuery::Path3,
+                "P(A, B, C, D) :- edge(A, B), edge(B, C), edge(C, D).",
+                (4, 3),
+            ),
+            (
+                SnapQuery::Cycle4,
+                "C(A, B, C, D) :- edge(A, B), edge(B, C), edge(C, D), edge(A, D).",
+                (4, 4),
+            ),
+            (
+                SnapQuery::Clique4,
+                "K(A, B, C, D) :- edge(A, B), edge(A, C), edge(A, D), edge(B, C), edge(B, D), \
+                 edge(C, D).",
+                (4, 6),
+            ),
+        ];
+        for (query, text, (head_terms, atoms)) in expected {
+            assert_eq!(rule(query), text, "{}", query.name());
+            let parsed: JoinQuery = rule(query).parse().unwrap();
+            assert_eq!(parsed.head.terms.len(), head_terms, "{}", query.name());
+            assert_eq!(parsed.body.len(), atoms, "{}", query.name());
+            assert!(
+                parsed
+                    .body
+                    .iter()
+                    .all(|p| p.name == EDGE && p.terms.len() == 2),
+                "{} must name only the binary relation `edge`",
+                query.name()
+            );
+        }
+        // Decision 6: the stored column order rejects `edge(D, A)`.
+        let cycle: JoinQuery = rule(SnapQuery::Cycle4).parse().unwrap();
+        assert_eq!(cycle.body[3].terms, [
+            Term::Var("A".to_string()),
+            Term::Var("D".to_string())
+        ]);
+    }
+
+    #[test]
+    fn a_named_source_is_the_graphs_pinned_pair() {
+        for graph in SnapGraph::ALL {
+            let (url, sha256) = graph.source();
+            assert_eq!(SnapSource::named(graph), SnapSource::Remote {
+                url: url.to_string(),
+                sha256: sha256.to_string(),
+            });
+        }
+    }
+
+    #[test]
+    fn a_local_fixture_generates_a_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let gz = gz_file(root.path(), MINI);
+        let out = root.path().join("snap-mini");
+
+        let generator = SnapGenerator::new(target(&out), None, SnapSource::Local(gz.clone()), None);
+        let meta = run(&generator).unwrap();
+
+        assert_eq!(meta.kind, "snap");
+        assert_eq!(meta.extras, SnapExtras {
+            graph: None,
+            source_url: None,
+            gz_sha256: sha256_hex(&gz).unwrap(),
+            input_edges: 14,
+            dropped_self_loops: 1,
+            dropped_duplicates: 2,
+        });
+        assert_eq!(
+            sha256_hex(&out.join("raw").join("mini.ungraph.txt.gz")).unwrap(),
+            meta.extras.gz_sha256,
+            "the raw copy must be the input, byte for byte"
+        );
+
+        assert_eq!(meta.relations.len(), 1);
+        assert_eq!(meta.relations[0].name, "edge");
+        assert_eq!(meta.relations[0].columns, ["src", "dst"]);
+        assert_eq!(meta.relations[0].rows, 22);
+        let (header, tuples) = read_parquet(out.join("edge.parquet")).unwrap();
+        assert_eq!(header, edge_header());
+        assert_eq!(tuples, parse_gz(&gz).unwrap().tuples);
+        assert_eq!(tuples.to_vecs()[..4], [
+            vec![1, 2],
+            vec![2, 1],
+            vec![2, 3],
+            vec![3, 2]
+        ]);
+
+        let bench = read_benchmark(&out);
+        assert_eq!(bench.name, "snap-mini");
+        assert!(
+            bench.description.starts_with("SNAP mini: "),
+            "{}",
+            bench.description
+        );
+        let got: Vec<_> = bench
+            .queries
+            .iter()
+            .map(|q| (q.name.as_str(), q.query.as_str(), q.expected))
+            .collect();
+        let want: Vec<_> = SnapQuery::ALL
+            .iter()
+            .zip(MINI_COUNTS)
+            .map(|(q, count)| (q.name(), rule(*q), Some(count)))
+            .collect();
+        assert_eq!(got, want);
+        let descriptions: Vec<_> = bench
+            .queries
+            .iter()
+            .map(|q| q.description.as_str())
+            .collect();
+        assert_eq!(descriptions, [
+            "6 × triangles",
+            "3-step walks (vertices may repeat)",
+            "closed 4-step walks, tr(A⁴): not 8 × 4-cycles",
+            "24 × 4-cliques"
+        ]);
+    }
+
+    #[test]
+    fn a_named_graph_is_recorded_and_names_the_benchmark() {
+        let root = tempfile::tempdir().unwrap();
+        let gz = gz_file(root.path(), MINI);
+        let out = root.path().join("snap-mini");
+        let generator = SnapGenerator::new(
+            target(&out),
+            Some(SnapGraph::ComDblp),
+            SnapSource::Local(gz),
+            None,
+        );
+        let meta = run(&generator).unwrap();
+        assert_eq!(meta.extras.graph, Some(SnapGraph::ComDblp));
+        let description = read_benchmark(&out).description;
+        assert!(description.starts_with("SNAP com-dblp: "), "{description}");
+    }
+
+    #[test]
+    fn a_query_subset_keeps_its_order() {
+        let root = tempfile::tempdir().unwrap();
+        let gz = gz_file(root.path(), MINI);
+        let out = root.path().join("snap-mini");
+        let generator = SnapGenerator::new(
+            target(&out),
+            None,
+            SnapSource::Local(gz),
+            Some(&[SnapQuery::Clique4, SnapQuery::Triangle]),
+        );
+        let meta = run(&generator).unwrap();
+        assert_eq!(meta.query_count, 2);
+        let got: Vec<_> = read_benchmark(&out)
+            .queries
+            .into_iter()
+            .map(|q| (q.name, q.expected))
+            .collect();
+        assert_eq!(got, [
+            ("clique4".to_string(), Some(24)),
+            ("triangle".to_string(), Some(30))
+        ]);
+    }
+
+    #[test]
+    fn an_edgeless_input_fails_without_a_commit_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let gz = gz_file(root.path(), "# only a header\n3\t3\n");
+        let out = root.path().join("snap-mini");
+        let generator = SnapGenerator::new(target(&out), None, SnapSource::Local(gz), None);
+        let err = format!("{:#}", run(&generator).unwrap_err());
+        assert!(
+            err.contains("has no edges after dropping 1 self-loops and 0 duplicates"),
+            "{err}"
+        );
+        assert!(!out.join("meta.json").exists());
+        assert!(!out.join("edge.parquet").exists());
+    }
+
+    #[test]
+    fn a_remote_source_is_fetched_into_the_raw_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let gz = gz_file(root.path(), MINI);
+        let sha256 = sha256_hex(&gz).unwrap();
+        let url = serve(fs::read(&gz).unwrap(), "mini.ungraph.txt.gz");
+        let out = root.path().join("snap-mini");
+        let source = SnapSource::Remote {
+            url: url.clone(),
+            sha256: sha256.clone(),
+        };
+        let meta = run(&SnapGenerator::new(target(&out), None, source, None)).unwrap();
+        assert_eq!(meta.extras.source_url, Some(url));
+        assert_eq!(meta.extras.gz_sha256, sha256);
+        assert_eq!(meta.extras.input_edges, 14);
+        assert_eq!(
+            sha256_hex(&out.join("raw").join("mini.ungraph.txt.gz")).unwrap(),
+            sha256
+        );
+    }
+
+    #[test]
+    fn a_wrong_digest_fails_before_parsing_and_commits_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let gz = gz_file(root.path(), MINI);
+        let url = serve(fs::read(&gz).unwrap(), "mini.ungraph.txt.gz");
+        let out = root.path().join("snap-mini");
+        let source = SnapSource::Remote {
+            url,
+            sha256: "0".repeat(64),
+        };
+        let err = run(&SnapGenerator::new(target(&out), None, source, None)).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("integrity check failed"), "{message}");
+        assert!(!out.join("raw").join("mini.ungraph.txt.gz").exists());
+        assert!(!out.join("edge.parquet").exists());
+        assert!(!out.join("meta.json").exists());
+    }
+
+    /// Downloads com-amazon and com-dblp (8.6 MB) and checks the eight counts
+    /// verified independently with scipy and a direct 4-clique count
+    /// (2026-10-05; spec § Workload). Needs the network: a download that fails
+    /// without an HTTP status (connection, DNS, timeout) skips with a note on
+    /// stderr. Anything else fails, a dead SNAP URL (a 4xx or 5xx status) and
+    /// a digest mismatch included.
+    #[test]
+    fn reference_counts_match_the_verified_values() {
+        let cases = [
+            (SnapGraph::ComAmazon, 925_872, [
+                4_002_774,
+                206_831_062,
+                65_863_072,
+                6_623_064,
+            ]),
+            (SnapGraph::ComDblp, 1_049_866, [
+                13_346_310,
+                1_453_845_122,
+                530_084_528,
+                401_116_608,
+            ]),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        for (graph, input_edges, expected) in cases {
+            let SnapSource::Remote {
+                url,
+                sha256,
+            } = SnapSource::named(graph)
+            else {
+                panic!("{} has no pinned download", graph.name());
+            };
+            let dest = dir.path().join(format!("{}.ungraph.txt.gz", graph.name()));
+            match download_verified(&url, &dest, &sha256) {
+                | Ok(()) => {},
+                | Err(BenchError::Download {
+                    source, ..
+                }) if source.status().is_none() => {
+                    eprintln!("skipping the SNAP reference counts: {url} is unreachable: {source}");
+                    return;
+                },
+                | Err(other) => panic!("downloading {url}: {other}"),
+            }
+            let parsed = parse_gz(&dest).unwrap();
+            assert_eq!(parsed.input_edges, input_edges, "{}", graph.name());
+            assert_eq!(
+                (parsed.self_loops, parsed.duplicates),
+                (0, 0),
+                "{}",
+                graph.name()
+            );
+            let counts = expected_counts(&parsed.tuples, &SnapQuery::ALL).unwrap();
+            assert_eq!(counts, expected, "{}", graph.name());
+        }
     }
 }
