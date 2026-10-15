@@ -4,7 +4,8 @@
 **Status:** Design approved in conversation (2026-10-15), section by section. It confirms
 issue #96 (itself the output of a 2026-10-05 brainstorm) and records what changed since:
 the shared generator layer moved to #95, the general download moved here, and the open
-com-youtube facts were measured.
+com-youtube facts were measured. The written spec was approved by the user on 2026-10-15
+(at 02bcd0c). Phase 1 is planned in `docs/superpowers/plans/2026-10-15-snap-phase-1-download.md`.
 **Scope:** Issue #96. One symmetric `edge` relation built from a SNAP community graph and
 four cyclic and acyclic graph patterns, generated on demand like LUBM and WatDiv, with
 every `expected` count computed by an oracle that shares no code with the joins.
