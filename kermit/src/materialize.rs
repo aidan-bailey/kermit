@@ -226,11 +226,22 @@ pub fn materialize(
     }
 
     fs::create_dir_all(&cache_subdir)?;
-    dispatch(spec, &def.name, &cache_subdir, &expected_hash).map_err(|e| BenchError::Invalid {
-        name: def.name.clone(),
-        reason: format!("generator pipeline failed: {e}"),
-    })?;
+    dispatch(spec, &def.name, &cache_subdir, &expected_hash)
+        .map_err(|e| generator_failed(&def.name, &e))?;
     load_cached_yaml(&yml_path)
+}
+
+/// The error for a generator that failed while materializing `name`.
+///
+/// The reason formats `err` with the alternate flag, which prints the whole
+/// `anyhow` context chain (`outer: inner`); the plain format would print only
+/// the outermost layer, and the `kermit-generate` arms put "what failed" in
+/// the layers beneath it.
+fn generator_failed(name: &str, err: &anyhow::Error) -> BenchError {
+    BenchError::Invalid {
+        name: name.to_string(),
+        reason: format!("generator pipeline failed: {err:#}"),
+    }
 }
 
 /// Loads a `benchmark.yml` from a cache subdir and validates it.
@@ -739,6 +750,28 @@ queries:
         def.name = "hand-made".to_string();
         let out = materialize(def, dir.path(), false).unwrap();
         assert_eq!(out.name, "hand-made");
+    }
+
+    /// A two-level `.context()` error reaches the benchmark's error with both
+    /// messages, so a `kermit-generate` failure says what failed and why.
+    #[test]
+    fn generator_failure_keeps_the_context_chain() {
+        let err = anyhow::anyhow!("inner").context("outer");
+        match generator_failed("some-bench", &err) {
+            | BenchError::Invalid {
+                name,
+                reason,
+            } => {
+                assert_eq!(name, "some-bench");
+                assert!(
+                    reason.starts_with("generator pipeline failed: "),
+                    "{reason}"
+                );
+                assert!(reason.contains("outer"), "{reason}");
+                assert!(reason.contains("inner"), "{reason}");
+            },
+            | other => panic!("expected Invalid, got {other:?}"),
+        }
     }
 
     fn workspace_tree() -> tempfile::TempDir {
