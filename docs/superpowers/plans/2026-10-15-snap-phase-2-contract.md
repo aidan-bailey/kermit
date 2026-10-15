@@ -295,3 +295,7 @@ Spec § Documentation, plus `kermit-generate`'s crate docs if they list modules.
 ## T10: the gate
 
 As phase 1's T5: fmt, clippy and doc on the pinned and CI nightlies (non-writing override), the full workspace test detached, the scope check, and mutation checks the drafts propose (one per task that has a decisive test).
+
+## Updates
+
+- **H2O push 1b (bbaef2e, landing soon; base phase 2 on it):** `kermit_generate::run` now checks, before touching anything, that `target.out_dir`'s last path component equals `target.bench_name`. Every test that calls `run` with a hand-made out_dir names it after the benchmark (`tempdir().path().join("snap-mini")` with `bench_name: "snap-mini"`). `run`'s query check also requires every body atom to have exactly one term per column of the relation it names. SNAP's binary `edge` atoms satisfy it. No names change.
