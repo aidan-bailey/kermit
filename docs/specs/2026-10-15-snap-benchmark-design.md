@@ -11,7 +11,7 @@ every `expected` count computed by an oracle that shares no code with the joins.
 **Related:**
 - #95: H2O. Its session owns the generator layer, the new `kermit-generate` crate, and
   `kermit_ds::write_parquet`; this design implements that layer's trait (§ The generator).
-  Layer spec: Part 1 of `docs/specs/2026-10-15-h2o-benchmark-design.md` (4e0beac on
+  Layer spec: Part 1 of `docs/specs/2026-10-15-h2o-benchmark-design.md` (41537a4 on
   `aidanb/h2o`), § "The `kermit-generate` crate".
 - #97: JOB. It reuses this design's `download_verified` (§ The download). Spec:
   `docs/specs/2026-10-15-job-benchmark-design.md` (8358e7e on `aidanb/job`).
@@ -98,7 +98,10 @@ ones pinned in the issue.
 ## Workload
 
 **Relation.** `edge(src, dst)`, from the cleaned input lines in file order, each
-contributing (s, d) then (d, s).
+contributing (s, d) then (d, s). It is every SNAP benchmark's only relation, named `edge`
+whatever the source: a `url` names the benchmark (`snap-<stem>-<tag>`), never the
+relation. `edge` satisfies `RelationSink::open`'s name rule, `[a-z][a-z0-9_]*` (H2O's
+spec, 41537a4).
 
 **Queries.**
 
