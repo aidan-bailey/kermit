@@ -24,6 +24,7 @@ kermit-algos = { version = "0.0.12", path = "../kermit-algos" }
 kermit-bench = { version = "0.1.2", path = "../kermit-bench" }
 kermit-parser = { version = "0.0.3", path = "../kermit-parser" }
 kermit-rdf = { version = "0.1.1", path = "../kermit-rdf" }
+kermit-generate = { version = "0.1.0", path = "../kermit-generate" }
 clap = { version = "4.4", features = ["derive", "env"] }
 criterion = { version = "0.8.2", default-features = false, features = ["rayon", "cargo_bench_support"] }
 anyhow = "1.0"

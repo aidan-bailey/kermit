@@ -9,6 +9,7 @@ members = [
     "kermit-derive",
     "kermit-parser",
     "kermit-rdf",
+    "kermit-generate",
 ]
 
 [workspace.package]
@@ -31,6 +32,7 @@ kermit-derive = { path = "kermit-derive" }
 kermit-bench = { path = "kermit-bench" }
 kermit-parser = { path = "kermit-parser" }
 kermit-rdf = { path = "kermit-rdf" }
+kermit-generate = { path = "kermit-generate" }
 
 # jemalloc (the `kermit` binary's allocator, #112) runs its configure probes with
 # -Werror. Where the C compiler defines _FORTIFY_SOURCE by default (nix's gcc
