@@ -27,7 +27,10 @@ use {
     kermit_bench::{
         BenchError, BenchmarkDefinition, GeneratorSpec, SnapGraph, SnapQuery, WatdivStressSpec,
     },
-    kermit_generate::snap::{SnapGenerator, SnapSource},
+    kermit_generate::{
+        job::{duckdb::Duckdb, raw, JobGenerator},
+        snap::{SnapGenerator, SnapSource},
+    },
     kermit_rdf::generator::{MetaHeader, Target},
     std::{
         fs,
@@ -313,6 +316,9 @@ fn dispatch(
             out_dir,
             spec_hash,
         ),
+        | GeneratorSpec::Job {
+            template,
+        } => run_job(*template, bench_name, out_dir, spec_hash),
     }
 }
 
@@ -461,6 +467,27 @@ fn run_snap(
         spec_hash: Some(spec_hash),
     };
     kermit_generate::run(&SnapGenerator::new(target, graph, source, queries))?;
+    Ok(())
+}
+
+/// Generates one JOB template (`kind: job`) into `out_dir` through the shared
+/// layer. DuckDB and the IMDb raw cache are found here, on a cache miss, so a
+/// cache hit needs neither.
+fn run_job(template: u8, bench_name: &str, out_dir: &Path, spec_hash: &str) -> anyhow::Result<()> {
+    let duckdb = Duckdb::locate()?;
+    let cache = raw::ensure(&duckdb, &raw::default_raw_dir()?)?;
+    let generator = JobGenerator {
+        template,
+        raw: &cache,
+        duckdb: &duckdb,
+        target: Target {
+            out_dir,
+            bench_name,
+            tag: bench_name,
+            spec_hash: Some(spec_hash),
+        },
+    };
+    kermit_generate::run(&generator)?;
     Ok(())
 }
 
@@ -735,6 +762,67 @@ queries:
         def.generator = None;
         let out = materialize(def, dir.path(), false).unwrap();
         assert_eq!(out.name, "lubm-1-new");
+    }
+
+    fn job_def(name: &str, template: u8) -> BenchmarkDefinition {
+        BenchmarkDefinition {
+            name: name.to_string(),
+            description: "x".to_string(),
+            relations: vec![],
+            queries: vec![],
+            generator: Some(GeneratorSpec::Job {
+                template,
+            }),
+        }
+    }
+
+    /// A JOB cache is judged like any generator's: `meta.json` carries the
+    /// spec hash `kermit_generate::run` writes, so the same template is a hit
+    /// and another is drift (never a silent reuse, never a silent rebuild),
+    /// and `kind: job` has no outdated-encoding floor.
+    #[test]
+    fn a_job_cache_is_a_hit_for_its_template_and_drift_for_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("job-6");
+        write_meta_and_yaml(&subdir, None);
+        let meta = serde_json::json!({
+            "schema_version": kermit_rdf::generator::META_SCHEMA_VERSION,
+            "kind": "job",
+            "spec_hash": GeneratorSpec::Job { template: 6 }.spec_hash(),
+        });
+        fs::write(subdir.join("meta.json"), meta.to_string()).unwrap();
+
+        let hit = materialize(job_def("job-6", 6), dir.path(), false).unwrap();
+        assert!(
+            hit.generator.is_none(),
+            "the cached YAML is post-materialization"
+        );
+        assert_eq!(hit.relations.len(), 1);
+
+        match materialize(job_def("job-6", 7), dir.path(), false).unwrap_err() {
+            | BenchError::SpecDrift {
+                name, ..
+            } => assert_eq!(name, "job-6"),
+            | other => panic!("expected SpecDrift, got {other:?}"),
+        }
+        assert!(subdir.exists(), "drift must not delete the cache");
+    }
+
+    /// kermit-bench validates a template against its own copy of the range
+    /// (it cannot name `kermit_generate::job::TEMPLATES`); the two must agree
+    /// on every byte.
+    #[test]
+    fn the_spec_and_the_generator_agree_on_the_template_range() {
+        for template in 0..=u8::MAX {
+            let valid = job_def(&format!("job-{template}"), template)
+                .validate()
+                .is_ok();
+            assert_eq!(
+                valid,
+                kermit_generate::job::TEMPLATES.contains(&template),
+                "template {template}"
+            );
+        }
     }
 
     /// Discovery treats a cache-side `meta.json` only as a marker, so a

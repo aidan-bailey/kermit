@@ -401,6 +401,27 @@ pub fn extract_tgz(tgz: &Path, into: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The IMDb raw cache at `dir`, if a finished one is there.
+///
+/// This is the stand-in until the download lands (#97's last phase): it opens
+/// the cache or fails, and never builds one. The failure says the cache is
+/// missing; [`build`] makes one from a directory of CSVs. The signature is
+/// the final one, so callers do not change when the download replaces the
+/// body.
+///
+/// # Errors
+///
+/// Fails when `dir` holds no finished cache (no `provenance.json`).
+pub fn ensure(_duckdb: &Duckdb, dir: &Path) -> anyhow::Result<RawCache> {
+    RawCache::open(dir).ok_or_else(|| {
+        anyhow!(
+            "the IMDb raw cache at {} is missing (no finished cache with {PROVENANCE_FILE}); \
+             downloading it arrives with the next phase of #97 (J7)",
+            dir.display()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use {super::*, crate::job::duckdb::test_support::locate_or_skip};

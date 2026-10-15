@@ -16,6 +16,12 @@ use {
 /// constant lives here so the accepted range and its error messages agree.
 const LUBM_QUERY_COUNT: u32 = 14;
 
+/// The JOB templates a `kind: job` spec may name: the benchmark has 33 (Leis
+/// et al., VLDB 2015). Mirrors `kermit_generate::job::TEMPLATES`, which this
+/// crate cannot name (it is a leaf); a test in the `kermit` binary pins the
+/// two together.
+const JOB_TEMPLATES: std::ops::RangeInclusive<u8> = 1..=33;
+
 /// A benchmark definition loaded from a YAML file.
 ///
 /// A benchmark is either *static* — `relations` and `queries` are populated
@@ -39,15 +45,17 @@ pub struct BenchmarkDefinition {
     #[serde(default)]
     pub queries: Vec<QueryDefinition>,
     /// Optional declarative generator spec. When present, `bench run` runs
-    /// the corresponding `kermit-rdf` pipeline on first invocation and
-    /// caches the artefacts; subsequent runs short-circuit on the cached
-    /// `meta.json` if the spec hash matches.
+    /// the corresponding generator (a `kermit-rdf` pipeline or a
+    /// `kermit-generate` one) on first invocation and caches the artefacts;
+    /// subsequent runs short-circuit on the cached `meta.json` if the spec
+    /// hash matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator: Option<GeneratorSpec>,
 }
 
 /// A declarative generator spec. Tagged on the `kind` field
-/// (`kind: watdiv`, `kind: watdiv-basic`, `kind: lubm` or `kind: snap`).
+/// (`kind: watdiv`, `kind: watdiv-basic`, `kind: lubm`, `kind: snap` or
+/// `kind: job`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum GeneratorSpec {
@@ -112,6 +120,15 @@ pub enum GeneratorSpec {
         /// `None` or omitted = all four, in [`SnapQuery::ALL`] order.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         queries: Option<Vec<SnapQuery>>,
+    },
+    /// Drives the Join Order Benchmark generator
+    /// (`kermit_generate::job::JobGenerator`): every variant of one JOB
+    /// template over IMDb, with each alias's filters applied during
+    /// generation. Unlike the other kinds it has no `scale`; the template
+    /// picks the queries and so the data.
+    Job {
+        /// The JOB template, `1` to `33`.
+        template: u8,
     },
 }
 
@@ -659,6 +676,20 @@ fn validate_generator(bench_name: &str, spec: &GeneratorSpec) -> Result<(), Benc
                         )));
                     }
                 }
+            }
+        },
+        | GeneratorSpec::Job {
+            template,
+        } => {
+            if !JOB_TEMPLATES.contains(template) {
+                return Err(BenchError::Invalid {
+                    name: bench_name.to_string(),
+                    reason: format!(
+                        "job generator template must be in {}..={}",
+                        JOB_TEMPLATES.start(),
+                        JOB_TEMPLATES.end()
+                    ),
+                });
             }
         },
     }
@@ -1400,6 +1431,90 @@ generator:
             queries: Some(vec!["q1".to_string(), "q2".to_string()]),
         };
         assert_ne!(a.spec_hash(), b.spec_hash());
+    }
+
+    #[test]
+    fn job_spec_parses() {
+        let yaml = r#"
+name: job-6
+description: "Join Order Benchmark, template 6 (6a-6f)"
+generator:
+  kind: job
+  template: 6
+"#;
+        let def: BenchmarkDefinition = serde_yaml::from_str(yaml).unwrap();
+        def.validate().unwrap();
+        assert_eq!(
+            def.generator,
+            Some(GeneratorSpec::Job {
+                template: 6
+            })
+        );
+    }
+
+    /// `template` has no default and must fit a byte: a missing, oversized,
+    /// negative or non-numeric one is a parse error, not a silent template 0.
+    #[test]
+    fn job_spec_requires_a_template_that_fits_a_byte() {
+        for generator in [
+            "kind: job",
+            "kind: job\n  template: 256",
+            "kind: job\n  template: -1",
+            "kind: job\n  template: six",
+        ] {
+            let yaml = format!("name: job-x\ndescription: \"x\"\ngenerator:\n  {generator}\n");
+            assert!(
+                serde_yaml::from_str::<BenchmarkDefinition>(&yaml).is_err(),
+                "{generator}"
+            );
+        }
+    }
+
+    #[test]
+    fn job_template_out_of_range_is_rejected() {
+        for template in [0u8, 34, 255] {
+            let spec = GeneratorSpec::Job {
+                template,
+            };
+            let message = validate_generator("job-x", &spec).unwrap_err().to_string();
+            assert!(
+                message.contains("job generator template must be in 1..=33"),
+                "{message}"
+            );
+        }
+        for template in [1u8, 17, 33] {
+            let spec = GeneratorSpec::Job {
+                template,
+            };
+            assert!(validate_generator("job-x", &spec).is_ok(), "{template}");
+        }
+    }
+
+    #[test]
+    fn job_spec_hash_changes_with_template() {
+        let one = GeneratorSpec::Job {
+            template: 1,
+        };
+        let two = GeneratorSpec::Job {
+            template: 2,
+        };
+        assert_ne!(one.spec_hash(), two.spec_hash());
+        assert_eq!(
+            one.spec_hash(),
+            GeneratorSpec::Job {
+                template: 1
+            }
+            .spec_hash()
+        );
+        // The kind is part of the hash: scale 1 of another kind is not template
+        // 1.
+        assert_ne!(
+            one.spec_hash(),
+            GeneratorSpec::WatdivBasic {
+                scale: 1
+            }
+            .spec_hash()
+        );
     }
 
     #[test]
