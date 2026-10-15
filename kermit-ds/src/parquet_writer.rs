@@ -281,7 +281,11 @@ pub fn write_parquet<P: AsRef<Path>>(
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::read_parquet};
+    use {
+        super::*,
+        crate::read_parquet,
+        parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
+    };
 
     /// A header named `name` with attributes `c0`, `c1`, ...
     fn header_of(name: &str, arity: usize) -> RelationHeader {
@@ -308,6 +312,16 @@ mod tests {
             | Some(RelationError::InvalidData(message)) => message,
             | other => panic!("expected InvalidData, got {other:?}"),
         }
+    }
+
+    /// `tuples` cut into batches of `size` rows (the last may be shorter).
+    fn batches(tuples: &Tuples, size: usize) -> Vec<Tuples> {
+        let arity = tuples.arity();
+        tuples
+            .as_flat()
+            .chunks(size * arity)
+            .map(|chunk| Tuples::from_flat(arity, chunk.len() / arity, chunk.to_vec()))
+            .collect()
     }
 
     #[test]
@@ -400,5 +414,81 @@ mod tests {
         let message = invalid_message(writer.write_batch(&Tuples::from(vec![vec![1, usize::MAX]])));
         assert!(message.starts_with("row 2, column 1:"), "{message}");
         assert!(message.contains("exceeds i64::MAX"), "{message}");
+    }
+
+    /// The same rows give the same file whatever the batching: one-shot, and
+    /// batches below, at and across the chunk size.
+    #[test]
+    fn batching_does_not_change_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = header_of("rel", 2);
+        let tuples = rows_of(2, 2 * WRITE_CHUNK_ROWS + 3);
+        let reference = dir.path().join("rel.parquet");
+        write_parquet(&reference, &header, &tuples).unwrap();
+        let want = std::fs::read(&reference).unwrap();
+        assert_eq!(read_parquet(&reference).unwrap(), (header.clone(), tuples.clone()));
+        for size in [1, 7, 1000, WRITE_CHUNK_ROWS - 1, WRITE_CHUNK_ROWS + 1] {
+            let subdir = dir.path().join(format!("batch{size}"));
+            std::fs::create_dir(&subdir).unwrap();
+            let path = subdir.join("rel.parquet");
+            let mut writer = ParquetWriter::create(&path, &header).unwrap();
+            for batch in batches(&tuples, size) {
+                writer.write_batch(&batch).unwrap();
+            }
+            assert_eq!(writer.finish().unwrap(), tuples.len() as u64, "batch size {size}");
+            assert!(
+                std::fs::read(&path).unwrap() == want,
+                "batch size {size}: bytes differ from the one-shot file"
+            );
+        }
+    }
+
+    /// One row group holds `ROW_GROUP_ROWS` rows, so `ROW_GROUP_ROWS + 3`
+    /// rows make two, the second holding the 3.
+    #[test]
+    fn crosses_a_row_group_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = header_of("big", 1);
+        let tuples = rows_of(1, ROW_GROUP_ROWS + 3);
+        let path = dir.path().join("big.parquet");
+        write_parquet(&path, &header, &tuples).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(&path).unwrap()).unwrap();
+        let metadata = builder.metadata();
+        assert_eq!(metadata.num_row_groups(), 2);
+        assert_eq!(metadata.row_group(0).num_rows(), ROW_GROUP_ROWS as i64);
+        assert_eq!(metadata.row_group(1).num_rows(), 3);
+        assert_eq!(read_parquet(&path).unwrap(), (header, tuples));
+    }
+
+    #[test]
+    fn dropped_writer_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.parquet");
+        let part = dir.path().join("edge.parquet.part");
+        let mut writer = ParquetWriter::create(&path, &header_of("edge", 2)).unwrap();
+        // More than one chunk, so `ArrowWriter` has been handed data.
+        writer.write_batch(&rows_of(2, WRITE_CHUNK_ROWS + 1)).unwrap();
+        assert!(part.exists(), "the .part file exists while the writer lives");
+        drop(writer);
+        assert!(!part.exists());
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn failed_writer_refuses_more_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.parquet");
+        let mut writer = ParquetWriter::create(&path, &header_of("edge", 2)).unwrap();
+        writer.write_batch(&rows_of(2, 5)).unwrap();
+        // A wrong arity fails the writer ...
+        invalid_message(writer.write_batch(&rows_of(3, 1)));
+        // ... so even a valid batch is now refused ...
+        let message = invalid_message(writer.write_batch(&rows_of(2, 1)));
+        assert!(message.contains("failed"), "{message}");
+        // ... and so is `finish`, which leaves no file of either name.
+        let message = invalid_message(writer.finish());
+        assert!(message.contains("failed"), "{message}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }
