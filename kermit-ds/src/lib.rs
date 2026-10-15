@@ -26,6 +26,7 @@ mod configured;
 mod ds;
 mod heap_size;
 mod morsel;
+mod parquet_writer;
 mod relation;
 mod seek;
 #[cfg(feature = "test-hooks")]
@@ -49,6 +50,7 @@ pub use {
     heap_size::HeapSize,
     kermit_iters::{LeafCursor, LeafRows, RowId, Tuples},
     morsel::Threads,
+    parquet_writer::{write_parquet, ParquetWriter},
     relation::{
         read_csv, read_csv_header, read_parquet, read_parquet_header, BuildModeRelation,
         ConfigurableRelation, ConfiguredBuildModeRelation, ModelType, Projectable, Relation,

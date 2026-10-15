@@ -425,7 +425,7 @@ pub trait RelationFileExt: Relation {
 
 /// Extracts the relation name from a file path: the file stem (filename
 /// without extension), or an empty string if it cannot be determined.
-fn file_stem(path: &Path) -> String {
+pub(crate) fn file_stem(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
