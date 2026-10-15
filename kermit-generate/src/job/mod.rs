@@ -29,7 +29,7 @@ pub mod translate;
 use {
     crate::{
         job::{
-            duckdb::Duckdb,
+            duckdb::{sql_identifier, Duckdb},
             raw::RawCache,
             translate::{parse_query, plan_template, RelationPlan},
         },
@@ -64,8 +64,12 @@ pub struct JobSource {
     pub relation: String,
     /// The IMDb table its rows are read from.
     pub table: String,
-    /// The filter applied to the table, with the alias stripped from its
-    /// columns; empty when the relation is unfiltered.
+    /// The query's own predicate on the alias, with the alias stripped from its
+    /// columns; empty when the relation is unfiltered. It is not the whole
+    /// `WHERE`: every relation also drops the rows with a NULL in a join
+    /// column (the leading columns of its `relations` entry, which an SQL
+    /// equi-join never matches), one fixed rule that is not recorded per
+    /// relation.
     pub filter: String,
 }
 
@@ -80,11 +84,14 @@ pub struct JobExtras {
     /// The commit of `gregrahn/join-order-benchmark` the queries were read at.
     pub query_commit: String,
     /// SHA-256 of `schema.sql` and of each of this template's query files, by
-    /// file name.
+    /// file name, copied from the raw cache's `provenance.json` (not re-hashed
+    /// by this generation).
     pub query_sha256: BTreeMap<String, String>,
-    /// `duckdb --version` of this generation; the raw cache records its
-    /// build's separately.
+    /// `duckdb --version` of this generation, which ran the filters and counts.
     pub duckdb_version: String,
+    /// `duckdb --version` of the build that loaded the raw cache's CSVs,
+    /// copied from its `provenance.json`; it may differ from `duckdb_version`.
+    pub raw_duckdb_version: String,
     /// Where each relation file's rows come from, in the order the files
     /// were written.
     pub sources: Vec<JobSource>,
@@ -112,20 +119,24 @@ pub struct JobGenerator<'a> {
 
 /// The `SELECT` that the filter stage streams for one relation.
 ///
-/// Every column is cast to `BIGINT` (`read_parquet` reads only `Int64`); the
+/// Every column is cast to `BIGINT`, so that `stream_rows` reads integer text
+/// (`ParquetWriter` writes `Int64` regardless); the
 /// rows are those that pass the relation's filter and have no NULL in a join
 /// column (an SQL equi-join excludes them); and `ORDER BY "id"` fixes their
 /// order, which a parallel scan does not promise and which the tries' build
 /// cost and byte-identical regeneration depend on. The filter is the text of
 /// conjuncts joined by `AND`, each an operand of the query's top-level `AND`,
 /// so an `OR` inside one is parenthesised in the source and appending `AND …`
-/// cannot change its meaning. Identifiers are quoted; they are IMDb column
-/// names, which never contain `"`.
+/// cannot change its meaning. Identifiers are quoted with
+/// `sql_identifier`, which doubles any `"`.
 pub fn filter_select(relation: &RelationPlan) -> String {
     let projection = relation
         .columns
         .iter()
-        .map(|column| format!("CAST(\"{column}\" AS BIGINT) AS \"{column}\""))
+        .map(|column| {
+            let column = sql_identifier(column);
+            format!("CAST({column} AS BIGINT) AS {column}")
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let filter = (!relation.filter.is_empty()).then(|| relation.filter.clone());
@@ -133,7 +144,7 @@ pub fn filter_select(relation: &RelationPlan) -> String {
         .columns
         .iter()
         .take(relation.join_columns)
-        .map(|column| format!("\"{column}\" IS NOT NULL"));
+        .map(|column| format!("{} IS NOT NULL", sql_identifier(column)));
     let conditions: Vec<String> = filter.into_iter().chain(not_null).collect();
     let predicate = if conditions.is_empty() {
         String::new()
@@ -141,8 +152,9 @@ pub fn filter_select(relation: &RelationPlan) -> String {
         format!(" WHERE {}", conditions.join(" AND "))
     };
     format!(
-        "SELECT {projection} FROM \"{}\"{predicate} ORDER BY \"id\"",
-        relation.table
+        "SELECT {projection} FROM {}{predicate} ORDER BY {}",
+        sql_identifier(&relation.table),
+        sql_identifier("id")
     )
 }
 
@@ -172,7 +184,8 @@ impl Generator for JobGenerator<'_> {
             .iter()
             .map(|(name, sql)| parse_query(name, sql))
             .collect::<Result<Vec<_>, _>>()?;
-        let plan = plan_template(&queries)?;
+        let plan = plan_template(&queries)
+            .with_context(|| format!("planning JOB template {}", self.template))?;
 
         // The pins the cache was built from, narrowed to this template's files.
         // Checked before any DuckDB process starts: a cache whose
@@ -198,7 +211,8 @@ impl Generator for JobGenerator<'_> {
         // Filter stage: one DuckDB process per relation, streamed into its
         // writer. The writer is finished only after DuckDB exited 0
         // with an empty stderr (`stream_rows` fails otherwise), so a
-        // failed filter leaves no file for it.
+        // failed filter leaves no new file for it (an older file of the same
+        // name survives a failed regeneration, harmlessly).
         for relation in &plan.relations {
             let header = RelationHeader::new(relation.name.clone(), relation.columns.clone());
             let mut writer = sink.open(&header)?;
@@ -255,6 +269,7 @@ impl Generator for JobGenerator<'_> {
             extras: JobExtras {
                 template: self.template,
                 imdb_sha256: provenance.imdb_sha256,
+                raw_duckdb_version: provenance.duckdb_version,
                 query_commit: provenance.query_commit,
                 query_sha256,
                 duckdb_version: self.duckdb.version().to_owned(),
@@ -347,6 +362,17 @@ mod tests {
                 r#"SELECT CAST("id" AS BIGINT) AS "id", CAST("kind_id" AS BIGINT) AS "kind_id" "#,
                 r#"FROM "title" WHERE title LIKE '%"Hero"%' "#,
                 r#"AND "id" IS NOT NULL AND "kind_id" IS NOT NULL ORDER BY "id""#,
+            )
+        );
+
+        // A double quote inside a table or column name is doubled, so no
+        // name can end its identifier early.
+        let quoted = relation("t", r#"ti"tle"#, &[r#"i"d"#], 1, "");
+        assert_eq!(
+            filter_select(&quoted),
+            concat!(
+                r#"SELECT CAST("i""d" AS BIGINT) AS "i""d" FROM "ti""tle" "#,
+                r#"WHERE "i""d" IS NOT NULL ORDER BY "id""#,
             )
         );
 

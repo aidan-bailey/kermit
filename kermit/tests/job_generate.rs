@@ -395,6 +395,24 @@ fn relations_hold_filtered_rows_in_id_order() {
         else {
             return;
         };
+        // The reversed pass is only a check while DuckDB scans in load order:
+        // the first `movie_info` row it returns is the last id loaded (16). If
+        // a DuckDB upgrade ever changes that, fail here instead of letting
+        // the missing-`ORDER BY` check pass vacuously.
+        if reversed {
+            let first = fixture
+                .duckdb
+                .query_u64(
+                    &fixture.raw.database(),
+                    &fixture.raw.temp_dir(),
+                    "SELECT id FROM movie_info LIMIT 1",
+                )
+                .unwrap();
+            assert_eq!(
+                first, 16,
+                "the reversed fixture is not scanned in load order"
+            );
+        }
         for (template, expected) in [(1u8, TEMPLATE_1), (2, TEMPLATE_2)] {
             let context = format!("template {template}, reversed load = {reversed}");
             let parent = tempfile::tempdir().unwrap();
@@ -702,6 +720,8 @@ fn extras_record_sources_and_versions() {
     assert_eq!(extras.query_commit, "fixture-commit");
     // The generation's DuckDB, not the one the cache was built with.
     assert_eq!(extras.duckdb_version, fixture.duckdb.version());
+    // The cache's build is recorded beside it, copied from `provenance.json`.
+    assert_eq!(extras.raw_duckdb_version, provenance().duckdb_version);
     assert_ne!(extras.duckdb_version, provenance().duckdb_version);
     // `schema.sql` and this template's queries, not template 2's.
     let files: Vec<&str> = extras.query_sha256.keys().map(String::as_str).collect();
@@ -751,6 +771,7 @@ fn extras_record_sources_and_versions() {
         "query_commit",
         "query_sha256",
         "duckdb_version",
+        "raw_duckdb_version",
         "sources",
         "relations",
     ] {

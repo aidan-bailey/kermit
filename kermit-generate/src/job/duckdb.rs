@@ -43,6 +43,9 @@ pub const BATCH_ROWS: usize = 1 << 16;
 /// `text` as a single-quoted SQL string literal (`'` doubled).
 pub(crate) fn sql_literal(text: &str) -> String { format!("'{}'", text.replace('\'', "''")) }
 
+/// `name` as a double-quoted SQL identifier (`"` doubled).
+pub(crate) fn sql_identifier(name: &str) -> String { format!("\"{}\"", name.replace('"', "\"\"")) }
+
 /// `path` as a SQL string literal. DuckDB receives the statement as text, so
 /// the path must be valid UTF-8.
 pub(crate) fn path_literal(path: &Path) -> anyhow::Result<String> {
@@ -490,6 +493,13 @@ mod tests {
         assert_eq!(sql_literal("plain"), "'plain'");
         assert_eq!(sql_literal("it's"), "'it''s'");
         assert_eq!(sql_literal(""), "''");
+    }
+
+    #[test]
+    fn sql_identifier_doubles_double_quotes() {
+        assert_eq!(sql_identifier("id"), r#""id""#);
+        assert_eq!(sql_identifier(r#"we"ird"#), r#""we""ird""#);
+        assert_eq!(sql_identifier(""), r#""""#);
     }
 
     /// The env override names a binary that does not exist: the error says
