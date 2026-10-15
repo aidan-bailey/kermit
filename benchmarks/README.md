@@ -8,6 +8,7 @@ This directory holds YAML benchmark definitions consumed by the `kermit bench` C
 - `triangle.yml` is the minimal working example.
 - `oxford-uniform-s*.yml` and `oxford-zipf-s*.yml` are realistic multi-relation benchmarks from the Oxford DSI dataset.
 - `watdiv-example.yml`, `watdiv-basic.yml`, `lubm-example.yml`, and `lubm-reference.yml` are generator-driven examples illustrating the generator schema below; `watdiv-stress-default.yml` is a declarative generator spec (distinct from the frozen `watdiv-stress-*` snapshots covered later).
+- `snap-amazon.yml` and `snap-dblp.yml` are generator-driven SNAP community graphs (`kind: snap`: one symmetric `edge` relation, four graph-pattern queries with exact `expected` counts); see [`docs/benchmarks/SNAP.md`](../docs/benchmarks/SNAP.md).
 
 ## Schema
 
@@ -55,8 +56,8 @@ A `generator:` block replaces `relations` and `queries`. On `bench run <name>`, 
 
 | Field                       | Type               | Required | Description |
 |-----------------------------|--------------------|----------|-------------|
-| `generator.kind`            | `watdiv` \| `watdiv-basic` \| `lubm` | yes      | Selects the underlying `kermit-rdf` pipeline. |
-| `generator.scale`           | u32 (≥ 1)          | yes      | Scale factor (`watdiv -d <N>` or `lubm-uba -u <N>`). |
+| `generator.kind`            | `watdiv` \| `watdiv-basic` \| `lubm` \| `snap` | yes      | Selects the generator: a `kermit-rdf` pipeline, or for `snap` a `kermit-generate` module. |
+| `generator.scale`           | u32 (≥ 1)          | for `watdiv`, `watdiv-basic` and `lubm` | Scale factor (`watdiv -d <N>` or `lubm-uba -u <N>`). `snap` has no scale. |
 
 WatDiv-specific fields (under `generator:` when `kind: watdiv`):
 
@@ -78,6 +79,17 @@ LUBM-specific fields (under `generator:` when `kind: lubm`):
 | `generator.start_index`     | u32         | 0                                                           | Starting university index. |
 | `generator.ontology`        | string      | `http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl`     | Univ-Bench TBox IRI. |
 | `generator.queries`         | list of `q1`..`q14` | all 14 if omitted                                  | Subset of LUBM queries to materialise. |
+
+SNAP-specific fields (under `generator:` when `kind: snap`; there is no `scale`):
+
+| Field                       | Type        | Default                                                     | Description |
+|-----------------------------|-------------|-------------------------------------------------------------|-------------|
+| `generator.graph`           | `com-amazon` \| `com-dblp` \| `com-youtube` | —                                | A named graph with a pinned URL and `.gz` SHA-256. Exactly one of `graph` and `url`. |
+| `generator.url`             | string      | —                                                           | `http://` or `https://` URL of a SNAP edge-list `.gz`. Requires `sha256`. |
+| `generator.sha256`          | string (64 lowercase hex) | —                                             | SHA-256 of the `.gz` at `url`. Required with `url`, rejected with `graph`. |
+| `generator.queries`         | non-empty list of `triangle`, `path3`, `cycle4`, `clique4` | all four                     | Subset of queries to emit; no duplicates. |
+
+See [`docs/benchmarks/SNAP.md`](../docs/benchmarks/SNAP.md) for the graphs, the query semantics and the cleaning rules.
 
 Structural invariants are checked at load time by `BenchmarkDefinition::validate`.
 
@@ -161,6 +173,16 @@ generator:
   scale: 1
   queries: [q1, q3, q5]
 ```
+
+```yaml
+name: snap-amazon
+description: "SNAP com-amazon (Yang & Leskovec, ICDM 2012) as one symmetric edge relation, with the triangle, path3, cycle4 and clique4 queries (walk semantics)."
+generator:
+  kind: snap
+  graph: com-amazon
+```
+
+`snap-amazon` downloads the pinned `.gz` (4.5 MB, SHA-256 checked) on first use. A graph outside the named table takes `url` and `sha256` instead of `graph`; see `docs/benchmarks/SNAP.md`.
 
 ## Frozen snapshots and the `scripts/` preprocessors
 

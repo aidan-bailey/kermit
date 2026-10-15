@@ -439,6 +439,37 @@ seed 0 and start index 0; at other settings the queries still run but
 carry no `expected`, so `bench run --verify` reports them as not
 verified.
 
+### Generate a SNAP community-graph benchmark (`bench gen snap`)
+
+Downloads a SNAP community graph (Yang and Leskovec, ICDM 2012), checks its
+SHA-256, symmetrises it into one `edge(src, dst)` relation and emits four
+queries, `triangle`, `path3`, `cycle4` and `clique4`, each with an exact
+`expected` count. Output lands at
+`~/.cache/kermit/benchmarks/snap-<name>-<tag>/`, where `<name>` is the graph or
+the URL's file stem, so subsequent `bench run` invocations pick it up.
+
+```sh
+kermit bench gen snap --graph com-amazon --tag dev
+# → ~/.cache/kermit/benchmarks/snap-com-amazon-dev/
+kermit bench run snap-com-amazon-dev -i all -a all --verify
+```
+
+Give exactly one source: `--graph com-amazon|com-dblp|com-youtube` (each has a
+pinned URL and digest), or `--url <URL> --sha256 <HEX>` for any SNAP edge-list
+`.gz` (the digest is 64 lowercase hex, from `sha256sum`; the benchmark is
+named `snap-<stem>-<tag>`, where the stem is the URL's last path segment up to
+its first `.`). `--tag` is required. Tunables (optional): `--queries
+triangle,clique4` for a subset (default all four) and `--output-dir <PATH>` to
+write outside the default cache (generated benchmarks placed there are NOT
+auto-discovered by `bench list/fetch/run`). A wrong digest fails before
+anything is parsed and leaves no cache: the directory stays, but without
+`meta.json` it is not discovered, and `raw/` holds no `.gz` or `.part`.
+
+The queries count walks, not simple paths or cycles, and `com-dblp`'s `path3`
+alone is 1.45 billion rows; see [`docs/benchmarks/SNAP.md`](docs/benchmarks/SNAP.md).
+The committed `snap-amazon` and `snap-dblp` need no `bench gen`:
+`kermit bench run snap-amazon -i all -a all --verify` generates on first use.
+
 ## JSON reports
 
 The default report path is `bench-runs/<kind>-<unix-millis>.json` resolved

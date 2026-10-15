@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! ~/.cache/kermit/benchmarks/<name>/
-//!   meta.json        # PipelineMeta or LubmMeta with spec_hash field
+//!   meta.json        # PipelineMeta, LubmMeta or GeneratedMeta, with spec_hash field
 //!   benchmark.yml    # BenchmarkDefinition with file:// URLs
 //!   <pred>.parquet × N
 //!   ...
@@ -24,8 +24,11 @@
 //! the same way, with [`BenchError::OutdatedCache`].
 
 use {
-    kermit_bench::{BenchError, BenchmarkDefinition, GeneratorSpec, WatdivStressSpec},
-    kermit_rdf::generator::MetaHeader,
+    kermit_bench::{
+        BenchError, BenchmarkDefinition, GeneratorSpec, SnapGraph, SnapQuery, WatdivStressSpec,
+    },
+    kermit_generate::snap::{SnapGenerator, SnapSource},
+    kermit_rdf::generator::{MetaHeader, Target},
     std::{
         fs,
         path::{Path, PathBuf},
@@ -223,11 +226,22 @@ pub fn materialize(
     }
 
     fs::create_dir_all(&cache_subdir)?;
-    dispatch(spec, &def.name, &cache_subdir, &expected_hash).map_err(|e| BenchError::Invalid {
-        name: def.name.clone(),
-        reason: format!("generator pipeline failed: {e}"),
-    })?;
+    dispatch(spec, &def.name, &cache_subdir, &expected_hash)
+        .map_err(|e| generator_failed(&def.name, &e))?;
     load_cached_yaml(&yml_path)
+}
+
+/// The error for a generator that failed while materializing `name`.
+///
+/// The reason formats `err` with the alternate flag, which prints the whole
+/// `anyhow` context chain (`outer: inner`); the plain format would print only
+/// the outermost layer, and the `kermit-generate` arms put "what failed" in
+/// the layers beneath it.
+fn generator_failed(name: &str, err: &anyhow::Error) -> BenchError {
+    BenchError::Invalid {
+        name: name.to_string(),
+        reason: format!("generator pipeline failed: {err:#}"),
+    }
 }
 
 /// Loads a `benchmark.yml` from a cache subdir and validates it.
@@ -253,8 +267,9 @@ fn read_meta_header(meta_path: &Path) -> Result<MetaHeader, BenchError> {
     })
 }
 
-/// Routes a `GeneratorSpec` to the appropriate `kermit-rdf` pipeline,
-/// passing `spec_hash` through so it lands in the produced `meta.json`.
+/// Routes a `GeneratorSpec` to the appropriate `kermit-rdf` pipeline or
+/// `kermit-generate` generator, passing `spec_hash` through so it lands in the
+/// produced `meta.json`.
 fn dispatch(
     spec: &GeneratorSpec, bench_name: &str, out_dir: &Path, spec_hash: &str,
 ) -> anyhow::Result<()> {
@@ -279,6 +294,20 @@ fn dispatch(
             *threads,
             *start_index,
             ontology,
+            queries.as_deref(),
+            bench_name,
+            out_dir,
+            spec_hash,
+        ),
+        | GeneratorSpec::Snap {
+            graph,
+            url,
+            sha256,
+            queries,
+        } => run_snap(
+            *graph,
+            url.as_deref(),
+            sha256.as_deref(),
             queries.as_deref(),
             bench_name,
             out_dir,
@@ -405,6 +434,33 @@ fn run_lubm(
     };
     kermit_rdf::lubm::pipeline::run_lubm_pipeline(&inputs)
         .map_err(|e| anyhow::anyhow!("lubm pipeline failed: {e}"))?;
+    Ok(())
+}
+
+/// Runs the SNAP generator for a `kind: snap` spec into `out_dir`, passing
+/// `spec_hash` through so it lands in the produced `meta.json`. A named
+/// `graph` fetches its pinned download; otherwise `url` and `sha256` name it.
+/// Validation guarantees one of the two, so the `bail!` below is unreachable
+/// from a validated spec.
+fn run_snap(
+    graph: Option<SnapGraph>, url: Option<&str>, sha256: Option<&str>,
+    queries: Option<&[SnapQuery]>, bench_name: &str, out_dir: &Path, spec_hash: &str,
+) -> anyhow::Result<()> {
+    let source = match (graph, url, sha256) {
+        | (Some(graph), ..) => SnapSource::named(graph),
+        | (None, Some(url), Some(sha256)) => SnapSource::Remote {
+            url: url.to_string(),
+            sha256: sha256.to_string(),
+        },
+        | (None, ..) => anyhow::bail!("a snap spec needs a graph, or a url with a sha256"),
+    };
+    let target = Target {
+        out_dir,
+        bench_name,
+        tag: bench_name,
+        spec_hash: Some(spec_hash),
+    };
+    kermit_generate::run(&SnapGenerator::new(target, graph, source, queries))?;
     Ok(())
 }
 
@@ -696,6 +752,28 @@ queries:
         assert_eq!(out.name, "hand-made");
     }
 
+    /// A two-level `.context()` error reaches the benchmark's error with both
+    /// messages, so a `kermit-generate` failure says what failed and why.
+    #[test]
+    fn generator_failure_keeps_the_context_chain() {
+        let err = anyhow::anyhow!("inner").context("outer");
+        match generator_failed("some-bench", &err) {
+            | BenchError::Invalid {
+                name,
+                reason,
+            } => {
+                assert_eq!(name, "some-bench");
+                assert!(
+                    reason.starts_with("generator pipeline failed: "),
+                    "{reason}"
+                );
+                assert!(reason.contains("outer"), "{reason}");
+                assert!(reason.contains("inner"), "{reason}");
+            },
+            | other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
     fn workspace_tree() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(
@@ -748,5 +826,17 @@ queries:
         let (got, source) = resolve_workspace_root(None, &tmp.path().join("x/y"), fallback);
         assert_eq!(got, fallback);
         assert_eq!(source, RootSource::CompileTime);
+    }
+
+    /// Validation makes a spec with neither a graph nor a `url` + `sha256`
+    /// pair unreachable here; the arm still fails loudly, and before it writes.
+    #[test]
+    fn run_snap_without_a_source_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        for (url, sha256) in [(None, None), (Some("https://h/x.gz"), None)] {
+            let err = run_snap(None, url, sha256, None, "snap-x", dir.path(), "h").unwrap_err();
+            assert!(err.to_string().contains("needs a graph"), "{err:#}");
+        }
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

@@ -1,0 +1,5 @@
+name: snap-dblp
+description: "SNAP com-dblp (Yang & Leskovec, ICDM 2012) as one symmetric edge relation, with the triangle, path3, cycle4 and clique4 queries (walk semantics)."
+generator:
+  kind: snap
+  graph: com-dblp

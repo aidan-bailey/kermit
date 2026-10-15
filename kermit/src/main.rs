@@ -388,6 +388,107 @@ enum BenchSubcommand {
     },
 }
 
+/// Output flags shared by every non-RDF `bench gen <kind>` (D15).
+#[derive(clap::Args)]
+struct GenTarget {
+    /// Tag appended to the benchmark name; pick a value that won't
+    /// collide with committed snapshot names
+    #[arg(long, value_name = "STRING", required = true)]
+    tag: String,
+
+    /// Override the cache dir parent (default: ~/.cache/kermit/benchmarks).
+    /// NOTE: benchmarks generated outside the default cache are NOT
+    /// auto-discovered by `bench list/fetch/run`; mainly useful for tests.
+    #[arg(long, value_name = "PATH")]
+    output_dir: Option<PathBuf>,
+}
+
+impl GenTarget {
+    /// Resolves and creates `bench_name`'s output directory, as `bench gen
+    /// lubm` does: refuses a name a workspace YAML already uses, and notes
+    /// an undiscovered `--output-dir` and a non-empty directory on stderr.
+    fn prepare(&self, kind: &str, bench_name: &str) -> anyhow::Result<PathBuf> {
+        let workspace_names = kermit_bench::discovery::list_benchmarks(&workspace_root())
+            .map_err(|e| anyhow::anyhow!("failed to enumerate workspace benchmarks: {e}"))?;
+        if workspace_names.iter().any(|n| n == bench_name) {
+            anyhow::bail!(
+                "--tag {:?} produces bench name {bench_name:?} which already exists in the \
+                 workspace; pick a different tag",
+                self.tag
+            );
+        }
+        let out = kermit_generate::output_dir(bench_name, self.output_dir.as_deref())?;
+        if !out.discovered {
+            eprintln!(
+                "[gen {kind}] note: --output-dir is set; {} will NOT be auto-discovered by `bench \
+                 list/fetch/run`",
+                out.path.display()
+            );
+        }
+        if std::fs::read_dir(&out.path)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "[gen {kind}] note: {} is non-empty; existing files will be overwritten",
+                out.path.display()
+            );
+        }
+        std::fs::create_dir_all(&out.path)?;
+        Ok(out.path)
+    }
+}
+
+/// The CLI spelling of `kermit_bench::SnapGraph`. kermit-bench has no clap
+/// dependency, so the binary declares its own `ValueEnum` and maps it across;
+/// `snap_clap_names_match_the_spec_names` pins that the names agree.
+// The `Com` prefix is part of the SNAP graph names (`com-amazon`), which clap
+// derives from the variant names and which must equal the spec's.
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SnapGraphArg {
+    /// The Amazon product co-purchasing communities (`com-amazon`)
+    ComAmazon,
+    /// The DBLP collaboration communities (`com-dblp`)
+    ComDblp,
+    /// The YouTube social communities (`com-youtube`)
+    ComYoutube,
+}
+
+impl From<SnapGraphArg> for kermit_bench::SnapGraph {
+    fn from(arg: SnapGraphArg) -> Self {
+        match arg {
+            | SnapGraphArg::ComAmazon => Self::ComAmazon,
+            | SnapGraphArg::ComDblp => Self::ComDblp,
+            | SnapGraphArg::ComYoutube => Self::ComYoutube,
+        }
+    }
+}
+
+/// The CLI spelling of `kermit_bench::SnapQuery`; see [`SnapGraphArg`].
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SnapQueryArg {
+    /// `edge(A, B), edge(B, C), edge(A, C)`: 6 x the triangles
+    Triangle,
+    /// The 3-step walks (vertices may repeat)
+    Path3,
+    /// The closed 4-step walks, tr(A^4)
+    Cycle4,
+    /// 24 x the 4-cliques
+    Clique4,
+}
+
+impl From<SnapQueryArg> for kermit_bench::SnapQuery {
+    fn from(arg: SnapQueryArg) -> Self {
+        match arg {
+            | SnapQueryArg::Triangle => Self::Triangle,
+            | SnapQueryArg::Path3 => Self::Path3,
+            | SnapQueryArg::Cycle4 => Self::Cycle4,
+            | SnapQueryArg::Clique4 => Self::Clique4,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum GenSubcommand {
     /// Generate a fresh watdiv benchmark on the fly
@@ -484,6 +585,33 @@ enum GenSubcommand {
         /// auto-discovered by `bench list/fetch/run`; mainly useful for tests.
         #[arg(long, value_name = "PATH")]
         output_dir: Option<PathBuf>,
+    },
+
+    /// Generate a SNAP community-graph benchmark (#96)
+    Snap {
+        /// A named graph with a pinned download
+        #[arg(
+            long,
+            value_enum,
+            required_unless_present = "url",
+            conflicts_with_all = ["url", "sha256"]
+        )]
+        graph: Option<SnapGraphArg>,
+
+        /// A SNAP edge-list `.gz` URL; requires --sha256
+        #[arg(long, value_name = "URL", requires = "sha256")]
+        url: Option<String>,
+
+        /// SHA-256 of the `.gz` at --url (64 lowercase hex)
+        #[arg(long, value_name = "HEX", requires = "url")]
+        sha256: Option<String>,
+
+        /// Queries to emit, comma-separated (default: all four)
+        #[arg(long, value_enum, value_delimiter = ',')]
+        queries: Vec<SnapQueryArg>,
+
+        #[command(flatten)]
+        target: GenTarget,
     },
 }
 
@@ -1188,6 +1316,91 @@ fn run_gen_lubm(
     Ok(())
 }
 
+/// The name of a `bench gen snap` benchmark: `snap-<name>-<tag>`, where
+/// `<name>` is the graph's name or the URL's file name up to its first `.`
+/// (`.../com-orkut.ungraph.txt.gz` gives `com-orkut`).
+///
+/// A URL with no such name (one ending in `/`, or in `/.gz`) is an error that
+/// names it. Whether the result is a portable filename is not checked here:
+/// `BenchmarkDefinition::validate` does that for the finished name.
+fn snap_bench_name(
+    graph: Option<kermit_bench::SnapGraph>, url: Option<&str>, tag: &str,
+) -> anyhow::Result<String> {
+    let name = match (graph, url) {
+        | (Some(g), _) => g.name(),
+        | (None, Some(u)) => {
+            let Some(stem) = kermit_generate::snap::url_stem(u) else {
+                anyhow::bail!("--url {u:?} has no file name to name the benchmark by");
+            };
+            stem
+        },
+        | (None, None) => anyhow::bail!("pass --graph, or --url together with --sha256"),
+    };
+    Ok(format!("snap-{name}-{tag}"))
+}
+
+/// Handler for `bench gen snap`: download (or take) a SNAP edge list and write
+/// a benchmark from it through [`kermit_generate::snap::SnapGenerator`].
+///
+/// The benchmark is named by [`snap_bench_name`]. The name, the digest and
+/// the URL are checked once, by validating the equivalent declarative spec,
+/// before anything is downloaded. The run has no `spec_hash`, like every
+/// imperative `bench gen`.
+fn run_gen_snap(
+    graph: Option<SnapGraphArg>, url: Option<String>, sha256: Option<String>,
+    queries: Vec<SnapQueryArg>, target: GenTarget,
+) -> anyhow::Result<()> {
+    use {
+        kermit_bench::{GeneratorSpec, SnapGraph, SnapQuery},
+        kermit_generate::snap::{SnapGenerator, SnapSource},
+    };
+
+    let graph = graph.map(SnapGraph::from);
+    let queries: Vec<SnapQuery> = queries.into_iter().map(SnapQuery::from).collect();
+    let queries = (!queries.is_empty()).then_some(queries);
+    let spec = GeneratorSpec::Snap {
+        graph,
+        url: url.clone(),
+        sha256: sha256.clone(),
+        queries: queries.clone(),
+    };
+
+    let bench_name = snap_bench_name(graph, url.as_deref(), &target.tag)?;
+
+    BenchmarkDefinition {
+        name: bench_name.clone(),
+        description: String::new(),
+        relations: vec![],
+        queries: vec![],
+        generator: Some(spec),
+    }
+    .validate()?;
+
+    let source = match (graph, url, sha256) {
+        | (Some(g), None, None) => SnapSource::named(g),
+        | (None, Some(url), Some(sha256)) => SnapSource::Remote {
+            url,
+            sha256,
+        },
+        | _ => anyhow::bail!("pass --graph, or --url together with --sha256"),
+    };
+    let out = target.prepare("snap", &bench_name)?;
+    let generator = SnapGenerator::new(
+        kermit_rdf::generator::Target {
+            out_dir: &out,
+            bench_name: &bench_name,
+            tag: &target.tag,
+            spec_hash: None,
+        },
+        graph,
+        source,
+        queries.as_deref(),
+    );
+    kermit_generate::run(&generator)?;
+    eprintln!("snap benchmark written to {}", out.display());
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -1322,6 +1535,14 @@ fn main() -> anyhow::Result<()> {
                     ontology,
                     output_dir,
                 )?,
+
+                | GenSubcommand::Snap {
+                    graph,
+                    url,
+                    sha256,
+                    queries,
+                    target,
+                } => run_gen_snap(graph, url, sha256, queries, target)?,
             },
         },
     }
@@ -1741,5 +1962,121 @@ mod tests {
             static_status, "cached",
             "without workspace_def the static path takes over and the generator status is lost"
         );
+    }
+
+    /// The names clap accepts for `--graph` and `--queries` are the names the
+    /// YAML spec and the generated queries use: kermit-bench has no clap
+    /// dependency, so the binary spells them twice and this pins that the two
+    /// agree, variant for variant, in order.
+    #[test]
+    fn snap_clap_names_match_the_spec_names() {
+        use clap::ValueEnum;
+
+        let mut graphs = Vec::new();
+        for arg in SnapGraphArg::value_variants() {
+            let clap_name = arg.to_possible_value().unwrap().get_name().to_string();
+            assert_eq!(clap_name, kermit_bench::SnapGraph::from(*arg).name());
+            graphs.push(clap_name);
+        }
+        let spec_graphs: Vec<&str> = kermit_bench::SnapGraph::ALL
+            .iter()
+            .map(|g| g.name())
+            .collect();
+        assert_eq!(graphs, spec_graphs);
+
+        let mut queries = Vec::new();
+        for arg in SnapQueryArg::value_variants() {
+            let clap_name = arg.to_possible_value().unwrap().get_name().to_string();
+            assert_eq!(clap_name, kermit_bench::SnapQuery::from(*arg).name());
+            queries.push(clap_name);
+        }
+        let spec_queries: Vec<&str> = kermit_bench::SnapQuery::ALL
+            .iter()
+            .map(|q| q.name())
+            .collect();
+        assert_eq!(queries, spec_queries);
+    }
+
+    /// A graph names the benchmark by its name, a URL by its file name up to
+    /// the first `.`, and a URL with no file name is refused naming the URL.
+    #[test]
+    fn snap_bench_name_follows_the_graph_or_the_url_stem() {
+        use kermit_bench::SnapGraph;
+
+        assert_eq!(
+            snap_bench_name(Some(SnapGraph::ComAmazon), None, "dev").unwrap(),
+            "snap-com-amazon-dev"
+        );
+        assert_eq!(
+            snap_bench_name(
+                None,
+                Some("https://h.invalid/d/com-orkut.ungraph.txt.gz"),
+                "dev"
+            )
+            .unwrap(),
+            "snap-com-orkut-dev"
+        );
+        for url in ["https://h.invalid/d/", "https://h.invalid/d/.gz"] {
+            let err = snap_bench_name(None, Some(url), "dev")
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(url), "{err}");
+        }
+    }
+
+    /// `--graph` xor (`--url` with `--sha256`) is required, the pairs require
+    /// each other, `--queries` splits on commas, and a name outside the enums
+    /// is refused, all at parse time, before the handler runs.
+    #[test]
+    fn snap_flags_conflict_and_require_as_documented() {
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["kermit", "bench", "gen", "snap", "--tag", "t"];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from(argv)
+        };
+        let digest = "0".repeat(64);
+        let d = digest.as_str();
+        let url = "https://example.invalid/g.ungraph.txt.gz";
+
+        assert!(parse(&["--graph", "com-amazon"]).is_ok());
+        assert!(parse(&["--url", url, "--sha256", d]).is_ok());
+
+        let rejected: &[&[&str]] = &[
+            // neither a graph nor a URL
+            &[],
+            // a URL without its digest, and a digest without its URL
+            &["--url", url],
+            &["--sha256", d],
+            // a graph with a URL, and a graph with a digest
+            &["--graph", "com-amazon", "--url", url, "--sha256", d],
+            &["--graph", "com-amazon", "--sha256", d],
+            // names outside the enums
+            &["--graph", "com-orkut"],
+            &["--graph", "com-amazon", "--queries", "triangle,pentagon"],
+        ];
+        for args in rejected {
+            assert!(parse(args).is_err(), "{args:?} should be rejected");
+        }
+
+        let cli = parse(&["--graph", "com-dblp", "--queries", "triangle,clique4"])
+            .expect("a graph with two queries parses");
+        let Commands::Bench {
+            subcommand:
+                BenchSubcommand::Gen {
+                    subcommand:
+                        GenSubcommand::Snap {
+                            queries, ..
+                        },
+                },
+            ..
+        } = cli.command
+        else {
+            panic!("not a `bench gen snap` command");
+        };
+        let names: Vec<&str> = queries
+            .iter()
+            .map(|q| kermit_bench::SnapQuery::from(*q).name())
+            .collect();
+        assert_eq!(names, ["triangle", "clique4"]);
     }
 }
