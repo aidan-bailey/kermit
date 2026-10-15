@@ -377,12 +377,60 @@ fn mini_lubm_generation_is_byte_reproducible() {
     assert_eq!(first_meta.dict_sha256, second_meta.dict_sha256);
 }
 
-/// The mini ABox's encoding hashes. Equal to what the pipeline wrote before
-/// #75 changed only the emitted variable names (checked by restoring the
-/// uppercase mapping), so they pin that the bump left the encoding alone.
+/// The mini ABox's encoding hashes: of the entailed N-Triples file, and of the
+/// dictionary's decoded rows ([`dict_contents_sha256`]). Equal to what the
+/// pipeline wrote before #75 changed only the emitted variable names (checked
+/// by restoring the uppercase mapping), so they pin that the bump left the
+/// encoding alone.
+///
+/// The dictionary is pinned by its rows, not by `meta.json`'s `dict_sha256`:
+/// that hashes the file's bytes, which change with the `parquet` release that
+/// writes them (the footer records `created_by`). 59.3.1 changed them while
+/// the rows stayed the same, so a pin on the file failed on every fresh lock.
 const MINI_PARTITION_INPUT_SHA256: &str =
     "2d647306eb390b0187e7dbaac3acb6f980b56d2c152b4479e43a33e2af2fa650";
-const MINI_DICT_SHA256: &str = "e66f88ff44efffea16f82c2661c4d5b84c878bc10631f748b4e4edc320b22ff2";
+const MINI_DICT_CONTENTS_SHA256: &str =
+    "eae479cd15f1c06b25b62fac0ad370939b0b07a63893e808b1c56362cc378e65";
+
+/// SHA-256 of `<out_dir>/dict.parquet`'s rows, one `<id>\t<value>\n` line
+/// each, in file order.
+fn dict_contents_sha256(out_dir: &Path) -> String {
+    use {
+        arrow::{array::AsArray, datatypes::Int64Type},
+        kermit_rdf::parquet::{DICT_ID_COL, DICT_VALUE_COL},
+        parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
+        sha2::{Digest, Sha256},
+        std::fmt::Write as _,
+    };
+
+    let file = fs::File::open(out_dir.join("dict.parquet")).expect("open dict.parquet");
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .expect("read dict.parquet's footer")
+        .build()
+        .expect("build a dict.parquet reader");
+    let mut hasher = Sha256::new();
+    for batch in reader {
+        let batch = batch.expect("read a dict.parquet batch");
+        let ids = batch
+            .column_by_name(DICT_ID_COL)
+            .expect("dict.parquet has an id column")
+            .as_primitive::<Int64Type>();
+        let values = batch
+            .column_by_name(DICT_VALUE_COL)
+            .expect("dict.parquet has a value column")
+            .as_string::<i32>();
+        for row in 0..batch.num_rows() {
+            hasher.update(format!("{}\t{}\n", ids.value(row), values.value(row)).as_bytes());
+        }
+    }
+    hasher
+        .finalize()
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
 
 /// Issue #75 bumped the meta schema to 4 with a floor for every generator,
 /// because emitted query text changed under a fixed spec. A cache from
@@ -394,7 +442,7 @@ fn regenerating_a_cache_from_before_the_variable_mapping_keeps_its_encoding() {
     let specs = lubm_query_specs(false);
     let (old, old_meta) = generate_mini(&specs);
     assert_eq!(old_meta.partition_input_sha256, MINI_PARTITION_INPUT_SHA256);
-    assert_eq!(old_meta.dict_sha256, MINI_DICT_SHA256);
+    assert_eq!(dict_contents_sha256(old.path()), MINI_DICT_CONTENTS_SHA256);
 
     // Mark the cache as written at schema 3, before #75.
     let meta_path = old.path().join("meta.json");
