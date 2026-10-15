@@ -50,39 +50,33 @@ mod tests {
     fn explicit_parent_is_not_discovered() {
         let parent = tempfile::tempdir().unwrap();
         let out = output_dir("h2o-test", Some(parent.path())).unwrap();
-        assert_eq!(
-            out,
-            OutputDir {
-                path: parent.path().join("h2o-test"),
-                discovered: false,
-            }
+        assert_eq!(out, OutputDir {
+            path: parent.path().join("h2o-test"),
+            discovered: false,
+        });
+        assert!(
+            !out.path.exists(),
+            "output_dir must not create the directory"
         );
-        assert!(!out.path.exists(), "output_dir must not create the directory");
     }
 
     #[test]
     fn default_parent_is_the_cache_root() {
         let root = base_cache_dir().unwrap();
         let out = output_dir("h2o-test", None).unwrap();
-        assert_eq!(
-            out,
-            OutputDir {
-                path: root.join("h2o-test"),
-                discovered: true,
-            }
-        );
+        assert_eq!(out, OutputDir {
+            path: root.join("h2o-test"),
+            discovered: true,
+        });
     }
 
     #[test]
     fn explicit_cache_root_is_discovered() {
         let root = base_cache_dir().unwrap();
         let out = output_dir("h2o-test", Some(root.as_path())).unwrap();
-        assert_eq!(
-            out,
-            OutputDir {
-                path: root.join("h2o-test"),
-                discovered: true,
-            }
-        );
+        assert_eq!(out, OutputDir {
+            path: root.join("h2o-test"),
+            discovered: true,
+        });
     }
 }

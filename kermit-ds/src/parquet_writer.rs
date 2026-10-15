@@ -36,18 +36,17 @@ pub(crate) const ROW_GROUP_ROWS: usize = 1 << 20;
 ///   boundaries but cuts data pages at checkpoints counted from the start of
 ///   each input batch, so different batchings can give different bytes. The
 ///   writer therefore transposes caller rows into its own column buffers of
-///   `WRITE_CHUNK_ROWS` rows and hands `ArrowWriter` only full chunks, plus
-///   the remainder at `finish`. Rows per row group is pinned to
-///   `ROW_GROUP_ROWS`, a multiple of the chunk size, so a chunk never
-///   straddles a row group. `ArrowWriter`'s input then depends only on the
-///   row sequence, and the writer's extra memory is one chunk whatever the
-///   caller's batch size.
+///   `WRITE_CHUNK_ROWS` rows and hands `ArrowWriter` only full chunks, plus the
+///   remainder at `finish`. Rows per row group is pinned to `ROW_GROUP_ROWS`, a
+///   multiple of the chunk size, so a chunk never straddles a row group.
+///   `ArrowWriter`'s input then depends only on the row sequence, and the
+///   writer's extra memory is one chunk whatever the caller's batch size.
 /// - **No partial files.** Rows go to `<path>.part`, renamed to `path` by
-///   `finish`. A writer dropped before `finish`, or one whose `finish`
-///   fails, removes `<path>.part` and never writes `path`.
-/// - **Stable bytes for a fixed build only.** The footer records
-///   `created_by`, which names the parquet crate version, so files differ
-///   across versions of it.
+///   `finish`. A writer dropped before `finish`, or one whose `finish` fails,
+///   removes `<path>.part` and never writes `path`.
+/// - **Stable bytes for a fixed build only.** The footer records `created_by`,
+///   which names the parquet crate version, so files differ across versions of
+///   it.
 ///
 /// After any error every later call returns an error too.
 pub struct ParquetWriter {
@@ -78,14 +77,12 @@ impl ParquetWriter {
     /// attribute) or if `path`'s file stem differs from `header.name()`;
     /// [`RelationError::Io`] / [`RelationError::Parquet`] if the file cannot
     /// be created.
-    pub fn create<P: AsRef<Path>>(
-        path: P, header: &RelationHeader,
-    ) -> Result<Self, RelationError> {
+    pub fn create<P: AsRef<Path>>(path: P, header: &RelationHeader) -> Result<Self, RelationError> {
         let path = path.as_ref();
         if header.attrs().is_empty() {
             return Err(RelationError::InvalidData(format!(
-                "relation `{}` has no named attributes; a Parquet file needs one named column \
-                 per attribute",
+                "relation `{}` has no named attributes; a Parquet file needs one named column per \
+                 attribute",
                 header.name()
             )));
         }
@@ -282,8 +279,7 @@ pub fn write_parquet<P: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use {
-        super::*,
-        crate::read_parquet,
+        super::*, crate::read_parquet,
         parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     };
 
@@ -337,7 +333,11 @@ mod tests {
                 !dir.path().join(format!("{name}.parquet.part")).exists(),
                 "arity {arity}: finish leaves no .part file"
             );
-            assert_eq!(read_parquet(&path).unwrap(), (header, tuples), "arity {arity}");
+            assert_eq!(
+                read_parquet(&path).unwrap(),
+                (header, tuples),
+                "arity {arity}"
+            );
         }
     }
 
@@ -358,11 +358,15 @@ mod tests {
     fn rejects_positional_header() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.parquet");
-        let message =
-            invalid_message(ParquetWriter::create(&path, &RelationHeader::new_positional("p", 2)));
+        let message = invalid_message(ParquetWriter::create(
+            &path,
+            &RelationHeader::new_positional("p", 2),
+        ));
         assert!(message.contains("named"), "{message}");
-        let message =
-            invalid_message(ParquetWriter::create(&path, &RelationHeader::new_positional("p", 0)));
+        let message = invalid_message(ParquetWriter::create(
+            &path,
+            &RelationHeader::new_positional("p", 0),
+        ));
         assert!(message.contains("named"), "{message}");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
@@ -426,7 +430,10 @@ mod tests {
         let reference = dir.path().join("rel.parquet");
         write_parquet(&reference, &header, &tuples).unwrap();
         let want = std::fs::read(&reference).unwrap();
-        assert_eq!(read_parquet(&reference).unwrap(), (header.clone(), tuples.clone()));
+        assert_eq!(
+            read_parquet(&reference).unwrap(),
+            (header.clone(), tuples.clone())
+        );
         for size in [1, 7, 1000, WRITE_CHUNK_ROWS - 1, WRITE_CHUNK_ROWS + 1] {
             let subdir = dir.path().join(format!("batch{size}"));
             std::fs::create_dir(&subdir).unwrap();
@@ -435,7 +442,11 @@ mod tests {
             for batch in batches(&tuples, size) {
                 writer.write_batch(&batch).unwrap();
             }
-            assert_eq!(writer.finish().unwrap(), tuples.len() as u64, "batch size {size}");
+            assert_eq!(
+                writer.finish().unwrap(),
+                tuples.len() as u64,
+                "batch size {size}"
+            );
             assert!(
                 std::fs::read(&path).unwrap() == want,
                 "batch size {size}: bytes differ from the one-shot file"
@@ -467,8 +478,13 @@ mod tests {
         let part = dir.path().join("edge.parquet.part");
         let mut writer = ParquetWriter::create(&path, &header_of("edge", 2)).unwrap();
         // More than one chunk, so `ArrowWriter` has been handed data.
-        writer.write_batch(&rows_of(2, WRITE_CHUNK_ROWS + 1)).unwrap();
-        assert!(part.exists(), "the .part file exists while the writer lives");
+        writer
+            .write_batch(&rows_of(2, WRITE_CHUNK_ROWS + 1))
+            .unwrap();
+        assert!(
+            part.exists(),
+            "the .part file exists while the writer lives"
+        );
         drop(writer);
         assert!(!part.exists());
         assert!(!path.exists());

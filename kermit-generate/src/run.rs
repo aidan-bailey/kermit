@@ -22,18 +22,17 @@ use {
 ///
 /// The steps and their order are the cache contract:
 ///
-/// 1. Create the output directory and delete any existing `meta.json`, so
-///    that a failed run can never leave an old commit marker beside new
-///    files.
+/// 1. Create the output directory and delete any existing `meta.json`, so that
+///    a failed run can never leave an old commit marker beside new files.
 /// 2. Call [`Generator::generate`] with a fresh [`RelationSink`].
-/// 3. Check the extras: they must serialize to a JSON object, and none of
-///    its keys may be a common `meta.json` field.
-/// 4. Check the queries: names are unique, each one parses as a Datalog
-///    rule, and each body predicate names a relation the generator wrote.
-///    A malformed rule therefore fails here, not at `bench run`.
-/// 5. Write `benchmark.yml`: one `file://` URL and one `sha256` per
-///    relation, `generator: None`, validated first. A generator that wrote
-///    no relation or no query fails that validation.
+/// 3. Check the extras: they must serialize to a JSON object, and none of its
+///    keys may be a common `meta.json` field.
+/// 4. Check the queries: names are unique, each one parses as a Datalog rule,
+///    and each body predicate names a relation the generator wrote. A malformed
+///    rule therefore fails here, not at `bench run`.
+/// 5. Write `benchmark.yml`: one `file://` URL and one `sha256` per relation,
+///    `generator: None`, validated first. A generator that wrote no relation or
+///    no query fails that validation.
 /// 6. Write `meta.json` last, and return it.
 ///
 /// # Errors
@@ -104,8 +103,8 @@ fn check_extras<E: Serialize>(extras: &E) -> anyhow::Result<()> {
         .find(|key| fields.contains_key(*key))
     {
         bail!(
-            "a generator's extras use the key {key:?}, which meta.json already uses for a \
-             common field"
+            "a generator's extras use the key {key:?}, which meta.json already uses for a common \
+             field"
         );
     }
     Ok(())
@@ -192,7 +191,10 @@ mod tests {
 
     #[test]
     fn duplicate_query_names_are_rejected() {
-        let queries = [query("q1", "Q(X) :- edge(X)."), query("q1", "Q(X) :- edge(X).")];
+        let queries = [
+            query("q1", "Q(X) :- edge(X)."),
+            query("q1", "Q(X) :- edge(X)."),
+        ];
         let err = check_queries(&queries, &[record("edge")]).unwrap_err();
         assert!(err.to_string().contains("\"q1\""), "{err}");
         assert!(err.to_string().contains("twice"), "{err}");
@@ -231,7 +233,10 @@ mod tests {
             let mut fields = serde_json::Map::new();
             fields.insert(key.to_string(), json!(1));
             let err = check_extras(&Value::Object(fields)).unwrap_err();
-            assert!(err.to_string().contains(&format!("{key:?}")), "{key}: {err}");
+            assert!(
+                err.to_string().contains(&format!("{key:?}")),
+                "{key}: {err}"
+            );
         }
     }
 }

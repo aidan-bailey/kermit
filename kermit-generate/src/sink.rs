@@ -168,9 +168,16 @@ mod tests {
             let Err(err) = sink.open(&header(name)) else {
                 panic!("the name {name:?} was accepted");
             };
-            assert!(err.to_string().contains("[a-z][a-z0-9_]*"), "{name:?}: {err}");
+            assert!(
+                err.to_string().contains("[a-z][a-z0-9_]*"),
+                "{name:?}: {err}"
+            );
         }
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "a rejected name left a file");
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "a rejected name left a file"
+        );
         sink.write(&header("r2_d2"), &pairs()).unwrap();
         assert_eq!(sink.records().len(), 1);
     }
@@ -187,7 +194,11 @@ mod tests {
         };
         assert!(err.to_string().contains("already"), "{err}");
         assert_eq!(sink.records().len(), 1);
-        assert_eq!(fs::read(&file).unwrap(), before, "the first file was touched");
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            before,
+            "the first file was touched"
+        );
     }
 
     #[test]
@@ -197,15 +208,12 @@ mod tests {
         let (edge, rows) = (header("edge"), pairs());
         sink.write(&edge, &rows).unwrap();
         let file = dir.path().join("edge.parquet");
-        assert_eq!(
-            sink.records(),
-            [RelationRecord {
-                name: "edge".to_string(),
-                columns: vec!["a".to_string(), "b".to_string()],
-                rows: 2,
-                sha256: sha256_hex(&file).unwrap(),
-            }]
-        );
+        assert_eq!(sink.records(), [RelationRecord {
+            name: "edge".to_string(),
+            columns: vec!["a".to_string(), "b".to_string()],
+            rows: 2,
+            sha256: sha256_hex(&file).unwrap(),
+        }]);
         assert_eq!(read_parquet(&file).unwrap(), (edge, rows));
     }
 
@@ -217,7 +225,11 @@ mod tests {
         assert!(!raw.exists());
         assert_eq!(sink.raw_dir().unwrap(), raw);
         assert!(raw.is_dir());
-        assert_eq!(sink.raw_dir().unwrap(), raw, "a second call must also succeed");
+        assert_eq!(
+            sink.raw_dir().unwrap(),
+            raw,
+            "a second call must also succeed"
+        );
     }
 
     #[test]

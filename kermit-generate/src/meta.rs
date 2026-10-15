@@ -97,7 +97,11 @@ mod tests {
             .collect();
         let listed: BTreeSet<&str> = COMMON_FIELDS.into_iter().collect();
         assert_eq!(keys, listed);
-        assert_eq!(listed.len(), COMMON_FIELDS.len(), "COMMON_FIELDS repeats a key");
+        assert_eq!(
+            listed.len(),
+            COMMON_FIELDS.len(),
+            "COMMON_FIELDS repeats a key"
+        );
     }
 
     #[test]

@@ -51,9 +51,9 @@ impl ToyGenerator {
 }
 
 impl Generator for ToyGenerator {
-    const KIND: &'static str = "toy";
-
     type Extras = Value;
+
+    const KIND: &'static str = "toy";
 
     fn target(&self) -> Target<'_> {
         Target {
@@ -115,7 +115,11 @@ struct ToyExtras {
 /// A `meta.json` a previous run might have left behind.
 fn plant_stale_meta(out_dir: &Path) {
     fs::create_dir_all(out_dir).unwrap();
-    fs::write(meta_json_path(out_dir), r#"{"schema_version":4,"kind":"toy"}"#).unwrap();
+    fs::write(
+        meta_json_path(out_dir),
+        r#"{"schema_version":4,"kind":"toy"}"#,
+    )
+    .unwrap();
 }
 
 /// `run` must fail with a message containing `needle`, and leave neither a
@@ -124,9 +128,18 @@ fn assert_fails_without_meta(generator: &ToyGenerator, needle: &str) {
     plant_stale_meta(&generator.out_dir);
     let err = run(generator).expect_err("run should have failed");
     let message = format!("{err:#}");
-    assert!(message.contains(needle), "expected {needle:?} in: {message}");
-    assert!(!meta_json_path(&generator.out_dir).exists(), "the stale meta.json survived");
-    assert!(!generator.out_dir.join("benchmark.yml").exists(), "benchmark.yml was written");
+    assert!(
+        message.contains(needle),
+        "expected {needle:?} in: {message}"
+    );
+    assert!(
+        !meta_json_path(&generator.out_dir).exists(),
+        "the stale meta.json survived"
+    );
+    assert!(
+        !generator.out_dir.join("benchmark.yml").exists(),
+        "benchmark.yml was written"
+    );
 }
 
 #[test]
@@ -143,7 +156,11 @@ fn run_writes_a_discoverable_cache() {
     assert_eq!(definition.name, "toy-bench");
     assert_eq!(definition.description, "A toy benchmark");
     assert!(definition.generator.is_none());
-    let names: Vec<&str> = definition.relations.iter().map(|r| r.name.as_str()).collect();
+    let names: Vec<&str> = definition
+        .relations
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
     assert_eq!(names, ["edge", "node"]);
     let canonical = out.canonicalize().unwrap();
     for relation in &definition.relations {
@@ -151,7 +168,10 @@ fn run_writes_a_discoverable_cache() {
         let path = Path::new(url.strip_prefix("file://").unwrap());
         assert_eq!(path, canonical.join(format!("{}.parquet", relation.name)));
         assert!(path.exists(), "{url} does not exist");
-        assert_eq!(relation.sha256.as_deref(), Some(sha256_hex(path).unwrap().as_str()));
+        assert_eq!(
+            relation.sha256.as_deref(),
+            Some(sha256_hex(path).unwrap().as_str())
+        );
         assert!(relation.path.is_none());
     }
     assert_eq!(definition.queries.len(), 1);
@@ -163,13 +183,10 @@ fn run_writes_a_discoverable_cache() {
     assert_eq!(header.spec_hash.as_deref(), Some("hash-1"));
     assert_eq!(header.schema_version, META_SCHEMA_VERSION);
     let read: GeneratedMeta<ToyExtras> = read_meta_json(&out).unwrap();
-    assert_eq!(
-        read.extras,
-        ToyExtras {
-            seed: 7,
-            note: "toy".to_string(),
-        }
-    );
+    assert_eq!(read.extras, ToyExtras {
+        seed: 7,
+        note: "toy".to_string(),
+    });
     assert_eq!(read.tag, "t1");
     assert_eq!(read.generated_at_utc.len(), "1970-01-01T00:00:00Z".len());
     assert_eq!((read.relation_count, read.query_count), (2, 1));
@@ -193,9 +210,18 @@ fn rows_and_relation_count_are_recorded() {
     let summary: Vec<(&str, Vec<&str>, u64)> = meta
         .relations
         .iter()
-        .map(|r| (r.name.as_str(), r.columns.iter().map(String::as_str).collect(), r.rows))
+        .map(|r| {
+            (
+                r.name.as_str(),
+                r.columns.iter().map(String::as_str).collect(),
+                r.rows,
+            )
+        })
         .collect();
-    assert_eq!(summary, [("edge", vec!["src", "dst"], 5), ("node", vec!["id"], 6)]);
+    assert_eq!(summary, [
+        ("edge", vec!["src", "dst"], 5),
+        ("node", vec!["id"], 6)
+    ]);
 
     // The streamed relation holds its rows in order, whatever the batching.
     let (header, tuples) = read_parquet(out.join("node.parquet")).unwrap();

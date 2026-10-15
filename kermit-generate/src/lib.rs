@@ -10,18 +10,17 @@
 //! The shared layer is:
 //!
 //! - `Generator` and `Generated`: the trait a generator implements. It names
-//!   its output directory, benchmark name and tag, writes its relations
-//!   through a `RelationSink`, and returns the queries and its own
-//!   `meta.json` fields.
-//! - `RelationSink`, `RelationWriter` and `RelationRecord`: write each
-//!   relation as `<name>.parquet`, hash it, and remember its name, columns,
-//!   row count and SHA-256.
-//! - `run`: drives a generator and leaves a cache directory that
-//!   `bench list`, `bench fetch` and `bench run` already understand.
+//!   its output directory, benchmark name and tag, writes its relations through
+//!   a `RelationSink`, and returns the queries and its own `meta.json` fields.
+//! - `RelationSink`, `RelationWriter` and `RelationRecord`: write each relation
+//!   as `<name>.parquet`, hash it, and remember its name, columns, row count
+//!   and SHA-256.
+//! - `run`: drives a generator and leaves a cache directory that `bench list`,
+//!   `bench fetch` and `bench run` already understand.
 //! - `GeneratedMeta`: the `meta.json` every generator writes, with the
 //!   generator's own fields flattened beside the common ones.
-//! - `output_dir` and `OutputDir`: where `bench gen <kind>` puts a
-//!   benchmark, as a pure function.
+//! - `output_dir` and `OutputDir`: where `bench gen <kind>` puts a benchmark,
+//!   as a pure function.
 //!
 //! # Relation to `kermit_rdf::generator::Generator`
 //!
@@ -45,8 +44,8 @@
 //!    under its real name only when it is whole;
 //! 3. check the generator's extras and queries;
 //! 4. write `benchmark.yml`, with every relation's SHA-256;
-//! 5. write `meta.json` last. It is the commit marker: a directory without
-//!    it is not a cache, whatever else it holds.
+//! 5. write `meta.json` last. It is the commit marker: a directory without it
+//!    is not a cache, whatever else it holds.
 //!
 //! # The binary
 //!
