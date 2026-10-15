@@ -24,6 +24,7 @@ use {
 /// One H2O plan's cardinalities: `rows` = N, the rows of `x` and the keys of
 /// `big`; `small` and `medium`, the keys of the other two right-hand tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "KeyPlanFields")]
 pub struct KeyPlan {
     /// N, the rows of `x` and the keys of `big`.
     rows: usize,
@@ -90,6 +91,23 @@ impl KeyPlan {
             | KeyColumn::Id2 => self.medium,
             | KeyColumn::Id3 => self.rows,
         }
+    }
+}
+
+/// `KeyPlan`'s serialized form, checked by [`KeyPlan::new`] when it is read
+/// back, so a deserialized plan holds the same invariants as a new one.
+#[derive(serde::Deserialize)]
+struct KeyPlanFields {
+    rows: usize,
+    small: usize,
+    medium: usize,
+}
+
+impl TryFrom<KeyPlanFields> for KeyPlan {
+    type Error = anyhow::Error;
+
+    fn try_from(fields: KeyPlanFields) -> anyhow::Result<Self> {
+        Self::new(fields.rows, fields.small, fields.medium)
     }
 }
 
@@ -331,6 +349,18 @@ mod tests {
         let json = serde_json::to_string(&plan).unwrap();
         assert_eq!(json, r#"{"rows":2000,"small":20,"medium":200}"#);
         assert_eq!(serde_json::from_str::<KeyPlan>(&json).unwrap(), plan);
+    }
+
+    #[test]
+    fn a_deserialized_plan_is_checked_like_a_new_one() {
+        let plan: KeyPlan =
+            serde_json::from_str(r#"{"rows":2000,"small":20,"medium":200}"#).unwrap();
+        assert_eq!(plan, KeyPlan::new(2000, 20, 200).unwrap());
+        let Err(err) = serde_json::from_str::<KeyPlan>(r#"{"rows":2000,"small":0,"medium":200}"#)
+        else {
+            panic!("a plan with small = 0 was deserialized");
+        };
+        assert!(err.to_string().contains("small = 0"), "{err}");
     }
 
     #[test]
