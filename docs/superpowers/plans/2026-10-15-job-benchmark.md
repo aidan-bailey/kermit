@@ -9445,3 +9445,35 @@ Four `code-quality-reviewer`s read the merged plan, one per part, against the re
 - **Part 3 (J5–J6):** J6's `definition.rs` and `materialize.rs` Edits re-anchored after the last generator arm, so they still apply once #95's and #96's arms are merged; the provenance check runs before the filter stage (with a test); a hash comment made true by comparing `sha256_hex`; the CLI end-to-end test uses `-m iteration` and puts `bench`'s flags before `run`; two stale `definition.rs` docs updated.
 - **Part 4–5 (J7–J9):** J7's duplicate `Staging` removed (it reuses J4's), mutation expectations corrected, JOB.md/CLAUDE.md doc fixes, J7 reuses J4's test helpers and J5's `SCHEMA_FILE`. J9 rewritten by the design session: scripts under `bash`, `bench`'s flags before `run`, GNU time at `/run/current-system/sw/bin/time`, the shell's `$?` (not `%x`) for an OOM kill, an untimed materialise pass so measured runs are cache hits, every block self-contained with a guarded private cache on disk, the memory table aligned with J8's columns, and a real-data byte-identity check between `bench gen` and `bench run` outputs.
 - **Plan-wide:** commit trailers as `--trailer` flags (a multi-line `-m` pasted from an indented fence merges them); nothing large in `$SCRATCH` (tmpfs).
+
+### Phase 1 carry-forward (2026-10-15, after C01–C05)
+
+Phase 1 is done at 836a562; each story passed spec and quality review, and a cross-story review over 593ed09..836a562 approved it. Its Minors were deferred to the phases that edit the same files, to keep the host free for the #101 chain. Each phase's executor applies its items after Step 1's premise re-check, in that task's commit or as one fix commit before it. Line numbers are as at 836a562.
+
+Departures from this plan's code text, already landed (each task's Step 1 should expect them):
+
+- **The IMDb CSV dialect is stated in full** (643f5f8; spec d8b3d54): `COPY … (FORMAT csv, HEADER false, DELIMITER ',', QUOTE '"', ESCAPE '\', ALLOW_QUOTED_NULLS false, AUTO_DETECT false)`. PostgreSQL's CSV format, which wrote the dump, reads a quoted `""` as `''`; DuckDB's default reads it as NULL and sniffs any unset option.
+- **Staging and spill names carry a sequence:** `<dir>.building-<pid>-<seq>` (`raw::staging_path`, 643f5f8) and per-call spill directories `duckdb.tmp/<pid>-<seq>` (b47a4cd). `duckdb.tmp` is now their parent, not the spill directory itself.
+- **Every `Target`'s `out_dir` ends in the benchmark's name** (#95 push 1b): tests generate into `<tmp>/job-<N>` (`job_generate.rs`'s `job_dir`).
+
+**J6** (it edits `kermit-generate/src/job/mod.rs` and adds beside `kermit/tests/job_generate.rs`):
+
+1. `mod.rs:115`: the `BIGINT` cast's doc gives a stale reason. The cast gives `stream_rows` integer text; `ParquetWriter` writes `Int64` regardless.
+2. `mod.rs:123,128,144`: add `sql_identifier` beside `duckdb::sql_literal`, doubling `"`, use it for every quoted identifier in `filter_select`, drop the "IMDb names never contain `"`" justification, and add one unit case with an embedded `"`.
+3. `mod.rs:82`: `JobExtras::query_sha256` is copied from the raw cache's `provenance.json`, not re-hashed; say so. `mod.rs:199-200`: "no new file" (an older file of the same name survives a failed regeneration, harmlessly).
+4. `mod.rs:175`: `plan_template`'s error gets `.with_context(|| format!("planning JOB template {}", self.template))`.
+5. `job_generate.rs:393`: on the reversed fixture, assert DuckDB scans in load order (`SELECT id FROM movie_info LIMIT 1` gives 16), with a comment, so the missing-`ORDER BY` check fails loudly instead of going vacuous if the scan order changes.
+6. `mod.rs:67-69`: `JobSource.filter`'s doc states the fixed rule that every relation also drops rows with a NULL in a join column (spec, `meta.json` extras). Design decision: document it, don't record it per relation.
+7. Add `raw_duckdb_version` to `JobExtras`, copied from `RawProvenance.duckdb_version` (`raw.rs:53`), so `meta.json` names the DuckDB that loaded the CSVs as well as the one that filtered them.
+
+**J7** (it edits `kermit-generate/src/job/raw.rs`):
+
+1. `ensure`'s download staging (the plan's `<dir>.fetch-<pid>`, line 8032; code doc `raw.rs:164`) uses `staging_path`'s `<pid>-<seq>` scheme.
+2. `ensure` runs `check_provenance` on `build`'s result too: when `build` loses the rename and adopts the winner, the adopted cache is never compared with `inputs.provenance`.
+3. `raw.rs:144, 152-158`: `split_query_stem` rejects a leading `0` in the template number. `01a.sql` is accepted today, `template_queries` names it `1a`, and J5 then looks up `1a.sql`'s digest; `1a.sql` plus `01a.sql` collide only after every relation is written.
+4. `raw.rs:938, 955`: give the scratch dialect test a column of all-`'x'` values so that dropping `QUOTE` and `AUTO_DETECT` fails (prove it with that mutant); if DuckDB's sniffer keeps the apostrophes even then, cut the "whatever the sample looks like" claim instead.
+5. `raw.rs:545`: delete the doc clause "an empty folder is refused too" (the separate test at `:583` covers it).
+
+**J8** (docs): JOB.md's DuckDB-sessions and output-layout text (lines 8630-8632, 8654) calls `duckdb.tmp` "DuckDB's spill directory"; it is the parent of the per-call `<pid>-<seq>` spill directories. Line 8676's `imdb.fetch-<pid>` / `imdb.building-<pid>` become `-<pid>-<seq>`.
+
+**Outside JOB:** `kermit/tests/job_generate.rs` holds a third copy of the 14 structure × layout aliases (after `join_tests.rs` and `column_orders_any.rs`) and a `mismatches` / `cells` count-oracle loop that generalises the LUBM and WatDiv loops. Moving both into `kermit/tests/common/` is a cross-cutting test change; it is flagged to the benchmark co-ordinator for SNAP and H2O and is not JOB's.

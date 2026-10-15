@@ -213,7 +213,11 @@ and document, don't fix here.
   commit and per-file SHA-256s, `duckdb --version`, and `sources`: per
   relation `{relation, table, filter}`, joined by name to the common
   `relations` list, which already records each relation's columns, rows and
-  SHA-256. No extras field reuses a common name (`relations`, `columns`, …),
+  SHA-256. `filter` is the query's own predicate on that alias. Every
+  relation also drops rows with a NULL in a join column, since an SQL
+  equi-join never matches them; that is one fixed rule over the join
+  columns `relations` already lists, stated here and in `JobSource`'s docs
+  rather than repeated per relation. No extras field reuses a common name (`relations`, `columns`, …),
   since #95's `GeneratedMeta` flattens the extras beside them.
 - **New dependency.** `sqlparser` in `kermit-generate/Cargo.toml` (never
   `kermit`'s).
