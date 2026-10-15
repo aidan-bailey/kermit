@@ -196,6 +196,45 @@ impl SnapQuery {
     }
 }
 
+/// The smallest H2O scale: upstream's floor. Below N = 1e7, `small` (N / 1e6
+/// keys) has no left-only or right-only key.
+pub const H2O_MIN_SCALE: u32 = 10_000_000;
+
+/// The default H2O seed: upstream's `set.seed(108)`.
+pub const DEFAULT_H2O_SEED: u32 = 108;
+
+/// The row order of every relation an H2O generator writes (#101's
+/// input-order axis).
+///
+/// The YAML and command-line spelling is kebab case (`order: sorted`);
+/// [`H2oOrder::name`] returns it.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum H2oOrder {
+    /// The order the generator draws rows in, as upstream writes them.
+    #[default]
+    Shuffled,
+    /// Each relation's rows sorted lexicographically (`Tuples::sort`), the
+    /// order the sorted tries build in. The draws are the same as
+    /// `Shuffled`'s.
+    Sorted,
+}
+
+impl H2oOrder {
+    /// Every order, in this order.
+    pub const ALL: [H2oOrder; 2] = [Self::Shuffled, Self::Sorted];
+
+    /// The YAML and CLI spelling: `shuffled`, `sorted`.
+    pub fn name(self) -> &'static str {
+        match self {
+            | Self::Shuffled => "shuffled",
+            | Self::Sorted => "sorted",
+        }
+    }
+}
+
 /// WatDiv stress-template parameters. Field defaults match the `bench gen
 /// watdiv` CLI defaults.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -1495,6 +1534,43 @@ generator:
             serde_yaml::from_str::<Vec<SnapQuery>>("[triangle, clique4]").unwrap(),
             [SnapQuery::Triangle, SnapQuery::Clique4]
         );
+    }
+
+    #[test]
+    fn h2o_order_names_match_their_serde_spelling() {
+        for order in H2oOrder::ALL {
+            assert_eq!(
+                serde_yaml::to_string(&order).unwrap().trim_end(),
+                order.name()
+            );
+            let parsed: H2oOrder = serde_yaml::from_str(order.name()).unwrap();
+            assert_eq!(parsed, order);
+        }
+        // The documented spellings, in the documented order.
+        assert_eq!(H2oOrder::ALL.map(H2oOrder::name), ["shuffled", "sorted"]);
+    }
+
+    #[test]
+    fn h2o_order_defaults_to_shuffled() {
+        assert_eq!(H2oOrder::default(), H2oOrder::Shuffled);
+        assert_eq!(H2oOrder::ALL[0], H2oOrder::default());
+        // The other two defaults of an H2O spec: upstream's floor and seed.
+        assert_eq!(H2O_MIN_SCALE, 10_000_000);
+        assert_eq!(DEFAULT_H2O_SEED, 108);
+    }
+
+    #[test]
+    fn an_unknown_h2o_order_fails_to_parse() {
+        for bad in ["random", "Sorted", ""] {
+            let parsed = serde_yaml::from_str::<H2oOrder>(&format!("'{bad}'"));
+            assert!(parsed.is_err(), "order {bad:?} parsed as {parsed:?}");
+        }
+        // The error names the valid spellings.
+        let err = serde_yaml::from_str::<H2oOrder>("'random'")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("shuffled"), "{err}");
+        assert!(err.contains("sorted"), "{err}");
     }
 
     /// A `GeneratorSpec::Snap` with exactly the fields given.
