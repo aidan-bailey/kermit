@@ -56,5 +56,9 @@
 #![deny(missing_docs)]
 
 mod output_dir;
+mod sink;
 
-pub use output_dir::{output_dir, OutputDir};
+pub use {
+    output_dir::{output_dir, OutputDir},
+    sink::{RelationRecord, RelationSink, RelationWriter},
+};
