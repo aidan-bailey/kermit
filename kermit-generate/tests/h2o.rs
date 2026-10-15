@@ -10,6 +10,7 @@ use {
         run, GeneratedMeta,
     },
     kermit_rdf::generator::{read_meta_json, Target},
+    sha2::{Digest, Sha256},
     std::{collections::HashMap, fs, path::PathBuf},
 };
 
@@ -237,5 +238,173 @@ fn expected_counts_equal_a_brute_force_join() {
             assert!(counted > 0, "{query} {order:?}: nothing joins");
             assert!(counted < 2000, "{query} {order:?}: every row joins");
         }
+    }
+}
+
+/// The reference plan's relations in `Shuffled` order, each as the SHA-256
+/// of its values (see [`digest`]), in write order.
+const GOLDEN_SHUFFLED: [(&str, &str); 6] = [
+    (
+        "x_id3",
+        "a6995949eb98f11444e9bd59e5353a46928a2648ae45bb9e8d254afb0399589c",
+    ),
+    (
+        "big",
+        "daeb0faaa79972199c71600bf24ac7a8a9dba4c1d0e4a25204b2eec574010102",
+    ),
+    (
+        "x_id1",
+        "3a9a6901e57520c8c51da77f54e373758cf47e20d5b29441b2814055a4b1fcab",
+    ),
+    (
+        "small",
+        "7a7ca985781668a8c510f5905ad5bd56e7fc6a471bac204accf59a6023bad7fa",
+    ),
+    (
+        "x_id2",
+        "01ae30e97a521fced72f5faa1e26e2eaa2304b1bb5c6888d593e98a241a4eb97",
+    ),
+    (
+        "medium",
+        "ca2644e7d6a743f68a010af7c2ec46fced86a942bb724e2dba5a46af90f93255",
+    ),
+];
+
+/// The same relations in `Sorted` order.
+const GOLDEN_SORTED: [(&str, &str); 6] = [
+    (
+        "x_id3",
+        "46d0bb7d56f4102f31d36ea3896df676d431bd73fc332b430c7d8d7be430db48",
+    ),
+    (
+        "big",
+        "078cf7896fb356d148669cea09eb3dfaf06961c984e3fe397e886315f387ca85",
+    ),
+    (
+        "x_id1",
+        "69239a8aac021928a0b533e5fede0b3aff66215bd8d0e1f2f47749156e1c2814",
+    ),
+    (
+        "small",
+        "c38798bf9a2d0d3f28a36a50aa81ef6e3b5fefc477f7dbc3029f0705b096a5aa",
+    ),
+    (
+        "x_id2",
+        "136e352cc2d950268350010d22d50a4e23d0255e5bf2c564535bada8da8fbc6d",
+    ),
+    (
+        "medium",
+        "14135e2b2fc781278aed6f1d400f19d5f12f339f3cf0bf4f5b3f040547f11f03",
+    ),
+];
+
+/// The reference plan's counts, in both orders.
+const GOLDEN_COUNTS: [(&str, u64); 3] = [("q1", 1812), ("q2", 1814), ("q5", 1800)];
+
+/// The SHA-256 of a relation's data, not of its file (the Parquet footer
+/// records the `parquet` crate's version): every value of `as_flat()`, in
+/// order, as `(v as u64).to_le_bytes()`.
+fn digest(tuples: &Tuples) -> String {
+    let mut hasher = Sha256::new();
+    for &value in tuples.as_flat() {
+        hasher.update((value as u64).to_le_bytes());
+    }
+    hex(&hasher.finalize())
+}
+
+/// Lowercase hex, as `bench fetch` compares digests.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(out, "{byte:02x}").expect("writing to a String never fails");
+    }
+    out
+}
+
+/// Pins the reference plan's data, in both orders, to digests computed by a
+/// Python model of the spec that shares no code with this crate, and the
+/// three counts to the same model's.
+///
+/// If these digests must change, the generator's output changed: bump
+/// `META_SCHEMA_VERSION` and add an `h2o` floor to `OUTDATED_BEFORE`, so that
+/// caches generated before the change are reported as outdated rather than
+/// passing as hits.
+#[test]
+fn the_reference_plan_matches_its_golden_digests() {
+    let cases = [
+        (H2oOrder::Shuffled, GOLDEN_SHUFFLED),
+        (H2oOrder::Sorted, GOLDEN_SORTED),
+    ];
+    for (order, golden) in cases {
+        let out = generate(reference_plan(), SEED, order);
+        for (name, expected) in golden {
+            assert_eq!(digest(out.tuples(name)), expected, "{name} {order:?}");
+        }
+        for (query, count) in GOLDEN_COUNTS {
+            assert_eq!(out.expected(query), count, "{query} {order:?}");
+        }
+    }
+}
+
+#[test]
+fn the_same_spec_reproduces_and_another_seed_differs() {
+    for order in H2oOrder::ALL {
+        let first = generate(reference_plan(), SEED, order);
+        let second = generate(reference_plan(), SEED, order);
+        for (name, _) in RELATIONS {
+            assert_eq!(first.tuples(name), second.tuples(name), "{name} {order:?}");
+        }
+        // The files are byte-identical too: the records hold their hashes.
+        assert_eq!(first.meta.relations, second.meta.relations, "{order:?}");
+
+        let other = generate(reference_plan(), SEED + 1, order);
+        assert_eq!(other.meta.extras.seed, 109);
+        assert_ne!(other.tuples("x_id3"), first.tuples("x_id3"), "{order:?}");
+        assert_ne!(other.tuples("x_id1"), first.tuples("x_id1"), "{order:?}");
+    }
+}
+
+#[test]
+fn sorted_relations_are_the_shuffled_relations_sorted() {
+    let plan = reference_plan();
+    let shuffled = generate(plan, SEED, H2oOrder::Shuffled);
+    let sorted = generate(plan, SEED, H2oOrder::Sorted);
+    for (name, _) in RELATIONS {
+        let mut expected = shuffled.tuples(name).clone();
+        expected.sort();
+        assert_eq!(sorted.tuples(name), &expected, "{name}");
+        assert!(
+            sorted.tuples(name).rows().is_sorted(),
+            "{name} is not sorted"
+        );
+    }
+    // Sorting moved the rows of the big relations, so the check above
+    // compares two different orders.
+    for name in ["x_id3", "x_id1", "x_id2", "big"] {
+        assert_ne!(sorted.tuples(name), shuffled.tuples(name), "{name}");
+    }
+    // The draws and the counts are the same in both orders.
+    for (query, ..) in JOINS {
+        assert_eq!(sorted.expected(query), shuffled.expected(query), "{query}");
+    }
+}
+
+/// With `small` = 5 and `medium` = 9, n / 10 is 0: those pools have no
+/// left-only and no right-only key, so every row of `x` joins `small` and
+/// `medium`. `big` = 50 still has 5 of each, and q5 = 50 - 5.
+#[test]
+fn a_plan_without_left_only_keys_generates() {
+    let out = generate(KeyPlan::new(50, 5, 9).unwrap(), SEED, H2oOrder::Shuffled);
+    for (query, count) in [("q1", 50), ("q2", 50), ("q5", 45)] {
+        assert_eq!(out.expected(query), count, "{query}");
+    }
+    for (query, table, x) in JOINS {
+        assert_eq!(brute_force(&out, table, x), out.expected(query), "{query}");
+    }
+    for (name, keys) in [("small", 5), ("medium", 9)] {
+        let mut written: Vec<usize> = out.tuples(name).rows().map(|row| row[0]).collect();
+        written.sort_unstable();
+        assert_eq!(written, (1..=keys).collect::<Vec<_>>(), "{name}");
     }
 }
