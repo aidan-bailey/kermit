@@ -259,6 +259,7 @@ from the spec alone, which shares no code with the Rust:
 | | `q1` | `q2` | `q5` |
 |---|---|---|---|
 | reference plan, seed 108 | 1,812 | 1,814 | 1,800 |
+| N = 1e7, seed 108 (`h2o`, `h2o-sorted`) | 8,999,658 | 9,000,406 | 9,000,000 |
 
 They are the same in both row orders. `kermit/tests/h2o_generate.rs` pins them, and
 `kermit-generate/tests/h2o.rs` pins SHA-256 digests of every relation's data.
@@ -368,4 +369,59 @@ To regenerate, run `bench run --force <name>`, or delete the cache directory.
 
 ## Measured at N = 1e7
 
-Story 8 of #95's push 2 records the acceptance runs here.
+These are the acceptance runs of 2026-10-15, at commit fdf658c. They used a release build
+(jemalloc) on an AMD Ryzen 7 7700X (8 cores, 16 threads) with 30 GiB of RAM, with the
+host's timing chain paused and no other heavy work running. The run directory is
+`kermit-bench-runs/h2o-acceptance-2026-10-15`, outside the repository.
+
+### Counts
+
+| Spec | `q1` | `q2` | `q5` |
+|---|---|---|---|
+| `h2o` and `h2o-sorted` (seed 108) | 8,999,658 | 9,000,406 | 9,000,000 |
+| `bench gen h2o --seed 7` | 9,000,061 | 9,001,863 | 9,000,000 |
+| upstream db-benchmark, `set.seed(108)` | 8,997,136 | 9,001,606 | 9,000,000 |
+
+`q5` is N − N / 10 by construction and equals upstream's count. `q1` and `q2` depend on
+the draws. kermit's SplitMix64 streams are not R's generator, so the same seed draws
+different keys (see [Random numbers](#random-numbers)). `bench run h2o -i all -a all
+--verify` and the same run for `h2o-sorted` checked all three queries on all three
+cells, and all 18 checks passed.
+
+### Space
+
+These numbers come from `bench run … -m space`, in bytes as `heap_size_bytes()` reports
+them (MB = 10⁶ bytes). They are identical under `shuffled` and `sorted`, because each
+structure holds the same contents with the same capacities.
+
+| Relation | TreeTrie | ColumnTrie | HashTrie |
+|---|---:|---:|---:|
+| `x_id3` | 536.9 MB | 134.2 MB | 522.7 MB |
+| `big` | 536.9 MB | 134.2 MB | 522.7 MB |
+| `x_id1` | 335.5 MB | 134.2 MB | 703.3 MB |
+| `small` | 512 B | 208 B | 504 B |
+| `x_id2` | 400.6 MB | 134.5 MB | 692.4 MB |
+| `medium` | 0.5 MB | 0.1 MB | 0.5 MB |
+| **Total** | **1,810.4 MB** | **537.3 MB** | **2,441.6 MB** |
+| Per unit of N | 181 B | 54 B | 244 B |
+
+### Generation
+
+`bench gen h2o --scale 10000000` took 2.2 s of wall time, with a peak RSS of 375 MB
+(GNU `time -v`). That is close to the estimate of about 4N words, 320 MB. It wrote 338 MB
+of Parquet (316 MB under `sorted`). Each `bench run --verify -m space` above took about
+10 minutes of wall time, with a peak RSS of 2.5 GB.
+
+### Determinism
+
+Three generations of the shuffled spec gave identical per-relation SHA-256s in
+`meta.json`: `bench run h2o`'s cache and two `bench gen h2o` runs. So did `bench gen h2o
+--order sorted` and `h2o-sorted`'s cache. `bench gen h2o --seed 7 --order sorted`
+recorded seed 7 and order `sorted` in its `meta.json`, and wrote different relations.
+
+### Per-structure ceilings
+
+Extrapolated linearly from the totals above, the six relations alone fill this host's
+30 GiB at about N = 1.8 × 10⁸ for TreeTrie, 6.0 × 10⁸ for ColumnTrie, and 1.3 × 10⁸ for
+HashTrie. These are upper bounds: they leave out the load buffers, the queries' working
+memory and everything else on the host. All three are well below `RowId::MAX`.
