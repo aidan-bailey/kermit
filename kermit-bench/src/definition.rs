@@ -92,6 +92,87 @@ pub enum GeneratorSpec {
     },
 }
 
+/// A SNAP community graph with a pinned download (Yang & Leskovec, ICDM 2012).
+///
+/// The YAML and command-line spelling is kebab case (`graph: com-amazon`);
+/// [`SnapGraph::name`] returns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapGraph {
+    /// `com-amazon`: the Amazon product co-purchasing network.
+    ComAmazon,
+    /// `com-dblp`: the DBLP collaboration network.
+    ComDblp,
+    /// `com-youtube`: the YouTube social network.
+    ComYoutube,
+}
+
+impl SnapGraph {
+    /// Every named graph, in this order.
+    pub const ALL: [SnapGraph; 3] = [Self::ComAmazon, Self::ComDblp, Self::ComYoutube];
+
+    /// The YAML and CLI spelling: `com-amazon`, `com-dblp`, `com-youtube`.
+    pub fn name(self) -> &'static str {
+        match self {
+            | Self::ComAmazon => "com-amazon",
+            | Self::ComDblp => "com-dblp",
+            | Self::ComYoutube => "com-youtube",
+        }
+    }
+
+    /// The pinned download: its URL and the SHA-256 of the `.gz` it serves
+    /// (64 lowercase hex characters).
+    pub fn source(self) -> (&'static str, &'static str) {
+        match self {
+            | Self::ComAmazon => (
+                "https://snap.stanford.edu/data/bigdata/communities/com-amazon.ungraph.txt.gz",
+                "bb4b9fcf549c9174049e885e9a0a4057c9724846e7297c4a1ea299b8e92eec34",
+            ),
+            | Self::ComDblp => (
+                "https://snap.stanford.edu/data/bigdata/communities/com-dblp.ungraph.txt.gz",
+                "9eb0bd30312ddd04e2624f7c36c0983a2e99b116f0385be5a7fce6d6170f4cb3",
+            ),
+            | Self::ComYoutube => (
+                "https://snap.stanford.edu/data/bigdata/communities/com-youtube.ungraph.txt.gz",
+                "dff1b97ba7d2fa9c59884b67dcd2275e717ff9501f86ed82ce6582ed4971f3e0",
+            ),
+        }
+    }
+}
+
+/// One of the four SNAP queries (spec § Workload).
+///
+/// The YAML and command-line spelling is kebab case (`queries: [triangle,
+/// clique4]`); [`SnapQuery::name`] returns it, and it is also the query's name
+/// in the generated `benchmark.yml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapQuery {
+    /// Six times the triangle count.
+    Triangle,
+    /// Three-step walks, vertices may repeat.
+    Path3,
+    /// Closed four-step walks, `tr(A⁴)`.
+    Cycle4,
+    /// Twenty-four times the 4-clique count.
+    Clique4,
+}
+
+impl SnapQuery {
+    /// Every query, in the default order a spec without `queries` uses.
+    pub const ALL: [SnapQuery; 4] = [Self::Triangle, Self::Path3, Self::Cycle4, Self::Clique4];
+
+    /// The YAML, CLI and query name: `triangle`, `path3`, `cycle4`, `clique4`.
+    pub fn name(self) -> &'static str {
+        match self {
+            | Self::Triangle => "triangle",
+            | Self::Path3 => "path3",
+            | Self::Cycle4 => "cycle4",
+            | Self::Clique4 => "clique4",
+        }
+    }
+}
+
 /// WatDiv stress-template parameters. Field defaults match the `bench gen
 /// watdiv` CLI defaults.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -1220,6 +1301,101 @@ generator:
             queries: Some(vec!["q1".to_string(), "q2".to_string()]),
         };
         assert_ne!(a.spec_hash(), b.spec_hash());
+    }
+
+    #[test]
+    fn snap_names_match_their_serde_spelling() {
+        for graph in SnapGraph::ALL {
+            assert_eq!(
+                serde_yaml::to_string(&graph).unwrap().trim_end(),
+                graph.name()
+            );
+            let parsed: SnapGraph = serde_yaml::from_str(graph.name()).unwrap();
+            assert_eq!(parsed, graph);
+        }
+        for query in SnapQuery::ALL {
+            assert_eq!(
+                serde_yaml::to_string(&query).unwrap().trim_end(),
+                query.name()
+            );
+            let parsed: SnapQuery = serde_yaml::from_str(query.name()).unwrap();
+            assert_eq!(parsed, query);
+        }
+        // The documented spellings, in the documented order.
+        assert_eq!(SnapGraph::ALL.map(SnapGraph::name), [
+            "com-amazon",
+            "com-dblp",
+            "com-youtube"
+        ]);
+        assert_eq!(SnapQuery::ALL.map(SnapQuery::name), [
+            "triangle", "path3", "cycle4", "clique4"
+        ]);
+    }
+
+    #[test]
+    fn snap_graph_sources_are_pinned() {
+        let mut urls = HashSet::new();
+        let mut digests = HashSet::new();
+        for graph in SnapGraph::ALL {
+            let (url, sha256) = graph.source();
+            assert!(url.starts_with("https://snap.stanford.edu/"), "{url}");
+            assert!(
+                url.ends_with(&format!("/{}.ungraph.txt.gz", graph.name())),
+                "{url} is not the .gz of {}",
+                graph.name()
+            );
+            assert!(
+                sha256.len() == 64
+                    && sha256
+                        .bytes()
+                        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "{sha256} is not 64 lowercase hex characters"
+            );
+            assert!(urls.insert(url), "{url} is pinned twice");
+            assert!(digests.insert(sha256), "{sha256} is pinned twice");
+        }
+        // The digests of spec § Measured facts, spelled out so that an edit to
+        // one is a failing test rather than a silent re-pin.
+        assert_eq!(
+            SnapGraph::ComAmazon.source().1,
+            "bb4b9fcf549c9174049e885e9a0a4057c9724846e7297c4a1ea299b8e92eec34"
+        );
+        assert_eq!(
+            SnapGraph::ComDblp.source().1,
+            "9eb0bd30312ddd04e2624f7c36c0983a2e99b116f0385be5a7fce6d6170f4cb3"
+        );
+        assert_eq!(
+            SnapGraph::ComYoutube.source().1,
+            "dff1b97ba7d2fa9c59884b67dcd2275e717ff9501f86ed82ce6582ed4971f3e0"
+        );
+    }
+
+    #[test]
+    fn an_unknown_snap_name_fails_to_parse() {
+        for bad in ["com-orkut", "ComAmazon", "com_amazon", ""] {
+            let parsed = serde_yaml::from_str::<SnapGraph>(&format!("'{bad}'"));
+            assert!(parsed.is_err(), "graph {bad:?} parsed as {parsed:?}");
+        }
+        for bad in ["path4", "Triangle", "cycle-4", ""] {
+            let parsed = serde_yaml::from_str::<SnapQuery>(&format!("'{bad}'"));
+            assert!(parsed.is_err(), "query {bad:?} parsed as {parsed:?}");
+        }
+        // The error names the valid spellings (spec § Testing).
+        let err = serde_yaml::from_str::<SnapGraph>("'com-orkut'")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("com-amazon"), "{err}");
+        let err = serde_yaml::from_str::<SnapQuery>("'path4'")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("clique4"), "{err}");
+        // One unknown name spoils a whole list; the same list without it
+        // parses.
+        assert!(serde_yaml::from_str::<Vec<SnapQuery>>("[triangle, nope]").is_err());
+        assert_eq!(
+            serde_yaml::from_str::<Vec<SnapQuery>>("[triangle, clique4]").unwrap(),
+            [SnapQuery::Triangle, SnapQuery::Clique4]
+        );
     }
 
     /// Pins the encoding against the NIST SHA-256 vector for `"abc"`. The
