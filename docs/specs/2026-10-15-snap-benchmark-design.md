@@ -186,11 +186,14 @@ every field.
 pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), BenchError>;
 ```
 
-- **One streaming core** shared with the relation path: GET; reject a non-200 status and
-  a WAF challenge (`x-amzn-waf-action`) before reading the body; stream into
-  `<dest>.part` while hashing; reject an empty body (zero bytes streamed); return the
-  digest. Every rejection removes `.part` and keeps today's `unusable_download` message as
-  a `BenchError::UnusableDownload`.
+- **One streaming core** shared with the relation path: GET; before reading the body,
+  a 4xx or 5xx status is a `BenchError::Download` (reqwest's `error_for_status`, as
+  today), and any other status but `200 OK`, a WAF challenge (`x-amzn-waf-action`)
+  included, is a `BenchError::UnusableDownload` with today's message; stream into
+  `<dest>.part` while hashing; reject an empty body (zero bytes streamed) as
+  `UnusableDownload`; return the digest. Every failure removes `.part`. (Corrected
+  2026-10-15 at T3's code review: an earlier wording put every non-200 status under
+  `UnusableDownload`.)
 - **`download_verified`** compares the digest. On a mismatch it removes `.part` and
   returns `BenchError::Integrity`; otherwise it renames `.part` onto `dest`. No partial
   file ever sits at `dest`.

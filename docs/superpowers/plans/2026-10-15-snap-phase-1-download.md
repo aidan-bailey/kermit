@@ -1084,3 +1084,17 @@ Changes made during execution, each after a review, so that the code differs fro
   nix develop --override-input rust-overlay github:oxalica/rust-overlay --no-write-lock-file --command env CARGO_BUILD_JOBS=2 RUSTFLAGS=-Dwarnings cargo clippy --all-targets
   ```
   Never commit a `flake.lock` refresh from this branch without telling the co-ordinator first. The first of #95 and #96 to land on master commits it as its own `chore(nix): refresh rust-overlay`.
+- **T3, code-quality review (fix commit after eb501f0):**
+  - `progress_line` hoists `let mib = received >> 20;`, for `fn_call_width = 60`.
+  - `download_verified`'s `# Errors` list is corrected: a 4xx or 5xx is `Download` (from `error_for_status`), `UnusableDownload` is only a success status other than 200 or an empty body, and `Io` includes a failed rename. Its first paragraph says an existing `dest` is replaced only by a verified file.
+  - `Progress` gains `tick(received, now) -> Option<String>`, holding both rules (the threshold and the interval), and `update` prints what it returns. New test `progress_prints_at_most_once_per_interval`.
+  - Both `contains("202")` checks become `contains("got 202")`, since the URL's random port can contain "202".
+  - `stream_to_part`'s doc names the 4xx/5xx path and the progress lines.
+  - Deferred to phase 2: a shared `is_sha256_hex` for the spec validators.
+  - Mutant 6 (run in T3 after the fix commit): `Progress::tick` never restarts its interval. It must make `cache::tests::progress_prints_at_most_once_per_interval` FAIL.
+    ```bash
+    sed -i 's/^        self.last = now;$/        let _ = now;/' kermit-bench/src/cache.rs
+    grep -c '^        let _ = now;$' kermit-bench/src/cache.rs   # must print 1
+    nix develop --command env CARGO_BUILD_JOBS=2 cargo test -p kermit-bench --lib cache::tests::progress_prints_at_most_once_per_interval -- --exact
+    git checkout -- kermit-bench/src/cache.rs
+    ```
