@@ -127,7 +127,9 @@ Rules, all errors `RelationError::InvalidData(msg)` unless stated:
     (`parquet-59.3.0/src/file/properties.rs:741`) and would fail clippy under `-Dwarnings`;
   - creates the `.part` file (truncating any leftover one).
 - `write_batch`:
-  - errors if `batch.arity() != header arity` or if `self.failed`;
+  - an empty batch is a no-op at any arity (as `Relation::from_tuples` accepts an empty
+    batch under any header);
+  - errors if a non-empty `batch.arity() != header arity`, or if `self.failed`;
   - errors if `rows + batch.len() > RowId::MAX as u64`;
   - converts each value with `i64::try_from` (error message `"row {r}, column {c}: {v}
     exceeds i64::MAX"`, `r` counted across all batches);
