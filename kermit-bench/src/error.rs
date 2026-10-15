@@ -18,7 +18,7 @@ pub enum BenchError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Downloading a relation file failed.
+    /// Downloading a file failed.
     #[error("download failed for {url}: {source}")]
     Download {
         /// URL that was being fetched.
@@ -109,8 +109,8 @@ pub enum BenchError {
         reason: String,
     },
 
-    /// A file's contents do not match the `sha256` declared for it: a
-    /// benchmark relation's, or a raw file a generator pins by its digest.
+    /// A file's contents do not match its declared `sha256`: a
+    /// benchmark relation's file, or a raw file a generator pins by its digest.
     #[error(
         "integrity check failed for {subject} from {location}: expected sha256 {expected}, got \
          {actual}"
@@ -133,8 +133,8 @@ pub enum BenchError {
 mod tests {
     use super::BenchError;
 
-    /// A relation's message is byte-identical to the one before `subject`
-    /// replaced `relation`, which `cli_bench_fetch_integrity.rs` asserts.
+    /// A relation's subject renders as `relation 'edge'`, the form
+    /// `kermit/tests/cli_bench_fetch_integrity.rs` asserts.
     #[test]
     fn integrity_names_its_subject_verbatim() {
         let err = BenchError::Integrity {
