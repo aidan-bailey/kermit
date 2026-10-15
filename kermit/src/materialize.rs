@@ -864,4 +864,115 @@ queries:
         }
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
+
+    /// `kind: h2o` through `materialize` (#95, D11): a miss generates, a hit
+    /// reuses the cache, a changed seed is `SpecDrift`, and `--force`
+    /// wipes the cache and regenerates. The scale is 1,000,000, below the
+    /// floor, which `materialize` does not check (validation does, and this
+    /// definition never goes through it); it makes `small` one key. The
+    /// counts are the design session's independent model of the spec at
+    /// (1,000,000, 1, 1,000).
+    #[test]
+    fn h2o_cache_misses_hits_drifts_and_regenerates() {
+        fn spec(seed: u32, order: H2oOrder) -> GeneratorSpec {
+            GeneratorSpec::H2o {
+                scale: 1_000_000,
+                seed,
+                order,
+            }
+        }
+        fn definition(spec: GeneratorSpec) -> BenchmarkDefinition {
+            BenchmarkDefinition {
+                name: "h2o-cache".to_string(),
+                description: "x".to_string(),
+                relations: vec![],
+                queries: vec![],
+                generator: Some(spec),
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let subdir = root.path().join("h2o-cache");
+        let meta_path = subdir.join("meta.json");
+        let read_meta = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap()
+        };
+        let base = spec(108, H2oOrder::Shuffled);
+
+        // A miss generates six relations and three queries, each with a count.
+        let first = materialize(definition(base.clone()), root.path(), false).unwrap();
+        let names: Vec<&str> = first.relations.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["x_id3", "big", "x_id1", "small", "x_id2", "medium"]);
+        let counts: Vec<(&str, Option<u64>)> = first
+            .queries
+            .iter()
+            .map(|q| (q.name.as_str(), q.expected))
+            .collect();
+        assert_eq!(counts, [
+            ("q1", Some(1_000_000)),
+            ("q2", Some(899_809)),
+            ("q5", Some(900_000))
+        ]);
+        let meta = read_meta();
+        assert_eq!(meta["kind"], "h2o");
+        assert_eq!(meta["spec_hash"], base.spec_hash());
+        assert_eq!(meta["seed"], 108);
+        assert_eq!(meta["order"], "shuffled");
+        assert_eq!(
+            meta["plan"],
+            serde_json::json!({ "rows": 1_000_000, "small": 1, "medium": 1_000 })
+        );
+
+        // A marker in the cache, and `meta.json` as it stands.
+        let marker = subdir.join("planted.marker");
+        fs::write(&marker, "planted").unwrap();
+        let meta_bytes = fs::read(&meta_path).unwrap();
+        let meta_modified = fs::metadata(&meta_path).unwrap().modified().unwrap();
+
+        // The same spec is a hit: the cache is loaded and nothing is written.
+        let hit = materialize(definition(base.clone()), root.path(), false).unwrap();
+        assert_eq!(hit.relations.len(), 6);
+        assert_eq!(hit.queries.len(), 3);
+        assert_eq!(
+            fs::metadata(&meta_path).unwrap().modified().unwrap(),
+            meta_modified,
+            "a hit regenerated the cache: meta.json was rewritten"
+        );
+        assert_eq!(fs::read(&meta_path).unwrap(), meta_bytes);
+        assert!(marker.exists(), "a hit must not touch the cache");
+
+        // Another seed is drift, and drift without --force deletes nothing.
+        let drifted = spec(109, H2oOrder::Shuffled);
+        match materialize(definition(drifted.clone()), root.path(), false).unwrap_err() {
+            | BenchError::SpecDrift {
+                name,
+                expected_hash,
+                actual_hash,
+                ..
+            } => {
+                assert_eq!(name, "h2o-cache");
+                assert_eq!(expected_hash, drifted.spec_hash());
+                assert_eq!(actual_hash, base.spec_hash());
+            },
+            | other => panic!("expected SpecDrift, got {other:?}"),
+        }
+        assert!(
+            marker.exists(),
+            "drift without --force must not delete the cache"
+        );
+        assert_eq!(fs::read(&meta_path).unwrap(), meta_bytes);
+
+        // --force wipes the cache and regenerates under the new spec. This
+        // one also changes the order, so that `meta.json` shows both fields
+        // of the spec reaching the generator.
+        let forced_spec = spec(109, H2oOrder::Sorted);
+        let forced = materialize(definition(forced_spec.clone()), root.path(), true).unwrap();
+        assert!(!marker.exists(), "--force must wipe the old cache");
+        assert_eq!(forced.relations.len(), 6);
+        assert_eq!(forced.queries.len(), 3);
+        let meta = read_meta();
+        assert_eq!(meta["spec_hash"], forced_spec.spec_hash());
+        assert_eq!(meta["seed"], 109);
+        assert_eq!(meta["order"], "sorted");
+    }
 }
