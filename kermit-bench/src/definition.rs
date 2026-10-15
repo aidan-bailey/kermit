@@ -47,7 +47,7 @@ pub struct BenchmarkDefinition {
 }
 
 /// A declarative generator spec. Tagged on the `kind` field
-/// (`kind: watdiv` or `kind: lubm`).
+/// (`kind: watdiv`, `kind: watdiv-basic`, `kind: lubm` or `kind: snap`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum GeneratorSpec {
@@ -89,6 +89,29 @@ pub enum GeneratorSpec {
         /// (`q1` … `q14`). `None` or omitted = all 14.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         queries: Option<Vec<String>>,
+    },
+    /// Drives the SNAP generator (`kermit_generate::snap::SnapGenerator`):
+    /// one symmetric `edge` relation from a SNAP community edge list, and the
+    /// four SNAP queries with their exact counts. Names the graph with
+    /// `graph`, or a `url` and the `sha256` of the `.gz` it serves; exactly
+    /// one of the two ([`BenchmarkDefinition::validate`] enforces it).
+    Snap {
+        /// A named graph with a pinned download.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        graph: Option<SnapGraph>,
+        /// A SNAP edge-list `.gz` to download instead of a named graph.
+        /// Needs `sha256`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        /// SHA-256 of the `.gz` at `url`, 64 lowercase hex characters. The
+        /// spec hash covers this text, not the file, so a `url` must pin
+        /// its content here. Forbidden with `graph`, which carries its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+        /// Optional subset of the four queries, in the order to emit them.
+        /// `None` or omitted = all four, in [`SnapQuery::ALL`] order.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queries: Option<Vec<SnapQuery>>,
     },
 }
 
@@ -450,11 +473,7 @@ impl BenchmarkDefinition {
         };
 
         if let Some(digest) = &rel.sha256 {
-            let well_formed = digest.len() == 64
-                && digest
-                    .bytes()
-                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-            if !well_formed {
+            if !is_sha256_hex(digest) {
                 return Err(invalid(format!(
                     "relation '{}' sha256 must be 64 lowercase hex characters",
                     rel.name
@@ -571,8 +590,88 @@ fn validate_generator(bench_name: &str, spec: &GeneratorSpec) -> Result<(), Benc
                 }
             }
         },
+        | GeneratorSpec::Snap {
+            graph,
+            url,
+            sha256,
+            queries,
+        } => {
+            let invalid = |reason: String| BenchError::Invalid {
+                name: bench_name.to_string(),
+                reason,
+            };
+            match (graph, url) {
+                | (Some(_), Some(_)) => {
+                    return Err(invalid(
+                        "snap generator takes `graph` or `url`, not both".to_string(),
+                    ));
+                },
+                | (None, None) => {
+                    return Err(invalid("snap generator needs `graph` or `url`".to_string()));
+                },
+                | (Some(_), None) => {
+                    if sha256.is_some() {
+                        return Err(invalid(
+                            "snap generator `sha256` is only for `url`; a named `graph` carries \
+                             its own pinned digest"
+                                .to_string(),
+                        ));
+                    }
+                },
+                | (None, Some(url)) => {
+                    if !(url.starts_with("http://") || url.starts_with("https://")) {
+                        return Err(invalid(format!(
+                            "snap generator url '{url}' must start with http:// or https://"
+                        )));
+                    }
+                    match sha256 {
+                        | None => {
+                            return Err(invalid(
+                                "snap generator `url` requires `sha256`: the spec hash covers the \
+                                 spec, not the file"
+                                    .to_string(),
+                            ));
+                        },
+                        | Some(digest) if !is_sha256_hex(digest) => {
+                            return Err(invalid(format!(
+                                "snap generator sha256 must be 64 lowercase hex characters, got \
+                                 '{digest}'"
+                            )));
+                        },
+                        | Some(_) => {},
+                    }
+                },
+            }
+            if let Some(qs) = queries {
+                if qs.is_empty() {
+                    return Err(invalid(
+                        "snap generator queries list must be non-empty if provided (omit to run \
+                         all four)"
+                            .to_string(),
+                    ));
+                }
+                let mut seen = HashSet::new();
+                for q in qs {
+                    if !seen.insert(*q) {
+                        return Err(invalid(format!(
+                            "snap generator query '{}' is listed twice",
+                            q.name()
+                        )));
+                    }
+                }
+            }
+        },
     }
     Ok(())
+}
+
+/// Returns true if `digest` is a SHA-256 as the specs spell it: 64 lowercase
+/// hex characters.
+fn is_sha256_hex(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn is_valid_lubm_query_name(name: &str) -> bool {
@@ -1398,7 +1497,211 @@ generator:
         );
     }
 
-    /// Pins the encoding against the NIST SHA-256 vector for `"abc"`. The
+    /// A `GeneratorSpec::Snap` with exactly the fields given.
+    fn snap(
+        graph: Option<SnapGraph>, url: Option<&str>, sha256: Option<&str>,
+        queries: Option<Vec<SnapQuery>>,
+    ) -> GeneratorSpec {
+        GeneratorSpec::Snap {
+            graph,
+            url: url.map(str::to_string),
+            sha256: sha256.map(str::to_string),
+            queries,
+        }
+    }
+
+    /// The reason `validate_generator` rejects `spec` with; `spec` must be
+    /// invalid.
+    fn snap_reason(spec: &GeneratorSpec) -> String {
+        match validate_generator("s", spec).unwrap_err() {
+            | BenchError::Invalid {
+                name,
+                reason,
+            } => {
+                assert_eq!(name, "s");
+                reason
+            },
+            | other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snap_named_and_url_forms_parse() {
+        let named = r#"
+name: snap-amazon
+description: "amazon"
+generator:
+  kind: snap
+  graph: com-amazon
+"#;
+        let def: BenchmarkDefinition = serde_yaml::from_str(named).unwrap();
+        def.validate().unwrap();
+        let named_spec = snap(Some(SnapGraph::ComAmazon), None, None, None);
+        assert_eq!(def.generator, Some(named_spec.clone()));
+        // Absent fields stay out of the YAML that `spec_hash` covers.
+        assert_eq!(
+            serde_yaml::to_string(&named_spec).unwrap(),
+            "kind: snap\ngraph: com-amazon\n"
+        );
+
+        let digest = "ab".repeat(32);
+        let by_url = format!(
+            r#"
+name: snap-mini
+description: "mini"
+generator:
+  kind: snap
+  url: https://example.org/data/mini.ungraph.txt.gz
+  sha256: '{digest}'
+  queries: [triangle, clique4]
+"#
+        );
+        let def: BenchmarkDefinition = serde_yaml::from_str(&by_url).unwrap();
+        def.validate().unwrap();
+        assert_eq!(
+            def.generator,
+            Some(snap(
+                None,
+                Some("https://example.org/data/mini.ungraph.txt.gz"),
+                Some(&digest),
+                Some(vec![SnapQuery::Triangle, SnapQuery::Clique4]),
+            ))
+        );
+    }
+
+    #[test]
+    fn snap_spec_rejects_bad_combinations() {
+        let url = "https://example.org/mini.ungraph.txt.gz";
+        let digest = "ab".repeat(32);
+        let upper = "AB".repeat(32);
+        let non_hex = "g".repeat(64);
+        let graph = SnapGraph::ComAmazon;
+
+        // The accepted forms, so that each rejection below is one field away
+        // from a spec that passes.
+        for accepted in [
+            snap(Some(graph), None, None, None),
+            snap(None, Some(url), Some(&digest), None),
+            snap(
+                None,
+                Some("http://127.0.0.1:8000/m.gz"),
+                Some(&digest),
+                None,
+            ),
+            snap(
+                Some(graph),
+                None,
+                None,
+                Some(vec![SnapQuery::Clique4, SnapQuery::Triangle]),
+            ),
+        ] {
+            validate_generator("s", &accepted).unwrap();
+        }
+
+        let cases = [
+            (snap(Some(graph), Some(url), None, None), "not both"),
+            (
+                snap(Some(graph), Some(url), Some(&digest), None),
+                "not both",
+            ),
+            (snap(None, None, None, None), "needs `graph` or `url`"),
+            (
+                snap(None, None, Some(&digest), None),
+                "needs `graph` or `url`",
+            ),
+            (snap(None, Some(url), None, None), "requires `sha256`"),
+            (
+                snap(Some(graph), None, Some(&digest), None),
+                "only for `url`",
+            ),
+            (
+                snap(None, Some("ftp://h/m.gz"), Some(&digest), None),
+                "http:// or https://",
+            ),
+            (
+                snap(None, Some("/data/m.gz"), Some(&digest), None),
+                "http:// or https://",
+            ),
+            (
+                snap(None, Some(url), Some(&upper), None),
+                "64 lowercase hex",
+            ),
+            (
+                snap(None, Some(url), Some(&non_hex), None),
+                "64 lowercase hex",
+            ),
+            (
+                snap(None, Some(url), Some(&digest[..63]), None),
+                "64 lowercase hex",
+            ),
+            (snap(Some(graph), None, None, Some(vec![])), "non-empty"),
+            (
+                snap(
+                    Some(graph),
+                    None,
+                    None,
+                    Some(vec![
+                        SnapQuery::Triangle,
+                        SnapQuery::Path3,
+                        SnapQuery::Triangle,
+                    ]),
+                ),
+                "listed twice",
+            ),
+        ];
+        for (spec, fragment) in &cases {
+            let reason = snap_reason(spec);
+            assert!(reason.starts_with("snap generator"), "{reason}");
+            assert!(
+                reason.contains(fragment),
+                "{reason:?} lacks {fragment:?} for {spec:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn snap_spec_hash_changes_with_each_field() {
+        let url_a = "https://example.org/a.ungraph.txt.gz";
+        let url_b = "https://example.org/b.ungraph.txt.gz";
+        let digest_a = "ab".repeat(32);
+        let digest_b = "cd".repeat(32);
+        let amazon = SnapGraph::ComAmazon;
+        let specs = [
+            snap(Some(amazon), None, None, None),
+            snap(Some(SnapGraph::ComDblp), None, None, None),
+            snap(Some(amazon), None, None, Some(vec![SnapQuery::Triangle])),
+            snap(
+                Some(amazon),
+                None,
+                None,
+                Some(vec![SnapQuery::Triangle, SnapQuery::Clique4]),
+            ),
+            snap(None, Some(url_a), Some(&digest_a), None),
+            snap(None, Some(url_b), Some(&digest_a), None),
+            snap(None, Some(url_a), Some(&digest_b), None),
+            snap(
+                None,
+                Some(url_a),
+                Some(&digest_a),
+                Some(vec![SnapQuery::Triangle]),
+            ),
+        ];
+        let hashes: HashSet<String> = specs.iter().map(GeneratorSpec::spec_hash).collect();
+        assert_eq!(hashes.len(), specs.len(), "two specs share a spec_hash");
+        // A spec hashes the same twice, and a snap spec never hashes as a
+        // spec of another kind.
+        assert_eq!(specs[0].spec_hash(), specs[0].clone().spec_hash());
+        let lubm = GeneratorSpec::Lubm {
+            scale: 1,
+            seed: 0,
+            threads: 1,
+            start_index: 0,
+            ontology: DEFAULT_LUBM_ONTOLOGY.to_string(),
+            queries: None,
+        };
+        assert!(!hashes.contains(&lubm.spec_hash()));
+    }
+
     /// digests this crate emits are written into `meta.json` and compared on
     /// later runs, so a formatting change here would read as spec drift on
     /// every already-cached benchmark.
