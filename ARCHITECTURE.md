@@ -452,7 +452,7 @@ The binary exposes two top-level subcommands:
   - `bench list` — list benchmarks; status distinguishes `cached` / `not cached` for static and `not generated` / `cached` / `stale` for generator-driven.
   - `bench fetch [<NAME>]` — download relation parquets for static benchmarks.
   - `bench clean [<NAME>]` — remove cached benchmark artefacts.
-  - `bench gen { watdiv | lubm }` — imperative on-the-fly generation, bypassing YAML; writes into the same cache layout under a user-supplied `--tag`.
+  - `bench gen { watdiv | lubm | snap }` — imperative on-the-fly generation, bypassing YAML; writes into the same cache layout under a user-supplied `--tag`.
 
 Working examples live in `README.md` and `USAGE.md`; the YAML schema and generator-spec details live in `benchmarks/README.md`.
 
