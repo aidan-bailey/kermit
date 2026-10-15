@@ -31,7 +31,8 @@ S2 and S3 depend on S1 (`kermit_ds::ParquetWriter`). S3 depends on S2.
 
 ## Facts of the tree at BASE (verified 2026-10-15)
 
-- `kermit-ds/src/relation.rs` (1047 lines). `RelationError { Csv, Io, Parquet, Arrow,
+- `kermit-ds/src/relation.rs` (1047 lines). Its private `file_stem` becomes `pub(crate)` for
+  `parquet_writer.rs` (S1). `RelationError { Csv, Io, Parquet, Arrow,
   InvalidData(String) }`, with `From` impls for each library error. `RelationHeader`
   derives `Clone, Debug, PartialEq, Eq` and has `new(name, attrs: Vec<String>)`, `name()`,
   `attrs() -> &[String]`, `arity()`, `is_nameless()`. A positional header has empty
@@ -121,8 +122,9 @@ Rules, all errors `RelationError::InvalidData(msg)` unless stated:
   - errors if `header.attrs().is_empty()` (positional or arity 0; Parquet needs one named
     column per attribute), and if `file_stem(path) != header.name()` (message names both);
   - schema: one `Field::new(attr, DataType::Int64, false)` per attribute;
-  - properties: `WriterProperties::builder().set_max_row_group_size(ROW_GROUP_ROWS).build()`.
-    Verify the setter's name in parquet-59.3.0 and note it if it is deprecated;
+  - properties: `WriterProperties::builder().set_max_row_group_row_count(Some(ROW_GROUP_ROWS))
+    .build()`. `set_max_row_group_size` is deprecated since parquet 58.0.0
+    (`parquet-59.3.0/src/file/properties.rs:741`) and would fail clippy under `-Dwarnings`;
   - creates the `.part` file (truncating any leftover one).
 - `write_batch`:
   - errors if `batch.arity() != header arity` or if `self.failed`;
@@ -230,8 +232,11 @@ pub struct OutputDir {
 /// `<parent or kermit_bench::cache::base_cache_dir()>/<bench_name>`.
 pub fn output_dir(bench_name: &str, parent: Option<&Path>) -> anyhow::Result<OutputDir>;
 ```
-`discovered` is `parent == base_cache_dir()` (`None` counts as the default). It is pure:
-no filesystem writes, no output.
+It is pure: no filesystem writes, no output. With `parent: None` the parent is
+`base_cache_dir()?` (the one error: no platform cache dir) and `discovered` is `true`. With
+`Some(dir)` it never fails: `discovered` is `base_cache_dir().is_ok_and(|b| b == dir)`. This
+is a total function at a public boundary (CLAUDE.md priority 5), unlike `run_gen_lubm`,
+which needs a cache dir even under `--output-dir`.
 
 **S2 tests** (inline): `explicit_parent_is_not_discovered`,
 `default_parent_is_the_cache_root`, `explicit_cache_root_is_discovered`.
@@ -293,8 +298,7 @@ impl RelationWriter<'_> {
 
 `meta.rs`:
 ```rust
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]   // no `Eq`: `E` may be `serde_json::Value`
 pub struct GeneratedMeta<E> {
     pub schema_version: u32,
     pub kind: String,
@@ -314,7 +318,8 @@ impl<E: Serialize + DeserializeOwned> kermit_rdf::generator::GeneratorMeta for G
 pub(crate) const COMMON_FIELDS: [&str; 8] = ["schema_version", "kind", "tag",
     "generated_at_utc", "relation_count", "query_count", "spec_hash", "relations"];
 ```
-(Derive `PartialEq` only if `E: PartialEq` is acceptable as a bound; otherwise drop it.)
+serde_derive infers `E: Serialize` / `E: Deserialize<'de>` for the flattened field, so no
+`#[serde(bound)]` is needed.
 
 `run.rs`:
 ```rust
