@@ -290,3 +290,22 @@ fn no_queries_write_no_meta() {
     };
     assert_fails_without_meta(&toy, "queries must not be empty");
 }
+
+/// Step 0 runs before anything is touched: a target whose directory does
+/// not end in the bench name fails, and the planted `meta.json` survives.
+#[test]
+fn a_mismatched_target_touches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let toy = ToyGenerator::new(dir.path().join("elsewhere"));
+    plant_stale_meta(&toy.out_dir);
+    let message = format!("{:#}", run(&toy).expect_err("run should have failed"));
+    assert!(message.contains("toy-bench"), "{message}");
+    assert!(
+        meta_json_path(&toy.out_dir).exists(),
+        "step 0 must not touch meta.json"
+    );
+    assert!(
+        !toy.out_dir.join("edge.parquet").exists(),
+        "no relation may be written"
+    );
+}

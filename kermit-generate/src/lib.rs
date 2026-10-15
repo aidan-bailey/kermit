@@ -38,7 +38,8 @@
 //! and `bench list` treat like any other generated benchmark. To keep a
 //! failed run from passing for a finished one it does, in order:
 //!
-//! 1. create the output directory and delete any old `meta.json`;
+//! 1. check that the output directory ends in the benchmark name, then create
+//!    it and delete any old `meta.json`;
 //! 2. let the generator write its relations. Each is written to
 //!    `<name>.parquet.part` and renamed once complete, so a relation exists
 //!    under its real name only when it is whole;
@@ -49,9 +50,10 @@
 //!
 //! # The binary
 //!
-//! The binary's `materialize` dispatch calls `run` once per generator kind
-//! and discards the `GeneratedMeta` it returns. `bench gen` may print a
-//! summary from it.
+//! The binary wires each non-RDF generator kind in as a `materialize`
+//! dispatch arm that calls `run`; the arms arrive with the generators
+//! (#95, #96, #97). An arm discards the `GeneratedMeta` that `run` returns,
+//! and `bench gen` may print a summary from it.
 //!
 //! # Generators
 //!
