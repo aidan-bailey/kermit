@@ -209,9 +209,8 @@ and document, don't fix here.
   `relations` list, which already records each relation's columns, rows and
   SHA-256. No extras field reuses a common name (`relations`, `columns`, …),
   since #95's `GeneratedMeta` flattens the extras beside them.
-- **New dependencies.** `sqlparser` in `kermit-generate/Cargo.toml` (never
-  `kermit`'s); `kermit-algos` as a dev-dependency there, for the
-  `check_attribute_order` test.
+- **New dependency.** `sqlparser` in `kermit-generate/Cargo.toml` (never
+  `kermit`'s).
 - **What #97 uses from #95**, agreed 2026-10-15 and specified in #95's
   `docs/specs/2026-10-15-h2o-benchmark-design.md` (4e0beac on
   `aidanb/h2o`), Part 1:
@@ -268,14 +267,17 @@ depend on `kermit`.
   merging; text-order variables; `id` appended only when not a join column;
   the sharing key including column order; naming; head and rule text;
   renamed aliases still sharing relations; one error per unsupported shape.
-- **Translator on the real 113** (needs network; skips without it, saying why
-  on stderr): every condition classifies; every rule passes
+- **Translator on the real 113** (`kermit/tests/job_translate.rs`, where
+  `kermit-algos` is already a dependency, so `kermit-generate` gains no
+  dev-dependency; needs network and fetches the pinned files from GitHub at
+  test time, in CI too; skips without network, saying why on stderr): every condition classifies; every rule passes
   `check_attribute_order`; every relation and variable name is a
   kermit-parser identifier (an ASCII letter, then letters, digits or `_`),
   which #95's sink also enforces; golden counts of 466 relation files and 0
   column-order conflicts.
 - **Pipeline on a committed fixture** (needs DuckDB; skips without it, as the
-  LUBM tests do without Java). Tiny IMDb-shaped CSVs with NULL join keys,
+  LUBM tests do without Java; CI installs no DuckDB, so it runs only under
+  `nix develop`). Tiny IMDb-shaped CSVs with NULL join keys,
   backslash-escaped quotes, and rows removed by `LIKE`, `IN`, ranges and
   `BETWEEN`, plus a few fixture queries (the real JOB files cannot be
   committed). Checked:
