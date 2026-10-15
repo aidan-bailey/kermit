@@ -519,7 +519,7 @@ pub fn query_url(file: &str) -> String { format!("{QUERY_BASE_URL}/{QUERY_COMMIT
 
 #[cfg(test)]
 mod tests {
-    use {super::*, std::collections::HashSet};
+    use {super::*, crate::job::raw::split_query_stem, std::collections::HashSet};
 
     /// The 21 tables `schema.sql` creates, in its order.
     const SCHEMA_TABLES: [&str; 21] = [
@@ -571,9 +571,9 @@ mod tests {
         let mut templates = HashSet::new();
         for (file, _) in &QUERY_FILES[1..] {
             let stem = file.strip_suffix(".sql").unwrap();
-            let split = stem.find(|c: char| !c.is_ascii_digit()).unwrap();
-            let (number, letters) = stem.split_at(split);
-            let key = (number.parse::<u32>().unwrap(), letters.to_owned());
+            let (number, letters) = split_query_stem(stem)
+                .unwrap_or_else(|| panic!("{file} is not <template><letters>.sql"));
+            let key = (number, letters.to_owned());
             assert!((1..=33).contains(&key.0), "{file}");
             assert!(key > previous, "{file} is out of order");
             templates.insert(key.0);

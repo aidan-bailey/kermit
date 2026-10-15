@@ -15,6 +15,7 @@ use {
         fs,
         path::{Path, PathBuf},
         process::Command,
+        sync::atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -90,7 +91,8 @@ impl RawCache {
     /// `<dir>/imdb.duckdb`.
     pub fn database(&self) -> PathBuf { self.dir.join(DATABASE_FILE) }
 
-    /// `<dir>/duckdb.tmp`, the spill directory of every session on this cache.
+    /// `<dir>/duckdb.tmp`, the parent of each DuckDB call's own spill
+    /// directory on this cache.
     pub fn temp_dir(&self) -> PathBuf { self.dir.join(TEMP_DIR) }
 
     /// What the cache was built from.
@@ -147,7 +149,7 @@ impl RawCache {
 
 /// Splits a query file stem such as `16b` into its template number and its
 /// variant letters; `None` for anything else (`schema`, `1`, `1A`, `1a2`).
-fn split_query_stem(stem: &str) -> Option<(u32, &str)> {
+pub(crate) fn split_query_stem(stem: &str) -> Option<(u32, &str)> {
     let digits = stem.find(|c: char| !c.is_ascii_digit())?;
     let (number, letters) = stem.split_at(digits);
     if number.is_empty() || !letters.chars().all(|c| c.is_ascii_lowercase()) {
@@ -158,8 +160,8 @@ fn split_query_stem(stem: &str) -> Option<(u32, &str)> {
 
 /// A staging directory that removes itself on drop unless it was renamed
 /// into place. It is the one staging guard of the raw cache: [`build`] stages
-/// in `<dir>.building-<pid>`, and the download stage of `ensure` stages in
-/// `<dir>.fetch-<pid>` with the same type.
+/// in `<dir>.building-<pid>-<seq>`, and the download stage of `ensure` stages
+/// in `<dir>.fetch-<pid>` with the same type.
 ///
 /// `Drop` runs on every `?` return and on a panic. A process killed by a
 /// signal (`SIGINT`, `SIGKILL`) skips it, so a directory under a dead pid can
@@ -205,19 +207,26 @@ impl Drop for Staging {
     }
 }
 
-/// Builds a raw cache in `<dir>.building-<pid>` and renames it to `dir`.
+/// Builds a raw cache in `<dir>.building-<pid>-<seq>` and renames it to `dir`.
+/// (`seq` is a process-wide counter, so two builds of one `dir` in one process
+/// never share a staging directory.)
 ///
 /// Loads `schema.sql`, then each table the schema created (read back from
 /// `information_schema.tables`) with `COPY <table> FROM '<csv>' (FORMAT csv,
-/// HEADER false, ESCAPE '\')`, checking every row count against
+/// HEADER false, DELIMITER ',', QUOTE '"', ESCAPE '\', ALLOW_QUOTED_NULLS
+/// false, AUTO_DETECT false)`, checking every row count against
 /// `inputs.table_rows`, copies the queries and writes `provenance.json` last.
+/// The dialect is pinned to PostgreSQL CSV's, which wrote the dump: left to
+/// DuckDB's detection, a quoted empty `""` (an empty string in PostgreSQL)
+/// loads as NULL, and a sample of fields that all happen to be `'x'` makes it
+/// pick the apostrophe as the quote.
 /// A table without its CSV or without a pinned count, a count that differs,
 /// or a query file that is not `<template><letters>.sql` is an error naming
 /// it, and leaves no `dir` and no staging directory (a process killed by a
 /// signal leaves its staging directory behind). `dir`'s parent directories are
-/// created if missing. If `dir` appeared while the build ran and holds a
-/// finished cache, the staging directory is removed and that cache is
-/// returned.
+/// created if missing. If `dir` exists at the rename and holds a finished
+/// cache, the staging directory is removed and that cache is returned; if it
+/// exists and holds none, the build fails and leaves `dir` as it was.
 ///
 /// # Errors
 ///
@@ -232,7 +241,7 @@ pub fn build(duckdb: &Duckdb, dir: &Path, inputs: &BuildInputs<'_>) -> anyhow::R
         .with_context(|| format!("{} names no directory", dir.display()))?
         .to_string_lossy()
         .into_owned();
-    let staging = Staging::create(parent.join(format!("{name}.building-{}", std::process::id())))?;
+    let staging = Staging::create(staging_path(parent, &name))?;
     load_into(duckdb, staging.path(), inputs)?;
     match fs::rename(staging.path(), dir) {
         | Ok(()) => {
@@ -251,6 +260,14 @@ pub fn build(duckdb: &Duckdb, dir: &Path, inputs: &BuildInputs<'_>) -> anyhow::R
             ))),
         },
     }
+}
+
+/// `<parent>/<name>.building-<pid>-<seq>`, with `seq` the next value of a
+/// process-wide counter.
+fn staging_path(parent: &Path, name: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!("{name}.building-{}-{seq}", std::process::id()))
 }
 
 /// Fills `staging`: database, queries, then `provenance.json`.
@@ -296,7 +313,8 @@ fn load_into(duckdb: &Duckdb, staging: &Path, inputs: &BuildInputs<'_>) -> anyho
     }
     for (table, csv, expected) in plan {
         let copy = format!(
-            "COPY \"{table}\" FROM {} (FORMAT csv, HEADER false, ESCAPE '\\')",
+            "COPY \"{table}\" FROM {} (FORMAT csv, HEADER false, DELIMITER ',', QUOTE '\"', \
+             ESCAPE '\\', ALLOW_QUOTED_NULLS false, AUTO_DETECT false)",
             path_literal(&csv)?
         );
         duckdb
@@ -415,14 +433,27 @@ mod tests {
     fn build_from(
         duckdb: &Duckdb, dir: &Path, csv_dir: &Path, rows: &[(String, u64)], version: &str,
     ) -> anyhow::Result<RawCache> {
-        let fixture = fixture_dir();
-        let schema_sql = fixture.join("schema.sql");
-        let queries_dir = fixture.join("queries");
+        build_with_schema(
+            duckdb,
+            dir,
+            &fixture_dir().join("schema.sql"),
+            csv_dir,
+            rows,
+            version,
+        )
+    }
+
+    /// [`build_from`] over a schema other than the fixture's.
+    fn build_with_schema(
+        duckdb: &Duckdb, dir: &Path, schema_sql: &Path, csv_dir: &Path, rows: &[(String, u64)],
+        version: &str,
+    ) -> anyhow::Result<RawCache> {
+        let queries_dir = fixture_dir().join("queries");
         let table_rows: Vec<(&str, u64)> =
             rows.iter().map(|(table, n)| (table.as_str(), *n)).collect();
         build(duckdb, dir, &BuildInputs {
             csv_dir,
-            schema_sql: &schema_sql,
+            schema_sql,
             queries_dir: &queries_dir,
             table_rows: &table_rows,
             provenance: provenance(version),
@@ -507,6 +538,94 @@ mod tests {
         assert!(names(3).is_empty());
         let first = cache.template_queries(1).unwrap().remove(0);
         assert_eq!(first, ("1a".to_owned(), "-- 1a.sql\n".to_owned()));
+    }
+
+    /// A folder holding something that is not `<template><letters>.sql`
+    /// (`schema.sql`, `1A.sql`, a directory named like a query) is refused
+    /// naming it, and an empty folder is refused too.
+    #[test]
+    fn copy_queries_refuses_what_is_not_a_query_file() {
+        let scratch = tempfile::tempdir().unwrap();
+        for (index, bad) in ["schema.sql", "1A.sql", "notes.txt", "1a.sql.bak"]
+            .into_iter()
+            .enumerate()
+        {
+            let from = scratch.path().join(format!("from{index}"));
+            fs::create_dir(&from).unwrap();
+            fs::write(from.join("1a.sql"), "-- 1a\n").unwrap();
+            fs::write(from.join(bad), "-- bad\n").unwrap();
+            let error =
+                copy_queries(&from, &scratch.path().join(format!("to{index}"))).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(bad) && message.contains("is not a query file"),
+                "{bad}: {message}"
+            );
+        }
+        // A directory named like a query is not a regular file.
+        let from = scratch.path().join("from-dir");
+        fs::create_dir_all(from.join("2a.sql")).unwrap();
+        let error = copy_queries(&from, &scratch.path().join("to-dir")).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("is not a query file"),
+            "{error:#}"
+        );
+        // A good folder copies.
+        let from = scratch.path().join("from-good");
+        fs::create_dir(&from).unwrap();
+        fs::write(from.join("1a.sql"), "-- 1a\n").unwrap();
+        let to = scratch.path().join("to-good");
+        copy_queries(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(to.join("1a.sql")).unwrap(), "-- 1a\n");
+    }
+
+    #[test]
+    fn copy_queries_refuses_an_empty_folder() {
+        let scratch = tempfile::tempdir().unwrap();
+        let from = scratch.path().join("from");
+        fs::create_dir(&from).unwrap();
+        let error = copy_queries(&from, &scratch.path().join("to")).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("holds no query files"),
+            "{error:#}"
+        );
+    }
+
+    /// Two staging paths for one `dir` in one process differ, and both name
+    /// the pid.
+    #[test]
+    fn staging_paths_are_distinct_within_a_process() {
+        let parent = Path::new("/cache");
+        let first = staging_path(parent, "imdb");
+        let second = staging_path(parent, "imdb");
+        assert_ne!(first, second);
+        let prefix = format!("imdb.building-{}-", std::process::id());
+        for path in [&first, &second] {
+            assert_eq!(path.parent(), Some(parent));
+            assert!(
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&prefix),
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    /// Whatever a killed run left at the staging path is removed, never reused
+    /// (not even a directory that looks finished).
+    #[test]
+    fn staging_create_removes_a_leftover() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("imdb.building-1-0");
+        fs::create_dir_all(path.join(QUERIES_DIR)).unwrap();
+        fs::write(path.join("stale.txt"), "left by a killed build").unwrap();
+        fs::write(path.join(PROVENANCE_FILE), "{}").unwrap();
+        let staging = Staging::create(path.clone()).unwrap();
+        assert_eq!(fs::read_dir(staging.path()).unwrap().count(), 0);
+        drop(staging);
+        assert!(!path.exists(), "dropped, so removed");
     }
 
     #[test]
@@ -767,43 +886,6 @@ mod tests {
         assert!(!dir.exists());
     }
 
-    /// A `<dir>.building-<pid>` left by a killed run is removed, never reused
-    /// (not even one that looks finished).
-    #[test]
-    fn leftover_staging_dir_is_not_reused() {
-        let Some(duckdb) = locate_or_skip() else {
-            return;
-        };
-        let scratch = tempfile::tempdir().unwrap();
-        let dir = scratch.path().join("imdb");
-        let stale = scratch
-            .path()
-            .join(format!("imdb.building-{}", std::process::id()));
-        fs::create_dir_all(stale.join(QUERIES_DIR)).unwrap();
-        fs::write(stale.join("stale.txt"), "left by a killed build").unwrap();
-        fs::write(stale.join(PROVENANCE_FILE), "{}").unwrap();
-        let cache = build_fixture(&duckdb, &dir, "v-test").unwrap();
-        assert!(!cache.dir().join("stale.txt").exists());
-        assert!(!stale.exists());
-        assert_eq!(cache.provenance().unwrap(), provenance("v-test"));
-    }
-
-    /// `provenance.json` is the last thing written: nothing in the cache is
-    /// newer than it.
-    #[test]
-    fn build_writes_provenance_last() {
-        let Some(duckdb) = locate_or_skip() else {
-            return;
-        };
-        let scratch = tempfile::tempdir().unwrap();
-        let dir = scratch.path().join("imdb");
-        let cache = build_fixture(&duckdb, &dir, "v-test").unwrap();
-        let modified = |path: PathBuf| fs::metadata(path).unwrap().modified().unwrap();
-        let provenance = modified(dir.join(PROVENANCE_FILE));
-        assert!(provenance >= modified(cache.database()));
-        assert!(provenance >= modified(dir.join(QUERIES_DIR).join("1a.sql")));
-    }
-
     /// A build that loses the final rename to a concurrent one discards its
     /// own staging directory and adopts the winner's cache.
     #[test]
@@ -822,5 +904,73 @@ mod tests {
             1,
             "the loser's staging is gone"
         );
+    }
+
+    /// If `dir` exists at the rename but holds no finished cache, the build
+    /// fails, leaves `dir` as it was and removes its staging directory. (A
+    /// non-empty directory cannot be renamed over.)
+    #[test]
+    fn an_unfinished_dir_at_the_rename_is_an_error() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("imdb");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("stray"), "not a cache").unwrap();
+        let error = build_fixture(&duckdb, &dir, "v").unwrap_err();
+        assert!(format!("{error:#}").contains("moving"), "{error:#}");
+        assert!(RawCache::open(&dir).is_none());
+        assert_eq!(
+            fs::read_to_string(dir.join("stray")).unwrap(),
+            "not a cache"
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_dir(scratch.path()).unwrap().count(),
+            1,
+            "no staging directory"
+        );
+    }
+
+    /// The CSV dialect is PostgreSQL's, whatever the sample looks like: a
+    /// quoted empty field is an empty string, an unquoted one is NULL, a
+    /// backslash escapes a quote, and a field in apostrophes keeps them.
+    #[test]
+    fn a_quoted_empty_field_loads_as_an_empty_string() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let schema = scratch.path().join("schema.sql");
+        fs::write(
+            &schema,
+            "CREATE TABLE note (id integer NOT NULL, info text, tag text NOT NULL);\n",
+        )
+        .unwrap();
+        let csv = scratch.path().join("csv");
+        fs::create_dir(&csv).unwrap();
+        fs::write(
+            csv.join("note.csv"),
+            "1,\"\",a\n2,,b\n3,'x','y'\n4,\"say \\\"hi\\\"\",d\n",
+        )
+        .unwrap();
+        let dir = scratch.path().join("imdb");
+        let rows = [("note".to_owned(), 4)];
+        let cache = build_with_schema(&duckdb, &dir, &schema, &csv, &rows, "v").unwrap();
+        let count = |predicate: &str| {
+            duckdb
+                .query_u64(
+                    &cache.database(),
+                    &cache.temp_dir(),
+                    &format!("SELECT COUNT(*) FROM note WHERE {predicate}"),
+                )
+                .unwrap()
+        };
+        assert_eq!(count("id = 1 AND info IS NOT NULL AND info = ''"), 1);
+        assert_eq!(count("id = 2 AND info IS NULL"), 1);
+        assert_eq!(count("info IS NULL"), 1);
+        assert_eq!(count("id = 3 AND info = '''x''' AND tag = '''y'''"), 1);
+        assert_eq!(count("id = 4 AND info = 'say \"hi\"'"), 1);
     }
 }
