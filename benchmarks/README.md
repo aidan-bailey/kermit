@@ -9,6 +9,7 @@ This directory holds YAML benchmark definitions consumed by the `kermit bench` C
 - `oxford-uniform-s*.yml` and `oxford-zipf-s*.yml` are realistic multi-relation benchmarks from the Oxford DSI dataset.
 - `watdiv-example.yml`, `watdiv-basic.yml`, `lubm-example.yml`, and `lubm-reference.yml` are generator-driven examples illustrating the generator schema below; `watdiv-stress-default.yml` is a declarative generator spec (distinct from the frozen `watdiv-stress-*` snapshots covered later).
 - `snap-amazon.yml` and `snap-dblp.yml` are generator-driven SNAP community graphs (`kind: snap`: one symmetric `edge` relation, four graph-pattern queries with exact `expected` counts); see [`docs/benchmarks/SNAP.md`](../docs/benchmarks/SNAP.md).
+- `h2o.yml` and `h2o-sorted.yml` are generator-driven H2O db-benchmark joins at N = 1e7 (`kind: h2o`: six relations, three queries with exact `expected` counts; the second writes every relation sorted); see [`docs/benchmarks/H2O.md`](../docs/benchmarks/H2O.md).
 
 ## Schema
 
@@ -56,8 +57,8 @@ A `generator:` block replaces `relations` and `queries`. On `bench run <name>`, 
 
 | Field                       | Type               | Required | Description |
 |-----------------------------|--------------------|----------|-------------|
-| `generator.kind`            | `watdiv` \| `watdiv-basic` \| `lubm` \| `snap` | yes      | Selects the generator: a `kermit-rdf` pipeline, or for `snap` a `kermit-generate` module. |
-| `generator.scale`           | u32 (≥ 1)          | for `watdiv`, `watdiv-basic` and `lubm` | Scale factor (`watdiv -d <N>` or `lubm-uba -u <N>`). `snap` has no scale. |
+| `generator.kind`            | `watdiv` \| `watdiv-basic` \| `lubm` \| `snap` \| `h2o` | yes      | Selects the generator: a `kermit-rdf` pipeline, or for `snap` and `h2o` a `kermit-generate` module. |
+| `generator.scale`           | u32 (≥ 1)          | for `watdiv`, `watdiv-basic`, `lubm` and `h2o` | Scale factor (`watdiv -d <N>` or `lubm-uba -u <N>`); for `h2o`, N, the rows of the fact table, at least 10000000. `snap` has no scale. |
 
 WatDiv-specific fields (under `generator:` when `kind: watdiv`):
 
@@ -90,6 +91,16 @@ SNAP-specific fields (under `generator:` when `kind: snap`; there is no `scale`)
 | `generator.queries`         | non-empty list of `triangle`, `path3`, `cycle4`, `clique4` | all four                     | Subset of queries to emit; no duplicates. |
 
 See [`docs/benchmarks/SNAP.md`](../docs/benchmarks/SNAP.md) for the graphs, the query semantics and the cleaning rules.
+
+H2O-specific fields (under `generator:` when `kind: h2o`):
+
+| Field                       | Type        | Default                                                     | Description |
+|-----------------------------|-------------|-------------------------------------------------------------|-------------|
+| `generator.scale`           | u32 (≥ 10000000) | required                                               | N, the rows of the fact table `x`. 10000000 is upstream's floor; a smaller value is rejected by `BenchmarkDefinition::validate`. |
+| `generator.seed`            | u32         | 108                                                         | Random seed (upstream's `set.seed(108)`). |
+| `generator.order`           | `shuffled` \| `sorted` | `shuffled`                                       | Row order of every relation: as drawn, or sorted. |
+
+All three feed the spec hash, and an omitted `seed` hashes the same as `seed: 108`. See [`docs/benchmarks/H2O.md`](../docs/benchmarks/H2O.md) for the relations, the queries and the floor.
 
 Structural invariants are checked at load time by `BenchmarkDefinition::validate`.
 
@@ -183,6 +194,17 @@ generator:
 ```
 
 `snap-amazon` downloads the pinned `.gz` (4.5 MB, SHA-256 checked) on first use. A graph outside the named table takes `url` and `sha256` instead of `graph`; see `docs/benchmarks/SNAP.md`.
+
+```yaml
+name: h2o-sorted
+description: "H2O db-benchmark join (J1) at N = 1e7: q1, q2 and q5 over per-query projections of x, rows sorted, #101's input-order axis (#95)."
+generator:
+  kind: h2o
+  scale: 10000000
+  order: sorted
+```
+
+`h2o-sorted` generates the six H2O relations at N = 1e7 with every relation's rows sorted on first use; `h2o` is the same with `order` omitted (shuffled). `seed` defaults to 108. See `docs/benchmarks/H2O.md`.
 
 ## Frozen snapshots and the `scripts/` preprocessors
 

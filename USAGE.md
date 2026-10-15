@@ -470,6 +470,34 @@ alone is 1.45 billion rows; see [`docs/benchmarks/SNAP.md`](docs/benchmarks/SNAP
 The committed `snap-amazon` and `snap-dblp` need no `bench gen`:
 `kermit bench run snap-amazon -i all -a all --verify` generates on first use.
 
+### Generate an H2O join benchmark (`bench gen h2o`)
+
+Generates the data of H2O.ai's db-benchmark join task (J1) at N rows and emits three
+queries, `q1`, `q2` and `q5`, each with an exact `expected` count. Nothing is downloaded
+and no external tool runs: a seeded generator in the repo writes six relations (`x_id3`,
+`big`, `x_id1`, `small`, `x_id2`, `medium`). Output lands at
+`~/.cache/kermit/benchmarks/h2o-<scale>-<tag>/`, so subsequent `bench run` invocations
+pick it up.
+
+```sh
+kermit bench gen h2o --scale 10000000 --tag dev
+# → ~/.cache/kermit/benchmarks/h2o-10000000-dev/
+kermit bench run h2o-10000000-dev -i all -a all --verify
+```
+
+`--scale N` (the rows of the fact table) and `--tag` are required. `--scale` must be at
+least 10000000, upstream's floor, and a smaller value is a usage error. Tunables
+(optional): `--seed S` (default 108, upstream's `set.seed(108)`), `--order
+shuffled|sorted` (default `shuffled`; `sorted` writes every relation's rows in sorted
+order, for #101's input-order axis) and `--output-dir <PATH>` to write outside the
+default cache (generated benchmarks placed there are NOT auto-discovered by
+`bench list/fetch/run`). Seed and order are recorded in `meta.json`, not in the name.
+
+Generation holds about four words per row at its peak, and each loaded relation costs 8
+bytes per column per row; see [`docs/benchmarks/H2O.md`](docs/benchmarks/H2O.md). The
+committed `h2o` and `h2o-sorted` (N = 1e7) need no `bench gen`:
+`kermit bench run h2o -i all -a all --verify` generates on first use.
+
 ## JSON reports
 
 The default report path is `bench-runs/<kind>-<unix-millis>.json` resolved

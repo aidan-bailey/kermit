@@ -94,9 +94,10 @@ For ad-hoc data outside the committed YAMLs, `bench gen` drives the generators d
 kermit bench gen watdiv --scale 10 --tag dev   # → watdiv-stress-10-dev
 kermit bench gen lubm   --scale 1  --tag dev   # → lubm-1-dev (JDK 8 required)
 kermit bench gen snap   --graph com-amazon --tag dev   # → snap-com-amazon-dev (downloads a 4.5 MB .gz, SHA-256 checked)
+kermit bench gen h2o    --scale 10000000 --tag dev   # → h2o-10000000-dev (N = 1e7 is the floor; nothing is downloaded)
 ```
 
-All three write into `~/.cache/kermit/benchmarks/<name>/` and become discoverable to `bench run/list`. WatDiv uses the committed vendored binary at `kermit-rdf/vendor/watdiv/bin/Release/watdiv`; LUBM requires JDK 8 on PATH for the vendored jar; SNAP downloads a digest-pinned `.gz` from snap.stanford.edu and needs no external tool. See [`docs/benchmarks/WATDIV.md`](docs/benchmarks/WATDIV.md), [`docs/benchmarks/LUBM.md`](docs/benchmarks/LUBM.md), [`docs/benchmarks/SNAP.md`](docs/benchmarks/SNAP.md), and [`USAGE.md`](USAGE.md) for full flag listings.
+All four write into `~/.cache/kermit/benchmarks/<name>/` and become discoverable to `bench run/list`. WatDiv uses the committed vendored binary at `kermit-rdf/vendor/watdiv/bin/Release/watdiv`; LUBM requires JDK 8 on PATH for the vendored jar; SNAP downloads a digest-pinned `.gz` from snap.stanford.edu and needs no external tool; H2O draws its data from a seeded generator in the repo and needs neither a download nor a tool. See [`docs/benchmarks/WATDIV.md`](docs/benchmarks/WATDIV.md), [`docs/benchmarks/LUBM.md`](docs/benchmarks/LUBM.md), [`docs/benchmarks/SNAP.md`](docs/benchmarks/SNAP.md), [`docs/benchmarks/H2O.md`](docs/benchmarks/H2O.md), and [`USAGE.md`](USAGE.md) for full flag listings.
 
 ### Manage benchmark cache
 
