@@ -328,14 +328,18 @@ serde_derive infers `E: Serialize` / `E: Deserialize<'de>` for the flattened fie
 pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extras>>;
 fn check_extras<E: Serialize>(extras: &E) -> anyhow::Result<()>;
 fn check_queries(queries: &[QueryDefinition], records: &[RelationRecord]) -> anyhow::Result<()>;
+fn check_target(out_dir: &Path, bench_name: &str) -> anyhow::Result<()>;   // push 1b
 ```
-`run`'s order is fixed by the spec's six steps:
+`run`'s order is fixed by the spec's steps 0–6:
+0. (push 1b) `check_target`: `bench_name` is non-empty and `out_dir.file_name() ==
+   Some(bench_name)`, checked before anything is touched.
 1. `create_dir_all(out_dir)`, then remove `meta_json_path(out_dir)`, ignoring `NotFound`.
 2. `generate(&mut RelationSink::new(out_dir))`.
 3. `check_extras`: `serde_json::to_value` must be `Value::Object`, with no key in
    `COMMON_FIELDS` (the error names the key).
 4. `check_queries`: query names are unique, and each `query` parses as `JoinQuery`, whose
-   every `body` predicate `name` is a record name. Errors name the query.
+   every `body` predicate `name` is a record name with `terms.len() == record.columns.len()`
+   (the arity part is push 1b). Errors name the query.
 5. Build a `BenchmarkDefinition`:
    - `name = target.bench_name`;
    - `description = generated.description`;

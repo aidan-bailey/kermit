@@ -15,21 +15,24 @@ use {
     },
     serde::Serialize,
     serde_json::Value,
-    std::{collections::HashSet, fs, io::ErrorKind, path::Path},
+    std::{collections::HashSet, ffi::OsStr, fs, io::ErrorKind, path::Path},
 };
 
 /// Runs `generator` and leaves a complete benchmark cache at its target.
 ///
 /// The steps and their order are the cache contract:
 ///
+/// 0. Check the target before anything is touched: the output directory must
+///    end in the benchmark name, where discovery and `materialize` look.
 /// 1. Create the output directory and delete any existing `meta.json`, so that
 ///    a failed run can never leave an old commit marker beside new files.
 /// 2. Call [`Generator::generate`] with a fresh [`RelationSink`].
 /// 3. Check the extras: they must serialize to a JSON object, and none of its
 ///    keys may be a common `meta.json` field.
 /// 4. Check the queries: names are unique, each one parses as a Datalog rule,
-///    and each body predicate names a relation the generator wrote. A malformed
-///    rule therefore fails here, not at `bench run`.
+///    and each body predicate names a relation the generator wrote, with one
+///    term per column. A malformed rule therefore fails here, not at `bench
+///    run`, and no cache is committed for it.
 /// 5. Write `benchmark.yml`: one `file://` URL and one `sha256` per relation,
 ///    `generator: None`, validated first. A generator that wrote no relation or
 ///    no query fails that validation.
@@ -44,6 +47,7 @@ pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extra
     let target = generator.target();
     let out_dir = target.out_dir;
 
+    check_target(out_dir, target.bench_name)?;
     clear_commit_marker(out_dir)?;
 
     let mut sink = RelationSink::new(out_dir);
@@ -75,8 +79,26 @@ pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extra
         relations: sink.into_records(),
         extras: generated.extras,
     };
-    write_meta_json(out_dir, &meta)?;
+    write_meta_json(out_dir, &meta)
+        .with_context(|| format!("writing {}", meta_json_path(out_dir).display()))?;
     Ok(meta)
+}
+
+/// Step 0: `out_dir` must end in a component equal to `bench_name`, which
+/// is where discovery, `materialize` and
+/// `kermit_bench::cache::relation_cache_path` look for the cache. The full
+/// name rules are checked by `validate()` at step 5.
+fn check_target(out_dir: &Path, bench_name: &str) -> anyhow::Result<()> {
+    // The emptiness test is redundant with the `file_name` comparison
+    // (`Path::file_name` never yields an empty component) but states the
+    // contract's rule: a benchmark name is never empty.
+    if bench_name.is_empty() || out_dir.file_name() != Some(OsStr::new(bench_name)) {
+        bail!(
+            "the output directory {} does not end in the benchmark name {bench_name:?}",
+            out_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Step 1: creates `out_dir` and deletes `meta.json` if there is one.
@@ -111,7 +133,7 @@ fn check_extras<E: Serialize>(extras: &E) -> anyhow::Result<()> {
 }
 
 /// Step 4: unique names, well-formed rules, and body predicates that name
-/// written relations.
+/// written relations with one term per column.
 fn check_queries(queries: &[QueryDefinition], records: &[RelationRecord]) -> anyhow::Result<()> {
     let mut names = HashSet::new();
     for query in queries {
@@ -123,11 +145,21 @@ fn check_queries(queries: &[QueryDefinition], records: &[RelationRecord]) -> any
             .parse()
             .with_context(|| format!("the query {:?} is not a Datalog rule", query.name))?;
         for predicate in &rule.body {
-            if !records.iter().any(|record| record.name == predicate.name) {
+            let Some(record) = records.iter().find(|record| record.name == predicate.name) else {
                 bail!(
                     "the query {:?} names the relation {:?}, which the generator did not write",
                     query.name,
                     predicate.name
+                );
+            };
+            if predicate.terms.len() != record.columns.len() {
+                bail!(
+                    "the query {:?} gives the relation {:?} {} term(s), but it was written with \
+                     {} column(s)",
+                    query.name,
+                    predicate.name,
+                    predicate.terms.len(),
+                    record.columns.len()
                 );
             }
         }
@@ -238,5 +270,42 @@ mod tests {
                 "{key}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn an_atom_needs_one_term_per_column() {
+        let records = [record("edge")];
+        let wide = [query("q3", "Q(X, Y) :- edge(X, Y).")];
+        let err = check_queries(&wide, &records).unwrap_err().to_string();
+        assert!(err.contains("q3"), "{err}");
+        assert!(err.contains("edge"), "{err}");
+        assert!(err.contains('2') && err.contains('1'), "{err}");
+        assert!(err.contains("2 term(s)"), "{err}");
+        assert!(err.contains("1 column(s)"), "{err}");
+    }
+
+    #[test]
+    fn an_atom_with_fewer_terms_than_columns_is_rejected() {
+        let pair = RelationRecord {
+            columns: vec!["a".to_string(), "b".to_string()],
+            ..record("pair")
+        };
+        let narrow = [query("q4", "Q(X) :- pair(X).")];
+        let err = check_queries(&narrow, &[pair]).unwrap_err().to_string();
+        assert!(err.contains("q4"), "{err}");
+        assert!(err.contains("pair"), "{err}");
+        assert!(err.contains("1 term(s)"), "{err}");
+        assert!(err.contains("2 column(s)"), "{err}");
+    }
+
+    #[test]
+    fn the_output_directory_must_end_in_the_bench_name() {
+        check_target(Path::new("/cache/toy-bench"), "toy-bench").unwrap();
+        let err = check_target(Path::new("/cache/other"), "toy-bench")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("toy-bench"), "{err}");
+        assert!(check_target(Path::new("/cache/toy-bench"), "").is_err());
+        assert!(check_target(Path::new("/cache/a/b"), "a/b").is_err());
     }
 }

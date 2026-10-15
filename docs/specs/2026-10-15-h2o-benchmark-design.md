@@ -222,6 +222,9 @@ pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extra
   `finish` records nothing.
 
 **`kermit_generate::run`**
+0. Checks the target, before anything is touched (Amendment 1): `out_dir` must end in a
+   component equal to `bench_name`, which is where discovery, `materialize` and
+   `kermit_bench::cache::relation_cache_path` look for the cache.
 1. Creates `out_dir` and deletes any existing `meta.json`, so that a failed run can never
    leave an old commit marker beside new files.
 2. Calls `generate` with a fresh sink.
@@ -230,8 +233,9 @@ pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extra
    `generated_at_utc`, `relation_count`, `query_count`, `spec_hash`, `relations`). An
    overlap is an error naming the key.
 4. Checks the queries: names are unique, each `query` parses as a `kermit_parser::JoinQuery`,
-   and each body predicate names a recorded relation. A malformed rule therefore fails at
-   generation time, not at `bench run`.
+   and each body predicate names a recorded relation, with one term per column (Amendment
+   1). A malformed rule therefore fails at generation time, not at `bench run`, and no
+   cache is committed for it.
 5. Builds a `BenchmarkDefinition`:
    - `name`: the target's bench name;
    - `description`: from `Generated`;
@@ -690,3 +694,30 @@ gate first, then push 2's acceptance runs, around #96's and #97's runs.
       and `benchmark.yml` record each relation's SHA-256.
 - [ ] The tests above pass.
 - [ ] `docs/benchmarks/H2O.md` records the measured space per structure at 1e7.
+
+## Amendment 1 (2026-10-15): push 1b, the final review's minors
+
+Push 1 landed at 615066b. Its final review (0 Critical, 0 Important, 7 Minor) left seven
+minor findings, which the user chose to fix in a small follow-up before the generators build
+on the layer:
+
+1. **Arity.** `run`'s query check also requires each body atom to have one term per column
+   of the relation it names (step 4). Without it, a wrong-arity query commits a cache that
+   fails at `bench run`, and since the spec hash matches, the broken cache would then be a
+   hit.
+2. **Target.** A new step 0 checks, before `meta.json` is touched, that `out_dir` ends in
+   `bench_name`. The full name rules are still checked by `validate()` at step 5.
+3. **I/O errors name the file.** `RelationSink::open`, `RelationWriter::write_batch` and
+   `finish`, and `run`'s `meta.json` write add context naming the relation and its path.
+   kermit-ds's errors stay typed, so the path is added by the layer.
+4. **Two failure paths get tests:** the `RowId::MAX` total, and a failing `finish` (a rename
+   onto a directory), which must leave no `.part` file.
+5. **`ROW_GROUP_ROWS % WRITE_CHUNK_ROWS == 0` is a compile-time assertion**, not a comment.
+6. **Docs written ahead of the code** are reworded: the crate docs' description of the
+   binary's dispatch, and ARCHITECTURE.md's tree line.
+7. **`ParquetWriter` and `RelationWriter` implement `Debug`** (path, rows, failed;
+   relation name), by hand, without the Arrow writer or the buffers.
+
+No name changes. #96 and #97 are told before it lands, because items 1 and 2 make `run`
+stricter. Outside #95, the review also found that `write_meta_json` is not atomic: #115.
+

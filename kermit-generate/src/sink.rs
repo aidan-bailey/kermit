@@ -64,7 +64,8 @@ impl RelationSink {
             bail!("the relation {name:?} was already written");
         }
         let path = self.out_dir.join(format!("{name}.parquet"));
-        let writer = ParquetWriter::create(&path, header)?;
+        let writer = ParquetWriter::create(&path, header)
+            .with_context(|| format!("creating the relation {name:?} at {}", path.display()))?;
         Ok(RelationWriter {
             sink: self,
             writer,
@@ -118,13 +119,26 @@ impl RelationWriter<'_> {
     /// than `RowId::MAX` rows in total. After an error the writer refuses
     /// further batches.
     pub fn write_batch(&mut self, batch: &Tuples) -> anyhow::Result<()> {
-        Ok(self.writer.write_batch(batch)?)
+        self.writer.write_batch(batch).with_context(|| {
+            format!(
+                "writing the relation {:?} to {}",
+                self.header.name(),
+                self.path.display()
+            )
+        })
     }
 
     /// Finishes the file, hashes it and records it in the sink.
     pub fn finish(self) -> anyhow::Result<()> {
-        let rows = self.writer.finish()?;
-        let sha256 = sha256_hex(&self.path)?;
+        let rows = self.writer.finish().with_context(|| {
+            format!(
+                "finishing the relation {:?} at {}",
+                self.header.name(),
+                self.path.display()
+            )
+        })?;
+        let sha256 =
+            sha256_hex(&self.path).with_context(|| format!("hashing {}", self.path.display()))?;
         self.sink.records.push(RelationRecord {
             name: self.header.name().to_string(),
             columns: self.header.attrs().to_vec(),
@@ -132,6 +146,16 @@ impl RelationWriter<'_> {
             sha256,
         });
         Ok(())
+    }
+}
+
+/// Shows the relation and its `ParquetWriter`, but not the sink it borrows.
+impl std::fmt::Debug for RelationWriter<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelationWriter")
+            .field("relation", &self.header.name())
+            .field("writer", &self.writer)
+            .finish_non_exhaustive()
     }
 }
 
@@ -247,5 +271,42 @@ mod tests {
         assert!(left.is_empty(), "a dropped writer left {left:?}");
         sink.write(&header("edge"), &pairs()).unwrap();
         assert_eq!(sink.records().len(), 1, "the name must be free again");
+    }
+
+    #[test]
+    fn errors_name_the_relation_and_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sink = RelationSink::new(dir.path());
+        let positional = RelationHeader::new_positional("edge", 2);
+        let message = format!("{:#}", sink.open(&positional).unwrap_err());
+        assert!(message.contains("edge.parquet"), "{message}");
+
+        let node = RelationHeader::new("node", vec!["id".to_string()]);
+        let mut writer = sink.open(&node).unwrap();
+        writer.write_batch(&Tuples::from(vec![vec![1]])).unwrap();
+        // A directory where the file must go makes the final rename fail.
+        std::fs::create_dir(dir.path().join("node.parquet")).unwrap();
+        let message = format!("{:#}", writer.finish().unwrap_err());
+        assert!(message.contains("node.parquet"), "{message}");
+        assert!(sink.records().is_empty());
+
+        // The arity message alone names no path; `write_batch` adds it.
+        let mut wrong = sink.open(&header("pair")).unwrap();
+        let message = format!(
+            "{:#}",
+            wrong.write_batch(&Tuples::from(vec![vec![1]])).unwrap_err()
+        );
+        assert!(message.contains("pair.parquet"), "{message}");
+    }
+
+    #[test]
+    fn a_relation_writer_debugs_its_relation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sink = RelationSink::new(dir.path());
+        let node = RelationHeader::new("node", vec!["id".to_string()]);
+        let writer = sink.open(&node).unwrap();
+        let shown = format!("{writer:?}");
+        assert!(shown.contains("relation: \"node\""), "{shown}");
+        assert!(shown.contains("ParquetWriter"), "{shown}");
     }
 }
