@@ -9,9 +9,10 @@ com-youtube facts were measured.
 four cyclic and acyclic graph patterns, generated on demand like LUBM and WatDiv, with
 every `expected` count computed by an oracle that shares no code with the joins.
 **Related:**
-- #95: H2O. Its session owns `kermit/src/generate/` and `kermit_ds::write_parquet`; this
-  design implements that layer's trait (§ The generator). Layer spec: Part 1 of
-  `docs/specs/2026-10-15-h2o-benchmark-design.md` (ed1fb4c on `aidanb/h2o`).
+- #95: H2O. Its session owns the generator layer, the new `kermit-generate` crate, and
+  `kermit_ds::write_parquet`; this design implements that layer's trait (§ The generator).
+  Layer spec: Part 1 of `docs/specs/2026-10-15-h2o-benchmark-design.md` (4e0beac on
+  `aidanb/h2o`), § "The `kermit-generate` crate".
 - #97: JOB. It reuses this design's `download_verified` (§ The download). Spec:
   `docs/specs/2026-10-15-job-benchmark-design.md` (8358e7e on `aidanb/job`).
 - #93: column orders. `cycle4` is written so that `--column-orders any` builds no copy.
@@ -58,10 +59,12 @@ From the 2026-10-05 brainstorm (issue #96), unchanged:
 
 From this session (2026-10-15):
 
-7. **The shared layer belongs to #95.** The H2O session designs `kermit/src/generate/`
-   (the trait, `RelationSink`, `generate::run`, `meta.json` and `benchmark.yml`) and
-   `kermit_ds::write_parquet`. This session sent it #96's requirements; its spec traces
-   all six and lands the layer on master as its own push, before any H2O code.
+7. **The shared layer belongs to #95.** The H2O session designs it (the trait,
+   `RelationSink`, `run`, `meta.json` and `benchmark.yml`) and `kermit_ds::write_parquet`.
+   This session sent it #96's requirements; its spec traces all six and lands the layer on
+   master as its own push, before any H2O code. The layer is a new workspace crate,
+   `kermit-generate` (the user's decision, H2O's D13), not a module of the binary: its
+   `pub` items are not dead code, and `kermit/tests/` can reach them.
 8. **`write_parquet` is the inverse of `read_parquet`:**
    `write_parquet(path, &RelationHeader, &Tuples)`, chosen over #95's original
    column-major `columns: &[Vec<usize>]` because #111 made `Tuples` the one batch type.
@@ -212,13 +215,13 @@ pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), Ben
   (`cache.rs`) destructures `relation` and asserts `"edge"`; it destructures `subject`
   and asserts `"relation 'edge'"` instead.
 
-### The parser (`kermit/src/generate/snap.rs`)
+### The parser (`kermit-generate/src/snap.rs`)
 
 Input: a local `.gz` path. Output: `(RelationHeader, Tuples)` with header `edge(src, dst)`,
 plus the counts `meta.json` records.
 
-- Decode with flate2's `MultiGzDecoder` (a new dependency of `kermit`; `kermit-rdf`
-  already uses flate2 1) and read line by line.
+- Decode with flate2's `MultiGzDecoder` (a new dependency of `kermit-generate`, in its
+  own manifest only; `kermit-rdf` already uses flate2 1) and read line by line.
 - A line starting with `#` is skipped.
 - A data line is exactly two whitespace-separated unsigned integers. SNAP uses tabs, and
   some SNAP graphs use spaces. Anything else, a blank line included, is an error naming its
@@ -232,10 +235,10 @@ plus the counts `meta.json` records.
 The `meta.json` extras are: the graph name or the URL, the `.gz` SHA-256, the input edge
 count, and the self-loops and duplicates dropped.
 
-### The count oracle (`kermit/src/generate/snap/counts.rs`)
+### The count oracle (`kermit-generate/src/snap/counts.rs`)
 
-It reads only the parser's `Tuples` and nothing in `kermit-algos` or `kermit-ds`, and
-computes only the selected queries.
+It reads only the parser's `Tuples`: nothing in `kermit-algos` and none of `kermit-ds`'s
+structures. It computes only the selected queries.
 
 - **CSR.** Count degrees over the rows, prefix-sum, fill, then sort each adjacency list.
   Arrays are sized by the largest id plus one (ids are sparse).
@@ -262,11 +265,18 @@ dblp, with six atoms and four levels, is that kind of check.
 ### The generator (phase 2, against #95's layer)
 
 Written against the layer as specified in Part 1 of
-`docs/specs/2026-10-15-h2o-benchmark-design.md` (ed1fb4c). If the landed layer differs,
+`docs/specs/2026-10-15-h2o-benchmark-design.md` (4e0beac). If the landed layer differs,
 this section is amended before the phase-2 plan is written.
 
+The SNAP module is `kermit-generate/src/snap.rs` plus `snap/counts.rs`, registered by one
+`pub mod snap;` line in the crate's `lib.rs`. It uses the layer through the root
+re-exports (`kermit_generate::{Generator, Generated, RelationSink}`). The crate has
+`#![deny(missing_docs)]`, so every `pub` item below is documented, and `cargo doc
+--workspace` lints those docs; they link to no binary item (`materialize`,
+`ExecutionFamily`), which rustdoc cannot reach.
+
 ```rust
-// kermit/src/generate/snap.rs
+// kermit-generate/src/snap.rs
 pub enum SnapSource {
     /// A local `.gz` (tests).
     Local(PathBuf),
@@ -311,10 +321,10 @@ impl Generator for SnapGenerator<'_> {
 4. **Returns** `Generated { description, queries, extras }`. Each `QueryDefinition` carries
    its rule from § Workload, a one-line description saying what it counts, and `expected`.
 
-`SnapExtras`'s field names avoid every common `GeneratedMeta` field (`kind`, `tag`,
-`relations`, …), as the layer requires. Everything else (`benchmark.yml` with `file://`
-URLs and SHA-256s, `meta.json` written last, the check that each query parses and names a
-written relation) is `generate::run`'s.
+`SnapExtras` serialises to a JSON object whose keys avoid every common `GeneratedMeta`
+field (`kind`, `tag`, `relations`, …), which `run` enforces (H2O's D14). Everything else
+(`benchmark.yml` with `file://` URLs and SHA-256s, `meta.json` written last, the check that
+each query parses and names a written relation) is `kermit_generate::run`'s.
 
 The six requirements this session sent the H2O session on 2026-10-15 are traced in that
 spec's "Requirements from #96 and #97" table:
@@ -330,14 +340,25 @@ spec's "Requirements from #96 and #97" table:
 
 ### Wiring (phase 2)
 
-- **`materialize::dispatch`** gains a `GeneratorSpec::Snap` arm that resolves the source
-  (`SnapGraph::source()` or the spec's pair) and runs the generator with `spec_hash`.
+- **`materialize::dispatch`** (in the binary) gains a `GeneratorSpec::Snap` arm that
+  resolves the source (`SnapGraph::source()` or the spec's pair), builds a
+  `SnapGenerator` with `spec_hash`, and calls `kermit_generate::run`.
 - **`bench gen snap`** takes `--graph <com-amazon|com-dblp|com-youtube>`, or `--url URL
-  --sha256 HEX`, plus `--queries triangle,clique4` (optional), `--tag STRING` (required)
-  and `--output-dir PATH`, mirroring `bench gen lubm`. It writes `snap-<name>-<tag>`,
-  where `<name>` is the graph or the URL's last path segment up to its first `.`
-  (`com-orkut.ungraph.txt.gz` gives `com-orkut`); a name that is not a portable filename
-  is an error. As for LUBM, a name that collides with a workspace benchmark is refused.
+  --sha256 HEX`, plus `--queries triangle,clique4` (optional), and the shared output flags
+  through `#[command(flatten)] target: GenTarget` (`--tag`, required; `--output-dir`,
+  optional; H2O's D15). It writes `snap-<name>-<tag>`, where `<name>` is the graph or the
+  URL's last path segment up to its first `.` (`com-orkut.ungraph.txt.gz` gives
+  `com-orkut`); a name that is not a portable filename is an error. It then calls
+  `target.prepare("snap", &bench_name)?`, which refuses a name a workspace YAML uses and
+  resolves the directory through `kermit_generate::output_dir`, and runs the generator
+  with `spec_hash: None`.
+  - **`GenTarget`** lands with whichever of H2O's push 2 and #96's phase 2 comes first
+    (H2O's D17). If #96 is first, it copies the struct and `prepare` byte for byte from
+    H2O's spec, § Surface, into `kermit/src/main.rs` beside `GenSubcommand`, and the
+    later lander drops its copy at merge. If H2O is first, #96 uses the landed one.
+  - kermit-bench has no clap dependency, so the CLI declares its own `ValueEnum`s for the
+    graph and query names and maps them onto `SnapGraph` and `SnapQuery`, as H2O does for
+    `H2oOrder`. A unit test pins that every clap value name equals its serde name.
 - **Committed YAMLs.** `benchmarks/snap-amazon.yml` and `benchmarks/snap-dblp.yml`, each
   `generator: { kind: snap, graph: com-<name> }` with all four queries.
 
@@ -361,13 +382,13 @@ spec's "Requirements from #96 and #97" table:
   - An unknown graph or query name is a parse error naming the valid values.
   - `spec_hash` changes with the graph, URL, digest and queries.
   - Every `SnapGraph::source()` is an `https` URL with a 64-hex digest.
-- **Parser:**
+- **Parser** (inline unit tests in `kermit-generate/src/snap.rs`):
   - Comments are skipped.
   - A malformed line errors with its line number and text: one field, three fields,
     non-numeric, negative, blank.
   - Self-loops, exact duplicates and reversed duplicates are dropped and counted.
   - Rows come out (s, d), (d, s) in file order.
-- **Oracle:**
+- **Oracle** (inline unit tests in `kermit-generate/src/snap/counts.rs`):
   - Hand-checked: K₄ gives triangle 24, clique4 24, path3 108, cycle4 84; C₄ gives
     triangle 0, clique4 0, path3 32, cycle4 32.
   - On seeded random small graphs, every count equals a brute-force nested-loop evaluation
@@ -377,9 +398,11 @@ spec's "Requirements from #96 and #97" table:
   reads in a diff: a header comment, a 4-clique, a 4-cycle, a hub, one self-loop and one
   reversed duplicate. Tests gzip it on the fly with flate2, so a loopback test's digest is
   computed from the bytes actually served and never goes stale.
-- **End to end** (a unit test in the binary, as #95's D11: `generate/` is a binary module,
-  so `kermit/tests/` cannot reach it):
-  - The fixture goes through `generate::run` with a `Local` source into a temp directory.
+- **End to end** (`kermit/tests/snap_generate.rs`, beside H2O's `h2o_generate.rs`; it
+  joins through `kermit::db`, the library entry points, so it needs nothing of the
+  binary):
+  - The fixture goes through `kermit_generate::run` with a `Local` source into a temp
+    directory.
   - All four queries run on the three cells × every `Optimiser::value_variants()` × both
     `--column-orders` policies, through the real entry points; every count equals the
     emitted `expected`.
@@ -400,8 +423,8 @@ spec's "Requirements from #96 and #97" table:
   - A workspace `kind: snap` YAML materialises on `bench run`, is a hit the second time,
     raises `SpecDrift` after an edit and regenerates under `--force`. #95's tests cover
     the general mechanism; this pins SNAP's `dispatch` arm.
-- **Reference counts** (a unit test in the binary's `generate/snap.rs`, for the same
-  reason): downloads amazon and dblp (8.6 MB) into a temp directory through
+- **Reference counts** (an inline unit test in `kermit-generate/src/snap.rs`, beside the
+  parser and oracle tests): downloads amazon and dblp (8.6 MB) into a temp directory through
   `download_verified` and checks the eight verified values through the parser and the
   oracle. A `BenchError::Download` (connection, DNS) skips with a note on stderr; any
   other error, a digest mismatch included, fails.
@@ -439,10 +462,11 @@ spec's "Requirements from #96 and #97" table:
   marking `generator.scale` as required for every kind (today's row 59). JOB needs the
   same edit, so whichever of #96 and #97 lands first changes the row and the other keeps
   it.
-- `CLAUDE.md`: a Benchmark Reference Docs entry for `SNAP.md`; `snap` added to the
-  workspace table's `bench gen […]` list as it reads on master at landing (each generator
-  adds only its own kind); a gotcha on `download_verified` (streaming, required digest, no
-  30 s total timeout), landing with phase 1; a `bench gen snap` line in Build Commands.
+- `CLAUDE.md`: a Benchmark Reference Docs entry for `SNAP.md`; in the workspace table,
+  `snap` added to the `bench gen […]` list and to `kermit-generate`'s entry, each as it
+  reads on master at landing (every generator adds only its own kind); a gotcha on
+  `download_verified` (streaming, required digest, no 30 s total timeout), landing with
+  phase 1; a `bench gen snap` line in Build Commands.
 
 ## Sequencing
 
@@ -452,16 +476,19 @@ spec's "Requirements from #96 and #97" table:
   master by itself, at any time.
 - **Phase 2** is everything else, landed as one push: `SnapGraph`, `SnapQuery` and
   `GeneratorSpec::Snap` with its `validate_generator` arm; the parser and the oracle
-  (`kermit/src/generate/snap.rs`, `snap/counts.rs`); the generator, the `dispatch` arm,
-  `bench gen snap`, the YAMLs, the tests and the docs. It starts when the H2O session's
-  push 1 (the layer alone, before any H2O code) is on master: merge `origin/master` into
-  this branch (never rebase), check § The generator against the landed interface (amend it
-  if needed), then write the phase-2 plan. `mod generate;` and `generate/mod.rs` then come
-  from the layer, so there's no add/add conflict.
+  (`kermit-generate/src/snap.rs`, `snap/counts.rs`); the generator, the `dispatch` arm,
+  `bench gen snap` (with `GenTarget`, if H2O's push 2 hasn't landed it), the YAMLs, the
+  tests and the docs. It starts when the H2O session's push 1 (the layer alone, before
+  any H2O code) is on master: merge `origin/master` into this branch (never rebase), check
+  § The generator against the landed interface (amend it if needed), then write the
+  phase-2 plan. The crate, its `lib.rs` and its entry in `kermit/Cargo.toml` come from
+  push 1, so #96 adds one `pub mod snap;` line and `flate2` to `kermit-generate`'s
+  manifest; H2O and JOB each add their own line, a one-line add/add conflict at most.
 - **Why the split falls there.** A `GeneratorSpec::Snap` variant without its
   `materialize::dispatch` arm fails to build, because that match (`materialize.rs:261`) is
-  exhaustive, with no `_` arm. Parser or oracle code in the binary with no caller in
-  `main` trips `dead_code`, which CI's `-Dwarnings` makes an error. A stub `dispatch` arm
-  (`bail!`) was rejected: it would put a `kind: snap` on master that validates but cannot
-  generate.
+  exhaustive, with no `_` arm. A stub `dispatch` arm (`bail!`) was rejected: it would put
+  a `kind: snap` on master that validates but cannot generate. The parser and the oracle
+  live in `kermit-generate`, which push 1 creates. (While the layer was planned as a
+  module of the binary, they also had no caller in `main`, which `-Dwarnings` makes a
+  `dead_code` error; in a library crate their `pub` items are not dead.)
 - **Ordering with #97.** JOB builds on `download_verified` once phase 1 lands.
