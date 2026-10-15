@@ -389,7 +389,7 @@ The benchmark crate is a leaf with no internal kermit dependencies. It defines t
 A benchmark is a single `benchmarks/<name>.yml` file (filename stem must equal the `name:` field). The schema is documented in `benchmarks/README.md`. Two flavours:
 
 - **Static** — declares `relations:` (each with a download URL or committed path, optionally pinned by a `sha256` digest) and `queries:` (Datalog strings, optionally with an `expected` result cardinality for `bench run --verify`). See `benchmarks/triangle.yml`.
-- **Generator-driven** — declares a `generator: { kind: watdiv|lubm|snap, ... }` block instead (`scale: N` is required by `watdiv` and `lubm`; `snap` has none). The relations and queries are produced on demand by a `kermit-rdf` pipeline (`watdiv`, `lubm`) or a `kermit-generate` generator (`snap`).
+- **Generator-driven** — declares a `generator: { kind: watdiv|lubm|snap|h2o, ... }` block instead (`scale: N` is required by `watdiv`, `lubm` and `h2o`; `snap` has none). The relations and queries are produced on demand by a `kermit-rdf` pipeline (`watdiv`, `lubm`) or a `kermit-generate` generator (`snap`, `h2o`).
 
 The two are mutually exclusive; `BenchmarkDefinition::validate` enforces the XOR plus structural invariants (non-empty name, unique relation/query names, portable filename characters, generator-specific bounds).
 
@@ -452,7 +452,7 @@ The binary exposes two top-level subcommands:
   - `bench list` — list benchmarks; status distinguishes `cached` / `not cached` for static and `not generated` / `cached` / `stale` for generator-driven.
   - `bench fetch [<NAME>]` — download relation parquets for static benchmarks.
   - `bench clean [<NAME>]` — remove cached benchmark artefacts.
-  - `bench gen { watdiv | lubm | snap }` — imperative on-the-fly generation, bypassing YAML; writes into the same cache layout under a user-supplied `--tag`.
+  - `bench gen { watdiv | lubm | snap | h2o }` — imperative on-the-fly generation, bypassing YAML; writes into the same cache layout under a user-supplied `--tag`.
 
 Working examples live in `README.md` and `USAGE.md`; the YAML schema and generator-spec details live in `benchmarks/README.md`.
 
