@@ -21,12 +21,17 @@ use {
 /// Rows per chunk handed to `ArrowWriter`: the writer's own buffering
 /// (`ArrowWriter` also holds the encoded row group in progress).
 pub(crate) const WRITE_CHUNK_ROWS: usize = 1 << 16;
-/// Rows per row group; a multiple of `WRITE_CHUNK_ROWS`.
+/// Rows per row group; a multiple of `WRITE_CHUNK_ROWS`, as the assertion
+/// below enforces.
 pub(crate) const ROW_GROUP_ROWS: usize = 1 << 20;
+
+// A chunk must never straddle a row group, or `ArrowWriter`'s input would
+// depend on the batching after all.
+const _: () = assert!(ROW_GROUP_ROWS % WRITE_CHUNK_ROWS == 0);
 
 /// Writes one relation to a Parquet file, batch by batch.
 ///
-/// Four guarantees, the first three each pinned by a test:
+/// Four guarantees, the first three each pinned by tests:
 ///
 /// - **The exact inverse of `read_parquet`.** The file has one non-nullable
 ///   `Int64` column per attribute, named as in the header, and `create`
@@ -65,6 +70,18 @@ pub struct ParquetWriter {
     part: PathBuf,
     /// Set by any error; later calls return `InvalidData`.
     failed: bool,
+}
+
+/// Shows the path, the rows written and whether the writer failed; the
+/// Arrow writer and the chunk buffers are left out.
+impl std::fmt::Debug for ParquetWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParquetWriter")
+            .field("path", &self.path)
+            .field("rows", &self.rows)
+            .field("failed", &self.failed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ParquetWriter {
@@ -302,7 +319,7 @@ mod tests {
     }
 
     /// The message of an `InvalidData` error; any other outcome panics.
-    /// (`ParquetWriter` is not `Debug`, so `unwrap_err` is unavailable.)
+    /// (It takes any result, so tests need not name the success type.)
     fn invalid_message<T>(result: Result<T, RelationError>) -> String {
         match result.err() {
             | Some(RelationError::InvalidData(message)) => message,
@@ -506,5 +523,42 @@ mod tests {
         let message = invalid_message(writer.finish());
         assert!(message.contains("failed"), "{message}");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn rejects_rows_beyond_row_id_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.parquet");
+        let mut writer = ParquetWriter::create(&path, &header_of("edge", 2)).unwrap();
+        writer.rows = u64::from(RowId::MAX);
+        let message = invalid_message(writer.write_batch(&rows_of(2, 1)));
+        assert!(message.contains("exceed"), "{message}");
+    }
+
+    #[test]
+    fn a_failed_finish_leaves_no_part_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.parquet");
+        let part = dir.path().join("edge.parquet.part");
+        let mut writer = ParquetWriter::create(&path, &header_of("edge", 2)).unwrap();
+        writer.write_batch(&rows_of(2, 3)).unwrap();
+        // A directory at `path` makes the rename onto it fail.
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(writer.finish(), Err(RelationError::Io(_))));
+        assert!(!part.exists(), "a failed finish must remove the .part file");
+        assert!(path.is_dir(), "the directory in the way is left alone");
+    }
+
+    #[test]
+    fn a_writer_debugs_its_path_and_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edge.parquet");
+        let mut writer = ParquetWriter::create(&path, &header_of("edge", 2)).unwrap();
+        writer.write_batch(&rows_of(2, 3)).unwrap();
+        let shown = format!("{writer:?}");
+        assert!(
+            shown.contains("edge.parquet") && shown.contains("rows: 3"),
+            "{shown}"
+        );
     }
 }
