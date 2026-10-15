@@ -457,16 +457,15 @@ const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 ///
 /// # Errors
 ///
-/// - [`BenchError::Download`] — the request failed, the server answered with
-///   a 4xx or 5xx status, or the connection stalled or dropped before or
-///   during the body.
+/// - [`BenchError::Download`] — the request failed, the server answered with a
+///   4xx or 5xx status, or the connection stalled or dropped before or during
+///   the body.
 /// - [`BenchError::UnusableDownload`] — the server answered with a success
-///   status other than `200 OK` (naming a WAF challenge) or with an empty
-///   body.
+///   status other than `200 OK` (naming a WAF challenge) or with an empty body.
 /// - [`BenchError::Integrity`] — the body's digest differs from `sha256`; its
 ///   `subject` is `file '<name>'`, where `<name>` is `dest`'s file name.
-/// - [`BenchError::Io`] — `dest`'s directory or its part file cannot be
-///   created or written, or the part file cannot be renamed onto `dest`.
+/// - [`BenchError::Io`] — `dest`'s directory or its part file cannot be created
+///   or written, or the part file cannot be renamed onto `dest`.
 pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), BenchError> {
     fetch_checked(url, dest, |_part, actual| {
         if actual == sha256 {
@@ -939,9 +938,7 @@ mod tests {
         let dest = dir.path().join("edge.parquet");
         let url = serve_once(http_response("200 OK", &[], PARQUET_LIKE));
         let mut rel = url_relation(&url);
-        rel.sha256 = Some(crate::definition::hex_digest(&Sha256::digest(
-            PARQUET_LIKE,
-        )));
+        rel.sha256 = Some(crate::definition::hex_digest(&Sha256::digest(PARQUET_LIKE)));
         download_file(&url, &dest, &rel).unwrap();
         assert_eq!(fs::read(&dest).unwrap(), PARQUET_LIKE);
         assert!(!part_path(&dest).exists());
@@ -988,8 +985,8 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap();
         let part = dir.path().join("stalled.part");
-        let err = stream_to_part(&client_with_timeout(Duration::from_secs(1)), &url, &part)
-            .unwrap_err();
+        let err =
+            stream_to_part(&client_with_timeout(Duration::from_secs(1)), &url, &part).unwrap_err();
         assert!(matches!(err, BenchError::Download { .. }), "{err:?}");
         assert_eq!(
             fs::read(&part).unwrap(),
@@ -1112,7 +1109,11 @@ mod tests {
         let mut progress = Progress::new(url, Some(PROGRESS_MIN_BYTES));
         let start = progress.last;
         let due = start + PROGRESS_INTERVAL;
-        assert_eq!(progress.tick(1 << 20, start), None, "not before an interval");
+        assert_eq!(
+            progress.tick(1 << 20, start),
+            None,
+            "not before an interval"
+        );
         assert_eq!(progress.tick(1 << 20, due - Duration::from_nanos(1)), None);
         assert_eq!(
             progress.tick(1 << 20, due).as_deref(),
