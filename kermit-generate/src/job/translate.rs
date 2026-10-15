@@ -1,7 +1,7 @@
 //! Translating JOB queries into relation files and Datalog rules.
 //!
-//! A JOB query is `SELECT MIN(…), … FROM table AS alias, … WHERE c1 AND c2 …`:
-//! a conjunction of conditions over aliased tables. `parse_query` reads one
+//! A JOB query is `SELECT MIN(…), … FROM table [AS] alias, … WHERE c1 AND c2
+//! …`: a conjunction of conditions over aliased tables. `parse_query` reads one
 //! with `sqlparser` and sorts each condition into a *join* (`a.x = b.y`
 //! across two aliases) or a *filter* (a condition on one alias); anything
 //! else is an error that names the query and the condition. `plan_template`
@@ -35,7 +35,7 @@ pub struct ColumnRef {
     pub column: String,
 }
 
-/// One `FROM` entry, `table AS alias`.
+/// One `FROM` entry, `table [AS] alias`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alias {
     /// The alias.
@@ -73,12 +73,17 @@ pub enum TranslateError {
         /// `sqlparser`'s error text.
         message: String,
     },
-    /// The text is not exactly one plain `SELECT … FROM … WHERE …`.
+    /// The text is not exactly one plain `SELECT … FROM … WHERE …`: more or
+    /// fewer than one statement, a set operation, a missing `WHERE`, a `WITH`,
+    /// `DISTINCT`, `TOP`, `INTO`, `GROUP BY`, `HAVING`, `QUALIFY`, a named
+    /// `WINDOW`, `ORDER BY`, `LIMIT`, `FETCH` or a locking clause (`FOR
+    /// UPDATE`), or a subquery in the `WHERE` clause.
     NotOneSelect {
         /// The query's name.
         query: String,
     },
-    /// A `FROM` item that is not `table AS alias`.
+    /// A `FROM` item that is not `table [AS] alias`, or that samples the table
+    /// (`TABLESAMPLE`).
     UnsupportedFrom {
         /// The query's name.
         query: String,
@@ -140,7 +145,8 @@ impl fmt::Display for TranslateError {
             } => write!(
                 f,
                 "query {query}: expected one SELECT ... FROM ... WHERE ... statement without \
-                 DISTINCT, GROUP BY, HAVING, ORDER BY, LIMIT or WITH"
+                 DISTINCT, TOP, INTO, GROUP BY, HAVING, QUALIFY, WINDOW, ORDER BY, LIMIT, FETCH, \
+                 locking clauses, WITH or subqueries"
             ),
             | TranslateError::UnsupportedFrom {
                 query,
@@ -148,7 +154,7 @@ impl fmt::Display for TranslateError {
             } => {
                 write!(
                     f,
-                    "query {query}: FROM item `{item}` is not `table AS alias`"
+                    "query {query}: FROM item `{item}` is not `table [AS] alias`"
                 )
             },
             | TranslateError::DuplicateAlias {
@@ -199,8 +205,10 @@ impl std::error::Error for TranslateError {}
 ///
 /// `name` is the query's name (`6a`); it is carried into the result and into
 /// every error. The text must be exactly one plain `SELECT … FROM … WHERE …`
-/// (no `DISTINCT`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` or `WITH`) whose
-/// `FROM` items are all `table AS alias`.
+/// (no `DISTINCT`, `TOP`, `INTO`, `GROUP BY`, `HAVING`, `QUALIFY`, named
+/// `WINDOW`, `ORDER BY`, `LIMIT`, `FETCH`, locking clause, `WITH` or subquery
+/// in the `WHERE` clause, anywhere inside a conjunct) whose `FROM` items are
+/// all `table [AS] alias`, unsampled (no `TABLESAMPLE`).
 ///
 /// The `WHERE` clause is flattened through its top-level `AND`s, left before
 /// right. A parenthesised conjunct stays whole (`(a OR b)` is one conjunct)
@@ -249,15 +257,22 @@ fn not_one_select(name: &str) -> TranslateError {
 }
 
 /// The statement's one `SELECT`, if it is a plain one: no `WITH`, `ORDER BY`,
-/// `LIMIT`, `DISTINCT`, `GROUP BY` or `HAVING`, and a `FROM` clause. Each
-/// would change what `COUNT(*)` counts, and JOB uses none of them.
+/// `LIMIT`, `FETCH`, locking clause, `DISTINCT`, `TOP`, `INTO`, `GROUP BY`,
+/// `HAVING`, `QUALIFY` or named `WINDOW`, and a `FROM` clause. Each would
+/// change what `COUNT(*)` counts (or what the statement does), and JOB uses
+/// none of them.
 fn plain_select<'a>(
     name: &str, statement: &'a mut Statement,
 ) -> Result<&'a mut Select, TranslateError> {
     let Statement::Query(query) = statement else {
         return Err(not_one_select(name));
     };
-    if query.with.is_some() || query.order_by.is_some() || query.limit_clause.is_some() {
+    if query.with.is_some()
+        || query.order_by.is_some()
+        || query.limit_clause.is_some()
+        || query.fetch.is_some()
+        || !query.locks.is_empty()
+    {
         return Err(not_one_select(name));
     }
     let SetExpr::Select(select) = &mut *query.body else {
@@ -268,16 +283,23 @@ fn plain_select<'a>(
         GroupByExpr::Expressions(expressions, modifiers)
             if expressions.is_empty() && modifiers.is_empty()
     );
-    if select.from.is_empty() || select.distinct.is_some() || select.having.is_some() || !ungrouped
+    if select.from.is_empty()
+        || select.distinct.is_some()
+        || select.top.is_some()
+        || select.into.is_some()
+        || select.having.is_some()
+        || select.qualify.is_some()
+        || !select.named_window.is_empty()
+        || !ungrouped
     {
         return Err(not_one_select(name));
     }
     Ok(&mut **select)
 }
 
-/// The `FROM` clause as `table AS alias` entries. A join, a subquery, a
-/// table function, a schema-qualified name, an alias with column names or a
-/// missing alias is `UnsupportedFrom`.
+/// The `FROM` clause as `table [AS] alias` entries. A join, a subquery, a
+/// table function, a schema-qualified name, an alias with column names, a
+/// missing alias or a `TABLESAMPLE` is `UnsupportedFrom`.
 fn read_aliases(name: &str, select: &Select) -> Result<Vec<Alias>, TranslateError> {
     let mut aliases: Vec<Alias> = Vec::new();
     for item in &select.from {
@@ -292,6 +314,7 @@ fn read_aliases(name: &str, select: &Select) -> Result<Vec<Alias>, TranslateErro
             name: table_name,
             alias: Some(alias),
             args: None,
+            sample: None,
             ..
         } = &item.relation
         else {
@@ -330,6 +353,9 @@ fn classify(name: &str, aliases: &[Alias], selection: &Expr) -> Result<Condition
         filters: Vec::new(),
     };
     for conjunct in conjuncts(selection) {
+        if has_subquery(conjunct) {
+            return Err(not_one_select(name));
+        }
         let columns = column_refs(conjunct);
         if let Some(unknown) = columns
             .iter()
@@ -390,6 +416,22 @@ fn conjuncts(expr: &Expr) -> Vec<&Expr> {
     let mut out = Vec::new();
     walk(expr, &mut out);
     out
+}
+
+/// Whether `conjunct` contains a subquery (`EXISTS (…)`, `x IN (SELECT …)` or
+/// a scalar `(SELECT …)`) at any depth.
+fn has_subquery(conjunct: &Expr) -> bool {
+    visit_expressions(conjunct, |expr| match expr {
+        | Expr::Subquery(_)
+        | Expr::Exists {
+            ..
+        }
+        | Expr::InSubquery {
+            ..
+        } => ControlFlow::Break(()),
+        | _ => ControlFlow::Continue(()),
+    })
+    .is_break()
 }
 
 /// Every `alias.column` in `conjunct`, in text order. A reference with any
@@ -998,12 +1040,41 @@ mod tests {
             "WITH c AS (SELECT 1) SELECT MIN(a.x) FROM t AS a WHERE a.x = 1",
             "SELECT MIN(a.x) FROM t AS a WHERE a.x = 1 HAVING MIN(a.x) > 0",
             "DROP TABLE t",
+            "SELECT MIN(a.x) FROM t AS a WHERE a.x = 1 FETCH FIRST 5 ROWS ONLY",
+            "SELECT MIN(a.x) FROM t AS a WHERE a.x = 1 FOR UPDATE",
+            "SELECT MIN(a.x) FROM t AS a WHERE a.x = 1 QUALIFY a.x > 0",
+            "SELECT MIN(a.x) INTO u FROM t AS a WHERE a.x = 1",
+            "SELECT TOP 5 MIN(a.x) FROM t AS a WHERE a.x = 1",
+            "SELECT MIN(a.x) FROM t AS a WHERE a.x = 1 WINDOW w AS (PARTITION BY a.x)",
         ];
         for sql in shapes {
             assert_eq!(
                 parse_query("2b", sql),
                 Err(TranslateError::NotOneSelect {
                     query: "2b".to_owned(),
+                }),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn subqueries_in_where_are_rejected() {
+        // Each is a subquery in a conjunct; the last two are nested inside an
+        // `OR` and a `NOT`, not at the top of the conjunct.
+        let conjuncts = [
+            "EXISTS (SELECT 1 FROM u AS b WHERE b.x = a.x)",
+            "a.x IN (SELECT b.x FROM u AS b)",
+            "a.x = (SELECT MIN(b.x) FROM u AS b)",
+            "(a.x = 1 OR a.x IN (SELECT b.x FROM u AS b))",
+            "NOT EXISTS (SELECT 1 FROM u AS b)",
+        ];
+        for conjunct in conjuncts {
+            let sql = format!("SELECT MIN(a.x) FROM t AS a WHERE a.y = 2 AND {conjunct}");
+            assert_eq!(
+                parse_query("2c", &sql),
+                Err(TranslateError::NotOneSelect {
+                    query: "2c".to_owned(),
                 }),
                 "{sql}"
             );
@@ -1033,6 +1104,10 @@ mod tests {
             (
                 "SELECT MIN(a.x) FROM generate_series(1, 3) AS a WHERE a.x = 1",
                 "generate_series",
+            ),
+            (
+                "SELECT MIN(a.x) FROM t AS a TABLESAMPLE BERNOULLI (10) WHERE a.x = 1",
+                "t AS a TABLESAMPLE",
             ),
         ];
         for (sql, prefix) in cases {
