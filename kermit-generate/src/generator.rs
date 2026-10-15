@@ -24,7 +24,9 @@ pub trait Generator {
     /// field names ([`GeneratedMeta`](crate::GeneratedMeta)); `run` checks.
     type Extras: Serialize + DeserializeOwned;
 
-    /// Output directory, benchmark name, tag and spec hash.
+    /// Output directory, benchmark name, tag and spec hash. `run` requires
+    /// the target's `out_dir` to end in its `bench_name`, which is where
+    /// discovery and `materialize` look for the cache.
     fn target(&self) -> Target<'_>;
 
     /// Writes every relation through `sink` and returns the queries.
