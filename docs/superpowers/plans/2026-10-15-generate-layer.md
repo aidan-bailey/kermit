@@ -41,7 +41,7 @@ The spec is at 41537a4; Part 1 and decisions D13–D17 apply. **Names contract:*
 - **Formatting:** `nix develop --command cargo fmt --all` only. Stable rustfmt rewrites ~30 files.
 - **Doc comments:** backtick every code identifier (clippy `doc_markdown` runs under `-Dwarnings`). `kermit-ds` and `kermit-generate` have `#![deny(missing_docs)]`. `wrap_comments` wraps at 80 columns, so accept `cargo fmt`'s re-wrapping.
 - **No `unsafe`.**
-- **Staging by name only.** New files in this repo are marked intent-to-add, so the untracked `.superpowers/` drafts show in `git status` as ` A`. Never `git add -A` / `git commit -a`, and never stage anything under `.superpowers/`.
+- **Staging and committing by path only.** Never `git add -A` / `-u` / `.` / a directory, never `git commit -a` / `--amend`, and commit with a pathspec: `git commit -m "…" -- <files>`. The developer agents' guard hook enforces this and blocks `git reset`, `stash`, `checkout`, `restore`, `clean`, `rebase`, `switch` and `push`. The hook runs `scripts/hooks/developer_git_guard.py`, an **untracked copy** of the roster's guard placed in this worktree for this plan and listed in `.git/info/exclude` (with `.superpowers/`). Never commit, edit or delete it.
 - **Commit trailers**, on every commit:
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2554,8 +2554,7 @@ unique with `grep -cF '<before>' <file>` (expect `1`).
 
 - [ ] **Step 11: Commit.**
   ```bash
-  git add CLAUDE.md ARCHITECTURE.md
-  git commit -F - <<'EOF'
+  git commit -F - -- CLAUDE.md ARCHITECTURE.md <<'EOF'
   docs: kermit-generate, the shared non-RDF generator layer (#95)
 
   CLAUDE.md and ARCHITECTURE.md list the ninth crate, its dependency
