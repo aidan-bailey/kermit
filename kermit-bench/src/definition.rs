@@ -47,7 +47,8 @@ pub struct BenchmarkDefinition {
 }
 
 /// A declarative generator spec. Tagged on the `kind` field
-/// (`kind: watdiv`, `kind: watdiv-basic`, `kind: lubm` or `kind: snap`).
+/// (`kind: watdiv`, `kind: watdiv-basic`, `kind: lubm`, `kind: snap` or
+/// `kind: h2o`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum GeneratorSpec {
@@ -112,6 +113,20 @@ pub enum GeneratorSpec {
         /// `None` or omitted = all four, in [`SnapQuery::ALL`] order.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         queries: Option<Vec<SnapQuery>>,
+    },
+    /// Drives the H2O generator (`kermit_generate::h2o::H2oGenerator`): six
+    /// relations from db-benchmark's join data generator (J1) at `scale` rows,
+    /// and the queries q1, q2 and q5 with their exact counts. All three
+    /// fields are always serialized, so all three feed `spec_hash`.
+    H2o {
+        /// N, the rows of `x`. At least [`H2O_MIN_SCALE`].
+        scale: u32,
+        /// Default [`DEFAULT_H2O_SEED`] (upstream's `set.seed(108)`).
+        #[serde(default = "default_h2o_seed")]
+        seed: u32,
+        /// Default [`H2oOrder::Shuffled`].
+        #[serde(default)]
+        order: H2oOrder,
     },
 }
 
@@ -274,6 +289,8 @@ fn default_watdiv_constants_per_query() -> u32 { 2 }
 fn default_lubm_seed() -> u32 { 0 }
 fn default_lubm_threads() -> u32 { 1 }
 fn default_lubm_ontology() -> String { DEFAULT_LUBM_ONTOLOGY.to_string() }
+/// `GeneratorSpec::H2o`'s default `seed`.
+fn default_h2o_seed() -> u32 { DEFAULT_H2O_SEED }
 
 impl GeneratorSpec {
     /// Computes the canonical SHA-256 hash of this spec, used by the
@@ -698,6 +715,20 @@ fn validate_generator(bench_name: &str, spec: &GeneratorSpec) -> Result<(), Benc
                         )));
                     }
                 }
+            }
+        },
+        | GeneratorSpec::H2o {
+            scale, ..
+        } => {
+            if *scale < H2O_MIN_SCALE {
+                return Err(BenchError::Invalid {
+                    name: bench_name.to_string(),
+                    reason: format!(
+                        "h2o generator scale {scale} is below the floor {H2O_MIN_SCALE}: \
+                         upstream's join data generator needs N >= 1e7, below which `small` (N / \
+                         1e6 keys) has no left-only or right-only key"
+                    ),
+                });
             }
         },
     }
@@ -1776,6 +1807,125 @@ generator:
             queries: None,
         };
         assert!(!hashes.contains(&lubm.spec_hash()));
+    }
+
+    /// A `GeneratorSpec::H2o` with exactly the fields given.
+    fn h2o(scale: u32, seed: u32, order: H2oOrder) -> GeneratorSpec {
+        GeneratorSpec::H2o {
+            scale,
+            seed,
+            order,
+        }
+    }
+
+    /// The reason `validate_generator` rejects `spec` with; `spec` must be
+    /// invalid.
+    fn h2o_reason(spec: &GeneratorSpec) -> String {
+        match validate_generator("h", spec).unwrap_err() {
+            | BenchError::Invalid {
+                name,
+                reason,
+            } => {
+                assert_eq!(name, "h");
+                reason
+            },
+            | other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    /// The `generator:` block of a definition whose only other fields are a
+    /// name and a description, parsed.
+    fn h2o_generator(block: &str) -> Result<GeneratorSpec, serde_yaml::Error> {
+        let yaml = format!("name: h2o-x\ndescription: \"h2o\"\ngenerator:\n{block}");
+        let def: BenchmarkDefinition = serde_yaml::from_str(&yaml)?;
+        def.validate().expect("the definition is valid");
+        Ok(def.generator.expect("the block was parsed"))
+    }
+
+    #[test]
+    fn h2o_spec_parses_with_its_defaults() {
+        let spec = h2o_generator("  kind: h2o\n  scale: 10000000\n").unwrap();
+        assert_eq!(spec, h2o(10_000_000, 108, H2oOrder::Shuffled));
+        // All three fields are written, so all three feed `spec_hash`.
+        assert_eq!(
+            serde_yaml::to_string(&spec).unwrap(),
+            "kind: h2o\nscale: 10000000\nseed: 108\norder: shuffled\n"
+        );
+    }
+
+    #[test]
+    fn h2o_order_sorted_parses() {
+        let spec =
+            h2o_generator("  kind: h2o\n  scale: 10000000\n  seed: 7\n  order: sorted\n").unwrap();
+        assert_eq!(spec, h2o(10_000_000, 7, H2oOrder::Sorted));
+        assert_eq!(
+            serde_yaml::to_string(&spec).unwrap(),
+            "kind: h2o\nscale: 10000000\nseed: 7\norder: sorted\n"
+        );
+        // An order outside the enum is a parse error, not a silent default.
+        assert!(h2o_generator("  kind: h2o\n  scale: 10000000\n  order: random\n").is_err());
+        // So is a missing scale: it has no default.
+        assert!(h2o_generator("  kind: h2o\n  seed: 7\n").is_err());
+    }
+
+    #[test]
+    fn h2o_spec_hash_covers_every_field() {
+        let base = h2o(10_000_000, 108, H2oOrder::Shuffled);
+        let specs = [
+            base.clone(),
+            h2o(10_000_001, 108, H2oOrder::Shuffled),
+            h2o(10_000_000, 109, H2oOrder::Shuffled),
+            h2o(10_000_000, 108, H2oOrder::Sorted),
+        ];
+        let hashes: HashSet<String> = specs.iter().map(GeneratorSpec::spec_hash).collect();
+        assert_eq!(hashes.len(), specs.len(), "two specs share a spec_hash");
+        assert_eq!(base.spec_hash(), base.clone().spec_hash());
+
+        // Omitted fields hash as their defaults: the cache of a YAML that
+        // spells the defaults out is a hit for one that leaves them off.
+        let omitted = h2o_generator("  kind: h2o\n  scale: 10000000\n").unwrap();
+        let spelled =
+            h2o_generator("  kind: h2o\n  scale: 10000000\n  seed: 108\n  order: shuffled\n")
+                .unwrap();
+        assert_eq!(omitted.spec_hash(), spelled.spec_hash());
+        assert_eq!(omitted.spec_hash(), base.spec_hash());
+    }
+
+    #[test]
+    fn h2o_scale_below_the_floor_is_rejected() {
+        // The floor itself validates, with any seed and either order.
+        for order in H2oOrder::ALL {
+            validate_generator("h", &h2o(10_000_000, 108, order)).unwrap();
+            validate_generator("h", &h2o(u32::MAX, 0, order)).unwrap();
+        }
+        for scale in [0, 1, 1_000_000, 9_999_999] {
+            let reason = h2o_reason(&h2o(scale, 108, H2oOrder::Shuffled));
+            assert!(
+                reason.starts_with(&format!(
+                    "h2o generator scale {scale} is below the floor 10000000: "
+                )),
+                "{reason}"
+            );
+            assert!(reason.contains("`small`"), "{reason}");
+        }
+        // The loader reaches the same check through the definition.
+        let def = BenchmarkDefinition {
+            name: "h2o-small".to_string(),
+            description: "x".to_string(),
+            relations: vec![],
+            queries: vec![],
+            generator: Some(h2o(9_999_999, 108, H2oOrder::Sorted)),
+        };
+        match def.validate().unwrap_err() {
+            | BenchError::Invalid {
+                name,
+                reason,
+            } => {
+                assert_eq!(name, "h2o-small");
+                assert!(reason.contains("10000000"), "{reason}");
+            },
+            | other => panic!("expected Invalid, got {other:?}"),
+        }
     }
 
     /// Pins the encoding against the NIST SHA-256 vector for `"abc"`. The

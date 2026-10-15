@@ -25,9 +25,13 @@
 
 use {
     kermit_bench::{
-        BenchError, BenchmarkDefinition, GeneratorSpec, SnapGraph, SnapQuery, WatdivStressSpec,
+        BenchError, BenchmarkDefinition, GeneratorSpec, H2oOrder, SnapGraph, SnapQuery,
+        WatdivStressSpec,
     },
-    kermit_generate::snap::{SnapGenerator, SnapSource},
+    kermit_generate::{
+        h2o::{H2oGenerator, KeyPlan},
+        snap::{SnapGenerator, SnapSource},
+    },
     kermit_rdf::generator::{MetaHeader, Target},
     std::{
         fs,
@@ -313,6 +317,11 @@ fn dispatch(
             out_dir,
             spec_hash,
         ),
+        | GeneratorSpec::H2o {
+            scale,
+            seed,
+            order,
+        } => run_h2o(*scale, *seed, *order, bench_name, out_dir, spec_hash),
     }
 }
 
@@ -461,6 +470,22 @@ fn run_snap(
         spec_hash: Some(spec_hash),
     };
     kermit_generate::run(&SnapGenerator::new(target, graph, source, queries))?;
+    Ok(())
+}
+
+/// Runs the H2O generator for a `kind: h2o` spec into `out_dir`, passing
+/// `spec_hash` through so it lands in the produced `meta.json`.
+fn run_h2o(
+    scale: u32, seed: u32, order: H2oOrder, bench_name: &str, out_dir: &Path, spec_hash: &str,
+) -> anyhow::Result<()> {
+    let plan = KeyPlan::for_scale(scale)?;
+    let target = Target {
+        out_dir,
+        bench_name,
+        tag: bench_name,
+        spec_hash: Some(spec_hash),
+    };
+    kermit_generate::run(&H2oGenerator::new(target, plan, seed, order))?;
     Ok(())
 }
 
