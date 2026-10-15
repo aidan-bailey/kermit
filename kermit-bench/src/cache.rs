@@ -214,7 +214,7 @@ pub fn verify_integrity(
         let actual = sha256_hex(&path)?;
         if &actual != expected {
             return Err(BenchError::Integrity {
-                relation: rel.name.clone(),
+                subject: format!("relation '{}'", rel.name),
                 location: path.display().to_string(),
                 expected: expected.clone(),
                 actual,
@@ -338,7 +338,7 @@ fn download_file(url: &str, dest: &Path, rel: &RelationSource) -> Result<(), Ben
     if let Some(expected) = rel.sha256.as_deref() {
         if let Err(actual) = check_digest(&bytes, expected) {
             return Err(BenchError::Integrity {
-                relation: rel.name.clone(),
+                subject: format!("relation '{}'", rel.name),
                 location: url.to_string(),
                 expected: expected.to_string(),
                 actual,
@@ -647,12 +647,12 @@ mod tests {
         let err = verify_integrity(&local_bench(root.path(), Some(&bad)), root.path()).unwrap_err();
         match err {
             | BenchError::Integrity {
-                relation,
+                subject,
                 expected,
                 actual,
                 ..
             } => {
-                assert_eq!(relation, "edge");
+                assert_eq!(subject, "relation 'edge'");
                 assert_eq!(expected, bad);
                 assert_eq!(
                     actual,
