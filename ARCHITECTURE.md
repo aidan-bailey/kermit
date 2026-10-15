@@ -22,7 +22,7 @@ kermit/
 ├── kermit-algos/    # Join algorithms + query optimisers
 ├── kermit-bench/    # Benchmark definitions, discovery, caching
 ├── kermit-rdf/      # RDF/SPARQL pipelines (WatDiv, LUBM generators)
-├── kermit-generate/ # Non-RDF generators (H2O, SNAP, JOB) and their shared layer
+├── kermit-generate/ # Layer shared by the non-RDF generators (H2O #95, SNAP #96, JOB #97)
 ├── kermit/          # CLI binary and top-level integration
 └── python/
     └── kermit-lab/  # Analysis library over the JSON bench reports (not a Cargo member)
