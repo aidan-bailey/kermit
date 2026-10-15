@@ -27,7 +27,7 @@ pub(crate) const ROW_GROUP_ROWS: usize = 1 << 20;
 
 // A chunk must never straddle a row group, or `ArrowWriter`'s input would
 // depend on the batching after all.
-const _: () = assert!(ROW_GROUP_ROWS % WRITE_CHUNK_ROWS == 0);
+const _: () = assert!(ROW_GROUP_ROWS.is_multiple_of(WRITE_CHUNK_ROWS));
 
 /// Writes one relation to a Parquet file, batch by batch.
 ///
