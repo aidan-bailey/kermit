@@ -235,6 +235,15 @@ and document, don't fix here.
    a local file.
 4. **Last:** the acceptance run and JOB.md's measured memory table.
 
+The phases are development order on `aidanb/job`, not separate landings:
+JOB lands on master once, after phase 3 and its 113-count check (the memory
+table may follow as a docs commit). `generate/` is a binary module, where
+`pub` does not exempt an item from `dead_code`, so until phase 2's dispatch
+arm calls the generator, the `mod job;` line carries
+`#[cfg_attr(not(test), expect(dead_code, reason = "…"))]`. Every branch
+commit then passes `cargo clippy --all-targets` under `-Dwarnings`, and the
+expectation fails once the arm exists, which forces its removal.
+
 `bench run --all` will materialise all 33 templates (first run: the 1.26 GB
 download and the raw-cache build). Whether the next sweep includes JOB is
 #99's decision.
