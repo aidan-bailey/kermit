@@ -41,4 +41,8 @@
 // Story 3 uses every item of these modules; until then they are dead outside
 // the tests.
 #[allow(dead_code)]
+mod keys;
+#[allow(dead_code)]
 mod rng;
+
+pub use keys::KeyPlan;
