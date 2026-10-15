@@ -252,12 +252,13 @@ fn cached_file_problem(path: &Path) -> Result<Option<String>, BenchError> {
     )))
 }
 
-/// How long a download waits to connect, for the response headers, and for
-/// each read of the body. reqwest's blocking client applies its `timeout` to
-/// each of those operations, not to the whole body, so a download that keeps
-/// arriving has no total limit and one that stalls this long fails.
-/// `Response::bytes()` would wait on the whole body under one timeout, which
-/// is why bodies are streamed through `Read` instead.
+/// How long a download may wait: to connect, for the response (the request
+/// and its headers count as one window), and for each read of the body.
+/// reqwest's blocking client applies its `timeout` per operation, not to the
+/// whole body, so a download that keeps arriving has no total limit and one
+/// that stalls this long fails. `Response::bytes()` would wait on the whole
+/// body under one timeout, which is why bodies are streamed through `Read`
+/// instead.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Bytes read from a response body per call.
@@ -388,19 +389,12 @@ fn unusable_status(status: reqwest::StatusCode, waf_action: Option<&str>) -> Opt
 /// that becomes a [`BenchError::Download`], as the same failure before the
 /// body would, and any other error stays a [`BenchError::Io`].
 fn body_read_error(url: &str, err: io::Error) -> BenchError {
-    if !err
-        .get_ref()
-        .is_some_and(|inner| inner.is::<reqwest::Error>())
-    {
-        return BenchError::Io(err);
-    }
-    let source = err
-        .into_inner()
-        .and_then(|inner| inner.downcast::<reqwest::Error>().ok())
-        .expect("checked above that the inner error is a reqwest::Error");
-    BenchError::Download {
-        url: url.to_string(),
-        source: *source,
+    match err.downcast::<reqwest::Error>() {
+        | Ok(source) => BenchError::Download {
+            url: url.to_string(),
+            source,
+        },
+        | Err(err) => BenchError::Io(err),
     }
 }
 
@@ -671,7 +665,7 @@ mod tests {
             !dest.exists(),
             "a rejected download must not reach the cache"
         );
-        assert!(!dest.with_extension("parquet.part").exists());
+        assert!(!part_path(&dest).exists());
         err.to_string()
     }
 
@@ -759,7 +753,11 @@ mod tests {
             let _ = stream.write_all(head.as_bytes());
             for piece in body.chunks(body.len().div_ceil(chunks)) {
                 std::thread::sleep(gap);
-                if stream.write_all(piece).and_then(|()| stream.flush()).is_err() {
+                if stream
+                    .write_all(piece)
+                    .and_then(|()| stream.flush())
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -788,6 +786,8 @@ mod tests {
 
     #[test]
     fn download_file_reports_a_digest_mismatch_as_its_relation() {
+        use sha2::{Digest, Sha256};
+
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("edge.parquet");
         let url = serve_once(http_response("200 OK", &[], PARQUET_LIKE));
@@ -795,14 +795,37 @@ mod tests {
         rel.sha256 = Some("0".repeat(64));
         match download_file(&url, &dest, &rel).unwrap_err() {
             | BenchError::Integrity {
-                subject, expected, ..
+                subject,
+                expected,
+                actual,
+                ..
             } => {
                 assert_eq!(subject, "relation 'edge'");
                 assert_eq!(expected, "0".repeat(64));
+                assert_eq!(
+                    actual,
+                    crate::definition::hex_digest(&Sha256::digest(PARQUET_LIKE))
+                );
             },
             | other => panic!("expected Integrity, got {other:?}"),
         }
         assert!(!dest.exists());
+        assert!(!part_path(&dest).exists());
+    }
+
+    #[test]
+    fn download_file_accepts_a_matching_digest() {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("edge.parquet");
+        let url = serve_once(http_response("200 OK", &[], PARQUET_LIKE));
+        let mut rel = url_relation(&url);
+        rel.sha256 = Some(crate::definition::hex_digest(&Sha256::digest(
+            PARQUET_LIKE,
+        )));
+        download_file(&url, &dest, &rel).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), PARQUET_LIKE);
         assert!(!part_path(&dest).exists());
     }
 
@@ -850,11 +873,30 @@ mod tests {
         let err = stream_to_part(&client_with_timeout(Duration::from_millis(500)), &url, &part)
             .unwrap_err();
         assert!(matches!(err, BenchError::Download { .. }), "{err:?}");
+        assert_eq!(
+            fs::read(&part).unwrap(),
+            b"PAR1",
+            "the stall must come mid-body, after the first read"
+        );
     }
 
     #[test]
     fn a_body_read_error_not_raised_by_reqwest_stays_io() {
         let err = body_read_error("http://h/x", io::Error::other("disk full"));
         assert!(matches!(err, BenchError::Io(_)), "{err:?}");
+    }
+
+    /// A rename that fails (here `dest` is a non-empty directory) still
+    /// removes the part file.
+    #[test]
+    fn a_failed_rename_still_removes_the_part_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("edge.parquet");
+        fs::create_dir(&dest).unwrap();
+        fs::write(dest.join("occupant"), b"x").unwrap();
+        let url = serve_once(http_response("200 OK", &[], PARQUET_LIKE));
+        let err = download_file(&url, &dest, &url_relation(&url)).unwrap_err();
+        assert!(matches!(err, BenchError::Io(_)), "{err:?}");
+        assert!(!part_path(&dest).exists());
     }
 }
