@@ -530,9 +530,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("edge.parquet");
         let mut writer = ParquetWriter::create(&path, &header_of("edge", 2)).unwrap();
-        writer.rows = u64::from(RowId::MAX);
+        writer.rows = u64::from(RowId::MAX) - 1;
+        // The last row `RowId` can address is accepted ...
+        writer.write_batch(&rows_of(2, 1)).unwrap();
+        // ... and the next one is not.
         let message = invalid_message(writer.write_batch(&rows_of(2, 1)));
-        assert!(message.contains("exceed"), "{message}");
+        assert!(message.contains("rows exceed"), "{message}");
     }
 
     #[test]
@@ -560,5 +563,9 @@ mod tests {
             shown.contains("edge.parquet") && shown.contains("rows: 3"),
             "{shown}"
         );
+        assert!(shown.contains("failed: false"), "{shown}");
+        invalid_message(writer.write_batch(&rows_of(3, 1)));
+        let shown = format!("{writer:?}");
+        assert!(shown.contains("failed: true"), "{shown}");
     }
 }

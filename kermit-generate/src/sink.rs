@@ -289,6 +289,14 @@ mod tests {
         let message = format!("{:#}", writer.finish().unwrap_err());
         assert!(message.contains("node.parquet"), "{message}");
         assert!(sink.records().is_empty());
+
+        // The arity message alone names no path; `write_batch` adds it.
+        let mut wrong = sink.open(&header("pair")).unwrap();
+        let message = format!(
+            "{:#}",
+            wrong.write_batch(&Tuples::from(vec![vec![1]])).unwrap_err()
+        );
+        assert!(message.contains("pair.parquet"), "{message}");
     }
 
     #[test]
@@ -298,6 +306,7 @@ mod tests {
         let node = RelationHeader::new("node", vec!["id".to_string()]);
         let writer = sink.open(&node).unwrap();
         let shown = format!("{writer:?}");
-        assert!(shown.contains("node"), "{shown}");
+        assert!(shown.contains("relation: \"node\""), "{shown}");
+        assert!(shown.contains("ParquetWriter"), "{shown}");
     }
 }

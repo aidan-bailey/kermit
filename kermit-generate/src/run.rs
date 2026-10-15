@@ -89,6 +89,9 @@ pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extra
 /// `kermit_bench::cache::relation_cache_path` look for the cache. The full
 /// name rules are checked by `validate()` at step 5.
 fn check_target(out_dir: &Path, bench_name: &str) -> anyhow::Result<()> {
+    // The emptiness test is redundant with the `file_name` comparison
+    // (`Path::file_name` never yields an empty component) but states the
+    // contract's rule: a benchmark name is never empty.
     if bench_name.is_empty() || out_dir.file_name() != Some(OsStr::new(bench_name)) {
         bail!(
             "the output directory {} does not end in the benchmark name {bench_name:?}",
@@ -277,6 +280,22 @@ mod tests {
         assert!(err.contains("q3"), "{err}");
         assert!(err.contains("edge"), "{err}");
         assert!(err.contains('2') && err.contains('1'), "{err}");
+        assert!(err.contains("2 term(s)"), "{err}");
+        assert!(err.contains("1 column(s)"), "{err}");
+    }
+
+    #[test]
+    fn an_atom_with_fewer_terms_than_columns_is_rejected() {
+        let pair = RelationRecord {
+            columns: vec!["a".to_string(), "b".to_string()],
+            ..record("pair")
+        };
+        let narrow = [query("q4", "Q(X) :- pair(X).")];
+        let err = check_queries(&narrow, &[pair]).unwrap_err().to_string();
+        assert!(err.contains("q4"), "{err}");
+        assert!(err.contains("pair"), "{err}");
+        assert!(err.contains("1 term(s)"), "{err}");
+        assert!(err.contains("2 column(s)"), "{err}");
     }
 
     #[test]
