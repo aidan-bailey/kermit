@@ -20,7 +20,7 @@ use {
     std::{
         fs, io,
         path::{Path, PathBuf},
-        time::Duration,
+        time::{Duration, Instant},
     },
 };
 
@@ -339,6 +339,7 @@ fn stream_to_part(
         });
     }
 
+    let mut progress = Progress::new(url, response.content_length());
     let mut file = fs::File::create(part)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; DOWNLOAD_CHUNK_BYTES];
@@ -355,6 +356,7 @@ fn stream_to_part(
         hasher.update(&buf[..n]);
         file.write_all(&buf[..n])?;
         received += n as u64;
+        progress.update(received);
     }
     if received == 0 {
         return Err(BenchError::UnusableDownload {
@@ -427,6 +429,102 @@ fn download_file(url: &str, dest: &Path, rel: &RelationSource) -> Result<(), Ben
     fetch_checked(url, dest, |part, actual| {
         check_relation_part(url, part, rel, actual)
     })
+}
+
+/// A body of at least this many bytes reports its progress on stderr.
+const PROGRESS_MIN_BYTES: u64 = 64 << 20;
+
+/// The least time between two progress lines.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Downloads `url` to `dest`, checked against `sha256` (64 lowercase hex
+/// characters). For any file pinned by its digest, Parquet or not: a SNAP
+/// graph's `.gz` (#96), JOB's IMDb dump and query files (#97).
+///
+/// The body is streamed into `<dest>.part` while it is hashed, and renamed
+/// onto `dest` only once its digest equals `sha256`, so `dest` never holds a
+/// partial or unverified file and a failure leaves neither. It waits up to
+/// 30 s to connect, for the response headers and for each read of the body,
+/// with no limit on the whole download. A body of 64 `MiB` or more reports
+/// its progress on stderr every 10 s.
+///
+/// # Errors
+///
+/// - [`BenchError::Download`] — the request failed, or the connection stalled
+///   or dropped before or during the body.
+/// - [`BenchError::UnusableDownload`] — the server answered with a status
+///   other than `200 OK` (naming a WAF challenge) or with an empty body.
+/// - [`BenchError::Integrity`] — the body's digest differs from `sha256`; its
+///   `subject` is `file '<name>'`, where `<name>` is `dest`'s file name.
+/// - [`BenchError::Io`] — `dest`'s directory or its part file cannot be
+///   created or written.
+pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), BenchError> {
+    fetch_checked(url, dest, |_part, actual| {
+        if actual == sha256 {
+            Ok(())
+        } else {
+            Err(BenchError::Integrity {
+                subject: format!("file '{}'", file_name(dest)),
+                location: url.to_string(),
+                expected: sha256.to_string(),
+                actual,
+            })
+        }
+    })
+}
+
+/// `path`'s file name for a message, or the whole path if it has none.
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// Whether a download that has received `received` bytes reports its
+/// progress: a body whose length `total` is known to be at least
+/// [`PROGRESS_MIN_BYTES`], or one of unknown length once that many bytes have
+/// arrived.
+fn reports_progress(total: Option<u64>, received: u64) -> bool {
+    total.unwrap_or(received) >= PROGRESS_MIN_BYTES
+}
+
+/// One progress line, in whole `MiB`.
+fn progress_line(url: &str, received: u64, total: Option<u64>) -> String {
+    match total {
+        | Some(total) => {
+            format!("  downloading {url}: {} of {} MiB", received >> 20, total >> 20)
+        },
+        | None => format!("  downloading {url}: {} MiB so far", received >> 20),
+    }
+}
+
+/// Prints a large download's progress on stderr, at most once per
+/// [`PROGRESS_INTERVAL`].
+struct Progress<'a> {
+    /// The URL being fetched.
+    url: &'a str,
+    /// The body's length, when the response gives one.
+    total: Option<u64>,
+    /// When the last line was printed, or the download started.
+    last: Instant,
+}
+
+impl<'a> Progress<'a> {
+    fn new(url: &'a str, total: Option<u64>) -> Self {
+        Self {
+            url,
+            total,
+            last: Instant::now(),
+        }
+    }
+
+    fn update(&mut self, received: u64) {
+        if reports_progress(self.total, received) && self.last.elapsed() >= PROGRESS_INTERVAL {
+            self.last = Instant::now();
+            eprintln!("{}", progress_line(self.url, received, self.total));
+        }
+    }
 }
 
 /// Removes the cache directory for a specific benchmark.
@@ -898,5 +996,93 @@ mod tests {
         let err = download_file(&url, &dest, &url_relation(&url)).unwrap_err();
         assert!(matches!(err, BenchError::Io(_)), "{err:?}");
         assert!(!part_path(&dest).exists());
+    }
+
+    /// SHA-256 of `b"abc"`.
+    const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    /// `b"abc"` is not Parquet, so this also shows `download_verified` makes
+    /// no format check.
+    #[test]
+    fn download_verified_writes_a_file_whose_digest_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("raw/graph.txt.gz");
+        let url = serve_once(http_response("200 OK", &[], b"abc"));
+        download_verified(&url, &dest, ABC_SHA256).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"abc");
+        assert!(!part_path(&dest).exists());
+    }
+
+    #[test]
+    fn download_verified_rejects_a_digest_mismatch_and_leaves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("graph.txt.gz");
+        let url = serve_once(http_response("200 OK", &[], b"abc"));
+        let bad = "0".repeat(64);
+        match download_verified(&url, &dest, &bad).unwrap_err() {
+            | BenchError::Integrity {
+                subject,
+                location,
+                expected,
+                actual,
+            } => {
+                assert_eq!(subject, "file 'graph.txt.gz'");
+                assert_eq!(location, url);
+                assert_eq!(expected, bad);
+                assert_eq!(actual, ABC_SHA256);
+            },
+            | other => panic!("expected Integrity, got {other:?}"),
+        }
+        assert!(!dest.exists());
+        assert!(!part_path(&dest).exists());
+    }
+
+    /// Fetches `response` through `download_verified` into a fresh temp path
+    /// and returns the error text, asserting that neither the file nor its
+    /// `.part` was left behind.
+    fn rejected_verified(response: Vec<u8>) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("graph.txt.gz");
+        let url = serve_once(response);
+        let err = download_verified(&url, &dest, ABC_SHA256)
+            .expect_err("download should have been rejected");
+        assert!(!dest.exists());
+        assert!(!part_path(&dest).exists());
+        err.to_string()
+    }
+
+    #[test]
+    fn download_verified_rejects_a_challenge_a_non_200_and_an_empty_body() {
+        let waf = rejected_verified(http_response(
+            "202 Accepted",
+            &["x-amzn-waf-action: challenge"],
+            b"",
+        ));
+        assert!(waf.contains("challenge"), "{waf}");
+        let accepted = rejected_verified(http_response("202 Accepted", &[], b"abc"));
+        assert!(accepted.contains("202"), "{accepted}");
+        let empty = rejected_verified(http_response("200 OK", &[], b""));
+        assert!(empty.contains("empty"), "{empty}");
+    }
+
+    #[test]
+    fn progress_is_reported_only_for_large_bodies() {
+        let min = PROGRESS_MIN_BYTES;
+        assert!(reports_progress(Some(min), 0));
+        assert!(!reports_progress(Some(min - 1), min - 1));
+        assert!(!reports_progress(None, min - 1));
+        assert!(reports_progress(None, min));
+    }
+
+    #[test]
+    fn progress_lines_name_the_total_when_known() {
+        assert_eq!(
+            progress_line("http://h/x.tgz", 3 << 20, Some(10 << 20)),
+            "  downloading http://h/x.tgz: 3 of 10 MiB"
+        );
+        assert_eq!(
+            progress_line("http://h/x.tgz", 3 << 20, None),
+            "  downloading http://h/x.tgz: 3 MiB so far"
+        );
     }
 }
