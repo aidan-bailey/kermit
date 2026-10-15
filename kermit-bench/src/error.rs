@@ -18,7 +18,7 @@ pub enum BenchError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Downloading a relation file failed.
+    /// Downloading a file failed.
     #[error("download failed for {url}: {source}")]
     Download {
         /// URL that was being fetched.
@@ -27,10 +27,11 @@ pub enum BenchError {
         source: reqwest::Error,
     },
 
-    /// A download succeeded at the HTTP level but did not deliver a relation
-    /// file: a status other than `200 OK`, an empty body, or bytes without the
-    /// Parquet magic. Nothing is written to the cache.
-    #[error("download from {url} did not return a Parquet file: {reason}")]
+    /// A download succeeded at the HTTP level but did not deliver the file: a
+    /// status other than `200 OK`, an empty body, or, for a relation, bytes
+    /// without the Parquet magic. The part file is removed and the
+    /// destination left as it was.
+    #[error("download from {url} is unusable: {reason}")]
     UnusableDownload {
         /// URL that was being fetched.
         url: String,
@@ -109,20 +110,55 @@ pub enum BenchError {
         reason: String,
     },
 
-    /// A relation file's contents do not match the `sha256` its benchmark
-    /// declares.
+    /// A file's contents do not match its declared `sha256`: a
+    /// benchmark relation's file, or a raw file a generator pins by its digest.
     #[error(
-        "integrity check failed for relation '{relation}' from {location}: expected sha256 \
-         {expected}, got {actual}"
+        "integrity check failed for {subject} from {location}: expected sha256 {expected}, got \
+         {actual}"
     )]
     Integrity {
-        /// Relation name as declared in the YAML.
-        relation: String,
+        /// What was checked, as a noun phrase: `relation 'edge'` for a
+        /// benchmark relation, `file 'com-amazon.ungraph.txt.gz'` for a raw
+        /// download.
+        subject: String,
         /// The URL it was downloaded from, or the local path that was hashed.
         location: String,
-        /// Digest declared in the YAML.
+        /// Digest declared for it.
         expected: String,
         /// Digest computed from the bytes.
         actual: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BenchError;
+
+    /// A relation's subject renders as `relation 'edge'`, the form
+    /// `kermit/tests/cli_bench_fetch_integrity.rs` asserts.
+    #[test]
+    fn integrity_names_its_subject_verbatim() {
+        let err = BenchError::Integrity {
+            subject: "relation 'edge'".to_string(),
+            location: "/x".to_string(),
+            expected: "aa".to_string(),
+            actual: "bb".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "integrity check failed for relation 'edge' from /x: expected sha256 aa, got bb"
+        );
+    }
+
+    #[test]
+    fn unusable_download_does_not_presume_parquet() {
+        let err = BenchError::UnusableDownload {
+            url: "http://h/x.gz".to_string(),
+            reason: "the response body is empty".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "download from http://h/x.gz is unusable: the response body is empty"
+        );
+    }
 }

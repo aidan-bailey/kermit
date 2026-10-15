@@ -36,7 +36,11 @@ tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
 allocation-counter = "0.8"
+# `lubm_mini_oracle.rs` reads `dict.parquet`'s rows to pin the dictionary.
+arrow = "59.3.0"
 # The build records `execution.rs`'s tests read (`kermit_ds::test_hooks`).
 kermit-ds = { version = "0.2.0", path = "../kermit-ds", features = ["test-hooks"] }
+parquet = "59.3.0"
 paste = "1.0.15"
+sha2 = "0.11"
 tempfile = "3"
