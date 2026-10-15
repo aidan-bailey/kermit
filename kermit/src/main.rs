@@ -489,6 +489,25 @@ impl From<SnapQueryArg> for kermit_bench::SnapQuery {
     }
 }
 
+/// The CLI spelling of `kermit_bench::H2oOrder`; see [`SnapGraphArg`].
+/// `h2o_clap_names_match_the_spec_names` pins that the names agree.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum H2oOrderArg {
+    /// Each relation's rows in the order they are drawn (upstream's)
+    Shuffled,
+    /// Each relation's rows sorted, the order the sorted tries build in
+    Sorted,
+}
+
+impl From<H2oOrderArg> for kermit_bench::H2oOrder {
+    fn from(arg: H2oOrderArg) -> Self {
+        match arg {
+            | H2oOrderArg::Shuffled => Self::Shuffled,
+            | H2oOrderArg::Sorted => Self::Sorted,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum GenSubcommand {
     /// Generate a fresh watdiv benchmark on the fly
@@ -609,6 +628,29 @@ enum GenSubcommand {
         /// Queries to emit, comma-separated (default: all four)
         #[arg(long, value_enum, value_delimiter = ',')]
         queries: Vec<SnapQueryArg>,
+
+        #[command(flatten)]
+        target: GenTarget,
+    },
+
+    /// Generate an H2O db-benchmark join benchmark (#95)
+    H2o {
+        /// N, the rows of the fact table `x` (at least 10000000, upstream's
+        /// floor)
+        #[arg(
+            long,
+            value_name = "N",
+            value_parser = clap::value_parser!(u32).range(i64::from(kermit_bench::H2O_MIN_SCALE)..)
+        )]
+        scale: u32,
+
+        /// Random seed (default: upstream's 108)
+        #[arg(long, value_name = "SEED", default_value_t = kermit_bench::DEFAULT_H2O_SEED)]
+        seed: u32,
+
+        /// Row order of every relation
+        #[arg(long, value_enum, default_value_t = H2oOrderArg::Shuffled)]
+        order: H2oOrderArg,
 
         #[command(flatten)]
         target: GenTarget,
@@ -1401,6 +1443,57 @@ fn run_gen_snap(
     Ok(())
 }
 
+/// The name of a `bench gen h2o` benchmark: `h2o-<scale>-<tag>`, as `bench
+/// gen lubm` names `lubm-<scale>-<tag>`. The seed and the order go to
+/// `meta.json`, not the name.
+fn h2o_bench_name(scale: u32, tag: &str) -> String { format!("h2o-{scale}-{tag}") }
+
+/// Handler for `bench gen h2o`: generate the H2O db-benchmark join relations
+/// and queries through [`kermit_generate::h2o::H2oGenerator`].
+///
+/// The benchmark is named by [`h2o_bench_name`]. The equivalent declarative
+/// spec is validated first (the floor and the name), before anything is
+/// written. The run has no `spec_hash`, like every imperative `bench gen`.
+fn run_gen_h2o(scale: u32, seed: u32, order: H2oOrderArg, target: GenTarget) -> anyhow::Result<()> {
+    use {
+        kermit_bench::{GeneratorSpec, H2oOrder},
+        kermit_generate::h2o::{H2oGenerator, KeyPlan},
+    };
+
+    let order = H2oOrder::from(order);
+    let bench_name = h2o_bench_name(scale, &target.tag);
+
+    BenchmarkDefinition {
+        name: bench_name.clone(),
+        description: String::new(),
+        relations: vec![],
+        queries: vec![],
+        generator: Some(GeneratorSpec::H2o {
+            scale,
+            seed,
+            order,
+        }),
+    }
+    .validate()?;
+
+    let plan = KeyPlan::for_scale(scale)?;
+    let out = target.prepare("h2o", &bench_name)?;
+    let generator = H2oGenerator::new(
+        kermit_rdf::generator::Target {
+            out_dir: &out,
+            bench_name: &bench_name,
+            tag: &target.tag,
+            spec_hash: None,
+        },
+        plan,
+        seed,
+        order,
+    );
+    kermit_generate::run(&generator)?;
+    eprintln!("h2o benchmark written to {}", out.display());
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -1543,6 +1636,13 @@ fn main() -> anyhow::Result<()> {
                     queries,
                     target,
                 } => run_gen_snap(graph, url, sha256, queries, target)?,
+
+                | GenSubcommand::H2o {
+                    scale,
+                    seed,
+                    order,
+                    target,
+                } => run_gen_h2o(scale, seed, order, target)?,
             },
         },
     }
@@ -2078,5 +2178,98 @@ mod tests {
             .map(|q| kermit_bench::SnapQuery::from(*q).name())
             .collect();
         assert_eq!(names, ["triangle", "clique4"]);
+    }
+
+    /// The names clap accepts for `--order` are the names the YAML spec
+    /// uses: kermit-bench has no clap dependency, so the binary spells them
+    /// twice and this pins that the two agree, variant for variant, in
+    /// order.
+    #[test]
+    fn h2o_clap_names_match_the_spec_names() {
+        use clap::ValueEnum;
+
+        let mut orders = Vec::new();
+        for arg in H2oOrderArg::value_variants() {
+            let clap_name = arg.to_possible_value().unwrap().get_name().to_string();
+            assert_eq!(clap_name, kermit_bench::H2oOrder::from(*arg).name());
+            orders.push(clap_name);
+        }
+        let spec_orders: Vec<&str> = kermit_bench::H2oOrder::ALL
+            .iter()
+            .map(|o| o.name())
+            .collect();
+        assert_eq!(orders, spec_orders);
+    }
+
+    /// `--scale` is required and floored at `H2O_MIN_SCALE`, `--seed` and
+    /// `--order` default to upstream's 108 and `shuffled`, and a value
+    /// outside any of them is refused at parse time, before the handler
+    /// runs.
+    #[test]
+    fn h2o_flags_default_and_enforce_the_floor() {
+        use kermit_bench::H2oOrder;
+
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["kermit", "bench", "gen", "h2o", "--tag", "t"];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from(argv)
+        };
+        let fields = |cli: Cli| {
+            let Commands::Bench {
+                subcommand:
+                    BenchSubcommand::Gen {
+                        subcommand:
+                            GenSubcommand::H2o {
+                                scale,
+                                seed,
+                                order,
+                                ..
+                            },
+                    },
+                ..
+            } = cli.command
+            else {
+                panic!("not a `bench gen h2o` command");
+            };
+            (scale, seed, H2oOrder::from(order))
+        };
+
+        let cli = parse(&["--scale", "10000000"]).expect("the floor itself parses");
+        assert_eq!(fields(cli), (10_000_000, 108, H2oOrder::Shuffled));
+        let cli = parse(&["--scale", "12000000", "--order", "sorted", "--seed", "7"])
+            .expect("a seed and an order parse");
+        assert_eq!(fields(cli), (12_000_000, 7, H2oOrder::Sorted));
+        let cli = parse(&["--scale", "4294967295"]).expect("the largest u32 parses");
+        assert_eq!(fields(cli).0, u32::MAX);
+
+        // One below the floor is refused, and the error names the flag and
+        // the floor.
+        let Err(below) = parse(&["--scale", "9999999"]) else {
+            panic!("--scale 9999999 was accepted");
+        };
+        let message = below.to_string();
+        assert!(
+            message.contains("--scale") && message.contains("10000000"),
+            "{message}"
+        );
+
+        let rejected: &[&[&str]] = &[
+            // zero, and no scale at all
+            &["--scale", "0"],
+            &[],
+            // an order outside the enum, or spelled in another case
+            &["--scale", "10000000", "--order", "random"],
+            &["--scale", "10000000", "--order", "Sorted"],
+        ];
+        for args in rejected {
+            assert!(parse(args).is_err(), "{args:?} should be rejected");
+        }
+    }
+
+    /// `h2o-<scale>-<tag>`, as `bench gen lubm` names `lubm-<scale>-<tag>`.
+    #[test]
+    fn h2o_bench_name_is_scale_and_tag() {
+        assert_eq!(h2o_bench_name(10_000_000, "dev"), "h2o-10000000-dev");
+        assert_eq!(h2o_bench_name(12_000_000, "a-b"), "h2o-12000000-a-b");
     }
 }
