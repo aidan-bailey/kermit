@@ -61,6 +61,7 @@ mod meta;
 mod output_dir;
 mod run;
 mod sink;
+pub mod snap;
 
 pub use {
     generator::{Generated, Generator},
