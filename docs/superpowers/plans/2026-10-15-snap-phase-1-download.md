@@ -660,14 +660,14 @@ Claude-Session: https://claude.ai/code/session_01GVMQgHfjGHYeJpbR8BZsQ9"
 
 - [ ] **Step 6: Mutation checks 1 to 3** (after the commit; each must make its named test FAIL, then be restored)
 
-Mutant 1: `body_read_error` always returns `Io`.
+Mutant 1: `body_read_error` always returns `Io`. (As built: the review changed `body_read_error` to `match err.downcast::<reqwest::Error>()`; see As-built notes.)
 ```bash
-sed -i 's/^    if !err$/    if true || !err/' kermit-bench/src/cache.rs
-grep -c 'if true || !err' kermit-bench/src/cache.rs   # must print 1
+sed -i 's/    match err.downcast::<reqwest::Error>() {/    match Err::<reqwest::Error, io::Error>(err) {/' kermit-bench/src/cache.rs
+grep -c 'match Err::<reqwest::Error, io::Error>(err)' kermit-bench/src/cache.rs   # must print 1
 nix develop --command env CARGO_BUILD_JOBS=2 cargo test -p kermit-bench --lib cache::tests::a_body_that_stalls_fails_as_a_download_error -- --exact
 git checkout -- kermit-bench/src/cache.rs
 ```
-Expected: the test FAILS (`Io(..)` is not `Download`). If `grep -c` printed 0, `cargo fmt` laid the condition out differently: find the line with `grep -n 'is_some_and(|inner| inner.is::<reqwest::Error>())' kermit-bench/src/cache.rs` and mutate the `if` above it by hand.
+Expected: the test FAILS (`Io(..)` is not `Download`).
 
 Mutant 2: `fetch_checked` never removes the part file.
 ```bash
@@ -1061,3 +1061,20 @@ Expected: every `test result: ok`, no `FAILED`. If `e2e_watdiv` fails, rerun it 
 - [ ] **Step 6: Report**
 
 Report the gate results, the five mutation outcomes, and the branch tip (`git log --oneline -1`) to the user. Landing on master (merge `origin/master`, re-gate, `git push origin HEAD:master`) waits for the user's go-ahead. After it lands, send the master SHA to the JOB session (`job-18dea468f74c13c3-e6`) and to the benchmark co-ordinator, as promised.
+
+---
+
+## As-built notes
+
+Changes made during execution, each after a review, so that the code differs from this plan's blocks:
+
+- **T1 (0c11e61), code-quality review:** three doc-comment rewordings in `kermit-bench/src/error.rs`. `Download` says "Downloading a file failed.", `Integrity`'s doc reads cleanly, and the message-pinning test states its rule instead of its history.
+- **T2, code-quality review (fix commit after 23f14ea):**
+  - `serve_trickle`'s write chain is split one call per line (`chain_width = 60`).
+  - New test `download_file_accepts_a_matching_digest`. Deleting `check_digest`'s test had left the accept branch untested. The mismatch test also asserts `actual`.
+  - `body_read_error` is `match err.downcast::<reqwest::Error>() { | Ok(source) => Download { .. }, | Err(err) => Io(err) }` (`io::Error::downcast`, stable since 1.79), with no `expect`. Mutant 1 targets that `match`.
+  - The stall test asserts the part file holds `PAR1`, pinning the failure to mid-body.
+  - `rejected_download` checks `part_path(&dest)`.
+  - New test `a_failed_rename_still_removes_the_part_file`.
+  - `DOWNLOAD_TIMEOUT`'s doc now says the request and its headers count as one window.
+  - Not taken: a `sync_all` before the rename (durability across power loss); the old code didn't have one either.
