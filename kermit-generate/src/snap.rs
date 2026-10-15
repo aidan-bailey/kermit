@@ -8,7 +8,7 @@
 //! (#78), never a skipped line.
 
 mod counts;
-
+pub use counts::expected_counts;
 use {
     anyhow::{bail, Context},
     flate2::read::MultiGzDecoder,
