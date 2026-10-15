@@ -446,8 +446,10 @@ spec's "Requirements from #96 and #97" table:
 - **Reference counts** (an inline unit test in `kermit-generate/src/snap.rs`, beside the
   parser and oracle tests): downloads amazon and dblp (8.6 MB) into a temp directory through
   `download_verified` and checks the eight verified values through the parser and the
-  oracle. A `BenchError::Download` (connection, DNS) skips with a note on stderr; any
-  other error, a digest mismatch included, fails.
+  oracle. A `BenchError::Download` with no HTTP status (`source.status().is_none()`: a
+  connection, DNS or timeout failure) skips with a note on stderr. Any other error fails,
+  including a `Download` carrying a 4xx/5xx status, since a dead SNAP URL must not pass as
+  "offline", and a digest mismatch.
 
 ## Out of scope
 

@@ -97,7 +97,8 @@ pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
 /// - [`BenchError::NoCacheDir`] — the platform cache directory is not
 ///   available.
 /// - [`BenchError::Io`] — the cache directory cannot be created, a downloaded
-///   file cannot be written, or a declared local path does not exist.
+///   file cannot be written, read back or renamed into place, or a declared
+///   local path does not exist.
 /// - [`BenchError::Download`] — an HTTP error occurred while fetching a
 ///   relation file, or the connection stalled for 30 s before or during the
 ///   body.
@@ -290,8 +291,8 @@ fn part_path(dest: &Path) -> PathBuf {
 
 /// Streams `url` into `<dest>.part`, hands the finished part file and its
 /// SHA-256 to `check`, and renames it onto `dest` only if `check` passes.
-/// Every failure removes the part file, so a download leaves either a checked
-/// file at `dest` or nothing (#70).
+/// Every failure removes the part file and leaves `dest` as it was, so `dest`
+/// only ever receives a checked file (#70).
 fn fetch_checked(
     url: &str, dest: &Path, check: impl FnOnce(&Path, String) -> Result<(), BenchError>,
 ) -> Result<(), BenchError> {
@@ -987,7 +988,7 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap();
         let part = dir.path().join("stalled.part");
-        let err = stream_to_part(&client_with_timeout(Duration::from_millis(500)), &url, &part)
+        let err = stream_to_part(&client_with_timeout(Duration::from_secs(1)), &url, &part)
             .unwrap_err();
         assert!(matches!(err, BenchError::Download { .. }), "{err:?}");
         assert_eq!(

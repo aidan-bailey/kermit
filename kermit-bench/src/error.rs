@@ -29,7 +29,8 @@ pub enum BenchError {
 
     /// A download succeeded at the HTTP level but did not deliver the file: a
     /// status other than `200 OK`, an empty body, or, for a relation, bytes
-    /// without the Parquet magic. Nothing is left at the destination.
+    /// without the Parquet magic. The part file is removed and the
+    /// destination left as it was.
     #[error("download from {url} is unusable: {reason}")]
     UnusableDownload {
         /// URL that was being fetched.
