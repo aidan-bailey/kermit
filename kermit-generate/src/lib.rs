@@ -52,9 +52,14 @@
 //! The binary's `materialize` dispatch calls `run` once per generator kind
 //! and discards the `GeneratedMeta` it returns. `bench gen` may print a
 //! summary from it.
+//!
+//! # Generators
+//!
+//! - [`job`]: the Join Order Benchmark over IMDb (#97).
 #![deny(missing_docs)]
 
 mod generator;
+pub mod job;
 mod meta;
 mod output_dir;
 mod run;
