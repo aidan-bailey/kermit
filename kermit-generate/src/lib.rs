@@ -55,10 +55,12 @@
 //! summary from it.
 #![deny(missing_docs)]
 
+mod meta;
 mod output_dir;
 mod sink;
 
 pub use {
+    meta::GeneratedMeta,
     output_dir::{output_dir, OutputDir},
     sink::{RelationRecord, RelationSink, RelationWriter},
 };
