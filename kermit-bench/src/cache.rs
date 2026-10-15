@@ -10,7 +10,10 @@
 //! on demand.
 //!
 //! [`ensure_cached`] is the entry point; [`clean_benchmark`] and [`clean_all`]
-//! remove cached files.
+//! remove cached files. [`download_verified`] downloads any other file pinned
+//! by its digest, such as a generator's raw input, through the same streaming
+//! core: a body is staged in a `.part` file while it is hashed and renamed
+//! onto its destination only once it passes its checks.
 
 use {
     crate::{
@@ -96,7 +99,8 @@ pub fn is_cached(benchmark: &BenchmarkDefinition) -> Result<bool, BenchError> {
 /// - [`BenchError::Io`] — the cache directory cannot be created, a downloaded
 ///   file cannot be written, or a declared local path does not exist.
 /// - [`BenchError::Download`] — an HTTP error occurred while fetching a
-///   relation file.
+///   relation file, or the connection stalled for 30 s before or during the
+///   body.
 /// - [`BenchError::UnusableDownload`] — the server answered without error but
 ///   did not send a Parquet file (non-200 status, empty body, missing magic).
 /// - [`BenchError::Integrity`] — a downloaded file does not match the `sha256`
