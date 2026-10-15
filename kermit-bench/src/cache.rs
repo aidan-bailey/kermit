@@ -20,6 +20,7 @@ use {
     std::{
         fs, io,
         path::{Path, PathBuf},
+        time::Duration,
     },
 };
 
@@ -178,18 +179,6 @@ pub fn sha256_hex(path: &Path) -> Result<String, BenchError> {
     Ok(crate::definition::hex_digest(&hasher.finalize()))
 }
 
-/// Compares `bytes` against a declared digest. `Err` carries the actual
-/// digest so the caller can report both.
-fn check_digest(bytes: &[u8], expected: &str) -> Result<(), String> {
-    use sha2::{Digest, Sha256};
-    let actual = crate::definition::hex_digest(&Sha256::digest(bytes));
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(actual)
-    }
-}
-
 /// Re-hashes every relation of `benchmark` that declares a `sha256`
 /// (cached `url:` files and committed `path:` files alike) and returns how
 /// many were checked. Callers run [`ensure_cached`] first.
@@ -229,9 +218,10 @@ pub fn verify_integrity(
 const PARQUET_MAGIC: &[u8] = b"PAR1";
 
 /// Explains why the file at `path` cannot be a Parquet file, or returns
-/// `None` if it may be one: the structural check [`unusable_download`]
-/// applies to a download, `PAR1` at both ends, read from the file's first
-/// and last four bytes so a large relation is not read whole.
+/// `None` if it may be one: `PAR1` at both ends, read from the file's first
+/// and last four bytes so a large relation is not read whole. Applied to a
+/// cached relation and, by [`check_relation_part`], to every relation
+/// download before it reaches its cache path.
 ///
 /// # Errors
 ///
@@ -262,94 +252,187 @@ fn cached_file_problem(path: &Path) -> Result<Option<String>, BenchError> {
     )))
 }
 
-/// Explains why a response that passed `error_for_status` is still not a
-/// relation file, or returns `None` if it is one.
-///
-/// `error_for_status` only rejects 4xx/5xx, so a `202 Accepted` with an empty
-/// body — what an AWS WAF bot challenge looks like to a non-browser client —
-/// would otherwise be cached as a zero-byte `.parquet` and never re-fetched.
-fn unusable_download(
-    status: reqwest::StatusCode, waf_action: Option<&str>, body: &[u8],
-) -> Option<String> {
-    if status != reqwest::StatusCode::OK {
-        return Some(match waf_action {
-            | Some(action) => format!(
-                "HTTP {status} with `x-amzn-waf-action: {action}`: the host answered with a \
-                 bot-protection challenge instead of the file"
-            ),
-            | None => format!("expected HTTP 200 OK, got {status}"),
-        });
-    }
-    if body.is_empty() {
-        return Some("the response body is empty".to_string());
-    }
-    let is_parquet = body.len() >= 2 * PARQUET_MAGIC.len()
-        && body.starts_with(PARQUET_MAGIC)
-        && body.ends_with(PARQUET_MAGIC);
-    if !is_parquet {
-        return Some(format!(
-            "the {}-byte body lacks the Parquet `PAR1` magic at both ends",
-            body.len()
-        ));
-    }
-    None
+/// How long a download waits to connect, for the response headers, and for
+/// each read of the body. reqwest's blocking client applies its `timeout` to
+/// each of those operations, not to the whole body, so a download that keeps
+/// arriving has no total limit and one that stalls this long fails.
+/// `Response::bytes()` would wait on the whole body under one timeout, which
+/// is why bodies are streamed through `Read` instead.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Bytes read from a response body per call.
+const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
+
+/// The client every download uses (see [`DOWNLOAD_TIMEOUT`]).
+fn http_client(url: &str) -> Result<reqwest::blocking::Client, BenchError> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(DOWNLOAD_TIMEOUT)
+        .timeout(DOWNLOAD_TIMEOUT)
+        .build()
+        .map_err(|source| BenchError::Download {
+            url: url.to_string(),
+            source,
+        })
 }
 
-/// Downloads a file from a URL to the given destination path, rejecting a
-/// response that is not a Parquet file (see [`unusable_download`]) and
-/// checking it against `rel`'s declared `sha256` (if any) before anything is
-/// written.
-fn download_file(url: &str, dest: &Path, rel: &RelationSource) -> Result<(), BenchError> {
+/// Where a download is staged until it is checked: `dest` with `.part`
+/// appended to its file name (`edge.parquet` becomes `edge.parquet.part`).
+fn part_path(dest: &Path) -> PathBuf {
+    let mut name = dest.as_os_str().to_owned();
+    name.push(".part");
+    PathBuf::from(name)
+}
+
+/// Streams `url` into `<dest>.part`, hands the finished part file and its
+/// SHA-256 to `check`, and renames it onto `dest` only if `check` passes.
+/// Every failure removes the part file, so a download leaves either a checked
+/// file at `dest` or nothing (#70).
+fn fetch_checked(
+    url: &str, dest: &Path, check: impl FnOnce(&Path, String) -> Result<(), BenchError>,
+) -> Result<(), BenchError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
+    let part = part_path(dest);
+    let fetched = http_client(url)
+        .and_then(|client| stream_to_part(&client, url, &part))
+        .and_then(|sha256| check(&part, sha256))
+        .and_then(|()| fs::rename(&part, dest).map_err(BenchError::from));
+    if fetched.is_err() {
+        // Absent when the request failed before the body; nothing to report.
+        let _ = fs::remove_file(&part);
+    }
+    fetched
+}
 
-    // Atomic-download staging: write bytes to a `.part` sibling, then rename it
-    // onto `dest` only on success, so a crashed download never leaves a
-    // truncated file at the real cache path.
-    let part_path = dest.with_extension("parquet.part");
+/// Sends a GET for `url` and streams a `200 OK` body into `part` while
+/// hashing it, returning the body's SHA-256 as 64 lowercase hex characters.
+/// A response other than `200 OK` is rejected before its body is read
+/// ([`unusable_status`]), and an empty body after it. The caller removes
+/// `part` on failure.
+fn stream_to_part(
+    client: &reqwest::blocking::Client, url: &str, part: &Path,
+) -> Result<String, BenchError> {
+    use {
+        io::{Read as _, Write as _},
+        sha2::{Digest, Sha256},
+    };
 
-    let response = reqwest::blocking::get(url)
+    let mut response = client
+        .get(url)
+        .send()
         .and_then(|r| r.error_for_status())
         .map_err(|source| BenchError::Download {
             url: url.to_string(),
             source,
         })?;
-
-    let status = response.status();
     let waf_action = response
         .headers()
         .get("x-amzn-waf-action")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-
-    let bytes = response.bytes().map_err(|source| BenchError::Download {
-        url: url.to_string(),
-        source,
-    })?;
-
-    if let Some(reason) = unusable_download(status, waf_action.as_deref(), &bytes) {
+    if let Some(reason) = unusable_status(response.status(), waf_action.as_deref()) {
         return Err(BenchError::UnusableDownload {
             url: url.to_string(),
             reason,
         });
     }
 
-    if let Some(expected) = rel.sha256.as_deref() {
-        if let Err(actual) = check_digest(&bytes, expected) {
-            return Err(BenchError::Integrity {
-                subject: format!("relation '{}'", rel.name),
-                location: url.to_string(),
-                expected: expected.to_string(),
-                actual,
-            });
+    let mut file = fs::File::create(part)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; DOWNLOAD_CHUNK_BYTES];
+    let mut received: u64 = 0;
+    loop {
+        let n = match response.read(&mut buf) {
+            | Ok(n) => n,
+            | Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            | Err(e) => return Err(body_read_error(url, e)),
+        };
+        if n == 0 {
+            break;
         }
+        hasher.update(&buf[..n]);
+        file.write_all(&buf[..n])?;
+        received += n as u64;
     }
+    if received == 0 {
+        return Err(BenchError::UnusableDownload {
+            url: url.to_string(),
+            reason: "the response body is empty".to_string(),
+        });
+    }
+    Ok(crate::definition::hex_digest(&hasher.finalize()))
+}
 
-    fs::write(&part_path, &bytes)?;
-    fs::rename(&part_path, dest)?;
+/// Explains why a response that passed `error_for_status` is still not the
+/// file, or returns `None` for a `200 OK`.
+///
+/// `error_for_status` only rejects 4xx/5xx, so a `202 Accepted` with an empty
+/// body (what an AWS WAF bot challenge looks like to a non-browser client)
+/// would otherwise be streamed into the cache as a zero-byte file.
+fn unusable_status(status: reqwest::StatusCode, waf_action: Option<&str>) -> Option<String> {
+    if status == reqwest::StatusCode::OK {
+        return None;
+    }
+    Some(match waf_action {
+        | Some(action) => format!(
+            "HTTP {status} with `x-amzn-waf-action: {action}`: the host answered with a \
+             bot-protection challenge instead of the file"
+        ),
+        | None => format!("expected HTTP 200 OK, got {status}"),
+    })
+}
 
-    Ok(())
+/// The error for a failed read of a response body. `Response::read` wraps
+/// reqwest's own error (a stalled or dropped connection) in an `io::Error`;
+/// that becomes a [`BenchError::Download`], as the same failure before the
+/// body would, and any other error stays a [`BenchError::Io`].
+fn body_read_error(url: &str, err: io::Error) -> BenchError {
+    if !err
+        .get_ref()
+        .is_some_and(|inner| inner.is::<reqwest::Error>())
+    {
+        return BenchError::Io(err);
+    }
+    let source = err
+        .into_inner()
+        .and_then(|inner| inner.downcast::<reqwest::Error>().ok())
+        .expect("checked above that the inner error is a reqwest::Error");
+    BenchError::Download {
+        url: url.to_string(),
+        source: *source,
+    }
+}
+
+/// The relation checks on a downloaded part file: the Parquet magic at both
+/// ends ([`cached_file_problem`]), then the relation's declared digest, if it
+/// declares one.
+fn check_relation_part(
+    url: &str, part: &Path, rel: &RelationSource, actual: String,
+) -> Result<(), BenchError> {
+    if let Some(reason) = cached_file_problem(part)? {
+        return Err(BenchError::UnusableDownload {
+            url: url.to_string(),
+            reason,
+        });
+    }
+    match rel.sha256.as_deref() {
+        | Some(expected) if expected != actual => Err(BenchError::Integrity {
+            subject: format!("relation '{}'", rel.name),
+            location: url.to_string(),
+            expected: expected.to_string(),
+            actual,
+        }),
+        | _ => Ok(()),
+    }
+}
+
+/// Downloads a relation file from `url` to `dest`: [`fetch_checked`] with the
+/// relation checks ([`check_relation_part`]).
+fn download_file(url: &str, dest: &Path, rel: &RelationSource) -> Result<(), BenchError> {
+    fetch_checked(url, dest, |part, actual| {
+        check_relation_part(url, part, rel, actual)
+    })
 }
 
 /// Removes the cache directory for a specific benchmark.
@@ -442,14 +525,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn check_digest_accepts_match_and_reports_mismatch() {
-        let ok = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        assert_eq!(check_digest(b"abc", ok), Ok(()));
-        let bad = "0".repeat(64);
-        assert_eq!(check_digest(b"abc", &bad), Err(ok.to_string()));
-    }
-
     fn local_bench(root: &std::path::Path, sha256: Option<&str>) -> BenchmarkDefinition {
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(root.join("data/edge.csv"), b"abc").unwrap();
@@ -527,7 +602,16 @@ mod tests {
     /// Serves `response` verbatim to the first connection on a loopback port
     /// and returns the URL to fetch it from.
     fn serve_once(response: Vec<u8>) -> String {
-        use std::io::{Read, Write};
+        serve_with(move |stream| {
+            use std::io::Write;
+            stream.write_all(&response).unwrap();
+        })
+    }
+
+    /// Accepts the first connection on a loopback port, reads its request
+    /// head, hands the stream to `respond`, and returns the URL to fetch.
+    fn serve_with(respond: impl FnOnce(&mut std::net::TcpStream) + Send + 'static) -> String {
+        use std::io::Read;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/relation.parquet", listener.local_addr().unwrap());
@@ -542,7 +626,7 @@ mod tests {
                 }
                 request.extend_from_slice(&buf[..n]);
             }
-            stream.write_all(&response).unwrap();
+            respond(&mut stream);
         });
         url
     }
@@ -661,5 +745,116 @@ mod tests {
             },
             | other => panic!("expected Integrity, got {other:?}"),
         }
+    }
+
+    /// Serves a `200 OK` with `body` to the first connection, writing the
+    /// body in `chunks` pieces with `gap` before each, and returns its URL.
+    fn serve_trickle(body: Vec<u8>, chunks: usize, gap: Duration) -> String {
+        serve_with(move |stream| {
+            use std::io::Write;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            for piece in body.chunks(body.len().div_ceil(chunks)) {
+                std::thread::sleep(gap);
+                if stream.write_all(piece).and_then(|()| stream.flush()).is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
+    /// A client whose per-operation timeout is short enough to test against.
+    fn client_with_timeout(timeout: Duration) -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn part_path_appends_to_the_file_name() {
+        assert_eq!(
+            part_path(Path::new("/c/edge.parquet")),
+            Path::new("/c/edge.parquet.part")
+        );
+        assert_eq!(
+            part_path(Path::new("raw/com-amazon.ungraph.txt.gz")),
+            Path::new("raw/com-amazon.ungraph.txt.gz.part")
+        );
+    }
+
+    #[test]
+    fn download_file_reports_a_digest_mismatch_as_its_relation() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("edge.parquet");
+        let url = serve_once(http_response("200 OK", &[], PARQUET_LIKE));
+        let mut rel = url_relation(&url);
+        rel.sha256 = Some("0".repeat(64));
+        match download_file(&url, &dest, &rel).unwrap_err() {
+            | BenchError::Integrity {
+                subject, expected, ..
+            } => {
+                assert_eq!(subject, "relation 'edge'");
+                assert_eq!(expected, "0".repeat(64));
+            },
+            | other => panic!("expected Integrity, got {other:?}"),
+        }
+        assert!(!dest.exists());
+        assert!(!part_path(&dest).exists());
+    }
+
+    /// reqwest's blocking timeout bounds each read, not the whole body: a body
+    /// that keeps arriving in gaps shorter than the timeout succeeds although
+    /// it takes longer than the timeout in total. This is the semantics
+    /// `DOWNLOAD_TIMEOUT` relies on, pinned against a reqwest upgrade.
+    #[test]
+    fn a_body_that_keeps_arriving_has_no_total_timeout() {
+        use sha2::{Digest, Sha256};
+
+        let body = vec![7u8; 6 * 1024];
+        let url = serve_trickle(body.clone(), 6, Duration::from_millis(250));
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("slow.bin.part");
+        let started = std::time::Instant::now();
+        let sha256 =
+            stream_to_part(&client_with_timeout(Duration::from_secs(1)), &url, &part).unwrap();
+        assert!(
+            started.elapsed() > Duration::from_secs(1),
+            "the body must take longer than the timeout"
+        );
+        assert_eq!(fs::read(&part).unwrap(), body);
+        assert_eq!(
+            sha256,
+            crate::definition::hex_digest(&Sha256::digest(&body))
+        );
+    }
+
+    /// A connection that stalls mid-body for longer than the timeout fails as
+    /// a download error, as the same stall before the body would.
+    #[test]
+    fn a_body_that_stalls_fails_as_a_download_error() {
+        let url = serve_with(|stream| {
+            use std::io::Write;
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nPAR1",
+            );
+            let _ = stream.flush();
+            std::thread::sleep(Duration::from_secs(3));
+            let _ = stream.write_all(b"PAR1");
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("stalled.part");
+        let err = stream_to_part(&client_with_timeout(Duration::from_millis(500)), &url, &part)
+            .unwrap_err();
+        assert!(matches!(err, BenchError::Download { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn a_body_read_error_not_raised_by_reqwest_stays_io() {
+        let err = body_read_error("http://h/x", io::Error::other("disk full"));
+        assert!(matches!(err, BenchError::Io(_)), "{err:?}");
     }
 }
