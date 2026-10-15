@@ -210,7 +210,9 @@ and document, don't fix here.
 - **Committed.** `benchmarks/job-1.yml` … `job-33.yml`. Cache hit, drift,
   `--force` and `bench list` come from the shared meta, as for LUBM.
 - **`meta.json` extras.** The template, the `imdb.tgz` SHA-256, the query
-  commit and per-file SHA-256s, `duckdb --version`, and `sources`: per
+  commit and per-file SHA-256s, `duckdb --version` of the generation and of
+  the raw-cache build (`duckdb_version`, `raw_duckdb_version`; they differ
+  when a cache built by an older DuckDB is reused), and `sources`: per
   relation `{relation, table, filter}`, joined by name to the common
   `relations` list, which already records each relation's columns, rows and
   SHA-256. `filter` is the query's own predicate on that alias. Every

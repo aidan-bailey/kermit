@@ -399,6 +399,7 @@ pub struct JobExtras {
     pub query_commit: String,
     pub query_sha256: BTreeMap<String, String>,   // this template's files and schema.sql
     pub duckdb_version: String,                   // the generation's
+    pub raw_duckdb_version: String,               // the raw-cache build's (provenance.json); added in J6's carry-forward, 41e956f
     pub sources: Vec<JobSource>,
 }
 

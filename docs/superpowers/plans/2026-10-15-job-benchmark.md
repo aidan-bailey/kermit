@@ -8658,8 +8658,9 @@ error names the relation and quotes stderr, and no `<name>.parquet` is left behi
 `spec_hash`, `relation_count`, `query_count`, and `relations`: each relation's columns, rows and
 SHA-256), plus JOB's:
 `template`, `imdb_sha256`, `query_commit`, `query_sha256` (this template's files and
-`schema.sql`), `duckdb_version` (the generation's), and `sources` (per relation `{relation,
-table, filter}`, joined by name to `relations`).
+`schema.sql`), `duckdb_version` (the generation's), `raw_duckdb_version` (the one that built the
+raw cache, from its `provenance.json`), and `sources` (per relation `{relation, table, filter}`,
+joined by name to `relations`).
 
 The raw cache has no `benchmark.yml` and no `meta.json`, so benchmark discovery ignores it. It
 sits beside the `benchmarks/` cache, not in it: `bench clean job-6` and `bench clean --all`
@@ -9473,9 +9474,10 @@ Departures from this plan's code text, already landed (each task's Step 1 should
 3. `raw.rs:144, 152-158`: `split_query_stem` rejects a leading `0` in the template number. `01a.sql` is accepted today, `template_queries` names it `1a`, and J5 then looks up `1a.sql`'s digest; `1a.sql` plus `01a.sql` collide only after every relation is written.
 4. `raw.rs:938, 955`: give the scratch dialect test a column of all-`'x'` values so that dropping `QUOTE` and `AUTO_DETECT` fails (prove it with that mutant); if DuckDB's sniffer keeps the apostrophes even then, cut the "whatever the sample looks like" claim instead.
 5. `raw.rs:545`: delete the doc clause "an empty folder is refused too" (the separate test at `:583` covers it).
+6. `raw.rs:316, 327`: the `COPY` and the row-count query quote table names by hand; use `duckdb::sql_identifier` (41e956f).
 
 **J8** (docs): JOB.md's DuckDB-sessions and output-layout text (lines 8630-8632, 8654) calls `duckdb.tmp` "DuckDB's spill directory"; it is the parent of the per-call `<pid>-<seq>` spill directories. Line 8676's `imdb.fetch-<pid>` / `imdb.building-<pid>` become `-<pid>-<seq>`.
 
 **Outside JOB:** `kermit/tests/job_generate.rs` holds a third copy of the 14 structure × layout aliases (after `join_tests.rs` and `column_orders_any.rs`) and a `mismatches` / `cells` count-oracle loop that generalises the LUBM and WatDiv loops. Moving both into `kermit/tests/common/` is a cross-cutting test change; it is flagged to the benchmark co-ordinator for SNAP and H2O and is not JOB's.
 
-**Optional** (skipped by earlier rulings; take one only when its file is open anyway): `translate.rs`'s `has_subquery` misses `ARRAY(SELECT …)` (`Expr::Function` with `FunctionArguments::Subquery`), so its doc at `:208-211` overclaims; a test comment near `:1063-1070` calls a top-level `NOT EXISTS` nested; `translate.rs:530`'s doc line breaks early; `duckdb.rs:86-87` says the next cache clean removes stray spill directories (`bench clean --all` leaves `~/.cache/kermit/imdb`), and `:243-244`'s "every path below reaps it" does not hold for a failed `take()` or `wait()`.
+**Optional** (skipped by earlier rulings; take one only when its file is open anyway): `translate.rs`'s `has_subquery` misses `ARRAY(SELECT …)` (`Expr::Function` with `FunctionArguments::Subquery`), so its doc at `:208-211` overclaims; a test comment near `:1063-1070` calls a top-level `NOT EXISTS` nested; `translate.rs:530`'s doc line breaks early; `duckdb.rs:86-87` says the next cache clean removes stray spill directories (`bench clean --all` leaves `~/.cache/kermit/imdb`), and `:243-244`'s "every path below reaps it" does not hold for a failed `take()` or `wait()`. From C06.0's review (41e956f): `mod.rs:69-72`'s parenthetical reads as if the columns are what the join never matches (say: "drops rows with a NULL in a join column, since an SQL equi-join never matches them; its join columns are the leading columns of its `relations` entry"); `mod.rs:272`'s struct literal has `raw_duckdb_version` before `duckdb_version`; `mod.rs:122-131`'s doc lines are ragged; and `job_generate.rs:555-585`'s `regeneration_is_byte_identical` relies on the reversed scan order without the `:398-415` guard (share the guard as a `Fixture` helper).
