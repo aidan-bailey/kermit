@@ -523,7 +523,10 @@ fn count_star() -> SelectItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationPlan {
     /// The file and relation name: the table's name when unfiltered, else
-    /// `{table}_{alias}_{letters}` (`keyword_k_ace`). The generator's sink
+    /// `{table}_{alias}_{letters}` (`keyword_k_ace`), where `alias` is the
+    /// alias of the first query that reads the relation and `letters` are the
+    /// variant letters of every query that does (`6a` gives `a`), in input
+    /// order. The generator's sink
     /// requires `[a-z][a-z0-9_]*`, which holds for JOB's lowercase table and
     /// alias names; the sink rejects anything else.
     pub name: String,
@@ -1311,11 +1314,19 @@ mod tests {
             .collect()
     }
 
+    /// Every rule's text, each checked to parse as Datalog on the way, so every
+    /// rule a test plans (`CCT1`, `CI_MOVIE_ID`, `movie_link(T, T, _)`, …) is
+    /// parsed too.
     fn datalog(planned: &TemplatePlan) -> Vec<String> {
         planned
             .rules
             .iter()
-            .map(|rule| rule.datalog.clone())
+            .map(|rule| {
+                rule.datalog
+                    .parse::<kermit_parser::JoinQuery>()
+                    .unwrap_or_else(|error| panic!("{}: {error}", rule.datalog));
+                rule.datalog.clone()
+            })
             .collect()
     }
 
@@ -1593,6 +1604,46 @@ mod tests {
     }
 
     #[test]
+    fn columns_follow_variable_order_not_mention_order() {
+        // The joins mention `mk.keyword_id` (variable `K`, position 1) before
+        // `mk.movie_id` (variable `T`, position 0), so first-mention order
+        // would give `(keyword_id, movie_id, id)`. The variables are `T` =
+        // {`t.id`, `mc.movie_id`, `mk.movie_id`}, named after `t.id`, and
+        // `K` = {`k.id`, `mk.keyword_id`}; `mk`'s columns are the join columns
+        // in variable order, `(movie_id, keyword_id)`, then its carried `id`,
+        // and its atom is `movie_keyword(T, K, _)`.
+        let planned = plan(&[(
+            "1a",
+            "SELECT MIN(t.title) FROM title AS t, movie_companies AS mc, keyword AS k, \
+             movie_keyword AS mk WHERE t.id = mc.movie_id AND k.id = mk.keyword_id AND t.id = \
+             mk.movie_id",
+        )]);
+        assert_eq!(described(&planned), [
+            "title: title(id) join=1 filter=[] queries=1a",
+            "movie_companies: movie_companies(movie_id, id) join=1 filter=[] queries=1a",
+            "keyword: keyword(id) join=1 filter=[] queries=1a",
+            "movie_keyword: movie_keyword(movie_id, keyword_id, id) join=2 filter=[] queries=1a",
+        ]);
+        assert_eq!(datalog(&planned), ["Q(T, K) :- title(T), \
+                                        movie_companies(T, _), keyword(K), \
+                                        movie_keyword(T, K, _)."]);
+    }
+
+    #[test]
+    fn variable_is_named_after_its_first_id_alias() {
+        // One variable holds `t.id` and `t2.id`; the first in text order names
+        // it, so `T` and not `T2`.
+        let planned = plan(&[(
+            "1a",
+            "SELECT MIN(t.title) FROM title AS t, movie_companies AS mc, title AS t2 WHERE t.id = \
+             mc.movie_id AND mc.movie_id = t2.id",
+        )]);
+        assert_eq!(datalog(&planned), [
+            "Q(T) :- title(T), movie_companies(T, _), title(T)."
+        ]);
+    }
+
+    #[test]
     fn fallback_variable_name() {
         // No member is an `id`: the variable is named after its first member.
         let planned = plan(&[(
@@ -1684,13 +1735,15 @@ mod tests {
     fn names_survive_digits_and_underscores() {
         // A two-variant template 16 whose aliases carry digits and underscores
         // (`it1`, `mi_idx1`) and whose number has two digits: the names keep
-        // the digits and underscores, and the letters drop the `16`. (Template
-        // 6's names are pinned in `template_6_shapes`.)
+        // the digits and underscores, and the letters drop the `16`.
+        // `mi_idx1` is filtered, so its relation is named after it, and `it1`
+        // names its variable. (Template 6's names are pinned in
+        // `template_6_shapes`.)
         let rank = |year: &str| {
             format!(
                 "SELECT MIN(mi_idx1.info) FROM info_type AS it1, movie_info_idx AS mi_idx1, title \
-                 AS t WHERE it1.info = 'rank-info' AND t.production_year > {year} AND \
-                 mi_idx1.info_type_id = it1.id AND mi_idx1.movie_id = t.id"
+                 AS t WHERE it1.info = 'rank-info' AND mi_idx1.info < '9' AND t.production_year > \
+                 {year} AND mi_idx1.info_type_id = it1.id AND mi_idx1.movie_id = t.id"
             )
         };
         let sixteen = plan(&[("16a", rank("2000")), ("16b", rank("2005"))]);
@@ -1702,10 +1755,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "info_type_it1_ab",
-                "movie_info_idx",
+                "movie_info_idx_mi_idx1_ab",
                 "title_t_a",
                 "title_t_b"
             ]
         );
+        assert_eq!(datalog(&sixteen), [
+            "Q(IT1, T) :- info_type_it1_ab(IT1), movie_info_idx_mi_idx1_ab(IT1, T, _), \
+             title_t_a(T).",
+            "Q(IT1, T) :- info_type_it1_ab(IT1), movie_info_idx_mi_idx1_ab(IT1, T, _), \
+             title_t_b(T).",
+        ]);
+        // Joined on its `id`, `mi_idx1` names a variable.
+        let named = plan(&[(
+            "1a",
+            "SELECT MIN(t.title) FROM movie_info_idx AS mi_idx1, movie_link AS ml, title AS t \
+             WHERE mi_idx1.id = ml.movie_id AND ml.linked_movie_id = t.id",
+        )]);
+        assert_eq!(datalog(&named), ["Q(MI_IDX1, T) :- \
+                                      movie_info_idx(MI_IDX1), \
+                                      movie_link(MI_IDX1, T, _), title(T)."]);
     }
 }
