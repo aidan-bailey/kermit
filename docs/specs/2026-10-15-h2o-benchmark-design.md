@@ -1,7 +1,9 @@
 # H2O Join Benchmark and the Shared Non-RDF Generator Layer
 
 **Date:** 2026-10-15
-**Status:** Design approved in conversation (2026-10-15), section by section.
+**Status:** Design approved in conversation (2026-10-15), section by section. It was amended
+the same day (D13–D16) after the benchmark co-ordinator session cross-checked it against
+#96's and #97's specs.
 **Scope:** Issue #95: the H2O.ai db-benchmark join tasks ("J1") as a generator benchmark,
 `generator: { kind: h2o, … }`. It also covers the shared `kermit/src/generate/` layer that
 #95, #96 (SNAP) and #97 (JOB) all build on. That layer is designed here against all three
@@ -22,11 +24,11 @@ Two pieces of work:
 
 1. **The layer.** A new streaming Parquet writer in `kermit-ds` (`ParquetWriter`, with
    `write_parquet` as a wrapper), the exact inverse of `read_parquet`. On top of it, a
-   `Generator` trait in a new binary module `kermit/src/generate/`, with a `RelationSink`
-   that writes and hashes each relation as it arrives, and `generate::run`, which writes
-   `benchmark.yml` and then, last, `meta.json`. Every generated cache satisfies the existing
-   contract, so discovery, spec drift, `--force`, `OUTDATED_BEFORE` and `bench list` work
-   unchanged.
+   `Generator` trait in a new library module `kermit/src/generate/` (D13), with a
+   `RelationSink` that writes and hashes each relation as it arrives, and `generate::run`,
+   which writes `benchmark.yml` and then, last, `meta.json`. Every generated cache
+   satisfies the existing contract, so discovery, spec drift, `--force`, `OUTDATED_BEFORE`
+   and `bench list` work unchanged.
 2. **H2O.** `GeneratorSpec::H2o { scale, seed, order }`, a reimplementation of
    db-benchmark's `_data/join-datagen.R` that keeps its structure and uses in-repo random
    numbers. It produces six per-query projected relations and three queries (q1, q2, q5),
@@ -59,8 +61,12 @@ Made in this design, including where it departs from #95's body:
 | D8 | The golden test hashes each relation's data, not its file bytes. | Refines #95's "golden SHA-256 of a small plan's output". |
 | D9 | `benchmark.yml` carries every relation's `sha256`, so `bench fetch` verifies generated caches. | New. |
 | D10 | Random numbers: SplitMix64, Lemire bounded draws, Fisher–Yates, one stream per (column, step). | Settles #95's "SplitMix64- or xoshiro-class". |
-| D11 | The end-to-end test is a unit test in the binary, because `generate/` and `materialize` are binary modules and the 1e7 floor stops any small `bench gen h2o`. | Refines #95. |
+| D11 | The end-to-end and cache tests are unit tests in a binary module, because `ExecutionFamily` and `materialize` live in the binary and the 1e7 floor stops any small `bench gen h2o`. | Refines #95. |
 | D12 | `benchmarks/h2o-sorted.yml` is committed beside `h2o.yml`. | New, follows from D2. |
+| D13 | `generate/` lives in the **library** crate (`pub mod generate;` in `kermit/src/lib.rs`), and the binary's `materialize` calls `kermit::generate::run`. Push 1 lands the layer with no consumer, and in a binary every unused item is dead code, which CI's `-Dwarnings` rejects. A library's `pub` items are not dead, and CI's `cargo doc` lints its docs. File paths are unchanged. | New. |
+| D14 | `generate::run` enforces that `Extras` serializes to a JSON object whose keys don't overlap the common `GeneratedMeta` fields. `serde(flatten)` would otherwise let a duplicate key through silently. | New (co-ordinator). |
+| D15 | Every non-RDF `bench gen <kind>` takes lubm's flags, `--tag` (required) and `--output-dir` (optional), through one shared clap `GenTarget` struct with one cache-path resolver. It lands with its first user, `bench gen h2o` (push 2). `lubm` and `watdiv` are not migrated. | New (co-ordinator). |
+| D16 | The trait keeps the name `Generator`, which #96's and #97's specs cite. Its module docs say how it relates to `kermit_rdf::generator::Generator`. | New (co-ordinator). |
 
 ## Part 1: the shared layer
 
@@ -112,7 +118,13 @@ pub fn write_parquet<P: AsRef<Path>>(path: P, header: &RelationHeader, tuples: &
 
 ### `kermit/src/generate/mod.rs`: trait, sink, run
 
-A module of the binary, declared in `main.rs` beside `materialize`.
+A module of the library crate, declared `pub mod generate;` in `kermit/src/lib.rs` (D13).
+The binary's `materialize` calls `kermit::generate::run`. The module docs:
+- explain how this trait relates to `kermit_rdf::generator::Generator`. That trait drives
+  external RDF tools and partitions their N-Triples; this one writes relations directly. It
+  stays in kermit-rdf, which must not depend on kermit-ds (D16).
+- note that `dispatch` arms discard `run`'s returned `GeneratedMeta`, which `bench gen` may
+  print a summary from.
 
 ```rust
 pub trait Generator {
@@ -167,10 +179,14 @@ pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extra
 1. Creates `out_dir` and deletes any existing `meta.json`, so that a failed run can never
    leave an old commit marker beside new files.
 2. Calls `generate` with a fresh sink.
-3. Checks the queries: names are unique, each `query` parses as a `kermit_parser::JoinQuery`,
+3. Checks the extras (D14): `serde_json::to_value(&extras)` must be an object, and none of
+   its keys may be a common `GeneratedMeta` field (`schema_version`, `kind`, `tag`,
+   `generated_at_utc`, `relation_count`, `query_count`, `spec_hash`, `relations`). An
+   overlap is an error naming the key.
+4. Checks the queries: names are unique, each `query` parses as a `kermit_parser::JoinQuery`,
    and each body predicate names a recorded relation. A malformed rule therefore fails at
    generation time, not at `bench run`.
-4. Builds a `BenchmarkDefinition`:
+5. Builds a `BenchmarkDefinition`:
    - `name`: the target's bench name;
    - `description`: from `Generated`;
    - one `RelationSource` per record, in write order: `url: file://<out_dir>/<name>.parquet`,
@@ -179,7 +195,7 @@ pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extra
    - `generator: None`, as the RDF pipelines write it.
 
    It calls `validate()` and writes `benchmark.yml`.
-5. Writes `meta.json` last, through `kermit_rdf::generator::write_meta_json`, and returns
+6. Writes `meta.json` last, through `kermit_rdf::generator::write_meta_json`, and returns
    the meta.
 
 ### `GeneratedMeta<E>`
@@ -205,12 +221,14 @@ impl<E: Serialize + DeserializeOwned> GeneratorMeta for GeneratedMeta<E> { … }
 - `MetaHeader::read` already ignores unknown fields, so drift detection, `outdated_reason`
   and `bench list` read every kind's file unchanged.
 - An `Extras` type must not reuse a common field's name, because flattening would collide.
-  The module docs state the rule, and the toy-generator test pins it.
+  `generate::run` enforces this (step 3, D14), and a toy-generator test pins it.
 - The timestamp comes from kermit-rdf's `utc_iso8601_now`, made public (today it is
   `pub(crate)` in the private `timestamp` module). That one-line change is this design's
   only edit to kermit-rdf.
 - A future output change for one kind bumps the shared `META_SCHEMA_VERSION` and adds that
-  kind's floor to `OUTDATED_BEFORE`, the existing rule.
+  kind's floor to `OUTDATED_BEFORE`, the existing rule. While #95, #96 and #97 are in
+  flight, bumps and floors go through the benchmark co-ordinator session, so each lands
+  once.
 
 ### What the layer leaves out
 
@@ -236,6 +254,8 @@ impl<E: Serialize + DeserializeOwned> GeneratorMeta for GeneratedMeta<E> { … }
 | #97: streaming writer beside the one-shot form, one code path | `RelationSink::open` → `RelationWriter`; `ParquetWriter` |
 | #97: bytes independent of batch boundaries, pinned by a test | internal re-chunking; the batching test |
 | #97: a dropped writer leaves no `<name>.parquet` | `.part` + rename; `Drop` removes `.part` |
+| Co-ordinator: enforce the extras rule | `generate::run` step 3 (D14) |
+| Co-ordinator: one `bench gen` flag set for the three kinds | `GenTarget` (D15) |
 
 ## Part 2: H2O
 
@@ -367,11 +387,15 @@ For a key column with cardinality n, where n is `small`, `medium` or `rows`:
 
 - **`materialize::dispatch`:** an `H2o { scale, seed, order }` arm builds `KeyPlan::for_scale`
   and an `H2oGenerator` with the spec hash, and calls `generate::run`.
-- **`bench gen h2o --scale N [--seed S] [--order shuffled|sorted] --tag T`** writes
-  `h2o-{N}-{T}` under the cache root with `spec_hash: None`, like `bench gen lubm`
-  (`lubm-{scale}-{tag}`).
+- **`bench gen h2o --scale N [--seed S] [--order shuffled|sorted] --tag T [--output-dir PATH]`**
+  writes `h2o-{N}-{T}` under the cache root (or `--output-dir`) with `spec_hash: None`, like
+  `bench gen lubm` (`lubm-{scale}-{tag}`).
+  - **`GenTarget`** (D15) is a `#[derive(clap::Args)]` struct holding `--tag` and
+    `--output-dir`. Its resolver is the one place that turns a benchmark name into
+    `<output-dir or ~/.cache/kermit/benchmarks>/<name>`. `bench gen h2o` introduces it with
+    `#[command(flatten)]`, and #96's and #97's subcommands flatten the same struct.
   - `--scale` is range-checked against `H2O_MIN_SCALE`.
-  - The tag rule, and the handling of an existing output directory, match `bench gen lubm`.
+  - The handling of an existing output directory matches `bench gen lubm`.
   - Seed and order are recorded in `meta.json`, not in the name.
   - kermit-bench has no clap dependency, so the CLI maps its own `ValueEnum` onto `H2oOrder`.
 - **Committed YAMLs:**
@@ -404,8 +428,9 @@ For a key column with cardinality n, where n is `small`, `medium` or `rows`:
     and `expected`;
   - `meta.json` reads as a `MetaHeader` (`kind`, `spec_hash`, `schema_version`) and
     round-trips as `GeneratedMeta<ToyExtras>` with flattened extras;
-  - there is no `meta.json` when `generate` fails, when a query fails to parse, or when it
-    names a relation that was never written, including when an old `meta.json` was present
+  - there is no `meta.json` when `generate` fails, when a query fails to parse, when it
+    names a relation that was never written, or when the extras contain a common field's
+    key (a toy `relations` extra), including when an old `meta.json` was present
     beforehand;
   - `load_all_benchmarks_with_cache` discovers the output directory.
 
@@ -449,7 +474,8 @@ For a key column with cardinality n, where n is `small`, `medium` or `rows`:
   - the second is a hit and doesn't regenerate;
   - a changed seed gives `SpecDrift`;
   - `force` regenerates.
-- **End to end** (a binary unit test, D11). A small plan is generated in both orders, and
+- **End to end** (a unit test in a binary module, D11; a test inline in the library's
+  `generate/` cannot see `ExecutionFamily`). A small plan is generated in both orders, and
   every query is loaded and counted through the `ExecutionFamily` `load` and `count` calls
   that `bench run --verify` makes. This runs on every cell × `Optimiser::value_variants()` ×
   both column-order policies, and every count must equal `expected`.
@@ -482,7 +508,8 @@ Release build, inside `nix develop`, with a scratch `XDG_CACHE_HOME` so the shar
     space (D7).
 - **`benchmarks/README.md`:** `h2o` in the generator kinds, and a fields table.
 - **CLAUDE.md:**
-  - the `generate/` layer in the `kermit` binary's description;
+  - the `generate/` layer in the `kermit` crate's description, as a library module (D13),
+    and `GenTarget` (D15);
   - `bench gen [watdiv|lubm|h2o]`;
   - an H2O.md entry in Benchmark Reference Docs;
   - `h2o` in "Adding a new benchmark";
@@ -494,21 +521,26 @@ Release build, inside `nix develop`, with a scratch `XDG_CACHE_HOME` so the shar
     - H2O's in-repo RNG has one stream per step, and its golden data hash follows the
       bump-and-floor rule.
 - **Module docs on `generate/mod.rs`**, written so the snap and job sessions can implement
-  the trait from them. These live in the binary, which CI never rustdoc-lints, so check them
-  with `cargo rustdoc -p kermit --bin kermit -- --document-private-items -D warnings`, which
-  has two known pre-existing errors.
+  the trait from them. They are in the library, so CI's `cargo doc` (`-Dwarnings`) lints
+  them. `GenTarget`, in the binary, is checked with
+  `cargo rustdoc -p kermit --bin kermit -- --document-private-items -D warnings`, which has
+  two known pre-existing errors.
 
 ## Landing
 
-1. **Push 1, the layer:** `ParquetWriter` / `write_parquet`, `generate/` (trait, sink,
-   `run`, `GeneratedMeta`) with the toy-generator tests, the `utc_iso8601_now` visibility
-   change, and the layer's CLAUDE.md lines. It follows the usual loom landing: merge
-   `origin/master` in, run the full gate, then `push HEAD:master`, after the user's go-ahead.
-   The commit SHA then goes to the snap and job sessions.
-2. **Push 2, H2O:** spec, RNG, keys, generator, `dispatch` arm, `bench gen h2o`, YAMLs,
-   tests, docs and the 1e7 measurements.
+1. **Push 1, the layer:** `ParquetWriter` / `write_parquet`; `generate/` as a library
+   module (trait, sink, `run` with the extras check, `GeneratedMeta`) with the
+   toy-generator tests; the `utc_iso8601_now` visibility change; and the layer's CLAUDE.md
+   lines. No binary code: `GenTarget` and the first `dispatch` arm come with push 2. It
+   follows the usual loom landing: merge `origin/master` in, run the full gate, then
+   `push HEAD:master`, after the user's go-ahead. The commit SHA then goes to the snap and
+   job sessions.
+2. **Push 2, H2O:** spec, RNG, keys, generator, `dispatch` arm, `GenTarget` and
+   `bench gen h2o`, YAMLs, tests, docs and the 1e7 measurements.
 
-A comment on #95 summarising D1–D12 is posted only with the user's approval.
+**Host scheduling.** No cargo build or test runs while the #101 replicate chain is live
+(`FULL_EXIT` in its `logs/full.log`). The benchmark co-ordinator session schedules push 1's
+gate first, then push 2's acceptance runs, around #96's and #97's runs.
 
 ## Out of scope
 
