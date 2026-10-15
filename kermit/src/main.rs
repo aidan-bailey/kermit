@@ -617,7 +617,7 @@ enum GenSubcommand {
     /// Generate one Join Order Benchmark template on the fly (needs DuckDB)
     Job {
         /// The JOB template to generate, 1-33: every variant of it (`6` is
-        /// 6a-6f) becomes one query of the benchmark
+        /// `6a`-`6f`) becomes one query of the benchmark
         #[arg(long, value_name = "N", required = true)]
         template: u8,
 
@@ -1414,9 +1414,9 @@ fn run_gen_snap(
 
 /// Handler for `bench gen job`: generate one JOB template into
 /// `job-{template}-{tag}` through `kermit-generate`, with no spec hash (like
-/// `bench gen lubm`). The range is checked first and DuckDB is located before
-/// the output directory is made, so a bad template or a host without DuckDB
-/// leaves nothing behind.
+/// `bench gen lubm`). The range and the benchmark's name are checked first and
+/// DuckDB is located before the output directory is made, so a bad template,
+/// a bad tag or a host without DuckDB leaves nothing behind.
 fn run_gen_job(template: u8, target: GenTarget) -> anyhow::Result<()> {
     use kermit_generate::job::{duckdb::Duckdb, raw, JobGenerator, TEMPLATES};
 
@@ -1427,6 +1427,18 @@ fn run_gen_job(template: u8, target: GenTarget) -> anyhow::Result<()> {
         TEMPLATES.end()
     );
     let bench_name = format!("job-{template}-{}", target.tag);
+    // The name is checked here, as `run_gen_snap` does, because `run` would
+    // check it only after the raw cache and every filter had been built.
+    BenchmarkDefinition {
+        name: bench_name.clone(),
+        description: String::new(),
+        relations: vec![],
+        queries: vec![],
+        generator: Some(kermit_bench::GeneratorSpec::Job {
+            template,
+        }),
+    }
+    .validate()?;
     let duckdb = Duckdb::locate()?;
     let out_dir = target.prepare("job", &bench_name)?;
     let cache = raw::ensure(&duckdb, &raw::default_raw_dir()?)?;

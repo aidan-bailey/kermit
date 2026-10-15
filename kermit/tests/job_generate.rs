@@ -24,7 +24,7 @@ use {
     kermit_algos::{
         ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
     },
-    kermit_bench::BenchmarkDefinition,
+    kermit_bench::{discovery::load_benchmark, BenchmarkDefinition},
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, GallopingSeek, HashTrie, LazyExpansion, LinearSeek,
         NoPruning, Relation, SingletonPruning, TreeTrie,
@@ -32,6 +32,7 @@ use {
     kermit_generate::{
         job::{
             duckdb::Duckdb,
+            pins::QUERY_FILES,
             raw::{RawCache, RawProvenance},
             JobExtras, JobGenerator,
         },
@@ -876,5 +877,39 @@ fn benchmark_yml_carries_the_rules_and_counts() {
             );
             assert_eq!(query.expected, Some(expected_count(&query.name)));
         }
+    }
+}
+
+/// Each committed `benchmarks/job-N.yml` describes its template as "Join Order
+/// Benchmark, template N (Na-Nx)", `a` and `x` being the first and last
+/// variant the pinned query files hold for N. Needs no DuckDB.
+#[test]
+fn committed_yaml_descriptions_name_their_variants() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("kermit is inside the workspace");
+    for template in 1..=33u32 {
+        // `QUERY_FILES` lists `schema.sql` first, then the variants in order.
+        let variants: Vec<&str> = QUERY_FILES
+            .iter()
+            .filter_map(|(file, _)| file.strip_suffix(".sql"))
+            .filter_map(|stem| stem.strip_prefix(&template.to_string()))
+            .filter(|letters| {
+                !letters.is_empty() && letters.chars().all(|c| c.is_ascii_lowercase())
+            })
+            .collect();
+        let (first, last) = (
+            variants.first().expect("a template has variants"),
+            variants.last().unwrap(),
+        );
+        let name = format!("job-{template}");
+        let def = load_benchmark(root, &name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            def.description,
+            format!(
+                "Join Order Benchmark, template {template} ({template}{first}-{template}{last})"
+            ),
+            "{name}"
+        );
     }
 }

@@ -124,8 +124,8 @@ pub enum GeneratorSpec {
     /// Drives the Join Order Benchmark generator
     /// (`kermit_generate::job::JobGenerator`): every variant of one JOB
     /// template over IMDb, with each alias's filters applied during
-    /// generation. Unlike the other kinds it has no `scale`; the template
-    /// picks the queries and so the data.
+    /// generation. It has no `scale`: the template picks the queries and so
+    /// the data.
     Job {
         /// The JOB template, `1` to `33`.
         template: u8,
@@ -1456,6 +1456,10 @@ generator:
     /// negative or non-numeric one is a parse error, not a silent template 0.
     #[test]
     fn job_spec_requires_a_template_that_fits_a_byte() {
+        // Positive control: `kind: job` with a template parses, so the failures
+        // below come from the template.
+        let ok = "name: job-x\ndescription: \"x\"\ngenerator:\n  kind: job\n  template: 6\n";
+        assert!(serde_yaml::from_str::<BenchmarkDefinition>(ok).is_ok());
         for generator in [
             "kind: job",
             "kind: job\n  template: 256",
@@ -1503,15 +1507,6 @@ generator:
             one.spec_hash(),
             GeneratorSpec::Job {
                 template: 1
-            }
-            .spec_hash()
-        );
-        // The kind is part of the hash: scale 1 of another kind is not template
-        // 1.
-        assert_ne!(
-            one.spec_hash(),
-            GeneratorSpec::WatdivBasic {
-                scale: 1
             }
             .spec_hash()
         );

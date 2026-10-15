@@ -1,6 +1,6 @@
 //! `kermit bench gen job` and `bench run job-N`, through the real binary.
 //!
-//! The first two tests fail before any generation starts and need no DuckDB.
+//! The first three tests fail before any generation starts and need no DuckDB.
 //! The others build the fixture raw cache
 //! (`kermit-generate/tests/fixtures/job/`) at `<XDG_CACHE_HOME>/kermit/imdb`,
 //! where `raw::default_raw_dir()` looks, with a provenance equal to the pins,
@@ -9,7 +9,10 @@
 //!
 //! Every test redirects the platform cache with `XDG_CACHE_HOME`, which `dirs`
 //! honours only on Linux, and passes `--output-dir` or `KERMIT_WORKSPACE`, so
-//! nothing is written under `~/.cache/kermit`.
+//! nothing is written under `~/.cache/kermit`. The `bench run` test also sets
+//! `CRITERION_HOME`, so its Criterion groups stay out of the workspace's
+//! `target/criterion/`, and points the HTTP proxies at a closed port, so no
+//! run can download anything.
 
 mod common;
 
@@ -30,8 +33,12 @@ use {
     },
 };
 
-/// The `--tag` every `bench gen` here passes.
+/// The `--tag` every `bench gen` here passes, unless a test is about the tag.
 const TAG: &str = "citest";
+
+/// A `KERMIT_DUCKDB_BIN` that names no file, so a run that reaches DuckDB
+/// fails with the variable's name instead of finding one on the host.
+const MISSING_DUCKDB: &str = "/nonexistent/kermit-test/duckdb";
 
 /// The tests that start generation redirect the cache with `XDG_CACHE_HOME`,
 /// which only Linux honours.
@@ -60,10 +67,17 @@ fn fixture_raw_cache(duckdb: &Duckdb, cache: &Path) {
 /// with the platform cache at `cache`; `duckdb_bin` overrides
 /// `KERMIT_DUCKDB_BIN`.
 fn gen_job(cache: &Path, out: &Path, template: &str, duckdb_bin: Option<&str>) -> Output {
+    gen_job_tagged(cache, out, template, TAG, duckdb_bin)
+}
+
+/// [`gen_job`] with the `--tag` given.
+fn gen_job_tagged(
+    cache: &Path, out: &Path, template: &str, tag: &str, duckdb_bin: Option<&str>,
+) -> Output {
     let mut command = Command::new(kermit_bin());
     command
         .env("XDG_CACHE_HOME", cache)
-        .args(["bench", "gen", "job", "--template", template, "--tag", TAG])
+        .args(["bench", "gen", "job", "--template", template, "--tag", tag])
         .arg("--output-dir")
         .arg(out);
     if let Some(bin) = duckdb_bin {
@@ -72,12 +86,15 @@ fn gen_job(cache: &Path, out: &Path, template: &str, duckdb_bin: Option<&str>) -
     command.output().expect("failed to execute kermit binary")
 }
 
+/// A template outside 1..=33 fails naming the flag and the range, before
+/// DuckDB is looked for (the missing one would name another variable) and with
+/// nothing written.
 #[test]
 fn template_outside_1_to_33_is_rejected_before_anything_is_written() {
     for template in ["0", "34"] {
         let cache = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
-        let output = gen_job(cache.path(), out.path(), template, None);
+        let output = gen_job(cache.path(), out.path(), template, Some(MISSING_DUCKDB));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !output.status.success(),
@@ -107,12 +124,7 @@ fn template_outside_1_to_33_is_rejected_before_anything_is_written() {
 fn a_missing_duckdb_is_reported_before_anything_is_written() {
     let cache = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
-    let output = gen_job(
-        cache.path(),
-        out.path(),
-        "1",
-        Some("/nonexistent/kermit-test/duckdb"),
-    );
+    let output = gen_job(cache.path(), out.path(), "1", Some(MISSING_DUCKDB));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "stderr: {stderr}");
     assert!(stderr.contains("KERMIT_DUCKDB_BIN"), "{stderr}");
@@ -128,6 +140,33 @@ fn a_missing_duckdb_is_reported_before_anything_is_written() {
     );
 }
 
+/// A tag that makes an invalid benchmark name fails naming the name rule, not
+/// DuckDB (the missing one would name `KERMIT_DUCKDB_BIN`), and leaves nothing
+/// behind: the name is checked before the raw cache and the filters are built.
+#[test]
+fn a_bad_tag_is_rejected_before_anything_is_written() {
+    let cache = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let output = gen_job_tagged(cache.path(), out.path(), "1", "a b", Some(MISSING_DUCKDB));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stderr: {stderr}");
+    assert!(stderr.contains("name may only contain"), "{stderr}");
+    assert!(!stderr.contains("KERMIT_DUCKDB_BIN"), "{stderr}");
+    assert_eq!(
+        fs::read_dir(out.path()).unwrap().count(),
+        0,
+        "nothing in --output-dir"
+    );
+    assert_eq!(
+        fs::read_dir(cache.path()).unwrap().count(),
+        0,
+        "nothing in the cache"
+    );
+}
+
+/// `bench gen job` on the fixture raw cache writes `job-1-<tag>` into
+/// `--output-dir`: a valid `meta.json` and `benchmark.yml` with the hand
+/// counts, and nothing else in the cache.
 #[test]
 fn gen_job_writes_a_benchmark_from_the_raw_cache() {
     if skip_unsupported() {
@@ -191,10 +230,13 @@ fn workspace_with_job_1() -> tempfile::TempDir {
 
 /// `kermit bench <timing flags> run job-1 -m iteration --verify <extra>` from
 /// `workspace` against the platform cache `cache`, writing the report to
-/// `report`; `duckdb_bin` overrides `KERMIT_DUCKDB_BIN`. `bench`'s own flags
-/// (`--sample-size`, `--measurement-time`, `--warm-up-time`, `--report-json`)
-/// belong to `bench`, not `run`, so they come before `run`, as in
-/// `cli_bench_run_verify.rs`. `--verify` checks every count before the timing.
+/// `report` and the Criterion groups to `criterion` beside it; `duckdb_bin`
+/// overrides `KERMIT_DUCKDB_BIN`. The proxies name a closed port and
+/// `NO_PROXY` is cleared, so a run that tried to download would fail. `bench`'s
+/// own flags (`--sample-size`, `--measurement-time`, `--warm-up-time`,
+/// `--report-json`) belong to `bench`, not `run`, so they come before `run`, as
+/// in `cli_bench_run_verify.rs`. `--verify` checks every count before the
+/// timing.
 fn bench_run(
     cache: &Path, workspace: &Path, report: &Path, duckdb_bin: Option<&str>, extra: &[&str],
 ) -> Output {
@@ -202,6 +244,11 @@ fn bench_run(
     command
         .env("XDG_CACHE_HOME", cache)
         .env("KERMIT_WORKSPACE", workspace)
+        .env("CRITERION_HOME", report.parent().unwrap().join("criterion"))
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
         .args(["bench", "--sample-size", "10", "--measurement-time", "1"])
         .args(["--warm-up-time", "1", "--report-json"])
         .arg(report)
@@ -236,7 +283,9 @@ fn bench_run_materialises_a_committed_yaml_and_verifies_every_count() {
     if skip_unsupported() {
         return;
     }
-    let Some(duckdb) = locate_or_skip("bench_run_materialises_a_committed_yaml") else {
+    let Some(duckdb) =
+        locate_or_skip("bench_run_materialises_a_committed_yaml_and_verifies_every_count")
+    else {
         return;
     };
     let cache = tempfile::tempdir().unwrap();
@@ -264,6 +313,8 @@ fn bench_run_materialises_a_committed_yaml_and_verifies_every_count() {
         ("1a".to_owned(), true),
         ("1b".to_owned(), true)
     ]);
+    let meta_text = fs::read_to_string(subdir.join("meta.json")).unwrap();
+    let yaml_text = fs::read_to_string(subdir.join("benchmark.yml")).unwrap();
 
     // 2. A hit: with no usable DuckDB the run succeeds only if nothing is
     //    regenerated.
@@ -272,7 +323,7 @@ fn bench_run_materialises_a_committed_yaml_and_verifies_every_count() {
         cache.path(),
         workspace.path(),
         &report,
-        Some("/nonexistent/kermit-test/duckdb"),
+        Some(MISSING_DUCKDB),
         &["-i", "tree-trie", "-a", "leapfrog-triejoin", "-q", "1a"],
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -281,6 +332,16 @@ fn bench_run_materialises_a_committed_yaml_and_verifies_every_count() {
         "a cache hit must not need DuckDB; stderr: {stderr}"
     );
     assert_eq!(verified(&report), [("1a".to_owned(), true)]);
+    assert_eq!(
+        fs::read_to_string(subdir.join("meta.json")).unwrap(),
+        meta_text,
+        "a hit must not regenerate"
+    );
+    assert_eq!(
+        fs::read_to_string(subdir.join("benchmark.yml")).unwrap(),
+        yaml_text,
+        "a hit must not regenerate"
+    );
 
     // 3. Drift: the YAML now names template 2, so the cached spec hash no
     //    longer matches.
@@ -302,9 +363,15 @@ fn bench_run_materialises_a_committed_yaml_and_verifies_every_count() {
         "drift must fail without --force; stderr: {stderr}"
     );
     assert!(stderr.contains("spec drift"), "{stderr}");
-    assert!(
-        subdir.join("meta.json").is_file(),
-        "drift must not delete the cache"
+    assert_eq!(
+        fs::read_to_string(subdir.join("meta.json")).unwrap(),
+        meta_text,
+        "drift must leave the cache as it was"
+    );
+    assert_eq!(
+        fs::read_to_string(subdir.join("benchmark.yml")).unwrap(),
+        yaml_text,
+        "drift must leave the cache as it was"
     );
 
     // 4. --force regenerates from the new spec: template 2's queries, including
