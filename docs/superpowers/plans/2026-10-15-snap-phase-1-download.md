@@ -1078,3 +1078,9 @@ Changes made during execution, each after a review, so that the code differs fro
   - New test `a_failed_rename_still_removes_the_part_file`.
   - `DOWNLOAD_TIMEOUT`'s doc now says the request and its headers count as one window.
   - Not taken: a `sync_all` before the rename (durability across power loss); the old code didn't have one either.
+- **T5 gate, toolchain (co-ordinator, 2026-10-15):** `flake.lock` pins rust-overlay at 2026-10-07, while CI floats nightly. Run T5's fmt, clippy and doc checks a second time against CI's current nightly, without writing the lock:
+  ```bash
+  nix develop --override-input rust-overlay github:oxalica/rust-overlay --no-write-lock-file --command cargo fmt --all -- --check
+  nix develop --override-input rust-overlay github:oxalica/rust-overlay --no-write-lock-file --command env CARGO_BUILD_JOBS=2 RUSTFLAGS=-Dwarnings cargo clippy --all-targets
+  ```
+  Never commit a `flake.lock` refresh from this branch without telling the co-ordinator first. The first of #95 and #96 to land on master commits it as its own `chore(nix): refresh rust-overlay`.
