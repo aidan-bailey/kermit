@@ -59,8 +59,6 @@ description: "H2O db-benchmark join (J1) at N = 1e7: q1, q2 and q5 over per-quer
 generator:
   kind: h2o
   scale: 10000000
-  # seed: 108          # optional; upstream's set.seed(108) by default
-  # order: shuffled    # optional; `shuffled` (default) or `sorted`
 ```
 
 `h2o-sorted.yml` is the same with `name: h2o-sorted`, a description ending
@@ -284,7 +282,10 @@ same rows in the same order and the same counts. The Parquet bytes are identical
 regenerating with the same build; they can differ across builds, since the file's footer
 records the Parquet writer's version. `meta.json` records the seed, the order, the
 plan and each relation's SHA-256, and `benchmark.yml` carries the same digests, so
-`bench fetch` verifies a generated cache and a cache can be identified after the fact.
+a bare `bench fetch`, or `bench fetch h2o-<N>-<tag>` with the cache's own name, verifies a
+generated cache, and a cache can be identified after the fact. `bench fetch h2o` reads
+the workspace YAML, which declares no relations, and reports 'No integrity hashes
+declared.'
 
 `kermit-generate/tests/h2o.rs` pins the data itself: SHA-256 digests over each relation's
 values (not its file bytes) for the reference plan, in both orders. If the digests must
@@ -331,8 +332,8 @@ To regenerate, run `bench run --force <name>`, or delete the cache directory.
 | Test | What it validates | Gate |
 |------|-------------------|------|
 | `kermit-bench/src/definition.rs` (`h2o_*` and `an_unknown_h2o_order_fails_to_parse`) | `H2oOrder`'s names match their serde spelling and default to `shuffled`; an unknown order fails to parse and names `shuffled`; a spec parses with `seed` 108 and `order` `shuffled` and serialises to exactly that; `order: sorted` parses; `spec_hash` changes with `scale`, `seed` and `order`, and an omitted `seed` hashes as 108; 9,999,999 is rejected and 10,000,000 accepted | always |
-| `kermit-generate/src/h2o/rng.rs` | SplitMix64 reproduces `splitmix64.c`'s outputs for two seeds; three streams' first outputs are pinned and the twelve (column, step) streams differ; `bounded` matches a reference model, including a case that exercises Lemire's rejection loop, stays in range at n = 1, 2ᵏ and 2ᵏ ± 1, and passes a chi-square check on n = 10; `bounded(0)` panics; a shuffle is a permutation | always |
-| `kermit-generate/src/h2o/keys.rs` | The pool splits have the right sizes, including n = 7 where n / 10 = 0; the right-hand table is the shared and right-only keys with no duplicate; `x`'s column holds every shared and left-only key and no right-only key, and is a permutation at n = N; `matches` equals a `HashSet` count; `KeyPlan::new` rejects zero and oversize cardinalities and rows above `RowId::MAX`; `for_scale` divides by 10⁶ and 10³ and rejects 999,999 | always |
+| `kermit-generate/src/h2o/rng.rs` | SplitMix64 reproduces `splitmix64.c`'s outputs for two seeds; three streams' first outputs are pinned and the twelve (column, step) streams differ; `bounded` matches a reference model, including a case that exercises Lemire's rejection loop, stays in range at n = 1, 2ᵏ and 2ᵏ ± 1, and passes a chi-square check on n = 10; `bounded(0)` panics; a shuffle is a permutation and, for 10 and 20 elements from seed 3, equals a reference model's output | always |
+| `kermit-generate/src/h2o/keys.rs` | The pool splits have the right sizes, including n = 7 where n / 10 = 0; the right-hand table is the shared and right-only keys with no duplicate; `x`'s column holds every shared and left-only key and no right-only key, and is a permutation at n = N; `matches` equals a `HashSet` count; `KeyPlan::new` rejects zero and oversize cardinalities and rows above `RowId::MAX`, and a deserialized plan is checked the same way (`small = 0` fails to parse); for 20 keys and seed 108 the pool, `x`'s column and the right-hand table equal a reference model's output; `for_scale` divides by 10⁶ and 10³ and rejects 999,999 | always |
 | `kermit-generate/tests/h2o.rs` | Six relations and three queries, in order, with the right columns and sizes; each `expected` equals a brute-force join over the written relations, in both orders; the reference plan's data digests and counts are pinned; the same spec reproduces and another seed differs; a sorted relation is its shuffled counterpart sorted; a plan with no left-only key generates | always |
 | `kermit/src/materialize.rs` (`h2o_cache_misses_hits_drifts_and_regenerates`) | A 1,000,000-row spec (below the floor, which `materialize` does not check) generates on a miss, is a hit the second time, raises `SpecDrift` after a seed change and regenerates under `force` | always |
 | `kermit/src/main.rs` (`h2o_clap_names_match_the_spec_names`, `h2o_flags_default_and_enforce_the_floor`, `h2o_bench_name_is_scale_and_tag`) | The CLI's order names equal the spec's serde names; `--seed` and `--order` default as documented and `--scale` enforces the floor; the benchmark name is `h2o-<scale>-<tag>` | always |
