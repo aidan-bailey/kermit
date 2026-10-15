@@ -1,0 +1,5 @@
+name: job-17
+description: "Join Order Benchmark, template 17 (17a-17f)"
+generator:
+  kind: job
+  template: 17

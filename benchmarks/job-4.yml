@@ -1,0 +1,5 @@
+name: job-4
+description: "Join Order Benchmark, template 4 (4a-4c)"
+generator:
+  kind: job
+  template: 4

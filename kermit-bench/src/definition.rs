@@ -1817,6 +1817,32 @@ generator:
         assert!(!hashes.contains(&lubm.spec_hash()));
     }
 
+    /// `benchmarks/job-1.yml` … `job-33.yml` are the 33 JOB templates: each
+    /// loads through discovery (so it parses, validates and is named for its
+    /// file), declares its own template, and no other `job-*.yml` exists.
+    #[test]
+    fn committed_job_yamls_are_the_33_templates() {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for template in 1..=33u8 {
+            let name = format!("job-{template}");
+            let def = crate::discovery::load_benchmark(&workspace, &name)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(
+                def.generator,
+                Some(GeneratorSpec::Job {
+                    template
+                }),
+                "{name} must declare its own template"
+            );
+        }
+        let committed = std::fs::read_dir(workspace.join("benchmarks"))
+            .unwrap()
+            .filter_map(|entry| entry.unwrap().file_name().into_string().ok())
+            .filter(|file| file.starts_with("job-") && file.ends_with(".yml"))
+            .count();
+        assert_eq!(committed, 33);
+    }
+
     /// Pins the encoding against the NIST SHA-256 vector for `"abc"`. The
     /// digests this crate emits are written into `meta.json` and compared on
     /// later runs, so a formatting change here would read as spec drift on

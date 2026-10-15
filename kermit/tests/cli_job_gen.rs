@@ -178,3 +178,150 @@ fn gen_job_writes_a_benchmark_from_the_raw_cache() {
     assert!(cache.path().join("kermit/imdb/provenance.json").is_file());
     assert!(!cache.path().join("kermit/benchmarks").exists());
 }
+
+/// The committed `benchmarks/job-1.yml` as the only YAML of a temp workspace.
+fn workspace_with_job_1() -> tempfile::TempDir {
+    let workspace = tempfile::tempdir().unwrap();
+    let benchmarks = workspace.path().join("benchmarks");
+    fs::create_dir(&benchmarks).unwrap();
+    let committed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../benchmarks/job-1.yml");
+    fs::copy(&committed, benchmarks.join("job-1.yml")).unwrap();
+    workspace
+}
+
+/// `kermit bench <timing flags> run job-1 -m iteration --verify <extra>` from
+/// `workspace` against the platform cache `cache`, writing the report to
+/// `report`; `duckdb_bin` overrides `KERMIT_DUCKDB_BIN`. `bench`'s own flags
+/// (`--sample-size`, `--measurement-time`, `--warm-up-time`, `--report-json`)
+/// belong to `bench`, not `run`, so they come before `run`, as in
+/// `cli_bench_run_verify.rs`. `--verify` checks every count before the timing.
+fn bench_run(
+    cache: &Path, workspace: &Path, report: &Path, duckdb_bin: Option<&str>, extra: &[&str],
+) -> Output {
+    let mut command = Command::new(kermit_bin());
+    command
+        .env("XDG_CACHE_HOME", cache)
+        .env("KERMIT_WORKSPACE", workspace)
+        .args(["bench", "--sample-size", "10", "--measurement-time", "1"])
+        .args(["--warm-up-time", "1", "--report-json"])
+        .arg(report)
+        .args(["run", "job-1", "-m", "iteration", "--verify"])
+        .args(extra);
+    if let Some(bin) = duckdb_bin {
+        command.env("KERMIT_DUCKDB_BIN", bin);
+    }
+    command.output().expect("failed to execute kermit binary")
+}
+
+/// `(query, verified)` of each report in `report`, in file order.
+fn verified(report: &Path) -> Vec<(String, bool)> {
+    let text = fs::read_to_string(report).expect("the report file");
+    let reports: Vec<serde_json::Value> = serde_json::from_str(&text).expect("a JSON array");
+    reports
+        .iter()
+        .map(|r| {
+            (
+                r["axes"]["query"].as_str().expect("query axis").to_owned(),
+                r["axes"]["verified"] == true,
+            )
+        })
+        .collect()
+}
+
+/// The whole path a user takes: a committed YAML, a cache miss that generates
+/// from the raw cache, `--verify` against DuckDB's counts, then a hit, drift
+/// and `--force`, as for LUBM.
+#[test]
+fn bench_run_materialises_a_committed_yaml_and_verifies_every_count() {
+    if skip_unsupported() {
+        return;
+    }
+    let Some(duckdb) = locate_or_skip("bench_run_materialises_a_committed_yaml") else {
+        return;
+    };
+    let cache = tempfile::tempdir().unwrap();
+    fixture_raw_cache(&duckdb, cache.path());
+    let workspace = workspace_with_job_1();
+    let reports = tempfile::tempdir().unwrap();
+    let subdir = cache.path().join("kermit/benchmarks/job-1");
+
+    // 1. A miss: job-1 (template 1) is generated, then both queries verify (5
+    //    and 7).
+    let report = reports.path().join("miss.json");
+    let output = bench_run(cache.path(), workspace.path(), &report, None, &[
+        "-i",
+        "tree-trie",
+        "-a",
+        "leapfrog-triejoin",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "the first run failed; stderr: {stderr}"
+    );
+    assert!(subdir.join("meta.json").is_file() && subdir.join("benchmark.yml").is_file());
+    assert_eq!(verified(&report), [
+        ("1a".to_owned(), true),
+        ("1b".to_owned(), true)
+    ]);
+
+    // 2. A hit: with no usable DuckDB the run succeeds only if nothing is
+    //    regenerated.
+    let report = reports.path().join("hit.json");
+    let output = bench_run(
+        cache.path(),
+        workspace.path(),
+        &report,
+        Some("/nonexistent/kermit-test/duckdb"),
+        &["-i", "tree-trie", "-a", "leapfrog-triejoin", "-q", "1a"],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "a cache hit must not need DuckDB; stderr: {stderr}"
+    );
+    assert_eq!(verified(&report), [("1a".to_owned(), true)]);
+
+    // 3. Drift: the YAML now names template 2, so the cached spec hash no
+    //    longer matches.
+    let yaml_path = workspace.path().join("benchmarks/job-1.yml");
+    let yaml = fs::read_to_string(&yaml_path).unwrap();
+    let drifted = yaml.replace("template: 1", "template: 2");
+    assert_ne!(yaml, drifted, "job-1.yml must declare `template: 1`");
+    fs::write(&yaml_path, drifted).unwrap();
+    let report = reports.path().join("drift.json");
+    let output = bench_run(cache.path(), workspace.path(), &report, None, &[
+        "-i",
+        "tree-trie",
+        "-a",
+        "leapfrog-triejoin",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "drift must fail without --force; stderr: {stderr}"
+    );
+    assert!(stderr.contains("spec drift"), "{stderr}");
+    assert!(
+        subdir.join("meta.json").is_file(),
+        "drift must not delete the cache"
+    );
+
+    // 4. --force regenerates from the new spec: template 2's queries, including
+    //    2b, whose relation `name_n_b` is empty and whose count is 0, on Hash
+    //    Triejoin.
+    let report = reports.path().join("force.json");
+    let output = bench_run(cache.path(), workspace.path(), &report, None, &[
+        "-i",
+        "hash-trie",
+        "-a",
+        "hash-triejoin",
+        "--force",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "--force failed; stderr: {stderr}");
+    assert_eq!(verified(&report), [
+        ("2a".to_owned(), true),
+        ("2b".to_owned(), true)
+    ]);
+}
