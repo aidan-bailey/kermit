@@ -249,6 +249,9 @@ every row:
   is far beyond the other two; use `--queries triangle,clique4` for a lighter run.
 - **Never write a result to disk.** `kermit join` writes every row as CSV; on dblp's
   `path3` that is 1.45 billion rows. `bench run` only counts.
+- **`bench run --all` includes both committed YAMLs**, as it does every workspace
+  benchmark: it downloads amazon and dblp and times every query on both, dblp's `path3`
+  included. Name the benchmarks you want when that is too much.
 - **The oracle** runs in seconds for amazon and dblp and about ten seconds for youtube
   (`cycle4`, the dearest), over all rows in memory (youtube: about 96 MB). **The
   parser** also keeps a set of the unordered pairs it has seen (about 100 MB at
@@ -310,6 +313,7 @@ served.
   are pinned independently and a `path3`/`cycle4` run on it is judged worth the time.
 - **Distinct-variable variants** of `path3` and `cycle4` (simple paths and simple
   cycles), if a thesis chapter needs counts that do not include doubled-back walks.
-- **SNAP in a sweep.** The benchmarks run on request only; adding them to the full
-  sweep is a separate decision.
+- **SNAP in the thesis sweep.** The sweep's scripts name their benchmarks, and adding
+  `snap-amazon` and `snap-dblp` to them is a separate decision (`bench run --all`
+  already includes them; see [Practical scale ceiling](#practical-scale-ceiling)).
 - **A parallel oracle**, if a much larger graph makes the single-threaded count slow.

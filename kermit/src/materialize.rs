@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! ~/.cache/kermit/benchmarks/<name>/
-//!   meta.json        # PipelineMeta or LubmMeta with spec_hash field
+//!   meta.json        # PipelineMeta, LubmMeta or GeneratedMeta, with spec_hash field
 //!   benchmark.yml    # BenchmarkDefinition with file:// URLs
 //!   <pred>.parquet × N
 //!   ...

@@ -1702,6 +1702,7 @@ generator:
         assert!(!hashes.contains(&lubm.spec_hash()));
     }
 
+    /// Pins the encoding against the NIST SHA-256 vector for `"abc"`. The
     /// digests this crate emits are written into `meta.json` and compared on
     /// later runs, so a formatting change here would read as spec drift on
     /// every already-cached benchmark.
