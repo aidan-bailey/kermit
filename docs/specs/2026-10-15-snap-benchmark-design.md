@@ -13,7 +13,7 @@ every `expected` count computed by an oracle that shares no code with the joins.
   design implements that layer's trait (§ The generator). Layer spec: Part 1 of
   `docs/specs/2026-10-15-h2o-benchmark-design.md` (ed1fb4c on `aidanb/h2o`).
 - #97: JOB. It reuses this design's `download_verified` (§ The download). Spec:
-  `docs/specs/2026-10-15-job-benchmark-design.md` (2cb335b on `aidanb/job`).
+  `docs/specs/2026-10-15-job-benchmark-design.md` (8358e7e on `aidanb/job`).
 - #93: column orders. `cycle4` is written so that `--column-orders any` builds no copy.
 - #111: flat tuple batches. The parser's output is a `Tuples`.
 - #70: atomic, checked downloads, whose discipline `download_verified` keeps.
@@ -30,9 +30,10 @@ shared generator layer and emits four queries (`triangle`, `path3`, `cycle4`, `c
 with exact `expected` counts. `benchmarks/snap-amazon.yml` and `benchmarks/snap-dblp.yml`
 are committed.
 
-The work splits into two phases. Phase 1 (the download, the spec, the parser and the
-oracle) depends on nothing unlanded. Phase 2 (the generator, the CLI and the committed
-YAMLs) implements #95's generator trait and starts once that layer is committed.
+The work lands in two pushes. Phase 1 is kermit-bench's general download alone, which
+depends on nothing unlanded and is all #97 needs. Phase 2 is everything else (the spec
+variant, the parser, the oracle, the generator, the CLI and the committed YAMLs). It
+implements #95's generator trait and lands once that layer is on master (§ Sequencing).
 
 ## Decisions
 
@@ -70,7 +71,10 @@ From this session (2026-10-15):
 10. **Graph and query names are types** (`SnapGraph`, `SnapQuery`), so an unknown name
     fails when the YAML is parsed, naming the valid values.
 11. **Raw SNAP ids are kept.** Keys are already `usize`; no dictionary and no remapping.
-12. **Phases.** Phase 1 lands independently of #95; phase 2 waits for its layer.
+12. **Phases.** Phase 1 (the download) lands independently of #95; phase 2 waits for its
+    layer. Amended 2026-10-15 after the benchmark co-ordinator's conflict map: the spec
+    variant, parser and oracle moved from phase 1 to phase 2, because phase 1 must build on
+    its own (§ Sequencing).
 
 ## Measured facts (2026-10-15)
 
@@ -187,9 +191,13 @@ pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), Ben
   digest. Its `PAR1` check moves from the in-memory body to the `.part` file before the
   rename, using `cached_file_problem`, so there is one definition of "this is a Parquet
   file". A failed check is reported as `UnusableDownload` (not `CorruptCache`) and removes
-  `.part`. The existing tests then pass unchanged: they assert only that the message names
-  the cause ("challenge", "202", "empty", "Parquet") and that neither `dest` nor `.part`
-  remains.
+  `.part`. The existing `download_file` tests then pass unchanged: they assert only that
+  the message names the cause ("challenge", "202", "empty", "Parquet") and that neither
+  `dest` nor `.part` remains.
+- **`BenchError::UnusableDownload`'s message** becomes `download from {url} is unusable:
+  {reason}`, since `download_verified` also raises it for a `.gz`. Today's "did not return
+  a Parquet file" is wrong for a non-Parquet download. No test or doc pins the old wording,
+  and the Parquet case still says "Parquet" through its reason.
 - **Client.** A `reqwest::blocking::Client` with `timeout(None)` plus a connect timeout
   and a per-read timeout. The blocking default is a 30 s timeout that runs until the body
   finishes, which a 1.26 GB download (JOB) would hit below about 42 MB/s.
@@ -200,7 +208,9 @@ pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), Ben
   noun phrase (`relation 'parentcountry'`, `file 'com-amazon.ungraph.txt.gz'`). The
   message stays `integrity check failed for {subject} from {location}: …`, so the
   existing relation messages, and `cli_bench_fetch_integrity.rs`'s assertion on them,
-  are byte-identical.
+  are byte-identical. One existing test changes: `verify_integrity_reports_a_mismatch`
+  (`cache.rs`) destructures `relation` and asserts `"edge"`; it destructures `subject`
+  and asserts `"relation 'edge'"` instead.
 
 ### The parser (`kermit/src/generate/snap.rs`)
 
@@ -335,6 +345,15 @@ spec's "Requirements from #96 and #97" table:
 
 ### Phase 1
 
+- **Download** (kermit-bench, against the existing `serve_once` loopback server):
+  - A matching digest writes `dest`.
+  - A mismatch leaves neither `dest` nor `.part` and reports both digests.
+  - A WAF challenge, a non-200 status and an empty body are named as today.
+  - The relation path's existing tests pass unchanged, except the one `Integrity`
+    destructure (§ The download).
+
+### Phase 2
+
 - **Spec** (kermit-bench unit tests):
   - Both forms parse.
   - Rejected: both forms at once, neither, a URL without a digest, a `graph` with a digest,
@@ -342,11 +361,6 @@ spec's "Requirements from #96 and #97" table:
   - An unknown graph or query name is a parse error naming the valid values.
   - `spec_hash` changes with the graph, URL, digest and queries.
   - Every `SnapGraph::source()` is an `https` URL with a 64-hex digest.
-- **Download** (kermit-bench, against the existing `serve_once` loopback server):
-  - A matching digest writes `dest`.
-  - A mismatch leaves neither `dest` nor `.part` and reports both digests.
-  - A WAF challenge, a non-200 status and an empty body are named as today.
-  - The relation path's existing tests pass unchanged.
 - **Parser:**
   - Comments are skipped.
   - A malformed line errors with its line number and text: one field, three fields,
@@ -359,9 +373,6 @@ spec's "Requirements from #96 and #97" table:
   - On seeded random small graphs, every count equals a brute-force nested-loop evaluation
     of the query's rule over vertex tuples, written fresh in the test.
   - Overflow is an error.
-
-### Phase 2
-
 - **Fixture:** `kermit/tests/fixtures/snap/mini.ungraph.txt`, committed as plain text so it
   reads in a diff: a header comment, a 4-clique, a 4-cycle, a hub, one self-loop and one
   reversed duplicate. Tests gzip it on the fly with flate2, so a loopback test's digest is
@@ -414,8 +425,8 @@ spec's "Requirements from #96 and #97" table:
       cells.
 - [ ] Regenerating the same source with the same build gives byte-identical Parquet;
       `meta.json` records the `.gz` SHA-256, the relation SHA-256 and the dropped rows.
-- [ ] `download_verified` is public in kermit-bench, streams, and the relation path's
-      behaviour and messages are unchanged.
+- [ ] `download_verified` is public in kermit-bench and streams; the relation path's
+      behaviour is unchanged and its messages still name the cause.
 - [ ] The tests above pass, and CI is green.
 
 ## Documentation
@@ -424,24 +435,33 @@ spec's "Requirements from #96 and #97" table:
   and the measured facts; symmetrisation and cleaning; the four queries with exact
   semantics ("closed 4-step walks") and the verified counts; the `edge(A, D)` rewrite;
   costs (dblp `path3` is 1.45 billion rows; youtube not committed).
-- `benchmarks/README.md`: the `snap` kind and its fields; the common-fields table stops
-  marking `scale` as required for every kind (JOB makes the same edit, so whichever lands
-  second rebases a one-line change).
-- `CLAUDE.md`: a Benchmark Reference Docs entry for `SNAP.md`;
-  `bench gen [watdiv|lubm|h2o|snap]` in the workspace table; a gotcha on
-  `download_verified` (streaming, required digest, no 30 s total timeout); a `bench gen
-  snap` line in Build Commands.
+- `benchmarks/README.md`: the `snap` kind and its fields. The common-fields table stops
+  marking `generator.scale` as required for every kind (today's row 59). JOB needs the
+  same edit, so whichever of #96 and #97 lands first changes the row and the other keeps
+  it.
+- `CLAUDE.md`: a Benchmark Reference Docs entry for `SNAP.md`; `snap` added to the
+  workspace table's `bench gen […]` list as it reads on master at landing (each generator
+  adds only its own kind); a gotcha on `download_verified` (streaming, required digest, no
+  30 s total timeout), landing with phase 1; a `bench gen snap` line in Build Commands.
 
 ## Sequencing
 
-- **Phase 1** can land on master at any time. Its kermit-bench half (`download_verified`,
-  `GeneratorSpec::Snap`) never waits. Its binary half (the parser and the oracle) lives in
-  `kermit/src/generate/snap.rs` and `snap/counts.rs`. If the layer's push 1 is already on
-  master when that
-  work starts, merge it first and register the module in the layer's `generate/mod.rs`;
-  otherwise create a minimal `generate/mod.rs` and resolve the one-line conflict when
-  merging.
-- **Phase 2** starts when the H2O session's push 1 (the layer alone, before any H2O code)
-  is on master. Merge `origin/master` into this branch (never rebase), check § The
-  generator against the landed interface (amend it if needed), then write the phase-2 plan.
-- **#97** builds on `download_verified` once phase 1 lands.
+- **Phase 1** is kermit-bench alone: `download_verified`, the shared streaming core, the
+  `Integrity` and `UnusableDownload` message changes, their tests, and the CLAUDE.md
+  gotcha. It touches neither `GeneratorSpec` nor the binary, so it builds and lands on
+  master by itself, at any time.
+- **Phase 2** is everything else, landed as one push: `SnapGraph`, `SnapQuery` and
+  `GeneratorSpec::Snap` with its `validate_generator` arm; the parser and the oracle
+  (`kermit/src/generate/snap.rs`, `snap/counts.rs`); the generator, the `dispatch` arm,
+  `bench gen snap`, the YAMLs, the tests and the docs. It starts when the H2O session's
+  push 1 (the layer alone, before any H2O code) is on master: merge `origin/master` into
+  this branch (never rebase), check § The generator against the landed interface (amend it
+  if needed), then write the phase-2 plan. `mod generate;` and `generate/mod.rs` then come
+  from the layer, so there's no add/add conflict.
+- **Why the split falls there.** A `GeneratorSpec::Snap` variant without its
+  `materialize::dispatch` arm fails to build, because that match (`materialize.rs:261`) is
+  exhaustive, with no `_` arm. Parser or oracle code in the binary with no caller in
+  `main` trips `dead_code`, which CI's `-Dwarnings` makes an error. A stub `dispatch` arm
+  (`bail!`) was rejected: it would put a `kind: snap` on master that validates but cannot
+  generate.
+- **Ordering with #97.** JOB builds on `download_verified` once phase 1 lands.
