@@ -204,9 +204,22 @@ pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), Ben
   {reason}`, since `download_verified` also raises it for a `.gz`. Today's "did not return
   a Parquet file" is wrong for a non-Parquet download. No test or doc pins the old wording,
   and the Parquet case still says "Parquet" through its reason.
-- **Client.** A `reqwest::blocking::Client` with `timeout(None)` plus a connect timeout
-  and a per-read timeout. The blocking default is a 30 s timeout that runs until the body
-  finishes, which a 1.26 GB download (JOB) would hit below about 42 MB/s.
+- **Client and timeouts.** In reqwest 0.13's blocking client, `ClientBuilder::timeout`
+  (default 30 s) bounds each operation: the wait for the response headers, and each
+  `Read::read` of the body (`reqwest/src/blocking/response.rs`, `impl Read for
+  Response`). `Response::bytes()` instead waits on the whole body under one timeout, so
+  today's `download_file` caps a whole download at 30 s, which a 1.26 GB download (JOB)
+  would hit below about 42 MB/s. Streaming through `Read` turns the same 30 s into a
+  stall limit with no total. The helper's client sets `timeout(30 s)` and
+  `connect_timeout(30 s)` explicitly. A loopback test pins the per-read semantics: a body
+  trickled in gaps shorter than the timeout, but longer in total, succeeds; a stall longer
+  than the timeout fails. A reqwest upgrade that changed the semantics would fail it.
+  (Corrected 2026-10-15 while planning: an earlier draft read the async client's docs
+  and specified `timeout(None)` plus a per-read timeout, which the blocking client
+  doesn't offer.)
+- **A failed body read** (a stalled or dropped connection) is a `BenchError::Download`,
+  as a failure before the body is. `Response::read` wraps reqwest's error in an
+  `io::Error`, which the core unwraps.
 - **Progress.** For a body over 64 MiB, a line on stderr every 10 s with the bytes received,
   and the total when the response gives a `Content-Length`. SNAP's files stay silent; JOB's
   1.26 GB dump would otherwise be minutes without output (JOB asked for it, 2026-10-15).
