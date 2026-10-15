@@ -477,6 +477,332 @@ fn count_star() -> SelectItem {
     }))
 }
 
+/// One relation file of a template.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationPlan {
+    /// The file and relation name: the table's name when unfiltered, else
+    /// `{table}_{alias}_{letters}` (`keyword_k_ace`). The generator's sink
+    /// requires `[a-z][a-z0-9_]*`, which holds for JOB's lowercase table and
+    /// alias names; the sink rejects anything else.
+    pub name: String,
+    /// The IMDb table the rows come from.
+    pub table: String,
+    /// The columns in file order: the join columns in variable order, then
+    /// `id` unless it is already a join column.
+    pub columns: Vec<String>,
+    /// How many leading columns are join columns; rows where one is NULL
+    /// cannot join and are left out.
+    pub join_columns: usize,
+    /// The alias's filters joined by ` AND ` in text order, with the alias
+    /// stripped from every column; empty when the relation is unfiltered.
+    pub filter: String,
+    /// The queries that use this relation, in input order.
+    pub queries: Vec<String>,
+}
+
+/// One query's rule and its oracle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RulePlan {
+    /// The query's name, `6a`.
+    pub query: String,
+    /// The Datalog rule, `Q(K, T, N) :- …`.
+    pub datalog: String,
+    /// The query with `COUNT(*)` in place of its projection: the oracle for
+    /// the rule's cardinality.
+    pub count_sql: String,
+}
+
+/// A template's relation files and its rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplatePlan {
+    /// The distinct relation files, in order of first use (query order, then
+    /// `FROM` order).
+    pub relations: Vec<RelationPlan>,
+    /// One rule per query, in input order.
+    pub rules: Vec<RulePlan>,
+}
+
+/// Plans one template: `queries` are its variants in letter order.
+///
+/// **Variables.** Within a query, the joins' columns merge into variables
+/// (union-find over `alias.column`). A variable's position is that of the
+/// first join, in text order, that mentions one of its columns. It is named
+/// after the first alias, in text order, whose `id` column it contains
+/// (`k.id` gives `K`, `mi_idx1.id` gives `MI_IDX1`), or `ALIAS_COLUMN`
+/// uppercased after its first column when it contains no `id`.
+///
+/// **Relations.** An alias's columns are its join columns in variable order,
+/// then `id` unless `id` is already one of them. A relation is shared by
+/// every alias, in every query of the template, with the same table, columns
+/// and filter, whatever the aliases are called.
+///
+/// **Rules.** `Q(<every variable, in position order>) :- <one atom per alias,
+/// in FROM order>.`, each atom the alias's relation with its variables as
+/// terms and `_` for a carried `id`. An empty slice plans nothing.
+///
+/// # Errors
+///
+/// `UnjoinedAlias` for an alias in no join condition, and `NameClash` for two
+/// variables of one query, or two relations of the template, with one name.
+pub fn plan_template(queries: &[JobQuery]) -> Result<TemplatePlan, TranslateError> {
+    let mut drafts: Vec<Draft> = Vec::new();
+    let mut sketches: Vec<Sketch> = Vec::new();
+    for query in queries {
+        sketches.push(plan_query(query, &mut drafts)?);
+    }
+    // Names need every user of a relation, so they come last.
+    let names: Vec<String> = drafts.iter().map(relation_name).collect();
+    if let Some(name) = first_duplicate(&names) {
+        return Err(TranslateError::NameClash {
+            name: name.clone(),
+        });
+    }
+    let rules: Vec<RulePlan> = sketches
+        .into_iter()
+        .map(|sketch| {
+            let body: Vec<String> = sketch
+                .atoms
+                .iter()
+                .map(|(relation, terms)| format!("{}({})", names[*relation], terms.join(", ")))
+                .collect();
+            RulePlan {
+                query: sketch.query,
+                datalog: format!("Q({}) :- {}.", sketch.head.join(", "), body.join(", ")),
+                count_sql: sketch.count_sql,
+            }
+        })
+        .collect();
+    let relations = drafts
+        .into_iter()
+        .zip(names)
+        .map(|(draft, name)| RelationPlan {
+            name,
+            table: draft.table,
+            columns: draft.columns,
+            join_columns: draft.join_columns,
+            filter: draft.filter,
+            queries: draft.queries,
+        })
+        .collect();
+    Ok(TemplatePlan {
+        relations,
+        rules,
+    })
+}
+
+/// The column every table keys its rows on, carried when it is not joined.
+const ID: &str = "id";
+
+/// The term of a carried `id`.
+const PLACEHOLDER: &str = "_";
+
+/// A relation file under construction: its sharing key (`table`, `columns`,
+/// `filter`) and who uses it.
+struct Draft {
+    table: String,
+    columns: Vec<String>,
+    join_columns: usize,
+    filter: String,
+    /// The alias of the first query's first use of the key; it names a
+    /// filtered relation.
+    first_alias: String,
+    queries: Vec<String>,
+}
+
+/// One query's rule before the relations have their names.
+struct Sketch {
+    query: String,
+    count_sql: String,
+    /// The variable names in position order.
+    head: Vec<String>,
+    /// One atom per alias in `FROM` order: the relation's index in the
+    /// drafts, and its terms.
+    atoms: Vec<(usize, Vec<String>)>,
+}
+
+/// The join variables of one query.
+struct Variables {
+    /// Every joined column once, in the order the joins first mention it,
+    /// with the position of its variable.
+    columns: Vec<(ColumnRef, usize)>,
+    /// The variables' names, by position.
+    names: Vec<String>,
+}
+
+impl Variables {
+    fn of(query: &JobQuery) -> Variables {
+        // Number the joined columns by first mention.
+        let mut columns: Vec<&ColumnRef> = Vec::new();
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        for (left, right) in &query.joins {
+            let left = intern(&mut columns, left);
+            let right = intern(&mut columns, right);
+            pairs.push((left, right));
+        }
+        // Union-find in its plainest form: a join merges the labels of its two
+        // columns, so equal labels are one variable.
+        let mut label: Vec<usize> = (0..columns.len()).collect();
+        for &(left, right) in &pairs {
+            let (kept, merged) = (label[left], label[right]);
+            for other in &mut label {
+                if *other == merged {
+                    *other = kept;
+                }
+            }
+        }
+        // A variable's position is the rank of the first join that mentions it.
+        let mut order: Vec<usize> = Vec::new();
+        let mut position = vec![0; columns.len()];
+        for &(left, right) in &pairs {
+            let rank = intern(&mut order, label[left]);
+            position[left] = rank;
+            position[right] = rank;
+        }
+        // A variable is named after the first `id` among its columns, else
+        // after its first column.
+        let mut names = vec![String::new(); order.len()];
+        let mut named_by_id = vec![false; order.len()];
+        for (column, &rank) in columns.iter().zip(&position) {
+            if column.column == ID && !named_by_id[rank] {
+                names[rank] = column.alias.to_uppercase();
+                named_by_id[rank] = true;
+            } else if names[rank].is_empty() {
+                names[rank] = format!("{}_{}", column.alias, column.column).to_uppercase();
+            }
+        }
+        Variables {
+            columns: columns.into_iter().cloned().zip(position).collect(),
+            names,
+        }
+    }
+
+    /// The join columns of `alias` with their variables' positions, ordered by
+    /// position; two columns in one variable stay in the order of first
+    /// mention.
+    fn of_alias(&self, alias: &str) -> Vec<(&str, usize)> {
+        let mut joined: Vec<(&str, usize)> = self
+            .columns
+            .iter()
+            .filter(|(column, _)| column.alias == alias)
+            .map(|(column, rank)| (column.column.as_str(), *rank))
+            .collect();
+        joined.sort_by_key(|&(_, rank)| rank);
+        joined
+    }
+
+    fn check_names(&self) -> Result<(), TranslateError> {
+        match first_duplicate(&self.names) {
+            | Some(name) => Err(TranslateError::NameClash {
+                name: name.clone(),
+            }),
+            | None => Ok(()),
+        }
+    }
+}
+
+/// The index of `item` in `seen`, appending it first when it is new.
+fn intern<T: PartialEq>(seen: &mut Vec<T>, item: T) -> usize {
+    let found = seen.iter().position(|other| *other == item);
+    match found {
+        | Some(index) => index,
+        | None => {
+            seen.push(item);
+            seen.len() - 1
+        },
+    }
+}
+
+/// The first name that an earlier entry already has.
+fn first_duplicate(names: &[String]) -> Option<&String> {
+    names
+        .iter()
+        .enumerate()
+        .find(|&(index, name)| names[..index].contains(name))
+        .map(|(_, name)| name)
+}
+
+/// Plans one query: its variables, and for each alias the relation it reads
+/// (found among `drafts` or added to them).
+fn plan_query(query: &JobQuery, drafts: &mut Vec<Draft>) -> Result<Sketch, TranslateError> {
+    let variables = Variables::of(query);
+    if let Some(alias) = query
+        .aliases
+        .iter()
+        .find(|alias| variables.of_alias(&alias.name).is_empty())
+    {
+        return Err(TranslateError::UnjoinedAlias {
+            query: query.name.clone(),
+            alias: alias.name.clone(),
+        });
+    }
+    variables.check_names()?;
+    let mut atoms = Vec::new();
+    for alias in &query.aliases {
+        let joined = variables.of_alias(&alias.name);
+        let mut columns: Vec<String> = joined
+            .iter()
+            .map(|&(column, _)| column.to_owned())
+            .collect();
+        let mut terms: Vec<String> = joined
+            .iter()
+            .map(|&(_, rank)| variables.names[rank].clone())
+            .collect();
+        if !columns.iter().any(|column| column == ID) {
+            columns.push(ID.to_owned());
+            terms.push(PLACEHOLDER.to_owned());
+        }
+        let filter = query
+            .filters
+            .iter()
+            .filter(|(owner, _)| *owner == alias.name)
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let found = drafts.iter().position(|draft| {
+            draft.table == alias.table && draft.columns == columns && draft.filter == filter
+        });
+        let index = match found {
+            | Some(index) => index,
+            | None => {
+                drafts.push(Draft {
+                    table: alias.table.clone(),
+                    columns,
+                    join_columns: joined.len(),
+                    filter,
+                    first_alias: alias.name.clone(),
+                    queries: Vec::new(),
+                });
+                drafts.len() - 1
+            },
+        };
+        if drafts[index].queries.last() != Some(&query.name) {
+            drafts[index].queries.push(query.name.clone());
+        }
+        atoms.push((index, terms));
+    }
+    Ok(Sketch {
+        query: query.name.clone(),
+        count_sql: query.count_sql.clone(),
+        head: variables.names,
+        atoms,
+    })
+}
+
+/// A relation's file name: the table for an unfiltered one, else
+/// `{table}_{alias}_{letters}` with the variant letters (`6a` gives `a`) of
+/// every query that uses it.
+fn relation_name(draft: &Draft) -> String {
+    if draft.filter.is_empty() {
+        return draft.table.clone();
+    }
+    let letters: String = draft
+        .queries
+        .iter()
+        .map(|query| query.trim_start_matches(|c: char| c.is_ascii_digit()))
+        .collect();
+    format!("{}_{}_{}", draft.table, draft.first_alias, letters)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -879,5 +1205,432 @@ mod tests {
             }
             let _: &dyn std::error::Error = &error;
         }
+    }
+
+    /// Plans the `(name, sql)` variants of one template.
+    fn plan<S: AsRef<str>>(variants: &[(&str, S)]) -> TemplatePlan {
+        let queries: Vec<JobQuery> = variants
+            .iter()
+            .map(|(name, sql)| parse(name, sql.as_ref()))
+            .collect();
+        plan_template(&queries).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// One line per relation: `name: table(columns) join=n filter=[…]
+    /// queries=…`.
+    fn described(planned: &TemplatePlan) -> Vec<String> {
+        planned
+            .relations
+            .iter()
+            .map(|relation| {
+                format!(
+                    "{}: {}({}) join={} filter=[{}] queries={}",
+                    relation.name,
+                    relation.table,
+                    relation.columns.join(", "),
+                    relation.join_columns,
+                    relation.filter,
+                    relation.queries.join(",")
+                )
+            })
+            .collect()
+    }
+
+    fn datalog(planned: &TemplatePlan) -> Vec<String> {
+        planned
+            .rules
+            .iter()
+            .map(|rule| rule.datalog.clone())
+            .collect()
+    }
+
+    /// The six variants of a template-6-shaped query: five aliases, three
+    /// variables, and a filter on `k`, `n` and `t` that changes from variant
+    /// to variant (`6f` has none on `n`).
+    ///
+    /// The plan, derived by hand. The joins, in text order, mention these
+    /// columns first-to-last: `k.id`, `mk.keyword_id`, `t.id`, `mk.movie_id`,
+    /// `ci.movie_id`, `n.id`, `ci.person_id`. The variables, in position
+    /// order, are `K` = {`k.id`, `mk.keyword_id`}, `T` = {`t.id`,
+    /// `mk.movie_id`, `ci.movie_id`} and `N` = {`n.id`, `ci.person_id`}, at
+    /// positions 0, 1 and 2, each named after the `id` it contains. The
+    /// drafts, in `FROM` order (`ci`, `k`, `mk`, `n`, `t`), are
+    /// `cast_info(movie_id, person_id, id)` read as `(T, N, _)`, `keyword(id)`
+    /// as `(K)`, `movie_keyword(keyword_id, movie_id, id)` as `(K, T, _)`,
+    /// `name(id)` as `(N)` and `title(id)` as `(T)`.
+    fn template_6() -> Vec<JobQuery> {
+        let one = "k.keyword = 'kw-one'";
+        let two = "k.keyword IN ('kw-two', 'kw-three')";
+        let person = "n.name LIKE '%Ab%Cd%'";
+        [
+            ("6a", one, person, "t.production_year > 2010"),
+            ("6b", two, person, "t.production_year > 2014"),
+            ("6c", one, person, "t.production_year > 2014"),
+            ("6d", two, person, "t.production_year > 2000"),
+            ("6e", one, person, "t.production_year > 2000"),
+            ("6f", two, "", "t.production_year > 2000"),
+        ]
+        .into_iter()
+        .map(|(name, keyword_filter, person_filter, year_filter)| {
+            let filters: String = [keyword_filter, person_filter, year_filter]
+                .iter()
+                .filter(|condition| !condition.is_empty())
+                .map(|condition| format!("{condition} AND "))
+                .collect();
+            parse(
+                name,
+                &format!(
+                    "SELECT MIN(k.keyword), MIN(n.name), MIN(t.title) FROM cast_info AS ci, \
+                     keyword AS k, movie_keyword AS mk, name AS n, title AS t WHERE {filters}k.id \
+                     = mk.keyword_id AND t.id = mk.movie_id AND t.id = ci.movie_id AND \
+                     ci.movie_id = mk.movie_id AND n.id = ci.person_id"
+                ),
+            )
+        })
+        .collect()
+    }
+
+    /// Template 6's rule for a variant that uses these relations.
+    fn rule_6(keyword: &str, person: &str, title: &str) -> String {
+        format!(
+            "Q(K, T, N) :- cast_info(T, N, _), {keyword}(K), movie_keyword(K, T, _), {person}(N), \
+             {title}(T)."
+        )
+    }
+
+    #[test]
+    fn template_6_shapes() {
+        let queries = template_6();
+        let planned = plan_template(&queries).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(described(&planned), [
+            "cast_info: cast_info(movie_id, person_id, id) join=2 filter=[] \
+             queries=6a,6b,6c,6d,6e,6f",
+            "keyword_k_ace: keyword(id) join=1 filter=[keyword = 'kw-one'] queries=6a,6c,6e",
+            "movie_keyword: movie_keyword(keyword_id, movie_id, id) join=2 filter=[] \
+             queries=6a,6b,6c,6d,6e,6f",
+            "name_n_abcde: name(id) join=1 filter=[name LIKE '%Ab%Cd%'] queries=6a,6b,6c,6d,6e",
+            "title_t_a: title(id) join=1 filter=[production_year > 2010] queries=6a",
+            "keyword_k_bdf: keyword(id) join=1 filter=[keyword IN ('kw-two', 'kw-three')] \
+             queries=6b,6d,6f",
+            "title_t_bc: title(id) join=1 filter=[production_year > 2014] queries=6b,6c",
+            "title_t_def: title(id) join=1 filter=[production_year > 2000] queries=6d,6e,6f",
+            "name: name(id) join=1 filter=[] queries=6f",
+        ]);
+        // The spec's example, verbatim.
+        assert_eq!(
+            planned.rules[0].datalog,
+            "Q(K, T, N) :- cast_info(T, N, _), keyword_k_ace(K), movie_keyword(K, T, _), \
+             name_n_abcde(N), title_t_a(T)."
+        );
+        assert_eq!(datalog(&planned), [
+            rule_6("keyword_k_ace", "name_n_abcde", "title_t_a"),
+            rule_6("keyword_k_bdf", "name_n_abcde", "title_t_bc"),
+            rule_6("keyword_k_ace", "name_n_abcde", "title_t_bc"),
+            rule_6("keyword_k_bdf", "name_n_abcde", "title_t_def"),
+            rule_6("keyword_k_ace", "name_n_abcde", "title_t_def"),
+            rule_6("keyword_k_bdf", "name", "title_t_def"),
+        ]);
+        assert_eq!(planned.rules.len(), queries.len());
+        for (rule, query) in planned.rules.iter().zip(&queries) {
+            assert_eq!(rule.query, query.name);
+            assert_eq!(rule.count_sql, query.count_sql);
+        }
+    }
+
+    #[test]
+    fn every_rule_parses_as_datalog() {
+        use kermit_parser::{JoinQuery, Term};
+        let planned = plan_template(&template_6()).unwrap_or_else(|error| panic!("{error}"));
+        let names: Vec<&str> = planned
+            .relations
+            .iter()
+            .map(|relation| relation.name.as_str())
+            .collect();
+        for rule in &planned.rules {
+            let parsed: JoinQuery = rule
+                .datalog
+                .parse()
+                .unwrap_or_else(|error| panic!("{}: {error}", rule.datalog));
+            assert_eq!(parsed.head.name, "Q");
+            assert_eq!(parsed.head.terms, vec![
+                Term::Var("K".into()),
+                Term::Var("T".into()),
+                Term::Var("N".into())
+            ]);
+            assert_eq!(parsed.body.len(), 5);
+            for atom in &parsed.body {
+                assert!(
+                    names.contains(&atom.name.as_str()),
+                    "{} is not planned",
+                    atom.name
+                );
+            }
+            assert_eq!(parsed.body[0].terms, vec![
+                Term::Var("T".into()),
+                Term::Var("N".into()),
+                Term::Placeholder
+            ]);
+        }
+    }
+
+    #[test]
+    fn variables_follow_text_order() {
+        let forward = "SELECT MIN(t.title) FROM movie_keyword AS mk, title AS t, keyword AS k \
+                       WHERE t.id = mk.movie_id AND k.id = mk.keyword_id";
+        let reversed = "SELECT MIN(t.title) FROM movie_keyword AS mk, title AS t, keyword AS k \
+                        WHERE k.id = mk.keyword_id AND t.id = mk.movie_id";
+        let first = plan(&[("1a", forward)]);
+        let second = plan(&[("1a", reversed)]);
+        assert_eq!(datalog(&first), [
+            "Q(T, K) :- movie_keyword(T, K, _), title(T), keyword(K)."
+        ]);
+        assert_eq!(datalog(&second), [
+            "Q(K, T) :- movie_keyword(K, T, _), title(T), keyword(K)."
+        ]);
+        assert_eq!(first.relations[0].columns, ["movie_id", "keyword_id", "id"]);
+        assert_eq!(second.relations[0].columns, [
+            "keyword_id",
+            "movie_id",
+            "id"
+        ]);
+    }
+
+    #[test]
+    fn id_is_appended_only_when_not_joined() {
+        // `kt` joins on its `id` alone, `t` on `kind_id` and `id`, `ci` on
+        // `movie_id` only: its `id` is carried.
+        let planned = plan(&[(
+            "1a",
+            "SELECT MIN(t.title) FROM title AS t, kind_type AS kt, cast_info AS ci WHERE \
+             t.kind_id = kt.id AND t.id = ci.movie_id",
+        )]);
+        assert_eq!(described(&planned), [
+            "title: title(kind_id, id) join=2 filter=[] queries=1a",
+            "kind_type: kind_type(id) join=1 filter=[] queries=1a",
+            "cast_info: cast_info(movie_id, id) join=1 filter=[] queries=1a",
+        ]);
+        assert_eq!(datalog(&planned), [
+            "Q(KT, T) :- title(KT, T), kind_type(KT), cast_info(T, _)."
+        ]);
+    }
+
+    #[test]
+    fn shared_relation_keeps_column_order_in_its_key() {
+        // The same filter on `mk` in all three variants, but `1b` reads the
+        // joins the other way round, so its `mk` file has its columns the
+        // other way round: a second file, not a shared one. `1a` and `1c`
+        // agree and share.
+        let sql = |joins: &str| {
+            format!(
+                "SELECT MIN(t.title) FROM movie_keyword AS mk, title AS t, keyword AS k WHERE \
+                 mk.keyword_id > 5 AND {joins}"
+            )
+        };
+        let forward = sql("t.id = mk.movie_id AND k.id = mk.keyword_id");
+        let reversed = sql("k.id = mk.keyword_id AND t.id = mk.movie_id");
+        let planned = plan(&[("1a", &forward), ("1b", &reversed), ("1c", &forward)]);
+        assert_eq!(described(&planned), [
+            "movie_keyword_mk_ac: movie_keyword(movie_id, keyword_id, id) join=2 \
+             filter=[keyword_id > 5] queries=1a,1c",
+            "title: title(id) join=1 filter=[] queries=1a,1b,1c",
+            "keyword: keyword(id) join=1 filter=[] queries=1a,1b,1c",
+            "movie_keyword_mk_b: movie_keyword(keyword_id, movie_id, id) join=2 \
+             filter=[keyword_id > 5] queries=1b",
+        ]);
+        assert_eq!(datalog(&planned), [
+            "Q(T, K) :- movie_keyword_mk_ac(T, K, _), title(T), keyword(K).",
+            "Q(K, T) :- movie_keyword_mk_b(K, T, _), title(T), keyword(K).",
+            "Q(T, K) :- movie_keyword_mk_ac(T, K, _), title(T), keyword(K).",
+        ]);
+    }
+
+    #[test]
+    fn filtered_name_lists_variant_letters() {
+        // Multi-digit templates: `16a` contributes `a`, not `16a`.
+        let sql = |year: &str| {
+            format!(
+                "SELECT MIN(t.title) FROM title AS t, movie_keyword AS mk WHERE t.production_year \
+                 > {year} AND t.id = mk.movie_id"
+            )
+        };
+        let planned = plan(&[
+            ("16a", sql("2000")),
+            ("16b", sql("2010")),
+            ("16c", sql("2000")),
+        ]);
+        assert_eq!(described(&planned), [
+            "title_t_ac: title(id) join=1 filter=[production_year > 2000] queries=16a,16c",
+            "movie_keyword: movie_keyword(movie_id, id) join=1 filter=[] queries=16a,16b,16c",
+            "title_t_b: title(id) join=1 filter=[production_year > 2010] queries=16b",
+        ]);
+        assert_eq!(datalog(&planned), [
+            "Q(T) :- title_t_ac(T), movie_keyword(T, _).",
+            "Q(T) :- title_t_b(T), movie_keyword(T, _).",
+            "Q(T) :- title_t_ac(T), movie_keyword(T, _).",
+        ]);
+    }
+
+    #[test]
+    fn renamed_aliases_still_share() {
+        // Template-8 style: the variants rename their aliases (`an1`/`an`,
+        // `n1`/`n`), so the variables differ, but the files do not.
+        let planned = plan(&[
+            (
+                "8a",
+                "SELECT MIN(an1.name) FROM aka_name AS an1, name AS n1, cast_info AS ci WHERE \
+                 an1.name LIKE '%Y%' AND an1.person_id = n1.id AND n1.id = ci.person_id",
+            ),
+            (
+                "8b",
+                "SELECT MIN(an.name) FROM aka_name AS an, name AS n, cast_info AS ci WHERE \
+                 an.name LIKE '%Y%' AND an.person_id = n.id AND n.id = ci.person_id",
+            ),
+        ]);
+        assert_eq!(described(&planned), [
+            "aka_name_an1_ab: aka_name(person_id, id) join=1 filter=[name LIKE '%Y%'] \
+             queries=8a,8b",
+            "name: name(id) join=1 filter=[] queries=8a,8b",
+            "cast_info: cast_info(person_id, id) join=1 filter=[] queries=8a,8b",
+        ]);
+        assert_eq!(datalog(&planned), [
+            "Q(N1) :- aka_name_an1_ab(N1, _), name(N1), cast_info(N1, _).",
+            "Q(N) :- aka_name_an1_ab(N, _), name(N), cast_info(N, _).",
+        ]);
+    }
+
+    #[test]
+    fn variable_named_after_id_alias() {
+        // The `id` member is on the right of both joins, and its alias has a
+        // digit. Both `cct` aliases read one shared file, once each in
+        // `queries`.
+        let planned = plan(&[(
+            "1a",
+            "SELECT MIN(cc.id) FROM complete_cast AS cc, comp_cast_type AS cct1, comp_cast_type \
+             AS cct2 WHERE cc.subject_id = cct1.id AND cc.status_id = cct2.id",
+        )]);
+        assert_eq!(described(&planned), [
+            "complete_cast: complete_cast(subject_id, status_id, id) join=2 filter=[] queries=1a",
+            "comp_cast_type: comp_cast_type(id) join=1 filter=[] queries=1a",
+        ]);
+        assert_eq!(datalog(&planned), ["Q(CCT1, CCT2) :- complete_cast(CCT1, \
+                                        CCT2, _), comp_cast_type(CCT1), \
+                                        comp_cast_type(CCT2)."]);
+    }
+
+    #[test]
+    fn fallback_variable_name() {
+        // No member is an `id`: the variable is named after its first member.
+        let planned = plan(&[(
+            "1a",
+            "SELECT MIN(ci.note) FROM cast_info AS ci, movie_keyword AS mk WHERE ci.movie_id = \
+             mk.movie_id",
+        )]);
+        assert_eq!(datalog(&planned), ["Q(CI_MOVIE_ID) :- \
+                                        cast_info(CI_MOVIE_ID, _), \
+                                        movie_keyword(CI_MOVIE_ID, _)."]);
+    }
+
+    #[test]
+    fn two_columns_of_one_alias_in_one_variable_keep_text_order() {
+        // JOB has no such query; the translator keeps the columns in the order
+        // the joins first mention them, and the variable repeats in the atom.
+        let planned = plan(&[(
+            "1a",
+            "SELECT MIN(t.title) FROM movie_link AS ml, title AS t WHERE ml.movie_id = t.id AND \
+             ml.linked_movie_id = t.id",
+        )]);
+        assert_eq!(described(&planned), [
+            "movie_link: movie_link(movie_id, linked_movie_id, id) join=2 filter=[] queries=1a",
+            "title: title(id) join=1 filter=[] queries=1a",
+        ]);
+        assert_eq!(
+            datalog(&planned),
+            ["Q(T) :- movie_link(T, T, _), title(T)."]
+        );
+    }
+
+    #[test]
+    fn unjoined_alias_is_an_error() {
+        // `k` appears in a filter, which does not join it.
+        let query = parse(
+            "9z",
+            "SELECT MIN(t.title) FROM title AS t, keyword AS k, movie_keyword AS mk WHERE \
+             k.keyword = 'kw' AND mk.movie_id = t.id",
+        );
+        assert_eq!(
+            plan_template(&[query]),
+            Err(TranslateError::UnjoinedAlias {
+                query: "9z".to_owned(),
+                alias: "k".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn relation_name_clash_is_an_error() {
+        // Unfiltered, so both `mk` files would be called `movie_keyword`, but
+        // their columns differ (see `variables_follow_text_order`).
+        let forward = parse(
+            "1a",
+            "SELECT MIN(t.title) FROM movie_keyword AS mk, title AS t, keyword AS k WHERE t.id = \
+             mk.movie_id AND k.id = mk.keyword_id",
+        );
+        let reversed = parse(
+            "1b",
+            "SELECT MIN(t.title) FROM movie_keyword AS mk, title AS t, keyword AS k WHERE k.id = \
+             mk.keyword_id AND t.id = mk.movie_id",
+        );
+        assert_eq!(
+            plan_template(&[forward, reversed]),
+            Err(TranslateError::NameClash {
+                name: "movie_keyword".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn variable_name_clash_is_an_error() {
+        // `mi.x` has no `id` in its variable: its name falls back to `MI_X`,
+        // which is also the name `mi_x.id` gives the other variable.
+        let query = parse(
+            "1a",
+            "SELECT MIN(mi.x) FROM movie_info AS mi, aka_name AS a, title AS mi_x, keyword AS b \
+             WHERE mi.x = a.y AND mi_x.id = b.z",
+        );
+        assert_eq!(
+            plan_template(&[query]),
+            Err(TranslateError::NameClash {
+                name: "MI_X".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn names_survive_digits_and_underscores() {
+        // A two-variant template 16 whose aliases carry digits and underscores
+        // (`it1`, `mi_idx1`) and whose number has two digits: the names keep
+        // the digits and underscores, and the letters drop the `16`. (Template
+        // 6's names are pinned in `template_6_shapes`.)
+        let rank = |year: &str| {
+            format!(
+                "SELECT MIN(mi_idx1.info) FROM info_type AS it1, movie_info_idx AS mi_idx1, title \
+                 AS t WHERE it1.info = 'rank-info' AND t.production_year > {year} AND \
+                 mi_idx1.info_type_id = it1.id AND mi_idx1.movie_id = t.id"
+            )
+        };
+        let sixteen = plan(&[("16a", rank("2000")), ("16b", rank("2005"))]);
+        assert_eq!(
+            sixteen
+                .relations
+                .iter()
+                .map(|relation| relation.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "info_type_it1_ab",
+                "movie_info_idx",
+                "title_t_a",
+                "title_t_b"
+            ]
+        );
     }
 }
