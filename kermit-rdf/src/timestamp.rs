@@ -16,7 +16,15 @@ const SECS_PER_MINUTE: u64 = 60;
 /// Returns the current wall-clock time as a UTC ISO-8601 string of the
 /// form `YYYY-MM-DDTHH:MM:SSZ`. Returns the epoch (`1970-01-01T00:00:00Z`)
 /// if the system clock is set before the Unix epoch.
-pub(crate) fn utc_iso8601_now() -> String {
+///
+/// # Example
+///
+/// ```
+/// let now = kermit_rdf::timestamp::utc_iso8601_now();
+/// assert_eq!(now.len(), "1970-01-01T00:00:00Z".len());
+/// assert!(now.ends_with('Z'));
+/// ```
+pub fn utc_iso8601_now() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
