@@ -144,10 +144,16 @@ claiming its default 80% of RAM beside a timing run.
   `a39603662e023e449cb2121997a5034df9e02ebf`, each checked against a
   SHA-256 committed in kermit. The repository has no licence, so kermit
   pins the files rather than committing them.
-- `imdb.duckdb`: `schema.sql`, then each CSV loaded with `escape '\\'` and
-  no header (the dump escapes quotes with backslashes; the default dialect
-  shifts fields into the wrong columns), then each table's row count checked
-  against a pinned table. The extracted CSVs are deleted after loading.
+- `imdb.duckdb`: `schema.sql`, then each CSV loaded with the dialect stated
+  in full, `(FORMAT csv, HEADER false, DELIMITER ',', QUOTE '"', ESCAPE '\',
+  ALLOW_QUOTED_NULLS false, AUTO_DETECT false)`, then each table's row count
+  checked against a pinned table. The dump was written by PostgreSQL's CSV
+  format, which escapes quotes with backslashes (the default dialect shifts
+  fields into the wrong columns) and reads a quoted `""` as the empty string
+  and only an unquoted empty field as NULL; DuckDB's default reads `""` as
+  NULL and sniffs any option left unset, and neither change moves a row
+  count, so the check would not catch them. JOB's reference counts are
+  PostgreSQL's. The extracted CSVs are deleted after loading.
 - Built in a temporary directory and renamed into place, so an interrupted
   build is never reused; a build that loses the rename to a concurrent one
   is discarded.
