@@ -55,12 +55,16 @@
 //! summary from it.
 #![deny(missing_docs)]
 
+mod generator;
 mod meta;
 mod output_dir;
+mod run;
 mod sink;
 
 pub use {
+    generator::{Generated, Generator},
     meta::GeneratedMeta,
     output_dir::{output_dir, OutputDir},
+    run::run,
     sink::{RelationRecord, RelationSink, RelationWriter},
 };

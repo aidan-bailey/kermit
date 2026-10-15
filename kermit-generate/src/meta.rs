@@ -54,8 +54,6 @@ impl<E: Serialize + DeserializeOwned> GeneratorMeta for GeneratedMeta<E> {
 }
 
 /// The keys `GeneratedMeta` writes itself; `Extras` may use none of them.
-// Used by `run`, which Task 3.3 adds; Task 3.3 removes this allow.
-#[allow(dead_code)]
 pub(crate) const COMMON_FIELDS: [&str; 8] = [
     "schema_version",
     "kind",

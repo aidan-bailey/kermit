@@ -38,8 +38,6 @@ pub struct RelationSink {
 
 impl RelationSink {
     /// An empty sink over `out_dir`, which must exist.
-    // Used by `run`, which Task 3.3 adds; Task 3.3 removes this allow.
-    #[allow(dead_code)]
     pub(crate) fn new(out_dir: &Path) -> Self {
         Self {
             out_dir: out_dir.to_path_buf(),
@@ -95,8 +93,6 @@ impl RelationSink {
     pub fn records(&self) -> &[RelationRecord] { &self.records }
 
     /// The records, once the generator is done.
-    // Used by `run`, which Task 3.3 adds; Task 3.3 removes this allow.
-    #[allow(dead_code)]
     pub(crate) fn into_records(self) -> Vec<RelationRecord> { self.records }
 }
 
