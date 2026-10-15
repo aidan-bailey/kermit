@@ -189,16 +189,22 @@ and document, don't fix here.
 - **Module.** `kermit/src/generate/job/`: `mod.rs` (the generator,
   implementing #95's `Generator`: `generate(&self, &mut RelationSink)` writes
   the relations and returns the queries with their `expected` and the typed
-  `meta.json` extras), `translate.rs`, `raw.rs`, `duckdb.rs`.
+  `meta.json` extras), `translate.rs`, `raw.rs`, `duckdb.rs`. Imports name
+  the trait as `generate::Generator`, since `kermit_rdf::generator` has its
+  own `Generator`.
 - **`materialize::dispatch`** gets a `Job` arm through #95's
   `generate::run`.
-- **CLI.** `bench gen job --template N --tag T` writes `job-{N}-{tag}`.
+- **CLI.** `bench gen job --template N --tag T` writes `job-{N}-{tag}`, plus
+  whichever common flags the three kinds settle on (the co-ordinator has
+  proposed lubm's `--tag` and `--output-dir` for every kind; pending H2O).
 - **Committed.** `benchmarks/job-1.yml` … `job-33.yml`. Cache hit, drift,
   `--force` and `bench list` come from the shared meta, as for LUBM.
 - **`meta.json` extras.** The template, the `imdb.tgz` SHA-256, the query
-  commit and per-file SHA-256s, `duckdb --version`, and per relation its
-  table, columns, filter text, rows and SHA-256 (the last two from the
-  sink).
+  commit and per-file SHA-256s, `duckdb --version`, and `sources`: per
+  relation `{relation, table, filter}`, joined by name to the common
+  `relations` list, which already records each relation's columns, rows and
+  SHA-256. No extras field reuses a common name (`relations`, `columns`, …),
+  since #95's `GeneratedMeta` flattens the extras beside them.
 - **New dependency.** `sqlparser` (in `kermit`).
 - **What #97 uses from #95**, agreed 2026-10-15 and specified in #95's
   `docs/specs/2026-10-15-h2o-benchmark-design.md` (ed1fb4c on
@@ -217,9 +223,10 @@ and document, don't fix here.
 
 1. **Now, independent of #95 and #96:** the translator and its tests; the
    DuckDB session runner; the raw-cache build from a local `imdb.tgz`; the
-   count stage. Until #95 lands, this branch declares the module with a
-   temporary one-line `generate/mod.rs`, whose only conflict at merge is that
-   line.
+   count stage. Until #95 lands, this branch declares the module with
+   `mod generate;` in `main.rs` and a temporary one-line `generate/mod.rs`;
+   both conflict with #95 (and #96) by one line, resolved by whichever branch
+   lands later merging `origin/master`.
 2. **After #95:** the filter stage on the streaming writer, `generate::run`,
    the spec, CLI, `materialize` arm and the 33 YAMLs.
 3. **After #96's phase 1** (which does not wait on #95, so this step may
@@ -244,7 +251,9 @@ download and the raw-cache build). Whether the next sweep includes JOB is
   renamed aliases still sharing relations; one error per unsupported shape.
 - **Translator on the real 113** (needs network; skips without it, saying why
   on stderr): every condition classifies; every rule passes
-  `check_attribute_order`; golden counts of 466 relation files and 0
+  `check_attribute_order`; every relation and variable name is a
+  kermit-parser identifier (an ASCII letter, then letters, digits or `_`),
+  which #95's sink also enforces; golden counts of 466 relation files and 0
   column-order conflicts.
 - **Pipeline on a committed fixture** (needs DuckDB; skips without it, as the
   LUBM tests do without Java). Tiny IMDb-shaped CSVs with NULL join keys,
@@ -267,7 +276,9 @@ download and the raw-cache build). Whether the next sweep includes JOB is
   variables (and why `stored` is one fixed order), relation naming and
   sharing; why benchmarks are per template; DuckDB's settings, disk and
   time; the measured memory ceiling per template and structure.
-- `benchmarks/README.md`: the `job` kind.
+- `benchmarks/README.md`: the `job` kind, and the common-fields table's
+  `generator.scale` row stops saying "required for every kind" (#96 makes
+  the same edit; whichever lands first does it).
 - CLAUDE.md: a Benchmark Reference Docs entry; `bench gen job`; gotchas for
   DuckDB on PATH or `KERMIT_DUCKDB_BIN`, the shared raw cache, the streamed
   handoff, `ORDER BY id`, carried ids and text-order variables.
