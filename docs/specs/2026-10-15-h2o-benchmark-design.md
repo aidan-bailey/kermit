@@ -74,8 +74,9 @@ Made in this design, including where it departs from #95's body:
 
 ### `ParquetWriter` and `write_parquet` (kermit-ds)
 
-These go in `kermit-ds/src/relation.rs`, beside `read_parquet`, and are re-exported at the
-crate root like it.
+These go in a new `kermit-ds/src/parquet_writer.rs` (`relation.rs`, which holds
+`read_parquet`, is already 1,047 lines), and are re-exported at the crate root beside
+`read_parquet`.
 
 ```rust
 pub struct ParquetWriter { /* ArrowWriter<File>, column chunk buffers, row count, paths */ }
@@ -152,7 +153,7 @@ kermit-generate/
     output_dir.rs   output_dir, OutputDir (D17)
     h2o/            mod.rs, keys.rs, rng.rs                  (push 2, #95)
     snap.rs, snap/counts.rs                                  (#96)
-    job/            mod.rs, translate.rs, duckdb.rs          (#97)
+    job/            mod.rs, translate.rs, duckdb.rs, raw.rs  (#97; its own spec's list governs)
 ```
 
 `lib.rs` re-exports the layer at the crate root: `kermit_generate::{Generator, Generated,
@@ -209,8 +210,10 @@ pub fn run<G: Generator>(generator: &G) -> anyhow::Result<GeneratedMeta<G::Extra
 ```
 
 **`RelationSink`**
-- `open` rejects a name that is already written, is not a predicate name kermit-parser
-  accepts, or starts with a reserved prefix (`Const_`, `Select_`, `Index_`). It creates
+- `open` rejects a name that is already written, or that does not match
+  `[a-z][a-z0-9_]*`. That rule is stricter than kermit-parser's identifiers
+  (`[A-Za-z][A-Za-z0-9_]*`) and excludes every reserved prefix (`Const_`, `Select_`,
+  `Index_`), all of which start uppercase. It creates
   `ParquetWriter::create(<out_dir>/<name>.parquet, header)`.
 - `write` is `open` + one `write_batch` + `finish`, so there is one code path.
 - `RelationWriter` borrows the sink mutably, so only one relation can be open at a time.
@@ -534,7 +537,7 @@ For a key column with cardinality n, where n is `small`, `medium` or `rows`:
   the final file. A `RelationWriter` dropped the same way leaves no record either.
 - **`output_dir`:** the three cases under "`output_dir`: `GenTarget`'s resolver".
 - **`RelationSink`:**
-  - duplicate, unparseable and reserved names are rejected;
+  - duplicate names, and names outside `[a-z][a-z0-9_]*` (uppercase, reserved, digit-first, hyphenated, empty), are rejected;
   - a record's `sha256` equals the file's hash and its `rows` equal the row count;
   - `raw_dir()` creates `raw/`, and the directory is absent when nobody calls it.
 - **`kermit_generate::run` with a toy generator** (two relations, one streamed; one query):
