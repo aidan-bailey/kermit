@@ -7,8 +7,8 @@
 Query Optimizers, Really?", VLDB 2015) becomes a generator benchmark: all
 113 queries (33 templates) over IMDb, with each alias's filters applied
 during generation, so kermit runs JOB's real joins.
-**Related:** #95 (H2O, owns the shared `kermit/src/generate/` layer and its
-streaming writer), #96 (SNAP, owns kermit-bench's `download_verified`), #81
+**Related:** #95 (H2O, owns the shared generator layer, the
+`kermit-generate` crate, and its streaming writer), #96 (SNAP, owns kermit-bench's `download_verified`), #81
 (cost-based optimiser) and #93 (`--column-orders any`), which JOB evaluates;
 #99 (the next sweep).
 
@@ -38,7 +38,7 @@ points of the issue:
 | The rule's head unspecified | Head = every join variable in order | The parser needs at least one head term; a full head makes the lexicographic optimiser follow the text order |
 | `RelationSink::write` buffers each relation (~1.1 GB peak) | DuckDB streams CSV; kermit writes Parquet batch by batch | User decision: generation is out of core end to end |
 | Download into the raw cache (helper unspecified) | #96's `download_verified` | #96 builds the streaming, digest-checked download (user decision) |
-| Builds on whichever of #95/#96 lands `generate/` | Builds on #95 | User decision: H2O owns the layer |
+| Builds on whichever of #95/#96 lands `kermit/src/generate/` | Builds on #95's new `kermit-generate` crate | User decisions: H2O owns the layer, and it is a workspace crate, not a binary module |
 
 Premises re-checked and unchanged: `bench run` still loads every relation of
 a definition (`kermit/src/bench/run.rs:113`), so benchmarks stay per
@@ -67,7 +67,7 @@ than `=`, no OR spans two aliases, and every condition names an alias; no
 alias has two columns in one join variable, so no query needs the selection
 rewrite.
 
-## Translator (`generate/job/translate.rs`, pure Rust)
+## Translator (`kermit-generate/src/job/translate.rs`, pure Rust)
 
 **Parsing.** `sqlparser` (PostgreSQL dialect) parses each query. The
 translator reads the `FROM` aliases, then flattens the WHERE clause's
@@ -121,7 +121,7 @@ title_t_a / title_t_bc / title_t_def(id)  production_year > …
 
 Across all 33 templates this gives 466 relation files.
 
-## DuckDB stages (`generate/job/{raw,duckdb}.rs`)
+## DuckDB stages (`kermit-generate/src/job/{raw,duckdb}.rs`)
 
 **Finding DuckDB.** `KERMIT_DUCKDB_BIN`, then `duckdb` on PATH; the flake
 adds `pkgs.duckdb`. Without it, generation fails with an error pointing at
@@ -186,17 +186,21 @@ and document, don't fix here.
 
 - **Spec.** `GeneratorSpec::Job { template: u8 }` in kermit-bench; `validate`
   rejects templates outside 1–33; `spec_hash` covers `template`. No `scale`.
-- **Module.** `kermit/src/generate/job/`: `mod.rs` (the generator,
-  implementing #95's `Generator`: `generate(&self, &mut RelationSink)` writes
-  the relations and returns the queries with their `expected` and the typed
-  `meta.json` extras), `translate.rs`, `raw.rs`, `duckdb.rs`. Imports name
-  the trait as `generate::Generator`, since `kermit_rdf::generator` has its
-  own `Generator`.
-- **`materialize::dispatch`** gets a `Job` arm through #95's
-  `generate::run`.
-- **CLI.** `bench gen job --template N --tag T` writes `job-{N}-{tag}`, plus
-  whichever common flags the three kinds settle on (the co-ordinator has
-  proposed lubm's `--tag` and `--output-dir` for every kind; pending H2O).
+- **Module.** `kermit-generate/src/job/` in #95's `kermit-generate` crate,
+  registered by one `pub mod job;` line in its `lib.rs`: `mod.rs` (the
+  generator, implementing `kermit_generate::Generator` with `KIND = "job"`:
+  `generate(&self, &mut RelationSink)` writes the relations and returns the
+  queries with their `expected` and the typed `meta.json` extras),
+  `translate.rs`, `raw.rs`, `duckdb.rs`. The crate is
+  `#![deny(missing_docs)]`, so every `pub` item is documented, with no
+  intra-doc links to binary items (`materialize`, `ExecutionFamily`, …).
+  Imports name the trait through `kermit_generate`, since
+  `kermit_rdf::generator` has its own `Generator`.
+- **`materialize::dispatch`** (in the binary) gets a `Job` arm calling
+  `kermit_generate::run`.
+- **CLI.** `bench gen job --template N` with #95's shared `GenTarget`
+  flattened in (`--tag` required, `--output-dir` optional); it writes
+  `job-{N}-{tag}`.
 - **Committed.** `benchmarks/job-1.yml` … `job-33.yml`. Cache hit, drift,
   `--force` and `bench list` come from the shared meta, as for LUBM.
 - **`meta.json` extras.** The template, the `imdb.tgz` SHA-256, the query
@@ -205,9 +209,11 @@ and document, don't fix here.
   `relations` list, which already records each relation's columns, rows and
   SHA-256. No extras field reuses a common name (`relations`, `columns`, …),
   since #95's `GeneratedMeta` flattens the extras beside them.
-- **New dependency.** `sqlparser` (in `kermit`).
+- **New dependencies.** `sqlparser` in `kermit-generate/Cargo.toml` (never
+  `kermit`'s); `kermit-algos` as a dev-dependency there, for the
+  `check_attribute_order` test.
 - **What #97 uses from #95**, agreed 2026-10-15 and specified in #95's
-  `docs/specs/2026-10-15-h2o-benchmark-design.md` (ed1fb4c on
+  `docs/specs/2026-10-15-h2o-benchmark-design.md` (4e0beac on
   `aidanb/h2o`), Part 1:
   - `RelationSink::open(&RelationHeader) -> RelationWriter`, with
     `write_batch(&Tuples)` and `finish()`; `RelationSink::write` is `open`
@@ -221,14 +227,14 @@ and document, don't fix here.
 
 ## Sequencing
 
-1. **Now, independent of #95 and #96:** the translator and its tests; the
+1. **After #95's push 1** (the `kermit-generate` crate, landing on master
+   alone), merged in from `origin/master`: the translator and its tests; the
    DuckDB session runner; the raw-cache build from a local `imdb.tgz`; the
-   count stage. Until #95 lands, this branch declares the module with
-   `mod generate;` in `main.rs` and a temporary one-line `generate/mod.rs`;
-   both conflict with #95 (and #96) by one line, resolved by whichever branch
-   lands later merging `origin/master`.
-2. **After #95:** the filter stage on the streaming writer, `generate::run`,
-   the spec, CLI, `materialize` arm and the 33 YAMLs.
+   count stage. The `pub mod job;` line is JOB's only edit to the layer's
+   files, a one-line add/add conflict with #96 at most.
+2. **After #95's `GenTarget`** (push 2, or #96's phase 2 if first): the
+   filter stage on the streaming writer, `kermit_generate::run`, the spec,
+   CLI, `materialize` arm and the 33 YAMLs.
 3. **After #96's phase 1** (which does not wait on #95, so this step may
    come before step 2): downloads through `download_verified`, which prints
    progress on stderr for bodies over 64 MiB; until then the raw cache takes
@@ -237,12 +243,11 @@ and document, don't fix here.
 
 The phases are development order on `aidanb/job`, not separate landings:
 JOB lands on master once, after phase 3 and its 113-count check (the memory
-table may follow as a docs commit). `generate/` is a binary module, where
-`pub` does not exempt an item from `dead_code`, so until phase 2's dispatch
-arm calls the generator, the `mod job;` line carries
-`#[cfg_attr(not(test), expect(dead_code, reason = "…"))]`. Every branch
-commit then passes `cargo clippy --all-targets` under `-Dwarnings`, and the
-expectation fails once the arm exists, which forces its removal.
+table may follow as a docs commit), because a JOB that cannot both download
+and dispatch is not usable. `kermit-generate` is a library crate, so its
+`pub` items are not dead code before the dispatch arm exists, and every
+branch commit passes `cargo clippy --all-targets` under `-Dwarnings`
+without any lint attribute.
 
 `bench run --all` will materialise all 33 templates (first run: the 1.26 GB
 download and the raw-cache build). Whether the next sweep includes JOB is
@@ -252,6 +257,11 @@ download and the raw-cache build). Whether the next sweep includes JOB is
 
 - **Spec** (CI): `kind: job` parses; templates 0 and 34 are rejected;
   `spec_hash` changes with the template.
+Unit tests (spec aside) live in `kermit-generate`; the pipeline test, which
+counts through kermit's join entry points, lives in `kermit/tests/job_generate.rs`
+(as #95's `kermit/tests/h2o_generate.rs`), since `kermit-generate` cannot
+depend on `kermit`.
+
 - **Translator** (CI, no network), on hand-written JOB-shaped SQL: `BETWEEN`
   stays one filter; OR inside parentheses; quoted strings containing
   `' AND '` and dots; `LIKE`, `NOT LIKE`, `IN`, `IS NULL`; self-joins; chain
@@ -271,7 +281,7 @@ download and the raw-cache build). Whether the next sweep includes JOB is
   committed). Checked:
   - relation contents and `ORDER BY id` order;
   - every query's count on every cell × optimiser × `stored`/`any`, through
-    the real entry points, equals DuckDB's `COUNT(*)`;
+    `kermit::db`'s entry points, equals DuckDB's `COUNT(*)`;
   - regeneration is byte-identical;
   - a raw-cache row-count mismatch is an error, and an interrupted raw-cache
     build is not reused;
