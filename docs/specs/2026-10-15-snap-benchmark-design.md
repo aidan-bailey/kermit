@@ -220,7 +220,7 @@ pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), Ben
 - **A failed body read** (a stalled or dropped connection) is a `BenchError::Download`,
   as a failure before the body is. `Response::read` wraps reqwest's error in an
   `io::Error`, which the core unwraps.
-- **Progress.** For a body over 64 MiB, a line on stderr every 10 s with the bytes received,
+- **Progress.** For a body of 64 MiB or more, a line on stderr every 10 s with the bytes received,
   and the total when the response gives a `Content-Length`. SNAP's files stay silent; JOB's
   1.26 GB dump would otherwise be minutes without output (JOB asked for it, 2026-10-15).
 - **`BenchError::Integrity`** generalises its `relation` field to a `subject` holding the
