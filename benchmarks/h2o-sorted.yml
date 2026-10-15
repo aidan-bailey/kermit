@@ -1,0 +1,6 @@
+name: h2o-sorted
+description: "H2O db-benchmark join (J1) at N = 1e7: q1, q2 and q5 over per-query projections of x, rows sorted, #101's input-order axis (#95)."
+generator:
+  kind: h2o
+  scale: 10000000
+  order: sorted
