@@ -37,6 +37,10 @@
             # Pinned to 8 to match the build environment that produced
             # the vendored jar — see kermit-rdf/vendor/lubm-uba/REGENERATE.md.
             pkgs.jdk8
+            # DuckDB runs the JOB generator's filter and count stages; required by
+            # `kermit bench gen job` and the DuckDB-gated tests (kermit-generate's
+            # job module, kermit/tests/job_generate.rs).
+            pkgs.duckdb
             pkgs.python313
             # uv manages python/kermit-lab/ — `uv sync` reads pyproject.toml
             # + uv.lock to materialise .venv/.

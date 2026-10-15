@@ -11,4 +11,5 @@
 //!
 //! The design is in `docs/specs/2026-10-15-job-benchmark-design.md`.
 
+pub mod duckdb;
 pub mod translate;
