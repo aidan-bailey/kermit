@@ -14,6 +14,10 @@ the canonical template every benchmark doc follows.
 - [WatDiv](WATDIV.md) — ~12 400 mechanically-generated stress queries per
   workload spanning star, snowflake, and chain shapes. The distributional
   counterpart to LUBM.
+- [SNAP](SNAP.md) — real community graphs (Amazon, DBLP, YouTube) as one
+  symmetric `edge` relation, with four graph-pattern queries (`triangle`,
+  `path3`, `cycle4`, `clique4`) whose counts are exact. Walk semantics; the
+  cyclic workload on real, skewed data.
 
 ## Cross-benchmark comparison
 
@@ -21,19 +25,19 @@ Rows cluster by purpose: workload-shape rows describe what the workload
 looks like; verification rows describe how a run is checked for correctness;
 operational rows describe how it actually runs.
 
-| Dimension | LUBM | WatDiv |
-|---|---|---|
-| Query count per dataset | 14 | ~12 400 per stress file (12 committed files) |
-| Authoring | Hand-designed for specific OWL features | Mechanically generated from templates |
-| Predicate arity | All binary + unary type lookups | All binary |
-| Inference required | OWL-Lite (subClassOf, subPropertyOf, transitivity, inverseOf, realisation) | None — data is pre-materialised |
-| Triangle queries | **Q2, Q9 — explicit hand-designed** | Incidental (e.g. q0010 sharing a country variable) |
-| Self-joins | None | Yes (e.g. `friendof(V_v2, V_v2)`) |
-| Result oracle | Paper Table 3, manually transcribed | None — vendored binary emits no `.desc` |
-| Reproducibility | Deterministic per `(seed, scale)` | Non-deterministic; tag-based snapshots |
-| Sandbox | — | bwrap required (or `--no-bwrap`) |
-| Vendored asset | Committed (~2.9 MB jar) | Committed (~360 KB binary) |
-| Pipeline command | `kermit bench gen lubm` | `kermit bench gen watdiv` |
+| Dimension | LUBM | WatDiv | SNAP |
+|---|---|---|---|
+| Query count per dataset | 14 | ~12 400 per stress file (12 committed files) | 4 per graph (`triangle`, `path3`, `cycle4`, `clique4`) |
+| Authoring | Hand-designed for specific OWL features | Mechanically generated from templates | Four hand-chosen graph patterns over a downloaded real graph |
+| Predicate arity | All binary + unary type lookups | All binary | One relation, `edge`, binary |
+| Inference required | OWL-Lite (subClassOf, subPropertyOf, transitivity, inverseOf, realisation) | None — data is pre-materialised | None — the edge list is symmetrised and cleaned, not inferred over |
+| Triangle queries | **Q2, Q9 — explicit hand-designed** | Incidental (e.g. q0010 sharing a country variable) | **`triangle` and `clique4` explicit**; `cycle4` counts closed 4-step walks |
+| Self-joins | None | Yes (e.g. `friendof(V_v2, V_v2)`) | **Every query** (all atoms are `edge`) |
+| Result oracle | Paper Table 3, manually transcribed | None — vendored binary emits no `.desc` | **Generator-computed `expected` for every query**, by an oracle that shares no code with the joins |
+| Reproducibility | Deterministic per `(seed, scale)` | Non-deterministic; tag-based snapshots | Deterministic: the `.gz` is pinned by SHA-256; Parquet bytes are stable per build |
+| Sandbox | — | bwrap required (or `--no-bwrap`) | — |
+| Vendored asset | Committed (~2.9 MB jar) | Committed (~360 KB binary) | None — downloaded from snap.stanford.edu (4–11 MB, SHA-256 checked) |
+| Pipeline command | `kermit bench gen lubm` | `kermit bench gen watdiv` | `kermit bench gen snap` |
 
 Cell conventions: `—` for "inapplicable"; `None` when the value is genuinely
 zero/empty (e.g. LUBM has no self-joins by design); bold marks a row's most

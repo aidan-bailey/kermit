@@ -251,6 +251,9 @@ plus the counts `meta.json` records.
   That also covers a reversed repeat (d, s). The check keeps a `HashSet` of normalised
   pairs, about 100 MB at youtube.
 - Each kept line pushes (s, d) then (d, s), with raw ids.
+- If no line survives, generation fails: `<source> has no edges after dropping <n>
+  self-loops and <m> duplicates`. A benchmark with no data measures nothing (user
+  decision, 2026-10-15). The three named graphs are unaffected.
 
 The `meta.json` extras are: the graph name or the URL, the `.gz` SHA-256, the input edge
 count, and the self-loops and duplicates dropped.
@@ -363,6 +366,13 @@ spec's "Requirements from #96 and #97" table:
 - **`materialize::dispatch`** (in the binary) gains a `GeneratorSpec::Snap` arm that
   resolves the source (`SnapGraph::source()` or the spec's pair), builds a
   `SnapGenerator` with `spec_hash`, and calls `kermit_generate::run`.
+- **`materialize`'s error context (first lander only).** `materialize` formats
+  `dispatch`'s error with `{e}`, which drops an `anyhow` context chain, so a
+  `kermit-generate` arm's "what failed" would be lost. The first branch to add a
+  `kermit-generate` dispatch arm (this phase 2, or H2O's push 2) changes it to `{e:#}` in
+  its own small commit, with a test that a two-level `.context()` error shows both
+  messages (co-ordinator's rule, 2026-10-15). If H2O's push 2 lands first, merge it and
+  do nothing.
 - **`bench gen snap`** takes `--graph <com-amazon|com-dblp|com-youtube>`, or `--url URL
   --sha256 HEX`, plus `--queries triangle,clique4` (optional), and the shared output flags
   through `#[command(flatten)] target: GenTarget` (`--tag`, required; `--output-dir`,
@@ -408,6 +418,8 @@ spec's "Requirements from #96 and #97" table:
     non-numeric, negative, blank.
   - Self-loops, exact duplicates and reversed duplicates are dropped and counted.
   - Rows come out (s, d), (d, s) in file order.
+  - A file whose lines are all comments, self-loops or duplicates is rejected, naming
+    the counts.
 - **Oracle** (inline unit tests in `kermit-generate/src/snap/counts.rs`):
   - Hand-checked: K₄ gives triangle 24, clique4 24, path3 108, cycle4 84; C₄ gives
     triangle 0, clique4 0, path3 32, cycle4 32.
@@ -439,7 +451,9 @@ spec's "Requirements from #96 and #97" table:
   dirs, so the shared cache is never touched):
   - `bench gen snap --url http://127.0.0.1:… --sha256 …` generates, and
     `bench run … -i all -a all -m iteration --verify` passes.
-  - A wrong `--sha256` exits non-zero and leaves no cache subdir.
+  - A wrong `--sha256` exits non-zero and leaves no cache: `GenTarget::prepare` has
+    created the directory, but it holds no `meta.json` (so `bench list` doesn't show
+    it), and `raw/` holds no `.gz` and no `.part`.
   - A workspace `kind: snap` YAML materialises on `bench run`, is a hit the second time,
     raises `SpecDrift` after an edit and regenerates under `--force`. #95's tests cover
     the general mechanism; this pins SNAP's `dispatch` arm.
@@ -464,7 +478,8 @@ spec's "Requirements from #96 and #97" table:
 - [ ] `benchmarks/snap-amazon.yml` and `snap-dblp.yml` generate on `bench run`; a cache
       hit, drift, `--force` and `bench list` behave as for LUBM.
 - [ ] `bench gen snap` works in both forms, including `--graph com-youtube`, and a wrong
-      SHA-256 fails before parsing and leaves no cache subdir.
+      SHA-256 fails before parsing and leaves no cache (no `meta.json`, nothing in
+      `raw/`).
 - [ ] Generated counts for amazon and dblp equal the eight verified values, and
       `bench run snap-amazon -i all -a all --verify` (and `snap-dblp`) passes on all three
       cells.

@@ -28,8 +28,8 @@ pub(crate) const BENCHMARKS_DIR: &str = "benchmarks";
 
 pub use {
     definition::{
-        BenchmarkDefinition, GeneratorSpec, QueryDefinition, RelationSource, WatdivStressSpec,
-        DEFAULT_LUBM_ONTOLOGY,
+        BenchmarkDefinition, GeneratorSpec, QueryDefinition, RelationSource, SnapGraph, SnapQuery,
+        WatdivStressSpec, DEFAULT_LUBM_ONTOLOGY,
     },
     error::BenchError,
 };
