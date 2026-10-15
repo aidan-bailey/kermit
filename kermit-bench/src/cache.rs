@@ -308,9 +308,10 @@ fn fetch_checked(
 
 /// Sends a GET for `url` and streams a `200 OK` body into `part` while
 /// hashing it, returning the body's SHA-256 as 64 lowercase hex characters.
-/// A response other than `200 OK` is rejected before its body is read
-/// ([`unusable_status`]), and an empty body after it. The caller removes
-/// `part` on failure.
+/// A 4xx or 5xx response is a [`BenchError::Download`], and any other status
+/// but `200 OK` is rejected by [`unusable_status`], both before the body is
+/// read; an empty body is rejected after it. A large body reports its
+/// progress on stderr ([`Progress`]). The caller removes `part` on failure.
 fn stream_to_part(
     client: &reqwest::blocking::Client, url: &str, part: &Path,
 ) -> Result<String, BenchError> {
@@ -442,22 +443,25 @@ const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 /// graph's `.gz` (#96), JOB's IMDb dump and query files (#97).
 ///
 /// The body is streamed into `<dest>.part` while it is hashed, and renamed
-/// onto `dest` only once its digest equals `sha256`, so `dest` never holds a
-/// partial or unverified file and a failure leaves neither. It waits up to
+/// onto `dest` (replacing any file there) only once its digest equals
+/// `sha256`. A failure leaves `dest` as it was and removes the part file, so
+/// `dest` never holds a partial or unverified download. It waits up to
 /// 30 s to connect, for the response headers and for each read of the body,
 /// with no limit on the whole download. A body of 64 `MiB` or more reports
 /// its progress on stderr every 10 s.
 ///
 /// # Errors
 ///
-/// - [`BenchError::Download`] — the request failed, or the connection stalled
-///   or dropped before or during the body.
-/// - [`BenchError::UnusableDownload`] — the server answered with a status
-///   other than `200 OK` (naming a WAF challenge) or with an empty body.
+/// - [`BenchError::Download`] — the request failed, the server answered with
+///   a 4xx or 5xx status, or the connection stalled or dropped before or
+///   during the body.
+/// - [`BenchError::UnusableDownload`] — the server answered with a success
+///   status other than `200 OK` (naming a WAF challenge) or with an empty
+///   body.
 /// - [`BenchError::Integrity`] — the body's digest differs from `sha256`; its
 ///   `subject` is `file '<name>'`, where `<name>` is `dest`'s file name.
 /// - [`BenchError::Io`] — `dest`'s directory or its part file cannot be
-///   created or written.
+///   created or written, or the part file cannot be renamed onto `dest`.
 pub fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<(), BenchError> {
     fetch_checked(url, dest, |_part, actual| {
         if actual == sha256 {
@@ -491,11 +495,10 @@ fn reports_progress(total: Option<u64>, received: u64) -> bool {
 
 /// One progress line, in whole `MiB`.
 fn progress_line(url: &str, received: u64, total: Option<u64>) -> String {
+    let mib = received >> 20;
     match total {
-        | Some(total) => {
-            format!("  downloading {url}: {} of {} MiB", received >> 20, total >> 20)
-        },
-        | None => format!("  downloading {url}: {} MiB so far", received >> 20),
+        | Some(total) => format!("  downloading {url}: {mib} of {} MiB", total >> 20),
+        | None => format!("  downloading {url}: {mib} MiB so far"),
     }
 }
 
@@ -519,10 +522,22 @@ impl<'a> Progress<'a> {
         }
     }
 
+    /// The progress line due at `now`, if any: once the body is large enough
+    /// ([`reports_progress`]) and [`PROGRESS_INTERVAL`] has passed since the
+    /// last line, or since the start. Returning a line restarts the interval.
+    fn tick(&mut self, received: u64, now: Instant) -> Option<String> {
+        if !reports_progress(self.total, received)
+            || now.saturating_duration_since(self.last) < PROGRESS_INTERVAL
+        {
+            return None;
+        }
+        self.last = now;
+        Some(progress_line(self.url, received, self.total))
+    }
+
     fn update(&mut self, received: u64) {
-        if reports_progress(self.total, received) && self.last.elapsed() >= PROGRESS_INTERVAL {
-            self.last = Instant::now();
-            eprintln!("{}", progress_line(self.url, received, self.total));
+        if let Some(line) = self.tick(received, Instant::now()) {
+            eprintln!("{line}");
         }
     }
 }
@@ -790,7 +805,7 @@ mod tests {
     #[test]
     fn download_rejects_a_success_status_other_than_200() {
         let msg = rejected_download(http_response("202 Accepted", &[], PARQUET_LIKE));
-        assert!(msg.contains("202"), "{msg}");
+        assert!(msg.contains("got 202"), "{msg}");
     }
 
     #[test]
@@ -1060,7 +1075,7 @@ mod tests {
         ));
         assert!(waf.contains("challenge"), "{waf}");
         let accepted = rejected_verified(http_response("202 Accepted", &[], b"abc"));
-        assert!(accepted.contains("202"), "{accepted}");
+        assert!(accepted.contains("got 202"), "{accepted}");
         let empty = rejected_verified(http_response("200 OK", &[], b""));
         assert!(empty.contains("empty"), "{empty}");
     }
@@ -1084,5 +1099,27 @@ mod tests {
             progress_line("http://h/x.tgz", 3 << 20, None),
             "  downloading http://h/x.tgz: 3 MiB so far"
         );
+    }
+
+    #[test]
+    fn progress_prints_at_most_once_per_interval() {
+        let url = "http://h/x.tgz";
+        let mut progress = Progress::new(url, Some(PROGRESS_MIN_BYTES));
+        let start = progress.last;
+        let due = start + PROGRESS_INTERVAL;
+        assert_eq!(progress.tick(1 << 20, start), None, "not before an interval");
+        assert_eq!(progress.tick(1 << 20, due - Duration::from_nanos(1)), None);
+        assert_eq!(
+            progress.tick(1 << 20, due).as_deref(),
+            Some("  downloading http://h/x.tgz: 1 of 64 MiB")
+        );
+        assert_eq!(
+            progress.tick(2 << 20, due),
+            None,
+            "a line restarts the interval"
+        );
+        let mut small = Progress::new(url, Some(PROGRESS_MIN_BYTES - 1));
+        let later = small.last + PROGRESS_INTERVAL;
+        assert_eq!(small.tick(1, later), None, "a small body stays silent");
     }
 }
