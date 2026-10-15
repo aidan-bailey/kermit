@@ -613,6 +613,17 @@ enum GenSubcommand {
         #[command(flatten)]
         target: GenTarget,
     },
+
+    /// Generate one Join Order Benchmark template on the fly (needs DuckDB)
+    Job {
+        /// The JOB template to generate, 1-33: every variant of it (`6` is
+        /// 6a-6f) becomes one query of the benchmark
+        #[arg(long, value_name = "N", required = true)]
+        template: u8,
+
+        #[command(flatten)]
+        target: GenTarget,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1401,6 +1412,45 @@ fn run_gen_snap(
     Ok(())
 }
 
+/// Handler for `bench gen job`: generate one JOB template into
+/// `job-{template}-{tag}` through `kermit-generate`, with no spec hash (like
+/// `bench gen lubm`). The range is checked first and DuckDB is located before
+/// the output directory is made, so a bad template or a host without DuckDB
+/// leaves nothing behind.
+fn run_gen_job(template: u8, target: GenTarget) -> anyhow::Result<()> {
+    use kermit_generate::job::{duckdb::Duckdb, raw, JobGenerator, TEMPLATES};
+
+    anyhow::ensure!(
+        TEMPLATES.contains(&template),
+        "--template {template} is not a JOB template: the benchmark has templates {}..={}",
+        TEMPLATES.start(),
+        TEMPLATES.end()
+    );
+    let bench_name = format!("job-{template}-{}", target.tag);
+    let duckdb = Duckdb::locate()?;
+    let out_dir = target.prepare("job", &bench_name)?;
+    let cache = raw::ensure(&duckdb, &raw::default_raw_dir()?)?;
+    let generator = JobGenerator {
+        template,
+        raw: &cache,
+        duckdb: &duckdb,
+        target: kermit_rdf::generator::Target {
+            out_dir: &out_dir,
+            bench_name: &bench_name,
+            tag: &target.tag,
+            spec_hash: None,
+        },
+    };
+    let meta = kermit_generate::run(&generator)?;
+    eprintln!(
+        "[gen job] wrote {} (relations={}, queries={})",
+        out_dir.display(),
+        meta.relation_count,
+        meta.query_count
+    );
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -1543,6 +1593,11 @@ fn main() -> anyhow::Result<()> {
                     queries,
                     target,
                 } => run_gen_snap(graph, url, sha256, queries, target)?,
+
+                | GenSubcommand::Job {
+                    template,
+                    target,
+                } => run_gen_job(template, target)?,
             },
         },
     }
