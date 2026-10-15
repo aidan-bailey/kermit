@@ -22,6 +22,7 @@ kermit/
 ├── kermit-algos/    # Join algorithms + query optimisers
 ├── kermit-bench/    # Benchmark definitions, discovery, caching
 ├── kermit-rdf/      # RDF/SPARQL pipelines (WatDiv, LUBM generators)
+├── kermit-generate/ # Non-RDF generators (H2O, SNAP, JOB) and their shared layer
 ├── kermit/          # CLI binary and top-level integration
 └── python/
     └── kermit-lab/  # Analysis library over the JSON bench reports (not a Cargo member)
@@ -33,7 +34,9 @@ Arrows read "depends on". Only production (`[dependencies]`) edges are listed.
 
 ```
 kermit         ──▶ kermit-iters, kermit-ds, kermit-algos,
-                   kermit-parser, kermit-bench, kermit-rdf
+                   kermit-parser, kermit-bench, kermit-rdf,
+                   kermit-generate
+kermit-generate ─▶ kermit-ds, kermit-bench, kermit-rdf, kermit-parser
 kermit-rdf     ──▶ kermit-bench
 kermit-algos   ──▶ kermit-iters, kermit-parser
 kermit-ds      ──▶ kermit-iters, kermit-derive
@@ -50,6 +53,8 @@ Three crates are leaves with no internal dependencies: `kermit-iters`, `kermit-p
 `kermit-derive` is a proc-macro crate; its `kermit-iters` dependency is dev-only, used by its integration tests. The `kermit` binary depends on every sibling except `kermit-derive`, which it pulls in transitively via `kermit-ds`.
 
 `kermit-rdf` depends on `kermit-bench` alone. Its coupling to the query layer is deliberately textual, not structural: `sparql::translator` emits a Datalog *string* into the generated `benchmark.yml`, and that string is parsed by `kermit-parser` later, in the binary, when the benchmark is actually run. The pipeline also never constructs a relation, so it has no need of `kermit-ds`. (Both crates were declared in its manifest for a period without ever being referenced; the entries were removed.)
+
+`kermit-generate` holds the generators that write their relations themselves rather than partitioning an RDF tool's N-Triples: H2O (#95), SNAP (#96) and JOB (#97). Writing relations needs `kermit-ds`'s `ParquetWriter`, which is exactly the dependency `kermit-rdf` must not take, so they get their own crate. It reuses `kermit-rdf`'s cache contract (`Target`, `GeneratorMeta`, `write_meta_json`, `META_SCHEMA_VERSION`) and `kermit-parser` to check each query it emits. Nothing but the binary depends on it.
 
 ## Core Abstractions
 
@@ -425,6 +430,15 @@ Legacy `meta.json` files lacking `spec_hash` are treated as drift.
 Both pipelines share post-driver stages: `partition` (split N-Triples by predicate), `parquet` (encode dict + per-predicate parquet), `dict` (string→usize), `sparql::translator` (BGP-only SPARQL → Datalog), `yaml_emit` (write the cache-side `benchmark.yml`, including each query's `expected` cardinality when the generator supplies one). The cache-side YAML always has `generator: None` — provenance lives in `meta.json.spec_hash`.
 
 User-facing reference docs live at `docs/benchmarks/WATDIV.md` and `docs/benchmarks/LUBM.md`. Module-internal contributor notes for the LUBM driver live at `kermit-rdf/src/lubm/README.md`.
+
+## Non-RDF Generators (`kermit-generate`)
+
+`kermit-generate` is the layer that non-RDF generator benchmarks share, plus those generators. A generator implements `Generator`: a `KIND` for `meta.json`, an `Extras` type for its own `meta.json` fields, a `target()` (output directory, benchmark name, tag, spec hash: `kermit-rdf`'s `Target`), and `generate(&mut RelationSink)`, which writes every relation and returns the queries with their `expected` counts.
+
+- **`RelationSink`** writes `<out_dir>/<name>.parquet` through `kermit_ds::ParquetWriter`, either one-shot (`write(&header, &tuples)`) or streamed (`open(&header)` → `RelationWriter::write_batch` → `finish`), and records each relation's columns, rows and SHA-256. A writer that is dropped unfinished leaves no file and no record. `raw_dir()` gives `<out_dir>/raw/` for downloaded artifacts.
+- **`run`** owns the cache contract that `materialize` and discovery rely on. It deletes any old `meta.json`, calls `generate`, checks the extras and that every query parses and names a written relation, writes `benchmark.yml`, and writes `meta.json` last. The last write is the commit marker: a directory without `meta.json` is never a cache hit.
+- **`GeneratedMeta<E>`** is the common `meta.json` (schema version, kind, tag, timestamp, counts, spec hash, per-relation records) with `E` flattened beside it. It implements `kermit-rdf`'s `GeneratorMeta`, so drift detection, `OUTDATED_BEFORE` and `bench list` treat these caches like `kermit-rdf`'s.
+- **`output_dir`** resolves a `bench gen <kind>` output directory (`--output-dir` or the cache root) and reports whether discovery will see it.
 
 ## CLI (`kermit`)
 

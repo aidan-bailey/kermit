@@ -1,0 +1,24 @@
+[package]
+name = "kermit-generate"
+description = "Non-RDF benchmark generators for Kermit and the layer they share"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[dependencies]
+kermit-bench = { version = "0.1.2", path = "../kermit-bench" }
+kermit-ds = { version = "0.2.0", path = "../kermit-ds" }
+kermit-parser = { version = "0.0.3", path = "../kermit-parser" }
+kermit-rdf = { version = "0.1.1", path = "../kermit-rdf" }
+anyhow = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+[dev-dependencies]
+tempfile = "3"

@@ -17,7 +17,7 @@ pub mod parquet;
 pub mod partition;
 pub mod pipeline;
 pub mod sparql;
-mod timestamp;
+pub mod timestamp;
 pub mod value;
 pub mod yaml_emit;
 
