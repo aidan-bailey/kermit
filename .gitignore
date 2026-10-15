@@ -24,6 +24,8 @@ Cargo.lock
 **/*.pdf
 **/*.csv
 !kermit/tests/fixtures/*.csv
+# The JOB generator's hand-written IMDb-shaped fixture (kermit-generate).
+!kermit-generate/tests/fixtures/job/csv/*.csv
 # Committed benchmark relations (`path:` in a benchmark YAML). These are
 # deliberately small worked examples that must ship with the repository —
 # without them the benchmarks referencing them cannot run.
