@@ -4,6 +4,8 @@
 // it. Allow it at the module boundary rather than per-item.
 #[allow(dead_code)]
 pub mod cli;
+#[allow(dead_code)]
+pub mod job;
 pub mod macros;
 #[allow(dead_code)]
 pub mod utils;
