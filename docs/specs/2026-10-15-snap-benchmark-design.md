@@ -451,7 +451,9 @@ spec's "Requirements from #96 and #97" table:
   dirs, so the shared cache is never touched):
   - `bench gen snap --url http://127.0.0.1:… --sha256 …` generates, and
     `bench run … -i all -a all -m iteration --verify` passes.
-  - A wrong `--sha256` exits non-zero and leaves no cache subdir.
+  - A wrong `--sha256` exits non-zero and leaves no cache: `GenTarget::prepare` has
+    created the directory, but it holds no `meta.json` (so `bench list` doesn't show
+    it), and `raw/` holds no `.gz` and no `.part`.
   - A workspace `kind: snap` YAML materialises on `bench run`, is a hit the second time,
     raises `SpecDrift` after an edit and regenerates under `--force`. #95's tests cover
     the general mechanism; this pins SNAP's `dispatch` arm.
@@ -476,7 +478,8 @@ spec's "Requirements from #96 and #97" table:
 - [ ] `benchmarks/snap-amazon.yml` and `snap-dblp.yml` generate on `bench run`; a cache
       hit, drift, `--force` and `bench list` behave as for LUBM.
 - [ ] `bench gen snap` works in both forms, including `--graph com-youtube`, and a wrong
-      SHA-256 fails before parsing and leaves no cache subdir.
+      SHA-256 fails before parsing and leaves no cache (no `meta.json`, nothing in
+      `raw/`).
 - [ ] Generated counts for amazon and dblp equal the eight verified values, and
       `bench run snap-amazon -i all -a all --verify` (and `snap-dblp`) passes on all three
       cells.
