@@ -745,7 +745,9 @@ mod tests {
     }
 
     /// Writes `rows` as an `Int64` Parquet file with one column per name.
-    fn write_parquet(path: &Path, attrs: &[&str], rows: &[Vec<i64>]) {
+    /// Unlike the public `write_parquet`, it writes any `i64`, including the
+    /// negative values `read_parquet` rejects.
+    fn write_i64_parquet(path: &Path, attrs: &[&str], rows: &[Vec<i64>]) {
         use {
             arrow::{
                 array::{ArrayRef, Int64Array, RecordBatch},
@@ -798,7 +800,7 @@ mod tests {
     fn read_parquet_header_agrees_with_read_parquet() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("triple.parquet");
-        write_parquet(&path, &["a", "b", "c"], &[vec![1, 2, 3], vec![4, 5, 6]]);
+        write_i64_parquet(&path, &["a", "b", "c"], &[vec![1, 2, 3], vec![4, 5, 6]]);
         let header = read_parquet_header(&path).unwrap();
         assert_eq!(header.arity(), 3);
         assert_eq!(header, read_parquet(&path).unwrap().0);
@@ -810,7 +812,7 @@ mod tests {
     fn empty_parquet_keeps_its_arity_from_the_schema() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.parquet");
-        write_parquet(&path, &["s", "o"], &[]);
+        write_i64_parquet(&path, &["s", "o"], &[]);
         let header = read_parquet_header(&path).unwrap();
         assert_eq!(header.name(), "empty");
         assert_eq!(header.arity(), 2);
@@ -846,7 +848,7 @@ mod tests {
             .collect();
         std::fs::write(&csv, format!("a,b\n{body}")).unwrap();
         let parquet = dir.path().join("edge.parquet");
-        write_parquet(&parquet, &["a", "b"], &rows);
+        write_i64_parquet(&parquet, &["a", "b"], &rows);
         for (reader, tuples) in [
             ("read_csv", read_csv(&csv).unwrap().1),
             ("read_parquet", read_parquet(&parquet).unwrap().1),
@@ -868,7 +870,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("triple.parquet");
         let rows: Vec<Vec<i64>> = (0..2_500).map(|i| vec![i, 7 * i % 13, 2_500 - i]).collect();
-        write_parquet(&path, &["s", "p", "o"], &rows);
+        write_i64_parquet(&path, &["s", "p", "o"], &rows);
         let (header, tuples) = read_parquet(&path).unwrap();
         assert_eq!(header.arity(), 3);
         let want: Vec<Vec<usize>> = rows
@@ -884,7 +886,7 @@ mod tests {
     fn read_parquet_rejects_a_negative_value() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("signed.parquet");
-        write_parquet(&path, &["a", "b"], &[vec![1, 2], vec![3, -4]]);
+        write_i64_parquet(&path, &["a", "b"], &[vec![1, 2], vec![3, -4]]);
         match read_parquet(&path) {
             | Err(RelationError::InvalidData(message)) => {
                 assert!(message.starts_with("row 1, column 1:"), "{message}");
