@@ -7076,7 +7076,8 @@ fn bench_run_materialises_a_committed_yaml_and_verifies_every_count() {
 set -euo pipefail
 cd "$1"
 for n in $(seq 1 33); do
-  letters=$(sed -n "s/^    (\"${n}\([a-z]\)\.sql\", \"[0-9a-f]\{64\}\"),\$/\1/p" kermit-generate/src/job/pins.rs)
+  # rustfmt splits each QUERY_FILES tuple, so the file name sits alone on its line.
+  letters=$(sed -n "s/^        \"${n}\([a-z]\)\.sql\",\$/\1/p" kermit-generate/src/job/pins.rs)
   first=$(printf '%s\n' "$letters" | head -n 1)
   last=$(printf '%s\n' "$letters" | tail -n 1)
   if [ -z "$first" ]; then
