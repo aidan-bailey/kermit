@@ -652,6 +652,9 @@ fn fetch_and_build(
 
     fetch_from_mirrors(fetch, &sources.imdb_urls, &tgz, &sources.imdb_sha256)?;
     extract_tgz(&tgz, &csv_dir)?;
+    // The tarball is pinned and can be downloaded again; dropping it here cuts
+    // the disk peak by 1.26 GB.
+    fs::remove_file(&tgz).with_context(|| format!("removing {}", tgz.display()))?;
 
     let table_rows: Vec<(&str, u64)> = sources
         .table_rows

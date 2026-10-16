@@ -230,6 +230,79 @@ fn gen_job_writes_a_benchmark_from_the_raw_cache() {
     assert!(!cache.path().join("kermit/benchmarks").exists());
 }
 
+/// Every file under `dir` with its bytes, by path, so a test can tell that a
+/// directory was left exactly as it was.
+fn snapshot(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in fs::read_dir(&next).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let bytes = fs::read(&path).unwrap();
+                files.push((path, bytes));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// A finished raw cache built from other pins than this binary's is refused
+/// before anything is fetched: the error names the field and the cache
+/// directory, `no_network` makes any fetch fail differently, and the cache is
+/// left byte for byte as it was (kermit never deletes or rebuilds it).
+#[test]
+fn gen_job_refuses_a_raw_cache_built_from_other_pins() {
+    if skip_unsupported() {
+        return;
+    }
+    let Some(duckdb) = locate_or_skip("gen_job_refuses_a_raw_cache_built_from_other_pins") else {
+        return;
+    };
+    let cache = tempfile::tempdir().unwrap();
+    let raw_dir = cache.path().join("kermit").join("imdb");
+    let mut provenance = pinned_provenance(&duckdb);
+    provenance.imdb_sha256 = "0".repeat(64);
+    build_raw_cache(
+        &duckdb,
+        &raw_dir,
+        &csv_dir(cache.path(), false),
+        &fixture_dir().join("queries"),
+        provenance,
+    );
+    let before = snapshot(&raw_dir);
+    assert!(
+        before
+            .iter()
+            .any(|(path, _)| path.ends_with("provenance.json")),
+        "the premise: a finished cache"
+    );
+    let out = tempfile::tempdir().unwrap();
+
+    let output = gen_job(cache.path(), out.path(), "1", None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a cache built from other pins must be refused; stderr: {stderr}"
+    );
+    assert!(stderr.contains("imdb_sha256"), "{stderr}");
+    assert!(
+        stderr.contains(&raw_dir.display().to_string()),
+        "the error must name the cache directory: {stderr}"
+    );
+    assert_eq!(snapshot(&raw_dir), before, "the cache must be untouched");
+    assert!(
+        !out.path()
+            .join(format!("job-1-{TAG}"))
+            .join("meta.json")
+            .exists(),
+        "nothing was generated"
+    );
+}
+
 /// The committed `benchmarks/job-1.yml` as the only YAML of a temp workspace.
 fn workspace_with_job_1() -> tempfile::TempDir {
     let workspace = tempfile::tempdir().unwrap();

@@ -653,7 +653,10 @@ fn run_gen_h2o(scale: u32, seed: u32, order: H2oOrderArg, target: GenTarget) -> 
 /// `job-{template}-{tag}` through `kermit-generate`, with no spec hash (like
 /// `bench gen lubm`). The range and the benchmark's name are checked first and
 /// DuckDB is located before the output directory is made, so a bad template,
-/// a bad tag or a host without DuckDB leaves nothing behind.
+/// a bad tag or a host without DuckDB leaves nothing behind. A raw cache that
+/// is then refused or fails to build still leaves the empty `job-N-<tag>`
+/// output directory `GenTarget::prepare` made, as SNAP's download inside
+/// `generate` does; discovery ignores a directory without `meta.json`.
 fn run_gen_job(template: u8, target: GenTarget) -> anyhow::Result<()> {
     use kermit_generate::job::{duckdb::Duckdb, raw, JobGenerator, TEMPLATES};
 

@@ -495,7 +495,8 @@ fn run_h2o(
 
 /// Generates one JOB template (`kind: job`) into `out_dir` through the shared
 /// layer. DuckDB and the IMDb raw cache are found here, on a cache miss, so a
-/// cache hit needs neither.
+/// cache hit needs neither. On first use `raw::ensure` downloads the ~1.26 GB
+/// IMDb dump (and the pinned queries) and builds the cache.
 fn run_job(template: u8, bench_name: &str, out_dir: &Path, spec_hash: &str) -> anyhow::Result<()> {
     let duckdb = Duckdb::locate()?;
     let cache = raw::ensure(&duckdb, &raw::default_raw_dir()?)?;

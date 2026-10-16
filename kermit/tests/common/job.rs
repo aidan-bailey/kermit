@@ -100,8 +100,8 @@ pub fn build_raw_cache(
 /// A provenance equal to the pins: the dump's digest, the query commit and
 /// all 114 file digests. The fixture queries are not JOB's files, so the
 /// digests describe nothing about them; the point is that a cache with this
-/// provenance is one `raw::ensure` accepts as current, whether `ensure` only
-/// opens a finished cache or also compares its provenance with the pins.
+/// provenance is one `raw::ensure` accepts as current: `ensure` compares a
+/// complete cache's provenance with the pins, so this fixture must equal them.
 pub fn pinned_provenance(duckdb: &Duckdb) -> RawProvenance {
     RawProvenance {
         imdb_sha256: pins::IMDB_SHA256.to_owned(),
