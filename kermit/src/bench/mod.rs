@@ -6,6 +6,10 @@
 //! the one generic runner in `run`; `ds` is the structure-only runner
 //! behind `bench ds`. `main.rs` keeps the clap types and the thin handlers
 //! that build these inputs and write the report.
+//!
+//! `gen` is the exception and measures nothing: it holds `bench gen`'s clap
+//! subtree and the handlers that write a generated benchmark into the cache,
+//! which outgrew `main.rs`.
 
 use {
     crate::{
@@ -17,6 +21,7 @@ use {
 };
 
 pub mod ds;
+pub mod gen;
 pub mod run;
 pub mod workload;
 
