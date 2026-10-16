@@ -7,7 +7,7 @@
 //! lacks it is never reused. [`RawCache::open`] is the only reader.
 
 use {
-    crate::job::duckdb::{path_literal, Duckdb},
+    crate::job::duckdb::{path_literal, sql_identifier, Duckdb},
     anyhow::{anyhow, ensure, Context},
     serde::{Deserialize, Serialize},
     std::{
@@ -148,11 +148,15 @@ impl RawCache {
 }
 
 /// Splits a query file stem such as `16b` into its template number and its
-/// variant letters; `None` for anything else (`schema`, `1`, `1A`, `1a2`).
+/// variant letters; `None` for anything else (`schema`, `1`, `1A`, `1a2`,
+/// `01a`: a leading zero would give `1a` two file names).
 pub(crate) fn split_query_stem(stem: &str) -> Option<(u32, &str)> {
     let digits = stem.find(|c: char| !c.is_ascii_digit())?;
     let (number, letters) = stem.split_at(digits);
-    if number.is_empty() || !letters.chars().all(|c| c.is_ascii_lowercase()) {
+    if number.is_empty()
+        || number.starts_with('0')
+        || !letters.chars().all(|c| c.is_ascii_lowercase())
+    {
         return None;
     }
     Some((number.parse().ok()?, letters))
@@ -313,8 +317,9 @@ fn load_into(duckdb: &Duckdb, staging: &Path, inputs: &BuildInputs<'_>) -> anyho
     }
     for (table, csv, expected) in plan {
         let copy = format!(
-            "COPY \"{table}\" FROM {} (FORMAT csv, HEADER false, DELIMITER ',', QUOTE '\"', \
-             ESCAPE '\\', ALLOW_QUOTED_NULLS false, AUTO_DETECT false)",
+            "COPY {} FROM {} (FORMAT csv, HEADER false, DELIMITER ',', QUOTE '\"', ESCAPE '\\', \
+             ALLOW_QUOTED_NULLS false, AUTO_DETECT false)",
+            sql_identifier(table),
             path_literal(&csv)?
         );
         duckdb
@@ -324,7 +329,7 @@ fn load_into(duckdb: &Duckdb, staging: &Path, inputs: &BuildInputs<'_>) -> anyho
             .query_u64(
                 &database,
                 &temp,
-                &format!("SELECT COUNT(*) FROM \"{table}\""),
+                &format!("SELECT COUNT(*) FROM {}", sql_identifier(table)),
             )
             .with_context(|| format!("counting table `{table}`"))?;
         ensure!(
@@ -524,7 +529,9 @@ mod tests {
         assert_eq!(split_query_stem("1a"), Some((1, "a")));
         assert_eq!(split_query_stem("10a"), Some((10, "a")));
         assert_eq!(split_query_stem("33c"), Some((33, "c")));
-        for bad in ["", "1", "a1", "schema", "1A", "1a2", "x1a"] {
+        for bad in [
+            "", "1", "a1", "schema", "1A", "1a2", "x1a", "01a", "0a", "001b",
+        ] {
             assert_eq!(split_query_stem(bad), None, "{bad:?}");
         }
     }
@@ -563,7 +570,7 @@ mod tests {
 
     /// A folder holding something that is not `<template><letters>.sql`
     /// (`schema.sql`, `1A.sql`, a directory named like a query) is refused
-    /// naming it, and an empty folder is refused too.
+    /// naming it.
     #[test]
     fn copy_queries_refuses_what_is_not_a_query_file() {
         let scratch = tempfile::tempdir().unwrap();
@@ -954,9 +961,9 @@ mod tests {
         );
     }
 
-    /// The CSV dialect is PostgreSQL's, whatever the sample looks like: a
-    /// quoted empty field is an empty string, an unquoted one is NULL, a
-    /// backslash escapes a quote, and a field in apostrophes keeps them.
+    /// The CSV dialect is PostgreSQL's: a quoted empty field is an empty
+    /// string, an unquoted one is NULL, a backslash escapes a quote, and a
+    /// field in apostrophes keeps them.
     #[test]
     fn a_quoted_empty_field_loads_as_an_empty_string() {
         let Some(duckdb) = locate_or_skip() else {
