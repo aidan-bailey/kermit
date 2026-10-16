@@ -61,6 +61,7 @@
 #![deny(missing_docs)]
 
 mod generator;
+pub mod h2o;
 pub mod job;
 mod meta;
 mod output_dir;

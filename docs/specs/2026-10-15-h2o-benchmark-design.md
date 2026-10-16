@@ -457,6 +457,12 @@ For a key column with cardinality n, where n is `small`, `medium` or `rows`:
 
 - **`materialize::dispatch`:** an `H2o { scale, seed, order }` arm builds `KeyPlan::for_scale`
   and an `H2oGenerator` with the spec hash, and calls `kermit_generate::run`.
+- **The error chain:** `materialize` reports a failed generator with `{e:#}`, not `{e}`,
+  so the `anyhow` context chain of a `kermit-generate` arm survives (lubm and watdiv errors
+  have a single level, so they are unaffected). The first `kermit-generate` arm to land
+  makes this change, in its own commit, with a test that a two-level `.context()` error
+  shows both messages. That arm is #96's phase 2 (Amendment 2), so push 2 inherits the
+  change.
 - **`bench gen h2o --scale N [--seed S] [--order shuffled|sorted] --tag T [--output-dir PATH]`**
   writes `h2o-{N}-{T}` under the cache root (or `--output-dir`) with `spec_hash: None`, like
   `bench gen lubm` (`lubm-{scale}-{tag}`).
@@ -721,3 +727,26 @@ on the layer:
 No name changes. #96 and #97 are told before it lands, because items 1 and 2 make `run`
 stricter. Outside #95, the review also found that `write_meta_json` is not atomic: #115.
 
+
+## Amendment 2 (2026-10-15): push 2, after #96's phase 2
+
+#96's phase 2 lands before push 2. It carries `GenTarget`, copied verbatim from § Surface,
+and the materialize `{e:#}` change with its test (the first-lander rules of D17 and
+§ Surface). Push 2 merges both from `origin/master` and adds neither. Push 2's plan settles
+these points within the design above, and its names contract
+(`docs/superpowers/plans/2026-10-15-h2o-generator-contract.md`) records them:
+
+1. **Layout.** `kermit-generate/src/h2o/{mod,rng,keys}.rs`. `KeyPlan`, `H2oGenerator` and
+   `H2oExtras` are public. The random numbers and `KeyPool` (steps 1–4 of § Key generation)
+   are crate-private. The generator's tests are an integration test,
+   `kermit-generate/tests/h2o.rs`, and use only the public API.
+2. **Pinned values are computed independently.** The SplitMix64 vectors come from Vigna's
+   `splitmix64.c`, compiled and run. The golden digests and counts of the reference plan
+   (2,000 / 20 / 200, seed 108: q1 = 1812, q2 = 1814, q5 = 1800) come from a Python model
+   of this spec written in the design session, which shares no code with the Rust. A
+   pinned bounded-draw vector exercises Lemire's rejection loop.
+3. **Query descriptions** use upstream's question names: q1 "small inner on int", q2
+   "medium inner on int", q5 "big inner on int".
+4. **H2O.md's 1e7 measurements** (q1/q2 at 1e7, space per structure, generation time and
+   peak RSS, ceilings) are written by push 2's last story, after the acceptance runs in a
+   heavy-run slot. Until then, the story before it leaves a stub section.
