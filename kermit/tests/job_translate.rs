@@ -12,9 +12,10 @@
 //!   (the check `bench run` makes) against headers built from its template's
 //!   relations under `--column-orders stored`: head terms are distinct bound
 //!   variables, every body atom names a relation of the template with one term
-//!   per column, no term is a malformed constant (a variable the translator
-//!   failed to uppercase parses as one), and the atoms admit a global attribute
-//!   order (JOB needs no `--column-orders any`);
+//!   per column, no term is a malformed constant, and the atoms admit a global
+//!   attribute order (JOB needs no `--column-orders any`). A variable the
+//!   translator failed to uppercase parses as a constant, so it is refused as a
+//!   head term that is not a variable, or else as a malformed constant;
 //! - every relation name matches `[a-z][a-z0-9_]*`, which `RelationSink::open`
 //!   enforces;
 //! - 113 rules and 465 relation files across the 33 templates.

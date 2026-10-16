@@ -342,8 +342,9 @@ impl RawCache {
     pub fn template_queries(&self, template: u8) -> anyhow::Result<Vec<(String, String)>>;
 }
 
-/// Builds in `<dir>.building-<pid>` and renames it to `dir`. Loads `schema.sql`, then each
-/// table with `COPY <table> FROM '<csv>' (FORMAT csv, HEADER false, ESCAPE '\\')`, checks
+/// Builds in `<dir>.building-<pid>-<seq>` and renames it to `dir`. Loads `schema.sql`, then
+/// each table with `COPY <table> FROM '<csv>' (FORMAT csv, HEADER false, DELIMITER ',',
+/// QUOTE '"', ESCAPE '\\', ALLOW_QUOTED_NULLS false, AUTO_DETECT false)` (643f5f8), checks
 /// every row count against `table_rows` (a mismatch is an error naming the table, both
 /// counts, and leaves no `dir`), copies the queries, writes `provenance.json`, renames.
 /// If `dir` appeared meanwhile, the staging dir is removed and `dir` is opened.
@@ -352,8 +353,10 @@ pub fn build(duckdb: &Duckdb, dir: &Path, inputs: &BuildInputs<'_>) -> anyhow::R
 /// `tar -xzf <tgz> -C <into>`.
 pub fn extract_tgz(tgz: &Path, into: &Path) -> anyhow::Result<()>;
 
-/// Phase 2 stub (J6): `RawCache::open(dir)` or an error saying the IMDb cache is missing.
-/// J7 replaces the error with the download and build.
+/// J7 (8015d24, 980dadd): a finished cache whose provenance matches the pins, or else the
+/// pinned files downloaded and built (J6's stub only opened `dir`). Refuses, before any
+/// fetch, a cache built from other pins, an existing `dir` with no finished cache and an
+/// absent `dir` with no file name.
 pub fn ensure(duckdb: &Duckdb, dir: &Path) -> anyhow::Result<RawCache>;
 ```
 
@@ -453,18 +456,20 @@ the fixture with a query filtering on a missing column); `extras_record_sources_
 
 ## J7: downloads and the real 113
 
-- `raw::ensure`: open, else stage in `<dir>.fetch-<pid>`: `download_verified` `imdb.tgz` from
-  `IMDB_URLS` in order (next mirror on any error; all failing is an error listing each), every
-  `QUERY_FILES` entry from `query_url`, `extract_tgz`, `build` with `IMDB_TABLE_ROWS` and the
-  provenance, then remove the staging dir (the tgz and CSVs go; the cache keeps
-  `imdb.duckdb` and `queries/`).
+- `raw::ensure`: open (and compare the provenance with the pins), else stage in
+  `<dir>.fetch-<pid>-<seq>`: every `QUERY_FILES` entry from `query_url` first, then
+  `download_verified` `imdb.tgz` from `IMDB_URLS` in order (next mirror on any error; all
+  failing is an error listing each), `extract_tgz` (the tgz is deleted once extracted), `build`
+  with `IMDB_TABLE_ROWS` and the provenance (an adopted winner is compared with the pins too),
+  then remove the staging dir (the CSVs go; the cache keeps `imdb.duckdb` and `queries/`).
 - `kermit/tests/job_translate.rs` (network-gated: skip with a stderr line if the first fetch
   fails): fetch every `QUERY_FILES` entry with `download_verified` into a tempdir; for each
   template, `parse_query` every variant and `plan_template`; assert every rule parses as a
-  `JoinQuery` and, after `kermit_algos::rewrite_placeholders`, passes
-  `kermit_algos::check_attribute_order(&JoinQuery)`, every relation name matches
-  `[a-z][a-z0-9_]*`, every variable starts uppercase, 466 relation files in total, and 113
-  rules.
+  `JoinQuery` and passes `kermit::db::validate_query` under `ColumnOrderPolicy::Stored`
+  against headers from the template's relations (169c651; it supersedes the
+  `rewrite_placeholders` + `check_attribute_order` and uppercase checks), every relation name
+  matches `[a-z][a-z0-9_]*`, 465 relation files in total (not 466: template 12's
+  `company_name` is one relation), and 113 rules.
 
 ## J8: docs
 

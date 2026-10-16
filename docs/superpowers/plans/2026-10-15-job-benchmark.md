@@ -7182,6 +7182,10 @@ git commit -m "feat(job): the 33 committed job-N benchmark specs (#97)" \
 
 ### Task J7: `raw::ensure` downloads, and the translator on the real 113
 
+**Done 2026-10-16 at 169c651 (af3ba49..169c651).** Where this task's text and what landed
+differ (the staging names, the test lists, the golden count of 465, `validate_query`), the
+Merge notes' "J7 results" section is authoritative.
+
 Phase 3: needs #96's `download_verified` on `origin/master` and merged into `aidanb/job`
 (`git merge origin/master`, never rebase). It replaces J6's `ensure` stub, whose signature
 stays the contract's, `ensure(duckdb: &Duckdb, dir: &Path) -> anyhow::Result<RawCache>`, so
@@ -8079,7 +8083,7 @@ fn staging_dir(dir: &Path) -> PathBuf {
 //!   (JOB needs no `--column-orders any`);
 //! - every relation name matches `[a-z][a-z0-9_]*`, which `RelationSink::open`
 //!   enforces, and every variable starts with an ASCII uppercase letter;
-//! - 113 rules and 466 relation files across the 33 templates.
+//! - 113 rules and 465 relation files across the 33 templates.
 //!
 //! It lives in `kermit` because `check_attribute_order` and
 //! `rewrite_placeholders` are in `kermit-algos`, which `kermit-generate` does
@@ -8107,7 +8111,7 @@ const TEMPLATES: usize = 33;
 /// JOB's 113 queries, one rule each.
 const RULES: usize = 113;
 /// The relation files across all 33 templates (the spec's golden count).
-const RELATION_FILES: usize = 466;
+const RELATION_FILES: usize = 465;
 
 /// The 113 pinned queries as `(name, sql)`, `name` being `6a`, in
 /// `QUERY_FILES` order (template, then letter). `None` when the first fetch
@@ -8275,7 +8279,7 @@ fn pinned_templates_give_the_golden_counts() {
 
   **If an assertion fails, do not touch the constants or the checks.** The message lists every
   problem. A rule that does not parse or has no attribute order, a name outside
-  `[a-z][a-z0-9_]*`, or a count other than 113 and 466 is a bug in J1's or J2's `translate.rs`
+  `[a-z][a-z0-9_]*`, or a count other than 113 and 465 is a bug in J1's or J2's `translate.rs`
   (or the contract's golden number): stop and report it with the printed list.
 
 - [ ] **Step 8: Lint, format, document.**
@@ -8296,7 +8300,7 @@ fn pinned_templates_give_the_golden_counts() {
   git add kermit-generate/src/job/raw.rs kermit/tests/job_translate.rs
   git commit -m "feat(job): raw::ensure downloads the IMDb dump and the queries (#97)" \
     -m "ensure now fetches the 114 pinned query-repository files and then the 1.26 GB IMDb dump through download_verified, trying the dump's mirrors in order, extracts it and builds the raw cache, in a staging directory that is removed on every exit. The small files come first so a stale query pin fails before the long download. A complete cache is returned only if its provenance matches the pins; otherwise the call stops with an error naming the field, both values and the directory to delete (kermit never deletes or rebuilds it itself)." \
-    -m "kermit/tests/job_translate.rs fetches the same pinned files at test time and translates all 113 queries: every rule parses, passes check_attribute_order after the placeholder rewrite, and uses parser-valid names; the 33 templates give 113 rules and 466 relation files. It skips only when the first fetch cannot connect, so a stale pin fails the test." \
+    -m "kermit/tests/job_translate.rs fetches the same pinned files at test time and translates all 113 queries: every rule parses, passes check_attribute_order after the placeholder rewrite, and uses parser-valid names; the 33 templates give 113 rules and 465 relation files. It skips only when the first fetch cannot connect, so a stale pin fails the test." \
     --trailer "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" \
     --trailer "Claude-Session: https://claude.ai/code/session_01WeRnvdstSxUY8CJGSx1NFB" \
     -- kermit-generate/src/job/raw.rs kermit/tests/job_translate.rs
@@ -8677,7 +8681,7 @@ cache's value, the pinned value and the directory to delete. Kermit never delete
 the cache itself, the same rule as a generator's `SpecDrift`, which waits for `--force`. The
 DuckDB version that built the cache is recorded but not compared: it is not a pin.
 
-It is built in `imdb.fetch-<pid>` and `imdb.building-<pid>` beside it and renamed into place, so
+It is built in `imdb.fetch-<pid>-<seq>` and `imdb.building-<pid>-<seq>` beside it and renamed into place, so
 an interrupted build is never reused. A failed run removes both directories. A run stopped
 outright (Ctrl-C, `SIGKILL`) leaves them behind under the pid of a process that is gone: any
 `imdb.fetch-*` or `imdb.building-*` directory whose process no longer runs is safe to delete
@@ -8699,7 +8703,7 @@ translator works on the parsed syntax tree, never on the query text.
 | Name the variables | After the first alias, in text order, whose `id` the variable contains (`K`, `T`, `MI_IDX1`); `<ALIAS>_<COLUMN>` when it contains no `id` | All 113 |
 | Build each alias's relation | Its join columns in variable order, then the table's `id`, unless `id` is already a join column | 589 alias occurrences join on their own `id` |
 | Exclude NULL join keys | `… AND movie_id IS NOT NULL` on every join column | Any nullable join column, such as `cast_info.person_role_id` (an SQL equi-join never matches NULL) |
-| Share relations | Equal (table, ordered columns, filter text) within a template is one file | 466 files for 113 queries across 33 templates |
+| Share relations | Equal (table, ordered columns, filter text) within a template is one file | 465 files for 113 queries across 33 templates |
 | Cast | Every column is `CAST(… AS BIGINT)` | The Parquet reader reads Int64 columns only |
 
 The rest of the translation, in the order it matters when reading a rule:
@@ -8754,7 +8758,7 @@ name(id)                                  unfiltered            6f
 title_t_a / title_t_bc / title_t_def(id)  production_year > …
 ```
 
-Across all 33 templates this gives 466 relation files.
+Across all 33 templates this gives 465 relation files.
 
 ### The 33 templates
 
@@ -8881,7 +8885,7 @@ pin change are not comparable.
 | `kermit-bench` `definition.rs` tests | `kind: job` parses; templates 0 and 34 are rejected; `spec_hash` changes with the template | None |
 | `kermit/tests/job_generate.rs` | The fixture pipeline: filtered rows in id order; kermit's count equals DuckDB's `COUNT(*)` on every structure × optimiser × `stored`/`any`; byte-identical regeneration; a failed filter leaves no relation and no `meta.json`; `meta.json` records sources and versions | `duckdb` available |
 | `kermit/tests/cli_job_gen.rs` | `bench gen job` and `bench run job-1` through the real binary over a fixture raw cache, with the platform cache redirected so nothing is written under `~/.cache/kermit`: a template outside 1–33, a missing DuckDB and a tag that makes an invalid benchmark name fail before any directory is created; `bench gen job` writes `job-N-<tag>`; `bench run job-1` materialises the committed YAML, verifies every count, then hits the cache, reports drift and rebuilds under `--force` | Linux (`XDG_CACHE_HOME`); the first three need no DuckDB, the rest need `duckdb` |
-| `kermit/tests/job_translate.rs` | The real 113 queries (fetched and digest-checked at test time): every rule parses, passes `check_attribute_order` after the placeholder rewrite, and uses parser-valid names; 113 rules and 466 relation files | Network to `raw.githubusercontent.com` (CI too); skips only when the first fetch cannot connect; a digest mismatch fails; not miri |
+| `kermit/tests/job_translate.rs` | The real 113 queries (fetched and digest-checked at test time): every rule parses and passes `kermit::db::validate_query` under `--column-orders stored` against its template's relations, the checks and rewrites `bench run` applies; every relation name is parser-valid; 33 templates, 113 rules and 465 relation files; template 12's three variants share one `company_name` relation | Network to `raw.githubusercontent.com` (CI too); skips only when the first fetch cannot connect; a digest mismatch fails; not miri |
 
 The translator test on real queries lives in the `kermit` crate because `kermit-generate`
 does not depend on `kermit-algos`; the fixture pipeline does for the same reason (it counts
@@ -9381,7 +9385,7 @@ The plan was drafted in four parts (J1–J2, J3–J4, J5–J6, J7–J8) by separ
 
 - **DuckDB 1.4.4 CLI** (the flake's, `nix shell --inputs-from . nixpkgs#duckdb`, on scratch tables): `COPY (…) TO '/dev/stdout' (FORMAT csv, HEADER false)` under `-readonly -csv -noheader -c` prints only the rows (no count line); a NULL prints as an empty line; an empty result prints nothing; `SET memory_limit`, `SET temp_directory`, `SET preserve_insertion_order` all work under `-readonly`; `information_schema.tables` is readable; a missing table prints `Catalog Error: Table with name … does not exist!` on stderr with exit 1; `COPY t FROM 'x.csv' (FORMAT csv, HEADER false, ESCAPE '\\')` reads backslash-escaped quotes.
 - **The J4 fixture**, extracted from this plan's text and loaded into DuckDB: every `rows.txt` count matches; the four counts are 1a = 5, 1b = 7, 2a = 2, 2b = 0, as the fixture facts say; and all 15 relations' rows (filter + NULL check + `ORDER BY id`) match the fixture facts' "Relation contents" table row for row, including 2b's empty `name_n_b`. A prototype of J2's rules, written independently in Python, gives the same 15 relations, names, columns, filters and sharing.
-- **The real 113 queries** (pinned clone, prototype rules): 466 relation files, 0 column-order conflicts, no unfiltered name clash in any template, every table and alias name matches `[a-z][a-z0-9_]*`.
+- **The real 113 queries** (pinned clone, prototype rules): 466 relation files (wrong: 465, see "J7 results"), 0 column-order conflicts, no unfiltered name clash in any template, every table and alias name matches `[a-z][a-z0-9_]*`.
 
 ### Rulings on the drafters' escalations
 
@@ -9506,3 +9510,52 @@ Departures from Steps 15–27: Step 20's script used `raw::build`'s full COPY di
 **J7:** 8. The archive holds a 22nd entry, `schematext.sql`, a different schema from the pinned `schema.sql` (no `NOT NULL` constraints, other `varchar` lengths). `extract_tgz` unpacks it beside the CSVs and `build` reads only `<table>.csv`, so it is harmless, but `ensure` must load the pinned `schema.sql` it fetched, never anything from the archive; a fixture tarball with an extra file would pin that. 9. At the first `origin/master` merge after SNAP's `bench gen` split lands (`kermit/src/bench/gen.rs`, df767f2 on aidanb/snap; the co-ordinator relays the SHA), move `GenSubcommand::Job`, its `gen::run` arm, `run_gen_job` and its tests from `main.rs` into `gen.rs`, as a merge.
 
 **J8:** the real numbers replace the spec's estimates: the load takes about 30 s, not minutes; a build peaks near 7.7 GB on disk (tarball 1.26, CSVs 3.88, database 2.5) and leaves the 2.5 GB database. The real dump has no empty string in any of its 49 `VARCHAR` columns (and 57.7 M NULLs, all in nullable ones), so the pinned dialect loads today's dump exactly as DuckDB's defaults would; JOB.md says the pin is defensive (no sniffing, PostgreSQL's `""` rule), not a correction to these counts. `run_gen_job` is cited at `kermit/src/bench/gen.rs` once item 9 lands.
+
+### J7 results (2026-10-16, af3ba49..169c651)
+
+Run supervised on the user's go-ahead after merging `origin/master` df767f2 (af3ba49, which did J7 item 9: `GenSubcommand::Job`, its arm and `run_gen_job` now live in `kermit/src/bench/gen.rs`). Every chunk passed spec and quality review, the whole implementation was reviewed again, and an independent gate at 169c651 passed: fmt, clippy `-Dwarnings`, doc `-Dwarnings`, `cargo test --workspace` (6,334 passed, 0 failed). The binary's private rustdoc keeps master's two known errors. Nothing was downloaded beyond `job_translate.rs`'s 114 small files into a tempdir.
+
+Commits: 1fea8e9 and b922a9a (Phase 1 items 3–6); 8015d24, 980dadd, a0d18d9 and 874ead8 (`ensure`, items 1, 2, 7 and 8); 0c13fae and 169c651 (`job_translate.rs`); ddd924c (the final review's fixes).
+
+**The golden count is 465, not 466** (the user approved the change to `RELATION_FILES`). Template 12's `company_name` filter is spaced one way in 12a and 12c and another in 12b. The sharing key is the filter as sqlparser prints it, which normalises the spacing, so the three variants share one relation, `company_name_cn_abc`, and template 12 has 17 files. The design scan compared filters with whitespace only collapsed, so it counted 18. An independent recount over the 113 pinned files agrees with the translator in every other template. `template_12_shares_one_company_name_relation` pins the case.
+
+Departures from this task's text:
+
+- **Staging names.** `staging_path(dir, kind) -> anyhow::Result<PathBuf>` names both staging directories `<dir>.<kind>-<pid>-<seq>` (`building`, `fetch`) on one counter. A `dir` with no file name is an error, not a fallback name. `staging_dir` is gone. The tests scan the parent for leftover `imdb.fetch-*` / `imdb.building-*` directories (`assert_no_staging_beside`), because re-deriving a sequenced name would be vacuous.
+- **More refusals before any fetch.** `ensure_from` compares provenance once, after both paths, so a cache adopted after a lost rename is checked too (`a_cache_adopted_after_a_lost_rename_is_checked_against_the_pins`). An existing `dir` without `provenance.json` is refused before the download, naming `dir` to delete (`an_unfinished_dir_fails_before_any_fetch`); so is an unreadable `provenance.json` (`an_unreadable_provenance_says_to_delete_the_cache`).
+- **The tarball is deleted right after `extract_tgz`**, so a first build peaks near 6.4 GB on disk (CSVs 3.88 GB plus the 2.5 GB database), not 7.7. No test covers this; it would need a production hook.
+- **Item 8.** The fake dump carries a `schematext.sql` that is not SQL, and the build still succeeds from the fetched `schema.sql`.
+- **Item 4.** J4's dialect test, renamed `the_csv_dialect_is_postgresqls`, gains a CSV with no `"` (`quip`). The first attempt reused the fixture CSV, whose own `"` makes DuckDB's sniffer pick `"` anyway. Without `QUOTE` and `AUTO_DETECT` the new table loads 0 matching rows instead of 2.
+- **The real-113 test** admits each rule through `kermit::db::validate_query` under `ColumnOrderPolicy::Stored`, against headers from its template's relations. That is `bench run`'s path; the old uppercase loop could never fire, since kermit-parser reads any lowercase term as a constant. The fetch result is cached as a `Result`, so a failure costs one fetch round. It has 3 tests (the template-12 pin is the third). It ran in 37.8 s cold and 5–6 s warm.
+- **CLI.** `cli_job_gen.rs` has a `no_network` helper for every command that may reach `ensure`, and `gen_job_refuses_a_raw_cache_built_from_other_pins`. That test fails when `ensure` is reverted to J6's stub.
+
+Step 10's mutants, as run:
+
+- Mutant 1 fails the three tests listed.
+- Mutant 2 also fails `ensure_falls_back_to_the_second_mirror`.
+- Mutant 3, over `job::raw`, fails 10:
+  - `tests::staging_create_removes_a_leftover`
+  - `tests::an_unfinished_dir_at_the_rename_is_an_error`
+  - `tests::row_count_mismatch_leaves_no_cache`
+  - `tests::losing_the_rename_adopts_the_winner`
+  - `ensure_tests::a_stale_query_pin_fails_before_the_dump`
+  - `ensure_tests::a_first_run_creates_the_missing_cache_parent`
+  - `ensure_tests::a_cache_built_from_other_pins_is_refused_and_kept`
+  - `ensure_tests::a_failed_build_leaves_no_cache_and_no_staging`
+  - `ensure_tests::a_cache_adopted_after_a_lost_rename_is_checked_against_the_pins`
+  - `ensure_tests::ensure_fetches_the_queries_before_the_dump_then_builds`
+- Mutant 4 also fails the adopted-cache test.
+
+Control A: all 3 tests fail on the integrity error, none skip. Control B: one `skipping:` line and 3 passed; reqwest 0.13.5 honours `HTTPS_PROXY`.
+
+**J8:**
+
+- **Real numbers.** The peak disk figure is 6.4 GB (it supersedes J4 Part B's 7.7). `job_translate.rs` takes about 40 s cold (114 serial fetches, each a fresh TLS client).
+- **JOB.md's raw-cache section:**
+  - The 114 small files come before the dump.
+  - A cache built from other pins, an existing `imdb` directory without `provenance.json`, and an unreadable `provenance.json` are each refused before any download, naming the directory to delete.
+  - The tarball is deleted once extracted.
+  - A refused or failed raw cache leaves the empty `job-N-<tag>` directory `bench gen job` made, which discovery ignores.
+- **Tests table.** The `job_translate.rs` row is updated in place. Add `cli_job_gen.rs`'s refusal test to its row.
+
+**Follow-up for the user (not JOB-blocking):** `raw.rs` has grown to about 1,900 lines. Its download half could move to `job/raw/fetch.rs`.

@@ -119,7 +119,10 @@ name(id)                                  unfiltered            6f
 title_t_a / title_t_bc / title_t_def(id)  production_year > …
 ```
 
-Across all 33 templates this gives 466 relation files.
+Across all 33 templates this gives 465 relation files. (The design scan
+counted 466: it compared filters with whitespace collapsed, not as printed,
+so it split template 12's `company_name` relation, whose filter 12b spaces
+differently from 12a and 12c. J7's real-query test found it, 2026-10-16.)
 
 ## DuckDB stages (`kermit-generate/src/job/{raw,duckdb}.rs`)
 
@@ -153,10 +156,17 @@ claiming its default 80% of RAM beside a timing run.
   and only an unquoted empty field as NULL; DuckDB's default reads `""` as
   NULL and sniffs any option left unset, and neither change moves a row
   count, so the check would not catch them. JOB's reference counts are
-  PostgreSQL's. The extracted CSVs are deleted after loading.
+  PostgreSQL's. The tarball is deleted once extracted, and the CSVs after
+  loading.
 - Built in a temporary directory and renamed into place, so an interrupted
   build is never reused; a build that loses the rename to a concurrent one
   is discarded.
+- The 114 small files are fetched before the dump, so a stale pin fails
+  before the long download. A finished cache whose provenance differs from
+  the pins (the dump's digest, the query commit, any file's digest) is
+  refused with an error naming the field, both values and the directory to
+  delete; so is an existing directory that holds no finished cache. Kermit
+  never deletes or rebuilds the cache itself (as with spec drift).
 
 **Filter** (one DuckDB process per distinct relation):
 
@@ -283,9 +293,10 @@ depend on `kermit`.
   `kermit-algos` is already a dependency, so `kermit-generate` gains no
   dev-dependency; needs network and fetches the pinned files from GitHub at
   test time, in CI too; skips without network, saying why on stderr): every condition classifies; every rule passes
-  `check_attribute_order`; every relation and variable name is a
+  `kermit::db::validate_query` under `--column-orders stored` (so
+  `check_attribute_order` too); every relation and variable name is a
   kermit-parser identifier (an ASCII letter, then letters, digits or `_`),
-  which #95's sink also enforces; golden counts of 466 relation files and 0
+  which #95's sink also enforces; golden counts of 465 relation files and 0
   column-order conflicts.
 - **Pipeline on a committed fixture** (needs DuckDB; skips without it, as the
   LUBM tests do without Java; CI installs no DuckDB, so it runs only under
