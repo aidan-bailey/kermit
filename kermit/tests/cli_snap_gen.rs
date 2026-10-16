@@ -9,8 +9,10 @@
 //! The server counts the connections it accepts, one per download, so the
 //! tests can tell a cache hit (no download) from a regeneration (one more).
 
+mod common;
+
 use {
-    flate2::{write::GzEncoder, Compression},
+    common::snap::{fixture_text, gzip, MINI_COUNTS},
     kermit_bench::{cache::sha256_hex, BenchmarkDefinition},
     std::{
         collections::BTreeSet,
@@ -27,15 +29,6 @@ use {
     tempfile::{NamedTempFile, TempDir},
 };
 
-/// The fixture's counts, in `SnapQuery::ALL` order; see `snap_generate.rs`
-/// for their independent derivation.
-const MINI_COUNTS: [(&str, u64); 4] = [
-    ("triangle", 36),
-    ("path3", 482),
-    ("cycle4", 322),
-    ("clique4", 24),
-];
-
 fn kermit_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_kermit")) }
 
 fn skip_unsupported() -> bool {
@@ -44,20 +37,6 @@ fn skip_unsupported() -> bool {
         return true;
     }
     false
-}
-
-fn fixture_text() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/snap/mini.ungraph.txt");
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
-}
-
-/// Gzips `text` in memory (no timestamp, so the bytes depend only on it).
-fn gzip(text: &str) -> Vec<u8> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(text.as_bytes())
-        .expect("gzip the fixture");
-    encoder.finish().expect("finish the gzip stream")
 }
 
 /// A loopback HTTP server that answers every connection with the same body.

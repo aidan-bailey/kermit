@@ -29,8 +29,10 @@ mod common;
 
 use {
     clap::ValueEnum,
-    common::utils::{join_under_planner, load_parquet_relations, JoinEntry},
-    flate2::{write::GzEncoder, Compression},
+    common::{
+        snap::{fixture_text, gzip, MINI_COUNTS},
+        utils::{join_under_planner, load_parquet_relations, JoinEntry},
+    },
     kermit_algos::{
         ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
     },
@@ -50,7 +52,6 @@ use {
     std::{
         collections::HashSet,
         fs,
-        io::Write,
         path::{Path, PathBuf},
     },
 };
@@ -59,35 +60,11 @@ use {
 /// requires the output directory's last component to equal it.
 const BENCH_NAME: &str = "snap-mini";
 
-/// The fixture's answer counts, in `SnapQuery::ALL` order, derived
-/// independently of the generator (see the module doc).
-const MINI_COUNTS: [(&str, u64); 4] = [
-    ("triangle", 36),
-    ("path3", 482),
-    ("cycle4", 322),
-    ("clique4", 24),
-];
-
 // The three cells' relation types. `TreeTrie` and `ColumnTrie` default to
 // `GallopingSeek`; the alias names it so no inference fallback is needed.
 type Tree = TreeTrie<GallopingSeek>;
 type Column = ColumnTrie<GallopingSeek>;
 type Hash = HashTrie<SipHashStrategy>;
-
-fn fixture_text() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/snap/mini.ungraph.txt");
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
-}
-
-/// Gzips `text` in memory. The header carries no timestamp, so the bytes
-/// (and the digest a test takes of them) depend only on `text`.
-fn gzip(text: &str) -> Vec<u8> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(text.as_bytes())
-        .expect("gzip the fixture");
-    encoder.finish().expect("finish the gzip stream")
-}
 
 /// The data lines of the fixture: everything that is not a `#` comment or
 /// blank.
