@@ -8,31 +8,36 @@
 //! template, plans the template, and checks every emitted rule and relation
 //! against what the executors and the generator layer need:
 //!
-//! - every rule parses as a `JoinQuery`;
-//! - after `rewrite_placeholders`, every rule passes `check_attribute_order`
-//!   (JOB needs no `--column-orders any`);
+//! - every rule parses as a `JoinQuery` and passes `kermit::db::validate_query`
+//!   (the check `bench run` makes) against headers built from its template's
+//!   relations under `--column-orders stored`: head terms are distinct bound
+//!   variables, every body atom names a relation of the template with one term
+//!   per column, no term is a malformed constant (a variable the translator
+//!   failed to uppercase parses as one), and the atoms admit a global attribute
+//!   order (JOB needs no `--column-orders any`);
 //! - every relation name matches `[a-z][a-z0-9_]*`, which `RelationSink::open`
-//!   enforces, and every variable starts with an ASCII uppercase letter;
+//!   enforces;
 //! - 113 rules and 465 relation files across the 33 templates.
 //!
-//! It lives in `kermit` because `check_attribute_order` and
-//! `rewrite_placeholders` are in `kermit-algos`, which `kermit-generate` does
-//! not depend on.
+//! It lives in `kermit` because `validate_query` is in the binary crate's
+//! library, which `kermit-generate` does not depend on.
 //!
 //! Needs network access to `raw.githubusercontent.com`, in CI too. It skips,
 //! with a stderr line (run with `--nocapture` to see it), only when the first
-//! fetch cannot connect. A digest mismatch, a refused or empty answer, or a
-//! failure after the first fetch panics, so a stale pin cannot hide behind a
-//! skip.
+//! fetch cannot connect. A digest mismatch, an HTTP error status or an empty
+//! answer, or a failure after the first fetch panics, so a stale pin cannot
+//! hide behind a skip.
 
 use {
-    kermit_algos::{check_attribute_order, rewrite_placeholders},
+    kermit::db::validate_query,
+    kermit_algos::ColumnOrderPolicy,
     kermit_bench::{cache::download_verified, BenchError},
+    kermit_ds::RelationHeader,
     kermit_generate::job::{
         pins::{query_url, QUERY_FILES},
         translate::{parse_query, plan_template, JobQuery, TemplatePlan},
     },
-    kermit_parser::{JoinQuery, Term},
+    kermit_parser::JoinQuery,
     std::{collections::BTreeMap, fs, sync::OnceLock},
 };
 
@@ -43,15 +48,24 @@ const RULES: usize = 113;
 /// The relation files across all 33 templates (the spec's golden count).
 const RELATION_FILES: usize = 465;
 
+/// The pinned queries as `(name, sql)` pairs.
+type Queries = Vec<(String, String)>;
+
 /// The 113 pinned queries as `(name, sql)`, `name` being `6a`, in
 /// `QUERY_FILES` order (template, then letter). `None` when the first fetch
-/// could not connect. Fetched once per test binary.
+/// could not connect. Fetched once per test binary: a failure is stored as its
+/// message, which every test then panics with, so it costs one fetch round (a
+/// panic inside `OnceLock::get_or_init` would leave the lock empty and the
+/// next test would fetch all 114 files again).
 fn pinned_queries() -> Option<&'static [(String, String)]> {
-    static QUERIES: OnceLock<Option<Vec<(String, String)>>> = OnceLock::new();
-    QUERIES.get_or_init(fetch_pinned_queries).as_deref()
+    static QUERIES: OnceLock<Result<Option<Queries>, String>> = OnceLock::new();
+    match QUERIES.get_or_init(fetch_pinned_queries) {
+        | Ok(queries) => queries.as_deref(),
+        | Err(message) => panic!("{message}"),
+    }
 }
 
-fn fetch_pinned_queries() -> Option<Vec<(String, String)>> {
+fn fetch_pinned_queries() -> Result<Option<Queries>, String> {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let mut queries = Vec::new();
     for (index, (file, sha256)) in QUERY_FILES.iter().enumerate() {
@@ -68,16 +82,16 @@ fn fetch_pinned_queries() -> Option<Vec<(String, String)>> {
                     "skipping: could not reach {url} ({source}); the pinned JOB queries are \
                      fetched at test time"
                 );
-                return None;
+                return Ok(None);
             },
-            | Err(error) => panic!("fetching {file} failed: {error}"),
+            | Err(error) => return Err(format!("fetching {file} failed: {error}")),
         }
         if let Some(name) = file.strip_suffix(".sql").filter(|name| *name != "schema") {
-            let sql = fs::read_to_string(&dest).unwrap_or_else(|e| panic!("reading {file}: {e}"));
+            let sql = fs::read_to_string(&dest).map_err(|e| format!("reading {file}: {e}"))?;
             queries.push((name.to_owned(), sql));
         }
     }
-    Some(queries)
+    Ok(Some(queries))
 }
 
 /// The template number of a query name: `6a` is 6, `33c` is 33.
@@ -131,37 +145,29 @@ fn is_relation_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// What is wrong with one rule, if anything: it must parse, name its variables
-/// with an uppercase initial, and, once its placeholders are variables, admit a
-/// global attribute order under `--column-orders stored`.
-fn rule_problems(query: &str, datalog: &str) -> Vec<String> {
+/// What is wrong with one rule, if anything: it must parse and pass
+/// `validate_query` against its template's relations under
+/// `--column-orders stored`, the check `bench run` makes before it loads
+/// anything.
+fn rule_problems(query: &str, datalog: &str, headers: &[RelationHeader]) -> Vec<String> {
     let parsed: JoinQuery = match datalog.parse() {
         | Ok(parsed) => parsed,
         | Err(error) => return vec![format!("{query}: `{datalog}` does not parse: {error}")],
     };
-    let mut problems = Vec::new();
-    let terms = parsed
-        .head
-        .terms
-        .iter()
-        .chain(parsed.body.iter().flat_map(|atom| &atom.terms));
-    for term in terms {
-        match term {
-            | Term::Var(name) if !name.starts_with(|c: char| c.is_ascii_uppercase()) => {
-                problems.push(format!(
-                    "{query}: variable {name:?} does not start uppercase"
-                ));
-            },
-            | _ => {},
-        }
+    match validate_query(&parsed, headers, ColumnOrderPolicy::Stored) {
+        | Ok(()) => Vec::new(),
+        | Err(error) => vec![format!("{query}: `{datalog}` is rejected: {error}")],
     }
-    if let Err(cycle) = check_attribute_order(&rewrite_placeholders(parsed)) {
-        problems.push(format!(
-            "{query}: `{datalog}` has no attribute order; atoms {:?} form a cycle",
-            cycle.atoms
-        ));
-    }
-    problems
+}
+
+/// Fails with every problem listed, so one run reports them all.
+fn assert_no_problems(problems: &[String]) {
+    assert!(
+        problems.is_empty(),
+        "{} problem(s):\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
 }
 
 #[test]
@@ -183,16 +189,16 @@ fn pinned_queries_translate_into_valid_rules() {
                 ));
             }
         }
+        let headers: Vec<RelationHeader> = plan
+            .relations
+            .iter()
+            .map(|relation| RelationHeader::new(&relation.name, relation.columns.clone()))
+            .collect();
         for rule in &plan.rules {
-            problems.extend(rule_problems(&rule.query, &rule.datalog));
+            problems.extend(rule_problems(&rule.query, &rule.datalog, &headers));
         }
     }
-    assert!(
-        problems.is_empty(),
-        "{} problem(s):\n{}",
-        problems.len(),
-        problems.join("\n")
-    );
+    assert_no_problems(&problems);
 }
 
 #[test]
@@ -205,20 +211,21 @@ fn pinned_templates_give_the_golden_counts() {
         plans,
         problems,
     } = translate(queries);
-    assert!(
-        problems.is_empty(),
-        "{} problem(s):\n{}",
-        problems.len(),
-        problems.join("\n")
-    );
+    assert_no_problems(&problems);
 
     assert_eq!(plans.len(), TEMPLATES, "templates");
     let rules: usize = plans.values().map(|plan| plan.rules.len()).sum();
     assert_eq!(rules, RULES, "rules, one per query");
     let relation_files: usize = plans.values().map(|plan| plan.relations.len()).sum();
     assert_eq!(
-        relation_files, RELATION_FILES,
-        "relation files across all templates"
+        relation_files,
+        RELATION_FILES,
+        "relation files across all templates; per template (template:files): {}",
+        plans
+            .iter()
+            .map(|(template, plan)| format!("{template}:{}", plan.relations.len()))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
 }
 
@@ -236,12 +243,7 @@ fn template_12_shares_one_company_name_relation() {
         plans,
         problems,
     } = translate(queries);
-    assert!(
-        problems.is_empty(),
-        "{} problem(s):\n{}",
-        problems.len(),
-        problems.join("\n")
-    );
+    assert_no_problems(&problems);
 
     let plan = &plans[&12];
     let names: Vec<&str> = plan
