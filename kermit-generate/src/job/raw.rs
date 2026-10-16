@@ -414,8 +414,8 @@ pub fn extract_tgz(tgz: &Path, into: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The IMDb raw cache at `dir`: opened if it is complete, otherwise downloaded
-/// and built.
+/// The IMDb raw cache at `dir`: opened if it is a complete cache built from the
+/// pins, downloaded and built if `dir` is absent, and refused otherwise.
 ///
 /// A first call fetches `schema.sql` and the 113 pinned queries, then the
 /// 1.26 GB dump, each through `download_verified`, so a stale query pin fails
@@ -432,9 +432,13 @@ pub fn extract_tgz(tgz: &Path, into: &Path) -> anyhow::Result<()> {
 ///
 /// # Errors
 ///
-/// A complete cache built from other pins (the error names the field, both
-/// values and `dir`), a download that fails on every mirror (the error lists
-/// each), an extraction that fails, or a build that fails (see [`build`]).
+/// Before anything is fetched: a `dir` that exists without `provenance.json`
+/// (the error names `dir` to delete); a `provenance.json` that cannot be read
+/// or parsed (likewise); a complete cache built from other pins (the error
+/// names the field, both values and `dir`); or a `dir` with no file name, such
+/// as `..`, that holds no finished cache, since there is no sibling to stage
+/// in. Otherwise, a download that fails on every mirror (the error lists each),
+/// an extraction that fails, or a build that fails (see [`build`]).
 pub fn ensure(duckdb: &Duckdb, dir: &Path) -> anyhow::Result<RawCache> {
     ensure_from(duckdb, dir, &Sources::pinned(), &mut |url, dest, sha256| {
         download_verified(url, dest, sha256).map_err(anyhow::Error::from)
@@ -498,9 +502,9 @@ impl Sources {
 /// `sha256`**, or fail, as `download_verified` does: `fetch_and_build` records
 /// the pinned digest in the provenance without hashing the file again.
 ///
-/// A `dir` that exists without a finished cache is an error before anything is
-/// fetched: [`build`] would lose its rename onto it, after the 1.26 GB
-/// download.
+/// A `dir` without `provenance.json`, even an empty one (kermit never makes
+/// one), is refused before any fetch: [`build`] cannot rename over a non-empty
+/// one, and would find that out only after the 1.26 GB download.
 fn ensure_from(
     duckdb: &Duckdb, dir: &Path, sources: &Sources,
     fetch: &mut dyn FnMut(&str, &Path, &str) -> anyhow::Result<()>,
