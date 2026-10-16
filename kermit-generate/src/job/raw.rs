@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn copy_queries_refuses_what_is_not_a_query_file() {
         let scratch = tempfile::tempdir().unwrap();
-        for (index, bad) in ["schema.sql", "1A.sql", "notes.txt", "1a.sql.bak"]
+        for (index, bad) in ["schema.sql", "1A.sql", "01a.sql", "notes.txt", "1a.sql.bak"]
             .into_iter()
             .enumerate()
         {
@@ -1000,7 +1000,7 @@ mod tests {
         };
         for (table, rows) in fixture_rows() {
             assert_eq!(
-                count(&format!("SELECT COUNT(*) FROM \"{table}\"")),
+                count(&format!("SELECT COUNT(*) FROM {}", sql_identifier(&table))),
                 rows,
                 "{table}"
             );
@@ -1208,7 +1208,8 @@ mod tests {
 
     /// The CSV dialect is PostgreSQL's: a quoted empty field is an empty
     /// string, an unquoted one is NULL, a backslash escapes a quote, and a
-    /// field in apostrophes keeps them.
+    /// field in apostrophes keeps them, even in a CSV whose sample holds no
+    /// `"`.
     #[test]
     fn a_quoted_empty_field_loads_as_an_empty_string() {
         let Some(duckdb) = locate_or_skip() else {
@@ -1218,7 +1219,8 @@ mod tests {
         let schema = scratch.path().join("schema.sql");
         fs::write(
             &schema,
-            "CREATE TABLE note (id integer NOT NULL, info text, tag text NOT NULL);\n",
+            "CREATE TABLE note (id integer NOT NULL, info text, tag text NOT NULL);\nCREATE TABLE \
+             quip (id integer NOT NULL, info text NOT NULL);\n",
         )
         .unwrap();
         let csv = scratch.path().join("csv");
@@ -1228,8 +1230,11 @@ mod tests {
             "1,\"\",a\n2,,b\n3,'x','y'\n4,\"say \\\"hi\\\"\",d\n",
         )
         .unwrap();
+        // No `"` anywhere: left to detection, the sniffer takes `'` as the
+        // quote.
+        fs::write(csv.join("quip.csv"), "1,'x'\n2,'x'\n").unwrap();
         let dir = scratch.path().join("imdb");
-        let rows = [("note".to_owned(), 4)];
+        let rows = [("note".to_owned(), 4), ("quip".to_owned(), 2)];
         let cache = build_with_schema(&duckdb, &dir, &schema, &csv, &rows, "v").unwrap();
         let count = |predicate: &str| {
             duckdb
@@ -1245,6 +1250,14 @@ mod tests {
         assert_eq!(count("info IS NULL"), 1);
         assert_eq!(count("id = 3 AND info = '''x''' AND tag = '''y'''"), 1);
         assert_eq!(count("id = 4 AND info = 'say \"hi\"'"), 1);
+        let quip = duckdb
+            .query_u64(
+                &cache.database(),
+                &cache.temp_dir(),
+                "SELECT COUNT(*) FROM quip WHERE info = '''x'''",
+            )
+            .unwrap();
+        assert_eq!(quip, 2);
     }
 }
 
