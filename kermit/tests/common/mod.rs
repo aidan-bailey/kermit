@@ -6,4 +6,6 @@
 pub mod cli;
 pub mod macros;
 #[allow(dead_code)]
+pub mod snap;
+#[allow(dead_code)]
 pub mod utils;
