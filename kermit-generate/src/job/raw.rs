@@ -435,8 +435,8 @@ pub fn extract_tgz(tgz: &Path, into: &Path) -> anyhow::Result<()> {
 /// Before anything is fetched: a `dir` that exists without `provenance.json`
 /// (the error names `dir` to delete); a `provenance.json` that cannot be read
 /// or parsed (likewise); a complete cache built from other pins (the error
-/// names the field, both values and `dir`); or a `dir` with no file name, such
-/// as `..`, that holds no finished cache, since there is no sibling to stage
+/// names the field, both values and `dir`); or an absent `dir` with no file
+/// name (an empty path, or `missing/..`), since there is no sibling to stage
 /// in. Otherwise, a download that fails on every mirror (the error lists each),
 /// an extraction that fails, or a build that fails (see [`build`]).
 pub fn ensure(duckdb: &Duckdb, dir: &Path) -> anyhow::Result<RawCache> {
