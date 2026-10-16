@@ -57,7 +57,9 @@
 //!
 //! # Generators
 //!
+//! - [`h2o`]: the join task of H2O.ai's db-benchmark (#95).
 //! - [`job`]: the Join Order Benchmark over IMDb (#97).
+//! - [`snap`]: SNAP community graphs (#96).
 #![deny(missing_docs)]
 
 mod generator;
