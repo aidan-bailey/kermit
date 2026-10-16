@@ -7,11 +7,16 @@
 //! lacks it is never reused. [`RawCache::open`] is the only reader.
 
 use {
-    crate::job::duckdb::{path_literal, sql_identifier, Duckdb},
-    anyhow::{anyhow, ensure, Context},
+    crate::job::{
+        duckdb::{path_literal, sql_identifier, Duckdb},
+        pins, SCHEMA_FILE,
+    },
+    anyhow::{anyhow, bail, ensure, Context},
+    kermit_bench::cache::download_verified,
     serde::{Deserialize, Serialize},
     std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
+        ffi::OsStr,
         fs,
         path::{Path, PathBuf},
         process::Command,
@@ -165,7 +170,7 @@ pub(crate) fn split_query_stem(stem: &str) -> Option<(u32, &str)> {
 /// A staging directory that removes itself on drop unless it was renamed
 /// into place. It is the one staging guard of the raw cache: [`build`] stages
 /// in `<dir>.building-<pid>-<seq>`, and the download stage of `ensure` stages
-/// in `<dir>.fetch-<pid>` with the same type.
+/// in `<dir>.fetch-<pid>-<seq>` with the same type.
 ///
 /// `Drop` runs on every `?` return and on a panic. A process killed by a
 /// signal (`SIGINT`, `SIGKILL`) skips it, so a directory under a dead pid can
@@ -236,16 +241,12 @@ impl Drop for Staging {
 ///
 /// As described above, and on any DuckDB or file-system failure.
 pub fn build(duckdb: &Duckdb, dir: &Path, inputs: &BuildInputs<'_>) -> anyhow::Result<RawCache> {
-    let parent = match dir.parent() {
-        | Some(parent) if !parent.as_os_str().is_empty() => parent,
-        | _ => Path::new("."),
-    };
-    let name = dir
-        .file_name()
-        .with_context(|| format!("{} names no directory", dir.display()))?
-        .to_string_lossy()
-        .into_owned();
-    let staging = Staging::create(staging_path(parent, &name))?;
+    ensure!(
+        dir.file_name().is_some(),
+        "{} names no directory",
+        dir.display()
+    );
+    let staging = Staging::create(staging_path(dir, "building"))?;
     load_into(duckdb, staging.path(), inputs)?;
     match fs::rename(staging.path(), dir) {
         | Ok(()) => {
@@ -266,12 +267,19 @@ pub fn build(duckdb: &Duckdb, dir: &Path, inputs: &BuildInputs<'_>) -> anyhow::R
     }
 }
 
-/// `<parent>/<name>.building-<pid>-<seq>`, with `seq` the next value of a
-/// process-wide counter.
-fn staging_path(parent: &Path, name: &str) -> PathBuf {
+/// `<dir>.<kind>-<pid>-<seq>`, a sibling of `dir` (so the rename into place
+/// stays on one filesystem), with `seq` the next value of a process-wide
+/// counter: `kind` is `building` for [`build`] and `fetch` for [`ensure`]'s
+/// download. The pid keeps two processes apart and `seq` two calls in one.
+fn staging_path(dir: &Path, kind: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let seq = NEXT.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!("{name}.building-{}-{seq}", std::process::id()))
+    let mut name = dir
+        .file_name()
+        .unwrap_or_else(|| OsStr::new(RAW_DIR_NAME))
+        .to_os_string();
+    name.push(format!(".{kind}-{}-{seq}", std::process::id()));
+    dir.with_file_name(name)
 }
 
 /// Fills `staging`: database, queries, then `provenance.json`.
@@ -406,25 +414,260 @@ pub fn extract_tgz(tgz: &Path, into: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The IMDb raw cache at `dir`, if a finished one is there.
+/// The IMDb raw cache at `dir`: opened if it is complete, otherwise downloaded
+/// and built.
 ///
-/// This is the stand-in until the download lands (#97's last phase): it opens
-/// the cache or fails, and never builds one. The failure says the cache is
-/// missing; [`build`] makes one from a directory of CSVs. The signature is
-/// the final one, so callers do not change when the download replaces the
-/// body.
+/// A first call fetches `schema.sql` and the 113 pinned queries, then the
+/// 1.26 GB dump, each through `download_verified`, so a stale query pin fails
+/// before the long download. It stages everything in `<dir>.fetch-<pid>-<seq>`,
+/// builds `imdb.duckdb` with [`build`], and removes the staging directory
+/// whether or not the build succeeded, so a failed call leaves no `dir`. The
+/// dump's mirrors are tried in order.
+///
+/// A complete cache is returned only if its provenance matches the pins
+/// (the dump's SHA-256, the query commit and every query file's SHA-256), a
+/// cache another process finished first included. Otherwise `ensure` stops and
+/// names the directory to delete: like a generator's spec drift, it never
+/// deletes or rebuilds a cache itself.
 ///
 /// # Errors
 ///
-/// Fails when `dir` holds no finished cache (no `provenance.json`).
-pub fn ensure(_duckdb: &Duckdb, dir: &Path) -> anyhow::Result<RawCache> {
-    RawCache::open(dir).ok_or_else(|| {
-        anyhow!(
-            "the IMDb raw cache at {} is missing (no finished cache with {PROVENANCE_FILE}); \
-             downloading it arrives with the next phase of #97 (J7)",
-            dir.display()
+/// A complete cache built from other pins (the error names the field, both
+/// values and `dir`), a download that fails on every mirror (the error lists
+/// each), an extraction that fails, or a build that fails (see [`build`]).
+pub fn ensure(duckdb: &Duckdb, dir: &Path) -> anyhow::Result<RawCache> {
+    ensure_from(duckdb, dir, &Sources::pinned(), &mut |url, dest, sha256| {
+        download_verified(url, dest, sha256).map_err(anyhow::Error::from)
+    })
+}
+
+/// What `ensure` fetches and checks. [`Sources::pinned`] is the production
+/// value; tests substitute a fixture, which is why `ensure_from` takes one
+/// instead of reading `pins` itself.
+struct Sources {
+    /// Mirrors of `imdb.tgz`, tried in order.
+    imdb_urls: Vec<String>,
+    /// SHA-256 of `imdb.tgz`.
+    imdb_sha256: String,
+    /// The query repository's commit, recorded in the provenance.
+    query_commit: String,
+    /// `schema.sql` first, then the queries.
+    query_files: Vec<QueryFile>,
+    /// The row count the build must find in each table.
+    table_rows: Vec<(String, u64)>,
+}
+
+/// One pinned file of the query repository.
+struct QueryFile {
+    /// Its name in the repository: `schema.sql` or `6a.sql`.
+    file: String,
+    /// Where to fetch it.
+    url: String,
+    /// Its SHA-256.
+    sha256: String,
+}
+
+impl Sources {
+    /// The values `pins` records.
+    fn pinned() -> Sources {
+        Sources {
+            imdb_urls: pins::IMDB_URLS
+                .iter()
+                .map(|url| (*url).to_owned())
+                .collect(),
+            imdb_sha256: pins::IMDB_SHA256.to_owned(),
+            query_commit: pins::QUERY_COMMIT.to_owned(),
+            query_files: pins::QUERY_FILES
+                .iter()
+                .map(|(file, sha256)| QueryFile {
+                    file: (*file).to_owned(),
+                    url: pins::query_url(file),
+                    sha256: (*sha256).to_owned(),
+                })
+                .collect(),
+            table_rows: pins::IMDB_TABLE_ROWS
+                .iter()
+                .map(|(table, rows)| ((*table).to_owned(), *rows))
+                .collect(),
+        }
+    }
+}
+
+/// [`ensure`] over any `sources` and any way of fetching: `fetch(url, dest,
+/// sha256)` must leave `dest` holding the file at `url` or fail, as
+/// `download_verified` does.
+fn ensure_from(
+    duckdb: &Duckdb, dir: &Path, sources: &Sources,
+    fetch: &mut dyn FnMut(&str, &Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<RawCache> {
+    let cache = match RawCache::open(dir) {
+        | Some(cache) => cache,
+        // `build` returns another process's cache if it won the rename, and
+        // that one was built from whatever pins that process had.
+        | None => fetch_and_build(duckdb, dir, sources, fetch)?,
+    };
+    check_provenance(&cache, dir, sources)?;
+    Ok(cache)
+}
+
+/// How a cache's provenance differs from the pins: the first field that does.
+struct Mismatch {
+    /// `imdb_sha256`, `query_commit` or `query_sha256[<file>]`.
+    field: String,
+    /// The cache's value, or `(absent)`.
+    cache: String,
+    /// The pinned value, or `(absent)`.
+    pinned: String,
+}
+
+/// What a missing query file shows in a [`Mismatch`].
+const ABSENT: &str = "(absent)";
+
+/// `Some` if `cache` and `pinned` differ.
+fn differing(field: String, cache: &str, pinned: &str) -> Option<Mismatch> {
+    (cache != pinned).then(|| Mismatch {
+        field,
+        cache: cache.to_owned(),
+        pinned: pinned.to_owned(),
+    })
+}
+
+/// The first way `built` differs from `sources`, if any: the dump's digest,
+/// then the query commit, then the query files in name order (a file in only
+/// one of the two counts). `duckdb_version` is the build's, not a pin, and is
+/// not compared.
+fn provenance_mismatch(built: &RawProvenance, sources: &Sources) -> Option<Mismatch> {
+    let pinned: BTreeMap<&str, &str> = sources
+        .query_files
+        .iter()
+        .map(|query| (query.file.as_str(), query.sha256.as_str()))
+        .collect();
+    let files: BTreeSet<&str> = pinned
+        .keys()
+        .copied()
+        .chain(built.query_sha256.keys().map(String::as_str))
+        .collect();
+    differing(
+        "imdb_sha256".to_owned(),
+        &built.imdb_sha256,
+        &sources.imdb_sha256,
+    )
+    .or_else(|| {
+        differing(
+            "query_commit".to_owned(),
+            &built.query_commit,
+            &sources.query_commit,
         )
     })
+    .or_else(|| {
+        files.into_iter().find_map(|file| {
+            differing(
+                format!("query_sha256[{file}]"),
+                built.query_sha256.get(file).map_or(ABSENT, String::as_str),
+                pinned.get(file).copied().unwrap_or(ABSENT),
+            )
+        })
+    })
+}
+
+/// Refuses a complete cache that was built from other pins, naming the field,
+/// both values and the directory to delete. Nothing is deleted or rebuilt: the
+/// user decides, as with a generator's spec drift.
+fn check_provenance(cache: &RawCache, dir: &Path, sources: &Sources) -> anyhow::Result<()> {
+    let built = cache
+        .provenance()
+        .with_context(|| format!("reading the provenance of {}", dir.display()))?;
+    match provenance_mismatch(&built, sources) {
+        | None => Ok(()),
+        | Some(Mismatch {
+            field,
+            cache,
+            pinned,
+        }) => bail!(
+            "the IMDb raw cache at {dir} was built from other pins: {field} is {cache} in the \
+             cache but {pinned} in the pins; delete {dir} and run again to rebuild it (kermit \
+             never deletes or rebuilds a cache itself)",
+            dir = dir.display()
+        ),
+    }
+}
+
+/// Stages the files in `<dir>.fetch-<pid>-<seq>`, builds the cache from them
+/// and drops the staging directory.
+fn fetch_and_build(
+    duckdb: &Duckdb, dir: &Path, sources: &Sources,
+    fetch: &mut dyn FnMut(&str, &Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<RawCache> {
+    let staging = Staging::create(staging_path(dir, "fetch"))?;
+    let queries_dir = staging.path().join("queries");
+    let csv_dir = staging.path().join("csv");
+    let schema_sql = staging.path().join(SCHEMA_FILE);
+    let tgz = staging.path().join("imdb.tgz");
+    fs::create_dir_all(&queries_dir)
+        .with_context(|| format!("creating {}", queries_dir.display()))?;
+
+    // The 114 small files first: a stale pin fails here, before the 1.26 GB
+    // dump.
+    let mut query_sha256 = BTreeMap::new();
+    for QueryFile {
+        file,
+        url,
+        sha256,
+    } in &sources.query_files
+    {
+        let dest = if file == SCHEMA_FILE {
+            schema_sql.clone()
+        } else {
+            queries_dir.join(file)
+        };
+        fetch(url.as_str(), &dest, sha256.as_str())
+            .with_context(|| format!("fetching {file} from {url}"))?;
+        query_sha256.insert(file.clone(), sha256.clone());
+    }
+
+    fetch_from_mirrors(fetch, &sources.imdb_urls, &tgz, &sources.imdb_sha256)?;
+    fs::create_dir_all(&csv_dir).with_context(|| format!("creating {}", csv_dir.display()))?;
+    extract_tgz(&tgz, &csv_dir)?;
+
+    let table_rows: Vec<(&str, u64)> = sources
+        .table_rows
+        .iter()
+        .map(|(table, rows)| (table.as_str(), *rows))
+        .collect();
+    let inputs = BuildInputs {
+        csv_dir: &csv_dir,
+        schema_sql: &schema_sql,
+        queries_dir: &queries_dir,
+        table_rows: &table_rows,
+        provenance: RawProvenance {
+            imdb_sha256: sources.imdb_sha256.clone(),
+            query_commit: sources.query_commit.clone(),
+            query_sha256,
+            duckdb_version: duckdb.version().to_owned(),
+        },
+    };
+    build(duckdb, dir, &inputs)
+}
+
+/// Fetches `dest` from the first of `urls` that serves it with a matching
+/// digest. Any error moves on to the next mirror; when every mirror fails,
+/// the error lists each failure.
+fn fetch_from_mirrors(
+    fetch: &mut dyn FnMut(&str, &Path, &str) -> anyhow::Result<()>, urls: &[String], dest: &Path,
+    sha256: &str,
+) -> anyhow::Result<()> {
+    let mut failures = Vec::new();
+    for url in urls {
+        match fetch(url.as_str(), dest, sha256) {
+            | Ok(()) => return Ok(()),
+            | Err(error) => failures.push(format!("  {url}: {error:#}")),
+        }
+    }
+    bail!(
+        "could not download the IMDb dump from any of {} mirror(s):\n{}",
+        urls.len(),
+        failures.join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -432,10 +675,12 @@ mod tests {
     use {super::*, crate::job::duckdb::test_support::locate_or_skip};
 
     /// The committed fixture: `schema.sql`, `csv/`, `queries/` and `rows.txt`.
-    fn fixture_dir() -> PathBuf { Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/job") }
+    pub(super) fn fixture_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/job")
+    }
 
     /// `rows.txt`: one `<table> <rows>` pair per line.
-    fn fixture_rows() -> Vec<(String, u64)> {
+    pub(super) fn fixture_rows() -> Vec<(String, u64)> {
         let text = fs::read_to_string(fixture_dir().join("rows.txt")).unwrap();
         text.lines()
             .filter(|line| !line.trim().is_empty())
@@ -624,8 +869,8 @@ mod tests {
     #[test]
     fn staging_paths_are_distinct_within_a_process() {
         let parent = Path::new("/cache");
-        let first = staging_path(parent, "imdb");
-        let second = staging_path(parent, "imdb");
+        let first = staging_path(&parent.join("imdb"), "building");
+        let second = staging_path(&parent.join("imdb"), "building");
         assert_ne!(first, second);
         let prefix = format!("imdb.building-{}-", std::process::id());
         for path in [&first, &second] {
@@ -1000,5 +1245,577 @@ mod tests {
         assert_eq!(count("info IS NULL"), 1);
         assert_eq!(count("id = 3 AND info = '''x''' AND tag = '''y'''"), 1);
         assert_eq!(count("id = 4 AND info = 'say \"hi\"'"), 1);
+    }
+}
+
+#[cfg(test)]
+mod ensure_tests {
+    use {
+        super::{
+            tests::{fixture_dir, fixture_rows},
+            *,
+        },
+        crate::job::duckdb::test_support::locate_or_skip,
+        kermit_bench::cache::sha256_hex,
+        std::{
+            collections::{BTreeMap, BTreeSet},
+            process::Command,
+        },
+        tempfile::TempDir,
+    };
+
+    const MIRROR_A: &str = "fixture://mirror-a/imdb.tgz";
+    const MIRROR_B: &str = "fixture://mirror-b/imdb.tgz";
+
+    /// The names in `dir` that end in `suffix`, sorted.
+    fn files_ending(dir: &Path, suffix: &str) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(suffix))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The fixture dressed as the network: `Sources` that name fake URLs, and
+    /// the file each URL serves. The tarball is built with `tar -czf` from
+    /// the fixture's CSVs, which sit at its top level as in the real dump,
+    /// and one more entry, `schematext.sql`.
+    struct Fixture {
+        _scratch: TempDir,
+        sources: Sources,
+        served: BTreeMap<String, PathBuf>,
+    }
+
+    impl Fixture {
+        fn new() -> Fixture {
+            let scratch = tempfile::tempdir().unwrap();
+            let root = fixture_dir();
+
+            // The real archive holds a 22nd entry, `schematext.sql`, beside the
+            // 21 CSVs: a different schema from the pinned
+            // `schema.sql` (no NOT NULL constraints, other varchar
+            // lengths). `ensure` loads only the pinned `schema.sql`
+            // it fetched, so the fake archive carries a
+            // `schematext.sql` that is not SQL at all: a build that read it
+            // would fail.
+            let archived = scratch.path().join("archived");
+            fs::create_dir(&archived).unwrap();
+            let csvs = files_ending(&root.join("csv"), ".csv");
+            for csv in &csvs {
+                fs::copy(root.join("csv").join(csv), archived.join(csv)).unwrap();
+            }
+            fs::write(
+                archived.join("schematext.sql"),
+                "this is not the pinned schema;",
+            )
+            .unwrap();
+            let tgz = scratch.path().join("imdb.tgz");
+            let status = Command::new("tar")
+                .arg("-czf")
+                .arg(&tgz)
+                .arg("-C")
+                .arg(&archived)
+                .args(&csvs)
+                .arg("schematext.sql")
+                .status()
+                .expect("tar runs");
+            assert!(status.success(), "tar -czf failed");
+
+            let mut served = BTreeMap::new();
+            served.insert(MIRROR_A.to_owned(), tgz.clone());
+            served.insert(MIRROR_B.to_owned(), tgz.clone());
+
+            // schema.sql first, then the queries, as `pins::QUERY_FILES` orders
+            // them.
+            let mut query_files = Vec::new();
+            let queries = files_ending(&root.join("queries"), ".sql");
+            for file in std::iter::once(SCHEMA_FILE.to_owned()).chain(queries) {
+                let source = if file == SCHEMA_FILE {
+                    root.join(&file)
+                } else {
+                    root.join("queries").join(&file)
+                };
+                let url = format!("fixture://job/{file}");
+                query_files.push(QueryFile {
+                    sha256: sha256_hex(&source).unwrap(),
+                    url: url.clone(),
+                    file,
+                });
+                served.insert(url, source);
+            }
+
+            let sources = Sources {
+                imdb_urls: vec![MIRROR_A.to_owned(), MIRROR_B.to_owned()],
+                imdb_sha256: sha256_hex(&tgz).unwrap(),
+                query_commit: "fixture-commit".to_owned(),
+                query_files,
+                table_rows: fixture_rows(),
+            };
+            Fixture {
+                _scratch: scratch,
+                sources,
+                served,
+            }
+        }
+    }
+
+    /// The fake network. It serves `served`, refuses the URLs in `failing`,
+    /// records every request in `calls`, and checks the digest the way
+    /// `download_verified` does: a mismatch leaves no file and is an error.
+    struct FakeNet<'a> {
+        served: &'a BTreeMap<String, PathBuf>,
+        failing: BTreeSet<String>,
+        calls: Vec<String>,
+    }
+
+    impl<'a> FakeNet<'a> {
+        fn new(served: &'a BTreeMap<String, PathBuf>) -> Self {
+            FakeNet {
+                served,
+                failing: BTreeSet::new(),
+                calls: Vec::new(),
+            }
+        }
+
+        fn fetch(&mut self, url: &str, dest: &Path, sha256: &str) -> anyhow::Result<()> {
+            self.calls.push(url.to_owned());
+            if self.failing.contains(url) {
+                anyhow::bail!("{url} is unreachable");
+            }
+            let source = self
+                .served
+                .get(url)
+                .with_context(|| format!("no fixture file serves {url}"))?;
+            fs::copy(source, dest)?;
+            let actual = sha256_hex(dest)?;
+            if actual != sha256 {
+                fs::remove_file(dest)?;
+                anyhow::bail!("digest mismatch for {url}: expected {sha256}, got {actual}");
+            }
+            Ok(())
+        }
+    }
+
+    /// Fails with `message` if a staging directory of `ensure` or `build` is
+    /// still beside `dir`. A staging name carries a per-call sequence number,
+    /// so the parent is scanned: asking for the next name would find
+    /// nothing.
+    fn assert_no_staging_beside(dir: &Path, message: &str) {
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let left: Vec<String> = fs::read_dir(dir.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|entry| {
+                entry.starts_with(&format!("{name}.fetch-"))
+                    || entry.starts_with(&format!("{name}.building-"))
+            })
+            .collect();
+        assert!(left.is_empty(), "{message}: {left:?}");
+    }
+
+    /// A fresh cache root and the `imdb` directory inside it, which does not
+    /// exist yet.
+    fn cache_dir() -> (TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("imdb");
+        (root, dir)
+    }
+
+    fn run(
+        duckdb: &Duckdb, dir: &Path, fixture: &Fixture, net: &mut FakeNet<'_>,
+    ) -> anyhow::Result<RawCache> {
+        ensure_from(duckdb, dir, &fixture.sources, &mut |url, dest, sha256| {
+            net.fetch(url, dest, sha256)
+        })
+    }
+
+    /// The download's staging directory sits beside the cache, is named for the
+    /// process, and is new at every call.
+    #[test]
+    fn staging_dir_is_a_sibling_named_for_the_process() {
+        let dir = Path::new("/cache/kermit/imdb");
+        let first = staging_path(dir, "fetch");
+        let second = staging_path(dir, "fetch");
+        assert_ne!(first, second);
+        let prefix = format!("imdb.fetch-{}-", std::process::id());
+        for staged in [&first, &second] {
+            assert_eq!(staged.parent(), Some(Path::new("/cache/kermit")));
+            let name = staged.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with(&prefix), "{}", staged.display());
+        }
+    }
+
+    #[test]
+    fn staging_replaces_a_leftover_and_removes_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("imdb.fetch-1");
+        fs::create_dir_all(path.join("queries")).unwrap();
+        fs::write(path.join("leftover.sql"), "stale").unwrap();
+
+        let staging = Staging::create(path.clone()).unwrap();
+        assert!(path.is_dir());
+        assert_eq!(
+            fs::read_dir(&path).unwrap().count(),
+            0,
+            "the leftover is gone"
+        );
+        assert_eq!(staging.path(), path);
+        drop(staging);
+        assert!(!path.exists(), "the guard removes the directory");
+    }
+
+    #[test]
+    fn pinned_sources_mirror_the_pins() {
+        let sources = Sources::pinned();
+        assert_eq!(sources.imdb_urls, pins::IMDB_URLS);
+        assert_eq!(sources.imdb_sha256, pins::IMDB_SHA256);
+        assert_eq!(sources.query_commit, pins::QUERY_COMMIT);
+        assert_eq!(sources.query_files.len(), pins::QUERY_FILES.len());
+        assert_eq!(
+            sources.query_files[0].file, SCHEMA_FILE,
+            "schema.sql is fetched first"
+        );
+        for query in &sources.query_files {
+            assert_eq!(query.url, pins::query_url(&query.file));
+        }
+        assert_eq!(sources.table_rows.len(), pins::IMDB_TABLE_ROWS.len());
+    }
+
+    /// The provenance a build from exactly `sources` records.
+    fn provenance_of(sources: &Sources) -> RawProvenance {
+        RawProvenance {
+            imdb_sha256: sources.imdb_sha256.clone(),
+            query_commit: sources.query_commit.clone(),
+            query_sha256: sources
+                .query_files
+                .iter()
+                .map(|query| (query.file.clone(), query.sha256.clone()))
+                .collect(),
+            duckdb_version: "v0.0.0 (a different build)".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_matching_provenance_has_no_mismatch() {
+        let sources = Sources::pinned();
+        // The DuckDB version is the build's, not a pin: it never counts.
+        assert!(provenance_mismatch(&provenance_of(&sources), &sources).is_none());
+    }
+
+    #[test]
+    fn each_differing_pin_is_named_with_both_values() {
+        let sources = Sources::pinned();
+        let file = sources.query_files[1].file.clone();
+        let pinned_digest = sources.query_files[1].sha256.clone();
+        let zeros = "0".repeat(64);
+
+        let mut built = provenance_of(&sources);
+        built.imdb_sha256 = zeros.clone();
+        let mismatch = provenance_mismatch(&built, &sources).unwrap();
+        assert_eq!(mismatch.field, "imdb_sha256");
+        assert_eq!(mismatch.cache, zeros);
+        assert_eq!(mismatch.pinned, sources.imdb_sha256);
+
+        let mut built = provenance_of(&sources);
+        built.query_commit = "another-commit".to_owned();
+        let mismatch = provenance_mismatch(&built, &sources).unwrap();
+        assert_eq!(mismatch.field, "query_commit");
+        assert_eq!(mismatch.cache, "another-commit");
+        assert_eq!(mismatch.pinned, sources.query_commit);
+
+        // A changed query digest.
+        let mut built = provenance_of(&sources);
+        built.query_sha256.insert(file.clone(), zeros.clone());
+        let mismatch = provenance_mismatch(&built, &sources).unwrap();
+        assert_eq!(mismatch.field, format!("query_sha256[{file}]"));
+        assert_eq!(mismatch.cache, zeros);
+        assert_eq!(mismatch.pinned, pinned_digest);
+
+        // A pinned file the cache lacks.
+        let mut built = provenance_of(&sources);
+        built.query_sha256.remove(&file);
+        let mismatch = provenance_mismatch(&built, &sources).unwrap();
+        assert_eq!(mismatch.field, format!("query_sha256[{file}]"));
+        assert_eq!(mismatch.cache, ABSENT);
+        assert_eq!(mismatch.pinned, pinned_digest);
+
+        // A file the cache has and the pins do not.
+        let mut built = provenance_of(&sources);
+        built
+            .query_sha256
+            .insert("99z.sql".to_owned(), zeros.clone());
+        let mismatch = provenance_mismatch(&built, &sources).unwrap();
+        assert_eq!(mismatch.field, "query_sha256[99z.sql]");
+        assert_eq!(mismatch.cache, zeros);
+        assert_eq!(mismatch.pinned, ABSENT);
+    }
+
+    #[test]
+    fn a_failing_mirror_falls_through_to_the_next() {
+        let urls = vec![
+            "http://a/imdb.tgz".to_owned(),
+            "http://b/imdb.tgz".to_owned(),
+        ];
+        let mut calls = Vec::new();
+        let mut fetch = |url: &str, _dest: &Path, _sha256: &str| -> anyhow::Result<()> {
+            calls.push(url.to_owned());
+            if url.starts_with("http://a/") {
+                anyhow::bail!("a is down");
+            }
+            Ok(())
+        };
+        fetch_from_mirrors(&mut fetch, &urls, Path::new("imdb.tgz"), "digest").unwrap();
+        assert_eq!(calls, urls, "a was tried first, then b");
+    }
+
+    #[test]
+    fn every_mirror_failing_lists_each_failure() {
+        let urls = vec![
+            "http://a/imdb.tgz".to_owned(),
+            "http://b/imdb.tgz".to_owned(),
+        ];
+        let mut fetch = |url: &str, _dest: &Path, _sha256: &str| -> anyhow::Result<()> {
+            anyhow::bail!("{url} refused")
+        };
+        let error =
+            fetch_from_mirrors(&mut fetch, &urls, Path::new("imdb.tgz"), "digest").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("http://a/imdb.tgz refused"), "{message}");
+        assert!(message.contains("http://b/imdb.tgz refused"), "{message}");
+        assert!(message.contains("2 mirror(s)"), "{message}");
+    }
+
+    #[test]
+    fn ensure_fetches_the_queries_before_the_dump_then_builds() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let fixture = Fixture::new();
+        let (_root, dir) = cache_dir();
+        let mut net = FakeNet::new(&fixture.served);
+
+        let cache = run(&duckdb, &dir, &fixture, &mut net).unwrap();
+
+        // Every query file, schema.sql among them, is requested before the
+        // dump.
+        let dump = net
+            .calls
+            .iter()
+            .position(|url| url == MIRROR_A)
+            .expect("the dump was fetched");
+        assert_eq!(dump, fixture.sources.query_files.len(), "{:?}", net.calls);
+        assert_eq!(
+            net.calls.len(),
+            dump + 1,
+            "the first mirror served the dump"
+        );
+
+        // The cache holds the fixture's queries, in letter order, and its
+        // provenance.
+        assert_eq!(cache.dir(), dir.as_path());
+        let names: Vec<String> = cache
+            .template_queries(1)
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["1a", "1b"]);
+        let provenance = cache.provenance().unwrap();
+        assert_eq!(provenance.imdb_sha256, fixture.sources.imdb_sha256);
+        assert_eq!(provenance.query_commit, "fixture-commit");
+        assert_eq!(
+            provenance.query_sha256.len(),
+            fixture.sources.query_files.len()
+        );
+        assert_eq!(provenance.duckdb_version, duckdb.version());
+
+        // The tarball and the CSVs went with the staging directory.
+        assert_no_staging_beside(&dir, "the staging directory is removed");
+    }
+
+    /// A fresh `$XDG_CACHE_HOME` has no `kermit` directory, so neither the
+    /// cache nor its staging sibling has a parent yet: the first run
+    /// creates both.
+    #[test]
+    fn a_first_run_creates_the_missing_cache_parent() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let fixture = Fixture::new();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("kermit").join("imdb");
+        assert!(
+            !root.path().join("kermit").exists(),
+            "the premise: no parent"
+        );
+        let mut net = FakeNet::new(&fixture.served);
+
+        let cache = run(&duckdb, &dir, &fixture, &mut net).unwrap();
+
+        assert_eq!(cache.dir(), dir.as_path());
+        assert!(RawCache::open(&dir).is_some());
+        assert_no_staging_beside(&dir, "the staging directory is removed");
+    }
+
+    #[test]
+    fn ensure_falls_back_to_the_second_mirror() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let fixture = Fixture::new();
+        let (_root, dir) = cache_dir();
+        let mut net = FakeNet::new(&fixture.served);
+        net.failing.insert(MIRROR_A.to_owned());
+
+        run(&duckdb, &dir, &fixture, &mut net).unwrap();
+
+        let start = net.calls.len() - 2;
+        assert_eq!(&net.calls[start..], [MIRROR_A, MIRROR_B]);
+        assert!(RawCache::open(&dir).is_some());
+    }
+
+    #[test]
+    fn a_complete_cache_is_reused_without_a_fetch() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let fixture = Fixture::new();
+        let (_root, dir) = cache_dir();
+        let mut net = FakeNet::new(&fixture.served);
+        run(&duckdb, &dir, &fixture, &mut net).unwrap();
+
+        let again = ensure_from(
+            &duckdb,
+            &dir,
+            &fixture.sources,
+            &mut |url, _dest, _sha256| panic!("a complete cache must not fetch {url}"),
+        )
+        .unwrap();
+        assert_eq!(again.dir(), dir.as_path());
+    }
+
+    #[test]
+    fn a_cache_built_from_other_pins_is_refused_and_kept() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let mut fixture = Fixture::new();
+        let (_root, dir) = cache_dir();
+        let mut net = FakeNet::new(&fixture.served);
+        run(&duckdb, &dir, &fixture, &mut net).unwrap();
+        let built_from = fixture.sources.imdb_sha256.clone();
+
+        // The pins move on: the dump's digest now differs from the cache's.
+        let other = "0".repeat(64);
+        fixture.sources.imdb_sha256 = other.clone();
+        let error = ensure_from(
+            &duckdb,
+            &dir,
+            &fixture.sources,
+            &mut |url, _dest, _sha256| panic!("a refused cache must not fetch {url}"),
+        )
+        .unwrap_err();
+
+        // The error names the field, both values and the directory to delete...
+        let message = format!("{error:#}");
+        assert!(message.contains("imdb_sha256"), "{message}");
+        assert!(message.contains(&built_from), "{message}");
+        assert!(message.contains(&other), "{message}");
+        assert!(message.contains(&dir.display().to_string()), "{message}");
+        // ...and leaves everything where it was: nothing is deleted or rebuilt.
+        assert!(dir.is_dir(), "the cache is kept");
+        assert!(RawCache::open(&dir).is_some(), "and still complete");
+        assert_no_staging_beside(&dir, "the staging directory is removed");
+    }
+
+    #[test]
+    fn a_stale_query_pin_fails_before_the_dump() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let mut fixture = Fixture::new();
+        fixture.sources.query_files[1].sha256 = "0".repeat(64);
+        let stale = fixture.sources.query_files[1].url.clone();
+        let (_root, dir) = cache_dir();
+        let mut net = FakeNet::new(&fixture.served);
+
+        let error = run(&duckdb, &dir, &fixture, &mut net).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains(&stale),
+            "the error names {stale}: {error:#}"
+        );
+        assert!(
+            !net.calls
+                .iter()
+                .any(|url| url == MIRROR_A || url == MIRROR_B),
+            "the dump is never requested: {:?}",
+            net.calls
+        );
+        assert!(!dir.exists());
+        assert_no_staging_beside(&dir, "the staging directory is removed");
+    }
+
+    #[test]
+    fn a_failed_build_leaves_no_cache_and_no_staging() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let mut fixture = Fixture::new();
+        fixture.sources.table_rows[0].1 += 1;
+        let table = fixture.sources.table_rows[0].0.clone();
+        let (_root, dir) = cache_dir();
+        let mut net = FakeNet::new(&fixture.served);
+
+        let error = run(&duckdb, &dir, &fixture, &mut net).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains(&table),
+            "the error names {table}: {error:#}"
+        );
+        assert!(!dir.exists(), "a failed build leaves no cache");
+        assert_no_staging_beside(&dir, "the failed call's download is discarded");
+    }
+
+    /// `build` loses the rename to a cache that appeared meanwhile and returns
+    /// it; `ensure_from` must still compare that cache with the pins. The fake
+    /// fetch plants a finished cache built from other pins just before it
+    /// serves the dump, so `dir` is non-empty when `build` renames onto it.
+    /// No timing is involved.
+    #[test]
+    fn a_cache_adopted_after_a_lost_rename_is_checked_against_the_pins() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let fixture = Fixture::new();
+        let (_root, dir) = cache_dir();
+        let other = "0".repeat(64);
+        let mut planted = provenance_of(&fixture.sources);
+        planted.imdb_sha256 = other.clone();
+        let planted_json = serde_json::to_string_pretty(&planted).unwrap();
+        let mut net = FakeNet::new(&fixture.served);
+
+        let error = ensure_from(&duckdb, &dir, &fixture.sources, &mut |url, dest, sha256| {
+            if url == MIRROR_A {
+                // Another process finishes its cache while this one downloads.
+                fs::create_dir(&dir).unwrap();
+                fs::write(dir.join(PROVENANCE_FILE), &planted_json).unwrap();
+            }
+            net.fetch(url, dest, sha256)
+        })
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("imdb_sha256"), "{message}");
+        assert!(message.contains(&other), "{message}");
+        assert!(message.contains(&dir.display().to_string()), "{message}");
+        assert_eq!(
+            fs::read_to_string(dir.join(PROVENANCE_FILE)).unwrap(),
+            planted_json,
+            "the other process's cache is kept as it was"
+        );
+        assert_no_staging_beside(&dir, "the lost build's staging directory is removed");
     }
 }

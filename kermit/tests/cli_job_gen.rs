@@ -75,8 +75,16 @@ fn gen_job_tagged(
     cache: &Path, out: &Path, template: &str, tag: &str, duckdb_bin: Option<&str>,
 ) -> Output {
     let mut command = Command::new(kermit_bin());
+    // `raw::ensure` downloads a raw cache it cannot find, so `gen` must never
+    // reach the network from a test: the proxy is dead and `NO_PROXY` is
+    // cleared, as in `bench_run`, so a missing cache fails at once instead
+    // of downloading.
     command
         .env("XDG_CACHE_HOME", cache)
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
         .args(["bench", "gen", "job", "--template", template, "--tag", tag])
         .arg("--output-dir")
         .arg(out);
