@@ -10,11 +10,10 @@ pub const IMDB_URLS: [&str; 2] = [
     "http://event.cwi.nl/da/job/imdb.tgz",
 ];
 
-/// SHA-256 (lowercase hex) of `imdb.tgz`.
-///
-/// `"UNMEASURED"` until Part B of the J4 task measures the dump; the download
-/// in the raw cache (J7) is checked against it.
-pub const IMDB_SHA256: &str = "UNMEASURED";
+/// SHA-256 (lowercase hex) of `imdb.tgz`, measured on 2026-10-16 from both
+/// mirrors in the run that measured [`IMDB_TABLE_ROWS`]; the download in the
+/// raw cache is checked against it.
+pub const IMDB_SHA256: &str = "25f9d893c54f903366e0c263f88db0d429dbc2b159d4987ebc1e203242a7e988";
 
 /// The commit of `gregrahn/join-order-benchmark` the query files are read at.
 pub const QUERY_COMMIT: &str = "a39603662e023e449cb2121997a5034df9e02ebf";
@@ -485,33 +484,31 @@ pub const QUERY_FILES: [(&str, &str); 114] = [
     ),
 ];
 
-/// The row count of each of the 21 IMDb tables after loading `imdb.tgz`,
-/// in `schema.sql`'s order.
-///
-/// All `0` until Part B of the J4 task measures them; the raw-cache build
-/// checks every loaded table against its entry.
+/// The row count of each of the 21 IMDb tables after loading `imdb.tgz` with
+/// `schema.sql` under DuckDB (`v1.4.4 (Andium) 6ddac802ff`), in `schema.sql`'s
+/// order; the raw-cache build checks every loaded table against its entry.
 pub const IMDB_TABLE_ROWS: [(&str, u64); 21] = [
-    ("aka_name", 0),
-    ("aka_title", 0),
-    ("cast_info", 0),
-    ("char_name", 0),
-    ("comp_cast_type", 0),
-    ("company_name", 0),
-    ("company_type", 0),
-    ("complete_cast", 0),
-    ("info_type", 0),
-    ("keyword", 0),
-    ("kind_type", 0),
-    ("link_type", 0),
-    ("movie_companies", 0),
-    ("movie_info", 0),
-    ("movie_info_idx", 0),
-    ("movie_keyword", 0),
-    ("movie_link", 0),
-    ("name", 0),
-    ("person_info", 0),
-    ("role_type", 0),
-    ("title", 0),
+    ("aka_name", 901343),
+    ("aka_title", 361472),
+    ("cast_info", 36244344),
+    ("char_name", 3140339),
+    ("comp_cast_type", 4),
+    ("company_name", 234997),
+    ("company_type", 4),
+    ("complete_cast", 135086),
+    ("info_type", 113),
+    ("keyword", 134170),
+    ("kind_type", 7),
+    ("link_type", 18),
+    ("movie_companies", 2609129),
+    ("movie_info", 14835720),
+    ("movie_info_idx", 1380035),
+    ("movie_keyword", 4523930),
+    ("movie_link", 29997),
+    ("name", 4167491),
+    ("person_info", 2963664),
+    ("role_type", 12),
+    ("title", 2528312),
 ];
 
 /// The URL of one query file (or `schema.sql`) at [`QUERY_COMMIT`].
@@ -596,5 +593,21 @@ mod tests {
     fn imdb_table_rows_name_the_21_tables() {
         let names: Vec<&str> = IMDB_TABLE_ROWS.iter().map(|(table, _)| *table).collect();
         assert_eq!(names, SCHEMA_TABLES);
+    }
+
+    /// Part B of the J4 task replaced the placeholders: a 64-digit lowercase
+    /// hex digest, and a non-empty table for each of the 21 names.
+    #[test]
+    fn imdb_pins_are_measured() {
+        assert_eq!(IMDB_SHA256.len(), 64, "{IMDB_SHA256}");
+        assert!(
+            IMDB_SHA256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "{IMDB_SHA256} is not lowercase hex"
+        );
+        for (table, rows) in IMDB_TABLE_ROWS {
+            assert!(rows > 0, "{table} has no pinned row count");
+        }
     }
 }
