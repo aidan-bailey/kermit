@@ -11,8 +11,8 @@
 //! honours only on Linux, and passes `--output-dir` or `KERMIT_WORKSPACE`, so
 //! nothing is written under `~/.cache/kermit`. The `bench run` test also sets
 //! `CRITERION_HOME`, so its Criterion groups stay out of the workspace's
-//! `target/criterion/`, and points the HTTP proxies at a closed port, so no
-//! run can download anything.
+//! `target/criterion/`. Both `gen` and `bench run` point the HTTP proxies at a
+//! closed port (`no_network`), so no run can download anything.
 
 mod common;
 
@@ -70,21 +70,25 @@ fn gen_job(cache: &Path, out: &Path, template: &str, duckdb_bin: Option<&str>) -
     gen_job_tagged(cache, out, template, TAG, duckdb_bin)
 }
 
+/// Points the HTTP proxies at a closed port and clears `NO_PROXY`, so a
+/// command that cannot find its raw cache fails at once instead of
+/// downloading: `raw::ensure` downloads one it cannot find, and no test may
+/// reach the network.
+fn no_network(command: &mut Command) -> &mut Command {
+    command
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+}
+
 /// [`gen_job`] with the `--tag` given.
 fn gen_job_tagged(
     cache: &Path, out: &Path, template: &str, tag: &str, duckdb_bin: Option<&str>,
 ) -> Output {
     let mut command = Command::new(kermit_bin());
-    // `raw::ensure` downloads a raw cache it cannot find, so `gen` must never
-    // reach the network from a test: the proxy is dead and `NO_PROXY` is
-    // cleared, as in `bench_run`, so a missing cache fails at once instead
-    // of downloading.
-    command
+    no_network(&mut command)
         .env("XDG_CACHE_HOME", cache)
-        .env("HTTPS_PROXY", "http://127.0.0.1:9")
-        .env("HTTP_PROXY", "http://127.0.0.1:9")
-        .env_remove("NO_PROXY")
-        .env_remove("no_proxy")
         .args(["bench", "gen", "job", "--template", template, "--tag", tag])
         .arg("--output-dir")
         .arg(out);
@@ -249,14 +253,10 @@ fn bench_run(
     cache: &Path, workspace: &Path, report: &Path, duckdb_bin: Option<&str>, extra: &[&str],
 ) -> Output {
     let mut command = Command::new(kermit_bin());
-    command
+    no_network(&mut command)
         .env("XDG_CACHE_HOME", cache)
         .env("KERMIT_WORKSPACE", workspace)
         .env("CRITERION_HOME", report.parent().unwrap().join("criterion"))
-        .env("HTTPS_PROXY", "http://127.0.0.1:9")
-        .env("HTTP_PROXY", "http://127.0.0.1:9")
-        .env_remove("NO_PROXY")
-        .env_remove("no_proxy")
         .args(["bench", "--sample-size", "10", "--measurement-time", "1"])
         .args(["--warm-up-time", "1", "--report-json"])
         .arg(report)

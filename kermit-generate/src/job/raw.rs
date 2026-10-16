@@ -16,7 +16,6 @@ use {
     serde::{Deserialize, Serialize},
     std::{
         collections::{BTreeMap, BTreeSet},
-        ffi::OsStr,
         fs,
         path::{Path, PathBuf},
         process::Command,
@@ -241,12 +240,7 @@ impl Drop for Staging {
 ///
 /// As described above, and on any DuckDB or file-system failure.
 pub fn build(duckdb: &Duckdb, dir: &Path, inputs: &BuildInputs<'_>) -> anyhow::Result<RawCache> {
-    ensure!(
-        dir.file_name().is_some(),
-        "{} names no directory",
-        dir.display()
-    );
-    let staging = Staging::create(staging_path(dir, "building"))?;
+    let staging = Staging::create(staging_path(dir, "building")?)?;
     load_into(duckdb, staging.path(), inputs)?;
     match fs::rename(staging.path(), dir) {
         | Ok(()) => {
@@ -271,15 +265,21 @@ pub fn build(duckdb: &Duckdb, dir: &Path, inputs: &BuildInputs<'_>) -> anyhow::R
 /// stays on one filesystem), with `seq` the next value of a process-wide
 /// counter: `kind` is `building` for [`build`] and `fetch` for [`ensure`]'s
 /// download. The pid keeps two processes apart and `seq` two calls in one.
-fn staging_path(dir: &Path, kind: &str) -> PathBuf {
+///
+/// # Errors
+///
+/// Fails if `dir` has no final component (`/`, `..`), so there is no name to
+/// build on; callers stage before they fetch, so that fails before any
+/// download.
+fn staging_path(dir: &Path, kind: &str) -> anyhow::Result<PathBuf> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let seq = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut name = dir
         .file_name()
-        .unwrap_or_else(|| OsStr::new(RAW_DIR_NAME))
+        .with_context(|| format!("{} names no directory", dir.display()))?
         .to_os_string();
     name.push(format!(".{kind}-{}-{seq}", std::process::id()));
-    dir.with_file_name(name)
+    Ok(dir.with_file_name(name))
 }
 
 /// Fills `staging`: database, queries, then `provenance.json`.
@@ -494,13 +494,31 @@ impl Sources {
 }
 
 /// [`ensure`] over any `sources` and any way of fetching: `fetch(url, dest,
-/// sha256)` must leave `dest` holding the file at `url` or fail, as
-/// `download_verified` does.
+/// sha256)` must leave `dest` holding the file at `url` **whose SHA-256 is
+/// `sha256`**, or fail, as `download_verified` does: `fetch_and_build` records
+/// the pinned digest in the provenance without hashing the file again.
+///
+/// A `dir` that exists without a finished cache is an error before anything is
+/// fetched: [`build`] would lose its rename onto it, after the 1.26 GB
+/// download.
 fn ensure_from(
     duckdb: &Duckdb, dir: &Path, sources: &Sources,
     fetch: &mut dyn FnMut(&str, &Path, &str) -> anyhow::Result<()>,
 ) -> anyhow::Result<RawCache> {
-    let cache = match RawCache::open(dir) {
+    let mut cache = RawCache::open(dir);
+    if cache.is_none() && dir.exists() {
+        // Open again after the `exists` test: another process may rename its
+        // finished cache into place between the two calls, and that one is
+        // checked like any other.
+        cache = RawCache::open(dir);
+        ensure!(
+            cache.is_some(),
+            "{dir} exists but holds no finished cache (no {PROVENANCE_FILE}); delete {dir} and \
+             run again",
+            dir = dir.display()
+        );
+    }
+    let cache = match cache {
         | Some(cache) => cache,
         // `build` returns another process's cache if it won the rename, and
         // that one was built from whatever pins that process had.
@@ -574,9 +592,12 @@ fn provenance_mismatch(built: &RawProvenance, sources: &Sources) -> Option<Misma
 /// both values and the directory to delete. Nothing is deleted or rebuilt: the
 /// user decides, as with a generator's spec drift.
 fn check_provenance(cache: &RawCache, dir: &Path, sources: &Sources) -> anyhow::Result<()> {
-    let built = cache
-        .provenance()
-        .with_context(|| format!("reading the provenance of {}", dir.display()))?;
+    let built = cache.provenance().with_context(|| {
+        format!(
+            "reading the provenance of {dir}; delete {dir} and run again",
+            dir = dir.display()
+        )
+    })?;
     match provenance_mismatch(&built, sources) {
         | None => Ok(()),
         | Some(Mismatch {
@@ -598,7 +619,7 @@ fn fetch_and_build(
     duckdb: &Duckdb, dir: &Path, sources: &Sources,
     fetch: &mut dyn FnMut(&str, &Path, &str) -> anyhow::Result<()>,
 ) -> anyhow::Result<RawCache> {
-    let staging = Staging::create(staging_path(dir, "fetch"))?;
+    let staging = Staging::create(staging_path(dir, "fetch")?)?;
     let queries_dir = staging.path().join("queries");
     let csv_dir = staging.path().join("csv");
     let schema_sql = staging.path().join(SCHEMA_FILE);
@@ -626,7 +647,6 @@ fn fetch_and_build(
     }
 
     fetch_from_mirrors(fetch, &sources.imdb_urls, &tgz, &sources.imdb_sha256)?;
-    fs::create_dir_all(&csv_dir).with_context(|| format!("creating {}", csv_dir.display()))?;
     extract_tgz(&tgz, &csv_dir)?;
 
     let table_rows: Vec<(&str, u64)> = sources
@@ -864,26 +884,40 @@ mod tests {
         );
     }
 
-    /// Two staging paths for one `dir` in one process differ, and both name
-    /// the pid.
+    /// A staging path, for each kind (`building` for `build`, `fetch` for
+    /// `ensure`'s download), is a sibling of `dir`, is named for the process,
+    /// and is new at every call.
     #[test]
-    fn staging_paths_are_distinct_within_a_process() {
+    fn staging_paths_are_distinct_siblings_named_for_the_process() {
         let parent = Path::new("/cache");
-        let first = staging_path(&parent.join("imdb"), "building");
-        let second = staging_path(&parent.join("imdb"), "building");
-        assert_ne!(first, second);
-        let prefix = format!("imdb.building-{}-", std::process::id());
-        for path in [&first, &second] {
-            assert_eq!(path.parent(), Some(parent));
-            assert!(
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with(&prefix),
-                "{}",
-                path.display()
-            );
+        for kind in ["building", "fetch"] {
+            let first = staging_path(&parent.join("imdb"), kind).unwrap();
+            let second = staging_path(&parent.join("imdb"), kind).unwrap();
+            assert_ne!(first, second);
+            let prefix = format!("imdb.{kind}-{}-", std::process::id());
+            for path in [&first, &second] {
+                assert_eq!(path.parent(), Some(parent));
+                assert!(
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(&prefix),
+                    "{}",
+                    path.display()
+                );
+            }
         }
+    }
+
+    /// A `dir` with no final component has no name to stage beside: an error,
+    /// not an invented name.
+    #[test]
+    fn a_nameless_dir_has_no_staging_path() {
+        let error = staging_path(Path::new("/"), "fetch").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("names no directory"),
+            "{error:#}"
+        );
     }
 
     /// Whatever a killed run left at the staging path is removed, never reused
@@ -1211,7 +1245,7 @@ mod tests {
     /// field in apostrophes keeps them, even in a CSV whose sample holds no
     /// `"`.
     #[test]
-    fn a_quoted_empty_field_loads_as_an_empty_string() {
+    fn the_csv_dialect_is_postgresqls() {
         let Some(duckdb) = locate_or_skip() else {
             return;
         };
@@ -1307,12 +1341,11 @@ mod ensure_tests {
             let root = fixture_dir();
 
             // The real archive holds a 22nd entry, `schematext.sql`, beside the
-            // 21 CSVs: a different schema from the pinned
-            // `schema.sql` (no NOT NULL constraints, other varchar
-            // lengths). `ensure` loads only the pinned `schema.sql`
-            // it fetched, so the fake archive carries a
-            // `schematext.sql` that is not SQL at all: a build that read it
-            // would fail.
+            // 21 CSVs: a different schema from the pinned `schema.sql` (no
+            // NOT NULL constraints, other varchar lengths). `ensure` loads
+            // only the pinned `schema.sql` it fetched, so the fake archive
+            // carries a `schematext.sql` that is not SQL at all: a build that
+            // read it would fail.
             let archived = scratch.path().join("archived");
             fs::create_dir(&archived).unwrap();
             let csvs = files_ending(&root.join("csv"), ".csv");
@@ -1444,41 +1477,6 @@ mod ensure_tests {
         })
     }
 
-    /// The download's staging directory sits beside the cache, is named for the
-    /// process, and is new at every call.
-    #[test]
-    fn staging_dir_is_a_sibling_named_for_the_process() {
-        let dir = Path::new("/cache/kermit/imdb");
-        let first = staging_path(dir, "fetch");
-        let second = staging_path(dir, "fetch");
-        assert_ne!(first, second);
-        let prefix = format!("imdb.fetch-{}-", std::process::id());
-        for staged in [&first, &second] {
-            assert_eq!(staged.parent(), Some(Path::new("/cache/kermit")));
-            let name = staged.file_name().unwrap().to_string_lossy();
-            assert!(name.starts_with(&prefix), "{}", staged.display());
-        }
-    }
-
-    #[test]
-    fn staging_replaces_a_leftover_and_removes_itself() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("imdb.fetch-1");
-        fs::create_dir_all(path.join("queries")).unwrap();
-        fs::write(path.join("leftover.sql"), "stale").unwrap();
-
-        let staging = Staging::create(path.clone()).unwrap();
-        assert!(path.is_dir());
-        assert_eq!(
-            fs::read_dir(&path).unwrap().count(),
-            0,
-            "the leftover is gone"
-        );
-        assert_eq!(staging.path(), path);
-        drop(staging);
-        assert!(!path.exists(), "the guard removes the directory");
-    }
-
     #[test]
     fn pinned_sources_mirror_the_pins() {
         let sources = Sources::pinned();
@@ -1486,14 +1484,21 @@ mod ensure_tests {
         assert_eq!(sources.imdb_sha256, pins::IMDB_SHA256);
         assert_eq!(sources.query_commit, pins::QUERY_COMMIT);
         assert_eq!(sources.query_files.len(), pins::QUERY_FILES.len());
+        for (query, (file, sha256)) in sources.query_files.iter().zip(pins::QUERY_FILES) {
+            assert_eq!(query.file, *file);
+            assert_eq!(query.sha256, *sha256);
+            assert_eq!(query.url, pins::query_url(file));
+        }
         assert_eq!(
             sources.query_files[0].file, SCHEMA_FILE,
             "schema.sql is fetched first"
         );
-        for query in &sources.query_files {
-            assert_eq!(query.url, pins::query_url(&query.file));
-        }
-        assert_eq!(sources.table_rows.len(), pins::IMDB_TABLE_ROWS.len());
+        let table_rows: Vec<(&str, u64)> = sources
+            .table_rows
+            .iter()
+            .map(|(table, rows)| (table.as_str(), *rows))
+            .collect();
+        assert_eq!(table_rows, pins::IMDB_TABLE_ROWS);
     }
 
     /// The provenance a build from exactly `sources` records.
@@ -1707,6 +1712,55 @@ mod ensure_tests {
         )
         .unwrap();
         assert_eq!(again.dir(), dir.as_path());
+    }
+
+    /// A `dir` with files but no `provenance.json` (a cache `build` never
+    /// finished, or someone's own directory) is refused before anything is
+    /// fetched, and left as it was.
+    #[test]
+    fn an_unfinished_dir_fails_before_any_fetch() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let fixture = Fixture::new();
+        let (_root, dir) = cache_dir();
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("stray.txt"), "not a cache").unwrap();
+        let mut net = FakeNet::new(&fixture.served);
+
+        let error = run(&duckdb, &dir, &fixture, &mut net).unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains(&dir.display().to_string()), "{message}");
+        assert!(message.contains(PROVENANCE_FILE), "{message}");
+        assert!(message.contains("delete"), "{message}");
+        assert!(net.calls.is_empty(), "nothing fetched: {:?}", net.calls);
+        assert_eq!(files_ending(&dir, ""), ["stray.txt"], "dir is as it was");
+        assert_no_staging_beside(&dir, "no staging directory was made");
+    }
+
+    /// A `provenance.json` that does not parse is a cache that cannot be
+    /// compared with the pins; the error says to delete it.
+    #[test]
+    fn an_unreadable_provenance_says_to_delete_the_cache() {
+        let Some(duckdb) = locate_or_skip() else {
+            return;
+        };
+        let fixture = Fixture::new();
+        let (_root, dir) = cache_dir();
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join(PROVENANCE_FILE), "not json").unwrap();
+        let mut net = FakeNet::new(&fixture.served);
+
+        let error = run(&duckdb, &dir, &fixture, &mut net).unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains(PROVENANCE_FILE), "{message}");
+        assert!(
+            message.contains(&format!("delete {} and run again", dir.display())),
+            "{message}"
+        );
+        assert!(net.calls.is_empty(), "nothing fetched: {:?}", net.calls);
     }
 
     #[test]
