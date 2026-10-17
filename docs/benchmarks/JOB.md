@@ -343,25 +343,69 @@ only).
 
 Generation is not the limit. The **raw cache** is built once. Measured on 2026-10-16 with
 DuckDB 1.4.4: the dump is 1,263,193,115 bytes (about five minutes to download here), its 21
-CSVs are 3.88 GB, and they load in about 30 s into a 2.5 GB `imdb.duckdb`, which is what the
+CSVs are 3.88 GB, and they load in about 30 s into a 2.65 GB `imdb.duckdb`, which is what the
 finished cache keeps. The tarball is deleted once extracted, so the first build peaks near
-6.4 GB on disk (the CSVs beside the growing database), and the staging directory goes once
-the database is in place. Each template then takes seconds to a couple of minutes (design
-estimates; the measured figures replace them at acceptance).
+6.5 GB on disk (the CSVs beside the growing database), and the staging directory goes once
+the database is in place. Each template then takes 1.3–7.6 s (measured on 2026-10-17 with a
+release build, the raw cache in place): 1.3–3.1 s for most, 4.1–4.8 s for templates 3, 18–20
+and 26, and 6.6–7.6 s for templates 6–8, 16 and 17, which read all 36 M rows of `cast_info`
+and peak at 2.4–2.5 GB resident. The first template generated also builds the raw cache: job-1 took 854 s, of which
+its own generation was about a second.
 
 The **run phase** sets the memory ceiling. `cast_info` holds about 36 M rows and `movie_info`
-15 M (Leis et al., §2.1), and a trie over `cast_info` may not fit for the `cast_info` templates
-on a 30 GB host, HashTrie least of all. The table below records, per template, the output
-size and the peak memory of `bench run job-N -i all -a all --verify` for each structure, or the
-failure.
-
-<!-- J9-FILL: replace the placeholder row below with one row per template (job-1 to job-33: the total bytes of its relation files, the peak memory of the verify run for each structure, or the failure), replace the per-template generation-time estimate in this section with the measured figures, then delete this comment. -->
+15 M (Leis et al., §2.1), so the templates that read all of `cast_info` need the most memory,
+HashTrie the most of all. The table below records, per template, the output
+size (the bytes of its relation files) and, for each structure, the peak resident memory of
+its verify run, or the failure. It was measured on 2026-10-17 on a 30 GB host with a release
+build (jemalloc), one process per template and structure:
+`bench run job-N -i <structure> -a <algorithm> --verify -m space`, the structure's default
+layout and build, each process in its own `systemd-run --user --scope` with `MemoryMax=14G`
+and no swap, its peak taken from GNU time's `%M`. Every query of every cell that finished
+matched its `expected`.
 
 | Template | Output size | Peak memory (tree-trie) | Peak memory (column-trie) | Peak memory (hash-trie) | Notes |
 |----------|-------------|-------------------------|---------------------------|-------------------------|-------|
-| *measured at acceptance* | — | — | — | — | — |
+| job-1 | 84.7 MB | 0.6 GiB | 0.2 GiB | 0.9 GiB | 1a–1d |
+| job-2 | 129.2 MB | 1.3 GiB | 0.3 GiB | 1.9 GiB | 2a–2d |
+| job-3 | 98.5 MB | 1.0 GiB | 0.3 GiB | 1.5 GiB | 3a–3c |
+| job-4 | 105.9 MB | 1.2 GiB | 0.3 GiB | 1.8 GiB | 4a–4c |
+| job-5 | 55.6 MB | 0.6 GiB | 0.2 GiB | 0.9 GiB | 5a–5c |
+| job-6 | 791.9 MB | 6.6 GiB | 1.8 GiB | 9.4 GiB | 6a–6f |
+| job-7 | 735.8 MB | 6.7 GiB | 1.9 GiB | 8.9 GiB | 7a–7c |
+| job-8 | 808.0 MB | 11.5 GiB | 2.7 GiB | OOM (>14 GiB) | 8a–8d; hash-trie killed by the cap within 15 s, twice |
+| job-9 | 176.0 MB | 1.5 GiB | 0.3 GiB | 2.4 GiB | 9a–9d |
+| job-10 | 103.3 MB | 1.0 GiB | 0.3 GiB | 1.7 GiB | 10a–10c |
+| job-11 | 137.7 MB | 1.8 GiB | 0.3 GiB | 2.6 GiB | 11a–11d |
+| job-12 | 331.9 MB | 3.2 GiB | 0.8 GiB | 4.9 GiB | 12a–12c |
+| job-13 | 325.7 MB | 3.4 GiB | 0.8 GiB | 5.2 GiB | 13a–13d |
+| job-14 | 120.0 MB | 1.6 GiB | 0.3 GiB | 2.3 GiB | 14a–14c |
+| job-15 | 149.0 MB | 1.8 GiB | 0.4 GiB | 2.7 GiB | 15a–15d |
+| job-16 | 877.3 MB | 7.5 GiB | 1.9 GiB | 10.9 GiB | 16a–16d |
+| job-17 | 858.5 MB | 7.4 GiB | 1.9 GiB | 10.7 GiB | 17a–17f |
+| job-18 | 381.2 MB | 3.2 GiB | 0.7 GiB | 4.9 GiB | 18a–18c |
+| job-19 | 400.0 MB | 3.9 GiB | 0.9 GiB | 5.6 GiB | 19a–19d |
+| job-20 | 551.4 MB | 5.9 GiB | 1.3 GiB | 9.2 GiB | 20a–20c |
+| job-21 | 136.6 MB | 1.5 GiB | 0.3 GiB | 2.3 GiB | 21a–21c |
+| job-22 | 194.6 MB | 2.5 GiB | 0.5 GiB | 3.8 GiB | 22a–22d |
+| job-23 | 138.5 MB | 1.8 GiB | 0.4 GiB | 2.6 GiB | 23a–23c |
+| job-24 | 173.2 MB | 1.9 GiB | 0.4 GiB | 2.8 GiB | 24a–24b |
+| job-25 | 142.1 MB | 1.5 GiB | 0.3 GiB | 2.2 GiB | 25a–25c |
+| job-26 | 565.6 MB | 6.2 GiB | 1.3 GiB | 9.5 GiB | 26a–26c |
+| job-27 | 128.5 MB | 1.5 GiB | 0.3 GiB | 2.3 GiB | 27a–27c |
+| job-28 | 127.0 MB | 1.6 GiB | 0.3 GiB | 2.3 GiB | 28a–28c |
+| job-29 | 243.6 MB | 2.7 GiB | 0.5 GiB | 4.2 GiB | 29a–29c |
+| job-30 | 156.8 MB | 1.6 GiB | 0.3 GiB | 2.4 GiB | 30a–30c |
+| job-31 | 227.0 MB | 2.1 GiB | 0.4 GiB | 3.3 GiB | 31a–31c |
+| job-32 | 79.3 MB | 0.9 GiB | 0.3 GiB | 1.3 GiB | 32a–32b |
+| job-33 | 132.8 MB | 1.7 GiB | 0.3 GiB | 2.5 GiB | 33a–33c |
 
-Cells that do not fit are listed here with their measured sizes, not hidden: see
+The notes name each template's queries. 98 of the 99 cells finished, in 28–264 s each, and
+verified 335 query counts. The one cell that does not fit
+is HashTrie on template 8, killed by the cap before it finished building; a re-run was killed
+the same way. Template 8 is the only template whose unfiltered `cast_info` atom has four columns,
+`cast_info(N1, T, RT, _)`, one level more than the same 685 MB relation in templates 6, 7, 16
+and 17, whose HashTrie cells fit in 8.9–10.9 GiB. Across the table, ColumnTrie peaks at
+0.18–0.29 times TreeTrie's memory and HashTrie at 1.33–1.66 times it. See
 [Future work](#future-work).
 
 ## Vendored generator
@@ -433,10 +477,12 @@ develop`.
 
 ## Future work
 
-- **Cells that do not fit.** The memory table lists the template × structure cells that run out
-  of memory on this host. A lower-memory configuration (the lazy HashTrie layout,
-  `--ds-layout-expansion lazy`, builds children on demand) might move the ceiling; it is not
-  measured.
+- **Cells that do not fit.** One cell runs out of the 14 GiB cap on this host: HashTrie on
+  template 8 (see the memory table). Two HashTrie layouts might bring it under the cap, and
+  neither is measured. Singleton pruning (`--ds-layout-pruning on`) stores a one-row subtrie
+  as one row id, and 31.4 M of the 33.3 M (person, movie) pairs in `cast_info(N1, T, RT, _)`
+  (94 %) have one row. Lazy expansion (`--ds-layout-expansion lazy`) builds a child only when a probe
+  reaches it.
 - **A filters-stripped "JOB-shape" variant.** Dropping the filters changes the join problem
   (much larger inputs), so it would be a second workload with its own `expected`, not a flag.
 - **An outdated-cache floor for `job`.** `kind: job` is new, so `OUTDATED_BEFORE` has no `job`
