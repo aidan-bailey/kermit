@@ -9328,7 +9328,7 @@ Run: `bash /tb/Source/Academia/kermit-bench-runs/job-97/accept.sh`
 
 In `docs/benchmarks/JOB.md`'s "Practical scale ceiling":
 - Replace the placeholder row under the `<!-- J9-FILL: … -->` comment with one row per template, in J8's columns: **Template** (`job-N`), **Output size** (the template's relation files: `du -cb "$RUNS/xdg/kermit/benchmarks/job-N"/*.parquet | tail -1`, in MB with one decimal), **Peak memory** per structure (Step 4's `%M` in GiB with one decimal, or `OOM` for `rc=137`, `>30 min` for `rc=124`), **Notes** (e.g. "`cast_info` templates"). Then delete the comment.
-- Replace the "about 5 GB of disk and a few minutes … (design estimates; the measured figures replace them at acceptance)" sentence with the measured figures: the raw cache's size (`disk.log`), job-1's generation time (download + build + template), and the range of the other templates' generation times (`gen.log`).
+- Replace the "Each template then takes seconds to a couple of minutes (design estimates; the measured figures replace them at acceptance)" sentence with the measured figures: job-1's generation time (download + build + template) and the range of the other templates' generation times (`gen.log`). J8 already wrote the raw-cache figures from J4 Part B and J7 (2.5 GB finished, a load of about 30 s, a 6.4 GB peak); check them against `disk.log` and `job-1.log`, and correct any that differ.
 - Replace the sentence naming `bench run job-N -i all -a all --verify` with the command Step 4 actually ran (one cell per process, `--verify -m space`), and add one sentence naming the host (30 GB RAM) and the date.
 
 Check:
@@ -9559,3 +9559,23 @@ Control A: all 3 tests fail on the integrity error, none skip. Control B: one `s
 - **Tests table.** The `job_translate.rs` row is updated in place. Add `cli_job_gen.rs`'s refusal test to its row.
 
 **Follow-up for the user (not JOB-blocking):** `raw.rs` has grown to about 1,900 lines. Its download half could move to `job/raw/fetch.rs`.
+
+### J8 results (2026-10-17)
+
+Done by the design session directly (docs only, no cargo run: no test reads the edited Markdown). Then one independent reviewer checked every claim against the code, the tests, the paper and the recorded measurements. It found no wrong number. It found 12 overclaims, all fixed before the commit. Examples: the `duckdb.rs` tests' gate and coverage, the failed-filter guarantee, which `meta.json` digests are recorded, and why the real-113 test lives in `kermit`.
+
+Departures from Steps 2–5:
+
+- **Merged after SNAP and H2O.** Their Index entries, matrix columns, kind-table rows and CLAUDE.md list entries were already on the branch, so JOB's were appended after them.
+  - The kind and scale rows in `benchmarks/README.md` were extended in place.
+  - The CLAUDE.md gotcha sits after H2O's, not after "LUBM jar regeneration", so the `kermit-generate` generators' gotchas stay together.
+  - `ARCHITECTURE.md` gained `job` in its four kind lists, plus one paragraph under "Non-RDF Generators". That paragraph says `job` is the generator that drives an external tool.
+- **The carry-forward items went in, and the plan's JOB.md text was corrected to the code.**
+  - Spill directories are per call, `duckdb.tmp/<pid>-<seq>`.
+  - The CSV dialect is pinned in full, and the pin is defensive.
+  - Pins and the cache floor: `spec_hash` covers only `template`, so a pin change bumps `META_SCHEMA_VERSION` and adds the first `job` floor.
+  - The measured raw-cache figures went in: 2.5 GB finished, a load of about 30 s, a 6.4 GB peak.
+  - The 114 small files are fetched first, the three refusals happen before any fetch, and the tarball is deleted once extracted.
+  - The full IMDb digest is stated.
+  - The Tests rows are corrected to what each test asserts.
+- **J9 Step 5's anchor moved.** The per-template time is still a design estimate. J9 Step 5 now replaces the "Each template then takes seconds to a couple of minutes (design estimates; …)" sentence and checks J8's raw-cache figures against `disk.log`. `J9-FILL` is still present exactly once.

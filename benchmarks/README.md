@@ -10,6 +10,7 @@ This directory holds YAML benchmark definitions consumed by the `kermit bench` C
 - `watdiv-example.yml`, `watdiv-basic.yml`, `lubm-example.yml`, and `lubm-reference.yml` are generator-driven examples illustrating the generator schema below; `watdiv-stress-default.yml` is a declarative generator spec (distinct from the frozen `watdiv-stress-*` snapshots covered later).
 - `snap-amazon.yml` and `snap-dblp.yml` are generator-driven SNAP community graphs (`kind: snap`: one symmetric `edge` relation, four graph-pattern queries with exact `expected` counts); see [`docs/benchmarks/SNAP.md`](../docs/benchmarks/SNAP.md).
 - `h2o.yml` and `h2o-sorted.yml` are generator-driven H2O db-benchmark joins at N = 1e7 (`kind: h2o`: six relations, three queries with exact `expected` counts; the second writes every relation sorted); see [`docs/benchmarks/H2O.md`](../docs/benchmarks/H2O.md).
+- `job-1.yml` … `job-33.yml` are generator-driven specs for the Join Order Benchmark, one per template (`kind: job`: `job-6` holds queries 6a–6f, each with DuckDB's `COUNT(*)` as its `expected`); see [`docs/benchmarks/JOB.md`](../docs/benchmarks/JOB.md).
 
 ## Schema
 
@@ -57,8 +58,8 @@ A `generator:` block replaces `relations` and `queries`. On `bench run <name>`, 
 
 | Field                       | Type               | Required | Description |
 |-----------------------------|--------------------|----------|-------------|
-| `generator.kind`            | `watdiv` \| `watdiv-basic` \| `lubm` \| `snap` \| `h2o` | yes      | Selects the generator: a `kermit-rdf` pipeline, or for `snap` and `h2o` a `kermit-generate` module. |
-| `generator.scale`           | u32 (≥ 1)          | for `watdiv`, `watdiv-basic`, `lubm` and `h2o` | Scale factor (`watdiv -d <N>` or `lubm-uba -u <N>`); for `h2o`, N, the rows of the fact table, at least 10000000. `snap` has no scale. |
+| `generator.kind`            | `watdiv` \| `watdiv-basic` \| `lubm` \| `snap` \| `h2o` \| `job` | yes      | Selects the generator: a `kermit-rdf` pipeline, or for `snap`, `h2o` and `job` a `kermit-generate` module. |
+| `generator.scale`           | u32 (≥ 1)          | for `watdiv`, `watdiv-basic`, `lubm` and `h2o` | Scale factor (`watdiv -d <N>` or `lubm-uba -u <N>`); for `h2o`, N, the rows of the fact table, at least 10000000. `snap` and `job` have no scale: `job`'s data is a fixed IMDb dump and `template` picks the queries. |
 
 WatDiv-specific fields (under `generator:` when `kind: watdiv`):
 
@@ -101,6 +102,14 @@ H2O-specific fields (under `generator:` when `kind: h2o`):
 | `generator.order`           | `shuffled` \| `sorted` | `shuffled`                                       | Row order of every relation: as drawn, or sorted. |
 
 All three feed the spec hash, and an omitted `seed` hashes the same as `seed: 108`. See [`docs/benchmarks/H2O.md`](../docs/benchmarks/H2O.md) for the relations, the queries and the floor.
+
+JOB-specific fields (under `generator:` when `kind: job`; there is no `scale`):
+
+| Field                       | Type        | Required | Description |
+|-----------------------------|-------------|----------|-------------|
+| `generator.template`        | u8 (1–33)   | yes      | The JOB template: `job-<N>` holds every variant of template N (`job-6` = 6a–6f). `BenchmarkDefinition::validate` rejects a template outside 1–33. |
+
+A `job` benchmark needs DuckDB (on `PATH` inside `nix develop`, or at `KERMIT_DUCKDB_BIN`) and, on first use, downloads the 1.26 GB IMDb dump into a raw cache shared by every template, `~/.cache/kermit/imdb/`, which sits outside the `benchmarks/` cache. See [`docs/benchmarks/JOB.md`](../docs/benchmarks/JOB.md).
 
 Structural invariants are checked at load time by `BenchmarkDefinition::validate`.
 
@@ -206,6 +215,16 @@ generator:
 
 `h2o-sorted` generates the six H2O relations at N = 1e7 with every relation's rows sorted on first use; `h2o` is the same with `order` omitted (shuffled). `seed` defaults to 108. See `docs/benchmarks/H2O.md`.
 
+```yaml
+name: job-6
+description: "Join Order Benchmark, template 6 (6a-6f)"
+generator:
+  kind: job
+  template: 6
+```
+
+`job-6` generates every variant of JOB template 6 over IMDb, with each alias's filters applied during generation. There is no `scale`. See `docs/benchmarks/JOB.md`.
+
 ## Frozen snapshots and the `scripts/` preprocessors
 
 Two families of committed YAMLs are **frozen snapshots**, not declarative specs. Each was produced by a one-shot Python preprocessor under `scripts/`, and the data it references was uploaded to ZivaHub afterwards — the YAMLs only carry the URLs:
@@ -229,7 +248,7 @@ Relation files are downloaded on first use and cached at:
 - macOS: `~/Library/Caches/kermit/benchmarks/<benchmark-name>/<relation-name>.parquet`
 - Windows: `%LOCALAPPDATA%\kermit\benchmarks\<benchmark-name>\<relation-name>.parquet`
 
-Exact layout comes from `dirs::cache_dir()` (see `kermit-bench/src/cache.rs`). Use `kermit bench clean <name>` to drop a single benchmark's cache, or `kermit bench clean --all` to purge everything.
+Exact layout comes from `dirs::cache_dir()` (see `kermit-bench/src/cache.rs`). Use `kermit bench clean <name>` to drop a single benchmark's cache, or `kermit bench clean --all` to purge every benchmark's cache. The JOB generator's raw IMDb cache (`<cache dir>/kermit/imdb/`) is shared by all its templates and sits beside `benchmarks/`, so neither command removes it.
 
 Downloads write to a `*.parquet.part` file and atomically rename on completion, so an interrupted download cannot leave a partial file that later reads trust.
 

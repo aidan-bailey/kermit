@@ -54,7 +54,7 @@ Three crates are leaves with no internal dependencies: `kermit-iters`, `kermit-p
 
 `kermit-rdf` depends on `kermit-bench` alone. Its coupling to the query layer is deliberately textual, not structural: `sparql::translator` emits a Datalog *string* into the generated `benchmark.yml`, and that string is parsed by `kermit-parser` later, in the binary, when the benchmark is actually run. The pipeline also never constructs a relation, so it has no need of `kermit-ds`. (Both crates were declared in its manifest for a period without ever being referenced; the entries were removed.)
 
-`kermit-generate` is the layer that generators which write their relations themselves, rather than partitioning an RDF tool's N-Triples, join: H2O (#95) and SNAP (#96) are in; JOB arrives with #97. Writing relations needs `kermit-ds`'s `ParquetWriter`, which is exactly the dependency `kermit-rdf` must not take, so they get their own crate. It reuses `kermit-rdf`'s cache contract (`Target`, `GeneratorMeta`, `write_meta_json`, `META_SCHEMA_VERSION`) and `kermit-parser` to check each query it emits. Nothing but the binary depends on it.
+`kermit-generate` is the layer that generators which write their relations themselves, rather than partitioning an RDF tool's N-Triples, join: H2O (#95), SNAP (#96) and JOB (#97). Writing relations needs `kermit-ds`'s `ParquetWriter`, which is exactly the dependency `kermit-rdf` must not take, so they get their own crate. It reuses `kermit-rdf`'s cache contract (`Target`, `GeneratorMeta`, `write_meta_json`, `META_SCHEMA_VERSION`) and `kermit-parser` to check each query it emits. Nothing but the binary depends on it.
 
 ## Core Abstractions
 
@@ -389,7 +389,7 @@ The benchmark crate is a leaf with no internal kermit dependencies. It defines t
 A benchmark is a single `benchmarks/<name>.yml` file (filename stem must equal the `name:` field). The schema is documented in `benchmarks/README.md`. Two flavours:
 
 - **Static** — declares `relations:` (each with a download URL or committed path, optionally pinned by a `sha256` digest) and `queries:` (Datalog strings, optionally with an `expected` result cardinality for `bench run --verify`). See `benchmarks/triangle.yml`.
-- **Generator-driven** — declares a `generator: { kind: watdiv|lubm|snap|h2o, ... }` block instead (`scale: N` is required by `watdiv`, `lubm` and `h2o`; `snap` has none). The relations and queries are produced on demand by a `kermit-rdf` pipeline (`watdiv`, `lubm`) or a `kermit-generate` generator (`snap`, `h2o`).
+- **Generator-driven** — declares a `generator: { kind: watdiv|lubm|snap|h2o|job, ... }` block instead (`scale: N` is required by `watdiv`, `lubm` and `h2o`; `snap` has none, and `job` takes `template: N` instead). The relations and queries are produced on demand by a `kermit-rdf` pipeline (`watdiv`, `lubm`) or a `kermit-generate` generator (`snap`, `h2o`, `job`).
 
 The two are mutually exclusive; `BenchmarkDefinition::validate` enforces the XOR plus structural invariants (non-empty name, unique relation/query names, portable filename characters, generator-specific bounds).
 
@@ -433,12 +433,14 @@ User-facing reference docs live at `docs/benchmarks/WATDIV.md` and `docs/benchma
 
 ## Non-RDF Generators (`kermit-generate`)
 
-`kermit-generate` is the layer that non-RDF generator benchmarks share; the generators themselves join it as modules: `h2o` (#95) and `snap` (#96) are in, and `job` arrives with #97. A generator implements `Generator`: a `KIND` for `meta.json`, an `Extras` type for its own `meta.json` fields, a `target()` (output directory, benchmark name, tag, spec hash: `kermit-rdf`'s `Target`), and `generate(&mut RelationSink)`, which writes every relation and returns the queries with their `expected` counts.
+`kermit-generate` is the layer that non-RDF generator benchmarks share; the generators themselves join it as modules: `h2o` (#95), `snap` (#96) and `job` (#97). A generator implements `Generator`: a `KIND` for `meta.json`, an `Extras` type for its own `meta.json` fields, a `target()` (output directory, benchmark name, tag, spec hash: `kermit-rdf`'s `Target`), and `generate(&mut RelationSink)`, which writes every relation and returns the queries with their `expected` counts.
 
 - **`RelationSink`** writes `<out_dir>/<name>.parquet` through `kermit_ds::ParquetWriter`, either one-shot (`write(&header, &tuples)`) or streamed (`open(&header)` → `RelationWriter::write_batch` → `finish`), and records each relation's columns, rows and SHA-256. A writer that is dropped unfinished leaves no file and no record. `raw_dir()` gives `<out_dir>/raw/` for downloaded artifacts.
 - **`run`** owns the cache contract that `materialize` and discovery rely on. It deletes any old `meta.json`, calls `generate`, checks the extras and that every query parses and names a written relation, writes `benchmark.yml`, and writes `meta.json` last. The last write is the commit marker: a directory without `meta.json` is never a cache hit.
 - **`GeneratedMeta<E>`** is the common `meta.json` (schema version, kind, tag, timestamp, counts, spec hash, per-relation records) with `E` flattened beside it. It implements `kermit-rdf`'s `GeneratorMeta`, so drift detection, `OUTDATED_BEFORE` and `bench list` treat these caches like `kermit-rdf`'s.
 - **`output_dir`** resolves a `bench gen <kind>` output directory (`--output-dir` or the cache root) and reports whether discovery will see it.
+
+`job` is the one generator that drives an external tool. Its translator parses JOB's SQL with `sqlparser` into relation files and Datalog rules; DuckDB (`KERMIT_DUCKDB_BIN`, else `PATH`) then applies each relation's filters, streaming the rows into a `RelationWriter`, and computes each query's `expected` as `COUNT(*)`, over a raw IMDb cache (`<cache>/kermit/imdb/`) built once and shared by every template. See `docs/benchmarks/JOB.md`.
 
 ## CLI (`kermit`)
 
@@ -452,7 +454,7 @@ The binary exposes two top-level subcommands:
   - `bench list` — list benchmarks; status distinguishes `cached` / `not cached` for static and `not generated` / `cached` / `stale` for generator-driven.
   - `bench fetch [<NAME>]` — download relation parquets for static benchmarks.
   - `bench clean [<NAME>]` — remove cached benchmark artefacts.
-  - `bench gen { watdiv | lubm | snap | h2o }` — imperative on-the-fly generation, bypassing YAML; writes into the same cache layout under a user-supplied `--tag`.
+  - `bench gen { watdiv | lubm | snap | h2o | job }` — imperative on-the-fly generation, bypassing YAML; writes into the same cache layout under a user-supplied `--tag`.
 
 Working examples live in `README.md` and `USAGE.md`; the YAML schema and generator-spec details live in `benchmarks/README.md`.
 
@@ -538,6 +540,6 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 
 1. Create `benchmarks/<name>.yml`. The schema is documented in `benchmarks/README.md`.
    - For a static benchmark, declare `relations:` (with download URLs) and `queries:` (Datalog strings).
-   - For a generator-driven benchmark, declare `generator: { kind: watdiv | watdiv-basic | lubm | snap | h2o, ... }` instead.
+   - For a generator-driven benchmark, declare `generator: { kind: watdiv | watdiv-basic | lubm | snap | h2o | job, ... }` instead.
 2. Run `kermit bench list` to verify discovery and validate the YAML.
 3. For static benchmarks, `kermit bench fetch <name>` downloads the relation parquets. For generator-driven benchmarks, `kermit bench run <name>` materialises them on first invocation.
