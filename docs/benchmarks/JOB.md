@@ -142,6 +142,10 @@ would fail the empty-stderr check below, and on stdout it would corrupt the row 
 `COPY … TO '/dev/stdout'` is trusted only if DuckDB exits 0 with an empty stderr; otherwise the
 error names the relation and quotes stderr, and no new `<name>.parquet` is written.
 
+The count oracle is the original query with its projection replaced by `COUNT(*)` and every
+identifier double-quoted. DuckDB's keywords are not PostgreSQL's: JOB's `aka_title AS at`
+(15a–15d) is valid PostgreSQL, where `AT` is non-reserved, but DuckDB refuses a bare `at`.
+
 ## Output layout
 
 ```

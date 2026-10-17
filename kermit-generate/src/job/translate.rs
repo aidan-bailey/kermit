@@ -56,9 +56,9 @@ pub struct JobQuery {
     /// The filters in text order: the alias, and the conjunct as `sqlparser`
     /// prints it with every `alias.` stripped from its columns.
     pub filters: Vec<(String, String)>,
-    /// The statement with its projection replaced by `COUNT(*)`, printed
-    /// without a trailing `;`. DuckDB's answer to it is the query's expected
-    /// cardinality.
+    /// The statement with its projection replaced by `COUNT(*)` and every
+    /// identifier double-quoted, printed without a trailing `;`. DuckDB's
+    /// answer to it is the query's expected cardinality.
     pub count_sql: String,
 }
 
@@ -241,6 +241,7 @@ pub fn parse_query(name: &str, sql: &str) -> Result<JobQuery, TranslateError> {
         filters,
     } = classify(name, &aliases, selection)?;
     select.projection = vec![count_star()];
+    quote_identifiers(select);
     Ok(JobQuery {
         name: name.to_owned(),
         aliases,
@@ -500,6 +501,44 @@ fn without_alias(conjunct: &Expr) -> String {
     });
     stripped.to_string()
 }
+
+/// Double-quotes every identifier of `select`: the table and alias of each
+/// `FROM` item and every column reference in the `WHERE` clause.
+///
+/// The `COUNT(*)` oracle runs in DuckDB, whose keywords are not PostgreSQL's:
+/// JOB's `aka_title AS at` (15a–15d) parses in PostgreSQL, where `AT` is
+/// non-reserved, but DuckDB refuses a bare `at`. A quoted identifier is never
+/// read as a keyword. Only the oracle is quoted; `filters` and the relations'
+/// names are read before this runs.
+fn quote_identifiers(select: &mut Select) {
+    for item in &mut select.from {
+        if let TableFactor::Table {
+            name,
+            alias,
+            ..
+        } = &mut item.relation
+        {
+            for part in &mut name.0 {
+                if let ObjectNamePart::Identifier(ident) = part {
+                    quote(ident);
+                }
+            }
+            if let Some(alias) = alias {
+                quote(&mut alias.name);
+            }
+        }
+    }
+    let _ = visit_expressions_mut(&mut select.selection, |expr| {
+        match expr {
+            | Expr::Identifier(ident) => quote(ident),
+            | Expr::CompoundIdentifier(idents) => idents.iter_mut().for_each(quote),
+            | _ => {},
+        }
+        ControlFlow::<()>::Continue(())
+    });
+}
+
+fn quote(ident: &mut Ident) { ident.quote_style = Some('"'); }
 
 /// The projection `COUNT(*)`.
 fn count_star() -> SelectItem {
@@ -1006,8 +1045,24 @@ mod tests {
         );
         assert_eq!(
             query.count_sql,
-            "SELECT COUNT(*) FROM title AS t, name AS n, cast_info AS ci WHERE t.production_year \
-             > 2000 AND t.id = ci.movie_id AND n.id = ci.person_id"
+            r#"SELECT COUNT(*) FROM "title" AS "t", "name" AS "n", "cast_info" AS "ci" WHERE "t"."production_year" > 2000 AND "t"."id" = "ci"."movie_id" AND "n"."id" = "ci"."person_id""#
+        );
+    }
+
+    /// JOB's 15a–15d alias `aka_title` as `at`, valid PostgreSQL (`AT` is
+    /// non-reserved there) that DuckDB 1.4 refuses: `syntax error at or near
+    /// "at"`. Quoted, an identifier is never read as a keyword, and a literal
+    /// that looks like a reference stays a literal.
+    #[test]
+    fn count_sql_quotes_a_keyword_alias() {
+        let query = parse(
+            "15a",
+            "SELECT MIN(at.title) AS aka FROM aka_title AS at, title AS t WHERE at.note LIKE \
+             '%at.title%' AND t.id = at.movie_id;",
+        );
+        assert_eq!(
+            query.count_sql,
+            r#"SELECT COUNT(*) FROM "aka_title" AS "at", "title" AS "t" WHERE "at"."note" LIKE '%at.title%' AND "t"."id" = "at"."movie_id""#
         );
     }
 
