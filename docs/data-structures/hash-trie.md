@@ -74,6 +74,8 @@ The paper's buffer is a copy its build makes. `bulk` and `incremental` take the 
 
 The chains cost 4 bytes per row for the trie's life (`links`, counted by `heap_size_bytes`), and one store per push beyond the paper's: the `NIL` written into the pushed row's link, which keeps `links` a function of the lists (kermit's). In return no build allocates per list. A chain step reads two places, the link and then the row, where the paper's in-row pointer reads one cache line; the links are dense, and in the partitioning modes a chain's rows are partition-local (#101 B1). The links are `AtomicU32`, read and written `Relaxed`, so that a lazy trie can re-thread a child's rows inside `HashTrieIter::open`, which holds only `&self`. On x86-64 and AArch64 a relaxed load or store compiles to a plain one; eager tries use the same atomics, which keeps them `Sync`, and what that costs them is measured once (the design's § Measurement).
 
+**Measured effect** (2026-10-18, [Chain links, measured](#chain-links-measured-101-b2)). On the 33 JOB templates the chains cut HashTrie's peak memory by about 15 %: before B2 a run peaked at 1.13–1.26× today's (geomean 1.18), with the same answers. In the replicated B1 + B2 run, which was stopped part-way, eager builds take 0.67–0.90× as long as before and the triangle join runs at the same speed (1.01–1.02×). The one regression is a lazy trie's walk of its unexpanded chains on ungrouped input, up to 11× slower: a `Vec<RowId>`'s loads were independent, and a chain's are dependent, one link per row, scattered over the buffer.
+
 Design: [`docs/specs/2026-10-08-hash-trie-partitioned-materialisation-design.md`](../specs/2026-10-08-hash-trie-partitioned-materialisation-design.md) (#101 B1) and [`docs/specs/2026-10-14-hash-trie-chain-links-design.md`](../specs/2026-10-14-hash-trie-chain-links-design.md) (#101 B2).
 
 Bucket index: the high `p` bits of `hash × MULTIPLIERS[p]`, where `p = log2_capacity` and `MULTIPLIERS` holds one odd constant per capacity. The paper takes the high bits of the hash itself; multiplying first is this implementation's one departure, and the [bucket-index invariant](#invariants) explains it. Collisions are resolved by linear probing within the bucket array. Each occupied bucket stores the full 64-bit hash for disambiguation during probes.
@@ -962,6 +964,138 @@ and `presized:16`, each at load factors 0.7 and 0.8.
   a depth-1 list holds one tuple per distinct key. The predicted fall did
   appear, on `price`. Its one-tuple children get 2 buckets instead of 4,
   which saves 18 % of the space and cuts its iteration time by 16 %.
+
+### Chain links, measured (#101 B2)
+
+B2 is not an axis: every `HashTrie` threads its lists through `links`. Its
+records therefore compare the commit before B2 with a commit after it. Both
+ran on an AMD Ryzen 7 7700X with jemalloc 5.3.1, on SipHash with pruning
+off unless a cell says otherwise.
+
+#### JOB peak memory (2026-10-17/18)
+
+Run directory: `kermit-bench-runs/job-97/old-a589c64/` (`run.sh`,
+`run2.sh`, `run.log`). The after-B2 runs are #97's J9 acceptance runs, in
+`kermit-bench-runs/job-97/accept/`.
+- BEFORE is a589c64, B1's landing and the commit before B2 (sha256
+  `ce30fd93ba0399cd…`), built from a `git archive` in its own target
+  directory.
+- AFTER is b89f29c, the J9 acceptance binary (sha256 `1aab9777c3634b90…`).
+- Between the two, B2 is the only engine change on the default `bulk` path.
+  The toolchain, jemalloc and `parquet` (59.3.1) are the same.
+
+**Method.**
+- Each template ran once per binary: `bench run job-N -i hash-trie -a
+  hash-triejoin --verify -m space`, with `--sample-size 10
+  --measurement-time 1 --warm-up-time 1`, on the default Layout and build
+  (eager, `bulk`).
+- Each process ran in its own 14 GiB cgroup cap with no swap. Peak memory
+  is GNU time's maximum RSS of the whole process.
+- Two BEFORE runs (job-6 and job-17) were killed by host-wide OOMs, not by
+  the cap. Each was re-run once the host had the memory, and only the
+  re-runs count.
+
+**Answers.** 32 of the 33 templates finished on both binaries, and all 109
+of their query counts matched DuckDB's on both. job-8 exceeds the 14 GiB
+cap on both.
+
+**Peak memory.** BEFORE ÷ AFTER is 1.13–1.26 over the 32, geomean 1.18, so
+the chains save about 15 % of HashTrie's peak. The ratio barely depends on
+size: 1.15–1.26 on templates that peak under 6 GiB, 1.13–1.20 on the six
+that peak at 8.9–10.9 GiB. AFTER's peaks for all three structures are in
+[`JOB.md`](../benchmarks/JOB.md#practical-scale-ceiling).
+
+| Template | AFTER (GiB) | BEFORE (GiB) | BEFORE ÷ AFTER |
+|---|---|---|---|
+| 1 | 0.90 | 1.13 | 1.26 |
+| 2 | 1.86 | 2.23 | 1.20 |
+| 3 | 1.50 | 1.85 | 1.23 |
+| 4 | 1.81 | 2.17 | 1.20 |
+| 5 | 0.93 | 1.11 | 1.20 |
+| 6 | 9.36 | 11.27 | 1.20 |
+| 7 | 8.95 | 10.65 | 1.19 |
+| 8 | > 14 (cap) | > 14 (cap) | — |
+| 9 | 2.37 | 2.84 | 1.20 |
+| 10 | 1.74 | 2.06 | 1.19 |
+| 11 | 2.59 | 2.99 | 1.16 |
+| 12 | 4.87 | 5.69 | 1.17 |
+| 13 | 5.15 | 6.04 | 1.17 |
+| 14 | 2.31 | 2.69 | 1.16 |
+| 15 | 2.70 | 3.15 | 1.17 |
+| 16 | 10.86 | 12.96 | 1.19 |
+| 17 | 10.71 | 12.78 | 1.19 |
+| 18 | 4.93 | 5.90 | 1.20 |
+| 19 | 5.55 | 6.55 | 1.18 |
+| 20 | 9.16 | 10.38 | 1.13 |
+| 21 | 2.32 | 2.75 | 1.19 |
+| 22 | 3.77 | 4.35 | 1.16 |
+| 23 | 2.63 | 3.04 | 1.15 |
+| 24 | 2.84 | 3.34 | 1.18 |
+| 25 | 2.24 | 2.68 | 1.19 |
+| 26 | 9.55 | 10.78 | 1.13 |
+| 27 | 2.31 | 2.72 | 1.17 |
+| 28 | 2.35 | 2.74 | 1.17 |
+| 29 | 4.18 | 4.87 | 1.16 |
+| 30 | 2.41 | 2.88 | 1.20 |
+| 31 | 3.26 | 3.92 | 1.20 |
+| 32 | 1.25 | 1.51 | 1.21 |
+| 33 | 2.53 | 2.96 | 1.17 |
+
+**Time.** These were not timing runs. 78–84 % of each run's wall time is
+Criterion's space sampling, which lasts a fixed ~2 s per relation per query
+whatever the binary does (1.01× between the binaries). The rest of the run
+reads the Parquet files, builds every relation and runs one verify join per
+query. That part took BEFORE 1.47× as long per template (geomean, range
+0.93–2.26). Each template ran once on a shared host, so this shows a
+direction only. It agrees with the build ratios below.
+
+#### Replicated B1 + B2 run, interim (2026-10-14/15)
+
+Run directory: `kermit-bench-runs/hash-trie-chain-links-2026-10-14/`
+(README, `run.sh`, `analyse.py`); these numbers are
+`logs/interim-1122.txt`. The design's § Measurement planned 5 replicates.
+The run was cut to 3, paused during replicate 3 and then dropped
+(2026-10-16), so these are interim numbers over 2–3 replicates (n = 1
+where marked).
+
+B2 = d2bfc43 ÷ a589c64, so below 1 B2 is faster or smaller. TreeTrie's code
+is identical in both binaries, and its `bench ds iteration` ratio of
+0.93–0.95 is this run's codegen bound.
+
+| Metric | B2 ratio |
+|---|---|
+| `bench ds insertion`, eager, per build mode (geomean over inputs) | 0.74–0.90 |
+| triangle (`oxford-uniform-s3`) `insertion`, eager, pruning off / on | 0.67 / 0.74 |
+| triangle `iteration` (the join), eager, off / on | 1.02 / 1.01 |
+| triangle `space`, eager, off / on | 0.81 / 0.88 |
+| `bench ds iteration` (the trie walk), eager, per build mode | 0.75–0.84 |
+| `bench ds iteration`, lazy `bulk`, shuffled `friendof` | 11.2 [10.3, 15.7] |
+| the same on `binary-1e7` in file order (n = 1) | 3.9 |
+| the same on grouped `friendof` / sorted `binary-1e7` | 1.18 / 0.98 |
+
+Part D, the check of what the atomics cost eager tries, is interim too. One
+of its 26 cells fell outside the codegen bound, marginally: pruned
+`incremental` `iteration` on `friendof`, plain links ÷ atomic links 0.969
+[0.954, 0.984], so the plain-links walk was 3 % faster.
+
+**Reading.**
+- **Memory.** A list was a `Vec<RowId>`, a heap allocation of its own, and
+  a leaf bucket was 32 B. A list is now a chain through 4 bytes of link per
+  row, and a leaf bucket is 24 B. JOB's relations hold mostly short lists,
+  so the saving is a near-constant share of the trie.
+- **Build.** No build allocates or frees a list any more, the cost the
+  [Algorithm 2 A/B](#algorithm-2-ab-107)'s *All keys distinct* reading
+  named. The faster eager `insertion` is consistent with that; the
+  mechanism was not isolated.
+- **Join.** The eager triangle join is unchanged. The eager trie walk is
+  faster, part of it codegen, since TreeTrie's walk moves by 0.93–0.95.
+- **Lazy walk.** An unexpanded child's walk read a contiguous `Vec<RowId>`
+  before B2, whose loads are independent. It now follows `links`, one
+  dependent load per row, scattered over the buffer unless the input is
+  grouped. This is unresolved. The JOB runs above are eager, so it does not
+  touch them.
+- **job-8** still exceeds 14 GiB after B2, so the chains are not enough for
+  it.
 
 ## See also
 
