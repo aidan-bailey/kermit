@@ -281,7 +281,7 @@ threads (`P` = 4·N rounded up to a power of two):
 | Build | O(n · a) expected probes, inserts and link writes, split across partitions, plus O(D) to take the entries out | N workers |
 | Merge | O(D log P) heap operations and D root inserts (expected O(1) each, plus the root's resizes) | the calling thread |
 
-For a filtered view, `n` counts the matching rows. The partition step tests the filter on each of the source's rows (`count()` first, which sizes the root and the links, then the histogram pass, and the scatter tests the filter again), which is O(s) filter tests over a source of `s` rows; unfiltered, `s = n`. The presized build's partition step is the same.
+For a filtered view, `n` counts the matching rows. The partition step tests the filter on each of the source's rows three times: in `count()` (which sizes the root and the links), in the histogram pass, and in the scatter, which is 3·s = O(s) filter tests over a source of `s` rows. An identity view (unfiltered and unprojected; Amendment 2) tests none of them: `count()` is the source's length without a scan, and the histogram and the scatter read each source row in place, so unfiltered, `s = n` and the partition step is the O(n) hashes and copies of the table above. The presized build's partition step is the same.
 
 The sequential share is the checks, the prefix sums over the
 (n / 16 384) · P (partition, morsel) pairs, and the merge into the root.
