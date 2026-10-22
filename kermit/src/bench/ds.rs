@@ -8,12 +8,14 @@ use {
             write_metadata_block, BenchKind, BenchReport, CriterionGroupRef, MetadataLine,
             ReportMetric,
         },
-        execution::{Execution, HashTrieFamily, RelationFamily, SortedTrie, SortedTrieFamily},
+        execution::{
+            read_relation, Execution, HashTrieFamily, RelationFamily, SortedTrie, SortedTrieFamily,
+        },
         measurement,
         options::{with_hash_trie_layout, with_sorted_trie_layout, DsChoices},
         BenchArgs,
     },
-    kermit_ds::{IndexStructure, Relation, Tuples},
+    kermit_ds::{IndexStructure, TupleView},
     std::{collections::BTreeMap, fs, io, path::Path},
 };
 
@@ -23,27 +25,29 @@ use {
 /// (`SortedTrieFamily<R>`) and the hash family (`HashTrieFamily<H, P, E>`)
 /// share one body, as `run_benchmark` does for `bench run` (issue #61
 /// closed the last hand-mirrored pair). The family supplies the four
-/// points where the bodies used to diverge: the relation type to load
-/// (`F::Rel`), how to *build* one from a `(header, tuples)` snapshot
+/// points where the bodies used to diverge: the relation type to build
+/// (`F::Rel`), how to *build* one from a borrowed view of the file's tuples
 /// honouring the family's `--ds-config` values and `--ds-build` mode
-/// ([`RelationFamily::build_relation`], and [`RelationFamily::load`] on
-/// top of it), how to walk its tuples without materialising them
-/// (`F::for_each_tuple` — `TrieIteratorWrapper::advance` for sorted tries,
-/// `HashTrie::for_each_tuple` for the hash trie, whose iterator yields
-/// hashes; `F::scan` counts through it), and its optimization axes. `bench ds`
-/// involves no join, which the bound states: a `RelationFamily` has no engine
-/// to build or query.
+/// ([`RelationFamily::build_index`]), how to walk its tuples without
+/// materialising them (`F::for_each_tuple` — `TrieIteratorWrapper::advance`
+/// for sorted tries, `HashTrie::for_each_tuple` for the hash trie, whose
+/// iterator yields hashes; `F::scan` counts through it), and its
+/// optimization axes. `bench ds` involves no join, which the bound states: a
+/// `RelationFamily` has no engine to build or query.
+///
+/// The file is read once, flat and untimed. The untimed relation that
+/// `iteration` and `space` measure, and every build `build` and `end_to_end`
+/// time, copy its rows once from a view of that one buffer, so no timed step
+/// clones a tuple buffer first. Every timed routine returns what it built,
+/// so Criterion frees it after the timer stops.
 fn run_ds_bench<F: RelationFamily>(
     family: &F, relation_path: &Path, metrics: &[Metric], queries_per_build: u32, group_name: &str,
     bench_args: &BenchArgs,
 ) -> anyhow::Result<BenchReport> {
-    // The insertion / end-to-end closures below rebuild from the tuples in
-    // file order rather than reading them back off the built relation: file
-    // order is the same whichever structure and Layout ran, so every one of
-    // them is fed identical input (see `RelationFamily::load_with_tuples`).
-    // Each setup clone copies one buffer (#111).
-    let (relation, tuples): (F::Rel, Tuples) = family.load_with_tuples(relation_path)?;
-    let header = relation.header().clone();
+    // File order is the same whichever structure and Layout ran, so every
+    // one of them is fed identical input.
+    let (header, tuples) = read_relation(relation_path)?;
+    let relation: F::Rel = family.build_index(header.clone(), TupleView::all(&tuples));
     // What the structure stores, which for a set-semantics structure can be
     // fewer than the file's rows; the `tuples` axis has always reported this.
     let tuple_count = F::tuple_count(&relation);
@@ -73,21 +77,24 @@ fn run_ds_bench<F: RelationFamily>(
 
     let has_time_metrics = metrics
         .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
+        .any(|m| matches!(m, Metric::Build | Metric::Iteration | Metric::EndToEnd));
 
     if has_time_metrics {
         let mut criterion = build_time_criterion(bench_args);
         let mut group = criterion.benchmark_group(group_name);
 
-        if metrics.contains(&Metric::Insertion) {
-            let insertion_tuples = tuples.clone();
-            let insertion_header = header.clone();
-            let function = format!("{ds_name}/insertion");
+        if metrics.contains(&Metric::Build) {
+            let function = format!("{ds_name}/build");
+            // The setup clones the header only; the timed routine copies the
+            // rows once from the borrowed buffer, through the family's one
+            // construction site, and returns the relation so Criterion frees
+            // it after the timer stops. PerIteration keeps one relation
+            // alive at a time, however large the file.
             group.bench_function(&function, |b| {
                 b.iter_batched(
-                    || (insertion_header.clone(), insertion_tuples.clone()),
-                    |(h, t)| family.build_relation(h, t),
-                    criterion::BatchSize::SmallInput,
+                    || header.clone(),
+                    |h| family.build_index(h, TupleView::all(&tuples)),
+                    criterion::BatchSize::PerIteration,
                 );
             });
             criterion_groups.push(CriterionGroupRef {
@@ -114,20 +121,21 @@ fn run_ds_bench<F: RelationFamily>(
         }
 
         if metrics.contains(&Metric::EndToEnd) {
-            let e2e_tuples = tuples.clone();
-            let e2e_header = header.clone();
             let function = format!("{ds_name}/end_to_end");
             // PerIteration: a fresh build per sample is the point of this
             // metric — batching would amortise away the construction cost
-            // whose interaction with traversal is under measurement.
+            // whose interaction with traversal is under measurement. The
+            // routine returns the relation it built, so its free is not
+            // timed.
             group.bench_function(&function, |b| {
                 b.iter_batched(
-                    || (e2e_header.clone(), e2e_tuples.clone()),
-                    |(h, t)| {
-                        let built = family.build_relation(h, t);
+                    || header.clone(),
+                    |h| {
+                        let built = family.build_index(h, TupleView::all(&tuples));
                         for _ in 0..queries_per_build {
                             std::hint::black_box(F::scan(&built));
                         }
+                        built
                     },
                     criterion::BatchSize::PerIteration,
                 );

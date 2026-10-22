@@ -233,7 +233,7 @@ enum BenchSubcommand {
             long,
             value_enum,
             num_args = 1..,
-            default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
+            default_values_t = vec![Metric::Build, Metric::Iteration, Metric::Space]
         )]
         metrics: Vec<Metric>,
 
@@ -249,7 +249,7 @@ enum BenchSubcommand {
         build: BuildChoices,
     },
 
-    /// Benchmark an index structure (insertion, iteration, space,
+    /// Benchmark an index structure (build, iteration, space,
     /// end-to-end)
     Ds {
         /// Input relation data path (single file)
@@ -273,7 +273,7 @@ enum BenchSubcommand {
             long,
             value_enum,
             num_args = 1..,
-            default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
+            default_values_t = vec![Metric::Build, Metric::Iteration, Metric::Space]
         )]
         metrics: Vec<Metric>,
 
@@ -331,7 +331,7 @@ enum BenchSubcommand {
             long,
             value_enum,
             num_args = 1..,
-            default_values_t = vec![Metric::Insertion, Metric::Iteration, Metric::Space]
+            default_values_t = vec![Metric::Build, Metric::Iteration, Metric::Space]
         )]
         metrics: Vec<Metric>,
 
@@ -842,15 +842,15 @@ fn run_ds_bench_command(
     metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices, config: ConfigChoices,
     build: BuildChoices,
 ) -> anyhow::Result<()> {
-    // None of `bench ds`'s metrics calls `seek`: insertion builds the
+    // None of `bench ds`'s metrics calls `seek`: build constructs the
     // relation, iteration and end_to_end scan it with open/next/up
     // (`TrieIteratorWrapper::advance`), and space measures it. Accepting
     // the flag would label identical measurements as a seek ablation.
     if layout.sorted_trie_seek_explicit() {
         anyhow::bail!(
-            "--ds-layout-seek has no effect on bench ds: none of its metrics calls seek \
-             (insertion builds the relation; iteration and end-to-end scan it with open/next/up; \
-             space measures it). Time a join with bench run or bench join."
+            "--ds-layout-seek has no effect on bench ds: none of its metrics calls seek (build \
+             constructs the relation; iteration and end-to-end scan it with open/next/up; space \
+             measures it). Time a join with bench run or bench join."
         );
     }
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;

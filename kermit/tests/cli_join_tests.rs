@@ -472,6 +472,68 @@ fn run_bench_ds(
     output
 }
 
+/// Runs `kermit bench` with fast Criterion settings and a throwaway
+/// `--report-json`, then `args`. Returns the process output and the first
+/// report the run wrote (`Null` when it wrote none).
+fn run_bench(args: &[&str]) -> (std::process::Output, serde_json::Value) {
+    let report_path = temp_report_path("fast");
+    let output = Command::new(kermit_bin())
+        .args([
+            "bench",
+            "--sample-size",
+            "10",
+            "--measurement-time",
+            "1",
+            "--warm-up-time",
+            "1",
+        ])
+        .arg("--report-json")
+        .arg(&report_path)
+        .args(args)
+        .output()
+        .expect("failed to execute kermit binary");
+    let report = std::fs::read_to_string(&report_path)
+        .map(|contents| {
+            let reports: serde_json::Value =
+                serde_json::from_str(&contents).expect("report should be valid JSON");
+            reports[0].clone()
+        })
+        .unwrap_or(serde_json::Value::Null);
+    let _ = std::fs::remove_file(&report_path);
+    (output, report)
+}
+
+/// `run_bench` for `bench ds` over the fixture `relation`.
+fn bench_ds_report(
+    relation: &str, indexstructure: &str, ds_args: &[&str],
+) -> (std::process::Output, serde_json::Value) {
+    let relation = fixtures_dir().join(relation);
+    let mut args = vec![
+        "ds",
+        "--relation",
+        relation.to_str().expect("utf-8 fixture path"),
+        "--indexstructure",
+        indexstructure,
+    ];
+    args.extend_from_slice(ds_args);
+    run_bench(&args)
+}
+
+/// The Criterion function ids a report lists, in the order it lists them.
+fn functions_of(report: &serde_json::Value) -> Vec<String> {
+    report["criterion_groups"]
+        .as_array()
+        .expect("criterion_groups should be an array")
+        .iter()
+        .map(|group| {
+            group["function"]
+                .as_str()
+                .expect("function should be a string")
+                .to_string()
+        })
+        .collect()
+}
+
 #[test]
 fn cli_bench_ds_all_metrics() {
     let output = run_bench_ds(
@@ -505,8 +567,12 @@ fn cli_bench_ds_all_metrics() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("TreeTrie/insertion"),
-        "stdout should contain insertion benchmark: {stdout}"
+        stdout.contains("TreeTrie/build"),
+        "stdout should contain build benchmark: {stdout}"
+    );
+    assert!(
+        !stdout.contains("TreeTrie/insertion"),
+        "the retired insertion function id must not appear: {stdout}"
     );
     assert!(
         stdout.contains("TreeTrie/iteration"),
@@ -662,13 +728,163 @@ fn cli_bench_ds_space_only() {
         "stdout should contain space benchmark: {stdout}"
     );
     assert!(
-        !stdout.contains("ColumnTrie/insertion"),
-        "space-only should not have insertion benchmark: {stdout}"
+        !stdout.contains("ColumnTrie/build"),
+        "space-only should not have build benchmark: {stdout}"
     );
     assert!(
         !stdout.contains("ColumnTrie/iteration"),
         "space-only should not have iteration benchmark: {stdout}"
     );
+}
+
+/// `build` and `end_to_end` both build through the family from a view of
+/// the file's tuples, on both trait families; the `tuples` axis is still
+/// what the structure stores.
+#[test]
+fn cli_bench_ds_times_build_and_end_to_end_on_every_structure() {
+    for (indexstructure, label) in [
+        ("tree-trie", "TreeTrie"),
+        ("column-trie", "ColumnTrie"),
+        ("hash-trie", "HashTrie"),
+    ] {
+        let (output, report) = bench_ds_report("edge.csv", indexstructure, &[
+            "-m",
+            "build",
+            "end-to-end",
+            "--queries-per-build",
+            "2",
+        ]);
+        assert!(
+            output.status.success(),
+            "{indexstructure}: stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            functions_of(&report),
+            vec![format!("{label}/build"), format!("{label}/end_to_end")],
+            "{indexstructure}"
+        );
+        let axes = &report["axes"];
+        assert_eq!(
+            axes["tuples"], 4,
+            "{indexstructure}: edge.csv has four rows"
+        );
+        assert_eq!(axes["queries_per_build"], 2, "{indexstructure}");
+    }
+}
+
+/// A timed build goes through the family's one construction site, so it
+/// builds by the `--ds-build` mode and `--ds-config` the report's axes
+/// name, including the modes that partition or presize from the view.
+#[test]
+fn cli_bench_ds_times_a_build_under_each_build_mode() {
+    let cases: [(&str, &str, &[&str], &str); 3] = [
+        (
+            "tree-trie",
+            "TreeTrie",
+            &["--ds-build", "tree-trie=parallel:2"],
+            "parallel:2",
+        ),
+        (
+            "column-trie",
+            "ColumnTrie",
+            &["--ds-build", "column-trie=incremental"],
+            "incremental",
+        ),
+        (
+            "hash-trie",
+            "HashTrie",
+            &[
+                "--ds-config",
+                "root-capacity=tuples",
+                "--ds-build",
+                "hash-trie=presized:2",
+            ],
+            "presized:2",
+        ),
+    ];
+    for (indexstructure, label, build_args, mode) in cases {
+        let mut args = vec!["-m", "build"];
+        args.extend_from_slice(build_args);
+        let (output, report) = bench_ds_report("edge.csv", indexstructure, &args);
+        assert!(
+            output.status.success(),
+            "{indexstructure}: stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            functions_of(&report),
+            vec![format!("{label}/build")],
+            "{indexstructure}"
+        );
+        assert_eq!(report["axes"]["ds_build_mode"], mode, "{indexstructure}");
+    }
+}
+
+/// `build` replaced `insertion` as the name of the first metric: the old
+/// value is a usage error on every subcommand that takes `--metrics`, with
+/// the new one among the possible values.
+#[test]
+fn cli_rejects_the_retired_insertion_metric() {
+    let fixtures = fixtures_dir();
+    let edge = fixtures.join("edge.csv");
+    let first = fixtures.join("first.csv");
+    let query = fixtures.join("intersect_query.dl");
+    let edge = edge.to_str().expect("utf-8 fixture path");
+    let first = first.to_str().expect("utf-8 fixture path");
+    let query = query.to_str().expect("utf-8 fixture path");
+    let invocations: [(&str, Vec<&str>); 3] = [
+        ("ds", vec![
+            "ds",
+            "--relation",
+            edge,
+            "-i",
+            "tree-trie",
+            "-m",
+            "insertion",
+        ]),
+        ("join", vec![
+            "join",
+            "--relations",
+            first,
+            "--query",
+            query,
+            "-i",
+            "tree-trie",
+            "-a",
+            "leapfrog-triejoin",
+            "-m",
+            "insertion",
+        ]),
+        ("run", vec![
+            "run",
+            "triangle",
+            "-i",
+            "tree-trie",
+            "-a",
+            "leapfrog-triejoin",
+            "-m",
+            "insertion",
+        ]),
+    ];
+    for (subcommand, args) in invocations {
+        let (output, report) = run_bench(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "bench {subcommand}: a usage error: {stderr}"
+        );
+        assert!(stderr.contains("insertion"), "bench {subcommand}: {stderr}");
+        assert!(
+            stderr.contains("build"),
+            "bench {subcommand}: the possible values should list build: {stderr}"
+        );
+        assert!(
+            report.is_null(),
+            "bench {subcommand}: a usage error writes no report: {report}"
+        );
+    }
 }
 
 #[test]

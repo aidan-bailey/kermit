@@ -34,7 +34,7 @@ pub(crate) use {
 /// A measurement `bench ds` / `bench run` can record.
 #[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
 pub enum Metric {
-    Insertion,
+    Build,
     Iteration,
     Space,
     /// Build + K × query in one timed body (`T = build + K × query`), with

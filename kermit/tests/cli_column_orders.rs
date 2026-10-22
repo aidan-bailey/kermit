@@ -356,7 +356,7 @@ fn bench_run_under_any_times_the_copies_and_measures_their_space() {
         "any",
         "--verify",
         "-m",
-        "insertion",
+        "build",
         "iteration",
         "space",
     ]);
@@ -399,7 +399,7 @@ fn bench_run_under_any_on_a_lazy_cell_runs_every_metric_over_copies() {
         "any",
         "--verify",
         "-m",
-        "insertion",
+        "build",
         "iteration",
         "end-to-end",
         "space",
@@ -448,7 +448,7 @@ fn bench_run_under_any_emits_no_copies_when_the_plan_agrees() {
         "-a",
         "leapfrog-triejoin",
         "-m",
-        "insertion",
+        "build",
         "space",
         "--column-orders",
         "any",
@@ -492,7 +492,7 @@ fn bench_run_under_any_reports_a_symmetric_relations_redundant_copy() {
         "any",
         "--verify",
         "-m",
-        "insertion",
+        "build",
         "space",
     ]);
     let stderr = String::from_utf8_lossy(&output.stderr);

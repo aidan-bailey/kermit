@@ -105,7 +105,7 @@ fn run_benchmark<F: ExecutionFamily>(
     // the whole workload.
     let rebuilds = metrics
         .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::EndToEnd))
+        .any(|m| matches!(m, Metric::Build | Metric::EndToEnd))
         || (F::JOIN_MUTATES && (verify || metrics.contains(&Metric::Iteration)))
         || column_orders == ColumnOrderPolicy::Any;
     let mut relations: Vec<F::Rel> = Vec::with_capacity(workload.relation_paths.len());
@@ -146,7 +146,7 @@ fn run_benchmark<F: ExecutionFamily>(
 
     let has_time_metrics = metrics
         .iter()
-        .any(|m| matches!(m, Metric::Insertion | Metric::Iteration | Metric::EndToEnd));
+        .any(|m| matches!(m, Metric::Build | Metric::Iteration | Metric::EndToEnd));
 
     // Everything read from the base relations is taken once, here, so the
     // per-query loop can add and drop copies in the engine.
@@ -281,7 +281,7 @@ fn run_benchmark<F: ExecutionFamily>(
             let mut criterion = build_time_criterion(bench_args);
             let mut group = criterion.benchmark_group(&group_name);
 
-            if metrics.contains(&Metric::Insertion) {
+            if metrics.contains(&Metric::Build) {
                 group.bench_function("insertion", |b| {
                     b.iter_batched(
                         // One buffer copy per relation, untimed (#111).
