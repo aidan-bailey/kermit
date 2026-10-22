@@ -73,7 +73,12 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
     prepared
         .relations()
         .into_iter()
-        .map(|name| catalog.tuples(name).map_or(0, Tuples::len))
+        .map(|name| {
+            catalog
+                .tuples(name)
+                .expect("prepare checked that every relation a query reads is in the catalog")
+                .len()
+        })
         .sum()
 }
 
