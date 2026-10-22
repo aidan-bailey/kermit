@@ -138,7 +138,10 @@ pub fn prepare(
     } = plan_indexes(&access_query, &ordering);
 
     // Counted here, untimed: `build` would otherwise scan a filtered relation
-    // once more only to learn how many rows its copy holds.
+    // once more only to learn how many rows its copy holds. This is a pass of
+    // its own over each index's view: `access_statistics` counted per access,
+    // before identical specs were merged, and scanned only the filtered ones
+    // and only for the planner, so none of its counts are reused.
     let index_rows: Vec<usize> = indexes
         .iter()
         .map(|spec| spec.view(tuples_of(catalog, &spec.relation)).count())
@@ -752,6 +755,25 @@ mod tests {
         let counts = (stats.tuples("@0"), stats.tuples("@1"), stats.tuples("@2"));
         assert_eq!(counts, (Some(2), Some(3), Some(4)));
         for id in ["@0", "@1", "@2"] {
+            assert_eq!(stats.distinct(id, 0), None, "{id}");
+        }
+    }
+
+    /// The distinct-value scan of a filtered access is gated on what the
+    /// planner reads, not on what the catalog gathered: over a catalog
+    /// gathered at `ColumnDistinct`, a planner that reads only counts still
+    /// gets exact counts of the filtered accesses and no distinct counts, so
+    /// the scan is not paid for. (An unfiltered access is its relation's
+    /// catalog entry whatever the planner reads, so only the filtered
+    /// accesses `@0` and `@1` are checked.)
+    #[test]
+    fn a_planner_reading_only_counts_skips_the_distinct_scan_of_a_richer_catalog() {
+        let c = catalog_at(StatisticsLevel::ColumnDistinct, statistics_relations());
+        let spy = StatsSpy::new(StatisticsLevel::TupleCounts);
+        prepare(&c, &parse(STATISTICS_QUERY), &planner_of(spy.clone())).unwrap();
+        let (_, stats) = spy.taken();
+        assert_eq!((stats.tuples("@0"), stats.tuples("@1")), (Some(2), Some(3)));
+        for id in ["@0", "@1"] {
             assert_eq!(stats.distinct(id, 0), None, "{id}");
         }
     }
