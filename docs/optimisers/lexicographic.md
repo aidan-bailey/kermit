@@ -2,12 +2,17 @@
 
 > **Status:** stable · **CLI:** `--optimiser lexicographic` (default) · **Implementation:** [`kermit_algos::optimiser::lexicographic`](../../kermit-algos/src/optimiser/lexicographic.rs)
 
-The default ordering policy: among the variables whose column-order
-constraints are satisfied, always bind the one with the smallest canonical
-index next. Reproduces, bit for bit, the ordering kermit hardcoded before
-query optimisers existed (`global_attribute_order`), so benchmarks planned
-with it are directly comparable with pre-optimiser measurements. Prefer it
-as the control arm of optimiser ablations (e.g. against the
+The default ordering policy: always bind the variable with the smallest
+canonical index next. It is the stats-free control: the plan depends on
+the query text alone. Before per-query index builds (2026-10-22) it
+reproduced, bit for bit, the ordering kermit hardcoded before query
+optimisers existed (`global_attribute_order`), Kahn's sort constrained by
+each atom's stored column order, so benchmarks planned with it were
+directly comparable with pre-optimiser measurements. Nothing is
+constrained now, so the plan is the canonical order itself, and it differs
+from that earlier order wherever a stored column order forced another (a
+subject-position constant, a cyclic pair of atoms). Prefer it as the
+control arm of optimiser ablations (e.g. against the
 [cardinality optimiser](./cardinality.md)) and whenever no statistics are
 available.
 
@@ -24,33 +29,33 @@ None. `plan()` ignores `CatalogStats` entirely.
 
 ## Complexity
 
-O(E + V log V) for Kahn's sort with a binary-heap ready set, plus O(P · a)
-to build the constraint edges (a = max predicate arity).
+O(V log V) for Kahn's sort with a binary-heap ready set over an edge-free
+precedence; there are no constraint edges to build.
 
 ## Worked micro-example
 
-Query: `Q(Y) :- r(K, Y), Const_c7(K).` (the subject-position-constant
-shape). Canonical indices: `Y = 0` (head), `K = 1`. Constraint DAG:
-`r(K, Y)` contributes the edge `1 -> 0`.
+Query: `Q(Y, X) :- r(X, Y).` Canonical indices: `Y = 0`, `X = 1` (head
+variables first, in head order). There are no constraint edges, so the
+ready set is `{0, 1}`.
 
-1. Ready set: `{1}` (only `K` has in-degree 0). Emit `1`.
-2. Edge `1 -> 0` releases `0`. Ready set: `{0}`. Emit `0`.
+1. Emit `0` (`Y`), the smaller index.
+2. Emit `1` (`X`).
 
-`variable_ordering = [1, 0]` — the constant's variable binds first even
-though the head variable is canonically smaller.
+`variable_ordering = [0, 1]` — `Y` binds first although it is `r`'s second
+column. `r` is the access `@0` (no filter, both columns kept, variables
+`[X, Y]`), and its index is built with its columns swapped,
+`columns = [1, 0]`, so the join reads `r` in the order it binds it.
 
-## Column orders
+## Index orders
 
-`--column-orders stored` (the default) pins every atom to its stored
-column order: the plan binds each atom's columns left to right, as every
-plan did before issue #93. `--column-orders any` pins nothing
-(`CatalogStats::is_pinned`, read through `Precedence::for_query`), so the
-ranking alone decides, and an atom whose plan disagrees with its stored
-order is read through a reordered copy
-(`docs/specs/2026-10-05-column-orders-design.md`).
-
-Under `any` the plan is the canonical order itself: head variables in
-head order, then body-only variables by first appearance.
+The plan is the canonical order itself: head variables in head order, then
+body-only variables by first appearance. No atom is pinned to its stored
+column order (`Precedence::free`), and `plan_indexes` builds each access's
+index with its columns in plan order
+(`docs/specs/2026-10-22-per-query-index-build-design.md`). Before that
+design, a flag pinned every atom to its stored order by default and lifted
+the pin through reordered copies
+(`docs/specs/2026-10-05-column-orders-design.md`); the flag is gone.
 
 ## CLI
 

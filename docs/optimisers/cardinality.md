@@ -2,8 +2,7 @@
 
 > **Status:** stable · **CLI:** `--optimiser cardinality` · **Implementation:** [`kermit_algos::optimiser::cardinality`](../../kermit-algos/src/optimiser/cardinality.rs)
 
-Smallest-relation-first: among the variables whose column-order
-constraints are satisfied, bind next the one appearing in the smallest
+Smallest-relation-first: bind next the variable appearing in the smallest
 relation. A variable occurring in a small relation can take only few
 values, so binding it early shrinks the search space at every deeper
 level. This is the classic size-driven heuristic for worst-case-optimal
@@ -12,51 +11,53 @@ joins; prefer it when relation sizes are skewed.
 ## Ranking function
 
 `rank(v) = min_size(v)` where `min_size(v)` is the minimum tuple count
-over the body predicates that mention `v`. The canonical index acts as
+over the accesses (body atoms) that mention `v`. The canonical index acts as
 the final tie-break (supplied contractually by
 `kermit_algos::topological_order`'s heap key, not by the policy), keeping
 plans deterministic for reproducible benchmarks.
 
 ## Statistics consumed
 
-`CatalogStats::tuples(name)` per body predicate. Relations without an
-entry rank as `usize::MAX` ("assume large"). Synthetic `Const_*`
-predicates (const-view rewrite) are recorded with one tuple, so constants
-bind as early as constraints allow — no special-casing needed.
+`CatalogStats::tuples(name)` per access, keyed by access id (`@0`, `@1`,
+…). An unfiltered access reads its relation's catalog count; a filtered
+one (a constant or a repeated variable) counts the rows that pass its
+filter, in a scan that `prepare` makes. A constant therefore
+shrinks its relation's count, and its variables bind early, with no
+special-casing. Accesses without an entry rank as `usize::MAX` ("assume
+large").
 
 ## Complexity
 
-O(P · a) to compute per-variable minimum sizes, plus O(E + V log V) for
-Kahn's sort (a = max predicate arity).
+O(P · a) to compute per-variable minimum sizes, plus O(V log V) for
+Kahn's sort over an edge-free precedence (a = max access arity).
 
 ## Worked micro-example
 
-Query: `Q(A, B, C) :- R(A, B), S(A, C).` with |R| = 1000, |S| = 3.
-Canonical indices: `A = 0`, `B = 1`, `C = 2`. Constraint edges: `0 -> 1`
-(from R) and `0 -> 2` (from S). Per-variable minimum sizes:
+Query: `Q(A, B, C) :- R(A, B), S(A, C).` with |R| = 1000, |S| = 3, both
+unfiltered (accesses `@0` and `@1`). Canonical indices: `A = 0`,
+`B = 1`, `C = 2`. No variable is constrained. Per-variable minimum sizes:
 `A -> min(1000, 3) = 3`, `B -> 1000`, `C -> 3`.
 
-1. Ready set: `{A}`. Emit `0`.
-2. Both edges release `B` and `C`. Ready ranks: `B = 1000`, `C = 3`.
-   `C` wins. Emit `2`.
+1. Ready set: `{A, B, C}` with ranks 3, 1000, 3. `A` and `C` tie, and the
+   canonical index breaks it. Emit `0`.
+2. Ready ranks: `B = 1000`, `C = 3`. `C` wins. Emit `2`.
 3. Emit `1`.
 
 `variable_ordering = [0, 2, 1]` — the small relation's variable is bound
 before the large one's, unlike the [lexicographic](./lexicographic.md)
-order `[0, 1, 2]`.
+order `[0, 1, 2]`. Written `S(C, A)` instead, the query gets the same plan,
+and `S`'s index is built with its columns swapped, `[1, 0]`.
 
-## Column orders
+## Index orders
 
-`--column-orders stored` (the default) pins every atom to its stored
-column order: the plan binds each atom's columns left to right, as every
-plan did before issue #93. `--column-orders any` pins nothing
-(`CatalogStats::is_pinned`, read through `Precedence::for_query`), so the
-ranking alone decides, and an atom whose plan disagrees with its stored
-order is read through a reordered copy
-(`docs/specs/2026-10-05-column-orders-design.md`).
-
-Under `any` the smallest relation's variable goes first even when its
-column is not that relation's first.
+The plan is free: no atom is pinned to its stored column order, so the
+ranking alone decides (`Precedence::free`), and `plan_indexes` builds each
+access's index with its columns in plan order
+(`docs/specs/2026-10-22-per-query-index-build-design.md`). The smallest
+relation's variable therefore goes first even when its column is not that
+relation's first. Before that design, a flag pinned every atom to its
+stored order by default and lifted the pin through reordered copies
+(`docs/specs/2026-10-05-column-orders-design.md`); the flag is gone.
 
 ## CLI
 

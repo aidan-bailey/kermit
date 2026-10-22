@@ -8,31 +8,34 @@ when to prefer it.
 ## Ranking function
 
 The key the policy assigns each candidate variable, and how ties break.
-Every optimiser orders variables within Kahn's topological sort over the
-column-order constraint DAG (`kermit_algos::topological_order`), so every
-produced plan is valid by construction — the policy only chooses among
-valid orders.
+Every optimiser orders variables within Kahn's topological sort
+(`kermit_algos::topological_order`) over `Precedence::free`, an edge-free
+precedence: no column order constrains the plan, because each index is
+built in plan order. So every produced plan is valid by construction —
+the policy only chooses among all orders.
 
 ## Statistics consumed
 
-Which `CatalogStats` fields the policy reads (or "none").
+Which `CatalogStats` fields the policy reads (or "none"), keyed by access id (`@0`, `@1`, …). A filtered access's counts are
+exact, from a scan that `prepare` makes.
 
 ## Complexity
 
-Cost of `plan()` in terms of variables V, body predicates P, and
-constraint edges E.
+Cost of `plan()` in terms of variables V and body atoms P (there are no
+constraint edges).
 
 ## Worked micro-example
 
-A small query (plus stats if consumed), the constraint DAG, and the
-resulting `variable_ordering`, step by step.
+A small query (plus stats if consumed) and the resulting
+`variable_ordering`, step by step.
 
-## Column orders
+## Index orders
 
-How the policy behaves under `--column-orders any`, where no atom is
-pinned to its stored column order (`Precedence::for_query` is empty), so
-the ranking alone decides and a disagreeing atom reads a reordered copy:
-what the plan becomes, and any limit the larger search space hits.
+How the policy behaves when the plan is free: no atom is pinned to its
+stored column order (`Precedence::free`), so the ranking alone decides,
+and `plan_indexes` builds each atom's index with its columns in plan
+order. What the plan becomes for a variable bound by an atom's later
+column, and any limit the larger search space hits.
 
 ## CLI
 
