@@ -5,7 +5,7 @@
 //! `(IndexStructure, JoinAlgorithm)` pairs are meaningful: the sorted
 //! tries pair with [`LeapfrogTriejoin`](kermit_algos::LeapfrogTriejoin)
 //! and the hash trie pairs with
-//! [`HashTriejoin`](kermit_algos::HashTriejoin). The two families run
+//! [`HashTriejoin`]. The two families run
 //! through separate join entry points ([`lftj_join_for_each`] vs
 //! [`hash_join_for_each`]), and historically the CLI carried two
 //! hand-reconciled copies of the benchmark runner, each taking the structure
@@ -28,10 +28,10 @@ use {
         PruningChoice, SeekChoice,
     },
     kermit::db::{
-        hash_join_for_each, index_header, lftj_join_for_each, Database, HashFamily, JoinError,
-        SortedFamily,
+        self, hash_join_for_each, index_header, lftj_join_for_each, Catalog, Database, HashFamily,
+        Indexes, JoinError, Prepared, SortedFamily,
     },
-    kermit_algos::{CopySpec, JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Planner},
+    kermit_algos::{CopySpec, HashTriejoin, JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Planner},
     kermit_ds::{
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
         ConfiguredBuildModeRelation, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
@@ -474,7 +474,7 @@ pub fn read_relation_header(path: &Path) -> anyhow::Result<RelationHeader> {
 ///
 /// Returns an error if the extension is neither `csv` nor `parquet`, or if
 /// the reader fails.
-fn read_relation(path: &Path) -> anyhow::Result<(RelationHeader, Tuples)> {
+pub(crate) fn read_relation(path: &Path) -> anyhow::Result<(RelationHeader, Tuples)> {
     let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     match extension.to_lowercase().as_str() {
         | "csv" => kermit_ds::read_csv(path),
@@ -504,6 +504,48 @@ pub trait ExecutionFamily: RelationFamily {
     /// as built and each timed join pays its own expansion. Required, like
     /// `build_relation`: every family states what its joins do.
     const JOIN_MUTATES: bool;
+
+    /// Builds the indexes `prepared` reads from the relations of `catalog`,
+    /// one [`build_index`](RelationFamily::build_index) per index spec: the
+    /// timed `build` of the per-query pipeline. Each index is a view of its
+    /// relation's flat tuples, filtered by the query's constants and repeated
+    /// variables and copied once, with its columns in plan order.
+    // Called by the tests only until `bench run` moves to the per-query
+    // pipeline.
+    #[allow(dead_code)]
+    fn build_indexes(&self, catalog: &Catalog, prepared: &Prepared) -> Indexes<Self::Rel> {
+        db::build_with(catalog, prepared, |h, v| self.build_index(h, v))
+    }
+
+    /// Runs `prepared` over its `indexes`, passing each result row, the
+    /// head's columns, to `emit` as a borrowed slice; the result is never
+    /// materialised. `indexes` must come from
+    /// [`build_indexes`](Self::build_indexes) on the same `prepared`. When
+    /// [`JOIN_MUTATES`](Self::JOIN_MUTATES), the join expands the indexes it
+    /// is given, as `join_for_each` expands its engine.
+    // Called by the tests only until `bench run` moves to the per-query
+    // pipeline.
+    #[allow(dead_code)]
+    fn execute<S: FnMut(&[usize])>(
+        &self, prepared: &Prepared, indexes: &Indexes<Self::Rel>, emit: S,
+    );
+
+    /// Runs `prepared` over its `indexes` and counts its result rows,
+    /// passing each through [`std::hint::black_box`] so the traversal cannot
+    /// be optimised away. Allocates no result rows: this is what the
+    /// per-query `iteration` and `end_to_end` metrics will time and what
+    /// `--verify` will check, as [`count`](Self::count) does for an engine.
+    // Called by the tests only until `bench run` moves to the per-query
+    // pipeline.
+    #[allow(dead_code)]
+    fn count_rows(&self, prepared: &Prepared, indexes: &Indexes<Self::Rel>) -> u64 {
+        let mut rows = 0u64;
+        self.execute(prepared, indexes, |row| {
+            std::hint::black_box(row);
+            rows += 1;
+        });
+        rows
+    }
 
     /// Builds the engine from freshly loaded relations, retaining them for
     /// the per-relation metrics (`insertion`, `space`).
@@ -752,6 +794,10 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
     /// Sorted tries are immutable under a join.
     const JOIN_MUTATES: bool = false;
 
+    fn execute<S: FnMut(&[usize])>(&self, prepared: &Prepared, indexes: &Indexes<R>, emit: S) {
+        db::execute::<R, LeapfrogTriejoin>(prepared, indexes, emit);
+    }
+
     fn build(&self, relations: Vec<R>) -> Self::Engine {
         let relations = relations
             .into_iter()
@@ -854,6 +900,12 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> ExecutionF
 
     /// A lazy trie expands the children a join reaches.
     const JOIN_MUTATES: bool = E::LAZY;
+
+    fn execute<S: FnMut(&[usize])>(
+        &self, prepared: &Prepared, indexes: &Indexes<HashTrie<H, P, E>>, emit: S,
+    ) {
+        db::execute::<HashTrie<H, P, E>, HashTriejoin>(prepared, indexes, emit);
+    }
 
     fn build(&self, relations: Vec<HashTrie<H, P, E>>) -> Self::Engine {
         let relations = relations
@@ -2342,5 +2394,174 @@ mod tests {
         let hashed = Eager::default();
         let hash = hashed.build_index(header(), TupleView::all(&empty));
         assert_eq!(Eager::tuple_count(&hash), 0);
+    }
+
+    /// A catalog holding the relation `r` and the query `text` prepared over
+    /// it: the input of `build_indexes`.
+    fn prepared_over_r(tuples: Tuples, text: &str) -> (Catalog, Prepared) {
+        let planner = Planner::stored(LexicographicOptimiser);
+        let relations = vec![(RelationHeader::new_positional("r", 2), tuples)];
+        let catalog = Catalog::new(relations, planner.required_statistics());
+        let query: JoinQuery = text.parse().unwrap();
+        let prepared = db::prepare(&catalog, &query, &planner).unwrap();
+        (catalog, prepared)
+    }
+
+    /// `build_indexes` builds every index through the family's one
+    /// construction site, so each carries the family's build mode (seen by a
+    /// spy and by kermit-ds's record of parallel builds) and config (seen on
+    /// the index). `r(Z, Y)` is read reversed, so the query needs two
+    /// indexes, `#0` in the stored column order and `#1` reversed.
+    #[test]
+    fn build_indexes_builds_each_index_by_the_familys_mode_and_config() {
+        let tuples = || Tuples::from(vec![vec![1, 2], vec![2, 1], vec![3, 4]]);
+        let (catalog, prepared) = prepared_over_r(tuples(), "Q(X, Y, Z) :- r(X, Y), r(Z, Y).");
+        let specs = prepared.indexes();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].columns, vec![0, 1]);
+        assert_eq!(specs[1].columns, vec![1, 0]);
+
+        // ColumnTrie `incremental`, seen by the spy.
+        let spy = TrieLftj::<Spy>::new(
+            ColumnTrieBuildMode::Incremental,
+            Planner::stored(LexicographicOptimiser),
+        );
+        BUILT_WITH.take();
+        let built = spy.build_indexes(&catalog, &prepared);
+        assert_eq!(BUILT_WITH.take(), Some(ColumnTrieBuildMode::Incremental));
+        assert_eq!(built.iter().count(), 2);
+
+        // TreeTrie `parallel:2`: one parallel build per index.
+        let two = TreeTrieBuildMode::Parallel(kermit_ds::Threads::new(2).unwrap());
+        let tree = TrieLftj::<TreeTrie>::new(two, Planner::stored(LexicographicOptimiser));
+        kermit_ds::test_hooks::take_tree_trie_parallel_builds();
+        let built = tree.build_indexes(&catalog, &prepared);
+        let builds = kermit_ds::test_hooks::take_tree_trie_parallel_builds();
+        let threads: Vec<usize> = builds.into_iter().map(|(threads, _)| threads).collect();
+        assert_eq!(threads, vec![2, 2]);
+        assert_eq!(built.iter().count(), 2);
+
+        // HashTrie `presized:3` under a configured load factor and a presized
+        // root: the build mode reaches the presized fill and the config
+        // reaches both indexes.
+        let config = HashTrieConfig {
+            root_capacity: RootCapacity::Tuples,
+            load_factor: LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
+        };
+        let presized = HashTrieBuildMode::Presized(kermit_ds::Threads::new(3).unwrap());
+        let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+            config,
+            presized,
+            Planner::stored(LexicographicOptimiser),
+        );
+        kermit_ds::test_hooks::take_hash_trie_parallel_builds();
+        let built = hash.build_indexes(&catalog, &prepared);
+        let builds = kermit_ds::test_hooks::take_hash_trie_parallel_builds();
+        let threads: Vec<usize> = builds.iter().map(|b| b.threads).collect();
+        assert_eq!(threads, vec![3, 3]);
+        assert!(
+            builds.iter().all(|b| b.deferred.is_some()),
+            "the presized fill ran"
+        );
+        for id in ["#0", "#1"] {
+            let index = built.get(id).unwrap();
+            assert_eq!(index.config(), &config, "{id}");
+            assert_eq!(index.header().name(), "r", "{id}");
+        }
+    }
+
+    /// Runs `text` over `edges` through `family`'s old engine and through its
+    /// per-query pipeline: the rows each streams agree, `count_rows` agrees
+    /// with the old `count`, and both equal the hand-counted `expected`.
+    fn assert_pipelines_agree<F: ExecutionFamily>(
+        family: &F, edges: &Tuples, text: &str, expected: u64,
+    ) {
+        let query: JoinQuery = text.parse().unwrap();
+        let inputs = || vec![(RelationHeader::new_positional("edge", 2), edges.clone())];
+
+        let engine = family.build_from_tuples(inputs());
+        let mut old_rows = Vec::new();
+        family
+            .join_for_each(&engine, query.clone(), |row| old_rows.push(row.to_vec()))
+            .unwrap();
+        let old_count = family.count(&engine, query.clone()).unwrap();
+
+        let planner = Planner::stored(LexicographicOptimiser);
+        let catalog = Catalog::new(inputs(), planner.required_statistics());
+        let prepared = db::prepare(&catalog, &query, &planner).unwrap();
+        let indexes = family.build_indexes(&catalog, &prepared);
+        let mut new_rows = Vec::new();
+        family.execute(&prepared, &indexes, |row| new_rows.push(row.to_vec()));
+        let new_count = family.count_rows(&prepared, &indexes);
+
+        old_rows.sort();
+        new_rows.sort();
+        assert_eq!(new_rows, old_rows, "{text}");
+        assert_eq!(old_count, expected, "{text}");
+        assert_eq!(new_count, old_count, "{text}");
+    }
+
+    /// `execute` and `count_rows` answer what the old engine answers, in
+    /// every family: a self-join, a constant, a repeated variable, a
+    /// placeholder and a query whose index reads `edge` reversed.
+    #[test]
+    fn execute_and_count_rows_agree_with_the_old_engine_in_every_family() {
+        // The edges 1 to 2, 2 to 3, 1 to 3, 3 to 4, 2 to 4, and the loop on 4.
+        let mut edges = Tuples::new(2);
+        for (src, dst) in [(1, 2), (2, 3), (1, 3), (3, 4), (2, 4), (4, 4)] {
+            edges.push(&[src, dst]);
+        }
+        let queries = [
+            // Triangles: (1,2,3), (2,3,4), (2,4,4), (3,4,4) and (4,4,4).
+            ("Q(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).", 5),
+            // A constant: the successors of 1.
+            ("Q(Y) :- edge(c1, Y).", 2),
+            // A repeated variable: the loop.
+            ("Q(X) :- edge(X, X).", 1),
+            // A placeholder: one row per edge.
+            ("Q(X) :- edge(X, _).", 6),
+            // The index reads `edge` reversed.
+            ("Q(Y, X) :- edge(X, Y).", 6),
+        ];
+
+        let planner = || Planner::stored(LexicographicOptimiser);
+        let tree = TrieLftj::<TreeTrie>::new(TreeTrieBuildMode::default(), planner());
+        let column = TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::default(), planner());
+        let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+            HashTrieConfig::default(),
+            HashTrieBuildMode::Bulk,
+            planner(),
+        );
+        let lazy = HashHtj::<SipHashStrategy, SingletonPruning, LazyExpansion>::new(
+            HashTrieConfig::default(),
+            HashTrieBuildMode::Bulk,
+            planner(),
+        );
+        for (text, expected) in queries {
+            assert_pipelines_agree(&tree, &edges, text, expected);
+            assert_pipelines_agree(&column, &edges, text, expected);
+            assert_pipelines_agree(&hash, &edges, text, expected);
+            assert_pipelines_agree(&lazy, &edges, text, expected);
+        }
+    }
+
+    /// `execute` keeps `kermit::db::execute`'s debug assertion: indexes built
+    /// for another prepared query are a programming error, not an answer.
+    /// The two queries read `r` in different column orders, so their index
+    /// specs differ.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn execute_refuses_indexes_built_for_another_prepared_query() {
+        let tuples = || Tuples::from(vec![vec![1, 2], vec![2, 1], vec![3, 4]]);
+        let (catalog, forward) = prepared_over_r(tuples(), "Q(A, B) :- r(A, B).");
+        let (_, reversed) = prepared_over_r(tuples(), "Q(B, A) :- r(A, B).");
+        let family = TrieLftj::<TreeTrie>::new(
+            TreeTrieBuildMode::default(),
+            Planner::stored(LexicographicOptimiser),
+        );
+        let indexes = family.build_indexes(&catalog, &forward);
+        family.execute(&reversed, &indexes, |_| {});
     }
 }
