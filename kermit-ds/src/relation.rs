@@ -10,7 +10,7 @@
 //! stores raw strings or domain values directly.
 use {
     arrow::array::AsArray,
-    kermit_iters::{JoinIterable, RowId, Tuples},
+    kermit_iters::{JoinIterable, RowId, TupleView, Tuples},
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     std::{fmt, fs::File, path::Path},
 };
@@ -227,6 +227,21 @@ where
     R::from_tuples(new_header, projected)
 }
 
+/// The arity check every `from_view*` body makes first (the default bodies
+/// here, and the structures' overrides in Stories 3 to 6): a
+/// view whose source holds rows must read as many columns as `header` has
+/// attributes, whether or not its filter keeps any row. An empty source
+/// builds an empty relation under any header, as `from_tuples(header,
+/// vec![])` does. The message is `from_tuples`'s, which tests match.
+pub(crate) fn check_view_arity(header: &RelationHeader, view: &TupleView<'_>) {
+    assert!(
+        view.source_rows() == 0 || view.arity() == header.arity(),
+        "from_tuples: tuple arity {} does not match header arity {}",
+        view.arity(),
+        header.arity(),
+    );
+}
+
 /// A relational data structure that stores tuples of `usize` keys and can
 /// participate in joins.
 ///
@@ -239,6 +254,12 @@ where
 ///   hierarchically.
 /// - [`Projectable`] — the relational π operator (column projection).
 pub trait Relation: JoinIterable + Projectable {
+    /// Whether the structure keeps a repeated row (a multiset: `HashTrie`)
+    /// rather than absorbing it (a set: the sorted tries). A query that reads
+    /// an all-constant atom multiplies its answers by that atom's row count
+    /// only where this is `true`.
+    const KEEPS_DUPLICATES: bool = false;
+
     /// Returns the header describing this relation's name, attributes, and
     /// arity.
     fn header(&self) -> &RelationHeader;
@@ -260,6 +281,25 @@ pub trait Relation: JoinIterable + Projectable {
     /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
     /// earlier, while converting to [`Tuples`].
     fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self;
+
+    /// Creates a relation from the rows `view` accepts, each cut to the
+    /// view's output columns, matching `header`. The default body checks the
+    /// arity, materialises the view (one exact-size copy) and calls
+    /// [`from_tuples`](Self::from_tuples); a structure that reads the view
+    /// directly overrides it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the view's source holds rows and `view.arity()` does not
+    /// equal `header.arity()`, even when the filter rejects every row. An
+    /// empty source builds an empty relation under any header.
+    fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self
+    where
+        Self: Sized,
+    {
+        check_view_arity(&header, &view);
+        Self::from_tuples(header, view.materialize())
+    }
 
     /// Inserts a tuple, given as anything that lends a slice of keys
     /// (`&[usize]`, `Vec<usize>`, an array). Sorted tries absorb duplicates
@@ -319,6 +359,23 @@ pub trait ConfigurableRelation: Relation {
         header: RelationHeader, config: Self::Config, tuples: impl Into<Tuples>,
     ) -> Self;
 
+    /// Creates a relation from the rows `view` accepts under `config`. Same
+    /// contract and default body as [`Relation::from_view`], calling
+    /// [`from_tuples_with_config`](Self::from_tuples_with_config).
+    ///
+    /// # Panics
+    ///
+    /// As [`Relation::from_view`].
+    fn from_view_with_config(
+        header: RelationHeader, config: Self::Config, view: TupleView<'_>,
+    ) -> Self
+    where
+        Self: Sized,
+    {
+        check_view_arity(&header, &view);
+        Self::from_tuples_with_config(header, config, view.materialize())
+    }
+
     /// The configuration this relation was built with.
     fn config(&self) -> &Self::Config;
 }
@@ -354,6 +411,24 @@ pub trait BuildModeRelation: Relation {
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: Self::BuildMode, tuples: impl Into<Tuples>,
     ) -> Self;
+
+    /// Creates a relation from the rows `view` accepts, built by `mode`. Same
+    /// contract and default body as [`Relation::from_view`], calling
+    /// [`from_tuples_with_build_mode`](Self::from_tuples_with_build_mode).
+    ///
+    /// # Panics
+    ///
+    /// As [`Relation::from_view`], and if `mode` has a prerequisite the
+    /// default config lacks.
+    fn from_view_with_build_mode(
+        header: RelationHeader, mode: Self::BuildMode, view: TupleView<'_>,
+    ) -> Self
+    where
+        Self: Sized,
+    {
+        check_view_arity(&header, &view);
+        Self::from_tuples_with_build_mode(header, mode, view.materialize())
+    }
 }
 
 /// A relation with both a Config and a BuildMode, and the one constructor
@@ -373,6 +448,24 @@ pub trait ConfiguredBuildModeRelation: ConfigurableRelation + BuildModeRelation 
         header: RelationHeader, config: Self::Config, mode: Self::BuildMode,
         tuples: impl Into<Tuples>,
     ) -> Self;
+
+    /// Builds the rows `view` accepts by `mode` under `config`. Same contract
+    /// and default body as [`Relation::from_view`], calling
+    /// [`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode).
+    ///
+    /// # Panics
+    ///
+    /// As [`Relation::from_view`], and if `mode` has a prerequisite `config`
+    /// lacks.
+    fn from_view_with_config_and_build_mode(
+        header: RelationHeader, config: Self::Config, mode: Self::BuildMode, view: TupleView<'_>,
+    ) -> Self
+    where
+        Self: Sized,
+    {
+        check_view_arity(&header, &view);
+        Self::from_tuples_with_config_and_build_mode(header, config, mode, view.materialize())
+    }
 }
 
 /// Loads a [`Relation`] from a CSV or Parquet file.
@@ -1045,5 +1138,217 @@ mod tests {
     fn mixed_arity_vectors_are_rejected_before_the_build() {
         use crate::ds::TreeTrie;
         let _: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![3]]);
+    }
+
+    // ── view constructors, bridged to the tuple constructors ───────────
+
+    /// Five rows of arity 3: `[1,1,5] [2,3,5] [2,2,6] [1,1,6] [3,3,5]`.
+    fn view_source() -> Tuples {
+        Tuples::from(vec![
+            vec![1, 1, 5],
+            vec![2, 3, 5],
+            vec![2, 2, 6],
+            vec![1, 1, 6],
+            vec![3, 3, 5],
+        ])
+    }
+
+    /// Rows whose column 2 holds 5 and whose columns 0 and 1 agree (rows 0
+    /// and 4), reading columns 2 then 0: the output rows `[5, 1]`, `[5, 3]`.
+    fn filtered_view(source: &Tuples) -> TupleView<'_> {
+        TupleView::new(
+            source,
+            crate::Filter::new(vec![(2, 5)], vec![(0, 1)]),
+            vec![2, 0],
+        )
+    }
+
+    /// `R::KEEPS_DUPLICATES` read through a function, so that the assertions
+    /// are not constant expressions.
+    fn keeps_duplicates<R: Relation>() -> bool { R::KEEPS_DUPLICATES }
+
+    /// `R` built under a header of arity 3 from a view of arity 2 whose filter
+    /// rejects every row.
+    fn build_from_a_rejecting_view_of_the_wrong_arity<R: Relation>() -> R {
+        let source = view_source();
+        let view = TupleView::new(&source, crate::Filter::new(vec![(2, 99)], vec![]), vec![
+            2, 0,
+        ]);
+        R::from_view(3.into(), view)
+    }
+
+    /// `R` built under a header of arity 2 from an empty source of arity 3.
+    fn build_from_an_empty_source_of_another_arity<R: Relation>() -> R {
+        let source = Tuples::new(3);
+        R::from_view(2.into(), TupleView::all(&source))
+    }
+
+    #[test]
+    fn from_view_builds_what_the_materialised_batch_builds() {
+        use crate::{
+            ds::{ColumnTrie, HashTrie, TreeTrie},
+            HeapSize,
+        };
+        let source = view_source();
+        let view = filtered_view(&source);
+        let batch = view.materialize();
+        let expected = vec![vec![5, 1], vec![5, 3]];
+
+        let tree: TreeTrie = TreeTrie::from_view(2.into(), view.clone());
+        let tree_batch: TreeTrie = TreeTrie::from_tuples(2.into(), batch.clone());
+        assert_eq!(trie_rows(&tree), expected);
+        assert_eq!(tree.heap_size_bytes(), tree_batch.heap_size_bytes());
+
+        let column: ColumnTrie = ColumnTrie::from_view(2.into(), view.clone());
+        let column_batch: ColumnTrie = ColumnTrie::from_tuples(2.into(), batch.clone());
+        assert_eq!(trie_rows(&column), expected);
+        assert_eq!(column.heap_size_bytes(), column_batch.heap_size_bytes());
+
+        let hash: HashTrie = HashTrie::from_view(2.into(), view);
+        let hash_batch: HashTrie = HashTrie::from_tuples(2.into(), batch.clone());
+        assert_eq!(hash.collect_tuples(), batch);
+        assert_eq!(hash_rows(&hash), expected);
+        assert_eq!(hash.heap_size_bytes(), hash_batch.heap_size_bytes());
+    }
+
+    #[test]
+    fn from_view_with_build_mode_builds_what_the_materialised_batch_builds() {
+        use crate::{
+            ds::{
+                ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieBuildMode, RadixBits, TreeTrie,
+                TreeTrieBuildMode,
+            },
+            Threads,
+        };
+        let source = view_source();
+        let view = filtered_view(&source);
+        let expected = vec![vec![5, 1], vec![5, 3]];
+
+        let tree: TreeTrie = TreeTrie::from_view_with_build_mode(
+            2.into(),
+            TreeTrieBuildMode::Parallel(Threads::new(2).unwrap()),
+            view.clone(),
+        );
+        assert_eq!(trie_rows(&tree), expected);
+
+        let column: ColumnTrie = ColumnTrie::from_view_with_build_mode(
+            2.into(),
+            ColumnTrieBuildMode::Incremental,
+            view.clone(),
+        );
+        assert_eq!(trie_rows(&column), expected);
+
+        let hash: HashTrie = HashTrie::from_view_with_build_mode(
+            2.into(),
+            HashTrieBuildMode::Radix(RadixBits::new(2).unwrap()),
+            view,
+        );
+        assert_eq!(hash_rows(&hash), expected);
+    }
+
+    #[test]
+    fn from_view_with_config_passes_the_config_on() {
+        use crate::ds::{HashTrie, HashTrieConfig, LoadFactor};
+        let source = view_source();
+        let config = HashTrieConfig {
+            load_factor: LoadFactor::percent(50).unwrap(),
+            ..HashTrieConfig::default()
+        };
+        let hash: HashTrie =
+            HashTrie::from_view_with_config(2.into(), config, filtered_view(&source));
+        assert_eq!(hash.config().load_factor, LoadFactor::percent(50).unwrap());
+        assert_eq!(hash_rows(&hash), vec![vec![5, 1], vec![5, 3]]);
+    }
+
+    /// The config and the mode reach the build together: `presized:2` runs
+    /// (one record, on two threads, with a deferred count) and needs the
+    /// config's `root-capacity=tuples`, so a dropped config would panic here.
+    #[test]
+    fn from_view_with_config_and_build_mode_passes_both_on() {
+        use crate::{
+            ds::{
+                take_hash_trie_parallel_builds, HashTrie, HashTrieBuildMode, HashTrieConfig,
+                RootCapacity,
+            },
+            Threads,
+        };
+        let source = view_source();
+        let config = HashTrieConfig {
+            root_capacity: RootCapacity::Tuples,
+            ..HashTrieConfig::default()
+        };
+        take_hash_trie_parallel_builds();
+        let hash: HashTrie = HashTrie::from_view_with_config_and_build_mode(
+            2.into(),
+            config,
+            HashTrieBuildMode::Presized(Threads::new(2).unwrap()),
+            filtered_view(&source),
+        );
+        let builds = take_hash_trie_parallel_builds();
+        assert_eq!(builds.len(), 1, "one presized build: {builds:?}");
+        assert_eq!(builds[0].threads, 2, "{builds:?}");
+        assert!(builds[0].deferred.is_some(), "{builds:?}");
+        assert_eq!(hash.config().root_capacity, RootCapacity::Tuples);
+        assert_eq!(hash_rows(&hash), vec![vec![5, 1], vec![5, 3]]);
+    }
+
+    /// `KEEPS_DUPLICATES` names what the structures do with a repeated row:
+    /// the sorted tries absorb it, the hash trie keeps it.
+    #[test]
+    fn keeps_duplicates_names_whether_a_repeated_row_is_kept() {
+        use crate::{
+            ds::{ColumnTrie, HashTrie, LazyExpansion, SingletonPruning, TreeTrie},
+            Cardinality,
+        };
+        let source = Tuples::from(vec![vec![1, 2], vec![1, 2], vec![3, 4]]);
+        let tree: TreeTrie = TreeTrie::from_view(2.into(), TupleView::all(&source));
+        let column: ColumnTrie = ColumnTrie::from_view(2.into(), TupleView::all(&source));
+        let hash: HashTrie = HashTrie::from_view(2.into(), TupleView::all(&source));
+        assert!(!keeps_duplicates::<TreeTrie>());
+        assert!(!keeps_duplicates::<ColumnTrie>());
+        assert!(keeps_duplicates::<HashTrie>());
+        assert!(keeps_duplicates::<
+            HashTrie<kermit_iters::FxHashStrategy, SingletonPruning, LazyExpansion>,
+        >());
+        assert_eq!(tree.tuple_count(), 2);
+        assert_eq!(column.tuple_count(), 2);
+        assert_eq!(hash.tuple_count(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 2 does not match header arity 3")]
+    fn a_rejecting_view_of_the_wrong_arity_panics_for_a_tree_trie() {
+        let _: crate::ds::TreeTrie = build_from_a_rejecting_view_of_the_wrong_arity();
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 2 does not match header arity 3")]
+    fn a_rejecting_view_of_the_wrong_arity_panics_for_a_column_trie() {
+        let _: crate::ds::ColumnTrie = build_from_a_rejecting_view_of_the_wrong_arity();
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 2 does not match header arity 3")]
+    fn a_rejecting_view_of_the_wrong_arity_panics_for_a_hash_trie() {
+        let _: crate::ds::HashTrie = build_from_a_rejecting_view_of_the_wrong_arity();
+    }
+
+    /// An empty source builds an empty relation under any header, as
+    /// `from_tuples(header, vec![])` does.
+    #[test]
+    fn an_empty_source_builds_an_empty_relation_under_any_header() {
+        use crate::{
+            ds::{ColumnTrie, HashTrie, TreeTrie},
+            Cardinality,
+        };
+        let tree: TreeTrie = build_from_an_empty_source_of_another_arity();
+        let column: ColumnTrie = build_from_an_empty_source_of_another_arity();
+        let hash: HashTrie = build_from_an_empty_source_of_another_arity();
+        assert_eq!(tree.header().arity(), 2);
+        assert_eq!(column.header().arity(), 2);
+        assert_eq!(hash.header().arity(), 2);
+        assert_eq!(tree.tuple_count(), 0);
+        assert_eq!(column.tuple_count(), 0);
+        assert_eq!(hash.tuple_count(), 0);
     }
 }

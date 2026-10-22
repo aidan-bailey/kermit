@@ -446,6 +446,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> JoinIterable for HashTrie<H, P, E> {}
 
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTrie<H, P, E> {
+    /// A hash trie is a multiset: a repeated row is stored and counted (see
+    /// [`Cardinality`](crate::Cardinality)).
+    const KEEPS_DUPLICATES: bool = true;
+
     fn header(&self) -> &RelationHeader { &self.header }
 
     fn new(header: RelationHeader) -> Self { Self::with_config(header, HashTrieConfig::default()) }
