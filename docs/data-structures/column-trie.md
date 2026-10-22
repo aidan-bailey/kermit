@@ -32,7 +32,7 @@ Compared to [`TreeTrie`](./tree-trie.md), this layout avoids per-node allocation
 
 ### Construction
 
-`from_tuples` sorts the batch's rows with `Tuples::sort` (lexicographic; in place up to arity 4, into a new buffer of the rows' exact size for wider rows; the sort TreeTrie's builds run too, so a comparison costs the same in both, #111), then builds every layer in one pass over the row slices (`ColumnTrie::from_sorted`), remembering the previous row as a slice borrowed from the batch. Each tuple shares some leading keys with the tuple before it; call that count its *divergence depth* `d`. Those keys are already stored, so the tuple appends one key to every layer from `d` down. Every key it appends above the last layer is a new parent, so the layer below first opens a child interval for it (`interval.push(data.len())`). A tuple whose divergence depth equals the arity duplicates its predecessor and appends nothing. The first tuple also opens the root layer's single interval.
+`from_view` copies the view's matching rows once with `view.materialize_sorted()` (projected and permuted into output order, sorted lexicographically, in one exact-size buffer at every arity; the copy TreeTrie's `serial` build makes too, so a comparison costs the same in both, #111), then builds every layer in one pass over the row slices (`ColumnTrie::from_sorted`), remembering the previous row as a slice borrowed from that buffer, which is freed when the build ends. The view's source is only read. Each tuple shares some leading keys with the tuple before it; call that count its *divergence depth* `d`. Those keys are already stored, so the tuple appends one key to every layer from `d` down. Every key it appends above the last layer is a new parent, so the layer below first opens a child interval for it (`interval.push(data.len())`). A tuple whose divergence depth equals the arity duplicates its predecessor and appends nothing. The first tuple also opens the root layer's single interval.
 
 For `{(1, 2), (1, 3), (2, 4)}` the divergence depths are 0, 1 and 0:
 
@@ -50,8 +50,8 @@ That yields the arrays of the worked micro-example below. Incremental `insert` r
 - **Sorted within sibling intervals.** Each layer's `data` is sorted ascending within every `data[interval[i]..interval[i+1]]` span. Keys belonging to different parents are *not* globally sorted across the entire `data` array.
 - **Interval-length coherence.** `layers[i].interval.len()` equals the number of distinct keys in `layers[i-1].data` (1 for the root layer when non-empty, 0 when empty).
 - **Interval bounds.** Every interval entry indexes into `layers[i].data`; the last entry may equal `data.len()`.
-- **Canonical layout.** The arrays depend only on the tuple *set*: each layer's `data` is every parent's sorted children, concatenated in parent order. So `from_tuples` and any sequence of `insert` calls over the same tuples produce identical arrays — down to each `Vec`'s capacity, because both grow one element at a time — and so the same `heap_size_bytes`. Pinned by `bulk_and_incremental_builds_are_identical`.
-- **Duplicate insert is a no-op.** When an inserted key matches an existing key in the active interval, insertion *recurses into the existing key's position* — the next layer is inserted under the right parent. Encoded as `LayerStep::Recurse` in [`implementation.rs`](../../kermit-ds/src/ds/column_trie/implementation.rs).
+- **Canonical layout.** The arrays depend only on the tuple *set*: each layer's `data` is every parent's sorted children, concatenated in parent order. So `from_view` (and `from_tuples` over the identity view) and any sequence of `insert` calls over the same tuples produce identical arrays — down to each `Vec`'s capacity, because both grow one element at a time — and so the same `heap_size_bytes`. Pinned by `bulk_and_incremental_builds_are_identical`.
+- **Duplicate insert is a no-op.** When an inserted key matches an existing key in the active interval, insertion *recurses into the existing key's position* — the next layer is inserted under the right parent. Encoded as `LayerStep::Recurse` in [`implementation.rs`](../../kermit-ds/src/ds/column_trie/implementation.rs). So `Relation::KEEPS_DUPLICATES` is `false` (the trait's default): a constant-only atom's row count multiplies a join's results only on a structure that keeps duplicates, and `kermit::db::build` clamps it to 1 here.
 - **Forward-only `seek`.** Like `TreeTrieIter`, `ColumnTrieIter::seek(k)` only advances; it asks its seek strategy `S` for the offset within the remaining slice (see [seek strategies](seek-strategies.md)).
 - **LFTJ `open`-after-`at_end` discipline.** `ColumnTrieIter::open` derives the new interval index from `parent_start + rel_data_i` even if `rel_data_i` is currently past the end of the parent's children. LFTJ relies on this — do not "fix" the apparent stale offset. See the LFTJ gotcha in `CLAUDE.md`.
 
@@ -62,7 +62,7 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | Operation | Time | Space | Notes |
 |---|---|---|---|
 | `insert(tuple)` | O(a · b) worst-case | O(1) extra | linear search within interval; insertions in early layers shift later-layer offsets (`insert_key_and_shift_intervals`) |
-| `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort the batch with `Tuples::sort` (O(n · a · log n)), then build every layer in one pass over its row slices (O(n · a), no allocation per tuple); see Construction. Before issue #84 it inserted tuple by tuple, O(n · a · b) |
+| `from_view(view)` (`from_tuples(n)` is the convenience over the identity view) | O(n · a · log n) | O(n · a) | `view.materialize_sorted()` (O(n · a · log n): one exact-size copy of the matching rows, sorted; a filtered view also costs one filter test per source row), then build every layer in one pass over its row slices (O(n · a), no allocation per tuple); see Construction. The copy is scratch, freed when the build ends. Before issue #84 it inserted tuple by tuple, O(n · a · b) |
 | `TrieIterator::key()` | O(1) | | slice index |
 | `TrieIterator::next()` | O(1) | | `rel_data_i += 1` |
 | `TrieIterator::seek(target)` | `S`-dependent: linear O(d), binary O(log r), galloping O(log d) | | `S::partition_point` over the `r` remaining keys of the interval slice; `d` is the distance moved. See [seek strategies](seek-strategies.md) |
@@ -101,20 +101,20 @@ Under [`optimization-standard.md`](../specs/optimization-standard.md), `ColumnTr
 
 ### Build mode
 
-Every mode builds the identical trie — the same arrays and the same capacities — so the mode changes the `insertion` and `end_to_end` timings and nothing else.
+Every mode builds the identical trie — the same arrays and the same capacities — so the mode changes the `build` and `end_to_end` timings and nothing else.
 
 | Mode | `--ds-build` | Method | Build (after the sort) |
 |---|---|---|---|
 | `Bulk` (default) | `column-trie=bulk` | sort, then one pass (see Construction) | O(n · a) |
 | `Incremental` | `column-trie=incremental` | sort, then one `insert` per tuple — the build before issue #84 | O(n · a · b) |
 
-Both modes sort first, O(n · a · log n); `b` is the average branching factor.
+Both modes first read the view with `materialize_sorted`, one copy sorted in O(n · a · log n); `b` is the average branching factor.
 
 `--ds-build` takes `structure=mode` pairs (issue #91), so a ColumnTrie mode is spelled `--ds-build column-trie=incremental`. The bare `--ds-build incremental` is rejected with that hint.
 
 - **Axis:** `ds_build_mode`, on every ColumnTrie report. The bench family that ran the build emits it (`RelationFamily::build_mode_axes`), because the trie cannot tell how it was built. kermit-lab reads a ColumnTrie row without the axis as `incremental`, the only build before the axis existed.
-- **API:** `ColumnTrieBuildMode`, through `BuildModeRelation::from_tuples_with_build_mode`; `Relation::from_tuples` uses the default, `Bulk`.
-- **Tests:** `bulk_and_incremental_builds_are_identical` (array-level, capacities included), the `ColumnTrieIncremental` alias in `kermit-ds/tests/{trie,parquet}_tests.rs`, and `define_multiway_join_test_suite_for_build_mode!` in `kermit/tests/join_tests.rs`.
+- **API:** `ColumnTrieBuildMode`, through `BuildModeRelation::from_view_with_build_mode` (`from_tuples_with_build_mode` is the convenience over the identity view); `Relation::from_view` and `from_tuples` use the default, `Bulk`.
+- **Tests:** `bulk_and_incremental_builds_are_identical` (array-level, capacities included), the `ColumnTrieIncremental` alias in `kermit-ds/tests/{trie,parquet}_tests.rs`, `define_multiway_join_test_suite_for_build_mode!` in `kermit/tests/join_tests.rs`, and kermit-ds's view test, which builds both modes from a filtered, permuted view and compares each with the trie of the rows it keeps, inserted one at a time.
 - **When `incremental` is useful:** reproducing pre-#84 `insertion` numbers, and measuring how much of ColumnTrie's build cost belonged to the routine rather than the layout.
 
 ### Seek strategy

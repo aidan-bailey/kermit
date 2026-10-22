@@ -24,10 +24,14 @@ The iterator `TreeTrieIter` carries a `Vec<(&TrieNode, usize)>` stack from root 
 
 Compared to [`ColumnTrie`](./column-trie.md), this layout pays one allocation per node but is structurally local — insertions and splits don't propagate across the layer.
 
+### Construction
+
+`from_view(header, view)` reads a [`TupleView`](../../kermit-iters/src/tuple_view.rs): a borrowed flat `Tuples`, a filter of constants and column equalities, and the output columns in the order the trie stores them. It copies the matching rows once, with `view.materialize_sorted()`: they come back projected, permuted and sorted lexicographically in one exact-size buffer, at every arity (up to arity 4 the copy is sorted in place; from arity 5 the ids are sorted against the view and gathered once, so no arity copies twice). `TreeTrie` then inserts each row of that buffer as a slice, and the buffer, which is scratch, is freed when the build ends. The build only reads the source, the catalog's flat area shared by every index of every query. `from_tuples(header, tuples)` is the convenience over `TupleView::all`. Kermit-ds's test `views_build_the_trie_of_the_rows_they_keep` builds every mode from a filtered, permuted view and compares each with the trie of the kept rows, inserted one at a time.
+
 ## Invariants
 
 - **Path depth = arity.** Every root-to-leaf path has length `header.arity()`. Enforced at insert by [`TreeTrie::insert`](../../kermit-ds/src/ds/tree_trie/implementation.rs#L161).
-- **Sorted children, no duplicate sibling keys.** `children` at every level is sorted ascending by key with no duplicates among siblings. Duplicate tuples are silently absorbed: an insert with an existing key at this level descends into the existing child instead of allocating a new node.
+- **Sorted children, no duplicate sibling keys.** `children` at every level is sorted ascending by key with no duplicates among siblings. Duplicate tuples are silently absorbed: an insert with an existing key at this level descends into the existing child instead of allocating a new node. So `Relation::KEEPS_DUPLICATES` is `false` (the trait's default): a constant-only atom's row count multiplies a join's results only on a structure that keeps duplicates, and `kermit::db::build` clamps it to 1 here.
 - **Iterator stack invariant (`TreeTrieIter`).** `stack` holds `(node, sibling_index)` pairs from root to the current depth. `sibling_idx` is the authoritative cursor. It equals the deepest entry's index except past the end: when `next` or a failed `seek` runs off the last sibling, `sibling_idx` becomes `siblings.len()` and the entry keeps the last node the iterator was positioned on.
 - **Forward-only `seek`.** `TreeTrieIter::seek(k)` panics if `k < self.key()`. Every `LinearIterator` is positioned at the start of a sorted sequence and may only advance — the leapfrog ring's invariants ensure callers respect this.
 - **LFTJ `open`-after-`at_end` discipline.** `TreeTrieIter::open` always descends into `stack.last().children().first()`, even when the deepest sibling has been advanced past the end. LFTJ relies on this — do not "fix" the apparent stale stack top. See the LFTJ gotcha in `CLAUDE.md`.
@@ -39,7 +43,7 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | Operation | Time | Space | Notes |
 |---|---|---|---|
 | `insert(tuple)` | O(a · log b + b) | O(a) | binary search locates the slot at each level (a · log b); a diverging key shifts trailing siblings once at the divergence level via `Vec::insert` (b); absorbs duplicates |
-| `from_tuples(n)` | O(n · a · log n) | O(n · a) | sort the batch with `Tuples::sort` (lexicographic; in place up to arity 4, into a new buffer of the rows' exact size for wider rows; one sort for both sorted tries, #111), then insert each row as a slice: the input costs no allocation per tuple or per level (new nodes allocate as before), and the batch is freed once |
+| `from_view(view)` (`from_tuples(n)` is the convenience over the identity view) | O(n · a · log n) | O(n · a) | `view.materialize_sorted()`: the matching rows in output order, sorted lexicographically, in one exact-size copy at every arity (a filtered view also costs one filter test per source row), then insert each row as a slice: the input costs no allocation per tuple or per level (new nodes allocate as before). The copy is scratch, freed when the build ends |
 | `TrieIterator::key()` | O(1) | | slice index |
 | `TrieIterator::next()` | O(1) | | `sibling_idx += 1` |
 | `TrieIterator::seek(target)` | `S`-dependent: linear O(d), binary O(log r), galloping O(log d) | | `S::partition_point` over the `r` remaining siblings; `d` is the distance moved. See [seek strategies](seek-strategies.md) |
@@ -89,6 +93,8 @@ Iteration walk (`trie_iter().into_iter()`):
 The strategy changes only how `seek` searches; it changes no stored data, no build and no `heap_size_bytes`. Details: [seek strategies](seek-strategies.md).
 
 The build mode changes only how long the build takes: `parallel:N` builds the identical trie, down to every `Vec`'s capacity, on N threads. Details: [parallel builds](parallel-build.md); measured speedups: [its scaling result](parallel-build.md#scaling-result-treetrie-2026-10-05).
+
+Both modes read the same view and copy its matching rows exactly once: `serial` into the sorted scratch buffer (`materialize_sorted`), `parallel:N` into each worker's gathered partition (`gather_sorted`). So the `build` metric times the copy in both. Before per-query index builds (2026-10-22), `parallel:N`'s copy sat inside the timer and `serial`'s outside it, which skewed every build-mode comparison.
 
 ## See also
 
