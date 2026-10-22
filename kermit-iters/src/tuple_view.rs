@@ -301,10 +301,18 @@ impl<'a> TupleView<'a> {
         }
     }
 
-    /// `rows` are matching source row ids: sorts them by their output rows
-    /// (reordering the slice), then gathers the output rows once, into a
-    /// buffer of exactly their size. TreeTrie's `parallel:N` workers call
-    /// this on their partitions of row ids.
+    /// `rows` are matching source row ids: gathers their output rows once,
+    /// into a buffer of exactly their size, sorted lexicographically.
+    /// TreeTrie's `parallel:N` workers call this on their partitions of row
+    /// ids.
+    ///
+    /// The sort is [`materialize_sorted`](Self::materialize_sorted)'s at
+    /// every arity. Arities 1-4 gather the rows in the order given and sort
+    /// them in place with [`Tuples::sort`], which sorts `[usize; N]` arrays
+    /// there, and leave `rows` as it was. From arity 5, `Tuples::sort` would
+    /// gather into a second buffer, so this sorts the ids by their output
+    /// rows (reordering the slice) and gathers once. Arity 0 has nothing to
+    /// order.
     ///
     /// An id may appear more than once, and ids that give equal output rows
     /// may end in either order, which the result cannot show.
@@ -319,6 +327,11 @@ impl<'a> TupleView<'a> {
                 self.matches(row),
                 "TupleView::gather_sorted: row {row} does not match the filter"
             );
+        }
+        if self.arity() <= 4 {
+            let mut gathered = self.gather(rows.iter().copied(), rows.len());
+            gathered.sort();
+            return gathered;
         }
         if self.columns.iter().copied().eq(0..self.source.arity()) {
             // The output rows are the source rows: compare them as slices.
@@ -692,33 +705,42 @@ mod tests {
     }
 
     #[test]
-    fn gather_sorted_sorts_the_ids_by_output_row_and_copies_once() {
+    fn gather_sorted_sorts_the_gathered_rows_at_arities_up_to_4() {
         let source = source();
         let view = TupleView::new(&source, Filter::none(), vec![2, 0]);
         // Output rows: id 3 is [6, 1], id 1 is [5, 2], id 0 is [5, 1].
         let mut rows: [RowId; 3] = [3, 1, 0];
         let gathered = view.gather_sorted(&mut rows);
-        assert_eq!(rows, [0, 1, 3], "the slice is reordered");
+        assert_eq!(rows, [3, 1, 0], "the ids are gathered, not sorted");
         assert_eq!(gathered, Tuples::from_flat(2, 3, vec![5, 1, 5, 2, 6, 1]));
         assert_eq!(gathered.value_capacity(), 6);
     }
 
     #[test]
-    fn gather_sorted_on_an_identity_view_compares_whole_source_rows() {
-        let source = source();
-        let view = TupleView::new(&source, Filter::new(vec![(2, 5)], vec![]), vec![0, 1, 2]);
-        assert!(
-            !view.is_identity(),
-            "filtered, but its columns are in place"
-        );
-        // Rows 4, 1, 0 are `[3,3,5]`, `[2,3,5]`, `[1,1,5]`.
-        let mut rows: [RowId; 3] = [4, 1, 0];
+    fn gather_sorted_sorts_the_ids_by_output_row_and_copies_once_from_arity_5() {
+        let source = Tuples::from_flat(5, 3, vec![2, 0, 0, 0, 1, 1, 0, 0, 0, 9, 1, 0, 0, 0, 2]);
+        // Filtered, but its columns are in place: whole source rows compare.
+        let view = TupleView::new(&source, Filter::new(vec![(1, 0)], vec![]), vec![
+            0, 1, 2, 3, 4,
+        ]);
+        assert!(!view.is_identity());
+        let mut rows: [RowId; 3] = [0, 1, 2];
         let gathered = view.gather_sorted(&mut rows);
-        assert_eq!(rows, [0, 1, 4]);
+        assert_eq!(rows, [2, 1, 0], "the slice is reordered");
         assert_eq!(
             gathered,
-            Tuples::from_flat(3, 3, vec![1, 1, 5, 2, 3, 5, 3, 3, 5])
+            Tuples::from_flat(5, 3, vec![1, 0, 0, 0, 2, 1, 0, 0, 0, 9, 2, 0, 0, 0, 1])
         );
+        assert_eq!(gathered.value_capacity(), 15);
+        let reversed = TupleView::new(&source, Filter::none(), vec![4, 3, 2, 1, 0]);
+        let mut rows: [RowId; 3] = [0, 1, 2];
+        let gathered = reversed.gather_sorted(&mut rows);
+        assert_eq!(
+            rows,
+            [0, 2, 1],
+            "output rows [1,0,0,0,2], [2,0,0,0,1], [9,0,0,0,1]"
+        );
+        assert_eq!(gathered.value_capacity(), 15);
     }
 
     #[test]
@@ -729,7 +751,6 @@ mod tests {
         let mut rows: [RowId; 4] = [4, 2, 0, 1];
         let gathered = view.gather_sorted(&mut rows);
         assert_eq!(gathered, Tuples::from_flat(1, 4, vec![5, 5, 5, 6]));
-        assert_eq!(rows[3], 2);
     }
 
     #[test]
@@ -738,7 +759,6 @@ mod tests {
         let view = filtered(&source);
         let mut rows: [RowId; 2] = [4, 0];
         let gathered = view.gather_sorted(&mut rows);
-        assert_eq!(rows, [0, 4]);
         assert_eq!(gathered, Tuples::from_flat(2, 2, vec![5, 1, 5, 3]));
         assert_eq!(view.gather_sorted(&mut []), Tuples::new(2));
     }

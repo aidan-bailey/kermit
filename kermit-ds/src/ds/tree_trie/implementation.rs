@@ -210,14 +210,15 @@ impl<S: SeekStrategy> TreeTrie<S> {
     ///    keeps into first-key ranges cut at [`first_key_splitters`]; the
     ///    source itself stays where it is.
     /// 2. **Build**: [`dispatch`] each partition to a worker, which gathers its
-    ///    rows with [`TupleView::gather_sorted`]: the ids ascend, so the sort
-    ///    of the 4-byte ids is a sort of nearly ordered input, and the rows are
-    ///    then copied once, in output order, into a [`Tuples`] of exactly their
-    ///    size, at every arity. The worker inserts its rows one at a time, as
-    ///    the serial build does with the whole view. The gather copies each row
-    ///    once (`arity` × 8 bytes), in parallel; with unordered first keys
-    ///    every partition reads across the whole source, so read traffic grows
-    ///    by up to the rows per cache line (about 4× at arity 2).
+    ///    rows with [`TupleView::gather_sorted`], into a [`Tuples`] of exactly
+    ///    their size, sorted, at every arity: up to arity 4 the rows are
+    ///    gathered in id order and sorted in place, from arity 5 the 4-byte ids
+    ///    are sorted against the view and the rows copied once in output order.
+    ///    The worker inserts its rows one at a time, as the serial build does
+    ///    with the whole view. The gather copies each row once (`arity` × 8
+    ///    bytes), in parallel; with unordered first keys every partition reads
+    ///    across the whole source, so read traffic grows by up to the rows per
+    ///    cache line (about 4× at arity 2).
     /// 3. **Assemble**: push every partition's top-level nodes onto the root,
     ///    in key order, one at a time.
     ///
@@ -257,9 +258,9 @@ impl<S: SeekStrategy> TreeTrie<S> {
         let built = dispatch(threads, partitions, |partition| {
             let mut ids = Vec::with_capacity(partition.len());
             ids.extend(partition.ids());
-            // The same lexicographic order `materialize_sorted` gives the
-            // serial build (and ColumnTrie's builds), so a comparison costs
-            // the same in both builds and `parallel:N` against `serial`
+            // The same lexicographic order, by the same sort at every arity,
+            // as `materialize_sorted` gives the serial build (and
+            // ColumnTrie's builds), so `parallel:N` against `serial`
             // measures the build process, not a cheaper sort.
             let gathered = view.gather_sorted(&mut ids);
             let mut nodes = Vec::new();
@@ -387,7 +388,6 @@ impl<S: SeekStrategy> BuildModeRelation for TreeTrie<S> {
     fn from_view_with_build_mode(
         header: RelationHeader, mode: TreeTrieBuildMode, view: TupleView<'_>,
     ) -> Self {
-        crate::relation::check_view_arity(&header, &view);
         match mode {
             | TreeTrieBuildMode::Serial => Self::from_view(header, view),
             | TreeTrieBuildMode::Parallel(threads) => {

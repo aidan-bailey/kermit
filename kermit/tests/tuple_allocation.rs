@@ -298,12 +298,15 @@ fn a_sorted_copy_of_an_unfiltered_view_sizes_its_row_ids_exactly() {
     }
 }
 
-/// `gather_sorted` over a supplied row set sorts the ids in place and
-/// allocates the output buffer, once, at its exact size.
+/// `gather_sorted` over a supplied row set allocates the output buffer, once,
+/// at its exact size: from arity 5 it sorts the ids in place first, and up to
+/// arity 4 it sorts the gathered rows in place (`[usize; N]` arrays).
 #[test]
 fn gathering_a_sorted_row_set_allocates_the_output_once() {
     let source = view_source();
-    for columns in [vec![5, 4, 3, 2, 1], vec![5, 4, 3, 2, 1, 0]] {
+    for columns in [vec![5, 2], vec![5, 4, 3, 2], vec![5, 4, 3, 2, 1], vec![
+        5, 4, 3, 2, 1, 0,
+    ]] {
         let arity = columns.len();
         let view = TupleView::new(&source, view_filter(), columns);
         let mut rows: Vec<RowId> = (0..VIEW_ROWS as RowId)
