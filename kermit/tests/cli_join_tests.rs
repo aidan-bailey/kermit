@@ -773,9 +773,10 @@ fn cli_bench_ds_times_build_and_end_to_end_on_every_structure() {
     }
 }
 
-/// A timed build goes through the family's one construction site, so it
-/// builds by the `--ds-build` mode and `--ds-config` the report's axes
-/// name, including the modes that partition or presize from the view.
+/// `bench ds -m build` runs the `build` metric without error under each
+/// build mode, including the modes that partition or presize from the view,
+/// and reports the mode's `ds_build_mode` axis. It does not check which
+/// build the timed routine ran.
 #[test]
 fn cli_bench_ds_times_a_build_under_each_build_mode() {
     let cases: [(&str, &str, &[&str], &str); 3] = [
@@ -977,14 +978,11 @@ fn cli_bench_run_writes_json_report() {
         !groups.is_empty(),
         "space metric must produce at least one criterion group"
     );
-    for g in groups {
-        assert_eq!(g["metric"], "space");
-        let function = g["function"].as_str().expect("function must be a string");
-        assert!(
-            function.starts_with("space/"),
-            "space functions are named space/<relation>; got {function}"
-        );
-    }
+    // One `space` function per query: it measures every index the query
+    // reads, together.
+    assert_eq!(groups.len(), 1, "{groups:?}");
+    assert_eq!(groups[0]["metric"], "space");
+    assert_eq!(groups[0]["function"], "space");
 
     let _ = std::fs::remove_file(&tmp_report);
     let _ = std::fs::remove_dir_all(&tmp_cache);

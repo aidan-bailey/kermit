@@ -817,7 +817,8 @@ fn run_bench_join(
         write_join(writer, &header, &mut join, join_query)?;
     }
 
-    let workload = Workload::adhoc(query_args.relations.clone(), &query_args.query)?;
+    let workload = Workload::adhoc(query_args.relations.clone(), &query_args.query)?
+        .prepare(&query_args.planner.instantiate())?;
     let settings = RunSettings {
         kind: BenchKind::Join,
         prefix: bench_args.name.as_deref().unwrap_or(DEFAULT_JOIN_GROUP),
@@ -894,6 +895,7 @@ fn run_bench_run_command(
         .collect::<Result<Vec<_>, _>>()?;
 
     let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_RUN_GROUP);
+    let prepare_with = planner.instantiate();
     let settings = RunSettings {
         kind: BenchKind::Run,
         prefix,
@@ -911,7 +913,11 @@ fn run_bench_run_command(
     // next one starts; a crash mid-sweep keeps the completed cells.
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Run)?;
     for benchmark in &materialized {
+        // Validated, read and planned once per benchmark, before its loop
+        // over cells: every cell builds from this catalog and runs these
+        // prepared queries.
         let workload = Workload::from_definition(benchmark, &workspace_root(), query.as_deref())
+            .and_then(|workload| workload.prepare(&prepare_with))
             .with_context(|| {
                 format!(
                     "bench run failed on benchmark '{}'; partial report retained at {}",

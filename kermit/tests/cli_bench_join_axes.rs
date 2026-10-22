@@ -1,11 +1,20 @@
 //! `bench join` goes through the same generic runner as `bench run`, so an
 //! ad-hoc join reports the full metric set and the structure's
 //! optimization axes, under `bench run`'s Criterion naming with the
-//! `adhoc/<query-stem>` identity.
+//! `adhoc/<query-stem>` identity. The runner reads each relation once,
+//! builds the indexes each query's plan reads, and reports every one of
+//! them.
 
 mod common;
 
-use common::cli::{bench_join, kermit_bin, reports_of};
+use {
+    common::cli::{bench_join, kermit_bin, reports_of},
+    std::{
+        fs,
+        process::{Command, Output},
+    },
+    tempfile::TempDir,
+};
 
 #[test]
 fn cli_bench_join_hash_trie_reports_axes_and_all_default_metrics() {
@@ -30,7 +39,7 @@ fn cli_bench_join_hash_trie_reports_axes_and_all_default_metrics() {
     assert_eq!(axes["data_structure"], "HashTrie");
     assert_eq!(axes["algorithm"], "HashTriejoin");
     assert_eq!(axes["optimiser"], "lexicographic");
-    assert_eq!(axes["column_orders"], "stored");
+    assert!(axes.get("column_orders").is_none(), "{axes}");
     // The binary under test is built with this package's features (#112).
     let allocator = if cfg!(feature = "jemalloc") {
         "jemalloc"
@@ -41,7 +50,10 @@ fn cli_bench_join_hash_trie_reports_axes_and_all_default_metrics() {
     assert_eq!(axes["ds_layout_hasher"], "fxhash");
     assert_eq!(axes["ds_layout_pruning"], "off");
     assert_eq!(axes["ds_config_load_factor"], 0.5);
-    assert!(axes["tuples"].as_u64().unwrap() > 0);
+    // `first` and `second` hold three tuples each, and each atom builds its
+    // own unfiltered index over its relation.
+    assert_eq!(axes["tuples"], 6);
+    assert_eq!(axes["index_rows"], 6);
     assert!(
         axes.get("relations").is_none(),
         "the old count axis is gone"
@@ -55,12 +67,7 @@ fn cli_bench_join_hash_trie_reports_axes_and_all_default_metrics() {
         .map(|g| g["function"].as_str().unwrap())
         .collect();
     functions.sort_unstable();
-    assert_eq!(functions, [
-        "insertion",
-        "iteration",
-        "space/first",
-        "space/second"
-    ]);
+    assert_eq!(functions, ["build", "iteration", "space"]);
 }
 
 #[test]
@@ -111,4 +118,245 @@ fn cli_bench_join_rejects_ds_config_on_tree_trie() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--ds-config"), "{stderr}");
+}
+
+/// One benchmark, `per-query`, over `data/edge.csv` (1 -> 2, 2 -> 1,
+/// 2 -> 3). A second declared relation, `data/unused.csv`, has a header that
+/// parses and a row that does not, so any run that reads its tuples fails.
+/// Returns the workspace and an empty cache directory.
+fn per_query_workspace() -> (TempDir, TempDir) {
+    let workspace = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let data = workspace.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("edge.csv"), "src,dst\n1,2\n2,1\n2,3\n").unwrap();
+    fs::write(data.join("unused.csv"), "a,b\nnot,numbers\n").unwrap();
+    let benchmarks = workspace.path().join("benchmarks");
+    fs::create_dir_all(&benchmarks).unwrap();
+    fs::write(
+        benchmarks.join("per-query.yml"),
+        r#"name: per-query
+description: "queries over one relation, beside a relation no query names"
+relations:
+  - name: edge
+    path: "data/edge.csv"
+  - name: unused
+    path: "data/unused.csv"
+queries:
+  - name: mutual
+    description: "edges present in both directions: two indexes over one relation"
+    query: "Q(X, Y) :- edge(X, Y), edge(Y, X)."
+    expected: 2
+  - name: pinned
+    description: "the sources of edges into 2: a constant filter"
+    query: "Q(X) :- edge(X, c2)."
+    expected: 1
+"#,
+    )
+    .unwrap();
+    (workspace, cache)
+}
+
+/// `bench run per-query` in `workspace` with `args`, returning the process
+/// output and the parsed report array (empty if no report was written).
+fn bench_run_per_query(
+    workspace: &TempDir, cache: &TempDir, args: &[&str],
+) -> (Output, Vec<serde_json::Value>) {
+    let report = workspace.path().join("report.json");
+    let output = Command::new(kermit_bin())
+        .env("RUST_BACKTRACE", "0")
+        .env("RUST_LIB_BACKTRACE", "0")
+        .env("KERMIT_WORKSPACE", workspace.path())
+        .env("XDG_CACHE_HOME", cache.path())
+        .current_dir(workspace.path())
+        .args([
+            "bench",
+            "--sample-size",
+            "10",
+            "--measurement-time",
+            "1",
+            "--warm-up-time",
+            "1",
+            "--report-json",
+        ])
+        .arg(&report)
+        .args(["run", "per-query"])
+        .args(args)
+        .output()
+        .unwrap();
+    let reports = fs::read_to_string(&report)
+        .ok()
+        .map(|text| serde_json::from_str(&text).unwrap())
+        .unwrap_or_default();
+    (output, reports)
+}
+
+/// The report's Criterion function ids, sorted.
+fn functions_of(report: &serde_json::Value) -> Vec<String> {
+    let mut functions: Vec<String> = report["criterion_groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["function"].as_str().unwrap().to_string())
+        .collect();
+    functions.sort_unstable();
+    functions
+}
+
+/// The values of the report's `index` metadata lines, in order.
+fn index_lines(report: &serde_json::Value) -> Vec<String> {
+    report["metadata"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["label"] == "index")
+        .map(|m| m["value"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// `edge(X, Y), edge(Y, X)` was rejected under `--column-orders stored`
+/// (contradictory orders). Every query is now planned freely and each atom
+/// builds the index its plan reads: here the relation twice, in two column
+/// orders. `unused.csv` is declared but never read.
+#[test]
+fn bench_run_builds_one_index_per_atom_and_reports_each() {
+    let (workspace, cache) = per_query_workspace();
+    let (output, reports) = bench_run_per_query(&workspace, &cache, &[
+        "-q",
+        "mutual",
+        "-i",
+        "tree-trie",
+        "-a",
+        "leapfrog-triejoin",
+        "--verify",
+        "-m",
+        "build",
+        "iteration",
+        "space",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    let report = &reports[0];
+    assert_eq!(functions_of(report), ["build", "iteration", "space"]);
+    let axes = &report["axes"];
+    assert!(axes.get("column_orders").is_none(), "{axes}");
+    assert_eq!(axes["verified"], true);
+    assert_eq!(
+        axes["tuples"], 3,
+        "the relation's rows, once, however many atoms read it"
+    );
+    assert_eq!(
+        axes["index_rows"], 6,
+        "two unfiltered indexes of three rows"
+    );
+    let lines = index_lines(report);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with("#0 edge filter - columns [0, 1]: 3 rows, "),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].starts_with("#1 edge filter - columns [1, 0]: 3 rows, "),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().all(|line| line.ends_with(" bytes")),
+        "{lines:?}"
+    );
+    for line in &lines {
+        assert!(
+            stderr.contains(line.as_str()),
+            "{line} missing from {stderr}"
+        );
+    }
+}
+
+/// A lazy `HashTrie`'s joins expand it, so `--verify` and `iteration` run on
+/// fresh builds (#92), `end_to_end` builds its own, and `space` must find the
+/// as-built indexes untouched.
+#[test]
+fn bench_run_on_a_lazy_cell_runs_every_metric_over_fresh_builds() {
+    let (workspace, cache) = per_query_workspace();
+    let (output, reports) = bench_run_per_query(&workspace, &cache, &[
+        "-q",
+        "mutual",
+        "-i",
+        "hash-trie",
+        "-a",
+        "hash-triejoin",
+        "--ds-layout-expansion",
+        "lazy",
+        "--verify",
+        "-m",
+        "build",
+        "iteration",
+        "end-to-end",
+        "space",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(functions_of(&reports[0]), [
+        "build",
+        "end_to_end",
+        "iteration",
+        "space"
+    ]);
+    assert_eq!(reports[0]["axes"]["verified"], true);
+    assert_eq!(reports[0]["axes"]["ds_layout_expansion"], "lazy");
+}
+
+/// A constant is applied while the index is built: the index holds only the
+/// rows that match, and its line names the filter.
+#[test]
+fn bench_run_pushes_a_constant_into_the_index_it_builds() {
+    let (workspace, cache) = per_query_workspace();
+    let (output, reports) = bench_run_per_query(&workspace, &cache, &[
+        "-q",
+        "pinned",
+        "-i",
+        "tree-trie",
+        "-a",
+        "leapfrog-triejoin",
+        "--verify",
+        "-m",
+        "space",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let report = &reports[0];
+    assert_eq!(report["axes"]["verified"], true);
+    assert_eq!(
+        report["axes"]["tuples"], 3,
+        "tuples counts the catalog's rows, not the filtered ones"
+    );
+    assert_eq!(report["axes"]["index_rows"], 1);
+    let lines = index_lines(report);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("#0 edge filter col1=2 columns [0]: 1 rows, "),
+        "{lines:?}"
+    );
+}
+
+/// `unused.csv` cannot be read, and the run succeeds: no query names it, so
+/// it is neither read nor listed among the query's relations.
+#[test]
+fn bench_run_reads_only_the_relations_its_queries_name() {
+    let (workspace, cache) = per_query_workspace();
+    let (output, _) = bench_run_per_query(&workspace, &cache, &[
+        "-q",
+        "pinned",
+        "-i",
+        "hash-trie",
+        "-a",
+        "hash-triejoin",
+        "-m",
+        "space",
+    ]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("\"edge\" (arity 2)"), "{stderr}");
+    assert!(!stderr.contains("\"unused\""), "{stderr}");
 }

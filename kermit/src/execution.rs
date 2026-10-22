@@ -359,9 +359,9 @@ pub trait RelationFamily {
     ///
     /// Every relation the family builds routes through this one site: the
     /// indexes `ExecutionFamily::build_indexes` builds and, through
-    /// [`build_relation`](Self::build_relation), the `insertion` metric,
-    /// [`load`](Self::load), [`load_with_tuples`](Self::load_with_tuples) and
-    /// both families' [`build_from_tuples`]. So such a measurement can never
+    /// [`build_relation`](Self::build_relation), [`load`](Self::load),
+    /// [`load_with_tuples`](Self::load_with_tuples) and both families'
+    /// [`build_from_tuples`]. So the `build` metric can never
     /// build a relation the report's `ds_config_*` / `ds_build_mode` axes
     /// fail to describe. Required, with no default, so no family can
     /// silently fall back to `Relation::from_view` and build with a
@@ -396,8 +396,9 @@ pub trait RelationFamily {
     /// Loads one relation file like [`load`](Self::load), and also returns
     /// the tuples it was built from, in the order the reader produced them.
     ///
-    /// These are the input of every metric that rebuilds a relation
-    /// (`insertion`, `end_to_end`). A structure's own iteration order is not
+    /// These are the input of every copy built from file order (the
+    /// reordered copies under `--column-orders any`). A structure's own
+    /// iteration order is not
     /// neutral input — it is the sorted tries' best case, and it made the
     /// hash trie's build quadratic (issue #66) — whereas file order is the
     /// same for every structure and every Layout, so all of them build from
@@ -484,25 +485,30 @@ pub(crate) fn read_relation(path: &Path) -> anyhow::Result<(RelationHeader, Tupl
     .map_err(|e| anyhow::anyhow!("Failed to load {path:?}: {e}"))
 }
 
-/// The join-facing half of a family: building an engine over loaded
-/// relations and querying it. Everything else in a `bench run` cell —
+/// The join-facing half of a family: building the indexes a prepared query
+/// reads and executing it over them (`build_indexes`, `execute`,
+/// `count_rows`), plus the engine-based path `kermit join` and `bench join
+/// --output` still use. Everything else in a `bench run` cell —
 /// query parsing, metadata, Criterion group wiring, report assembly — is
 /// shared by the generic runner in `bench/run.rs`.
 ///
-/// Both `build` paths must construct the engine the same way: the
-/// `end_to_end` metric times [`ExecutionFamily::build_from_tuples`] and
-/// reports it as the cost of the build that the `iteration` metric's
-/// engine paid via [`ExecutionFamily::build`].
+/// The `build` and `end_to_end` metrics time
+/// [`ExecutionFamily::build_indexes`], the same call that builds the indexes
+/// `iteration` and `space` measure, so the build term is the cost of the build
+/// those indexes paid. The engine-based [`ExecutionFamily::build`] and
+/// [`ExecutionFamily::build_from_tuples`] must still construct the engine the
+/// same way until Story 19 deletes them.
 pub trait ExecutionFamily: RelationFamily {
     /// The built, queryable form of a set of relations.
     type Engine;
 
     /// Whether running a join can change the engine's relations: a lazy
     /// `HashTrie` builds each child a join first reaches (issue #92). When
-    /// true, `bench run` never probes the engine it loaded. `--verify` and
-    /// `iteration` run on fresh builds, so `space` measures the relations
-    /// as built and each timed join pays its own expansion. Required, like
-    /// `build_relation`: every family states what its joins do.
+    /// true, `bench run` never probes the indexes it built for `space`.
+    /// `--verify` and `iteration` run on fresh builds, so `space` measures
+    /// the relations as built and each timed join pays its own expansion.
+    /// Required, like `build_relation`: every family states what its joins
+    /// do.
     const JOIN_MUTATES: bool;
 
     /// Builds the indexes `prepared` reads from the relations of `catalog`,
@@ -510,9 +516,6 @@ pub trait ExecutionFamily: RelationFamily {
     /// timed `build` of the per-query pipeline. Each index is a view of its
     /// relation's flat tuples, filtered by the query's constants and repeated
     /// variables and copied once, with its columns in plan order.
-    // Called by the tests only until `bench run` moves to the per-query
-    // pipeline.
-    #[allow(dead_code)]
     fn build_indexes(&self, catalog: &Catalog, prepared: &Prepared) -> Indexes<Self::Rel> {
         db::build_with(catalog, prepared, |h, v| self.build_index(h, v))
     }
@@ -523,9 +526,6 @@ pub trait ExecutionFamily: RelationFamily {
     /// [`build_indexes`](Self::build_indexes) on the same `prepared`. When
     /// [`JOIN_MUTATES`](Self::JOIN_MUTATES), the join expands the indexes it
     /// is given, as `join_for_each` expands its engine.
-    // Called by the tests only until `bench run` moves to the per-query
-    // pipeline.
-    #[allow(dead_code)]
     fn execute<S: FnMut(&[usize])>(
         &self, prepared: &Prepared, indexes: &Indexes<Self::Rel>, emit: S,
     );
@@ -535,9 +535,6 @@ pub trait ExecutionFamily: RelationFamily {
     /// be optimised away. Allocates no result rows: this is what the
     /// per-query `iteration` and `end_to_end` metrics will time and what
     /// `--verify` will check, as [`count`](Self::count) does for an engine.
-    // Called by the tests only until `bench run` moves to the per-query
-    // pipeline.
-    #[allow(dead_code)]
     fn count_rows(&self, prepared: &Prepared, indexes: &Indexes<Self::Rel>) -> u64 {
         let mut rows = 0u64;
         self.execute(prepared, indexes, |row| {
@@ -548,16 +545,18 @@ pub trait ExecutionFamily: RelationFamily {
     }
 
     /// Builds the engine from freshly loaded relations, retaining them for
-    /// the per-relation metrics (`insertion`, `space`).
+    /// the copies a query's plan reads.
     fn build(&self, relations: Vec<Self::Rel>) -> Self::Engine;
 
     /// Builds an engine from `(header, tuples)` snapshots along the same
     /// path as [`ExecutionFamily::build`]. Used inside the timed
     /// `end_to_end` body, where only [`ExecutionFamily::count`] is needed
     /// afterwards.
+    #[allow(dead_code)] // Unused until Story 19
     fn build_from_tuples(&self, inputs: Vec<(RelationHeader, Tuples)>) -> Self::Engine;
 
     /// The relations an engine built by [`ExecutionFamily::build`] retains.
+    #[allow(dead_code)] // Unused until Story 19
     fn relations(engine: &Self::Engine) -> Vec<&Self::Rel>;
 
     /// Runs `query` against `engine`, passing each result tuple to `emit`
@@ -580,6 +579,7 @@ pub trait ExecutionFamily: RelationFamily {
     /// # Errors
     ///
     /// As [`join_for_each`](Self::join_for_each).
+    #[allow(dead_code)] // Unused until Story 19
     fn count(&self, engine: &Self::Engine, query: JoinQuery) -> Result<u64, JoinError> {
         let mut rows = 0u64;
         self.join_for_each(engine, query, |tuple| {
@@ -615,6 +615,7 @@ pub trait ExecutionFamily: RelationFamily {
 
     /// Every copy `engine` holds, with its spec: the `space/Index_*`
     /// functions.
+    #[allow(dead_code)] // Unused until Story 19
     fn indexes(engine: &Self::Engine) -> Vec<(&CopySpec, &Self::Rel)>;
 }
 
@@ -1354,7 +1355,7 @@ mod tests {
 
     /// `load_with_tuples` hands back the tuples in the order the reader
     /// produced them, not in the structure's own iteration order: the
-    /// `insertion` and `end_to_end` metrics rebuild from them, and a
+    /// copies built under `--column-orders any` start from them, and a
     /// structure's iteration order is not neutral input — sorted for the
     /// sorted tries, and a degenerate build order for the hash trie (issue
     /// #66).
@@ -1490,8 +1491,8 @@ mod tests {
         );
     }
 
-    /// The per-relation `insertion` metric builds through
-    /// [`ExecutionFamily::build_relation`], so it must honour the config
+    /// The `build` metric builds through `build_index`, which
+    /// [`ExecutionFamily::build_relation`] wraps, so it must honour the config
     /// too — otherwise it would time an unconfigured build under a report
     /// labelled with the configured axes.
     #[test]

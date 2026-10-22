@@ -45,8 +45,6 @@ pub struct Workload {
 /// and the relations the queries name read once into a catalog. No structure
 /// is built from them here; each cell builds the indexes a query's plan
 /// reads, from the catalog's flat tuples.
-#[allow(dead_code)] // `run_benchmark` reads it from Task 17.2 on; until then
-                    // only the tests do.
 pub struct PreparedWorkload {
     /// The workload that was prepared: its name, files and parsed queries.
     pub workload: Workload,
@@ -114,29 +112,6 @@ impl Workload {
         })
     }
 
-    /// Checks every query against the relations' headers under
-    /// `column_orders`, read without their tuples, so a query that cannot
-    /// run fails before any relation is built or any measurement starts —
-    /// in milliseconds even for a workload whose build takes minutes.
-    ///
-    /// # Errors
-    ///
-    /// A relation file whose header cannot be read, or the first query
-    /// that [`validate_query`] rejects, named with its benchmark.
-    pub fn validate(&self, column_orders: ColumnOrderPolicy) -> anyhow::Result<()> {
-        let headers = self
-            .relation_paths
-            .iter()
-            .map(|path| read_relation_header(path))
-            .collect::<anyhow::Result<Vec<RelationHeader>>>()?;
-        for q in &self.queries {
-            validate_query(&q.query, headers.as_slice(), column_orders).map_err(|e| {
-                anyhow::anyhow!("benchmark '{}' query '{}': {e}", self.name, q.name)
-            })?;
-        }
-        Ok(())
-    }
-
     /// Validates every query from the relations' headers, reads only the
     /// relations the queries name into one catalog at the statistics level
     /// `planner` reads, and prepares each query once.
@@ -152,8 +127,6 @@ impl Workload {
     /// A relation file whose header or tuples cannot be read, or the first
     /// query that validation, planning or index planning rejects, named with
     /// its benchmark.
-    #[allow(dead_code)] // `bench run` and `bench join` call it from Task 17.2
-                        // on.
     pub fn prepare(self, planner: &Planner) -> anyhow::Result<PreparedWorkload> {
         let headers = self
             .relation_paths
@@ -425,7 +398,7 @@ mod tests {
             StatisticsLevel::TupleCounts
         );
         assert_eq!(
-            level_under(Box::new(CostBasedOptimiser::default())),
+            level_under(Box::<CostBasedOptimiser>::default()),
             StatisticsLevel::ColumnDistinct
         );
     }

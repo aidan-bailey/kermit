@@ -1,11 +1,11 @@
 //! The generic runner behind `bench run` and `bench join`: one execution
-//! cell over one [`Workload`], every requested metric, one report per
-//! query.
+//! cell over one [`PreparedWorkload`], every requested metric, one report
+//! per query.
 
 use {
     super::{
         add_space_bench, build_space_criterion, build_time_criterion, criterion_directory_name,
-        Metric, Workload, CRITERION_MAX_DIRECTORY_NAME_BYTES,
+        workload::PreparedWorkload, Metric, CRITERION_MAX_DIRECTORY_NAME_BYTES,
     },
     crate::{
         bench_report::{
@@ -19,25 +19,19 @@ use {
         },
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
-    kermit::db::index_header,
-    kermit_algos::{ColumnOrderPolicy, CopySpec},
+    kermit::db::{Catalog, Prepared},
+    kermit_algos::{IndexSpec, INDEX_ID_PREFIX},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HeapSize, Relation, RelationHeader, Tuples},
+    kermit_ds::{HeapSize, RelationHeader, TupleView, Tuples},
     std::{
         collections::{hash_map::Entry, BTreeMap, HashMap},
         io,
     },
 };
 
-/// Why a timed join cannot fail: [`run_benchmark`] calls
-/// [`Workload::validate`] on every query before it builds anything, and
-/// the join rejects exactly the queries validation does.
-const VALIDATED: &str = "query validated against the workload before timing";
-
 /// Everything a measured join needs besides the cell and the workload:
-/// what kind of report to stamp, how to name the Criterion group, how the
-/// queries are planned (optimiser and column-order policy), and what to
-/// measure. One value is built
+/// what kind of report to stamp, how to name the Criterion group, which
+/// optimiser the report names, and what to measure. One value is built
 /// per subcommand invocation and shared by every cell it runs.
 #[derive(Clone, Copy)]
 pub(crate) struct RunSettings<'a> {
@@ -48,7 +42,8 @@ pub(crate) struct RunSettings<'a> {
     /// (`{prefix}/{workload}/{query}/{ds}/{algo}`), from `--name` or the
     /// subcommand's default.
     pub prefix: &'a str,
-    /// `--optimiser` and `--column-orders`.
+    /// `--optimiser`, for the report's `optimiser` axis. The queries were
+    /// planned when the workload was prepared, so nothing here plans.
     pub planner: PlannerArgs,
     pub metrics: &'a [Metric],
     /// K in the `end_to_end` metric's `T = build + K × query`.
@@ -60,25 +55,53 @@ pub(crate) struct RunSettings<'a> {
     pub bench_args: &'a BenchArgs,
 }
 
+/// The value of one `index` metadata line, for the `position`th index of a
+/// query: `{id} {relation} filter {filter} columns {columns:?}: {rows} rows,
+/// {bytes} bytes`. `rows` is what the build copied, the index view's count,
+/// and `bytes` the index's footprint as built.
+fn describe_index(position: usize, spec: &IndexSpec, rows: usize, bytes: usize) -> String {
+    format!(
+        "{INDEX_ID_PREFIX}{position} {} filter {} columns {:?}: {rows} rows, {bytes} bytes",
+        spec.relation, spec.filter, spec.columns
+    )
+}
+
+/// The rows the relations `prepared` reads hold in `catalog`, each relation
+/// counted once however many atoms read it: the report's `tuples` axis, the
+/// same for every structure.
+fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
+    prepared
+        .relations()
+        .into_iter()
+        .map(|name| catalog.tuples(name).map_or(0, Tuples::len))
+        .sum()
+}
+
 /// Runs every query of `workload` on one execution cell and returns one
 /// report per query, each stamped with `settings.kind` and grouped under
 /// `settings.prefix`.
 ///
 /// Generic over the [`ExecutionFamily`] so the sorted family
 /// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P, E>`) share one body:
-/// relation loading, metadata, Criterion group wiring and report assembly
-/// are identical, and the report's `data_structure` / `algorithm` axes
-/// come from `family.execution()` — the same value that picked the code
-/// path — so a report can never name an algorithm it did not run (issue
-/// #56). Every query is validated against the relations' headers before
-/// anything is loaded, so a query that cannot run aborts the cell with an
-/// error rather than a panic inside Criterion (issue #78). With
-/// `settings.verify`, each query with an `expected` count is executed once
-/// before timing and a mismatch aborts. Under `--column-orders any`, each
-/// query's reordered copies are built before it is verified or timed and
-/// dropped after it (see `ExecutionFamily::add_index`).
+/// metadata, Criterion group wiring and report assembly are identical, and
+/// the report's `data_structure` / `algorithm` axes come from
+/// `family.execution()` — the same value that picked the code path — so a
+/// report can never name an algorithm it did not run (issue #56).
+///
+/// The workload arrives prepared (`Workload::prepare`): every query is
+/// validated and planned, and the relations the queries name sit in the
+/// catalog as flat tuples, so a query that cannot run never reaches this
+/// function (issue #78). Per query, the cell builds exactly the indexes the
+/// plan reads (`ExecutionFamily::build_indexes`). One build, untimed, backs
+/// the `index` metadata, `space` and a non-mutating `iteration`; `build`
+/// and `end_to_end` time fresh ones, and a family whose joins mutate their
+/// indexes (`ExecutionFamily::JOIN_MUTATES`) also joins over fresh ones for
+/// `iteration` and `--verify`. Every timed routine returns what it built, so
+/// Criterion frees it after the timer stops. With `settings.verify`, each
+/// query with an `expected` count is executed once before timing and a
+/// mismatch aborts.
 fn run_benchmark<F: ExecutionFamily>(
-    family: &F, workload: &Workload, settings: RunSettings<'_>,
+    family: &F, workload: &PreparedWorkload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
     let RunSettings {
         kind,
@@ -89,52 +112,11 @@ fn run_benchmark<F: ExecutionFamily>(
         verify,
         bench_args,
     } = settings;
-    let column_orders = planner.column_orders;
-    // Reject a query that cannot run before loading anything: the headers
-    // alone settle it, and a failure inside a timed closure below could
-    // only panic.
-    workload.validate(column_orders)?;
-    // Load each relation from disk exactly once; the family builds its
-    // engine from these typed relations rather than re-reading the files.
-    // Rebuilding metrics rebuild from each relation's tuples in file order,
-    // kept here (see `RelationFamily::load_with_tuples`): `insertion`,
-    // `end_to_end`, and, for a family whose joins mutate their relations,
-    // `iteration` and `--verify`, which then never probe the loaded engine.
-    // Under `--column-orders any` so does every query's reordered copy. A
-    // run with no rebuilding metric keeps none: it would be a dead copy of
-    // the whole workload.
-    let rebuilds = metrics
-        .iter()
-        .any(|m| matches!(m, Metric::Build | Metric::EndToEnd))
-        || (F::JOIN_MUTATES && (verify || metrics.contains(&Metric::Iteration)))
-        || column_orders == ColumnOrderPolicy::Any;
-    let mut relations: Vec<F::Rel> = Vec::with_capacity(workload.relation_paths.len());
-    let mut build_inputs: Vec<(RelationHeader, Tuples)> = Vec::new();
-    for path in &workload.relation_paths {
-        if rebuilds {
-            let (relation, tuples) = family.load_with_tuples(path)?;
-            build_inputs.push((relation.header().clone(), tuples));
-            relations.push(relation);
-        } else {
-            relations.push(family.load(path)?);
-        }
-    }
-    // Each query's reordered copies (`--column-orders any`) are built from
-    // the same file-order tuples `insertion` rebuilds from, through the
-    // same `build_relation`, into whichever engine the query reads.
-    let input_of = |base: &str| -> &(RelationHeader, Tuples) {
-        build_inputs
-            .iter()
-            .find(|(header, _)| header.name() == base)
-            .expect("validation checked that every base relation was loaded")
-    };
-    let add_copies = |engine: &mut F::Engine, specs: &[CopySpec]| {
-        for spec in specs {
-            let (header, tuples) = input_of(&spec.base);
-            family.add_index(engine, spec.clone(), header, tuples);
-        }
-    };
-    let mut engine = family.build(relations);
+    let PreparedWorkload {
+        workload: definition,
+        catalog,
+        prepared: prepared_queries,
+    } = workload;
 
     // `ds_name`/`algo_name` become the report's identity axes and the
     // on-disk `target/criterion/{group}` names (the group_name below embeds
@@ -148,79 +130,59 @@ fn run_benchmark<F: ExecutionFamily>(
         .iter()
         .any(|m| matches!(m, Metric::Build | Metric::Iteration | Metric::EndToEnd));
 
-    // Everything read from the base relations is taken once, here, so the
-    // per-query loop can add and drop copies in the engine.
-    let (total_tuples, optimization_axes, relation_lines, as_built_bytes) = {
-        let relations = F::relations(&engine);
-        // Sum across relations: scaling plots key off this as the workload's
-        // total input size. One walk per relation is cheap vs the bench
-        // itself.
-        let total_tuples: usize = relations.iter().map(|r| F::tuple_count(r)).sum();
-
-        // Standard optimization axes: merge in dimensions emitted by the DS.
-        // Every relation in this run shares the same type, so any one of
-        // them produces the canonical `ds_layout_*` set. The `ds_*` prefix
-        // convention (see `kermit_iters::HasOptimizationAxes`) guarantees no
-        // collision with the base axes assembled per query below.
-        let mut optimization_axes = relations
-            .first()
-            .map(|r| F::optimization_axes(r))
-            .unwrap_or_default();
-        // The build mode comes from the family, not a relation: it describes
-        // the build, which leaves no trace in the structure, and it must be
-        // present even for a workload with no relations.
-        optimization_axes.extend(family.build_mode_axes());
-
-        let relation_lines: Vec<String> = relations
-            .iter()
-            .map(|rel| {
-                let h = rel.header();
-                format!("{:?} (arity {})", h.name(), h.arity())
-            })
-            .collect();
-
-        // A family whose joins mutate their relations (a lazy HashTrie
-        // expands what a join reaches, #92) never probes this engine:
-        // `--verify` and `iteration` run on fresh builds, so `space`
-        // measures the relations as built, whatever ran before it. Their
-        // footprint now is what each `space` block checks against.
-        let as_built_bytes: Option<Vec<usize>> =
-            F::JOIN_MUTATES.then(|| relations.iter().map(|r| r.heap_size_bytes()).collect());
-        (
-            total_tuples,
-            optimization_axes,
-            relation_lines,
-            as_built_bytes,
-        )
+    // Standard optimization axes: the dimensions the structure emits (the
+    // `ds_*` prefix convention, see `kermit_iters::HasOptimizationAxes`,
+    // guarantees no collision with the base axes assembled per query below)
+    // plus the build mode, which comes from the family because it leaves no
+    // trace in the structure. They are read off one empty relation, since
+    // they depend on the type, not on the data, and a query whose atoms are
+    // all constant checks builds no index to read them from.
+    let optimization_axes = {
+        let empty = Tuples::new(1);
+        let probe = family.build_index(
+            RelationHeader::new_positional("axes", 1),
+            TupleView::all(&empty),
+        );
+        let mut axes = F::optimization_axes(&probe);
+        axes.extend(family.build_mode_axes());
+        axes
     };
 
-    let mut reports: Vec<BenchReport> = Vec::with_capacity(workload.queries.len());
+    let mut reports: Vec<BenchReport> = Vec::with_capacity(definition.queries.len());
 
-    for query_def in &workload.queries {
-        // The copies this query reads under `any` (none under `stored`):
-        // built into the loaded engine before anything is verified or
-        // timed, and dropped after the query, so one query's copies are
-        // held at a time. Planning reads only statistics, so this never
-        // probes a relation.
-        let specs = family.required_indexes(&engine, &query_def.query)?;
-        add_copies(&mut engine, &specs);
-        // As for the base relations: the copies' footprint as built.
-        let copies_as_built: Option<Vec<usize>> = F::JOIN_MUTATES.then(|| {
-            F::indexes(&engine)
+    for (query_def, prepared) in definition.queries.iter().zip(prepared_queries) {
+        // This query's indexes, built once and untimed: the `index` metadata
+        // and `space` describe them, and a family whose joins leave an index
+        // as built (`iteration`, `--verify`) joins over them.
+        let indexes = family.build_indexes(catalog, prepared);
+        // A family whose joins mutate their indexes (a lazy HashTrie expands
+        // what a join reaches, #92) never probes these: `--verify` and
+        // `iteration` run on fresh builds, so `space` measures the indexes as
+        // built, whatever ran before it. Their footprint now is what the
+        // `space` block checks against.
+        let as_built_bytes: Option<Vec<usize>> = F::JOIN_MUTATES.then(|| {
+            indexes
                 .iter()
-                .map(|(_, copy)| copy.heap_size_bytes())
+                .map(|(_, index)| index.heap_size_bytes())
                 .collect()
         });
 
         let mut metadata = vec![
-            MetadataLine::new("benchmark", &workload.name),
+            MetadataLine::new("benchmark", &definition.name),
             MetadataLine::new("query", &query_def.name),
             MetadataLine::new("data structure", ds_name),
             MetadataLine::new("algorithm", algo_name),
             MetadataLine::new("allocator", crate::ALLOCATOR),
         ];
-        for spec in &specs {
-            metadata.push(MetadataLine::new("index", spec.describe()));
+        for (position, (spec, index)) in indexes.iter().enumerate() {
+            let source = catalog
+                .tuples(&spec.relation)
+                .expect("prepare checked that every indexed relation is in the catalog");
+            let rows = spec.view(source).count();
+            metadata.push(MetadataLine::new(
+                "index",
+                describe_index(position, spec, rows, index.heap_size_bytes()),
+            ));
         }
         // Correctness gate: with `--verify`, run the query once (untimed)
         // and compare the answer count before spending any measurement time
@@ -232,17 +194,16 @@ fn run_benchmark<F: ExecutionFamily>(
             match query_def.expected {
                 | Some(expected) => {
                     let actual = if F::JOIN_MUTATES {
-                        let mut fresh = family.build_from_tuples(build_inputs.clone());
-                        add_copies(&mut fresh, &specs);
-                        family.count(&fresh, query_def.query.clone())?
+                        let fresh = family.build_indexes(catalog, prepared);
+                        family.count_rows(prepared, &fresh)
                     } else {
-                        family.count(&engine, query_def.query.clone())?
+                        family.count_rows(prepared, &indexes)
                     };
                     if actual != expected {
                         anyhow::bail!(
                             "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
                              tuples, expected {}",
-                            workload.name,
+                            definition.name,
                             query_def.name,
                             ds_name,
                             algo_name,
@@ -257,7 +218,7 @@ fn run_benchmark<F: ExecutionFamily>(
                     eprintln!(
                         "bench run: no expected cardinality for query '{}' in benchmark '{}'; not \
                          verified",
-                        query_def.name, workload.name
+                        query_def.name, definition.name
                     );
                     false
                 },
@@ -268,12 +229,17 @@ fn run_benchmark<F: ExecutionFamily>(
         if metrics.contains(&Metric::EndToEnd) {
             metadata.push(MetadataLine::new("queries per build", queries_per_build));
         }
-        for line in &relation_lines {
-            metadata.push(MetadataLine::new("relation", line));
+        for name in prepared.relations() {
+            if let Some(header) = catalog.header(name) {
+                metadata.push(MetadataLine::new(
+                    "relation",
+                    format!("{:?} (arity {})", header.name(), header.arity()),
+                ));
+            }
         }
         write_metadata_block(&mut io::stderr(), "bench run metadata", &metadata)?;
 
-        let group_name = criterion_group_name(prefix, &workload.name, &query_def.name, execution);
+        let group_name = criterion_group_name(prefix, &definition.name, &query_def.name, execution);
 
         let mut criterion_groups: Vec<CriterionGroupRef> = Vec::new();
 
@@ -282,84 +248,47 @@ fn run_benchmark<F: ExecutionFamily>(
             let mut group = criterion.benchmark_group(&group_name);
 
             if metrics.contains(&Metric::Build) {
-                group.bench_function("insertion", |b| {
+                // Times `build_indexes` alone: every index this query's plan
+                // reads and its constant checks, each copied once from the
+                // catalog's flat tuples, through the same `build_index` that
+                // honours the configuration and build mode the report's
+                // `ds_config_*` / `ds_build_mode` axes name. Planning is done
+                // and statistics are gathered, so neither is in the timer.
+                // The setup is a no-op and the routine returns the indexes,
+                // so nothing is copied beforehand, Criterion drops them after
+                // the timer stops, and `PerIteration` keeps one set alive at
+                // a time.
+                group.bench_function("build", |b| {
                     b.iter_batched(
-                        // One buffer copy per relation, untimed (#111).
-                        || build_inputs.clone(),
-                        |data| {
-                            // Times the per-relation construction only —
-                            // `family.build_relation` rather than the whole
-                            // engine build, which `end_to_end` covers — and
-                            // goes through the family so the build honours
-                            // the same configuration and build mode the
-                            // report's `ds_config_*` / `ds_build_mode` axes
-                            // name.
-                            for (header, tuples) in data {
-                                std::hint::black_box(family.build_relation(header, tuples));
-                            }
-                        },
-                        criterion::BatchSize::SmallInput,
+                        || (),
+                        |()| family.build_indexes(catalog, prepared),
+                        criterion::BatchSize::PerIteration,
                     );
                 });
                 criterion_groups.push(CriterionGroupRef {
                     group: group_name.clone(),
-                    function: "insertion".to_string(),
+                    function: "build".to_string(),
                     metric: ReportMetric::Time,
                 });
-
-                // The price of `any`: permuting and building this query's
-                // copies, timed as one function beside `insertion` and
-                // through the same `build_relation`. The permutation is
-                // inside the timed region, since a copy cannot be built
-                // without it. Emitted only when the plan needs a copy, so a
-                // `stored` report is unchanged.
-                if !specs.is_empty() {
-                    group.bench_function("copies", |b| {
-                        b.iter_batched(
-                            || specs.clone(),
-                            |specs| {
-                                for spec in specs {
-                                    let (header, tuples) = input_of(&spec.base);
-                                    let header = index_header(&spec, header);
-                                    std::hint::black_box(
-                                        family.build_relation(header, spec.permute_all(tuples)),
-                                    );
-                                }
-                            },
-                            criterion::BatchSize::SmallInput,
-                        );
-                    });
-                    criterion_groups.push(CriterionGroupRef {
-                        group: group_name.clone(),
-                        function: "copies".to_string(),
-                        metric: ReportMetric::Time,
-                    });
-                }
             }
 
             if metrics.contains(&Metric::Iteration) {
                 // Times the join with its rows counted, never collected: the
-                // timed region holds no per-row allocation, and a batch keeps
-                // only `u64`s alive, so memory is independent of result size
+                // timed region holds no per-row allocation, and only a `u64`
+                // stays alive, so memory is independent of result size
                 // (issue #65).
                 if F::JOIN_MUTATES {
-                    // Cold (#92): each timed join runs on an engine built in
+                    // Cold (#92): each timed join runs on indexes built in
                     // the untimed setup, so it pays the expansion its own
                     // probes cause instead of finding it done by an earlier
-                    // sample. The setup builds the query's copies too, so
-                    // they are as cold as the base relations. The routine
-                    // hands the engine back, so Criterion drops it after
-                    // timing, and `PerIteration` keeps one fresh engine
-                    // alive at a time.
+                    // sample. The routine hands the indexes back, so
+                    // Criterion drops them after timing, and `PerIteration`
+                    // keeps one fresh set alive at a time.
                     group.bench_function("iteration", |b| {
                         b.iter_batched(
-                            || {
-                                let mut fresh = family.build_from_tuples(build_inputs.clone());
-                                add_copies(&mut fresh, &specs);
-                                (fresh, query_def.query.clone())
-                            },
-                            |(fresh, q)| {
-                                let rows = family.count(&fresh, q).expect(VALIDATED);
+                            || family.build_indexes(catalog, prepared),
+                            |fresh| {
+                                let rows = family.count_rows(prepared, &fresh);
                                 (fresh, rows)
                             },
                             criterion::BatchSize::PerIteration,
@@ -367,11 +296,7 @@ fn run_benchmark<F: ExecutionFamily>(
                     });
                 } else {
                     group.bench_function("iteration", |b| {
-                        b.iter_batched(
-                            || query_def.query.clone(),
-                            |q| family.count(&engine, q).expect(VALIDATED),
-                            criterion::BatchSize::SmallInput,
-                        );
+                        b.iter(|| family.count_rows(prepared, &indexes));
                     });
                 }
                 criterion_groups.push(CriterionGroupRef {
@@ -382,31 +307,25 @@ fn run_benchmark<F: ExecutionFamily>(
             }
 
             if metrics.contains(&Metric::EndToEnd) {
-                // The timed body rebuilds the engine from the file-order
-                // tuples kept above, through the same `build_relation` path
-                // that loaded the untimed engine and that the `insertion`
-                // metric times, so the build term is the one the
-                // `iteration` metric's engine paid. It additionally pays for
-                // assembling the relation store and, under `any`, for this
-                // query's copies, which the engine `iteration` reads holds.
+                // The timed body is the `build` metric's `build_indexes`
+                // followed by K joins over the indexes it built, so the
+                // build term is the one the `iteration` metric's indexes
+                // paid and the whole equals `build` + K × `iteration`.
                 //
                 // PerIteration: a fresh build per sample is the point of this
                 // metric — batching would amortise away the construction cost
                 // whose interaction with query traversal is under measurement.
+                // The routine returns the indexes, so they are freed outside
+                // the timer.
                 group.bench_function("end_to_end", |b| {
                     b.iter_batched(
-                        || {
-                            (build_inputs.clone(), vec![
-                                query_def.query.clone();
-                                queries_per_build as usize
-                            ])
-                        },
-                        |(inputs, queries)| {
-                            let mut fresh = family.build_from_tuples(inputs);
-                            add_copies(&mut fresh, &specs);
-                            for q in queries {
-                                std::hint::black_box(family.count(&fresh, q).expect(VALIDATED));
+                        || (),
+                        |()| {
+                            let built = family.build_indexes(catalog, prepared);
+                            for _ in 0..queries_per_build {
+                                std::hint::black_box(family.count_rows(prepared, &built));
                             }
+                            built
                         },
                         criterion::BatchSize::PerIteration,
                     );
@@ -423,36 +342,35 @@ fn run_benchmark<F: ExecutionFamily>(
         }
 
         if metrics.contains(&Metric::Space) {
-            let relations = F::relations(&engine);
-            let copies = F::indexes(&engine);
-            if let (Some(as_built), Some(copies_as_built)) = (&as_built_bytes, &copies_as_built) {
-                let now: Vec<usize> = relations.iter().map(|r| r.heap_size_bytes()).collect();
-                let copies_now: Vec<usize> =
-                    copies.iter().map(|(_, c)| c.heap_size_bytes()).collect();
+            let built: Vec<&F::Rel> = indexes.iter().map(|(_, index)| index).collect();
+            if let Some(as_built) = &as_built_bytes {
+                let now: Vec<usize> = built.iter().map(|index| index.heap_size_bytes()).collect();
                 anyhow::ensure!(
-                    now == *as_built && copies_now == *copies_as_built,
-                    "internal error: a probe reached the loaded engine of a {ds_name} cell whose \
-                     joins mutate their relations, so `space` would measure them partly expanded; \
-                     see `ExecutionFamily::JOIN_MUTATES`"
+                    now == *as_built,
+                    "internal error: a probe reached the indexes of a {ds_name} cell whose joins \
+                     mutate their relations, so `space` would measure them partly expanded; see \
+                     `ExecutionFamily::JOIN_MUTATES`"
                 );
             }
-            let mut criterion = build_space_criterion(bench_args);
-            let mut group = criterion.benchmark_group(&group_name);
-            for rel in relations {
-                let function = format!("space/{}", rel.header().name());
-                criterion_groups.push(add_space_bench(&mut group, &group_name, function, &[rel]));
+            // A query whose atoms are all constant checks builds no index,
+            // and there is nothing to measure.
+            if !built.is_empty() {
+                let mut criterion = build_space_criterion(bench_args);
+                let mut group = criterion.benchmark_group(&group_name);
+                // One function per query, summing every index it reads.
+                criterion_groups.push(add_space_bench(
+                    &mut group,
+                    &group_name,
+                    "space".to_string(),
+                    &built,
+                ));
+                group.finish();
+                criterion.final_summary();
             }
-            // One function per copy, beside the base relations'.
-            for (spec, copy) in copies {
-                let function = format!("space/{}", spec.name);
-                criterion_groups.push(add_space_bench(&mut group, &group_name, function, &[copy]));
-            }
-            group.finish();
-            criterion.final_summary();
         }
 
         let mut axes = BTreeMap::from([
-            ("benchmark".to_string(), serde_json::json!(workload.name)),
+            ("benchmark".to_string(), serde_json::json!(definition.name)),
             ("query".to_string(), serde_json::json!(query_def.name)),
             ("data_structure".to_string(), serde_json::json!(ds_name)),
             ("algorithm".to_string(), serde_json::json!(algo_name)),
@@ -461,10 +379,10 @@ fn run_benchmark<F: ExecutionFamily>(
                 serde_json::json!(planner.optimiser.axis_value()),
             ),
             (
-                "column_orders".to_string(),
-                serde_json::json!(column_orders.axis_value()),
+                "tuples".to_string(),
+                serde_json::json!(tuples_read(catalog, prepared)),
             ),
-            ("tuples".to_string(), serde_json::json!(total_tuples)),
+            ("index_rows".to_string(), serde_json::json!(indexes.rows())),
         ]);
         // Only meaningful when the end-to-end metric ran; omitting it
         // otherwise keeps historical invocations' reports unchanged.
@@ -479,8 +397,6 @@ fn run_benchmark<F: ExecutionFamily>(
             axes.insert("verified".to_string(), serde_json::json!(true));
         }
         reports.push(BenchReport::new(kind, &metadata, axes, criterion_groups));
-
-        F::clear_indexes(&mut engine);
     }
 
     Ok(reports)
@@ -490,7 +406,7 @@ fn run_benchmark<F: ExecutionFamily>(
 /// [`ExecutionFamily`] the cell names. There is no separate algorithm
 /// parameter to ignore: the `Execution` fixes both halves of the pair.
 pub(crate) fn dispatch_run_bench(
-    cell: Execution, workload: &Workload, settings: RunSettings<'_>,
+    cell: Execution, workload: &PreparedWorkload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
     // One planner per family: a `Planner` owns its optimiser.
     let planner = || settings.planner.instantiate();
@@ -721,5 +637,28 @@ mod tests {
         assert!(groups.iter().all(|g| g.len() > 64));
 
         check_group_directories_distinct(groups).unwrap();
+    }
+
+    #[test]
+    fn an_index_line_names_its_id_relation_filter_columns_rows_and_bytes() {
+        use kermit_ds::Filter;
+        let pinned = IndexSpec {
+            relation: "edge".to_string(),
+            filter: Filter::new(vec![(1, 2)], vec![]),
+            columns: vec![0],
+        };
+        assert_eq!(
+            describe_index(0, &pinned, 1, 96),
+            "#0 edge filter col1=2 columns [0]: 1 rows, 96 bytes"
+        );
+        let reversed = IndexSpec {
+            relation: "edge".to_string(),
+            filter: Filter::none(),
+            columns: vec![1, 0],
+        };
+        assert_eq!(
+            describe_index(1, &reversed, 3, 128),
+            "#1 edge filter - columns [1, 0]: 3 rows, 128 bytes"
+        );
     }
 }
