@@ -272,8 +272,8 @@ impl<'a> Cursor<'a> {
 ///    each row of a morsel that the view matches they write its output row into
 ///    a scratch row, call `partition_of` on it once, keep the row's partition
 ///    number, and count the morsel's matching rows per partition (an identity
-///    view, Amendment 2, tests no row and writes no scratch row: the source
-///    row is the output row, and `partition_of` reads it in place). A row the
+///    view, Amendment 2, tests no row and writes no scratch row: the source row
+///    is the output row, and `partition_of` reads it in place). A row the
 ///    filter rejects is skipped.
 /// 2. **Offsets.** The counts add up to the copy's row count, and the copy and
 ///    `origin` are allocated once, at exactly that size. Prefix sums over
