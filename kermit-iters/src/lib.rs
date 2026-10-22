@@ -51,6 +51,7 @@ mod leaf_rows;
 mod linear;
 mod optimization;
 mod trie;
+mod tuple_view;
 mod tuples;
 
 pub use {
@@ -63,5 +64,6 @@ pub use {
     linear::{LinearIterable, LinearIterator},
     optimization::{BuildMode, ConfigOption, HasOptimizationAxes, LayoutOption},
     trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
+    tuple_view::Filter,
     tuples::{RowId, Tuples},
 };
