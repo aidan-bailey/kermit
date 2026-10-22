@@ -1,6 +1,6 @@
 # `LeapfrogTriejoin`
 
-> **Status:** stable · **CLI:** `-a leapfrog-triejoin` · **Implementation:** [`kermit_algos::leapfrog_triejoin`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs)
+> **Status:** stable · **CLI:** `-a leapfrog-triejoin` · **Implementation:** [`kermit_algos::LeapfrogTriejoin`](../../kermit-algos/src/sorted/leapfrog_triejoin.rs)
 
 ## What it is
 
