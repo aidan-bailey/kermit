@@ -176,7 +176,7 @@ def test_allow_mixed_schema_loads_both_sides(tmp_path: Path) -> None:
 
 
 def test_single_sided_loads_are_unaffected(tmp_path: Path) -> None:
-    for version in (2, 3, 4):
+    for version in (2, 3, 4, 5):
         same = [_versioned_report(tmp_path / f"v{version}_{i}.json", version) for i in range(2)]
         assert len(load_reports(same)) == 2
 
@@ -244,3 +244,50 @@ def test_phase_of_recognises_copies() -> None:
     assert "copies" in TIME_PHASES
     assert phase_of("copies") == "copies"
     assert phase_of("space/Index_1_0_edge") is None
+
+
+def test_refuses_to_mix_reports_across_the_per_query_build_boundary(tmp_path: Path) -> None:
+    from kermit_lab.loader import PER_QUERY_BUILD_SCHEMA
+
+    assert PER_QUERY_BUILD_SCHEMA == 5
+    old = _versioned_report(tmp_path / "v4.json", 4)
+    new = _versioned_report(tmp_path / "v5.json", 5)
+    with pytest.raises(SchemaError, match="refusing to mix schema_version 4"):
+        load_reports([old, new])
+    with pytest.raises(SchemaError, match="builds, and times, only the indexes it reads"):
+        load_reports([new, old])
+    reports = load_reports([old, new], allow_mixed_schema=True)
+    assert [r.schema_version for r in reports] == [4, 5]
+
+
+def test_no_metric_is_comparable_across_the_per_query_build_boundary(tmp_path: Path) -> None:
+    """v5 changes `iteration`, `end_to_end` and `space` per query and replaces
+    `insertion` and `copies` with `build`, so the message offers nothing to compare."""
+    v4 = _versioned_report(tmp_path / "v4.json", 4)
+    v5 = _versioned_report(tmp_path / "v5.json", 5)
+    with pytest.raises(SchemaError) as exc:
+        load_reports([v4, v5])
+    assert "no metric is comparable across them all" in str(exc.value)
+
+
+def test_a_load_straddling_v4_and_v5_names_both_boundaries(tmp_path: Path) -> None:
+    v3 = _versioned_report(tmp_path / "v3.json", 3)
+    v5 = _versioned_report(tmp_path / "v5.json", 5)
+    with pytest.raises(SchemaError) as exc:
+        load_reports([v3, v5])
+    message = str(exc.value)
+    assert "from v4 every structure builds from one flat tuple buffer" in message
+    assert "also straddles v5, where each query builds, and times, only the indexes it reads" in message
+    assert "no metric is comparable across them all" in message
+
+
+def test_phase_of_recognises_build() -> None:
+    from kermit_lab.loader import TIME_PHASES, phase_of
+
+    # `bench run` writes the bare token; `bench ds` prefixes the DS name (v5).
+    assert phase_of("build") == "build"
+    assert phase_of("TreeTrie/build") == "build"
+    assert phase_of("space") is None
+    # Reports before v5 still load: their phases stay recognised.
+    assert TIME_PHASES == ("build", "insertion", "copies", "iteration", "end_to_end")
+    assert phase_of("TreeTrie/insertion") == "insertion"

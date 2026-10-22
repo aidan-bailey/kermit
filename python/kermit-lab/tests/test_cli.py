@@ -39,7 +39,7 @@ def test_scaling_preset_subcommand(fixture_tree, tmp_path: Path) -> None:
     assert out.exists()
 
 
-@pytest.mark.parametrize("versions", [(2, 3), (3, 4)])
+@pytest.mark.parametrize("versions", [(2, 3), (3, 4), (4, 5)])
 def test_mixed_schema_reports_exit_with_code_4(tmp_path: Path, versions: tuple[int, int]) -> None:
     paths = []
     for version in versions:

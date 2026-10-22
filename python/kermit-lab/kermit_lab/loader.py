@@ -33,6 +33,13 @@ instead of a ``Vec`` per tuple, and a lazy-expansion HashTrie's
 ``iteration``, which runs on a fresh build and times child expansion, times
 Algorithm 2 grouping row ids and reading rows from the buffer."""
 
+PER_QUERY_BUILD_SCHEMA = 5
+"""First schema version whose queries load their relations into a flat
+catalog and build, and time, only the indexes each reads (per-query index
+builds): ``build`` replaces ``insertion`` and ``copies``, ``iteration``
+excludes planning, ``end_to_end`` and ``space`` are per query, the
+``column_orders`` axis is gone and ``index_rows`` is new."""
+
 MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (
         STREAMED_JOIN_SCHEMA,
@@ -48,6 +55,12 @@ MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
             "ColumnTrie space",
             "bench run / bench join iteration outside lazy-expansion HashTrie cells",
         ),
+    ),
+    (
+        PER_QUERY_BUILD_SCHEMA,
+        "each query builds, and times, only the indexes it reads, so build replaces "
+        "insertion and copies and iteration, end_to_end and space are measured per query",
+        (),
     ),
 )
 """Every schema version from which a metric changed meaning: the version,
@@ -170,16 +183,18 @@ def load_reports(
     return out
 
 
-TIME_PHASES: tuple[str, ...] = ("insertion", "copies", "iteration", "end_to_end")
+TIME_PHASES: tuple[str, ...] = ("build", "insertion", "copies", "iteration", "end_to_end")
 
 
 def phase_of(function_id: str) -> str | None:
-    """Return the time phase (``"insertion"`` / ``"copies"`` /
+    """Return the time phase (``"build"`` / ``"insertion"`` / ``"copies"`` /
     ``"iteration"`` / ``"end_to_end"``) if ``function_id`` encodes one.
 
-    ``copies`` is the reordered copies a query needs under
+    ``build`` is the v5 phase: a query's indexes, built from the flat
+    catalog. ``insertion`` and ``copies`` are what v4 and earlier reports
+    carry: ``copies`` is the reordered copies a query needed under
     ``--column-orders any``, emitted beside ``insertion`` when the plan
-    needs one (#93).
+    needed one (#93).
 
     `bench ds` writes ``"{ds}/<phase>"``; `bench run` writes the bare
     ``"<phase>"``. Both end with the phase token, so a final-segment check
