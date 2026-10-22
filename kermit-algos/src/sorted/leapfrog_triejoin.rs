@@ -411,7 +411,7 @@ where
 mod tests {
     use {
         crate::{
-            optimiser::{CatalogStats, LexicographicOptimiser, QueryOptimiser},
+            optimiser::QueryPlan,
             sorted::{
                 leapfrog_join::LeapfrogJoinIterator,
                 leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
@@ -818,19 +818,18 @@ mod tests {
         );
     }
 
-    /// `Q(X, Y) :- R(Y, X).` forces the descent order Y, X (R's column
+    /// `Q(X, Y) :- R(Y, X).` with the descent order Y, X (R's column
     /// order) against the head order X, Y, so `join_for_each` must reorder
     /// every descent tuple into its scratch row before emitting it.
     #[test]
     fn join_for_each_emits_head_order_under_a_reordering_plan() {
         let r: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 10], vec![2, 20]]);
         let query: JoinQuery = "Q(X, Y) :- R(Y, X).".parse().unwrap();
-        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
-        assert_eq!(
-            plan.variable_ordering,
-            vec![1, 0],
-            "the plan must descend Y first"
-        );
+        // No column order constrains an optimiser any more, so the plan that
+        // descends Y first is written out.
+        let plan = QueryPlan {
+            variable_ordering: vec![1, 0],
+        };
         let mut rows = Vec::new();
         LeapfrogTriejoin::join_for_each(
             &plan,

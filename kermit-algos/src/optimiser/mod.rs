@@ -31,7 +31,7 @@ pub use {
     column_orders::ColumnOrderPolicy,
     cost_based::CostBasedOptimiser,
     lexicographic::LexicographicOptimiser,
-    ordering::{check_attribute_order, topological_order, CyclicAttributeOrder, Precedence},
+    ordering::{topological_order, Precedence},
     plan::{PlanError, QueryPlan},
     planner::Planner,
     stats::{distinct_per_column, CatalogStats, RelationStats, StatisticsLevel},

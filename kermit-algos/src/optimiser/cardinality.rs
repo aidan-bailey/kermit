@@ -13,12 +13,11 @@ use crate::{
 ///
 /// Each variable is ranked by the minimum tuple count over the body
 /// predicates that mention it (a variable in a small relation can only
-/// take few values, so binding it early shrinks the search space).
-/// Relations without statistics rank as `usize::MAX` ("assume large");
-/// synthetic `Const_*` singletons rank 1 and are therefore bound as early
-/// as constraints allow — exactly the right treatment for constants. Ties
-/// break on the canonical index, keeping plans deterministic for
-/// reproducible benchmarks.
+/// take few values, so binding it early shrinks the search space). A
+/// predicate is an access, so a constant's filter has already shrunk its
+/// count. Relations without statistics rank as `usize::MAX` ("assume
+/// large"). Ties break on the canonical index, keeping plans
+/// deterministic for reproducible benchmarks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CardinalityOptimiser;
 
@@ -33,7 +32,7 @@ impl QueryOptimiser for CardinalityOptimiser {
             }
         }
         QueryPlan {
-            variable_ordering: topological_order(&Precedence::for_query(query, stats), |v| {
+            variable_ordering: topological_order(&Precedence::free(analysis.num_vars), |v| {
                 min_size[v]
             }),
         }
@@ -108,29 +107,13 @@ mod tests {
         assert_eq!(plan.variable_ordering, vec![0, 1]);
     }
 
+    /// The ranking alone decides: `S` is tiny, so its `Y` goes first even
+    /// though `R(X, Y)` lists `X` first. An index is built with its columns
+    /// in plan order, so no column order constrains the plan.
     #[test]
-    fn column_order_constraints_still_bind() {
-        // Even though Y's relation is tiny, R(X, Y) forces X first.
+    fn the_smallest_relation_goes_first_regardless_of_column_order() {
         let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
         let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, &[("R", 1000), ("S", 1)]));
-        assert_eq!(plan.variable_ordering, vec![0, 1]);
-    }
-
-    /// Under `any` the ranking alone decides: `S` is tiny, so its `Y`
-    /// goes first even though `R(X, Y)` stores `X` first.
-    #[test]
-    fn under_any_the_smallest_relation_goes_first_regardless_of_column_order() {
-        let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
-        let sizes = [("R", 1000), ("S", 1)];
-        let stored = CardinalityOptimiser.plan(&q, &stats_for(&q, &sizes));
-        assert_eq!(stored.variable_ordering, vec![0, 1]);
-        let any = CatalogStats::for_query(&q, ColumnOrderPolicy::Any, |name| {
-            let arity = q.body.iter().find(|p| p.name == name)?.terms.len();
-            let &(_, tuples) = sizes.iter().find(|(n, _)| *n == name)?;
-            Some(RelationStats::new(tuples, arity))
-        });
-        assert_eq!(CardinalityOptimiser.plan(&q, &any).variable_ordering, vec![
-            1, 0
-        ]);
+        assert_eq!(plan.variable_ordering, vec![1, 0]);
     }
 }

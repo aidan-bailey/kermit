@@ -107,8 +107,8 @@ pub fn distinct_per_column(
 /// data-structure-agnostic and unit-testable with literal maps. Callers
 /// build one per join via [`CatalogStats::for_query`]. The policy rides
 /// along because it decides which atoms *pin* the plan to their stored
-/// column order ([`is_pinned`](Self::is_pinned)), which every optimiser
-/// reads through [`Precedence::for_query`](super::Precedence::for_query).
+/// column order ([`is_pinned`](Self::is_pinned)); no optimiser reads that
+/// any more, and Task 23.2 deletes the policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CatalogStats {
     relations: BTreeMap<String, RelationStats>,

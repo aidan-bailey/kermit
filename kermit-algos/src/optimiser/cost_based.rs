@@ -5,8 +5,7 @@ use {
         analysis::analyse,
         optimiser::{
             ordering::{topological_order, Precedence},
-            CardinalityOptimiser, CatalogStats, ColumnOrderPolicy, QueryOptimiser, QueryPlan,
-            StatisticsLevel,
+            CardinalityOptimiser, CatalogStats, QueryOptimiser, QueryPlan, StatisticsLevel,
         },
     },
     kermit_parser::JoinQuery,
@@ -25,13 +24,11 @@ use {
 /// size: the product of the atoms' projection sizes, divided, per variable,
 /// by every column's distinct count except the smallest. The cheapest plan
 /// is then a shortest path over sets of bound variables, found by dynamic
-/// programming in the style of Selinger et al. (1979). The search visits
-/// only the sets a valid plan can bind, those closed under the column-order
-/// constraints, so its plan is valid by construction. Under
-/// `--column-orders any` there are no constraints, so every subset of the
-/// variables is a state: 2ⁿ − 1 for n variables, which fits the default
-/// budget up to 14 variables and falls back to [`CardinalityOptimiser`]
-/// above.
+/// programming in the style of Selinger et al. (1979). No column order
+/// constrains the plan, since a query builds each index with its columns in
+/// plan order, so every subset of the variables is a state: 2ⁿ − 1 for n
+/// variables, which fits the default budget up to 14 variables and falls
+/// back to [`CardinalityOptimiser`] above.
 ///
 /// Ties break towards the lexicographically smaller order, so plans are
 /// deterministic. A query with more than 64 variables, or whose search
@@ -70,7 +67,7 @@ impl QueryOptimiser for CostBasedOptimiser {
             analysis.num_vars,
             stats,
         );
-        let precedence = Precedence::for_query(query, stats);
+        let precedence = Precedence::free(analysis.num_vars);
         let cheapest = precedence
             .predecessor_masks()
             .and_then(|predecessors| cheapest_order(&model, &predecessors, self.state_budget));
@@ -90,7 +87,7 @@ impl QueryOptimiser for CostBasedOptimiser {
         let variable_ordering = topological_order(&precedence, |v| position[v]);
         debug_assert_eq!(
             variable_ordering, order,
-            "the search returned an order that violates a column-order constraint"
+            "the search returned an order that violates a precedence edge"
         );
         QueryPlan {
             variable_ordering,
@@ -132,9 +129,8 @@ impl AtomStats {
     /// non-empty): its tuples when they are all its columns, one column's
     /// distinct count on its own, and otherwise the product of the
     /// columns' distinct counts capped at the tuples, since no statistic
-    /// covers a multi-column projection (independent columns assumed).
-    /// Under `stored` the bound columns are always a prefix; under `any`
-    /// any subset.
+    /// covers a multi-column projection (independent columns assumed). The
+    /// bound columns are any subset of the atom's columns.
     fn projection_size(&self, columns: &[usize]) -> f64 {
         if columns.len() == self.distinct.len() {
             self.tuples
@@ -157,13 +153,10 @@ struct CostModel<'q> {
     /// Each atom's variables in column order, as `analyse` numbers them.
     predicate_variables: &'q [Vec<usize>],
     num_vars: usize,
-    /// The policy the plan is made under: under `stored` every set the
-    /// search reaches binds a prefix of each atom, which `estimate` checks.
-    column_orders: ColumnOrderPolicy,
 }
 
 impl<'q> CostModel<'q> {
-    /// The model of `query`, which must be the rewritten query (as
+    /// The model of `query`, which must be the query of accesses (as
     /// [`QueryOptimiser::plan`] receives it): one variable per column, so
     /// `predicate_variables[i][c]` is the variable in atom `i`'s column `c`.
     fn new(
@@ -187,7 +180,6 @@ impl<'q> CostModel<'q> {
             atoms,
             predicate_variables,
             num_vars,
-            column_orders: stats.column_orders(),
         }
     }
 
@@ -196,9 +188,8 @@ impl<'q> CostModel<'q> {
     /// variable, by the distinct counts of every column it occupies except
     /// the smallest (the containment-of-value-sets assumption).
     ///
-    /// `bound` is any set of variables; under `stored` it is closed under
-    /// the column-order constraints, so each atom's bound columns form a
-    /// prefix, and under `any` they are any subset.
+    /// `bound` is any set of variables, so an atom's bound columns are any
+    /// subset of its columns.
     fn estimate(&self, bound: u64) -> f64 {
         if bound == 0 {
             return 1.0;
@@ -215,11 +206,6 @@ impl<'q> CostModel<'q> {
             let bound_columns: Vec<usize> = (0..vars.len())
                 .filter(|&c| contains(bound, vars[c]))
                 .collect();
-            debug_assert!(
-                self.column_orders == ColumnOrderPolicy::Any
-                    || bound_columns.iter().enumerate().all(|(i, &c)| i == c),
-                "under `stored`, a set closed under column order binds a prefix of every atom"
-            );
             if bound_columns.is_empty() {
                 continue;
             }
@@ -321,7 +307,7 @@ fn cheapest_order(
 mod tests {
     use {
         super::*,
-        crate::optimiser::{check_attribute_order, ColumnOrderPolicy, RelationStats},
+        crate::optimiser::{ColumnOrderPolicy, RelationStats},
         kermit_parser::JoinQuery,
     };
 
@@ -408,21 +394,13 @@ mod tests {
     #[test]
     fn worked_example_binds_the_selective_side_first() {
         let (q, stats) = worked_example();
-        // K0, B, A, Y costs 1 + 10 + 1000 + 200 = 1211. Cardinality binds
-        // small's A second, for 1 + 100 + 1000 + 200 = 1301.
+        // K0, B, Y, A costs 1 + 10 + 20 + 200 = 231, as K0, Y, B, A does;
+        // the lexicographically smaller order wins. Cardinality binds
+        // small's A second, for 1 + 100 + 100 + 200 = 401.
         let plan = CostBasedOptimiser::default().plan(&q, &stats);
-        assert_eq!(plan.variable_ordering, vec![3, 1, 0, 2]);
+        assert_eq!(plan.variable_ordering, vec![3, 1, 2, 0]);
         let cardinality = CardinalityOptimiser.plan(&q, &stats);
-        assert_eq!(cardinality.variable_ordering, vec![3, 0, 1, 2]);
-    }
-
-    #[test]
-    fn column_order_constraints_bind() {
-        // Y's relation S is tiny, but R(X, Y) puts X first.
-        let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
-        let stats = stats_for(&q, &[("R", 1000, &[1000, 1000]), ("S", 1, &[1])]);
-        let plan = CostBasedOptimiser::default().plan(&q, &stats);
-        assert_eq!(plan.variable_ordering, vec![0, 1]);
+        assert_eq!(cardinality.variable_ordering, vec![3, 0, 2, 1]);
     }
 
     #[test]
@@ -493,18 +471,19 @@ mod tests {
 
     #[test]
     fn the_budget_counts_every_set_reached() {
-        // The worked example reaches six sets: {A}, {K0}, {A, K0}, {K0, B},
-        // {A, K0, B} and all four.
+        // No constraint limits the search, so the worked example reaches
+        // every non-empty subset of its four variables: 4 + 6 + 4 + 1 = 15
+        // sets.
         let (q, stats) = worked_example();
         let fits = CostBasedOptimiser {
-            state_budget: 6,
+            state_budget: 15,
         }
         .plan(&q, &stats);
-        assert_eq!(fits.variable_ordering, vec![3, 1, 0, 2]);
+        assert_eq!(fits.variable_ordering, vec![3, 1, 2, 0]);
         let cardinality = CardinalityOptimiser.plan(&q, &stats);
         assert_eq!(
             CostBasedOptimiser {
-                state_budget: 5
+                state_budget: 14
             }
             .plan(&q, &stats),
             cardinality
@@ -537,73 +516,53 @@ mod tests {
         );
     }
 
-    fn stats_under(
-        q: &JoinQuery, policy: ColumnOrderPolicy, relations: &[(&str, usize, &[usize])],
-    ) -> CatalogStats {
-        CatalogStats::for_query(q, policy, |name| {
-            let &(_, tuples, distinct) = relations.iter().find(|(n, ..)| *n == name)?;
-            Some(RelationStats::new(tuples, distinct.len()).with_column_distinct(distinct.to_vec()))
-        })
-    }
-
-    /// Under `any` a bound set need not be a stored-order prefix of an
-    /// atom: `{Y}` binds `R`'s second column alone, and the estimate reads
-    /// that column's distinct count.
+    /// An atom's bound columns need not be a stored-order prefix: `{Y}`
+    /// binds `R`'s second column alone, and the estimate reads that
+    /// column's distinct count.
     #[test]
-    fn under_any_the_bound_columns_need_not_be_a_prefix() {
+    fn the_bound_columns_need_not_be_a_prefix() {
         let q: JoinQuery = "Q(X, Y) :- R(X, Y).".parse().unwrap();
-        let stats = stats_under(&q, ColumnOrderPolicy::Any, &[("R", 100, &[10, 20])]);
+        let stats = stats_for(&q, &[("R", 100, &[10, 20])]);
         assert_eq!(estimate(&q, &stats, &[1]), 20.0);
         assert_eq!(estimate(&q, &stats, &[0]), 10.0);
         assert_eq!(estimate(&q, &stats, &[0, 1]), 100.0);
     }
 
-    /// Under `any` a non-prefix pair of a ternary atom multiplies those
-    /// columns' distinct counts, capped at the tuples, like a prefix does.
+    /// A non-prefix pair of a ternary atom multiplies those columns'
+    /// distinct counts, capped at the tuples, like a prefix does.
     #[test]
-    fn under_any_a_column_pair_assumes_independent_columns_capped_by_the_tuples() {
+    fn a_column_pair_assumes_independent_columns_capped_by_the_tuples() {
         let q: JoinQuery = "Q(X, Y, Z) :- T(X, Y, Z).".parse().unwrap();
-        let stats = stats_under(&q, ColumnOrderPolicy::Any, &[("T", 1000, &[10, 5, 7])]);
+        let stats = stats_for(&q, &[("T", 1000, &[10, 5, 7])]);
         assert_eq!(estimate(&q, &stats, &[0, 2]), 70.0);
-        let stats = stats_under(&q, ColumnOrderPolicy::Any, &[("T", 1000, &[100, 50, 70])]);
+        let stats = stats_for(&q, &[("T", 1000, &[100, 50, 70])]);
         assert_eq!(estimate(&q, &stats, &[1, 2]), 1000.0);
     }
 
-    /// `column_order_constraints_bind` is the `stored` half: `R(X, Y)`
-    /// forces `X` first although `S` is tiny. Under `any` the cheap side
-    /// goes first.
+    /// `S` is tiny, although `R(X, Y)` lists `X` first: no column order
+    /// constrains the plan, so the cheap side goes first.
     #[test]
-    fn under_any_the_cheap_side_goes_first() {
+    fn the_cheap_side_goes_first() {
         let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
-        let relations: &[(&str, usize, &[usize])] = &[("R", 1000, &[1000, 1000]), ("S", 1, &[1])];
-        let stored = stats_under(&q, ColumnOrderPolicy::Stored, relations);
+        let stats = stats_for(&q, &[("R", 1000, &[1000, 1000]), ("S", 1, &[1])]);
         assert_eq!(
             CostBasedOptimiser::default()
-                .plan(&q, &stored)
-                .variable_ordering,
-            vec![0, 1]
-        );
-        let any = stats_under(&q, ColumnOrderPolicy::Any, relations);
-        assert_eq!(
-            CostBasedOptimiser::default()
-                .plan(&q, &any)
+                .plan(&q, &stats)
                 .variable_ordering,
             vec![1, 0]
         );
     }
 
     /// With no edges every subset is a state: three variables reach seven
-    /// sets, so a budget of six falls back to `cardinality` under `any`
-    /// while `stored` reaches only three.
+    /// sets, so a budget of six falls back to `cardinality`.
     #[test]
-    fn a_free_search_reaches_every_subset() {
+    fn the_search_reaches_every_subset() {
         let q: JoinQuery = "Q(X, Y, Z) :- T(X, Y, Z).".parse().unwrap();
-        let relations: &[(&str, usize, &[usize])] = &[("T", 1000, &[10, 5, 7])];
-        let any = stats_under(&q, ColumnOrderPolicy::Any, relations);
+        let stats = stats_for(&q, &[("T", 1000, &[10, 5, 7])]);
         let seven = CostBasedOptimiser {
             state_budget: 7,
         }
-        .plan(&q, &any);
+        .plan(&q, &stats);
         // est({Y}) = 5 is the cheapest first step; then est({Y, Z}) = 35
         // beats est({X, Y}) = 50, and every order ends at est({X, Y, Z}) =
         // 1000: Y, Z, X costs 1040, the next best (Z, Y, X) 1042.
@@ -612,23 +571,14 @@ mod tests {
             CostBasedOptimiser {
                 state_budget: 6
             }
-            .plan(&q, &any),
-            CardinalityOptimiser.plan(&q, &any)
-        );
-        let stored = stats_under(&q, ColumnOrderPolicy::Stored, relations);
-        assert_eq!(
-            CostBasedOptimiser {
-                state_budget: 3
-            }
-            .plan(&q, &stored)
-            .variable_ordering,
-            vec![0, 1, 2]
+            .plan(&q, &stats),
+            CardinalityOptimiser.plan(&q, &stats)
         );
     }
 
     /// A 64-bit linear congruential generator (Knuth's MMIX constants), as
-    /// `kermit/tests/column_orders_equivalence.rs` has: seeded, so a
-    /// failing case reproduces, with no new dependency.
+    /// `kermit/tests/common/oracle.rs` has: seeded, so a failing case
+    /// reproduces, with no new dependency.
     struct Lcg(u64);
 
     impl Lcg {
@@ -665,8 +615,8 @@ mod tests {
 
     /// A random query as the planner receives it, and its statistics: two
     /// to four atoms over three relations of arity 1–3, each atom's columns
-    /// distinct variables (the selection rewrite leaves no repeat) drawn
-    /// from six, and the head every variable used.
+    /// distinct variables (an access repeats none) drawn from six, and the
+    /// head every variable used.
     fn random_case(rng: &mut Lcg, counts: Counts) -> (String, Relations) {
         let relations: Relations = (0..3)
             .map(|i| {
@@ -719,7 +669,8 @@ mod tests {
     }
 
     /// Every order of the variables that binds each after its
-    /// `predecessors`, in lexicographic order.
+    /// `predecessors` (none, for a free graph: every permutation), in
+    /// lexicographic order.
     fn valid_orders(predecessors: &[u64]) -> Vec<Vec<usize>> {
         fn extend(predecessors: &[u64], order: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
             if order.len() == predecessors.len() {
@@ -758,22 +709,16 @@ mod tests {
         least: f64,
     }
 
-    /// Plans `q` under `policy` and enumerates every order the column-order
-    /// constraints allow. `None` when `stored` finds `q` cyclic.
-    fn search_and_enumerate(
-        q: &JoinQuery, relations: &Relations, policy: ColumnOrderPolicy,
-    ) -> Option<Searched> {
-        if policy == ColumnOrderPolicy::Stored && check_attribute_order(q).is_err() {
-            return None;
-        }
+    /// Plans `q` and enumerates every order of its variables.
+    fn search_and_enumerate(q: &JoinQuery, relations: &Relations) -> Searched {
         let relations: Vec<(&str, usize, &[usize])> = relations
             .iter()
             .map(|(name, tuples, distinct)| (name.as_str(), *tuples, distinct.as_slice()))
             .collect();
-        let stats = stats_under(q, policy, &relations);
+        let stats = stats_for(q, &relations);
         let analysis = analyse(q);
         let model = CostModel::new(q, &analysis.predicate_variables, analysis.num_vars, &stats);
-        let predecessors = Precedence::for_query(q, &stats)
+        let predecessors = Precedence::free(analysis.num_vars)
             .predecessor_masks()
             .unwrap();
         let mut best: Option<(f64, Vec<usize>)> = None;
@@ -783,68 +728,43 @@ mod tests {
                 best = Some((cost, order));
             }
         }
-        let (least, cheapest) = best.expect("an acyclic query has a valid order");
+        let (least, cheapest) = best.expect("every query has an order");
         let plan = CostBasedOptimiser::default()
             .plan(q, &stats)
             .variable_ordering;
-        Some(Searched {
+        Searched {
             plan_cost: cost_of(&model, &plan),
             plan,
             cheapest,
             least,
-        })
+        }
     }
 
     /// The seeds each random-query test plans.
     const SEARCH_SEEDS: u64 = 300;
 
     /// The search is exact for its cost model: on random queries whose
-    /// statistics span orders of magnitude, under both policies, its plan
-    /// costs what the cheapest order the column-order constraints allow
-    /// does, as brute force over every valid order finds it. Exactly,
-    /// although `f64` rounds: the search sums each order's estimates in the
-    /// order `cost_of` does, and rounding is monotonic, so no order can come
-    /// out cheaper than the plan. And `any`, which allows every order
-    /// `stored` does, never plans dearer.
+    /// statistics span orders of magnitude, its plan costs what the
+    /// cheapest order does, as brute force over every order finds it.
+    /// Exactly, although `f64` rounds: the search sums each order's
+    /// estimates in the order `cost_of` does, and rounding is monotonic, so
+    /// no order can come out cheaper than the plan.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "enumerates every valid order, minutes under Miri; the tests above run the \
-                  search there"
+        ignore = "enumerates every order, minutes under Miri; the tests above run the search there"
     )]
-    fn the_search_finds_the_cheapest_valid_order() {
-        // Cases searched under `stored` (the rest are cyclic there), and
-        // cases where `any` found a strictly cheaper plan.
-        let (mut stored_cases, mut any_cheaper) = (0, 0);
+    fn the_search_finds_the_cheapest_order() {
         for seed in 0..SEARCH_SEEDS {
             let (text, relations) = random_case(&mut Lcg(seed), Counts::Wide);
             let q: JoinQuery = text.parse().unwrap();
-            let mut least = Vec::new();
-            for policy in [ColumnOrderPolicy::Stored, ColumnOrderPolicy::Any] {
-                let Some(searched) = search_and_enumerate(&q, &relations, policy) else {
-                    continue;
-                };
-                assert_eq!(
-                    searched.plan_cost, searched.least,
-                    "seed {seed}, {policy:?}: {text}: planned {:?}, cheapest {:?}",
-                    searched.plan, searched.cheapest
-                );
-                least.push(searched.least);
-            }
-            if let [stored, any] = least[..] {
-                assert!(any <= stored, "seed {seed}: {text}");
-                stored_cases += 1;
-                any_cheaper += usize::from(any < stored);
-            }
+            let searched = search_and_enumerate(&q, &relations);
+            assert_eq!(
+                searched.plan_cost, searched.least,
+                "seed {seed}: {text}: planned {:?}, cheapest {:?}",
+                searched.plan, searched.cheapest
+            );
         }
-        // The first 300 seeds give 249 queries `stored` can plan (the other
-        // 51 are cyclic there), 136 of which `any` plans cheaper. The bounds
-        // catch a generator that stops producing cases where the policies
-        // differ.
-        assert!(
-            stored_cases >= 200 && any_cheaper >= 80,
-            "stored {stored_cases}, any cheaper {any_cheaper}"
-        );
     }
 
     /// Among plans of equal cost the search takes the lexicographically
@@ -853,21 +773,14 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "enumerates every valid order, minutes under Miri; the tests above run the \
-                  search there"
+        ignore = "enumerates every order, minutes under Miri; the tests above run the search there"
     )]
     fn random_ties_take_the_lexicographically_smaller_order() {
         for seed in 0..SEARCH_SEEDS {
             let (text, relations) = random_case(&mut Lcg(seed), Counts::SmallPowersOfTwo);
             let q: JoinQuery = text.parse().unwrap();
-            for policy in [ColumnOrderPolicy::Stored, ColumnOrderPolicy::Any] {
-                if let Some(searched) = search_and_enumerate(&q, &relations, policy) {
-                    assert_eq!(
-                        searched.plan, searched.cheapest,
-                        "seed {seed}, {policy:?}: {text}"
-                    );
-                }
-            }
+            let searched = search_and_enumerate(&q, &relations);
+            assert_eq!(searched.plan, searched.cheapest, "seed {seed}: {text}");
         }
     }
 }
