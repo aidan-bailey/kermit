@@ -20,8 +20,8 @@ use {
 /// A query's constants (`edge(c1, X)`) and repeated variables
 /// (`edge(X, X)`) are exactly these two conditions, so a `TupleView`
 /// filtered by one reads the rows an atom can match, and no others. Both
-/// lists are kept sorted and deduplicated, so two filters that express the
-/// same conditions compare, and hash, equal.
+/// lists are kept sorted and deduplicated, so two filters built from the
+/// same lists, in any order, compare and hash equal.
 ///
 /// ```
 /// use kermit_iters::Filter;
