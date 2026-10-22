@@ -19,10 +19,12 @@
 //! Runtime selection of the (structure, algorithm) cell lives in the CLI's
 //! `execution` module, not here.
 
+mod catalog;
 mod database;
 mod validation;
 
 pub use {
+    catalog::Catalog,
     database::{build_index, index_header, Database},
     validation::{validate_query, JoinError, RelationArities},
 };
