@@ -11,11 +11,10 @@ use crate::{
 /// Plans the global attribute order by Kahn's topological sort with a
 /// smallest-canonical-index tie-break.
 ///
-/// This reproduces, bit for bit, the ordering kermit hardcoded before
-/// query optimisers existed — it keeps head variables early and is fully
-/// deterministic. It ignores statistics, which makes it the control arm for
-/// optimiser ablation studies and the default everywhere. Nothing
-/// constrains it, so the plan is the canonical order itself.
+/// Nothing constrains it, so the plan is the canonical order itself: head
+/// variables first, then the body-only ones, fully deterministic. It
+/// ignores statistics, which makes it the control arm for optimiser
+/// ablation studies and the default everywhere.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LexicographicOptimiser;
 

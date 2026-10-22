@@ -169,7 +169,7 @@ impl<'q> CostModel<'q> {
                 .iter()
                 .zip(predicate_variables)
                 .all(|(atom, vars)| vars.len() == atom.terms.len()),
-            "the cost model reads the rewritten query: one variable per column"
+            "the cost model reads the query of accesses: one variable per column"
         );
         let atoms = query
             .body
@@ -355,10 +355,11 @@ mod tests {
         assert_eq!(estimate(&q, &stats, &[0]), 0.0);
     }
 
-    /// The worked micro-example of `docs/optimisers/cost-based.md`, already
-    /// rewritten: `Const_c7` pins `K0`, which selects few `B`s through
-    /// `link`; `small` has few tuples, but its `A`s meet the rest only
-    /// through `Y`. Canonical indices: A = 0, B = 1, Y = 2, K0 = 3.
+    /// The worked micro-example of `docs/optimisers/cost-based.md`:
+    /// `Const_c7` is a one-row unary relation that pins `K0`, which selects
+    /// few `B`s through `link`; `small` has few tuples, but its `A`s meet the
+    /// rest only through `Y`. Canonical indices: A = 0, B = 1, Y = 2, K0 =
+    /// 3.
     fn worked_example() -> (JoinQuery, CatalogStats) {
         let q: JoinQuery = "Q(A, B, Y) :- small(A, Y), link(K0, B), owns(B, Y), Const_c7(K0)."
             .parse()
@@ -456,8 +457,8 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "the cost model reads the rewritten query")]
-    fn an_unrewritten_query_is_refused() {
+    #[should_panic(expected = "the cost model reads the query of accesses")]
+    fn a_query_with_a_constant_term_is_refused() {
         let q: JoinQuery = "Q(X) :- R(c5, X).".parse().unwrap();
         let stats = stats_for(&q, &[("R", 10, &[10, 10])]);
         CostBasedOptimiser::default().plan(&q, &stats);
@@ -749,6 +750,7 @@ mod tests {
         ignore = "enumerates every order, minutes under Miri; the tests above run the search there"
     )]
     fn the_search_finds_the_cheapest_order() {
+        let mut nontrivial = 0;
         for seed in 0..SEARCH_SEEDS {
             let (text, relations) = random_case(&mut Lcg(seed), Counts::Wide);
             let q: JoinQuery = text.parse().unwrap();
@@ -758,7 +760,17 @@ mod tests {
                 "seed {seed}: {text}: planned {:?}, cheapest {:?}",
                 searched.plan, searched.cheapest
             );
+            // The lexicographic plan is the canonical order 0, 1, 2, ...
+            if searched.plan.iter().enumerate().any(|(i, &v)| i != v) {
+                nontrivial += 1;
+            }
         }
+        // Observed: 215 of the 300 seeds. The floor fails the test if
+        // `random_case` degenerates into queries the search plans trivially.
+        assert!(
+            nontrivial >= 160,
+            "only {nontrivial} of {SEARCH_SEEDS} random cases plan off the canonical order"
+        );
     }
 
     /// Among plans of equal cost the search takes the lexicographically
