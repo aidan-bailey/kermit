@@ -2,12 +2,15 @@
 //! plus named, already-parsed queries.
 
 use {
-    crate::execution::read_relation_header,
-    kermit::db::validate_query,
-    kermit_algos::{ColumnOrderPolicy, JoinQuery},
+    crate::execution::{read_relation, read_relation_header},
+    kermit::db::{self, validate_query, Catalog, Prepared},
+    kermit_algos::{ColumnOrderPolicy, JoinQuery, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::RelationHeader,
-    std::path::{Path, PathBuf},
+    std::{
+        collections::HashSet,
+        path::{Path, PathBuf},
+    },
 };
 
 /// One query of a workload, already parsed.
@@ -24,7 +27,7 @@ pub struct NamedQuery {
 }
 
 /// What the generic runner measures: relation files (already cached or
-/// resolved, loaded by the execution family) and the queries to run over
+/// resolved, read by [`Workload::prepare`]) and the queries to run over
 /// them.
 #[derive(Debug)]
 pub struct Workload {
@@ -32,10 +35,25 @@ pub struct Workload {
     /// [`Workload::ADHOC`] for a `bench join` invocation.
     pub name: String,
     /// Relation files, stored as given; nothing here checks they exist —
-    /// the family's `load` does.
+    /// [`Workload::prepare`] does when it reads their headers.
     pub relation_paths: Vec<PathBuf>,
     /// The queries to run, in report order.
     pub queries: Vec<NamedQuery>,
+}
+
+/// A [`Workload`] ready to build and run: every query validated and planned,
+/// and the relations the queries name read once into a catalog. No structure
+/// is built from them here; each cell builds the indexes a query's plan
+/// reads, from the catalog's flat tuples.
+#[allow(dead_code)] // `run_benchmark` reads it from Task 17.2 on; until then
+                    // only the tests do.
+pub struct PreparedWorkload {
+    /// The workload that was prepared: its name, files and parsed queries.
+    pub workload: Workload,
+    /// The relations the queries name, as flat tuples with their statistics.
+    pub catalog: Catalog,
+    /// One per entry of `workload.queries`, in the same order.
+    pub prepared: Vec<Prepared>,
 }
 
 impl Workload {
@@ -119,6 +137,62 @@ impl Workload {
         Ok(())
     }
 
+    /// Validates every query from the relations' headers, reads only the
+    /// relations the queries name into one catalog at the statistics level
+    /// `planner` reads, and prepares each query once.
+    ///
+    /// The headers settle validation, so a query that cannot run fails in
+    /// milliseconds, before any tuple is read, even for a workload whose
+    /// relations take minutes to load. A relation no query names is never
+    /// read. Planning happens here, once per query, so no timed region pays
+    /// for it and every cell runs the same plan.
+    ///
+    /// # Errors
+    ///
+    /// A relation file whose header or tuples cannot be read, or the first
+    /// query that validation, planning or index planning rejects, named with
+    /// its benchmark.
+    #[allow(dead_code)] // `bench run` and `bench join` call it from Task 17.2
+                        // on.
+    pub fn prepare(self, planner: &Planner) -> anyhow::Result<PreparedWorkload> {
+        let headers = self
+            .relation_paths
+            .iter()
+            .map(|path| read_relation_header(path))
+            .collect::<anyhow::Result<Vec<RelationHeader>>>()?;
+        for q in &self.queries {
+            validate_query(&q.query, headers.as_slice(), ColumnOrderPolicy::Any).map_err(|e| {
+                anyhow::anyhow!("benchmark '{}' query '{}': {e}", self.name, q.name)
+            })?;
+        }
+        let named: HashSet<&str> = self
+            .queries
+            .iter()
+            .flat_map(|q| q.query.body.iter().map(|atom| atom.name.as_str()))
+            .collect();
+        let mut relations = Vec::new();
+        for (path, header) in self.relation_paths.iter().zip(&headers) {
+            if named.contains(header.name()) {
+                relations.push(read_relation(path)?);
+            }
+        }
+        let catalog = Catalog::new(relations, planner.required_statistics());
+        let prepared = self
+            .queries
+            .iter()
+            .map(|q| {
+                db::prepare(&catalog, &q.query, planner).map_err(|e| {
+                    anyhow::anyhow!("benchmark '{}' query '{}': {e}", self.name, q.name)
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(PreparedWorkload {
+            workload: self,
+            catalog,
+            prepared,
+        })
+    }
+
     /// Builds the workload for `bench join`: the given relation paths
     /// verbatim and one query read from `query_path`, named by its file
     /// stem (`triangle.dl` → `triangle`).
@@ -155,6 +229,9 @@ impl Workload {
 mod tests {
     use {
         super::*,
+        kermit_algos::{
+            CostBasedOptimiser, LexicographicOptimiser, QueryOptimiser, StatisticsLevel,
+        },
         kermit_bench::{QueryDefinition, RelationSource},
         std::fs,
     };
@@ -244,5 +321,133 @@ mod tests {
     fn adhoc_rejects_query_path_without_stem() {
         let err = Workload::adhoc(vec![], Path::new("/")).unwrap_err();
         assert!(err.to_string().contains("query path"), "{err}");
+    }
+
+    /// A workspace holding `data/edge.csv` (three edges) and `data/unused.csv`,
+    /// whose header parses and whose only row does not, so reading its tuples
+    /// fails. The definition declares both and carries one query per
+    /// `(name, text)` pair.
+    fn def_with_an_unreadable_relation(
+        queries: &[(&str, &str)],
+    ) -> (tempfile::TempDir, BenchmarkDefinition) {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("data")).unwrap();
+        fs::write(
+            root.path().join("data/edge.csv"),
+            "src,dst\n1,2\n2,3\n3,1\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("data/unused.csv"), "a,b\nnot,numbers\n").unwrap();
+        let relation = |name: &str| RelationSource {
+            name: name.to_string(),
+            url: None,
+            path: Some(format!("data/{name}.csv")),
+            sha256: None,
+        };
+        let def = BenchmarkDefinition {
+            name: "local".to_string(),
+            description: "local fixture".to_string(),
+            relations: vec![relation("edge"), relation("unused")],
+            queries: queries
+                .iter()
+                .map(|&(name, query)| QueryDefinition {
+                    name: name.to_string(),
+                    description: name.to_string(),
+                    query: query.to_string(),
+                    expected: None,
+                })
+                .collect(),
+            generator: None,
+        };
+        (root, def)
+    }
+
+    /// A planner for these tests: the lexicographic optimiser, planning
+    /// freely.
+    fn free() -> Planner { Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any) }
+
+    #[test]
+    fn prepare_reads_only_the_relations_the_queries_name() {
+        let (root, def) = def_with_an_unreadable_relation(&[("pair", "Q(X, Y) :- edge(X, Y).")]);
+        let workload = Workload::from_definition(&def, root.path(), None).unwrap();
+
+        let prepared = workload.prepare(&free()).unwrap();
+
+        assert_eq!(prepared.catalog.names().collect::<Vec<_>>(), ["edge"]);
+        assert_eq!(prepared.catalog.tuples("edge").unwrap().len(), 3);
+        assert_eq!(prepared.prepared.len(), 1);
+        assert_eq!(prepared.prepared[0].relations(), ["edge"]);
+    }
+
+    /// The control for the test above: `unused.csv` really is unreadable, so a
+    /// query that names it fails when its tuples are read.
+    #[test]
+    fn prepare_reads_a_relation_a_query_names() {
+        let (root, def) =
+            def_with_an_unreadable_relation(&[("both", "Q(X, Y) :- edge(X, Y), unused(X, Y).")]);
+        let workload = Workload::from_definition(&def, root.path(), None).unwrap();
+
+        let err = workload.prepare(&free()).err().unwrap().to_string();
+
+        assert!(err.contains("unused.csv"), "{err}");
+        assert!(err.contains("cannot parse"), "{err}");
+    }
+
+    /// A query that cannot run is refused from the headers alone: this one
+    /// names the unreadable relation, yet the error is the arity mismatch,
+    /// not the unparsable row, and it names the benchmark and the query.
+    #[test]
+    fn prepare_validates_from_headers_before_reading_any_tuples() {
+        let (root, def) = def_with_an_unreadable_relation(&[("narrow", "Q(X) :- unused(X).")]);
+        let workload = Workload::from_definition(&def, root.path(), None).unwrap();
+
+        let err = workload.prepare(&free()).err().unwrap().to_string();
+
+        assert!(err.contains("benchmark 'local' query 'narrow': "), "{err}");
+        assert!(
+            err.contains("has 1 term(s), but relation \"unused\" has arity 2"),
+            "{err}"
+        );
+        assert!(!err.contains("cannot parse"), "{err}");
+    }
+
+    #[test]
+    fn prepare_gathers_the_statistics_the_planner_reads() {
+        let (root, def) = def_with_an_unreadable_relation(&[("pair", "Q(X, Y) :- edge(X, Y).")]);
+        let level_under = |optimiser: Box<dyn QueryOptimiser>| {
+            let workload = Workload::from_definition(&def, root.path(), None).unwrap();
+            let planner = Planner::new(optimiser, ColumnOrderPolicy::Any);
+            workload.prepare(&planner).unwrap().catalog.level()
+        };
+
+        assert_eq!(
+            level_under(Box::new(LexicographicOptimiser)),
+            StatisticsLevel::TupleCounts
+        );
+        assert_eq!(
+            level_under(Box::new(CostBasedOptimiser::default())),
+            StatisticsLevel::ColumnDistinct
+        );
+    }
+
+    #[test]
+    fn prepare_prepares_each_query_in_definition_order() {
+        let (root, def) = def_with_an_unreadable_relation(&[
+            ("pair", "Q(X, Y) :- edge(X, Y)."),
+            ("start", "Q(X) :- edge(X, Y)."),
+        ]);
+        let workload = Workload::from_definition(&def, root.path(), None).unwrap();
+
+        let prepared = workload.prepare(&free()).unwrap();
+
+        let names: Vec<&str> = prepared
+            .workload
+            .queries
+            .iter()
+            .map(|q| q.name.as_str())
+            .collect();
+        assert_eq!(names, ["pair", "start"]);
+        let heads: Vec<usize> = prepared.prepared.iter().map(Prepared::head_len).collect();
+        assert_eq!(heads, [2, 1]);
     }
 }
