@@ -827,6 +827,19 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
             tuples,
         )
     }
+
+    /// Builds with the default config; see
+    /// [`from_view_with_config_and_build_mode`](HashTrie::from_view_with_config_and_build_mode).
+    ///
+    /// # Panics
+    ///
+    /// Panics as `from_tuples_with_build_mode` does, and if the view's source
+    /// holds rows and the view's arity is not `header.arity()`.
+    fn from_view_with_build_mode(
+        header: RelationHeader, mode: HashTrieBuildMode, view: TupleView<'_>,
+    ) -> Self {
+        Self::from_view_with_config_and_build_mode(header, HashTrieConfig::default(), mode, view)
+    }
 }
 
 /// The inherent
@@ -840,6 +853,13 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfiguredBuildModeR
         tuples: impl Into<Tuples>,
     ) -> Self {
         HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(header, config, mode, tuples)
+    }
+
+    fn from_view_with_config_and_build_mode(
+        header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
+        view: TupleView<'_>,
+    ) -> Self {
+        HashTrie::<H, P, E>::from_view_with_config_and_build_mode(header, config, mode, view)
     }
 }
 
@@ -2627,13 +2647,16 @@ mod view_tests {
         super::{
             super::{
                 expansion::LazyExpansion,
-                identity::{assert_same_trie, configs, inputs, rows},
+                identity::{assert_same_trie, configs, incremental_configs, inputs, rows},
                 pruning::SingletonPruning,
             },
             tests::walked_sorted,
             *,
         },
-        crate::{cardinality::Cardinality, test_support::Mod10HashStrategy},
+        crate::{
+            cardinality::Cardinality, ds::hash_trie::build_mode::RadixBits, morsel::Threads,
+            test_support::Mod10HashStrategy,
+        },
         kermit_iters::{Filter, FxHashStrategy},
     };
 
@@ -2883,5 +2906,263 @@ mod view_tests {
         let source = hand_source();
         let view = TupleView::new(&source, Filter::new(vec![(0, 99)], vec![]), vec![0]);
         let _: HashTrie = HashTrie::from_view(2.into(), view);
+    }
+
+    /// `incremental` over a view builds the trie `bulk` builds from the
+    /// view's hand-made batch, array for array, links included (the two
+    /// builds are array-identical), under every config that accepts it:
+    /// children that grow.
+    fn check_incremental_views_build_the_bulk_trie<
+        H: HashStrategy,
+        P: PruningPolicy,
+        E: ExpansionPolicy,
+    >() {
+        for (input, source) in sources() {
+            for case in cases() {
+                let arity = case.columns.len();
+                let expected = reference(&source, &case);
+                for config in incremental_configs() {
+                    let label = format!(
+                        "{}/{}/{} {input}, {}, load {}%, root {}",
+                        H::NAME,
+                        P::NAME,
+                        E::NAME,
+                        case.name,
+                        config.load_factor.numerator(),
+                        config.root_capacity.axis_value(),
+                    );
+                    let view = TupleView::new(&source, case.filter.clone(), case.columns.clone());
+                    let built = HashTrie::<H, P, E>::from_view_with_config_and_build_mode(
+                        arity.into(),
+                        config,
+                        HashTrieBuildMode::Incremental,
+                        view,
+                    );
+                    let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
+                        arity.into(),
+                        config,
+                        expected.clone(),
+                    );
+                    assert_same_trie(&bulk, &built, &label);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_over_a_view_builds_the_bulk_trie() {
+        check_incremental_views_build_the_bulk_trie::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_incremental_views_build_the_bulk_trie::<
+            FxHashStrategy,
+            SingletonPruning,
+            EagerExpansion,
+        >();
+        check_incremental_views_build_the_bulk_trie::<SipHashStrategy, NoPruning, LazyExpansion>();
+        check_incremental_views_build_the_bulk_trie::<
+            Mod10HashStrategy,
+            SingletonPruning,
+            LazyExpansion,
+        >();
+    }
+
+    /// `bulk` and `incremental` build the same trie, so only
+    /// `BULK_BUILDS` tells which ran: `from_view`, `from_view_with_config`
+    /// and `Bulk` take Algorithm 2, `Incremental` the per-tuple build.
+    #[test]
+    fn each_build_mode_runs_its_own_build_from_a_view() {
+        let source = hand_source();
+        let view = || TupleView::all(&source);
+        let bulk_builds = |build: &dyn Fn()| {
+            BULK_BUILDS.with(|n| n.set(0));
+            build();
+            BULK_BUILDS.with(std::cell::Cell::get)
+        };
+        assert_eq!(
+            bulk_builds(&|| {
+                let _: HashTrie = HashTrie::from_view(3.into(), view());
+            }),
+            1,
+            "from_view"
+        );
+        assert_eq!(
+            bulk_builds(&|| {
+                let _: HashTrie =
+                    HashTrie::from_view_with_config(3.into(), HashTrieConfig::default(), view());
+            }),
+            1,
+            "from_view_with_config"
+        );
+        assert_eq!(
+            bulk_builds(&|| {
+                let _: HashTrie =
+                    HashTrie::from_view_with_build_mode(3.into(), HashTrieBuildMode::Bulk, view());
+            }),
+            1,
+            "bulk"
+        );
+        assert_eq!(
+            bulk_builds(&|| {
+                let _: HashTrie = HashTrie::from_view_with_build_mode(
+                    3.into(),
+                    HashTrieBuildMode::Incremental,
+                    view(),
+                );
+            }),
+            0,
+            "incremental"
+        );
+    }
+
+    /// `insert_at` creates a child on its first tuple, before the child's
+    /// list is known, so `incremental` cannot size it: the prerequisite
+    /// holds from a view too.
+    #[test]
+    #[should_panic(expected = "hash-trie=incremental requires child-capacity=grow")]
+    fn incremental_over_a_view_requires_grown_children() {
+        let source = hand_source();
+        let config = HashTrieConfig {
+            child_capacity: ChildCapacity::Tuples,
+            ..HashTrieConfig::default()
+        };
+        let _: HashTrie = HashTrie::from_view_with_config_and_build_mode(
+            3.into(),
+            config,
+            HashTrieBuildMode::Incremental,
+            TupleView::all(&source),
+        );
+    }
+
+    /// `presized:N` cuts its regions from a root sized before any tuple
+    /// arrives, so it requires `root-capacity=tuples` from a view too.
+    #[test]
+    #[should_panic(expected = "hash-trie=presized:2 requires root-capacity=tuples")]
+    fn presized_over_a_view_requires_a_presized_root() {
+        let source = hand_source();
+        let _: HashTrie = HashTrie::from_view_with_config_and_build_mode(
+            3.into(),
+            HashTrieConfig::default(),
+            HashTrieBuildMode::Presized(Threads::new(2).expect("two is a valid thread count")),
+            TupleView::all(&source),
+        );
+    }
+
+    /// The partitioning builds of a view are the partitioning builds of the
+    /// batch the view selects: the same trie, buffer and ids included, since
+    /// both copy the same rows into the same partition order.
+    #[test]
+    fn partitioning_builds_of_a_view_match_those_of_its_batch() {
+        let threads = Threads::new(2).expect("two is a valid thread count");
+        let modes = [
+            HashTrieBuildMode::Radix(RadixBits::new(3).expect("three is a valid bit count")),
+            HashTrieBuildMode::Parallel(threads),
+            HashTrieBuildMode::Presized(threads),
+        ];
+        // `presized:N` requires a presized root; the others accept it.
+        let config = HashTrieConfig {
+            root_capacity: RootCapacity::Tuples,
+            ..HashTrieConfig::default()
+        };
+        for (input, source) in sources() {
+            for case in cases() {
+                let arity = case.columns.len();
+                let expected = reference(&source, &case);
+                for mode in modes {
+                    let label = format!("{input}, {}, {mode:?}", case.name);
+                    let view = TupleView::new(&source, case.filter.clone(), case.columns.clone());
+                    let built: HashTrie = HashTrie::from_view_with_config_and_build_mode(
+                        arity.into(),
+                        config,
+                        mode,
+                        view,
+                    );
+                    let batch: HashTrie = HashTrie::from_tuples_with_config_and_build_mode(
+                        arity.into(),
+                        config,
+                        mode,
+                        expected.clone(),
+                    );
+                    assert_same_trie(&batch, &built, &label);
+                }
+            }
+        }
+    }
+
+    /// The trait constructors agree with the inherent one, and
+    /// `BuildModeRelation` builds with the default config.
+    #[test]
+    fn the_trait_constructors_build_from_views() {
+        let source = hand_source();
+        let view = || TupleView::new(&source, Filter::new(vec![(0, 1)], vec![]), vec![2, 1]);
+        let radix = HashTrieBuildMode::Radix(RadixBits::new(2).expect("two is a valid bit count"));
+        let config = HashTrieConfig::default();
+        let inherent: HashTrie =
+            HashTrie::from_view_with_config_and_build_mode(2.into(), config, radix, view());
+        let by_mode: HashTrie = HashTrie::from_view_with_build_mode(2.into(), radix, view());
+        let by_trait: HashTrie = ConfiguredBuildModeRelation::from_view_with_config_and_build_mode(
+            2.into(),
+            config,
+            radix,
+            view(),
+        );
+        assert_same_trie(&inherent, &by_mode, "BuildModeRelation");
+        assert_same_trie(&inherent, &by_trait, "ConfiguredBuildModeRelation");
+        assert_eq!(*by_mode.config(), config);
+    }
+
+    /// Every constructor refuses a view of the wrong arity over a source
+    /// that holds rows, even when its filter rejects every one. A
+    /// constructor that quietly built the empty trie would leave a wrong
+    /// header for the join to trip over.
+    #[test]
+    fn every_constructor_checks_the_arity_of_a_non_empty_source() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let source = hand_source();
+        // Rejects all eight rows, and reads one column into a two-column
+        // header.
+        let wrong = || TupleView::new(&source, Filter::new(vec![(0, 99)], vec![]), vec![0]);
+        let config = HashTrieConfig::default();
+        let bulk = HashTrieBuildMode::Bulk;
+        type Build<'a> = Box<dyn Fn() + 'a>;
+        let constructors: Vec<(&str, Build<'_>)> = vec![
+            (
+                "from_view",
+                Box::new(|| {
+                    let _: HashTrie = HashTrie::from_view(2.into(), wrong());
+                }),
+            ),
+            (
+                "from_view_with_config",
+                Box::new(|| {
+                    let _: HashTrie = HashTrie::from_view_with_config(2.into(), config, wrong());
+                }),
+            ),
+            (
+                "from_view_with_build_mode",
+                Box::new(|| {
+                    let _: HashTrie = HashTrie::from_view_with_build_mode(2.into(), bulk, wrong());
+                }),
+            ),
+            (
+                "ConfiguredBuildModeRelation",
+                Box::new(|| {
+                    let _: HashTrie =
+                        ConfiguredBuildModeRelation::from_view_with_config_and_build_mode(
+                            2.into(),
+                            config,
+                            bulk,
+                            wrong(),
+                        );
+                }),
+            ),
+        ];
+        let silent: Vec<&str> = constructors
+            .iter()
+            .filter(|(_, build)| catch_unwind(AssertUnwindSafe(build)).is_ok())
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            silent.is_empty(),
+            "these constructors accept a view of the wrong arity: {silent:?}"
+        );
     }
 }
