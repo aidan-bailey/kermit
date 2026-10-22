@@ -12,7 +12,7 @@ use {
         HashFamily, JoinError, SortedFamily,
     },
     kermit_algos::{
-        ColumnOrderPolicy, HashTriejoin, IndexSpec, JoinQuery, LeapfrogTriejoin, Planner,
+        ColumnOrderPolicy, CopySpec, HashTriejoin, JoinQuery, LeapfrogTriejoin, Planner,
         QueryOptimiser, StatisticsLevel,
     },
     kermit_ds::{
@@ -243,7 +243,7 @@ pub fn load_parquet_relations<'n, R: Relation>(
 /// the rows and the specs it built (empty under `stored`).
 pub fn join_under_planner<R: Relation + Cardinality, JA: JoinEntry<R>>(
     database: &mut Database<R>, inputs: &Inputs, query: JoinQuery, planner: &Planner,
-) -> Result<(Vec<Vec<usize>>, Vec<IndexSpec>), JoinError> {
+) -> Result<(Vec<Vec<usize>>, Vec<CopySpec>), JoinError> {
     let specs = database.required_indexes(&query, planner)?;
     for spec in &specs {
         let (header, tuples) = &inputs[&spec.base];

@@ -10,7 +10,7 @@ use {
     common::utils::{join_under_planner, Inputs, JoinEntry},
     kermit::db::JoinError,
     kermit_algos::{
-        CardinalityOptimiser, ColumnOrderPolicy, CostBasedOptimiser, HashTriejoin, IndexSpec,
+        CardinalityOptimiser, ColumnOrderPolicy, CopySpec, CostBasedOptimiser, HashTriejoin,
         JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, Planner, QueryOptimiser,
     },
     kermit_ds::{
@@ -159,7 +159,7 @@ fn symmetric_four_cycle() -> Pattern {
 /// agrees, `any` returns the pinned rows. Returns the specs `any` built.
 fn check<R: Relation + Cardinality, JA: JoinEntry<R>, O: QueryOptimiser + Default + 'static>(
     pattern: &Pattern,
-) -> Vec<IndexSpec> {
+) -> Vec<CopySpec> {
     let inputs: Inputs = pattern
         .relations
         .iter()
@@ -385,7 +385,7 @@ fn lexicographic_builds_the_expected_copies() {
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, vec!["Index_1_0_includes", "Index_1_0_purchasefor"]);
     let specs = check::<HashTrieSip, HashTriejoin, LexicographicOptimiser>(&mutual_edges());
-    assert_eq!(specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+    assert_eq!(specs, vec![CopySpec::new("edge", vec![1, 0])]);
 }
 
 /// A symmetric relation's reversed copy is redundant, but the planner
@@ -395,7 +395,7 @@ fn a_symmetric_relation_still_gets_its_redundant_copy() {
     let pattern = symmetric_four_cycle();
     assert_eq!(pattern.rows.len(), 50);
     let specs = check::<TreeTrie, LeapfrogTriejoin, LexicographicOptimiser>(&pattern);
-    assert_eq!(specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+    assert_eq!(specs, vec![CopySpec::new("edge", vec![1, 0])]);
     let base = &pattern.relations[0].2;
     let mut copied = specs[0].permute_all(&Tuples::from(base.clone())).to_vecs();
     let mut original = base.clone();

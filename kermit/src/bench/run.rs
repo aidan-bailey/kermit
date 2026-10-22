@@ -20,7 +20,7 @@ use {
         BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
     },
     kermit::db::index_header,
-    kermit_algos::{ColumnOrderPolicy, IndexSpec},
+    kermit_algos::{ColumnOrderPolicy, CopySpec},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{HeapSize, Relation, RelationHeader, Tuples},
     std::{
@@ -128,7 +128,7 @@ fn run_benchmark<F: ExecutionFamily>(
             .find(|(header, _)| header.name() == base)
             .expect("validation checked that every base relation was loaded")
     };
-    let add_copies = |engine: &mut F::Engine, specs: &[IndexSpec]| {
+    let add_copies = |engine: &mut F::Engine, specs: &[CopySpec]| {
         for spec in specs {
             let (header, tuples) = input_of(&spec.base);
             family.add_index(engine, spec.clone(), header, tuples);

@@ -29,7 +29,7 @@ pub use {
 use {
     kermit_algos::{
         is_const_predicate, is_index_predicate, is_selection_predicate, orient, CatalogStats,
-        ColumnEquality, ConstSpec, HashTrieIterKind, HashTriejoin, IndexSpec, JoinAlgo, JoinQuery,
+        ColumnEquality, ConstSpec, CopySpec, HashTrieIterKind, HashTriejoin, JoinAlgo, JoinQuery,
         Oriented, Planner, QueryPlan, SelectionSpec, SingletonHashTrieIter, SingletonTrieIter,
         TrieIterKind,
     },
@@ -147,7 +147,7 @@ struct Planned {
     plan: QueryPlan,
     const_specs: Vec<ConstSpec>,
     /// The copies the query reads (`Index_*` atoms and reoriented views).
-    index_specs: Vec<IndexSpec>,
+    index_specs: Vec<CopySpec>,
     selection_specs: Vec<SelectionSpec>,
 }
 
@@ -220,7 +220,7 @@ impl<R: Relation + Cardinality> Database<R> {
     /// would return, or [`JoinError::MissingStatistics`].
     pub fn required_indexes(
         &self, query: &JoinQuery, planner: &Planner,
-    ) -> Result<Vec<IndexSpec>, JoinError> {
+    ) -> Result<Vec<CopySpec>, JoinError> {
         let planned = plan_query(self, query, planner)?;
         Ok(planned
             .index_specs
@@ -826,7 +826,7 @@ mod tests {
     fn add_copies<R: Relation + Cardinality>(
         database: &mut Database<R>, query: &JoinQuery, planner: &Planner,
         tuples: &BTreeMap<&str, Vec<Vec<usize>>>,
-    ) -> Vec<IndexSpec> {
+    ) -> Vec<CopySpec> {
         let specs = database.required_indexes(query, planner).unwrap();
         for spec in &specs {
             let base = database.get(&spec.base).unwrap().header().clone();
@@ -859,7 +859,7 @@ mod tests {
         ));
         let planner = any(LexicographicOptimiser);
         let specs = add_copies(&mut sorted, &query, &planner, &tuples);
-        assert_eq!(specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+        assert_eq!(specs, vec![CopySpec::new("edge", vec![1, 0])]);
         let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&sorted, query.clone(), &planner).unwrap();
         got.sort();
@@ -975,8 +975,8 @@ mod tests {
         let planner = any(LexicographicOptimiser);
         let specs = add_copies(&mut sorted, &query, &planner, &tuples);
         assert_eq!(specs, vec![
-            IndexSpec::new("r", vec![0, 2, 1]),
-            IndexSpec::new("s", vec![1, 0]),
+            CopySpec::new("r", vec![0, 2, 1]),
+            CopySpec::new("s", vec![1, 0]),
         ]);
         let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&sorted, query.clone(), &planner).unwrap();

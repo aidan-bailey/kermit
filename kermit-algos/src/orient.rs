@@ -39,7 +39,7 @@ pub fn is_index_predicate(name: &str) -> bool { name.starts_with(INDEX_PREDICATE
 /// A relation copy with its columns permuted: column `i` of the copy is
 /// column `permutation[i]` of `base`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndexSpec {
+pub struct CopySpec {
     /// The synthetic predicate name, `Index_<π joined by _>_<base>`, e.g.
     /// `Index_1_0_edge`.
     pub name: String,
@@ -49,7 +49,7 @@ pub struct IndexSpec {
     pub permutation: Vec<usize>,
 }
 
-impl IndexSpec {
+impl CopySpec {
     /// The copy of `base` under `permutation`, named by both.
     pub fn new(base: &str, permutation: Vec<usize>) -> Self {
         let digits: Vec<String> = permutation.iter().map(usize::to_string).collect();
@@ -91,7 +91,7 @@ pub struct Oriented {
     pub plan: QueryPlan,
     /// The copies `query` reads, one per distinct `(base, permutation)`,
     /// in body order of first use. Empty under `stored`.
-    pub index_specs: Vec<IndexSpec>,
+    pub index_specs: Vec<CopySpec>,
     /// The selection views, with `relation` and `equalities` moved to the
     /// copy where the view's atom was reoriented.
     pub selection_specs: Vec<SelectionSpec>,
@@ -110,7 +110,7 @@ pub struct Oriented {
 /// points at the copy, each of its equality classes carried through π and
 /// re-rooted at its new first column (the selection views are positional
 /// and keep one source per column). Atoms with equal `(base, π)` share
-/// one [`IndexSpec`].
+/// one [`CopySpec`].
 ///
 /// `analyse` numbers body-only variables by first appearance, so
 /// permuting terms can renumber them: the plan is translated by variable
@@ -149,7 +149,7 @@ pub fn orient(
         .map(|(i, spec)| (spec.name.clone(), i))
         .collect();
 
-    let mut index_specs: Vec<IndexSpec> = Vec::new();
+    let mut index_specs: Vec<CopySpec> = Vec::new();
     for (atom, vars) in query.body.iter_mut().zip(&analysis.predicate_variables) {
         if is_const_predicate(&atom.name) {
             continue;
@@ -174,7 +174,7 @@ pub fn orient(
             | Some(i) => selection_specs[i].relation.clone(),
             | None => atom.name.clone(),
         };
-        let spec = IndexSpec::new(&base, pi.clone());
+        let spec = CopySpec::new(&base, pi.clone());
         if !index_specs.iter().any(|s| s.name == spec.name) {
             index_specs.push(spec.clone());
         }
@@ -329,7 +329,7 @@ mod tests {
             specs,
         );
         assert_eq!(body_text(&out.query), vec!["Index_1_0_edge(X, Y)"]);
-        assert_eq!(out.index_specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+        assert_eq!(out.index_specs, vec![CopySpec::new("edge", vec![1, 0])]);
         assert_eq!(out.index_specs[0].name, "Index_1_0_edge");
         assert_eq!(out.plan.variable_ordering, vec![0, 1]);
     }
@@ -360,7 +360,7 @@ mod tests {
             "Index_1_0_edge(X, Y)",
             "Index_1_0_edge(X, Z)"
         ]);
-        assert_eq!(out.index_specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+        assert_eq!(out.index_specs, vec![CopySpec::new("edge", vec![1, 0])]);
     }
 
     #[test]
@@ -377,8 +377,8 @@ mod tests {
             "Index_1_2_0_r(X, Y, Z)"
         ]);
         assert_eq!(out.index_specs, vec![
-            IndexSpec::new("r", vec![1, 0, 2]),
-            IndexSpec::new("r", vec![1, 2, 0]),
+            CopySpec::new("r", vec![1, 0, 2]),
+            CopySpec::new("r", vec![1, 2, 0]),
         ]);
     }
 
@@ -414,7 +414,7 @@ mod tests {
             specs,
         );
         assert_eq!(body_text(&out.query), vec!["Select_0_r(Y, X, K0)"]);
-        assert_eq!(out.index_specs, vec![IndexSpec::new("r", vec![2, 0, 1])]);
+        assert_eq!(out.index_specs, vec![CopySpec::new("r", vec![2, 0, 1])]);
         assert_eq!(out.selection_specs[0].name, "Select_0_r");
         assert_eq!(out.selection_specs[0].relation, "Index_2_0_1_r");
         assert_eq!(out.selection_specs[0].equalities, vec![eq(1, 2)]);
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn specs_permute_tuples_and_describe_themselves() {
-        let spec = IndexSpec::new("edge", vec![1, 0]);
+        let spec = CopySpec::new("edge", vec![1, 0]);
         let copy = spec.permute_all(&Tuples::from(vec![vec![1, 2], vec![3, 4], vec![5, 6]]));
         assert_eq!(copy, Tuples::from(vec![vec![2, 1], vec![4, 3], vec![6, 5]]));
         // One buffer at its exact size: six values, which a doubling buffer
@@ -527,7 +527,7 @@ mod tests {
     /// the copy's arity, whatever arity the empty batch carried.
     #[test]
     fn permute_all_keeps_file_order_and_the_copys_arity() {
-        let spec = IndexSpec::new("r", vec![2, 0, 1]);
+        let spec = CopySpec::new("r", vec![2, 0, 1]);
         let base = Tuples::from(vec![vec![1, 2, 3], vec![4, 5, 6]]);
         assert_eq!(spec.permute_all(&base).to_vecs(), vec![
             vec![3, 1, 2],

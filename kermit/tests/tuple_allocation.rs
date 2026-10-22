@@ -14,7 +14,7 @@
 //!   allocations; the Parquet reader sizes its buffer once from the footer, and
 //!   arrow decodes in 1 024-row record batches and allocates per batch, never
 //!   per row. A per-row allocation costs 9 000 more.
-//! - **A batch clone** and **a reordered copy** (`IndexSpec::permute_all`) are
+//! - **A batch clone** and **a reordered copy** (`CopySpec::permute_all`) are
 //!   one allocation each.
 //! - **TreeTrie and ColumnTrie builds** are bounded by the heap objects the
 //!   built trie owns: TreeTrie a children `Vec` per inner node, ColumnTrie two
@@ -51,7 +51,7 @@
 //!   mode holds beside it) plus a margin under one copy ([`assert_peak`]).
 
 use {
-    kermit_algos::IndexSpec,
+    kermit_algos::CopySpec,
     kermit_ds::{
         test_hooks::{
             take_hash_trie_parallel_builds, take_tree_trie_parallel_builds, HashTrieParallelBuild,
@@ -203,7 +203,7 @@ fn cloning_a_batch_allocates_once() {
 #[test]
 fn a_reordered_copy_allocates_once() {
     let batch = fanned_out();
-    let spec = IndexSpec::new("r", vec![1, 0]);
+    let spec = CopySpec::new("r", vec![1, 0]);
     let mut copy = None;
     let info = allocation_counter::measure(|| copy = Some(spec.permute_all(&batch)));
     assert_eq!(info.count_total, 1);
@@ -821,7 +821,7 @@ fn tree_trie_parallel_view_build_on_one_thread_allocates_per_partition_not_per_r
     // thread runs the workers in turn): the build holds the row-id buckets
     // `scatter_rows` filled (a `Vec` each, grown by doubling from 4 slots),
     // and the worker's own row ids and gathered rows of its partition, beside
-    // the nodes. A quarter copy of margin covers the nodes' `Vec` growth;
+    // the nodes. An eighth of a copy of margin covers the nodes' `Vec` growth;
     // a second full copy of the kept rows would exceed the bound.
     let [(_, sizes)] = builds.as_slice() else {
         unreachable!("matched above")
@@ -1049,10 +1049,13 @@ fn hash_trie_presized_view_build_allocates_independently_of_its_row_count() {
 }
 
 /// Bytes of one bucket of a table of chains (`Option<Entry<Chain>>`): the
-/// key's hash, and a chain's head, tail and length.
+/// key's hash, and a chain's head, tail and length. It is pinned in kermit-ds
+/// by `chain.rs`'s `size_of::<Option<Entry<Chain>>>() == 24` check.
 const CHAIN_BUCKET_BYTES: u64 = 24;
 /// Buckets of the root `root-capacity=tuples` gives 10 000 rows at the
-/// default 0.7 load factor: the smallest power of two over 10 000 / 0.7.
+/// default 0.7 load factor: the smallest power of two over 10 000 / 0.7. The
+/// rule it follows is `log2_capacity_for`, in
+/// `kermit-ds/src/ds/hash_trie/hash_table.rs`.
 const PRESIZED_ROOT_BUCKETS: u64 = 16_384;
 
 /// [`hash_trie_view_builds_allocate_independently_of_their_row_count`]'s

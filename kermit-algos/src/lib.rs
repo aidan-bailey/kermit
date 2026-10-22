@@ -57,7 +57,7 @@ pub use {
         LexicographicOptimiser, Optimiser, PlanError, Planner, Precedence, QueryOptimiser,
         QueryPlan, RelationStats, StatisticsLevel,
     },
-    orient::{is_index_predicate, orient, IndexSpec, Oriented, INDEX_PREDICATE_PREFIX},
+    orient::{is_index_predicate, orient, CopySpec, Oriented, INDEX_PREDICATE_PREFIX},
     placeholder_rewrite::rewrite_placeholders,
     selection_rewrite::{
         is_selection_predicate, rewrite_repeated_variables, ColumnEquality, SelectionSpec,

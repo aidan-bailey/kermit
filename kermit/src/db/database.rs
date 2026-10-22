@@ -2,7 +2,7 @@
 
 use {
     super::{JoinFamily, RelationArities},
-    kermit_algos::{distinct_per_column, IndexSpec, RelationStats, StatisticsLevel},
+    kermit_algos::{distinct_per_column, CopySpec, RelationStats, StatisticsLevel},
     kermit_ds::{Cardinality, Relation, RelationHeader, Tuples},
     std::collections::BTreeMap,
 };
@@ -36,7 +36,7 @@ pub struct Database<R> {
     statistics: BTreeMap<String, RelationStats>,
     level: StatisticsLevel,
     /// The current query's copies, by their `Index_*` name.
-    indexes: BTreeMap<String, (IndexSpec, R)>,
+    indexes: BTreeMap<String, (CopySpec, R)>,
 }
 
 impl<R: Relation + Cardinality> Database<R> {
@@ -79,7 +79,7 @@ impl<R> Database<R> {
     pub fn index(&self, name: &str) -> Option<&R> { self.indexes.get(name).map(|(_, copy)| copy) }
 
     /// Every copy the store holds, with its spec, in name order.
-    pub fn indexes(&self) -> impl Iterator<Item = (&IndexSpec, &R)> {
+    pub fn indexes(&self) -> impl Iterator<Item = (&CopySpec, &R)> {
         self.indexes.values().map(|(spec, copy)| (spec, copy))
     }
 
@@ -96,7 +96,7 @@ impl<R: Relation> Database<R> {
     ///
     /// In debug builds, if `copy`'s arity is not the permutation's length
     /// or the base relation's arity.
-    pub fn add_index(&mut self, spec: IndexSpec, copy: R) {
+    pub fn add_index(&mut self, spec: CopySpec, copy: R) {
         debug_assert_eq!(
             copy.header().arity(),
             spec.permutation.len(),
@@ -142,7 +142,7 @@ impl<R: Relation> RelationArities for Database<R> {
 
 /// The header of `spec`'s copy: named `spec.name`, with the base's
 /// attribute names permuted (or positional, if the base is).
-pub fn index_header(spec: &IndexSpec, base: &RelationHeader) -> RelationHeader {
+pub fn index_header(spec: &CopySpec, base: &RelationHeader) -> RelationHeader {
     if base.attrs().is_empty() {
         RelationHeader::new_positional(&spec.name, base.arity())
     } else {
@@ -161,7 +161,7 @@ pub fn index_header(spec: &IndexSpec, base: &RelationHeader) -> RelationHeader {
 /// keeps its config or build mode. Never through `Projectable::project`,
 /// which rebuilds in the structure's own iteration order with a nameless
 /// header and drops the build mode.
-pub fn build_index<R: Relation>(spec: &IndexSpec, base: &RelationHeader, tuples: &Tuples) -> R {
+pub fn build_index<R: Relation>(spec: &CopySpec, base: &RelationHeader, tuples: &Tuples) -> R {
     R::from_tuples(index_header(spec, base), spec.permute_all(tuples))
 }
 
@@ -170,7 +170,7 @@ mod tests {
     use {
         super::*,
         crate::db::{build_index, index_header, HashFamily, SortedFamily},
-        kermit_algos::{ColumnEquality, IndexSpec, TrieIterKind},
+        kermit_algos::{ColumnEquality, CopySpec, TrieIterKind},
         kermit_ds::{
             BuildModeProvider, BuiltWith, ColumnTrie, ColumnTrieBuildMode, ConfigurableRelation,
             Configured, HashTrie, HashTrieConfig, HeapSize, LazyExpansion, LoadFactor, NoPruning,
@@ -312,7 +312,7 @@ mod tests {
         assert!(database.index("Index_1_0_edge").is_none());
         assert_eq!(database.indexes().count(), 0);
 
-        let spec = IndexSpec::new("edge", vec![1, 0]);
+        let spec = CopySpec::new("edge", vec![1, 0]);
         let header = RelationHeader::new_positional("edge", 2);
         let copy: TreeTrie = build_index(&spec, &header, &Tuples::from(edges()));
         database.add_index(spec.clone(), copy);
@@ -321,7 +321,7 @@ mod tests {
             database.get("Index_1_0_edge").is_none(),
             "copies are not base relations"
         );
-        let held: Vec<&IndexSpec> = database.indexes().map(|(spec, _)| spec).collect();
+        let held: Vec<&CopySpec> = database.indexes().map(|(spec, _)| spec).collect();
         assert_eq!(held, vec![&spec]);
         // The statistics are read-only and know nothing of copies.
         assert_eq!(database.statistics("Index_1_0_edge"), None);
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn index_header_permutes_named_attributes_and_keeps_positional_arity() {
-        let spec = IndexSpec::new("edge", vec![1, 0]);
+        let spec = CopySpec::new("edge", vec![1, 0]);
         let named = RelationHeader::new("edge", vec!["src".into(), "dst".into()]);
         let header = index_header(&spec, &named);
         assert_eq!(header.name(), "Index_1_0_edge");
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn build_index_permutes_the_tuples_in_file_order() {
-        let spec = IndexSpec::new("edge", vec![1, 0]);
+        let spec = CopySpec::new("edge", vec![1, 0]);
         let header = RelationHeader::new_positional("edge", 2);
         let copy: ColumnTrie = build_index(&spec, &header, &Tuples::from(edges()));
         assert_eq!(copy.header().name(), "Index_1_0_edge");
@@ -387,7 +387,7 @@ mod tests {
     /// do (it rebuilds through `from_tuples` with a nameless header).
     #[test]
     fn build_index_keeps_config_and_build_mode() {
-        let spec = IndexSpec::new("edge", vec![1, 0]);
+        let spec = CopySpec::new("edge", vec![1, 0]);
         let header = RelationHeader::new_positional("edge", 2);
 
         let hashed: Configured<HashTrie<SipHashStrategy>, HalfFull> =

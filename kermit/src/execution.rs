@@ -31,7 +31,7 @@ use {
         hash_join_for_each, index_header, lftj_join_for_each, Database, HashFamily, JoinError,
         SortedFamily,
     },
-    kermit_algos::{IndexSpec, JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Planner},
+    kermit_algos::{CopySpec, JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Planner},
     kermit_ds::{
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ExpansionPolicy, HashTrie,
         HashTrieBuildMode, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy, Relation,
@@ -546,14 +546,14 @@ pub trait ExecutionFamily: RelationFamily {
     /// As [`join_for_each`](Self::join_for_each).
     fn required_indexes(
         &self, engine: &Self::Engine, query: &JoinQuery,
-    ) -> Result<Vec<IndexSpec>, JoinError>;
+    ) -> Result<Vec<CopySpec>, JoinError>;
 
     /// Builds `spec`'s copy from its base relation's header and file-order
     /// `tuples` through [`build_relation`](RelationFamily::build_relation),
     /// so the copy carries the configuration and build mode the report's
     /// axes name, and adds it to `engine`.
     fn add_index(
-        &self, engine: &mut Self::Engine, spec: IndexSpec, base: &RelationHeader, tuples: &Tuples,
+        &self, engine: &mut Self::Engine, spec: CopySpec, base: &RelationHeader, tuples: &Tuples,
     );
 
     /// Drops every copy `engine` holds.
@@ -561,7 +561,7 @@ pub trait ExecutionFamily: RelationFamily {
 
     /// Every copy `engine` holds, with its spec: the `space/Index_*`
     /// functions.
-    fn indexes(engine: &Self::Engine) -> Vec<(&IndexSpec, &Self::Rel)>;
+    fn indexes(engine: &Self::Engine) -> Vec<(&CopySpec, &Self::Rel)>;
 }
 
 /// The sorted-family structure `R` on its own: what `bench ds -i tree-trie`
@@ -769,12 +769,12 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
 
     fn required_indexes(
         &self, engine: &Self::Engine, query: &JoinQuery,
-    ) -> Result<Vec<IndexSpec>, JoinError> {
+    ) -> Result<Vec<CopySpec>, JoinError> {
         engine.required_indexes(query, &self.planner)
     }
 
     fn add_index(
-        &self, engine: &mut Self::Engine, spec: IndexSpec, base: &RelationHeader, tuples: &Tuples,
+        &self, engine: &mut Self::Engine, spec: CopySpec, base: &RelationHeader, tuples: &Tuples,
     ) {
         let copy = self.build_relation(index_header(&spec, base), spec.permute_all(tuples));
         engine.add_index(spec, copy);
@@ -782,9 +782,7 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
 
     fn clear_indexes(engine: &mut Self::Engine) { engine.clear_indexes(); }
 
-    fn indexes(engine: &Self::Engine) -> Vec<(&IndexSpec, &Self::Rel)> {
-        engine.indexes().collect()
-    }
+    fn indexes(engine: &Self::Engine) -> Vec<(&CopySpec, &Self::Rel)> { engine.indexes().collect() }
 }
 
 /// Hash family: `HashTrie<H, P, E>` under Hash Triejoin through
@@ -874,12 +872,12 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> ExecutionF
 
     fn required_indexes(
         &self, engine: &Self::Engine, query: &JoinQuery,
-    ) -> Result<Vec<IndexSpec>, JoinError> {
+    ) -> Result<Vec<CopySpec>, JoinError> {
         engine.required_indexes(query, &self.planner)
     }
 
     fn add_index(
-        &self, engine: &mut Self::Engine, spec: IndexSpec, base: &RelationHeader, tuples: &Tuples,
+        &self, engine: &mut Self::Engine, spec: CopySpec, base: &RelationHeader, tuples: &Tuples,
     ) {
         let copy = self.build_relation(index_header(&spec, base), spec.permute_all(tuples));
         engine.add_index(spec, copy);
@@ -887,9 +885,7 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> ExecutionF
 
     fn clear_indexes(engine: &mut Self::Engine) { engine.clear_indexes(); }
 
-    fn indexes(engine: &Self::Engine) -> Vec<(&IndexSpec, &Self::Rel)> {
-        engine.indexes().collect()
-    }
+    fn indexes(engine: &Self::Engine) -> Vec<(&CopySpec, &Self::Rel)> { engine.indexes().collect() }
 }
 
 #[cfg(test)]
@@ -898,7 +894,7 @@ mod tests {
         super::*,
         crate::options::BuildModes,
         clap::ValueEnum,
-        kermit_algos::{ColumnOrderPolicy, IndexSpec, LexicographicOptimiser, Optimiser},
+        kermit_algos::{ColumnOrderPolicy, CopySpec, LexicographicOptimiser, Optimiser},
         kermit_ds::{
             ChildCapacity, ConfigurableRelation, EagerExpansion, LazyExpansion, LoadFactor,
             NoPruning, RadixBits, RootCapacity, SingletonPruning,
@@ -1749,7 +1745,7 @@ mod tests {
                 }),
                 ("TrieLftj::add_index", &|| {
                     let mut engine = join.build(Vec::new());
-                    let spec = IndexSpec::new("r", vec![1, 0]);
+                    let spec = CopySpec::new("r", vec![1, 0]);
                     join.add_index(&mut engine, spec, &header(), &tuples());
                 }),
             ];
@@ -1988,7 +1984,7 @@ mod tests {
                     }),
                     ("HashHtj::add_index", &|| {
                         let mut engine = join.build(Vec::new());
-                        let spec = IndexSpec::new("r", vec![1, 0]);
+                        let spec = CopySpec::new("r", vec![1, 0]);
                         join.add_index(&mut engine, spec, &header(), &tuples());
                     }),
                 ];
@@ -2128,7 +2124,7 @@ mod tests {
     fn families_build_copies_through_build_relation() {
         let header = RelationHeader::new_positional("edge", 2);
         let edges = Tuples::from(vec![vec![1, 2], vec![1, 3], vec![2, 3]]);
-        let spec = || IndexSpec::new("edge", vec![1, 0]);
+        let spec = || CopySpec::new("edge", vec![1, 0]);
 
         let join = TrieLftj::<Spy>::new(
             ColumnTrieBuildMode::Incremental,
@@ -2138,7 +2134,7 @@ mod tests {
         BUILT_WITH.take();
         join.add_index(&mut engine, spec(), &header, &edges);
         assert_eq!(BUILT_WITH.take(), Some(ColumnTrieBuildMode::Incremental));
-        let held: Vec<&IndexSpec> = TrieLftj::<Spy>::indexes(&engine)
+        let held: Vec<&CopySpec> = TrieLftj::<Spy>::indexes(&engine)
             .into_iter()
             .map(|(spec, _)| spec)
             .collect();
@@ -2189,7 +2185,7 @@ mod tests {
         );
         let mut engine = any.build(vec![any.build_relation(header(), edges())]);
         let specs = any.required_indexes(&engine, &query).unwrap();
-        assert_eq!(specs, vec![IndexSpec::new("edge", vec![1, 0])]);
+        assert_eq!(specs, vec![CopySpec::new("edge", vec![1, 0])]);
         for spec in specs {
             any.add_index(&mut engine, spec, &header(), &edges());
         }
