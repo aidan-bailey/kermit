@@ -271,6 +271,60 @@ impl<'a> TupleView<'a> {
         )
     }
 
+    /// The matching rows' output columns sorted lexicographically, as one
+    /// batch of exactly [`count`](Self::count) × [`arity`](Self::arity)
+    /// values, with one copy of the data at every arity.
+    ///
+    /// Arities 1-4 [`materialize`](Self::materialize) and then sort in place
+    /// with [`Tuples::sort`], which sorts `[usize; N]` arrays there. From
+    /// arity 5, `Tuples::sort` would gather into a second buffer, so this
+    /// sorts the matching row ids against the view and gathers once
+    /// ([`gather_sorted`](Self::gather_sorted)). Arity 0 has nothing to order.
+    pub fn materialize_sorted(&self) -> Tuples {
+        match self.arity() {
+            | 0 => self.materialize(),
+            | 1..=4 => {
+                let mut sorted = self.materialize();
+                sorted.sort();
+                sorted
+            },
+            | _ => {
+                let mut rows: Vec<RowId> =
+                    self.row_ids().filter(|&row| self.matches(row)).collect();
+                self.gather_sorted(&mut rows)
+            },
+        }
+    }
+
+    /// `rows` are matching source row ids: sorts them by their output rows
+    /// (reordering the slice), then gathers the output rows once, into a
+    /// buffer of exactly their size. TreeTrie's `parallel:N` workers call
+    /// this on their partitions of row ids.
+    ///
+    /// An id may appear more than once, and ids that give equal output rows
+    /// may end in either order, which the result cannot show.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an id is not below [`source_rows`](Self::source_rows); in a
+    /// debug build, also if a row does not match the filter.
+    pub fn gather_sorted(&self, rows: &mut [RowId]) -> Tuples {
+        for &row in rows.iter() {
+            debug_assert!(
+                self.matches(row),
+                "TupleView::gather_sorted: row {row} does not match the filter"
+            );
+        }
+        rows.sort_unstable_by(|&a, &b| self.output(a).cmp(self.output(b)));
+        self.gather(rows.iter().copied(), rows.len())
+    }
+
+    /// Source row `row`'s output columns, lent as an iterator for comparing.
+    fn output(&self, row: RowId) -> impl Iterator<Item = usize> + '_ {
+        let source = self.source.row(row);
+        self.columns.iter().map(move |&column| source[column])
+    }
+
     /// Every source row id, in order. A batch holds at most `RowId::MAX` rows,
     /// so the cast is exact.
     fn row_ids(&self) -> std::ops::Range<RowId> { 0..self.source.len() as RowId }
@@ -555,5 +609,116 @@ mod tests {
     fn matches_past_the_last_row_panics() {
         let source = source();
         let _ = filtered(&source).matches(5);
+    }
+
+    /// A 64-bit LCG (Knuth's MMIX constants), as `tuples.rs`'s tests use, so
+    /// the sort tests are seeded without a `rand` dependency.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 33) as usize % n
+        }
+    }
+
+    /// The oracle: the view's matching rows through `for_each`, sorted by
+    /// `Vec`'s own ordering.
+    fn sorted_reference(view: &TupleView<'_>) -> Vec<Vec<usize>> {
+        let mut rows = Vec::new();
+        view.for_each(|row| rows.push(row.to_vec()));
+        rows.sort();
+        rows
+    }
+
+    /// At every output arity from 0 to 6, with and without a filter, the
+    /// sorted copy holds the matching rows in lexicographic order at exactly
+    /// their size. Arities 1-4 take the in-place array sort and 5 and above
+    /// the row-id gather, and a small domain repeats prefixes and whole rows.
+    #[test]
+    fn materialize_sorted_sorts_the_matching_rows_at_every_arity() {
+        let mut lcg = Lcg(0x1CE);
+        let data: Vec<usize> = (0..300 * 6).map(|_| lcg.below(4)).collect();
+        let source = Tuples::from_flat(6, 300, data);
+        let column_sets: [&[usize]; 7] = [
+            &[],
+            &[3],
+            &[5, 1],
+            &[2, 0, 4],
+            &[1, 3, 5, 0],
+            &[4, 2, 0, 1, 3],
+            &[5, 4, 3, 2, 1, 0],
+        ];
+        let filters = [
+            Filter::none(),
+            Filter::new(vec![(0, 1)], vec![]),
+            Filter::new(vec![(2, 3)], vec![(1, 4)]),
+            Filter::new(vec![(0, 9)], vec![]),
+        ];
+        for columns in column_sets {
+            for filter in &filters {
+                let view = TupleView::new(&source, filter.clone(), columns.to_vec());
+                let sorted = view.materialize_sorted();
+                let context = format!("columns {columns:?}, filter {filter}");
+                assert_eq!(
+                    (sorted.arity(), sorted.len()),
+                    (columns.len(), view.count()),
+                    "{context}"
+                );
+                assert_eq!(sorted.to_vecs(), sorted_reference(&view), "{context}");
+                assert_eq!(
+                    sorted.value_capacity(),
+                    view.count() * columns.len(),
+                    "{context}: exactly the rows' size"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gather_sorted_sorts_the_ids_by_output_row_and_copies_once() {
+        let source = source();
+        let view = TupleView::new(&source, Filter::none(), vec![2, 0]);
+        // Output rows: id 3 is [6, 1], id 1 is [5, 2], id 0 is [5, 1].
+        let mut rows: [RowId; 3] = [3, 1, 0];
+        let gathered = view.gather_sorted(&mut rows);
+        assert_eq!(rows, [0, 1, 3], "the slice is reordered");
+        assert_eq!(gathered, Tuples::from_flat(2, 3, vec![5, 1, 5, 2, 6, 1]));
+        assert_eq!(gathered.value_capacity(), 6);
+    }
+
+    #[test]
+    fn gather_sorted_keeps_equal_output_rows() {
+        let source = source();
+        let view = TupleView::new(&source, Filter::none(), vec![2]);
+        // Column 2 holds 5, 5, 6, 6, 5 in rows 0..5, so ids 4, 0, 1 tie.
+        let mut rows: [RowId; 4] = [4, 2, 0, 1];
+        let gathered = view.gather_sorted(&mut rows);
+        assert_eq!(gathered, Tuples::from_flat(1, 4, vec![5, 5, 5, 6]));
+        assert_eq!(rows[3], 2);
+    }
+
+    #[test]
+    fn gather_sorted_reads_only_the_ids_it_is_given() {
+        let source = source();
+        let view = filtered(&source);
+        let mut rows: [RowId; 2] = [4, 0];
+        let gathered = view.gather_sorted(&mut rows);
+        assert_eq!(rows, [0, 4]);
+        assert_eq!(gathered, Tuples::from_flat(2, 2, vec![5, 1, 5, 3]));
+        assert_eq!(view.gather_sorted(&mut []), Tuples::new(2));
+    }
+
+    /// A row id the filter rejects is a caller's bug, which debug builds
+    /// catch.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "TupleView::gather_sorted: row 1 does not match the filter")]
+    fn gather_sorted_debug_asserts_that_every_id_matches() {
+        let source = source();
+        let _ = filtered(&source).gather_sorted(&mut [0, 1]);
     }
 }
