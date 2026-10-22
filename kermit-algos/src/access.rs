@@ -16,11 +16,34 @@
 //! `[A-Za-z][A-Za-z0-9_]*` only.
 
 use {
-    crate::const_rewrite::RewriteError,
     kermit_iters::Filter,
     kermit_parser::{JoinQuery, Predicate, Term},
-    std::collections::HashMap,
+    std::{collections::HashMap, fmt},
 };
+
+/// Error returned by [`extract_accesses`] when a constant does not match
+/// the expected `c<digits>` shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RewriteError {
+    /// An atom was not of the form `c<digits>`. kermit currently only
+    /// supports constants encoded as dictionary IDs using this
+    /// convention.
+    BadAtom(String),
+}
+
+impl fmt::Display for RewriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            | RewriteError::BadAtom(s) => write!(
+                f,
+                "atom {s:?} does not match the expected c<digits> shape — kermit currently only \
+                 supports constants encoded as dictionary IDs",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RewriteError {}
 
 /// Prefix of the ids of the atoms of an [`AccessQuery`]: `@0`, `@1`, …, the
 /// position of the access in [`AccessQuery::accesses`].
@@ -373,5 +396,27 @@ mod tests {
             extract_accesses(&parse(text)).unwrap_err(),
             RewriteError::BadAtom("foo".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod rewrite_error_tests {
+    use super::*;
+
+    /// `JoinError::MalformedConstant` shows this text and tests match it.
+    /// The error moved here from the retired const rewrite unchanged.
+    #[test]
+    fn bad_atom_display_text_is_pinned() {
+        assert_eq!(
+            RewriteError::BadAtom("x9".to_string()).to_string(),
+            "atom \"x9\" does not match the expected c<digits> shape — kermit currently only \
+             supports constants encoded as dictionary IDs"
+        );
+    }
+
+    #[test]
+    fn rewrite_error_is_an_error() {
+        let error: &dyn std::error::Error = &RewriteError::BadAtom("x9".to_string());
+        assert!(error.source().is_none());
     }
 }

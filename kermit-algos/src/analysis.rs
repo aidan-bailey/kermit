@@ -30,9 +30,9 @@ pub struct QueryAnalysis {
 /// index lists. Placeholders (`_`) and atoms are skipped in all passes —
 /// they occupy trie levels but don't bind a join variable — so an atom
 /// holding either yields a list shorter than its arity. The executors need
-/// one variable per column, which is why `kermit::db` hands them the
-/// rewritten query ([`crate::rewrite_atoms`], [`crate::rewrite_placeholders`]),
-/// in which neither occurs.
+/// one variable per column, which is why `kermit::db` hands them the query
+/// that [`crate::rewrite_placeholders`], [`crate::extract_accesses`] and
+/// [`crate::plan_indexes`] leave, in which neither occurs.
 ///
 /// Deterministic: same query, same numbering, always.
 pub fn analyse(query: &JoinQuery) -> QueryAnalysis {
@@ -89,8 +89,8 @@ pub fn analyse(query: &JoinQuery) -> QueryAnalysis {
 
 /// The variables of `query` by canonical index: `names[i]` is the variable
 /// [`analyse`] numbers `i`. The same two passes, head then body in first
-/// appearance, so the two always agree. The orientation rewrite
-/// ([`crate::orient`]) uses it to carry a plan across a renumbering.
+/// appearance, so the two always agree. A plan is carried across a
+/// renumbering by these names, as [`crate::plan_indexes`] does.
 pub fn canonical_names(query: &JoinQuery) -> Vec<String> {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut names: Vec<String> = Vec::new();

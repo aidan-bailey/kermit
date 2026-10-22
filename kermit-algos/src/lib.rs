@@ -7,17 +7,17 @@
 //!
 //! # Layout
 //!
-//! The crate is organised in seven parts. Five are family-agnostic and sit
-//! at the root — `const_rewrite`, which turns constant atoms into synthetic
-//! unary predicates; `placeholder_rewrite`, which turns each `_` into a
-//! fresh variable; `selection_rewrite`, which turns a variable repeated
-//! inside one atom into a fresh variable plus a synthetic selection view;
-//! `analysis`, the canonical variable numbering that planners and
-//! executors must agree on; and `orient`, which runs after planning and
-//! renames each atom whose plan disagrees with its stored column order to
-//! a reordered copy (`--column-orders any`). `optimiser` plans a
-//! [`QueryPlan`]. The remaining two are the iterator families, `sorted`
-//! (over [`TrieIterable`](kermit_iters::TrieIterable)) and `hash` (over
+//! The crate is organised in seven parts. Four are family-agnostic and sit
+//! at the root — `placeholder_rewrite`, which turns each `_` into a fresh
+//! variable; `access`, which reads each body atom as a selection and a
+//! projection of its relation, so that constants and repeated variables
+//! become a filter applied when an index is built; `analysis`, the
+//! canonical variable numbering that planners and executors must agree on;
+//! and `index_plan`, which runs after planning, orders each access's columns
+//! by the plan and merges identical accesses into the indexes a query
+//! builds. `optimiser` plans a [`QueryPlan`]. The remaining two are the
+//! iterator families, `sorted` (over
+//! [`TrieIterable`](kermit_iters::TrieIterable)) and `hash` (over
 //! [`HashTrieIterable`](kermit_iters::HashTrieIterable)); they share no
 //! code and never reference each other.
 //!
@@ -27,14 +27,11 @@
 
 mod access;
 mod analysis;
-mod const_rewrite;
 mod hash;
 mod index_plan;
 mod join_algo;
 mod optimiser;
-mod orient;
 mod placeholder_rewrite;
-mod selection_rewrite;
 mod sorted;
 
 // `clap::ValueEnum` is derived in this library crate on purpose: it keeps
@@ -46,11 +43,8 @@ mod sorted;
 // its implementations in `optimiser`.
 use clap::ValueEnum;
 pub use {
-    access::{extract_accesses, Access, AccessQuery, ACCESS_PREFIX},
+    access::{extract_accesses, Access, AccessQuery, RewriteError, ACCESS_PREFIX},
     analysis::{analyse, canonical_names, QueryAnalysis},
-    const_rewrite::{
-        is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
-    },
     hash::HashTriejoin,
     index_plan::{plan_indexes, IndexPlan, IndexSpec, INDEX_ID_PREFIX},
     join_algo::JoinAlgo,
@@ -61,12 +55,7 @@ pub use {
         LexicographicOptimiser, Optimiser, PlanError, Planner, Precedence, QueryOptimiser,
         QueryPlan, RelationStats, StatisticsLevel,
     },
-    orient::{is_index_predicate, orient, CopySpec, Oriented, INDEX_PREDICATE_PREFIX},
     placeholder_rewrite::rewrite_placeholders,
-    selection_rewrite::{
-        is_selection_predicate, rewrite_repeated_variables, ColumnEquality, SelectionSpec,
-        SELECTION_PREDICATE_PREFIX,
-    },
     sorted::LeapfrogTriejoin,
 };
 

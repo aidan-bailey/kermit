@@ -13,8 +13,10 @@ where
 {
     /// Joins the given iterables according to `plan`, which must have been
     /// produced by a [`QueryOptimiser`](crate::optimiser::QueryOptimiser)
-    /// for this exact `query` (after any const-view rewrite), and passes
-    /// each result tuple to `emit` in canonical (head-first) variable order.
+    /// for this exact `query` (the executed query of `IndexPlan::query`,
+    /// whose atoms name the indexes, with the plan translated to it), and
+    /// passes each result tuple to `emit` in canonical (head-first) variable
+    /// order.
     ///
     /// # Streaming
     ///

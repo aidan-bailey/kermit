@@ -12,27 +12,22 @@
 //! a placeholder mean exactly what an unused named variable means: the
 //! result keeps one row per matching tuple (bag semantics), and the
 //! fresh column is dropped when the result is projected to the head.
-//! Intended to run after [`crate::rewrite_atoms`] and before
-//! [`crate::rewrite_repeated_variables`].
+//! Intended to run before [`crate::extract_accesses`], which expects it to
+//! have run.
 
-use {
-    crate::const_rewrite::highest_k_index,
-    kermit_parser::{JoinQuery, Term},
-};
+use kermit_parser::{JoinQuery, Predicate, Term};
 
 /// Rewrites `query.body` so that no atom contains a placeholder: each `_`
 /// becomes its own fresh variable `K<i>`.
 ///
-/// Fresh variables share the `K<n>` counter with [`crate::rewrite_atoms`]
-/// and [`crate::rewrite_repeated_variables`] (all three start past the
-/// highest existing `K<n>`), and each is distinct, so the selection
-/// rewrite that follows never mistakes one for a repeat.
+/// Fresh variables start past the highest existing `K<n>` in the query,
+/// and each is distinct, so access extraction never mistakes one for a
+/// repeated variable.
 ///
 /// # Head asymmetry
 ///
-/// As with the other rewrites, **only body atoms are rewritten**. A head
-/// placeholder names no output column; `kermit::db` rejects it before
-/// any rewrite runs.
+/// **Only body atoms are rewritten.** A head placeholder names no output
+/// column; `kermit::db` rejects it before any rewrite runs.
 pub fn rewrite_placeholders(mut query: JoinQuery) -> JoinQuery {
     let mut next_k = highest_k_index(&query).map_or(0, |n| n + 1);
     for term in query.body.iter_mut().flat_map(|pred| &mut pred.terms) {
@@ -44,11 +39,32 @@ pub fn rewrite_placeholders(mut query: JoinQuery) -> JoinQuery {
     query
 }
 
+/// Highest `n` among existing `K<n>` variable names in `query`, if any. A
+/// fresh name starts past it, so it never collides with a user's own `K0`,
+/// `K1`, …; scanning the head too keeps a head-only `K3` from being reused.
+pub(crate) fn highest_k_index(query: &JoinQuery) -> Option<usize> {
+    let scan = |p: &Predicate| -> Option<usize> {
+        p.terms
+            .iter()
+            .filter_map(|t| match t {
+                | Term::Var(name) => name.strip_prefix('K').and_then(|r| r.parse::<usize>().ok()),
+                | _ => None,
+            })
+            .max()
+    };
+    query
+        .body
+        .iter()
+        .chain(std::iter::once(&query.head))
+        .filter_map(scan)
+        .max()
+}
+
 #[cfg(test)]
 mod tests {
     use {
         super::*,
-        crate::{analyse, rewrite_atoms, rewrite_repeated_variables, ColumnEquality},
+        crate::{analyse, extract_accesses},
         kermit_parser::Term,
     };
 
@@ -117,27 +133,30 @@ mod tests {
         ]]);
     }
 
-    /// The const rewrite runs first and takes `K0`; the placeholder takes
-    /// the next index from the shared counter.
+    /// A constant beside a placeholder stays a constant: the placeholder
+    /// takes the first fresh name, and access extraction keeps its column
+    /// while the constant becomes a filter.
     #[test]
-    fn composes_after_the_const_rewrite() {
-        let (q, _) = rewrite_atoms(parse("Q(X) :- r(c5, _, X).")).unwrap();
-        let out = rewrite_placeholders(q);
-        let names: Vec<&str> = out.body[0].terms.iter().map(var).collect();
-        assert_eq!(names, vec!["K0", "K1", "X"]);
+    fn composes_before_access_extraction_with_a_constant() {
+        let out = rewrite_placeholders(parse("Q(X) :- r(c5, _, X)."));
+        let extracted = extract_accesses(&out).unwrap();
+        let access = &extracted.accesses[0];
+        assert_eq!(access.columns, vec![1, 2]);
+        assert_eq!(access.variables, vec!["K0".to_string(), "X".to_string()]);
+        assert_eq!(access.filter.constants(), &[(0, 5)]);
     }
 
     /// A placeholder between two occurrences of one variable is neither a
-    /// source nor a repeat for the selection rewrite that follows.
+    /// source nor a repeat for the equality that extraction records.
     #[test]
-    fn composes_before_the_selection_rewrite() {
-        let q = rewrite_placeholders(parse("Q(X) :- r(X, _, X)."));
-        let (out, specs) = rewrite_repeated_variables(q);
+    fn composes_before_access_extraction_with_a_repeated_variable() {
+        let out = rewrite_placeholders(parse("Q(X) :- r(X, _, X)."));
         let names: Vec<&str> = out.body[0].terms.iter().map(var).collect();
-        assert_eq!(names, vec!["X", "K0", "K1"]);
-        assert_eq!(specs[0].equalities, vec![ColumnEquality {
-            source: 0,
-            repeat: 2,
-        }]);
+        assert_eq!(names, vec!["X", "K0", "X"]);
+        let extracted = extract_accesses(&out).unwrap();
+        let access = &extracted.accesses[0];
+        assert_eq!(access.columns, vec![0, 1]);
+        assert_eq!(access.variables, vec!["X".to_string(), "K0".to_string()]);
+        assert_eq!(access.filter.equalities(), &[(0, 2)]);
     }
 }
