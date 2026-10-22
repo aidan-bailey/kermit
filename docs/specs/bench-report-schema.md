@@ -1,6 +1,6 @@
 # `BenchReport` JSON schema
 
-**Current schema version:** `4`
+**Current schema version:** `5`
 **Source of truth:** `kermit/src/bench_report.rs`
 
 ## Top-level shape
@@ -19,7 +19,7 @@ always parse a list.
 ```json
 [
   {
-    "schema_version": 4,
+    "schema_version": 5,
     "kind": "ds",
     "metadata": [
       { "label": "data structure", "value": "TreeTrie" },
@@ -46,7 +46,7 @@ always parse a list.
 
 | Field              | Type                         | Description |
 |--------------------|------------------------------|-------------|
-| `schema_version`   | u32                          | Currently `4`. Consumers should refuse unknown majors. |
+| `schema_version`   | u32                          | Currently `5`. Consumers should refuse unknown majors. |
 | `kind`             | `"join"` \| `"ds"` \| `"run"` | Which `bench` subcommand produced the report. |
 | `metadata`         | Array of `{label, value}`    | Human-readable label/value pairs mirroring the stderr block. Both fields are strings (numerics get stringified for stderr alignment). |
 | `axes`             | Object (string → JSON value) | Structured axis values for downstream tooling. Numeric axes are kept numeric; alphabetically ordered (`BTreeMap`) so JSON diffs are deterministic. |
@@ -62,18 +62,31 @@ always parse a list.
 
 ### Time and space function ids
 
-`bench run` / `bench join` write the time functions `insertion` (every
-base relation built from its file-order tuples), `iteration` (the
-streamed join over the prebuilt engine), `end_to_end` (opt-in: a fresh
-build plus K joins) and, under `--column-orders any` when the plan needs
-a copy, `copies` (every reordered copy the query needs, permuted and
-built through the same `build_relation` as `insertion`; emitted beside
-`insertion`, so only when `insertion` is measured). The space functions
-are `space/<relation>` per base relation and `space/Index_<π>_<base>` per
-copy (e.g. `space/Index_1_0_edge`). Each copy also gets an `index`
-metadata line, e.g. `edge (1, 0)`. Under `stored` no `copies` or
-`space/Index_*` function is ever written. A query's copies are part of
-the engine `iteration` reads and of `end_to_end`'s fresh build.
+From v5, `bench run` and `bench join` write, per query, the time functions
+`build` (the query's indexes built from the catalog's flat tuples, each a
+relation filtered by the query's constants and repeated variables and
+copied once in plan order, plus its all-constant checks), `iteration` (the
+streamed join over indexes built once, outside Criterion; planning is
+excluded, since a query is planned once, in `prepare`) and `end_to_end`
+(opt-in: a build plus K joins), and one space function, `space` (the heap
+bytes of the query's indexes together). `bench ds` writes `{ds}/build`,
+`{ds}/iteration`, `{ds}/end_to_end` (opt-in) and `{ds}/space`. Each index
+also gets an `index` metadata line, `{id} {relation} filter {filter}
+columns {columns:?}: {rows} rows, {bytes} bytes`, where the filter reads
+`-` for none and otherwise `col{c}={value}` for a constant and
+`col{a}=col{b}` for an equality, comma-separated (for example
+`#0 edge filter - columns [1, 0]: 4 rows, 96 bytes`, illustrative).
+
+Up to v4, the time functions were `insertion` (every base relation built
+from its file-order tuples), `iteration` (the streamed join over the
+prebuilt engine), `end_to_end` and, under `--column-orders any` when the
+plan needed a copy, `copies` (every reordered copy the query needed,
+permuted and built through the same `build_relation` as `insertion`;
+emitted beside `insertion`, so only when `insertion` was measured). The
+space functions were `space/<relation>` per base relation and
+`space/Index_<π>_<base>` per copy (e.g. `space/Index_1_0_edge`), and each
+copy also got an `index` metadata line, e.g. `edge (1, 0)`. Under `stored`
+no `copies` or `space/Index_*` function was ever written.
 
 ## Conventional `axes` keys
 
@@ -86,14 +99,15 @@ semantics).
 |------------------|--------------------------|------------------|-------|
 | `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`. The `IndexStructure::axis_value` string. |
 | `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`. The `JoinAlgorithm::axis_value` string. |
-| `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`, `"cost-based"`. A `"cost-based"` run's `end_to_end` includes its per-column statistics walk; its `iteration` does not. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
-| `column_orders`  | `join`, `run`            | string           | Column-order policy the join was planned under (`--column-orders`). Values: `"stored"` (default; each relation read in its stored column order) and `"any"` (the planner is free; an atom whose plan disagrees with its stored order reads a per-query reordered copy). Always emitted since #93; kermit-lab back-fills `"stored"` on earlier join reports (rows with an `algorithm`). |
+| `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`, `"cost-based"`. A `"cost-based"` run's per-column statistics walk runs when the catalog is read, outside every timer. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
+| `column_orders`  | `join`, `run`            | string           | *Removed in v5* (`--column-orders` no longer exists; the planner is always free). Schema 3 and 4 reports carry the column-order policy the join was planned under: `"stored"` (each relation read in its stored column order) or `"any"` (an atom whose plan disagreed with its stored order read a per-query reordered copy). kermit-lab back-fills `"stored"` only on join rows (rows with an `algorithm`) whose `schema_version` is below 5; a v5 row has no such axis, and labelling it `"stored"` would be false. |
+| `index_rows`     | `join`, `run`            | number (usize)   | v5: the rows the query's build copied, `Indexes::rows()`, the sum of its index views' counts (a filtered index counts only the rows that match). Lets build time be normalised per row. Absent from `ds` reports and from reports before v5. |
 | `allocator`      | `join`, `ds`, `run`      | string           | The allocator the binary runs on: `"jemalloc"` (the default `jemalloc` cargo feature of `kermit`) or `"system"` (built with `--no-default-features`; glibc on Linux). Every timing depends on it (#112), so `BenchReport::new` adds it to every report. Always emitted since #112; kermit-lab back-fills `"system"` on every earlier row. |
 | `query`          | `join`, `run`            | string           | Query name. `run`: from the YAML `queries:` list (e.g. `"triangle"`). `bench join`: the query file's stem. |
 | `benchmark`      | `join`, `run`            | string           | Workload name. `run`: YAML benchmark name (e.g. `"triangle"`, `"watdiv-stress-c1"`). `bench join`: `"adhoc"`. |
 | `relation_path`  | `ds`                     | string           | The single relation file passed to `bench ds`. Workspace-relative if invoked from the workspace root. |
 | `relation_bytes` | `ds`                     | number (u64)     | On-disk size in bytes (raw, not formatted). Use `relation_size` from `metadata` for the human-readable form. |
-| `tuples`         | `ds`, `join`, `run`      | number (usize)   | `ds`: tuples in the single relation. `join`, `run`: total summed across all of the benchmark's relations (workload input size). |
+| `tuples`         | `ds`, `join`, `run`      | number (usize)   | `ds`: tuples in the single relation. `join`, `run`: from v5, the flat row count of the relations the query reads (`Catalog::tuples(name).len()` summed over `Prepared::relations()`), the same for every structure; before v5, the total summed across all of the benchmark's relations (workload input size). |
 | `arity`          | `ds`                     | number (usize)   | Relation arity. |
 | `relations`      | *(removed 2026-09-09)*   | —                | `bench join` used to emit its relation count; it now reports `tuples` like `bench run`. Old reports may still carry it. |
 | `verified`       | `run`                    | boolean          | `true` when `--verify` checked the query's result count against the YAML's `expected`; absent otherwise. |
@@ -212,13 +226,12 @@ When pivoting bench reports in kermit-lab, downstream code should:
   which. `HashTrie` has no seek.
 - `ds_layout_expansion` (HashTrie only, `"eager"` / `"lazy"`, #92). Under
   `"lazy"` a join builds the children it first reaches, so `bench run` /
-  `bench join` never probe the engine they loaded: `iteration` times one
-  join against the relations **in their as-built state**, on a fresh build
-  made in untimed setup per sample, and `--verify` runs on a fresh build
-  too, so `space` always measures the relations as built. Every other
-  structure reuses one engine for `iteration`, which is the same state, so
-  every pre-existing cell measures what it did and the schema stays at
-  version 3.
+  `bench join` never probe the indexes they measure: `iteration` times one
+  join against the query's indexes **in their as-built state**, on a fresh
+  build made in untimed setup per sample, and `--verify` runs on a fresh
+  build too, so `space` always measures the indexes as built. Every other
+  structure reuses one set of indexes for `iteration`, which is the same
+  state.
 
 Adding new keys under these prefixes does not require a `schema_version`
 bump — the `axes` field is an open map.
@@ -230,15 +243,17 @@ bump — the `axes` field is an open map.
   pinned to it), or restructuring nesting.
 - **Also bump** when what a metric measures changes, even if every field
   keeps its name and type: values on either side are no longer comparable.
-  v3 and v4 are such bumps.
+  v3, v4 and v5 are such bumps.
 - **No bump** for additive changes: new `axes` keys, new optional fields on
   `CriterionGroupRef`, new conventional values for `kind` or `metric`.
 - Consumers should refuse to parse if `schema_version` is missing or
   greater than the highest version they know about. kermit-lab also
-  refuses to load reports from both sides of version 3, or of version 4,
-  in one call: at 3 the `iteration` and `end_to_end` values changed
-  meaning, and at 4 `insertion`, `copies`, `end_to_end`, HashTrie's
-  `space` and lazy-expansion HashTrie's `iteration` did.
+  refuses to load reports from both sides of version 3, of version 4, or
+  of version 5, in one call: at 3 the `iteration` and `end_to_end` values
+  changed meaning, at 4 `insertion`, `copies`, `end_to_end`, HashTrie's
+  `space` and lazy-expansion HashTrie's `iteration` did, and at 5 the build
+  metric, `iteration`, `end_to_end` and `space` did (`insertion` and
+  `copies` became `build`).
 
 ## Change log
 
@@ -265,3 +280,4 @@ bump — the `axes` field is an open map.
 | 4       | 2026-10-08 | What `insertion`, `copies`, `end_to_end`, HashTrie's `space` and lazy-expansion HashTrie's `iteration` measure changed, so they are not comparable with v3, and kermit-lab refuses to load v3 and v4 reports together unless `allow_mixed_schema=True` (#111). Every relation's tuples travel from the reader to every structure's build as one row-major buffer (`Tuples`) instead of a `Vec` per tuple: each `insertion` / `end_to_end` setup clone copies one buffer; TreeTrie and ColumnTrie sort it with one shared `Tuples::sort` and free one buffer where they freed a `Vec` per tuple; `bench run`'s `copies` metric (`--column-orders any`) times `permute_all` plus the copies' builds, which now copy one buffer and build from rows; and HashTrie keeps the buffer, so its `space` counts the buffer (capacity × 8 B), its row-id lists and chains (capacity × 4 B) and its tables, where it counted a `Vec` per tuple. HashTrie's `bench ds` `iteration` still walks the trie, now reading each row through its id, so it may move; #111's measurement records by how much. TreeTrie and ColumnTrie `space` and `bench run` / `bench join` `iteration` keep their meaning (the join's leaf product reads HashTrie chains through `LeafRows`; compare `iteration` within the codegen bound), except on lazy-expansion HashTrie cells (`ds_layout_expansion=lazy`): their `iteration` runs on fresh builds and times child expansion, and `resolve`'s Algorithm 2 now groups row ids and reads rows from the buffer. HashTriejoin `iteration` on a query that repeats a variable inside one atom also moves: its selection view copies 4-byte row ids per leaf bucket where it cloned tuples. Under `--optimiser cost-based`, HashTrie's column-distinct statistics are now a scan of its buffer (`TupleScan`), timed inside `end_to_end`, which is non-comparable already. No field or axis changed. |
 | 4 (no bump) | 2026-10-08 | HashTrie's `radix:K`, `parallel:N` and `presized:N` copy their rows into first-key-hash partition order and keep the copy as the trie's buffer (#101 B1). Their `insertion`, `end_to_end` and, under `--column-orders any`, `copies` now include the copy (`add_index` builds each copy through `build_relation` in the cell's mode, so a radix-family cell's copies include the partition copy too), and their `iteration` reads rows in the new order. The trie's contents and capacities are unchanged, so `space` keeps its meaning. `bulk` and `incremental` are unchanged. A process change within the BuildMode axis, as #107's was, so `schema_version` stays `4`; compare these modes within one binary. |
 | 4 (no bump) | 2026-10-14 | Every HashTrie list is a chain threaded through one 4-byte link per row (`ChainLinks`) instead of a `Vec<RowId>` (#101 B2), in every build mode and Layout. HashTrie's `insertion` and `end_to_end` time builds that allocate per table, never per list, and rewrite each row's link once per level; its `space` counts the links (capacity × 4 B) and 24-byte leaf buckets where it counted a heap list per chain and pending list and 32-byte leaf buckets; its `iteration`, the join's leaf product and `bench ds`'s trie walk, walks each chain through its links, one link and one row per step, and under `ds_layout_expansion=lazy` times an expansion that re-threads links; and under `--column-orders any` its `copies` time copies built the same way. The trie's contents, its tables' capacities and every join's output order are unchanged, and no field or axis changed, so `schema_version` stays `4`, as for #107 and #101 B1; compare HashTrie timings and `space` within one binary, or across B2 only through a measured A/B. TreeTrie and ColumnTrie reports are unchanged. |
+| 5       | 2026-10-22 | What `insertion`, `copies`, `iteration`, `end_to_end` and `space` measure changed, so they are not comparable with v4, and kermit-lab refuses to load v4 and v5 reports together unless `allow_mixed_schema=True`. Relations load into a flat `Catalog` untimed, and each query builds, and times as `build`, only the indexes its plan reads: each a relation filtered by the query's constants and repeated variables, in plan order, copied exactly once from a borrowed `TupleView` in every build mode (so `serial` and `bulk` now copy inside the timer, as `radix:K`, `parallel:N` and `presized:N` already did, and a build is freed after the timer stops). `insertion` and `copies` are replaced by `build` (`--metrics build`; `copies` is no longer a metric); `iteration` excludes planning, which now runs once per query before any timer, and times the join over plain indexes with no const or selection wrapper; `end_to_end` and `space` are per query, and `space` sums the query's indexes in one function, replacing `space/<relation>` and `space/Index_<π>_<base>`. The `column_orders` axis is removed (`--column-orders` no longer exists; the planner is always free), `index_rows` is new, `tuples` for `join` and `run` is the flat row count of the relations the query reads, and each index adds an `index` metadata line. `bench ds` emits `{ds}/build` where it emitted `{ds}/insertion`. Criterion group names are unchanged. No v4 cell measures the same work under the same name, so there is no A/B against v4; the first v5 measurement is the next authoritative sweep (#99). |
