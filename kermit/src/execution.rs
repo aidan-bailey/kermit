@@ -33,9 +33,10 @@ use {
     },
     kermit_algos::{CopySpec, JoinAlgorithm, JoinQuery, LeapfrogTriejoin, Planner},
     kermit_ds::{
-        BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode, ExpansionPolicy, HashTrie,
-        HashTrieBuildMode, HashTrieConfig, HeapSize, IndexStructure, PruningPolicy, Relation,
-        RelationFileExt, RelationHeader, SeekStrategy, TreeTrie, TreeTrieBuildMode, Tuples,
+        BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
+        ConfiguredBuildModeRelation, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
+        HeapSize, IndexStructure, PruningPolicy, Relation, RelationFileExt, RelationHeader,
+        SeekStrategy, TreeTrie, TreeTrieBuildMode, TupleView, Tuples,
     },
     kermit_iters::{
         BuildMode, HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -104,8 +105,9 @@ pub trait SortedTrieRelation:
     /// The CLI-visible identity of this relation type built by `build`.
     fn kind(build: Self::BuildMode) -> SortedTrie;
 
-    /// Builds one relation from `tuples` by `build`.
-    fn build_with(header: RelationHeader, build: Self::BuildMode, tuples: Tuples) -> Self;
+    /// Builds one relation from the rows `view` selects by `build`: the rows
+    /// are copied once, however `build` arranges them.
+    fn build_with(header: RelationHeader, build: Self::BuildMode, view: TupleView<'_>) -> Self;
 
     /// The `ds_build_mode` axis of relations built by `build`. The build
     /// leaves no trace in the built structure, so this — not the relation —
@@ -123,8 +125,8 @@ impl<S: SeekStrategy> SortedTrieRelation for TreeTrie<S> {
         }
     }
 
-    fn build_with(header: RelationHeader, build: TreeTrieBuildMode, tuples: Tuples) -> Self {
-        Self::from_tuples_with_build_mode(header, build, tuples)
+    fn build_with(header: RelationHeader, build: TreeTrieBuildMode, view: TupleView<'_>) -> Self {
+        Self::from_view_with_build_mode(header, build, view)
     }
 
     /// Every `TreeTrie` report says which build made it, so kermit-lab can
@@ -148,8 +150,8 @@ impl<S: SeekStrategy> SortedTrieRelation for ColumnTrie<S> {
         }
     }
 
-    fn build_with(header: RelationHeader, build: ColumnTrieBuildMode, tuples: Tuples) -> Self {
-        Self::from_tuples_with_build_mode(header, build, tuples)
+    fn build_with(header: RelationHeader, build: ColumnTrieBuildMode, view: TupleView<'_>) -> Self {
+        Self::from_view_with_build_mode(header, build, view)
     }
 
     /// Every `ColumnTrie` report says which build made it, so kermit-lab can
@@ -352,20 +354,30 @@ pub trait RelationFamily {
     /// `data_structure` / `algorithm` axes.
     fn execution(&self) -> Execution;
 
-    /// Builds one relation from a header and its tuples, honouring the
-    /// family's configuration and build mode.
+    /// Builds one relation from a header and a view of its source tuples,
+    /// honouring the family's configuration and build mode.
     ///
-    /// Every relation the family builds *from tuples* routes through this
-    /// one site — the `insertion` metric, [`load`](Self::load),
-    /// [`load_with_tuples`](Self::load_with_tuples), and both families'
-    /// [`build_from_tuples`] — so such a measurement can never build a
-    /// relation the report's `ds_config_*` / `ds_build_mode` axes fail to
-    /// describe. Required, with no default, so no family can silently fall
-    /// back to `Relation::from_tuples` and build with a configuration or
-    /// mode its report does not name.
+    /// Every relation the family builds routes through this one site: the
+    /// indexes `ExecutionFamily::build_indexes` builds and, through
+    /// [`build_relation`](Self::build_relation), the `insertion` metric,
+    /// [`load`](Self::load), [`load_with_tuples`](Self::load_with_tuples) and
+    /// both families' [`build_from_tuples`]. So such a measurement can never
+    /// build a relation the report's `ds_config_*` / `ds_build_mode` axes
+    /// fail to describe. Required, with no default, so no family can
+    /// silently fall back to `Relation::from_view` and build with a
+    /// configuration or mode its report does not name.
     ///
     /// [`build_from_tuples`]: ExecutionFamily::build_from_tuples
-    fn build_relation(&self, header: RelationHeader, tuples: Tuples) -> Self::Rel;
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> Self::Rel;
+
+    /// Builds one relation from a header and its tuples: [`build_index`]
+    /// over the identity view of `tuples`, so the old and the per-query
+    /// paths cannot disagree about a structure.
+    ///
+    /// [`build_index`]: Self::build_index
+    fn build_relation(&self, header: RelationHeader, tuples: Tuples) -> Self::Rel {
+        self.build_index(header, TupleView::all(&tuples))
+    }
 
     /// Loads one relation file into `Self::Rel`, honouring the family's
     /// configuration: the reader is chosen by extension and the relation
@@ -591,8 +603,8 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
 
     fn execution(&self) -> Execution { Execution::TrieLftj(R::kind(self.build)) }
 
-    fn build_relation(&self, header: RelationHeader, tuples: Tuples) -> R {
-        R::build_with(header, self.build, tuples)
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> R {
+        R::build_with(header, self.build, view)
     }
 
     fn for_each_tuple<V: FnMut(&[usize])>(rel: &R, mut visit: V) {
@@ -659,12 +671,12 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFa
         }
     }
 
-    fn build_relation(&self, header: RelationHeader, tuples: Tuples) -> HashTrie<H, P, E> {
-        HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> HashTrie<H, P, E> {
+        <HashTrie<H, P, E> as ConfiguredBuildModeRelation>::from_view_with_config_and_build_mode(
             header,
             self.config,
             self.build,
-            tuples,
+            view,
         )
     }
 
@@ -713,8 +725,8 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for TrieLftj<R> {
 
     fn execution(&self) -> Execution { self.structure.execution() }
 
-    fn build_relation(&self, header: RelationHeader, tuples: Tuples) -> R {
-        self.structure.build_relation(header, tuples)
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> R {
+        self.structure.build_index(header, view)
     }
 
     fn for_each_tuple<V: FnMut(&[usize])>(rel: &R, visit: V) {
@@ -814,8 +826,8 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFa
 
     fn execution(&self) -> Execution { self.structure.execution() }
 
-    fn build_relation(&self, header: RelationHeader, tuples: Tuples) -> HashTrie<H, P, E> {
-        self.structure.build_relation(header, tuples)
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> HashTrie<H, P, E> {
+        self.structure.build_index(header, view)
     }
 
     fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P, E>, visit: V) {
@@ -1649,9 +1661,11 @@ mod tests {
             <ColumnTrie as SortedTrieRelation>::kind(build)
         }
 
-        fn build_with(header: RelationHeader, build: ColumnTrieBuildMode, tuples: Tuples) -> Self {
+        fn build_with(
+            header: RelationHeader, build: ColumnTrieBuildMode, view: TupleView<'_>,
+        ) -> Self {
             BUILT_WITH.set(Some(build));
-            <Spy as Relation>::from_tuples(header, tuples)
+            <Spy as Relation>::from_view(header, view)
         }
 
         fn build_mode_axes(build: ColumnTrieBuildMode) -> BTreeMap<String, serde_json::Value> {
@@ -2191,5 +2205,142 @@ mod tests {
         }
         assert_eq!(any.count(&engine, query.clone()).unwrap(), 2);
         assert!(any.required_indexes(&engine, &query).unwrap().is_empty());
+    }
+
+    /// Five rows of arity 3, the first and the last equal: the source of the
+    /// view tests.
+    fn view_source() -> Tuples {
+        let mut source = Tuples::new(3);
+        for row in [[1, 2, 5], [1, 3, 5], [2, 2, 5], [2, 2, 6], [1, 2, 5]] {
+            source.push(&row);
+        }
+        source
+    }
+
+    /// `build_index` over `view` builds the relation that `build_relation`
+    /// builds over the view's materialisation: the same tuples, the same
+    /// count and the same heap.
+    fn assert_view_builds_like_batch<F: RelationFamily>(family: &F, view: &TupleView<'_>) {
+        let header = || RelationHeader::new_positional("r", view.arity());
+        let from_view = family.build_index(header(), view.clone());
+        let from_batch = family.build_relation(header(), view.materialize());
+        let (mut viewed, mut batched) = (visited::<F>(&from_view), visited::<F>(&from_batch));
+        viewed.sort();
+        batched.sort();
+        assert_eq!(viewed, batched);
+        assert_eq!(F::tuple_count(&from_view), F::tuple_count(&from_batch));
+        assert_eq!(from_view.heap_size_bytes(), from_batch.heap_size_bytes());
+    }
+
+    /// Every family builds, through `build_index`, what its view
+    /// materialises: a view that filters by a constant and permutes, one that
+    /// filters by an equality, one that matches nothing, and the identity
+    /// view.
+    #[test]
+    fn build_index_builds_what_its_view_materialises_in_every_family() {
+        type Eager = HashTrieFamily<SipHashStrategy, NoPruning, EagerExpansion>;
+        type PrunedLazy = HashTrieFamily<SipHashStrategy, SingletonPruning, LazyExpansion>;
+
+        let source = view_source();
+        let by_constant = kermit_ds::Filter::new(vec![(2, 5)], vec![]);
+        let by_equality = kermit_ds::Filter::new(vec![], vec![(0, 1)]);
+        let by_nothing = kermit_ds::Filter::new(vec![(2, 9)], vec![]);
+        let views = [
+            TupleView::new(&source, by_constant, vec![1, 0]),
+            TupleView::new(&source, by_equality, vec![1, 2]),
+            TupleView::new(&source, by_nothing, vec![0, 1]),
+            TupleView::all(&source),
+        ];
+        let counted: Vec<usize> = views.iter().map(TupleView::count).collect();
+        assert_eq!(
+            counted,
+            vec![4, 2, 0, 5],
+            "the fixture's views must keep, filter and drop rows"
+        );
+
+        let lftj = TrieLftj::<TreeTrie>::new(
+            TreeTrieBuildMode::default(),
+            Planner::stored(LexicographicOptimiser),
+        );
+        let htj = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+            HashTrieConfig::default(),
+            HashTrieBuildMode::Bulk,
+            Planner::stored(LexicographicOptimiser),
+        );
+        for view in &views {
+            assert_view_builds_like_batch(&SortedTrieFamily::<TreeTrie>::default(), view);
+            assert_view_builds_like_batch(&SortedTrieFamily::<ColumnTrie>::default(), view);
+            assert_view_builds_like_batch(&Eager::default(), view);
+            assert_view_builds_like_batch(&PrunedLazy::default(), view);
+            assert_view_builds_like_batch(&lftj, view);
+            assert_view_builds_like_batch(&htj, view);
+        }
+    }
+
+    /// The relation holds exactly the rows its view selects, in the view's
+    /// column order: the filter and the permutation both reach the build. A
+    /// sorted trie holds each row once, a hash trie keeps the duplicate.
+    #[test]
+    fn build_index_builds_exactly_the_rows_its_view_selects() {
+        type Eager = HashTrieFamily<SipHashStrategy, NoPruning, EagerExpansion>;
+
+        // Column 2 equal to 5, columns 1 and 0 kept in that order: the rows
+        // (2, 1) twice, (3, 1) and (2, 2).
+        let source = view_source();
+        let filter = kermit_ds::Filter::new(vec![(2, 5)], vec![]);
+        let view = TupleView::new(&source, filter, vec![1, 0]);
+        let header = || RelationHeader::new_positional("r", 2);
+
+        let sorted = SortedTrieFamily::<TreeTrie>::default();
+        let tree = sorted.build_index(header(), view.clone());
+        let got = visited::<SortedTrieFamily<TreeTrie>>(&tree);
+        assert_eq!(got, vec![vec![2, 1], vec![2, 2], vec![3, 1]]);
+
+        let hashed = Eager::default();
+        let hash = hashed.build_index(header(), view);
+        let mut got = visited::<Eager>(&hash);
+        got.sort();
+        assert_eq!(got, vec![vec![2, 1], vec![2, 1], vec![2, 2], vec![3, 1]]);
+    }
+
+    /// The arity panic keeps its text on the new path: a view of another
+    /// arity than the header is a broken invariant wherever it is built.
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 2 does not match header arity 3")]
+    fn build_index_rejects_a_view_of_another_arity_in_a_sorted_family() {
+        let source = Tuples::from(vec![vec![1, 2]]);
+        let header = RelationHeader::new_positional("r", 3);
+        let family = SortedTrieFamily::<TreeTrie>::default();
+        family.build_index(header, TupleView::all(&source));
+    }
+
+    /// As above, for the hash family.
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 2 does not match header arity 3")]
+    fn build_index_rejects_a_view_of_another_arity_in_a_hash_family() {
+        type Eager = HashTrieFamily<SipHashStrategy, NoPruning, EagerExpansion>;
+
+        let source = Tuples::from(vec![vec![1, 2]]);
+        let header = RelationHeader::new_positional("r", 3);
+        let family = Eager::default();
+        family.build_index(header, TupleView::all(&source));
+    }
+
+    /// An empty source builds an empty relation under any header, as
+    /// `from_tuples(header, vec![])` does.
+    #[test]
+    fn build_index_of_an_empty_source_accepts_any_header() {
+        type Eager = HashTrieFamily<SipHashStrategy, NoPruning, EagerExpansion>;
+
+        let empty = Tuples::new(2);
+        let header = || RelationHeader::new_positional("r", 3);
+
+        let sorted = SortedTrieFamily::<TreeTrie>::default();
+        let tree = sorted.build_index(header(), TupleView::all(&empty));
+        assert_eq!(SortedTrieFamily::<TreeTrie>::tuple_count(&tree), 0);
+
+        let hashed = Eager::default();
+        let hash = hashed.build_index(header(), TupleView::all(&empty));
+        assert_eq!(Eager::tuple_count(&hash), 0);
     }
 }
