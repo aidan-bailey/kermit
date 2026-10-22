@@ -1,27 +1,33 @@
-//! The cost-based optimiser reproduces the plans #68 simulated for the
-//! WatDiv stress templates it was built to fix (issue #81).
+//! The cost-based optimiser plans the WatDiv stress templates #68 simulated
+//! (issue #81), over the accesses `kermit::db::prepare` plans over.
 //!
 //! #68 counted, exactly, the bindings LFTJ makes under any plan of each
 //! `watdiv-stress-100-test-1` template, and scored a Python prototype of
 //! this optimiser (`plan_est_dp` in its `planners.py`) with those counts.
 //! The planner sees only statistics, never data, so the 61 relations'
 //! tuple and distinct counts (`fixtures/watdiv-stress-100-stats.tsv`, #68's
-//! `relstats.txt`) reproduce its decisions without the data. Each `stored`
-//! test pins the prototype's plan; its exact cost, from #68's counter, is
-//! in its doc comment.
+//! `relstats.txt`) reproduce its decisions without the data.
 //!
-//! #68's prototype planned under `stored` only. Under `--column-orders
-//! any` (issue #93) the tests pin the plans these statistics give for
-//! templates `stored` leaves above 3.7e7 bindings, and check that every
-//! committed query of the benchmark fits the search budget.
+//! A query is planned as `prepare` plans it: each `_` becomes a variable,
+//! then each body atom becomes an access (`extract_accesses`), whose
+//! constants are a filter and not a variable, and the statistics are keyed
+//! by access id. `prepare` counts a filtered access's rows by scanning the
+//! data. This test has none, so it estimates them: a constant on a column
+//! divides the relation's rows by that column's distinct count (never below
+//! one row), and a kept column has no more distinct values than rows.
+//!
+//! The pins are the plans these statistics give, searched freely
+//! (`ColumnOrderPolicy::Any`). Four of them are the plans this file pinned
+//! under `--column-orders any` (issue #93) without the variable the old
+//! rewrite gave each constant; q0034's differs only in binding `V9` before
+//! `V0`. Every committed query of the benchmark fits the search budget.
 
 use {
     kermit_algos::{
-        analyse, orient, rewrite_atoms, rewrite_placeholders, rewrite_repeated_variables,
-        CatalogStats, ColumnOrderPolicy, CostBasedOptimiser, JoinQuery, QueryOptimiser,
-        RelationStats, SelectionSpec,
+        analyse, canonical_names, extract_accesses, rewrite_placeholders, AccessQuery,
+        CatalogStats, ColumnOrderPolicy, CostBasedOptimiser, QueryOptimiser, RelationStats,
+        ACCESS_PREFIX,
     },
-    kermit_parser::Term,
     std::{collections::HashMap, path::Path},
 };
 
@@ -53,19 +59,18 @@ const Q0085: &str = "Q_test_1_q0085(V0, V1, V3, V4, V5, V6, V8, V11, V2, V7, V10
                      pricevaliduntil(V0, V11), offers(V2, V0), tag(V1, V7), keywords(V1, V10), \
                      purchasefor(V12, V1).";
 
-/// The query as `kermit::db` hands it to the planner: after the const,
-/// placeholder and selection rewrites, with the selection views those
-/// leave for `orient`.
-fn rewritten_with_selections(text: &str) -> (JoinQuery, Vec<SelectionSpec>) {
-    let (query, _) = rewrite_atoms(text.parse().expect("parse")).expect("const rewrite");
-    rewrite_repeated_variables(rewrite_placeholders(query))
+/// The query as `prepare` hands it to the planner: placeholders rewritten,
+/// then one access per body atom.
+fn accesses(text: &str) -> AccessQuery {
+    let query = rewrite_placeholders(text.parse().expect("parse"));
+    extract_accesses(&query).expect("constants are c<digits>")
 }
 
-/// The query as `kermit::db` hands it to the planner.
-fn rewritten(text: &str) -> JoinQuery { rewritten_with_selections(text).0 }
-
-/// The fixture's statistics for `query`'s relations, under `policy`.
-fn catalog(query: &JoinQuery, policy: ColumnOrderPolicy) -> CatalogStats {
+/// The fixture's statistics for `access_query`'s accesses, keyed by access
+/// id. An access reads its relation's counts for the columns it keeps; a
+/// constant filter divides the rows by the filtered column's distinct count,
+/// and no kept column has more distinct values than rows.
+fn catalog(access_query: &AccessQuery) -> CatalogStats {
     let table: HashMap<&str, Vec<usize>> = STATS
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
@@ -75,175 +80,127 @@ fn catalog(query: &JoinQuery, policy: ColumnOrderPolicy) -> CatalogStats {
             (name, fields.map(|f| f.parse().expect("a count")).collect())
         })
         .collect();
-    CatalogStats::for_query(query, policy, |name| {
-        let counts = table.get(name)?;
-        Some(RelationStats::new(counts[0], 2).with_column_distinct(counts[1..].to_vec()))
+    CatalogStats::for_query(&access_query.query, ColumnOrderPolicy::Any, |id| {
+        let position = id.strip_prefix(ACCESS_PREFIX)?.parse::<usize>().ok()?;
+        let access = access_query.accesses.get(position)?;
+        let counts = table.get(access.relation.as_str())?;
+        let (mut rows, distinct) = (counts[0], &counts[1..]);
+        assert!(
+            access.filter.equalities().is_empty(),
+            "no template repeats a variable inside an atom"
+        );
+        for &(column, _) in access.filter.constants() {
+            rows = (rows / distinct[column]).max(1);
+        }
+        let kept: Vec<usize> = access
+            .columns
+            .iter()
+            .map(|&column| distinct[column].min(rows))
+            .collect();
+        Some(RelationStats::new(rows, kept.len()).with_column_distinct(kept))
     })
 }
 
-/// `query`'s variables in canonical order (`kermit_algos::analyse`): the
-/// head's, then the body's in order of first appearance.
-fn canonical_names(query: &JoinQuery) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    let terms = query
-        .head
-        .terms
-        .iter()
-        .chain(query.body.iter().flat_map(|atom| &atom.terms));
-    for term in terms {
-        if let Term::Var(name) = term {
-            if !names.contains(name) {
-                names.push(name.clone());
-            }
-        }
-    }
-    names
-}
-
-/// The cost-based plan for `text` under `--column-orders stored`, by
-/// variable name.
-fn plan(text: &str) -> Vec<String> { plan_under(text, ColumnOrderPolicy::Stored).0 }
-
-/// The cost-based plan for `text` under `policy`, by variable name, and
-/// the copies it reads (`orient`'s `Index_<π>_<base>` names; none under
-/// `stored`).
-fn plan_under(text: &str, policy: ColumnOrderPolicy) -> (Vec<String>, Vec<String>) {
-    let (query, selections) = rewritten_with_selections(text);
-    let names = canonical_names(&query);
-    let plan = CostBasedOptimiser::default().plan(&query, &catalog(&query, policy));
-    let order = plan
-        .variable_ordering
+/// The cost-based plan for `text`, by variable name.
+fn plan(text: &str) -> Vec<String> {
+    let access_query = accesses(text);
+    let names = canonical_names(&access_query.query);
+    let stats = catalog(&access_query);
+    let plan = CostBasedOptimiser::default().plan(&access_query.query, &stats);
+    plan.variable_ordering
         .iter()
         .map(|&v| names[v].clone())
-        .collect();
-    let copies = orient(policy, query, plan, selections)
-        .index_specs
-        .into_iter()
-        .map(|spec| spec.name)
-        .collect();
-    (order, copies)
+        .collect()
 }
 
-/// Both current optimisers bind the small `parentcountry` and
-/// `nationality` subjects before the constant and cost 9.68e10 bindings.
-/// This plan binds the constant's offer first and costs 1.81e4 (#68).
+/// The constant's offer side first: `purchasefor`'s object V3, then
+/// `includes`' subject V2 and V2's own properties (V4, V5, V1).
+/// `parentcountry` and `nationality`, which share V1, bind last (V0, V6).
 #[test]
 fn q0020_binds_the_constants_side_first() {
-    assert_eq!(plan(Q0020), [
-        "K0", "V2", "V3", "V4", "V5", "V0", "V6", "V1"
-    ]);
+    assert_eq!(plan(Q0020), ["V3", "V2", "V4", "V5", "V1", "V0", "V6"]);
 }
 
-/// `cardinality` binds `tag`'s 15,080 objects first and costs 2.27e9
-/// bindings, 187x `lexicographic`. This plan costs 9.67e5 (#68).
+/// `tag(V0, V1)` and `tag(V2, V1)` meet only through V1, so binding V2 is
+/// a cross product over `tag`'s subjects. It binds last.
 #[test]
-fn q0034_avoids_the_tag_cross_product() {
+#[cfg_attr(
+    miri,
+    ignore = "a 4,095-set search, minutes under Miri; q0264 runs the path there"
+)]
+fn q0034_binds_the_tag_cross_product_last() {
     assert_eq!(plan(Q0034), [
-        "V12", "V0", "K0", "V9", "V10", "V11", "V4", "V5", "V6", "V7", "V8", "V2", "V1"
+        "V9", "V0", "V10", "V11", "V4", "V5", "V6", "V7", "V8", "V12", "V1", "V2"
     ]);
 }
 
-/// The documented regression: 8.85e7 bindings, against `cardinality`'s
-/// 3.81e7 (2.32x; #68). Pinned so that a change to it is deliberate.
+/// From the 13 objects of `openinghours`, before their subjects: the
+/// `contactpoint`, `name` and `email` properties of V0 follow it, and the
+/// constant's offers (V2, V3, V4, V5) come after, with `reviewer` and
+/// `rating` (V6, V7) last.
 #[test]
-fn q0008_keeps_its_documented_regression() {
+#[cfg_attr(
+    miri,
+    ignore = "a 2,047-set search, minutes under Miri; q0264 runs the path there"
+)]
+fn q0008_binds_the_openinghours_objects_first() {
     assert_eq!(plan(Q0008), [
-        "V0", "V1", "V10", "V11", "V6", "V8", "V7", "V2", "K0", "V3", "V4", "V5"
+        "V11", "V0", "V8", "V1", "V10", "V2", "V3", "V4", "V5", "V6", "V7"
     ]);
 }
 
-/// Under `stored`, `homepage(V0, c382480)` must bind `V0` before the
-/// constant, so no plan can start from it. Under `any` this plan does, and
-/// reads `homepage` reversed, then `includes` and `purchasefor` from `V0`,
-/// their object. With q0085 and q0008 below, one of the 10 templates
-/// `stored` leaves above 3.7e7 bindings and `any` answers in under 1 s
-/// (`docs/optimisers/cost-based.md`).
+/// The constant filters `homepage`, so its subject V0 binds first, then
+/// V0's properties, and last `includes` and `purchasefor`, from their
+/// object V0 (V2 and V7).
 #[test]
-fn q0264_under_any_binds_the_constant_first() {
-    let (order, copies) = plan_under(Q0264, ColumnOrderPolicy::Any);
-    assert_eq!(order, ["K0", "V0", "V3", "V4", "V5", "V6", "V2", "V7"]);
-    assert_eq!(copies, [
-        "Index_1_0_homepage",
-        "Index_1_0_includes",
-        "Index_1_0_purchasefor"
-    ]);
+fn q0264_binds_the_filtered_subject_first() {
+    assert_eq!(plan(Q0264), ["V0", "V3", "V4", "V5", "V6", "V2", "V7"]);
 }
 
-/// From `eligibleregion`'s constant, then the 9 and 70 objects of
-/// `eligiblequantity` and `pricevaliduntil` before their subject `V0`:
-/// five relations read reversed.
+/// From the 9 and 70 objects of `eligiblequantity` and `pricevaliduntil`
+/// before their subject V0.
 #[test]
 #[cfg_attr(
     miri,
-    ignore = "an 8,191-set search, minutes under Miri; q0264 runs the `any` path there"
+    ignore = "a 4,095-set search, minutes under Miri; q0264 runs the path there"
 )]
-fn q0085_under_any_binds_the_constant_first() {
-    let (order, copies) = plan_under(Q0085, ColumnOrderPolicy::Any);
-    assert_eq!(order, [
-        "K0", "V8", "V11", "V0", "V1", "V3", "V4", "V5", "V6", "V10", "V2", "V12", "V7"
-    ]);
-    assert_eq!(copies, [
-        "Index_1_0_eligibleregion",
-        "Index_1_0_eligiblequantity",
-        "Index_1_0_pricevaliduntil",
-        "Index_1_0_offers",
-        "Index_1_0_purchasefor"
+fn q0085_binds_the_small_object_sets_first() {
+    assert_eq!(plan(Q0085), [
+        "V8", "V11", "V0", "V1", "V3", "V4", "V5", "V6", "V10", "V2", "V12", "V7"
     ]);
 }
 
-/// Under `stored`, the documented regression above, at 10.9 s on
-/// `tree-trie`. Under `any`, from `eligibleregion`'s constant and the 13
-/// objects of `openinghours`, before their subjects: three relations read
-/// reversed.
+/// The search reaches every subset of the variables, 2ⁿ − 1 sets. q0034 is
+/// the largest template: 12 variables, since its constant is a filter and
+/// no longer a variable. 4,095 sets fit the default budget, so its plan is
+/// the unbounded search's, not `cardinality`'s fallback.
 #[test]
 #[cfg_attr(
     miri,
-    ignore = "a 4,095-set search, minutes under Miri; q0264 runs the `any` path there"
+    ignore = "two 4,095-set searches, minutes under Miri; q0264 runs the path there"
 )]
-fn q0008_under_any_binds_the_constant_first() {
-    let (order, copies) = plan_under(Q0008, ColumnOrderPolicy::Any);
-    assert_eq!(order, [
-        "K0", "V11", "V0", "V8", "V1", "V10", "V2", "V3", "V4", "V5", "V6", "V7"
-    ]);
-    assert_eq!(copies, [
-        "Index_1_0_eligibleregion",
-        "Index_1_0_openinghours",
-        "Index_1_0_reviewer"
-    ]);
-}
-
-/// Under `any` the search reaches every subset of the variables, 2ⁿ − 1
-/// sets. q0034 is the largest template, 13 variables counting the
-/// constant's: 8,191 sets fit the default budget, so its plan is the
-/// unbounded search's, not `cardinality`'s fallback.
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "two 8,191-set searches, minutes under Miri; q0264 runs the `any` path there"
-)]
-fn q0034_under_any_fits_the_budget() {
-    let query = rewritten(Q0034);
-    assert_eq!(analyse(&query).num_vars, 13);
-    let stats = catalog(&query, ColumnOrderPolicy::Any);
+fn q0034_fits_the_budget() {
+    let access_query = accesses(Q0034);
+    assert_eq!(analyse(&access_query.query).num_vars, 12);
+    let stats = catalog(&access_query);
     let unbounded = CostBasedOptimiser {
         state_budget: usize::MAX,
     };
     assert_eq!(
-        CostBasedOptimiser::default().plan(&query, &stats),
-        unbounded.plan(&query, &stats)
+        CostBasedOptimiser::default().plan(&access_query.query, &stats),
+        unbounded.plan(&access_query.query, &stats)
     );
 }
 
 /// Every query of the committed `watdiv-stress-100-test-1` benchmark, not
-/// only the templates above, fits the default budget under `any`: the
-/// search reaches 2ⁿ − 1 sets there, which fits for n ≤ 14. The largest
-/// has 13 variables, counting each constant's, as q0034 does.
+/// only the templates above, fits the default budget: the search reaches
+/// 2ⁿ − 1 sets, which fits for n ≤ 14. The largest has 12 variables.
 #[test]
 #[cfg_attr(
     miri,
     ignore = "parses a 2.8 MB benchmark; safe Rust, so Miri adds nothing"
 )]
-fn every_committed_query_fits_the_budget_under_any() {
+fn every_committed_query_fits_the_budget() {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../benchmarks/watdiv-stress-100-test-1.yml");
     let text = std::fs::read_to_string(&path).expect("the committed benchmark");
@@ -252,9 +209,9 @@ fn every_committed_query_fits_the_budget_under_any() {
     assert_eq!(queries.len(), 12_400);
     let largest = queries
         .iter()
-        .map(|q| analyse(&rewritten(q["query"].as_str().expect("query text"))).num_vars)
+        .map(|q| analyse(&accesses(q["query"].as_str().expect("query text")).query).num_vars)
         .max()
         .expect("queries");
-    assert_eq!(largest, 13);
+    assert_eq!(largest, 12);
     assert!((1 << largest) - 1 <= CostBasedOptimiser::DEFAULT_STATE_BUDGET);
 }
