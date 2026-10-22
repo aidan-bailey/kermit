@@ -20,7 +20,7 @@ pub mod ds {
 pub mod db;
 
 use {
-    crate::db::{build, execute, prepare, Catalog},
+    crate::db::Catalog,
     kermit_algos::{ColumnOrderPolicy, JoinAlgo, JoinQuery, LexicographicOptimiser, Planner},
     kermit_ds::{Relation, RelationHeader, Tuples},
 };
@@ -31,10 +31,10 @@ use {
 /// Constructs a synthetic Datalog query from the `variables` and
 /// `rel_variables` mappings (variable `v` is written `V{v}`, and input `i` is
 /// the relation `R{i}`), loads the batches into a [`db::Catalog`], and runs
-/// the same [`db::prepare`], [`db::build`] and [`db::execute`] steps as
-/// [`db::lftj_join`] and [`db::hash_join`], with `R` as the index structure
-/// and `JA` as the algorithm. The query is therefore validated first, a
-/// variable repeated within one `rel_variables` entry selects the rows whose
+/// [`db::prepare`], [`db::build`] and [`db::execute`] through the one body
+/// [`db::lftj_join`] and [`db::hash_join`] share, with `R` as the index
+/// structure and `JA` as the algorithm. The query is therefore validated first,
+/// a variable repeated within one `rel_variables` entry selects the rows whose
 /// columns agree, and each result row holds the `variables`, in that order:
 /// a variable only the body binds is not part of it.
 ///
@@ -47,7 +47,9 @@ use {
 /// If the synthetic query cannot run over the inputs: a head variable no
 /// relation binds, a repeated head variable, or a batch whose arity is not
 /// the length of its `rel_variables` entry. The message is the
-/// [`db::JoinError`]'s.
+/// [`db::JoinError`]'s. Also if `rel_variables` has more entries than
+/// `input` has batches: the entry's relation `R{i}` was never loaded, so its
+/// atom is an unknown relation.
 pub fn compute_join<R, JA>(
     input: Vec<impl Into<Tuples>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
 ) -> Vec<Vec<usize>>
@@ -98,11 +100,9 @@ where
     // `Planner::new` still takes a policy; `prepare` plans freely under any.
     let planner = Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any);
     let catalog = Catalog::new(relations, planner.required_statistics());
-    let prepared =
-        prepare(&catalog, &query, &planner).unwrap_or_else(|error| panic!("compute_join: {error}"));
-    let indexes = build::<R>(&catalog, &prepared);
     let mut rows = Vec::new();
-    execute::<R, JA>(&prepared, &indexes, |row| rows.push(row.to_vec()));
+    db::run_join::<R, JA>(&catalog, &query, &planner, |row| rows.push(row.to_vec()))
+        .unwrap_or_else(|error| panic!("compute_join: {error}"));
     rows
 }
 
@@ -178,6 +178,27 @@ mod compute_join_tests {
     fn an_unbound_head_variable_panics_with_the_error() {
         let input: Vec<Rows> = vec![vec![vec![1, 2]]];
         let _ = compute_join::<TreeTrie, LeapfrogTriejoin>(input, vec![0, 5], vec![vec![0, 1]]);
+    }
+
+    /// An empty variable entry is the unary atom `R{i}(_)`, and its empty
+    /// batch takes arity 1 for it (`.max(1)`), not the arity 0 an empty
+    /// `Vec` converts to, which the atom would reject. The join is empty.
+    #[test]
+    fn an_empty_batch_with_an_empty_entry_is_a_unary_relation() {
+        let input = vec![Vec::new(), vec![vec![2, 3]]];
+        let rows = joined(input, vec![0, 1], vec![vec![], vec![0, 1]]);
+        assert!(rows.is_empty());
+    }
+
+    /// An entry with no batch names a relation that was never loaded.
+    #[test]
+    #[should_panic(expected = "compute_join: ")]
+    fn an_entry_without_a_batch_panics_as_an_unknown_relation() {
+        let input: Vec<Rows> = vec![vec![vec![1, 2]]];
+        let _ = compute_join::<TreeTrie, LeapfrogTriejoin>(input, vec![0, 1], vec![
+            vec![0, 1],
+            vec![1],
+        ]);
     }
 
     #[test]

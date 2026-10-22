@@ -46,7 +46,7 @@ use {
 /// Returns the [`JoinError`] [`validate_query`] would, or
 /// [`JoinError::MissingStatistics`], before any index is built or any tuple
 /// is emitted.
-fn run_join<R, JA>(
+pub(crate) fn run_join<R, JA>(
     catalog: &Catalog, query: &JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
 ) -> Result<(), JoinError>
 where
