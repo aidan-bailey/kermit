@@ -322,7 +322,9 @@ fn run_benchmark<F: ExecutionFamily>(
                 // The timed body is the `build` metric's `build_indexes`
                 // followed by K joins over the indexes it built, so the
                 // build term is the one the `iteration` metric's indexes
-                // paid and the whole equals `build` + K × `iteration`.
+                // paid; it is the same build and K executions as `build` + K ×
+                // `iteration`, and a gap beyond noise is the build-to-query
+                // interaction this metric measures.
                 //
                 // PerIteration: a fresh build per sample is the point of this
                 // metric — batching would amortise away the construction cost
