@@ -41,9 +41,14 @@
 //! - **View builds** read a filtered, projected and permuted `TupleView` over a
 //!   wider batch whose other rows the filter rejects. The batch is built, and
 //!   the view made, outside the measurement, so the counts are the build's own:
-//!   a build copies the rows the view keeps once, and a rejected row costs it
-//!   nothing. The cells reuse the bounds above, since the view keeps exactly
-//!   the rows of the unfiltered fixtures.
+//!   a rejected row costs it nothing, and its decoys scale with the HashTrie
+//!   cells' repetitions so that one allocation per skipped row shows. The cells
+//!   reuse the bounds above, since the view keeps exactly the rows of the
+//!   unfiltered fixtures. A build copies the rows the view keeps once, and
+//!   counts cannot see a second copy, so every cell also bounds the build's
+//!   peak bytes by the built structure's `heap_size_bytes` plus one copy of the
+//!   kept rows (or, for HashTrie, whose copy is its buffer, the scratch its
+//!   mode holds beside it) plus a margin under one copy ([`assert_peak`]).
 
 use {
     kermit_algos::IndexSpec,
@@ -53,8 +58,8 @@ use {
         },
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
         ConfiguredBuildModeRelation, EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode,
-        HashTrieConfig, LazyExpansion, NoPruning, PruningPolicy, RadixBits, Relation, RootCapacity,
-        SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode, Tuples,
+        HashTrieConfig, HeapSize, LazyExpansion, NoPruning, PruningPolicy, RadixBits, Relation,
+        RootCapacity, SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode, Tuples,
     },
     kermit_iters::{Filter, RowId, SipHashStrategy, TupleView},
     kermit_rdf::{parquet::write_relation, partition::PartitionedRelation},
@@ -348,6 +353,37 @@ fn materializing_an_identity_view_allocates_once() {
 /// above 4 only) and a constant or two. A per-row allocation adds 10 000.
 const SCRATCH: u64 = 4;
 
+/// A build's peak memory, the second thing the view cells pin beside the
+/// allocation counts: the counts cannot see a second full copy of the kept
+/// rows (one more allocation, or the same number on both sides of a
+/// differential cell), but the peak does.
+///
+/// The build's peak live bytes (`bytes_max`) may not exceed the built
+/// structure's `heap_size_bytes` (`heap`, which includes the one copy of the
+/// kept rows wherever that copy is the structure's own buffer) plus `scratch`,
+/// what the build holds beside the finished structure (the sorted copy a
+/// sorted trie builds from and then frees, the row ids and partition numbers
+/// of a partitioning build, the table of lists a table is mapped from), plus
+/// `margin`, the transient bytes of a `Vec` growing (its old and its new
+/// array live at once). `copy` is one copy of the kept rows: the margin must
+/// stay under it, or a second copy could hide in the margin.
+fn assert_peak(
+    label: &str, info: &allocation_counter::AllocationInfo, heap: usize, scratch: u64, margin: u64,
+    copy: u64,
+) {
+    assert!(
+        margin < copy,
+        "{label}: a margin of {margin} bytes could hide a copy of {copy}"
+    );
+    let bound = heap as u64 + scratch + margin;
+    assert!(
+        info.bytes_max <= bound,
+        "{label}: peak {} bytes, over {bound} = the structure's {heap} + scratch {scratch} + \
+         margin {margin}: the build holds more than the one copy of the {copy} bytes it keeps",
+        info.bytes_max
+    );
+}
+
 /// TreeTrie owns one heap object per inner node, its children `Vec`: the
 /// root's, grown one push per first key, and one per first key, whose
 /// `FAN_OUT` leaves fit its first allocation. Leaves own nothing. Expected
@@ -387,22 +423,21 @@ const ONE_THREAD_PARTITIONS: u64 = 4;
 /// row its worker writes each kept row's output columns into (1);
 /// `first_key_splitters` its scratch row, its splitter sample and the
 /// splitters (3); the build from `TupleView::all` the view's column list
-/// (1); and the test hook its record of the build (2). That is 17, and each
-/// partition's worker also allocates the row-id `Vec` it gathers from (1
-/// per partition). The bound below keeps `2 * 4 + 2 + 2 + 2`: it was set
-/// before the build read a view, and the difference is inside the slack of
-/// the per-partition term, whose `doublings(rows)` counts a bucket growing to
-/// every row where a partition's bucket holds only its share (about a
-/// quarter of them, three growth steps fewer), and of [`SCRATCH`].
-const ONE_THREAD_MACHINERY: u64 = 2 * 4 + 2 + 2 + 2;
+/// (1); and the test hook its record of the build (2). That is
+/// `2 * 4 + (2 + 1) + 3 + 1 + 2 = 17`. Each partition's worker also allocates
+/// the row-id `Vec` it gathers from, counted with the partition's own
+/// allocations below.
+const ONE_THREAD_MACHINERY: u64 = 2 * 4 + (2 + 1) + 3 + 1 + 2;
 
 /// `parallel:1` builds the serial trie, down to each `Vec`'s capacity, so it
 /// allocates the serial build's inner nodes. On top of them it allocates,
 /// per partition, the row-id bucket `scatter_rows` grows one push per id
-/// (at most `doublings(rows)` steps), its segment list, the gathered rows
-/// (sized once) and the node list its rows insert into, grown one push per
-/// first key; and [`ONE_THREAD_MACHINERY`]. The fixture's 10 000 rows fit
-/// one 16 384-row morsel. A per-row allocation adds 10 000.
+/// (at most `doublings(rows)` steps; a bucket holds its partition's share, so
+/// this over-counts), its segment list, the worker's row-id `Vec` (sized
+/// once), the gathered rows (sized once) and the node list its rows insert
+/// into, grown one push per first key; and [`ONE_THREAD_MACHINERY`]. The
+/// fixture's 10 000 rows fit one 16 384-row morsel. A per-row allocation adds
+/// 10 000.
 #[test]
 fn tree_trie_parallel_build_on_one_thread_allocates_per_partition_not_per_row() {
     let tuples = fanned_out();
@@ -423,7 +458,7 @@ fn tree_trie_parallel_build_on_one_thread_allocates_per_partition_not_per_row() 
         "parallel:1 ran one build on one thread: {builds:?}"
     );
     let nodes = FIRST_KEYS as u64 + doublings(FIRST_KEYS);
-    let partitions = ONE_THREAD_PARTITIONS * (doublings(rows) + 1 + 1 + doublings(FIRST_KEYS));
+    let partitions = ONE_THREAD_PARTITIONS * (doublings(rows) + 1 + 1 + 1 + doublings(FIRST_KEYS));
     let bound = nodes + partitions + ONE_THREAD_MACHINERY + SCRATCH;
     assert!(
         info.count_total <= bound,
@@ -689,19 +724,26 @@ fn fanned_out_in_decoys() -> Tuples {
     tuples
 }
 
+/// Decoy rows stored in each repetition of [`repeated_in_decoys`]: the 10
+/// rows `(y, 0, DECOY)`.
+const DECOYS_PER_REPEAT: usize = KEYS;
+
 /// [`repeated`]'s rows hidden in a wider batch: each `(x, y)` is stored as
-/// `(y, x, KEPT)`, in the same order, and the first repetition also stores
-/// a decoy `(y, x, DECOY)` after each. The decoys are 100 rows at either
-/// repetition, so the larger source stays inside one 16 384-row morsel, and a
-/// build that ignored the filter would store 100 rows too many.
+/// `(y, x, KEPT)`, in the same order, and every repetition also stores
+/// [`DECOYS_PER_REPEAT`] decoys `(y, 0, DECOY)` right after its row `(y, 0)`.
+/// The decoys scale with the repetitions, 10 at one and 1 000 at 100, so a
+/// build that allocated for each row it skips would allocate 990 more for the
+/// larger input, and the differential cells would see it. The larger source
+/// (11 000 rows) stays inside one 16 384-row morsel, and a build that ignored
+/// the filter would store 1 000 rows too many.
 fn repeated_in_decoys(repeats: usize) -> Tuples {
-    let mut tuples = Tuples::with_capacity(3, (repeats + 1) * KEYS * KEYS);
-    for repeat in 0..repeats {
+    let mut tuples = Tuples::with_capacity(3, repeats * (KEYS * KEYS + DECOYS_PER_REPEAT));
+    for _ in 0..repeats {
         for x in 0..KEYS {
             for y in 0..KEYS {
                 tuples.push(&[y, x, KEPT]);
-                if repeat == 0 {
-                    tuples.push(&[y, x, DECOY]);
+                if x == 0 {
+                    tuples.push(&[y, 0, DECOY]);
                 }
             }
         }
@@ -728,7 +770,20 @@ fn tree_trie_build_from_a_filtered_view_allocates_once_per_inner_node() {
     );
     let mut built: Option<TreeTrie> = None;
     let info = allocation_counter::measure(|| built = Some(TreeTrie::from_view(2.into(), view)));
-    assert_eq!(built.expect("measured").tuple_count(), rows);
+    let built = built.expect("measured");
+    assert_eq!(built.tuple_count(), rows);
+    // The peak is the trie plus `serial`'s sorted copy of the kept rows (the
+    // one copy; arity 2 sorts in place, so no row ids), which it frees when
+    // it returns. The margin is a quarter copy for the root's `Vec` growing.
+    let copy = (rows * 2 * WORD) as u64;
+    assert_peak(
+        "TreeTrie serial from a view",
+        &info,
+        built.heap_size_bytes(),
+        copy,
+        copy / 4,
+        copy,
+    );
     let nodes = FIRST_KEYS as u64 + doublings(FIRST_KEYS);
     assert!(
         info.count_total <= nodes + SCRATCH,
@@ -755,14 +810,39 @@ fn tree_trie_parallel_view_build_on_one_thread_allocates_per_partition_not_per_r
     let info = allocation_counter::measure(|| {
         built = Some(TreeTrie::from_view_with_build_mode(2.into(), mode, view));
     });
-    assert_eq!(built.expect("measured").tuple_count(), rows);
+    let built = built.expect("measured");
+    assert_eq!(built.tuple_count(), rows);
     let builds = take_tree_trie_parallel_builds();
     assert!(
         matches!(builds.as_slice(), [(1, _)]),
         "parallel:1 ran one build on one thread: {builds:?}"
     );
+    // The kept rows are copied once in all, one partition at a time (the one
+    // thread runs the workers in turn): the build holds the row-id buckets
+    // `scatter_rows` filled (a `Vec` each, grown by doubling from 4 slots),
+    // and the worker's own row ids and gathered rows of its partition, beside
+    // the nodes. A quarter copy of margin covers the nodes' `Vec` growth;
+    // a second full copy of the kept rows would exceed the bound.
+    let [(_, sizes)] = builds.as_slice() else {
+        unreachable!("matched above")
+    };
+    let buckets: u64 = sizes
+        .iter()
+        .map(|&len| (len.next_power_of_two().max(4) * std::mem::size_of::<RowId>()) as u64)
+        .sum();
+    let largest = *sizes.iter().max().expect("four partitions") as u64;
+    let worker = largest * (std::mem::size_of::<RowId>() + 2 * WORD) as u64;
+    let copy = (rows * 2 * WORD) as u64;
+    assert_peak(
+        "TreeTrie parallel:1 from a view",
+        &info,
+        built.heap_size_bytes(),
+        buckets + worker,
+        copy / 8,
+        copy,
+    );
     let nodes = FIRST_KEYS as u64 + doublings(FIRST_KEYS);
-    let partitions = ONE_THREAD_PARTITIONS * (doublings(rows) + 1 + 1 + doublings(FIRST_KEYS));
+    let partitions = ONE_THREAD_PARTITIONS * (doublings(rows) + 1 + 1 + 1 + doublings(FIRST_KEYS));
     let bound = nodes + partitions + ONE_THREAD_MACHINERY + SCRATCH;
     assert!(
         info.count_total <= bound,
@@ -789,7 +869,22 @@ fn column_trie_view_builds_allocate_only_their_layer_arrays() {
         let info = allocation_counter::measure(|| {
             built = Some(ColumnTrie::from_view_with_build_mode(2.into(), mode, view));
         });
-        assert_eq!(built.expect("measured").tuple_count(), rows, "{mode:?}");
+        let built = built.expect("measured");
+        assert_eq!(built.tuple_count(), rows, "{mode:?}");
+        // The peak is the layers plus the sorted copy of the kept rows (the
+        // one copy, sorted in place at arity 2) that both modes build from
+        // and free. The margin is half a copy: a layer's array growing holds
+        // its old and its new capacity at once, and the largest is 8 192 and
+        // 16 384 words.
+        let copy = (rows * 2 * WORD) as u64;
+        assert_peak(
+            &format!("ColumnTrie {mode:?} from a view"),
+            &info,
+            built.heap_size_bytes(),
+            copy,
+            copy / 2,
+            copy,
+        );
         let arrays = 1 + 2 * 2 * doublings(rows);
         assert!(
             info.count_total <= arrays + SCRATCH,
@@ -800,12 +895,26 @@ fn column_trie_view_builds_allocate_only_their_layer_arrays() {
     }
 }
 
+/// What [`measure_hash_view_build`] observed of one build.
+struct HashViewBuild {
+    /// The counter's totals and peak for the build.
+    info: allocation_counter::AllocationInfo,
+    /// The built trie's `heap_size_bytes`.
+    heap: usize,
+    /// Rows of the batch the view reads, kept and rejected.
+    source_rows: usize,
+    /// Rows the view keeps.
+    kept_rows: usize,
+    /// The record a parallel build left.
+    builds: Vec<HashTrieParallelBuild>,
+}
+
 /// [`measure_hash_build`] for a build from [`kept_rows`] over
 /// [`repeated_in_decoys`]: the same trie as `repeated(repeats)` builds, so
 /// the stored row count (a multiset's, decoys excluded) is `repeats × 100`.
 fn measure_hash_view_build<P: PruningPolicy, E: ExpansionPolicy>(
     config: HashTrieConfig, mode: HashTrieBuildMode, repeats: usize,
-) -> (u64, Vec<HashTrieParallelBuild>) {
+) -> HashViewBuild {
     let source = repeated_in_decoys(repeats);
     let view = kept_rows(&source);
     let rows = repeats * KEYS * KEYS;
@@ -825,16 +934,27 @@ fn measure_hash_view_build<P: PruningPolicy, E: ExpansionPolicy>(
                 from_view_with_config_and_build_mode(2.into(), config, mode, view),
         );
     });
-    assert_eq!(built.expect("measured").tuple_count(), rows);
-    (info.count_total, take_hash_trie_parallel_builds())
+    let built = built.expect("measured");
+    assert_eq!(built.tuple_count(), rows);
+    HashViewBuild {
+        info,
+        heap: built.heap_size_bytes(),
+        source_rows: source.len(),
+        kept_rows: rows,
+        builds: take_hash_trie_parallel_builds(),
+    }
 }
 
 /// [`hash_build_allocations`] for a build from a view.
 fn hash_view_build_allocations<P: PruningPolicy, E: ExpansionPolicy>(
     mode: HashTrieBuildMode, repeats: usize,
 ) -> u64 {
-    let (allocations, builds) =
-        measure_hash_view_build::<P, E>(HashTrieConfig::default(), mode, repeats);
+    let HashViewBuild {
+        info,
+        builds,
+        ..
+    } = measure_hash_view_build::<P, E>(HashTrieConfig::default(), mode, repeats);
+    let allocations = info.count_total;
     let threads: Vec<usize> = builds.iter().map(|build| build.threads).collect();
     let expected = match mode {
         | HashTrieBuildMode::Parallel(threads) => vec![threads.get()],
@@ -904,8 +1024,12 @@ fn hash_trie_presized_view_build_allocates_independently_of_its_row_count() {
     };
     let mode = HashTrieBuildMode::Presized(one_thread());
     let measure = |repeats| {
-        let (allocations, builds) =
-            measure_hash_view_build::<NoPruning, EagerExpansion>(config, mode, repeats);
+        let HashViewBuild {
+            info,
+            builds,
+            ..
+        } = measure_hash_view_build::<NoPruning, EagerExpansion>(config, mode, repeats);
+        let allocations = info.count_total;
         let [build] = builds.as_slice() else {
             panic!("presized:1 ran one build: {builds:?}");
         };
@@ -922,4 +1046,105 @@ fn hash_trie_presized_view_build_allocates_independently_of_its_row_count() {
          the larger build allocates more, so some row or list allocates",
         KEYS * KEYS,
     );
+}
+
+/// Bytes of one bucket of a table of chains (`Option<Entry<Chain>>`): the
+/// key's hash, and a chain's head, tail and length.
+const CHAIN_BUCKET_BYTES: u64 = 24;
+/// Buckets of the root `root-capacity=tuples` gives 10 000 rows at the
+/// default 0.7 load factor: the smallest power of two over 10 000 / 0.7.
+const PRESIZED_ROOT_BUCKETS: u64 = 16_384;
+
+/// [`hash_trie_view_builds_allocate_independently_of_their_row_count`]'s
+/// differential cells cannot see a second copy of the kept rows (it adds the
+/// same to both sides), so this pins each build mode's peak (see
+/// [`assert_peak`]) over the larger source, 10 000 kept rows and 1 000
+/// decoys: a copy of the kept rows is 160 000 bytes.
+///
+/// A HashTrie's one copy of the kept rows is its buffer, which
+/// `heap_size_bytes` counts, so what is left to account for is each mode's
+/// scratch beside the finished trie:
+///
+/// - `bulk` and `incremental` copy the view once (`materialize`) and build from
+///   the copy: none.
+/// - The partitioning builds (`radix:2`, `parallel:1`, `presized:1`) copy the
+///   rows into partition order directly from the view, holding beside the copy
+///   the `origin` array (a 4-byte `RowId` per kept row) and the partition
+///   numbers (a `u16` per row of the source, whose filter runs in the same
+///   pass).
+/// - `presized:1` also maps its root of chains to the root of nodes
+///   (`map_in_runs`), so the root's table of chains lives beside the finished
+///   root: `root-capacity=tuples` makes it 2^14 buckets of
+///   [`CHAIN_BUCKET_BYTES`].
+///
+/// The default config keeps every other table at its 16 buckets (ten distinct
+/// keys per level), so table growth leaves a few hundred bytes of margin; the
+/// margin is an eighth of a copy, 20 000 bytes.
+#[test]
+fn hash_trie_view_builds_hold_the_kept_rows_once() {
+    let default = HashTrieConfig::default();
+    let presized_config = HashTrieConfig {
+        root_capacity: RootCapacity::Tuples,
+        ..default
+    };
+    let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
+    type Measure = fn(HashTrieConfig, HashTrieBuildMode, usize) -> HashViewBuild;
+    let eager: Measure = measure_hash_view_build::<NoPruning, EagerExpansion>;
+    let pruned_lazy: Measure = measure_hash_view_build::<SingletonPruning, LazyExpansion>;
+    let cells: [(&str, Measure, HashTrieConfig, HashTrieBuildMode); 6] = [
+        ("eager bulk", eager, default, HashTrieBuildMode::Bulk),
+        (
+            "pruned lazy bulk",
+            pruned_lazy,
+            default,
+            HashTrieBuildMode::Bulk,
+        ),
+        (
+            "eager incremental",
+            eager,
+            default,
+            HashTrieBuildMode::Incremental,
+        ),
+        ("eager radix:2", eager, default, radix),
+        (
+            "eager parallel:1",
+            eager,
+            default,
+            HashTrieBuildMode::Parallel(one_thread()),
+        ),
+        (
+            "eager presized:1",
+            eager,
+            presized_config,
+            HashTrieBuildMode::Presized(one_thread()),
+        ),
+    ];
+    for (label, measure, config, mode) in cells {
+        let HashViewBuild {
+            info,
+            heap,
+            source_rows,
+            kept_rows,
+            ..
+        } = measure(config, mode, REPEATS);
+        let copy = (kept_rows * 2 * WORD) as u64;
+        let scratch = match mode {
+            | HashTrieBuildMode::Bulk | HashTrieBuildMode::Incremental => 0,
+            | HashTrieBuildMode::Radix(_) | HashTrieBuildMode::Parallel(_) => {
+                (kept_rows * std::mem::size_of::<RowId>() + source_rows * 2) as u64
+            },
+            | HashTrieBuildMode::Presized(_) => {
+                (kept_rows * std::mem::size_of::<RowId>() + source_rows * 2) as u64
+                    + PRESIZED_ROOT_BUCKETS * CHAIN_BUCKET_BYTES
+            },
+        };
+        assert_peak(
+            &format!("HashTrie {label} from a view"),
+            &info,
+            heap,
+            scratch,
+            copy / 8,
+            copy,
+        );
+    }
 }
