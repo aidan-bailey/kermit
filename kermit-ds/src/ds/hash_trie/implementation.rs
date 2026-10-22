@@ -39,7 +39,7 @@ use {
     },
     kermit_iters::{
         ChainLinks, ConfigOption, HashStrategy, JoinIterable, LayoutOption, RowId, SipHashStrategy,
-        Tuples,
+        TupleView, Tuples,
     },
     std::marker::PhantomData,
 };
@@ -96,7 +96,9 @@ use {
 ///
 /// # Construction
 ///
-/// Use `from_tuples` (batch) or `new` followed by `insert` (incremental).
+/// Use `from_tuples` (batch), `from_view` (the rows of a [`TupleView`],
+/// copied once into the trie's buffer) or `new` followed by `insert`
+/// (incremental).
 /// `from_tuples` builds by Algorithm 2 of the paper (`bulk.rs`): a table's
 /// tuples are grouped into its buckets, then each bucket's child is built
 /// from its list. `insert` places one tuple by `insert_at`, which the
@@ -458,6 +460,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
         Self::from_tuples_with_config(header, HashTrieConfig::default(), tuples)
     }
 
+    fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self {
+        Self::from_view_with_config(header, HashTrieConfig::default(), view)
+    }
+
     /// Appends `tuple` to the buffer and a `NIL` link for it, then places
     /// the new row by `insert_at`, which threads it into its chain.
     ///
@@ -512,6 +518,12 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
         header: RelationHeader, config: HashTrieConfig, tuples: impl Into<Tuples>,
     ) -> Self {
         Self::from_tuples_in_bulk(header, config, tuples.into())
+    }
+
+    fn from_view_with_config(
+        header: RelationHeader, config: HashTrieConfig, view: TupleView<'_>,
+    ) -> Self {
+        Self::from_view_with_config_and_build_mode(header, config, HashTrieBuildMode::Bulk, view)
     }
 
     fn config(&self) -> &HashTrieConfig { &self.config }
@@ -616,6 +628,53 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                 )
             },
         }
+    }
+
+    /// Creates a trie holding `config`, populated with the rows `view`
+    /// selects and built by `mode`: the view-reading form of
+    /// [`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
+    /// and the constructor every `from_view*` ends in. The matching rows are
+    /// copied once, in output-column order, into a buffer of exactly their
+    /// size (`TupleView::materialize`), and every mode builds over that
+    /// buffer: `bulk` and `incremental` keep it as the trie's own, and the
+    /// partitioning modes still copy it again into partition order, until
+    /// their builds read the view themselves. The root is sized by the
+    /// number of matching rows, never by the source's.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the view's source holds rows and the view's arity is not
+    /// `header.arity()`, whether or not any row passes the view's filter,
+    /// and where `from_tuples_with_config_and_build_mode` panics for a mode
+    /// whose prerequisite `config` lacks.
+    pub fn from_view_with_config_and_build_mode(
+        header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
+        view: TupleView<'_>,
+    ) -> Self {
+        let batch = Self::batch_from_view(&header, &view);
+        Self::from_tuples_with_config_and_build_mode(header, config, mode, batch)
+    }
+
+    /// The batch a trie for `header` stores for `view`, after the arity check
+    /// every build from a view makes first: its matching rows, copied once
+    /// into a buffer of exactly their size (`TupleView::materialize`), or,
+    /// when the source is empty, an empty batch of the header's arity, since
+    /// an empty source carries no arity worth keeping and `insert` must later
+    /// push rows of the header's.
+    ///
+    /// # Panics
+    ///
+    /// Panics as `relation::check_view_arity` does, the one check of every
+    /// structure: if `view.source_rows() > 0` and the view's arity is not
+    /// `header.arity()`, with the message the per-tuple check gave before
+    /// #111. A filter that rejects every row is no excuse: the check looks at
+    /// the source, not at the rows that pass.
+    fn batch_from_view(header: &RelationHeader, view: &TupleView<'_>) -> Tuples {
+        crate::relation::check_view_arity(header, view);
+        if view.source_rows() == 0 {
+            return Tuples::new(header.arity());
+        }
+        view.materialize()
     }
 
     /// The batch a trie of `arity` stores: `tuples` itself, or, when it holds
@@ -2554,5 +2613,275 @@ mod root_capacity_tests {
         assert_eq!(projected.tuple_count(), 100);
         assert_eq!(root_log2(&projected), config.root_log2_capacity(100));
         assert_eq!(config.root_log2_capacity(100), 8);
+    }
+}
+
+/// Builds from a [`TupleView`] (`from_view*`): the rows the view matches, in
+/// output-column order, become the trie's buffer at their exact size, and the
+/// trie is the one a batch of those rows builds. Every case is worked out by
+/// hand from the source rows (`reference`), never through
+/// `TupleView::materialize`, so a bug in the view cannot hide in the oracle.
+#[cfg(test)]
+mod view_tests {
+    use {
+        super::{
+            super::{
+                expansion::LazyExpansion,
+                identity::{assert_same_trie, configs, inputs, rows},
+                pruning::SingletonPruning,
+            },
+            tests::walked_sorted,
+            *,
+        },
+        crate::{cardinality::Cardinality, test_support::Mod10HashStrategy},
+        kermit_iters::{Filter, FxHashStrategy},
+    };
+
+    /// Eight rows of three columns, for the hand-worked cases. Rows 0 and 4
+    /// are equal, so a projection can repeat a row.
+    fn hand_source() -> Tuples {
+        rows(3, &[
+            [1, 2, 3],
+            [1, 2, 7],
+            [4, 5, 6],
+            [1, 9, 3],
+            [1, 2, 3],
+            [8, 8, 8],
+            [3, 1, 1],
+            [5, 3, 3],
+        ])
+    }
+
+    /// A view of a three-column source, described twice: as the `Filter` and
+    /// the output columns a `TupleView` takes, and as the predicate the
+    /// reference build keeps rows by.
+    struct Case {
+        name: &'static str,
+        filter: Filter,
+        columns: Vec<usize>,
+        keeps: fn(&[usize]) -> bool,
+    }
+
+    fn cases() -> Vec<Case> {
+        vec![
+            Case {
+                name: "all rows, all columns",
+                filter: Filter::none(),
+                columns: vec![0, 1, 2],
+                keeps: |_| true,
+            },
+            Case {
+                name: "col2 = 3, columns [1, 0]",
+                filter: Filter::new(vec![(2, 3)], vec![]),
+                columns: vec![1, 0],
+                keeps: |row| row[2] == 3,
+            },
+            Case {
+                name: "col1 = col2, column [2]",
+                filter: Filter::new(vec![], vec![(1, 2)]),
+                columns: vec![2],
+                keeps: |row| row[1] == row[2],
+            },
+            Case {
+                name: "col0 = 1, columns [2, 1]",
+                filter: Filter::new(vec![(0, 1)], vec![]),
+                columns: vec![2, 1],
+                keeps: |row| row[0] == 1,
+            },
+            Case {
+                name: "col0 = 99 (no row), all columns",
+                filter: Filter::new(vec![(0, 99)], vec![]),
+                columns: vec![0, 1, 2],
+                keeps: |row| row[0] == 99,
+            },
+        ]
+    }
+
+    /// What `case` selects from `source`, built by hand: the rows its
+    /// predicate keeps, in source order, cut to its columns, in a buffer of
+    /// exactly their size.
+    fn reference(source: &Tuples, case: &Case) -> Tuples {
+        let kept: Vec<Vec<usize>> = source
+            .rows()
+            .filter(|&row| (case.keeps)(row))
+            .map(|row| case.columns.iter().map(|&column| row[column]).collect())
+            .collect();
+        let mut batch = Tuples::with_capacity(case.columns.len(), kept.len());
+        for row in &kept {
+            batch.push(row);
+        }
+        batch
+    }
+
+    /// The shared three-column inputs, and the hand-worked source.
+    fn sources() -> Vec<(&'static str, Tuples)> {
+        let mut sources = inputs(3);
+        sources.push(("hand", hand_source()));
+        sources
+    }
+
+    /// The fixture is not vacuous: the hand source keeps 8, 4, 3 and 4 rows
+    /// under the first four cases, and none under the last.
+    #[test]
+    fn the_hand_source_exercises_every_case() {
+        let source = hand_source();
+        let kept: Vec<usize> = cases()
+            .iter()
+            .map(|case| reference(&source, case).len())
+            .collect();
+        assert_eq!(kept, vec![8, 4, 3, 4, 0]);
+    }
+
+    /// A trie built from `case`'s view of each source is the trie its
+    /// hand-made batch builds, array for array (the buffer at its exact
+    /// capacity, the links, every table, chain, singleton and pending chain),
+    /// under every config, for the layout `H`, `P`, `E`.
+    fn check_views_build_their_batches<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
+        for (input, source) in sources() {
+            for case in cases() {
+                let arity = case.columns.len();
+                let expected = reference(&source, &case);
+                for config in configs() {
+                    let label = format!(
+                        "{}/{}/{} {input}, {}, load {}%, root {}, children {}",
+                        H::NAME,
+                        P::NAME,
+                        E::NAME,
+                        case.name,
+                        config.load_factor.numerator(),
+                        config.root_capacity.axis_value(),
+                        config.child_capacity.axis_value(),
+                    );
+                    let view = TupleView::new(&source, case.filter.clone(), case.columns.clone());
+                    let built =
+                        HashTrie::<H, P, E>::from_view_with_config(arity.into(), config, view);
+                    let batch = HashTrie::<H, P, E>::from_tuples_with_config(
+                        arity.into(),
+                        config,
+                        expected.clone(),
+                    );
+                    assert_same_trie(&batch, &built, &label);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_view_builds_the_trie_its_batch_builds() {
+        check_views_build_their_batches::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_views_build_their_batches::<FxHashStrategy, SingletonPruning, EagerExpansion>();
+        check_views_build_their_batches::<SipHashStrategy, NoPruning, LazyExpansion>();
+        check_views_build_their_batches::<Mod10HashStrategy, SingletonPruning, LazyExpansion>();
+    }
+
+    /// The buffer is the view's matching rows, in source order and in output
+    /// column order, in exactly their size however much spare capacity the
+    /// source has: worked out here by hand. `col2 = 3` keeps rows 0, 3, 4 and
+    /// 7 of the hand source, read as columns `[1, 0]`.
+    #[test]
+    fn the_buffer_is_the_views_rows_at_their_exact_size() {
+        let mut source = Tuples::with_capacity(3, 100);
+        for row in hand_source().rows() {
+            source.push(row);
+        }
+        assert!(
+            source.value_capacity() > 3 * 8,
+            "the premise: the source has spare capacity"
+        );
+        let view = TupleView::new(&source, Filter::new(vec![(2, 3)], vec![]), vec![1, 0]);
+        let trie: HashTrie = HashTrie::from_view(2.into(), view);
+        assert_eq!(trie.collect_tuples().to_vecs(), vec![
+            vec![2, 1],
+            vec![9, 1],
+            vec![2, 1],
+            vec![3, 5]
+        ]);
+        assert_eq!(
+            trie.tuples().value_capacity(),
+            4 * 2,
+            "exactly the four rows"
+        );
+        assert_eq!(trie.links().len(), 4, "one link per matching row");
+        assert_eq!(trie.tuple_count(), 4);
+        assert_eq!(walked_sorted(&trie), vec![
+            vec![2, 1],
+            vec![2, 1],
+            vec![3, 5],
+            vec![9, 1]
+        ]);
+    }
+
+    /// `root-capacity=tuples` sizes the root by the rows the view matches,
+    /// not by the rows of its source: 34 of the 100 rows have `col1 = 0`.
+    #[test]
+    fn the_root_is_sized_by_the_matching_rows() {
+        let config = HashTrieConfig {
+            root_capacity: RootCapacity::Tuples,
+            ..HashTrieConfig::default()
+        };
+        let mut source = Tuples::with_capacity(2, 100);
+        for k in 0..100 {
+            source.push(&[k, k % 3]);
+        }
+        let view = TupleView::new(&source, Filter::new(vec![(1, 0)], vec![]), vec![0]);
+        assert_eq!(view.count(), 34, "the premise");
+        assert_ne!(
+            config.root_log2_capacity(34),
+            config.root_log2_capacity(100),
+            "the premise: 34 rows and 100 rows need different roots"
+        );
+        let trie: HashTrie = HashTrie::from_view_with_config(1.into(), config, view);
+        assert_eq!(
+            trie.root().buckets_len().trailing_zeros(),
+            config.root_log2_capacity(34)
+        );
+        assert_eq!(trie.tuple_count(), 34);
+    }
+
+    /// An empty source builds an empty trie under any header, as
+    /// `from_tuples(header, vec![])` does, whatever arity the view claims: it
+    /// holds no row to disagree with the header. A later `insert` then pushes
+    /// into a buffer of the header's arity.
+    #[test]
+    fn an_empty_source_builds_an_empty_trie_under_any_header() {
+        let source = Tuples::new(0);
+        let mut trie: HashTrie = HashTrie::from_view(2.into(), TupleView::all(&source));
+        assert_eq!(trie.header().arity(), 2);
+        assert_eq!(trie.tuples().arity(), 2);
+        assert_eq!(trie.tuple_count(), 0);
+        trie.insert(vec![1, 2]);
+        assert_eq!(walked_sorted(&trie), vec![vec![1, 2]]);
+    }
+
+    /// Dropping a column can make two rows equal. `HashTrie` is a multiset,
+    /// so the trie keeps both.
+    #[test]
+    fn a_projection_that_repeats_a_row_keeps_both() {
+        let source = rows(3, &[[1, 2, 3], [1, 2, 4], [5, 6, 7]]);
+        let view = TupleView::new(&source, Filter::none(), vec![0, 1]);
+        let trie: HashTrie = HashTrie::from_view(2.into(), view);
+        assert_eq!(trie.tuple_count(), 3);
+        assert_eq!(walked_sorted(&trie), vec![vec![1, 2], vec![1, 2], vec![
+            5, 6
+        ]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 1 does not match header arity 2")]
+    fn a_view_of_the_wrong_arity_panics() {
+        let source = hand_source();
+        let view = TupleView::new(&source, Filter::none(), vec![0]);
+        let _: HashTrie = HashTrie::from_view(2.into(), view);
+    }
+
+    /// The check does not wait for a row to pass the filter: it fires
+    /// whenever the source holds rows (Amendment 1, item 6). Here the filter
+    /// rejects all eight.
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 1 does not match header arity 2")]
+    fn a_filter_that_rejects_every_row_does_not_excuse_the_arity() {
+        let source = hand_source();
+        let view = TupleView::new(&source, Filter::new(vec![(0, 99)], vec![]), vec![0]);
+        let _: HashTrie = HashTrie::from_view(2.into(), view);
     }
 }
