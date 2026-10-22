@@ -92,14 +92,16 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
 /// validated and planned, and the relations the queries name sit in the
 /// catalog as flat tuples, so a query that cannot run never reaches this
 /// function (issue #78). Per query, the cell builds exactly the indexes the
-/// plan reads (`ExecutionFamily::build_indexes`). One build, untimed, backs
-/// the `index` metadata, `space` and a non-mutating `iteration`; `build`
-/// and `end_to_end` time fresh ones, and a family whose joins mutate their
-/// indexes (`ExecutionFamily::JOIN_MUTATES`) also joins over fresh ones for
-/// `iteration` and `--verify`. Every timed routine returns what it built, so
-/// Criterion frees it after the timer stops. With `settings.verify`, each
-/// query with an `expected` count is executed once before timing and a
-/// mismatch aborts.
+/// plan reads (`ExecutionFamily::build_indexes`), and at most one set is
+/// alive at a time, so a timed build never runs beside another set. An untimed
+/// build backs the `index` metadata, `--verify` counts on a fresh one,
+/// a non-mutating `iteration` joins over one built just for it, `build` and
+/// `end_to_end` time fresh ones, and `space` measures one built after the
+/// timers; a family whose joins mutate their indexes
+/// (`ExecutionFamily::JOIN_MUTATES`) also joins over fresh ones for
+/// `iteration`. Every timed routine returns what it built, so Criterion frees
+/// it after the timer stops. With `settings.verify`, each query with an
+/// `expected` count is executed once before timing and a mismatch aborts.
 fn run_benchmark<F: ExecutionFamily>(
     family: &F, workload: &PreparedWorkload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
@@ -151,21 +153,33 @@ fn run_benchmark<F: ExecutionFamily>(
     let mut reports: Vec<BenchReport> = Vec::with_capacity(definition.queries.len());
 
     for (query_def, prepared) in definition.queries.iter().zip(prepared_queries) {
-        // This query's indexes, built once and untimed: the `index` metadata
-        // and `space` describe them, and a family whose joins leave an index
-        // as built (`iteration`, `--verify`) joins over them.
-        let indexes = family.build_indexes(catalog, prepared);
-        // A family whose joins mutate their indexes (a lazy HashTrie expands
-        // what a join reaches, #92) never probes these: `--verify` and
-        // `iteration` run on fresh builds, so `space` measures the indexes as
-        // built, whatever ran before it. Their footprint now is what the
-        // `space` block checks against.
-        let as_built_bytes: Option<Vec<usize>> = F::JOIN_MUTATES.then(|| {
-            indexes
-                .iter()
-                .map(|(_, index)| index.heap_size_bytes())
-                .collect()
-        });
+        // One untimed build describes this query's indexes: the `index`
+        // metadata lines, the `index_rows` axis and, for a family whose joins
+        // mutate their indexes (a lazy HashTrie expands what a join reaches,
+        // #92), the footprint `space` checks against. It is dropped at the end
+        // of the block, so no index set built outside a timer is alive while
+        // the `build` or `end_to_end` timer runs.
+        let (index_lines, index_rows, as_built_bytes) = {
+            let indexes = family.build_indexes(catalog, prepared);
+            let mut lines = Vec::new();
+            for (position, (spec, index)) in indexes.iter().enumerate() {
+                let source = catalog
+                    .tuples(&spec.relation)
+                    .expect("prepare checked that every indexed relation is in the catalog");
+                let rows = spec.view(source).count();
+                lines.push(MetadataLine::new(
+                    "index",
+                    describe_index(position, spec, rows, index.heap_size_bytes()),
+                ));
+            }
+            let as_built_bytes: Option<Vec<usize>> = F::JOIN_MUTATES.then(|| {
+                indexes
+                    .iter()
+                    .map(|(_, index)| index.heap_size_bytes())
+                    .collect()
+            });
+            (lines, indexes.rows(), as_built_bytes)
+        };
 
         let mut metadata = vec![
             MetadataLine::new("benchmark", &definition.name),
@@ -174,30 +188,20 @@ fn run_benchmark<F: ExecutionFamily>(
             MetadataLine::new("algorithm", algo_name),
             MetadataLine::new("allocator", crate::ALLOCATOR),
         ];
-        for (position, (spec, index)) in indexes.iter().enumerate() {
-            let source = catalog
-                .tuples(&spec.relation)
-                .expect("prepare checked that every indexed relation is in the catalog");
-            let rows = spec.view(source).count();
-            metadata.push(MetadataLine::new(
-                "index",
-                describe_index(position, spec, rows, index.heap_size_bytes()),
-            ));
-        }
+        metadata.extend(index_lines);
         // Correctness gate: with `--verify`, run the query once (untimed)
         // and compare the answer count before spending any measurement time
         // on it. A mismatch aborts so a wrong answer can never yield a
         // plausible timing. The count comes through the same streaming path
         // the `iteration` metric times, so verifying a huge result never
-        // materialises it.
+        // materialises it. It runs on a fresh build, dropped right after the
+        // count, so no index set outlives it into the timers.
         let verified = if verify {
             match query_def.expected {
                 | Some(expected) => {
-                    let actual = if F::JOIN_MUTATES {
+                    let actual = {
                         let fresh = family.build_indexes(catalog, prepared);
                         family.count_rows(prepared, &fresh)
-                    } else {
-                        family.count_rows(prepared, &indexes)
                     };
                     if actual != expected {
                         anyhow::bail!(
@@ -295,9 +299,14 @@ fn run_benchmark<F: ExecutionFamily>(
                         );
                     });
                 } else {
+                    // Built just before the benchmark and dropped just after
+                    // it, so the `end_to_end` timer after it runs with no
+                    // other index set alive.
+                    let indexes = family.build_indexes(catalog, prepared);
                     group.bench_function("iteration", |b| {
                         b.iter(|| family.count_rows(prepared, &indexes));
                     });
+                    drop(indexes);
                 }
                 criterion_groups.push(CriterionGroupRef {
                     group: group_name.clone(),
@@ -342,6 +351,10 @@ fn run_benchmark<F: ExecutionFamily>(
         }
 
         if metrics.contains(&Metric::Space) {
+            // A fresh build after the time metrics, so it is the only index
+            // set alive and, under `JOIN_MUTATES`, as built whatever ran
+            // before it.
+            let indexes = family.build_indexes(catalog, prepared);
             let built: Vec<&F::Rel> = indexes.iter().map(|(_, index)| index).collect();
             if let Some(as_built) = &as_built_bytes {
                 let now: Vec<usize> = built.iter().map(|index| index.heap_size_bytes()).collect();
@@ -382,7 +395,7 @@ fn run_benchmark<F: ExecutionFamily>(
                 "tuples".to_string(),
                 serde_json::json!(tuples_read(catalog, prepared)),
             ),
-            ("index_rows".to_string(), serde_json::json!(indexes.rows())),
+            ("index_rows".to_string(), serde_json::json!(index_rows)),
         ]);
         // Only meaningful when the end-to-end metric ran; omitting it
         // otherwise keeps historical invocations' reports unchanged.
