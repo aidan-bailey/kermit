@@ -179,22 +179,24 @@ pub(crate) fn scatter_rows(
     out
 }
 
-/// A batch's rows copied into partition order by [`partition_rows`]: the
-/// paper's materialisation step, which partitions the tuples so "that
-/// tuples with similar join key hash values reside in physically close
-/// memory locations" (Freitag et al., VLDB 2020, §3.3.2). Partition `p`'s
-/// rows are the rows `offsets[p]..offsets[p + 1]` of `tuples`, in input
-/// order.
+/// The rows a view selects, copied into partition order by
+/// [`partition_rows`]: the paper's materialisation step, which partitions the
+/// tuples so "that tuples with similar join key hash values reside in
+/// physically close memory locations" (Freitag et al., VLDB 2020, §3.3.2).
+/// Partition `p`'s rows are the rows `offsets[p]..offsets[p + 1]` of
+/// `tuples`, in source order.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Partitioned {
-    /// The partition-ordered copy. Its buffer reserves the input buffer's
-    /// capacity ([`Tuples::value_capacity`]), so a trie that keeps it in
-    /// place of the input holds the same bytes.
+    /// The partition-ordered copy of the matching rows, as output rows. Its
+    /// buffer is sized exactly ([`Tuples::value_capacity`] is `len · arity`),
+    /// whatever spare capacity the source has, so a trie that keeps it holds
+    /// only the bytes its rows need.
     pub(crate) tuples: Tuples,
     /// `partitions + 1` prefix sums of the partition sizes: `offsets[0]` is
-    /// 0 and the last is the row count.
+    /// 0 and the last is the number of matching rows.
     pub(crate) offsets: Vec<usize>,
-    /// `origin[r]` is the input position of the copy's row `r`.
+    /// `origin[r]` is the source row id of the copy's row `r`: its position
+    /// in the view's source, which the rows the filter rejected leave gaps in.
     pub(crate) origin: Vec<RowId>,
 }
 
@@ -233,53 +235,59 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    /// Writes `row`, copied from input position `id`, at the front, and
-    /// moves the front past it.
-    fn write(&mut self, row: &[usize], id: RowId) {
+    /// Writes the output row of source row `id` at the front, straight from
+    /// the view into the copy, with `id` into `origin` alongside, and moves
+    /// the front past it.
+    fn write(&mut self, view: &TupleView<'_>, id: RowId) {
         let (slot, rest) = mem::take(&mut self.origin)
             .split_first_mut()
             .expect("the histogram counted every row a morsel sends to this range");
         *slot = id;
         self.origin = rest;
-        let (values, rest) = mem::take(&mut self.values).split_at_mut(row.len());
-        values.copy_from_slice(row);
+        let (values, rest) = mem::take(&mut self.values).split_at_mut(view.arity());
+        view.write(id, values);
         self.values = rest;
     }
 }
 
-/// Copies the rows of `tuples` into partition order: partition `p` holds,
-/// in input order, the rows that `partition_of` sends to `p`, which must be
-/// below `partitions`, and the partitions follow one another in order. A
-/// classic histogram-and-scatter radix partition, in three steps:
+/// Copies the rows `view` selects into partition order: partition `p` holds,
+/// in source order, the output rows that `partition_of` sends to `p`, which
+/// must be below `partitions`, and the partitions follow one another in
+/// order. A classic histogram-and-scatter radix partition, in three steps:
 ///
 /// 1. **Histogram.** `threads` workers take morsels of `morsel_rows`
-///    consecutive rows from a shared queue, as in [`scatter_rows`]. For each
-///    morsel they call `partition_of` once per row, keep the row's partition
-///    number, and count the morsel's rows per partition.
-/// 2. **Offsets.** Prefix sums over (partition, morsel) pairs, partition by
-///    partition, give every pair its own range of the copy: a partition's
-///    ranges lie side by side, in morsel order.
-/// 3. **Scatter.** The copy and `origin` are allocated once and cut into those
-///    ranges with `split_at_mut`, grouped by morsel. Workers take the morsels
-///    again, each with its ranges and its rows' partition numbers, and write
-///    every row at the front of its partition's range, its input position into
-///    `origin` alongside. The ranges are disjoint, so no write needs a lock or
-///    an atomic.
+///    consecutive source rows from a shared queue, as in [`scatter_rows`]. For
+///    each row of a morsel that the view matches they write its output row into
+///    a scratch row, call `partition_of` on it once, keep the row's partition
+///    number, and count the morsel's matching rows per partition. A row the
+///    filter rejects is skipped.
+/// 2. **Offsets.** The counts add up to the copy's row count, and the copy and
+///    `origin` are allocated once, at exactly that size. Prefix sums over
+///    (partition, morsel) pairs, partition by partition, give every pair its
+///    own range of the copy: a partition's ranges lie side by side, in morsel
+///    order.
+/// 3. **Scatter.** The copy and `origin` are cut into those ranges with
+///    `split_at_mut`, grouped by morsel. Workers take the morsels again, each
+///    with its ranges and its matching rows' partition numbers, and write every
+///    matching row's output columns at the front of its partition's range
+///    (`TupleView::write`), its source row id into `origin` alongside. The
+///    ranges are disjoint, so no write needs a lock or an atomic.
 ///
-/// `partition_of` runs exactly once per row: the scatter reads the numbers
-/// the histogram kept (2 bytes a row, freed as each morsel is scattered)
-/// instead of calling it again. A build whose `partition_of` hashes
-/// therefore hashes each row once here, as it did when it partitioned ids.
+/// `partition_of` runs exactly once per matching row, and never for a row the
+/// filter rejects: the scatter reads the numbers the histogram kept (2 bytes a
+/// row, freed as each morsel is scattered) instead of calling it again. A
+/// build whose `partition_of` hashes therefore hashes each row once here, as
+/// it did when it partitioned ids. The scatter does ask the view which rows
+/// match a second time, in the same order, to pair the rows with the numbers.
 ///
-/// The copy does not depend on the thread count or on which worker took
-/// which morsel: a partition's ranges are in morsel order, and a morsel's
-/// rows are written in input order. Its buffer reserves the input buffer's
-/// capacity ([`Tuples::value_capacity`]). Any arity works, nullary
-/// included.
+/// The copy does not depend on the thread count or on which worker took which
+/// morsel: a partition's ranges are in morsel order, and a morsel's rows are
+/// written in source order. Its buffer is sized exactly, `len · arity` values,
+/// whatever spare capacity the source has. Any arity works, nullary included.
 ///
 /// It starts workers exactly twice, one `run_workers` call per pass
-/// (histogram, then scatter), each on `threads` workers, even for an empty
-/// batch; a caller that must start none checks for that first.
+/// (histogram, then scatter), each on `threads` workers, even for a view that
+/// matches nothing; a caller that must start none checks for that first.
 ///
 /// Two costs are known and accepted:
 ///
@@ -291,7 +299,7 @@ impl<'a> Cursor<'a> {
 ///   first-touch faults land in the parallel scatter.
 /// - **The bookkeeping** is one count and one range per (partition, morsel)
 ///   pair. The `radix:K` build, a one-thread caller, gains nothing from several
-///   morsels and passes the whole batch as one (`tuples.len().max(1)`): the
+///   morsels and passes the whole source as one (`view.source_rows()`): the
 ///   classic one-thread radix partition, one histogram and one scatter;
 ///   `parallel:1` and `presized:1` keep `MORSEL_TUPLES`-row morsels.
 ///
@@ -301,7 +309,7 @@ impl<'a> Cursor<'a> {
 /// most any build uses: `radix:16`), or if `partition_of` returns
 /// `partitions` or more, or panics itself.
 pub(crate) fn partition_rows(
-    threads: Threads, tuples: &Tuples, morsel_rows: usize, partitions: usize,
+    threads: Threads, view: &TupleView<'_>, morsel_rows: usize, partitions: usize,
     partition_of: impl Fn(&[usize]) -> usize + Sync,
 ) -> Partitioned {
     assert!(
@@ -314,28 +322,34 @@ pub(crate) fn partition_rows(
         partitions <= 1 << 16,
         "partition_rows: at most 65,536 partitions, got {partitions}"
     );
-    let (len, arity) = (tuples.len(), tuples.arity());
-    let morsels = len.div_ceil(morsel_rows);
+    let (source_rows, arity) = (view.source_rows(), view.arity());
+    let morsels = source_rows.div_ceil(morsel_rows);
     let morsel_ids = |m: usize| {
         let first = m * morsel_rows;
-        row_id(first)..row_id(first + morsel_rows.min(len - first))
+        row_id(first)..row_id(first + morsel_rows.min(source_rows - first))
     };
 
-    // 1. Histogram: `counts[m][p]` of morsel `m`'s rows go to partition `p`,
-    //    and `partition_numbers[m]` holds each of its rows' partition, in row
-    //    order.
+    // 1. Histogram: `counts[m][p]` of morsel `m`'s matching rows go to
+    //    partition `p`, and `partition_numbers[m]` holds each of them
+    //    partition, in row order.
     let queue = Mutex::new(0..morsels);
     let mut counts: Vec<Vec<usize>> = vec![Vec::new(); morsels];
     let mut partition_numbers: Vec<Vec<u16>> = vec![Vec::new(); morsels];
     let counted = run_workers(threads, || {
         let mut counted = Vec::new();
+        // One scratch row per worker: the output row `partition_of` sees.
+        let mut output = vec![0; arity];
         while let Some(m) = take_next(&queue) {
             let ids = morsel_ids(m);
             let mut histogram = vec![0; partitions];
-            // Sized from the morsel's row count, so it never grows.
+            // At most one number per row of the morsel, so it never grows.
             let mut morsel_numbers = Vec::with_capacity(ids.len());
             for id in ids {
-                let p = partition_of(tuples.row(id));
+                if !view.matches(id) {
+                    continue;
+                }
+                view.write(id, &mut output);
+                let p = partition_of(&output);
                 assert!(
                     p < partitions,
                     "partition_rows: partition_of returned {p} for {partitions} partitions"
@@ -355,12 +369,12 @@ pub(crate) fn partition_rows(
 
     // 2. Offsets, and the copy cut into one range per (partition, morsel) pair,
     //    partition by partition: `ranges[m][p]` is where morsel `m` writes its
-    //    rows of partition `p`.
-    // `vec!` of zeros allocates through `alloc_zeroed`, at exactly the input's
-    // capacity; `truncate` keeps that capacity. `origin` is zeroed the same
-    // way.
-    let mut values = vec![0usize; tuples.value_capacity()];
-    values.truncate(len * arity);
+    //    rows of partition `p`. The counts add up to the copy's row count.
+    //    `vec!` of zeros allocates through `alloc_zeroed`, at exactly the
+    //    copy's size, so the buffer has no spare capacity. `origin` is zeroed
+    //    the same way.
+    let len: usize = counts.iter().flatten().sum();
+    let mut values = vec![0usize; len * arity];
     let mut origin: Vec<RowId> = vec![0; len];
     let mut offsets = Vec::with_capacity(partitions + 1);
     offsets.push(0);
@@ -383,14 +397,20 @@ pub(crate) fn partition_rows(
         }
         debug_assert_eq!(end, len, "the histograms count every row once");
 
-        // 3. Scatter: each worker takes a morsel with its ranges and its rows'
-        //    partition numbers, and writes every row at the front of its
-        //    partition's range. `partition_of` is not called again.
+        // 3. Scatter: each worker takes a morsel with its ranges and its
+        //    matching rows' partition numbers, and writes every matching row at
+        //    the front of its partition's range. `partition_of` is not called
+        //    again; the view is asked which rows match, in the order the
+        //    histogram asked it.
         let queue = Mutex::new(ranges.into_iter().zip(partition_numbers).enumerate());
         run_workers(threads, || {
             while let Some((m, (mut ranges, morsel_numbers))) = take_next(&queue) {
-                for (id, p) in morsel_ids(m).zip(morsel_numbers) {
-                    ranges[p as usize].write(tuples.row(id), id);
+                let mut numbers = morsel_numbers.into_iter();
+                for id in morsel_ids(m).filter(|&id| view.matches(id)) {
+                    let p = numbers
+                        .next()
+                        .expect("the histogram numbered every matching row");
+                    ranges[p as usize].write(view, id);
                 }
             }
         });
@@ -437,6 +457,22 @@ mod tests {
     use {super::*, kermit_iters::Filter};
 
     fn threads(n: usize) -> Threads { Threads::new(n).expect("tests use a nonzero count") }
+
+    /// The tests written for batches keep their call shape: the whole batch,
+    /// unfiltered. This shadows the glob-imported `partition_rows`; the tests
+    /// of views call `super::partition_rows` by path.
+    fn partition_rows(
+        threads: Threads, input: &Tuples, morsel_rows: usize, partitions: usize,
+        partition_of: impl Fn(&[usize]) -> usize + Sync,
+    ) -> Partitioned {
+        super::partition_rows(
+            threads,
+            &TupleView::all(input),
+            morsel_rows,
+            partitions,
+            partition_of,
+        )
+    }
 
     #[test]
     fn threads_accepts_only_one_to_max() {
@@ -749,11 +785,12 @@ mod tests {
         assert!((0..3).all(|p| out.ids(p).is_empty()));
     }
 
-    /// The copy reserves the input buffer's capacity, spare capacity
-    /// included, so a trie that keeps the copy holds the bytes the input
-    /// held.
+    /// The copy is sized exactly: `len · arity` values, whatever spare
+    /// capacity the source has, so a trie that keeps the copy holds only the
+    /// bytes its rows need and `space` does not depend on how the source was
+    /// built.
     #[test]
-    fn partition_rows_reserves_the_inputs_capacity() {
+    fn partition_rows_sizes_the_copy_exactly() {
         let mut input = Tuples::with_capacity(3, 40);
         for i in 0..10 {
             input.push(&[i, i, i]);
@@ -764,15 +801,150 @@ mod tests {
         );
         for t in [1, 3] {
             let out = partition_rows(threads(t), &input, 4, PARTITIONS, first_mod_3);
-            assert_eq!(
-                out.tuples.value_capacity(),
-                input.value_capacity(),
-                "threads {t}"
-            );
+            assert_eq!(out.tuples.value_capacity(), 30, "threads {t}");
         }
         let empty = Tuples::with_capacity(2, 5);
         let out = partition_rows(threads(2), &empty, 4, PARTITIONS, first_mod_3);
-        assert_eq!(out.tuples.value_capacity(), empty.value_capacity());
+        assert_eq!(out.tuples.value_capacity(), 0);
+    }
+
+    /// Over `rows_of_arity(100, 3)`, the rows `[i % 7, i, 100 - i]`: this view
+    /// keeps the 14 rows with `i % 7 == 3`, read as columns `[2, 1]`, so its
+    /// output rows are `[100 - i, i]` and `first_mod_3` sees `100 - i`.
+    fn matching_view(source: &Tuples) -> TupleView<'_> {
+        TupleView::new(
+            source,
+            kermit_iters::Filter::new(vec![(0, 3)], vec![]),
+            vec![2, 1],
+        )
+    }
+
+    /// What `partition_rows` must make of a view, worked out from the source
+    /// rows alone: the output rows, their source row ids and the partition
+    /// offsets, partition by partition, each in source order. `keeps` is the
+    /// filter's predicate and `columns` the view's.
+    fn expected_copy(
+        source: &Tuples, keeps: impl Fn(&[usize]) -> bool, columns: &[usize],
+    ) -> (Vec<Vec<usize>>, Vec<RowId>, Vec<usize>) {
+        let (mut rows, mut origin, mut offsets) = (Vec::new(), Vec::new(), vec![0]);
+        for p in 0..PARTITIONS {
+            for (id, row) in (0..).zip(source.rows()) {
+                let output: Vec<usize> = columns.iter().map(|&column| row[column]).collect();
+                if keeps(row) && first_mod_3(&output) == p {
+                    rows.push(output);
+                    origin.push(id);
+                }
+            }
+            offsets.push(rows.len());
+        }
+        (rows, origin, offsets)
+    }
+
+    /// The copy holds only the matching rows, as output rows (the view's
+    /// columns, in its order), in partition order, each partition in source
+    /// order; `origin` names source rows, with gaps where the filter
+    /// rejected; and the copy is sized for its 14 rows exactly. The filter
+    /// cuts across morsel boundaries at every size below.
+    #[test]
+    fn partition_rows_copies_the_matching_rows_in_output_order() {
+        let source = rows_of_arity(100, 3);
+        let (rows, origin, offsets) = expected_copy(&source, |row| row[0] == 3, &[2, 1]);
+        // The premise: 14 rows match, in partitions of 5, 5, 4 and 0.
+        assert_eq!(offsets, vec![0, 5, 10, 14, 14]);
+        for t in [1, 2, 3, 8] {
+            for morsel in [1, 3, 5, 100, 101] {
+                let case = format!("threads {t}, morsel {morsel}");
+                let out = super::partition_rows(
+                    threads(t),
+                    &matching_view(&source),
+                    morsel,
+                    PARTITIONS,
+                    first_mod_3,
+                );
+                assert_eq!(out.offsets, offsets, "{case}");
+                assert_eq!(out.tuples.to_vecs(), rows, "{case}");
+                assert_eq!(out.origin, origin, "{case}");
+                assert_eq!(out.tuples.arity(), 2, "{case}");
+                assert_eq!(out.tuples.value_capacity(), 14 * 2, "{case}: exact size");
+            }
+        }
+    }
+
+    /// An equality filter and a projection to one column: `col0 = col1` holds
+    /// only for `i < 7` (`i % 7 == i`), whose output rows are `[i]`.
+    #[test]
+    fn partition_rows_reads_an_equality_filter_and_a_projection() {
+        let source = rows_of_arity(100, 3);
+        let view = TupleView::new(
+            &source,
+            kermit_iters::Filter::new(vec![], vec![(0, 1)]),
+            vec![1],
+        );
+        let (rows, origin, offsets) = expected_copy(&source, |row| row[0] == row[1], &[1]);
+        assert_eq!(offsets, vec![0, 3, 5, 7, 7], "the premise: 7 rows match");
+        for t in [1, 3] {
+            for morsel in [1, 2, 3, 100] {
+                let case = format!("threads {t}, morsel {morsel}");
+                let out = super::partition_rows(threads(t), &view, morsel, PARTITIONS, first_mod_3);
+                assert_eq!(out.offsets, offsets, "{case}");
+                assert_eq!(out.tuples.to_vecs(), rows, "{case}");
+                assert_eq!(out.origin, origin, "{case}");
+            }
+        }
+    }
+
+    /// `partition_of` runs once per matching row, on the output row, and
+    /// never for a row the filter rejects.
+    #[test]
+    fn partition_rows_calls_partition_of_once_per_matching_row() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let source = rows_of_arity(100, 3);
+        for t in [1, 3] {
+            for morsel in [1, 7, 101] {
+                let calls = AtomicUsize::new(0);
+                let out = super::partition_rows(
+                    threads(t),
+                    &matching_view(&source),
+                    morsel,
+                    PARTITIONS,
+                    |row| {
+                        assert_eq!(row.len(), 2, "partition_of sees the output row");
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        first_mod_3(row)
+                    },
+                );
+                assert_eq!(calls.into_inner(), 14, "threads {t}, morsel {morsel}");
+                assert_eq!(out.offsets[PARTITIONS], 14, "threads {t}, morsel {morsel}");
+            }
+        }
+    }
+
+    /// A view that matches nothing copies nothing, however many source rows
+    /// it rejects, and still runs both passes (see `partition_rows`).
+    #[test]
+    fn partition_rows_of_a_view_that_matches_nothing_copies_nothing() {
+        let source = rows_of_arity(10, 3);
+        let view = TupleView::new(
+            &source,
+            kermit_iters::Filter::new(vec![(0, 99)], vec![]),
+            vec![0, 1, 2],
+        );
+        for t in [1, 3] {
+            take_worker_runs();
+            let out = super::partition_rows(threads(t), &view, 4, PARTITIONS, first_mod_3);
+            assert_eq!(out.offsets, vec![0; PARTITIONS + 1], "threads {t}");
+            assert_eq!(
+                (
+                    out.tuples.arity(),
+                    out.tuples.len(),
+                    out.tuples.value_capacity()
+                ),
+                (3, 0, 0),
+                "threads {t}"
+            );
+            assert!(out.origin.is_empty(), "threads {t}");
+            assert_eq!(take_worker_runs(), vec![t, t], "threads {t}");
+        }
     }
 
     /// With one partition the copy is the input, `origin` is the identity

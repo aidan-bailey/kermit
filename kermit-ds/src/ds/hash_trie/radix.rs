@@ -51,7 +51,7 @@ use {
         pruning::PruningPolicy,
     },
     crate::morsel::{dispatch, partition_rows, Partitioned, Threads},
-    kermit_iters::{ChainLinks, HashStrategy, RowId, Tuples},
+    kermit_iters::{ChainLinks, HashStrategy, RowId, TupleView, Tuples},
     std::{cmp::Reverse, collections::BinaryHeap},
 };
 
@@ -148,9 +148,13 @@ pub(super) fn partition_by_first_hash<H: HashStrategy>(
         "partition_by_first_hash: {bits} bits, not 1 to 16"
     );
     let shift = 64 - bits;
-    partition_rows(threads, tuples, morsel_rows, 1 << bits, |row| {
-        (H::hash(row[0]) >> shift) as usize
-    })
+    partition_rows(
+        threads,
+        &TupleView::all(tuples),
+        morsel_rows,
+        1 << bits,
+        |row| (H::hash(row[0]) >> shift) as usize,
+    )
 }
 
 /// Steps 2 and 3 of `radix:K` and `parallel:N`. Each non-empty partition
@@ -430,7 +434,7 @@ mod tests {
     /// it: a build that left the rows in arrival order would build the same
     /// contents. So the trie's buffer must be `partition_rows`' copy of its
     /// input, partitioned on the top `K` bits of the first attribute's hash,
-    /// row for row and at the input's capacity. The random input spreads
+    /// row for row and at exactly their size. The random input spreads
     /// over every bit count's partitions, so its copy is not the input and
     /// the test cannot pass vacuously.
     #[test]
@@ -443,9 +447,13 @@ mod tests {
                 for (input, tuples) in inputs(arity) {
                     let label = format!("arity {arity}, radix:{bits}, {input}");
                     let one_morsel = tuples.len().max(1);
-                    let expected = partition_rows(one, &tuples, one_morsel, 1 << bits, |row| {
-                        (SipHashStrategy::hash(row[0]) >> shift) as usize
-                    });
+                    let expected = partition_rows(
+                        one,
+                        &TupleView::all(&tuples),
+                        one_morsel,
+                        1 << bits,
+                        |row| (SipHashStrategy::hash(row[0]) >> shift) as usize,
+                    );
                     if input == "random" {
                         assert_ne!(expected.tuples, tuples, "{label}: the copy reorders");
                     }
@@ -454,7 +462,7 @@ mod tests {
                     assert_eq!(built.tuples(), &expected.tuples, "{label}: buffer");
                     assert_eq!(
                         built.tuples().value_capacity(),
-                        tuples.value_capacity(),
+                        tuples.len() * arity,
                         "{label}: capacity"
                     );
                 }

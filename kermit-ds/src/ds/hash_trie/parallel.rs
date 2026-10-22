@@ -95,7 +95,7 @@ use {
         radix,
     },
     crate::morsel::{dispatch, partition_rows, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD},
-    kermit_iters::{ChainLinks, HashStrategy, RowId, Tuples},
+    kermit_iters::{ChainLinks, HashStrategy, RowId, TupleView, Tuples},
     std::ops::Range,
 };
 
@@ -284,9 +284,13 @@ fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     let shift = log2_capacity - parts.trailing_zeros();
     // 1. Partition by the home bucket's top bits: whole runs of regions. The
     //    copy is the trie's buffer from here on, so the input is freed.
-    let partitioned = partition_rows(threads, &tuples, morsel_tuples, parts, |row| {
-        home_bucket(H::hash(row[0]), log2_capacity) >> shift
-    });
+    let partitioned = partition_rows(
+        threads,
+        &TupleView::all(&tuples),
+        morsel_tuples,
+        parts,
+        |row| home_bucket(H::hash(row[0]), log2_capacity) >> shift,
+    );
     drop(tuples);
     let rows = &partitioned.tuples;
     // 2. Group each run of regions in parallel, partition k into run k: each
@@ -543,7 +547,7 @@ mod tests {
 
     /// `parallel:N` stores the partitioned copy as its buffer: exactly what
     /// `partition_rows` makes of the input at `parallel:N`'s partition count,
-    /// which `partition_bits` derives from N, at the input's capacity. A
+    /// which `partition_bits` derives from N, at exactly its rows' size. A
     /// build that skipped the copy would pass every content test, so this is
     /// the test that sees it: the random input spreads over every partition,
     /// so there the copy must differ from the input.
@@ -553,10 +557,13 @@ mod tests {
                 for &t in THREADS {
                     let label = format!("{} arity {arity}, parallel:{t}, {input}", H::NAME);
                     let bits = partition_bits(threads(t));
-                    let copy =
-                        partition_rows(threads(t), &tuples, MORSEL_TUPLES, 1 << bits, |row| {
-                            (H::hash(row[0]) >> (64 - bits)) as usize
-                        });
+                    let copy = partition_rows(
+                        threads(t),
+                        &TupleView::all(&tuples),
+                        MORSEL_TUPLES,
+                        1 << bits,
+                        |row| (H::hash(row[0]) >> (64 - bits)) as usize,
+                    );
                     let built: HashTrie<H> = HashTrie::from_tuples_with_build_mode(
                         arity.into(),
                         HashTrieBuildMode::Parallel(threads(t)),
@@ -565,7 +572,7 @@ mod tests {
                     assert_eq!(built.tuples(), &copy.tuples, "{label}: buffer");
                     assert_eq!(
                         built.tuples().value_capacity(),
-                        tuples.value_capacity(),
+                        tuples.len() * arity,
                         "{label}: buffer capacity"
                     );
                     if input == "random" {
@@ -1141,7 +1148,7 @@ mod tests {
     /// `presized:N` stores the partitioned copy as its buffer: exactly what
     /// `partition_rows` makes of the input for its runs of regions, whose
     /// count `presized_parts` derives from N, the root's capacity and the
-    /// region size, at the input's capacity. It is pinned on the public path
+    /// region size, at exactly its rows' size. It is pinned on the public path
     /// (4 096-bucket regions) and with 8-bucket regions. With the latter the
     /// random input spreads over several runs, so there the copy must differ
     /// from the input, and a build that skipped the copy fails here.
@@ -1155,9 +1162,13 @@ mod tests {
                     let copy = |morsel_tuples: usize, region_buckets: usize| {
                         let parts = presized_parts(log2, threads(t), region_buckets);
                         let shift = log2 - parts.trailing_zeros();
-                        partition_rows(threads(t), &tuples, morsel_tuples, parts, |row| {
-                            home_bucket(H::hash(row[0]), log2) >> shift
-                        })
+                        partition_rows(
+                            threads(t),
+                            &TupleView::all(&tuples),
+                            morsel_tuples,
+                            parts,
+                            |row| home_bucket(H::hash(row[0]), log2) >> shift,
+                        )
                         .tuples
                     };
                     let built: HashTrie<H> = HashTrie::from_tuples_with_config_and_build_mode(
@@ -1182,7 +1193,7 @@ mod tests {
                     for trie in [&built, &small] {
                         assert_eq!(
                             trie.tuples().value_capacity(),
-                            tuples.value_capacity(),
+                            tuples.len() * arity,
                             "{label}: buffer capacity"
                         );
                     }

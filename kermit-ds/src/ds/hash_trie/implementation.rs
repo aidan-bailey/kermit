@@ -1299,9 +1299,9 @@ mod tests {
         ]
     }
 
-    /// `mode` over a fresh [`spare_capacity_input`], under the one config
-    /// every mode accepts: `presized:N` requires `root-capacity=tuples`. The
-    /// trie's Layout is the caller's to name, so the same body runs under
+    /// `mode` over a view of a fresh [`spare_capacity_input`], under the one
+    /// config every mode accepts: `presized:N` requires `root-capacity=tuples`.
+    /// The trie's Layout is the caller's to name, so the same body runs under
     /// every hasher, pruning and expansion policy.
     fn build_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
         mode: HashTrieBuildMode,
@@ -1310,11 +1310,12 @@ mod tests {
             root_capacity: RootCapacity::Tuples,
             ..HashTrieConfig::default()
         };
-        HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+        let input = spare_capacity_input();
+        HashTrie::<H, P, E>::from_view_with_config_and_build_mode(
             2.into(),
             config,
             mode,
-            spare_capacity_input(),
+            TupleView::all(&input),
         )
     }
 
@@ -1331,29 +1332,24 @@ mod tests {
         }
     }
 
-    /// Every partitioning build keeps the input batch's spare capacity
-    /// through its copy (`partition_rows` sizes the copy at the input's
-    /// `value_capacity()`), so `space` is the same under every mode.
+    /// Every build from a view allocates its buffer at its rows' exact size,
+    /// whatever spare capacity the source has (the buffer is the build's own
+    /// copy, never the source's), so `space` is the same under every mode.
     #[test]
-    fn partitioning_builds_keep_the_inputs_spare_capacity() {
+    fn builds_from_a_view_are_sized_exactly() {
         use crate::HeapSize;
-        let capacity = spare_capacity_input().value_capacity();
         assert!(
-            capacity > 2 * ROWS,
-            "the premise: the input has spare capacity"
+            spare_capacity_input().value_capacity() > 2 * ROWS,
+            "the premise: the source has spare capacity"
         );
         let bulk: HashTrie = build_in(HashTrieBuildMode::Bulk);
-        assert_eq!(
-            bulk.tuples().value_capacity(),
-            capacity,
-            "bulk keeps the input"
-        );
+        assert_eq!(bulk.tuples().value_capacity(), 2 * ROWS, "bulk: exact");
         for mode in partitioning_modes() {
             let label = format!("{mode:?}");
             let built: HashTrie = build_in(mode);
             assert_eq!(
                 built.tuples().value_capacity(),
-                bulk.tuples().value_capacity(),
+                2 * ROWS,
                 "{label}: the copy's capacity"
             );
             assert_eq!(
