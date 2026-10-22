@@ -17,6 +17,10 @@
 //! named by a list of their ids or reached along their links, in chain
 //! order through a [`LeafCursor`].
 //!
+//! A [`TupleView`] reads a [`Tuples`] batch through a [`Filter`] (constants
+//! and column equalities) and a list of output columns, so a build copies
+//! only the rows and columns an index needs, once.
+//!
 //! # Example
 //!
 //! `Vec<usize>` ships with a [`LinearIterable`] implementation, useful as a
@@ -64,6 +68,6 @@ pub use {
     linear::{LinearIterable, LinearIterator},
     optimization::{BuildMode, ConfigOption, HasOptimizationAxes, LayoutOption},
     trie::{TrieIterable, TrieIterator, TrieIteratorWrapper},
-    tuple_view::Filter,
+    tuple_view::{Filter, TupleView},
     tuples::{RowId, Tuples},
 };

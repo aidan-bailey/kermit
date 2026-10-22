@@ -9,7 +9,10 @@
 //! build makes (the build-mode table of
 //! `docs/specs/2026-10-22-per-query-index-build-design.md`).
 
-use std::fmt;
+use {
+    crate::tuples::{RowId, Tuples},
+    std::fmt,
+};
 
 /// A closed row predicate: constants a row must hold and pairs of columns
 /// that must agree. Nothing else can be expressed.
@@ -113,6 +116,185 @@ impl fmt::Display for Filter {
     }
 }
 
+/// A borrowed reading of a [`Tuples`] batch: the rows a [`Filter`] accepts,
+/// each cut down to `columns`, in source order.
+///
+/// Output column `i` reads source column `columns[i]`, so `columns` both
+/// projects and reorders (a column may repeat). A view with no output
+/// columns is legal: its [`count`](Self::count) is the multiplicity of an
+/// all-constant atom. Rows are lent, never copied, until
+/// [`materialize`](Self::materialize) (or one of the sorted helpers) copies
+/// the matching ones once.
+///
+/// ```
+/// use kermit_iters::{Filter, TupleView, Tuples};
+///
+/// let source = Tuples::from(vec![vec![1, 1, 5], vec![2, 3, 5], vec![3, 3, 6]]);
+/// // Rows whose last column is 5, reading columns 2 then 0.
+/// let view = TupleView::new(&source, Filter::new(vec![(2, 5)], vec![]), vec![2, 0]);
+/// assert_eq!(view.count(), 2);
+/// assert_eq!(view.materialize().to_vecs(), vec![vec![5, 1], vec![5, 2]]);
+/// ```
+#[derive(Clone, Debug)]
+pub struct TupleView<'a> {
+    source: &'a Tuples,
+    filter: Filter,
+    columns: Vec<usize>,
+}
+
+impl<'a> TupleView<'a> {
+    /// A view of `source` through `filter`, reading `columns`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a column, or a column the filter names, is not below
+    /// `source.arity()`.
+    pub fn new(source: &'a Tuples, filter: Filter, columns: Vec<usize>) -> TupleView<'a> {
+        let arity = source.arity();
+        for &column in &columns {
+            assert!(
+                column < arity,
+                "TupleView::new: column {column} is not below the source arity {arity}"
+            );
+        }
+        let named = filter
+            .constants()
+            .iter()
+            .map(|&(column, _)| column)
+            .chain(filter.equalities().iter().flat_map(|&(a, b)| [a, b]));
+        for column in named {
+            assert!(
+                column < arity,
+                "TupleView::new: filter column {column} is not below the source arity {arity}"
+            );
+        }
+        TupleView {
+            source,
+            filter,
+            columns,
+        }
+    }
+
+    /// Every row and every column of `source`, unchanged.
+    pub fn all(source: &'a Tuples) -> TupleView<'a> {
+        TupleView::new(source, Filter::none(), (0..source.arity()).collect())
+    }
+
+    /// The batch the view reads.
+    pub fn source(&self) -> &'a Tuples { self.source }
+
+    /// The conditions a row must satisfy.
+    pub fn filter(&self) -> &Filter { &self.filter }
+
+    /// The source column each output column reads.
+    pub fn columns(&self) -> &[usize] { &self.columns }
+
+    /// The number of output columns.
+    pub fn arity(&self) -> usize { self.columns.len() }
+
+    /// The source's row count, matching or not: what morsels split by row id.
+    pub fn source_rows(&self) -> usize { self.source.len() }
+
+    /// Whether the view is its source: no filter, and every column in place.
+    pub fn is_identity(&self) -> bool {
+        self.filter.is_none() && self.columns.iter().copied().eq(0..self.source.arity())
+    }
+
+    /// Whether source row `row` satisfies the filter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row` is not below [`source_rows`](Self::source_rows).
+    pub fn matches(&self, row: RowId) -> bool { self.filter.matches(self.source.row(row)) }
+
+    /// Writes source row `row`'s output columns into `out`. The filter is not
+    /// consulted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `out.len() != self.arity()`, or if `row` is not below
+    /// [`source_rows`](Self::source_rows).
+    pub fn write(&self, row: RowId, out: &mut [usize]) {
+        assert_eq!(
+            out.len(),
+            self.columns.len(),
+            "TupleView::write: out has {} values for a view of arity {}",
+            out.len(),
+            self.columns.len()
+        );
+        let source = self.source.row(row);
+        for (slot, &column) in out.iter_mut().zip(&self.columns) {
+            *slot = source[column];
+        }
+    }
+
+    /// Calls `visit` with each matching row's output columns, in source
+    /// order, through one reused scratch row.
+    pub fn for_each(&self, mut visit: impl FnMut(&[usize])) {
+        let mut scratch = vec![0; self.columns.len()];
+        for row in self.row_ids() {
+            if self.matches(row) {
+                self.write(row, &mut scratch);
+                visit(&scratch);
+            }
+        }
+    }
+
+    /// The number of matching rows; [`source_rows`](Self::source_rows), with
+    /// no scan, when the view is unfiltered.
+    pub fn count(&self) -> usize {
+        if self.filter.is_none() {
+            self.source.len()
+        } else {
+            self.row_ids().filter(|&row| self.matches(row)).count()
+        }
+    }
+
+    /// The matching rows' output columns, in source order, as one batch whose
+    /// buffer is exactly [`count`](Self::count) × [`arity`](Self::arity)
+    /// values: one allocation and one copy. An identity view is a single
+    /// `memcpy` of the source.
+    ///
+    /// A view with no columns gives `Tuples::from_flat(0, count, Vec::new())`.
+    pub fn materialize(&self) -> Tuples {
+        if self.is_identity() {
+            // `to_vec` allocates exactly the source's length.
+            return Tuples::from_flat(
+                self.arity(),
+                self.source.len(),
+                self.source.as_flat().to_vec(),
+            );
+        }
+        self.gather(
+            self.row_ids().filter(|&row| self.matches(row)),
+            self.count(),
+        )
+    }
+
+    /// Every source row id, in order. A batch holds at most `RowId::MAX` rows,
+    /// so the cast is exact.
+    fn row_ids(&self) -> std::ops::Range<RowId> { 0..self.source.len() as RowId }
+
+    /// The output columns of `rows`, in the order given, copied into a
+    /// buffer reserved for `count` rows: the one copy of a build.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `count × arity` overflows `usize`, or if `rows` yields a
+    /// number of rows other than `count`.
+    fn gather(&self, rows: impl Iterator<Item = RowId>, count: usize) -> Tuples {
+        let values = count
+            .checked_mul(self.arity())
+            .expect("TupleView: arity × rows overflows usize");
+        let mut data = Vec::with_capacity(values);
+        for row in rows {
+            let source = self.source.row(row);
+            data.extend(self.columns.iter().map(|&column| source[column]));
+        }
+        Tuples::from_flat(self.arity(), count, data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +368,192 @@ mod tests {
     #[should_panic(expected = "Filter::new: equality col3=col1 must name the earlier column first")]
     fn an_equality_written_later_column_first_panics() {
         let _ = Filter::new(vec![], vec![(3, 1)]);
+    }
+
+    /// Five rows of arity 3: `[1,1,5] [2,3,5] [2,2,6] [1,1,6] [3,3,5]`.
+    fn source() -> Tuples {
+        Tuples::from(vec![
+            vec![1, 1, 5],
+            vec![2, 3, 5],
+            vec![2, 2, 6],
+            vec![1, 1, 6],
+            vec![3, 3, 5],
+        ])
+    }
+
+    /// Rows whose column 2 holds 5 and whose columns 0 and 1 agree (rows 0
+    /// and 4), reading columns 2 then 0: the output rows `[5, 1]`, `[5, 3]`.
+    fn filtered(source: &Tuples) -> TupleView<'_> {
+        TupleView::new(source, Filter::new(vec![(2, 5)], vec![(0, 1)]), vec![2, 0])
+    }
+
+    #[test]
+    fn all_is_the_identity_view() {
+        let source = source();
+        let view = TupleView::all(&source);
+        assert!(view.is_identity());
+        assert_eq!((view.arity(), view.source_rows()), (3, 5));
+        assert_eq!(view.columns(), [0, 1, 2]);
+        assert!(view.filter().is_none());
+        assert!(std::ptr::eq(view.source(), &source));
+        assert_eq!(view.count(), 5);
+        assert!(view.matches(3));
+        let copy = view.materialize();
+        assert_eq!(copy, source);
+        assert_eq!(
+            copy.value_capacity(),
+            15,
+            "the copy is exactly the rows' size"
+        );
+    }
+
+    #[test]
+    fn a_projection_or_a_filter_is_not_the_identity() {
+        let source = source();
+        let prefix = TupleView::new(&source, Filter::none(), vec![0, 1]);
+        assert!(!prefix.is_identity());
+        let permuted = TupleView::new(&source, Filter::none(), vec![2, 0]);
+        assert!(!permuted.is_identity());
+        let narrowed = TupleView::new(&source, Filter::new(vec![(0, 1)], vec![]), vec![0, 1, 2]);
+        assert!(!narrowed.is_identity());
+    }
+
+    #[test]
+    fn an_unfiltered_projection_keeps_every_row_in_source_order() {
+        let source = source();
+        let view = TupleView::new(&source, Filter::none(), vec![2, 0]);
+        assert_eq!(view.count(), 5);
+        let copy = view.materialize();
+        assert_eq!(copy.to_vecs(), vec![
+            vec![5, 1],
+            vec![5, 2],
+            vec![6, 2],
+            vec![6, 1],
+            vec![5, 3]
+        ]);
+        assert_eq!(copy.value_capacity(), 10);
+    }
+
+    #[test]
+    fn a_filtered_view_lends_and_copies_only_the_matching_rows() {
+        let source = source();
+        let view = filtered(&source);
+        let matching: Vec<bool> = (0..5).map(|row| view.matches(row)).collect();
+        assert_eq!(matching, [true, false, false, false, true]);
+        assert_eq!(view.count(), 2);
+
+        let copy = view.materialize();
+        assert_eq!(copy, Tuples::from_flat(2, 2, vec![5, 1, 5, 3]));
+        assert_eq!(
+            copy.value_capacity(),
+            4,
+            "sized by the count, not the source"
+        );
+
+        let mut visited = Vec::new();
+        view.for_each(|row| visited.push(row.to_vec()));
+        assert_eq!(visited, vec![vec![5, 1], vec![5, 3]]);
+    }
+
+    #[test]
+    fn write_fills_the_output_columns_of_a_row() {
+        let source = source();
+        let view = filtered(&source);
+        let mut out = [0; 2];
+        view.write(4, &mut out);
+        assert_eq!(out, [5, 3]);
+        // `write` reads the columns and ignores the filter.
+        view.write(1, &mut out);
+        assert_eq!(out, [5, 2]);
+    }
+
+    #[test]
+    fn for_each_reuses_one_scratch_row() {
+        let source = source();
+        let view = filtered(&source);
+        let mut addresses = Vec::new();
+        view.for_each(|row| addresses.push(row.as_ptr()));
+        assert_eq!(addresses.len(), 2);
+        assert_eq!(addresses[0], addresses[1]);
+    }
+
+    #[test]
+    fn a_filter_nothing_satisfies_counts_and_copies_nothing() {
+        let source = source();
+        let view = TupleView::new(&source, Filter::new(vec![(0, 9)], vec![]), vec![1]);
+        assert_eq!(view.count(), 0);
+        let copy = view.materialize();
+        assert_eq!(copy, Tuples::new(1));
+        assert_eq!(copy.value_capacity(), 0);
+        view.for_each(|_| panic!("no row matches"));
+    }
+
+    #[test]
+    fn a_view_with_no_columns_counts_the_matching_rows() {
+        let source = source();
+        let counted = TupleView::new(&source, Filter::new(vec![(2, 5)], vec![]), vec![]);
+        assert_eq!(counted.arity(), 0);
+        assert_eq!(counted.count(), 3);
+        assert_eq!(counted.materialize(), Tuples::from_flat(0, 3, Vec::new()));
+        let mut calls = 0;
+        counted.for_each(|row| {
+            assert!(row.is_empty());
+            calls += 1;
+        });
+        assert_eq!(calls, 3);
+
+        let unfiltered = TupleView::new(&source, Filter::none(), vec![]);
+        assert!(!unfiltered.is_identity());
+        assert_eq!(unfiltered.count(), 5);
+        assert_eq!(
+            unfiltered.materialize(),
+            Tuples::from_flat(0, 5, Vec::new())
+        );
+    }
+
+    #[test]
+    fn nullary_and_empty_sources() {
+        let nullary = Tuples::from_flat(0, 4, Vec::new());
+        let view = TupleView::all(&nullary);
+        assert!(view.is_identity());
+        assert_eq!(view.count(), 4);
+        assert_eq!(view.materialize(), nullary);
+
+        let empty = Tuples::new(3);
+        let view = TupleView::all(&empty);
+        assert_eq!((view.count(), view.source_rows()), (0, 0));
+        assert_eq!(view.materialize(), empty);
+    }
+
+    #[test]
+    #[should_panic(expected = "TupleView::new: column 3 is not below the source arity 3")]
+    fn an_output_column_past_the_arity_panics() {
+        let _ = TupleView::new(&source(), Filter::none(), vec![3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "TupleView::new: filter column 3 is not below the source arity 3")]
+    fn a_filter_constant_past_the_arity_panics() {
+        let _ = TupleView::new(&source(), Filter::new(vec![(3, 1)], vec![]), vec![0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "TupleView::new: filter column 3 is not below the source arity 3")]
+    fn a_filter_equality_past_the_arity_panics() {
+        let _ = TupleView::new(&source(), Filter::new(vec![], vec![(0, 3)]), vec![0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "TupleView::write: out has 3 values for a view of arity 2")]
+    fn write_into_a_buffer_of_the_wrong_length_panics() {
+        let source = source();
+        filtered(&source).write(0, &mut [0; 3]);
+    }
+
+    #[test]
+    #[should_panic(expected = "row 5 out of range for 5 rows")]
+    fn matches_past_the_last_row_panics() {
+        let source = source();
+        let _ = filtered(&source).matches(5);
     }
 }
