@@ -42,16 +42,11 @@ impl Planner {
     /// ([`QueryOptimiser::required_statistics`]).
     pub fn required_statistics(&self) -> StatisticsLevel { self.optimiser.required_statistics() }
 
-    /// Plans `query` from `stats` ([`QueryOptimiser::plan`]). `stats` must
-    /// have been built under this planner's policy
-    /// ([`CatalogStats::for_query`]), which is how the policy reaches the
-    /// optimiser's precedence graph.
+    /// Plans `query` from `stats` ([`QueryOptimiser::plan`]). The policy
+    /// reaches the optimiser's precedence graph through `stats`
+    /// ([`CatalogStats::for_query`]); `plan` does not compare it with this
+    /// planner's own.
     pub fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan {
-        debug_assert_eq!(
-            stats.column_orders(),
-            self.column_orders,
-            "the statistics were built under another column-order policy"
-        );
         self.optimiser.plan(query, stats)
     }
 }
@@ -111,6 +106,28 @@ mod tests {
             CardinalityOptimiser.plan(&q, &stats)
         );
         assert_eq!(planner.plan(&q, &stats).variable_ordering, vec![0, 2, 1]);
+    }
+
+    /// The statistics may be built under another policy than the planner's:
+    /// `kermit::db::prepare` plans every planner over statistics built under
+    /// `Any`.
+    #[test]
+    fn the_planner_plans_over_statistics_built_under_another_policy() {
+        let q: JoinQuery = "Q(A, B, C) :- R(A, B), S(A, C).".parse().unwrap();
+        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Any, |name| {
+            let tuples = if name == "R" {
+                1000
+            } else {
+                3
+            };
+            Some(RelationStats::new(tuples, 2))
+        });
+        let planner = Planner::stored(CardinalityOptimiser);
+        assert_eq!(planner.column_orders(), ColumnOrderPolicy::Stored);
+        assert_eq!(
+            planner.plan(&q, &stats),
+            CardinalityOptimiser.plan(&q, &stats)
+        );
     }
 
     #[test]

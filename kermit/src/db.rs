@@ -21,11 +21,13 @@
 
 mod catalog;
 mod database;
+mod lifecycle;
 mod validation;
 
 pub use {
     catalog::Catalog,
     database::{build_index, index_header, Database},
+    lifecycle::{prepare, Prepared},
     validation::{validate_query, JoinError, RelationArities},
 };
 use {
