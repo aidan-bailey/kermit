@@ -84,8 +84,12 @@ pub fn write_metadata_block<W: Write>(
 /// a different input path and sort, HashTrie's `space` counts row ids into
 /// that buffer instead of a `Vec` per tuple, and a lazy-expansion HashTrie's
 /// `iteration`, which times child expansion, times it over that buffer
-/// (issue #111).
-pub const REPORT_SCHEMA_VERSION: u32 = 4;
+/// (issue #111). 5: relations load into a flat catalog and each query
+/// builds, and times, only the indexes it reads, each filtered by the
+/// query's constants and repeated variables. `build` replaces `insertion`
+/// and `copies`; `iteration` excludes planning; `end_to_end` and `space`
+/// are per query; the `column_orders` axis is gone and `index_rows` is new.
+pub const REPORT_SCHEMA_VERSION: u32 = 5;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).
@@ -375,7 +379,7 @@ mod tests {
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(json.is_array());
-        assert_eq!(json[0]["schema_version"], 4);
+        assert_eq!(json[0]["schema_version"], 5);
         assert_eq!(json[0]["kind"], "ds");
         assert_eq!(json[0]["metadata"][0]["label"], "data structure");
         assert_eq!(json[0]["metadata"][0]["value"], "TreeTrie");
