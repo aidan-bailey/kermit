@@ -51,7 +51,7 @@ pub use {
     const_rewrite::{
         is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
     },
-    hash::{EqualitySelectionHashTrieIter, HashTrieIterKind, HashTriejoin, SingletonHashTrieIter},
+    hash::HashTriejoin,
     index_plan::{plan_indexes, IndexPlan, IndexSpec, INDEX_ID_PREFIX},
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
@@ -67,7 +67,7 @@ pub use {
         is_selection_predicate, rewrite_repeated_variables, ColumnEquality, SelectionSpec,
         SELECTION_PREDICATE_PREFIX,
     },
-    sorted::{EqualitySelectionTrieIter, LeapfrogTriejoin, SingletonTrieIter, TrieIterKind},
+    sorted::LeapfrogTriejoin,
 };
 
 /// The available join algorithm implementations.

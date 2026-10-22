@@ -11,16 +11,10 @@
 //! directory refers to anything in [`crate::sorted`], and nothing there
 //! refers back.
 //!
-//! The module shape mirrors [`crate::sorted`] exactly — a [`singleton`],
-//! a [`selection`], an [`iter_kind`], and one module per algorithm
-//! ([`hash_triejoin`]) — so the two families stay comparable at a glance.
+//! The module shape mirrors [`crate::sorted`] exactly — one module per
+//! algorithm ([`hash_triejoin`]) — so the two families stay comparable at a
+//! glance.
 
 mod hash_triejoin;
-mod iter_kind;
-mod selection;
-mod singleton;
 
-pub use {
-    hash_triejoin::HashTriejoin, iter_kind::HashTrieIterKind,
-    selection::EqualitySelectionHashTrieIter, singleton::SingletonHashTrieIter,
-};
+pub use hash_triejoin::HashTriejoin;

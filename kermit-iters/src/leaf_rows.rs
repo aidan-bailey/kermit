@@ -16,7 +16,7 @@ use {
 /// id (#111). A view names its chain's rows in one of two forms:
 /// - **listed**: a slice of their ids ([`new`](Self::new),
 ///   [`from_parts`](Self::from_parts)), for a view that holds its own ids, such
-///   as a filtered chain or one row held inline;
+///   as the one row id of a pruned singleton frame;
 /// - **linked**: the chain's first row and length, the rest reached through the
 ///   batch's [`ChainLinks`] ([`linked`](Self::linked)), for a list threaded
 ///   through its trie's links (VLDB 2020 §3.3.2).
@@ -84,7 +84,7 @@ impl<'a> LeafRows<'a> {
 
     /// The rows `rows` of the row-major buffer `data`, whose rows hold
     /// `arity` values each: a listed view over a buffer that is not a whole
-    /// [`Tuples`], such as one value held inline.
+    /// [`Tuples`].
     ///
     /// `data.len()` must be a multiple of `arity` (empty when `arity` is 0),
     /// which a debug build asserts in O(1). The ids are not checked here:
@@ -454,8 +454,7 @@ mod tests {
         assert!(parts.ids().eq(whole.ids()));
     }
 
-    /// One value held inline, with no batch behind it (the constant view's
-    /// leaf in `kermit-algos`).
+    /// One value held in a bare buffer, with no batch behind it.
     #[test]
     fn a_view_needs_no_batch() {
         let value = [7];
