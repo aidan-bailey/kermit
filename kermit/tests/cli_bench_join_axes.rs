@@ -109,6 +109,54 @@ fn cli_bench_join_name_is_a_prefix() {
     );
 }
 
+/// A TreeTrie built from a view whose filter keeps no row holds no heap, so
+/// its `space` has nothing to measure: the run succeeds, notes the skip on
+/// stderr and reports no `space` function, instead of tripping
+/// `add_space_bench`'s zero-cost guard.
+#[test]
+fn cli_bench_join_skips_space_for_indexes_that_hold_no_bytes() {
+    let dir = TempDir::new().unwrap();
+    let query = dir.path().join("no_match.dl");
+    fs::write(&query, "Q(X) :- edge(X, c999).").unwrap();
+    let report = tempfile::NamedTempFile::new().unwrap();
+    let output = Command::new(kermit_bin())
+        .args([
+            "bench",
+            "--sample-size",
+            "10",
+            "--measurement-time",
+            "1",
+            "--warm-up-time",
+            "1",
+        ])
+        .arg("--report-json")
+        .arg(report.path())
+        .arg("join")
+        .arg("--relations")
+        .arg(common::cli::edge_fixture())
+        .arg("--query")
+        .arg(&query)
+        .args(["-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "space"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("skipping the space metric"),
+        "stderr: {stderr}"
+    );
+    let reports = reports_of(&report);
+    assert_eq!(reports[0]["axes"]["index_rows"], 0);
+    assert!(
+        reports[0]["criterion_groups"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{}",
+        reports[0]["criterion_groups"]
+    );
+}
+
 #[test]
 fn cli_bench_join_rejects_ds_config_on_tree_trie() {
     let (output, _) = bench_join("tree-trie", "leapfrog-triejoin", &[

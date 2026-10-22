@@ -371,8 +371,16 @@ fn run_benchmark<F: ExecutionFamily>(
                 );
             }
             // A query whose atoms are all constant checks builds no index,
-            // and there is nothing to measure.
-            if !built.is_empty() {
+            // and a TreeTrie built from a view that keeps no row holds no
+            // heap at all; either way there is nothing to measure, and
+            // `add_space_bench` needs O(N) work inside its loop.
+            let total_bytes: usize = built.iter().map(|index| index.heap_size_bytes()).sum();
+            if total_bytes == 0 {
+                eprintln!(
+                    "bench run: skipping the space metric of query '{}': its indexes hold no heap                      bytes (no index, or no row passes its filter)",
+                    query_def.name
+                );
+            } else {
                 let mut criterion = build_space_criterion(bench_args);
                 let mut group = criterion.benchmark_group(&group_name);
                 // One function per query, summing every index it reads.
