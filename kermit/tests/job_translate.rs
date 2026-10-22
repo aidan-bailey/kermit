@@ -10,12 +10,11 @@
 //!
 //! - every rule parses as a `JoinQuery` and passes `kermit::db::validate_query`
 //!   (the check `bench run` makes) against headers built from its template's
-//!   relations under `--column-orders stored`: head terms are distinct bound
-//!   variables, every body atom names a relation of the template with one term
-//!   per column, no term is a malformed constant, and the atoms admit a global
-//!   attribute order (JOB needs no `--column-orders any`). A variable the
-//!   translator failed to uppercase parses as a constant, so it is refused as a
-//!   head term that is not a variable, or else as a malformed constant;
+//!   relations: head terms are distinct bound variables, every body atom names
+//!   a relation of the template with one term per column, and no term is a
+//!   malformed constant. A variable the translator failed to uppercase parses
+//!   as a constant, so it is refused as a head term that is not a variable, or
+//!   else as a malformed constant;
 //! - every relation name matches `[a-z][a-z0-9_]*`, which `RelationSink::open`
 //!   enforces;
 //! - 113 rules and 465 relation files across the 33 templates.
@@ -31,7 +30,6 @@
 
 use {
     kermit::db::validate_query,
-    kermit_algos::ColumnOrderPolicy,
     kermit_bench::{cache::download_verified, BenchError},
     kermit_ds::RelationHeader,
     kermit_generate::job::{
@@ -147,15 +145,14 @@ fn is_relation_name(name: &str) -> bool {
 }
 
 /// What is wrong with one rule, if anything: it must parse and pass
-/// `validate_query` against its template's relations under
-/// `--column-orders stored`, the check `bench run` makes before it loads
-/// anything.
+/// `validate_query` against its template's relations, the check `bench run`
+/// makes before it loads anything.
 fn rule_problems(query: &str, datalog: &str, headers: &[RelationHeader]) -> Vec<String> {
     let parsed: JoinQuery = match datalog.parse() {
         | Ok(parsed) => parsed,
         | Err(error) => return vec![format!("{query}: `{datalog}` does not parse: {error}")],
     };
-    match validate_query(&parsed, headers, ColumnOrderPolicy::Stored) {
+    match validate_query(&parsed, headers) {
         | Ok(()) => Vec::new(),
         | Err(error) => vec![format!("{query}: `{datalog}` is rejected: {error}")],
     }

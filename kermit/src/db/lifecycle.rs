@@ -102,8 +102,7 @@ impl Prepared {
 pub fn prepare(
     catalog: &Catalog, query: &JoinQuery, planner: &Planner,
 ) -> Result<Prepared, JoinError> {
-    // The policy argument goes when `ColumnOrderPolicy` does.
-    validate_query(query, catalog, ColumnOrderPolicy::Any)?;
+    validate_query(query, catalog)?;
 
     let rewritten = rewrite_placeholders(query.clone());
     let access_query = extract_accesses(&rewritten)?;

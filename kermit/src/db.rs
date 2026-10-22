@@ -1,18 +1,19 @@
-//! Join entry points bridging a parsed Datalog query to a relation store.
+//! Join entry points bridging a parsed Datalog query to a [`Catalog`].
 //!
-//! Each iterator family has one streaming free function —
-//! [`lftj_join_for_each`] for sorted tries under a [`TrieIterable`]-family
-//! algorithm, [`hash_join_for_each`] for [`HashTrieIterable`] structures
-//! under [`HashTriejoin`] — plus a collecting wrapper ([`lftj_join`],
-//! [`hash_join`]), all over a [`Database`]: the relations, keyed by name,
-//! plus the statistics planners read, gathered once when it is built, plus
-//! the reordered copies the current query reads under `--column-orders
-//! any`. Each is planned by a [`Planner`] (an optimiser plus its
-//! column-order policy). Both share one private body and differ only in
-//! how a relation, a constant and a selection view are wrapped for the
-//! algorithm (the [`JoinFamily`] trait).
+//! A query runs in three steps, each a free function here: [`prepare`]
+//! validates and plans it against the catalog's headers and statistics,
+//! [`build`] builds the indexes the plan reads from the catalog's flat
+//! tuples, and [`execute`] joins over them. Each iterator family has one
+//! streaming function that runs all three — [`lftj_join_for_each`] for
+//! sorted tries under a [`TrieIterable`]-family algorithm,
+//! [`hash_join_for_each`] for [`HashTrieIterable`] structures under
+//! [`HashTriejoin`] — plus a collecting wrapper ([`lftj_join`],
+//! [`hash_join`]). Each is planned by a [`Planner`]. Both share one private
+//! body and differ only in the bounds they put on the relation type and the
+//! algorithm they run: an index is a plain relation, so no algorithm needs a
+//! wrapper for a constant or a repeated variable.
 //!
-//! Every entry point is total: a query that cannot run over the store
+//! Every entry point is total: a query that cannot run over the catalog
 //! returns a [`JoinError`] rather than panicking, identically for both
 //! families. [`validate_query`] runs the same checks without joining, for
 //! callers that want to reject a query before building or timing anything.
@@ -20,331 +21,65 @@
 //! `execution` module, not here.
 
 mod catalog;
-mod database;
 mod lifecycle;
 mod validation;
 
 pub use {
     catalog::Catalog,
-    database::{build_index, index_header, Database},
     lifecycle::{build, build_with, execute, prepare, Indexes, Prepared},
     validation::{validate_query, JoinError, RelationArities},
 };
 use {
-    kermit_algos::{
-        is_const_predicate, is_index_predicate, is_selection_predicate, orient, CatalogStats,
-        ColumnEquality, ConstSpec, CopySpec, HashTrieIterKind, HashTriejoin, JoinAlgo, JoinQuery,
-        Oriented, Planner, QueryPlan, SelectionSpec, SingletonHashTrieIter, SingletonTrieIter,
-        TrieIterKind,
-    },
-    kermit_ds::{Cardinality, Relation, TupleScan},
-    kermit_iters::{
-        HashStrategy, HashTrieIterable, JoinIterable, TrieIterable, TrieIteratorWrapper,
-    },
-    std::collections::HashMap,
-    validation::{check_and_rewrite, Rewritten},
+    kermit_algos::{HashTriejoin, JoinAlgo, JoinQuery, Planner},
+    kermit_ds::Relation,
+    kermit_iters::{HashTrieIterable, TrieIterable},
 };
 
-/// How one iterator family wraps a stored relation, a constant atom and an
-/// equality-selection view into the [`JoinIterable`] its algorithms
-/// consume.
+/// The one join body: [`prepare`] (validation, accesses, statistics, plan,
+/// index specs), [`build`] the indexes it names, [`execute`] over them.
 ///
-/// The two wrapper enums ([`TrieIterKind`] and [`HashTrieIterKind`]) are
-/// structurally identical; the only real asymmetry is that the hash family
-/// must hash the constant with the same [`HashStrategy`] its relations were
-/// built with, which is why the hash implementor carries `H`.
-pub trait JoinFamily<R> {
-    /// The wrapper handed to the algorithm; borrows the relation for `'a`.
-    type Wrapper<'a>: JoinIterable
-    where
-        R: 'a;
-
-    /// Wraps a borrowed relation.
-    fn wrap_relation(relation: &R) -> Self::Wrapper<'_>;
-
-    /// Wraps the singleton relation `{id}` standing in for a constant atom.
-    fn wrap_const<'a>(id: usize) -> Self::Wrapper<'a>
-    where
-        R: 'a;
-
-    /// Wraps a borrowed relation viewed through column `equalities`, standing
-    /// in for an atom that repeated a variable.
-    fn wrap_selection(relation: &R, equalities: Vec<ColumnEquality>) -> Self::Wrapper<'_>;
-
-    /// Lends every tuple stored in `relation` to `visit`, in the family's
-    /// native order, without allocating per tuple. The catalog walks
-    /// relations through it to count distinct values, so it needs no
-    /// structure-specific code.
-    fn for_each_tuple(relation: &R, visit: impl FnMut(&[usize]));
-}
-
-/// [`JoinFamily`] for sorted tries: [`TrieIterKind`] wrappers.
-pub struct SortedFamily;
-
-impl<R: TrieIterable> JoinFamily<R> for SortedFamily {
-    type Wrapper<'a>
-        = TrieIterKind<'a, R>
-    where
-        R: 'a;
-
-    fn wrap_relation(relation: &R) -> Self::Wrapper<'_> { TrieIterKind::Relation(relation) }
-
-    fn wrap_const<'a>(id: usize) -> Self::Wrapper<'a>
-    where
-        R: 'a,
-    {
-        TrieIterKind::Singleton(SingletonTrieIter::new(id))
-    }
-
-    fn wrap_selection(relation: &R, equalities: Vec<ColumnEquality>) -> Self::Wrapper<'_> {
-        TrieIterKind::Selection {
-            relation,
-            equalities,
-        }
-    }
-
-    fn for_each_tuple(relation: &R, mut visit: impl FnMut(&[usize])) {
-        let mut tuples = TrieIteratorWrapper::new(relation.trie_iter());
-        while let Some(tuple) = tuples.advance() {
-            visit(tuple);
-        }
-    }
-}
-
-/// [`JoinFamily`] for hash tries: [`HashTrieIterKind`] wrappers whose
-/// constant singletons are hashed with `H`.
-pub struct HashFamily<H>(std::marker::PhantomData<H>);
-
-impl<R: HashTrieIterable + TupleScan, H: HashStrategy> JoinFamily<R> for HashFamily<H> {
-    type Wrapper<'a>
-        = HashTrieIterKind<'a, R>
-    where
-        R: 'a;
-
-    fn wrap_relation(relation: &R) -> Self::Wrapper<'_> { HashTrieIterKind::Relation(relation) }
-
-    fn wrap_const<'a>(id: usize) -> Self::Wrapper<'a>
-    where
-        R: 'a,
-    {
-        HashTrieIterKind::Singleton(SingletonHashTrieIter::new(id, H::hash(id)))
-    }
-
-    fn wrap_selection(relation: &R, equalities: Vec<ColumnEquality>) -> Self::Wrapper<'_> {
-        HashTrieIterKind::Selection {
-            relation,
-            equalities,
-        }
-    }
-
-    /// Through [`TupleScan`], never the relation's `HashTrieIterator`:
-    /// probing a lazy `HashTrie` builds the children it reaches (#92), so
-    /// gathering statistics by probing would expand the whole trie before
-    /// any join ran.
-    fn for_each_tuple(relation: &R, visit: impl FnMut(&[usize])) { relation.scan_tuples(visit); }
-}
-
-/// A query ready to execute: validated, rewritten, planned and oriented.
-struct Planned {
-    /// The query the executor runs.
-    query: JoinQuery,
-    plan: QueryPlan,
-    const_specs: Vec<ConstSpec>,
-    /// The copies the query reads (`Index_*` atoms and reoriented views).
-    index_specs: Vec<CopySpec>,
-    selection_specs: Vec<SelectionSpec>,
-}
-
-/// Validation and the query rewrites ([`check_and_rewrite`]), the statistics
-/// gate, the plan, and the orientation: everything that decides *what* runs,
-/// shared by the join itself and by [`Database::required_indexes`], so
-/// the copies a caller builds are the copies the join will read.
-fn plan_query<R: Relation + Cardinality>(
-    database: &Database<R>, query: &JoinQuery, planner: &Planner,
-) -> Result<Planned, JoinError> {
-    let Rewritten {
-        query: rewritten,
-        const_specs,
-        selection_specs,
-    } = check_and_rewrite(query, database, planner.column_orders())?;
-
-    // The plan comes from the database's statistics, so the optimiser must
-    // not read more than were gathered when it was built.
-    let required = planner.required_statistics();
-    if required > database.level() {
-        return Err(JoinError::MissingStatistics {
-            required,
-            available: database.level(),
-        });
-    }
-
-    // Stats + planning run per join — inside benchmarks' measured region —
-    // so this stays O(#predicates) reads of statistics the database
-    // gathered when it was built. A selection view reports its base
-    // relation's statistics: upper bounds, the conservative values for a
-    // size-driven planner. The statistics are built *before* orientation,
-    // so the planner sees only base names.
-    let base_of: HashMap<&str, &str> = selection_specs
-        .iter()
-        .map(|s| (s.name.as_str(), s.relation.as_str()))
-        .collect();
-    let stats = CatalogStats::for_query(&rewritten, planner.column_orders(), |name| {
-        let base = base_of.get(name).copied().unwrap_or(name);
-        database.statistics(base).cloned()
-    });
-    let plan = planner.plan(&rewritten, &stats);
-
-    let Oriented {
-        query,
-        plan,
-        index_specs,
-        selection_specs,
-    } = orient(planner.column_orders(), rewritten, plan, selection_specs);
-    Ok(Planned {
-        query,
-        plan,
-        const_specs,
-        index_specs,
-        selection_specs,
-    })
-}
-
-impl<R: Relation + Cardinality> Database<R> {
-    /// The reordered copies `query` needs under `planner` that the store
-    /// does not hold yet: validate, rewrite, plan and orient the query
-    /// exactly as the join will, and keep each `Index_*` the plan reads
-    /// that [`index`](Self::index) does not find. Build each from its
-    /// base relation's file-order tuples ([`build_index`]) and
-    /// [`add_index`](Self::add_index) it before joining. Empty under
-    /// `stored`, and once the copies are held.
-    ///
-    /// # Errors
-    ///
-    /// As the join entry points: the [`JoinError`] [`validate_query`]
-    /// would return, or [`JoinError::MissingStatistics`].
-    pub fn required_indexes(
-        &self, query: &JoinQuery, planner: &Planner,
-    ) -> Result<Vec<CopySpec>, JoinError> {
-        let planned = plan_query(self, query, planner)?;
-        Ok(planned
-            .index_specs
-            .into_iter()
-            .filter(|spec| self.index(&spec.name).is_none())
-            .collect())
-    }
-}
-
-/// The one join body: [`plan_query`] (validation, rewrites, statistics,
-/// plan, orientation), wrapper map, execute, project.
-///
-/// Each result tuple is passed to `emit` as a borrowed slice of exactly
-/// the head's columns; the result is never materialised here.
+/// Each result tuple is passed to `emit` as a borrowed slice of exactly the
+/// head's columns; the result is never materialised here.
 ///
 /// # Errors
 ///
-/// Returns the [`JoinError`] [`validate_query`] would,
-/// [`JoinError::MissingStatistics`], or [`JoinError::MissingIndex`] when
-/// the plan reads a copy the database does not hold, before any tuple is
-/// emitted.
-fn run_join<'a, R, F, JA, S>(
-    database: &'a Database<R>, query: JoinQuery, planner: &Planner, mut emit: S,
+/// Returns the [`JoinError`] [`validate_query`] would, or
+/// [`JoinError::MissingStatistics`], before any index is built or any tuple
+/// is emitted.
+fn run_join<R, JA>(
+    catalog: &Catalog, query: &JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
 ) -> Result<(), JoinError>
 where
-    R: Relation + Cardinality + 'a,
-    F: JoinFamily<R>,
-    JA: JoinAlgo<F::Wrapper<'a>>,
-    S: FnMut(&[usize]),
+    R: Relation,
+    JA: JoinAlgo<R>,
 {
-    let head_len = query.head.terms.len();
-    let Planned {
-        query: oriented,
-        plan,
-        const_specs,
-        index_specs,
-        selection_specs,
-    } = plan_query(database, &query, planner)?;
-
-    // `check_and_rewrite` has checked that every base relation the body names
-    // is present; a copy is present only if the caller built it.
-    let lookup = |name: &str| -> Result<&'a R, JoinError> {
-        if is_index_predicate(name) {
-            database.index(name).ok_or_else(|| JoinError::MissingIndex {
-                index: name.to_string(),
-                base: index_specs
-                    .iter()
-                    .find(|spec| spec.name == name)
-                    .map(|spec| spec.base.clone())
-                    .unwrap_or_default(),
-            })
-        } else {
-            Ok(database
-                .get(name)
-                .expect("`check_and_rewrite` checked that the database holds every body relation"))
-        }
-    };
-
-    let mut wrappers: HashMap<String, F::Wrapper<'a>> = HashMap::new();
-    for pred in &oriented.body {
-        if wrappers.contains_key(&pred.name) {
-            continue;
-        }
-        // Const_* and Select_* predicates are synthetic — created by the
-        // rewrites and materialised from their specs below. They aren't
-        // expected to live in the database. Index_* predicates are copies
-        // the caller added to it.
-        if is_const_predicate(&pred.name) || is_selection_predicate(&pred.name) {
-            continue;
-        }
-        wrappers.insert(pred.name.clone(), F::wrap_relation(lookup(&pred.name)?));
-    }
-    for (name, id) in const_specs {
-        wrappers.entry(name).or_insert_with(|| F::wrap_const(id));
-    }
-    for spec in &selection_specs {
-        // A view over a reoriented atom reads its copy.
-        let base = lookup(&spec.relation)?;
-        wrappers.insert(
-            spec.name.clone(),
-            F::wrap_selection(base, spec.equalities.clone()),
-        );
-    }
-
-    let ds_map: HashMap<String, &F::Wrapper<'a>> =
-        wrappers.iter().map(|(k, v)| (k.clone(), v)).collect();
-
-    // Projection to the head (#71). The executors emit every variable of
-    // the query they run in canonical order, and `analyse` numbers the
-    // head's variables `0..head_len` in head order — which holds because
-    // `check_and_rewrite` has checked that the head is distinct variables, and
-    // still holds after orientation, which touches body atoms only — so the
-    // head's columns are each row's prefix. Lending that prefix allocates
-    // nothing; duplicates stay (bag semantics), so counts are unchanged.
-    JA::join_for_each(&plan, oriented, ds_map, |row| emit(&row[..head_len]));
+    let prepared = prepare(catalog, query, planner)?;
+    let indexes = build::<R>(catalog, &prepared);
+    execute::<R, JA>(&prepared, &indexes, emit);
     Ok(())
 }
 
-/// Sorted-family join entry point: runs `query` over `database` with the
+/// Sorted-family join entry point: runs `query` over `catalog` with the
 /// [`TrieIterable`]-family algorithm `JA` (normally
 /// [`LeapfrogTriejoin`](kermit_algos::LeapfrogTriejoin)), planned by
-/// `planner`, and passes each result tuple to `emit` without
-/// materialising the result. Mirror of [`hash_join_for_each`].
+/// `planner`, and passes each result tuple to `emit` without materialising
+/// the result. `R` is the structure every index is built as. Mirror of
+/// [`hash_join_for_each`].
 ///
 /// # Errors
 ///
 /// Returns a [`JoinError`], before emitting anything, if the query cannot
-/// run over `database` under `planner`'s column-order policy (see
-/// [`validate_query`]), if `planner` reads statistics `database` was not
-/// built with ([`JoinError::MissingStatistics`]), or if the plan reads a
-/// reordered copy `database` does not hold ([`JoinError::MissingIndex`];
-/// see [`Database::required_indexes`]).
+/// run over `catalog` (see [`validate_query`]) or if `planner` reads
+/// statistics `catalog` was not built with
+/// ([`JoinError::MissingStatistics`]).
 pub fn lftj_join_for_each<R, JA>(
-    database: &Database<R>, query: JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
+    catalog: &Catalog, query: JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
 ) -> Result<(), JoinError>
 where
-    R: TrieIterable + Relation + Cardinality,
-    JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
+    R: Relation + TrieIterable,
+    JA: JoinAlgo<R>,
 {
-    run_join::<R, SortedFamily, JA, _>(database, query, planner, emit)
+    run_join::<R, JA>(catalog, &query, planner, emit)
 }
 
 /// [`lftj_join_for_each`], collected: returns every result tuple. For
@@ -354,41 +89,32 @@ where
 ///
 /// As [`lftj_join_for_each`].
 pub fn lftj_join<R, JA>(
-    database: &Database<R>, query: JoinQuery, planner: &Planner,
+    catalog: &Catalog, query: JoinQuery, planner: &Planner,
 ) -> Result<Vec<Vec<usize>>, JoinError>
 where
-    R: TrieIterable + Relation + Cardinality,
-    JA: for<'a> JoinAlgo<TrieIterKind<'a, R>>,
+    R: Relation + TrieIterable,
+    JA: JoinAlgo<R>,
 {
     let mut tuples = Vec::new();
-    lftj_join_for_each::<R, JA>(database, query, planner, |tuple| {
-        tuples.push(tuple.to_vec())
-    })?;
+    lftj_join_for_each::<R, JA>(catalog, query, planner, |tuple| tuples.push(tuple.to_vec()))?;
     Ok(tuples)
 }
 
-/// Hash-family join entry point: runs `query` over `database` with
+/// Hash-family join entry point: runs `query` over `catalog` with
 /// [`HashTriejoin`], planned by `planner`, and passes each result tuple to
-/// `emit` without materialising the result. Mirror of
-/// [`lftj_join_for_each`].
-///
-/// `H` selects the hash function used for any constant-atom singletons;
-/// callers must thread the same `H` used when constructing the
-/// `HashTrie<H>` relations so the algorithm sees matching hashes on both
-/// sides of the intersection. Rust forbids defaults on free-function type
-/// parameters (see issue #36887), so callers specify it via turbofish.
+/// `emit` without materialising the result. `R` is the structure every index
+/// is built as. Mirror of [`lftj_join_for_each`].
 ///
 /// # Errors
 ///
 /// As [`lftj_join_for_each`].
-pub fn hash_join_for_each<R, H>(
-    database: &Database<R>, query: JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
+pub fn hash_join_for_each<R>(
+    catalog: &Catalog, query: JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
 ) -> Result<(), JoinError>
 where
-    R: HashTrieIterable + TupleScan + Relation + Cardinality,
-    H: HashStrategy,
+    R: Relation + HashTrieIterable,
 {
-    run_join::<R, HashFamily<H>, HashTriejoin, _>(database, query, planner, emit)
+    run_join::<R, HashTriejoin>(catalog, &query, planner, emit)
 }
 
 /// [`hash_join_for_each`], collected: returns every result tuple. For
@@ -397,17 +123,14 @@ where
 /// # Errors
 ///
 /// As [`hash_join_for_each`].
-pub fn hash_join<R, H>(
-    database: &Database<R>, query: JoinQuery, planner: &Planner,
+pub fn hash_join<R>(
+    catalog: &Catalog, query: JoinQuery, planner: &Planner,
 ) -> Result<Vec<Vec<usize>>, JoinError>
 where
-    R: HashTrieIterable + TupleScan + Relation + Cardinality,
-    H: HashStrategy,
+    R: Relation + HashTrieIterable,
 {
     let mut tuples = Vec::new();
-    hash_join_for_each::<R, H>(database, query, planner, |tuple| {
-        tuples.push(tuple.to_vec())
-    })?;
+    hash_join_for_each::<R>(catalog, query, planner, |tuple| tuples.push(tuple.to_vec()))?;
     Ok(tuples)
 }
 
@@ -416,28 +139,64 @@ mod tests {
     use {
         super::*,
         kermit_algos::{
-            CatalogStats, ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser,
-            QueryOptimiser, QueryPlan, StatisticsLevel,
+            CatalogStats, ColumnOrderPolicy, LeapfrogTriejoin, LexicographicOptimiser,
+            QueryOptimiser, QueryPlan, StatisticsLevel, ACCESS_PREFIX,
         },
-        kermit_ds::{HashTrie, Relation, TreeTrie, Tuples},
-        kermit_iters::SipHashStrategy,
-        std::{cell::RefCell, collections::BTreeMap, rc::Rc},
+        kermit_ds::{HashTrie, RelationHeader, TreeTrie, Tuples},
+        std::{cell::RefCell, rc::Rc},
     };
 
-    fn rel_map(entries: Vec<(&str, usize, Vec<Vec<usize>>)>) -> BTreeMap<String, TreeTrie> {
-        entries
-            .into_iter()
-            .map(|(name, arity, tuples)| {
-                (
-                    name.to_string(),
-                    TreeTrie::from_tuples(arity.into(), tuples),
-                )
-            })
-            .collect()
+    type Rows = Vec<Vec<usize>>;
+
+    /// The planner every test plans with. `Planner::new` still takes a
+    /// column-order policy; `prepare` plans freely under any.
+    fn planner_of(optimiser: impl QueryOptimiser + 'static) -> Planner {
+        Planner::new(Box::new(optimiser), ColumnOrderPolicy::Any)
     }
 
-    fn rels(entries: Vec<(&str, usize, Vec<Vec<usize>>)>) -> Database<TreeTrie> {
-        Database::from(rel_map(entries))
+    /// A catalog of positional relations `(name, arity, rows)`, gathered up to
+    /// `level`.
+    fn store(level: StatisticsLevel, entries: Vec<(&str, usize, Rows)>) -> Catalog {
+        let relations = entries
+            .into_iter()
+            .map(|(name, arity, rows)| {
+                let tuples = if rows.is_empty() {
+                    Tuples::new(arity)
+                } else {
+                    Tuples::from(rows)
+                };
+                (RelationHeader::new_positional(name, arity), tuples)
+            })
+            .collect();
+        Catalog::new(relations, level)
+    }
+
+    /// [`store`] at [`StatisticsLevel::TupleCounts`], all that
+    /// `LexicographicOptimiser` reads.
+    fn counts(entries: Vec<(&str, usize, Rows)>) -> Catalog {
+        store(StatisticsLevel::TupleCounts, entries)
+    }
+
+    fn sorted_family(catalog: &Catalog, query: &JoinQuery) -> Result<Rows, JoinError> {
+        let planner = planner_of(LexicographicOptimiser);
+        lftj_join::<TreeTrie, LeapfrogTriejoin>(catalog, query.clone(), &planner)
+    }
+
+    fn hash_family(catalog: &Catalog, query: &JoinQuery) -> Result<Rows, JoinError> {
+        let planner = planner_of(LexicographicOptimiser);
+        hash_join::<HashTrie>(catalog, query.clone(), &planner)
+    }
+
+    /// The rows `query` returns from each family, sorted. The families must
+    /// agree, since no relation here holds a duplicate row.
+    fn both_families(catalog: &Catalog, query: &str) -> Rows {
+        let query: JoinQuery = query.parse().unwrap();
+        let mut sorted = sorted_family(catalog, &query).unwrap();
+        let mut hashed = hash_family(catalog, &query).unwrap();
+        sorted.sort();
+        hashed.sort();
+        assert_eq!(sorted, hashed, "{query}");
+        sorted
     }
 
     /// Plans like `lexicographic` but declares that it reads per-column
@@ -452,28 +211,9 @@ mod tests {
         fn required_statistics(&self) -> StatisticsLevel { StatisticsLevel::ColumnDistinct }
     }
 
-    /// A query that fails validation reports that error, not
-    /// `MissingStatistics`: the statistics check runs after validation.
-    #[test]
-    fn validation_errors_win_over_missing_statistics() {
-        let relations = rels(vec![("edge", 2, vec![vec![1, 2]])]);
-        let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
-        assert_eq!(
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(
-                &relations,
-                query,
-                &Planner::stored(NeedsColumns)
-            ),
-            Err(JoinError::UnknownRelation {
-                relation: "missing".into(),
-                known: vec!["edge".into()],
-            })
-        );
-    }
-
-    /// Records the query and statistics `run_join` hands it, and plans like
-    /// `lexicographic`. Clones share the record, so a test keeps one while
-    /// the planner owns the other.
+    /// Records the query and statistics `prepare` hands the optimiser, and
+    /// plans like `lexicographic`. Clones share the record, so a test keeps
+    /// one while the planner owns the other.
     #[derive(Default, Clone)]
     struct StatsSpy(Rc<RefCell<Option<(JoinQuery, CatalogStats)>>>);
 
@@ -486,77 +226,70 @@ mod tests {
         fn required_statistics(&self) -> StatisticsLevel { StatisticsLevel::ColumnDistinct }
     }
 
-    /// The planner sees the database's per-column distinct counts; a
-    /// selection view sees its base relation's, and a constant's singleton
-    /// one tuple with one value. Answers cannot show this, since a plan
-    /// never changes them, so it is checked on the statistics themselves, in
-    /// both families.
+    /// A query that fails validation reports that error, not
+    /// `MissingStatistics`: the statistics check runs after validation.
     #[test]
-    fn the_planner_reads_the_databases_statistics() {
-        let r = vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3]];
-        let s = vec![vec![1, 5], vec![3, 5], vec![3, 6]];
-        let query: JoinQuery = "Q(X) :- r(X, X), s(X, c5).".parse().unwrap();
-        let check = |spy: &StatsSpy, mut got: Vec<Vec<usize>>| {
-            got.sort();
-            assert_eq!(got, vec![vec![1], vec![3]]);
-            let (planned, stats) = spy.0.borrow_mut().take().expect("the optimiser planned");
-            let named = |prefix: &str| -> String {
-                let atom = planned.body.iter().find(|a| a.name.starts_with(prefix));
-                atom.expect("a synthetic predicate").name.clone()
-            };
-            let selection = named("Select_");
-            let constant = named("Const_");
-            assert_eq!(stats.tuples("s"), Some(3));
-            assert_eq!(
-                (stats.distinct("s", 0), stats.distinct("s", 1)),
-                (Some(2), Some(2))
-            );
-            assert_eq!(stats.tuples(&selection), Some(4));
-            assert_eq!(
-                (stats.distinct(&selection, 0), stats.distinct(&selection, 1)),
-                (Some(3), Some(3))
-            );
-            assert_eq!(stats.tuples(&constant), Some(1));
-            assert_eq!(stats.distinct(&constant, 0), Some(1));
-        };
-
-        let level = StatisticsLevel::ColumnDistinct;
-        let sorted = Database::new::<SortedFamily>(
-            rel_map(vec![("r", 2, r.clone()), ("s", 2, s.clone())]),
-            level,
-        );
-        let spy = StatsSpy::default();
-        check(
-            &spy,
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(
-                &sorted,
-                query.clone(),
-                &Planner::stored(spy.clone()),
-            )
-            .unwrap(),
-        );
-
-        let hashed: Database<HashTrie> = Database::new::<HashFamily<SipHashStrategy>>(
-            BTreeMap::from([
-                ("r".to_string(), HashTrie::from_tuples(2.into(), r)),
-                ("s".to_string(), HashTrie::from_tuples(2.into(), s)),
-            ]),
-            level,
-        );
-        let spy = StatsSpy::default();
-        check(
-            &spy,
-            hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-                &hashed,
-                query,
-                &Planner::stored(spy.clone()),
-            )
-            .unwrap(),
+    fn validation_errors_win_over_missing_statistics() {
+        let catalog = counts(vec![("edge", 2, vec![vec![1, 2]])]);
+        let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
+        assert_eq!(
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&catalog, query, &planner_of(NeedsColumns)),
+            Err(JoinError::UnknownRelation {
+                relation: "missing".into(),
+                known: vec!["edge".into()],
+            })
         );
     }
 
-    /// An optimiser that reads more than the database gathered is refused
-    /// before any row, and the same relations analysed to its level run.
+    /// The planner is handed one statistics entry per access, keyed by the
+    /// access id: counts over the rows the access's filter keeps for a
+    /// filtered access, and the catalog's own for an unfiltered one. Answers
+    /// cannot show this, since a plan never changes them, so it is checked on
+    /// the statistics themselves, in both families.
+    #[test]
+    fn the_planner_reads_the_catalogs_statistics_per_access() {
+        let catalog = store(StatisticsLevel::ColumnDistinct, vec![
+            ("r", 2, vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3]]),
+            ("s", 2, vec![vec![1, 5], vec![3, 5], vec![3, 6]]),
+            ("t", 1, vec![vec![1], vec![3], vec![4]]),
+        ]);
+        let query: JoinQuery = "Q(X) :- r(X, X), s(X, c5), t(X).".parse().unwrap();
+        let check = |spy: &StatsSpy, mut got: Rows| {
+            got.sort();
+            assert_eq!(got, vec![vec![1], vec![3]]);
+            let (planned, stats) = spy.0.borrow_mut().take().expect("the optimiser planned");
+            let access = |k: usize| format!("{ACCESS_PREFIX}{k}");
+            let names: Vec<String> = planned.body.iter().map(|atom| atom.name.clone()).collect();
+            assert_eq!(names, (0..3).map(access).collect::<Vec<_>>());
+            // r(X, X) keeps the diagonal rows (1, 1) and (3, 3) of four.
+            assert_eq!(stats.tuples(&access(0)), Some(2));
+            assert_eq!(stats.distinct(&access(0), 0), Some(2));
+            // s(X, c5) keeps (1, 5) and (3, 5) of three.
+            assert_eq!(stats.tuples(&access(1)), Some(2));
+            assert_eq!(stats.distinct(&access(1), 0), Some(2));
+            // t(X) is unfiltered: the catalog's own counts.
+            assert_eq!(stats.tuples(&access(2)), Some(3));
+            assert_eq!(stats.distinct(&access(2), 0), Some(3));
+            // Statistics are keyed by access, never by the relation.
+            assert_eq!(stats.tuples("r"), None);
+        };
+
+        let spy = StatsSpy::default();
+        let rows = lftj_join::<TreeTrie, LeapfrogTriejoin>(
+            &catalog,
+            query.clone(),
+            &planner_of(spy.clone()),
+        )
+        .unwrap();
+        check(&spy, rows);
+
+        let spy = StatsSpy::default();
+        let rows = hash_join::<HashTrie>(&catalog, query, &planner_of(spy.clone())).unwrap();
+        check(&spy, rows);
+    }
+
+    /// An optimiser that reads more than the catalog gathered is refused
+    /// before any row, and the same relations gathered to its level run.
     #[test]
     fn an_optimiser_reading_ungathered_statistics_is_refused() {
         let entries = || {
@@ -568,9 +301,9 @@ mod tests {
         let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
         let mut rows = 0;
         let refused = lftj_join_for_each::<TreeTrie, LeapfrogTriejoin>(
-            &rels(entries()),
+            &counts(entries()),
             query.clone(),
-            &Planner::stored(NeedsColumns),
+            &planner_of(NeedsColumns),
             |_| rows += 1,
         );
         assert_eq!(
@@ -582,159 +315,95 @@ mod tests {
         );
         assert_eq!(rows, 0);
 
-        let analysed =
-            Database::new::<SortedFamily>(rel_map(entries()), StatisticsLevel::ColumnDistinct);
-        let mut got = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-            &analysed,
-            query,
-            &Planner::stored(NeedsColumns),
-        )
-        .unwrap();
+        let analysed = store(StatisticsLevel::ColumnDistinct, entries());
+        let mut got =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&analysed, query, &planner_of(NeedsColumns))
+                .unwrap();
         got.sort();
         assert_eq!(got, vec![vec![2], vec![3]]);
     }
 
     #[test]
-    fn test_join() {
-        let relations = rels(vec![
+    fn two_unary_relations_intersect() {
+        let catalog = counts(vec![
             ("first", 1, vec![vec![1], vec![2], vec![3]]),
             ("second", 1, vec![vec![2], vec![3], vec![4]]),
         ]);
-        let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
-        let mut got = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        got.sort();
+        let got = both_families(&catalog, "Q(X) :- first(X), second(X).");
         assert_eq!(got, vec![vec![2], vec![3]]);
     }
 
+    /// A constant filters its column, in the first column as in the last.
     #[test]
-    fn test_join_with_constant_filter() {
-        let relations = rels(vec![("p", 2, vec![vec![1, 10], vec![2, 20], vec![3, 30]])]);
-        let query: JoinQuery = "Q(X) :- p(X, c10).".parse().unwrap();
-        let result = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        let mut got = result;
-        got.sort();
+    fn a_constant_filters_its_column() {
+        let catalog = counts(vec![("p", 2, vec![vec![1, 10], vec![2, 20], vec![3, 30]])]);
+        let got = both_families(&catalog, "Q(X) :- p(X, c10).");
         assert_eq!(
             got,
             vec![vec![1]],
             "expected only X=1 to pass the c10 filter, got {got:?}"
         );
+        let got = both_families(&catalog, "Q(Y) :- p(c2, Y).");
+        assert_eq!(got, vec![vec![20]]);
     }
 
-    /// `Q(X) :- r(X, X).` — the PROBLEMS.md repro. Before the selection
-    /// rewrite this returned every first-column key of `r`.
+    /// `Q(X) :- r(X, X).`: a repeated variable is an equality between its
+    /// columns. Before the selection rewrite this returned every first-column
+    /// key of `r`.
     #[test]
-    fn test_join_diagonal() {
-        let relations = rels(vec![("r", 2, vec![
-            vec![1, 1],
-            vec![1, 2],
-            vec![2, 3],
-            vec![3, 3],
-            vec![4, 5],
-        ])]);
-        let query: JoinQuery = "Q(X) :- r(X, X).".parse().unwrap();
-        let mut got = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        got.sort();
+    fn a_repeated_variable_selects_the_diagonal() {
+        let r = vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3], vec![4, 5]];
+        let catalog = counts(vec![("r", 2, r)]);
+        let got = both_families(&catalog, "Q(X) :- r(X, X).");
         assert_eq!(got, vec![vec![1], vec![3]]);
     }
 
-    /// Both rewrites on one atom: the constant takes `K0`, the repeat
-    /// `K1`, and the view enforces column 0 = column 2.
+    /// One atom with a constant and a repeat: column 1 is 5 and column 0
+    /// equals column 2.
     #[test]
-    fn test_join_const_and_repeat() {
-        let relations = rels(vec![("r", 3, vec![
-            vec![1, 5, 1],
-            vec![1, 5, 2],
-            vec![2, 6, 2],
-            vec![3, 5, 3],
-        ])]);
-        let query: JoinQuery = "Q(X) :- r(X, c5, X).".parse().unwrap();
-        let mut got = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        got.sort();
+    fn a_constant_and_a_repeat_share_an_atom() {
+        let r = vec![vec![1, 5, 1], vec![1, 5, 2], vec![2, 6, 2], vec![3, 5, 3]];
+        let catalog = counts(vec![("r", 3, r)]);
+        let got = both_families(&catalog, "Q(X) :- r(X, c5, X).");
         assert_eq!(got, vec![vec![1], vec![3]]);
     }
 
-    /// Two views of one relation: `r(X, X)` becomes a selection view while
-    /// `r(X, Y)` stays the base relation.
+    /// Two readings of one relation: `r(X, X)` is a filtered index while
+    /// `r(X, Y)` reads it whole.
     #[test]
-    fn test_join_mixed_occurrences() {
-        let relations = rels(vec![("r", 2, vec![
-            vec![1, 1],
-            vec![1, 2],
-            vec![2, 3],
-            vec![3, 3],
-        ])]);
-        let query: JoinQuery = "Q(X, Y) :- r(X, X), r(X, Y).".parse().unwrap();
-        let mut got = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        got.sort();
+    fn one_relation_read_two_ways_in_one_query() {
+        let r = vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3]];
+        let catalog = counts(vec![("r", 2, r)]);
+        let got = both_families(&catalog, "Q(X, Y) :- r(X, X), r(X, Y).");
         assert_eq!(got, vec![vec![1, 1], vec![1, 2], vec![3, 3]]);
     }
 
-    /// `Q(X) :- r(X, _).` — a trailing placeholder is a fresh unused
-    /// variable, so `X` repeats once per matching tuple (bag semantics).
-    /// Before the placeholder rewrite the trailing level was never
-    /// opened and each `X` appeared once.
+    /// `Q(X) :- r(X, _).`: a trailing placeholder is a fresh unused variable,
+    /// so `X` repeats once per matching tuple (bag semantics).
     #[test]
-    fn test_join_trailing_placeholder() {
-        let relations = rels(vec![("r", 2, vec![vec![1, 2], vec![1, 3], vec![2, 4]])]);
-        let query: JoinQuery = "Q(X) :- r(X, _).".parse().unwrap();
-        let mut got = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        got.sort();
+    fn a_trailing_placeholder_is_an_unused_variable() {
+        let r = vec![vec![1, 2], vec![1, 3], vec![2, 4]];
+        let catalog = counts(vec![("r", 2, r)]);
+        let got = both_families(&catalog, "Q(X) :- r(X, _).");
         assert_eq!(got, vec![vec![1], vec![1], vec![2]]);
     }
 
-    /// `Q(X, Y) :- r(X, _, Y).` — `Y` names the third column. Before the
+    /// `Q(X, Y) :- r(X, _, Y).`: `Y` names the third column. Before the
     /// placeholder rewrite it bound the second (issue #73).
     #[test]
-    fn test_join_middle_placeholder() {
-        let relations = rels(vec![("r", 3, vec![vec![1, 2, 3], vec![1, 4, 5]])]);
-        let query: JoinQuery = "Q(X, Y) :- r(X, _, Y).".parse().unwrap();
-        let mut got = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        got.sort();
+    fn a_middle_placeholder_keeps_later_columns_in_place() {
+        let catalog = counts(vec![("r", 3, vec![vec![1, 2, 3], vec![1, 4, 5]])]);
+        let got = both_families(&catalog, "Q(X, Y) :- r(X, _, Y).");
         assert_eq!(got, vec![vec![1, 3], vec![1, 5]]);
     }
 
     /// Rows carry exactly the head's columns, in head order: body-only
-    /// variables — written, or introduced by the const, placeholder and
-    /// selection rewrites — are dropped, and duplicates are kept (bag
-    /// semantics), so the row count is unchanged by projection (#71).
+    /// variables, written or introduced by a placeholder, are dropped, and
+    /// duplicates are kept (bag semantics), so the row count is unchanged by
+    /// projection (#71).
     #[test]
     fn results_are_projected_to_the_head() {
-        let relations = rels(vec![
+        let catalog = counts(vec![
             ("r", 2, vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![3, 3]]),
             ("p", 2, vec![vec![1, 10], vec![2, 20]]),
         ]);
@@ -746,475 +415,79 @@ mod tests {
             ("Q(X) :- r(X, X).", vec![vec![1], vec![3]]),
             ("Q(Y, X) :- p(X, Y).", vec![vec![10, 1], vec![20, 2]]),
         ] {
-            let query: JoinQuery = q.parse().unwrap();
-            let mut got = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-                &relations,
-                query,
-                &Planner::stored(LexicographicOptimiser),
-            )
-            .unwrap();
-            got.sort();
-            assert_eq!(got, want, "{q}");
+            assert_eq!(both_families(&catalog, q), want, "{q}");
         }
     }
 
-    /// The streaming entry point visits every row without collecting;
-    /// `lftj_join` is the same traversal, collected.
+    /// The streaming entry points visit every row without collecting;
+    /// `lftj_join` and `hash_join` are the same traversals, collected.
     #[test]
-    fn lftj_join_for_each_visits_every_row() {
-        let relations = rels(vec![
+    fn the_streaming_entry_points_visit_every_row() {
+        let catalog = counts(vec![
             ("first", 1, vec![vec![1], vec![2], vec![3]]),
             ("second", 1, vec![vec![2], vec![3], vec![4]]),
         ]);
         let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
-        let mut got = Vec::new();
+        let planner = planner_of(LexicographicOptimiser);
+
+        let mut sorted = Vec::new();
         lftj_join_for_each::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
-            |row| got.push(row.to_vec()),
+            &catalog,
+            query.clone(),
+            &planner,
+            |row| sorted.push(row.to_vec()),
         )
         .unwrap();
-        got.sort();
-        assert_eq!(got, vec![vec![2], vec![3]]);
+        sorted.sort();
+        assert_eq!(sorted, vec![vec![2], vec![3]]);
+
+        let mut hashed = Vec::new();
+        hash_join_for_each::<HashTrie>(&catalog, query, &planner, |row| hashed.push(row.to_vec()))
+            .unwrap();
+        hashed.sort();
+        assert_eq!(hashed, vec![vec![2], vec![3]]);
     }
 
-    /// `missing` was never added. Silently dropping the atom would mask
-    /// typos and load failures, and panicking exited 101; the entry point
-    /// returns the error instead.
+    /// `missing` was never added. Silently dropping the atom would mask typos
+    /// and load failures, and panicking exited 101; the entry points return
+    /// the error instead, the same one from both families.
     #[test]
-    fn test_join_errors_on_missing_relation() {
-        let relations = rels(vec![("edge", 2, vec![vec![1, 2]])]);
+    fn an_unknown_relation_is_an_error_in_both_families() {
+        let catalog = counts(vec![("edge", 2, vec![vec![1, 2]])]);
         let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
-        assert_eq!(
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(
-                &relations,
-                query,
-                &Planner::stored(LexicographicOptimiser)
-            ),
-            Err(JoinError::UnknownRelation {
-                relation: "missing".into(),
-                known: vec!["edge".into()],
-            })
-        );
+        let want: Result<Rows, JoinError> = Err(JoinError::UnknownRelation {
+            relation: "missing".into(),
+            known: vec!["edge".into()],
+        });
+        assert_eq!(sorted_family(&catalog, &query), want);
+        assert_eq!(hash_family(&catalog, &query), want);
     }
 
     /// A rejected query emits nothing: validation runs before the join.
     #[test]
     fn a_rejected_query_emits_no_rows() {
-        let relations = rels(vec![("edge", 2, vec![vec![1, 2], vec![3, 4]])]);
+        let catalog = counts(vec![("edge", 2, vec![vec![1, 2], vec![3, 4]])]);
         let query: JoinQuery = "Q(X, Y) :- edge(X, Z).".parse().unwrap();
+        let planner = planner_of(LexicographicOptimiser);
         let mut rows = 0;
-        let result = lftj_join_for_each::<TreeTrie, LeapfrogTriejoin>(
-            &relations,
-            query,
-            &Planner::stored(LexicographicOptimiser),
+        let sorted = lftj_join_for_each::<TreeTrie, LeapfrogTriejoin>(
+            &catalog,
+            query.clone(),
+            &planner,
             |_| rows += 1,
         );
-        assert!(matches!(result, Err(JoinError::UnboundHeadVariable { .. })));
+        assert!(matches!(sorted, Err(JoinError::UnboundHeadVariable { .. })));
+        let hashed = hash_join_for_each::<HashTrie>(&catalog, query, &planner, |_| rows += 1);
+        assert!(matches!(hashed, Err(JoinError::UnboundHeadVariable { .. })));
         assert_eq!(rows, 0);
     }
 
-    /// The mutual-edge graph: 1 ↔ 2, 2 ↔ 3 and the one-way 1 → 3.
-    fn mutual_edges() -> Vec<Vec<usize>> {
-        vec![vec![1, 2], vec![2, 1], vec![2, 3], vec![3, 2], vec![1, 3]]
-    }
-
-    fn any(optimiser: impl QueryOptimiser + 'static) -> Planner {
-        Planner::new(Box::new(optimiser), ColumnOrderPolicy::Any)
-    }
-
-    /// Builds the copies `planner` needs for `query` into `database` from
-    /// `tuples` (base name → file-order tuples), as the CLI and the test
-    /// harness do.
-    fn add_copies<R: Relation + Cardinality>(
-        database: &mut Database<R>, query: &JoinQuery, planner: &Planner,
-        tuples: &BTreeMap<&str, Vec<Vec<usize>>>,
-    ) -> Vec<CopySpec> {
-        let specs = database.required_indexes(query, planner).unwrap();
-        for spec in &specs {
-            let base = database.get(&spec.base).unwrap().header().clone();
-            let copy = build_index(
-                spec,
-                &base,
-                &Tuples::from(tuples[spec.base.as_str()].clone()),
-            );
-            database.add_index(spec.clone(), copy);
-        }
-        specs
-    }
-
-    /// `edge(X, Y), edge(Y, X)` is a cycle under `stored` and a one-copy
-    /// query under `any`, in both families.
-    #[test]
-    fn under_any_a_cyclic_query_runs_over_a_copy() {
-        let query: JoinQuery = "Q(X, Y) :- edge(X, Y), edge(Y, X).".parse().unwrap();
-        let tuples = BTreeMap::from([("edge", mutual_edges())]);
-        let want = vec![vec![1, 2], vec![2, 1], vec![2, 3], vec![3, 2]];
-
-        let mut sorted = rels(vec![("edge", 2, mutual_edges())]);
-        assert!(matches!(
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(
-                &sorted,
-                query.clone(),
-                &Planner::stored(LexicographicOptimiser)
-            ),
-            Err(JoinError::CyclicAttributeOrder { .. })
-        ));
-        let planner = any(LexicographicOptimiser);
-        let specs = add_copies(&mut sorted, &query, &planner, &tuples);
-        assert_eq!(specs, vec![CopySpec::new("edge", vec![1, 0])]);
-        let mut got =
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(&sorted, query.clone(), &planner).unwrap();
-        got.sort();
-        assert_eq!(got, want);
-        assert!(
-            sorted
-                .required_indexes(&query, &planner)
-                .unwrap()
-                .is_empty(),
-            "held copies are not required again"
-        );
-
-        let mut hashed: Database<HashTrie> = Database::from(BTreeMap::from([(
-            "edge".to_string(),
-            HashTrie::from_tuples(2.into(), mutual_edges()),
-        )]));
-        add_copies(&mut hashed, &query, &planner, &tuples);
-        let mut got =
-            hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(&hashed, query, &planner)
-                .unwrap();
-        got.sort();
-        assert_eq!(got, want);
-    }
-
-    /// A caller that skips `required_indexes` gets a typed error before
-    /// any row.
-    #[test]
-    fn a_copy_the_store_lacks_is_a_missing_index() {
-        let query: JoinQuery = "Q(X, Y) :- edge(X, Y), edge(Y, X).".parse().unwrap();
-        let database = rels(vec![("edge", 2, mutual_edges())]);
-        let mut rows = 0;
-        let refused = lftj_join_for_each::<TreeTrie, LeapfrogTriejoin>(
-            &database,
-            query,
-            &any(LexicographicOptimiser),
-            |_| rows += 1,
-        );
-        assert_eq!(
-            refused,
-            Err(JoinError::MissingIndex {
-                index: "Index_1_0_edge".into(),
-                base: "edge".into(),
-            })
-        );
-        assert_eq!(rows, 0);
-    }
-
-    /// Under `stored` a plan never needs a copy; under `any` a plan that
-    /// agrees with every stored order needs none either.
-    #[test]
-    fn stored_and_agreeing_plans_need_no_copies() {
-        let query: JoinQuery = "Q(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
-            .parse()
-            .unwrap();
-        let database = rels(vec![("edge", 2, mutual_edges())]);
-        assert!(database
-            .required_indexes(&query, &Planner::stored(LexicographicOptimiser))
-            .unwrap()
-            .is_empty());
-        assert!(database
-            .required_indexes(&query, &any(LexicographicOptimiser))
-            .unwrap()
-            .is_empty());
-    }
-
-    /// The planner is handed the rewritten query *before* orientation:
-    /// base names and base statistics, never an `Index_*`.
-    #[test]
-    fn the_planner_sees_base_names_under_any() {
-        let query: JoinQuery = "Q(X, Y) :- edge(X, Y), edge(Y, X).".parse().unwrap();
-        let tuples = BTreeMap::from([("edge", mutual_edges())]);
-        let mut database = Database::new::<SortedFamily>(
-            rel_map(vec![("edge", 2, mutual_edges())]),
-            StatisticsLevel::ColumnDistinct,
-        );
-        let spy = StatsSpy::default();
-        let planner = any(spy.clone());
-        add_copies(&mut database, &query, &planner, &tuples);
-        lftj_join::<TreeTrie, LeapfrogTriejoin>(&database, query, &planner).unwrap();
-        let (planned, stats) = spy.0.borrow_mut().take().expect("the optimiser planned");
-        assert!(
-            planned.body.iter().all(|atom| atom.name == "edge"),
-            "{planned}"
-        );
-        assert_eq!(stats.column_orders(), ColumnOrderPolicy::Any);
-        assert_eq!(stats.tuples("edge"), Some(5));
-        assert_eq!(stats.tuples("Index_1_0_edge"), None);
-    }
-
-    /// `r(X, X, Y), s(Y, X)`: the selection on `r` and the reversed `s`
-    /// are both reoriented, and the equality follows its columns.
-    /// Canonically X = 0, Y = 1, K0 = 2, and `lexicographic` under `any`
-    /// plans X, Y, K0, so `Select_0_r(X, K0, Y)` reads `Index_0_2_1_r`
-    /// with its equality moved from (0, 1) to (0, 2), and `s(Y, X)` reads
-    /// `Index_1_0_s`.
-    #[test]
-    fn a_selection_on_a_reoriented_atom_keeps_its_equality() {
-        let r = vec![vec![1, 1, 5], vec![1, 2, 5], vec![2, 2, 6], vec![3, 3, 7]];
-        let s = vec![vec![5, 1], vec![6, 2], vec![7, 9]];
-        let query: JoinQuery = "Q(X, Y) :- r(X, X, Y), s(Y, X).".parse().unwrap();
-        let tuples = BTreeMap::from([("r", r.clone()), ("s", s.clone())]);
-        let want = vec![vec![1, 5], vec![2, 6]];
-
-        let mut sorted = rels(vec![("r", 3, r.clone()), ("s", 2, s.clone())]);
-        assert!(matches!(
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(
-                &sorted,
-                query.clone(),
-                &Planner::stored(LexicographicOptimiser)
-            ),
-            Err(JoinError::CyclicAttributeOrder { .. })
-        ));
-        let planner = any(LexicographicOptimiser);
-        let specs = add_copies(&mut sorted, &query, &planner, &tuples);
-        assert_eq!(specs, vec![
-            CopySpec::new("r", vec![0, 2, 1]),
-            CopySpec::new("s", vec![1, 0]),
-        ]);
-        let mut got =
-            lftj_join::<TreeTrie, LeapfrogTriejoin>(&sorted, query.clone(), &planner).unwrap();
-        got.sort();
-        assert_eq!(got, want);
-
-        let mut hashed: Database<HashTrie> = Database::from(BTreeMap::from([
-            ("r".to_string(), HashTrie::from_tuples(3.into(), r)),
-            ("s".to_string(), HashTrie::from_tuples(2.into(), s)),
-        ]));
-        add_copies(&mut hashed, &query, &planner, &tuples);
-        let mut got =
-            hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(&hashed, query, &planner)
-                .unwrap();
-        got.sort();
-        assert_eq!(got, want);
-    }
-}
-
-#[cfg(test)]
-mod hash_join_tests {
-    use {
-        super::*,
-        kermit_algos::LexicographicOptimiser,
-        kermit_ds::{HashTrie, Relation},
-        kermit_iters::SipHashStrategy,
-        std::collections::BTreeMap,
-    };
-
-    /// Pins the basic happy path: build two unary `HashTrie`s, run a
-    /// straight intersection through the free function, verify the
-    /// rewrite + dispatch + collect chain end-to-end.
-    #[test]
-    fn hash_join_unary_intersection() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "R".to_string(),
-            HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]),
-        );
-        relations.insert(
-            "S".to_string(),
-            HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]),
-        );
-        let relations = Database::from(relations);
-        let q: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
-        let mut out = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-            &relations,
-            q,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        out.sort();
-        assert_eq!(out, vec![vec![2], vec![3]]);
-    }
-
-    /// `Q(X) :- R(X, c5).` — pins the const-view rewrite path through
-    /// `SingletonHashTrieIter`. The rewrite turns the atom `c5` into a
-    /// synthetic unary predicate `Const_c5` backed by a singleton, which
-    /// `hash_join` materialises into a [`HashTrieIterKind::Singleton`]
-    /// wrapper alongside the relation.
-    ///
-    /// We deliberately place the constant in the trailing column. The
-    /// hash-trie iter family descends through *physical* attribute positions
-    /// in lockstep with the plan's *variable* ordering. `analyse` assigns the
-    /// canonical numbering ("head vars first, then any extra body vars");
-    /// the descent ordering is whatever the optimiser's plan returns, and for
-    /// this trailing-constant shape the lexicographic plan coincides with the
-    /// canonical numbering. The rewrite's fresh `K0` therefore lands at the
-    /// tail of the variable ordering, matching the trie's physical layout.
-    /// The LFTJ const test uses the same shape for the same reason.
-    ///
-    /// The entry point projects each row to the head, so the rewrite's
-    /// fresh `K0` column never reaches the caller — mirroring
-    /// [`tests::test_join_with_constant_filter`] for LFTJ above.
-    #[test]
-    fn hash_join_with_constant_atom() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "R".to_string(),
-            HashTrie::from_tuples(2.into(), vec![vec![1, 5], vec![2, 5], vec![3, 7]]),
-        );
-        let relations = Database::from(relations);
-        let q: JoinQuery = "Q(X) :- R(X, c5).".parse().unwrap();
-        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-            &relations,
-            q,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        let mut got = result;
-        got.sort();
-        assert_eq!(
-            got,
-            vec![vec![1], vec![2]],
-            "expected only X=1, X=2 to pass the c5 filter, got {got:?}"
-        );
-    }
-
-    /// `Q(X) :- r(X, X).` — the PROBLEMS.md repro. Before the selection
-    /// rewrite this panicked in `emit_leaf` ("at leaf level for every
-    /// participating iter") because `r` was opened only once.
-    #[test]
-    fn hash_join_diagonal() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "r".to_string(),
-            HashTrie::from_tuples(2.into(), vec![
-                vec![1, 1],
-                vec![1, 2],
-                vec![2, 3],
-                vec![3, 3],
-                vec![4, 5],
-            ]),
-        );
-        let relations = Database::from(relations);
-        let q: JoinQuery = "Q(X) :- r(X, X).".parse().unwrap();
-        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-            &relations,
-            q,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        let mut got = result;
-        got.sort();
-        assert_eq!(got, vec![vec![1], vec![3]]);
-    }
-
-    #[test]
-    fn hash_join_const_and_repeat() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "r".to_string(),
-            HashTrie::from_tuples(3.into(), vec![
-                vec![1, 5, 1],
-                vec![1, 5, 2],
-                vec![2, 6, 2],
-                vec![3, 5, 3],
-            ]),
-        );
-        let relations = Database::from(relations);
-        let q: JoinQuery = "Q(X) :- r(X, c5, X).".parse().unwrap();
-        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-            &relations,
-            q,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        let mut got = result;
-        got.sort();
-        assert_eq!(got, vec![vec![1], vec![3]]);
-    }
-
-    #[test]
-    fn hash_join_mixed_occurrences() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "r".to_string(),
-            HashTrie::from_tuples(2.into(), vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![
-                3, 3,
-            ]]),
-        );
-        let relations = Database::from(relations);
-        let q: JoinQuery = "Q(X, Y) :- r(X, X), r(X, Y).".parse().unwrap();
-        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-            &relations,
-            q,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        let mut got = result;
-        got.sort();
-        assert_eq!(got, vec![vec![1, 1], vec![1, 2], vec![3, 3]]);
-    }
-
-    /// Mirror of [`tests::test_join_trailing_placeholder`]. Before the
-    /// placeholder rewrite this panicked in `emit_leaf` ("at leaf level
-    /// for every participating iter").
-    #[test]
-    fn hash_join_trailing_placeholder() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "r".to_string(),
-            HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]),
-        );
-        let relations = Database::from(relations);
-        let q: JoinQuery = "Q(X) :- r(X, _).".parse().unwrap();
-        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-            &relations,
-            q,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        let mut got = result;
-        got.sort();
-        assert_eq!(got, vec![vec![1], vec![1], vec![2]]);
-    }
-
-    /// Mirror of [`tests::test_join_middle_placeholder`]; panicked at the
-    /// same site as the trailing case.
-    #[test]
-    fn hash_join_middle_placeholder() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "r".to_string(),
-            HashTrie::from_tuples(3.into(), vec![vec![1, 2, 3], vec![1, 4, 5]]),
-        );
-        let relations = Database::from(relations);
-        let q: JoinQuery = "Q(X, Y) :- r(X, _, Y).".parse().unwrap();
-        let result = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-            &relations,
-            q,
-            &Planner::stored(LexicographicOptimiser),
-        )
-        .unwrap();
-        let mut got = result;
-        got.sort();
-        assert_eq!(got, vec![vec![1, 3], vec![1, 5]]);
-    }
-
-    /// Every #78 shape is rejected by the hash family with exactly the
-    /// error the sorted family gives: validation runs before either
-    /// family's code.
+    /// Every #78 shape is rejected by the hash family with exactly the error
+    /// the sorted family gives: validation runs before either family's code.
     #[test]
     fn both_families_reject_malformed_queries_identically() {
-        use {crate::db::lftj_join, kermit_algos::LeapfrogTriejoin, kermit_ds::TreeTrie};
         let edges = vec![vec![1, 2], vec![2, 1], vec![2, 3]];
-        let hash: Database<HashTrie> = Database::from(BTreeMap::from([(
-            "edge".into(),
-            HashTrie::from_tuples(2.into(), edges.clone()),
-        )]));
-        let sorted: Database<TreeTrie> = Database::from(BTreeMap::from([(
-            "edge".into(),
-            TreeTrie::from_tuples(2.into(), edges),
-        )]));
+        let catalog = counts(vec![("edge", 2, edges)]);
         for q in [
             "Q(X, Y) :- edge(X, Z).",
             "Q(X, X) :- edge(X, Y).",
@@ -1224,141 +497,101 @@ mod hash_join_tests {
             "Q(_) :- edge(X, Y).",
             "Q(X) :- edge(X, cfoo).",
             "Q(X) :- Const_c5(X).",
-            "Q(X, Y) :- edge(X, Y), edge(Y, X).",
         ] {
             let query: JoinQuery = q.parse().unwrap();
-            let from_hash = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-                &hash,
-                query.clone(),
-                &Planner::stored(LexicographicOptimiser),
-            );
-            let from_sorted = lftj_join::<TreeTrie, LeapfrogTriejoin>(
-                &sorted,
-                query,
-                &Planner::stored(LexicographicOptimiser),
-            );
+            let from_hash = hash_family(&catalog, &query);
+            let from_sorted = sorted_family(&catalog, &query);
             assert!(from_hash.is_err(), "{q} was accepted");
             assert_eq!(from_hash, from_sorted, "{q}");
         }
     }
 
-    /// Mirror of [`tests::results_are_projected_to_the_head`].
+    /// The mutual-edge graph: 1 <-> 2, 2 <-> 3 and the one-way 1 -> 3.
+    fn mutual_edges() -> Rows { vec![vec![1, 2], vec![2, 1], vec![2, 3], vec![3, 2], vec![1, 3]] }
+
+    /// `edge(X, Y), edge(Y, X)` reads `edge` in both column orders. The
+    /// `stored` policy rejected it as a limitation; now each reading is an
+    /// index in the plan's order, so one relation gives two indexes.
     #[test]
-    fn hash_join_results_are_projected_to_the_head() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "r".to_string(),
-            HashTrie::from_tuples(2.into(), vec![vec![1, 1], vec![1, 2], vec![2, 3], vec![
-                3, 3,
-            ]]),
-        );
-        relations.insert(
-            "p".to_string(),
-            HashTrie::from_tuples(2.into(), vec![vec![1, 10], vec![2, 20]]),
-        );
-        let relations = Database::from(relations);
-        for (q, want) in [
-            ("Q(X) :- r(X, Y).", vec![vec![1], vec![1], vec![2], vec![3]]),
-            ("Q(Y) :- r(X, Y).", vec![vec![1], vec![2], vec![3], vec![3]]),
-            ("Q(X) :- r(X, _).", vec![vec![1], vec![1], vec![2], vec![3]]),
-            ("Q(X) :- p(X, c10).", vec![vec![1]]),
-            ("Q(X) :- r(X, X).", vec![vec![1], vec![3]]),
-            ("Q(Y, X) :- p(X, Y).", vec![vec![10, 1], vec![20, 2]]),
-        ] {
-            let query: JoinQuery = q.parse().unwrap();
-            let mut got = hash_join::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-                &relations,
-                query,
-                &Planner::stored(LexicographicOptimiser),
-            )
-            .unwrap();
-            got.sort();
-            assert_eq!(got, want, "{q}");
-        }
+    fn a_self_join_in_opposite_orders_builds_two_indexes() {
+        let catalog = counts(vec![("edge", 2, mutual_edges())]);
+        let text = "Q(X, Y) :- edge(X, Y), edge(Y, X).";
+        let got = both_families(&catalog, text);
+        assert_eq!(got, vec![vec![1, 2], vec![2, 1], vec![2, 3], vec![3, 2]]);
+
+        let query: JoinQuery = text.parse().unwrap();
+        let prepared = prepare(&catalog, &query, &planner_of(LexicographicOptimiser)).unwrap();
+        let mut columns: Vec<Vec<usize>> = prepared
+            .indexes()
+            .iter()
+            .map(|spec| spec.columns.clone())
+            .collect();
+        columns.sort();
+        assert_eq!(columns, vec![vec![0, 1], vec![1, 0]]);
     }
 
+    /// Readings that agree on the plan's order are one index: a self-join
+    /// whose atoms all bind their columns left to right builds `edge` once.
     #[test]
-    fn hash_join_for_each_visits_every_row() {
-        let mut relations: BTreeMap<String, HashTrie> = BTreeMap::new();
-        relations.insert(
-            "R".to_string(),
-            HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]),
-        );
-        relations.insert(
-            "S".to_string(),
-            HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]),
-        );
-        let relations = Database::from(relations);
-        let q: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
-        let mut got = Vec::new();
-        hash_join_for_each::<HashTrie<SipHashStrategy>, SipHashStrategy>(
-            &relations,
-            q,
-            &Planner::stored(LexicographicOptimiser),
-            |row| got.push(row.to_vec()),
-        )
-        .unwrap();
-        got.sort();
-        assert_eq!(got, vec![vec![2], vec![3]]);
-    }
-}
+    fn reads_that_agree_share_one_index() {
+        let catalog = counts(vec![("edge", 2, mutual_edges())]);
+        let text = "Q(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).";
+        let got = both_families(&catalog, text);
+        assert_eq!(got, vec![vec![1, 2, 3], vec![1, 3, 2], vec![2, 1, 3]]);
 
-#[cfg(test)]
-mod family_walk_tests {
-    use {
-        super::*,
-        kermit_ds::{ColumnTrie, HashTrie, NoPruning, PruningPolicy, SingletonPruning, TreeTrie},
-        kermit_iters::SipHashStrategy,
-    };
-
-    fn walked<R, F: JoinFamily<R>>(relation: &R) -> Vec<Vec<usize>> {
-        let mut tuples = Vec::new();
-        F::for_each_tuple(relation, |tuple| tuples.push(tuple.to_vec()));
-        tuples
+        let query: JoinQuery = text.parse().unwrap();
+        let prepared = prepare(&catalog, &query, &planner_of(LexicographicOptimiser)).unwrap();
+        assert_eq!(prepared.indexes().len(), 1);
     }
 
-    /// Shared prefixes and single-tuple subtries, so the pruned hash trie
-    /// stores some subtries as `Singleton`s.
-    fn tuples() -> Vec<Vec<usize>> {
-        vec![
-            vec![1, 10, 100],
-            vec![1, 10, 101],
-            vec![1, 20, 100],
-            vec![2, 30, 300],
-            vec![3, 40, 400],
-        ]
-    }
-
+    /// `r(X, X, Y), s(Y, X)`: the filtered `r` and the reversed `s` are both
+    /// read in the plan's order, and the equality stays with its columns.
     #[test]
-    fn sorted_walk_visits_every_tuple_in_order() {
-        let tree: TreeTrie = TreeTrie::from_tuples(3.into(), tuples());
-        assert_eq!(walked::<_, SortedFamily>(&tree), tuples());
-        let column: ColumnTrie = ColumnTrie::from_tuples(3.into(), tuples());
-        assert_eq!(walked::<_, SortedFamily>(&column), tuples());
+    fn a_selection_on_a_reordered_atom_keeps_its_equality() {
+        let r = vec![vec![1, 1, 5], vec![1, 2, 5], vec![2, 2, 6], vec![3, 3, 7]];
+        let s = vec![vec![5, 1], vec![6, 2], vec![7, 9]];
+        let catalog = counts(vec![("r", 3, r), ("s", 2, s)]);
+        let got = both_families(&catalog, "Q(X, Y) :- r(X, X, Y), s(Y, X).");
+        assert_eq!(got, vec![vec![1, 5], vec![2, 6]]);
     }
 
-    /// The family walk goes through `TupleScan` and must visit exactly what
-    /// the trie's own `for_each_tuple` visits.
-    fn assert_hash_walk_matches_the_trie<P: PruningPolicy>(tuples: Vec<Vec<usize>>) {
-        let trie: HashTrie<SipHashStrategy, P> = HashTrie::from_tuples(3.into(), tuples);
-        let mut expected = Vec::new();
-        trie.for_each_tuple(|tuple| expected.push(tuple.to_vec()));
-        let mut got = walked::<_, HashFamily<SipHashStrategy>>(&trie);
-        expected.sort();
-        got.sort();
-        assert_eq!(got, expected);
-    }
-
+    /// An atom of constants only reads no column: it is a check on how many
+    /// rows match. Zero matches means no answers. Otherwise the count
+    /// multiplies the answers on a multiset (`HashTrie`) and is clamped to one
+    /// on a set (the sorted tries).
     #[test]
-    fn hash_walk_visits_what_the_trie_stores() {
-        assert_hash_walk_matches_the_trie::<NoPruning>(tuples());
-        assert_hash_walk_matches_the_trie::<SingletonPruning>(tuples());
-        // The hash trie is a multiset: a duplicate is visited twice.
-        let mut duplicated = tuples();
-        duplicated.push(vec![1, 10, 100]);
-        assert_hash_walk_matches_the_trie::<NoPruning>(duplicated.clone());
-        assert_hash_walk_matches_the_trie::<SingletonPruning>(duplicated);
-        assert_hash_walk_matches_the_trie::<NoPruning>(Vec::new());
-        assert_hash_walk_matches_the_trie::<SingletonPruning>(Vec::new());
+    fn an_all_constant_atom_is_a_check() {
+        let catalog = counts(vec![
+            ("p", 1, vec![vec![1], vec![2]]),
+            ("q", 2, vec![vec![1, 2], vec![1, 2], vec![3, 4]]),
+        ]);
+        let query: JoinQuery = "Q(X) :- p(X), q(c1, c2).".parse().unwrap();
+        let mut sorted = sorted_family(&catalog, &query).unwrap();
+        sorted.sort();
+        assert_eq!(sorted, vec![vec![1], vec![2]]);
+        let mut hashed = hash_family(&catalog, &query).unwrap();
+        hashed.sort();
+        assert_eq!(hashed, vec![vec![1], vec![1], vec![2], vec![2]]);
+
+        let none: JoinQuery = "Q(X) :- p(X), q(c9, c9).".parse().unwrap();
+        assert_eq!(sorted_family(&catalog, &none), Ok(Vec::new()));
+        assert_eq!(hash_family(&catalog, &none), Ok(Vec::new()));
+    }
+
+    /// `Const_`, `Select_` and `Index_` used to be reserved for the predicates
+    /// the join synthesised. Indexes now live under their own ids, so a
+    /// relation with such a name joins like any other.
+    #[test]
+    fn names_that_used_to_be_reserved_are_ordinary_relations() {
+        let catalog = counts(vec![
+            ("Const_c5", 1, vec![vec![5], vec![6]]),
+            ("Select_0_r", 2, vec![vec![5, 50], vec![7, 70]]),
+            ("Index_1_0_edge", 2, vec![vec![50, 5]]),
+        ]);
+        let got = both_families(
+            &catalog,
+            "Q(X, Y) :- Const_c5(X), Select_0_r(X, Y), Index_1_0_edge(Y, X).",
+        );
+        assert_eq!(got, vec![vec![5, 50]]);
     }
 }

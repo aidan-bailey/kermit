@@ -280,16 +280,6 @@ fn malformed_constant() {
     );
 }
 
-/// A user atom named like a synthetic predicate used to be skipped as
-/// synthetic, then panic in the executor ("Missing datastructure").
-#[test]
-fn reserved_relation_name() {
-    assert_rejected_everywhere(
-        "Q(X) :- Const_c5(X).",
-        "relation name \"Const_c5\" is reserved",
-    );
-}
-
 /// Head placeholders and constants printed a header over the wrong column.
 #[test]
 fn non_variable_head_terms() {

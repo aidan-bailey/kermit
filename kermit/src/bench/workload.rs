@@ -4,7 +4,7 @@
 use {
     crate::execution::{read_relation, read_relation_header},
     kermit::db::{self, validate_query, Catalog, Prepared},
-    kermit_algos::{ColumnOrderPolicy, JoinQuery, Planner},
+    kermit_algos::{JoinQuery, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::RelationHeader,
     std::{
@@ -134,7 +134,7 @@ impl Workload {
             .map(|path| read_relation_header(path))
             .collect::<anyhow::Result<Vec<RelationHeader>>>()?;
         for q in &self.queries {
-            validate_query(&q.query, headers.as_slice(), ColumnOrderPolicy::Any).map_err(|e| {
+            validate_query(&q.query, headers.as_slice()).map_err(|e| {
                 anyhow::anyhow!("benchmark '{}' query '{}': {e}", self.name, q.name)
             })?;
         }
@@ -203,7 +203,8 @@ mod tests {
     use {
         super::*,
         kermit_algos::{
-            CostBasedOptimiser, LexicographicOptimiser, QueryOptimiser, StatisticsLevel,
+            ColumnOrderPolicy, CostBasedOptimiser, LexicographicOptimiser, QueryOptimiser,
+            StatisticsLevel,
         },
         kermit_bench::{QueryDefinition, RelationSource},
         std::fs,

@@ -53,10 +53,9 @@ impl RelationSink {
     ///
     /// Fails, before creating any file, if the name does not match
     /// `[a-z][a-z0-9_]*` or a relation of that name was already written. The
-    /// lowercase rule is stricter than the Datalog parser's identifiers, and
-    /// so excludes the reserved prefixes (`Const_`, `Select_`, `Index_`)
-    /// too. It also fails if `ParquetWriter::create` does, e.g. for a
-    /// positional header.
+    /// lowercase rule is stricter than the Datalog parser's identifiers. It
+    /// also fails if `ParquetWriter::create` does, e.g. for a positional
+    /// header.
     pub fn open(&mut self, header: &RelationHeader) -> anyhow::Result<RelationWriter<'_>> {
         let name = header.name();
         check_relation_name(name)?;
@@ -168,7 +167,7 @@ fn check_relation_name(name: &str) -> anyhow::Result<()> {
     if !well_formed {
         bail!(
             "the relation name {name:?} must match [a-z][a-z0-9_]*, which the Datalog parser \
-             accepts and no reserved prefix (`Const_`, `Select_`, `Index_`) starts"
+             accepts"
         );
     }
     Ok(())
@@ -185,10 +184,10 @@ mod tests {
     fn pairs() -> Tuples { Tuples::from(vec![vec![1, 2], vec![3, 4]]) }
 
     #[test]
-    fn rejects_uppercase_and_reserved_names() {
+    fn rejects_uppercase_and_malformed_names() {
         let dir = tempfile::tempdir().unwrap();
         let mut sink = RelationSink::new(dir.path());
-        for name in ["Edge", "Const_x", "1x", "x-y", ""] {
+        for name in ["Edge", "eDge", "1x", "x-y", ""] {
             let Err(err) = sink.open(&header(name)) else {
                 panic!("the name {name:?} was accepted");
             };

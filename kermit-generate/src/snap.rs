@@ -156,9 +156,9 @@ pub fn url_stem(url: &str) -> Option<&str> {
 
 /// The Datalog rule for `query` (the spec's § Workload, verbatim).
 ///
-/// `cycle4` closes with `edge(A, D)`, not `edge(D, A)`: the stored column
-/// order rejects the latter with `CyclicAttributeOrder`, and on a symmetric
-/// relation the two hold the same tuples.
+/// `cycle4` closes with `edge(A, D)`, not `edge(D, A)`. Both run, and on a
+/// symmetric relation the two hold the same tuples, but when the plan puts
+/// `A` before `D`, `edge(D, A)` needs a second, reordered index of `edge`.
 pub fn rule(query: SnapQuery) -> &'static str {
     match query {
         | SnapQuery::Triangle => "T(A, B, C) :- edge(A, B), edge(B, C), edge(A, C).",
@@ -623,7 +623,7 @@ mod tests {
                 query.name()
             );
         }
-        // Decision 6: the stored column order rejects `edge(D, A)`.
+        // Decision 6: the cycle closes with `edge(A, D)`, not `edge(D, A)`.
         let cycle: JoinQuery = rule(SnapQuery::Cycle4).parse().unwrap();
         assert_eq!(cycle.body[3].terms, [
             Term::Var("A".to_string()),
