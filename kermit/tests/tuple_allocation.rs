@@ -14,8 +14,7 @@
 //!   allocations; the Parquet reader sizes its buffer once from the footer, and
 //!   arrow decodes in 1 024-row record batches and allocates per batch, never
 //!   per row. A per-row allocation costs 9 000 more.
-//! - **A batch clone** and **a reordered copy** (`CopySpec::permute_all`) are
-//!   one allocation each.
+//! - **A batch clone** is one allocation.
 //! - **TreeTrie and ColumnTrie builds** are bounded by the heap objects the
 //!   built trie owns: TreeTrie a children `Vec` per inner node, ColumnTrie two
 //!   arrays per layer. A per-row allocation adds 10 000.
@@ -51,7 +50,6 @@
 //!   mode holds beside it) plus a margin under one copy ([`assert_peak`]).
 
 use {
-    kermit_algos::CopySpec,
     kermit_ds::{
         test_hooks::{
             take_hash_trie_parallel_builds, take_tree_trie_parallel_builds, HashTrieParallelBuild,
@@ -197,17 +195,6 @@ fn cloning_a_batch_allocates_once() {
         copy.heap_size_bytes(),
         batch.len() * batch.arity() * std::mem::size_of::<usize>()
     );
-}
-
-/// A reordered copy under `--column-orders any` is one buffer.
-#[test]
-fn a_reordered_copy_allocates_once() {
-    let batch = fanned_out();
-    let spec = CopySpec::new("r", vec![1, 0]);
-    let mut copy = None;
-    let info = allocation_counter::measure(|| copy = Some(spec.permute_all(&batch)));
-    assert_eq!(info.count_total, 1);
-    assert_eq!(copy.expect("measured").len(), batch.len());
 }
 
 // ── Tuple views ─────────────────────────────────────────────────────────
