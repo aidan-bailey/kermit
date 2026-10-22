@@ -207,7 +207,7 @@ def baseline_build_mode(data_structure: object) -> str:
 def speedup_table(
     df: pd.DataFrame,
     *,
-    phase: str = "insertion",
+    phase: str = "build",
     baseline: str | None = None,
     value: str = "mean_ns",
     n_resamples: int = 9999,

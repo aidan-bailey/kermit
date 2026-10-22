@@ -121,7 +121,7 @@ def ablation(
 
 
 def speedup(
-    df: pd.DataFrame, *, phase: str = "insertion", baseline: str | None = None,
+    df: pd.DataFrame, *, phase: str = "build", baseline: str | None = None,
     out: Optional[Path] = None,
 ) -> Figure:
     """Build speedup over the baseline build against thread count (#94): each

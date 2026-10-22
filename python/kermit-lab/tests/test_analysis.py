@@ -115,19 +115,19 @@ def test_mannwhitney_identical_samples_not_significant():
 def _build_mode_rows(
     arms: dict[str, list[float]], *, data_structure: str = "TreeTrie"
 ) -> pd.DataFrame:
-    """One summary row per run: ``data_structure`` insertion on one relation,
+    """One summary row per run: ``data_structure`` build on one relation,
     under each build mode in ``arms`` (mode -> one mean per replicate)."""
     rows = []
     for mode, times in arms.items():
         threads = threads_of(mode)
         for run, t in enumerate(times):
             rows.append({
-                "kind": "ds", "metric": "time", "phase": "insertion",
+                "kind": "ds", "metric": "time", "phase": "build",
                 "data_structure": data_structure, "relation_path": "r.parquet",
                 "ds_build_mode": mode, "threads": threads,
                 "mean_ns": t, "mean_lo": t * 0.99, "mean_hi": t * 1.01,
                 "source_path": f"{mode}-{run}.json", "criterion_group": f"{mode}-{run}",
-                "criterion_function": f"{data_structure}/insertion",
+                "criterion_function": f"{data_structure}/build",
             })
     df = pd.DataFrame(rows)
     df["threads"] = df["threads"].astype("Int64")
@@ -342,13 +342,26 @@ def test_speedup_table_envelope_covers_unequal_runs() -> None:
 
 
 def test_speedup_table_reads_only_its_phase() -> None:
-    insertion = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    build = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
     end_to_end = _build_mode_rows({"serial": [90.0], "parallel:2": [60.0]}).assign(
         phase="end_to_end", criterion_function="TreeTrie/end_to_end"
     )
-    both = pd.concat([insertion, end_to_end], ignore_index=True)
+    both = pd.concat([build, end_to_end], ignore_index=True)
     assert speedup_table(both)["speedup"].tolist() == pytest.approx([2.0])
     assert speedup_table(both, phase="end_to_end")["speedup"].tolist() == pytest.approx([1.5])
+
+
+def test_speedup_table_defaults_to_the_build_phase() -> None:
+    """`build` is the schema-v5 phase of a structure's build; a frame that
+    times only the older `insertion` phase has no case on the default."""
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    assert set(df["phase"]) == {"build"}
+    assert speedup_table(df)["speedup"].tolist() == pytest.approx([2.0])
+    assert speedup_table(df.assign(phase="insertion"), phase="insertion")["speedup"].tolist() == (
+        pytest.approx([2.0])
+    )
+    with pytest.raises(ValueError, match="on 'build'"):
+        speedup_table(df.assign(phase="insertion"))
 
 
 def test_speedup_table_honours_its_baseline() -> None:

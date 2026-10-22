@@ -126,10 +126,10 @@ def test_speedup_labels_its_axis_with_each_structures_default_baseline(
         plt.close(fig)
         return label
 
-    assert ylabel(tree) == "speedup over serial (insertion)"
-    assert ylabel(hash_trie) == "speedup over bulk (insertion)"
-    assert ylabel(pd.concat([tree, hash_trie])) == "speedup over bulk / serial (insertion)"
-    assert ylabel(tree, baseline="parallel:2") == "speedup over parallel:2 (insertion)"
+    assert ylabel(tree) == "speedup over serial (build)"
+    assert ylabel(hash_trie) == "speedup over bulk (build)"
+    assert ylabel(pd.concat([tree, hash_trie])) == "speedup over bulk / serial (build)"
+    assert ylabel(tree, baseline="parallel:2") == "speedup over parallel:2 (build)"
 
 
 def test_speedup_refuses_a_phase_that_is_not_a_time_phase(fixture_parallel_build_tree) -> None:
@@ -138,7 +138,7 @@ def test_speedup_refuses_a_phase_that_is_not_a_time_phase(fixture_parallel_build
     df = load(fixture_parallel_build_tree["paths"], fixture_parallel_build_tree["criterion_root"])
     with pytest.raises(InsufficientAxesError, match="time phases, not 'space'"):
         presets.speedup(df, phase="space")
-    # The fixture times insertion only, so an iteration speedup passes the
+    # The fixture times build only, so an iteration speedup passes the
     # phase check and finds no case to compare.
     with pytest.raises(InsufficientAxesError, match="no case"):
         presets.speedup(df, phase="iteration")
@@ -147,8 +147,9 @@ def test_speedup_refuses_a_phase_that_is_not_a_time_phase(fixture_parallel_build
 def test_speedup_without_a_threaded_build_is_insufficient_axes(fixture_build_mode_tree) -> None:
     """ColumnTrie and HashTrie rows, each with a baseline but no `parallel:N`."""
     df = load(fixture_build_mode_tree["paths"], fixture_build_mode_tree["criterion_root"])
+    # This fixture times the pre-v5 `insertion` phase, not `build`.
     with pytest.raises(InsufficientAxesError, match="no case has both a 'bulk' row"):
-        presets.speedup(df)
+        presets.speedup(df, phase="insertion")
 
 
 def test_speedup_ideal_line_is_y_equals_x_on_log_axes(fixture_parallel_build_tree) -> None:

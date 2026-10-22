@@ -666,8 +666,9 @@ def fixture_parallel_build_tree(tmp_path: Path) -> dict:
     """``bench ds`` reports of one relation: TreeTrie under ``serial``,
     ``parallel:2`` and ``parallel:4``, two replicates each (distinct
     ``--name``, so distinct Criterion groups), plus a ColumnTrie ``bulk``
-    case with no threaded build. Insertion time halves per thread
-    doubling, so the expected speedups are 2 and 4 exactly.
+    case with no threaded build. Build time halves per thread
+    doubling, so the expected speedups are 2 and 4 exactly. The build is the
+    ``build`` phase, the schema-v5 name of ``insertion``.
     """
     criterion_root = tmp_path / "target" / "criterion"
     reports_dir = tmp_path / "reports"
@@ -683,7 +684,7 @@ def fixture_parallel_build_tree(tmp_path: Path) -> dict:
     ):
         for replicate, jitter in enumerate((1.0, 1.02)):
             group = f"{data_structure}-{mode.replace(':', '-')}-{replicate}"
-            function = f"{data_structure}/insertion"
+            function = f"{data_structure}/build"
             mean = point * jitter
             samples = [(i + 1, mean * (i + 1)) for i in range(10)]
             _write_function_dir(

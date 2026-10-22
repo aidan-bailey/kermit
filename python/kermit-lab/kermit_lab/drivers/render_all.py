@@ -43,8 +43,9 @@ def render_all(
     """Render every applicable shape; skip with info-log on insufficient axes.
 
     ``phase`` is forwarded to every time-using shape (scaling, bar-time,
-    bar-queries, tradeoff, dist) so insertion- and iteration-time can be
-    rendered into separate output sets without re-running benchmarks.
+    bar-queries, tradeoff, dist) so build- (or, before schema 5, insertion-)
+    and iteration-time can be rendered into separate output sets without
+    re-running benchmarks.
     """
     suffix = f".{fmt}"
     df = _summary_from_reports(reports, criterion_root)

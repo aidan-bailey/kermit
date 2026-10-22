@@ -122,10 +122,15 @@ def test_speedup_preset_subcommand(fixture_parallel_build_tree, tmp_path: Path) 
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_speedup_subcommand_defaults_to_the_build_phase() -> None:
+    args = _build_parser().parse_args(["speedup", "r.json", "--out", "s.pdf"])
+    assert args.phase == "build"
+
+
 def test_speedup_subcommand_takes_every_time_phase_and_nothing_else() -> None:
     """A build mode may move ``iteration`` (Amendment 2), so every time phase
     is a speedup phase; ``space`` is not a time phase."""
-    for phase in ("insertion", "copies", "iteration", "end_to_end"):
+    for phase in ("build", "insertion", "copies", "iteration", "end_to_end"):
         args = _build_parser().parse_args(["speedup", "r.json", "--out", "s.pdf", "--phase", phase])
         assert args.phase == phase
     with pytest.raises(SystemExit):
@@ -146,7 +151,7 @@ def test_speedup_subcommand_prints_its_table(
 
 
 def test_speedup_subcommand_reads_its_phase(fixture_parallel_build_tree, tmp_path: Path) -> None:
-    """The fixture times insertion only, so asking for end_to_end finds no case."""
+    """The fixture times build only, so asking for end_to_end finds no case."""
     rc = main([
         "speedup", *[str(p) for p in fixture_parallel_build_tree["paths"]],
         "--criterion-root", str(fixture_parallel_build_tree["criterion_root"]),
