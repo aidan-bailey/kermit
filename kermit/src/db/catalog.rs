@@ -46,9 +46,30 @@ impl Catalog {
     /// nothing. [`StatisticsLevel::ColumnDistinct`] also walks each
     /// relation's rows once to count each column's distinct values:
     /// O(N · arity) time, O(distinct values) space.
+    ///
+    /// An empty batch is accepted under any header, as in
+    /// `Relation::from_tuples`: it is replaced by an empty batch of the
+    /// header's arity, so `tuples` and the statistics agree with the header.
+    ///
+    /// # Panics
+    ///
+    /// If a batch with rows has an arity other than its header's.
     pub fn new(relations: Vec<(RelationHeader, Tuples)>, level: StatisticsLevel) -> Catalog {
         let mut held: BTreeMap<String, (RelationHeader, Tuples)> = BTreeMap::new();
         for (header, tuples) in relations {
+            let tuples = if tuples.len() == 0 && tuples.arity() != header.arity() {
+                Tuples::new(header.arity())
+            } else {
+                tuples
+            };
+            assert_eq!(
+                tuples.arity(),
+                header.arity(),
+                "Catalog::new: tuple arity {} does not match header arity {} of relation '{}'",
+                tuples.arity(),
+                header.arity(),
+                header.name(),
+            );
             held.insert(header.name().to_string(), (header, tuples));
         }
         // Statistics are gathered after the names are settled, so a relation
@@ -191,6 +212,30 @@ mod tests {
             catalog.statistics("e"),
             Some(&RelationStats::new(0, 2).with_column_distinct(vec![0, 0]))
         );
+    }
+
+    /// An empty batch has no arity of its own (`Tuples::from(vec![])` is
+    /// nullary), so it is accepted under any header and takes its arity.
+    #[test]
+    fn an_empty_batch_is_accepted_under_any_header() {
+        let header = RelationHeader::new_positional("e", 2);
+        let empty = Tuples::from(Vec::<Vec<usize>>::new());
+        assert_eq!(empty.arity(), 0);
+        let catalog = Catalog::new(vec![(header, empty)], StatisticsLevel::ColumnDistinct);
+        assert_eq!(catalog.tuples("e").unwrap().arity(), 2);
+        assert_eq!(catalog.tuples("e").unwrap().len(), 0);
+        assert_eq!(
+            catalog.statistics("e"),
+            Some(&RelationStats::new(0, 2).with_column_distinct(vec![0, 0]))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Catalog::new: tuple arity 3 does not match header arity 2")]
+    fn a_batch_with_rows_of_another_arity_than_its_header_panics() {
+        let header = RelationHeader::new_positional("bad", 2);
+        let rows = Tuples::from(vec![vec![1, 2, 3]]);
+        let _ = Catalog::new(vec![(header, rows)], StatisticsLevel::TupleCounts);
     }
 
     /// As `Database`'s map does, the last relation with a name wins, with
