@@ -134,7 +134,7 @@ Let `n` = tuple count, `a` = arity, `b` = max chain length at a leaf bucket.
 | Operation | Time | Space | Notes |
 |---|---|---|---|
 | `insert(tuple)` | O(a) amortized | O(a) | per-level: one hash + one probe + at most one resize; amortized O(1) per level. The row is appended to the buffer with a `NIL` link, and the leaf step starts a chain at it or appends it to one: one or two link writes, no allocation (#101 B2) |
-| `from_view(view)` (`from_tuples(n)` over the identity view) | O(n · a) | O(n · a) | the default `bulk` build: one `materialize()` copy of the matching rows (a filtered view also costs one filter test per source row), then Algorithm 2: per level, n hashes and n chain pushes of one or two link writes each (each push moves a row from its parent's list to one child list; the tuples stay in the buffer), no allocation per list (#101 B2), one `links` array of 4 B per row allocated zeroed, and one transient table of chains per inner table (24 B a bucket, the root's the largest; the last attribute's table of chains stays as the `Leaf`). Expected cost holds for input in another `HashTrie`'s iteration order, or any subset of it; the bucket-index invariant names the one order it does not cover |
+| `from_view(view)` (`from_tuples(n)` over the identity view) | O(n · a) | O(n · a) | the default `bulk` build: one `materialize()` copy of the matching rows (a filtered view also costs O(s) filter tests over the source's s rows), then Algorithm 2: per level, n hashes and n chain pushes of one or two link writes each (each push moves a row from its parent's list to one child list; the tuples stay in the buffer), no allocation per list (#101 B2), one `links` array of 4 B per row allocated zeroed, and one transient table of chains per inner table (24 B a bucket, the root's the largest; the last attribute's table of chains stays as the `Leaf`). Expected cost holds for input in another `HashTrie`'s iteration order, or any subset of it; the bucket-index invariant names the one order it does not cover |
 | `from_view` under `incremental` | O(n · a) | O(n · a) | the same `materialize()` copy, then one `insert_at` per row of the copy, in order: the per-row build before #107 |
 | `from_view` under `radix:K` | O(n · a + D · K) | O(n · a) | the bulk build over a partitioned copy: a histogram pass over the source's rows and a scatter copying the matching ones (`partition_rows`, one first-attribute hash per tuple, kept for the scatter), a second first-attribute hash per tuple in the scratch roots, and a k-way merge of the D distinct root keys over the 2^K partitions' entry lists (`radix::build_and_merge`, shared with `parallel:N`: O(D · K) heap operations, where a sort, O(D log D), ran until 2026-10-14); transiently the copy beside the view's source while it is made, and 4 B per tuple of `origin` and 2 B of partition number; builds an equivalent trie, the bulk trie's contents and root with the rows in partition order |
 | `HashTrieIterator::key()` | O(1) | | array access at the deepest stack entry |
@@ -422,7 +422,7 @@ optimizations are classified into Layout, Config, or BuildMode.
     `tuples`; see [Build modes](#build-modes)), `project`, `Configured`, and
     the bench families through `RelationFamily::build_index`. A trie created empty (`new`, `with_config`)
     starts at 4 buckets, and an `insert` after a build may still grow the
-    root. All of them create the root through `HashTrie::with_config_for`.
+    root. All of them size the root by `HashTrieConfig::root_log2_capacity`.
   - **Bench axis value:** the JSON string `"grow"` / `"tuples"`.
   - **Expected effect:** `build` (`insertion` before schema v5) falls when the first attribute has
     many distinct values, because the root skips every rehash. `space` rises
@@ -510,7 +510,7 @@ the rule leaves free:
 
 So `iteration` is measured for the three partitioning modes, never assumed.
 
-Every mode reads the same `TupleView` and copies its matching rows exactly once, so the build metric (`build` since schema 5) times that copy in every mode alike. Before per-query index builds (2026-10-22), `bulk` and `incremental` kept the caller's batch and only the partitioning modes' copy sat inside the timer, which skewed every build-mode comparison (#91, #94, #101). The measurements recorded below predate this change: their `insertion` is the old definition and is not comparable with `build`. Every buffer is created by its own build at exact size, so `heap_size_bytes` is equal across modes by construction.
+Every mode reads the same `TupleView` and copies its matching rows exactly once, so the build metric (`build` since schema 5) times that copy in every mode alike. Before per-query index builds (2026-10-22), `bulk` and `incremental` kept the caller's batch and only the partitioning modes' copy sat inside the timer, which skewed every build-mode comparison (#91, #94, #101). The measurements recorded below predate this change: their `insertion` is the old definition and is not comparable with `build`. Every buffer is created by its own build at exact size, so the buffer adds the same bytes to `heap_size_bytes` in every mode.
 
 | Mode | `--ds-build` | Method |
 |---|---|---|

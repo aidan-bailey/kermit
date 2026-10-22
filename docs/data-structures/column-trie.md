@@ -62,7 +62,7 @@ Let `n` = tuple count, `a` = arity, `b` = average branching factor.
 | Operation | Time | Space | Notes |
 |---|---|---|---|
 | `insert(tuple)` | O(a · b) worst-case | O(1) extra | linear search within interval; insertions in early layers shift later-layer offsets (`insert_key_and_shift_intervals`) |
-| `from_view(view)` (`from_tuples(n)` is the convenience over the identity view) | O(n · a · log n) | O(n · a) | `view.materialize_sorted()` (O(n · a · log n): one exact-size copy of the matching rows, sorted; a filtered view also costs one filter test per source row), then build every layer in one pass over its row slices (O(n · a), no allocation per tuple); see Construction. The copy is scratch, freed when the build ends. Before issue #84 it inserted tuple by tuple, O(n · a · b) |
+| `from_view(view)` (`from_tuples(n)` is the convenience over the identity view) | O(n · a · log n) | O(n · a) | `view.materialize_sorted()` (O(n · a · log n): one exact-size copy of the matching rows, sorted; a filtered view also costs O(s) filter tests over the source's s rows), then build every layer in one pass over its row slices (O(n · a), no allocation per tuple); see Construction. The copy is scratch, freed when the build ends. Before issue #84 it inserted tuple by tuple, O(n · a · b) |
 | `TrieIterator::key()` | O(1) | | slice index |
 | `TrieIterator::next()` | O(1) | | `rel_data_i += 1` |
 | `TrieIterator::seek(target)` | `S`-dependent: linear O(d), binary O(log r), galloping O(log d) | | `S::partition_point` over the `r` remaining keys of the interval slice; `d` is the distance moved. See [seek strategies](seek-strategies.md) |
@@ -114,7 +114,7 @@ Both modes first read the view with `materialize_sorted`, one copy sorted in O(n
 
 - **Axis:** `ds_build_mode`, on every ColumnTrie report. The bench family that ran the build emits it (`RelationFamily::build_mode_axes`), because the trie cannot tell how it was built. kermit-lab reads a ColumnTrie row without the axis as `incremental`, the only build before the axis existed.
 - **API:** `ColumnTrieBuildMode`, through `BuildModeRelation::from_view_with_build_mode` (`from_tuples_with_build_mode` is the convenience over the identity view); `Relation::from_view` and `from_tuples` use the default, `Bulk`.
-- **Tests:** `bulk_and_incremental_builds_are_identical` (array-level, capacities included), the `ColumnTrieIncremental` alias in `kermit-ds/tests/{trie,parquet}_tests.rs`, `define_multiway_join_test_suite_for_build_mode!` in `kermit/tests/join_tests.rs`, and kermit-ds's view test, which builds both modes from a filtered, permuted view and compares each with the trie of the rows it keeps, inserted one at a time.
+- **Tests:** `bulk_and_incremental_builds_are_identical` (array-level, capacities included), the `ColumnTrieIncremental` alias in `kermit-ds/tests/{trie,parquet}_tests.rs`, `define_multiway_join_test_suite_for_build_mode!` in `kermit/tests/join_tests.rs`, and kermit-ds's `a_filtered_permuted_view_builds_the_trie_of_the_rows_it_keeps`, which builds both modes from a filtered, permuted view and compares each with the trie of the rows it keeps, inserted one at a time.
 - **When `incremental` is useful:** reproducing pre-#84 `insertion` numbers, and measuring how much of ColumnTrie's build cost belonged to the routine rather than the layout.
 
 ### Seek strategy

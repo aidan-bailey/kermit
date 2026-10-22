@@ -9,9 +9,9 @@ only on which variables are bound, not on their order, so the cheapest
 plan is a shortest path over those sets, searched exactly while their
 number stays within a budget. It reads per-column distinct
 counts as well as tuple counts. Prefer it when a query mixes a selective
-constant with small relations unrelated to it: there `cardinality` binds
-the small relations first and enumerates their cross product (WatDiv q0020
-and q0034, issue #68).
+constant with small relations unrelated to it: #68 found that `cardinality` bound
+the small relations first and enumerated their cross product (WatDiv q0020
+and q0034).
 
 ## Cost function
 
@@ -189,7 +189,7 @@ equality in its access's filter, whose statistics are scanned exactly, so
 the gap on those 6 templates should close. The table is the earlier run's, with
 the base relation's statistics, and is not re-measured here.
 
-**On real data.** `kermit join` on q0020 with `--optimiser cost-based`
+**On real data** (2026-10-05, before per-query index builds; not re-measured). `kermit join` on q0020 with `--optimiser cost-based`
 finishes in 0.09–0.33 s per cell, loading included, where `cardinality`
 still runs past 60 s; on q0034 it returns the same 243,150 rows as
 `lexicographic` in 0.36 s against 1.76 s (`column-trie`, release build).

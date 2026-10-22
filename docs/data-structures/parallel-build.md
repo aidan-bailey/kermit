@@ -281,7 +281,7 @@ threads (`P` = 4·N rounded up to a power of two):
 | Build | O(n · a) expected probes, inserts and link writes, split across partitions, plus O(D) to take the entries out | N workers |
 | Merge | O(D log P) heap operations and D root inserts (expected O(1) each, plus the root's resizes) | the calling thread |
 
-For a filtered view, `n` counts the matching rows. The histogram pass also tests the filter on each of the source's rows, which is O(s) for a source of `s` rows; unfiltered, `s = n`. The presized build's partition step is the same.
+For a filtered view, `n` counts the matching rows. The partition step tests the filter on each of the source's rows (`count()` sizes the buffer first, then the histogram pass), which is O(s) filter tests over a source of `s` rows; unfiltered, `s = n`. The presized build's partition step is the same.
 
 The sequential share is the checks, the prefix sums over the
 (n / 16 384) · P (partition, morsel) pairs, and the merge into the root.
@@ -482,7 +482,7 @@ Every record below also predates per-query index builds (2026-10-22): its `inser
 
 ### Scaling result: TreeTrie (2026-10-05)
 
-> **2026-10-08 (#111):** This record and the jemalloc one below predate flat tuple batches: every arm read its input as a `Vec` per tuple and freed those tuples one by one (`serial` on the calling thread, `parallel:N` on its workers). Since #111 the input is one `Tuples` batch, freed once by the calling thread, and each worker gathers its partition into a local `Tuples`, so neither the plateau's mechanism nor the `parallel:1` artefact below (both from those 10⁷ frees) applies to the input path any more.
+> **2026-10-08 (#111):** This record and the jemalloc one below predate flat tuple batches: every arm read its input as a `Vec` per tuple and freed those tuples one by one (`serial` on the calling thread, `parallel:N` on its workers). Since #111 the input is one `Tuples` batch, freed once by the calling thread (since 2026-10-22 no build frees it), and each worker gathers its partition into a local `Tuples`, so neither the plateau's mechanism nor the `parallel:1` artefact below (both from those 10⁷ frees) applies to the input path any more.
 
 These are **glibc** numbers. The binary predates #112, which made jemalloc the
 binary's allocator. At 10⁷ tuples the glibc curve is bound by the allocator,

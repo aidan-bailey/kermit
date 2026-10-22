@@ -1,6 +1,6 @@
 # `HashTriejoin`
 
-> **Status:** experimental · **CLI:** `-a hash-triejoin` · **Implementation:** [`kermit_algos::hash_triejoin`](../../kermit-algos/src/hash/hash_triejoin.rs)
+> **Status:** experimental · **CLI:** `-a hash-triejoin` · **Implementation:** [`kermit_algos::HashTriejoin`](../../kermit-algos/src/hash/hash_triejoin.rs)
 
 ## What it is
 
@@ -33,7 +33,7 @@ function enumerate(i):                              # Alg. 3 line 1
 
 Rust mapping:
 
-- `enumerate(i)` → `fn enumerate(i, arity, iters, predicate_variables, variable_to_iter_map, scratch, emit)` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs).
+- `enumerate(i)` → `fn enumerate(i, arity, iters, predicate_variables, variable_to_iter_map, scratch, emit)` in [`kermit-algos/src/hash/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs).
 - Lines 16–19 → `fn emit_leaf(iters, predicate_variables, scratch, emit)`, an odometer of one `LeafCursor` per relation, advanced by `fn advance_cursor(iters, cursor)`.
 - Line 18's verification → `fn verify_and_construct(candidate, predicate_variables, row, bound)`, which writes into a per-join scratch row (`LeafScratch`).
 
@@ -42,7 +42,7 @@ Rust mapping:
 - **Iterators in `I_join` are in lockstep.** When `enumerate(i)` calls `open()` on every iterator in `I_join`, all of them descend to depth `i+1`. The `up()` calls after recursion symmetrically restore the depth. Any iterator that fails `open()` short-circuits the descent — the corresponding `up()` calls are limited to the iterators that successfully opened, preventing depth drift.
 - **`enumerate` opens iterators at entry and ascends at exit.** The design diverged from the paper's pseudocode here for ergonomics — Algorithm 3 expects callers to have already descended the iterators before invoking `enumerate(i)`. The Rust implementation works on un-opened iterators: it issues `open()` on every participant in `I_join` at the start of the call and matches each successful descent with an `up()` before returning. This keeps the caller (the top-level `join_for_each` entry point) free of bookkeeping at the cost of one extra descend/ascend per recursive level. Over a lazy `HashTrie` (`--ds-layout-expansion lazy`), an `open()` may build the child it enters; the algorithm is unchanged and sees the eager trie's keys and leaf chains, so a child a join never enters is never built.
 - **`I_scan` choice is local to each level.** The argmin is recomputed at every depth; the choice doesn't affect correctness, only the cost of probing the other iterators.
-- **Hash collision rejection is at the leaves.** Inner-level `lookup(h)` may succeed on a false-positive hash match. The leaf-level `verify_and_construct` is the only place where actual key equality is enforced — every result tuple emerges from there. The `*_collision_*` tests in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs) force a real collision (a test-only `hash(k) = k mod 10` strategy on a real `HashTrie`) and check that the phantom candidate is rejected both by `verify_and_construct` directly and end-to-end through `join_iter`.
+- **Hash collision rejection is at the leaves.** Inner-level `lookup(h)` may succeed on a false-positive hash match. The leaf-level `verify_and_construct` is the only place where actual key equality is enforced — every result tuple emerges from there. The `*_collision_*` tests in [`kermit-algos/src/hash/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs) force a real collision (a test-only `hash(k) = k mod 10` strategy on a real `HashTrie`) and check that the phantom candidate is rejected both by `verify_and_construct` directly and end-to-end through `join_iter`.
 - **Constants and repeated variables never reach the join.** `kermit::db::prepare` turns each body atom into an access (`kermit_algos::extract_accesses`): a constant is a filter on its column, and a repeated variable is an equality with its first occurrence. The build applies the filter while it copies the rows into the hash trie (`TupleView`), so every `HashTrieIterator` this algorithm sees is a real hash trie whose columns are all distinct variables, and the hash entry point takes no hash strategy `H` (it existed only to hash constants). Before per-query index builds (2026-10-22), a one-value iterator for `Const_c<id>` and a `Select_<n>_<base>` view stood in for these: the view was a one-bucket table (`size() == 1`, so `enumerate` picked it as `I_scan`) that admitted only the hash it passed at the source level and filtered its leaf chain by value. The "collision rejection is at the leaves" rule above therefore has one site again. An atom of constants only builds no index: its row count multiplies the results on a structure that keeps duplicates (`Relation::KEEPS_DUPLICATES`, true for `HashTrie`), and a zero count ends the query.
 - **Placeholders never reach the join.** The entry point runs `rewrite_placeholders` ([placeholder_rewrite.rs](../../kermit-algos/src/placeholder_rewrite.rs)) first, so every `_` arrives as its own fresh variable and each atom carries one variable per column. `emit_leaf` relies on that — it expects every participating iterator at its leaf once the last variable is bound — and panicked on any placeholder before the rewrite (issue #73). Regression: the `trailing_placeholder` and `middle_placeholder` patterns of the standard suite.
 - **The result is streamed, not materialised.** `join_for_each` threads the caller's sink through `enumerate`; `emit_leaf` re-borrows each leaf chain through `leaf_tuples()` instead of collecting it, as a `LeafRows` view (the chain over its relation's tuple buffer, #111, walked through the trie's links since #101 B2), whose rows are slices of that buffer, and the cross-product cursors and output row are scratch buffers allocated once per join, so emitting a tuple allocates nothing. Algorithm 3 itself is unchanged — `output.push(t)` became `emit(&row)` (issue #65). `JoinAlgo::join_iter` is a provided method that collects through `join_for_each`, for callers that need the rows.
@@ -104,7 +104,7 @@ Trace:
 
 Output (sorted): `[[1, 2, 3], [1, 2, 4]]`.
 
-Related test: `join_algo_triangle` in [`kermit-algos/src/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs) exercises this same triangle-query path under `HashTriejoin` (with different sample data).
+Related test: `join_algo_triangle` in [`kermit-algos/src/hash/hash_triejoin.rs`](../../kermit-algos/src/hash/hash_triejoin.rs) exercises this same triangle-query path under `HashTriejoin` (with different sample data).
 
 ## See also
 
