@@ -157,6 +157,47 @@ queries:
     (workspace, cache)
 }
 
+/// Where `bench_run_per_query` sends Criterion's output.
+fn criterion_home(workspace: &TempDir) -> std::path::PathBuf { workspace.path().join("criterion") }
+
+/// The mean point estimate of the Criterion function `group`/`function`, found
+/// by the `group_id` and `function_id` in each `new/benchmark.json` under
+/// `home`, never by computing the directory name.
+fn mean_estimate(home: &std::path::Path, group: &str, function: &str) -> f64 {
+    fn benchmark_jsons(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                benchmark_jsons(&path, found);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == "benchmark.json")
+                && path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|name| name == "new")
+            {
+                found.push(path);
+            }
+        }
+    }
+    let mut jsons = Vec::new();
+    benchmark_jsons(home, &mut jsons);
+    let matching: Vec<_> = jsons
+        .into_iter()
+        .filter(|path| {
+            let id: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            id["group_id"] == group && id["function_id"] == function
+        })
+        .collect();
+    assert_eq!(matching.len(), 1, "{group}/{function}: {matching:?}");
+    let estimates = matching[0].with_file_name("estimates.json");
+    let estimates: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(estimates).unwrap()).unwrap();
+    estimates["mean"]["point_estimate"].as_f64().unwrap()
+}
+
 /// `bench run per-query` in `workspace` with `args`, returning the process
 /// output and the parsed report array (empty if no report was written).
 fn bench_run_per_query(
@@ -168,6 +209,7 @@ fn bench_run_per_query(
         .env("RUST_LIB_BACKTRACE", "0")
         .env("KERMIT_WORKSPACE", workspace.path())
         .env("XDG_CACHE_HOME", cache.path())
+        .env("CRITERION_HOME", criterion_home(workspace))
         .current_dir(workspace.path())
         .args([
             "bench",
@@ -270,6 +312,33 @@ fn bench_run_builds_one_index_per_atom_and_reports_each() {
             "{line} missing from {stderr}"
         );
     }
+
+    // `space` is one function summing every index the query reads, so its
+    // per-iteration measurement is the sum of the `index` lines' bytes.
+    let indexed_bytes: usize = lines
+        .iter()
+        .map(|line| {
+            let bytes = line.strip_suffix(" bytes").unwrap();
+            bytes[bytes.rfind(", ").unwrap() + 2..]
+                .parse::<usize>()
+                .unwrap()
+        })
+        .sum();
+    let space = report["criterion_groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["function"] == "space")
+        .unwrap();
+    let measured = mean_estimate(
+        &criterion_home(&workspace),
+        space["group"].as_str().unwrap(),
+        "space",
+    );
+    assert!(
+        (measured - indexed_bytes as f64).abs() < 0.5,
+        "space measured {measured} bytes, the index lines sum to {indexed_bytes}"
+    );
 }
 
 /// A lazy `HashTrie`'s joins expand it, so `--verify` and `iteration` run on
