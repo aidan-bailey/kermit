@@ -289,8 +289,13 @@ impl<'a> TupleView<'a> {
                 sorted
             },
             | _ => {
-                let mut rows: Vec<RowId> =
-                    self.row_ids().filter(|&row| self.matches(row)).collect();
+                // An unfiltered view matches every row: collecting the range
+                // sizes the ids exactly and never consults the filter.
+                let mut rows: Vec<RowId> = if self.filter.is_none() {
+                    self.row_ids().collect()
+                } else {
+                    self.row_ids().filter(|&row| self.matches(row)).collect()
+                };
                 self.gather_sorted(&mut rows)
             },
         }

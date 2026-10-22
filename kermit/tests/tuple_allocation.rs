@@ -269,6 +269,35 @@ fn a_sorted_copy_of_a_view_holds_the_data_once_at_every_arity() {
     }
 }
 
+/// An unfiltered view matches every row, so its row ids are collected from
+/// the range: the id array is sized exactly, and the sorted copy costs two
+/// allocations (the ids, then the data) of exactly `n × 4` and the data's
+/// bytes in total, not the doubling collect's 4, 8, 16, … slots.
+#[test]
+fn a_sorted_copy_of_an_unfiltered_view_sizes_its_row_ids_exactly() {
+    let source = view_source();
+    for columns in [vec![5, 4, 3, 2, 1], vec![5, 4, 3, 2, 1, 0]] {
+        let arity = columns.len();
+        let view = TupleView::new(&source, Filter::new(vec![], vec![]), columns);
+        assert_eq!(view.count(), VIEW_ROWS);
+        let data_bytes = (VIEW_ROWS * arity * WORD) as u64;
+        let mut copy = None;
+        let info = allocation_counter::measure(|| copy = Some(view.materialize_sorted()));
+        let copy = copy.expect("measured");
+        assert_eq!((copy.arity(), copy.len()), (arity, VIEW_ROWS));
+        assert!(is_sorted(&copy), "arity {arity}");
+        assert_eq!(
+            info.count_total, 2,
+            "arity {arity}: the row ids, then the data"
+        );
+        assert_eq!(
+            info.bytes_total,
+            data_bytes + (VIEW_ROWS * std::mem::size_of::<RowId>()) as u64,
+            "arity {arity}: the data and the row ids, each sized exactly"
+        );
+    }
+}
+
 /// `gather_sorted` over a supplied row set sorts the ids in place and
 /// allocates the output buffer, once, at its exact size.
 #[test]
