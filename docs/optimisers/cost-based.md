@@ -144,10 +144,13 @@ with columns `[1, 0]` (Y before A), `@1` as `link` with the filter
 `col0=7` and columns `[1]`, and `@2` as `owns` with columns `[1, 0]` (Y
 before B).
 
-No test pins these numbers: they are this page's illustration. The unit
-tests in `cost_based.rs` and `cardinality.rs` state their own constant
-statistics for a similar query, and `cost_based_watdiv_plans.rs` pins the
-real templates' plans (see "Index orders").
+The unit tests `worked_example_estimates` (the estimate table) and
+`worked_example_plans` (each order's cost, the cost-based plan
+`[2, 1, 0]` and `cardinality`'s `[1, 0, 2]`) in `cost_based.rs` pin these
+numbers, planning over the accesses as `prepare` does. The other unit tests
+there and in `cardinality.rs` state their own constant statistics, and
+`cost_based_watdiv_plans.rs` pins the real templates' plans (see "Index
+orders").
 
 ## Regressions and limitations
 

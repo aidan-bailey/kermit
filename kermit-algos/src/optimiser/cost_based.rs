@@ -357,49 +357,64 @@ mod tests {
         assert_eq!(estimate(&q, &stats, &[0]), 0.0);
     }
 
-    /// The worked micro-example of `docs/optimisers/cost-based.md`:
-    /// `Const_c7` is a one-row unary relation that pins `K0`, which selects
-    /// few `B`s through `link`; `small` has few tuples, but its `A`s meet the
-    /// rest only through `Y`. Canonical indices: A = 0, B = 1, Y = 2, K0 =
-    /// 3.
+    /// The worked micro-example of `docs/optimisers/cost-based.md`, planned
+    /// as `prepare` plans it: over the accesses of
+    /// `Q(A, B, Y) :- small(A, Y), link(c7, B), owns(B, Y).`, whose
+    /// statistics are keyed by access id. `@1` is `link` filtered to
+    /// `col0=7`: the 12 rows that match, and B's 12 distinct values.
+    /// Canonical indices: A = 0, B = 1, Y = 2.
     fn worked_example() -> (JoinQuery, CatalogStats) {
-        let q: JoinQuery = "Q(A, B, Y) :- small(A, Y), link(K0, B), owns(B, Y), Const_c7(K0)."
-            .parse()
-            .unwrap();
-        let stats = stats_for(&q, &[
-            ("small", 100, &[100, 10]),
-            ("link", 50_000, &[5_000, 20_000]),
-            ("owns", 40_000, &[20_000, 10]),
-            ("Const_c7", 1, &[1]),
+        let text = "Q(A, B, Y) :- small(A, Y), link(c7, B), owns(B, Y).";
+        let accesses = crate::extract_accesses(&text.parse().unwrap()).unwrap();
+        assert_eq!(accesses.accesses.len(), 3, "one access per atom");
+        let stats = stats_for(&accesses.query, &[
+            ("@0", 100, &[100, 10]),
+            ("@1", 12, &[12]),
+            ("@2", 40_000, &[20_000, 10]),
         ]);
-        (q, stats)
+        (accesses.query, stats)
     }
 
+    /// The estimate table of the worked example.
     #[test]
     fn worked_example_estimates() {
         let (q, stats) = worked_example();
         for (vars, want) in [
-            (&[3][..], 1.0),
             (&[0][..], 100.0),
-            (&[0, 3][..], 100.0),
-            (&[1, 3][..], 10.0),
-            (&[0, 1, 3][..], 1000.0),
-            (&[0, 1, 2, 3][..], 200.0),
+            (&[1][..], 12.0),
+            (&[2][..], 10.0),
+            (&[0, 1][..], 1_200.0),
+            (&[0, 2][..], 100.0),
+            (&[1, 2][..], 24.0),
+            (&[0, 1, 2][..], 240.0),
         ] {
             assert_eq!(estimate(&q, &stats, vars), want, "est({vars:?})");
         }
     }
 
+    /// The plans table of the worked example: each order's cost, the sum of
+    /// the estimates of its prefixes, then the plans each optimiser picks.
     #[test]
-    fn worked_example_binds_the_selective_side_first() {
+    fn worked_example_plans() {
         let (q, stats) = worked_example();
-        // K0, B, Y, A costs 1 + 10 + 20 + 200 = 231, as K0, Y, B, A does;
-        // the lexicographically smaller order wins. Cardinality binds
-        // small's A second, for 1 + 100 + 100 + 200 = 401.
+        let cost = |order: &[usize]| -> f64 {
+            (1..=order.len())
+                .map(|k| estimate(&q, &stats, &order[..k]))
+                .sum()
+        };
+        for (order, want) in [
+            (&[2, 1, 0][..], 274.0),
+            (&[1, 2, 0][..], 276.0),
+            (&[2, 0, 1][..], 350.0),
+            (&[1, 0, 2][..], 1_452.0),
+            (&[0, 1, 2][..], 1_540.0),
+        ] {
+            assert_eq!(cost(order), want, "cost({order:?})");
+        }
         let plan = CostBasedOptimiser::default().plan(&q, &stats);
-        assert_eq!(plan.variable_ordering, vec![3, 1, 2, 0]);
+        assert_eq!(plan.variable_ordering, vec![2, 1, 0], "cost-based");
         let cardinality = CardinalityOptimiser.plan(&q, &stats);
-        assert_eq!(cardinality.variable_ordering, vec![3, 0, 2, 1]);
+        assert_eq!(cardinality.variable_ordering, vec![1, 0, 2], "cardinality");
     }
 
     #[test]
