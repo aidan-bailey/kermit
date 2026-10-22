@@ -674,3 +674,22 @@ define_multiway_join_test_suite_for_build_mode!(
     CostBasedOptimiser,
     HashPresized2
 );
+// The paper sizing under the default `bulk` build, on the pruned lazy trie.
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    LexicographicOptimiser,
+    PaperSizing
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    CardinalityOptimiser,
+    PaperSizing
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipPrunedLazy,
+    HashTriejoin,
+    CostBasedOptimiser,
+    PaperSizing
+);

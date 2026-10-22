@@ -426,7 +426,7 @@ macro_rules! define_middle_placeholder_multiway_join_test {
 }
 
 /// The 16 standard join patterns against `Relation` under `Algo` and
-/// `Optimiser`. Each invocation names one alias × algorithm × optimiser;
+/// `Optimiser`. Each triple names one alias × algorithm × optimiser;
 /// the Config and BuildMode variants below wrap it in a module so test
 /// names stay unique.
 #[macro_export]

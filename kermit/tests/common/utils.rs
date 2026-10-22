@@ -197,6 +197,8 @@ pub fn test_join<R, JA, O>(
 
     // The catalog is analysed to exactly what the optimiser reads, as the
     // CLI's is.
+    // `prepare` reads no column-order policy; `Planner::new` takes one until it
+    // is removed from `Planner`.
     let planner = Planner::new(Box::new(O::default()), ColumnOrderPolicy::Any);
     let catalog = catalog_of(&inputs, planner.required_statistics());
     let (mut actual, _) = join_under_planner::<R, JA>(&catalog, query, &planner)
