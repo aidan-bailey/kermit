@@ -40,10 +40,11 @@ target/criterion/
 (overridable via `--name`); for `bench run` it is
 `{prefix}/{benchmark}/{query}/{ds}/{algo}` (prefix defaults to `run`).
 
-**directory_name** is the function ID with `/` replaced by `_`. The space
-function ID is `{IndexStructure}/space` — the `IndexStructure` Debug string is
-one of `ColumnTrie`, `HashTrie`, `TreeTrie` — so e.g. `TreeTrie/space` becomes
-`TreeTrie_space` on disk. Read the canonical segment from each subdir's
+**directory_name** is the function ID with `/` replaced by `_`. For `bench ds`
+the space function ID is `{IndexStructure}/space` — the `IndexStructure` Debug
+string is one of `ColumnTrie`, `HashTrie`, `TreeTrie` — so e.g. `TreeTrie/space`
+becomes `TreeTrie_space` on disk; for `bench run` it is `space` (schema 5), which
+stays `space`. Read the canonical segment from each subdir's
 `benchmark.json:directory_name` rather than computing it.
 
 On each run, the previous `new/` is rotated to `base/` and a `change/`
@@ -72,7 +73,7 @@ Identifies the benchmark. This is the primary metadata file.
 | `group_id` | string | Benchmark group name (`ds` for `bench ds`; the data structure is the function prefix) |
 | `function_id` | string | Benchmark function name within the group (`{IndexStructure}/space`) |
 | `value_str` | string \| null | Optional parameter string (unused) |
-| `throughput` | object \| null | Throughput config; `{"Elements": n}` where `n` is the tuple count of the benchmarked relation (the `27` above is illustrative) |
+| `throughput` | object \| null | Throughput config. `bench ds` sets `{"Elements": n}`, where `n` is the tuple count of the benchmarked relation (the `27` above is illustrative); `bench run` and `bench join` (schema 5) set none, so it is `null` on their `space` function |
 | `full_id` | string | `{group_id}/{function_id}` |
 | `directory_name` | string | Filesystem path segment (slashes replaced with underscores) |
 | `title` | string | Display name (same as `full_id`) |
@@ -241,7 +242,7 @@ Only `mean` and `median` are present (no `slope`, `std_dev`, or
 
 ## Benchmark ID Mapping
 
-Each benchmarked data structure produces exactly one space function, with ID
+Each data structure benchmarked by `bench ds` produces exactly one space function, with ID
 `{IndexStructure}/space`, which maps to the filesystem as `{IndexStructure}_space`.
 The `IndexStructure` Debug string is one of `ColumnTrie`, `HashTrie`, `TreeTrie`.
 
@@ -252,5 +253,13 @@ The `IndexStructure` Debug string is one of `ColumnTrie`, `HashTrie`, `TreeTrie`
 | `TreeTrie/space` | `TreeTrie_space` | tuple count of the benchmarked relation |
 
 One `{IndexStructure}/space` function is produced per data structure
-benchmarked. Under `bench ds` these all land in the `ds` group; under
-`bench run` the group is `{prefix}/{benchmark}/{query}/{ds}/{algo}`.
+benchmarked by `bench ds`; these all land in the `ds` group, and the table's
+tuple counts are that command's `throughput`.
+
+Under `bench run` and `bench join` (report schema 5) the group is
+`{prefix}/{benchmark}/{query}/{ds}/{algo}` and holds one function, `space`, per
+query (directory `space`). Its closure sums `heap_size_bytes()` over every index
+the query reads, so the value is the footprint of the query's indexes together,
+not of one relation, and the function sets no throughput. The report's `tuples`
+axis for that query is the flat row count of the relations it reads. A query
+whose atoms are all constant checks builds no index and has no `space` function.
