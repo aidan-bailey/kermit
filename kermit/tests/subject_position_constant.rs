@@ -20,9 +20,9 @@
 //!
 //! Each case runs under every optimiser and column-order policy: the shape
 //! exists to guard descent order, and each optimiser orders it differently.
-//! Under `--column-orders any` an optimiser that binds `X` before the
-//! constant's fresh variable reads `edge` through a reordered copy instead
-//! of being forced into the stored order.
+//! `edge` is read through an index permuted into the plan's order, so an
+//! optimiser that binds `X` before the constant's fresh variable is not
+//! forced into the stored column order.
 
 mod common;
 

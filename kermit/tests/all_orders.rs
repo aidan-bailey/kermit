@@ -25,9 +25,15 @@ use {
         canonical_names, rewrite_placeholders, CatalogStats, ColumnOrderPolicy, HashTriejoin,
         JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner, QueryOptimiser, StatisticsLevel,
     },
-    kermit_ds::{Cardinality, ColumnTrie, HashTrie, Relation, RelationHeader, TreeTrie, Tuples},
+    kermit_ds::{
+        Cardinality, ColumnTrie, HashTrie, LazyExpansion, NoPruning, Relation, RelationHeader,
+        SingletonPruning, TreeTrie, Tuples,
+    },
     kermit_iters::SipHashStrategy,
 };
+
+type HashTrieSipPruned = HashTrie<SipHashStrategy, SingletonPruning>;
+type HashTrieSipLazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
 
 fn names(list: &[&str]) -> Vec<String> { list.iter().map(|s| (*s).to_string()).collect() }
 
@@ -464,6 +470,16 @@ fn hash_trie_duplicated_constant_atom_under_every_order() {
 }
 
 #[test]
+fn pruned_hash_trie_duplicated_constant_atom_under_every_order() {
+    run_duplicated_constant_atom::<HashTrieSipPruned, HashTriejoin>(3);
+}
+
+#[test]
+fn lazy_hash_trie_duplicated_constant_atom_under_every_order() {
+    run_duplicated_constant_atom::<HashTrieSipLazy, HashTriejoin>(3);
+}
+
+#[test]
 fn tree_trie_shapes_under_every_order() { run_shapes::<TreeTrie, LeapfrogTriejoin>(); }
 
 #[test]
@@ -481,6 +497,16 @@ fn column_trie_pinned_queries_under_every_order() { run_pinned::<ColumnTrie, Lea
 #[test]
 fn hash_trie_pinned_queries_under_every_order() {
     run_pinned::<HashTrie<SipHashStrategy>, HashTriejoin>();
+}
+
+#[test]
+fn pruned_hash_trie_pinned_queries_under_every_order() {
+    run_pinned::<HashTrieSipPruned, HashTriejoin>();
+}
+
+#[test]
+fn lazy_hash_trie_pinned_queries_under_every_order() {
+    run_pinned::<HashTrieSipLazy, HashTriejoin>();
 }
 
 /// The forced order reaches the index: `r0(X, Y)` read `X` then `Y` is
