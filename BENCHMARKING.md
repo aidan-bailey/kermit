@@ -56,7 +56,7 @@ before it is measured.
 
 ## What you can measure
 
-`bench ds` and `bench run` accept `--metrics`, defaulting to `insertion`,
+`bench ds` and `bench run` accept `--metrics`, defaulting to `build`,
 `iteration`, and `space` (the opt-in `end-to-end` phase is *not* in the
 default set). They fall into two families. (`bench join` accepts the same
 `--metrics` as `bench run`; it is the ad-hoc form of the same measurement.)
@@ -68,7 +68,7 @@ Time is split into phases because they stress different things and a single
 
 | Phase | `--metrics` | What it times | When it matters |
 | --- | --- | --- | --- |
-| **Insertion** | `insertion` | Building the index from the input tuples (`from_tuples`, which presorts) | Construction-heavy workloads; one-shot queries; comparing build cost of structures |
+| **Build** | `build` | `bench run` / `bench join`: building the indexes one query reads (each a relation filtered by the query's constants and repeated variables, in plan order) from the catalog's flat tuples, plus its all-constant checks. `bench ds`: building the one relation from its flat tuples in file order. The built structure is freed after the timer stops | Construction-heavy workloads; one-shot queries; comparing build cost of structures |
 | **Iteration** | `iteration` | Running the join itself (`open`/`up`/`seek`/`next` traversal). In `bench run` / `bench join`, each result tuple is passed to a counting `black_box` sink and dropped: no result rows are allocated, and memory does not grow with the result. `bench ds` scans its relation the same way: tuples are counted through the sink, never collected. | The worst-case-optimal join's actual cost; the headline number for query performance |
 | **End-to-end** | `end-to-end` | One database build **plus K query executions** in a single timed body (`T = build + K × query`, K from `--queries-per-build`, default 1); each execution counts its rows the same way as Iteration | Amortisation/crossover questions: which structure wins depends on how many queries run per build |
 
@@ -98,19 +98,33 @@ through a measured A/B. The v4 row of
 lists the changes, and `kermit-lab` refuses to load v3 and v4 reports
 together unless you pass `allow_mixed_schema=True`.
 
-The end-to-end phase exists because summing `insertion + K × iteration` after
+Reports with `schema_version` 5 (2026-10-22) are not comparable with v4 in
+`build`, `iteration`, `end_to_end` or `space`, and have no `insertion` or
+`copies` metric: `build` replaces them. Relations are read once into a flat
+catalog, and each query builds, and times, only the indexes its plan reads,
+once, from a borrowed view of those tuples in every build mode. So
+`serial` and `bulk` builds now copy inside the timer, as `radix:K`,
+`parallel:N` and `presized:N` already did; `iteration` excludes planning;
+`space` is one function per query; and the `column_orders` axis is gone,
+since `--column-orders` no longer exists and the planner is always free.
+The v5 row of
+[`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md)
+lists the changes, and `kermit-lab` refuses to load v4 and v5 reports
+together unless you pass `allow_mixed_schema=True`. There is no A/B against
+v4; the first v5 measurement is the next full sweep (#99).
+
+The end-to-end phase exists because summing `build + K × iteration` after
 the fact assumes the phases are independent — precisely the assumption a
 build-then-query crossover study is testing (e.g. cache effects across the
 build→query boundary). Each Criterion sample therefore performs a *fresh*
 build (`BatchSize::PerIteration`) followed by K joins. Two caveats:
 
-- In `bench run`, the timed build goes through
-  `ExecutionFamily::build_from_tuples`, which routes every relation through
-  the same `RelationFamily::build_relation` site the `insertion` phase uses
-  — so the build term is the `from_tuples` path in both phases, honouring
-  any `--ds-config` values and each structure's `--ds-build` mode. The
-  end-to-end build additionally pays for assembling the relation store
-  (`BTreeMap<String, R>`), so the two numbers still are not identical.
+- In `bench run`, the timed build is `ExecutionFamily::build_indexes`, the
+  same call the `build` phase times, and every index it makes goes through
+  `RelationFamily::build_index`, the one construction site, honouring any
+  `--ds-config` values and each structure's `--ds-build` mode. So the build
+  term is the same work in both phases, and `end_to_end` should agree with
+  `build + K × iteration` up to measurement noise.
 - K is recorded in the report's `queries_per_build` axis (and surfaces as a
   DataFrame column), never in the Criterion function id.
 
@@ -244,8 +258,9 @@ HashTrie rows without the axis (and reads a HashTrie `serial` as
 rows are for continuity only: reports carry no binary identity, so a
 difference between an old row and a new one mixes the build mode with every
 other change between the two binaries. A build mode only changes the build,
-so `kl.ablation` (and `render-all`) draw the `ds_build_mode` axis for the
-`insertion` and `end_to_end` phases only.
+so `kl.ablation` (and `render-all`) draw the `ds_build_mode` axis for every
+time phase: `build` and `end_to_end` move with it, and `iteration` may
+(a different slot order, or allocations elsewhere in memory).
 
 The seek strategy of the sorted tries works the same way. Compare
 strategies **within one binary**, and give each run a distinct `--name`,
@@ -286,9 +301,9 @@ samples.
 
 ```sh
 kermit bench --name col-bulk --report-json bench-runs/col-bulk.json \
-  ds -r data.parquet -i column-trie -m insertion
+  ds -r data.parquet -i column-trie -m build
 kermit bench --name col-incr --report-json bench-runs/col-incr.json \
-  ds -r data.parquet -i column-trie -m insertion --ds-build column-trie=incremental
+  ds -r data.parquet -i column-trie -m build --ds-build column-trie=incremental
 ```
 
 The full optimization model (Layout / Config / BuildMode, how to add one, and
@@ -301,7 +316,7 @@ walkthrough is in
 
 `--ds-build tree-trie=parallel:N` builds a `TreeTrie` on N threads, and
 `hash-trie=parallel:N` a `HashTrie` (#94). A TreeTrie's trie is identical
-to its `serial` build's, so only `insertion` and `end_to_end` can move.
+to its `serial` build's, so only `build` and `end_to_end` can move.
 HashTrie's `parallel:N` holds `bulk`'s contents and root over a buffer of
 its own, since it copies its rows into partition order (#101).
 HashTrie's presized build is `--ds-build hash-trie=presized:N`, which
@@ -317,7 +332,7 @@ Run one arm per thread count within one binary, each with its own
 for mode in serial parallel:1 parallel:2 parallel:4 parallel:8 parallel:16; do
   name="tt-${mode/:/-}"
   kermit bench --name "$name" --report-json "bench-runs/$name.json" \
-    ds -r data.parquet -i tree-trie -m insertion --ds-build "tree-trie=$mode"
+    ds -r data.parquet -i tree-trie -m build --ds-build "tree-trie=$mode"
 done
 uv --directory python/kermit-lab run kermit-lab speedup "$PWD"/bench-runs/tt-*.json \
   --criterion-root "$PWD"/target/criterion --out "$PWD"/speedup.pdf
@@ -356,7 +371,7 @@ provides five helpers:
 | --- | --- | --- |
 | `summary` | `summary(df, *, rows, cols, value="mean_ns")` | Pivot many runs into a readable 2-D table (e.g. DS × size). |
 | `compare` | `compare(df, *, baseline, target, group_by="data_structure")` | Pair every baseline row with its target and compute speedup per workload. |
-| `speedup_table` | `speedup_table(df, *, phase="insertion", baseline=None)` | Speedup, efficiency and Karp–Flatt fraction of every `parallel:N` / `presized:N` build over each structure's default build (TreeTrie `serial`, HashTrie `bulk`), with CIs ("Scaling" above). |
+| `speedup_table` | `speedup_table(df, *, phase="build", baseline=None)` | Speedup, efficiency and Karp–Flatt fraction of every `parallel:N` / `presized:N` build over each structure's default build (TreeTrie `serial`, HashTrie `bulk`), with CIs ("Scaling" above). |
 | `bootstrap_ratio_ci` | `bootstrap_ratio_ci(a, b, *, ci=0.95, rng=…)` | Percentile-bootstrap CI for `mean(a)/mean(b)` from per-iter samples — "is this speedup real?" |
 | `mannwhitney_u` | `mannwhitney_u(a, b)` → `(U, p)` | Non-parametric test that two sample distributions differ; pair with a violin plot. |
 

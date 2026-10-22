@@ -163,7 +163,7 @@ Pass `-o`/`--output <PATH>` to also write the join's tuples to a CSV file
 `lexicographic`); the choice lands in the JSON report's `optimiser` axis.
 
 `bench join` runs through the same runner as `bench run`: it records the
-`insertion`, `iteration` and `space/<relation>` metrics by default (`-m`
+`build`, `iteration` and `space` metrics by default (`-m`
 selects; `end-to-end` is opt-in, with `--queries-per-build K` setting its K,
 default 1), accepts
 `--ds-config` and `--ds-build` alongside the `--ds-layout-*` flags (including
@@ -171,15 +171,24 @@ default 1), accepts
 its Criterion output under `{--name|join}/adhoc/{query-file-stem}/{ds}/{algo}`.
 The report's `benchmark` axis is `adhoc` and `query` is the query file's stem.
 
+`bench run` and `bench join` (report schema 5) read each relation a query names once, into
+a flat catalog, and build nothing at load. A query then builds, and times as `build`, only
+the indexes its plan reads: each is a relation filtered by the query's constants and
+repeated variables, with its columns in plan order, so a query may use an order the file
+does not store. There is no `--column-orders` flag any more. `space` is the heap bytes of
+those indexes together, one function per query. See
+[`docs/specs/benchmarking-architecture.md`](docs/specs/benchmarking-architecture.md) for
+the lifecycle.
+
 ### Benchmark a data structure (`bench ds`)
 
-Insertion / iteration / heap-size over a single relation file:
+Build / iteration / heap-size over a single relation file:
 
 ```sh
 kermit bench ds \
   --relation kermit/tests/fixtures/edge.csv \
   --indexstructure tree-trie \
-  --metrics insertion iteration space
+  --metrics build iteration space
 ```
 
 `--metrics` defaults to all three. To benchmark a single metric:
@@ -209,16 +218,16 @@ bits in 1..=16, threads in 1..=1024; `presized:<threads>`, the partitioned
 fill of a presized root, requires `--ds-config root-capacity=tuples`, and is
 rejected without it). Every mode builds an equivalent structure
 (the same contents and capacities), so answers and `space` never change; the
-`insertion` and `end-to-end` timings do, and `iteration` may. The report
+`build` and `end-to-end` timings do, and `iteration` may. The report
 records it as `ds_build_mode`. A pair is valid only when `-i` selects its
 structure (or `all`), and each structure takes only its own modes
 (`tree-trie=bulk` is rejected). `bench run` and `bench join` accept it too.
 
 ```sh
-kermit bench ds -r data.csv -i tree-trie -m insertion --ds-build tree-trie=parallel:4
-kermit bench ds -r data.csv -i column-trie -m insertion --ds-build column-trie=incremental
-kermit bench ds -r data.csv -i hash-trie -m insertion --ds-build hash-trie=radix:8
-kermit bench ds -r data.csv -i hash-trie -m insertion --ds-build hash-trie=parallel:4
+kermit bench ds -r data.csv -i tree-trie -m build --ds-build tree-trie=parallel:4
+kermit bench ds -r data.csv -i column-trie -m build --ds-build column-trie=incremental
+kermit bench ds -r data.csv -i hash-trie -m build --ds-build hash-trie=radix:8
+kermit bench ds -r data.csv -i hash-trie -m build --ds-build hash-trie=parallel:4
 kermit bench run triangle -i hash-trie -a hash-triejoin --ds-config root-capacity=tuples --ds-build hash-trie=presized:8
 ```
 
@@ -264,7 +273,7 @@ The opt-in `end-to-end` metric times one database build **plus K query
 executions** per Criterion sample (`T = build + K × query`, fresh build every
 sample). K comes from `--queries-per-build` (default 1) and lands in the
 report's `queries_per_build` axis — see `BENCHMARKING.md` § "What you can
-measure" for when to use it and why it is not the sum of `insertion` and
+measure" for when to use it and why it is not the sum of `build` and
 `iteration`:
 
 ```sh
