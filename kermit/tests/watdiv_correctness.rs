@@ -6,16 +6,16 @@
 //! relations, comparing tuple counts to the hand-verified
 //! `expected.json`. Exercises constant pushdown into index filters through
 //! `kermit::db`'s `prepare` → `build` → `execute` without any network or
-//! Python dependency at test time. Every query runs under every optimiser
-//! and column-order policy, because a plan changes the descent order and so
-//! the columns each index lists first, never the answer.
+//! Python dependency at test time. Every query runs under every optimiser,
+//! because a plan changes the descent order and so the columns each index
+//! lists first, never the answer.
 
 mod common;
 
 use {
     clap::ValueEnum,
     common::utils::{catalog_of, join_under_planner, load_parquet_inputs},
-    kermit_algos::{ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
+    kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, TreeTrie,
@@ -43,17 +43,15 @@ fn load_expected(dir: &Path) -> HashMap<String, usize> {
 }
 
 /// Loads the fixture's relations flat and checks every query's result
-/// count, joined as `R` and planned by `optimiser` under `policy`, against
+/// count, joined as `R` and planned by `optimiser`, against
 /// `expected.json`.
-fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(
-    optimiser: Optimiser, policy: ColumnOrderPolicy,
-) {
+fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Optimiser) {
     let dir = artifacts_dir();
     let bench = load_yaml(&dir);
     let expected = load_expected(&dir);
 
     let inputs = load_parquet_inputs(&dir, bench.relations.iter().map(|r| r.name.as_str()));
-    let planner = Planner::new(optimiser.instantiate(), policy);
+    let planner = Planner::new(optimiser.instantiate());
     let catalog = catalog_of(&inputs, planner.required_statistics());
 
     for q in &bench.queries {
@@ -70,9 +68,8 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(
         assert_eq!(
             got,
             want,
-            "cardinality mismatch on {key} ({} / {} / {}): got {got}, expected {want}\nquery: {}",
+            "cardinality mismatch on {key} ({} / {}): got {got}, expected {want}\nquery: {}",
             optimiser.axis_value(),
-            policy.axis_value(),
             std::any::type_name::<R>(),
             q.query
         );
@@ -83,14 +80,12 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(
 fn watdiv_mini_cardinalities_match() {
     // The plan an optimiser picks changes the descent order, never the
     // answer; iterating the CLI enum covers optimisers added later.
-    for &policy in ColumnOrderPolicy::value_variants() {
-        for &optimiser in Optimiser::value_variants() {
-            check_cardinalities::<TreeTrie<LinearSeek>>(optimiser, policy);
-            check_cardinalities::<TreeTrie<BinarySeek>>(optimiser, policy);
-            check_cardinalities::<TreeTrie<GallopingSeek>>(optimiser, policy);
-            check_cardinalities::<ColumnTrie<LinearSeek>>(optimiser, policy);
-            check_cardinalities::<ColumnTrie<BinarySeek>>(optimiser, policy);
-            check_cardinalities::<ColumnTrie<GallopingSeek>>(optimiser, policy);
-        }
+    for &optimiser in Optimiser::value_variants() {
+        check_cardinalities::<TreeTrie<LinearSeek>>(optimiser);
+        check_cardinalities::<TreeTrie<BinarySeek>>(optimiser);
+        check_cardinalities::<TreeTrie<GallopingSeek>>(optimiser);
+        check_cardinalities::<ColumnTrie<LinearSeek>>(optimiser);
+        check_cardinalities::<ColumnTrie<BinarySeek>>(optimiser);
+        check_cardinalities::<ColumnTrie<GallopingSeek>>(optimiser);
     }
 }

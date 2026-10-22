@@ -139,8 +139,8 @@ mod tests {
     use {
         super::*,
         kermit_algos::{
-            CatalogStats, ColumnOrderPolicy, LeapfrogTriejoin, LexicographicOptimiser,
-            QueryOptimiser, QueryPlan, StatisticsLevel, ACCESS_PREFIX,
+            CatalogStats, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser, QueryPlan,
+            StatisticsLevel, ACCESS_PREFIX,
         },
         kermit_ds::{HashTrie, RelationHeader, TreeTrie, Tuples},
         std::{cell::RefCell, rc::Rc},
@@ -148,10 +148,9 @@ mod tests {
 
     type Rows = Vec<Vec<usize>>;
 
-    /// The planner every test plans with. `Planner::new` still takes a
-    /// column-order policy; `prepare` plans freely under any.
+    /// The planner every test plans with.
     fn planner_of(optimiser: impl QueryOptimiser + 'static) -> Planner {
-        Planner::new(Box::new(optimiser), ColumnOrderPolicy::Any)
+        Planner::new(Box::new(optimiser))
     }
 
     /// A catalog of positional relations `(name, arity, rows)`, gathered up to

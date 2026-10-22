@@ -1,8 +1,8 @@
 //! End-to-end H2O check (#95): the reference plan goes through
 //! `kermit_generate::run` in both row orders, then every query runs on the
-//! three (structure, algorithm) cells under every optimiser and column-order
-//! policy through the real `kermit::db` entry points, and must return the
-//! count the generator recorded as `expected`.
+//! three (structure, algorithm) cells under every optimiser through the
+//! real `kermit::db` entry points, and must return the count the generator
+//! recorded as `expected`.
 //!
 //! It lives in the `kermit` crate for the reason `snap_generate.rs` does: only
 //! this crate has both the generator and the join engine, and it needs nothing
@@ -29,9 +29,7 @@ mod common;
 use {
     clap::ValueEnum,
     common::utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
-    kermit_algos::{
-        ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
-    },
+    kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::{discovery::load_benchmark, BenchmarkDefinition, GeneratorSpec, H2oOrder},
     kermit_ds::{Cardinality, ColumnTrie, GallopingSeek, HashTrie, Relation, TreeTrie},
     kermit_generate::h2o::{H2oGenerator, KeyPlan},
@@ -202,18 +200,14 @@ fn the_emitted_counts_are_the_reference_models() {
 }
 
 /// Every query returns its `expected` count on every cell, under every
-/// optimiser and both column-order policies, in both row orders.
+/// optimiser, in both row orders.
 ///
-/// The plan an optimiser picks changes the join's descent order, never its
-/// answer; iterating the CLI enums covers optimisers and policies added later
-/// with no edit here. Under `stored` all three queries must validate for every
-/// optimiser, which pins that each is written with its variables in the stored
-/// column order. Under `any` the copies a plan needs are the planner's
-/// business and are not asserted, only the answers.
+/// The plan an optimiser picks changes the join's descent order and so the
+/// columns each index lists first, never the answer; iterating the CLI enum
+/// covers optimisers added later with no edit here.
 #[test]
-fn every_cell_optimiser_and_policy_returns_the_expected_counts() {
+fn every_cell_and_optimiser_returns_the_expected_counts() {
     let optimisers = Optimiser::value_variants();
-    let policies = ColumnOrderPolicy::value_variants();
     let mut mismatches: Vec<String> = Vec::new();
     let mut joins = 0;
     for order in H2oOrder::ALL {
@@ -229,37 +223,29 @@ fn every_cell_optimiser_and_policy_returns_the_expected_counts() {
             emitted_counts(&bench)
         );
 
-        for &policy in policies {
-            for &optimiser in optimisers {
-                let planner = Planner::new(optimiser.instantiate(), policy);
-                let label = format!(
-                    "{} / {} / {}",
-                    order.name(),
-                    optimiser.axis_value(),
-                    policy.axis_value()
-                );
-                let dir = &generation.dir;
-                mismatches.extend(cell_mismatches::<Tree, LeapfrogTriejoin>(
-                    &bench, dir, &planner, &label,
-                ));
-                mismatches.extend(cell_mismatches::<Column, LeapfrogTriejoin>(
-                    &bench, dir, &planner, &label,
-                ));
-                mismatches.extend(cell_mismatches::<Hash, HashTriejoin>(
-                    &bench, dir, &planner, &label,
-                ));
-                joins += 3 * bench.queries.len();
-            }
+        for &optimiser in optimisers {
+            let planner = Planner::new(optimiser.instantiate());
+            let label = format!("{} / {}", order.name(), optimiser.axis_value());
+            let dir = &generation.dir;
+            mismatches.extend(cell_mismatches::<Tree, LeapfrogTriejoin>(
+                &bench, dir, &planner, &label,
+            ));
+            mismatches.extend(cell_mismatches::<Column, LeapfrogTriejoin>(
+                &bench, dir, &planner, &label,
+            ));
+            mismatches.extend(cell_mismatches::<Hash, HashTriejoin>(
+                &bench, dir, &planner, &label,
+            ));
+            joins += 3 * bench.queries.len();
         }
     }
     assert!(
         mismatches.is_empty(),
-        "H2O cardinality mismatches ({} of {joins} joins; {} orders x {} optimisers x {} \
-         column-order policies x 3 cells x {} queries):\n{}",
+        "H2O cardinality mismatches ({} of {joins} joins; {} orders x {} optimisers x 3 cells x \
+         {} queries):\n{}",
         mismatches.len(),
         H2oOrder::ALL.len(),
         optimisers.len(),
-        policies.len(),
         REFERENCE_COUNTS.len(),
         mismatches.join("\n"),
     );

@@ -57,8 +57,8 @@
 use {
     kermit::db::{build, execute, prepare, Catalog, Indexes, Prepared},
     kermit_algos::{
-        ColumnOrderPolicy, HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin,
-        LexicographicOptimiser, Planner, StatisticsLevel,
+        HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, Planner,
+        StatisticsLevel,
     },
     kermit_ds::{
         BinarySeek, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie, LazyExpansion,
@@ -108,7 +108,7 @@ fn s_tuples(fan_out: usize) -> Vec<Vec<usize>> {
 
 /// The planner every cell uses. Lexicographic, so the plan binds the
 /// head's variables in head order.
-fn planner() -> Planner { Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any) }
+fn planner() -> Planner { Planner::new(Box::new(LexicographicOptimiser)) }
 
 /// A query prepared and its indexes built, untimed: what `execute` is
 /// handed.

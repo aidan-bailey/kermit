@@ -11,13 +11,14 @@
 //! A query is planned as `prepare` plans it: each `_` becomes a variable,
 //! then each body atom becomes an access (`extract_accesses`), whose
 //! constants are a filter and not a variable, and the statistics are keyed
-//! by access id. `prepare` counts a filtered access's rows by scanning the
-//! data. This test has none, so it estimates them: a constant on a column
-//! divides the relation's rows by that column's distinct count (never below
-//! one row), and a kept column has no more distinct values than rows.
+//! by access id. `prepare` scans the data for the exact counts of a
+//! filtered access. The statistics fixture has no per-constant counts, so
+//! this test estimates them: a filtered access's rows are the relation's
+//! rows divided by the filtered column's distinct count (never below one
+//! row), and a kept column has no more distinct values than rows.
 //!
-//! The pins are the plans these statistics give, searched freely
-//! (`ColumnOrderPolicy::Any`). Four of them are the plans this file pinned
+//! The pins are the plans these statistics give, searched freely: no column
+//! order constrains a plan. Four of them are the plans this file pinned
 //! under `--column-orders any` (issue #93) without the variable the old
 //! rewrite gave each constant; q0034's differs only in binding `V9` before
 //! `V0`. Every committed query of the benchmark fits the search budget.
@@ -25,8 +26,7 @@
 use {
     kermit_algos::{
         analyse, canonical_names, extract_accesses, rewrite_placeholders, AccessQuery,
-        CatalogStats, ColumnOrderPolicy, CostBasedOptimiser, QueryOptimiser, RelationStats,
-        ACCESS_PREFIX,
+        CatalogStats, CostBasedOptimiser, QueryOptimiser, RelationStats, ACCESS_PREFIX,
     },
     std::{collections::HashMap, path::Path},
 };
@@ -80,7 +80,7 @@ fn catalog(access_query: &AccessQuery) -> CatalogStats {
             (name, fields.map(|f| f.parse().expect("a count")).collect())
         })
         .collect();
-    CatalogStats::for_query(&access_query.query, ColumnOrderPolicy::Any, |id| {
+    CatalogStats::for_query(&access_query.query, |id| {
         let position = id.strip_prefix(ACCESS_PREFIX)?.parse::<usize>().ok()?;
         let access = access_query.accesses.get(position)?;
         let counts = table.get(access.relation.as_str())?;

@@ -29,11 +29,7 @@ impl QueryOptimiser for LexicographicOptimiser {
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        crate::optimiser::{ColumnOrderPolicy, RelationStats},
-        kermit_parser::JoinQuery,
-    };
+    use {super::*, crate::optimiser::RelationStats, kermit_parser::JoinQuery};
 
     #[test]
     fn triangle_orders_head_first() {
@@ -55,7 +51,7 @@ mod tests {
     fn stats_are_ignored() {
         let q: JoinQuery = "Q(X, Y) :- R(X), S(Y).".parse().unwrap();
         // Even with S tiny, lexicographic keeps canonical order.
-        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |name| match name {
+        let stats = CatalogStats::for_query(&q, |name| match name {
             | "R" => Some(RelationStats::new(1_000_000, 1)),
             | "S" => Some(RelationStats::new(1, 1)),
             | _ => None,

@@ -305,16 +305,12 @@ fn cheapest_order(
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        crate::optimiser::{ColumnOrderPolicy, RelationStats},
-        kermit_parser::JoinQuery,
-    };
+    use {super::*, crate::optimiser::RelationStats, kermit_parser::JoinQuery};
 
     /// Statistics for `q`'s relations: `(name, tuples, per-column distinct
     /// counts)`.
     fn stats_for(q: &JoinQuery, relations: &[(&str, usize, &[usize])]) -> CatalogStats {
-        CatalogStats::for_query(q, ColumnOrderPolicy::Stored, |name| {
+        CatalogStats::for_query(q, |name| {
             let &(_, tuples, distinct) = relations.iter().find(|(n, ..)| *n == name)?;
             Some(RelationStats::new(tuples, distinct.len()).with_column_distinct(distinct.to_vec()))
         })
@@ -454,9 +450,7 @@ mod tests {
     #[test]
     fn a_column_without_a_distinct_count_is_assumed_a_key() {
         let q: JoinQuery = "Q(X, Y) :- R(X, Y).".parse().unwrap();
-        let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |_| {
-            Some(RelationStats::new(100, 2))
-        });
+        let stats = CatalogStats::for_query(&q, |_| Some(RelationStats::new(100, 2)));
         assert_eq!(estimate(&q, &stats, &[0]), 100.0);
     }
 

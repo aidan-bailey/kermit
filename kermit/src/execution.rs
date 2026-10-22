@@ -42,8 +42,7 @@ use {
 
 /// The sorted-family index structures: every `IndexStructure` that
 /// implements `TrieIterable` and therefore joins through
-/// [`lftj_join_for_each`](kermit::db::lftj_join_for_each) under Leapfrog
-/// Triejoin.
+/// [`execute`](kermit::db::execute) with `LeapfrogTriejoin`.
 ///
 /// A dedicated enum (rather than reusing [`IndexStructure`]) keeps
 /// `HashTrie` out of the sorted arm by construction — the dispatch `match`
@@ -737,13 +736,11 @@ mod tests {
     fn prepared_over(header: RelationHeader, tuples: Tuples, query: &str) -> (Catalog, Prepared) {
         use {
             kermit::db::prepare,
-            kermit_algos::{
-                ColumnOrderPolicy, JoinQuery, LexicographicOptimiser, Planner, StatisticsLevel,
-            },
+            kermit_algos::{JoinQuery, LexicographicOptimiser, Planner, StatisticsLevel},
         };
         let catalog = Catalog::new(vec![(header, tuples)], StatisticsLevel::TupleCounts);
         let query: JoinQuery = query.parse().expect("the query parses");
-        let planner = Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any);
+        let planner = Planner::new(Box::new(LexicographicOptimiser));
         let prepared = prepare(&catalog, &query, &planner).expect("the query prepares");
         (catalog, prepared)
     }

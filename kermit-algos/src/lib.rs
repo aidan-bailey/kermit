@@ -51,8 +51,8 @@ pub use {
     kermit_parser::JoinQuery,
     optimiser::{
         distinct_per_column, topological_order, CardinalityOptimiser, CatalogStats,
-        ColumnOrderPolicy, CostBasedOptimiser, LexicographicOptimiser, Optimiser, PlanError,
-        Planner, Precedence, QueryOptimiser, QueryPlan, RelationStats, StatisticsLevel,
+        CostBasedOptimiser, LexicographicOptimiser, Optimiser, PlanError, Planner, Precedence,
+        QueryOptimiser, QueryPlan, RelationStats, StatisticsLevel,
     },
     placeholder_rewrite::rewrite_placeholders,
     sorted::LeapfrogTriejoin,

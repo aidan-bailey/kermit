@@ -1,24 +1,20 @@
 //! Query optimisers: planners that choose the global attribute order.
 //!
 //! Kermit separates planning from execution. A [`QueryOptimiser`] consumes
-//! a parsed, rewritten (const, placeholder, selection) [`JoinQuery`] plus
-//! per-relation statistics
-//! ([`CatalogStats`]) and produces a [`QueryPlan`]. A [`Planner`] bundles
-//! an optimiser with the [`ColumnOrderPolicy`] it plans under;
-//! `kermit::db` passes one where it used to pass a bare optimiser. Join
-//! algorithms (`JoinAlgo::join_for_each`) execute the plan. The space of
-//! valid plans is
-//! exactly the set of topological orders of the column-order constraint
-//! DAG (see [`topological_order`]); the provided optimisers are valid by
-//! construction, and executors defensively assert
-//! [`QueryPlan::validate`].
+//! a query of accesses (see `kermit_algos::extract_accesses`) plus
+//! per-relation statistics ([`CatalogStats`]) and produces a [`QueryPlan`].
+//! A [`Planner`] holds an optimiser; `kermit::db` passes one where it used
+//! to pass a bare optimiser. Join algorithms (`JoinAlgo::join_for_each`)
+//! execute the plan. Every permutation of the variables is a valid plan,
+//! since each index is built with its columns in plan order (see
+//! [`topological_order`] and [`Precedence::free`]); executors defensively
+//! assert [`QueryPlan::validate`].
 //!
 //! [`QueryPlan`] is the *only* type crossing from planner to executor.
 //! The canonical variable numbering both sides agree on is not a planning
 //! decision and lives one level up, in [`crate::analysis`].
 
 mod cardinality;
-mod column_orders;
 mod cost_based;
 mod lexicographic;
 mod ordering;
@@ -28,7 +24,6 @@ mod stats;
 
 pub use {
     cardinality::CardinalityOptimiser,
-    column_orders::ColumnOrderPolicy,
     cost_based::CostBasedOptimiser,
     lexicographic::LexicographicOptimiser,
     ordering::{topological_order, Precedence},
@@ -40,13 +35,12 @@ use {clap::ValueEnum, kermit_parser::JoinQuery};
 
 /// A query optimiser plans how a join executes.
 ///
-/// Implementations receive the query *after* the const, placeholder and
-/// selection rewrites (the exact query the executor will run, including
-/// synthetic `Const_*` and `Select_*` predicates) and produce a [`QueryPlan`]
-/// the executor consumes. Object safe: the engine holds `Box<dyn
-/// QueryOptimiser>` so the choice is a runtime decision. The returned plan must
-/// order variables consistently with every relation's physical column order
-/// (any [`topological_order`] output qualifies); executors assert
+/// Implementations receive the query of accesses (its atoms `@0`, `@1`, …,
+/// one per access, each over distinct variables) and produce a
+/// [`QueryPlan`] the executor consumes. Object safe: the engine holds
+/// `Box<dyn QueryOptimiser>` so the choice is a runtime decision. The
+/// returned plan orders the query's variables (any [`topological_order`]
+/// output over [`Precedence::free`] qualifies); executors assert
 /// [`QueryPlan::validate`] and panic on violation.
 pub trait QueryOptimiser {
     /// Produces a plan for `query` given per-relation `stats`.

@@ -21,7 +21,7 @@ pub mod db;
 
 use {
     crate::db::Catalog,
-    kermit_algos::{ColumnOrderPolicy, JoinAlgo, JoinQuery, LexicographicOptimiser, Planner},
+    kermit_algos::{JoinAlgo, JoinQuery, LexicographicOptimiser, Planner},
     kermit_ds::{Relation, RelationHeader, Tuples},
 };
 
@@ -97,8 +97,7 @@ where
 
     // Synthetic queries carry no constants and this helper predates
     // statistics, so plan with the stats-free default optimiser.
-    // `Planner::new` still takes a policy; `prepare` plans freely under any.
-    let planner = Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any);
+    let planner = Planner::new(Box::new(LexicographicOptimiser));
     let catalog = Catalog::new(relations, planner.required_statistics());
     let mut rows = Vec::new();
     db::run_join::<R, JA>(&catalog, &query, &planner, |row| rows.push(row.to_vec()))
@@ -192,7 +191,7 @@ mod compute_join_tests {
 
     /// An entry with no batch names a relation that was never loaded.
     #[test]
-    #[should_panic(expected = "compute_join: ")]
+    #[should_panic(expected = "unknown relation \"R1\"")]
     fn an_entry_without_a_batch_panics_as_an_unknown_relation() {
         let input: Vec<Rows> = vec![vec![vec![1, 2]]];
         let _ = compute_join::<TreeTrie, LeapfrogTriejoin>(input, vec![0, 1], vec![

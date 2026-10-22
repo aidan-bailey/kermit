@@ -11,8 +11,8 @@
 use {
     kermit::db::{build, execute, prepare, Catalog, JoinError},
     kermit_algos::{
-        ColumnOrderPolicy, HashTriejoin, IndexSpec, JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner,
-        QueryOptimiser, StatisticsLevel,
+        HashTriejoin, IndexSpec, JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner, QueryOptimiser,
+        StatisticsLevel,
     },
     kermit_ds::{Relation, RelationHeader, Tuples},
     kermit_iters::{HashTrieIterable, TrieIterable},
@@ -199,7 +199,7 @@ pub fn test_join<R, JA, O>(
     // CLI's is.
     // `prepare` reads no column-order policy; `Planner::new` takes one until it
     // is removed from `Planner`.
-    let planner = Planner::new(Box::new(O::default()), ColumnOrderPolicy::Any);
+    let planner = Planner::new(Box::new(O::default()));
     let catalog = catalog_of(&inputs, planner.required_statistics());
     let (mut actual, _) = join_under_planner::<R, JA>(&catalog, query, &planner)
         .unwrap_or_else(|e| panic!("{query_str}: {e}"));

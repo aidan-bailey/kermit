@@ -203,8 +203,7 @@ mod tests {
     use {
         super::*,
         kermit_algos::{
-            ColumnOrderPolicy, CostBasedOptimiser, LexicographicOptimiser, QueryOptimiser,
-            StatisticsLevel,
+            CostBasedOptimiser, LexicographicOptimiser, QueryOptimiser, StatisticsLevel,
         },
         kermit_bench::{QueryDefinition, RelationSource},
         std::fs,
@@ -336,9 +335,8 @@ mod tests {
         (root, def)
     }
 
-    /// A planner for these tests: the lexicographic optimiser, planning
-    /// freely.
-    fn free() -> Planner { Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any) }
+    /// A planner for these tests: the lexicographic optimiser.
+    fn free() -> Planner { Planner::new(Box::new(LexicographicOptimiser)) }
 
     #[test]
     fn prepare_reads_only_the_relations_the_queries_name() {
@@ -390,7 +388,7 @@ mod tests {
         let (root, def) = def_with_an_unreadable_relation(&[("pair", "Q(X, Y) :- edge(X, Y).")]);
         let level_under = |optimiser: Box<dyn QueryOptimiser>| {
             let workload = Workload::from_definition(&def, root.path(), None).unwrap();
-            let planner = Planner::new(optimiser, ColumnOrderPolicy::Any);
+            let planner = Planner::new(optimiser);
             workload.prepare(&planner).unwrap().catalog.level()
         };
 

@@ -1,8 +1,8 @@
 //! End-to-end SNAP check (#96): the committed miniature graph goes through
 //! `kermit_generate::run`, then every query runs on the three
-//! (structure, algorithm) cells under every optimiser and column-order
-//! policy through the real `kermit::db` entry points, and must return the
-//! count the generator recorded as `expected`.
+//! (structure, algorithm) cells under every optimiser through the real
+//! `kermit::db` entry points, and must return the count the generator
+//! recorded as `expected`.
 //!
 //! It lives in the `kermit` crate for the reason `lubm_mini_oracle.rs` does:
 //! only this crate has both the generator and the join engine, and it needs
@@ -33,9 +33,7 @@ use {
         snap::{fixture_text, gzip, MINI_COUNTS},
         utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
     },
-    kermit_algos::{
-        ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
-    },
+    kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::{
         cache::sha256_hex, discovery::load_benchmark, BenchmarkDefinition, GeneratorSpec,
         SnapGraph, SnapQuery,
@@ -281,16 +279,13 @@ fn the_emitted_expected_counts_match_an_independent_count() {
 }
 
 /// Every query returns its `expected` count on every cell, under every
-/// optimiser and both column-order policies.
+/// optimiser.
 ///
-/// The plan an optimiser picks changes the join's descent order, never its
-/// answer; iterating the CLI enums covers optimisers and policies added
-/// later with no edit here. Under `stored` all four queries must validate for
-/// every optimiser (no `CyclicAttributeOrder`), which pins that `cycle4` is
-/// written `edge(A, D)` and not `edge(D, A)`. Under `any` the copies a plan
-/// needs are the planner's business and are not asserted, only the answers.
+/// The plan an optimiser picks changes the join's descent order and so the
+/// columns each index lists first, never the answer; iterating the CLI enum
+/// covers optimisers added later with no edit here.
 #[test]
-fn every_cell_optimiser_and_policy_returns_the_expected_counts() {
+fn every_cell_and_optimiser_returns_the_expected_counts() {
     let generation = generate_mini(None);
     let bench = emitted_benchmark(&generation.dir);
     assert_eq!(bench.queries.len(), SnapQuery::ALL.len());
@@ -304,32 +299,27 @@ fn every_cell_optimiser_and_policy_returns_the_expected_counts() {
     );
 
     let optimisers = Optimiser::value_variants();
-    let policies = ColumnOrderPolicy::value_variants();
     let mut mismatches: Vec<String> = Vec::new();
-    for &policy in policies {
-        for &optimiser in optimisers {
-            let planner = Planner::new(optimiser.instantiate(), policy);
-            let label = format!("{} / {}", optimiser.axis_value(), policy.axis_value());
-            let dir = &generation.dir;
-            mismatches.extend(cell_mismatches::<Tree, LeapfrogTriejoin>(
-                &bench, dir, &planner, &label,
-            ));
-            mismatches.extend(cell_mismatches::<Column, LeapfrogTriejoin>(
-                &bench, dir, &planner, &label,
-            ));
-            mismatches.extend(cell_mismatches::<Hash, HashTriejoin>(
-                &bench, dir, &planner, &label,
-            ));
-        }
+    for &optimiser in optimisers {
+        let planner = Planner::new(optimiser.instantiate());
+        let label = optimiser.axis_value().to_string();
+        let dir = &generation.dir;
+        mismatches.extend(cell_mismatches::<Tree, LeapfrogTriejoin>(
+            &bench, dir, &planner, &label,
+        ));
+        mismatches.extend(cell_mismatches::<Column, LeapfrogTriejoin>(
+            &bench, dir, &planner, &label,
+        ));
+        mismatches.extend(cell_mismatches::<Hash, HashTriejoin>(
+            &bench, dir, &planner, &label,
+        ));
     }
     assert!(
         mismatches.is_empty(),
-        "SNAP cardinality mismatches ({} across {} queries x {} optimisers x {} column-order \
-         policies x 3 cells):\n{}",
+        "SNAP cardinality mismatches ({} across {} queries x {} optimisers x 3 cells):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimisers.len(),
-        policies.len(),
         mismatches.join("\n"),
     );
 }

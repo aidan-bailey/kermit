@@ -19,10 +19,9 @@
 mod common;
 
 use {
-    clap::ValueEnum,
     common::utils::{catalog_of, join_under_planner, load_parquet_inputs},
     kermit_algos::{
-        CardinalityOptimiser, ColumnOrderPolicy, CostBasedOptimiser, JoinQuery, LeapfrogTriejoin,
+        CardinalityOptimiser, CostBasedOptimiser, JoinQuery, LeapfrogTriejoin,
         LexicographicOptimiser, Planner, QueryOptimiser,
     },
     kermit_bench::BenchmarkDefinition,
@@ -42,7 +41,7 @@ use {
     },
 };
 
-/// Builds one optimiser: a planner owns its optimiser, so each policy
+/// Builds one optimiser: a planner owns its optimiser, so each planner
 /// needs a fresh one.
 type NewOptimiser = fn() -> Box<dyn QueryOptimiser>;
 
@@ -65,8 +64,8 @@ fn vendored_jar() -> PathBuf {
 /// Loads the generated relations flat into a catalog gathered at what
 /// `planner` reads, joins every query as `R` (each builds the indexes its
 /// plan reads), and returns one line per query whose result count differs
-/// from the paper's reference cardinality. `label` names the optimiser and
-/// policy in each line.
+/// from the paper's reference cardinality. `label` names the optimiser in
+/// each line.
 fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
     bench: &BenchmarkDefinition, dir: &Path, planner: &Planner, label: &str,
     expected: &HashMap<String, u64>,
@@ -156,74 +155,68 @@ fn lubm_one_university_query_cardinalities_match_paper() {
     // failed descent at depth 3 or deeper once silently dropped every answer
     // to q7 under `cardinality` while `lexicographic` stayed correct. Add a
     // row here whenever an optimiser is added.
-    // Every column-order policy too: under `any` an atom may read a
-    // reordered copy, which must give the same answers (issue #93).
     let optimisers: Vec<(&str, NewOptimiser)> = vec![
         ("lexicographic", || Box::new(LexicographicOptimiser)),
         ("cardinality", || Box::new(CardinalityOptimiser)),
         ("cost-based", || Box::new(CostBasedOptimiser::default())),
     ];
     let optimiser_count = optimisers.len();
-    let policies = ColumnOrderPolicy::value_variants();
 
     let mut mismatches: Vec<String> = Vec::new();
-    for &policy in policies {
-        for (name, optimiser) in &optimisers {
-            let planner = Planner::new(optimiser(), policy);
-            let label = format!("{name} / {}", policy.axis_value());
-            mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
-                &bench,
-                out.path(),
-                &planner,
-                &label,
-                &expected,
-            ));
-            mismatches.extend(cardinality_mismatches::<TreeTrie<BinarySeek>>(
-                &bench,
-                out.path(),
-                &planner,
-                &label,
-                &expected,
-            ));
-            mismatches.extend(cardinality_mismatches::<TreeTrie<GallopingSeek>>(
-                &bench,
-                out.path(),
-                &planner,
-                &label,
-                &expected,
-            ));
-            mismatches.extend(cardinality_mismatches::<ColumnTrie<LinearSeek>>(
-                &bench,
-                out.path(),
-                &planner,
-                &label,
-                &expected,
-            ));
-            mismatches.extend(cardinality_mismatches::<ColumnTrie<BinarySeek>>(
-                &bench,
-                out.path(),
-                &planner,
-                &label,
-                &expected,
-            ));
-            mismatches.extend(cardinality_mismatches::<ColumnTrie<GallopingSeek>>(
-                &bench,
-                out.path(),
-                &planner,
-                &label,
-                &expected,
-            ));
-        }
+    for (name, optimiser) in &optimisers {
+        let planner = Planner::new(optimiser());
+        let label = (*name).to_string();
+        mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
+            &bench,
+            out.path(),
+            &planner,
+            &label,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<TreeTrie<BinarySeek>>(
+            &bench,
+            out.path(),
+            &planner,
+            &label,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<TreeTrie<GallopingSeek>>(
+            &bench,
+            out.path(),
+            &planner,
+            &label,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<LinearSeek>>(
+            &bench,
+            out.path(),
+            &planner,
+            &label,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<BinarySeek>>(
+            &bench,
+            out.path(),
+            &planner,
+            &label,
+            &expected,
+        ));
+        mismatches.extend(cardinality_mismatches::<ColumnTrie<GallopingSeek>>(
+            &bench,
+            out.path(),
+            &planner,
+            &label,
+            &expected,
+        ));
     }
 
     assert!(
         mismatches.is_empty(),
-        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers x {} \
-         column-order policies x 2 sorted tries x 3 seek strategies):\n{}",
+        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers x 2 sorted tries \
+         x 3 seek strategies):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimiser_count,
-        policies.len(),
         mismatches.join("\n"),
     );
 }

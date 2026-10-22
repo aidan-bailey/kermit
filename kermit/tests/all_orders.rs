@@ -22,8 +22,8 @@ use {
     },
     kermit::db::{build, execute, prepare, Catalog},
     kermit_algos::{
-        canonical_names, rewrite_placeholders, CatalogStats, ColumnOrderPolicy, HashTriejoin,
-        JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner, QueryOptimiser, StatisticsLevel,
+        canonical_names, rewrite_placeholders, CatalogStats, HashTriejoin, JoinAlgo, JoinQuery,
+        LeapfrogTriejoin, Planner, QueryOptimiser, StatisticsLevel,
     },
     kermit_ds::{
         Cardinality, ColumnTrie, HashTrie, LazyExpansion, NoPruning, Relation, RelationHeader,
@@ -246,7 +246,7 @@ fn catalog_for(relations: &Relations) -> Catalog {
 fn rows_in_order<R: Relation, JA: JoinAlgo<R>>(
     catalog: &Catalog, label: &str, query: &JoinQuery, order: &[String],
 ) -> Vec<Vec<usize>> {
-    let planner = Planner::new(Box::new(FixedOrder(order.to_vec())), ColumnOrderPolicy::Any);
+    let planner = Planner::new(Box::new(FixedOrder(order.to_vec())));
     let prepared = prepare(catalog, query, &planner)
         .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
     let names = canonical_names(prepared.query());
@@ -517,10 +517,9 @@ fn a_forced_order_reverses_the_index_columns() {
     let catalog = catalog_for(&relations);
     let query: JoinQuery = "Q(X, Y) :- r0(X, Y).".parse().unwrap();
     let columns = |order: [&str; 2]| {
-        let planner = Planner::new(
-            Box::new(FixedOrder(order.iter().map(|v| (*v).to_string()).collect())),
-            ColumnOrderPolicy::Any,
-        );
+        let planner = Planner::new(Box::new(FixedOrder(
+            order.iter().map(|v| (*v).to_string()).collect(),
+        )));
         let prepared = prepare(&catalog, &query, &planner).unwrap();
         prepared
             .indexes()

@@ -8,8 +8,8 @@ use {
     super::{validate_query, Catalog, JoinError},
     kermit_algos::{
         distinct_per_column, extract_accesses, plan_indexes, rewrite_placeholders, Access,
-        CatalogStats, ColumnOrderPolicy, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner,
-        QueryPlan, RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
+        CatalogStats, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner, QueryPlan, RelationStats,
+        StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
     },
     kermit_ds::{Relation, RelationHeader, TupleView, Tuples},
     kermit_iters::JoinIterable,
@@ -90,8 +90,7 @@ impl Prepared {
 /// plan into index specs.
 ///
 /// An index is built in plan order, so no stored column order constrains the
-/// plan: the statistics are always built under [`ColumnOrderPolicy::Any`],
-/// whatever policy `planner` was made with, and `planner` plans over them
+/// plan: the statistics carry no policy, and `planner` plans over them
 /// freely.
 ///
 /// # Errors
@@ -126,9 +125,7 @@ pub fn prepare(
             (id, access_statistics(catalog, access, required))
         })
         .collect();
-    let stats = CatalogStats::for_query(&access_query.query, ColumnOrderPolicy::Any, |id| {
-        access_stats.get(id).cloned()
-    });
+    let stats = CatalogStats::for_query(&access_query.query, |id| access_stats.get(id).cloned());
     let ordering = planner.plan(&access_query.query, &stats);
 
     let IndexPlan {
@@ -412,9 +409,9 @@ mod tests {
 
     fn parse(text: &str) -> JoinQuery { text.parse().expect("a well-formed query") }
 
-    /// A planner for `optimiser` under the only policy `prepare` plans with.
+    /// A planner for `optimiser`.
     fn planner_of(optimiser: impl QueryOptimiser + 'static) -> Planner {
-        Planner::new(Box::new(optimiser), ColumnOrderPolicy::Any)
+        Planner::new(Box::new(optimiser))
     }
 
     /// Plans in canonical variable order, so a test can read the plan off the

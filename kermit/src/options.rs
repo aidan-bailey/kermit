@@ -6,7 +6,7 @@
 use {
     crate::IndexStructureSelector,
     clap::{Args, ValueEnum},
-    kermit_algos::{ColumnOrderPolicy, Optimiser, Planner},
+    kermit_algos::{Optimiser, Planner},
     kermit_ds::{
         ChildCapacity, ColumnTrieBuildMode, ExpansionPolicy, HashTrieBuildMode, HashTrieConfig,
         IndexStructure, LoadFactor, PruningPolicy, RootCapacity, SeekStrategy, TreeTrieBuildMode,
@@ -29,12 +29,9 @@ pub(crate) struct PlannerArgs {
 }
 
 impl PlannerArgs {
-    /// The planner these flags select, planning over any column order
-    /// ([`ColumnOrderPolicy::Any`]). A `Planner` owns its optimiser, so each
-    /// family gets its own.
-    pub(crate) fn instantiate(self) -> Planner {
-        Planner::new(self.optimiser.instantiate(), ColumnOrderPolicy::Any)
-    }
+    /// The planner these flags select. A `Planner` owns its optimiser, so
+    /// each family gets its own.
+    pub(crate) fn instantiate(self) -> Planner { Planner::new(self.optimiser.instantiate()) }
 }
 
 /// One `--ds-*` flag. Each sets an axis that only some index structures

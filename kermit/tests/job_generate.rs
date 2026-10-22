@@ -2,7 +2,7 @@
 //! (`kermit-generate/tests/fixtures/job/`): a raw cache built from it,
 //! templates 1 and 2 generated through `kermit_generate::run`, the relation
 //! files read back with `kermit_ds::read_parquet`, and every query joined on
-//! every (structure, algorithm) cell, optimiser and column-order policy.
+//! every (structure, algorithm) cell and optimiser.
 //!
 //! Needs DuckDB, so each test skips with a stderr line where there is none
 //! (CI installs no DuckDB; the LUBM tests skip without Java the same way)
@@ -21,9 +21,7 @@ use {
         job::{build_raw_cache, csv_dir, fixture_dir, locate_or_skip},
         utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
     },
-    kermit_algos::{
-        ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
-    },
+    kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::{discovery::load_benchmark, BenchmarkDefinition},
     kermit_ds::{
         BinarySeek, Cardinality, ColumnTrie, GallopingSeek, HashTrie, LazyExpansion, LinearSeek,
@@ -449,41 +447,38 @@ fn relations_hold_filtered_rows_in_id_order() {
 }
 
 /// kermit's count of `bench`'s queries over the relations in `dir`, joined as
-/// `R` by `JA` under every optimiser and column-order policy, against each
-/// query's `expected` (DuckDB's `COUNT(*)`). One line per disagreement.
+/// `R` by `JA` under every optimiser, against each query's `expected`
+/// (DuckDB's `COUNT(*)`). One line per disagreement.
 fn mismatches<R: Relation + Cardinality, JA: JoinEntry<R>>(
     bench: &BenchmarkDefinition, dir: &Path,
 ) -> Vec<String> {
     let mut found = Vec::new();
-    for &policy in ColumnOrderPolicy::value_variants() {
-        for &optimiser in Optimiser::value_variants() {
-            let planner = Planner::new(optimiser.instantiate(), policy);
-            let label = format!(
-                "{} / {} / {}",
-                std::any::type_name::<R>(),
-                optimiser.axis_value(),
-                policy.axis_value()
-            );
-            let inputs = load_parquet_inputs(
-                dir,
-                bench
-                    .relations
-                    .iter()
-                    .map(|relation| relation.name.as_str()),
-            );
-            let catalog = catalog_of(&inputs, planner.required_statistics());
-            for query in &bench.queries {
-                let parsed: JoinQuery = query.query.parse().expect("generated Datalog parses");
-                let want = query.expected.expect("every JOB query carries its count");
-                match join_under_planner::<R, JA>(&catalog, parsed, &planner) {
-                    | Ok((rows, _)) if rows.len() as u64 == want => {},
-                    | Ok((rows, _)) => found.push(format!(
-                        "[{label}] {}: got {}, expected {want}",
-                        query.name,
-                        rows.len()
-                    )),
-                    | Err(error) => found.push(format!("[{label}] {}: {error}", query.name)),
-                }
+    for &optimiser in Optimiser::value_variants() {
+        let planner = Planner::new(optimiser.instantiate());
+        let label = format!(
+            "{} / {}",
+            std::any::type_name::<R>(),
+            optimiser.axis_value()
+        );
+        let inputs = load_parquet_inputs(
+            dir,
+            bench
+                .relations
+                .iter()
+                .map(|relation| relation.name.as_str()),
+        );
+        let catalog = catalog_of(&inputs, planner.required_statistics());
+        for query in &bench.queries {
+            let parsed: JoinQuery = query.query.parse().expect("generated Datalog parses");
+            let want = query.expected.expect("every JOB query carries its count");
+            match join_under_planner::<R, JA>(&catalog, parsed, &planner) {
+                | Ok((rows, _)) if rows.len() as u64 == want => {},
+                | Ok((rows, _)) => found.push(format!(
+                    "[{label}] {}: got {}, expected {want}",
+                    query.name,
+                    rows.len()
+                )),
+                | Err(error) => found.push(format!("[{label}] {}: {error}", query.name)),
             }
         }
     }
@@ -537,11 +532,9 @@ fn counts_match_duckdb_on_every_cell() {
     }
     assert!(
         found.is_empty(),
-        "{} count mismatches across 14 cells x {} optimisers x {} column-order policies x 2 \
-         templates:\n{}",
+        "{} count mismatches across 14 cells x {} optimisers x 2 templates:\n{}",
         found.len(),
         Optimiser::value_variants().len(),
-        ColumnOrderPolicy::value_variants().len(),
         found.join("\n")
     );
 }
