@@ -71,7 +71,7 @@ Identifies the benchmark. This is the primary metadata file.
 | Field | Type | Description |
 |-------|------|-------------|
 | `group_id` | string | Benchmark group name (`ds` for `bench ds`; the data structure is the function prefix) |
-| `function_id` | string | Benchmark function name within the group (`{IndexStructure}/space`) |
+| `function_id` | string | Benchmark function name within the group (`{IndexStructure}/space`; `space` for `bench run`/`bench join`) |
 | `value_str` | string \| null | Optional parameter string (unused) |
 | `throughput` | object \| null | Throughput config. `bench ds` sets `{"Elements": n}`, where `n` is the tuple count of the benchmarked relation (the `27` above is illustrative); `bench run` and `bench join` (schema 5) set none, so it is `null` on their `space` function |
 | `full_id` | string | `{group_id}/{function_id}` |
@@ -135,7 +135,7 @@ unit of `SpaceMeasurement::Value`).
 
 | Estimate | Description | Space benchmarks note |
 |----------|-------------|----------------------|
-| `mean` | Arithmetic mean of per-iteration values | Equals `heap_size_bytes()` exactly |
+| `mean` | Arithmetic mean of per-iteration values | Equals `heap_size_bytes()` exactly (for `bench run`, the sum over the query's indexes) |
 | `median` | Median of per-iteration values | Identical to mean (deterministic) |
 | `median_abs_dev` | Median absolute deviation | Always 0.0 (zero variance) |
 | `slope` | Slope of linear regression (iters vs total) | Equals mean (perfectly linear) |

@@ -273,9 +273,9 @@ subject-first stores, and stay excluded until the first v5 sweep re-measures the
 
 | Templates | Cause | Fix |
 |-----------|-------|-----|
-| q0008, q0010, q0017, q0030, q0035, q0079, q0085, q0264, q0306, q0409 | Index-bound: the best valid plan binds 3.7e7 to 1.7e11 keys, and `cardinality` already finds it. Object-first tries would bind 1 to 1.4e6. | #82 |
+| q0008, q0010, q0017, q0030, q0035, q0079, q0085, q0264, q0306, q0409 | Index-bound: the best valid plan binds 3.7e7 to 1.7e11 keys, and `cardinality` already finds it. Object-first tries would bind 1 to 1.4e6. | per-query index builds (2026-10-22), to be confirmed by #99 |
 | q0020 | Optimiser-bound: both optimisers bind 9.7e10 keys, where a valid plan binds 1.8e4. | #81 |
-| q0005 | An incoming star on the country `V_v3` (`nationality`, `parentcountry`, `eligibleregion`), plus 4,169,173,508 genuine result rows. The lexicographic plan enumerates users × given names × cities × offers before it checks the country. #65's capped runs did not finish on either family, and memory was not the limit. | #82 cuts the enumeration; the output stays 4.17e9 rows |
+| q0005 | An incoming star on the country `V_v3` (`nationality`, `parentcountry`, `eligibleregion`), plus 4,169,173,508 genuine result rows. The lexicographic plan enumerates users × given names × cities × offers before it checks the country. #65's capped runs did not finish on either family, and memory was not the limit. | per-query index builds (2026-10-22), to be confirmed by #99; the output stays 4.17e9 rows |
 
 Three more templates depend on the optimiser. q0073 and q0440 are slow only
 under `--optimiser lexicographic`, and q0034 only under `--optimiser

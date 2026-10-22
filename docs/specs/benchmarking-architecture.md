@@ -115,7 +115,7 @@ opt-in), `--queries-per-build` (K for the `end-to-end` metric, default 1).
 
 | Metric | How measured |
 |--------|--------------|
-| `Build` | `RelationFamily::build_index(header, TupleView::all(&tuples))` (which applies the family's config or build mode) via Criterion `iter_batched` with a no-op setup and `BatchSize::PerIteration`, on the relation's tuples in file order: no setup copy, and the built relation is freed after the timer stops |
+| `Build` | `RelationFamily::build_index(header, TupleView::all(&tuples))` (which applies the family's config or build mode) via Criterion `iter_batched` with a setup that clones only the header and `BatchSize::PerIteration`, on the relation's tuples in file order: no setup copy of the rows, and the built relation is freed after the timer stops |
 | `Iteration` | `F::scan(&relation)` via Criterion `iter`: walks every stored tuple through `RelationFamily::for_each_tuple` (`TrieIteratorWrapper::advance` / `HashTrie::for_each_tuple`), counting each through a `black_box` sink; no tuple is materialised |
 | `EndToEnd` | `RelationFamily::build_index` (same input) then K `F::scan` traversals, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
 | `Space` | `heap_size_bytes()` of the relation `build_index` built once, outside the timer, via Criterion `iter_custom` with `SpaceMeasurement` |
@@ -197,7 +197,7 @@ exists to measure.
 **Function names:** `build`, `iteration`, `end_to_end` and `space`, per
 query (the Criterion group, `{name}/{benchmark}/{query}/{ds}/{algo}`, already
 names the query). Before schema 5 they were `insertion`, `iteration`,
-`end_to_end`, `copies` and `space/{relation_name}`.
+`end_to_end`, `copies`, `space/{relation_name}` and `space/Index_<π>_<base>`.
 Note that `bench run`'s time functions are the bare strings, whereas
 `bench ds` prefixes the structure name (`{ds_name}/iteration`), so the two
 are *not* identical and a naive string match would not correlate them.

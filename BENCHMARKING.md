@@ -123,8 +123,9 @@ build (`BatchSize::PerIteration`) followed by K joins. Two caveats:
   same call the `build` phase times, and every index it makes goes through
   `RelationFamily::build_index`, the one construction site, honouring any
   `--ds-config` values and each structure's `--ds-build` mode. So the build
-  term is the same work in both phases, and `end_to_end` should agree with
-  `build + K × iteration` up to measurement noise.
+  term is the same work in both phases; a gap between `end_to_end` and
+  `build + K × iteration` beyond noise is the build→query interaction this
+  phase measures.
 - K is recorded in the report's `queries_per_build` axis (and surfaces as a
   DataFrame column), never in the Criterion function id.
 

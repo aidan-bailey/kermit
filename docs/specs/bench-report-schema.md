@@ -57,7 +57,7 @@ always parse a list.
 | Field      | Type                       | Description |
 |------------|----------------------------|-------------|
 | `group`    | string                     | The `criterion::BenchmarkGroup` name verbatim (e.g. `run/oxford-uniform-s1/triangle/TreeTrie/LeapfrogTriejoin`). On disk Criterion 0.8.2 escapes `/` (and `?"\*<>:\|^`) to `_` **and truncates the name to 64 bytes**, so `run/watdiv-stress-100-test-1-prelim/q0000/ColumnTrie/LeapfrogTriejoin` lives at `target/criterion/run_watdiv-stress-100-test-1-prelim_q0000_ColumnTrie_LeapfrogTri/`. Don't compute it — resolve as below. `bench run` refuses a sweep in which two groups would truncate to the same directory. |
-| `function` | string                     | Criterion `function_id` (e.g. `space/P` or `iteration`). On disk it is escaped the same way, and gets a `_2`, `_3`… suffix if its directory name was already used by the same `Criterion` instance. Resolve as below. |
+| `function` | string                     | Criterion `function_id` (e.g. `TreeTrie/space` or `iteration`). On disk it is escaped the same way, and gets a `_2`, `_3`… suffix if its directory name was already used by the same `Criterion` instance. Resolve as below. |
 | `metric`   | `"time"` \| `"space"`      | Which Criterion measurement axis this function recorded. |
 
 ### Time and space function ids
