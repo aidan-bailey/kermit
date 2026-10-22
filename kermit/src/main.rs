@@ -541,16 +541,14 @@ fn query_cell(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Execution>
 /// CSV. `bench join --output` passes the very cell its measurements run, so
 /// the CSV comes from the same kind of build.
 fn write_query_csv(
-    cell: Execution, planner_args: PlannerArgs, workload: &PreparedWorkload, writer: impl Write,
+    cell: Execution, workload: &PreparedWorkload, writer: impl Write,
 ) -> anyhow::Result<()> {
-    // One planner per family: a `Planner` owns its optimiser.
-    let planner = || planner_args.instantiate();
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| write_prepared_join(
-            TrieLftj::<kermit_ds::TreeTrie<S>>::new(build, planner()),
+            TrieLftj::<kermit_ds::TreeTrie<S>>::new(build),
             cell,
             workload,
             writer,
@@ -559,7 +557,7 @@ fn write_query_csv(
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| write_prepared_join(
-            TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, planner()),
+            TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build),
             cell,
             workload,
             writer,
@@ -571,7 +569,7 @@ fn write_query_csv(
             config,
             build,
         } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| write_prepared_join(
-            HashHtj::<H, P, E>::new(config, build, planner()),
+            HashHtj::<H, P, E>::new(config, build),
             cell,
             workload,
             writer,
@@ -674,7 +672,7 @@ fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         | None => Box::new(BufWriter::new(io::stdout().lock())),
     };
-    write_query_csv(cell, query_args.planner, &workload, writer)
+    write_query_csv(cell, &workload, writer)
 }
 
 /// Handler for `bench list`: print every discoverable benchmark with its
@@ -766,7 +764,7 @@ fn run_bench_join(
 
     if let Some(path) = &output {
         let writer = BufWriter::new(fs::File::create(path)?);
-        write_query_csv(cell, query_args.planner, &workload, writer)?;
+        write_query_csv(cell, &workload, writer)?;
     }
 
     let settings = RunSettings {

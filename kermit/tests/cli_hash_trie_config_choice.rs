@@ -3,7 +3,8 @@
 //! rejected where it cannot apply. Mirrors `cli_hash_trie_hasher_choice.rs` for
 //! the Config category of the optimization standard: CLI parser ->
 //! `ConfigChoices` -> `run_ds_bench::<HashTrieFamily<H, P>>` ->
-//! `RelationFamily::build_relation` -> `HashTrie::from_tuples_with_config` ->
+//! `RelationFamily::build_index` ->
+//! `ConfiguredBuildModeRelation::from_view_with_config_and_build_mode` ->
 //! `HasOptimizationAxes::optimization_axes()` -> `BenchReport.axes` -> JSON.
 
 mod common;

@@ -69,11 +69,10 @@ fn cli_bench_run_sweep_carries_expansion_only_to_hash_trie_cells() {
     }
 }
 
-/// `--verify` and `iteration` run before `space` here. Both would expand
-/// the loaded engine if they probed it, and `run_benchmark`'s as-built
-/// check would then fail the run. Triangle's vertex 1 has four out-edges,
-/// so its child is a multi-tuple `Unexpanded` list under either pruning
-/// setting.
+/// `--verify` and `iteration` run before `space` here. `space` measures a
+/// fresh build, and this test pins that `--verify` and lazy `iteration`
+/// succeed. Triangle's vertex 1 has four out-edges, so its child is a
+/// multi-tuple `Unexpanded` list under either pruning setting.
 #[test]
 fn cli_bench_run_lazy_probes_leave_the_engine_as_built() {
     for pruning in ["off", "on"] {

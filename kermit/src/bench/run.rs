@@ -365,8 +365,8 @@ fn run_benchmark<F: ExecutionFamily>(
                 let now: Vec<usize> = built.iter().map(|index| index.heap_size_bytes()).collect();
                 anyhow::ensure!(
                     now == *as_built,
-                    "internal error: a probe reached the indexes of a {ds_name} cell whose joins \
-                     mutate their relations, so `space` would measure them partly expanded; see \
+                    "internal error: two builds of the indexes of a {ds_name} cell differ in heap \
+                     size, so `space` would measure them partly expanded; see \
                      `ExecutionFamily::JOIN_MUTATES`"
                 );
             }
@@ -426,14 +426,12 @@ fn run_benchmark<F: ExecutionFamily>(
 pub(crate) fn dispatch_run_bench(
     cell: Execution, workload: &PreparedWorkload, settings: RunSettings<'_>,
 ) -> anyhow::Result<Vec<BenchReport>> {
-    // One planner per family: a `Planner` owns its optimiser.
-    let planner = || settings.planner.instantiate();
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie<S>>::new(build, planner()),
+            &TrieLftj::<kermit_ds::TreeTrie<S>>::new(build),
             workload,
             settings,
         )),
@@ -441,7 +439,7 @@ pub(crate) fn dispatch_run_bench(
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, planner()),
+            &TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build),
             workload,
             settings,
         )),
@@ -452,7 +450,7 @@ pub(crate) fn dispatch_run_bench(
             config,
             build,
         } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| run_benchmark(
-            &HashHtj::<H, P, E>::new(config, build, planner()),
+            &HashHtj::<H, P, E>::new(config, build),
             workload,
             settings,
         )),
