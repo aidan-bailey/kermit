@@ -70,8 +70,9 @@ pub struct IndexPlan {
 
 /// Plans the indexes of `accesses` under `plan`.
 ///
-/// `plan` must have been made for `accesses.query`. Checks (the atoms with
-/// no kept column) need no index and are not read here.
+/// `plan` must have been made for `accesses.query`. Accesses with equal
+/// [`IndexSpec`]s share one index, numbered by first appearance. Checks (the
+/// atoms with no kept column) need no index and are not read here.
 ///
 /// # Panics
 ///
@@ -103,8 +104,13 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan) -> IndexPlan {
             filter: access.filter.clone(),
             columns: order.iter().map(|&kept| access.columns[kept]).collect(),
         };
-        let id = indexes.len();
-        indexes.push(spec);
+        let id = match indexes.iter().position(|existing| *existing == spec) {
+            | Some(id) => id,
+            | None => {
+                indexes.push(spec);
+                indexes.len() - 1
+            },
+        };
         body.push(Predicate {
             name: format!("{INDEX_ID_PREFIX}{id}"),
             terms: order
@@ -325,5 +331,58 @@ mod tests {
                 .collect();
             assert_eq!(bound, order.to_vec());
         }
+    }
+
+    #[test]
+    fn a_self_join_that_reads_one_relation_one_way_builds_it_once() {
+        let out = planned("Q(X, Y, Z) :- edge(Y, X), edge(Z, X).", &["X", "Y", "Z"]);
+        assert_eq!(out.indexes, vec![spec("edge", Filter::none(), vec![1, 0])]);
+        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#0(X, Z)"]);
+        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+    }
+
+    #[test]
+    fn a_self_join_that_reads_both_ways_builds_two_indexes() {
+        let out = planned("Q(X, Y, Z) :- edge(X, Y), edge(Z, X).", &["X", "Y", "Z"]);
+        assert_eq!(out.indexes, vec![
+            spec("edge", Filter::none(), vec![0, 1]),
+            spec("edge", Filter::none(), vec![1, 0]),
+        ]);
+        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#1(X, Z)"]);
+    }
+
+    #[test]
+    fn index_ids_are_numbered_by_first_appearance() {
+        let out = planned("Q(X, Y) :- edge(Y, X), edge(X, Y), edge(Y, X).", &[
+            "X", "Y",
+        ]);
+        assert_eq!(out.indexes, vec![
+            spec("edge", Filter::none(), vec![1, 0]),
+            spec("edge", Filter::none(), vec![0, 1]),
+        ]);
+        assert_eq!(body_text(&out.query), vec![
+            "#0(X, Y)", "#1(X, Y)", "#0(X, Y)"
+        ]);
+    }
+
+    #[test]
+    fn the_same_filter_and_columns_merge_whatever_the_variables() {
+        let out = planned("Q(X, Y) :- p(X, c1), p(Y, c1).", &["X", "Y"]);
+        assert_eq!(out.indexes, vec![spec(
+            "p",
+            Filter::new(vec![(1, 1)], vec![]),
+            vec![0]
+        )]);
+        assert_eq!(body_text(&out.query), vec!["#0(X)", "#0(Y)"]);
+    }
+
+    #[test]
+    fn different_filters_do_not_merge() {
+        let out = planned("Q(X) :- p(X, c1), p(X, c2).", &["X"]);
+        assert_eq!(out.indexes, vec![
+            spec("p", Filter::new(vec![(1, 1)], vec![]), vec![0]),
+            spec("p", Filter::new(vec![(1, 2)], vec![]), vec![0]),
+        ]);
+        assert_eq!(body_text(&out.query), vec!["#0(X)", "#1(X)"]);
     }
 }
