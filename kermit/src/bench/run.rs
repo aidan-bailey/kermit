@@ -366,7 +366,7 @@ fn run_benchmark<F: ExecutionFamily>(
                 anyhow::ensure!(
                     now == *as_built,
                     "internal error: two builds of the indexes of a {ds_name} cell differ in heap \
-                     size, so `space` would measure them partly expanded; see \
+                     size, so `space` is not the as-built footprint; see \
                      `ExecutionFamily::JOIN_MUTATES`"
                 );
             }

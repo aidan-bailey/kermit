@@ -3,17 +3,14 @@
 //! The CLI exposes an index structure (`-i`) and a join algorithm (`-a`)
 //! as two independent selectors, but only three of the six concrete
 //! `(IndexStructure, JoinAlgorithm)` pairs are meaningful: the sorted
-//! tries pair with [`LeapfrogTriejoin`]
-//! and the hash trie pairs with
-//! [`HashTriejoin`]. The two families run
-//! through separate join entry points
-//! ([`lftj_join_for_each`](kermit::db::lftj_join_for_each) vs
-//! [`hash_join_for_each`](kermit::db::hash_join_for_each)), and historically
-//! the CLI carried two
-//! hand-reconciled copies of the benchmark runner, each taking the structure
-//! and the algorithm as *separate* parameters. That separation
-//! is what let `-i all -a leapfrog-triejoin` run `hash_join` on the
-//! `HashTrie` cell and stamp the report `LeapfrogTriejoin` (issue #56).
+//! tries pair with [`LeapfrogTriejoin`] and the hash trie pairs with
+//! [`HashTriejoin`]. The two families run through separate instantiations of
+//! [`kermit::db::execute`] (`LeapfrogTriejoin` vs `HashTriejoin`), and
+//! historically the CLI carried two hand-reconciled copies of the benchmark
+//! runner, each taking the structure and the algorithm as *separate*
+//! parameters. That separation is what let `-i all -a leapfrog-triejoin` run
+//! `hash_join` on the `HashTrie` cell and stamp the report `LeapfrogTriejoin`
+//! (issue #56).
 //!
 //! This module replaces the pair of independent values with a single
 //! [`Execution`] enum whose variants *are* the valid cells. A report's
@@ -175,14 +172,13 @@ impl<S: SeekStrategy> SortedTrieRelation for ColumnTrie<S> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through
-    /// [`lftj_join_for_each`](kermit::db::lftj_join_for_each).
+    /// [`kermit::db::execute`] with `LeapfrogTriejoin`.
     TrieLftj(SortedTrie),
     /// `HashTrie<H, P, E>` joined by Hash Triejoin through
-    /// [`hash_join_for_each`](kermit::db::hash_join_for_each), with `H` chosen
-    /// by `--ds-layout-hasher`, `P`
-    /// by `--ds-layout-pruning`, `E` by `--ds-layout-expansion`, and the
-    /// runtime values by `--ds-config`, built by the `--ds-build` mode
-    /// `build`.
+    /// [`kermit::db::execute`] with `HashTriejoin`, with `H` chosen by
+    /// `--ds-layout-hasher`, `P` by `--ds-layout-pruning`, `E` by
+    /// `--ds-layout-expansion`, and the runtime values by `--ds-config`,
+    /// built by the `--ds-build` mode `build`.
     HashHtj {
         /// The `--ds-layout-hasher` choice. Built by
         /// [`Execution::for_pair`] it is the *request* — the CLI choice
@@ -348,7 +344,7 @@ impl Sweep {
 /// join families [`TrieLftj`] / [`HashHtj`], which delegate to an embedded
 /// marker so the two paths cannot disagree about a structure.
 pub trait RelationFamily {
-    /// The relation type loaded from the benchmark's relation files.
+    /// The relation type built from views of the catalog's flat tuples.
     type Rel: Relation + HeapSize + 'static;
 
     /// The cell this family instance runs; source of the report's
@@ -492,8 +488,8 @@ pub trait ExecutionFamily: RelationFamily {
 /// The sorted-family structure `R` on its own: what `bench ds -i tree-trie`
 /// / `-i column-trie` measures. Carries the `--ds-build` mode every
 /// relation is built with (`()` for a structure with a single build), but
-/// no optimiser or engine, so it cannot join — the type says what
-/// `bench ds` does.
+/// does not implement [`ExecutionFamily`], so it cannot join — the type says
+/// what `bench ds` does.
 pub struct SortedTrieFamily<R: SortedTrieRelation> {
     build: R::BuildMode,
 }
@@ -738,11 +734,9 @@ mod tests {
 
     /// `query` prepared over a catalog holding `tuples` as the relation
     /// `header` names: what a family's `build_indexes` and `execute` take.
-    fn prepared_over(
-        header: RelationHeader, tuples: Tuples, query: &str,
-    ) -> (kermit::db::Catalog, kermit::db::Prepared) {
+    fn prepared_over(header: RelationHeader, tuples: Tuples, query: &str) -> (Catalog, Prepared) {
         use {
-            kermit::db::{prepare, Catalog},
+            kermit::db::prepare,
             kermit_algos::{
                 ColumnOrderPolicy, JoinQuery, LexicographicOptimiser, Planner, StatisticsLevel,
             },
@@ -1967,10 +1961,11 @@ mod tests {
 
     /// Runs `text` over `edges` through `family`'s per-query pipeline: the
     /// rows `execute` streams number the hand-counted `expected`, and
-    /// `count_rows` counts the same.
+    /// `count_rows` counts the same. Returns the rows, sorted, so the caller
+    /// can compare their contents across families.
     fn assert_pipeline_answers<F: ExecutionFamily>(
         family: &F, edges: &Tuples, text: &str, expected: u64,
-    ) {
+    ) -> Vec<Vec<usize>> {
         let (catalog, prepared) = prepared_over(
             RelationHeader::new_positional("edge", 2),
             edges.clone(),
@@ -1981,6 +1976,8 @@ mod tests {
         family.execute(&prepared, &indexes, |row| rows.push(row.to_vec()));
         assert_eq!(rows.len() as u64, expected, "{text}");
         assert_eq!(family.count_rows(&prepared, &indexes), expected, "{text}");
+        rows.sort();
+        rows
     }
 
     /// `execute` and `count_rows` answer the hand-counted rows in every
@@ -2017,10 +2014,25 @@ mod tests {
             HashTrieBuildMode::Bulk,
         );
         for (text, expected) in queries {
-            assert_pipeline_answers(&tree, &edges, text, expected);
-            assert_pipeline_answers(&column, &edges, text, expected);
-            assert_pipeline_answers(&hash, &edges, text, expected);
-            assert_pipeline_answers(&lazy, &edges, text, expected);
+            // The edges are a set and every query here yields the same bag
+            // of rows under set and multiset storage (the hand counts agree
+            // for all four families), so the sorted rows must be identical.
+            let rows = assert_pipeline_answers(&tree, &edges, text, expected);
+            assert_eq!(
+                assert_pipeline_answers(&column, &edges, text, expected),
+                rows,
+                "{text}"
+            );
+            assert_eq!(
+                assert_pipeline_answers(&hash, &edges, text, expected),
+                rows,
+                "{text}"
+            );
+            assert_eq!(
+                assert_pipeline_answers(&lazy, &edges, text, expected),
+                rows,
+                "{text}"
+            );
         }
     }
 

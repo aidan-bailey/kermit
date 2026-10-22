@@ -3,10 +3,9 @@
 //! the flag is rejected on a structure without the dimension. Mirrors
 //! `cli_hash_trie_layout_pruning.rs`.
 //!
-//! It also pins the probe rule of issue #92: a lazy family's loaded engine
-//! is never probed. `run_benchmark` checks that its relations still have
-//! their as-built footprint before measuring `space`, and fails the run if
-//! `--verify` or `iteration` reached them.
+//! It also pins the probe rule of issue #92 end to end: `--verify`, lazy
+//! `iteration` and `space` all succeed. `space` measures a fresh build, and
+//! `run_benchmark` checks that two fresh builds have the same heap size.
 
 mod common;
 
@@ -74,7 +73,7 @@ fn cli_bench_run_sweep_carries_expansion_only_to_hash_trie_cells() {
 /// succeed. Triangle's vertex 1 has four out-edges, so its child is a
 /// multi-tuple `Unexpanded` list under either pruning setting.
 #[test]
-fn cli_bench_run_lazy_probes_leave_the_engine_as_built() {
+fn cli_bench_run_lazy_verify_iteration_and_space_succeed() {
     for pruning in ["off", "on"] {
         let (output, report) = bench_run("triangle", &[
             "-i",

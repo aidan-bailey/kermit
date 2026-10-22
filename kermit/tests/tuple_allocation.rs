@@ -184,7 +184,7 @@ fn fanned_out() -> Tuples {
 }
 
 /// A batch clone is one `Vec<usize>` copy at the batch's exact size: what
-/// every `bench ds` / `bench run` setup clone and `load_with_tuples` pay.
+/// every `bench ds` / `bench run` setup clone pays.
 #[test]
 fn cloning_a_batch_allocates_once() {
     let batch = fanned_out();
