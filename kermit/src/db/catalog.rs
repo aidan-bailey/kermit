@@ -57,7 +57,7 @@ impl Catalog {
     pub fn new(relations: Vec<(RelationHeader, Tuples)>, level: StatisticsLevel) -> Catalog {
         let mut held: BTreeMap<String, (RelationHeader, Tuples)> = BTreeMap::new();
         for (header, tuples) in relations {
-            let tuples = if tuples.len() == 0 && tuples.arity() != header.arity() {
+            let tuples = if tuples.is_empty() && tuples.arity() != header.arity() {
                 Tuples::new(header.arity())
             } else {
                 tuples
