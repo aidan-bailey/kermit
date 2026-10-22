@@ -8,6 +8,8 @@ pub mod cli;
 pub mod job;
 pub mod macros;
 #[allow(dead_code)]
+pub mod orders;
+#[allow(dead_code)]
 pub mod snap;
 #[allow(dead_code)]
 pub mod utils;
