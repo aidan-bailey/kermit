@@ -20,12 +20,9 @@ use {
     kermit_algos::{
         extract_accesses, rewrite_placeholders, JoinQuery, RewriteError, StatisticsLevel,
     },
-    kermit_ds::{Relation, RelationHeader},
+    kermit_ds::RelationHeader,
     kermit_parser::Term,
-    std::{
-        collections::{BTreeMap, BTreeSet},
-        fmt,
-    },
+    std::{collections::BTreeSet, fmt},
 };
 
 /// Why a query cannot run over a relation store.
@@ -132,8 +129,8 @@ impl fmt::Display for JoinError {
                 available,
             } => write!(
                 f,
-                "the query optimiser reads {required}, but the database gathered only \
-                 {available}; build the database at the optimiser's required statistics"
+                "the query optimiser reads {required}, but the catalog gathered only {available}; \
+                 build the catalog at the optimiser's required statistics"
             ),
         }
     }
@@ -165,14 +162,6 @@ pub trait RelationArities {
     /// Every relation name, sorted and distinct. Read only to report an
     /// unknown relation.
     fn relation_names(&self) -> Vec<String>;
-}
-
-impl<R: Relation> RelationArities for BTreeMap<String, R> {
-    fn arity(&self, relation: &str) -> Option<usize> {
-        self.get(relation).map(|r| r.header().arity())
-    }
-
-    fn relation_names(&self) -> Vec<String> { self.keys().cloned().collect() }
 }
 
 /// Headers keyed by [`RelationHeader::name`], the key the CLI stores each
@@ -545,8 +534,8 @@ mod tests {
                 required: StatisticsLevel::ColumnDistinct,
                 available: StatisticsLevel::TupleCounts,
             }),
-            "the query optimiser reads per-column distinct counts, but the database gathered only \
-             tuple counts; build the database at the optimiser's required statistics"
+            "the query optimiser reads per-column distinct counts, but the catalog gathered only \
+             tuple counts; build the catalog at the optimiser's required statistics"
         );
     }
 }
