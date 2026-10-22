@@ -89,29 +89,6 @@ impl<R: Relation + HashTrieIterable> JoinEntry<R> for HashTriejoin {
     }
 }
 
-/// The column-order policy a macro-generated suite runs under, lifted to
-/// a type so `define_multiway_join_test_suite!` can name it, as
-/// `ConfigProvider` and `BuildModeProvider` lift a Config and a BuildMode.
-pub trait ColumnOrderProvider {
-    fn policy() -> ColumnOrderPolicy;
-}
-
-/// `--column-orders stored`: each relation read in its stored column
-/// order, the default.
-pub struct StoredOrders;
-
-/// `--column-orders any`: the planner is free and the join reads
-/// reordered copies.
-pub struct AnyOrders;
-
-impl ColumnOrderProvider for StoredOrders {
-    fn policy() -> ColumnOrderPolicy { ColumnOrderPolicy::Stored }
-}
-
-impl ColumnOrderProvider for AnyOrders {
-    fn policy() -> ColumnOrderPolicy { ColumnOrderPolicy::Any }
-}
-
 /// A fixture's relations by name: the header the relation was built with
 /// and its tuples, flat, in fixture (file) order.
 pub type Inputs = BTreeMap<String, (RelationHeader, Tuples)>;
@@ -163,27 +140,24 @@ pub fn join_under_planner<R: Relation, JA: JoinEntry<R>>(
 /// Builds one flat relation per input (named `R0`, `R1`, …), synthesises
 /// `Q(V…) :- R0(V…), R1(V…), ….` from `variables` / `rel_variables` (a
 /// [`PLACEHOLDER`] entry becomes `_`), runs it through `JA`'s entry point
-/// under `O` and the column-order policy `P` names, and asserts multiset
-/// equality with `result`.
+/// under `O`, and asserts multiset equality with `result`.
 ///
 /// Through [`join_under_planner`], so each pattern is also counted through
 /// the streamed path, the path `bench run` times, for every structure ×
-/// algorithm × optimiser × policy invocation. The relations are put in a
-/// `Catalog` gathered at the optimiser's `required_statistics()`, as the
-/// CLI's is.
+/// algorithm × optimiser invocation. The relations are put in a `Catalog`
+/// gathered at the optimiser's `required_statistics()`, as the CLI's is.
 ///
 /// The rows are compared as returned: the entry points project to the
 /// head themselves (issue #71), so a body-only variable — including the
 /// fresh ones a `_` or a repeated variable introduces — leaking into a row
 /// fails the comparison.
-pub fn test_join<R, JA, O, P>(
+pub fn test_join<R, JA, O>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     result: Vec<Vec<usize>>,
 ) where
     R: Relation,
     JA: JoinEntry<R>,
     O: QueryOptimiser + Default + 'static,
-    P: ColumnOrderProvider,
 {
     // Each relation's arity is its atom's term count: the query is what
     // fixes a column count, and an empty relation has no first tuple to
@@ -223,7 +197,7 @@ pub fn test_join<R, JA, O, P>(
 
     // The catalog is analysed to exactly what the optimiser reads, as the
     // CLI's is.
-    let planner = Planner::new(Box::new(O::default()), P::policy());
+    let planner = Planner::new(Box::new(O::default()), ColumnOrderPolicy::Any);
     let catalog = catalog_of(&inputs, planner.required_statistics());
     let (mut actual, _) = join_under_planner::<R, JA>(&catalog, query, &planner)
         .unwrap_or_else(|e| panic!("{query_str}: {e}"));
