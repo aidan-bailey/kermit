@@ -1,7 +1,7 @@
 # Benchmarking Architecture
 
 **Date:** 2026-03-17
-**Updated:** 2026-04-26 (post-output-refinement)
+**Updated:** 2026-04-26 (post-output-refinement); 2026-10-22 (per-query index builds, report schema 5)
 
 ## Overview
 
@@ -11,7 +11,7 @@ three management subcommands, and one generation subcommand:
 
 - **`bench join`** — Criterion benchmarks on user-supplied data files.
 - **`bench ds`** — Criterion benchmarks on a single data structure from a
-  file (insertion / iteration / space).
+  file (build / iteration / space).
 - **`bench run`** — Criterion benchmarks on a YAML-defined named workload
   drawn from `benchmarks/` (with relation files cached locally on first run).
 - **`bench list`** — Print all named workloads and their cache status.
@@ -30,6 +30,31 @@ kermit bench join           Criterion on user-supplied data (CLI)
 kermit bench ds             Criterion on single DS from file (CLI)
 kermit bench gen [watdiv|lubm]  Materialise a generator benchmark (CLI)
 ```
+
+## The query lifecycle
+
+Since report schema 5, every `bench join` and `bench run` query goes through
+four steps (`docs/specs/2026-10-22-per-query-index-build-design.md`):
+
+1. **Load (untimed).** Each relation the queries name is read once into a
+   `kermit::db::Catalog`: its header, its flat `Tuples` and statistics at
+   the optimiser's `required_statistics()` level. No structure is built.
+2. **Prepare (untimed, once per query).** `kermit::db::prepare` validates
+   the query against the catalog, extracts one access per atom (relation,
+   filter of constants and repeated variables, kept columns), scans
+   filtered accesses for exact statistics, plans freely, and turns the
+   plan into index specs (relation, filter, column order), merging
+   identical ones.
+3. **Build (timed).** Each spec reads the catalog's flat tuples through a
+   borrowed `TupleView` and copies its rows exactly once, in the
+   structure's own way (`ExecutionFamily::build_indexes`). An atom with only
+   constants becomes a row count.
+4. **Execute (timed).** The unchanged `JoinAlgo` runs over the plain
+   indexes (`ExecutionFamily::execute`); the entry point projects to the
+   head and applies the all-constant multiplicity.
+
+Freeing what a timed step built is never timed: Criterion drops it after the
+timer stops.
 
 ## Common arguments (`BenchArgs`)
 
@@ -52,14 +77,14 @@ group — the full name becomes
 ## `kermit bench join`
 
 Benchmarks a Datalog query over ad-hoc relation files with the same metrics
-as `bench run` (`insertion`, `iteration`, `space` by default; `end-to-end`
+as `bench run` (`build`, `iteration`, `space` by default; `end-to-end`
 opt-in).
 
 **Arguments:** `--relations` (file paths), `--query` (.dl file),
 `--algorithm`, `--indexstructure`, optional `--optimiser` (query optimiser
 planning the variable ordering; defaults to `lexicographic`), optional
 `--output` (writes one run's results as CSV with a header row of head
-variable names), `--metrics` (defaults to `insertion iteration space`;
+variable names), `--metrics` (defaults to `build iteration space`;
 `end-to-end` is opt-in), `--queries-per-build` (K for the `end-to-end`
 metric, default 1), `--ds-config` and `--ds-build` alongside the `--ds-layout-*` flags.
 
@@ -67,40 +92,44 @@ metric, default 1), `--ds-config` and `--ds-build` alongside the `--ds-layout-*`
 1. Validate the layout/config/build flags for the concrete structure, resolve
    them into a `DsChoices`, and resolve the `(structure, algorithm)` pair to
    its `Execution` cell.
-2. If `--output` is set, run the join once through `load_query_runner`
-   (built with the resolved `DsChoices`) and write CSV with a header row
-   (`head_column_names(query)`).
-3. Build `bench::Workload::adhoc` (name `adhoc`, one query named by the file
-   stem) and run it through `bench::run::dispatch_run_bench` — the same
-   runner as `bench run` — with prefix `--name` or `join`; function names as
-   for `bench run`.
+2. Build `bench::Workload::adhoc` (name `adhoc`, one query named by the file
+   stem) and prepare it once (`Workload::prepare`): one `Catalog` of the
+   relation files the query names, and the query's `Prepared`. `--output`
+   and the benchmark share that catalog, so the files are read once.
+3. If `--output` is set, build the query's indexes and execute the join
+   once, streaming each row to the CSV with a header row of head variable
+   names (`head_column_names(query)`).
+4. Run the `PreparedWorkload` through `bench::run::dispatch_run_bench` — the
+   same runner as `bench run` — with prefix `--name` or `join`; function
+   names as for `bench run`.
 
 ## `kermit bench ds`
 
 Benchmarks a single data structure on a single relation file.
 
 **Arguments:** `--relation` (single CSV/Parquet file), `--indexstructure`,
-`--metrics` (defaults to `insertion iteration space`; `end-to-end` is
+`--metrics` (defaults to `build iteration space`; `end-to-end` is
 opt-in), `--queries-per-build` (K for the `end-to-end` metric, default 1).
 
 **Metrics:**
 
 | Metric | How measured |
 |--------|--------------|
-| `Insertion` | `RelationFamily::build_relation(header, tuples)` (which applies the family's config or build mode) via Criterion `iter_batched`, on the relation's tuples in file order |
+| `Build` | `RelationFamily::build_index(header, TupleView::all(&tuples))` (which applies the family's config or build mode) via Criterion `iter_batched` with a no-op setup and `BatchSize::PerIteration`, on the relation's tuples in file order: no setup copy, and the built relation is freed after the timer stops |
 | `Iteration` | `F::scan(&relation)` via Criterion `iter`: walks every stored tuple through `RelationFamily::for_each_tuple` (`TrieIteratorWrapper::advance` / `HashTrie::for_each_tuple`), counting each through a `black_box` sink; no tuple is materialised |
-| `EndToEnd` | `RelationFamily::build_relation` (same input) then K `F::scan` traversals, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
-| `Space` | `heap_size_bytes()` of the relation `RelationFamily::load_with_tuples` built (through `build_relation`), via Criterion `iter_custom` with `SpaceMeasurement` |
+| `EndToEnd` | `RelationFamily::build_index` (same input) then K `F::scan` traversals, one timed body, via `iter_batched` with `BatchSize::PerIteration` (fresh build per sample) |
+| `Space` | `heap_size_bytes()` of the relation `build_index` built once, outside the timer, via Criterion `iter_custom` with `SpaceMeasurement` |
 
 Each metric becomes a separate Criterion `bench_function`:
-`{ds_name}/insertion`, `{ds_name}/iteration`, `{ds_name}/end_to_end`,
-`{ds_name}/space`. The two rebuilding metrics build from the tuples as the
-reader produced them (`RelationFamily::load_with_tuples`), not from the
-structure's own iteration order: that order is sorted and deduplicated for
-the sorted tries (their best case) and was a degenerate build order for
-the hash trie (issue #66), whereas file order is the same input for every
-structure and Layout. K is stamped into the report's `queries_per_build` axis
-(only when the metric is requested), never into the function id.
+`{ds_name}/build`, `{ds_name}/iteration`, `{ds_name}/end_to_end`,
+`{ds_name}/space`. The two building metrics build from the tuples as the
+reader produced them (`read_csv` / `read_parquet`: one flat `Tuples` in file
+order), read once and viewed whole, not from the structure's own iteration
+order: that order is sorted and deduplicated for the sorted tries (their
+best case) and was a degenerate build order for the hash trie (issue #66),
+whereas file order is the same input for every structure and Layout. K is
+stamped into the report's `queries_per_build` axis (only when the metric is
+requested), never into the function id.
 
 ## `kermit bench run`
 
@@ -109,7 +138,7 @@ Benchmarks a named YAML workload from `benchmarks/`.
 **Arguments:** positional `name` or `--all`, optional `--query` (run only
 that named query within the workload), `--indexstructure`, `--algorithm`,
 optional `--optimiser` (defaults to `lexicographic`; no `all` sweep —
-enumerate values per run), `--metrics` (defaults to `insertion iteration
+enumerate values per run), `--metrics` (defaults to `build iteration
 space`; `end-to-end` is opt-in), `--queries-per-build` (K for the
 `end-to-end` metric, default 1), `--verify` (run each query once before
 timing and compare its result count with the YAML's `expected`).
@@ -125,39 +154,50 @@ timing and compare its result count with the YAML's `expected`).
 3. For each workload, ensure relation files are cached locally
    (`kermit_bench::cache::ensure_cached`, downloading from the URLs in the
    YAML when missing).
-4. Load relations as `R` values and build the family's engine from them
-   (`ExecutionFamily::build`); the same values back the space metric. When
-   `insertion` or `end-to-end` is selected, each relation's tuples are also
-   kept in file order (`RelationFamily::load_with_tuples`), and those two
-   metrics rebuild from them.
-5. For each query in the workload (filtered by `--query` if set), with
-   `--verify`, run the query once and compare its count with `expected`
-   (mismatch aborts; a query without `expected` is noted as not verified)
-   — the count comes from `ExecutionFamily::count`, which streams the join
-   through a `black_box` sink and never materialises it, as do the
-   `Iteration` and `EndToEnd` timed bodies —
-   then run the chosen metrics. `Insertion`, `Iteration`, and `EndToEnd` go through
-   wall-clock Criterion; `Space` goes through `SpaceMeasurement`.
+4. Once per benchmark, before the loop over cells: `Workload::prepare`
+   validates every query from the relation headers, reads every relation the
+   queries name into one `Catalog` (flat `Tuples` plus statistics at the
+   optimiser's `required_statistics()` level), and prepares each query once
+   (access extraction, filtered statistics, free planning, index specs). No
+   structure is built at load, and the result is shared by every cell.
+5. For each query in the workload (filtered by `--query` if set), per
+   cell: with `--verify`, run the query once and compare its count with
+   `expected` (mismatch aborts; a query without `expected` is noted as not
+   verified) — the count comes from `ExecutionFamily::count_rows`, which
+   streams the join through a `black_box` sink and never materialises it, on
+   fresh indexes when the family's joins mutate them (`JOIN_MUTATES`) — then
+   run the chosen metrics. `Build`, `Iteration` and `EndToEnd` go through
+   wall-clock Criterion; `Space` goes through `SpaceMeasurement`:
+   - `build`: `ExecutionFamily::build_indexes(catalog, prepared)` — every
+     index the query needs plus its all-constant checks — via `iter_batched`
+     with a no-op setup and `BatchSize::PerIteration`: no setup copy, at most
+     one set of indexes alive, freed after the timer stops;
+   - `iteration`: `ExecutionFamily::execute`, counted through a `black_box`
+     sink, over indexes built once outside Criterion, or, when
+     `JOIN_MUTATES`, over a fresh build per sample made in untimed setup.
+     Planning is excluded;
+   - `end_to_end`: `build_indexes` plus K × `execute` in one timed body
+     (`--queries-per-build`), which equals `build` + K × `iteration`;
+   - `space`: the heap bytes of the query's indexes together, one Criterion
+     function per query. A lazy HashTrie keeps the check that its footprint
+     is as built.
 
-The runner itself (`run_benchmark`, which calls `ExecutionFamily::build` from
-`kermit/src/execution.rs`) lives in
-`kermit/src/bench/run.rs` and takes a `Workload` built by
-`Workload::from_definition`, which performs the `ensure_cached` step and the
-query parsing described in step 3 and the per-query loop above.
+The runner itself (`run_benchmark`, in `kermit/src/bench/run.rs`) takes a
+`PreparedWorkload`, which `Workload::prepare` builds from a `Workload`, and
+`Workload::from_definition` makes the `Workload`: it performs the
+`ensure_cached` step and the query parsing described in step 3.
 
 `EndToEnd` is the only metric whose timed body spans the build→query
-boundary: each Criterion sample constructs a fresh database from the
-file-order tuples kept in step 4 **through the same pipeline as the untimed step-4 build**
-(a fresh `BTreeMap<String, R>` via `build_relation`, queried through
-`ExecutionFamily::count` — `ExecutionFamily::build_from_tuples` for either family) and then executes and counts the query K times
-(`--queries-per-build`). `BatchSize::PerIteration` is deliberate — batching
-would amortise away the per-build cost the metric exists to measure. Every
-relation is built through `RelationFamily::build_relation` from the same
-input as the `Insertion` metric, so the build term is that metric's work
-plus assembling the engine's map.
+boundary: each Criterion sample builds the query's indexes from the
+catalog's flat tuples through the same call as `build`, then executes and
+counts the query K times (`--queries-per-build`). `BatchSize::PerIteration`
+is deliberate — batching would amortise away the per-build cost the metric
+exists to measure.
 
-**Function names:** `insertion`, `iteration`, `end_to_end`, and
-`space/{relation_name}`.
+**Function names:** `build`, `iteration`, `end_to_end` and `space`, per
+query (the Criterion group, `{name}/{benchmark}/{query}/{ds}/{algo}`, already
+names the query). Before schema 5 they were `insertion`, `iteration`,
+`end_to_end`, `copies` and `space/{relation_name}`.
 Note that `bench run`'s time functions are the bare strings, whereas
 `bench ds` prefixes the structure name (`{ds_name}/iteration`), so the two
 are *not* identical and a naive string match would not correlate them.
@@ -211,7 +251,7 @@ Each `bench` subcommand emits three independent output streams:
    `BenchReport` describing the same metadata, a structured `axes` map of
    axis values for downstream tooling (conventional keys: `data_structure`,
    `algorithm`, `optimiser`, `query`, `benchmark`, `relation_path`,
-   `relation_bytes`, `tuples`, `arity`; `optimiser` is emitted by
+   `relation_bytes`, `tuples`, `arity`, and `index_rows` on join reports; `optimiser` is emitted by
    `bench join` and `bench run` only — `bench ds` performs no join;
    `benchmark` and `query` are now emitted by `bench join` as well (`adhoc` /
    the query file's stem); `relations` is no longer emitted), plus
@@ -234,9 +274,11 @@ Each `bench` subcommand emits three independent output streams:
   metadata blocks.
 
 The space metric in `bench ds` and `bench run` is wired through
-`build_space_criterion`, which uses `iter_custom` to reconstruct the data
-structure per iteration so Criterion's calibration sees real work; the
-returned total equals `heap_size_bytes() * iters`, giving a deterministic
+`build_space_criterion` and `add_space_bench`, whose `iter_custom` closure
+sums `heap_size_bytes()` over a slice of the measured relations (one for
+`bench ds`, a query's indexes together for `bench run`) in every iteration,
+behind `black_box`, so Criterion's calibration sees real work; the returned
+total equals the summed heap size times `iters`, giving a deterministic
 per-iter mean equal to the heap size in bytes (see
 `docs/specs/space-benchmarks.md`). Criterion's plot subsystem isn't
 compiled in (`kermit/Cargo.toml` opts out of default features), so the
