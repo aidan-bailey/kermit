@@ -99,7 +99,7 @@ pub fn extract_accesses(query: &JoinQuery) -> Result<AccessQuery, RewriteError> 
 fn access_of(atom: &Predicate) -> Result<Access, RewriteError> {
     let mut columns: Vec<usize> = Vec::new();
     let mut variables: Vec<String> = Vec::new();
-    let constants: Vec<(usize, usize)> = Vec::new();
+    let mut constants: Vec<(usize, usize)> = Vec::new();
     let mut equalities: Vec<(usize, usize)> = Vec::new();
     let mut first_column: HashMap<&str, usize> = HashMap::new();
     for (column, term) in atom.terms.iter().enumerate() {
@@ -112,7 +112,7 @@ fn access_of(atom: &Predicate) -> Result<Access, RewriteError> {
                     variables.push(name.clone());
                 },
             },
-            | Term::Atom(_) => unimplemented!("constants: Task 9.2 replaces this arm"),
+            | Term::Atom(text) => constants.push((column, parse_constant(text)?)),
             | Term::Placeholder => {
                 panic!("extract_accesses: placeholder in {atom}; run rewrite_placeholders first")
             },
@@ -124,6 +124,15 @@ fn access_of(atom: &Predicate) -> Result<Access, RewriteError> {
         columns,
         variables,
     })
+}
+
+fn parse_constant(text: &str) -> Result<usize, RewriteError> {
+    let bad = || RewriteError::BadAtom(text.to_string());
+    let digits = text.strip_prefix('c').ok_or_else(bad)?;
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return Err(bad());
+    }
+    digits.parse::<usize>().map_err(|_| bad())
 }
 
 #[cfg(test)]
@@ -226,4 +235,113 @@ mod tests {
     #[test]
     #[should_panic(expected = "placeholder")]
     fn an_unrewritten_placeholder_panics() { let _ = extract_accesses(&parse("Q(X) :- r(X, _).")); }
+
+    #[test]
+    fn a_constant_is_a_filter_and_drops_its_column() {
+        let out = extract("Q(X) :- p(X, c42).");
+        let access = &out.accesses[0];
+        assert_eq!(access.columns, vec![0]);
+        assert_eq!(access.variables, vars(&["X"]));
+        assert_eq!(access.filter, Filter::new(vec![(1, 42)], vec![]));
+        assert_eq!(body_text(&out), vec!["@0(X)"]);
+        assert!(out.checks.is_empty());
+    }
+
+    #[test]
+    fn kept_columns_stay_in_source_order_around_a_leading_constant() {
+        let out = extract("Q(X, Y) :- edge(c5, X, Y).");
+        let access = &out.accesses[0];
+        assert_eq!(access.columns, vec![1, 2]);
+        assert_eq!(access.variables, vars(&["X", "Y"]));
+        assert_eq!(access.filter.constants(), &[(0, 5)]);
+    }
+
+    #[test]
+    fn a_constant_and_a_repeat_in_one_atom() {
+        let out = extract("Q(X) :- p(X, c7, X).");
+        let access = &out.accesses[0];
+        assert_eq!(access.columns, vec![0]);
+        assert_eq!(access.filter, Filter::new(vec![(1, 7)], vec![(0, 2)]));
+    }
+
+    #[test]
+    fn the_same_constant_in_two_atoms_is_two_filters() {
+        let out = extract("Q(X, Y) :- p(X, c5), r(Y, c5).");
+        assert_eq!(out.accesses.len(), 2);
+        assert_eq!(out.accesses[0].filter.constants(), &[(1, 5)]);
+        assert_eq!(out.accesses[1].filter.constants(), &[(1, 5)]);
+        assert_eq!(out.accesses[1].variables, vars(&["Y"]));
+    }
+
+    #[test]
+    fn an_all_constant_atom_is_a_check() {
+        let out = extract("Q(X) :- p(X), r(c1, c2).");
+        assert_eq!(out.accesses.len(), 1);
+        assert_eq!(out.checks.len(), 1);
+        let check = &out.checks[0];
+        assert_eq!(check.relation, "r");
+        assert!(check.columns.is_empty());
+        assert!(check.variables.is_empty());
+        assert_eq!(check.filter, Filter::new(vec![(0, 1), (1, 2)], vec![]));
+        assert_eq!(body_text(&out), vec!["@0(X)"]);
+    }
+
+    #[test]
+    fn access_ids_count_accesses_and_skip_checks() {
+        let out = extract("Q(X, Y) :- r(c1), p(X), s(c2, c3), t(X, Y).");
+        assert_eq!(body_text(&out), vec!["@0(X)", "@1(X, Y)"]);
+        assert_eq!(out.accesses[0].relation, "p");
+        assert_eq!(out.accesses[1].relation, "t");
+        let checked: Vec<&str> = out.checks.iter().map(|c| c.relation.as_str()).collect();
+        assert_eq!(checked, vec!["r", "s"]);
+    }
+
+    #[test]
+    fn a_query_of_only_checks_has_no_accesses() {
+        let out = extract("Q(X) :- r(c1, c2), s(c3).");
+        assert!(out.accesses.is_empty());
+        assert!(out.query.body.is_empty());
+        assert_eq!(out.checks.len(), 2);
+    }
+
+    #[test]
+    fn a_malformed_constant_is_a_bad_atom() {
+        for (text, bad) in [
+            ("Q(X) :- p(X, alice).", "alice"),
+            ("Q(X) :- p(X, c).", "c"),
+            ("Q(X) :- p(X, c12x).", "c12x"),
+        ] {
+            assert_eq!(
+                extract_accesses(&parse(text)).unwrap_err(),
+                RewriteError::BadAtom(bad.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn a_constant_too_large_for_usize_is_a_bad_atom() {
+        let text = "Q(X) :- p(X, c99999999999999999999999999).";
+        assert_eq!(
+            extract_accesses(&parse(text)).unwrap_err(),
+            RewriteError::BadAtom("c99999999999999999999999999".to_string())
+        );
+    }
+
+    #[test]
+    fn the_first_malformed_constant_in_body_order_is_reported() {
+        let text = "Q(X) :- p(X, c1), r(X, foo), s(X, bar).";
+        assert_eq!(
+            extract_accesses(&parse(text)).unwrap_err(),
+            RewriteError::BadAtom("foo".to_string())
+        );
+    }
+
+    #[test]
+    fn a_malformed_constant_inside_a_check_is_reported() {
+        let text = "Q(X) :- p(X), r(c1, foo).";
+        assert_eq!(
+            extract_accesses(&parse(text)).unwrap_err(),
+            RewriteError::BadAtom("foo".to_string())
+        );
+    }
 }
