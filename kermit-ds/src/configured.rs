@@ -24,7 +24,7 @@ use {
     },
     kermit_iters::{
         HasOptimizationAxes, HashTrieIterable, HashTrieIterator, JoinIterable, TrieIterable,
-        TrieIterator, Tuples,
+        TrieIterator, TupleView, Tuples,
     },
     serde_json::Value,
     std::{collections::BTreeMap, marker::PhantomData, ops::Deref},
@@ -120,12 +120,18 @@ where
     R: ConfigurableRelation,
     P: ConfigProvider<R::Config>,
 {
+    const KEEPS_DUPLICATES: bool = R::KEEPS_DUPLICATES;
+
     fn header(&self) -> &RelationHeader { self.inner.header() }
 
     fn new(header: RelationHeader) -> Self { Self::wrap(R::with_config(header, P::config())) }
 
     fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
         Self::wrap(R::from_tuples_with_config(header, P::config(), tuples))
+    }
+
+    fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self {
+        Self::wrap(R::from_view_with_config(header, P::config(), view))
     }
 
     fn insert(&mut self, tuple: impl AsRef<[usize]>) { self.inner.insert(tuple) }
@@ -151,6 +157,17 @@ where
             P::config(),
             mode,
             tuples,
+        ))
+    }
+
+    fn from_view_with_build_mode(
+        header: RelationHeader, mode: R::BuildMode, view: TupleView<'_>,
+    ) -> Self {
+        Self::wrap(R::from_view_with_config_and_build_mode(
+            header,
+            P::config(),
+            mode,
+            view,
         ))
     }
 }
@@ -274,5 +291,89 @@ mod tests {
             "the presized record: {builds:?}"
         );
         assert_eq!(walked(&r), vec![vec![1, 2], vec![3, 4]]);
+    }
+
+    /// Hands `build` the view of rows 0 and 4 of a five-row source, read
+    /// as `[5, 1]` and `[5, 3]` (column 2 holds 5, columns 0 and 1 agree,
+    /// columns 2 then 0 are read), and returns what it builds.
+    fn with_view<T>(build: impl FnOnce(crate::TupleView<'_>) -> T) -> T {
+        let source = Tuples::from(vec![
+            vec![1, 1, 5],
+            vec![2, 3, 5],
+            vec![2, 2, 6],
+            vec![1, 1, 6],
+            vec![3, 3, 5],
+        ]);
+        let view = crate::TupleView::new(
+            &source,
+            crate::Filter::new(vec![(2, 5)], vec![(0, 1)]),
+            vec![2, 0],
+        );
+        build(view)
+    }
+
+    /// `R::KEEPS_DUPLICATES` read through a function, so that the assertion
+    /// is not a constant expression.
+    fn keeps_duplicates<R: Relation>() -> bool { R::KEEPS_DUPLICATES }
+
+    #[test]
+    fn from_view_injects_the_provider_config() {
+        let r = with_view(|view| HalfFullTrie::from_view(2.into(), view));
+        assert_eq!(r.config().load_factor, LoadFactor::percent(50).unwrap());
+        assert_eq!(walked(&r), vec![vec![5, 1], vec![5, 3]]);
+    }
+
+    #[test]
+    fn from_view_with_build_mode_stacks_the_provider_config_and_the_given_mode() {
+        type Stacked = Configured<HashTrie<SipHashStrategy>, Presized>;
+        crate::ds::take_hash_trie_parallel_builds();
+        let mode = crate::ds::HashTrieBuildMode::Presized(crate::Threads::new(2).unwrap());
+        let r = with_view(|view| Stacked::from_view_with_build_mode(2.into(), mode, view));
+        assert_eq!(r.config().root_capacity, crate::ds::RootCapacity::Tuples);
+        let builds = crate::ds::take_hash_trie_parallel_builds();
+        assert_eq!(builds.len(), 1, "one presized build: {builds:?}");
+        assert_eq!(builds[0].threads, 2, "{builds:?}");
+        assert_eq!(walked(&r), vec![vec![5, 1], vec![5, 3]]);
+    }
+
+    crate::define_config_provider!(
+        SpyProvider,
+        crate::relation::view_spy::SpyConfig,
+        crate::relation::view_spy::SpyConfig
+    );
+
+    /// The wrapper hands the view to the inner relation's own view
+    /// constructor. The tests above cannot tell this from the default body,
+    /// which reaches the same build through the tuple constructor.
+    #[test]
+    fn views_reach_the_inner_relations_view_constructors() {
+        use crate::relation::view_spy::{take_calls, SpyMode, ViewSpy};
+        type Spied = Configured<ViewSpy, SpyProvider>;
+        take_calls();
+        let _ = with_view(|view| Spied::from_view(2.into(), view));
+        assert_eq!(take_calls(), ["from_view_with_config"]);
+        let _ = with_view(|view| Spied::from_view_with_build_mode(2.into(), SpyMode, view));
+        assert_eq!(take_calls(), ["from_view_with_config_and_build_mode"]);
+    }
+
+    /// The tuple constructors keep reaching the inner relation's tuple
+    /// constructors.
+    #[test]
+    fn tuple_constructors_still_reach_the_inner_relations_tuple_constructors() {
+        use crate::relation::view_spy::{take_calls, SpyMode, ViewSpy};
+        type Spied = Configured<ViewSpy, SpyProvider>;
+        take_calls();
+        let _ = Spied::from_tuples(2.into(), vec![vec![1, 2]]);
+        assert_eq!(take_calls(), ["from_tuples_with_config"]);
+        let _ = Spied::from_tuples_with_build_mode(2.into(), SpyMode, vec![vec![1, 2]]);
+        assert_eq!(take_calls(), ["from_tuples_with_config_and_build_mode"]);
+    }
+
+    #[test]
+    fn keeps_duplicates_is_the_inner_relations() {
+        assert!(keeps_duplicates::<HalfFullTrie>());
+        assert!(keeps_duplicates::<
+            Configured<crate::relation::view_spy::ViewSpy, SpyProvider>,
+        >());
     }
 }

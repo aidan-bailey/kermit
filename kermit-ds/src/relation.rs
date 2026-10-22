@@ -719,6 +719,135 @@ where
     }
 }
 
+/// A relation that builds nothing and records which constructor ran, so that
+/// a wrapper's pass-through can be told from the default bodies, which reach
+/// the same structure through the tuple constructors.
+#[cfg(test)]
+pub(crate) mod view_spy {
+    use {super::*, std::cell::RefCell};
+
+    thread_local! {
+        static CALLS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn record(call: &'static str) { CALLS.with(|calls| calls.borrow_mut().push(call)) }
+
+    /// The constructors that ran on this thread since the last call, in order.
+    pub(crate) fn take_calls() -> Vec<&'static str> { CALLS.with(RefCell::take) }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct SpyConfig;
+
+    impl kermit_iters::ConfigOption for SpyConfig {
+        fn axes(&self) -> Vec<(&'static str, serde_json::Value)> { vec![] }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct SpyMode;
+
+    impl kermit_iters::BuildMode for SpyMode {
+        fn axis_value(&self) -> String { "spy".to_string() }
+    }
+
+    pub(crate) struct ViewSpy {
+        header: RelationHeader,
+        config: SpyConfig,
+    }
+
+    impl ViewSpy {
+        fn empty(header: RelationHeader) -> Self {
+            Self {
+                header,
+                config: SpyConfig,
+            }
+        }
+    }
+
+    impl JoinIterable for ViewSpy {}
+
+    impl Projectable for ViewSpy {
+        fn project(&self, _columns: Vec<usize>) -> Self { Self::empty(self.header.clone()) }
+    }
+
+    impl Relation for ViewSpy {
+        const KEEPS_DUPLICATES: bool = true;
+
+        fn header(&self) -> &RelationHeader { &self.header }
+
+        fn new(header: RelationHeader) -> Self { Self::empty(header) }
+
+        fn from_tuples(header: RelationHeader, _tuples: impl Into<Tuples>) -> Self {
+            record("from_tuples");
+            Self::empty(header)
+        }
+
+        fn from_view(header: RelationHeader, _view: TupleView<'_>) -> Self {
+            record("from_view");
+            Self::empty(header)
+        }
+
+        fn insert(&mut self, _tuple: impl AsRef<[usize]>) {}
+
+        fn insert_all(&mut self, _tuples: impl Into<Tuples>) {}
+    }
+
+    impl ConfigurableRelation for ViewSpy {
+        type Config = SpyConfig;
+
+        fn with_config(header: RelationHeader, _config: SpyConfig) -> Self { Self::empty(header) }
+
+        fn from_tuples_with_config(
+            header: RelationHeader, _config: SpyConfig, _tuples: impl Into<Tuples>,
+        ) -> Self {
+            record("from_tuples_with_config");
+            Self::empty(header)
+        }
+
+        fn from_view_with_config(
+            header: RelationHeader, _config: SpyConfig, _view: TupleView<'_>,
+        ) -> Self {
+            record("from_view_with_config");
+            Self::empty(header)
+        }
+
+        fn config(&self) -> &SpyConfig { &self.config }
+    }
+
+    impl BuildModeRelation for ViewSpy {
+        type BuildMode = SpyMode;
+
+        fn from_tuples_with_build_mode(
+            header: RelationHeader, _mode: SpyMode, _tuples: impl Into<Tuples>,
+        ) -> Self {
+            record("from_tuples_with_build_mode");
+            Self::empty(header)
+        }
+
+        fn from_view_with_build_mode(
+            header: RelationHeader, _mode: SpyMode, _view: TupleView<'_>,
+        ) -> Self {
+            record("from_view_with_build_mode");
+            Self::empty(header)
+        }
+    }
+
+    impl ConfiguredBuildModeRelation for ViewSpy {
+        fn from_tuples_with_config_and_build_mode(
+            header: RelationHeader, _config: SpyConfig, _mode: SpyMode, _tuples: impl Into<Tuples>,
+        ) -> Self {
+            record("from_tuples_with_config_and_build_mode");
+            Self::empty(header)
+        }
+
+        fn from_view_with_config_and_build_mode(
+            header: RelationHeader, _config: SpyConfig, _mode: SpyMode, _view: TupleView<'_>,
+        ) -> Self {
+            record("from_view_with_config_and_build_mode");
+            Self::empty(header)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
