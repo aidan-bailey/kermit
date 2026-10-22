@@ -1,11 +1,11 @@
 use {
     super::build_mode::TreeTrieBuildMode,
     crate::{
-        morsel::{dispatch, scatter_rows, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD},
+        morsel::{dispatch, row_id, scatter_rows, Threads, MORSEL_TUPLES, PARTITIONS_PER_THREAD},
         relation::{BuildModeRelation, Relation, RelationHeader},
         seek::{seek_axes, GallopingSeek, SeekStrategy},
     },
-    kermit_iters::{HasOptimizationAxes, JoinIterable, TupleView, Tuples},
+    kermit_iters::{HasOptimizationAxes, JoinIterable, RowId, TupleView, Tuples},
     serde_json::Value,
     std::{
         collections::BTreeMap,
@@ -138,16 +138,42 @@ impl<S: SeekStrategy> TreeTrie<S> {
 const SPLITTER_SAMPLES_PER_PARTITION: usize = 128;
 
 /// Up to `partitions − 1` splitters for the parallel build: quantiles of a
-/// sorted stride sample of the first keys. The sample keeps its duplicates,
-/// so the splitters share out the *tuples*, not the distinct keys. A key
-/// heavier than one share repeats as a splitter; repeats are merged, since
-/// all of a key's tuples must share a partition. A tuple goes to partition
+/// sorted stride sample of the first output keys of the `rows` rows `view`
+/// keeps (`rows` is `view.count()`, which the caller has already taken).
+/// The sample keeps its duplicates, so the splitters share out the
+/// *tuples*, not the distinct keys. A key heavier than one share repeats as
+/// a splitter; repeats are merged, since all of a key's tuples must share a
+/// partition. A tuple goes to partition
 /// `splitters.partition_point(|&s| s <= tuple[0])`, so partitions are
 /// ordered by first key. The splitters move work between partitions, never
 /// the trie.
-fn first_key_splitters(tuples: &Tuples, partitions: usize) -> Vec<usize> {
-    let stride = (tuples.len() / (SPLITTER_SAMPLES_PER_PARTITION * partitions)).max(1);
-    let mut sample: Vec<usize> = tuples.rows().step_by(stride).map(|row| row[0]).collect();
+///
+/// An unfiltered view's `k`-th kept row is source row `k`, so the sample
+/// strides over source ids and reads only the sampled rows; a filtered view
+/// is walked once, counting the rows it keeps.
+///
+/// Requires `rows > 0` and a view with at least one output column.
+fn first_key_splitters(view: &TupleView<'_>, rows: usize, partitions: usize) -> Vec<usize> {
+    let stride = (rows / (SPLITTER_SAMPLES_PER_PARTITION * partitions)).max(1);
+    let mut first = vec![0; view.arity()];
+    let mut sample: Vec<usize> = Vec::with_capacity(rows.div_ceil(stride));
+    let mut take = |id: RowId| {
+        view.write(id, &mut first);
+        sample.push(first[0]);
+    };
+    if view.filter().is_none() {
+        (0..row_id(rows)).step_by(stride).for_each(&mut take);
+    } else {
+        let mut seen = 0usize;
+        for id in 0..row_id(view.source_rows()) {
+            if view.matches(id) {
+                if seen.is_multiple_of(stride) {
+                    take(id);
+                }
+                seen += 1;
+            }
+        }
+    }
     sample.sort_unstable();
     let mut splitters: Vec<usize> = (1..partitions)
         .map(|p| sample[p * sample.len() / partitions])
@@ -175,25 +201,23 @@ pub(crate) fn take_parallel_builds() -> Vec<(usize, Vec<usize>)> {
 
 impl<S: SeekStrategy> TreeTrie<S> {
     /// The `parallel:N` build (`docs/data-structures/parallel-build.md`):
-    /// the trie [`Relation::from_tuples`] builds, built on `threads` threads.
-    fn from_tuples_parallel(header: RelationHeader, threads: Threads, tuples: Tuples) -> Self {
-        Self::build_parallel(header, threads, MORSEL_TUPLES, tuples)
-    }
-
-    /// [`from_tuples_parallel`](Self::from_tuples_parallel) with the morsel
-    /// size as a parameter, so tests can cut a small input into many
-    /// morsels.
+    /// the trie [`Relation::from_view`] builds, built on `threads` threads.
+    /// `morsel_rows` is the morsel size as a parameter, so tests can cut a
+    /// small input into many morsels; [`BuildModeRelation`] passes
+    /// [`MORSEL_TUPLES`].
     ///
-    /// 1. **Partition**: [`scatter_rows`] the row ids into first-key ranges cut
-    ///    at [`first_key_splitters`]; the batch itself stays where it is.
+    /// 1. **Partition**: [`scatter_rows`] the ids of the source rows the view
+    ///    keeps into first-key ranges cut at [`first_key_splitters`]; the
+    ///    source itself stays where it is.
     /// 2. **Build**: [`dispatch`] each partition to a worker, which gathers its
-    ///    rows into a [`Tuples`] of its own (its ids strictly ascend, so the
-    ///    reads always move forward, skipping other partitions' rows), sorts
-    ///    it, and inserts its rows one at a time, as the serial build does with
-    ///    the whole batch. The gather copies each row once (`arity` × 8 bytes),
-    ///    in parallel; with unordered first keys every partition reads across
-    ///    the whole batch, so read traffic grows by up to the rows per cache
-    ///    line (about 4× at arity 2).
+    ///    rows with [`TupleView::gather_sorted`]: the ids ascend, so the sort
+    ///    of the 4-byte ids is a sort of nearly ordered input, and the rows are
+    ///    then copied once, in output order, into a [`Tuples`] of exactly their
+    ///    size, at every arity. The worker inserts its rows one at a time, as
+    ///    the serial build does with the whole view. The gather copies each row
+    ///    once (`arity` × 8 bytes), in parallel; with unordered first keys
+    ///    every partition reads across the whole source, so read traffic grows
+    ///    by up to the rows per cache line (about 4× at arity 2).
     /// 3. **Assemble**: push every partition's top-level nodes onto the root,
     ///    in key order, one at a time.
     ///
@@ -201,29 +225,28 @@ impl<S: SeekStrategy> TreeTrie<S> {
     /// subtree receives the serial build's sequence of inserts, and the root
     /// grows by one push per first key, as the serial insert-at-the-end
     /// does. Every node and every `Vec` capacity therefore matches.
+    ///
+    /// # Panics
+    ///
+    /// As [`Relation::from_view`]: if the source has rows and the view's
+    /// arity is not the header's.
     fn build_parallel(
-        header: RelationHeader, threads: Threads, morsel_rows: usize, tuples: Tuples,
+        header: RelationHeader, threads: Threads, morsel_rows: usize, view: &TupleView<'_>,
     ) -> Self {
-        if tuples.is_empty() {
+        crate::relation::check_view_arity(&header, view);
+        if view.source_rows() == 0 {
             return Self::new(header);
         }
-        // The serial build's check, with its message.
-        let arity = tuples.arity();
-        assert_eq!(
-            arity,
-            header.arity(),
-            "from_tuples: tuple arity {arity} does not match header arity {}",
-            header.arity()
-        );
-        if arity == 0 {
+        let arity = view.arity();
+        let rows = view.count();
+        if arity == 0 || rows == 0 {
             // A nullary tuple inserts nothing, so the serial build of any
-            // number of them is the empty trie.
+            // number of them is the empty trie; so is a view that keeps no row.
             return Self::new(header);
         }
 
-        let splitters = first_key_splitters(&tuples, PARTITIONS_PER_THREAD * threads.get());
-        let view = TupleView::all(&tuples);
-        let partitions = scatter_rows(threads, &view, morsel_rows, splitters.len() + 1, |row| {
+        let splitters = first_key_splitters(view, rows, PARTITIONS_PER_THREAD * threads.get());
+        let partitions = scatter_rows(threads, view, morsel_rows, splitters.len() + 1, |row| {
             splitters.partition_point(|&splitter| splitter <= row[0])
         });
         #[cfg(any(test, feature = "test-hooks"))]
@@ -232,14 +255,13 @@ impl<S: SeekStrategy> TreeTrie<S> {
             builds.borrow_mut().push((threads.get(), sizes));
         });
         let built = dispatch(threads, partitions, |partition| {
-            let mut gathered = Tuples::with_capacity(arity, partition.len());
-            for id in partition.ids() {
-                gathered.push(tuples.row(id));
-            }
-            // `Tuples::sort`, the serial build's sort (and ColumnTrie's), so
-            // a comparison costs the same in both builds and `parallel:N`
-            // against `serial` measures the build process, not a cheaper sort.
-            gathered.sort();
+            let mut ids = Vec::with_capacity(partition.len());
+            ids.extend(partition.ids());
+            // The same lexicographic order `materialize_sorted` gives the
+            // serial build (and ColumnTrie's builds), so a comparison costs
+            // the same in both builds and `parallel:N` against `serial`
+            // measures the build process, not a cheaper sort.
+            let gathered = view.gather_sorted(&mut ids);
             let mut nodes = Vec::new();
             let mut count = 0;
             for row in gathered.rows() {
@@ -276,14 +298,40 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
         }
     }
 
-    /// Builds a `TreeTrie` from a batch of tuples.
+    /// Builds a `TreeTrie` from the rows a view keeps.
     ///
-    /// Sorts the batch with [`Tuples::sort`] (lexicographic; in place up to
-    /// arity 4, into a new buffer of exactly the rows' size for wider rows),
-    /// the most efficient input order for the sorted-children invariant:
-    /// every new key then lands at the end of its sibling list. Then inserts
-    /// each row as a slice; the batch's buffer is freed when the build
-    /// returns.
+    /// Copies them once with [`TupleView::materialize_sorted`] (lexicographic,
+    /// into a buffer of exactly their size, one copy at every arity), the
+    /// most efficient input order for the sorted-children invariant: every
+    /// new key then lands at the end of its sibling list. Then inserts each
+    /// row as a slice; the scratch copy is freed when the build returns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the view's source has rows and the view's arity does not
+    /// match `header.arity()`, even when the filter keeps none
+    /// (`relation::check_view_arity`, which owns the message). An empty
+    /// source builds the empty trie under any header.
+    fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self {
+        crate::relation::check_view_arity(&header, &view);
+        if view.source_rows() == 0 {
+            return Self::new(header);
+        }
+
+        // One sort in every sorted-trie build (`parallel:N`'s workers and
+        // ColumnTrie's builds run the same one), so a comparison costs the
+        // same in each and `insertion` compares build routines, not sorts.
+        let sorted = view.materialize_sorted();
+
+        let mut trie = Self::new(header);
+        for tuple in sorted.rows() {
+            trie.insert(tuple);
+        }
+        trie
+    }
+
+    /// Builds a `TreeTrie` from a batch of tuples:
+    /// [`from_view`](Self::from_view) over [`TupleView::all`].
     ///
     /// # Panics
     ///
@@ -291,29 +339,8 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
     /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
     /// earlier, while converting to [`Tuples`].
     fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
-        let mut tuples: Tuples = tuples.into();
-        if tuples.is_empty() {
-            return Self::new(header);
-        }
-
-        let arity = tuples.arity();
-        assert_eq!(
-            arity,
-            header.arity(),
-            "from_tuples: tuple arity {arity} does not match header arity {}",
-            header.arity()
-        );
-
-        // One sort, `Tuples::sort`, in every sorted-trie build (`parallel:N`'s
-        // workers and ColumnTrie's builds run it too), so a comparison costs
-        // the same in each and `insertion` compares build routines, not sorts.
-        tuples.sort();
-
-        let mut trie = Self::new(header);
-        for tuple in tuples.rows() {
-            trie.insert(tuple);
-        }
-        trie
+        let tuples: Tuples = tuples.into();
+        Self::from_view(header, TupleView::all(&tuples))
     }
 
     /// Inserts a single tuple, preserving the sorted-children invariant.
@@ -351,8 +378,26 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
 impl<S: SeekStrategy> BuildModeRelation for TreeTrie<S> {
     type BuildMode = TreeTrieBuildMode;
 
-    /// Builds by `mode`: [`Relation::from_tuples`] for `Serial`, the
+    /// Builds by `mode`: [`Relation::from_view`] for `Serial`, the
     /// morsel-driven build for `Parallel`. Both build the identical trie.
+    ///
+    /// # Panics
+    ///
+    /// As [`Relation::from_view`].
+    fn from_view_with_build_mode(
+        header: RelationHeader, mode: TreeTrieBuildMode, view: TupleView<'_>,
+    ) -> Self {
+        crate::relation::check_view_arity(&header, &view);
+        match mode {
+            | TreeTrieBuildMode::Serial => Self::from_view(header, view),
+            | TreeTrieBuildMode::Parallel(threads) => {
+                Self::build_parallel(header, threads, MORSEL_TUPLES, &view)
+            },
+        }
+    }
+
+    /// [`from_view_with_build_mode`](Self::from_view_with_build_mode) over
+    /// [`TupleView::all`].
     ///
     /// # Panics
     ///
@@ -361,12 +406,7 @@ impl<S: SeekStrategy> BuildModeRelation for TreeTrie<S> {
         header: RelationHeader, mode: TreeTrieBuildMode, tuples: impl Into<Tuples>,
     ) -> Self {
         let tuples: Tuples = tuples.into();
-        match mode {
-            | TreeTrieBuildMode::Serial => Self::from_tuples(header, tuples),
-            | TreeTrieBuildMode::Parallel(threads) => {
-                Self::from_tuples_parallel(header, threads, tuples)
-            },
-        }
+        Self::from_view_with_build_mode(header, mode, TupleView::all(&tuples))
     }
 }
 
@@ -474,6 +514,7 @@ mod parallel_build_tests {
     use {
         super::*,
         crate::{heap_size::HeapSize, test_support::Lcg},
+        kermit_iters::Filter,
     };
 
     fn threads(n: usize) -> Threads { Threads::new(n).expect("tests use a nonzero count") }
@@ -563,11 +604,12 @@ mod parallel_build_tests {
                                     "seed {seed}, arity {arity}, keys < {key_range}, n {n}, \
                                      threads {t}, morsel {morsel}"
                                 );
+                                let batch = Tuples::from(tuples.clone());
                                 let parallel: TreeTrie = TreeTrie::build_parallel(
                                     arity.into(),
                                     threads(t),
                                     morsel,
-                                    Tuples::from(tuples.clone()),
+                                    &TupleView::all(&batch),
                                 );
                                 assert_identical(&parallel, &serial, &case);
                             }
@@ -660,8 +702,114 @@ mod parallel_build_tests {
     #[test]
     #[should_panic(expected = "does not match header arity")]
     fn parallel_build_rejects_a_first_tuple_of_the_wrong_arity() {
-        let _: TreeTrie =
-            TreeTrie::from_tuples_parallel(2.into(), threads(2), vec![vec![1, 2, 3]].into());
+        let _: TreeTrie = TreeTrie::from_tuples_with_build_mode(
+            2.into(),
+            TreeTrieBuildMode::Parallel(threads(2)),
+            vec![vec![1, 2, 3]],
+        );
+    }
+
+    /// One source row of two columns. The two arity tests below read it
+    /// through a one-column view whose filter keeps no row: the arity check is
+    /// on the source having rows (the contract of every `from_view*`), not on
+    /// the rows kept.
+    fn one_row_two_columns() -> Tuples {
+        let mut batch = Tuples::new(2);
+        batch.push(&[1, 2]);
+        batch
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 1 does not match header arity 2")]
+    fn serial_build_checks_the_arity_of_a_view_that_keeps_no_row() {
+        let batch = one_row_two_columns();
+        let view = TupleView::new(&batch, Filter::new(vec![(0, 99)], vec![]), vec![1]);
+        let _: TreeTrie = TreeTrie::from_view(2.into(), view);
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 1 does not match header arity 2")]
+    fn parallel_build_checks_the_arity_of_a_view_that_keeps_no_row() {
+        let batch = one_row_two_columns();
+        let view = TupleView::new(&batch, Filter::new(vec![(0, 99)], vec![]), vec![1]);
+        let _: TreeTrie = TreeTrie::build_parallel(2.into(), threads(2), 7, &view);
+    }
+
+    /// A view that keeps no row builds the empty trie, and the parallel
+    /// build returns before it partitions anything.
+    #[test]
+    fn a_view_that_keeps_no_row_builds_the_empty_trie() {
+        let mut batch = Tuples::new(2);
+        for i in 0..20 {
+            batch.push(&[i % 3, i]);
+        }
+        let view = || TupleView::new(&batch, Filter::new(vec![(0, 99)], vec![]), vec![1, 0]);
+        PARALLEL_BUILDS.with(|builds| builds.borrow_mut().clear());
+        let serial: TreeTrie = TreeTrie::from_view(2.into(), view());
+        assert_identical(&serial, &TreeTrie::new(2.into()), "serial");
+        let parallel: TreeTrie = TreeTrie::build_parallel(2.into(), threads(2), 7, &view());
+        assert_identical(&parallel, &TreeTrie::new(2.into()), "parallel");
+        assert!(
+            PARALLEL_BUILDS.with(|builds| builds.take()).is_empty(),
+            "an empty view is not partitioned"
+        );
+    }
+
+    /// A filtered, permuted view builds the trie of the rows it keeps: the
+    /// same nodes and capacities as inserting those rows one at a time in
+    /// arrival order, which is independent of every build's sort and gather.
+    /// The filter keeps rows whose column 0 is 1 and whose columns 1 and 2
+    /// agree; the view reads the other columns in reverse. Source arities 3
+    /// and 5 give output arities 2 and 4 (the sort in place), and 6 gives 5
+    /// (the permutation path). Morsels of 7 rows cut the parallel scatter many
+    /// times.
+    #[test]
+    fn views_build_the_trie_of_the_rows_they_keep() {
+        let mut rng = Lcg(0xF117);
+        for arity in [3usize, 5, 6] {
+            for n in [0, 1, 40, 400] {
+                let raw: Vec<Vec<usize>> = (0..n)
+                    .map(|_| (0..arity).map(|_| rng.next_usize() % 3).collect())
+                    .collect();
+                let mut batch = Tuples::with_capacity(arity, n);
+                for row in &raw {
+                    batch.push(row);
+                }
+                let filter = Filter::new(vec![(0, 1)], vec![(1, 2)]);
+                let columns: Vec<usize> = (1..arity).rev().collect();
+                let view = || TupleView::new(&batch, filter.clone(), columns.clone());
+
+                let mut expected: TreeTrie = TreeTrie::new((arity - 1).into());
+                let mut kept = 0;
+                for row in raw.iter().filter(|row| row[0] == 1 && row[1] == row[2]) {
+                    expected.insert(columns.iter().map(|&c| row[c]).collect::<Vec<_>>());
+                    kept += 1;
+                }
+                if n == 400 {
+                    assert!(kept > 0, "arity {arity}: the filter keeps something");
+                }
+
+                let case = format!("arity {arity}, n {n}");
+                let serial: TreeTrie = TreeTrie::from_view_with_build_mode(
+                    (arity - 1).into(),
+                    TreeTrieBuildMode::Serial,
+                    view(),
+                );
+                assert_identical(&serial, &expected, &format!("{case}, serial"));
+                for t in [1, 3] {
+                    for morsel in [7, MORSEL_TUPLES] {
+                        let parallel: TreeTrie = TreeTrie::build_parallel(
+                            (arity - 1).into(),
+                            threads(t),
+                            morsel,
+                            &view(),
+                        );
+                        let case = format!("{case}, threads {t}, morsel {morsel}");
+                        assert_identical(&parallel, &expected, &case);
+                    }
+                }
+            }
+        }
     }
 
     /// The splitters are strictly increasing first keys, at most
@@ -673,7 +821,7 @@ mod parallel_build_tests {
                 .map(|i| vec![(i * 7) % 100, i])
                 .collect::<Vec<_>>(),
         );
-        let splitters = first_key_splitters(&tuples, 8);
+        let splitters = first_key_splitters(&TupleView::all(&tuples), tuples.len(), 8);
         assert!(
             !splitters.is_empty() && splitters.len() <= 7,
             "{splitters:?}"
@@ -684,7 +832,10 @@ mod parallel_build_tests {
         );
         assert!(splitters.iter().all(|&s| s < 100), "{splitters:?}");
         let one_key = Tuples::from(vec![vec![5, 1], vec![5, 2]]);
-        assert_eq!(first_key_splitters(&one_key, 4), vec![5]);
+        assert_eq!(
+            first_key_splitters(&TupleView::all(&one_key), one_key.len(), 4),
+            vec![5]
+        );
     }
 
     /// The splitters share out the tuples, not the distinct keys: no
@@ -697,7 +848,7 @@ mod parallel_build_tests {
     fn splitters_share_out_the_tuples() {
         let partitions = 8;
         let largest_partition = |tuples: &Tuples| {
-            let splitters = first_key_splitters(tuples, partitions);
+            let splitters = first_key_splitters(&TupleView::all(tuples), tuples.len(), partitions);
             let mut counts = vec![0usize; splitters.len() + 1];
             for row in tuples.rows() {
                 counts[splitters.partition_point(|&s| s <= row[0])] += 1;
@@ -733,5 +884,40 @@ mod parallel_build_tests {
             2 * largest <= 2 * heaviest + 3 * share,
             "skewed: largest {largest}, share {share}, heaviest key {heaviest}"
         );
+    }
+
+    /// The splitters sample the rows a view keeps, through its output
+    /// columns. Source rows are `[i, i % 2]`.
+    #[test]
+    fn splitters_sample_the_matching_rows_of_a_view() {
+        let mut batch = Tuples::with_capacity(2, 1000);
+        for i in 0..1000 {
+            batch.push(&[i, i % 2]);
+        }
+
+        // Filtered, every row sampled: the kept rows are the even `i`, so the
+        // sample is `0, 2, 4, …` and splitter `p` is `sample[p · 500 / 8]`.
+        let even = TupleView::new(&batch, Filter::new(vec![(1, 0)], vec![]), vec![0]);
+        assert_eq!(even.count(), 500);
+        let expected: Vec<usize> = (1..8).map(|p| 2 * (p * 500 / 8)).collect();
+        assert_eq!(first_key_splitters(&even, 500, 8), expected);
+
+        // Unfiltered and permuted: the first output key is `i % 2`, 500
+        // zeros then 500 ones once sorted.
+        let flipped = TupleView::new(&batch, Filter::none(), vec![1, 0]);
+        assert_eq!(first_key_splitters(&flipped, 1000, 8), vec![0, 1]);
+
+        // A stride above 1 on both paths. 10 000 kept rows over 2
+        // partitions sample every 39th kept row (257 samples); 20 000 rows
+        // sample every 78th (257 samples). Splitter 1 is `sample[128]`: the
+        // 4 992nd kept row (key 9 984), and source row 9 984 (key 9 984).
+        let mut big = Tuples::with_capacity(2, 20_000);
+        for i in 0..20_000 {
+            big.push(&[i, i % 2]);
+        }
+        let filtered = TupleView::new(&big, Filter::new(vec![(1, 0)], vec![]), vec![0]);
+        assert_eq!(first_key_splitters(&filtered, 10_000, 2), vec![9984]);
+        let all = TupleView::new(&big, Filter::none(), vec![0]);
+        assert_eq!(first_key_splitters(&all, 20_000, 2), vec![9984]);
     }
 }
