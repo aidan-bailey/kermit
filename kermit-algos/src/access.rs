@@ -126,6 +126,7 @@ fn access_of(atom: &Predicate) -> Result<Access, RewriteError> {
     })
 }
 
+/// The dictionary id in a `c<digits>` constant.
 fn parse_constant(text: &str) -> Result<usize, RewriteError> {
     let bad = || RewriteError::BadAtom(text.to_string());
     let digits = text.strip_prefix('c').ok_or_else(bad)?;
@@ -202,6 +203,16 @@ mod tests {
         assert_eq!(access.variables, vars(&["X", "Y"]));
         assert_eq!(access.filter.equalities(), &[(0, 1), (0, 3)]);
         assert!(access.filter.constants().is_empty());
+    }
+
+    #[test]
+    fn filter_equalities_are_sorted_whatever_order_they_are_found_in() {
+        // Column 2 repeats column 1 before column 3 repeats column 0, so the
+        // equalities are discovered as (1, 2) then (0, 3).
+        let out = extract("Q(X, Y) :- r(X, Y, Y, X).");
+        let access = &out.accesses[0];
+        assert_eq!(access.columns, vec![0, 1]);
+        assert_eq!(access.filter.equalities(), &[(0, 3), (1, 2)]);
     }
 
     #[test]
@@ -284,6 +295,25 @@ mod tests {
         assert!(check.variables.is_empty());
         assert_eq!(check.filter, Filter::new(vec![(0, 1), (1, 2)], vec![]));
         assert_eq!(body_text(&out), vec!["@0(X)"]);
+    }
+
+    #[test]
+    fn a_nullary_atom_is_a_check_with_no_filter() {
+        // The parser rejects `r()`, so build the query by hand.
+        let mut q = parse("Q(X) :- p(X).");
+        q.body.push(Predicate {
+            name: "r".to_string(),
+            terms: vec![],
+        });
+        let out = extract_accesses(&q).expect("extract");
+        assert_eq!(out.accesses.len(), 1);
+        assert_eq!(body_text(&out), vec!["@0(X)"]);
+        assert_eq!(out.checks.len(), 1);
+        let check = &out.checks[0];
+        assert_eq!(check.relation, "r");
+        assert!(check.columns.is_empty());
+        assert!(check.variables.is_empty());
+        assert_eq!(check.filter, Filter::none());
     }
 
     #[test]
