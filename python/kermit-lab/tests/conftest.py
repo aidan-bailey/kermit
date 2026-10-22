@@ -712,9 +712,10 @@ def fixture_parallel_build_tree(tmp_path: Path) -> dict:
 
 @pytest.fixture
 def fixture_per_query_tree(tmp_path: Path) -> dict:
-    """Schema-v5 ``bench run`` reports, one per structure: a ``build`` and an
-    ``iteration`` time and a per-query ``space`` function, an ``index_rows``
-    axis, and no ``column_orders`` axis (v5 removed it)."""
+    """Schema-v5 per-query reports, one per structure, with function ids in
+    the ``{ds}/{query}/{phase}`` form ``phase_of`` also resolves: a ``build``
+    and an ``iteration`` time and a per-query ``space`` function, an
+    ``index_rows`` axis, and no ``column_orders`` axis (v5 removed it)."""
     criterion_root = tmp_path / "target" / "criterion"
     reports_dir = tmp_path / "reports"
     criterion_root.mkdir(parents=True)

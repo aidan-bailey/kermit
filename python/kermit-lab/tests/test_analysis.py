@@ -64,6 +64,13 @@ def test_compare_raises_for_missing_group(df):
         kl.compare(df, baseline="TreeTrie", target="MysteryStruct")
 
 
+def test_compare_pairs_rows_that_differ_only_in_schema_version() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    df["schema_version"] = [4, 5]
+    out = compare(df, baseline="serial", target="parallel:2", group_by="ds_build_mode")
+    assert out["speedup"].tolist() == pytest.approx([2.0])
+
+
 def test_compare_returns_speedup_envelope(df):
     sub = df[(df.metric == "time") & (df.phase == "iteration") & (df["query"] == "triangle")]
     result = kl.compare(sub, baseline="TreeTrie", target="ColumnTrie")
