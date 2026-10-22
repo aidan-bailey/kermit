@@ -10,7 +10,6 @@
 
 use {
     super::ColumnOrderPolicy,
-    crate::const_rewrite::is_const_predicate,
     kermit_parser::JoinQuery,
     std::{
         collections::{BTreeMap, HashSet},
@@ -137,12 +136,10 @@ impl CatalogStats {
     /// Builds stats for every body predicate of `query`, under
     /// `column_orders`.
     ///
-    /// `stats_of` supplies a relation's statistics (in `kermit::db`, those
-    /// its `Database` gathered when it was built). Synthetic `Const_*`
-    /// predicates (introduced by the const-view rewrite) are recorded as
-    /// single-tuple unary relations whose one column has one value.
-    /// Predicates the lookup does not know get no entry — planners treat
-    /// missing stats as "assume large".
+    /// `stats_of` supplies a predicate's statistics (in `kermit::db`, those
+    /// of the access the predicate names, which it counts through the
+    /// access's filter). Predicates the lookup does not know get no entry
+    /// — planners treat missing stats as "assume large".
     pub fn for_query(
         query: &JoinQuery, column_orders: ColumnOrderPolicy,
         stats_of: impl Fn(&str) -> Option<RelationStats>,
@@ -155,12 +152,7 @@ impl CatalogStats {
             if stats.relations.contains_key(&pred.name) {
                 continue;
             }
-            if is_const_predicate(&pred.name) {
-                stats.insert(
-                    pred.name.clone(),
-                    RelationStats::new(1, 1).with_column_distinct(vec![1]),
-                );
-            } else if let Some(relation) = stats_of(&pred.name) {
+            if let Some(relation) = stats_of(&pred.name) {
                 stats.insert(pred.name.clone(), relation);
             }
         }
@@ -200,8 +192,10 @@ mod tests {
         );
     }
 
+    /// A `Const_`-prefixed name is an ordinary name: the lookup decides
+    /// whether it has statistics, and here it has none.
     #[test]
-    fn for_query_records_relations_and_const_singletons() {
+    fn for_query_records_relations_and_treats_const_names_like_any_other() {
         let q: JoinQuery = "Q(X) :- R(X, K0), Const_c5(K0).".parse().unwrap();
         let stats = CatalogStats::for_query(&q, ColumnOrderPolicy::Stored, |name| match name {
             | "R" => Some(RelationStats::new(42, 2).with_column_distinct(vec![7, 3])),
@@ -210,8 +204,8 @@ mod tests {
         assert_eq!(stats.tuples("R"), Some(42));
         assert_eq!(stats.distinct("R", 0), Some(7));
         assert_eq!(stats.distinct("R", 1), Some(3));
-        assert_eq!(stats.tuples("Const_c5"), Some(1));
-        assert_eq!(stats.distinct("Const_c5", 0), Some(1));
+        assert_eq!(stats.tuples("Const_c5"), None);
+        assert_eq!(stats.distinct("Const_c5", 0), None);
         assert_eq!(stats.tuples("Unknown"), None);
     }
 

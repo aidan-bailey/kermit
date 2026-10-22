@@ -70,10 +70,10 @@ mod tests {
 
     #[test]
     fn const_singleton_binds_first() {
-        // Const_c9 has one tuple, so its variable K wins over X even
+        // Const_c9 is given one tuple, so its variable K wins over X even
         // though X is canonically first and unconstrained.
         let q: JoinQuery = "Q(X, K) :- R(X), Const_c9(K).".parse().unwrap();
-        let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, &[("R", 500)]));
+        let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, &[("R", 500), ("Const_c9", 1)]));
         assert_eq!(plan.variable_ordering, vec![1, 0]);
     }
 
