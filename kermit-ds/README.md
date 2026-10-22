@@ -28,7 +28,7 @@ let edges = TreeTrie::from_csv("edges.csv")?;
 
 To add a new data structure:
 
-1. Implement `Relation + Projectable + HeapSize` in this crate, plus an iterator trait: `TrieIterable` for a hierarchical (LFTJ-style) trie, or `HashTrieIterable` for a hash-based trie (see `HashTrie`).
+1. Implement `Relation + Projectable + HeapSize` in this crate. `Relation::from_view(header, TupleView)` is the one required constructor (it reads the view and copies its matching rows once); `from_tuples` is provided over it. Also implement an iterator trait: `TrieIterable` for a hierarchical (LFTJ-style) trie, or `HashTrieIterable` for a hash-based trie (see `HashTrie`).
 2. Add a variant to `IndexStructure` in [`src/ds/mod.rs`](src/ds/mod.rs).
 3. Wire it into the CLI dispatch (`run_ds_bench` / `run_benchmark` in [`../kermit/src/main.rs`](../kermit/src/main.rs)).
 
