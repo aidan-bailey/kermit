@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-22
 **Status:** Design approved in conversation (2026-10-22), decision by decision and then
-section by section.
+section by section. Amendment 1 (the same day) records the decisions made while writing the
+plan skeleton.
 **Scope:** Relations are read into flat `Tuples`, untimed, and no structure is built at load.
 For each query, kermit plans from statistics of the flat data, then builds exactly the
 indexes the plan reads, each one a relation filtered by the query's constants and repeated
@@ -435,3 +436,73 @@ One branch, landing in one push with one schema bump. Each phase leaves the CI g
   policy).
 - `docs/specs/bench-report-schema.md` (v5), `optimization-standard.md` (equivalence from
   views), `benchmarking-architecture.md`.
+
+## Amendment 1: decisions made while writing the plan skeleton (2026-10-22)
+
+Where this amendment is more specific than the sections above, it governs.
+
+1. **Where each step lives.**
+   - Access extraction is `kermit-algos/src/access.rs`, a query rewrite like the ones it
+     replaces.
+   - Index planning is `kermit-algos/src/index_plan.rs`, taking over `orient`'s place.
+   - `Catalog` is `kermit/src/db/catalog.rs`, and `prepare` / `build` / `execute` are
+     `kermit/src/db/lifecycle.rs`.
+   - Access ids are `@<k>`, where k is the access's position in `AccessQuery::accesses`.
+     Index ids are `#<k>`, in order of first appearance. No relation name can collide with
+     either, since the parser admits `[A-Za-z][A-Za-z0-9_]*` only.
+2. **Freeing names while old and new coexist.** The old `kermit_algos::IndexSpec` (a copy:
+   name, base, permutation) is renamed `CopySpec` before the new pipeline is written, and
+   deleted with `orient.rs`. The old private `validation::{prepare, Prepared}` are renamed
+   `{check_and_rewrite, Rewritten}`, so that `kermit::db::{prepare, Prepared}` can be the new
+   ones.
+3. **Final names in the binary.** `RelationFamily::build_index(header, view)` replaces
+   `build_relation`. `ExecutionFamily` gains `build_indexes(catalog, prepared)`,
+   `execute(prepared, indexes, sink)` and `count_rows(prepared, indexes)`. These names
+   differ from the old methods so both can coexist until the old ones are deleted. The
+   families stop holding a `Planner`, because `prepare` runs before them.
+4. **One prepared workload.** `Workload::prepare(planner)` returns a `PreparedWorkload`. It
+   validates from headers, reads the relations the queries name into one `Catalog` at the
+   optimiser's statistics level, and prepares each query once. `bench run`, `bench join`
+   (both `--output` and the benchmark) and `kermit join` all go through it.
+5. **Constants' errors.** `extract_accesses` returns `Result<AccessQuery, RewriteError>`.
+   When `const_rewrite.rs` is deleted, `RewriteError` moves to `access.rs` unchanged: name,
+   variant, Display text. So `JoinError::MalformedConstant(RewriteError)` and its message
+   stay as they are. `validate_query(query, relations)` keeps today's check order (head
+   terms, body atoms, head bound, constants) and checks constants through
+   `extract_accesses`.
+6. **The arity panic keeps today's text,** `from_tuples: tuple arity {a} does not match header
+   arity {h}`, wherever it is raised (five tests match its parts). It fires only when the
+   view's source holds rows. An empty source builds an empty structure under any header, as
+   `from_tuples(header, vec![])` does today.
+7. **No atom left.** If every body atom was an all-constant check, `execute` emits the head
+   row `multiplicity` times without calling the join. The head is then empty, since
+   validation requires every head variable to be bound in the body.
+8. **Space.** `add_space_bench` takes a slice of relations and measures their summed heap
+   bytes, keeping its O(N) `heap_size_bytes()` calls inside the `iter_custom` loop.
+   `bench run` measures each query's indexes together as one `space` function.
+9. **Report details.** Each index adds a metadata line labelled `index`, with the value
+   `{id} {relation} filter {filter} columns {columns:?}: {rows} rows, {bytes} bytes`.
+   `Filter`'s Display is `-` for no filter, otherwise its constants as `col{c}={value}` and
+   its equalities as `col{a}=col{b}`, comma-separated. `index_rows` is
+   `Indexes::rows()`, the rows the build copied. `bench ds` keeps its `tuples` axis.
+10. **kermit-lab, v5.**
+    - `SCHEMA_VERSION = 5`, plus a `PER_QUERY_BUILD_SCHEMA = 5` constant and a v5 entry in
+      `MEANING_CHANGES`.
+    - `TIME_PHASES` becomes (`build`, `insertion`, `copies`, `iteration`, `end_to_end`), so
+      older reports still load on their own.
+    - Every default phase becomes `build`, and the CLI's `--phase` accepts all five.
+    - The `column_orders` back-fill (`JOIN_AXIS_DEFAULTS`) applies only to rows whose
+      `schema_version` is below 5. A v5 row has no such axis, and labelling it `stored`
+      would be false.
+11. **The all-orders test** runs each of the 16 patterns' query shapes over seeded random
+    relations, generated as `column_orders_equivalence.rs` generates them. It adds the
+    constant cases and the six queries of `column_orders_any.rs`. The patterns have at most
+    5 variables (`four-way-chain`), so a query has at most 120 orders. It runs one alias per
+    structure: `TreeTrie` and `ColumnTrie` under LFTJ, `HashTrie` under HashTriejoin.
+12. **`Catalog::new`** keys relations by header name. A later duplicate name replaces an
+    earlier one, as `Database`'s map does today.
+13. **`compute_join`** keeps its signature and builds a `Catalog` from its inputs, then runs
+    the conveniences.
+14. **Sorted-trie sort helpers.** `TupleView::materialize_sorted()` and
+    `TupleView::gather_sorted(rows)` produce sorted output rows with one copy at every arity.
+    The sorted builds and TreeTrie's `parallel:N` workers use them.
