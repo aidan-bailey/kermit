@@ -46,9 +46,10 @@ pub struct CostBasedOptimiser {
 
 impl CostBasedOptimiser {
     /// The default [`state_budget`](Self::state_budget): 2¹⁴ = 16,384 sets,
-    /// every subset of 14 variables. A query of up to 12 variables, the most
-    /// any committed query has (4,095 sets), is always searched in full; the
-    /// budget only bounds the planning time of a larger one.
+    /// every subset of 14 variables. A query of up to 14 variables is always
+    /// searched in full, since its 2ⁿ − 1 sets fit the budget; the budget only
+    /// bounds the planning time of a query of more. The most any committed
+    /// query has is 12 variables (4,095 sets).
     pub const DEFAULT_STATE_BUDGET: usize = 1 << 14;
 }
 
