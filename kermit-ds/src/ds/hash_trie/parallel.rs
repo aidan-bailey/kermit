@@ -18,14 +18,15 @@
 //!    partition's id range to a worker, which threads the partition's rows into
 //!    the chains of a scratch root and builds its children, as `bulk` does
 //!    (`radix::build_scratch_root`), then takes the scratch root's entries out,
-//!    each tagged with the input position at which its key first appeared.
+//!    each tagged with the source row id (`origin`) at which its key first
+//!    appeared.
 //! 3. **Merge.** The calling thread inserts every entry into the real root in
 //!    first-appearance order, by a k-way merge of the partitions' lists.
 //!
 //! The result holds the bulk trie's contents, and its root is the bulk
 //! build's, bucket for bucket and capacity for capacity, for the reasons
 //! the radix build's is.
-//! - **Children.** A partition keeps its rows in input order (`partition_rows`
+//! - **Children.** A partition keeps its rows in source order (`partition_rows`
 //!   is stable), so each child is built from the tuples `bulk` builds it from,
 //!   in the same order, under the copy's row ids.
 //! - **Root.** The root receives its new keys in the bulk order, because the
@@ -50,7 +51,7 @@
 //!    rows a contiguous range of the copy. One worker threads it into the
 //!    chains of its run of a presized table.
 //! 2. A row whose probe would cross its region's end is deferred to the calling
-//!    thread, which pushes the deferred rows in input order (by `origin`).
+//!    thread, which pushes the deferred rows in source order (by `origin`).
 //! 3. Each worker builds the children of one run's buckets at a time,
 //!    re-threading every row of their chains, a deferred key's rows included,
 //!    which may live in another partition's range of the copy.
@@ -59,7 +60,7 @@
 //! trie is equivalent rather than identical (Amendment 2): the root has the
 //! same capacity, occupied buckets and total displacement, and every subtrie
 //! holds the same tuples in the same order. Regions, not threads, decide
-//! which tuples are deferred, and the tail goes in input order, so the
+//! which tuples are deferred, and the tail goes in source order, so the
 //! trie's contents are the same for every N, bucket for bucket. Only its
 //! buffer, each N's partitioned copy, differs.
 //!
@@ -303,7 +304,7 @@ fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
             deferred: Some(deferred.len()),
         });
     });
-    // 3. The tail, in input order: by each row's input position, `origin`. Its
+    // 3. The tail, in source order: by each row's source row id, `origin`. Its
     //    new id would order the tail partition-major, and the partition count
     //    depends on N, so tail keys would take buckets that vary with N. The
     //    table is presized for every row, so it does not grow here. Each row

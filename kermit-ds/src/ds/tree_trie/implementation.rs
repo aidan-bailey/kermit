@@ -321,7 +321,7 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
 
         // One sort in every sorted-trie build (`parallel:N`'s workers and
         // ColumnTrie's builds run the same one), so a comparison costs the
-        // same in each and `insertion` compares build routines, not sorts.
+        // same in each and `build` compares build routines, not sorts.
         let sorted = view.materialize_sorted();
 
         let mut trie = Self::new(header);

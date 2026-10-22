@@ -32,12 +32,12 @@
 //! ids. A table's final layout depends only on the order in which its
 //! *new* keys arrive — `HashTable::entry_or_insert_with` returns an
 //! existing entry before its resize check — so the merge inserts the
-//! distinct root keys in the order they first appear in the input, as the
-//! bulk build does. The copy records each row's input position (`origin`),
-//! each key is tagged with the position of the row that introduced it, and
+//! distinct root keys in the order they first appear in the source, as the
+//! bulk build does. The copy records each row's source row id (`origin`),
+//! each key is tagged with the source row id of the row that introduced it, and
 //! [`merge_in_first_appearance_order`] merges the partitions' tagged lists
 //! k-way on that tag. Below the root nothing needs care: the copy is
-//! stable, so each root key's child is built from the same tuples, in input
+//! stable, so each root key's child is built from the same tuples, in source
 //! order, as in the bulk build.
 
 use {
@@ -56,11 +56,11 @@ use {
     std::{cmp::Reverse, collections::BinaryHeap},
 };
 
-/// A root entry ready to merge: the input position of the row whose key
+/// A root entry ready to merge: the source row id of the row whose key
 /// first introduced it, its hash, and its finished value.
 pub(super) type Arrival<V> = (RowId, u64, V);
 
-/// One partition's root entries, each tagged with the input position at
+/// One partition's root entries, each tagged with the source row id at
 /// which its key first appeared, in that order. The root is `Inner` for
 /// arity ≥ 2, so its values are child nodes (subtries, or under pruning and
 /// lazy expansion their `Singleton`s and pending chains), and `Leaf` for
@@ -173,7 +173,7 @@ pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPol
         .collect();
     // 2. Build: each partition's id range into a scratch root, whose entries
     //    then leave in the order their keys arrived, each tagged with its key's
-    //    first input position (`origin`), not its id. A partition's rows are in
+    //    first source row id (`origin`), not its id. A partition's rows are in
     //    exactly one of these builds, so each link has one writer, and the
     //    relaxed atomics need no lock between the workers.
     let (rows, origin) = (&partitioned.tuples, &partitioned.origin);
@@ -182,7 +182,7 @@ pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPol
             build_scratch_root::<H, P, E>(rows, links, ids, origin, arity, config);
         Entries::take_from(scratch, &first_seen)
     });
-    // Every key's first input position is in its entry now, so nothing reads
+    // Every key's first source row id is in its entry now, so nothing reads
     // `origin` or `offsets` again: free them before the merge.
     drop(partitioned.origin);
     drop(partitioned.offsets);
@@ -207,7 +207,7 @@ pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPol
 /// Builds one partition, the rows `ids` of `tuples`, into a scratch root of
 /// the real root's kind by Algorithm 2 (`bulk.rs`): each row pushed onto
 /// the chain in its key's bucket, threaded through `links` (lines 3–7),
-/// recording for each key the input position of the row that introduced it
+/// recording for each key the source row id of the row that introduced it
 /// (`origin[id]`) and the key's hash, in arrival order; then each key's
 /// child built from its chain, as the bulk build builds it (lines 8–15).
 /// `ids` must list the partition in input order. Only the links of `ids`'
@@ -232,8 +232,8 @@ pub(super) fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: Expansion
     (scratch, first_seen)
 }
 
-/// Moves every entry out of `scratch` into `out`, tagged with the input
-/// position of the row whose key first introduced it. Bucket positions are
+/// Moves every entry out of `scratch` into `out`, tagged with the source
+/// row id of the row whose key first introduced it. Bucket positions are
 /// read before the table is consumed, and each bucket is taken exactly
 /// once.
 fn take_in_arrival_order<V>(
@@ -256,9 +256,9 @@ fn take_in_arrival_order<V>(
 }
 
 /// Inserts every partition's entries into the real root in the order their
-/// keys first appeared in the input, the order the bulk build inserts
+/// keys first appeared in the source, the order the bulk build inserts
 /// them, so the root's buckets, length and capacity are the bulk build's.
-/// Each entry's tag is an input position (`origin`, through
+/// Each entry's tag is a source row id (`origin`, through
 /// [`build_scratch_root`]), not an id into the copy: ids run
 /// partition-major, so merging on them would insert each partition's keys
 /// in turn. Each list is already in that order, so a k-way merge suffices:

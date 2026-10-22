@@ -271,7 +271,9 @@ impl<'a> Cursor<'a> {
 ///    consecutive source rows from a shared queue, as in [`scatter_rows`]. For
 ///    each row of a morsel that the view matches they write its output row into
 ///    a scratch row, call `partition_of` on it once, keep the row's partition
-///    number, and count the morsel's matching rows per partition. A row the
+///    number, and count the morsel's matching rows per partition (an identity
+///    view, Amendment 2, tests no row and writes no scratch row: the source
+///    row is the output row, and `partition_of` reads it in place). A row the
 ///    filter rejects is skipped.
 /// 2. **Offsets.** The counts add up to the copy's row count, and the copy and
 ///    `origin` are allocated once, at exactly that size. Prefix sums over
@@ -289,8 +291,10 @@ impl<'a> Cursor<'a> {
 /// filter rejects: the scatter reads the numbers the histogram kept (2 bytes a
 /// row, freed as each morsel is scattered) instead of calling it again. A
 /// build whose `partition_of` hashes therefore hashes each row once here, as
-/// it did when it partitioned ids. The scatter does ask the view which rows
-/// match a second time, in the same order, to pair the rows with the numbers.
+/// it did when it partitioned ids. Except on an identity view (Amendment 2),
+/// which keeps every row and so asks nothing, the scatter does ask the view
+/// which rows match a second time, in the same order, to pair the rows with
+/// the numbers.
 ///
 /// The copy does not depend on the thread count or on which worker took which
 /// morsel: a partition's ranges are in morsel order, and a morsel's rows are
@@ -343,8 +347,8 @@ pub(crate) fn partition_rows(
     };
 
     // 1. Histogram: `counts[m][p]` of morsel `m`'s matching rows go to
-    //    partition `p`, and `partition_numbers[m]` holds each of them
-    //    partition, in row order.
+    //    partition `p`, and `partition_numbers[m]` holds the partition of each
+    //    of them, in row order.
     let queue = Mutex::new(0..morsels);
     let mut counts: Vec<Vec<usize>> = vec![Vec::new(); morsels];
     let mut partition_numbers: Vec<Vec<u16>> = vec![Vec::new(); morsels];
@@ -429,7 +433,8 @@ pub(crate) fn partition_rows(
         //    matching rows' partition numbers, and writes every matching row at
         //    the front of its partition's range. `partition_of` is not called
         //    again; the view is asked which rows match, in the order the
-        //    histogram asked it.
+        //    histogram asked it (except on an identity view, which keeps every
+        //    row and asks nothing: Amendment 2).
         let queue = Mutex::new(ranges.into_iter().zip(partition_numbers).enumerate());
         run_workers(threads, || {
             while let Some((m, (mut ranges, morsel_numbers))) = take_next(&queue) {

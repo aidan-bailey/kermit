@@ -486,7 +486,7 @@ impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
         }
         // The one sort every sorted-trie build runs (TreeTrie's `serial` and
         // `parallel:N` builds too): a comparison costs the same in every
-        // ColumnTrie build and in TreeTrie's, so a change in the `insertion`
+        // ColumnTrie build and in TreeTrie's, so a change in the `build`
         // metric measures the build routine alone. Its order is the
         // lexicographic order the hand-rolled comparator gave before #111.
         let sorted = view.materialize_sorted();
