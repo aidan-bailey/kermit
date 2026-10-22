@@ -3,7 +3,7 @@
 **Date:** 2026-10-22
 **Status:** Design approved in conversation (2026-10-22), decision by decision and then
 section by section. Amendment 1 (the same day) records the decisions made while writing the
-plan skeleton.
+plan skeleton, and Amendment 2 those made during the supervised run.
 **Scope:** Relations are read into flat `Tuples`, untimed, and no structure is built at load.
 For each query, kermit plans from statistics of the flat data, then builds exactly the
 indexes the plan reads, each one a relation filtered by the query's constants and repeated
@@ -506,3 +506,22 @@ Where this amendment is more specific than the sections above, it governs.
 14. **Sorted-trie sort helpers.** `TupleView::materialize_sorted()` and
     `TupleView::gather_sorted(rows)` produce sorted output rows with one copy at every arity.
     The sorted builds and TreeTrie's `parallel:N` workers use them.
+
+## Amendment 2: decisions made during the supervised run (2026-10-22)
+
+Where this amendment is more specific than the sections above, it governs.
+
+1. **An identity view pays no per-row filter work.** On a view whose `is_identity()` holds (no
+   filter, every source column in source order), no timed build calls `matches` per row or
+   writes a row into a scratch row to read it: every row matches, and the source row is the
+   output row.
+   - `materialize_sorted` collects its row ids from the `Range`, at exact size (fe41e24).
+   - `partition_rows` (HashTrie `radix:K`, `parallel:N`, `presized:N`) passes the source row
+     to `partition_of` in its counting pass, and `scatter_rows` (TreeTrie `parallel:N`) does
+     the same while scattering.
+   - Filtered or permuted views keep `matches` and `write`, as the table under "Building from
+     views" says.
+   - Why: the identity view is the build path of every `from_tuples*` and of every index whose
+     atom has no constants or repeated variables. A per-row check there costs only the modes
+     that make it, which is the build-mode skew Motivation 4 removes. Decided by the owner
+     (option B) for the radix family; `scatter_rows` follows the same rule.
