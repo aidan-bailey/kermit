@@ -16,7 +16,7 @@ whichever thread is free takes the next unit of work.
   builds an equivalent trie whose root keys may also sit in other buckets,
   so `iteration` is measured for it too.
 
-Every mode reads a borrowed [`TupleView`](../../kermit-iters/src/tuple_view.rs) and copies its matching rows exactly once, so the build metric times the copy in every mode, `serial` and `bulk` included. The parallel builds cut the view's source into morsels of source row ids (a row the filter rejects is skipped) and write each matching row's output columns once. The source is only read, and the build never frees it.
+Every mode reads a borrowed [`TupleView`](../../kermit-iters/src/tuple_view.rs) and copies its matching rows exactly once, so the build metric times the copy in every mode, `serial` and `bulk` included. The parallel builds cut the view's source into morsels of source row ids (a row the filter rejects is skipped) and copy each matching row's output columns once into the build's buffer. The source is only read, and the build never frees it.
 
 | Mode | `--ds-build` | `ds_build_mode` | Default |
 |---|---|---|---|
@@ -78,10 +78,11 @@ parallel_build(view, N):
   stay in the source, which is only read. A partition is its buckets in
   morsel order, so it lists its ids in input order, strictly ascending.
   Each build worker then gathers its partition with `view.gather_sorted`:
-  it sorts the ids by output row, then copies each row's output columns
-  once, in that order, into a buffer of exact size, and frees the buffer
-  when done. That gather is the build's one copy, inside the timer exactly
-  as `serial`'s `materialize_sorted` is. Nothing frees the source.
+  it copies the partition's output rows into a buffer of exact size, sorted
+  (from arity 5 it sorts the ids by output row first, so each row is copied
+  once), and frees the buffer when done. That gather is the build's one
+  copy, inside the timer exactly as `serial`'s `materialize_sorted` is.
+  Nothing frees the source.
 - **Build.** Workers take whole partitions from the same kind of queue.
   There are usually more partitions than threads (fewer only when heavy keys
   merge splitters), so a worker that drew a small partition takes another.
