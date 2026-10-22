@@ -30,7 +30,7 @@ pub(crate) struct PlannerArgs {
 
 impl PlannerArgs {
     /// The planner these flags select. A `Planner` owns its optimiser, so
-    /// each family gets its own.
+    /// each prepared workload gets its own.
     pub(crate) fn instantiate(self) -> Planner { Planner::new(self.optimiser.instantiate()) }
 }
 

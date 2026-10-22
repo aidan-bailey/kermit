@@ -238,8 +238,8 @@ mod tests {
         let _ = Catalog::new(vec![(header, rows)], StatisticsLevel::TupleCounts);
     }
 
-    /// As `Database`'s map does, the last relation with a name wins, with
-    /// its own header, tuples and statistics.
+    /// The last relation with a name wins, with its own header, tuples and
+    /// statistics.
     #[test]
     fn a_later_duplicate_name_replaces_the_earlier_relation() {
         let later = (

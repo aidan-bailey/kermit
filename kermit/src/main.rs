@@ -235,7 +235,7 @@ enum BenchSubcommand {
         )]
         metrics: Vec<Metric>,
 
-        /// Query executions per database build in the `end-to-end` metric's
+        /// Query executions per index build in the `end-to-end` metric's
         /// timed body (T = build + K × query). Ignored by other metrics.
         #[arg(long, value_name = "K", default_value = "1", value_parser = clap::value_parser!(u32).range(1..))]
         queries_per_build: u32,
@@ -333,7 +333,7 @@ enum BenchSubcommand {
         )]
         metrics: Vec<Metric>,
 
-        /// Query executions per database build in the `end-to-end` metric's
+        /// Query executions per index build in the `end-to-end` metric's
         /// timed body (T = build + K × query). Ignored by other metrics.
         #[arg(long, value_name = "K", default_value = "1", value_parser = clap::value_parser!(u32).range(1..))]
         queries_per_build: u32,
