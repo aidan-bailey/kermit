@@ -79,8 +79,8 @@ macro_rules! define_config_provider {
 /// `config()` (reached by auto-deref to `R`) reports the inner relation's
 /// runtime config. It equals `P::config()` because `wrap` is private and
 /// [`Relation::new`] / [`Relation::from_view`] (hence every `from_tuples`) are
-/// the only constructors —
-/// keep it that way, or the type-level marker and the value can drift apart.
+/// the only constructors — keep it that way, or the type-level marker and the
+/// value can drift apart.
 /// In particular, `Configured` deliberately does **not** implement
 /// [`ConfigurableRelation`]: its config-carrying constructors take an
 /// arbitrary value that `P` cannot vouch for.

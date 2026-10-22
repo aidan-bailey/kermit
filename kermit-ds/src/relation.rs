@@ -227,9 +227,9 @@ where
     R::from_tuples(new_header, projected)
 }
 
-/// The arity check every `from_view*` body makes first (the default bodies
-/// here, and the structures' own `from_view*` overrides): a
-/// view whose source holds rows must read as many columns as `header` has
+/// The arity check every `from_view*` body makes first (called by the
+/// structures' own `from_view*` bodies; no provided body calls it): a view
+/// whose source holds rows must read as many columns as `header` has
 /// attributes, whether or not its filter keeps any row. An empty source
 /// builds an empty relation under any header, as `from_tuples(header,
 /// vec![])` does. The message is `from_tuples`'s, which tests match.
@@ -271,12 +271,12 @@ pub trait Relation: JoinIterable + Projectable {
     ///
     /// The one required constructor: every `from_tuples*` method is this one
     /// over [`TupleView::all`]. The relation reads the view's matching rows,
-    /// in its output-column order, and copies them once into the structure it
-    /// builds, so no build allocates per input row. Implementations may sort
-    /// or deduplicate during bulk construction; prefer this over `new`
-    /// followed by repeated `insert` calls when all tuples are known up
-    /// front. A view over an empty source builds an empty relation under any
-    /// header.
+    /// in its output-column order, and copies them once (into the structure,
+    /// or into a scratch buffer the build frees), so no build allocates per
+    /// input row. Implementations may sort or deduplicate during bulk
+    /// construction; prefer this over `new` followed by repeated `insert`
+    /// calls when all tuples are known up front. A view over an empty source
+    /// builds an empty relation under any header.
     ///
     /// # Panics
     ///

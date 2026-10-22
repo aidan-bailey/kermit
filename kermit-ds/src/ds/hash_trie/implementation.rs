@@ -598,12 +598,12 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         match mode {
             | HashTrieBuildMode::Bulk => {
                 // Algorithm 2 from the root (`bulk.rs`) over every row id of
-                // the copy, in input order, the root sized as
-                // every build sizes it,
-                // by `HashTrieConfig::root_log2_capacity` (#88). The trie keeps
-                // the copy as its buffer and threads its rows through one link
-                // each. The links start zeroed (`ChainLinks::new`): the root's
-                // grouping writes every row's link before any is read.
+                // the copy, in input order, the root sized as every build
+                // sizes it, by `HashTrieConfig::root_log2_capacity` (#88).
+                // The trie keeps the copy as its buffer and threads its rows
+                // through one link each. The links start zeroed
+                // (`ChainLinks::new`): the root's grouping writes every row's
+                // link before any is read.
                 #[cfg(test)]
                 BULK_BUILDS.with(|n| n.set(n.get() + 1));
                 let arity = header.arity();
