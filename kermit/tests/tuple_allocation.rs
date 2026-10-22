@@ -49,7 +49,7 @@ use {
         PruningPolicy, RadixBits, Relation, RootCapacity, SingletonPruning, Threads, TreeTrie,
         TreeTrieBuildMode, Tuples,
     },
-    kermit_iters::SipHashStrategy,
+    kermit_iters::{Filter, RowId, SipHashStrategy, TupleView},
     kermit_rdf::{parquet::write_relation, partition::PartitionedRelation},
     std::{fmt::Write, path::Path},
 };
@@ -196,6 +196,111 @@ fn a_reordered_copy_allocates_once() {
     let info = allocation_counter::measure(|| copy = Some(spec.permute_all(&batch)));
     assert_eq!(info.count_total, 1);
     assert_eq!(copy.expect("measured").len(), batch.len());
+}
+
+// ── Tuple views ─────────────────────────────────────────────────────────
+
+/// Rows a view matches, a power of two so that the row-id `Vec` that
+/// `materialize_sorted` collects (4, 8, 16, … slots) ends at exactly this
+/// many, and its peak is exactly `VIEW_MATCHING × 4` bytes.
+const VIEW_MATCHING: usize = 4_096;
+/// Source rows, half of them matching [`view_filter`].
+const VIEW_ROWS: usize = 2 * VIEW_MATCHING;
+const WORD: usize = std::mem::size_of::<usize>();
+
+/// `VIEW_ROWS` rows of arity 6 whose column 0 alternates 0, 1, 0, 1, … and
+/// whose other columns repeat prefixes, so sorting moves rows.
+fn view_source() -> Tuples {
+    let mut tuples = Tuples::with_capacity(6, VIEW_ROWS);
+    for row in 0..VIEW_ROWS {
+        let mixed = row.wrapping_mul(2_654_435_761) >> 4;
+        tuples.push(&[
+            row % 2,
+            mixed % 3,
+            mixed % 5,
+            mixed % 7,
+            mixed % 11,
+            mixed % 13,
+        ]);
+    }
+    tuples
+}
+
+/// Column 0 holds 0: the even rows, `VIEW_MATCHING` of them.
+fn view_filter() -> Filter { Filter::new(vec![(0, 0)], vec![]) }
+
+/// Whether `batch` is in lexicographic order.
+fn is_sorted(batch: &Tuples) -> bool {
+    let rows = batch.to_vecs();
+    rows.windows(2).all(|pair| pair[0] <= pair[1])
+}
+
+/// A sorted copy is one copy of the data at every arity. Arities 1-4 sort
+/// in place; from 5, row ids are sorted against the view and the data is
+/// gathered once, so the peak is the data and the row-id array, and a
+/// `materialize` followed by `Tuples::sort` (its own gather above arity 4)
+/// would hold the data twice.
+#[test]
+fn a_sorted_copy_of_a_view_holds_the_data_once_at_every_arity() {
+    let source = view_source();
+    for columns in [vec![1, 0], vec![5, 4, 3, 2, 1], vec![5, 4, 3, 2, 1, 0]] {
+        let arity = columns.len();
+        let view = TupleView::new(&source, view_filter(), columns);
+        assert_eq!(view.count(), VIEW_MATCHING);
+        let data_bytes = (VIEW_MATCHING * arity * WORD) as u64;
+        let mut copy = None;
+        let info = allocation_counter::measure(|| copy = Some(view.materialize_sorted()));
+        let copy = copy.expect("measured");
+        assert_eq!((copy.arity(), copy.len()), (arity, VIEW_MATCHING));
+        assert!(is_sorted(&copy), "arity {arity}");
+        if arity <= 4 {
+            assert_eq!(info.count_total, 1, "arity {arity}: one allocation");
+            assert_eq!(
+                info.bytes_total, data_bytes,
+                "arity {arity}: the data, once"
+            );
+        } else {
+            assert_eq!(
+                info.bytes_max,
+                data_bytes + (VIEW_MATCHING * std::mem::size_of::<RowId>()) as u64,
+                "arity {arity}: the data and the row ids live at once, and nothing else"
+            );
+        }
+    }
+}
+
+/// `gather_sorted` over a supplied row set sorts the ids in place and
+/// allocates the output buffer, once, at its exact size.
+#[test]
+fn gathering_a_sorted_row_set_allocates_the_output_once() {
+    let source = view_source();
+    for columns in [vec![5, 4, 3, 2, 1], vec![5, 4, 3, 2, 1, 0]] {
+        let arity = columns.len();
+        let view = TupleView::new(&source, view_filter(), columns);
+        let mut rows: Vec<RowId> = (0..VIEW_ROWS as RowId)
+            .filter(|&r| view.matches(r))
+            .collect();
+        let mut copy = None;
+        let info = allocation_counter::measure(|| copy = Some(view.gather_sorted(&mut rows)));
+        let copy = copy.expect("measured");
+        assert_eq!(copy.len(), VIEW_MATCHING);
+        assert!(is_sorted(&copy), "arity {arity}");
+        assert_eq!(info.count_total, 1, "arity {arity}");
+        assert_eq!(info.bytes_total, (VIEW_MATCHING * arity * WORD) as u64);
+    }
+}
+
+/// An identity view is one `memcpy` of the source: one allocation of its
+/// exact size, with no scan of the rows.
+#[test]
+fn materializing_an_identity_view_allocates_once() {
+    let source = view_source();
+    let view = TupleView::all(&source);
+    let mut copy = None;
+    let info = allocation_counter::measure(|| copy = Some(view.materialize()));
+    assert_eq!(info.count_total, 1);
+    assert_eq!(info.bytes_total, (VIEW_ROWS * 6 * WORD) as u64);
+    assert_eq!(copy.expect("measured"), source);
 }
 
 // ── Builds ──────────────────────────────────────────────────────────────
