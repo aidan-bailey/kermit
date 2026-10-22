@@ -29,6 +29,7 @@ mod access;
 mod analysis;
 mod const_rewrite;
 mod hash;
+mod index_plan;
 mod join_algo;
 mod optimiser;
 mod orient;
@@ -51,6 +52,7 @@ pub use {
         is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
     },
     hash::{EqualitySelectionHashTrieIter, HashTrieIterKind, HashTriejoin, SingletonHashTrieIter},
+    index_plan::{plan_indexes, IndexPlan, IndexSpec, INDEX_ID_PREFIX},
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     optimiser::{
