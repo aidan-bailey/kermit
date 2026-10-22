@@ -31,8 +31,8 @@ use {
     kermit_ds::{
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
         ConfiguredBuildModeRelation, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
-        HeapSize, IndexStructure, PruningPolicy, Relation, RelationFileExt, RelationHeader,
-        SeekStrategy, TreeTrie, TreeTrieBuildMode, TupleView, Tuples,
+        HeapSize, IndexStructure, PruningPolicy, Relation, RelationHeader, SeekStrategy, TreeTrie,
+        TreeTrieBuildMode, TupleView, Tuples,
     },
     kermit_iters::{
         BuildMode, HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -92,7 +92,7 @@ impl SortedTrie {
 /// the relation itself (`HasOptimizationAxes`), its build mode from the
 /// family.
 pub trait SortedTrieRelation:
-    Relation + RelationFileExt + TrieIterable + Cardinality + HeapSize + HasOptimizationAxes
+    Relation + TrieIterable + Cardinality + HeapSize + HasOptimizationAxes
 {
     /// How this structure can be built from its tuples: `()` for a
     /// structure with a single build process.
