@@ -145,6 +145,10 @@ fn cli_bench_join_skips_space_for_indexes_that_hold_no_bytes() {
         stderr.contains("skipping the space metric"),
         "stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("its indexes hold no heap bytes (no index, or no row passes its filter)"),
+        "stderr: {stderr}"
+    );
     let reports = reports_of(&report);
     assert_eq!(reports[0]["axes"]["index_rows"], 0);
     assert!(
