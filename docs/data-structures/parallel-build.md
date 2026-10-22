@@ -5,7 +5,7 @@
 Parallelism*, SIGMOD 2014): the input is cut into small morsels, and
 whichever thread is free takes the next unit of work.
 - **TreeTrie's `parallel:N`** produces exactly the trie its `serial` build
-  produces, so only the build-timing metrics (`insertion`, `end_to_end`)
+  produces, so only the build-timing metrics (`build`, `end_to_end`)
   can move.
 - **HashTrie's `parallel:N`** builds the `bulk` trie's contents and root,
   bucket for bucket, under the same config, over a buffer of its own. It
@@ -15,6 +15,8 @@ whichever thread is free takes the next unit of work.
   `--ds-config root-capacity=tuples`) copies its rows the same way. It
   builds an equivalent trie whose root keys may also sit in other buckets,
   so `iteration` is measured for it too.
+
+Every mode reads a borrowed [`TupleView`](../../kermit-iters/src/tuple_view.rs) and copies its matching rows exactly once, so the build metric times the copy in every mode, `serial` and `bulk` included. The parallel builds cut the view's source into morsels of source row ids (a row the filter rejects is skipped) and write each matching row's output columns once. The source is only read, and the build never frees it.
 
 | Mode | `--ds-build` | `ds_build_mode` | Default |
 |---|---|---|---|
@@ -33,13 +35,14 @@ everything, so `parallel:1` can beat `serial`. HashTrie has no such saving
 (see [HashTrie](#hashtrie)). N ranges from 1 to 1024 (`Threads::MAX`).
 
 The shared steps live in `kermit-ds/src/morsel.rs`:
-- `scatter_rows` sends the 4-byte row ids of a `Tuples` batch to partitions
-  (`RowPartition`, its ids in input order), and the batch itself never
-  moves (#111). TreeTrie's build uses it.
-- `partition_rows` copies the rows themselves into partition order, the
-  paper's materialisation step (§3.3.2, #101). It returns a `Partitioned`:
-  the copy, the partition offsets, and each copied row's input position
-  (`origin`). HashTrie's builds use it.
+- `scatter_rows` sends the 4-byte source row ids of a `TupleView`'s
+  matching rows to partitions (`RowPartition`, its ids in input order), and
+  the source itself never moves (#111). The `partition_of` closure it takes
+  sees output rows. TreeTrie's build uses it.
+- `partition_rows` copies the matching rows themselves into partition
+  order, the paper's materialisation step (§3.3.2, #101). It returns a
+  `Partitioned`: the copy, at exact capacity, the partition offsets, and
+  each copied row's source row id (`origin`). HashTrie's builds use it.
 - `dispatch` runs one task per partition.
 
 The TreeTrie build is `TreeTrie::build_parallel` in
@@ -55,35 +58,30 @@ partition, scratch-root and merge steps with `radix:K`
 ### The three steps
 
 ```text
-parallel_build(tuples, N):
-    check arities                                     // the serial check, on the caller
-    links = n zeroed links                            // one per row, shared by every worker (#101 B2)
-    if no tuples: return the empty root               // no worker started
-    P = 4·N rounded up to a power of two; b = log₂ P
-    copy = partition_rows(tuples, morsels of 16 384)  // step 1, N workers, two passes
-        // row t goes to partition H(t[0]) >> (64 − b): a histogram pass keeps
-        // each row's partition, then a scatter copies the rows into partition
-        // order, with origin[id] = the copied row's input position
-    free tuples                                       // the copy is the trie's buffer
-    lists = dispatch(non-empty partitions' id ranges): // step 2, N workers
-        group into a scratch root in id order (input order within a partition),
-            appending each id to its key's chain through links,
-            noting (origin[id], hash) whenever it gains a key
-        build each key's child from its chain (Algorithm 2), re-threading its ids
-        take its entries out in that order
-        -> [(first input position, hash, subtrie or chain)]
-    root = empty                                       // step 3, the caller
-    k-way merge the lists by first input position:
-        insert each (hash, value) into root
+parallel_build(view, N):
+    check arities                                     // the serial check, on the caller; only when the source holds rows
+    if the source has no rows: return the empty trie  // no worker started
+    splitters = sample of the output first keys       // the calling thread
+    partitions = scatter_rows(view, morsels of 16 384, partition_of)  // step 1, N workers
+        // each source row the filter keeps sends its source row id to the
+        // partition whose splitters bracket its output first key
+    lists = dispatch(partitions):                     // step 2, N workers
+        rows = view.gather_sorted(ids)                // the one copy: this partition's rows, output order, sorted
+        insert each row of rows into a local list of nodes
+    trie = empty                                      // step 3, the caller
+    push each partition's top-level nodes onto the root, in partition order
 ```
 
-- **Partition.** Workers take morsels from a mutex-guarded queue and push
-  each row's id into its partition's bucket for that morsel; the rows stay
-  in the batch. A partition is its buckets in morsel order, so it lists its
-  ids in input order, strictly ascending. Each build worker then gathers its
-  partition's rows into a buffer of its own, always reading forward and
-  skipping other partitions' rows, and frees it when done; the calling
-  thread frees the input batch once.
+- **Partition.** Workers take morsels, ranges of source row ids, from a
+  mutex-guarded queue and push the id of each row the filter keeps
+  (`view.matches`) into its partition's bucket for that morsel; the rows
+  stay in the source, which is only read. A partition is its buckets in
+  morsel order, so it lists its ids in input order, strictly ascending.
+  Each build worker then gathers its partition with `view.gather_sorted`:
+  it sorts the ids by output row, then copies each row's output columns
+  once, in that order, into a buffer of exact size, and frees the buffer
+  when done. That gather is the build's one copy, inside the timer exactly
+  as `serial`'s `materialize_sorted` is. Nothing frees the source.
 - **Build.** Workers take whole partitions from the same kind of queue.
   There are usually more partitions than threads (fewer only when heavy keys
   merge splitters), so a worker that drew a small partition takes another.
@@ -93,7 +91,7 @@ parallel_build(tuples, N):
 ### Invariant: the parallel trie is the serial trie
 
 Every `parallel:N` build is identical to the serial build of the same
-tuples: the same nodes, the same `Vec` capacities, the same `tuple_count`
+view: the same nodes, the same `Vec` capacities, the same `tuple_count`
 and `heap_size_bytes`. `parallel_builds_are_identical_to_serial` pins it for
 N ∈ {1, 2, 3, 8}.
 
@@ -162,7 +160,7 @@ which merge to the splitters `[1, 2, 3]`, so there are four partitions:
 | 3 | `≥ 3` | 0 → `[3,1]` | `3 → {1}` |
 
 Pushing the nodes of partitions 1, 2 and 3 in order gives the root `1, 2, 3`:
-the trie `from_tuples` builds from the same input.
+the trie `from_view` builds from the same view.
 
 ## HashTrie
 
@@ -183,15 +181,16 @@ HashTrie has two parallel builds, each its own mode:
 ### The three steps (exact build)
 
 ```text
-parallel_build(tuples, N):
-    check arities                                     // the serial check, on the caller
-    if no tuples: return the empty root               // no worker started
+parallel_build(view, N):
+    check arities                                     // the serial check, on the caller; only when the source holds rows
+    if the source has no rows: return the empty root  // no worker started
     P = 4·N rounded up to a power of two; b = log₂ P
-    copy = partition_rows(tuples, morsels of 16 384)  // step 1, N workers, two passes
-        // row t goes to partition H(t[0]) >> (64 − b): a histogram pass keeps
-        // each row's partition, then a scatter copies the rows into partition
-        // order, with origin[id] = the copied row's input position
-    free tuples                                       // the copy is the trie's buffer
+    copy = partition_rows(view, morsels of 16 384)    // step 1, N workers, two passes
+        // output row t goes to partition H(t[0]) >> (64 − b): a histogram pass
+        // tests view.matches and keeps each matching row's partition, then a
+        // scatter calls view.write into one exact-size buffer, with
+        // origin[id] = the copied row's source row id
+        // the copy is the trie's buffer; the source is only read
     lists = dispatch(non-empty partitions' id ranges): // step 2, N workers
         group into a scratch root in id order (input order within a partition),
             noting (origin[id], hash) whenever it gains a key
@@ -206,11 +205,13 @@ parallel_build(tuples, N):
 - **Partition.** By the top b bits of the first attribute's hash (the radix
   build's rule; FxHash mixes its low bits poorly), so there are no
   splitters to sample. Unlike TreeTrie's, this step moves the rows:
-  `partition_rows` counts each morsel's rows per partition, then each
-  worker copies its morsels' rows into disjoint ranges of one new buffer.
-  Partition p is the contiguous id range `offsets[p]..offsets[p + 1]` of
-  the copy, in input order, and `origin` maps each id back to its input
-  position. The input batch is freed once copied.
+  `partition_rows` counts each morsel's matching rows per partition (a
+  morsel is a range of source row ids, and `view.matches` skips the rows the
+  filter rejects), then each worker copies its morsels' matching rows with
+  `view.write` into disjoint ranges of one new buffer, allocated at exact
+  size. Partition p is the contiguous id range `offsets[p]..offsets[p + 1]`
+  of the copy, in input order, and `origin` maps each id back to its source
+  row id. The source is only read.
 - **Build.** A worker builds a whole partition, one contiguous range of the
   copy, into a scratch root of the real root's kind, by Algorithm 2, as
   the bulk build does. It then moves the scratch root's entries out in the
@@ -279,6 +280,8 @@ threads (`P` = 4·N rounded up to a power of two):
 | Build | O(n · a) expected probes, inserts and link writes, split across partitions, plus O(D) to take the entries out | N workers |
 | Merge | O(D log P) heap operations and D root inserts (expected O(1) each, plus the root's resizes) | the calling thread |
 
+For a filtered view, `n` counts the matching rows. The histogram pass also tests the filter on each of the source's rows, which is O(s) for a source of `s` rows; unfiltered, `s = n`. The presized build's partition step is the same.
+
 The sequential share is the checks, the prefix sums over the
 (n / 16 384) · P (partition, morsel) pairs, and the merge into the root.
 It grows with D/n: when the first attribute is a key (D = n) every root
@@ -288,8 +291,9 @@ two passes of `partition_rows`, then `dispatch`. Partition sizes follow
 the hash, so balance comes from P > N rather than from splitters, and a
 dominant first key still fills one partition.
 
-Memory: while the copy is made, the input and the copy are both held, so
-for that stretch the tuples are held twice. `origin` adds 4 bytes per
+Memory: while the copy is made, the view's source and the copy are both
+held, so for that stretch the matching tuples are held twice (the source is
+the catalog's, so the build never frees it). `origin` adds 4 bytes per
 tuple until the scratch roots are built (it is freed before the merge,
 since each key's first input position is already in its entry), and the
 partition numbers 2 bytes per tuple between the two passes. The trie's
@@ -349,13 +353,12 @@ partition is a contiguous run of regions.
 presized:N (requires root-capacity=tuples):
     check arities; no tuples → the empty root, no worker started
     links = n zeroed links                             // one per row, shared by every worker (#101 B2)
-    root = 2^p buckets, p = config.root_log2_capacity(n)    // #88; never grows here
+    root = 2^p buckets, p = config.root_log2_capacity(view.count())   // #88; counted before partitioning; never grows here
     P = 4·N rounded up to a power of two, capped at the region count
-    copy = partition_rows(tuples, morsels of 16 384)   // step 1, N workers, two passes
+    copy = partition_rows(view, morsels of 16 384)     // step 1, N workers, two passes
         // row t goes to partition home_bucket(H(t[0]), p) >> (p − log₂ P):
         // partition k is run k of the root, and ids offsets[k]..offsets[k+1]
-        // of the copy; origin[id] is the copied row's input position
-    free tuples                                        // the copy is the trie's buffer
+        // of the copy; origin[id] is the copied row's source row id; the copy is the trie's buffer
     root.with_runs(P, REGION_BUCKETS, |runs|           // step 2, N workers
         dispatch over (partition k's id range, run k):
             for each id, in order (input order within the partition):
@@ -474,6 +477,8 @@ predates #107: its arms, `serial` included, built per tuple.)
 The protocol is the spec's "Scaling protocol"; its TreeTrie half is
 recorded below.
 
+Every record below also predates per-query index builds (2026-10-22): its `insertion` times the old build, in which `serial` and `bulk` did not copy and the parallel modes did, so its ratios against `serial` carry that confound. Schema 5's `build` times one copy in every mode.
+
 ### Scaling result: TreeTrie (2026-10-05)
 
 > **2026-10-08 (#111):** This record and the jemalloc one below predate flat tuple batches: every arm read its input as a `Vec` per tuple and freed those tuples one by one (`serial` on the calling thread, `parallel:N` on its workers). Since #111 the input is one `Tuples` batch, freed once by the calling thread, and each worker gathers its partition into a local `Tuples`, so neither the plateau's mechanism nor the `parallel:1` artefact below (both from those 10⁷ frees) applies to the input path any more.
@@ -577,8 +582,9 @@ geometric mean over the 14 queries of each query's speedup):
   at `:16`, so neither DRAM traffic nor a sequential step is the cap.
   Inserting allocated nothing per level even then: `collect()` reused the
   tuple's buffer. Since #111 the input path frees no tuple on a worker
-  thread at all: the batch is one buffer, freed once, and each worker
-  gathers its partition into a local `Tuples` that it frees itself.
+  thread at all: the source is one buffer that no build frees (per-query
+  index builds, 2026-10-22), and each worker gathers its partition's matching
+  rows, sorted, into a local `Tuples` that it frees itself.
 - **`parallel:1` at 0.67 for unary 10⁷ is a glibc timing artefact.** A
   unary build made no small allocation, so a serial build's 10⁷ frees
   waited in glibc's fastbins and were consolidated in Criterion's *untimed*
