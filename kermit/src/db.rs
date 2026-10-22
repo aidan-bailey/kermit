@@ -38,7 +38,7 @@ use {
         HashStrategy, HashTrieIterable, JoinIterable, TrieIterable, TrieIteratorWrapper,
     },
     std::collections::HashMap,
-    validation::{prepare, Prepared},
+    validation::{check_and_rewrite, Rewritten},
 };
 
 /// How one iterator family wraps a stored relation, a constant atom and an
@@ -151,18 +151,18 @@ struct Planned {
     selection_specs: Vec<SelectionSpec>,
 }
 
-/// Validation and the query rewrites ([`prepare`]), the statistics gate,
-/// the plan, and the orientation: everything that decides *what* runs,
+/// Validation and the query rewrites ([`check_and_rewrite`]), the statistics
+/// gate, the plan, and the orientation: everything that decides *what* runs,
 /// shared by the join itself and by [`Database::required_indexes`], so
 /// the copies a caller builds are the copies the join will read.
 fn plan_query<R: Relation + Cardinality>(
     database: &Database<R>, query: &JoinQuery, planner: &Planner,
 ) -> Result<Planned, JoinError> {
-    let Prepared {
+    let Rewritten {
         query: rewritten,
         const_specs,
         selection_specs,
-    } = prepare(query, database, planner.column_orders())?;
+    } = check_and_rewrite(query, database, planner.column_orders())?;
 
     // The plan comes from the database's statistics, so the optimiser must
     // not read more than were gathered when it was built.
@@ -260,8 +260,8 @@ where
         selection_specs,
     } = plan_query(database, &query, planner)?;
 
-    // `prepare` has checked that every base relation the body names is
-    // present; a copy is present only if the caller built it.
+    // `check_and_rewrite` has checked that every base relation the body names
+    // is present; a copy is present only if the caller built it.
     let lookup = |name: &str| -> Result<&'a R, JoinError> {
         if is_index_predicate(name) {
             database.index(name).ok_or_else(|| JoinError::MissingIndex {
@@ -275,7 +275,7 @@ where
         } else {
             Ok(database
                 .get(name)
-                .expect("`prepare` checked that the database holds every body relation"))
+                .expect("`check_and_rewrite` checked that the database holds every body relation"))
         }
     };
 
@@ -311,8 +311,8 @@ where
     // Projection to the head (#71). The executors emit every variable of
     // the query they run in canonical order, and `analyse` numbers the
     // head's variables `0..head_len` in head order — which holds because
-    // `prepare` has checked that the head is distinct variables, and still
-    // holds after orientation, which touches body atoms only — so the
+    // `check_and_rewrite` has checked that the head is distinct variables, and
+    // still holds after orientation, which touches body atoms only — so the
     // head's columns are each row's prefix. Lending that prefix allocates
     // nothing; duplicates stay (bag semantics), so counts are unchanged.
     JA::join_for_each(&plan, oriented, ds_map, |row| emit(&row[..head_len]));

@@ -262,7 +262,7 @@ impl RelationArities for [RelationHeader] {
 
 /// A validated query, rewritten into the form the executors run, plus the
 /// synthetic predicates the rewrites introduced.
-pub(super) struct Prepared {
+pub(super) struct Rewritten {
     /// The query after the const, placeholder and selection rewrites.
     pub(super) query: JoinQuery,
     /// One entry per rewritten constant.
@@ -275,10 +275,10 @@ pub(super) struct Prepared {
 /// rewrites a copy of it for the executors. The one path both
 /// [`validate_query`] and the join entry points take, so they accept
 /// exactly the same queries.
-pub(super) fn prepare(
+pub(super) fn check_and_rewrite(
     query: &JoinQuery, relations: &(impl RelationArities + ?Sized),
     column_orders: ColumnOrderPolicy,
-) -> Result<Prepared, JoinError> {
+) -> Result<Rewritten, JoinError> {
     check_head_terms(query)?;
     check_body_atoms(query, relations)?;
     check_head_bound(query)?;
@@ -307,7 +307,7 @@ pub(super) fn prepare(
         })?;
     }
 
-    Ok(Prepared {
+    Ok(Rewritten {
         query: rewritten,
         const_specs,
         selection_specs,
@@ -336,7 +336,7 @@ pub fn validate_query(
     query: &JoinQuery, relations: &(impl RelationArities + ?Sized),
     column_orders: ColumnOrderPolicy,
 ) -> Result<(), JoinError> {
-    prepare(query, relations, column_orders).map(|_| ())
+    check_and_rewrite(query, relations, column_orders).map(|_| ())
 }
 
 fn check_head_terms(query: &JoinQuery) -> Result<(), JoinError> {
@@ -597,6 +597,20 @@ mod tests {
             validate("Q(X, W) :- nope(X)."),
             Err(JoinError::UnknownRelation { .. })
         ));
+    }
+
+    /// The checks and the rewrites share one body: it returns the rewritten
+    /// query with one spec per constant and one per repeated variable, and
+    /// leaves the head alone.
+    #[test]
+    fn check_and_rewrite_returns_the_rewritten_query_and_its_specs() {
+        let query: JoinQuery = "Q(X) :- edge(X, c5), r(X, X, _).".parse().unwrap();
+        let rewritten: Rewritten =
+            check_and_rewrite(&query, headers().as_slice(), ColumnOrderPolicy::Any)
+                .expect("a well-formed query");
+        assert_eq!(rewritten.const_specs.len(), 1);
+        assert_eq!(rewritten.selection_specs.len(), 1);
+        assert_eq!(rewritten.query.head, query.head);
     }
 
     /// A store and the headers its relations were built from accept and
