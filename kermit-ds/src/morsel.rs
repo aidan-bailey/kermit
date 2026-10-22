@@ -335,6 +335,7 @@ pub(crate) fn partition_rows(
         "partition_rows: at most 65,536 partitions, got {partitions}"
     );
     let (source_rows, arity) = (view.source_rows(), view.arity());
+    let identity = view.is_identity();
     let morsels = source_rows.div_ceil(morsel_rows);
     let morsel_ids = |m: usize| {
         let first = m * morsel_rows;
@@ -372,7 +373,7 @@ pub(crate) fn partition_rows(
             // check there would cost only the radix family. The branch is
             // taken once; the two loops differ only in how a row is read,
             // and share `tally`.
-            if view.is_identity() {
+            if identity {
                 for id in ids {
                     tally(partition_of(view.source().row(id)));
                 }
@@ -433,11 +434,21 @@ pub(crate) fn partition_rows(
         run_workers(threads, || {
             while let Some((m, (mut ranges, morsel_numbers))) = take_next(&queue) {
                 let mut numbers = morsel_numbers.into_iter();
-                for id in morsel_ids(m).filter(|&id| view.matches(id)) {
+                let mut send = |id: RowId| {
                     let p = numbers
                         .next()
                         .expect("the histogram numbered every matching row");
                     ranges[p as usize].write(view, id);
+                };
+                // As in the histogram: an identity view matches every row, so
+                // it pays no per-row filter here either (Amendment 2). The
+                // `write` is the build's one copy and stays on both paths.
+                if identity {
+                    morsel_ids(m).for_each(&mut send);
+                } else {
+                    morsel_ids(m)
+                        .filter(|&id| view.matches(id))
+                        .for_each(&mut send);
                 }
             }
         });
@@ -616,6 +627,35 @@ mod tests {
                 }
                 seen.sort_unstable();
                 assert_eq!(seen, kept, "{case}: exactly the matching ids, once each");
+            }
+        }
+    }
+
+    /// An unfiltered view that permutes its columns is not an identity view:
+    /// `partition_of` must see the *output* row (`[i, i % 7]` with columns
+    /// `[1, 0]`), not the source row, so every id's partition is its own
+    /// residue, and every id is sent once.
+    #[test]
+    fn scatter_rows_reads_the_output_row_of_an_unfiltered_permuted_view() {
+        let n = 1000;
+        let input = numbered_rows(n); // rows `[i % 7, i]`
+        let view = TupleView::new(&input, Filter::none(), vec![1, 0]);
+        assert!(!view.is_identity(), "the premise");
+        let all: Vec<RowId> = (0..).take(n).collect();
+        for t in [1, 2, 3, 8] {
+            for morsel in [1, 4, 5, n, n + 1] {
+                let case = format!("threads {t}, morsel {morsel}");
+                let partitions = scatter_rows(threads(t), &view, morsel, 3, |row| row[0] % 3);
+                let mut seen: Vec<RowId> = Vec::new();
+                for (p, partition) in partitions.iter().enumerate() {
+                    let ids: Vec<RowId> = partition.ids().collect();
+                    for &id in &ids {
+                        assert_eq!(id as usize % 3, p, "{case}: id {id} in partition {p}");
+                    }
+                    seen.extend(ids);
+                }
+                seen.sort_unstable();
+                assert_eq!(seen, all, "{case}: every id, once");
             }
         }
     }
@@ -893,6 +933,28 @@ mod tests {
                 assert_eq!(out.origin, origin, "{case}");
                 assert_eq!(out.tuples.arity(), 2, "{case}");
                 assert_eq!(out.tuples.value_capacity(), 14 * 2, "{case}: exact size");
+            }
+        }
+    }
+
+    /// An unfiltered view that permutes its columns is not an identity view:
+    /// the copy holds every row as the output row `[100 - i, i]`, and
+    /// `first_mod_3` partitions on `100 - i`, not on the source's `i % 7`.
+    #[test]
+    fn partition_rows_copies_an_unfiltered_permuted_view_in_output_order() {
+        let source = rows_of_arity(100, 3);
+        let view = TupleView::new(&source, kermit_iters::Filter::none(), vec![2, 1]);
+        assert!(!view.is_identity(), "the premise");
+        let (rows, origin, offsets) = expected_copy(&source, |_| true, &[2, 1]);
+        assert_eq!(offsets[PARTITIONS], 100, "the premise: every row is kept");
+        for t in [1, 2, 3, 8] {
+            for morsel in [1, 3, 5, 100, 101] {
+                let case = format!("threads {t}, morsel {morsel}");
+                let out = super::partition_rows(threads(t), &view, morsel, PARTITIONS, first_mod_3);
+                assert_eq!(out.offsets, offsets, "{case}");
+                assert_eq!(out.tuples.to_vecs(), rows, "{case}");
+                assert_eq!(out.origin, origin, "{case}");
+                assert_eq!(out.tuples.value_capacity(), 100 * 2, "{case}: exact size");
             }
         }
     }
