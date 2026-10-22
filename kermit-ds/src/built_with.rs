@@ -7,7 +7,7 @@
 //! `P: BuildModeProvider<R::BuildMode>` that supplies the mode. The wrapper
 //! forwards the sorted-family traits (`TrieIterable`, `Cardinality`,
 //! `HeapSize`, `Projectable`, `JoinIterable`, `HasOptimizationAxes`) to `R`;
-//! only `from_tuples` differs, routing through `P::build_mode()`. It also
+//! only `from_view` differs, routing through `P::build_mode()`. It also
 //! forwards `HashTrieIterable`, as `Configured` does, for HashTrie's build
 //! modes.
 //!
@@ -113,14 +113,6 @@ where
 
     /// An empty relation has nothing to build, so no mode applies.
     fn new(header: RelationHeader) -> Self { Self::wrap(R::new(header)) }
-
-    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
-        Self::wrap(R::from_tuples_with_build_mode(
-            header,
-            P::build_mode(),
-            tuples,
-        ))
-    }
 
     fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self {
         Self::wrap(R::from_view_with_build_mode(header, P::build_mode(), view))
@@ -317,9 +309,7 @@ mod tests {
     crate::define_config_provider!(SpyConfigProvider, SpyConfig, SpyConfig);
 
     /// The wrapper hands the view to the inner relation's own view
-    /// constructor. `from_view_builds_the_view_in_the_providers_mode` cannot
-    /// tell this from the default body, which reaches the same build through
-    /// `from_tuples`.
+    /// constructor.
     #[test]
     fn views_reach_the_inner_relations_view_constructors() {
         take_calls();
@@ -332,10 +322,10 @@ mod tests {
     }
 
     #[test]
-    fn from_tuples_still_reaches_the_inner_relations_tuple_constructor() {
+    fn from_tuples_reaches_the_inner_relations_view_constructor() {
         take_calls();
         let _ = BuiltWith::<ViewSpy, SpyModeProvider>::from_tuples(2.into(), vec![vec![1, 2]]);
-        assert_eq!(take_calls(), ["from_tuples_with_build_mode"]);
+        assert_eq!(take_calls(), ["from_view_with_build_mode"]);
     }
 
     #[test]

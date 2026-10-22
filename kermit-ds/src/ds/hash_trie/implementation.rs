@@ -77,22 +77,23 @@ use {
 /// # Storage
 ///
 /// The trie owns its tuples as one row-major buffer ([`Tuples`], #111): the
-/// batch a build is given, then every row `insert` appends. `bulk` and
-/// `incremental` keep the batch as is, in arrival order. `radix:K`,
-/// `parallel:N` and `presized:N` copy it into partition order on the first
-/// attribute's hash (`morsel::partition_rows`, #101) and keep the copy
-/// instead, so each partition's rows are one contiguous range, in input
-/// order. Below the tables everything names a tuple by its [`RowId`]: a
-/// pruned `Singleton` is one `RowId`, and every list (a leaf chain, an
-/// unexpanded child's pending chain, and each of Algorithm 2's per-bucket
-/// lists while a build runs) is a `Chain`: its first and last rows and its
-/// length, with each row's successor in `links`, one [`ChainLinks`] entry
-/// per row beside the buffer (#101 B2). The paper's leaves likewise point
-/// into a materialised buffer, partitioned as it is materialised, and
-/// thread each list through a chain pointer reserved in each tuple (VLDB
-/// 2020 §3.3.2, Figure 3). Its pointers are 8 bytes inside the tuple where
-/// these ids and links are 4 bytes beside it, and its push prepends where
-/// these lists append, keeping input order (both kermit's).
+/// rows a build copies out of its view (the view's matching rows in source
+/// order, each cut to the view's output columns, so a row's id is its rank
+/// among them), then every row `insert` appends. `bulk` and `incremental`
+/// keep that copy as is, in source order. `radix:K`, `parallel:N` and
+/// `presized:N` copy the rows into partition order on the first attribute's
+/// hash (`morsel::partition_rows`, #101) and keep that copy instead, so each
+/// partition's rows are one contiguous range, in source order. Below the tables
+/// everything names a tuple by its [`RowId`]: a pruned `Singleton` is one
+/// `RowId`, and every list (a leaf chain, an unexpanded child's pending chain,
+/// and each of Algorithm 2's per-bucket lists while a build runs) is a `Chain`:
+/// its first and last rows and its length, with each row's successor in
+/// `links`, one [`ChainLinks`] entry per row beside the buffer (#101 B2). The
+/// paper's leaves likewise point into a materialised buffer, partitioned as it
+/// is materialised, and thread each list through a chain pointer reserved in
+/// each tuple (VLDB 2020 §3.3.2, Figure 3). Its pointers are 8 bytes inside the
+/// tuple where these ids and links are 4 bytes beside it, and its push prepends
+/// where these lists append, keeping input order (both kermit's).
 ///
 /// # Construction
 ///
@@ -456,10 +457,6 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
 
     fn new(header: RelationHeader) -> Self { Self::with_config(header, HashTrieConfig::default()) }
 
-    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
-        Self::from_tuples_with_config(header, HashTrieConfig::default(), tuples)
-    }
-
     fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self {
         Self::from_view_with_config(header, HashTrieConfig::default(), view)
     }
@@ -514,12 +511,6 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
         Self::with_config_for(header, config, Tuples::new(arity))
     }
 
-    fn from_tuples_with_config(
-        header: RelationHeader, config: HashTrieConfig, tuples: impl Into<Tuples>,
-    ) -> Self {
-        Self::from_tuples_in_bulk(header, config, tuples.into())
-    }
-
     fn from_view_with_config(
         header: RelationHeader, config: HashTrieConfig, view: TupleView<'_>,
     ) -> Self {
@@ -553,6 +544,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// `Presized` groups a presized root by region, then builds its children
     /// in runs (both in `parallel.rs`).
     ///
+    /// A thin wrapper: the batch is converted once and built from its identity
+    /// view ([`TupleView::all`]) by
+    /// [`from_view_with_config_and_build_mode`](Self::from_view_with_config_and_build_mode),
+    /// so this copies once, like every build.
+    ///
     /// # Panics
     ///
     /// Panics if `tuples` holds rows of another arity than `header.arity()`,
@@ -565,23 +561,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         tuples: impl Into<Tuples>,
     ) -> Self {
         let tuples: Tuples = tuples.into();
-        match mode {
-            | HashTrieBuildMode::Bulk => Self::from_tuples_in_bulk(header, config, tuples),
-            | HashTrieBuildMode::Incremental => {
-                Self::assert_incremental_prerequisite(config);
-                Self::from_tuples_incrementally(header, config, tuples)
-            },
-            // The partitioning builds read a view, and this batch is the
-            // whole source of one: they copy it once, into partition order.
-            | HashTrieBuildMode::Radix(_)
-            | HashTrieBuildMode::Parallel(_)
-            | HashTrieBuildMode::Presized(_) => Self::from_view_with_config_and_build_mode(
-                header,
-                config,
-                mode,
-                TupleView::all(&tuples),
-            ),
-        }
+        Self::from_view_with_config_and_build_mode(header, config, mode, TupleView::all(&tuples))
     }
 
     /// Creates a trie holding `config`, populated with the rows `view`
@@ -617,13 +597,61 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     ) -> Self {
         match mode {
             | HashTrieBuildMode::Bulk => {
-                let batch = Self::batch_from_view(&header, &view);
-                Self::from_tuples_in_bulk(header, config, batch)
+                // Algorithm 2 from the root (`bulk.rs`) over every row id of
+                // the copy, in input order, the root sized as
+                // every build sizes it,
+                // by `HashTrieConfig::root_log2_capacity` (#88). The trie keeps
+                // the copy as its buffer and threads its rows through one link
+                // each. The links start zeroed (`ChainLinks::new`): the root's
+                // grouping writes every row's link before any is read.
+                #[cfg(test)]
+                BULK_BUILDS.with(|n| n.set(n.get() + 1));
+                let arity = header.arity();
+                let tuples = Self::batch_from_view(&header, &view);
+                let log2_capacity = config.root_log2_capacity(tuples.len());
+                let links = ChainLinks::new(tuples.len());
+                let root = Self::build(
+                    &tuples,
+                    &links,
+                    0,
+                    arity,
+                    all_rows(&tuples),
+                    log2_capacity,
+                    config,
+                );
+                Self {
+                    header,
+                    tuples,
+                    links,
+                    root,
+                    config,
+                    _layout: PhantomData,
+                }
             },
             | HashTrieBuildMode::Incremental => {
+                // One `insert_at` per row, in input order: the build
+                // `from_tuples_with_config` ran before #107.
                 Self::assert_incremental_prerequisite(config);
-                let batch = Self::batch_from_view(&header, &view);
-                Self::from_tuples_incrementally(header, config, batch)
+                let arity = header.arity();
+                let tuples = Self::batch_from_view(&header, &view);
+                let mut trie = Self::with_config_for(header, config, tuples);
+                for row in all_rows(&trie.tuples) {
+                    // As `insert` does: a row's link is `NIL` until a chain
+                    // threads it, so a row that stays a pruned `Singleton`
+                    // holds `NIL`, as `bulk` leaves it. (Zeroed links would
+                    // leave it at 0.)
+                    trie.links.push(ChainLinks::NIL);
+                    Self::insert_at(
+                        &trie.tuples,
+                        &trie.links,
+                        &mut trie.root,
+                        0,
+                        arity,
+                        row,
+                        config.load_factor,
+                    );
+                }
+                trie
             },
             | HashTrieBuildMode::Radix(bits) => {
                 Self::from_view_partitioned(header, config, &view, |view, links, log2, arity| {
@@ -684,99 +712,6 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             return Tuples::new(header.arity());
         }
         view.materialize()
-    }
-
-    /// The batch a trie of `arity` stores: `tuples` itself, or, when it holds
-    /// no rows and has another arity, an empty batch of `arity`: an empty
-    /// literal carries no arity, and `insert` must later push rows of the
-    /// header's.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `tuples` holds rows of another arity, with the message the
-    /// per-tuple check gave before #111.
-    fn batch_for_header(arity: usize, tuples: Tuples) -> Tuples {
-        if tuples.is_empty() && tuples.arity() != arity {
-            return Tuples::new(arity);
-        }
-        assert_eq!(
-            tuples.arity(),
-            arity,
-            "from_tuples: tuple arity {} does not match header arity {}",
-            tuples.arity(),
-            arity,
-        );
-        tuples
-    }
-
-    /// The `bulk` build: Algorithm 2 from the root (`bulk.rs`) over every
-    /// row id of `tuples`, in input order, the root sized as every build
-    /// sizes it, by [`HashTrieConfig::root_log2_capacity`] (#88). The trie
-    /// keeps `tuples` as its buffer and threads its rows through one link
-    /// each. The links start zeroed (`ChainLinks::new`): the root's grouping
-    /// writes every row's link before any is read.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `tuples` holds rows of another arity than `header.arity()`.
-    pub(super) fn from_tuples_in_bulk(
-        header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
-    ) -> Self {
-        #[cfg(test)]
-        BULK_BUILDS.with(|n| n.set(n.get() + 1));
-        let arity = header.arity();
-        let tuples = Self::batch_for_header(arity, tuples);
-        let log2_capacity = config.root_log2_capacity(tuples.len());
-        let links = ChainLinks::new(tuples.len());
-        let root = Self::build(
-            &tuples,
-            &links,
-            0,
-            arity,
-            all_rows(&tuples),
-            log2_capacity,
-            config,
-        );
-        Self {
-            header,
-            tuples,
-            links,
-            root,
-            config,
-            _layout: PhantomData,
-        }
-    }
-
-    /// The `incremental` build: one [`insert_at`](Self::insert_at) per row,
-    /// in input order. This is the build `from_tuples_with_config` ran
-    /// before #107; since #111 it places ids of rows of the batch it keeps,
-    /// and checks the batch's arity once, before building.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `tuples` holds rows of another arity than `header.arity()`.
-    pub(super) fn from_tuples_incrementally(
-        header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
-    ) -> Self {
-        let arity = header.arity();
-        let tuples = Self::batch_for_header(arity, tuples);
-        let mut trie = Self::with_config_for(header, config, tuples);
-        for row in all_rows(&trie.tuples) {
-            // As `insert` does: a row's link is `NIL` until a chain threads
-            // it, so a row that stays a pruned `Singleton` holds `NIL`, as
-            // `bulk` leaves it. (Zeroed links would leave it at 0.)
-            trie.links.push(ChainLinks::NIL);
-            Self::insert_at(
-                &trie.tuples,
-                &trie.links,
-                &mut trie.root,
-                0,
-                arity,
-                row,
-                config.load_factor,
-            );
-        }
-        trie
     }
 
     /// What the partitioned builds share (`radix:K`, `parallel:N`,
@@ -842,34 +777,16 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
     type BuildMode = HashTrieBuildMode;
 
     /// Builds with the default config; see
-    /// [`from_tuples_with_config_and_build_mode`](HashTrie::from_tuples_with_config_and_build_mode).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `tuples` holds rows of another arity than `header.arity()`,
-    /// and for [`HashTrieBuildMode::Presized`], which requires
-    /// `root-capacity=tuples`: this seam builds with the default config
-    /// (`root-capacity=grow`), so use
-    /// [`HashTrie::from_tuples_with_config_and_build_mode`] (or
-    /// `BuiltWith<Configured<…>, …>`) instead.
-    fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: HashTrieBuildMode, tuples: impl Into<Tuples>,
-    ) -> Self {
-        Self::from_tuples_with_config_and_build_mode(
-            header,
-            HashTrieConfig::default(),
-            mode,
-            tuples,
-        )
-    }
-
-    /// Builds with the default config; see
     /// [`from_view_with_config_and_build_mode`](HashTrie::from_view_with_config_and_build_mode).
     ///
     /// # Panics
     ///
-    /// Panics as `from_tuples_with_build_mode` does, and if the view's source
-    /// holds rows and the view's arity is not `header.arity()`.
+    /// Panics if the view's source holds rows and the view's arity is not
+    /// `header.arity()`, and for [`HashTrieBuildMode::Presized`], which
+    /// requires `root-capacity=tuples`: this seam builds with the default
+    /// config (`root-capacity=grow`), so use
+    /// [`HashTrie::from_view_with_config_and_build_mode`] (or
+    /// `BuiltWith<Configured<…>, …>`) instead.
     fn from_view_with_build_mode(
         header: RelationHeader, mode: HashTrieBuildMode, view: TupleView<'_>,
     ) -> Self {
@@ -877,19 +794,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
     }
 }
 
-/// The inherent
-/// [`from_tuples_with_config_and_build_mode`](HashTrie::from_tuples_with_config_and_build_mode),
-/// so `BuiltWith` can stack on `Configured` in the test suites.
+/// The view constructor of the build modes, so `BuiltWith` can stack on
+/// `Configured` in the test suites.
 impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfiguredBuildModeRelation
     for HashTrie<H, P, E>
 {
-    fn from_tuples_with_config_and_build_mode(
-        header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
-        tuples: impl Into<Tuples>,
-    ) -> Self {
-        HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(header, config, mode, tuples)
-    }
-
     fn from_view_with_config_and_build_mode(
         header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
         view: TupleView<'_>,
@@ -1463,7 +1372,7 @@ mod tests {
     }
 
     /// An empty literal carries no arity, so `from_tuples` stores an empty
-    /// batch of the header's instead (`batch_for_header`), and a later
+    /// batch of the header's instead (`batch_from_view`), and a later
     /// `insert` pushes its row into a buffer of the right arity.
     #[test]
     fn insert_into_a_trie_built_from_an_empty_batch() {

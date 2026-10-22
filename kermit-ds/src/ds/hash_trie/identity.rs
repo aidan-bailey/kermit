@@ -505,8 +505,9 @@ mod tests {
         (reversed, all_rows(tuples).rev().collect())
     }
 
-    /// The bulk build's root (Algorithm 2 from depth 0, as
-    /// `from_tuples_in_bulk` builds it) over the rows of `tuples` that `ids`
+    /// The bulk build's root (Algorithm 2 from depth 0, as the `Bulk` arm of
+    /// `from_view_with_config_and_build_mode` builds it) over the rows of
+    /// `tuples` that `ids`
     /// names, in that order, with the links it threads them through.
     fn root_over<P: PruningPolicy, E: ExpansionPolicy>(
         tuples: &Tuples, arity: usize, ids: impl IntoIterator<Item = RowId>,
@@ -677,18 +678,21 @@ mod tests {
     }
 
     /// The same trie over a buffer with spare capacity: equal nodes and
-    /// rows, another capacity.
+    /// rows, another capacity. Every build copies its rows at their exact
+    /// size, so the spare capacity comes from growing the buffer by `insert`,
+    /// which doubles it past the rows' size; the nodes are the build's, since
+    /// the `incremental` build is `insert` in input order.
     #[test]
     #[should_panic(expected = "buffer capacity")]
     fn same_contents_rejects_another_buffer_capacity() {
-        let exact = rows(2, &INTERLEAVED);
-        let mut spare = Tuples::with_capacity(2, 64);
-        for row in exact.rows() {
-            spare.push(row);
-        }
-        let a: HashTrie = HashTrie::from_tuples(2.into(), exact);
-        let b: HashTrie = HashTrie::from_tuples(2.into(), spare);
-        assert_same_contents(&a, &b, "spare");
+        let exact: HashTrie = HashTrie::from_tuples(2.into(), rows(2, &INTERLEAVED));
+        let mut grown: HashTrie = HashTrie::new(2.into());
+        grown.insert_all(rows(2, &INTERLEAVED));
+        assert!(
+            grown.tuples().value_capacity() > exact.tuples().value_capacity(),
+            "the premise: inserting grows the buffer past its exact size"
+        );
+        assert_same_contents(&exact, &grown, "spare");
     }
 
     /// The root is compared bucket for bucket, too. The same rows under a

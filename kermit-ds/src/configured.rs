@@ -78,7 +78,8 @@ macro_rules! define_config_provider {
 ///
 /// `config()` (reached by auto-deref to `R`) reports the inner relation's
 /// runtime config. It equals `P::config()` because `wrap` is private and
-/// [`Relation::new`] / [`Relation::from_tuples`] are the only constructors —
+/// [`Relation::new`] / [`Relation::from_view`] (hence every `from_tuples`) are
+/// the only constructors —
 /// keep it that way, or the type-level marker and the value can drift apart.
 /// In particular, `Configured` deliberately does **not** implement
 /// [`ConfigurableRelation`]: its config-carrying constructors take an
@@ -126,10 +127,6 @@ where
 
     fn new(header: RelationHeader) -> Self { Self::wrap(R::with_config(header, P::config())) }
 
-    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
-        Self::wrap(R::from_tuples_with_config(header, P::config(), tuples))
-    }
-
     fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self {
         Self::wrap(R::from_view_with_config(header, P::config(), view))
     }
@@ -148,17 +145,6 @@ where
     P: ConfigProvider<R::Config>,
 {
     type BuildMode = R::BuildMode;
-
-    fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: R::BuildMode, tuples: impl Into<Tuples>,
-    ) -> Self {
-        Self::wrap(R::from_tuples_with_config_and_build_mode(
-            header,
-            P::config(),
-            mode,
-            tuples,
-        ))
-    }
 
     fn from_view_with_build_mode(
         header: RelationHeader, mode: R::BuildMode, view: TupleView<'_>,
@@ -343,8 +329,7 @@ mod tests {
     );
 
     /// The wrapper hands the view to the inner relation's own view
-    /// constructor. The tests above cannot tell this from the default body,
-    /// which reaches the same build through the tuple constructor.
+    /// constructor.
     #[test]
     fn views_reach_the_inner_relations_view_constructors() {
         use crate::relation::view_spy::{take_calls, SpyMode, ViewSpy};
@@ -356,17 +341,17 @@ mod tests {
         assert_eq!(take_calls(), ["from_view_with_config_and_build_mode"]);
     }
 
-    /// The tuple constructors keep reaching the inner relation's tuple
-    /// constructors.
+    /// The tuple constructors are provided over the view ones, so they reach
+    /// the inner relation's view constructors too.
     #[test]
-    fn tuple_constructors_still_reach_the_inner_relations_tuple_constructors() {
+    fn tuple_constructors_reach_the_inner_relations_view_constructors() {
         use crate::relation::view_spy::{take_calls, SpyMode, ViewSpy};
         type Spied = Configured<ViewSpy, SpyProvider>;
         take_calls();
         let _ = Spied::from_tuples(2.into(), vec![vec![1, 2]]);
-        assert_eq!(take_calls(), ["from_tuples_with_config"]);
+        assert_eq!(take_calls(), ["from_view_with_config"]);
         let _ = Spied::from_tuples_with_build_mode(2.into(), SpyMode, vec![vec![1, 2]]);
-        assert_eq!(take_calls(), ["from_tuples_with_config_and_build_mode"]);
+        assert_eq!(take_calls(), ["from_view_with_config_and_build_mode"]);
     }
 
     #[test]

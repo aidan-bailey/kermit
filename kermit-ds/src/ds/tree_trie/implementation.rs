@@ -331,19 +331,6 @@ impl<S: SeekStrategy> Relation for TreeTrie<S> {
         trie
     }
 
-    /// Builds a `TreeTrie` from a batch of tuples:
-    /// [`from_view`](Self::from_view) over [`TupleView::all`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the batch is non-empty and its arity does not match
-    /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
-    /// earlier, while converting to [`Tuples`].
-    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
-        let tuples: Tuples = tuples.into();
-        Self::from_view(header, TupleView::all(&tuples))
-    }
-
     /// Inserts a single tuple, preserving the sorted-children invariant.
     /// Duplicate tuples are silently absorbed.
     ///
@@ -394,19 +381,6 @@ impl<S: SeekStrategy> BuildModeRelation for TreeTrie<S> {
                 Self::build_parallel(header, threads, MORSEL_TUPLES, &view)
             },
         }
-    }
-
-    /// [`from_view_with_build_mode`](Self::from_view_with_build_mode) over
-    /// [`TupleView::all`].
-    ///
-    /// # Panics
-    ///
-    /// As [`Relation::from_tuples`].
-    fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: TreeTrieBuildMode, tuples: impl Into<Tuples>,
-    ) -> Self {
-        let tuples: Tuples = tuples.into();
-        Self::from_view_with_build_mode(header, mode, TupleView::all(&tuples))
     }
 }
 

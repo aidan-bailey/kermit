@@ -434,17 +434,6 @@ impl<S: SeekStrategy> Relation for ColumnTrie<S> {
         Self::from_view_with_build_mode(header, ColumnTrieBuildMode::default(), view)
     }
 
-    /// Builds with the default [`ColumnTrieBuildMode`], `Bulk`:
-    /// [`from_view`](Self::from_view) over [`TupleView::all`].
-    ///
-    /// # Panics
-    ///
-    /// As [`from_view_with_build_mode`](BuildModeRelation::from_view_with_build_mode).
-    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
-        let tuples: Tuples = tuples.into();
-        Self::from_view(header, TupleView::all(&tuples))
-    }
-
     /// Inserts a single tuple. Duplicate tuples are silently absorbed.
     ///
     /// # Panics
@@ -505,21 +494,6 @@ impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
             | ColumnTrieBuildMode::Incremental => Self::from_sorted_by_insertion(header, &sorted),
             | ColumnTrieBuildMode::Bulk => Self::from_sorted(header, &sorted),
         }
-    }
-
-    /// [`from_view_with_build_mode`](Self::from_view_with_build_mode) over
-    /// [`TupleView::all`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the batch is non-empty and its arity does not match
-    /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
-    /// earlier, while converting to [`Tuples`].
-    fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: ColumnTrieBuildMode, tuples: impl Into<Tuples>,
-    ) -> Self {
-        let tuples: Tuples = tuples.into();
-        Self::from_view_with_build_mode(header, mode, TupleView::all(&tuples))
     }
 }
 

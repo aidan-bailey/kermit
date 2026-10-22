@@ -267,38 +267,42 @@ pub trait Relation: JoinIterable + Projectable {
     /// Creates an empty relation matching `header`.
     fn new(header: RelationHeader) -> Self;
 
-    /// Creates a relation populated with `tuples`, matching `header`.
+    /// Creates a relation from the rows `view` keeps, matching `header`.
+    ///
+    /// The one required constructor: every `from_tuples*` method is this one
+    /// over [`TupleView::all`]. The relation reads the view's matching rows,
+    /// in its output-column order, and copies them once into the structure it
+    /// builds, so no build allocates per input row. Implementations may sort
+    /// or deduplicate during bulk construction; prefer this over `new`
+    /// followed by repeated `insert` calls when all tuples are known up
+    /// front. A view over an empty source builds an empty relation under any
+    /// header.
+    ///
+    /// # Panics
+    ///
+    /// Panics with `from_tuples: tuple arity {view.arity()} does not match
+    /// header arity {header.arity()}` if the view's source holds rows and
+    /// `view.arity()` does not equal `header.arity()`.
+    fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self;
+
+    /// Creates a relation populated with `tuples`, matching `header`: the
+    /// identity view over the batch ([`TupleView::all`]) given to
+    /// [`from_view`](Self::from_view), after which the batch is dropped.
     /// `tuples` is a [`Tuples`] batch, or anything that converts into one:
     /// test fixtures pass one `Vec<usize>` per tuple, whose conversion
     /// panics on mixed arity. An empty batch is accepted under any header.
-    /// Implementations may sort or deduplicate during bulk construction;
-    /// prefer this over `new` followed by repeated `insert` calls when all
-    /// tuples are known up front.
     ///
     /// # Panics
     ///
-    /// Panics if `tuples` is not empty and its arity does not equal
-    /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
-    /// earlier, while converting to [`Tuples`].
-    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self;
-
-    /// Creates a relation from the rows `view` accepts, each cut to the
-    /// view's output columns, matching `header`. The default body checks the
-    /// arity, materialises the view (one exact-size copy) and calls
-    /// [`from_tuples`](Self::from_tuples); a structure that reads the view
-    /// directly overrides it.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the view's source holds rows and `view.arity()` does not
-    /// equal `header.arity()`, even when the filter rejects every row. An
-    /// empty source builds an empty relation under any header.
-    fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self
+    /// As [`from_view`](Self::from_view) for a non-empty batch whose arity
+    /// does not equal `header.arity()`. A `Vec<Vec<usize>>` of mixed
+    /// arities panics earlier, while converting to [`Tuples`].
+    fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self
     where
         Self: Sized,
     {
-        check_view_arity(&header, &view);
-        Self::from_tuples(header, view.materialize())
+        let tuples: Tuples = tuples.into();
+        Self::from_view(header, TupleView::all(&tuples))
     }
 
     /// Inserts a tuple, given as anything that lends a slice of keys
@@ -328,7 +332,7 @@ pub trait Relation: JoinIterable + Projectable {
 /// A [`Relation`] with runtime configuration — the Config category of the
 /// optimization standard (`docs/specs/optimization-standard.md`).
 ///
-/// `Relation::new` / `Relation::from_tuples` have no parameter through which
+/// `Relation::new` / `Relation::from_view` have no parameter through which
 /// a config value could travel, so this extension trait adds the
 /// config-carrying constructors. A data structure implementing this should
 /// make `Relation::new` equivalent to `with_config(header,
@@ -347,33 +351,24 @@ pub trait ConfigurableRelation: Relation {
     /// `config` for every subsequent insert.
     fn with_config(header: RelationHeader, config: Self::Config) -> Self;
 
-    /// Creates a relation populated with `tuples` under `config`. Same
-    /// contract as [`Relation::from_tuples`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if `tuples` is not empty and its arity does not equal
-    /// `header.arity()`. A `Vec<Vec<usize>>` of mixed arities panics
-    /// earlier, while converting to [`Tuples`].
-    fn from_tuples_with_config(
-        header: RelationHeader, config: Self::Config, tuples: impl Into<Tuples>,
-    ) -> Self;
-
-    /// Creates a relation from the rows `view` accepts under `config`. Same
-    /// contract and default body as [`Relation::from_view`], calling
-    /// [`from_tuples_with_config`](Self::from_tuples_with_config).
-    ///
-    /// # Panics
-    ///
-    /// As [`Relation::from_view`].
+    /// Creates a relation from the rows `view` keeps under `config`. Same
+    /// contract as [`Relation::from_view`].
     fn from_view_with_config(
         header: RelationHeader, config: Self::Config, view: TupleView<'_>,
+    ) -> Self;
+
+    /// Creates a relation populated with `tuples` under `config`: the
+    /// identity view over the batch given to
+    /// [`from_view_with_config`](Self::from_view_with_config). Same contract
+    /// as [`Relation::from_tuples`].
+    fn from_tuples_with_config(
+        header: RelationHeader, config: Self::Config, tuples: impl Into<Tuples>,
     ) -> Self
     where
         Self: Sized,
     {
-        check_view_arity(&header, &view);
-        Self::from_tuples_with_config(header, config, view.materialize())
+        let tuples: Tuples = tuples.into();
+        Self::from_view_with_config(header, config, TupleView::all(&tuples))
     }
 
     /// The configuration this relation was built with.
@@ -388,8 +383,8 @@ pub trait ConfigurableRelation: Relation {
 /// same capacities, hence the same [`HeapSize`](crate::HeapSize). Placement
 /// the structure leaves free, such as the slot a key takes in a hash table,
 /// may differ between modes (the optimization standard's Amendment 2). Only
-/// the construction process differs. [`Relation::from_tuples`] must equal
-/// `from_tuples_with_build_mode(header, Self::BuildMode::default(), tuples)`.
+/// the construction process differs. [`Relation::from_view`] must equal
+/// `from_view_with_build_mode(header, Self::BuildMode::default(), view)`.
 /// Wrapper types that exist to inject a mode (see `BuiltWith` in
 /// `built_with.rs`) deliberately do not implement this.
 ///
@@ -398,36 +393,35 @@ pub trait BuildModeRelation: Relation {
     /// The construction processes this structure offers.
     type BuildMode: kermit_iters::BuildMode + Copy + Default;
 
-    /// Creates a relation populated with `tuples`, built by `mode`. Same
-    /// contract as [`Relation::from_tuples`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if `tuples` is not empty and its arity does not equal
-    /// `header.arity()`, or if `mode` has a prerequisite the default config
-    /// lacks (`HashTrie`'s `presized:N` requires `root-capacity=tuples`). A
-    /// `Vec<Vec<usize>>` of mixed arities panics earlier, while converting
-    /// to [`Tuples`].
-    fn from_tuples_with_build_mode(
-        header: RelationHeader, mode: Self::BuildMode, tuples: impl Into<Tuples>,
-    ) -> Self;
-
-    /// Creates a relation from the rows `view` accepts, built by `mode`. Same
-    /// contract and default body as [`Relation::from_view`], calling
-    /// [`from_tuples_with_build_mode`](Self::from_tuples_with_build_mode).
+    /// Creates a relation from the rows `view` keeps, built by `mode`. Same
+    /// contract as [`Relation::from_view`].
     ///
     /// # Panics
     ///
     /// As [`Relation::from_view`], and if `mode` has a prerequisite the
-    /// default config lacks.
+    /// default config lacks (`HashTrie`'s `presized:N` requires
+    /// `root-capacity=tuples`).
     fn from_view_with_build_mode(
         header: RelationHeader, mode: Self::BuildMode, view: TupleView<'_>,
+    ) -> Self;
+
+    /// Creates a relation populated with `tuples`, built by `mode`: the
+    /// identity view over the batch given to
+    /// [`from_view_with_build_mode`](Self::from_view_with_build_mode). Same
+    /// contract as [`Relation::from_tuples`].
+    ///
+    /// # Panics
+    ///
+    /// As [`from_view_with_build_mode`](Self::from_view_with_build_mode) for
+    /// a non-empty batch.
+    fn from_tuples_with_build_mode(
+        header: RelationHeader, mode: Self::BuildMode, tuples: impl Into<Tuples>,
     ) -> Self
     where
         Self: Sized,
     {
-        check_view_arity(&header, &view);
-        Self::from_tuples_with_build_mode(header, mode, view.materialize())
+        let tuples: Tuples = tuples.into();
+        Self::from_view_with_build_mode(header, mode, TupleView::all(&tuples))
     }
 }
 
@@ -435,36 +429,36 @@ pub trait BuildModeRelation: Relation {
 /// that takes both, so the two test markers can stack:
 /// `BuiltWith<Configured<R, C>, M>` builds by `M`'s mode under `C`'s config.
 pub trait ConfiguredBuildModeRelation: ConfigurableRelation + BuildModeRelation {
-    /// Builds `tuples` by `mode` under `config`. Same contract as
-    /// [`BuildModeRelation::from_tuples_with_build_mode`].
+    /// Builds the rows `view` keeps by `mode` under `config`. Same contract
+    /// as [`BuildModeRelation::from_view_with_build_mode`].
     ///
     /// # Panics
     ///
-    /// Panics if `tuples` is not empty and its arity does not equal
-    /// `header.arity()`, or if `mode` has a prerequisite `config` lacks. A
-    /// `Vec<Vec<usize>>` of mixed arities panics earlier, while converting
-    /// to [`Tuples`].
+    /// As [`BuildModeRelation::from_view_with_build_mode`], and if `mode`
+    /// has a prerequisite `config` lacks.
+    fn from_view_with_config_and_build_mode(
+        header: RelationHeader, config: Self::Config, mode: Self::BuildMode, view: TupleView<'_>,
+    ) -> Self;
+
+    /// Builds `tuples` by `mode` under `config`: the identity view over the
+    /// batch given to
+    /// [`from_view_with_config_and_build_mode`](Self::from_view_with_config_and_build_mode).
+    /// Same contract as [`BuildModeRelation::from_tuples_with_build_mode`].
+    ///
+    /// # Panics
+    ///
+    /// As
+    /// [`from_view_with_config_and_build_mode`](Self::from_view_with_config_and_build_mode)
+    /// for a non-empty batch.
     fn from_tuples_with_config_and_build_mode(
         header: RelationHeader, config: Self::Config, mode: Self::BuildMode,
         tuples: impl Into<Tuples>,
-    ) -> Self;
-
-    /// Builds the rows `view` accepts by `mode` under `config`. Same contract
-    /// and default body as [`Relation::from_view`], calling
-    /// [`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode).
-    ///
-    /// # Panics
-    ///
-    /// As [`Relation::from_view`], and if `mode` has a prerequisite `config`
-    /// lacks.
-    fn from_view_with_config_and_build_mode(
-        header: RelationHeader, config: Self::Config, mode: Self::BuildMode, view: TupleView<'_>,
     ) -> Self
     where
         Self: Sized,
     {
-        check_view_arity(&header, &view);
-        Self::from_tuples_with_config_and_build_mode(header, config, mode, view.materialize())
+        let tuples: Tuples = tuples.into();
+        Self::from_view_with_config_and_build_mode(header, config, mode, TupleView::all(&tuples))
     }
 }
 
@@ -602,8 +596,11 @@ pub fn read_csv<P: AsRef<Path>>(filepath: P) -> Result<(RelationHeader, Tuples),
         rows += 1;
     }
     let mut tuples = Tuples::from_flat(arity, rows, data);
-    // A `HashTrie` keeps this buffer, so its `space` must not depend on how
-    // the reader grew it: one exact reallocation, outside every timed region.
+    // The buffer grew by doubling, so it may hold slack. Every build copies
+    // the rows it keeps out of a view of this batch (the batch is never a
+    // structure's own buffer), so the slack costs a structure nothing; one
+    // exact reallocation returns it, outside every timed region, so the
+    // batch the caller holds is as small as its rows.
     tuples.shrink_to_fit();
     Ok((header, tuples))
 }
@@ -1485,5 +1482,172 @@ mod tests {
         assert_eq!(tree.tuple_count(), 0);
         assert_eq!(column.tuple_count(), 0);
         assert_eq!(hash.tuple_count(), 0);
+    }
+    // ── from_tuples* are provided over from_view* ──────────────────────
+
+    /// A configuration value for [`ViewOnly`].
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct ViewOnlyConfig(u8);
+
+    impl kermit_iters::ConfigOption for ViewOnlyConfig {
+        fn axes(&self) -> Vec<(&'static str, serde_json::Value)> { vec![("level", self.0.into())] }
+    }
+
+    /// A build mode for [`ViewOnly`].
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum ViewOnlyMode {
+        #[default]
+        Plain,
+        Fancy,
+    }
+
+    impl kermit_iters::BuildMode for ViewOnlyMode {
+        fn axis_value(&self) -> String { format!("{self:?}").to_lowercase() }
+    }
+
+    /// A relation that implements only the `from_view*` constructors and
+    /// records what each was given. Every `from_tuples*` it has comes from
+    /// the traits, so a test through them sees exactly what the provided
+    /// methods hand to `from_view*`.
+    #[derive(Debug)]
+    struct ViewOnly {
+        header: RelationHeader,
+        rows: Vec<Vec<usize>>,
+        identity: bool,
+        source_rows: usize,
+        config: ViewOnlyConfig,
+        mode: Option<ViewOnlyMode>,
+    }
+
+    impl ViewOnly {
+        fn record(
+            header: RelationHeader, config: ViewOnlyConfig, mode: Option<ViewOnlyMode>,
+            view: &kermit_iters::TupleView<'_>,
+        ) -> Self {
+            Self {
+                header,
+                rows: view.materialize().to_vecs(),
+                identity: view.is_identity(),
+                source_rows: view.source_rows(),
+                config,
+                mode,
+            }
+        }
+    }
+
+    impl JoinIterable for ViewOnly {}
+
+    impl Projectable for ViewOnly {
+        fn project(&self, _columns: Vec<usize>) -> Self {
+            unimplemented!("ViewOnly is never projected")
+        }
+    }
+
+    impl Relation for ViewOnly {
+        fn header(&self) -> &RelationHeader { &self.header }
+
+        fn new(header: RelationHeader) -> Self {
+            let empty = Tuples::new(header.arity());
+            Self::record(
+                header,
+                ViewOnlyConfig::default(),
+                None,
+                &kermit_iters::TupleView::all(&empty),
+            )
+        }
+
+        fn from_view(header: RelationHeader, view: kermit_iters::TupleView<'_>) -> Self {
+            Self::record(header, ViewOnlyConfig::default(), None, &view)
+        }
+
+        fn insert(&mut self, tuple: impl AsRef<[usize]>) {
+            self.rows.push(tuple.as_ref().to_vec());
+        }
+
+        fn insert_all(&mut self, tuples: impl Into<Tuples>) {
+            let tuples: Tuples = tuples.into();
+            self.rows.extend(tuples.to_vecs());
+        }
+    }
+
+    impl ConfigurableRelation for ViewOnly {
+        type Config = ViewOnlyConfig;
+
+        fn with_config(header: RelationHeader, config: ViewOnlyConfig) -> Self {
+            let mut relation = Self::new(header);
+            relation.config = config;
+            relation
+        }
+
+        fn from_view_with_config(
+            header: RelationHeader, config: ViewOnlyConfig, view: kermit_iters::TupleView<'_>,
+        ) -> Self {
+            Self::record(header, config, None, &view)
+        }
+
+        fn config(&self) -> &ViewOnlyConfig { &self.config }
+    }
+
+    impl BuildModeRelation for ViewOnly {
+        type BuildMode = ViewOnlyMode;
+
+        fn from_view_with_build_mode(
+            header: RelationHeader, mode: ViewOnlyMode, view: kermit_iters::TupleView<'_>,
+        ) -> Self {
+            Self::record(header, ViewOnlyConfig::default(), Some(mode), &view)
+        }
+    }
+
+    impl ConfiguredBuildModeRelation for ViewOnly {
+        fn from_view_with_config_and_build_mode(
+            header: RelationHeader, config: ViewOnlyConfig, mode: ViewOnlyMode,
+            view: kermit_iters::TupleView<'_>,
+        ) -> Self {
+            Self::record(header, config, Some(mode), &view)
+        }
+    }
+
+    /// Each `from_tuples*` converts its argument to one batch and calls the
+    /// matching `from_view*` with the identity view over it: the whole batch,
+    /// duplicates and all, with the config and mode the caller named.
+    #[test]
+    fn every_from_tuples_constructor_is_the_from_view_one_over_all() {
+        let rows = vec![vec![1, 2], vec![3, 4], vec![1, 2]];
+        let batch = || Tuples::from(rows.clone());
+
+        let plain = ViewOnly::from_tuples(2.into(), batch());
+        let configured = ViewOnly::from_tuples_with_config(2.into(), ViewOnlyConfig(7), batch());
+        let moded =
+            ViewOnly::from_tuples_with_build_mode(2.into(), ViewOnlyMode::Fancy, rows.clone());
+        let both = ViewOnly::from_tuples_with_config_and_build_mode(
+            2.into(),
+            ViewOnlyConfig(7),
+            ViewOnlyMode::Fancy,
+            batch(),
+        );
+
+        for (built, config, mode) in [
+            (&plain, ViewOnlyConfig(0), None),
+            (&configured, ViewOnlyConfig(7), None),
+            (&moded, ViewOnlyConfig(0), Some(ViewOnlyMode::Fancy)),
+            (&both, ViewOnlyConfig(7), Some(ViewOnlyMode::Fancy)),
+        ] {
+            assert_eq!(built.rows, rows);
+            assert!(built.identity, "the view is TupleView::all over the batch");
+            assert_eq!(built.source_rows, 3);
+            assert_eq!(built.config, config);
+            assert_eq!(built.mode, mode);
+            assert_eq!(built.header().arity(), 2);
+        }
+    }
+
+    /// An empty literal (`vec![]`) converts to a batch of no rows, which
+    /// reaches `from_view` as a view over an empty source, under any header.
+    #[test]
+    fn an_empty_literal_reaches_from_view_as_an_empty_source() {
+        let built = ViewOnly::from_tuples(2.into(), vec![]);
+        assert_eq!(built.source_rows, 0);
+        assert!(built.rows.is_empty());
+        assert_eq!(built.header().arity(), 2);
     }
 }

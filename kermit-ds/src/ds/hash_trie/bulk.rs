@@ -203,6 +203,19 @@ mod tests {
         )
     }
 
+    /// The trie `mode` builds from `tuples` under `config`, through the one
+    /// public constructor that takes both.
+    fn built_by<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        arity: usize, config: HashTrieConfig, mode: HashTrieBuildMode, tuples: impl Into<Tuples>,
+    ) -> HashTrie<H, P, E> {
+        HashTrie::<H, P, E>::from_tuples_with_config_and_build_mode(
+            arity.into(),
+            config,
+            mode,
+            tuples,
+        )
+    }
+
     /// Algorithm 2 builds the trie the per-tuple build makes, array for
     /// array: capacities, chains, links, singletons and pending chains
     /// included (`assert_same_trie`).
@@ -210,13 +223,13 @@ mod tests {
         for arity in 1..=3 {
             for config in incremental_configs() {
                 for (input, tuples) in inputs(arity) {
-                    let incremental = HashTrie::<H, P, E>::from_tuples_incrementally(
-                        arity.into(),
+                    let incremental = built_by::<H, P, E>(
+                        arity,
                         config,
+                        HashTrieBuildMode::Incremental,
                         tuples.clone(),
                     );
-                    let bulk =
-                        HashTrie::<H, P, E>::from_tuples_in_bulk(arity.into(), config, tuples);
+                    let bulk = built_by::<H, P, E>(arity, config, HashTrieBuildMode::Bulk, tuples);
                     assert_same_trie(&incremental, &bulk, &label::<H, P, E>(arity, config, input));
                 }
             }
@@ -262,14 +275,16 @@ mod tests {
         ]];
         fn check<P: PruningPolicy, E: ExpansionPolicy>(tuples: &[Vec<usize>]) {
             for config in incremental_configs() {
-                let incremental = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_incrementally(
-                    2.into(),
+                let incremental = built_by::<Mod10HashStrategy, P, E>(
+                    2,
                     config,
+                    HashTrieBuildMode::Incremental,
                     Tuples::from(tuples.to_vec()),
                 );
-                let bulk = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_in_bulk(
-                    2.into(),
+                let bulk = built_by::<Mod10HashStrategy, P, E>(
+                    2,
                     config,
+                    HashTrieBuildMode::Bulk,
                     Tuples::from(tuples.to_vec()),
                 );
                 assert_same_trie(
@@ -284,9 +299,10 @@ mod tests {
         check::<NoPruning, LazyExpansion>(&tuples);
         check::<SingletonPruning, LazyExpansion>(&tuples);
         // The eager trie's one chain holds all five ids, in input order.
-        let bulk: HashTrie<Mod10HashStrategy> = HashTrie::from_tuples_in_bulk(
-            2.into(),
+        let bulk: HashTrie<Mod10HashStrategy> = built_by(
+            2,
             HashTrieConfig::default(),
+            HashTrieBuildMode::Bulk,
             Tuples::from(tuples),
         );
         let HashTrieNode::Inner(root) = bulk.root() else {
@@ -364,14 +380,16 @@ mod tests {
             };
             for config in incremental_configs() {
                 let label = label::<Mod10HashStrategy, P, E>(3, config, "links fixture");
-                let incremental = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_incrementally(
-                    3.into(),
+                let incremental = built_by::<Mod10HashStrategy, P, E>(
+                    3,
                     config,
+                    HashTrieBuildMode::Incremental,
                     tuples.clone(),
                 );
-                let bulk = HashTrie::<Mod10HashStrategy, P, E>::from_tuples_in_bulk(
-                    3.into(),
+                let bulk = built_by::<Mod10HashStrategy, P, E>(
+                    3,
                     config,
+                    HashTrieBuildMode::Bulk,
                     tuples.clone(),
                 );
                 assert_eq!(
@@ -433,14 +451,16 @@ mod tests {
                     ("half one key", Tuples::from(skewed)),
                 ] {
                     for config in incremental_configs() {
-                        let incremental = HashTrie::<H, P, E>::from_tuples_incrementally(
-                            arity.into(),
+                        let incremental = built_by::<H, P, E>(
+                            arity,
                             config,
+                            HashTrieBuildMode::Incremental,
                             tuples.clone(),
                         );
-                        let bulk = HashTrie::<H, P, E>::from_tuples_in_bulk(
-                            arity.into(),
+                        let bulk = built_by::<H, P, E>(
+                            arity,
                             config,
+                            HashTrieBuildMode::Bulk,
                             tuples.clone(),
                         );
                         assert_same_trie(
@@ -577,9 +597,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "does not match header arity")]
     fn bulk_build_rejects_a_wrong_arity() {
-        let _: HashTrie = HashTrie::from_tuples_in_bulk(
-            2.into(),
+        let _: HashTrie = built_by(
+            2,
             HashTrieConfig::default(),
+            HashTrieBuildMode::Bulk,
             Tuples::from(vec![vec![1, 2, 3]]),
         );
     }
