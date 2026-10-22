@@ -568,41 +568,80 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         match mode {
             | HashTrieBuildMode::Bulk => Self::from_tuples_in_bulk(header, config, tuples),
             | HashTrieBuildMode::Incremental => {
-                // The prerequisite: `insert_at` creates a child on its first
-                // tuple, before the child's list is known, so it cannot size
-                // it. The CLI rejects the pair first; here it is a broken
-                // invariant, like a wrong arity.
-                assert_eq!(
-                    config.child_capacity,
-                    ChildCapacity::Grow,
-                    "hash-trie=incremental requires child-capacity=grow; got child-capacity={}",
-                    config.child_capacity.axis_value(),
-                );
+                Self::assert_incremental_prerequisite(config);
                 Self::from_tuples_incrementally(header, config, tuples)
             },
-            | HashTrieBuildMode::Radix(bits) => Self::from_tuples_partitioned(
+            // The partitioning builds read a view, and this batch is the
+            // whole source of one: they copy it once, into partition order.
+            | HashTrieBuildMode::Radix(_)
+            | HashTrieBuildMode::Parallel(_)
+            | HashTrieBuildMode::Presized(_) => Self::from_view_with_config_and_build_mode(
                 header,
                 config,
-                tuples,
-                |tuples, links, log2, arity| {
+                mode,
+                TupleView::all(&tuples),
+            ),
+        }
+    }
+
+    /// Creates a trie holding `config`, populated with the rows `view`
+    /// selects and built by `mode`: the view-reading form of
+    /// [`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
+    /// and the constructor every `from_view*` ends in: the trait method
+    /// `ConfiguredBuildModeRelation::from_view_with_config_and_build_mode`
+    /// delegates to it, and so do `from_view`, `from_view_with_config` and
+    /// `from_view_with_build_mode`. This `match` is the home of every mode's
+    /// build. Each mode copies the matching rows once, in output-column
+    /// order, into a buffer of exactly their size, and builds over that
+    /// buffer:
+    /// - `bulk` and `incremental` materialise the view
+    ///   (`TupleView::materialize`) and keep that buffer as the trie's own;
+    /// - `radix:K`, `parallel:N` and `presized:N` copy the rows into partition
+    ///   order straight from the view (`morsel::partition_rows`, #101) and keep
+    ///   that copy.
+    ///
+    /// The root is sized by the number of matching rows, never by the
+    /// source's.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the view's source holds rows and the view's arity is not
+    /// `header.arity()`, whether or not any row passes the view's filter; if
+    /// `mode` is `Presized` and `config.root_capacity` is not
+    /// [`RootCapacity::Tuples`], or if `mode` is `Incremental` and
+    /// `config.child_capacity` is not [`ChildCapacity::Grow`]: each mode's
+    /// prerequisite.
+    pub fn from_view_with_config_and_build_mode(
+        header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
+        view: TupleView<'_>,
+    ) -> Self {
+        match mode {
+            | HashTrieBuildMode::Bulk => {
+                let batch = Self::batch_from_view(&header, &view);
+                Self::from_tuples_in_bulk(header, config, batch)
+            },
+            | HashTrieBuildMode::Incremental => {
+                Self::assert_incremental_prerequisite(config);
+                let batch = Self::batch_from_view(&header, &view);
+                Self::from_tuples_incrementally(header, config, batch)
+            },
+            | HashTrieBuildMode::Radix(bits) => {
+                Self::from_view_partitioned(header, config, &view, |view, links, log2, arity| {
                     let mut root = Self::make_root_sized(arity, log2);
                     let copy =
-                        radix::fill_root::<H, P, E>(tuples, links, &mut root, arity, bits, config);
+                        radix::fill_root::<H, P, E>(view, links, &mut root, arity, bits, config);
                     (copy, root)
-                },
-            ),
-            | HashTrieBuildMode::Parallel(threads) => Self::from_tuples_partitioned(
-                header,
-                config,
-                tuples,
-                |tuples, links, log2, arity| {
+                })
+            },
+            | HashTrieBuildMode::Parallel(threads) => {
+                Self::from_view_partitioned(header, config, &view, |view, links, log2, arity| {
                     let mut root = Self::make_root_sized(arity, log2);
                     let copy = parallel::fill_root::<H, P, E>(
-                        tuples, links, &mut root, arity, threads, config,
+                        view, links, &mut root, arity, threads, config,
                     );
                     (copy, root)
-                },
-            ),
+                })
+            },
             | HashTrieBuildMode::Presized(threads) => {
                 // The prerequisite
                 // (docs/specs/2026-10-07-dependent-optimisations-design.md):
@@ -616,43 +655,13 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     threads.get(),
                     config.root_capacity.axis_value(),
                 );
-                Self::from_tuples_partitioned(
-                    header,
-                    config,
-                    tuples,
-                    |tuples, links, log2, arity| {
-                        parallel::fill_presized_root::<H, P, E>(
-                            tuples, links, log2, arity, threads, config,
-                        )
-                    },
-                )
+                Self::from_view_partitioned(header, config, &view, |view, links, log2, arity| {
+                    parallel::fill_presized_root::<H, P, E>(
+                        view, links, log2, arity, threads, config,
+                    )
+                })
             },
         }
-    }
-
-    /// Creates a trie holding `config`, populated with the rows `view`
-    /// selects and built by `mode`: the view-reading form of
-    /// [`from_tuples_with_config_and_build_mode`](Self::from_tuples_with_config_and_build_mode),
-    /// and the constructor every `from_view*` ends in. The matching rows are
-    /// copied once, in output-column order, into a buffer of exactly their
-    /// size (`TupleView::materialize`), and every mode builds over that
-    /// buffer: `bulk` and `incremental` keep it as the trie's own, and the
-    /// partitioning modes still copy it again into partition order, until
-    /// their builds read the view themselves. The root is sized by the
-    /// number of matching rows, never by the source's.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the view's source holds rows and the view's arity is not
-    /// `header.arity()`, whether or not any row passes the view's filter,
-    /// and where `from_tuples_with_config_and_build_mode` panics for a mode
-    /// whose prerequisite `config` lacks.
-    pub fn from_view_with_config_and_build_mode(
-        header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
-        view: TupleView<'_>,
-    ) -> Self {
-        let batch = Self::batch_from_view(&header, &view);
-        Self::from_tuples_with_config_and_build_mode(header, config, mode, batch)
     }
 
     /// The batch a trie for `header` stores for `view`, after the arity check
@@ -771,24 +780,33 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     }
 
     /// What the partitioned builds share (`radix:K`, `parallel:N`,
-    /// `presized:N`): the batch's arity check, then `fill`, which builds the
-    /// root over the batch at the capacity every build gives it
-    /// (`HashTrieConfig::root_log2_capacity`, presized under
-    /// `root-capacity=tuples`) and returns it with the trie's buffer: the
-    /// batch's rows copied into partition order (`morsel::partition_rows`,
-    /// #101), the batch then freed. `fill` threads the rows of that buffer
-    /// through `links`, one per row (the copy has the batch's row count),
-    /// zeroed: every fill writes a row's link before it reads it. Tests in
-    /// `parallel.rs` call it with small morsels and regions.
-    pub(super) fn from_tuples_partitioned(
-        header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
-        fill: impl FnOnce(Tuples, &ChainLinks, u32, usize) -> (Tuples, HashTrieNode<P, E>),
+    /// `presized:N`): the view's arity check, then `fill`, which builds the
+    /// root over the view at the capacity every build gives it
+    /// (`HashTrieConfig::root_log2_capacity` of the rows the view matches,
+    /// presized under `root-capacity=tuples`) and returns it with the trie's
+    /// buffer: the matching rows copied into partition order
+    /// (`morsel::partition_rows`, #101). The view only borrows its source, so
+    /// that copy is the build's one. `fill` threads the rows of that buffer
+    /// through `links`, one per matching row (`view.count()` of them),
+    /// zeroed: every fill writes a row's link before it reads it, and starts
+    /// with an empty `links` when no row matches. Tests in `parallel.rs`
+    /// call it with small morsels and regions.
+    ///
+    /// # Panics
+    ///
+    /// Panics as `relation::check_view_arity` does, the one check of every
+    /// structure: if the view's source holds rows and the view's arity is not
+    /// `header.arity()`, whether or not any row passes the filter.
+    pub(super) fn from_view_partitioned(
+        header: RelationHeader, config: HashTrieConfig, view: &TupleView<'_>,
+        fill: impl FnOnce(&TupleView<'_>, &ChainLinks, u32, usize) -> (Tuples, HashTrieNode<P, E>),
     ) -> Self {
+        crate::relation::check_view_arity(&header, view);
         let arity = header.arity();
-        let tuples = Self::batch_for_header(arity, tuples);
-        let log2_capacity = config.root_log2_capacity(tuples.len());
-        let links = ChainLinks::new(tuples.len());
-        let (tuples, root) = fill(tuples, &links, log2_capacity, arity);
+        let count = view.count();
+        let log2_capacity = config.root_log2_capacity(count);
+        let links = ChainLinks::new(count);
+        let (tuples, root) = fill(view, &links, log2_capacity, arity);
         debug_assert_eq!(links.len(), tuples.len(), "one link per row of the buffer");
         Self {
             header,
@@ -798,6 +816,23 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             config,
             _layout: PhantomData,
         }
+    }
+
+    /// `incremental`'s prerequisite: `insert_at` creates a child on its first
+    /// tuple, before the child's list is known, so it cannot size it. The CLI
+    /// rejects the pair first; here it is a broken invariant, like a wrong
+    /// arity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config.child_capacity` is not [`ChildCapacity::Grow`].
+    fn assert_incremental_prerequisite(config: HashTrieConfig) {
+        assert_eq!(
+            config.child_capacity,
+            ChildCapacity::Grow,
+            "hash-trie=incremental requires child-capacity=grow; got child-capacity={}",
+            config.child_capacity.axis_value(),
+        );
     }
 }
 

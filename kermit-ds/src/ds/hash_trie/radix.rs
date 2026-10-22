@@ -9,11 +9,12 @@
 //!
 //! The copy is the paper's materialisation step: "the tuples are
 //! partitioned based on the hash values of the first join key attribute"
-//! (§3.3.2). It becomes the trie's buffer and the input is freed, so each
-//! partition's rows are one contiguous range of the buffer, in input order,
-//! and every row a partition's build reads is local. One round of `2^K`
-//! partitions is kermit's choice; the paper adapts a two-pass radix
-//! partitioning (Balkesen et al.).
+//! (§3.3.2). It is read straight from the view (the rows the build's query
+//! selects, in the structure's column order) and becomes the trie's buffer,
+//! the build's one copy, so each partition's rows are one contiguous range
+//! of the buffer, in source order, and every row a partition's build reads
+//! is local. One round of `2^K` partitions is kermit's choice; the paper
+//! adapts a two-pass radix partitioning (Balkesen et al.).
 //!
 //! Every list is a [`Chain`] threaded through the trie's links, one per row
 //! of the copy ([`ChainLinks`]): the paper's chain pointer (§3.3.2, Figure
@@ -106,55 +107,51 @@ impl<P: PruningPolicy, E: ExpansionPolicy> Entries<P, E> {
     }
 }
 
-/// Fills the empty `root` with the rows of `tuples` by the `radix:bits`
-/// build, threading every list through `links` (one link per row of
-/// `tuples`), and returns the trie's buffer: the rows copied into partition
-/// order. Every row must have `arity` attributes; the caller checks.
+/// Fills the empty `root` with the rows `view` selects by the `radix:bits`
+/// build, threading every list through `links` (one link per matching row),
+/// and returns the trie's buffer: the matching rows copied into partition
+/// order. The view only borrows its source, which stays where it is. The
+/// caller checks that the view's arity is `arity`.
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: Tuples, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
     bits: RadixBits, config: HashTrieConfig,
 ) -> Tuples {
-    if tuples.is_empty() {
-        // The bulk build of nothing is the empty root over the empty batch:
-        // copy nothing and start no worker, as `parallel:N` does.
-        return tuples;
+    if links.is_empty() {
+        // No row matches (`links` holds one link per matching row). The bulk
+        // build of nothing is the empty root over the empty batch: copy
+        // nothing and start no worker, as `parallel:N` does.
+        return Tuples::new(arity);
     }
-    // 1. Partition, on this thread: copy the rows into `2^bits` partitions on
-    //    the top `bits` of their first attribute's hash. Each partition is one
-    //    range of the copy, in input order. The whole batch is one morsel:
-    //    `partition_rows` keeps a count and a range per (partition, morsel)
-    //    pair, which one thread gains nothing from, and at `radix:16` over 10^7
-    //    rows in `MORSEL_TUPLES`-row morsels would be about 40 million pairs.
+    // 1. Partition, on this thread: copy the matching rows into `2^bits`
+    //    partitions on the top `bits` of their first attribute's hash. Each
+    //    partition is one range of the copy, in source order. The whole source
+    //    is one morsel: `partition_rows` keeps a count and a range per
+    //    (partition, morsel) pair, which one thread gains nothing from, and at
+    //    `radix:16` over 10^7 rows in `MORSEL_TUPLES`-row morsels would be
+    //    about 40 million pairs. The copy is the trie's buffer from here on.
     let one = Threads::new(1).expect("one thread is a valid count");
-    let one_morsel = tuples.len();
-    let partitioned = partition_by_first_hash::<H>(one, &tuples, one_morsel, u32::from(bits.get()));
-    // The copy is the buffer from here on: free the input before the build,
-    // so the build holds the rows once.
-    drop(tuples);
+    let one_morsel = view.source_rows();
+    let partitioned = partition_by_first_hash::<H>(one, view, one_morsel, u32::from(bits.get()));
     // 2 and 3, on this thread.
     build_and_merge::<H, P, E>(partitioned, links, root, arity, one, config)
 }
 
-/// Step 1 of `radix:K` and `parallel:N`: copies the rows of `tuples` into
+/// Step 1 of `radix:K` and `parallel:N`: copies the rows `view` selects into
 /// `2^bits` partitions on the top `bits` bits of their first attribute's
-/// hash, each partition's rows in input order, with each copied row's input
-/// position in `origin` (`morsel::partition_rows`, on `threads` workers over
-/// morsels of `morsel_rows` rows). `bits` must be in `1..=16`.
+/// hash, each partition's rows in source order, with each copied row's source
+/// row id in `origin` (`morsel::partition_rows`, on `threads` workers over
+/// morsels of `morsel_rows` source rows). `bits` must be in `1..=16`.
 pub(super) fn partition_by_first_hash<H: HashStrategy>(
-    threads: Threads, tuples: &Tuples, morsel_rows: usize, bits: u32,
+    threads: Threads, view: &TupleView<'_>, morsel_rows: usize, bits: u32,
 ) -> Partitioned {
     debug_assert!(
         (1..=16).contains(&bits),
         "partition_by_first_hash: {bits} bits, not 1 to 16"
     );
     let shift = 64 - bits;
-    partition_rows(
-        threads,
-        &TupleView::all(tuples),
-        morsel_rows,
-        1 << bits,
-        |row| (H::hash(row[0]) >> shift) as usize,
-    )
+    partition_rows(threads, view, morsel_rows, 1 << bits, |row| {
+        (H::hash(row[0]) >> shift) as usize
+    })
 }
 
 /// Steps 2 and 3 of `radix:K` and `parallel:N`. Each non-empty partition
@@ -468,5 +465,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `fill_root` reads the view in place: the buffer it returns holds
+    /// exactly the view's matching rows, as output rows in partition order,
+    /// at their exact size, and the root it fills names the three distinct
+    /// first keys. `col2 = 3` keeps rows 0, 3, 4 and 7 of the source, read as
+    /// columns `[1, 0]`: `[2, 1]`, `[9, 1]`, `[2, 1]` and `[3, 5]`.
+    #[test]
+    fn fill_root_copies_only_the_matching_rows() {
+        let source = rows(3, &[
+            [1, 2, 3],
+            [1, 2, 7],
+            [4, 5, 6],
+            [1, 9, 3],
+            [1, 2, 3],
+            [8, 8, 8],
+            [3, 1, 1],
+            [5, 3, 3],
+        ]);
+        let view = TupleView::new(
+            &source,
+            kermit_iters::Filter::new(vec![(2, 3)], vec![]),
+            vec![1, 0],
+        );
+        assert_eq!(view.count(), 4, "the premise");
+        let (arity, config) = (2, HashTrieConfig::default());
+        let links = ChainLinks::new(view.count());
+        let mut root = HashTrie::<SipHashStrategy>::make_root_sized(
+            arity,
+            config.root_log2_capacity(view.count()),
+        );
+        let bits = RadixBits::new(2).unwrap();
+        let copy = fill_root::<SipHashStrategy, NoPruning, EagerExpansion>(
+            &view, &links, &mut root, arity, bits, config,
+        );
+        let mut copied = copy.to_vecs();
+        copied.sort();
+        assert_eq!(copied, vec![vec![2, 1], vec![2, 1], vec![3, 5], vec![9, 1]]);
+        assert_eq!(copy.value_capacity(), 4 * arity, "exact size");
+        assert_eq!(links.len(), copy.len(), "one link per copied row");
+        assert_eq!(root.len(), 3, "first keys 2, 9 and 3");
     }
 }

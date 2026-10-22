@@ -4,15 +4,16 @@
 //! of `crate::morsel` (Leis et al., SIGMOD 2014; SIGMOD 2020 §3.3.2; issue
 //! #94).
 //!
-//! 1. **Partition.** `radix::partition_by_first_hash` copies every row
-//!    ([`partition_rows`]) into one of P partitions by the top log₂P bits of
-//!    the row's first attribute's hash, and records each copied row's input
-//!    position (`origin`); P is four per thread, rounded up to a power of two.
-//!    The copy is the paper's materialisation step (§3.3.2, #101): it becomes
-//!    the trie's buffer, the input batch is freed, and each partition's rows
-//!    are a contiguous range of it, so every later read of a partition's rows
-//!    is local. One round of partitioning is kermit's choice; the paper adapts
-//!    a two-pass radix partitioning (Balkesen et al.).
+//! 1. **Partition.** `radix::partition_by_first_hash` copies every row the view
+//!    selects ([`partition_rows`]) into one of P partitions by the top log₂P
+//!    bits of the row's first attribute's hash, and records each copied row's
+//!    source row id (`origin`); P is four per thread, rounded up to a power of
+//!    two. The copy is the paper's materialisation step (§3.3.2, #101), read
+//!    straight from the view: it becomes the trie's buffer, the build's one
+//!    copy, and each partition's rows are a contiguous range of it, so every
+//!    later read of a partition's rows is local. One round of partitioning is
+//!    kermit's choice; the paper adapts a two-pass radix partitioning (Balkesen
+//!    et al.).
 //! 2. **Build.** `radix::build_and_merge` [`dispatch`]es each non-empty
 //!    partition's id range to a worker, which threads the partition's rows into
 //!    the chains of a scratch root and builds its children, as `bulk` does
@@ -149,42 +150,37 @@ fn partition_sizes(partitioned: &crate::morsel::Partitioned) -> Vec<usize> {
         .collect()
 }
 
-/// Fills the empty `root` with the rows of `tuples` by the
+/// Fills the empty `root` with the rows `view` selects by the
 /// `parallel:threads` build, threading every list through `links` (one link
-/// per row of `tuples`), and returns the partitioned copy of `tuples` that
-/// the trie keeps as its buffer: every id in `root` names a row of it.
-/// `tuples` itself is freed once copied. Every row must have `arity`
-/// attributes; the caller checks.
+/// per matching row), and returns the partitioned copy of those rows that
+/// the trie keeps as its buffer: every id in `root` names a row of it. The
+/// view only borrows its source, which stays where it is. The caller checks
+/// that the view's arity is `arity`.
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: Tuples, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
     threads: Threads, config: HashTrieConfig,
 ) -> Tuples {
-    fill_root_in_morsels::<H, P, E>(tuples, links, root, arity, threads, MORSEL_TUPLES, config)
+    fill_root_in_morsels::<H, P, E>(view, links, root, arity, threads, MORSEL_TUPLES, config)
 }
 
 /// [`fill_root`] with the morsel size as a parameter, so tests can cut a
 /// small input into many morsels.
 fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: Tuples, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
     threads: Threads, morsel_tuples: usize, config: HashTrieConfig,
 ) -> Tuples {
-    if tuples.is_empty() {
-        // The bulk build of nothing is the empty root over the empty batch:
-        // copy nothing and start no worker.
-        return tuples;
+    if links.is_empty() {
+        // No row matches (`links` holds one link per matching row). The bulk
+        // build of nothing is the empty root over the empty batch: copy
+        // nothing and start no worker.
+        return Tuples::new(arity);
     }
     // 1. Partition, on `threads` workers, by the top bits of each row's first
-    //    attribute's hash. The rows are copied into partition order, each
-    //    partition's in input order, with each copy's input position in
-    //    `origin`. The copy is the trie's buffer from here on, so the input is
-    //    freed before the build steps.
-    let partitioned = radix::partition_by_first_hash::<H>(
-        threads,
-        &tuples,
-        morsel_tuples,
-        partition_bits(threads),
-    );
-    drop(tuples);
+    //    attribute's hash. The matching rows are copied into partition order,
+    //    each partition's in source order, with each copy's source row id in
+    //    `origin`. The copy is the trie's buffer from here on.
+    let partitioned =
+        radix::partition_by_first_hash::<H>(threads, view, morsel_tuples, partition_bits(threads));
     #[cfg(any(test, feature = "test-hooks"))]
     PARALLEL_BUILDS.with(|builds| {
         builds.borrow_mut().push(ParallelBuild {
@@ -216,22 +212,22 @@ fn presized_parts(log2_capacity: u32, threads: Threads, region_buckets: usize) -
     (1usize << partition_bits(threads)).min(capacity / region_buckets.min(capacity))
 }
 
-/// Builds the root of `2^log2_capacity` buckets over the rows of `tuples` by
-/// `presized:threads`, threading every list through `links` (one link per
-/// row of `tuples`), and returns it with the partitioned copy of `tuples`
-/// that the trie keeps as its buffer: every id in the root names a row of
-/// it. `tuples` itself is freed once copied. This is the partitioned build
-/// of a presized root: the paper's partitioning and Algorithm 2, with
-/// kermit's regions, tail and per-run children
+/// Builds the root of `2^log2_capacity` buckets over the rows `view` selects
+/// by `presized:threads`, threading every list through `links` (one link per
+/// matching row), and returns it with the partitioned copy of those rows that
+/// the trie keeps as its buffer: every id in the root names a row of it. The
+/// view only borrows its source, which stays where it is. This is the
+/// partitioned build of a presized root: the paper's partitioning and
+/// Algorithm 2, with kermit's regions, tail and per-run children
 /// (`docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`).
-/// Every child is built by Algorithm 2 (#107). Every row must have `arity`
-/// attributes; the caller checks.
+/// Every child is built by Algorithm 2 (#107). The caller checks that the
+/// view's arity is `arity`.
 pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: Tuples, links: &ChainLinks, log2_capacity: u32, arity: usize, threads: Threads,
+    view: &TupleView<'_>, links: &ChainLinks, log2_capacity: u32, arity: usize, threads: Threads,
     config: HashTrieConfig,
 ) -> (Tuples, HashTrieNode<P, E>) {
     fill_presized_root_in::<H, P, E>(
-        tuples,
+        view,
         links,
         log2_capacity,
         arity,
@@ -245,11 +241,11 @@ pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: Expansion
 /// [`fill_presized_root`] with the morsel and region sizes as parameters,
 /// so tests can cut a small input into many morsels and regions.
 ///
-/// 1. **Partition**: [`partition_rows`] copies the rows by the top bits of each
-///    row's home bucket, so partition k is a contiguous run of regions. Its
-///    rows are a contiguous range of the copy, in input order, with each row's
-///    input position in `origin`. The copy becomes the buffer; the input is
-///    freed.
+/// 1. **Partition**: [`partition_rows`] copies the rows the view selects by the
+///    top bits of each row's home bucket, so partition k is a contiguous run of
+///    regions. Its rows are a contiguous range of the copy, in source order,
+///    with each row's source row id in `origin`. The copy becomes the buffer;
+///    the source stays where it is.
 /// 2. **Group** (Algorithm 2, lines 4–7): each worker takes a partition's id
 ///    range with its run of a presized table of chains, and pushes every row
 ///    onto the chain in its key's bucket ([`push_in_run`]), threading it
@@ -273,25 +269,22 @@ pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: Expansion
 // Eight parameters: `fill_presized_root`'s six and the two sizes tests set.
 #[allow(clippy::too_many_arguments)]
 fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    tuples: Tuples, links: &ChainLinks, log2_capacity: u32, arity: usize, threads: Threads,
+    view: &TupleView<'_>, links: &ChainLinks, log2_capacity: u32, arity: usize, threads: Threads,
     morsel_tuples: usize, region_buckets: usize, config: HashTrieConfig,
 ) -> (Tuples, HashTrieNode<P, E>) {
-    if tuples.is_empty() {
+    if links.is_empty() {
+        // No row matches (`links` holds one link per matching row): the empty
+        // root over the empty batch, with no partition and no worker.
         let root = HashTrie::<H, P, E>::make_root_sized(arity, log2_capacity);
-        return (tuples, root);
+        return (Tuples::new(arity), root);
     }
     let parts = presized_parts(log2_capacity, threads, region_buckets);
     let shift = log2_capacity - parts.trailing_zeros();
     // 1. Partition by the home bucket's top bits: whole runs of regions. The
-    //    copy is the trie's buffer from here on, so the input is freed.
-    let partitioned = partition_rows(
-        threads,
-        &TupleView::all(&tuples),
-        morsel_tuples,
-        parts,
-        |row| home_bucket(H::hash(row[0]), log2_capacity) >> shift,
-    );
-    drop(tuples);
+    //    copy is the trie's buffer from here on.
+    let partitioned = partition_rows(threads, view, morsel_tuples, parts, |row| {
+        home_bucket(H::hash(row[0]), log2_capacity) >> shift
+    });
     let rows = &partitioned.tuples;
     // 2. Group each run of regions in parallel, partition k into run k: each
     //    worker threads its own partition's rows into its run's chains.
@@ -412,7 +405,7 @@ mod tests {
             relation::{BuildModeRelation, ConfigurableRelation, Relation},
             test_support::{Lcg, Mod10HashStrategy},
         },
-        kermit_iters::{FxHashStrategy, LayoutOption, SipHashStrategy},
+        kermit_iters::{Filter, FxHashStrategy, LayoutOption, SipHashStrategy},
     };
 
     fn threads(n: usize) -> Threads { Threads::new(n).expect("tests use a nonzero count") }
@@ -425,20 +418,20 @@ mod tests {
         &[1, 2, 3, 8]
     };
 
-    /// A `parallel:t` trie built through `HashTrie::from_tuples_partitioned`
-    /// with morsels of 7 tuples, which make the partition step cut a small
-    /// input many times.
-    fn parallel_in_small_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-        arity: usize, config: HashTrieConfig, tuples: &Tuples, t: usize,
+    /// A `parallel:t` trie built through `HashTrie::from_view_partitioned`
+    /// with morsels of 7 source rows, which make the partition step cut a
+    /// small input many times.
+    fn parallel_view_in_small_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        arity: usize, config: HashTrieConfig, view: &TupleView<'_>, t: usize,
     ) -> HashTrie<H, P, E> {
-        HashTrie::<H, P, E>::from_tuples_partitioned(
+        HashTrie::<H, P, E>::from_view_partitioned(
             arity.into(),
             config,
-            tuples.clone(),
-            |tuples, links, log2, arity| {
+            view,
+            |view, links, log2, arity| {
                 let mut root = HashTrie::<H, P, E>::make_root_sized(arity, log2);
                 let copy = fill_root_in_morsels::<H, P, E>(
-                    tuples,
+                    view,
                     links,
                     &mut root,
                     arity,
@@ -449,6 +442,75 @@ mod tests {
                 (copy, root)
             },
         )
+    }
+
+    /// [`parallel_view_in_small_morsels`] over a whole batch.
+    fn parallel_in_small_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        arity: usize, config: HashTrieConfig, tuples: &Tuples, t: usize,
+    ) -> HashTrie<H, P, E> {
+        parallel_view_in_small_morsels::<H, P, E>(arity, config, &TupleView::all(tuples), t)
+    }
+
+    /// Two filtered, permuted views of a three-column source: a constant on
+    /// the third column, read as columns `[1, 0]`, and an equality of the
+    /// second and third, read as columns `[2, 0, 1]`. Between them they keep
+    /// no rows, some, and all of a source, so the filter cuts across morsel
+    /// boundaries in the small-morsel and small-region tests.
+    fn filtered_views(source: &Tuples) -> Vec<(&'static str, TupleView<'_>)> {
+        vec![
+            (
+                "col2 = 3, columns [1, 0]",
+                TupleView::new(source, Filter::new(vec![(2, 3)], vec![]), vec![1, 0]),
+            ),
+            (
+                "col1 = col2, columns [2, 0, 1]",
+                TupleView::new(source, Filter::new(vec![], vec![(1, 2)]), vec![2, 0, 1]),
+            ),
+        ]
+    }
+
+    /// `parallel:N` over a filtered, permuted view, in morsels of 7, builds the
+    /// trie `bulk` builds from the same view, by contents, under every config
+    /// and thread count, for the layout `H`, `P`, `E`.
+    fn check_filtered_views_in_small_morsels<
+        H: HashStrategy,
+        P: PruningPolicy,
+        E: ExpansionPolicy,
+    >() {
+        for config in configs() {
+            for (input, source) in inputs(3) {
+                for (name, view) in filtered_views(&source) {
+                    let arity = view.arity();
+                    let bulk = HashTrie::<H, P, E>::from_view_with_config(
+                        arity.into(),
+                        config,
+                        view.clone(),
+                    );
+                    for &t in THREADS {
+                        let label = format!(
+                            "{}/{}/{} {input}, {name}, root {}, load {}%, children {}, \
+                             parallel:{t}, morsels of 7",
+                            H::NAME,
+                            P::NAME,
+                            E::NAME,
+                            config.root_capacity.axis_value(),
+                            config.load_factor.numerator(),
+                            config.child_capacity.axis_value(),
+                        );
+                        let small =
+                            parallel_view_in_small_morsels::<H, P, E>(arity, config, &view, t);
+                        assert_same_contents(&bulk, &small, &label);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_over_a_filtered_view_in_small_morsels_builds_the_bulk_trie() {
+        check_filtered_views_in_small_morsels::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_filtered_views_in_small_morsels::<SipHashStrategy, SingletonPruning, LazyExpansion>();
+        check_filtered_views_in_small_morsels::<Mod10HashStrategy, NoPruning, EagerExpansion>();
     }
 
     /// `parallel:N` builds the trie `bulk` builds, content for content, for
@@ -1024,19 +1086,19 @@ mod tests {
         fn hash(key: usize) -> u64 { super::super::hash_table::hash_with_home(7, 5, key as u64) }
     }
 
-    /// A `presized:t` trie built through `HashTrie::from_tuples_partitioned`
-    /// with morsels of 7 tuples and `region_buckets`-bucket regions, so small
-    /// inputs span many morsels and regions and overflow.
-    fn presized_in_small_regions<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-        arity: usize, config: HashTrieConfig, tuples: &Tuples, t: usize, region_buckets: usize,
+    /// A `presized:t` trie built through `HashTrie::from_view_partitioned`
+    /// with morsels of 7 source rows and `region_buckets`-bucket regions, so
+    /// small inputs span many morsels and regions and overflow.
+    fn presized_view_in_small_regions<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        arity: usize, config: HashTrieConfig, view: &TupleView<'_>, t: usize, region_buckets: usize,
     ) -> HashTrie<H, P, E> {
-        HashTrie::<H, P, E>::from_tuples_partitioned(
+        HashTrie::<H, P, E>::from_view_partitioned(
             arity.into(),
             config,
-            tuples.clone(),
-            |tuples, links, log2, arity| {
+            view,
+            |view, links, log2, arity| {
                 fill_presized_root_in::<H, P, E>(
-                    tuples,
+                    view,
                     links,
                     log2,
                     arity,
@@ -1047,6 +1109,66 @@ mod tests {
                 )
             },
         )
+    }
+
+    /// [`presized_view_in_small_regions`] over a whole batch.
+    fn presized_in_small_regions<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
+        arity: usize, config: HashTrieConfig, tuples: &Tuples, t: usize, region_buckets: usize,
+    ) -> HashTrie<H, P, E> {
+        presized_view_in_small_regions::<H, P, E>(
+            arity,
+            config,
+            &TupleView::all(tuples),
+            t,
+            region_buckets,
+        )
+    }
+
+    /// `presized:N` over a filtered, permuted view, in morsels of 7 and
+    /// regions of 8 buckets, builds a trie equivalent to the one `bulk`
+    /// builds from the same view (Amendment 2), under each child capacity and
+    /// thread count, for the layout `H`, `P`, `E`.
+    fn check_filtered_views_in_small_regions<
+        H: HashStrategy,
+        P: PruningPolicy,
+        E: ExpansionPolicy,
+    >() {
+        for &percent in PRESIZED_LOAD_PERCENTS {
+            for &child_capacity in BOTH_CHILD_CAPACITIES {
+                let config = tuples_config(percent, child_capacity);
+                for (input, source) in inputs(3) {
+                    for (name, view) in filtered_views(&source) {
+                        let arity = view.arity();
+                        let bulk = HashTrie::<H, P, E>::from_view_with_config(
+                            arity.into(),
+                            config,
+                            view.clone(),
+                        );
+                        for &t in PRESIZED_THREADS {
+                            let label = format!(
+                                "{}/{}/{} {input}, {name}, load {percent}%, children {}, \
+                                 presized:{t}, small regions",
+                                H::NAME,
+                                P::NAME,
+                                E::NAME,
+                                child_capacity.axis_value(),
+                            );
+                            let small = presized_view_in_small_regions::<H, P, E>(
+                                arity, config, &view, t, 8,
+                            );
+                            assert_equivalent_trie(&bulk, &small, &label);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn presized_over_a_filtered_view_in_small_regions_is_equivalent_to_bulk() {
+        check_filtered_views_in_small_regions::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_filtered_views_in_small_regions::<SipHashStrategy, SingletonPruning, LazyExpansion>();
+        check_filtered_views_in_small_regions::<Mod10HashStrategy, NoPruning, EagerExpansion>();
     }
 
     /// Homes in a 32-bucket root: first keys 0 to 4 at buckets 7, 5, 6, 7
