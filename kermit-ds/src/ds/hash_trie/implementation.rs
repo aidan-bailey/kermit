@@ -2678,7 +2678,10 @@ mod view_tests {
         super::{
             super::{
                 expansion::LazyExpansion,
-                identity::{assert_same_trie, configs, incremental_configs, inputs, rows},
+                identity::{
+                    assert_equivalent_trie, assert_same_contents, assert_same_trie, configs,
+                    incremental_configs, inputs, rows,
+                },
                 pruning::SingletonPruning,
             },
             tests::walked_sorted,
@@ -3195,5 +3198,111 @@ mod view_tests {
             silent.is_empty(),
             "these constructors accept a view of the wrong arity: {silent:?}"
         );
+    }
+
+    /// The three partitioning modes, on thread and bit counts small enough to
+    /// spread a small input over several partitions.
+    fn partition_modes() -> [HashTrieBuildMode; 3] {
+        let threads = Threads::new(2).expect("two is a valid thread count");
+        [
+            HashTrieBuildMode::Radix(RadixBits::new(3).expect("three is a valid bit count")),
+            HashTrieBuildMode::Parallel(threads),
+            HashTrieBuildMode::Presized(threads),
+        ]
+    }
+
+    /// Every build mode builds an equivalent trie from a filtered, permuted
+    /// view (Amendment 2), each against `bulk` built from the view's
+    /// hand-made batch: `bulk` and `incremental` array for array, `radix:K`
+    /// and `parallel:N` by contents (the same tables bucket for bucket, the
+    /// same tuples in every chain, the same exactly sized buffer, under the
+    /// copy's row ids), `presized:N` by equivalence. `incremental` runs under
+    /// the configs that accept it (children that grow) and `presized:N` under
+    /// the ones that accept it (a presized root), for the layout `H`, `P`, `E`.
+    fn check_modes_agree_on_views<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>() {
+        let [radix_mode, parallel_mode, presized_mode] = partition_modes();
+        for (input, source) in sources() {
+            for case in cases() {
+                let arity = case.columns.len();
+                let expected = reference(&source, &case);
+                for config in configs() {
+                    let bulk = HashTrie::<H, P, E>::from_tuples_with_config(
+                        arity.into(),
+                        config,
+                        expected.clone(),
+                    );
+                    let mut modes = vec![HashTrieBuildMode::Bulk, radix_mode, parallel_mode];
+                    if config.child_capacity == ChildCapacity::Grow {
+                        modes.push(HashTrieBuildMode::Incremental);
+                    }
+                    if config.root_capacity == RootCapacity::Tuples {
+                        modes.push(presized_mode);
+                    }
+                    for mode in modes {
+                        let label = format!(
+                            "{}/{}/{} {input}, {}, load {}%, root {}, children {}, {mode:?}",
+                            H::NAME,
+                            P::NAME,
+                            E::NAME,
+                            case.name,
+                            config.load_factor.numerator(),
+                            config.root_capacity.axis_value(),
+                            config.child_capacity.axis_value(),
+                        );
+                        let view =
+                            TupleView::new(&source, case.filter.clone(), case.columns.clone());
+                        let built = HashTrie::<H, P, E>::from_view_with_config_and_build_mode(
+                            arity.into(),
+                            config,
+                            mode,
+                            view,
+                        );
+                        match mode {
+                            | HashTrieBuildMode::Bulk | HashTrieBuildMode::Incremental => {
+                                assert_same_trie(&bulk, &built, &label)
+                            },
+                            | HashTrieBuildMode::Radix(_) | HashTrieBuildMode::Parallel(_) => {
+                                assert_same_contents(&bulk, &built, &label)
+                            },
+                            | HashTrieBuildMode::Presized(_) => {
+                                assert_equivalent_trie(&bulk, &built, &label)
+                            },
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_build_mode_builds_an_equivalent_trie_from_a_view() {
+        check_modes_agree_on_views::<SipHashStrategy, NoPruning, EagerExpansion>();
+        check_modes_agree_on_views::<FxHashStrategy, SingletonPruning, EagerExpansion>();
+        check_modes_agree_on_views::<SipHashStrategy, SingletonPruning, LazyExpansion>();
+    }
+
+    /// A view that matches no row builds the empty trie in every
+    /// partitioning mode, without partitioning or starting a worker, though
+    /// its source holds rows. (`radix_build_of_nothing_starts_no_worker` is
+    /// the same for an empty source.)
+    #[test]
+    fn a_view_that_matches_nothing_starts_no_worker() {
+        let source = hand_source();
+        let config = HashTrieConfig {
+            root_capacity: RootCapacity::Tuples,
+            ..HashTrieConfig::default()
+        };
+        let empty: HashTrie = HashTrie::from_tuples_with_config(2.into(), config, vec![]);
+        for mode in partition_modes() {
+            crate::morsel::take_worker_runs();
+            let view = TupleView::new(&source, Filter::new(vec![(0, 99)], vec![]), vec![0, 1]);
+            let built: HashTrie =
+                HashTrie::from_view_with_config_and_build_mode(2.into(), config, mode, view);
+            assert_same_trie(&empty, &built, &format!("{mode:?}"));
+            assert!(
+                crate::morsel::take_worker_runs().is_empty(),
+                "{mode:?}: a worker ran"
+            );
+        }
     }
 }
