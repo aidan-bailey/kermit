@@ -152,12 +152,24 @@ pub(crate) fn scatter_rows(
         while let Some((index, first)) = take_next(&queue) {
             let end = first + morsel_rows.min(len - first);
             let mut buckets: RowBuckets = (0..partitions).map(|_| Vec::new()).collect();
-            for id in row_id(first)..row_id(end) {
-                if !view.matches(id) {
-                    continue;
+            // An identity view keeps every row and its source row is its
+            // output row, so it pays no per-row filter or copy (Amendment 2
+            // of the per-query index build spec): it is the build path of
+            // every `from_tuples*` and of every constant-free index, and a
+            // check there would cost only the modes that scatter. The branch
+            // is taken once; the two loops differ only in how a row is read.
+            if view.is_identity() {
+                for id in row_id(first)..row_id(end) {
+                    buckets[partition_of(view.source().row(id))].push(id);
                 }
-                view.write(id, &mut output);
-                buckets[partition_of(&output)].push(id);
+            } else {
+                for id in row_id(first)..row_id(end) {
+                    if !view.matches(id) {
+                        continue;
+                    }
+                    view.write(id, &mut output);
+                    buckets[partition_of(&output)].push(id);
+                }
             }
             scattered.push((index, buckets));
         }
@@ -344,12 +356,7 @@ pub(crate) fn partition_rows(
             let mut histogram = vec![0; partitions];
             // At most one number per row of the morsel, so it never grows.
             let mut morsel_numbers = Vec::with_capacity(ids.len());
-            for id in ids {
-                if !view.matches(id) {
-                    continue;
-                }
-                view.write(id, &mut output);
-                let p = partition_of(&output);
+            let mut tally = |p: usize| {
                 assert!(
                     p < partitions,
                     "partition_rows: partition_of returned {p} for {partitions} partitions"
@@ -357,6 +364,26 @@ pub(crate) fn partition_rows(
                 histogram[p] += 1;
                 // Lossless: `p < partitions <= 2^16`, by the two assertions.
                 morsel_numbers.push(p as u16);
+            };
+            // An identity view keeps every row and its source row is its
+            // output row, so it pays no per-row filter or copy (Amendment 2
+            // of the per-query index build spec): it is the build path of
+            // every `from_tuples*` and of every constant-free index, and a
+            // check there would cost only the radix family. The branch is
+            // taken once; the two loops differ only in how a row is read,
+            // and share `tally`.
+            if view.is_identity() {
+                for id in ids {
+                    tally(partition_of(view.source().row(id)));
+                }
+            } else {
+                for id in ids {
+                    if !view.matches(id) {
+                        continue;
+                    }
+                    view.write(id, &mut output);
+                    tally(partition_of(&output));
+                }
             }
             counted.push((m, histogram, morsel_numbers));
         }
