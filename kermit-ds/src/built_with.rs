@@ -22,7 +22,7 @@ use {
     },
     kermit_iters::{
         HasOptimizationAxes, HashTrieIterable, HashTrieIterator, JoinIterable, TrieIterable,
-        TrieIterator, Tuples,
+        TrieIterator, TupleView, Tuples,
     },
     serde_json::Value,
     std::{collections::BTreeMap, marker::PhantomData, ops::Deref},
@@ -107,6 +107,8 @@ where
     R: BuildModeRelation,
     P: BuildModeProvider<R::BuildMode>,
 {
+    const KEEPS_DUPLICATES: bool = R::KEEPS_DUPLICATES;
+
     fn header(&self) -> &RelationHeader { self.inner.header() }
 
     /// An empty relation has nothing to build, so no mode applies.
@@ -118,6 +120,10 @@ where
             P::build_mode(),
             tuples,
         ))
+    }
+
+    fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self {
+        Self::wrap(R::from_view_with_build_mode(header, P::build_mode(), view))
     }
 
     fn insert(&mut self, tuple: impl AsRef<[usize]>) { self.inner.insert(tuple) }
@@ -157,7 +163,10 @@ impl<R: HasOptimizationAxes, P> HasOptimizationAxes for BuiltWith<R, P> {
 mod tests {
     use {
         super::*,
-        crate::ds::{ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieBuildMode, RadixBits},
+        crate::{
+            ds::{ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieBuildMode, RadixBits},
+            Configured,
+        },
         kermit_iters::{HashTrieIterable, HashTrieIterator},
     };
 
@@ -262,5 +271,77 @@ mod tests {
         let r = BuiltWith::<HashTrie, HashSpy>::from_tuples(2.into(), vec![vec![1, 2], vec![3, 4]]);
         assert_eq!(CALLS.with(|calls| calls.get()), 1);
         assert_eq!(root_keys(&r), 2);
+    }
+
+    /// Hands `build` the view of rows 0 and 4 of a five-row source, read
+    /// as `[5, 1]` and `[5, 3]` (column 2 holds 5, columns 0 and 1 agree,
+    /// columns 2 then 0 are read), and returns what it builds.
+    fn with_view<T>(build: impl FnOnce(crate::TupleView<'_>) -> T) -> T {
+        let source = Tuples::from(vec![
+            vec![1, 1, 5],
+            vec![2, 3, 5],
+            vec![2, 2, 6],
+            vec![1, 1, 6],
+            vec![3, 3, 5],
+        ]);
+        let view = crate::TupleView::new(
+            &source,
+            crate::Filter::new(vec![(2, 5)], vec![(0, 1)]),
+            vec![2, 0],
+        );
+        build(view)
+    }
+
+    /// `R::KEEPS_DUPLICATES` read through a function, so that the assertions
+    /// are not constant expressions.
+    fn keeps_duplicates<R: Relation>() -> bool { R::KEEPS_DUPLICATES }
+
+    #[test]
+    fn from_view_builds_the_view_in_the_providers_mode() {
+        CALLS.with(|calls| calls.set(0));
+        let r = with_view(|view| BuiltWith::<ColumnTrie, Spy>::from_view(2.into(), view));
+        assert_eq!(CALLS.with(|calls| calls.get()), 1);
+        assert_eq!(tuples_of(&r), vec![vec![5, 1], vec![5, 3]]);
+
+        CALLS.with(|calls| calls.set(0));
+        let r = with_view(|view| BuiltWith::<HashTrie, HashSpy>::from_view(2.into(), view));
+        assert_eq!(CALLS.with(|calls| calls.get()), 1);
+        let mut rows = r.collect_tuples().to_vecs();
+        rows.sort();
+        assert_eq!(rows, vec![vec![5, 1], vec![5, 3]]);
+    }
+
+    use crate::relation::view_spy::{take_calls, SpyConfig, SpyMode, ViewSpy};
+
+    crate::define_build_mode_provider!(SpyModeProvider, SpyMode, SpyMode);
+    crate::define_config_provider!(SpyConfigProvider, SpyConfig, SpyConfig);
+
+    /// The wrapper hands the view to the inner relation's own view
+    /// constructor. `from_view_builds_the_view_in_the_providers_mode` cannot
+    /// tell this from the default body, which reaches the same build through
+    /// `from_tuples`.
+    #[test]
+    fn views_reach_the_inner_relations_view_constructors() {
+        take_calls();
+        let _ = with_view(|view| BuiltWith::<ViewSpy, SpyModeProvider>::from_view(2.into(), view));
+        assert_eq!(take_calls(), ["from_view_with_build_mode"]);
+
+        type Stacked = BuiltWith<Configured<ViewSpy, SpyConfigProvider>, SpyModeProvider>;
+        let _ = with_view(|view| Stacked::from_view(2.into(), view));
+        assert_eq!(take_calls(), ["from_view_with_config_and_build_mode"]);
+    }
+
+    #[test]
+    fn from_tuples_still_reaches_the_inner_relations_tuple_constructor() {
+        take_calls();
+        let _ = BuiltWith::<ViewSpy, SpyModeProvider>::from_tuples(2.into(), vec![vec![1, 2]]);
+        assert_eq!(take_calls(), ["from_tuples_with_build_mode"]);
+    }
+
+    #[test]
+    fn keeps_duplicates_is_the_inner_relations() {
+        assert!(!keeps_duplicates::<IncrementalTrie>());
+        assert!(keeps_duplicates::<BuiltWith<HashTrie, HashSpy>>());
+        assert!(keeps_duplicates::<BuiltWith<ViewSpy, SpyModeProvider>>());
     }
 }
