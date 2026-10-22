@@ -138,11 +138,13 @@ pub fn prepare(
         indexes,
     } = plan_indexes(&access_query, &ordering);
 
-    // Counted here, untimed: `build` would otherwise scan a filtered relation
-    // once more only to learn how many rows its copy holds. This is a pass of
-    // its own over each index's view: `access_statistics` counted per access,
-    // before identical specs were merged, and scanned only the filtered ones
-    // and only for the planner, so none of its counts are reused.
+    // Counted here, untimed, for the report's `index_rows`, so reporting adds
+    // no scan to the timed build. (A filtered build still counts before it
+    // copies, by design: `TupleView::materialize` sizes its copy exactly.)
+    // This is a pass of its own over each index's view: `access_statistics`
+    // counted per access, before identical specs were merged, and scanned
+    // only the filtered ones and only for the planner, so none of its counts
+    // are reused.
     let index_rows: Vec<usize> = indexes
         .iter()
         .map(|spec| spec.view(tuples_of(catalog, &spec.relation)).count())
