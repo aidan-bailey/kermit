@@ -177,7 +177,9 @@ timing and compare its result count with the YAML's `expected`).
      `JOIN_MUTATES`, over a fresh build per sample made in untimed setup.
      Planning is excluded;
    - `end_to_end`: `build_indexes` plus K × `execute` in one timed body
-     (`--queries-per-build`), which equals `build` + K × `iteration`;
+     (`--queries-per-build`); it runs the same build and K executions as
+     `build` + K × `iteration`, so a gap beyond noise between them is the
+     build-to-query interaction it measures;
    - `space`: the heap bytes of the query's indexes together, one Criterion
      function per query. A lazy HashTrie keeps the check that its footprint
      is as built.
