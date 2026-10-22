@@ -228,7 +228,7 @@ where
 }
 
 /// The arity check every `from_view*` body makes first (the default bodies
-/// here, and the structures' overrides in Stories 3 to 6): a
+/// here, and the structures' own `from_view*` overrides): a
 /// view whose source holds rows must read as many columns as `header` has
 /// attributes, whether or not its filter keeps any row. An empty source
 /// builds an empty relation under any header, as `from_tuples(header,
@@ -1344,8 +1344,8 @@ mod tests {
     fn from_view_with_build_mode_builds_what_the_materialised_batch_builds() {
         use crate::{
             ds::{
-                ColumnTrie, ColumnTrieBuildMode, HashTrie, HashTrieBuildMode, RadixBits, TreeTrie,
-                TreeTrieBuildMode,
+                take_hash_trie_parallel_builds, ColumnTrie, ColumnTrieBuildMode, HashTrie,
+                HashTrieBuildMode, TreeTrie, TreeTrieBuildMode,
             },
             Threads,
         };
@@ -1367,11 +1367,17 @@ mod tests {
         );
         assert_eq!(trie_rows(&column), expected);
 
+        // Every mode builds an equivalent structure, so the rows cannot show
+        // that the mode reached the build; the parallel build's record does.
+        take_hash_trie_parallel_builds();
         let hash: HashTrie = HashTrie::from_view_with_build_mode(
             2.into(),
-            HashTrieBuildMode::Radix(RadixBits::new(2).unwrap()),
+            HashTrieBuildMode::Parallel(Threads::new(2).unwrap()),
             view,
         );
+        let builds = take_hash_trie_parallel_builds();
+        assert_eq!(builds.len(), 1, "one parallel build: {builds:?}");
+        assert_eq!(builds[0].threads, 2, "{builds:?}");
         assert_eq!(hash_rows(&hash), expected);
     }
 
