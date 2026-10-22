@@ -45,24 +45,29 @@
 //! allocates once per child it expands, by design. The scan never expands,
 //! so its lazy cells measure the trie as built.
 //!
-//! Issue #93 adds `--column-orders any`: the `*_under_any_*` cells read a
-//! reversed `R` through its reordered copy, built before measuring, and
-//! the streamed join over the copy must allocate nothing per row either.
+//! Issue #93 added reordered copies; they are now just indexes. The
+//! `*_over_a_permuted_index_*` cells read a reversed `R` through an index
+//! whose columns are permuted into plan order, and the streamed `execute`
+//! over it must allocate nothing per row either.
+//!
+//! Since the per-query index build every cell prepares its query and builds
+//! its indexes outside the measured region, and measures only the streamed
+//! `kermit::db::execute` over them.
 
 use {
-    kermit::db::{build_index, hash_join_for_each, lftj_join_for_each, Database},
+    kermit::db::{build, execute, prepare, Catalog, Indexes, Prepared},
     kermit_algos::{
-        ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, Planner,
+        ColumnOrderPolicy, HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin,
+        LexicographicOptimiser, Planner, StatisticsLevel,
     },
     kermit_ds::{
-        BinarySeek, Cardinality, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie,
-        LazyExpansion, LinearSeek, NoPruning, PruningPolicy, Relation, RelationHeader,
-        SingletonPruning, TreeTrie, Tuples,
+        BinarySeek, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie, LazyExpansion,
+        LinearSeek, NoPruning, PruningPolicy, Relation, RelationHeader, SingletonPruning, TreeTrie,
+        Tuples,
     },
     kermit_iters::{
         FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable, TrieIteratorWrapper,
     },
-    std::collections::BTreeMap,
 };
 
 const QUERY: &str = "Q(X, Y, Z) :- R(X, Y), S(X, Z).";
@@ -75,17 +80,22 @@ const XS: usize = 10;
 const SMALL: usize = 10;
 const LARGE: usize = 10_000;
 
+/// A workload's relations as the catalog takes them: header and flat tuples.
+type Inputs = Vec<(RelationHeader, Tuples)>;
+
+/// The relation `name` of arity `arity` holding `rows`.
+fn relation(name: &str, arity: usize, rows: Vec<Vec<usize>>) -> (RelationHeader, Tuples) {
+    (
+        RelationHeader::new_positional(name, arity),
+        Tuples::from(rows),
+    )
+}
+
 /// `R = {(x, 0)}` and `S = {(x, z) : z < fan_out}` for each of the `XS`
 /// keys, so the join has `XS * fan_out` rows.
-fn relations<Rel: Relation>(fan_out: usize) -> BTreeMap<String, Rel> {
+fn relations(fan_out: usize) -> Inputs {
     let r: Vec<Vec<usize>> = (0..XS).map(|x| vec![x, 0]).collect();
-    BTreeMap::from([
-        ("R".to_string(), Rel::from_tuples(2.into(), r)),
-        (
-            "S".to_string(),
-            Rel::from_tuples(2.into(), s_tuples(fan_out)),
-        ),
-    ])
+    vec![relation("R", 2, r), relation("S", 2, s_tuples(fan_out))]
 }
 
 /// `S = {(x, z) : z < fan_out}` for each of the `XS` keys: `XS * fan_out`
@@ -96,158 +106,129 @@ fn s_tuples(fan_out: usize) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// Allocations made by one streamed LFTJ join of `query` over `relations`,
-/// after checking that it produced `rows` rows.
-fn lftj_join_allocations<Rel: TrieIterable + Cardinality + Relation>(
-    query: &str, relations: BTreeMap<String, Rel>, rows: usize,
-) -> u64 {
-    let database = Database::from(relations);
+/// The planner every cell uses. Lexicographic, so the plan binds the
+/// head's variables in head order.
+fn planner() -> Planner { Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any) }
+
+/// A query prepared and its indexes built, untimed: what `execute` is
+/// handed.
+struct Built<R> {
+    prepared: Prepared,
+    indexes: Indexes<R>,
+}
+
+/// Prepares `query` over `inputs` and builds the indexes it reads as `R`.
+fn prebuilt<R: Relation>(query: &str, inputs: Inputs) -> Built<R> {
+    let catalog = Catalog::new(inputs, StatisticsLevel::TupleCounts);
     let query: JoinQuery = query.parse().unwrap();
-    // Built outside the measured region: the planner is not the join's
-    // allocation.
-    let planner = Planner::stored(LexicographicOptimiser);
+    let prepared = prepare(&catalog, &query, &planner()).unwrap();
+    let indexes = build::<R>(&catalog, &prepared);
+    Built {
+        prepared,
+        indexes,
+    }
+}
+
+/// Allocations made by one streamed `execute` over `built`, after checking
+/// that it produced `rows` rows.
+fn streamed_allocations<R: Relation, JA: JoinAlgo<R>>(built: &Built<R>, rows: usize) -> u64 {
     let mut produced = 0usize;
     let info = allocation_counter::measure(|| {
-        lftj_join_for_each::<Rel, LeapfrogTriejoin>(&database, query, &planner, |tuple| {
+        execute::<R, JA>(&built.prepared, &built.indexes, |tuple| {
             std::hint::black_box(tuple);
             produced += 1;
-        })
-        .unwrap();
+        });
     });
     assert_eq!(produced, rows, "the join must produce every row");
     info.count_total
 }
 
-/// Allocations made by one streamed HashTriejoin join of `query` over
-/// `HashTrie<H, P, E>` relations, after checking that it produced `rows`
-/// rows.
-fn htj_join_allocations<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    query: &str, relations: BTreeMap<String, HashTrie<H, P, E>>, rows: usize,
-) -> u64 {
-    htj_database_allocations(query, &Database::from(relations), rows)
+/// Allocations made by one streamed join of `query` over `inputs` as `R`
+/// through `JA`, built beforehand.
+fn join_allocations<R: Relation, JA: JoinAlgo<R>>(query: &str, inputs: Inputs, rows: usize) -> u64 {
+    streamed_allocations::<R, JA>(&prebuilt::<R>(query, inputs), rows)
 }
 
-/// [`htj_join_allocations`] over an already-built `database`, so a caller
-/// can join the same relations more than once.
-fn htj_database_allocations<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    query: &str, database: &Database<HashTrie<H, P, E>>, rows: usize,
+/// Allocations made by a *second* streamed join over the same lazy
+/// indexes. The first join expands every child it reaches, so the second
+/// allocates only what the join path itself does. A cold lazy join
+/// allocates once per child it expands, by design (issue #92), so the
+/// per-row and per-descent checks apply warm. The eager cells' unmeasured
+/// first call builds fresh indexes, which would leave a lazy cell cold,
+/// hence this helper.
+fn warm_join_allocations<R: Relation, JA: JoinAlgo<R>>(
+    query: &str, inputs: Inputs, rows: usize,
 ) -> u64 {
-    let query: JoinQuery = query.parse().unwrap();
-    // Built outside the measured region: the planner is not the join's
-    // allocation.
-    let planner = Planner::stored(LexicographicOptimiser);
-    let mut produced = 0usize;
-    let info = allocation_counter::measure(|| {
-        hash_join_for_each::<HashTrie<H, P, E>, H>(database, query, &planner, |tuple| {
-            std::hint::black_box(tuple);
-            produced += 1;
-        })
-        .unwrap();
-    });
-    assert_eq!(produced, rows, "the join must produce every row");
-    info.count_total
+    let built = prebuilt::<R>(query, inputs);
+    streamed_allocations::<R, JA>(&built, rows);
+    streamed_allocations::<R, JA>(&built, rows)
 }
 
 /// Allocations made by one streamed LFTJ join of `QUERY`, after checking
 /// that it produced every row.
-fn lftj_allocations<Rel: TrieIterable + Cardinality + Relation>(fan_out: usize) -> u64 {
-    lftj_join_allocations(QUERY, relations::<Rel>(fan_out), XS * fan_out)
+fn lftj_allocations<Rel: TrieIterable + Relation>(fan_out: usize) -> u64 {
+    join_allocations::<Rel, LeapfrogTriejoin>(QUERY, relations(fan_out), XS * fan_out)
 }
 
 /// Allocations made by one streamed HashTriejoin join of `QUERY` over
 /// `HashTrie<H, P>`, after checking that it produced every row.
 fn htj_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    htj_join_allocations(QUERY, relations::<HashTrie<H, P>>(fan_out), XS * fan_out)
-}
-
-/// Allocations made by a *second* streamed HashTriejoin join of `query`
-/// over the same lazy `relations`. The first join expands every child it
-/// reaches, so the second allocates only what the join path itself does.
-/// A cold lazy join allocates once per child it expands, by design
-/// (issue #92), so the per-row and per-descent checks apply warm. The
-/// eager cells' unmeasured first call builds fresh relations, which would
-/// leave a lazy cell cold, hence this helper.
-fn htj_warm_join_allocations<H: HashStrategy, P: PruningPolicy>(
-    query: &str, relations: BTreeMap<String, HashTrie<H, P, LazyExpansion>>, rows: usize,
-) -> u64 {
-    let database = Database::from(relations);
-    htj_database_allocations(query, &database, rows);
-    htj_database_allocations(query, &database, rows)
+    join_allocations::<HashTrie<H, P>, HashTriejoin>(QUERY, relations(fan_out), XS * fan_out)
 }
 
 /// [`htj_allocations`] for the lazy Layout, measured warm.
 fn htj_lazy_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    let relations = relations::<HashTrie<H, P, LazyExpansion>>(fan_out);
-    htj_warm_join_allocations(QUERY, relations, XS * fan_out)
+    warm_join_allocations::<HashTrie<H, P, LazyExpansion>, HashTriejoin>(
+        QUERY,
+        relations(fan_out),
+        XS * fan_out,
+    )
 }
 
 /// `R` reversed: `{(0, x)}`, so [`REVERSED_QUERY`] binds its second column
-/// first and, under `--column-orders any`, reads it through the copy
-/// `Index_1_0_R`.
+/// first and its plan reads it through an index whose columns are
+/// permuted.
 fn reversed_r() -> Vec<Vec<usize>> { (0..XS).map(|x| vec![0, x]).collect() }
 
 const REVERSED_QUERY: &str = "Q(X, Y, Z) :- R(Y, X), S(X, Z).";
 
-/// The reversed `R` and `S` as `Rel`, holding the one copy
-/// [`REVERSED_QUERY`] reads under `planner`, built before anything is
-/// measured.
-fn database_with_copies<Rel: Relation + Cardinality>(
-    fan_out: usize, planner: &Planner,
-) -> Database<Rel> {
-    let r = RelationHeader::new_positional("R", 2);
-    let s = RelationHeader::new_positional("S", 2);
-    let mut database = Database::from(BTreeMap::from([
-        ("R".to_string(), Rel::from_tuples(r.clone(), reversed_r())),
-        ("S".to_string(), Rel::from_tuples(s, s_tuples(fan_out))),
-    ]));
-    let query: JoinQuery = REVERSED_QUERY.parse().unwrap();
-    let specs = database.required_indexes(&query, planner).unwrap();
-    assert_eq!(specs.len(), 1, "the reversed R is read through one copy");
-    for spec in specs {
-        assert_eq!(spec.base, "R");
-        let copy = build_index(&spec, &r, &Tuples::from(reversed_r()));
-        database.add_index(spec, copy);
-    }
-    database
+/// [`REVERSED_QUERY`] prepared over the reversed `R` and `S`, its indexes
+/// built before anything is measured. The plan binds `X` first, so the
+/// index of `R` lists `R`'s second column first: the assertion below fails
+/// if the cell stopped reading a permuted index.
+fn reversed<Rel: Relation>(fan_out: usize) -> Built<Rel> {
+    let inputs = vec![
+        relation("R", 2, reversed_r()),
+        relation("S", 2, s_tuples(fan_out)),
+    ];
+    let built = prebuilt::<Rel>(REVERSED_QUERY, inputs);
+    let reads_r: Vec<_> = built
+        .prepared
+        .indexes()
+        .iter()
+        .filter(|spec| spec.relation == "R")
+        .collect();
+    assert_eq!(reads_r.len(), 1, "the reversed R is read through one index");
+    assert_eq!(
+        reads_r[0].columns,
+        vec![1, 0],
+        "the index of R must list its second column first"
+    );
+    built
 }
 
-fn any_planner() -> Planner {
-    Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any)
+/// Allocations of one streamed LFTJ join of [`REVERSED_QUERY`] over its
+/// prebuilt permuted index, after checking it produced every row.
+fn lftj_reversed_allocations<Rel: TrieIterable + Relation>(fan_out: usize) -> u64 {
+    streamed_allocations::<Rel, LeapfrogTriejoin>(&reversed::<Rel>(fan_out), XS * fan_out)
 }
 
-/// Allocations of one streamed LFTJ join of [`REVERSED_QUERY`] under
-/// `any`, over its prebuilt copy, after checking it produced every row.
-fn lftj_any_allocations<Rel: TrieIterable + Cardinality + Relation>(fan_out: usize) -> u64 {
-    let planner = any_planner();
-    let database = database_with_copies::<Rel>(fan_out, &planner);
-    let query: JoinQuery = REVERSED_QUERY.parse().unwrap();
-    let mut produced = 0usize;
-    let info = allocation_counter::measure(|| {
-        lftj_join_for_each::<Rel, LeapfrogTriejoin>(&database, query, &planner, |tuple| {
-            std::hint::black_box(tuple);
-            produced += 1;
-        })
-        .unwrap();
-    });
-    assert_eq!(produced, XS * fan_out, "the join must produce every row");
-    info.count_total
-}
-
-/// The HashTriejoin twin of [`lftj_any_allocations`].
-fn htj_any_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    let planner = any_planner();
-    let database = database_with_copies::<HashTrie<H, P>>(fan_out, &planner);
-    let query: JoinQuery = REVERSED_QUERY.parse().unwrap();
-    let mut produced = 0usize;
-    let info = allocation_counter::measure(|| {
-        hash_join_for_each::<HashTrie<H, P>, H>(&database, query, &planner, |tuple| {
-            std::hint::black_box(tuple);
-            produced += 1;
-        })
-        .unwrap();
-    });
-    assert_eq!(produced, XS * fan_out, "the join must produce every row");
-    info.count_total
+/// The HashTriejoin twin of [`lftj_reversed_allocations`].
+fn htj_reversed_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
+    streamed_allocations::<HashTrie<H, P>, HashTriejoin>(
+        &reversed::<HashTrie<H, P>>(fan_out),
+        XS * fan_out,
+    )
 }
 
 fn assert_flat(cell: &str, small: u64, large: u64) {
@@ -269,22 +250,22 @@ fn tree_trie_lftj_allocates_independently_of_result_size() {
 }
 
 #[test]
-fn tree_trie_lftj_under_any_allocates_independently_of_result_size() {
-    lftj_any_allocations::<TreeTrie>(SMALL);
+fn tree_trie_lftj_over_a_permuted_index_allocates_independently_of_result_size() {
+    lftj_reversed_allocations::<TreeTrie>(SMALL);
     assert_flat(
-        "TreeTrie/LFTJ/any",
-        lftj_any_allocations::<TreeTrie>(SMALL),
-        lftj_any_allocations::<TreeTrie>(LARGE),
+        "TreeTrie/LFTJ/permuted index",
+        lftj_reversed_allocations::<TreeTrie>(SMALL),
+        lftj_reversed_allocations::<TreeTrie>(LARGE),
     );
 }
 
 #[test]
-fn hash_trie_sip_under_any_allocates_independently_of_result_size() {
-    htj_any_allocations::<SipHashStrategy, NoPruning>(SMALL);
+fn hash_trie_sip_over_a_permuted_index_allocates_independently_of_result_size() {
+    htj_reversed_allocations::<SipHashStrategy, NoPruning>(SMALL);
     assert_flat(
-        "HashTrie<Sip>/HTJ/any",
-        htj_any_allocations::<SipHashStrategy, NoPruning>(SMALL),
-        htj_any_allocations::<SipHashStrategy, NoPruning>(LARGE),
+        "HashTrie<Sip>/HTJ/permuted index",
+        htj_reversed_allocations::<SipHashStrategy, NoPruning>(SMALL),
+        htj_reversed_allocations::<SipHashStrategy, NoPruning>(LARGE),
     );
 }
 
@@ -549,25 +530,25 @@ const MANY_DEAD_ENDS: usize = 10_000;
 /// `Z`: `S(x, ·) = {DESCENT_ROWS}`, which `T` lacks. So every dead end
 /// costs a successful descent, a failed one and an ascent, and adds no
 /// row.
-fn descent_relations<Rel: Relation>(dead_ends: usize) -> BTreeMap<String, Rel> {
+fn descent_relations(dead_ends: usize) -> Inputs {
     let r: Vec<Vec<usize>> = (0..=dead_ends).map(|x| vec![x, x]).collect();
     let s: Vec<Vec<usize>> = (0..DESCENT_ROWS)
         .map(|z| vec![0, z])
         .chain((1..=dead_ends).map(|x| vec![x, DESCENT_ROWS]))
         .collect();
     let t: Vec<Vec<usize>> = (0..DESCENT_ROWS).map(|z| vec![z]).collect();
-    BTreeMap::from([
-        ("R".to_string(), Rel::from_tuples(2.into(), r)),
-        ("S".to_string(), Rel::from_tuples(2.into(), s)),
-        ("T".to_string(), Rel::from_tuples(1.into(), t)),
-    ])
+    vec![
+        relation("R", 2, r),
+        relation("S", 2, s),
+        relation("T", 1, t),
+    ]
 }
 
 /// Allocations made by one streamed LFTJ join of the descent workload.
-fn lftj_descent_allocations<Rel: TrieIterable + Cardinality + Relation>(dead_ends: usize) -> u64 {
-    lftj_join_allocations(
+fn lftj_descent_allocations<Rel: TrieIterable + Relation>(dead_ends: usize) -> u64 {
+    join_allocations::<Rel, LeapfrogTriejoin>(
         DESCENT_QUERY,
-        descent_relations::<Rel>(dead_ends),
+        descent_relations(dead_ends),
         DESCENT_ROWS,
     )
 }
@@ -575,17 +556,20 @@ fn lftj_descent_allocations<Rel: TrieIterable + Cardinality + Relation>(dead_end
 /// Allocations made by one streamed HashTriejoin join of the descent
 /// workload over `HashTrie<H, P>`.
 fn htj_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) -> u64 {
-    htj_join_allocations(
+    join_allocations::<HashTrie<H, P>, HashTriejoin>(
         DESCENT_QUERY,
-        descent_relations::<HashTrie<H, P>>(dead_ends),
+        descent_relations(dead_ends),
         DESCENT_ROWS,
     )
 }
 
 /// [`htj_descent_allocations`] for the lazy Layout, measured warm.
 fn htj_lazy_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) -> u64 {
-    let relations = descent_relations::<HashTrie<H, P, LazyExpansion>>(dead_ends);
-    htj_warm_join_allocations(DESCENT_QUERY, relations, DESCENT_ROWS)
+    warm_join_allocations::<HashTrie<H, P, LazyExpansion>, HashTriejoin>(
+        DESCENT_QUERY,
+        descent_relations(dead_ends),
+        DESCENT_ROWS,
+    )
 }
 
 fn assert_flat_in_descents(cell: &str, few: u64, many: u64) {
