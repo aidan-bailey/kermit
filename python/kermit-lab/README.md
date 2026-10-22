@@ -111,7 +111,7 @@ kermit-lab tradeoff    <report.json>... --out PATH ...
 kermit-lab dist        <report.json>... --out PATH ...
 kermit-lab bar-queries <report.json>... --ds DS --algo ALGO --out PATH ...
 kermit-lab ablation    <report.json>... --axis COLUMN --out PATH ...
-kermit-lab speedup     <report.json>... [--phase {insertion,end_to_end}] --out PATH
+kermit-lab speedup     <report.json>... [--phase {build,insertion,copies,iteration,end_to_end}] --out PATH
 kermit-lab render-all  <report.json>... --out-dir DIR [--format ...]
 ```
 
@@ -137,8 +137,9 @@ figure. An axis whose effect is confined to some phases is drawn only for them
 for every phase: a build mode builds the same contents and capacities but may
 place keys and allocations elsewhere, so it can move `iteration` too (the
 optimization standard's Amendment 2). On any other phase its figure is skipped. The
-CLI's `--phase` offers every time phase a report records: `insertion`,
-`iteration` (the default) and `end_to_end`. Shapes that lack the necessary
+CLI's `--phase` offers every time phase a report records: `build` (v5; `speedup`'s
+default), `insertion` and `copies` (v4 and earlier), `iteration` (the default of
+the other shapes) and `end_to_end`. Shapes that lack the necessary
 axes are skipped with an info-level log message rather than erroring. Each
 figure is closed once it is saved, so a large sweep does not accumulate open
 figures.
@@ -166,12 +167,15 @@ CI runs it on every pull request.
 
 ## Schema
 
-`kermit-lab` parses `BenchReport` JSON up to v4 (see
+`kermit-lab` parses `BenchReport` JSON up to v5 (see
 `docs/specs/bench-report-schema.md`). The loader refuses to parse unknown
-major versions. It also refuses to mix reports from both sides of v3, or of
-v4, in one load: at v3 `iteration` and `end_to_end` changed meaning, and at
+major versions. It also refuses to mix reports from both sides of v3, of v4,
+or of v5 in one load: at v3 `iteration` and `end_to_end` changed meaning, at
 v4 `insertion`, `copies`, `end_to_end`, HashTrie's `space` and
-lazy-expansion HashTrie's `iteration` did (#111). Pass
+lazy-expansion HashTrie's `iteration` did (#111), and at v5 each query builds,
+and times, only the indexes it reads: `build` replaces `insertion` and
+`copies`, and `iteration`, `end_to_end` and `space` are measured per query, so
+no metric is comparable across v4 and v5. Pass
 `allow_mixed_schema=True` to `kl.load` / `kl.load_samples` to override, for
 example to compare `space` across v3. Fixed axis columns (`data_structure`, `algorithm`, `query`,
 `tuples`, etc.) are listed in `kermit_lab/frame.py`; optimization axes
@@ -179,4 +183,7 @@ example to compare `space` across v3. Fixed axis columns (`data_structure`, `alg
 from the reports and added as additional DataFrame columns. Use
 `kl.discover_opt_columns(df)` to enumerate them. `verified` (nullable
 boolean) is present when `bench run --verify` checked the query's answer
-count.
+count. Every row carries its report's `schema_version`. A v5 report adds
+`index_rows`, the rows the query's builds copied, and has no `column_orders`
+axis: the `column_orders: stored` back-fill applies only to join rows of
+reports older than v5, since a v5 report never ran that policy.

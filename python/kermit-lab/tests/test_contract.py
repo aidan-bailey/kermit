@@ -153,35 +153,39 @@ def test_bench_ds_hash_trie_reports_the_bulk_build_and_its_child_capacity(
     assert df.iloc[0]["ds_config_child_capacity"] == "grow"
 
 
-def test_bench_join_reports_its_column_orders(tmp_path: Path) -> None:
-    report = tmp_path / "join.json"
+def test_bench_ds_reports_the_build_phase(tmp_path: Path) -> None:
+    report = tmp_path / "ds.json"
     _run(
         tmp_path, report,
-        "join", "--relations", str(FIXTURES / "first.csv"), str(FIXTURES / "second.csv"),
-        "--query", str(FIXTURES / "intersect_query.dl"),
-        "-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "space",
-        "--column-orders", "any",
+        "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "tree-trie", "-m", "build", "space",
     )
-    # Without the back-fill, so a missing key cannot pass as "stored".
-    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion", apply_defaults=False)
-    assert len(df) >= 1
-    assert set(df["column_orders"]) == {"any"}
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
+    assert set(df["schema_version"]) == {5}
+    assert set(df.loc[df["metric"] == "time", "phase"]) == {"build"}
+    assert set(df.loc[df["metric"] == "time", "criterion_function"]) == {"TreeTrie/build"}
+    assert set(df.loc[df["metric"] == "space", "criterion_function"]) == {"TreeTrie/space"}
 
 
-def test_bench_join_copies_reach_the_frame(tmp_path: Path) -> None:
-    """A query `stored` rejects runs under `any` over a reordered copy: the
-    real binary's `copies` function loads as the `copies` phase and the
-    copy's footprint as `space/Index_1_0_edge` (#93)."""
+def test_bench_join_reports_a_per_query_build_and_space(tmp_path: Path) -> None:
+    """A query reading `edge` in both column orders builds two indexes of the
+    relation: one `build` and one `space` function cover both, and `index_rows`
+    counts the rows the build copied (two copies of edge's four rows)."""
     query = tmp_path / "mutual.dl"
     query.write_text("Q(X, Y) :- edge(X, Y), edge(Y, X).\n")
     report = tmp_path / "join.json"
     _run(
         tmp_path, report,
         "join", "--relations", str(FIXTURES / "edge.csv"), "--query", str(query),
-        "-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "insertion", "space",
-        "--column-orders", "any",
+        "-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "build", "space",
     )
-    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
-    assert set(df["phase"].dropna()) == {"insertion", "copies"}
-    space = set(df.loc[df["metric"] == "space", "criterion_function"])
-    assert space == {"space/edge", "space/Index_1_0_edge"}
+    criterion_root = tmp_path / "target" / "criterion"
+    # Without the back-fill, so a missing key cannot pass as "stored".
+    raw = kl.load(report, criterion_root=criterion_root, apply_defaults=False)
+    assert set(raw["schema_version"]) == {5}
+    assert set(raw.loc[raw["metric"] == "time", "phase"]) == {"build"}
+    assert raw["column_orders"].isna().all()
+    assert set(raw["index_rows"].dropna()) == {8}
+    space = raw.loc[raw["metric"] == "space", "criterion_function"]
+    assert len(space) == 1 and space.iloc[0].rsplit("/", 1)[-1] == "space"
+    # Nor does the default back-fill label a v5 report `stored`.
+    assert kl.load(report, criterion_root=criterion_root)["column_orders"].isna().all()
