@@ -20,7 +20,7 @@ mod common;
 
 use {
     clap::ValueEnum,
-    common::utils::{join_under_planner, load_parquet_relations, JoinEntry},
+    common::utils::{catalog_of, join_under_planner, load_parquet_inputs},
     kermit_algos::{
         CardinalityOptimiser, ColumnOrderPolicy, CostBasedOptimiser, JoinQuery, LeapfrogTriejoin,
         LexicographicOptimiser, Planner, QueryOptimiser,
@@ -62,19 +62,17 @@ fn vendored_jar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kermit-rdf/vendor/lubm-uba/lubm-uba.jar")
 }
 
-/// Loads the generated relations as `R` into a fresh engine planned by
-/// `planner`, runs every query (building the reordered copies it reads
-/// under `--column-orders any`), and returns one line per query whose
-/// result count differs from the paper's reference cardinality. `label`
-/// names the optimiser and policy in each line.
+/// Loads the generated relations flat into a catalog gathered at what
+/// `planner` reads, joins every query as `R` (each builds the indexes its
+/// plan reads), and returns one line per query whose result count differs
+/// from the paper's reference cardinality. `label` names the optimiser and
+/// policy in each line.
 fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
     bench: &BenchmarkDefinition, dir: &Path, planner: &Planner, label: &str,
     expected: &HashMap<String, u64>,
 ) -> Vec<String> {
-    let (relations, inputs) =
-        load_parquet_relations::<R>(dir, bench.relations.iter().map(|r| r.name.as_str()));
-    let mut database =
-        <LeapfrogTriejoin as JoinEntry<R>>::database(relations, planner.required_statistics());
+    let inputs = load_parquet_inputs(dir, bench.relations.iter().map(|r| r.name.as_str()));
+    let catalog = catalog_of(&inputs, planner.required_statistics());
 
     // Collect every divergence so one run surfaces the complete picture
     // rather than failing on the first mismatch.
@@ -85,9 +83,8 @@ fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
             .unwrap_or_else(|| panic!("no reference cardinality for query {}", q.name));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let (rows, _) =
-            join_under_planner::<R, LeapfrogTriejoin>(&mut database, &inputs, parsed, planner)
-                .unwrap_or_else(|e| panic!("query {}: {e}", q.name));
+        let (rows, _) = join_under_planner::<R, LeapfrogTriejoin>(&catalog, parsed, planner)
+            .unwrap_or_else(|e| panic!("query {}: {e}", q.name));
         let got = rows.len() as u64;
 
         if got != want {

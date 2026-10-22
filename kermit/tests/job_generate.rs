@@ -19,7 +19,7 @@ use {
     clap::ValueEnum,
     common::{
         job::{build_raw_cache, csv_dir, fixture_dir, locate_or_skip},
-        utils::{join_under_planner, load_parquet_relations, JoinEntry},
+        utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
     },
     kermit_algos::{
         ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
@@ -464,18 +464,18 @@ fn mismatches<R: Relation + Cardinality, JA: JoinEntry<R>>(
                 optimiser.axis_value(),
                 policy.axis_value()
             );
-            let (relations, inputs) = load_parquet_relations::<R>(
+            let inputs = load_parquet_inputs(
                 dir,
                 bench
                     .relations
                     .iter()
                     .map(|relation| relation.name.as_str()),
             );
-            let mut database = JA::database(relations, planner.required_statistics());
+            let catalog = catalog_of(&inputs, planner.required_statistics());
             for query in &bench.queries {
                 let parsed: JoinQuery = query.query.parse().expect("generated Datalog parses");
                 let want = query.expected.expect("every JOB query carries its count");
-                match join_under_planner::<R, JA>(&mut database, &inputs, parsed, &planner) {
+                match join_under_planner::<R, JA>(&catalog, parsed, &planner) {
                     | Ok((rows, _)) if rows.len() as u64 == want => {},
                     | Ok((rows, _)) => found.push(format!(
                         "[{label}] {}: got {}, expected {want}",

@@ -28,7 +28,7 @@ mod common;
 
 use {
     clap::ValueEnum,
-    common::utils::{join_under_planner, load_parquet_relations, JoinEntry},
+    common::utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
     kermit_algos::{
         ColumnOrderPolicy, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner,
     },
@@ -117,12 +117,11 @@ fn emitted_counts(bench: &BenchmarkDefinition) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// Loads the generated relations as `R` into a fresh engine planned by
-/// `planner`, runs every query through `JA`'s entry points (building the
-/// reordered copies it reads under `--column-orders any`), and returns one
-/// line per query whose result count differs from its `expected`. A join that
-/// errors panics, naming the cell: under `stored` that is the
-/// `CyclicAttributeOrder` check, which no H2O query may trip.
+/// Loads the generated relations flat into a catalog gathered at what
+/// `planner` reads, joins every query as `R` through `JA` (each builds the
+/// indexes its plan reads), and returns one line per query whose result
+/// count differs from its `expected`. A join that errors panics, naming the
+/// cell.
 fn cell_mismatches<R, JA>(
     bench: &BenchmarkDefinition, dir: &Path, planner: &Planner, label: &str,
 ) -> Vec<String>
@@ -130,16 +129,15 @@ where
     R: Relation + Cardinality,
     JA: JoinEntry<R>,
 {
-    let (relations, inputs) =
-        load_parquet_relations::<R>(dir, bench.relations.iter().map(|r| r.name.as_str()));
-    let mut database = JA::database(relations, planner.required_statistics());
+    let inputs = load_parquet_inputs(dir, bench.relations.iter().map(|r| r.name.as_str()));
+    let catalog = catalog_of(&inputs, planner.required_statistics());
 
     let mut mismatches = Vec::new();
     for q in &bench.queries {
         let want = q.expected.expect("every H2O query carries expected");
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let (rows, _) = join_under_planner::<R, JA>(&mut database, &inputs, parsed, planner)
-            .unwrap_or_else(|e| {
+        let (rows, _) =
+            join_under_planner::<R, JA>(&catalog, parsed, planner).unwrap_or_else(|e| {
                 panic!("[{label}] {} / {}: {e}", std::any::type_name::<R>(), q.name)
             });
         let got = rows.len() as u64;

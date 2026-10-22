@@ -4,17 +4,17 @@
 //! committed under `tests/fixtures/watdiv-mini/artifacts/`) and runs
 //! every query from the emitted YAML against the committed Parquet
 //! relations, comparing tuple counts to the hand-verified
-//! `expected.json`. Exercises the full Const-view rewrite path in
-//! `kermit::db::lftj_join` without any network or Python dependency at test
-//! time. Every query runs under every optimiser and column-order policy,
-//! because a plan changes the descent order, and under `--column-orders any`
-//! the atoms it reads through reordered copies, never the answer.
+//! `expected.json`. Exercises constant pushdown into index filters through
+//! `kermit::db`'s `prepare` → `build` → `execute` without any network or
+//! Python dependency at test time. Every query runs under every optimiser
+//! and column-order policy, because a plan changes the descent order and so
+//! the columns each index lists first, never the answer.
 
 mod common;
 
 use {
     clap::ValueEnum,
-    common::utils::{join_under_planner, load_parquet_relations, JoinEntry},
+    common::utils::{catalog_of, join_under_planner, load_parquet_inputs},
     kermit_algos::{ColumnOrderPolicy, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
@@ -42,8 +42,9 @@ fn load_expected(dir: &Path) -> HashMap<String, usize> {
     serde_json::from_str(&json).expect("expected.json malformed")
 }
 
-/// Loads the fixture's relations as `R` and checks every query's result
-/// count, planned by `optimiser` under `policy`, against `expected.json`.
+/// Loads the fixture's relations flat and checks every query's result
+/// count, joined as `R` and planned by `optimiser` under `policy`, against
+/// `expected.json`.
 fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(
     optimiser: Optimiser, policy: ColumnOrderPolicy,
 ) {
@@ -51,11 +52,9 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(
     let bench = load_yaml(&dir);
     let expected = load_expected(&dir);
 
-    let (relations, inputs) =
-        load_parquet_relations::<R>(&dir, bench.relations.iter().map(|r| r.name.as_str()));
+    let inputs = load_parquet_inputs(&dir, bench.relations.iter().map(|r| r.name.as_str()));
     let planner = Planner::new(optimiser.instantiate(), policy);
-    let mut database =
-        <LeapfrogTriejoin as JoinEntry<R>>::database(relations, planner.required_statistics());
+    let catalog = catalog_of(&inputs, planner.required_statistics());
 
     for q in &bench.queries {
         let key = format!("{}::{}", bench.name, q.name);
@@ -64,9 +63,8 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(
             .unwrap_or_else(|| panic!("no expected entry for {key}"));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let (rows, _) =
-            join_under_planner::<R, LeapfrogTriejoin>(&mut database, &inputs, parsed, &planner)
-                .unwrap_or_else(|e| panic!("query {}: {e}", q.name));
+        let (rows, _) = join_under_planner::<R, LeapfrogTriejoin>(&catalog, parsed, &planner)
+            .unwrap_or_else(|e| panic!("query {}: {e}", q.name));
         let got = rows.len();
 
         assert_eq!(

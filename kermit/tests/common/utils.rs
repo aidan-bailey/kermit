@@ -1,26 +1,21 @@
 //! Shared driver for the macro-generated join suites.
 //!
-//! Every pattern runs through the *real* entry points (`lftj_join` /
-//! `hash_join` in `kermit::db`), so the const-view and selection rewrites
-//! sit on the tested path exactly as they do for `kermit join`. The
-//! [`JoinEntry`] trait maps an algorithm type to the entry point that
-//! hosts it, mirroring how the CLI's `execution` module pairs them.
+//! Every pattern runs through the real lifecycle of `kermit::db`: a
+//! [`Catalog`] holds the fixture's relations flat, `prepare` plans the query
+//! and names the indexes it reads, `build` builds each from the catalog
+//! through a view (constants and repeated variables pushed down into its
+//! filter) and `execute` joins over them, exactly as `kermit join` does. The
+//! [`JoinEntry`] trait maps an algorithm type to the execution that hosts
+//! it, mirroring how the CLI's `execution` module pairs them.
 
 use {
-    kermit::db::{
-        build_index, hash_join, hash_join_for_each, lftj_join, lftj_join_for_each, Database,
-        HashFamily, JoinError, SortedFamily,
-    },
+    kermit::db::{build, execute, prepare, Catalog, JoinError},
     kermit_algos::{
-        ColumnOrderPolicy, CopySpec, HashTriejoin, JoinQuery, LeapfrogTriejoin, Planner,
+        ColumnOrderPolicy, HashTriejoin, IndexSpec, JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner,
         QueryOptimiser, StatisticsLevel,
     },
-    kermit_ds::{
-        BuildModeProvider, BuiltWith, Cardinality, ConfigProvider, Configured, ExpansionPolicy,
-        HashTrie, HashTrieBuildMode, HashTrieConfig, PruningPolicy, Relation, RelationHeader,
-        Tuples,
-    },
-    kermit_iters::{HashStrategy, TrieIterable},
+    kermit_ds::{Relation, RelationHeader, Tuples},
+    kermit_iters::{HashTrieIterable, TrieIterable},
     std::{collections::BTreeMap, path::Path},
 };
 
@@ -28,162 +23,69 @@ use {
 /// column exists in the relation's tuples but binds no variable.
 pub const PLACEHOLDER: usize = usize::MAX;
 
-/// The entry point in `kermit::db` that runs algorithm `Self` over `R`.
+/// The execution in `kermit::db` that runs algorithm `Self` over `R`.
 pub trait JoinEntry<R> {
-    /// The database the entry point reads, with statistics up to `level`.
-    fn database(relations: BTreeMap<String, R>, level: StatisticsLevel) -> Database<R>;
-
+    /// Every row of `query`'s head, collected.
     fn join(
-        database: &Database<R>, query: JoinQuery, planner: &Planner,
+        catalog: &Catalog, query: JoinQuery, planner: &Planner,
     ) -> Result<Vec<Vec<usize>>, JoinError>;
 
-    /// Counts the result through the streaming `_for_each` entry point —
-    /// the path `bench run`'s `iteration` metric times.
-    fn count(
-        database: &Database<R>, query: JoinQuery, planner: &Planner,
-    ) -> Result<usize, JoinError>;
+    /// Counts the result through the streamed `execute` — the path
+    /// `bench run`'s `iteration` metric times.
+    fn count(catalog: &Catalog, query: JoinQuery, planner: &Planner) -> Result<u64, JoinError>;
 }
 
-impl<R: TrieIterable + Relation + Cardinality> JoinEntry<R> for LeapfrogTriejoin {
-    fn database(relations: BTreeMap<String, R>, level: StatisticsLevel) -> Database<R> {
-        Database::new::<SortedFamily>(relations, level)
-    }
-
-    fn join(
-        database: &Database<R>, query: JoinQuery, planner: &Planner,
-    ) -> Result<Vec<Vec<usize>>, JoinError> {
-        lftj_join::<R, LeapfrogTriejoin>(database, query, planner)
-    }
-
-    fn count(
-        database: &Database<R>, query: JoinQuery, planner: &Planner,
-    ) -> Result<usize, JoinError> {
-        let mut rows = 0;
-        lftj_join_for_each::<R, LeapfrogTriejoin>(database, query, planner, |_| rows += 1)?;
-        Ok(rows)
-    }
+/// Prepares `query` over `catalog`, builds the indexes it reads as `R` and
+/// streams each row's head columns to `emit`.
+fn run<R: Relation, JA: JoinAlgo<R>>(
+    catalog: &Catalog, query: &JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
+) -> Result<(), JoinError> {
+    let prepared = prepare(catalog, query, planner)?;
+    let indexes = build::<R>(catalog, &prepared);
+    execute::<R, JA>(&prepared, &indexes, emit);
+    Ok(())
 }
 
-/// `hash_join` needs the relation's hash strategy `H` for constant
-/// singletons, so the hash-family impls are per concrete relation type
-/// rather than blanket over `HashTrieIterable`.
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> JoinEntry<HashTrie<H, P, E>>
-    for HashTriejoin
-{
-    fn database(
-        relations: BTreeMap<String, HashTrie<H, P, E>>, level: StatisticsLevel,
-    ) -> Database<HashTrie<H, P, E>> {
-        Database::new::<HashFamily<H>>(relations, level)
-    }
+fn collect<R: Relation, JA: JoinAlgo<R>>(
+    catalog: &Catalog, query: &JoinQuery, planner: &Planner,
+) -> Result<Vec<Vec<usize>>, JoinError> {
+    let mut rows = Vec::new();
+    run::<R, JA>(catalog, query, planner, |row| rows.push(row.to_vec()))?;
+    Ok(rows)
+}
 
+fn count_rows<R: Relation, JA: JoinAlgo<R>>(
+    catalog: &Catalog, query: &JoinQuery, planner: &Planner,
+) -> Result<u64, JoinError> {
+    let mut rows = 0u64;
+    run::<R, JA>(catalog, query, planner, |_| rows += 1)?;
+    Ok(rows)
+}
+
+impl<R: Relation + TrieIterable> JoinEntry<R> for LeapfrogTriejoin {
     fn join(
-        database: &Database<HashTrie<H, P, E>>, query: JoinQuery, planner: &Planner,
+        catalog: &Catalog, query: JoinQuery, planner: &Planner,
     ) -> Result<Vec<Vec<usize>>, JoinError> {
-        hash_join::<HashTrie<H, P, E>, H>(database, query, planner)
+        collect::<R, LeapfrogTriejoin>(catalog, &query, planner)
     }
 
-    fn count(
-        database: &Database<HashTrie<H, P, E>>, query: JoinQuery, planner: &Planner,
-    ) -> Result<usize, JoinError> {
-        let mut rows = 0;
-        hash_join_for_each::<HashTrie<H, P, E>, H>(database, query, planner, |_| rows += 1)?;
-        Ok(rows)
+    fn count(catalog: &Catalog, query: JoinQuery, planner: &Planner) -> Result<u64, JoinError> {
+        count_rows::<R, LeapfrogTriejoin>(catalog, &query, planner)
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, C: ConfigProvider<HashTrieConfig>>
-    JoinEntry<Configured<HashTrie<H, P, E>, C>> for HashTriejoin
-{
-    fn database(
-        relations: BTreeMap<String, Configured<HashTrie<H, P, E>, C>>, level: StatisticsLevel,
-    ) -> Database<Configured<HashTrie<H, P, E>, C>> {
-        Database::new::<HashFamily<H>>(relations, level)
-    }
-
+/// One impl for every hash-family relation (`HashTrie`, `Configured`,
+/// `BuiltWith`): the hash entry point no longer hashes constants, so it
+/// needs no hash strategy.
+impl<R: Relation + HashTrieIterable> JoinEntry<R> for HashTriejoin {
     fn join(
-        database: &Database<Configured<HashTrie<H, P, E>, C>>, query: JoinQuery, planner: &Planner,
+        catalog: &Catalog, query: JoinQuery, planner: &Planner,
     ) -> Result<Vec<Vec<usize>>, JoinError> {
-        hash_join::<Configured<HashTrie<H, P, E>, C>, H>(database, query, planner)
+        collect::<R, HashTriejoin>(catalog, &query, planner)
     }
 
-    fn count(
-        database: &Database<Configured<HashTrie<H, P, E>, C>>, query: JoinQuery, planner: &Planner,
-    ) -> Result<usize, JoinError> {
-        let mut rows = 0;
-        hash_join_for_each::<Configured<HashTrie<H, P, E>, C>, H>(
-            database,
-            query,
-            planner,
-            |_| rows += 1,
-        )?;
-        Ok(rows)
-    }
-}
-
-impl<
-        H: HashStrategy,
-        P: PruningPolicy,
-        E: ExpansionPolicy,
-        B: BuildModeProvider<HashTrieBuildMode>,
-    > JoinEntry<BuiltWith<HashTrie<H, P, E>, B>> for HashTriejoin
-{
-    fn database(
-        relations: BTreeMap<String, BuiltWith<HashTrie<H, P, E>, B>>, level: StatisticsLevel,
-    ) -> Database<BuiltWith<HashTrie<H, P, E>, B>> {
-        Database::new::<HashFamily<H>>(relations, level)
-    }
-
-    fn join(
-        database: &Database<BuiltWith<HashTrie<H, P, E>, B>>, query: JoinQuery, planner: &Planner,
-    ) -> Result<Vec<Vec<usize>>, JoinError> {
-        hash_join::<BuiltWith<HashTrie<H, P, E>, B>, H>(database, query, planner)
-    }
-
-    fn count(
-        database: &Database<BuiltWith<HashTrie<H, P, E>, B>>, query: JoinQuery, planner: &Planner,
-    ) -> Result<usize, JoinError> {
-        let mut rows = 0;
-        hash_join_for_each::<BuiltWith<HashTrie<H, P, E>, B>, H>(database, query, planner, |_| {
-            rows += 1
-        })?;
-        Ok(rows)
-    }
-}
-
-impl<
-        H: HashStrategy,
-        P: PruningPolicy,
-        E: ExpansionPolicy,
-        C: ConfigProvider<HashTrieConfig>,
-        B: BuildModeProvider<HashTrieBuildMode>,
-    > JoinEntry<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>> for HashTriejoin
-{
-    fn database(
-        relations: BTreeMap<String, BuiltWith<Configured<HashTrie<H, P, E>, C>, B>>,
-        level: StatisticsLevel,
-    ) -> Database<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>> {
-        Database::new::<HashFamily<H>>(relations, level)
-    }
-
-    fn join(
-        database: &Database<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>>, query: JoinQuery,
-        planner: &Planner,
-    ) -> Result<Vec<Vec<usize>>, JoinError> {
-        hash_join::<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>, H>(database, query, planner)
-    }
-
-    fn count(
-        database: &Database<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>>, query: JoinQuery,
-        planner: &Planner,
-    ) -> Result<usize, JoinError> {
-        let mut rows = 0;
-        hash_join_for_each::<BuiltWith<Configured<HashTrie<H, P, E>, C>, B>, H>(
-            database,
-            query,
-            planner,
-            |_| rows += 1,
-        )?;
-        Ok(rows)
+    fn count(catalog: &Catalog, query: JoinQuery, planner: &Planner) -> Result<u64, JoinError> {
+        count_rows::<R, HashTriejoin>(catalog, &query, planner)
     }
 }
 
@@ -211,108 +113,95 @@ impl ColumnOrderProvider for AnyOrders {
 }
 
 /// A fixture's relations by name: the header the relation was built with
-/// and its tuples in fixture (file) order, which copies are built from.
+/// and its tuples, flat, in fixture (file) order.
 pub type Inputs = BTreeMap<String, (RelationHeader, Tuples)>;
 
 /// Reads each named Parquet relation in `dir` (`<name>.parquet`) once,
-/// returning the relations as `R`, keyed by name, and the [`Inputs`] the
-/// copies under `--column-orders any` are built from: each header and its
-/// tuples in file order.
-pub fn load_parquet_relations<'n, R: Relation>(
-    dir: &Path, names: impl IntoIterator<Item = &'n str>,
-) -> (BTreeMap<String, R>, Inputs) {
-    let mut relations: BTreeMap<String, R> = BTreeMap::new();
-    let mut inputs: Inputs = BTreeMap::new();
-    for name in names {
-        let path = dir.join(format!("{name}.parquet"));
-        let (header, tuples) = kermit_ds::read_parquet(&path)
-            .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
-        relations.insert(
-            name.to_string(),
-            R::from_tuples(header.clone(), tuples.clone()),
-        );
-        inputs.insert(name.to_string(), (header, tuples));
-    }
-    (relations, inputs)
+/// flat: the header (named after the file) and the tuples in file order.
+pub fn load_parquet_inputs<'n>(dir: &Path, names: impl IntoIterator<Item = &'n str>) -> Inputs {
+    names
+        .into_iter()
+        .map(|name| {
+            let path = dir.join(format!("{name}.parquet"));
+            let (header, tuples) = kermit_ds::read_parquet(&path)
+                .unwrap_or_else(|e| panic!("failed to load relation {path:?}: {e}"));
+            assert_eq!(
+                header.name(),
+                name,
+                "{path:?} must name its relation after its file"
+            );
+            (name.to_string(), (header, tuples))
+        })
+        .collect()
 }
 
-/// Runs `query` over `database` under `planner` through `JA`'s entry
-/// points the way the CLI does: builds the copies `required_indexes` names
-/// from `inputs`, joins (collected, and counted through the streaming
-/// entry point, the path `bench run` times), and drops the copies. Returns
-/// the rows and the specs it built (empty under `stored`).
-pub fn join_under_planner<R: Relation + Cardinality, JA: JoinEntry<R>>(
-    database: &mut Database<R>, inputs: &Inputs, query: JoinQuery, planner: &Planner,
-) -> Result<(Vec<Vec<usize>>, Vec<CopySpec>), JoinError> {
-    let specs = database.required_indexes(&query, planner)?;
-    for spec in &specs {
-        let (header, tuples) = &inputs[&spec.base];
-        database.add_index(spec.clone(), build_index::<R>(spec, header, tuples));
-    }
-    assert!(
-        database.required_indexes(&query, planner)?.is_empty(),
-        "held copies must not be required again"
-    );
-    let rows = JA::join(database, query.clone(), planner);
-    let streamed = JA::count(database, query, planner);
-    database.clear_indexes();
-    let rows = rows?;
+/// The catalog of `inputs`, with statistics up to `level`: what the
+/// optimiser reads, as the CLI gathers it. The tuples are copied, so one
+/// fixture serves planners that read different levels.
+pub fn catalog_of(inputs: &Inputs, level: StatisticsLevel) -> Catalog {
+    Catalog::new(inputs.values().cloned().collect(), level)
+}
+
+/// Runs `query` over `catalog` under `planner` through `JA`: joined and
+/// collected, and counted through the streamed path `bench run` times, which
+/// must agree. Returns the rows and the index specs the query built (what
+/// `prepare` named; each is built again by the join and by the count).
+pub fn join_under_planner<R: Relation, JA: JoinEntry<R>>(
+    catalog: &Catalog, query: JoinQuery, planner: &Planner,
+) -> Result<(Vec<Vec<usize>>, Vec<IndexSpec>), JoinError> {
+    let specs = prepare(catalog, &query, planner)?.indexes().to_vec();
+    let rows = JA::join(catalog, query.clone(), planner)?;
+    let streamed = JA::count(catalog, query, planner)?;
     assert_eq!(
-        streamed?,
-        rows.len(),
+        streamed,
+        rows.len() as u64,
         "streamed count disagrees with the collected rows"
     );
     Ok((rows, specs))
 }
 
-/// Builds one `R` per input relation (named `R0`, `R1`, …), synthesises
+/// Builds one flat relation per input (named `R0`, `R1`, …), synthesises
 /// `Q(V…) :- R0(V…), R1(V…), ….` from `variables` / `rel_variables` (a
 /// [`PLACEHOLDER`] entry becomes `_`), runs it through `JA`'s entry point
 /// under `O` and the column-order policy `P` names, and asserts multiset
 /// equality with `result`.
 ///
-/// Through [`join_under_planner`], so under `any` the copies the plan needs
-/// are built from the fixture's tuples before the join and dropped after,
-/// and the result is also counted through the streaming entry point, the
-/// path `bench run` times, for every structure × algorithm × optimiser ×
-/// policy invocation. The relations are put in a `Database` built at the
-/// optimiser's `required_statistics()`, as the CLI's engines are.
+/// Through [`join_under_planner`], so each pattern is also counted through
+/// the streamed path, the path `bench run` times, for every structure ×
+/// algorithm × optimiser × policy invocation. The relations are put in a
+/// `Catalog` gathered at the optimiser's `required_statistics()`, as the
+/// CLI's is.
 ///
 /// The rows are compared as returned: the entry points project to the
 /// head themselves (issue #71), so a body-only variable — including the
-/// fresh ones the rewrites introduce — leaking into a row fails the
-/// comparison.
+/// fresh ones a `_` or a repeated variable introduces — leaking into a row
+/// fails the comparison.
 pub fn test_join<R, JA, O, P>(
     input: Vec<Vec<Vec<usize>>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
     result: Vec<Vec<usize>>,
 ) where
-    R: Relation + Cardinality,
+    R: Relation,
     JA: JoinEntry<R>,
     O: QueryOptimiser + Default + 'static,
     P: ColumnOrderProvider,
 {
     // Each relation's arity is its atom's term count: the query is what
     // fixes a column count, and an empty relation has no first tuple to
-    // read one from (the join rejects an atom whose arity disagrees). The
-    // header is named, so a copy's base header is the relation's own.
+    // read one from (the join rejects an atom whose arity disagrees), so
+    // the flat tuples take that arity too.
     let mut inputs: Inputs = BTreeMap::new();
-    let relations: BTreeMap<String, R> = input
-        .into_iter()
-        .zip(&rel_variables)
-        .enumerate()
-        .map(|(i, (tuples, rv))| {
-            assert!(
-                tuples.iter().all(|t| t.len() == rv.len()),
-                "fixture R{i}: every tuple must have one value per atom term"
-            );
-            let header = RelationHeader::new_positional(format!("R{i}"), rv.len());
-            inputs.insert(
-                format!("R{i}"),
-                (header.clone(), Tuples::from(tuples.clone())),
-            );
-            (format!("R{i}"), R::from_tuples(header, tuples))
-        })
-        .collect();
+    for (i, (tuples, rv)) in input.iter().zip(&rel_variables).enumerate() {
+        assert!(
+            tuples.iter().all(|t| t.len() == rv.len()),
+            "fixture R{i}: every tuple must have one value per atom term"
+        );
+        let header = RelationHeader::new_positional(format!("R{i}"), rv.len());
+        let flat: Vec<usize> = tuples.iter().flatten().copied().collect();
+        inputs.insert(
+            format!("R{i}"),
+            (header, Tuples::from_flat(rv.len(), tuples.len(), flat)),
+        );
+    }
     let head_vars: Vec<String> = variables.iter().map(|v| format!("V{v}")).collect();
     let mut body_preds: Vec<String> = Vec::new();
     for (i, rv) in rel_variables.iter().enumerate() {
@@ -332,11 +221,11 @@ pub fn test_join<R, JA, O, P>(
     let query_str = format!("Q({}) :- {}.", head_vars.join(", "), body_preds.join(", "));
     let query: JoinQuery = query_str.parse().expect("Failed to build JoinQuery");
 
-    // The database is analysed to exactly what the optimiser reads, as the
-    // CLI's engines are.
+    // The catalog is analysed to exactly what the optimiser reads, as the
+    // CLI's is.
     let planner = Planner::new(Box::new(O::default()), P::policy());
-    let mut database = JA::database(relations, planner.required_statistics());
-    let (mut actual, _) = join_under_planner::<R, JA>(&mut database, &inputs, query, &planner)
+    let catalog = catalog_of(&inputs, planner.required_statistics());
+    let (mut actual, _) = join_under_planner::<R, JA>(&catalog, query, &planner)
         .unwrap_or_else(|e| panic!("{query_str}: {e}"));
 
     // Multiset equality (relational algebra semantics) — sort both sides
