@@ -185,12 +185,15 @@ directions. No query forces its variables to be distinct, so the queries count
   coincide. A walk that doubles back (`A = C` or `B = D`) is a row. Such walks are 62%
   of amazon's `cycle4` count and 16.8% of dblp's, so `cycle4`'s count is far from
   eight times the number of 4-cycles.
-- **Why `cycle4` is written `edge(A, D)`.** The natural last atom is `edge(D, A)`, but
-  under `--column-orders stored` (the default) every atom's variables must follow its
-  stored column order, and `edge(A, B)`, `edge(B, C)`, `edge(C, D)` already force
-  A before B before C before D, so `edge(D, A)` is `CyclicAttributeOrder`. The relation
-  is symmetric, so `edge(A, D)` holds the same tuples and the same answers, and the
-  query plans without a reordered copy. Write your own cycle queries the same way.
+- **Why `cycle4` is written `edge(A, D)`.** The natural last atom is `edge(D, A)`. Before
+  per-query index builds (2026-10-22), the default `--column-orders stored` required every
+  atom's variables to follow its stored column order, and `edge(A, B)`, `edge(B, C)`,
+  `edge(C, D)` already forced A before B before C before D, so `edge(D, A)` was
+  `CyclicAttributeOrder`. The relation is symmetric, so `edge(A, D)` holds the same tuples
+  and the same answers; the rule is kept as written so `expected` and earlier results stay
+  comparable. It also lets the indexes merge: under the plan A, B, C, D all four atoms read
+  `edge` with its columns in stored order, so one index serves them. `edge(D, A)` now plans
+  like any query, with a second, column-swapped index of `edge`.
 
 ### Verified counts
 
@@ -285,7 +288,7 @@ instead of silently changing the data.
 | `kermit-generate/src/snap/counts.rs` | K₄ gives 24, 108, 84, 24 and C₄ gives 0, 32, 32, 0 (`triangle`, `path3`, `cycle4`, `clique4`); 50 seeded random graphs equal a fresh nested-loop count; an empty query list counts nothing | always |
 | `kermit-generate/src/snap.rs` (`rules_are_the_spec_queries`, `a_local_fixture_generates_a_cache`) | Each rule parses and names only `edge`; a local fixture generates a cache whose `expected` values, extras and Parquet round-trip are right | always |
 | `kermit-generate/src/snap.rs` (`reference_counts_match_the_verified_values`) | Downloads amazon and dblp (8.6 MB) through `download_verified` and checks the eight values above through the parser and the oracle | network; skips with a note on stderr when the connection, DNS or a timeout fails (a `Download` error with no HTTP status); a 4xx/5xx status or a digest mismatch fails |
-| `kermit/tests/snap_generate.rs` | The fixture, generated through `kermit_generate::run`, joins to its `expected` count for all four queries on the three cells × every optimiser × both `--column-orders` policies; no query is rejected under `stored` (this pins the `edge(A, D)` rewrite); two generations give byte-identical `edge.parquet`; `meta.json` round-trips | always |
+| `kermit/tests/snap_generate.rs` | The fixture, generated through `kermit_generate::run`, joins to its `expected` count for all four queries on the three cells × every optimiser; two generations give byte-identical `edge.parquet`; `meta.json` round-trips | always |
 | `kermit/tests/cli_snap_gen.rs` | `bench gen snap --url` against a loopback server, then `bench run … -i all -a all -m iteration --verify`; a wrong `--sha256` exits non-zero and leaves no cache: the directory stays, but without `meta.json` it is not discovered, and `raw/` holds no `.gz` or `.part`; a workspace `kind: snap` YAML materialises, is a hit the second time, raises `SpecDrift` after an edit and regenerates under `--force` | Linux; loopback only, no internet |
 | `kermit/src/bench/gen.rs` (`snap_clap_names_match_the_spec_names`, `snap_flags_conflict_and_require_as_documented`, `snap_bench_name_follows_the_graph_or_the_url_stem`) | The CLI's value names equal the spec's serde names; `--graph` and `--url`/`--sha256` conflict and require as documented; the benchmark name follows the graph or the URL's stem | always |
 | `kermit/src/materialize.rs` (`run_snap_without_a_source_is_an_error`, `generator_failure_keeps_the_context_chain`) | A `snap` spec with neither source fails cleanly; a generator's `anyhow` context chain reaches the error message | always |

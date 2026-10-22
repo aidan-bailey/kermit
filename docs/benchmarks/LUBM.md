@@ -141,6 +141,8 @@ remaining queries (Q2, Q6, Q9, Q14) reference no scale-specific entity at all.
 Both URI forms exist in any LUBM(N ≥ 1) by the data generator's deterministic
 0-indexed naming, so queries are universal across all scales.
 
+A pinned entity is a constant in the Datalog rule. `bench run` applies it as a filter while it builds that atom's index (per-query index builds, 2026-10-22), so a selective constant builds a small index rather than the whole relation.
+
 | # | Shape | Pre-materialisation needed | LUBM(1, 0) cardinality |
 |---|-------|---------------------------|------------------------|
 | Q1 | `GraduateStudent` who `takesCourse` GraduateCourse0 | none | 4 |
@@ -257,7 +259,7 @@ The cardinality regression test lives in the `kermit` crate (not `kermit-rdf`)
 because only the binary crate depends on both the LUBM pipeline and the join
 engine (`kermit-algos` + `kermit::db::lftj_join`), mirroring `watdiv_correctness.rs`.
 It is the load-bearing correctness check for the entailment rule set and the
-const-view-rewrite join path; finding it green is the precondition for relying
+constant-filter (filtered build) join path; finding it green is the precondition for relying
 on Q5–Q13 results from this pipeline.
 
 ## References

@@ -26,7 +26,11 @@ the canonical template every benchmark doc follows.
   templates) over a real IMDb snapshot, with each alias's filters applied
   at generation so kermit runs JOB's real joins. The join-ordering
   workload, and the natural evaluation of the cost-based optimiser and
-  `--column-orders any`.
+  free per-query index orders.
+
+## How every benchmark is run
+
+Every benchmark here runs the same way (report schema 5). `bench run` reads each relation a query names once into a flat catalog and builds no structure at load. Each query then builds, and times as `build`, only the indexes its plan reads: an index is a relation filtered by the query's constants and repeated variables, with its columns in plan order, copied once from the catalog. A constant is therefore a filter on a build, not a view in the join. A benchmark whose queries carry constants (LUBM, WatDiv) builds smaller indexes than the whole relation; one without them (SNAP, H2O, JOB) builds each relation whole, in plan order. See [`docs/specs/2026-10-22-per-query-index-build-design.md`](../specs/2026-10-22-per-query-index-build-design.md) and [`benchmarking-architecture.md`](../specs/benchmarking-architecture.md).
 
 ## Cross-benchmark comparison
 

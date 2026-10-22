@@ -251,22 +251,25 @@ Each SPARQL variable `?name` becomes `V_<name>` (letters and digits as
 written, `_` doubled, other characters escaped), so case-distinct variables
 stay distinct (#75); snapshots generated before #75 read `V0` where these
 read `V_v0`.
-The `c<dict-id>` atoms are resolved via kermit's const-rewrite path
-(`kermit_algos::rewrite_atoms`) into singleton-trie unary predicates before
-LFTJ runs.
+The `c<dict-id>` atoms are constant filters: `kermit_algos::extract_accesses` turns each
+into a filter on its column, which the build of that atom's index applies (`TupleView`), so
+no join sees an atom. Before per-query index builds (2026-10-22) they were rewritten into
+singleton-trie unary predicates.
 
 ## Known limitation: incoming-star templates
 
-Every trie stores a relation subject-first, so every plan binds an atom's
-subject before its object. An *incoming star* is several atoms sharing an
-object whose subjects appear nowhere else. On such a query, every valid plan
-enumerates the cross product of those subjects, under either optimiser and on
-every structure. In q0264, `includes(V_v2, V_v0)` and `purchasefor(V_v7, V_v0)`
-share `V_v0`. Subject-first tries bind 90,000 × 150,000 = 1.35e10 keys there, where
-object-first tries would bind 1.
+Before per-query index builds (2026-10-22), every trie stored a relation subject-first,
+so every plan bound an atom's subject before its object. An *incoming star* is several
+atoms sharing an object whose subjects appear nowhere else. On such a query, every valid
+plan enumerated the cross product of those subjects, under either optimiser and on every
+structure. In q0264, `includes(V_v2, V_v0)` and `purchasefor(V_v7, V_v0)` share `V_v0`.
+Subject-first tries bound 90,000 × 150,000 = 1.35e10 keys there, where object-first tries
+would bind 1. That ceiling is lifted: every index is built in plan order, so a plan may
+bind `V_v0` first. Whether a given optimiser finds that plan is a measurement, and the
+first v5 sweep (#99) makes it.
 
-Until the fixes land, these `watdiv-stress-100-test-1` templates are excluded
-from sample runs:
+These `watdiv-stress-100-test-1` templates were excluded from sample runs under the
+subject-first stores, and stay excluded until the first v5 sweep re-measures them:
 
 | Templates | Cause | Fix |
 |-----------|-------|-----|
@@ -286,8 +289,9 @@ uv run scripts/watdiv_stress_sample.py watdiv-stress-100-test-1 \
 
 The diagnosis is in #68. Its evidence (exact binding counts, plans and traces)
 is in `kermit-bench-runs/watdiv-stress-100-prelim-2026-09-10/diagnostics/issue-68/`,
-next to this repository. The fixes are #81 (a cost-based optimiser) and #82
-(object-first tries for selected relations); both are future work.
+next to this repository. The fixes were #81 (a cost-based optimiser, landed) and #82
+(object-first tries for selected relations), which per-query builds in plan order
+supersede; #82 is rescoped to an index cache.
 
 ## Determinism
 
@@ -405,7 +409,7 @@ bwrap can't construct the `/usr/share/dict/words` bind.
 - **Cost-based optimiser** (#81) — plan from estimated intermediate sizes
   rather than relation sizes alone. Fixes q0020 and q0034; see
   [Known limitation](#known-limitation-incoming-star-templates).
-- **Object-first tries for selected relations** (#82) — index the relations
-  a cost-based plan reverses (object, subject) as well, so incoming stars no
-  longer force cross products. Fixes the ten index-bound templates; see
+- **Index cache** (#82) — keep indexes across queries. Per-query builds (2026-10-22)
+  already build each index in plan order, so an incoming star no longer forces a cross
+  product by itself; the cache would stop that build being paid per query. See
   [Known limitation](#known-limitation-incoming-star-templates).

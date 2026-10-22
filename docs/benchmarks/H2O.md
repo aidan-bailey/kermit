@@ -242,11 +242,11 @@ dictionary.
 | `q2` | `Q(K, I) :- medium(K), x_id2(K, I).` | About 9,000 matching keys with about a thousand children each. Upstream's "medium inner on int" |
 | `q5` | `Q(K) :- big(K), x_id3(K).` | A dense intersection of two key lists that overlap by 90%, which separates the seek strategies (#80). Upstream's "big inner on int" |
 
-- **Every query is valid under `--column-orders stored`**: each atom's variables follow
-  its stored column order, so no query needs a reordered copy and none is a
-  `CyclicAttributeOrder`.
-- **No query repeats a variable in an atom or uses a constant**, so none uses the
-  selection or const rewrites; they run through the plain join path.
+- **Each atom's variables follow its stored column order**, so under the canonical
+  (lexicographic) order every index is the relation's columns as stored; another plan
+  builds a column-swapped index instead, inside `build`.
+- **No query repeats a variable in an atom or uses a constant**, so every access is
+  unfiltered: each index is a whole relation, and `build` is a plain copy of it.
 - **Counts are exact and the same on all three cells**, because no relation holds a
   duplicate row (see [Differences from upstream](#differences-from-upstream)).
 
@@ -339,8 +339,8 @@ To regenerate, run `bench run --force <name>`, or delete the cache directory.
 | `kermit/src/materialize.rs` (`h2o_cache_misses_hits_drifts_and_regenerates`) | A 1,000,000-row spec (below the floor, which `materialize` does not check) generates on a miss, is a hit the second time, raises `SpecDrift` after a seed change and regenerates under `force` | always |
 | `kermit/src/bench/gen.rs` (`h2o_clap_names_match_the_spec_names`, `h2o_flags_default_and_enforce_the_floor`, `h2o_bench_name_is_scale_and_tag`) | The CLI's order names equal the spec's serde names; `--seed` and `--order` default as documented and `--scale` enforces the floor; the benchmark name is `h2o-<scale>-<tag>` | always |
 | `kermit/tests/cli_gen_scale_range.rs` (`h2o_scale_below_the_floor_is_a_usage_error`) | `bench gen h2o --scale 1000` exits 2, names `'1000'`, `--scale` and 10000000, and writes no cache | always |
-| `kermit/tests/h2o_generate.rs` | The committed YAMLs declare `kind: h2o` at 10000000 in the right order; the reference plan, in both orders, joins to its `expected` count for all three queries on the three cells × every optimiser × both `--column-orders` policies; the emitted counts are the model's 1,812, 1,814 and 1,800 | always |
-| `bench run h2o -i all -a all --verify`, and the same for `h2o-sorted`, at N = 1e7 | Every cell verifies through the path `bench run` takes (`ExecutionFamily::load`), which the integration test does not | manual; release build inside `nix develop`; a heavy run, see [Measured at N = 1e7](#measured-at-n--1e7) |
+| `kermit/tests/h2o_generate.rs` | The committed YAMLs declare `kind: h2o` at 10000000 in the right order; the reference plan, in both orders, joins to its `expected` count for all three queries on the three cells × every optimiser; the emitted counts are the model's 1,812, 1,814 and 1,800 | always |
+| `bench run h2o -i all -a all --verify`, and the same for `h2o-sorted`, at N = 1e7 | Every cell verifies through the path `bench run` takes (`Workload::prepare`, then `ExecutionFamily::build_indexes` and `execute`), which the integration test does not | manual; release build inside `nix develop`; a heavy run, see [Measured at N = 1e7](#measured-at-n--1e7) |
 
 ## References
 

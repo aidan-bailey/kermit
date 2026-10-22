@@ -8,7 +8,7 @@ and independence assumptions that synthetic benchmarks share with query optimise
 generates it as a benchmark: each query's per-alias filters are applied once, by DuckDB,
 during generation, and the remaining equi-joins run as a Datalog rule on kermit's engines.
 That keeps JOB's real data, real selectivities and hard join orders, and gives the cost-based
-optimiser (#81) and `--column-orders any` (#93) a real workload to be judged on.
+optimiser (#81) and the free per-query index orders (#93, 2026-10-22) a real workload to be judged on.
 
 JOB is the relational counterpart of the RDF benchmarks: LUBM and WatDiv derive binary
 predicates from triples, while JOB's relations come from a relational schema, with several
@@ -62,10 +62,10 @@ generator:
   regenerating. `--force` rebuilds that benchmark only; the raw cache is untouched. See
   `benchmarks/README.md` for the full schema.
 
-**Why one benchmark per template.** `bench run` loads every relation of a definition before
-it runs any query, so one benchmark holding all 113 queries' relations would load all of them
-at once, `cast_info` (about 36 M rows) among them. `job-6` holds the relations of 6a–6f only;
-`bench run job-6 -q 6c` selects one query but still loads them all.
+**Why one benchmark per template.** `bench run` reads every relation a definition's queries
+name into one flat catalog before it runs any query, so one benchmark holding all 113
+queries' relations would hold all of them at once, `cast_info` (about 36 M rows) among them.
+`job-6` holds the relations of 6a–6f only; `bench run job-6 -q 6c` selects one query.
 
 ```bash
 kermit bench run job-6 -i all -a all --verify
@@ -219,11 +219,13 @@ translator works on the parsed syntax tree, never on the query text.
 The rest of the translation, in the order it matters when reading a rule:
 
 **Variables are ordered by text.** The order uses no data: it is the order in which each
-query's join conditions first mention a variable. Under `--column-orders stored` every atom is
-pinned to its stored column order, which the relation files give in variable order, so the
-order a query runs in is fixed by how it is written: the optimisers choose only among
-variables that no atom orders against each other. JOB therefore measures one neutral order
-under `stored`, and comparisons between optimisers belong under `--column-orders any`.
+query's join conditions first mention a variable, and the relation files give each alias's
+columns in that order. Every index is built in plan order (per-query index builds,
+2026-10-22), so no stored column order restricts any optimiser: the optimisers choose among
+all orders, and comparisons between them are free to differ on every query. Before that, the
+default `--column-orders stored` pinned every atom to its stored column order, so a query ran
+in the order it was written, JOB measured one neutral order, and optimiser comparisons
+belonged under `--column-orders any`.
 
 **The `id` is carried.** An alias's `id` rides along as a `_` in the rule. It keeps filtered
 rows distinct, so the sorted tries (which are sets) and HashTrie (a multiset) agree on one
@@ -363,6 +365,8 @@ layout and build, each process in its own `systemd-run --user --scope` with `Mem
 and no swap, its peak taken from GNU time's `%M`. Every query of every cell that finished
 matched its `expected`.
 
+The table predates per-query index builds (2026-10-22): a cell then built every relation of the template before any query, and now builds only the indexes each query reads, freeing them after its timers, so the peaks are expected to differ. The next sweep (#99) re-measures it.
+
 | Template | Output size | Peak memory (tree-trie) | Peak memory (column-trie) | Peak memory (hash-trie) | Notes |
 |----------|-------------|-------------------------|---------------------------|-------------------------|-------|
 | job-1 | 84.7 MB | 0.6 GiB | 0.2 GiB | 0.9 GiB | 1a–1d |
@@ -448,9 +452,9 @@ either side of a pin change are not comparable.
 | `kermit-generate/src/job/duckdb.rs` unit tests | Quoting of literals and identifiers; batching and order of streamed rows; a private spill directory per call, removed afterwards; stderr or a non-zero exit fails a stream even after rows, and errors quote stderr; read-only sessions | The batching, spill-directory and quoting tests need nothing, and the failure tests use a `/bin/sh` stand-in; the rest need `duckdb` on `PATH` or `KERMIT_DUCKDB_BIN` |
 | `kermit-generate/src/job/raw.rs` unit tests | The raw-cache build on a fixture (row-count mismatch leaves no cache; a leftover staging directory is not reused; provenance is written last; a lost rename adopts the winner; PostgreSQL's CSV dialect, on a sample that would mislead DuckDB's sniffer); `ensure`'s mirror fallback, queries-before-dump order, staging cleanup and a first run under a missing cache parent directory; a complete cache built from other pins, an unfinished `imdb` directory and an unreadable `provenance.json` are each refused before any fetch, naming the directory (the first two also checked to be left in place); a cache adopted after a lost rename is checked against the pins too; an extra non-SQL `schematext.sql` in the archive is ignored | The build and `ensure` tests need `duckdb`; the mirror loop, staging guard, pins and provenance-comparison tests need nothing |
 | `kermit-bench` `definition.rs` tests | `kind: job` parses; templates 0 and 34 are rejected; `spec_hash` changes with the template | None |
-| `kermit/tests/job_generate.rs` | The fixture pipeline, also over CSVs loaded in reverse order (so a missing `ORDER BY` shows): filtered rows in id order; kermit's count equals DuckDB's `COUNT(*)` on every structure × optimiser × `stored`/`any`; byte-identical regeneration; a failed filter leaves no file for the failing relation, no `.part`, no `benchmark.yml` and no `meta.json` (and, when it is the template's first relation, no relation at all); a provenance missing a query's digest fails before anything is written; `meta.json` records sources and versions; every committed `job-N.yml`'s description names its template's variants | `duckdb` available, except the YAML-description test |
+| `kermit/tests/job_generate.rs` | The fixture pipeline, also over CSVs loaded in reverse order (so a missing `ORDER BY` shows): filtered rows in id order; kermit's count equals DuckDB's `COUNT(*)` on every structure × optimiser; byte-identical regeneration; a failed filter leaves no file for the failing relation, no `.part`, no `benchmark.yml` and no `meta.json` (and, when it is the template's first relation, no relation at all); a provenance missing a query's digest fails before anything is written; `meta.json` records sources and versions; every committed `job-N.yml`'s description names its template's variants | `duckdb` available, except the YAML-description test |
 | `kermit/tests/cli_job_gen.rs` | `bench gen job` and `bench run job-1` through the real binary over a fixture raw cache, with the platform cache redirected so nothing is written under `~/.cache/kermit`: a template outside 1–33, a missing DuckDB and a tag that makes an invalid benchmark name fail before any directory is created; `bench gen job` writes `job-N-<tag>`; it refuses a raw cache built from other pins and leaves it unchanged; `bench run job-1` materialises the committed YAML, verifies every count, then hits the cache, reports drift and rebuilds under `--force` | The first three run anywhere and need no DuckDB; the rest need Linux (`XDG_CACHE_HOME`) and `duckdb` |
-| `kermit/tests/job_translate.rs` | The real 113 queries (fetched and digest-checked at test time): every rule parses and passes `kermit::db::validate_query` under `--column-orders stored` against its template's relations, the checks and rewrites `bench run` applies; every relation name is parser-valid; 33 templates, 113 rules and 465 relation files; template 12's three variants share one `company_name` relation | Network to `raw.githubusercontent.com` (CI too); skips only when the first fetch cannot connect; a digest mismatch fails; about 40 s cold (114 serial fetches); not miri |
+| `kermit/tests/job_translate.rs` | The real 113 queries (fetched and digest-checked at test time): every rule parses and passes `kermit::db::validate_query` against its template's relations, the check `bench run` applies; every relation name is parser-valid; 33 templates, 113 rules and 465 relation files; template 12's three variants share one `company_name` relation | Network to `raw.githubusercontent.com` (CI too); skips only when the first fetch cannot connect; a digest mismatch fails; about 40 s cold (114 serial fetches); not miri |
 
 The translator test on real queries lives in the `kermit` crate because it checks each rule
 with `kermit::db::validate_query`, which `kermit-generate` cannot reach; the fixture pipeline
