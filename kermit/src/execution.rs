@@ -965,7 +965,7 @@ mod tests {
         super::*,
         crate::options::BuildModes,
         clap::ValueEnum,
-        kermit_algos::{ColumnOrderPolicy, CopySpec, LexicographicOptimiser, Optimiser},
+        kermit_algos::LexicographicOptimiser,
         kermit_ds::{
             ChildCapacity, ConfigurableRelation, EagerExpansion, LazyExpansion, LoadFactor,
             NoPruning, RadixBits, RootCapacity, SingletonPruning,
@@ -973,6 +973,24 @@ mod tests {
         kermit_iters::{LayoutOption, SipHashStrategy},
         std::cell::Cell,
     };
+
+    /// `query` prepared over a catalog holding `tuples` as the relation
+    /// `header` names: what a family's `build_indexes` and `execute` take.
+    fn prepared_over(
+        header: RelationHeader, tuples: Tuples, query: &str,
+    ) -> (kermit::db::Catalog, kermit::db::Prepared) {
+        use {
+            kermit::db::{prepare, Catalog},
+            kermit_algos::{
+                ColumnOrderPolicy, JoinQuery, LexicographicOptimiser, Planner, StatisticsLevel,
+            },
+        };
+        let catalog = Catalog::new(vec![(header, tuples)], StatisticsLevel::TupleCounts);
+        let query: JoinQuery = query.parse().expect("the query parses");
+        let planner = Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any);
+        let prepared = prepare(&catalog, &query, &planner).expect("the query prepares");
+        (catalog, prepared)
+    }
 
     fn all_structures() -> Vec<IndexStructure> { IndexStructure::value_variants().to_vec() }
 
@@ -1307,124 +1325,6 @@ mod tests {
         };
     }
 
-    /// The config reaches the relations the family builds, so the report's
-    /// `ds_config_*` axes describe the structure that actually ran.
-    #[test]
-    fn hash_family_builds_relations_with_its_config() {
-        let config = HashTrieConfig {
-            load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
-            ..HashTrieConfig::default()
-        };
-        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
-            config,
-            HashTrieBuildMode::Bulk,
-            Planner::stored(LexicographicOptimiser),
-        );
-        let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
-        let engine = family.build_from_tuples(vec![(header, Tuples::from(vec![vec![1, 2]]))]);
-        let rel = engine.get("r").unwrap();
-        assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::optimization_axes(
-                rel
-            )
-            .get("ds_config_load_factor"),
-            Some(&serde_json::Value::from(0.5_f64))
-        );
-    }
-
-    /// `load` builds through `build_relation`, so a relation read off
-    /// disk carries the family's configuration too.
-    #[test]
-    fn hash_family_load_honours_its_config() {
-        let config = HashTrieConfig {
-            load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
-            ..HashTrieConfig::default()
-        };
-        let family = HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::new(
-            config,
-            HashTrieBuildMode::Bulk,
-            Planner::stored(LexicographicOptimiser),
-        );
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("r.csv");
-        std::fs::write(&path, "a,b\n1,2\n").expect("write csv");
-        let rel = family.load(&path).expect("load");
-        assert_eq!(*rel.config(), config);
-        assert_eq!(
-            HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::optimization_axes(
-                &rel
-            )
-            .get("ds_config_load_factor"),
-            Some(&serde_json::Value::from(0.5_f64))
-        );
-    }
-
-    /// `load_with_tuples` hands back the tuples in the order the reader
-    /// produced them, not in the structure's own iteration order: the
-    /// copies built under `--column-orders any` start from them, and a
-    /// structure's iteration order is not neutral input — sorted for the
-    /// sorted tries, and a degenerate build order for the hash trie (issue
-    /// #66).
-    #[test]
-    fn load_with_tuples_returns_file_order() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("r.csv");
-        std::fs::write(&path, "a,b\n3,1\n1,2\n2,0\n1,1\n").expect("write csv");
-        let file_order = vec![vec![3, 1], vec![1, 2], vec![2, 0], vec![1, 1]];
-
-        let (tree, tuples) = SortedTrieFamily::<TreeTrie>::default()
-            .load_with_tuples(&path)
-            .expect("load");
-        assert_eq!(tuples.to_vecs(), file_order);
-        assert_ne!(
-            visited::<SortedTrieFamily<TreeTrie>>(&tree),
-            file_order,
-            "the fixture must not already be in iteration order"
-        );
-
-        let (hash, tuples) =
-            HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::default()
-                .load_with_tuples(&path)
-                .expect("load");
-        assert_eq!(tuples.to_vecs(), file_order);
-        assert_eq!(hash.header().name(), "r");
-    }
-
-    /// `load_with_tuples` reads one buffer, keeps it and builds from one copy,
-    /// so nothing is allocated per row (#111). ColumnTrie is the probe: its
-    /// build owns only its layer arrays. At most five buffers grow with the
-    /// rows, the reader's and ColumnTrie's 2 · arity layer arrays, and each
-    /// doubles, so ten times the rows costs each at most ⌈log₂ 10⌉ = 4 more
-    /// allocations. A per-row allocation adds 9 000.
-    #[test]
-    fn load_with_tuples_allocates_independently_of_the_row_count() {
-        let allocations = |rows: usize| {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let path = dir.path().join("r.csv");
-            let mut csv = String::from("a,b\n");
-            for i in 0..rows {
-                csv.push_str(&format!("{},{}\n", i / 4, i % 4));
-            }
-            std::fs::write(&path, csv).expect("write csv");
-            let family = SortedTrieFamily::<ColumnTrie>::default();
-            // Unmeasured: a one-time initialisation must not count.
-            family.load_with_tuples(&path).expect("load");
-            let mut loaded = None;
-            let info = allocation_counter::measure(|| {
-                loaded = Some(family.load_with_tuples(&path).expect("load"));
-            });
-            let (relation, tuples) = loaded.expect("measured");
-            assert_eq!(tuples.len(), rows);
-            assert_eq!(SortedTrieFamily::<ColumnTrie>::tuple_count(&relation), rows);
-            info.count_total
-        };
-        let (small, large) = (allocations(1_000), allocations(10_000));
-        assert!(
-            large <= small + 5 * 4,
-            "load_with_tuples: {small} allocations for 1 000 rows, {large} for 10 000"
-        );
-    }
-
     /// Every tuple `F::for_each_tuple` lends, collected — the test-side
     /// stand-in for the materialising walk the families no longer offer.
     fn visited<F: RelationFamily>(rel: &F::Rel) -> Vec<Vec<usize>> {
@@ -1441,7 +1341,8 @@ mod tests {
         let family =
             HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::default();
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
-        let rel = family.build_relation(header, vec![vec![1, 2], vec![1, 2], vec![3, 4]].into());
+        let tuples = Tuples::from(vec![vec![1, 2], vec![1, 2], vec![3, 4]]);
+        let rel = family.build_index(header, kermit_ds::TupleView::all(&tuples));
         assert_eq!(
             HashTrieFamily::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::tuple_count(
                 &rel
@@ -1465,17 +1366,19 @@ mod tests {
         let header = || RelationHeader::new_positional("r", 2);
         let tuples = || Tuples::from(vec![vec![1, 2], vec![1, 2], vec![1, 3], vec![4, 5]]);
 
-        let tree = SortedTrieFamily::<TreeTrie>::default().build_relation(header(), tuples());
+        let tree = SortedTrieFamily::<TreeTrie>::default()
+            .build_index(header(), kermit_ds::TupleView::all(&tuples()));
         assert_eq!(SortedTrieFamily::<TreeTrie>::scan(&tree), 3);
         assert_eq!(SortedTrieFamily::<TreeTrie>::tuple_count(&tree), 3);
         assert_eq!(TrieLftj::<TreeTrie>::scan(&tree), 3);
 
-        let column = SortedTrieFamily::<ColumnTrie>::default().build_relation(header(), tuples());
+        let column = SortedTrieFamily::<ColumnTrie>::default()
+            .build_index(header(), kermit_ds::TupleView::all(&tuples()));
         assert_eq!(SortedTrieFamily::<ColumnTrie>::scan(&column), 3);
         assert_eq!(SortedTrieFamily::<ColumnTrie>::tuple_count(&column), 3);
 
         let hash = HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::default()
-            .build_relation(header(), tuples());
+            .build_index(header(), kermit_ds::TupleView::all(&tuples()));
         assert_eq!(
             HashTrieFamily::<SipHashStrategy, NoPruning, EagerExpansion>::scan(&hash),
             4
@@ -1490,19 +1393,18 @@ mod tests {
         );
 
         let pruned = HashTrieFamily::<SipHashStrategy, SingletonPruning, EagerExpansion>::default()
-            .build_relation(header(), tuples());
+            .build_index(header(), kermit_ds::TupleView::all(&tuples()));
         assert_eq!(
             HashTrieFamily::<SipHashStrategy, SingletonPruning, EagerExpansion>::scan(&pruned),
             4
         );
     }
 
-    /// The `build` metric builds through `build_index`, which
-    /// [`ExecutionFamily::build_relation`] wraps, so it must honour the config
-    /// too — otherwise it would time an unconfigured build under a report
-    /// labelled with the configured axes.
+    /// The `build` metric builds through [`RelationFamily::build_index`], so
+    /// it must honour the config too — otherwise it would time an
+    /// unconfigured build under a report labelled with the configured axes.
     #[test]
-    fn hash_family_build_relation_honours_its_config() {
+    fn hash_family_build_index_honours_its_config() {
         let config = HashTrieConfig {
             load_factor: kermit_ds::LoadFactor::percent(50).unwrap(),
             ..HashTrieConfig::default()
@@ -1513,7 +1415,8 @@ mod tests {
             Planner::stored(LexicographicOptimiser),
         );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
-        let rel = family.build_relation(header, vec![vec![1, 2]].into());
+        let tuples = Tuples::from(vec![vec![1, 2]]);
+        let rel = family.build_index(header, kermit_ds::TupleView::all(&tuples));
         assert_eq!(*rel.config(), config);
         assert_eq!(
             HashHtj::<kermit_iters::SipHashStrategy, NoPruning, EagerExpansion>::optimization_axes(
@@ -1529,7 +1432,7 @@ mod tests {
     /// root. 100 tuples sharing one first value hold one root key: the
     /// grown root keeps 4 buckets, while the presized one has room for 100.
     #[test]
-    fn hash_family_build_relation_presizes_the_root_under_tuples() {
+    fn hash_family_build_index_presizes_the_root_under_tuples() {
         let heap = |root_capacity| {
             let family = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
                 HashTrieConfig {
@@ -1540,9 +1443,9 @@ mod tests {
                 Planner::stored(LexicographicOptimiser),
             );
             let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
-            let tuples: Vec<Vec<usize>> = (0..100).map(|b| vec![1, b]).collect();
+            let tuples = Tuples::from((0..100).map(|b| vec![1, b]).collect::<Vec<Vec<usize>>>());
             family
-                .build_relation(header, tuples.into())
+                .build_index(header, kermit_ds::TupleView::all(&tuples))
                 .heap_size_bytes()
         };
         assert!(heap(RootCapacity::Tuples) > heap(RootCapacity::Grow));
@@ -1555,7 +1458,7 @@ mod tests {
     /// so only the children can differ and a `child-capacity` that resized
     /// the root instead would not pass.
     #[test]
-    fn hash_family_build_relation_sizes_children_under_tuples() {
+    fn hash_family_build_index_sizes_children_under_tuples() {
         let heap = |child_capacity| {
             let family = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
                 HashTrieConfig {
@@ -1567,8 +1470,9 @@ mod tests {
                 Planner::stored(LexicographicOptimiser),
             );
             let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
+            let tuples = Tuples::from(vec![vec![1, 1]; 3]);
             family
-                .build_relation(header, vec![vec![1, 1]; 3].into())
+                .build_index(header, kermit_ds::TupleView::all(&tuples))
                 .heap_size_bytes()
         };
         assert!(heap(ChildCapacity::Tuples) > heap(ChildCapacity::Grow));
@@ -1585,7 +1489,8 @@ mod tests {
                 Planner::stored(LexicographicOptimiser),
             );
         let header = RelationHeader::new("r", vec!["a".to_string(), "b".to_string()]);
-        let rel = family.build_relation(header, vec![vec![1, 2]].into());
+        let tuples = Tuples::from(vec![vec![1, 2]]);
+        let rel = family.build_index(header, kermit_ds::TupleView::all(&tuples));
         assert_eq!(
             HashHtj::<kermit_iters::SipHashStrategy, SingletonPruning, EagerExpansion>::optimization_axes(&rel)
                 .get("ds_layout_pruning"),
@@ -1593,88 +1498,48 @@ mod tests {
         );
     }
 
-    /// `count` (what `bench run` times and `--verify` checks) and the rows
-    /// `join_for_each` streams (what `kermit join` writes) come from one
+    /// `count_rows` (what `iteration` and `--verify` time and check) and the
+    /// rows `execute` streams (what `kermit join` writes) come from one
     /// traversal: they must agree in every family.
-    /// How many rows `join_for_each` streams for `query`.
-    fn rows<F: ExecutionFamily>(family: &F, engine: &F::Engine, query: JoinQuery) -> usize {
-        let mut rows = 0;
-        family.join_for_each(engine, query, |_| rows += 1).unwrap();
-        rows
-    }
-
-    /// Each engine gathers exactly the statistics its optimiser reads,
-    /// along both build paths: `iteration` never pays for a walk, and
-    /// `end_to_end` pays only for one its optimiser needs.
     #[test]
-    fn engines_gather_the_statistics_their_optimiser_reads() {
-        let header = || RelationHeader::new_positional("edge", 2);
-        let edges = || Tuples::from(vec![vec![1, 2], vec![1, 3], vec![2, 3]]);
-        for &optimiser in Optimiser::value_variants() {
-            let want = optimiser.instantiate().required_statistics();
-            // One planner per family: a `Planner` owns its optimiser.
-            let planner = || Planner::new(optimiser.instantiate(), ColumnOrderPolicy::Stored);
-            let tree = TrieLftj::<TreeTrie>::new(TreeTrieBuildMode::default(), planner());
-            let built = tree.build(vec![tree.build_relation(header(), edges())]);
-            assert_eq!(built.level(), want, "{optimiser:?}");
-            assert_eq!(
-                tree.build_from_tuples(vec![(header(), edges())]).level(),
-                want
+    fn count_rows_agrees_with_execute_in_every_family() {
+        fn check<F: ExecutionFamily>(family: &F) {
+            // Triangles in this graph: (1, 2, 3) and (2, 3, 4).
+            let edges = Tuples::from(vec![vec![1, 2], vec![2, 3], vec![1, 3], vec![3, 4], vec![
+                2, 4,
+            ]]);
+            let (catalog, prepared) = prepared_over(
+                RelationHeader::new_positional("edge", 2),
+                edges,
+                "Q(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).",
             );
-            let column = TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::default(), planner());
-            assert_eq!(
-                column.build_from_tuples(vec![(header(), edges())]).level(),
-                want
-            );
-            let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
-                HashTrieConfig::default(),
-                HashTrieBuildMode::Bulk,
-                planner(),
-            );
-            let built = hash.build(vec![hash.build_relation(header(), edges())]);
-            assert_eq!(built.level(), want, "{optimiser:?}");
-            assert_eq!(
-                hash.build_from_tuples(vec![(header(), edges())]).level(),
-                want
-            );
+            let indexes = family.build_indexes(&catalog, &prepared);
+            let mut streamed = Vec::new();
+            family.execute(&prepared, &indexes, |row| streamed.push(row.to_vec()));
+            streamed.sort();
+            assert_eq!(streamed, vec![vec![1, 2, 3], vec![2, 3, 4]]);
+            assert_eq!(family.count_rows(&prepared, &indexes), 2);
         }
-    }
-
-    #[test]
-    fn count_agrees_with_join_in_every_family() {
-        // Triangles in this graph: (1, 2, 3) and (2, 3, 4).
-        let edges = Tuples::from(vec![vec![1, 2], vec![2, 3], vec![1, 3], vec![3, 4], vec![
-            2, 4,
-        ]]);
-        let inputs = || vec![(RelationHeader::new_positional("edge", 2), edges.clone())];
-        let query: JoinQuery = "Q(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z)."
-            .parse()
-            .unwrap();
-
-        let tree = TrieLftj::<TreeTrie>::new(
+        check(&TrieLftj::<TreeTrie>::new(
             TreeTrieBuildMode::default(),
             Planner::stored(LexicographicOptimiser),
-        );
-        let engine = tree.build_from_tuples(inputs());
-        assert_eq!(tree.count(&engine, query.clone()).unwrap(), 2);
-        assert_eq!(rows(&tree, &engine, query.clone()), 2);
-
-        let column = TrieLftj::<ColumnTrie>::new(
+        ));
+        check(&TrieLftj::<ColumnTrie>::new(
             ColumnTrieBuildMode::default(),
             Planner::stored(LexicographicOptimiser),
-        );
-        let engine = column.build_from_tuples(inputs());
-        assert_eq!(column.count(&engine, query.clone()).unwrap(), 2);
-        assert_eq!(rows(&column, &engine, query.clone()), 2);
-
-        let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
+        ));
+        check(&HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
             HashTrieConfig::default(),
             HashTrieBuildMode::Bulk,
             Planner::stored(LexicographicOptimiser),
+        ));
+        check(
+            &HashHtj::<SipHashStrategy, SingletonPruning, LazyExpansion>::new(
+                HashTrieConfig::default(),
+                HashTrieBuildMode::Bulk,
+                Planner::stored(LexicographicOptimiser),
+            ),
         );
-        let engine = hash.build_from_tuples(inputs());
-        assert_eq!(hash.count(&engine, query.clone()).unwrap(), 2);
-        assert_eq!(rows(&hash, &engine, query), 2);
     }
 
     /// `read_relation_header` is what queries are validated against before
@@ -1736,11 +1601,11 @@ mod tests {
     /// family's mode reached the build, on every route a relation is built.
     #[test]
     fn sorted_families_build_with_their_mode() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("r.csv");
-        std::fs::write(&path, "a,b\n1,2\n").expect("write csv");
         let header = || RelationHeader::new_positional("r", 2);
         let tuples = || Tuples::from(vec![vec![1, 2]]);
+        // `r` read with its columns swapped: `build_indexes` builds a
+        // reordered index.
+        let (catalog, prepared) = prepared_over(header(), tuples(), "Q(X, Y) :- r(Y, X).");
         // The mode `build` hands to `build_with`, or `None` if it never does.
         let seen = |build: &dyn Fn()| {
             BUILT_WITH.take();
@@ -1751,21 +1616,15 @@ mod tests {
         for mode in [ColumnTrieBuildMode::Incremental, ColumnTrieBuildMode::Bulk] {
             let structure = SortedTrieFamily::<Spy>::new(mode);
             let join = TrieLftj::<Spy>::new(mode, Planner::stored(LexicographicOptimiser));
-            let routes: [(&str, &dyn Fn()); 5] = [
-                ("SortedTrieFamily::build_relation", &|| {
-                    structure.build_relation(header(), tuples());
+            let routes: [(&str, &dyn Fn()); 3] = [
+                ("SortedTrieFamily::build_index", &|| {
+                    structure.build_index(header(), kermit_ds::TupleView::all(&tuples()));
                 }),
-                ("SortedTrieFamily::load_with_tuples", &|| {
-                    structure.load_with_tuples(&path).expect("load");
+                ("TrieLftj::build_index", &|| {
+                    join.build_index(header(), kermit_ds::TupleView::all(&tuples()));
                 }),
-                ("TrieLftj::build_relation", &|| {
-                    join.build_relation(header(), tuples());
-                }),
-                ("TrieLftj::load", &|| {
-                    join.load(&path).expect("load");
-                }),
-                ("TrieLftj::build_from_tuples", &|| {
-                    join.build_from_tuples(vec![(header(), tuples())]);
+                ("TrieLftj::build_indexes", &|| {
+                    join.build_indexes(&catalog, &prepared);
                 }),
             ];
             for (route, build) in routes {
@@ -1777,15 +1636,13 @@ mod tests {
     /// The real `TreeTrie`, not a spy relation: its modes build identical
     /// tries, so only kermit-ds's record of parallel builds (the `test-hooks`
     /// feature) can show that the family's mode reached
-    /// `TreeTrie::from_tuples_with_build_mode`, on every route a relation is
-    /// built, copies included (#94).
+    /// `TreeTrie::from_view_with_build_mode`, on every route a relation is
+    /// built, reordered indexes included (#94).
     #[test]
     fn tree_trie_families_build_with_their_mode() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("r.csv");
-        std::fs::write(&path, "a,b\n1,2\n2,1\n3,4\n").expect("write csv");
         let header = || RelationHeader::new_positional("r", 2);
         let tuples = || Tuples::from(vec![vec![1, 2], vec![2, 1], vec![3, 4]]);
+        let (catalog, prepared) = prepared_over(header(), tuples(), "Q(X, Y) :- r(Y, X).");
         // The thread count of every parallel build `build` runs.
         let parallel_builds = |build: &dyn Fn()| {
             kermit_ds::test_hooks::take_tree_trie_parallel_builds();
@@ -1800,26 +1657,15 @@ mod tests {
         for (mode, expected) in [(TreeTrieBuildMode::Serial, vec![]), (two, vec![2])] {
             let structure = SortedTrieFamily::<TreeTrie>::new(mode);
             let join = TrieLftj::<TreeTrie>::new(mode, Planner::stored(LexicographicOptimiser));
-            let routes: [(&str, &dyn Fn()); 6] = [
-                ("SortedTrieFamily::build_relation", &|| {
-                    structure.build_relation(header(), tuples());
+            let routes: [(&str, &dyn Fn()); 3] = [
+                ("SortedTrieFamily::build_index", &|| {
+                    structure.build_index(header(), kermit_ds::TupleView::all(&tuples()));
                 }),
-                ("SortedTrieFamily::load_with_tuples", &|| {
-                    structure.load_with_tuples(&path).expect("load");
+                ("TrieLftj::build_index", &|| {
+                    join.build_index(header(), kermit_ds::TupleView::all(&tuples()));
                 }),
-                ("TrieLftj::build_relation", &|| {
-                    join.build_relation(header(), tuples());
-                }),
-                ("TrieLftj::load", &|| {
-                    join.load(&path).expect("load");
-                }),
-                ("TrieLftj::build_from_tuples", &|| {
-                    join.build_from_tuples(vec![(header(), tuples())]);
-                }),
-                ("TrieLftj::add_index", &|| {
-                    let mut engine = join.build(Vec::new());
-                    let spec = CopySpec::new("r", vec![1, 0]);
-                    join.add_index(&mut engine, spec, &header(), &tuples());
+                ("TrieLftj::build_indexes", &|| {
+                    join.build_indexes(&catalog, &prepared);
                 }),
             ];
             for (route, build) in routes {
@@ -1936,11 +1782,9 @@ mod tests {
     #[test]
     fn hash_families_build_with_their_mode() {
         fn check<E: ExpansionPolicy>() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let path = dir.path().join("r.csv");
-            std::fs::write(&path, "a,b\n1,2\n1,3\n2,4\n").expect("write csv");
             let header = || RelationHeader::new_positional("r", 2);
             let tuples = || Tuples::from(vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
+            let (catalog, prepared) = prepared_over(header(), tuples(), "Q(X, Y) :- r(Y, X).");
             let config = HashTrieConfig::default();
             let structure = |mode| HashTrieFamily::<CountingHash, NoPruning, E>::new(config, mode);
             let join = |mode| {
@@ -1950,21 +1794,15 @@ mod tests {
                     Planner::stored(LexicographicOptimiser),
                 )
             };
-            let routes: [(&str, &dyn Fn(HashTrieBuildMode)); 5] = [
-                ("HashTrieFamily::build_relation", &|mode| {
-                    structure(mode).build_relation(header(), tuples());
+            let routes: [(&str, &dyn Fn(HashTrieBuildMode)); 3] = [
+                ("HashTrieFamily::build_index", &|mode| {
+                    structure(mode).build_index(header(), kermit_ds::TupleView::all(&tuples()));
                 }),
-                ("HashTrieFamily::load_with_tuples", &|mode| {
-                    structure(mode).load_with_tuples(&path).expect("load");
+                ("HashHtj::build_index", &|mode| {
+                    join(mode).build_index(header(), kermit_ds::TupleView::all(&tuples()));
                 }),
-                ("HashHtj::build_relation", &|mode| {
-                    join(mode).build_relation(header(), tuples());
-                }),
-                ("HashHtj::load", &|mode| {
-                    join(mode).load(&path).expect("load");
-                }),
-                ("HashHtj::build_from_tuples", &|mode| {
-                    join(mode).build_from_tuples(vec![(header(), tuples())]);
+                ("HashHtj::build_indexes", &|mode| {
+                    join(mode).build_indexes(&catalog, &prepared);
                 }),
             ];
             let hashes = |build: &dyn Fn()| {
@@ -1991,16 +1829,15 @@ mod tests {
     /// The real `HashTrie`, not the counting spy, which cannot tell
     /// `parallel:N` from `radix:K`: only kermit-ds's record of parallel
     /// builds (the `test-hooks` feature) shows that the family's mode reached
-    /// the build, on every route a relation is built, copies included,
-    /// eager or lazy, and `presized:N` reached the presized fill (#94).
+    /// the build, on every route a relation is built, reordered indexes
+    /// included, eager or lazy, and `presized:N` reached the presized fill
+    /// (#94).
     #[test]
     fn hash_trie_families_build_with_their_parallel_mode() {
         fn check<E: ExpansionPolicy>() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let path = dir.path().join("r.csv");
-            std::fs::write(&path, "a,b\n1,2\n2,1\n3,4\n").expect("write csv");
             let header = || RelationHeader::new_positional("r", 2);
             let tuples = || Tuples::from(vec![vec![1, 2], vec![2, 1], vec![3, 4]]);
+            let (catalog, prepared) = prepared_over(header(), tuples(), "Q(X, Y) :- r(Y, X).");
             // The record of every parallel build `build` runs.
             let parallel_builds = |build: &dyn Fn()| {
                 kermit_ds::test_hooks::take_hash_trie_parallel_builds();
@@ -2039,26 +1876,15 @@ mod tests {
                     mode,
                     Planner::stored(LexicographicOptimiser),
                 );
-                let routes: [(&str, &dyn Fn()); 6] = [
-                    ("HashTrieFamily::build_relation", &|| {
-                        structure.build_relation(header(), tuples());
+                let routes: [(&str, &dyn Fn()); 3] = [
+                    ("HashTrieFamily::build_index", &|| {
+                        structure.build_index(header(), kermit_ds::TupleView::all(&tuples()));
                     }),
-                    ("HashTrieFamily::load_with_tuples", &|| {
-                        structure.load_with_tuples(&path).expect("load");
+                    ("HashHtj::build_index", &|| {
+                        join.build_index(header(), kermit_ds::TupleView::all(&tuples()));
                     }),
-                    ("HashHtj::build_relation", &|| {
-                        join.build_relation(header(), tuples());
-                    }),
-                    ("HashHtj::load", &|| {
-                        join.load(&path).expect("load");
-                    }),
-                    ("HashHtj::build_from_tuples", &|| {
-                        join.build_from_tuples(vec![(header(), tuples())]);
-                    }),
-                    ("HashHtj::add_index", &|| {
-                        let mut engine = join.build(Vec::new());
-                        let spec = CopySpec::new("r", vec![1, 0]);
-                        join.add_index(&mut engine, spec, &header(), &tuples());
+                    ("HashHtj::build_indexes", &|| {
+                        join.build_indexes(&catalog, &prepared);
                     }),
                 ];
                 for (route, build) in routes {
@@ -2180,9 +2006,10 @@ mod tests {
             TreeTrieBuildMode::default(),
             Planner::stored(LexicographicOptimiser),
         );
-        let rel = family.build_relation(
+        let tuples = Tuples::from(vec![vec![1, 2]]);
+        let rel = family.build_index(
             RelationHeader::new_positional("r", 2),
-            vec![vec![1, 2]].into(),
+            kermit_ds::TupleView::all(&tuples),
         );
         assert_eq!(
             TrieLftj::<TreeTrie<GallopingSeek>>::optimization_axes(&rel)["ds_layout_seek"],
@@ -2190,33 +2017,32 @@ mod tests {
         );
     }
 
-    /// A copy is built through `build_relation`, so it carries the
-    /// family's build mode (seen by the spy) and config (seen on the
-    /// copy), and the engine holds it until cleared.
+    /// An index the query reads in another column order is built through
+    /// `build_index` too, so it carries the family's build mode (seen by
+    /// the spy) and config (seen on the index).
     #[test]
-    fn families_build_copies_through_build_relation() {
-        let header = RelationHeader::new_positional("edge", 2);
-        let edges = Tuples::from(vec![vec![1, 2], vec![1, 3], vec![2, 3]]);
-        let spec = || CopySpec::new("edge", vec![1, 0]);
+    fn families_build_reordered_indexes_with_their_mode_and_config() {
+        let header = || RelationHeader::new_positional("edge", 2);
+        let edges = || Tuples::from(vec![vec![1, 2], vec![1, 3], vec![2, 3]]);
+        // `edge` read with its columns swapped: the one index is columns [1,
+        // 0].
+        let (catalog, prepared) = prepared_over(header(), edges(), "Q(X, Y) :- edge(Y, X).");
 
         let join = TrieLftj::<Spy>::new(
             ColumnTrieBuildMode::Incremental,
             Planner::stored(LexicographicOptimiser),
         );
-        let mut engine = join.build(vec![join.build_relation(header.clone(), edges.clone())]);
         BUILT_WITH.take();
-        join.add_index(&mut engine, spec(), &header, &edges);
+        let indexes = join.build_indexes(&catalog, &prepared);
         assert_eq!(BUILT_WITH.take(), Some(ColumnTrieBuildMode::Incremental));
-        let held: Vec<&CopySpec> = TrieLftj::<Spy>::indexes(&engine)
-            .into_iter()
-            .map(|(spec, _)| spec)
+        let columns: Vec<&[usize]> = indexes
+            .iter()
+            .map(|(spec, _)| spec.columns.as_slice())
             .collect();
-        assert_eq!(held, vec![&spec()]);
-        let copy = engine.index("Index_1_0_edge").unwrap();
-        assert_eq!(copy.header().name(), "Index_1_0_edge");
-        assert_eq!(copy.header().arity(), 2);
-        TrieLftj::<Spy>::clear_indexes(&mut engine);
-        assert!(TrieLftj::<Spy>::indexes(&engine).is_empty());
+        assert_eq!(columns, vec![&[1, 0][..]]);
+        let (_, index) = indexes.iter().next().expect("one index");
+        assert_eq!(index.header().name(), "edge");
+        assert_eq!(index.header().arity(), 2);
 
         let config = HashTrieConfig {
             load_factor: LoadFactor::percent(50).unwrap(),
@@ -2227,43 +2053,10 @@ mod tests {
             HashTrieBuildMode::Bulk,
             Planner::stored(LexicographicOptimiser),
         );
-        let mut engine = hash.build(vec![hash.build_relation(header.clone(), edges.clone())]);
-        hash.add_index(&mut engine, spec(), &header, &edges);
-        let (_, copy) = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::indexes(&engine)[0];
-        assert_eq!(copy.config(), &config);
-        assert_eq!(copy.header().name(), "Index_1_0_edge");
-    }
-
-    /// `required_indexes` goes through the engine's planner: the cyclic
-    /// query needs one copy under `any` and is rejected under `stored`.
-    #[test]
-    fn required_indexes_follow_the_familys_planner() {
-        let header = || RelationHeader::new_positional("edge", 2);
-        let edges = || Tuples::from(vec![vec![1, 2], vec![2, 1]]);
-        let query: JoinQuery = "Q(X, Y) :- edge(X, Y), edge(Y, X).".parse().unwrap();
-
-        let stored = TrieLftj::<TreeTrie>::new(
-            TreeTrieBuildMode::default(),
-            Planner::stored(LexicographicOptimiser),
-        );
-        let engine = stored.build(vec![stored.build_relation(header(), edges())]);
-        assert!(matches!(
-            stored.required_indexes(&engine, &query),
-            Err(JoinError::CyclicAttributeOrder { .. })
-        ));
-
-        let any = TrieLftj::<TreeTrie>::new(
-            TreeTrieBuildMode::default(),
-            Planner::new(Box::new(LexicographicOptimiser), ColumnOrderPolicy::Any),
-        );
-        let mut engine = any.build(vec![any.build_relation(header(), edges())]);
-        let specs = any.required_indexes(&engine, &query).unwrap();
-        assert_eq!(specs, vec![CopySpec::new("edge", vec![1, 0])]);
-        for spec in specs {
-            any.add_index(&mut engine, spec, &header(), &edges());
-        }
-        assert_eq!(any.count(&engine, query.clone()).unwrap(), 2);
-        assert!(any.required_indexes(&engine, &query).unwrap().is_empty());
+        let indexes = hash.build_indexes(&catalog, &prepared);
+        let (_, index) = indexes.iter().next().expect("one index");
+        assert_eq!(index.config(), &config);
+        assert_eq!(index.header().name(), "edge");
     }
 
     /// Five rows of arity 3, the first and the last equal: the source of the
@@ -2276,13 +2069,14 @@ mod tests {
         source
     }
 
-    /// `build_index` over `view` builds the relation that `build_relation`
-    /// builds over the view's materialisation: the same tuples, the same
-    /// count and the same heap.
+    /// `build_index` over `view` builds the relation that `build_index`
+    /// builds over the identity view of the view's materialisation: the same
+    /// tuples, the same count and the same heap.
     fn assert_view_builds_like_batch<F: RelationFamily>(family: &F, view: &TupleView<'_>) {
         let header = || RelationHeader::new_positional("r", view.arity());
+        let materialised = view.materialize();
         let from_view = family.build_index(header(), view.clone());
-        let from_batch = family.build_relation(header(), view.materialize());
+        let from_batch = family.build_index(header(), TupleView::all(&materialised));
         let (mut viewed, mut batched) = (visited::<F>(&from_view), visited::<F>(&from_batch));
         viewed.sort();
         batched.sort();
@@ -2403,17 +2197,6 @@ mod tests {
         assert_eq!(Eager::tuple_count(&hash), 0);
     }
 
-    /// A catalog holding the relation `r` and the query `text` prepared over
-    /// it: the input of `build_indexes`.
-    fn prepared_over_r(tuples: Tuples, text: &str) -> (Catalog, Prepared) {
-        let planner = Planner::stored(LexicographicOptimiser);
-        let relations = vec![(RelationHeader::new_positional("r", 2), tuples)];
-        let catalog = Catalog::new(relations, planner.required_statistics());
-        let query: JoinQuery = text.parse().unwrap();
-        let prepared = db::prepare(&catalog, &query, &planner).unwrap();
-        (catalog, prepared)
-    }
-
     /// `build_indexes` builds every index through the family's one
     /// construction site, so each carries the family's build mode (seen by a
     /// spy and by kermit-ds's record of parallel builds) and config (seen on
@@ -2422,7 +2205,11 @@ mod tests {
     #[test]
     fn build_indexes_builds_each_index_by_the_familys_mode_and_config() {
         let tuples = || Tuples::from(vec![vec![1, 2], vec![2, 1], vec![3, 4]]);
-        let (catalog, prepared) = prepared_over_r(tuples(), "Q(X, Y, Z) :- r(X, Y), r(Z, Y).");
+        let (catalog, prepared) = prepared_over(
+            RelationHeader::new_positional("r", 2),
+            tuples(),
+            "Q(X, Y, Z) :- r(X, Y), r(Z, Y).",
+        );
         let specs = prepared.indexes();
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].columns, vec![0, 1]);
@@ -2478,42 +2265,29 @@ mod tests {
         }
     }
 
-    /// Runs `text` over `edges` through `family`'s old engine and through its
-    /// per-query pipeline: the rows each streams agree, `count_rows` agrees
-    /// with the old `count`, and both equal the hand-counted `expected`.
-    fn assert_pipelines_agree<F: ExecutionFamily>(
+    /// Runs `text` over `edges` through `family`'s per-query pipeline: the
+    /// rows `execute` streams number the hand-counted `expected`, and
+    /// `count_rows` counts the same.
+    fn assert_pipeline_answers<F: ExecutionFamily>(
         family: &F, edges: &Tuples, text: &str, expected: u64,
     ) {
-        let query: JoinQuery = text.parse().unwrap();
-        let inputs = || vec![(RelationHeader::new_positional("edge", 2), edges.clone())];
-
-        let engine = family.build_from_tuples(inputs());
-        let mut old_rows = Vec::new();
-        family
-            .join_for_each(&engine, query.clone(), |row| old_rows.push(row.to_vec()))
-            .unwrap();
-        let old_count = family.count(&engine, query.clone()).unwrap();
-
-        let planner = Planner::stored(LexicographicOptimiser);
-        let catalog = Catalog::new(inputs(), planner.required_statistics());
-        let prepared = db::prepare(&catalog, &query, &planner).unwrap();
+        let (catalog, prepared) = prepared_over(
+            RelationHeader::new_positional("edge", 2),
+            edges.clone(),
+            text,
+        );
         let indexes = family.build_indexes(&catalog, &prepared);
-        let mut new_rows = Vec::new();
-        family.execute(&prepared, &indexes, |row| new_rows.push(row.to_vec()));
-        let new_count = family.count_rows(&prepared, &indexes);
-
-        old_rows.sort();
-        new_rows.sort();
-        assert_eq!(new_rows, old_rows, "{text}");
-        assert_eq!(old_count, expected, "{text}");
-        assert_eq!(new_count, old_count, "{text}");
+        let mut rows = Vec::new();
+        family.execute(&prepared, &indexes, |row| rows.push(row.to_vec()));
+        assert_eq!(rows.len() as u64, expected, "{text}");
+        assert_eq!(family.count_rows(&prepared, &indexes), expected, "{text}");
     }
 
-    /// `execute` and `count_rows` answer what the old engine answers, in
-    /// every family: a self-join, a constant, a repeated variable, a
-    /// placeholder and a query whose index reads `edge` reversed.
+    /// `execute` and `count_rows` answer the hand-counted rows in every
+    /// family: a self-join, a constant, a repeated variable, a placeholder
+    /// and a query whose index reads `edge` reversed.
     #[test]
-    fn execute_and_count_rows_agree_with_the_old_engine_in_every_family() {
+    fn execute_and_count_rows_answer_in_every_family() {
         // The edges 1 to 2, 2 to 3, 1 to 3, 3 to 4, 2 to 4, and the loop on 4.
         let mut edges = Tuples::new(2);
         for (src, dst) in [(1, 2), (2, 3), (1, 3), (3, 4), (2, 4), (4, 4)] {
@@ -2532,24 +2306,29 @@ mod tests {
             ("Q(Y, X) :- edge(X, Y).", 6),
         ];
 
-        let planner = || Planner::stored(LexicographicOptimiser);
-        let tree = TrieLftj::<TreeTrie>::new(TreeTrieBuildMode::default(), planner());
-        let column = TrieLftj::<ColumnTrie>::new(ColumnTrieBuildMode::default(), planner());
+        let tree = TrieLftj::<TreeTrie>::new(
+            TreeTrieBuildMode::default(),
+            Planner::stored(LexicographicOptimiser),
+        );
+        let column = TrieLftj::<ColumnTrie>::new(
+            ColumnTrieBuildMode::default(),
+            Planner::stored(LexicographicOptimiser),
+        );
         let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion>::new(
             HashTrieConfig::default(),
             HashTrieBuildMode::Bulk,
-            planner(),
+            Planner::stored(LexicographicOptimiser),
         );
         let lazy = HashHtj::<SipHashStrategy, SingletonPruning, LazyExpansion>::new(
             HashTrieConfig::default(),
             HashTrieBuildMode::Bulk,
-            planner(),
+            Planner::stored(LexicographicOptimiser),
         );
         for (text, expected) in queries {
-            assert_pipelines_agree(&tree, &edges, text, expected);
-            assert_pipelines_agree(&column, &edges, text, expected);
-            assert_pipelines_agree(&hash, &edges, text, expected);
-            assert_pipelines_agree(&lazy, &edges, text, expected);
+            assert_pipeline_answers(&tree, &edges, text, expected);
+            assert_pipeline_answers(&column, &edges, text, expected);
+            assert_pipeline_answers(&hash, &edges, text, expected);
+            assert_pipeline_answers(&lazy, &edges, text, expected);
         }
     }
 
@@ -2562,8 +2341,9 @@ mod tests {
     #[should_panic]
     fn execute_refuses_indexes_built_for_another_prepared_query() {
         let tuples = || Tuples::from(vec![vec![1, 2], vec![2, 1], vec![3, 4]]);
-        let (catalog, forward) = prepared_over_r(tuples(), "Q(A, B) :- r(A, B).");
-        let (_, reversed) = prepared_over_r(tuples(), "Q(B, A) :- r(A, B).");
+        let header = || RelationHeader::new_positional("r", 2);
+        let (catalog, forward) = prepared_over(header(), tuples(), "Q(A, B) :- r(A, B).");
+        let (_, reversed) = prepared_over(header(), tuples(), "Q(B, A) :- r(A, B).");
         let family = TrieLftj::<TreeTrie>::new(
             TreeTrieBuildMode::default(),
             Planner::stored(LexicographicOptimiser),
