@@ -300,18 +300,118 @@ fn non_variable_head_terms() {
     );
 }
 
-/// Mutual edges need `edge` in two column orders: a limitation, which
-/// used to panic in the planner.
+/// A relation with a mutual pair (1 and 2), a one-way edge and a self-loop.
+const MUTUAL_EDGES: &str = "src,dst\n1,2\n2,1\n2,3\n3,3\n";
+
+/// Both `edge(X, Y)` and `edge(Y, X)` hold. The query reads `edge` in two
+/// column orders, which `--column-orders stored` rejected as a limitation;
+/// every query now builds each index in its plan's order, so it just runs.
+const MUTUAL_QUERY: &str = "Q(X, Y) :- edge(X, Y), edge(Y, X).";
+
+/// [`MUTUAL_QUERY`]'s answer over [`MUTUAL_EDGES`], sorted.
+const MUTUAL_ROWS: [&str; 3] = ["1,2", "2,1", "3,3"];
+
+/// Writes [`MUTUAL_EDGES`] and [`MUTUAL_QUERY`] into `dir`; returns their
+/// paths.
+fn write_mutual_fixture(dir: &Path) -> (PathBuf, PathBuf) {
+    let edge = dir.join("edge.csv");
+    fs::write(&edge, MUTUAL_EDGES).unwrap();
+    let query = dir.join("mutual.dl");
+    fs::write(&query, MUTUAL_QUERY).unwrap();
+    (edge, query)
+}
+
+/// Splits CSV output into its header line and its data lines, sorted (the
+/// hash family's row order is unspecified).
+fn header_and_sorted_rows(csv: &str) -> (&str, Vec<&str>) {
+    let mut lines = csv.lines();
+    let header = lines.next().expect("a header line");
+    let mut rows: Vec<&str> = lines.collect();
+    rows.sort_unstable();
+    (header, rows)
+}
+
+/// The mutual-edge query needs `edge` in two column orders. It used to be
+/// rejected as a limitation; now it runs, with the same answer, on every cell.
 #[test]
-fn cyclic_attribute_order_is_a_reported_limitation() {
-    assert_rejected_everywhere(
-        "Q(X, Y) :- edge(X, Y), edge(Y, X).",
-        "atoms `edge(X, Y)`, `edge(Y, X)` need their relations' columns in contradictory orders",
-    );
-    let outputs = join_on_every_cell("Q(X, Y) :- edge(X, Y), edge(Y, X).");
-    let stderr = String::from_utf8_lossy(&outputs[0].stderr);
-    assert!(stderr.contains("limitation"), "{stderr}");
-    assert!(stderr.contains("--column-orders any"), "{stderr}");
+fn mutual_edges_run_on_every_cell() {
+    let dir = TempDir::new().unwrap();
+    let (edge, query) = write_mutual_fixture(dir.path());
+    for cell in CELLS {
+        let output = Command::new(kermit_bin())
+            .env("RUST_BACKTRACE", "0")
+            .env("RUST_LIB_BACKTRACE", "0")
+            .arg("join")
+            .arg("-r")
+            .arg(&edge)
+            .arg("-q")
+            .arg(&query)
+            .args(cell)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{cell:?}: {stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let (header, rows) = header_and_sorted_rows(&stdout);
+        assert_eq!(header, "X,Y", "{cell:?}");
+        assert_eq!(rows, MUTUAL_ROWS, "{cell:?}");
+    }
+}
+
+/// `--column-orders` is gone from `join` and `bench join` (and `bench run`,
+/// which shares `PlannerArgs`): clap rejects it as an unknown argument.
+#[test]
+fn column_orders_flag_is_gone() {
+    let dir = TempDir::new().unwrap();
+    let (edge, query) = write_mutual_fixture(dir.path());
+    let report = dir.path().join("report.json");
+    let edge = edge.to_str().unwrap();
+    let query = query.to_str().unwrap();
+    let report = report.to_str().unwrap();
+    let invocations: [Vec<&str>; 2] = [
+        vec![
+            "join",
+            "-r",
+            edge,
+            "-q",
+            query,
+            "-i",
+            "tree-trie",
+            "-a",
+            "leapfrog-triejoin",
+            "--column-orders",
+            "any",
+        ],
+        vec![
+            "bench",
+            "--report-json",
+            report,
+            "join",
+            "-r",
+            edge,
+            "-q",
+            query,
+            "-i",
+            "tree-trie",
+            "-a",
+            "leapfrog-triejoin",
+            "-m",
+            "space",
+            "--column-orders",
+            "any",
+        ],
+    ];
+    for args in &invocations {
+        let output = Command::new(kermit_bin())
+            .env("RUST_BACKTRACE", "0")
+            .args(args)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("--column-orders"), "{args:?}: {stderr}");
+        assert!(output.stdout.is_empty(), "{args:?}: wrote to stdout");
+    }
 }
 
 /// `bench run` validates every query of a workload before it loads or

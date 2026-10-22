@@ -1,7 +1,7 @@
 //! CLI option groups for the optimisation axes (`--ds-layout-*`,
-//! `--ds-config`, `--ds-build`), the planner (`--optimiser`,
-//! `--column-orders`), and the places the Layout products are
-//! monomorphised: `with_hash_trie_layout!` and `with_sorted_trie_layout!`.
+//! `--ds-config`, `--ds-build`), the planner (`--optimiser`), and the
+//! places the Layout products are monomorphised: `with_hash_trie_layout!`
+//! and `with_sorted_trie_layout!`.
 
 use {
     crate::IndexStructureSelector,
@@ -15,31 +15,25 @@ use {
     std::fmt,
 };
 
-/// How a join is planned: the optimiser and the column-order policy.
-/// Flattened into `join`, `bench join` and `bench run`; `bench ds` joins
-/// nothing and has neither flag.
+/// How a join is planned: the optimiser. Flattened into `join`,
+/// `bench join` and `bench run`; `bench ds` joins nothing and has no such
+/// flag. There is no column-order flag: a query builds each of its indexes
+/// with the columns in its plan's order, so the planner is free to choose
+/// any variable order.
 #[derive(Args, Copy, Clone, Debug)]
 pub(crate) struct PlannerArgs {
     /// Query optimiser (plans the join's variable ordering). Long-only:
     /// `-o` belongs to `--output`.
     #[arg(long, value_enum, default_value_t = Optimiser::Lexicographic)]
     pub(crate) optimiser: Optimiser,
-
-    /// Column orders the planner may bind an atom's columns in: `stored`
-    /// reads each relation in its stored column order, so a plan binds
-    /// every atom's columns left to right; `any` lets the planner choose,
-    /// and an atom whose plan disagrees with the stored order runs over a
-    /// per-query copy with the columns permuted, built before the timed
-    /// join (`copies`) and dropped after the query.
-    #[arg(long, value_enum, default_value_t = ColumnOrderPolicy::Stored)]
-    pub(crate) column_orders: ColumnOrderPolicy,
 }
 
 impl PlannerArgs {
-    /// The planner these flags select. A `Planner` owns its optimiser, so
-    /// each family gets its own.
+    /// The planner these flags select, planning over any column order
+    /// ([`ColumnOrderPolicy::Any`]). A `Planner` owns its optimiser, so each
+    /// family gets its own.
     pub(crate) fn instantiate(self) -> Planner {
-        Planner::new(self.optimiser.instantiate(), self.column_orders)
+        Planner::new(self.optimiser.instantiate(), ColumnOrderPolicy::Any)
     }
 }
 
@@ -2050,7 +2044,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_args_default_to_lexicographic_stored() {
+    fn planner_args_default_to_lexicographic_and_take_no_column_orders() {
         #[derive(Parser)]
         struct Cli {
             #[command(flatten)]
@@ -2058,22 +2052,11 @@ mod tests {
         }
         let cli = Cli::parse_from(["kermit"]);
         assert_eq!(cli.planner.optimiser, Optimiser::Lexicographic);
-        assert_eq!(cli.planner.column_orders, ColumnOrderPolicy::Stored);
-        assert_eq!(
-            cli.planner.instantiate().column_orders(),
-            ColumnOrderPolicy::Stored
-        );
-        let cli = Cli::parse_from([
-            "kermit",
-            "--column-orders",
-            "any",
-            "--optimiser",
-            "cost-based",
-        ]);
+        let cli = Cli::parse_from(["kermit", "--optimiser", "cost-based"]);
         assert_eq!(cli.planner.optimiser, Optimiser::CostBased);
-        assert_eq!(
-            cli.planner.instantiate().column_orders(),
-            ColumnOrderPolicy::Any
-        );
+        let err = Cli::try_parse_from(["kermit", "--column-orders", "any"])
+            .err()
+            .expect("the removed flag is rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 }

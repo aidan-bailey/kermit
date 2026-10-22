@@ -559,7 +559,7 @@ fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<(
         .iter()
         .map(|path| read_relation_header(path))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    validate_query(query, headers.as_slice(), args.planner.column_orders)
+    validate_query(query, headers.as_slice(), ColumnOrderPolicy::Any)
         .map_err(|e| anyhow::anyhow!("query {:?}: {e}", args.query))
 }
 
@@ -588,7 +588,7 @@ fn query_cell(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Execution>
 fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRunner> {
     // One planner per family: a `Planner` owns its optimiser.
     let planner = || args.planner.instantiate();
-    let column_orders = args.planner.column_orders;
+    let column_orders = ColumnOrderPolicy::Any;
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
