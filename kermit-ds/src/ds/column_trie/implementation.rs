@@ -4,7 +4,7 @@ use {
         relation::{BuildModeRelation, Relation, RelationHeader},
         seek::{seek_axes, GallopingSeek, SeekStrategy},
     },
-    kermit_iters::{HasOptimizationAxes, JoinIterable, Tuples},
+    kermit_iters::{HasOptimizationAxes, JoinIterable, TupleView, Tuples},
     serde_json::Value,
     std::{collections::BTreeMap, fmt, marker::PhantomData},
 };
@@ -424,13 +424,25 @@ impl<S: SeekStrategy> Relation for ColumnTrie<S> {
         }
     }
 
-    /// Builds with the default [`ColumnTrieBuildMode`], `Bulk`.
+    /// Builds from the rows a view keeps with the default
+    /// [`ColumnTrieBuildMode`], `Bulk`.
     ///
     /// # Panics
     ///
-    /// As [`from_tuples_with_build_mode`](BuildModeRelation::from_tuples_with_build_mode).
+    /// As [`from_view_with_build_mode`](BuildModeRelation::from_view_with_build_mode).
+    fn from_view(header: RelationHeader, view: TupleView<'_>) -> Self {
+        Self::from_view_with_build_mode(header, ColumnTrieBuildMode::default(), view)
+    }
+
+    /// Builds with the default [`ColumnTrieBuildMode`], `Bulk`:
+    /// [`from_view`](Self::from_view) over [`TupleView::all`].
+    ///
+    /// # Panics
+    ///
+    /// As [`from_view_with_build_mode`](BuildModeRelation::from_view_with_build_mode).
     fn from_tuples(header: RelationHeader, tuples: impl Into<Tuples>) -> Self {
-        Self::from_tuples_with_build_mode(header, ColumnTrieBuildMode::default(), tuples)
+        let tuples: Tuples = tuples.into();
+        Self::from_view(header, TupleView::all(&tuples))
     }
 
     /// Inserts a single tuple. Duplicate tuples are silently absorbed.
@@ -461,11 +473,42 @@ impl<S: SeekStrategy> Relation for ColumnTrie<S> {
 impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
     type BuildMode = ColumnTrieBuildMode;
 
-    /// Sorts the batch with [`Tuples::sort`] (lexicographic; in place up to
-    /// arity 4, into a new buffer of exactly the rows' size for wider rows),
-    /// then builds the layers by `mode`: one pass over the sorted rows for
-    /// `Bulk` (see `from_sorted`), one `insert` per row for `Incremental`
-    /// (see `from_sorted_by_insertion`).
+    /// Copies the rows the view keeps once, sorted, with
+    /// [`TupleView::materialize_sorted`] (lexicographic, into a buffer of
+    /// exactly their size, one copy at every arity; freed when the build
+    /// returns), then builds the layers by `mode`: one pass over the sorted
+    /// rows for `Bulk` (see `from_sorted`), one `insert` per row for
+    /// `Incremental` (see `from_sorted_by_insertion`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the view's source has rows and the view's arity does not
+    /// match `header.arity()`, even when the filter keeps none. An empty
+    /// source builds the empty trie under any header.
+    fn from_view_with_build_mode(
+        header: RelationHeader, mode: ColumnTrieBuildMode, view: TupleView<'_>,
+    ) -> Self {
+        // Panics on a source with rows whose arity is not the header's, even
+        // when the filter keeps none; an empty source passes (`vec![]`
+        // converts to arity 0).
+        crate::relation::check_view_arity(&header, &view);
+        if view.source_rows() == 0 {
+            return Self::new(header);
+        }
+        // The one sort every sorted-trie build runs (TreeTrie's `serial` and
+        // `parallel:N` builds too): a comparison costs the same in every
+        // ColumnTrie build and in TreeTrie's, so a change in the `insertion`
+        // metric measures the build routine alone. Its order is the
+        // lexicographic order the hand-rolled comparator gave before #111.
+        let sorted = view.materialize_sorted();
+        match mode {
+            | ColumnTrieBuildMode::Incremental => Self::from_sorted_by_insertion(header, &sorted),
+            | ColumnTrieBuildMode::Bulk => Self::from_sorted(header, &sorted),
+        }
+    }
+
+    /// [`from_view_with_build_mode`](Self::from_view_with_build_mode) over
+    /// [`TupleView::all`].
     ///
     /// # Panics
     ///
@@ -475,28 +518,8 @@ impl<S: SeekStrategy> BuildModeRelation for ColumnTrie<S> {
     fn from_tuples_with_build_mode(
         header: RelationHeader, mode: ColumnTrieBuildMode, tuples: impl Into<Tuples>,
     ) -> Self {
-        let mut tuples: Tuples = tuples.into();
-        // An empty batch's arity need not match (`vec![]` converts to arity
-        // 0), so only a non-empty one must match the header.
-        if !tuples.is_empty() {
-            let arity = tuples.arity();
-            assert_eq!(
-                arity,
-                header.arity(),
-                "from_tuples: tuple arity {arity} does not match header arity {}",
-                header.arity()
-            );
-        }
-        // `Tuples::sort`, the one sort every sorted-trie build runs (TreeTrie's
-        // `serial` and `parallel:N` builds too): a comparison costs the same in
-        // every ColumnTrie build and in TreeTrie's, so a change in the
-        // `insertion` metric measures the build routine alone. Its order is
-        // the lexicographic order the hand-rolled comparator gave before #111.
-        tuples.sort();
-        match mode {
-            | ColumnTrieBuildMode::Incremental => Self::from_sorted_by_insertion(header, &tuples),
-            | ColumnTrieBuildMode::Bulk => Self::from_sorted(header, &tuples),
-        }
+        let tuples: Tuples = tuples.into();
+        Self::from_view_with_build_mode(header, mode, TupleView::all(&tuples))
     }
 }
 
@@ -533,7 +556,10 @@ mod tests {
             test_support::{take_spy_lengths, Lcg, SpySeek},
             BinarySeek, GallopingSeek, HeapSize, LinearSeek, SeekStrategy,
         },
-        kermit_iters::{HasOptimizationAxes, LinearIterator, TrieIterable, TrieIterator, Tuples},
+        kermit_iters::{
+            Filter, HasOptimizationAxes, LinearIterator, TrieIterable, TrieIterator, TupleView,
+            Tuples,
+        },
     };
 
     #[test]
@@ -900,6 +926,102 @@ mod tests {
             let built: ColumnTrie =
                 ColumnTrie::from_tuples_with_build_mode(2.into(), mode, Tuples::new(5));
             assert_identical(&built, &ColumnTrie::new(2.into()), &format!("{mode:?}"));
+        }
+    }
+
+    /// A filtered, permuted view builds the trie of the rows it keeps, in
+    /// both modes: the same arrays and capacities as inserting those rows one
+    /// at a time in arrival order. The filter keeps rows whose column 0 is 1
+    /// and whose columns 1 and 2 agree; the view reads the other columns in
+    /// reverse. Source arities 3 and 5 give output arities 2 and 4 (the sort
+    /// in place), and 6 gives 5 (the permutation path).
+    #[test]
+    fn a_filtered_permuted_view_builds_the_trie_of_the_rows_it_keeps() {
+        let mut rng = Lcg(0xF117);
+        for arity in [3usize, 5, 6] {
+            for n in [0, 1, 40, 400] {
+                let raw: Vec<Vec<usize>> = (0..n)
+                    .map(|_| (0..arity).map(|_| rng.next_usize() % 3).collect())
+                    .collect();
+                let mut batch = Tuples::with_capacity(arity, n);
+                for row in &raw {
+                    batch.push(row);
+                }
+                let filter = Filter::new(vec![(0, 1)], vec![(1, 2)]);
+                let columns: Vec<usize> = (1..arity).rev().collect();
+                let kept: Vec<Vec<usize>> = raw
+                    .iter()
+                    .filter(|row| row[0] == 1 && row[1] == row[2])
+                    .map(|row| columns.iter().map(|&c| row[c]).collect())
+                    .collect();
+                if n == 400 {
+                    assert!(
+                        !kept.is_empty(),
+                        "arity {arity}: the filter keeps something"
+                    );
+                }
+                let expected = insert_one_by_one(arity - 1, &kept);
+                for mode in [ColumnTrieBuildMode::Bulk, ColumnTrieBuildMode::Incremental] {
+                    let view = TupleView::new(&batch, filter.clone(), columns.clone());
+                    let built: ColumnTrie =
+                        ColumnTrie::from_view_with_build_mode((arity - 1).into(), mode, view);
+                    assert_identical(
+                        &built,
+                        &expected,
+                        &format!("arity {arity}, n {n}, {mode:?}"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// One source row of two columns. The two arity tests below read it
+    /// through a one-column view whose filter keeps no row: the arity check is
+    /// on the source having rows (the contract of every `from_view*`), not on
+    /// the rows kept.
+    fn one_row_two_columns() -> Tuples {
+        let mut batch = Tuples::new(2);
+        batch.push(&[1, 2]);
+        batch
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 1 does not match header arity 2")]
+    fn bulk_build_checks_the_arity_of_a_view_that_keeps_no_row() {
+        let batch = one_row_two_columns();
+        let view = TupleView::new(&batch, Filter::new(vec![(0, 99)], vec![]), vec![1]);
+        let _: ColumnTrie =
+            ColumnTrie::from_view_with_build_mode(2.into(), ColumnTrieBuildMode::Bulk, view);
+    }
+
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 1 does not match header arity 2")]
+    fn incremental_build_checks_the_arity_of_a_view_that_keeps_no_row() {
+        let batch = one_row_two_columns();
+        let view = TupleView::new(&batch, Filter::new(vec![(0, 99)], vec![]), vec![1]);
+        let _: ColumnTrie =
+            ColumnTrie::from_view_with_build_mode(2.into(), ColumnTrieBuildMode::Incremental, view);
+    }
+
+    /// A view over an empty source builds the empty trie under any header,
+    /// as an empty batch does, and so does a view that keeps no row of a
+    /// source of the right arity.
+    #[test]
+    fn a_view_with_no_rows_builds_the_empty_trie() {
+        let empty = Tuples::new(5);
+        let mut batch = Tuples::new(2);
+        batch.push(&[1, 2]);
+        for mode in [ColumnTrieBuildMode::Bulk, ColumnTrieBuildMode::Incremental] {
+            let from_empty: ColumnTrie =
+                ColumnTrie::from_view_with_build_mode(2.into(), mode, TupleView::all(&empty));
+            assert_identical(
+                &from_empty,
+                &ColumnTrie::new(2.into()),
+                &format!("{mode:?}"),
+            );
+            let none = TupleView::new(&batch, Filter::new(vec![(0, 99)], vec![]), vec![0, 1]);
+            let from_none: ColumnTrie = ColumnTrie::from_view_with_build_mode(2.into(), mode, none);
+            assert_identical(&from_none, &ColumnTrie::new(2.into()), &format!("{mode:?}"));
         }
     }
 
