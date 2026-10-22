@@ -315,7 +315,13 @@ impl<'a> TupleView<'a> {
                 "TupleView::gather_sorted: row {row} does not match the filter"
             );
         }
-        rows.sort_unstable_by(|&a, &b| self.output(a).cmp(self.output(b)));
+        if self.columns.iter().copied().eq(0..self.source.arity()) {
+            // The output rows are the source rows: compare them as slices.
+            let source = self.source;
+            rows.sort_unstable_by(|&a, &b| source.row(a).cmp(source.row(b)));
+        } else {
+            rows.sort_unstable_by(|&a, &b| self.output(a).cmp(self.output(b)));
+        }
         self.gather(rows.iter().copied(), rows.len())
     }
 
@@ -643,7 +649,7 @@ mod tests {
         let mut lcg = Lcg(0x1CE);
         let data: Vec<usize> = (0..300 * 6).map(|_| lcg.below(4)).collect();
         let source = Tuples::from_flat(6, 300, data);
-        let column_sets: [&[usize]; 7] = [
+        let column_sets: [&[usize]; 8] = [
             &[],
             &[3],
             &[5, 1],
@@ -651,6 +657,8 @@ mod tests {
             &[1, 3, 5, 0],
             &[4, 2, 0, 1, 3],
             &[5, 4, 3, 2, 1, 0],
+            // The identity: `gather_sorted` compares whole source rows.
+            &[0, 1, 2, 3, 4, 5],
         ];
         let filters = [
             Filter::none(),
@@ -688,6 +696,24 @@ mod tests {
         assert_eq!(rows, [0, 1, 3], "the slice is reordered");
         assert_eq!(gathered, Tuples::from_flat(2, 3, vec![5, 1, 5, 2, 6, 1]));
         assert_eq!(gathered.value_capacity(), 6);
+    }
+
+    #[test]
+    fn gather_sorted_on_an_identity_view_compares_whole_source_rows() {
+        let source = source();
+        let view = TupleView::new(&source, Filter::new(vec![(2, 5)], vec![]), vec![0, 1, 2]);
+        assert!(
+            !view.is_identity(),
+            "filtered, but its columns are in place"
+        );
+        // Rows 4, 1, 0 are `[3,3,5]`, `[2,3,5]`, `[1,1,5]`.
+        let mut rows: [RowId; 3] = [4, 1, 0];
+        let gathered = view.gather_sorted(&mut rows);
+        assert_eq!(rows, [0, 1, 4]);
+        assert_eq!(
+            gathered,
+            Tuples::from_flat(3, 3, vec![1, 1, 5, 2, 3, 5, 3, 3, 5])
+        );
     }
 
     #[test]
