@@ -106,13 +106,14 @@ def _write_report(
     axes: dict,
     metadata: list[dict],
     groups: list[tuple[str, str, str]],  # (group, function, metric)
+    schema_version: int = 2,
 ) -> Path:
     path = reports_dir / f"{name}.json"
     path.write_text(
         json.dumps(
             [
                 {
-                    "schema_version": 2,
+                    "schema_version": schema_version,
                     "kind": kind,
                     "metadata": metadata,
                     "axes": axes,
@@ -701,6 +702,55 @@ def fixture_parallel_build_tree(tmp_path: Path) -> dict:
                     groups=[(group, function, "time")],
                 )
             )
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted(paths),
+    }
+
+
+@pytest.fixture
+def fixture_per_query_tree(tmp_path: Path) -> dict:
+    """Schema-v5 ``bench run`` reports, one per structure: a ``build`` and an
+    ``iteration`` time and a per-query ``space`` function, an ``index_rows``
+    axis, and no ``column_orders`` axis (v5 removed it)."""
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+
+    paths: list[Path] = []
+    for data_structure in ("TreeTrie", "ColumnTrie"):
+        groups: list[tuple[str, str, str]] = []
+        for phase, point in (("build", 300.0), ("iteration", 100.0)):
+            function = f"{data_structure}/triangle/{phase}"
+            samples = [(i + 1, point * (i + 1)) for i in range(10)]
+            _write_function_dir(
+                criterion_root, _FunctionSpec("run", function, "time", point, samples)
+            )
+            groups.append(("run", function, "time"))
+        space_function = f"{data_structure}/triangle/space"
+        space_samples = [(i + 1, 6400.0 * (i + 1)) for i in range(10)]
+        _write_function_dir(
+            criterion_root,
+            _FunctionSpec("run", space_function, "space", 6400.0, space_samples),
+        )
+        groups.append(("run", space_function, "space"))
+        paths.append(
+            _write_report(
+                reports_dir, f"run-{data_structure}-v5", kind="run",
+                axes={
+                    "benchmark": "triangle",
+                    "query": "triangle",
+                    "data_structure": data_structure,
+                    "algorithm": "LeapfrogTriejoin",
+                    "optimiser": "lexicographic",
+                    "tuples": 12,
+                    "index_rows": 9,
+                },
+                metadata=[], groups=groups, schema_version=5,
+            )
+        )
     return {
         "criterion_root": criterion_root,
         "reports_dir": reports_dir,

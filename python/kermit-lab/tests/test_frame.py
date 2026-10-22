@@ -220,9 +220,34 @@ def test_column_orders_backfills_stored_on_legacy_join_reports(fixture_tree) -> 
     # Reports from before #93 carry no `column_orders`; every join then ran
     # `stored`, so the loader fills it on join rows.
     df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    assert set(df.schema_version.unique()) == {2}
     assert set(df.column_orders.dropna().unique()) == {"stored"}
     raw = load(fixture_tree["paths"], fixture_tree["criterion_root"], apply_defaults=False)
     assert raw.column_orders.isna().all()
+
+
+def test_v5_reports_carry_index_rows_and_no_column_orders(fixture_per_query_tree) -> None:
+    df = load(fixture_per_query_tree["paths"], fixture_per_query_tree["criterion_root"])
+    assert str(df.index_rows.dtype) == "Int64"
+    assert set(df.index_rows.dropna().unique()) == {9}
+    assert str(df.schema_version.dtype) == "Int64"
+    assert set(df.schema_version.unique()) == {5}
+    assert set(df.loc[df.metric == "time", "phase"]) == {"build", "iteration"}
+    assert df.loc[df.metric == "space", "phase"].isna().all()
+
+
+def test_v5_join_rows_are_not_back_filled_as_stored(fixture_per_query_tree) -> None:
+    """A v5 report has no `column_orders` axis; the pre-#93 back-fill would
+    label it `stored`, which it never ran."""
+    df = load(fixture_per_query_tree["paths"], fixture_per_query_tree["criterion_root"])
+    assert "column_orders" in df.columns
+    assert df.column_orders.isna().all()
+
+
+def test_index_rows_is_missing_before_v5(fixture_tree) -> None:
+    df = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    assert "index_rows" in df.columns
+    assert df.index_rows.isna().all()
 
 
 def test_queries_per_build_na_for_legacy_reports(fixture_tree) -> None:

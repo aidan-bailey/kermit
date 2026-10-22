@@ -237,3 +237,40 @@ def test_join_defaults_apply_without_a_data_structure_column() -> None:
     df = pd.DataFrame({"algorithm": ["HashTriejoin"], "column_orders": [pd.NA]})
     out = apply_axis_defaults(df)
     assert out["column_orders"].iloc[0] == "stored"
+
+
+def test_column_orders_backfill_stops_at_schema_v5() -> None:
+    """The `stored` fill is ground truth for a report before #93 and false for a
+    v5 report, which has no such axis."""
+    df = pd.DataFrame({
+        "algorithm": ["LeapfrogTriejoin"] * 4,
+        "schema_version": pd.array([3, 4, 5, 6], dtype="Int64"),
+        "column_orders": [pd.NA] * 4,
+    })
+    out = apply_axis_defaults(df)
+    assert out["column_orders"].iloc[0] == "stored"
+    assert out["column_orders"].iloc[1] == "stored"
+    assert pd.isna(out["column_orders"].iloc[2])
+    assert pd.isna(out["column_orders"].iloc[3])
+
+
+def test_column_orders_backfill_reads_a_plain_integer_schema_column() -> None:
+    df = pd.DataFrame({
+        "algorithm": ["HashTriejoin", "HashTriejoin"],
+        "schema_version": [2, 5],
+        "column_orders": [pd.NA, pd.NA],
+    })
+    out = apply_axis_defaults(df)
+    assert out["column_orders"].iloc[0] == "stored"
+    assert pd.isna(out["column_orders"].iloc[1])
+
+
+def test_column_orders_backfill_treats_an_unknown_schema_as_legacy() -> None:
+    """A frame built by hand has no version to compare, so it is filled as it
+    always was; a missing cell in the column counts the same way."""
+    df = pd.DataFrame({
+        "algorithm": ["HashTriejoin"],
+        "schema_version": pd.array([pd.NA], dtype="Int64"),
+        "column_orders": [pd.NA],
+    })
+    assert apply_axis_defaults(df)["column_orders"].iloc[0] == "stored"

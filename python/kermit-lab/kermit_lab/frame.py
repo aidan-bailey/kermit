@@ -44,6 +44,7 @@ _AXIS_INT_KEYS: tuple[str, ...] = (
     "relations",
     "relation_bytes",
     "queries_per_build",
+    "index_rows",
 )
 _AXIS_BOOL_KEYS: tuple[str, ...] = (
     "verified",
@@ -53,6 +54,7 @@ _AXIS_BOOL_KEYS: tuple[str, ...] = (
 # appended dynamically in ``_summary_from_reports``.
 _SUMMARY_COLUMNS_CORE: tuple[str, ...] = (
     "kind", "metric", "phase",
+    "schema_version",
     *_AXIS_STR_KEYS,
     *_AXIS_INT_KEYS,
     *_AXIS_BOOL_KEYS,
@@ -75,6 +77,7 @@ def _summary_row(
         "kind": report.kind,
         "metric": group_ref.metric,
         "phase": phase if phase is not None else pd.NA,
+        "schema_version": report.schema_version,
     }
     for key in _AXIS_STR_KEYS:
         v = report.axis(key)
@@ -179,6 +182,7 @@ def _summary_from_reports(
     ]
     columns = [*_SUMMARY_COLUMNS_CORE, *opt_axes, *_SUMMARY_COLUMNS_STATS]
     df = pd.DataFrame(rows, columns=columns)
+    df["schema_version"] = df["schema_version"].astype("Int64")
     for key in _AXIS_INT_KEYS:
         df[key] = df[key].astype("Int64")
     for key in _AXIS_BOOL_KEYS:

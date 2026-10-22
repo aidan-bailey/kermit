@@ -17,7 +17,7 @@ from .frame import build_of
 # Columns that are not "natural grouping" keys for `compare`: provenance and
 # any value-family column (mean/median estimates and their CI bounds).
 _PROVENANCE_COLS: frozenset[str] = frozenset({
-    "source_path", "criterion_group", "criterion_function",
+    "source_path", "criterion_group", "criterion_function", "schema_version",
 })
 _VALUE_FAMILY: frozenset[str] = frozenset({
     "mean_ns", "mean_lo", "mean_hi", "mean_se",

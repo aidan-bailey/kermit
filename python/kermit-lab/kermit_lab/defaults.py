@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .loader import PER_QUERY_BUILD_SCHEMA
+
 # (axis column, data_structure) -> value to substitute for NaN on rows of
 # that structure only.
 SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
@@ -61,9 +63,11 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
 
 
 # Axis -> value to substitute for NaN on *join* rows only (rows with an
-# `algorithm`): a `bench ds` row joins nothing and has no such axis. Unlike
-# the scoped registry this is structure-blind by design, because every
-# structure's joins ran the same policy before the axis existed.
+# `algorithm`) of reports older than schema v5: a `bench ds` row joins
+# nothing and has no such axis, and a v5 report has no `column_orders` axis
+# (the policy was retired), so labelling it would be false. Unlike the scoped
+# registry this is structure-blind by design, because every structure's joins
+# ran the same policy before the axis existed.
 JOIN_AXIS_DEFAULTS: dict[str, object] = {
     # Every join before #93 read relations in their stored column order.
     "column_orders": "stored",
@@ -105,12 +109,23 @@ def apply_renamed_axis_values(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _predates_per_query_build(df: pd.DataFrame) -> pd.Series:
+    """Rows of reports older than schema v5. A frame without a
+    ``schema_version`` column, or a row whose version is missing, has none to
+    compare and counts as older, as it did before the column existed."""
+    if "schema_version" not in df.columns:
+        return pd.Series(True, index=df.index)
+    older = df["schema_version"] < PER_QUERY_BUILD_SCHEMA
+    return older.fillna(True).astype(bool)
+
+
 def apply_axis_defaults(df: pd.DataFrame) -> pd.DataFrame:
     """Return ``df`` with documented axis defaults filled in for NaN cells.
 
     Each optimization-axis default fills only the rows of its data
     structure, and each join default (:data:`JOIN_AXIS_DEFAULTS`) only rows
-    whose ``algorithm`` is set, so a frame without the column a default keys
+    whose ``algorithm`` is set and whose ``schema_version`` is below 5, so a
+    frame without the column a default keys
     on is left alone by it. A binary default (:data:`BINARY_AXIS_DEFAULTS`)
     fills every row. Only columns present in ``df`` are touched; absent
     columns are ignored. Mutates a copy, leaving the caller's frame
@@ -121,7 +136,7 @@ def apply_axis_defaults(df: pd.DataFrame) -> pd.DataFrame:
         if col in out.columns:
             out[col] = out[col].mask(out[col].isna(), default)
     if "algorithm" in out.columns:
-        joined = out["algorithm"].notna()
+        joined = out["algorithm"].notna() & _predates_per_query_build(out)
         for col, default in JOIN_AXIS_DEFAULTS.items():
             if col in out.columns:
                 out[col] = out[col].mask(out[col].isna() & joined, default)
