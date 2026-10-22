@@ -149,7 +149,9 @@ fn run_ds_bench<F: RelationFamily>(
         let mut group = criterion.benchmark_group(group_name);
         group.throughput(criterion::Throughput::Elements(n as u64));
         let function = format!("{ds_name}/space");
-        criterion_groups.push(add_space_bench(&mut group, group_name, function, &relation));
+        criterion_groups.push(add_space_bench(&mut group, group_name, function, &[
+            &relation,
+        ]));
         group.finish();
         criterion.final_summary();
     }

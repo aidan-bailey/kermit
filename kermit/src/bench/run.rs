@@ -440,12 +440,12 @@ fn run_benchmark<F: ExecutionFamily>(
             let mut group = criterion.benchmark_group(&group_name);
             for rel in relations {
                 let function = format!("space/{}", rel.header().name());
-                criterion_groups.push(add_space_bench(&mut group, &group_name, function, rel));
+                criterion_groups.push(add_space_bench(&mut group, &group_name, function, &[rel]));
             }
             // One function per copy, beside the base relations'.
             for (spec, copy) in copies {
                 let function = format!("space/{}", spec.name);
-                criterion_groups.push(add_space_bench(&mut group, &group_name, function, copy));
+                criterion_groups.push(add_space_bench(&mut group, &group_name, function, &[copy]));
             }
             group.finish();
             criterion.final_summary();
