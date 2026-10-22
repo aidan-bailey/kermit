@@ -484,18 +484,17 @@ mod tests {
     #[test]
     fn the_budget_counts_every_set_reached() {
         // No constraint limits the search, so the worked example reaches
-        // every non-empty subset of its four variables: 4 + 6 + 4 + 1 = 15
-        // sets.
+        // every non-empty subset of its three variables: 3 + 3 + 1 = 7 sets.
         let (q, stats) = worked_example();
         let fits = CostBasedOptimiser {
-            state_budget: 15,
+            state_budget: 7,
         }
         .plan(&q, &stats);
-        assert_eq!(fits.variable_ordering, vec![3, 1, 2, 0]);
+        assert_eq!(fits.variable_ordering, vec![2, 1, 0]);
         let cardinality = CardinalityOptimiser.plan(&q, &stats);
         assert_eq!(
             CostBasedOptimiser {
-                state_budget: 14
+                state_budget: 6
             }
             .plan(&q, &stats),
             cardinality
