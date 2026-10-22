@@ -30,7 +30,9 @@ pub(crate) struct PlannerArgs {
 
 impl PlannerArgs {
     /// The planner these flags select. A `Planner` owns its optimiser, so
-    /// each prepared workload gets its own.
+    /// each command instantiates its own: `bench run` prepares every
+    /// benchmark it runs with one, and `join` and `bench join` plan their
+    /// one query with another.
     pub(crate) fn instantiate(self) -> Planner { Planner::new(self.optimiser.instantiate()) }
 }
 
