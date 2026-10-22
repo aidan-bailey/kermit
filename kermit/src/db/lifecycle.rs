@@ -9,9 +9,9 @@ use {
     kermit_algos::{
         distinct_per_column, extract_accesses, plan_indexes, rewrite_placeholders, Access,
         CatalogStats, ColumnOrderPolicy, IndexPlan, IndexSpec, JoinQuery, Planner, QueryPlan,
-        RelationStats, StatisticsLevel, ACCESS_PREFIX,
+        RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
     },
-    kermit_ds::{TupleView, Tuples},
+    kermit_ds::{Relation, RelationHeader, TupleView, Tuples},
     std::collections::BTreeMap,
 };
 
@@ -33,6 +33,8 @@ pub struct Prepared {
     query: JoinQuery,
     plan: QueryPlan,
     indexes: Vec<IndexSpec>,
+    /// The rows `indexes[id]`'s view admits, counted by `prepare`.
+    index_rows: Vec<usize>,
     checks: Vec<Access>,
     head_len: usize,
 }
@@ -134,10 +136,19 @@ pub fn prepare(
         plan,
         indexes,
     } = plan_indexes(&access_query, &ordering);
+
+    // Counted here, untimed: `build` would otherwise scan a filtered relation
+    // once more only to learn how many rows its copy holds.
+    let index_rows: Vec<usize> = indexes
+        .iter()
+        .map(|spec| spec.view(tuples_of(catalog, &spec.relation)).count())
+        .collect();
+
     Ok(Prepared {
         query: executed,
         plan,
         indexes,
+        index_rows,
         checks: access_query.checks,
         head_len: query.head.terms.len(),
     })
@@ -170,12 +181,135 @@ fn access_statistics(catalog: &Catalog, access: &Access, level: StatisticsLevel)
     }))
 }
 
+/// The header of `spec`'s index: named for the relation, with the attributes of
+/// `base` at the spec's columns, or positional (at the index's arity) when
+/// `base` is.
+fn spec_header(spec: &IndexSpec, base: &RelationHeader) -> RelationHeader {
+    if base.attrs().is_empty() {
+        RelationHeader::new_positional(&spec.relation, spec.columns.len())
+    } else {
+        let attrs = spec
+            .columns
+            .iter()
+            .map(|&column| base.attrs()[column].clone())
+            .collect();
+        RelationHeader::new(&spec.relation, attrs)
+    }
+}
+
+/// The indexes of one prepared query, made by [`build`] or [`build_with`]: one
+/// structure per [`IndexSpec`], in id order, and what the constant checks
+/// decided.
+///
+/// The indexes hold copies of their rows and borrow nothing from the catalog,
+/// so a benchmark can drop them after its timers stop.
+pub struct Indexes<R> {
+    /// The specs the indexes were built from, in id order.
+    specs: Vec<IndexSpec>,
+    /// `relations[id]` is index `#<id>`.
+    relations: Vec<R>,
+    multiplicity: usize,
+    rows: usize,
+}
+
+impl<R> Indexes<R> {
+    /// The index named `id` (`#0`, `#1`, …), if there is one. Only the exact
+    /// spelling names an index.
+    pub fn get(&self, id: &str) -> Option<&R> {
+        let digits = id.strip_prefix(INDEX_ID_PREFIX)?;
+        // `parse` alone would also take `#01` and `#+1`, which no id is spelled
+        // as.
+        let padded = digits.len() > 1 && digits.starts_with('0');
+        if padded || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        self.relations.get(digits.parse::<usize>().ok()?)
+    }
+
+    /// Each index with the spec it was built from, in id order.
+    pub fn iter(&self) -> impl Iterator<Item = (&IndexSpec, &R)> {
+        self.specs.iter().zip(&self.relations)
+    }
+
+    /// How many times `execute` emits each answer: the product of the constant
+    /// checks' counts, each clamped to 1 unless the structure keeps
+    /// duplicates ([`Relation::KEEPS_DUPLICATES`]). Zero when a check
+    /// admits no row.
+    pub fn multiplicity(&self) -> usize { self.multiplicity }
+
+    /// The rows the build copied: the sum of the index views' counts, taken
+    /// when the query was prepared.
+    pub fn rows(&self) -> usize { self.rows }
+}
+
+/// Builds the indexes of `prepared` from `catalog`, constructing each with
+/// `construct`: the timed build.
+///
+/// Each spec becomes a [`TupleView`] over its relation's flat tuples, handed
+/// with the index's header to `construct` (normally [`Relation::from_view`], as
+/// [`build`] does; the binary's families pass their own to carry a config and a
+/// build mode). Each constant check counts the rows its constants admit, and
+/// the counts multiply into [`multiplicity`](Indexes::multiplicity).
+///
+/// # Panics
+///
+/// If `prepared` was made over another catalog and a relation it reads is
+/// missing. In debug builds, also if the catalog's rows changed since `prepare`
+/// counted them.
+pub fn build_with<R: Relation>(
+    catalog: &Catalog, prepared: &Prepared,
+    mut construct: impl FnMut(RelationHeader, TupleView<'_>) -> R,
+) -> Indexes<R> {
+    // A check keeps no column: it only counts the rows its filter admits. A
+    // structure that keeps duplicates answers once per row; one that does
+    // not answers once.
+    let mut multiplicity = 1usize;
+    for check in &prepared.checks {
+        let tuples = tuples_of(catalog, &check.relation);
+        let count = TupleView::new(tuples, check.filter.clone(), Vec::new()).count();
+        let copies = if R::KEEPS_DUPLICATES {
+            count
+        } else {
+            count.min(1)
+        };
+        multiplicity = multiplicity.saturating_mul(copies);
+    }
+
+    let relations: Vec<R> = prepared
+        .indexes
+        .iter()
+        .zip(&prepared.index_rows)
+        .map(|(spec, &rows)| {
+            let base = catalog.header(&spec.relation).expect(CATALOG_HOLDS);
+            let view = spec.view(tuples_of(catalog, &spec.relation));
+            debug_assert_eq!(view.count(), rows, "the catalog changed since `prepare`");
+            construct(spec_header(spec, base), view)
+        })
+        .collect();
+
+    Indexes {
+        specs: prepared.indexes.clone(),
+        relations,
+        multiplicity,
+        rows: prepared.index_rows.iter().sum(),
+    }
+}
+
+/// [`build_with`] constructing each index with [`Relation::from_view`].
+///
+/// # Panics
+///
+/// As [`build_with`].
+pub fn build<R: Relation>(catalog: &Catalog, prepared: &Prepared) -> Indexes<R> {
+    build_with(catalog, prepared, R::from_view)
+}
+
 #[cfg(test)]
 mod tests {
     use {
         super::*,
         kermit_algos::{analyse, LexicographicOptimiser, QueryOptimiser, RewriteError},
-        kermit_ds::{Filter, RelationHeader},
+        kermit_ds::{Cardinality, Filter, HashTrie, RelationHeader, TreeTrie},
         std::{cell::RefCell, rc::Rc},
     };
 
@@ -550,5 +684,119 @@ mod tests {
         for id in ["@0", "@1", "@2"] {
             assert_eq!(stats.distinct(id, 0), None, "{id}");
         }
+    }
+
+    /// How many tuples each index of `indexes` stores, in id order.
+    fn stored<R: Cardinality>(indexes: &Indexes<R>) -> Vec<usize> {
+        indexes
+            .iter()
+            .map(|(_, index)| index.tuple_count())
+            .collect()
+    }
+
+    /// Each index is its relation read through the spec's filter and columns:
+    /// `r`'s diagonal (1, 1) and (3, 3); `s(X, c5, W)`'s (1, 7), (1, 8) and
+    /// (3, 9); all four rows of `u`.
+    #[test]
+    fn build_copies_each_index_through_its_filter_and_columns() {
+        let c = catalog(statistics_relations());
+        let prepared = prepared_for(&c, STATISTICS_QUERY);
+
+        let sorted = build::<TreeTrie>(&c, &prepared);
+        let relations: Vec<&str> = sorted
+            .iter()
+            .map(|(spec, _)| spec.relation.as_str())
+            .collect();
+        assert_eq!(relations, vec!["r", "s", "u"]);
+        assert_eq!(stored(&sorted), vec![2, 3, 4]);
+        assert_eq!(sorted.rows(), 9);
+        assert_eq!(sorted.multiplicity(), 1);
+
+        let hashed = build::<HashTrie>(&c, &prepared);
+        assert_eq!(stored(&hashed), vec![2, 3, 4]);
+        assert_eq!(hashed.rows(), 9);
+    }
+
+    /// The constructor gets the index's header (named for the relation,
+    /// attributes in index order) and the view that `IndexSpec` describes.
+    #[test]
+    fn build_with_hands_the_constructor_each_header_and_view() {
+        let mut tuples = Tuples::new(2);
+        tuples.push(&[1, 2]);
+        tuples.push(&[3, 4]);
+        let header = RelationHeader::new("edge", vec!["src".into(), "dst".into()]);
+        let c = Catalog::new(vec![(header, tuples)], StatisticsLevel::TupleCounts);
+        let prepared = prepared_for(&c, "Q(X, Y) :- edge(Y, X).");
+
+        let mut seen = Vec::new();
+        let indexes: Indexes<TreeTrie> = build_with(&c, &prepared, |header, view| {
+            seen.push((header.clone(), view.columns().to_vec(), view.count()));
+            <TreeTrie as Relation>::from_view(header, view)
+        });
+
+        let reversed = RelationHeader::new("edge", vec!["dst".into(), "src".into()]);
+        assert_eq!(seen, vec![(reversed, vec![1, 0], 2)]);
+        assert_eq!(indexes.rows(), 2);
+    }
+
+    /// The header keeps the relation's name and takes the attributes at the
+    /// spec's columns; a positional header stays positional, at the index's
+    /// arity.
+    #[test]
+    fn an_index_header_follows_the_spec_columns() {
+        let index = spec("edge", Filter::none(), vec![1]);
+        let named = RelationHeader::new("edge", vec!["src".into(), "dst".into()]);
+        assert_eq!(
+            spec_header(&index, &named),
+            RelationHeader::new("edge", vec!["dst".into()])
+        );
+        let positional = RelationHeader::new_positional("edge", 2);
+        assert_eq!(
+            spec_header(&index, &positional),
+            RelationHeader::new_positional("edge", 1)
+        );
+    }
+
+    /// Only the spelling `#<k>` names index `k`.
+    #[test]
+    fn an_index_is_found_only_by_its_exact_id() {
+        let c = catalog(vec![("p", 1, vec![vec![1]])]);
+        let indexes = build::<TreeTrie>(&c, &prepared_for(&c, "Q(X) :- p(X)."));
+        assert!(indexes.get("#0").is_some());
+        for id in ["#1", "#00", "#+0", "#", "@0", "0", "#18446744073709551616"] {
+            assert!(indexes.get(id).is_none(), "{id}");
+        }
+    }
+
+    /// An all-constant atom counts the rows its constants admit. Hash tries
+    /// keep duplicates, so they multiply by the count; the sorted tries do
+    /// not, so they clamp it to one. A count of zero empties the product on
+    /// both.
+    #[test]
+    fn checks_multiply_on_hash_tries_only() {
+        let c = catalog(vec![
+            ("r", 1, vec![vec![1], vec![2]]),
+            ("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]]),
+            ("t", 1, vec![vec![5], vec![5], vec![5]]),
+        ]);
+        let multiplicity = |text: &str| {
+            let prepared = prepared_for(&c, text);
+            (
+                build::<TreeTrie>(&c, &prepared).multiplicity(),
+                build::<HashTrie>(&c, &prepared).multiplicity(),
+            )
+        };
+        assert_eq!(multiplicity("Q(X) :- r(X)."), (1, 1));
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8)."), (1, 2));
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8), t(c5)."), (1, 6));
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8), s(c7, c9)."), (0, 0));
+    }
+
+    #[test]
+    fn an_empty_relation_builds_an_empty_index() {
+        let c = catalog(vec![("e", 2, vec![])]);
+        let indexes = build::<TreeTrie>(&c, &prepared_for(&c, "Q(X) :- e(X, Y)."));
+        assert_eq!(indexes.rows(), 0);
+        assert_eq!(stored(&indexes), vec![0]);
     }
 }
