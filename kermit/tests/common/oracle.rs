@@ -1,6 +1,6 @@
-//! A nested-loop oracle and the seeded random relations it is checked
-//! against, shared by the tests that compare an executor's rows with an
-//! evaluator that has no planner, rewrite or trie in it.
+//! A nested-loop oracle and the seeded generator its tests draw from, shared
+//! by the tests that compare an executor's rows with an evaluator that has no
+//! planner, rewrite or trie in it.
 
 use {
     kermit_algos::JoinQuery,
@@ -25,24 +25,8 @@ impl Lcg {
     pub fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
 }
 
-/// The values a random tuple column draws from, `0..VALUES`.
-pub const VALUES: usize = 4;
-
 /// Relations as `(name, arity, tuples)`.
 pub type Relations = Vec<(String, usize, Vec<Vec<usize>>)>;
-
-/// One to three relations of arity 1–3 with 0–6 tuples over `0..VALUES`.
-pub fn random_relations(rng: &mut Lcg) -> Relations {
-    (0..1 + rng.below(3))
-        .map(|i| {
-            let arity = 1 + rng.below(3);
-            let tuples = (0..rng.below(7))
-                .map(|_| (0..arity).map(|_| rng.below(VALUES)).collect())
-                .collect();
-            (format!("r{i}"), arity, tuples)
-        })
-        .collect()
-}
 
 /// `tuples` as `R` holds them: the hash trie keeps duplicates (a
 /// multiset), the sorted tries drop them (a set), and `R`'s tuple count
