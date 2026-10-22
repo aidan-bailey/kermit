@@ -4,9 +4,12 @@
 use kermit_algos::{canonical_names, CatalogStats, JoinQuery, QueryOptimiser, QueryPlan};
 
 /// Plans the order it holds: the listed variables first, in that order,
-/// then any variable it does not list (such as the `K<n>` a rewritten `_`
-/// becomes) in canonical order. It reads no statistics, so it needs only
-/// the default [`StatisticsLevel`](kermit_algos::StatisticsLevel).
+/// then any variable it does not list in canonical order. A test lists every
+/// variable, the `K<n>` of each rewritten `_` included (see
+/// [`rewrite_placeholders`](kermit_algos::rewrite_placeholders)), so a `_`
+/// column is read before a join column in some order. It reads no statistics,
+/// so it needs only the default
+/// [`StatisticsLevel`](kermit_algos::StatisticsLevel).
 ///
 /// `plan` is handed the query the optimiser plans, which `prepare` builds
 /// from the accesses, and finds each name through [`canonical_names`] of

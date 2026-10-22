@@ -3,8 +3,9 @@
 //! the query.
 //!
 //! The shapes are the 16 standard join patterns' and a few constant cases,
-//! run over seeded random relations (the generator of
-//! `column_orders_equivalence.rs`), plus the six queries of the retired
+//! run over seeded random relations (a small domain of 3 values and 8-12
+//! tuples per relation, so duplicates are likely and joins dense), plus the
+//! six queries of the retired
 //! `column_orders_any.rs` with their pinned rows. Each query runs under
 //! every order of its variables, forced by `FixedOrder`, through
 //! `kermit::db::{prepare, build, execute}` directly, on one alias per
@@ -21,8 +22,8 @@ use {
     },
     kermit::db::{build, execute, prepare, Catalog},
     kermit_algos::{
-        canonical_names, CatalogStats, ColumnOrderPolicy, HashTriejoin, JoinAlgo, JoinQuery,
-        LeapfrogTriejoin, Planner, QueryOptimiser, StatisticsLevel,
+        canonical_names, rewrite_placeholders, CatalogStats, ColumnOrderPolicy, HashTriejoin,
+        JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner, QueryOptimiser, StatisticsLevel,
     },
     kermit_ds::{Cardinality, ColumnTrie, HashTrie, Relation, RelationHeader, TreeTrie, Tuples},
     kermit_iters::SipHashStrategy,
@@ -86,6 +87,18 @@ fn fixed_order_panics_on_an_unknown_variable() {
 fn fixed_order_panics_on_a_repeated_variable() {
     let query: JoinQuery = "Q(X) :- r(X).".parse().unwrap();
     FixedOrder(names(&["X", "X"])).plan(&query, &CatalogStats::default());
+}
+
+/// A `_` is a plan variable once `prepare` has run, so the placeholder
+/// shapes run every order of it too: `V0, K0` is 2 orders, `V0, V2, K0` is 6.
+#[test]
+fn a_placeholder_is_ordered_like_a_variable() {
+    let orders = |text: &str| {
+        let query: JoinQuery = text.parse().unwrap();
+        every_order(&canonical_names(&rewrite_placeholders(query))).len()
+    };
+    assert_eq!(orders("Q(V0) :- r0(V0, _), r1(V0)."), 2);
+    assert_eq!(orders("Q(V0, V2) :- r0(V0, _, V2), r1(V2)."), 6);
 }
 
 /// The values in the random relations, and so the constants `c0`..`c2` the
@@ -249,8 +262,9 @@ fn rows_in_order<R: Relation, JA: JoinAlgo<R>>(
     rows
 }
 
-/// Runs `text` over `relations` under every order of its variables and
-/// asserts each answer equals the oracle's (and `pinned`, when given).
+/// Runs `text` over `relations` under every order of its variables, each
+/// `_` counted as the plan variable `prepare` makes of it, and asserts each
+/// answer equals the oracle's (and `pinned`, when given).
 /// Returns whether the answer has any rows.
 fn agrees_in_every_order<R: Relation + Cardinality, JA: JoinAlgo<R>>(
     relations: &Relations, case: &str, text: &str, pinned: Option<&[Vec<usize>]>,
@@ -267,7 +281,10 @@ fn agrees_in_every_order<R: Relation + Cardinality, JA: JoinAlgo<R>>(
         );
     }
     let catalog = catalog_for(relations);
-    for order in every_order(&canonical_names(&query)) {
+    // `prepare` turns each `_` into a plan variable `K<n>`, so the orders
+    // are listed from the rewritten query, with the same fresh names.
+    let variables = canonical_names(&rewrite_placeholders(query.clone()));
+    for order in every_order(&variables) {
         let got = rows_in_order::<R, JA>(&catalog, &label, &query, &order);
         assert_eq!(got, want, "{label} in order {order:?}");
     }
@@ -403,6 +420,47 @@ fn run_pinned<R: Relation + Cardinality, JA: JoinAlgo<R>>() {
             "{text}: a pinned query must return rows"
         );
     }
+}
+
+/// An atom of only constants matching a tuple held three times: a multiset
+/// (`HashTrie`) returns each row of the rest of the query three times, a
+/// set (the sorted tries) once. The random shapes' `r1(c0, c1)` matches at
+/// most one row, so this is the only query that reaches the multiplicity.
+fn run_duplicated_constant_atom<R: Relation + Cardinality, JA: JoinAlgo<R>>(copies: usize) {
+    let relations: Relations = vec![
+        rel("r0", 1, vec![vec![1], vec![2]]),
+        rel("r1", 2, vec![vec![0, 1], vec![0, 1], vec![0, 1], vec![
+            0, 2,
+        ]]),
+    ];
+    let rows: Vec<Vec<usize>> = [1, 2]
+        .iter()
+        .flat_map(|&x| std::iter::repeat_n(vec![x], copies))
+        .collect();
+    assert!(
+        agrees_in_every_order::<R, JA>(
+            &relations,
+            "duplicated constant atom",
+            "Q(X) :- r0(X), r1(c0, c1).",
+            Some(&rows)
+        ),
+        "the duplicated-constant query must return rows"
+    );
+}
+
+#[test]
+fn tree_trie_duplicated_constant_atom_under_every_order() {
+    run_duplicated_constant_atom::<TreeTrie, LeapfrogTriejoin>(1);
+}
+
+#[test]
+fn column_trie_duplicated_constant_atom_under_every_order() {
+    run_duplicated_constant_atom::<ColumnTrie, LeapfrogTriejoin>(1);
+}
+
+#[test]
+fn hash_trie_duplicated_constant_atom_under_every_order() {
+    run_duplicated_constant_atom::<HashTrie<SipHashStrategy>, HashTriejoin>(3);
 }
 
 #[test]

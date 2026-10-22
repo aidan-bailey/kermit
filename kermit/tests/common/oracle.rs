@@ -93,7 +93,7 @@ pub fn oracle<R: Relation + Cardinality>(
 
 /// Matches `atoms` in order under `binding`, pushing one head row per
 /// complete match.
-pub fn match_atoms<'q>(
+fn match_atoms<'q>(
     atoms: &'q [Predicate], held: &BTreeMap<&str, Vec<Vec<usize>>>,
     binding: &mut BTreeMap<&'q str, usize>, head: &Predicate, rows: &mut Vec<Vec<usize>>,
 ) {
