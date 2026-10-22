@@ -11,7 +11,8 @@ src/
   lib.rs            flat public facade + the JoinAlgorithm registry enum
   join_algo.rs      the JoinAlgo<DS> trait every algorithm implements
   analysis.rs       canonical variable numbering, shared by planners and executors
-  placeholder_rewrite.rs  turns each `_` into its own fresh variable
+  placeholder_rewrite.rs
+                    turns each _ into its own fresh variable
   access.rs         extracts each body atom's access: its relation, its constant and
                     repeated-variable filter, and the columns it keeps
   index_plan.rs     turns a plan into the indexes a query builds (relation, filter,
@@ -30,7 +31,7 @@ Everything is re-exported flat from the crate root — consumers write `kermit_a
 - [`JoinAlgo`](src/join_algo.rs) — the algorithm trait. Takes a `QueryPlan`, a parsed `JoinQuery`, and a map from predicate name to data structure reference; its one required method, `join_for_each`, passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result. `join_iter` is a provided method that collects through it, for callers that need the rows.
 - [`LeapfrogTriejoin`](src/sorted/leapfrog_triejoin.rs) — the sorted-family entry point (`-a leapfrog-triejoin`).
 - [`HashTriejoin`](src/hash/hash_triejoin.rs) — the hash-family entry point (`-a hash-triejoin`).
-- [`QueryOptimiser`](src/optimiser/mod.rs) — plans the variable ordering (`QueryPlan`) that `JoinAlgo::join_for_each` executes. Implementations: `LexicographicOptimiser` (default), `CardinalityOptimiser`.
+- [`QueryOptimiser`](src/optimiser/mod.rs) — plans the variable ordering (`QueryPlan`) that `JoinAlgo::join_for_each` executes. Implementations: `LexicographicOptimiser` (default), `CardinalityOptimiser`, `CostBasedOptimiser`.
 - [`extract_accesses`](src/access.rs) and [`plan_indexes`](src/index_plan.rs) — the two steps the caller runs around planning. `extract_accesses` turns each body atom into an `Access` (a constant or a repeated variable becomes a filter, not a predicate); `plan_indexes` turns the plan into the `IndexSpec`s (relation, filter, column order) the query builds, and renames the atoms to those indexes, with their variables in index-column order. A `JoinAlgo` impl therefore receives atoms whose term order equals their index's column order, and needs no handling of constants, repeated variables or reordered copies.
 - `JoinAlgorithm` / `Optimiser` — CLI registry enums used by the binary to pick an implementation at runtime.
 
@@ -47,5 +48,5 @@ See [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the overall query-evaluation flo
 1. `src/<family>/<name>.rs`, implementing [`JoinAlgo<DS>`](src/join_algo.rs) with `DS` narrowed to the family you traverse. An algorithm in a *new* family also needs that family's `mod.rs` documenting the family contract.
 2. Register it in the family's `mod.rs`, re-export it from `src/lib.rs`, and add a `JoinAlgorithm` variant there.
 3. Wire the CLI in `kermit/src/main.rs` and `kermit/src/execution.rs`.
-4. Add a `define_multiway_join_test_suite!` invocation per index structure in `kermit/tests/join_tests.rs`, under both optimisers.
+4. Add a `define_multiway_join_test_suite!` invocation per index structure in `kermit/tests/join_tests.rs`, under both optimisers, and a cell in `kermit/tests/all_orders.rs`.
 5. Write `docs/algorithms/<name>.md` from the template.

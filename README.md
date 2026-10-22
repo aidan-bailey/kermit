@@ -53,7 +53,7 @@ Output (CSV to stdout):
 
 Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. `kermit join` accepts every valid cell: `tree-trie` / `column-trie` with `leapfrog-triejoin`, and `hash-trie` with `hash-triejoin` (optionally `--ds-layout-hasher fxhash`); an incompatible pair is a usage error.
 
-An optional `--optimiser <lexicographic|cardinality|cost-based>` flag picks the query optimiser that plans the join's variable ordering (default: `lexicographic`, which reproduces the historical ordering; `cardinality` binds variables from the smallest relations first; `cost-based` minimises an estimated cost from per-column distinct counts). See [`docs/optimisers/`](docs/optimisers/).
+An optional `--optimiser <lexicographic|cardinality|cost-based>` flag picks the query optimiser that plans the join's variable ordering (default: `lexicographic`, which plans the canonical order, head variables first and then the body-only ones; `cardinality` binds variables from the smallest relations first; `cost-based` minimises an estimated cost from per-column distinct counts). See [`docs/optimisers/`](docs/optimisers/).
 
 ## Benchmarking
 
