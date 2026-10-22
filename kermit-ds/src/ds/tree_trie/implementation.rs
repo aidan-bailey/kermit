@@ -5,7 +5,7 @@ use {
         relation::{BuildModeRelation, Relation, RelationHeader},
         seek::{seek_axes, GallopingSeek, SeekStrategy},
     },
-    kermit_iters::{HasOptimizationAxes, JoinIterable, Tuples},
+    kermit_iters::{HasOptimizationAxes, JoinIterable, TupleView, Tuples},
     serde_json::Value,
     std::{
         collections::BTreeMap,
@@ -222,7 +222,8 @@ impl<S: SeekStrategy> TreeTrie<S> {
         }
 
         let splitters = first_key_splitters(&tuples, PARTITIONS_PER_THREAD * threads.get());
-        let partitions = scatter_rows(threads, &tuples, morsel_rows, splitters.len() + 1, |row| {
+        let view = TupleView::all(&tuples);
+        let partitions = scatter_rows(threads, &view, morsel_rows, splitters.len() + 1, |row| {
             splitters.partition_point(|&splitter| splitter <= row[0])
         });
         #[cfg(any(test, feature = "test-hooks"))]

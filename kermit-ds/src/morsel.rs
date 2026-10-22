@@ -20,7 +20,7 @@
 //! is re-raised in the caller.
 
 use {
-    kermit_iters::{RowId, Tuples},
+    kermit_iters::{RowId, TupleView, Tuples},
     std::{mem, num::NonZeroUsize, ops::Range, panic, sync::Mutex, thread},
 };
 
@@ -122,32 +122,42 @@ pub(crate) fn row_id(position: usize) -> RowId {
     RowId::try_from(position).expect("a `Tuples` batch holds at most `RowId::MAX` rows")
 }
 
-/// Sends the id of every row of `tuples` to partition `partition_of(row)`,
-/// which must be below `partitions`. The batch stays where it is: workers
-/// read its rows through `&Tuples`, and only 4-byte ids move.
+/// Sends the id of every source row that `view` keeps to partition
+/// `partition_of(output)`, where `output` is the row's output columns and
+/// the partition must be below `partitions`. The source stays where it is:
+/// workers read it through the view, and only 4-byte ids move. The ids are
+/// *source* row ids (positions in `view.source()`), not positions among the
+/// kept rows, so a later [`TupleView::gather_sorted`] or `write` can read
+/// them back; rows the view's filter rejects are skipped.
 ///
-/// `threads` workers take morsels of `morsel_rows` consecutive rows from a
-/// shared queue, so a worker that finishes early takes more. Every
+/// `threads` workers take morsels of `morsel_rows` consecutive source rows
+/// from a shared queue, so a worker that finishes early takes more. Every
 /// partition lists its ids in input order, whatever order the morsels ran
-/// in.
+/// in. Each worker writes a row's output columns into one scratch row it
+/// allocates once, so nothing is allocated per row.
 ///
 /// # Panics
 ///
 /// Panics if `morsel_rows` is zero, or if `partition_of` returns
 /// `partitions` or more, or panics itself.
 pub(crate) fn scatter_rows(
-    threads: Threads, tuples: &Tuples, morsel_rows: usize, partitions: usize,
+    threads: Threads, view: &TupleView<'_>, morsel_rows: usize, partitions: usize,
     partition_of: impl Fn(&[usize]) -> usize + Sync,
 ) -> Vec<RowPartition> {
-    let len = tuples.len();
+    let len = view.source_rows();
     let queue = Mutex::new((0..len).step_by(morsel_rows).enumerate());
     let mut morsels: Vec<(usize, RowBuckets)> = run_workers(threads, || {
         let mut scattered = Vec::new();
+        let mut output = vec![0; view.arity()];
         while let Some((index, first)) = take_next(&queue) {
             let end = first + morsel_rows.min(len - first);
             let mut buckets: RowBuckets = (0..partitions).map(|_| Vec::new()).collect();
             for id in row_id(first)..row_id(end) {
-                buckets[partition_of(tuples.row(id))].push(id);
+                if !view.matches(id) {
+                    continue;
+                }
+                view.write(id, &mut output);
+                buckets[partition_of(&output)].push(id);
             }
             scattered.push((index, buckets));
         }
@@ -424,7 +434,7 @@ pub(crate) fn dispatch<T: Send, R: Send>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, kermit_iters::Filter};
 
     fn threads(n: usize) -> Threads { Threads::new(n).expect("tests use a nonzero count") }
 
@@ -452,10 +462,11 @@ mod tests {
     fn scatter_rows_keeps_every_row_once_in_input_order() {
         let n = 1000;
         let input = numbered_rows(n);
+        let view = TupleView::all(&input);
         for t in [1, 2, 3, 8] {
             for morsel in [1, 4, 5, n, n + 1] {
                 let case = format!("threads {t}, morsel {morsel}");
-                let partitions = scatter_rows(threads(t), &input, morsel, 3, |row| row[0] % 3);
+                let partitions = scatter_rows(threads(t), &view, morsel, 3, |row| row[0] % 3);
                 assert_eq!(partitions.len(), 3, "{case}");
                 let mut seen: Vec<RowId> = Vec::new();
                 for (p, partition) in partitions.iter().enumerate() {
@@ -484,7 +495,8 @@ mod tests {
     #[test]
     fn scatter_rows_cuts_one_segment_per_contributing_morsel() {
         let input = numbered_rows(10);
-        let partitions = scatter_rows(threads(2), &input, 3, 2, |row| row[1] % 2);
+        let view = TupleView::all(&input);
+        let partitions = scatter_rows(threads(2), &view, 3, 2, |row| row[1] % 2);
         assert_eq!(partitions[0].segments, vec![vec![0, 2], vec![4], vec![
             6, 8
         ]]);
@@ -504,8 +516,67 @@ mod tests {
         for _ in 0..5 {
             input.push(&[]);
         }
-        let partitions = scatter_rows(threads(2), &input, 2, 2, |row| row.len());
+        let view = TupleView::all(&input);
+        let partitions = scatter_rows(threads(2), &view, 2, 2, |row| row.len());
         assert_eq!(partitions[0].ids().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+        assert_eq!(partitions[1].len(), 0);
+    }
+
+    /// A filtered, permuted view scatters the *source* ids of the rows it
+    /// keeps, in input order, and `partition_of` sees the view's *output*
+    /// rows: with columns `[1, 0]` the output row is `[i, i % 7]`, so
+    /// `row[0] % 3` is the id's own residue and every id's partition can be
+    /// checked from the id alone. Rows the filter rejects (`i % 7 != 3`) are
+    /// never sent anywhere.
+    #[test]
+    fn scatter_rows_sends_the_source_ids_of_a_views_matching_rows() {
+        let n = 1000;
+        let input = numbered_rows(n); // rows `[i % 7, i]`
+        let view = TupleView::new(&input, Filter::new(vec![(0, 3)], vec![]), vec![1, 0]);
+        let kept: Vec<RowId> = (0..).take(n).filter(|id| id % 7 == 3).collect();
+        assert!(!kept.is_empty());
+        for t in [1, 2, 3, 8] {
+            for morsel in [1, 4, 5, n, n + 1] {
+                let case = format!("threads {t}, morsel {morsel}");
+                let partitions = scatter_rows(threads(t), &view, morsel, 3, |row| row[0] % 3);
+                let mut seen: Vec<RowId> = Vec::new();
+                for (p, partition) in partitions.iter().enumerate() {
+                    let ids: Vec<RowId> = partition.ids().collect();
+                    assert!(
+                        ids.windows(2).all(|pair| pair[0] < pair[1]),
+                        "{case}: partition {p} is out of input order"
+                    );
+                    for &id in &ids {
+                        assert_eq!(id as usize % 3, p, "{case}: id {id} in partition {p}");
+                    }
+                    seen.extend(ids);
+                }
+                seen.sort_unstable();
+                assert_eq!(seen, kept, "{case}: exactly the matching ids, once each");
+            }
+        }
+    }
+
+    /// An equality filter keeps the rows whose two columns agree, and a view
+    /// without output columns is legal: `partition_of` sees an empty row,
+    /// and the ids are still the matching source ids. Rows `[i % 4, i % 2]`
+    /// agree for `i % 4` in `{0, 1}`.
+    #[test]
+    fn scatter_rows_applies_equalities_and_accepts_a_view_without_columns() {
+        let mut input = Tuples::with_capacity(2, 40);
+        for i in 0..40 {
+            input.push(&[i % 4, i % 2]);
+        }
+        let kept: Vec<RowId> = (0..).take(40).filter(|id| id % 4 < 2).collect();
+        let equal = Filter::new(vec![], vec![(0, 1)]);
+
+        let both = TupleView::new(&input, equal.clone(), vec![0, 1]);
+        let partitions = scatter_rows(threads(2), &both, 3, 1, |_| 0);
+        assert_eq!(partitions[0].ids().collect::<Vec<_>>(), kept);
+
+        let nullary = TupleView::new(&input, equal, vec![]);
+        let partitions = scatter_rows(threads(2), &nullary, 3, 2, |row| row.len());
+        assert_eq!(partitions[0].ids().collect::<Vec<_>>(), kept);
         assert_eq!(partitions[1].len(), 0);
     }
 
@@ -797,7 +868,8 @@ mod tests {
     #[test]
     fn empty_input_needs_no_work() {
         assert!(dispatch(threads(4), Vec::<usize>::new(), |i| i).is_empty());
-        let partitions = scatter_rows(threads(4), &Tuples::new(2), 8, 3, |_| 0);
+        let empty = Tuples::new(2);
+        let partitions = scatter_rows(threads(4), &TupleView::all(&empty), 8, 3, |_| 0);
         assert_eq!(partitions.len(), 3);
         assert!(partitions.iter().all(|partition| partition.len() == 0));
     }
