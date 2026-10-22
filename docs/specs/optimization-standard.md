@@ -110,17 +110,17 @@ A **Config** option is a *value* field on a config struct, read on a code path t
 
 A **BuildMode** changes the construction process, not the structure: every mode builds the same contents with the same capacities, so answers and `space` cannot change. Placement that the structure itself leaves free, such as the slot a key takes in a hash table, may differ between modes (Amendment 2, 2026-10-06). Modes are a perf knob, not a semantic change.
 
-> **Concrete example (implemented).** ColumnTrie's build. `ColumnTrie::from_tuples_with_build_mode(header, ColumnTrieBuildMode::Incremental, tuples)` sorts the tuples and inserts them one at a time (the build before issue #84, O(n · a · b)); `ColumnTrieBuildMode::Bulk`, the default, builds every layer in one pass (O(n · a)). Both build identical arrays with identical capacities, which an array-level test pins.
+> **Concrete example (implemented).** ColumnTrie's build. `ColumnTrie::from_view_with_build_mode(header, ColumnTrieBuildMode::Incremental, view)` copies and sorts the view's rows and inserts them one at a time (the build before issue #84, O(n · a · b)); `ColumnTrieBuildMode::Bulk`, the default, builds every layer in one pass (O(n · a)). Both build identical arrays with identical capacities, which an array-level test pins.
 
 | Aspect | BuildMode |
 |---|---|
 | Runtime cost | None at query time (build-only) |
 | Binary size cost | One constructor variant per mode |
 | Type system enforcement | Weak (mode is just a parameter) |
-| Output equivalence | Required: every mode builds an *equivalent* structure — the same contents **and** the same capacities at every level, hence the same `HeapSize` — so `space` cannot move. Placement the structure leaves free (a key's slot in a hash table) may differ, and every mode's allocations land at addresses of their own, so `iteration` and `end_to_end` can move and are measured per mode, never assumed unchanged. A sorted trie leaves no placement free, so for it equivalence is array-level identity. Amendment 2 (2026-10-06, [`2026-10-05-parallel-build-design.md`](2026-10-05-parallel-build-design.md) § Amendment 2) relaxed this from array-level identity for every structure. Equivalence is to the structure's single-threaded build under the same config (TreeTrie `serial`, HashTrie `bulk`). A mode runs one process under every config; a mode that cannot run under some config declares the config it needs as a prerequisite rather than branching on it (HashTrie's `presized:N` requires `root-capacity=tuples`, and its `incremental` requires `child-capacity=grow`; see [Dependencies](#dependencies-between-optimisations)). |
+| Output equivalence | Required: every mode builds an *equivalent* structure — the same contents **and** the same capacities at every level, hence the same `HeapSize` — so `space` cannot move. Placement the structure leaves free (a key's slot in a hash table) may differ, and every mode's allocations land at addresses of their own, so `iteration` and `end_to_end` can move and are measured per mode, never assumed unchanged. A sorted trie leaves no placement free, so for it equivalence is array-level identity. Amendment 2 (2026-10-06, [`2026-10-05-parallel-build-design.md`](2026-10-05-parallel-build-design.md) § Amendment 2) relaxed this from array-level identity for every structure. Equivalence is to the structure's single-threaded build under the same config (TreeTrie `serial`, HashTrie `bulk`). A mode runs one process under every config; a mode that cannot run under some config declares the config it needs as a prerequisite rather than branching on it (HashTrie's `presized:N` requires `root-capacity=tuples`, and its `incremental` requires `child-capacity=grow`; see [Dependencies](#dependencies-between-optimisations)). Equivalence is from the same input: every mode reads one borrowed `TupleView` (a flat `Tuples`, a filter and output columns) and copies its matching rows exactly once, so the build metric times that copy in every mode alike (per-query index builds, 2026-10-22; before them only the partitioning modes' copy sat inside the timer). |
 | Bench axis key | `ds_build_mode` (single key with mode + params) |
 | Examples | ColumnTrie bulk / incremental ✓, TreeTrie serial / parallel:N ✓, HashTrie bulk / incremental (requires `child-capacity=grow`) / radix:K / parallel:N / presized:N (requires `root-capacity=tuples`) ✓ |
-| Test obligation | Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an equivalence test over every mode: the same contents and capacities at every level and the same `HeapSize`. Array-level where a mode fixes placement, as ColumnTrie's, TreeTrie's and HashTrie's `bulk` / `incremental` do; content-level (rows compared through each trie's own buffer) where a mode stores its rows in another order, as HashTrie's `radix:K`, `parallel:N` and `presized:N` do (#101); map-level (each hash table compared by hash, not by slot) where it leaves placement free, as `presized:N` does at the root |
+| Test obligation | Each non-default mode via `define_multiway_join_test_suite_for_build_mode!` ([`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs)), plus an equivalence test over every mode: the same contents and capacities at every level and the same `HeapSize`. Array-level where a mode fixes placement, as ColumnTrie's, TreeTrie's and HashTrie's `bulk` / `incremental` do; content-level (rows compared through each trie's own buffer) where a mode stores its rows in another order, as HashTrie's `radix:K`, `parallel:N` and `presized:N` do (#101); map-level (each hash table compared by hash, not by slot) where it leaves placement free, as `presized:N` does at the root. Each comparison builds every mode from the same filtered, permuted `TupleView` as well as from the identity view, and checks it against the build from that view's materialised batch |
 
 ---
 
@@ -146,7 +146,7 @@ $ kermit bench run triangle -i hash-trie -a hash-triejoin --ds-build hash-trie=p
 Error: --ds-build hash-trie=presized:8 requires --ds-config root-capacity=tuples; got root-capacity=grow (the default)
 ```
 
-The constructor asserts the same condition (`HashTrie::from_tuples_with_config_and_build_mode`
+The constructor asserts the same condition (`HashTrie::from_view_with_config_and_build_mode`
 panics), so a library caller cannot reach the dependent process without its
 prerequisite either. The report needs nothing new: both axes are already
 columns, and a report can only carry a pair the binary accepted.
@@ -211,10 +211,10 @@ kermit bench run triangle -i hash-trie -a hash-triejoin \
 The BuildMode category has three consumers: ColumnTrie (#84), HashTrie (#91) and TreeTrie (#94). `--ds-build` takes `structure=mode` pairs:
 
 ```bash
-# The pre-#84 ColumnTrie build, to reproduce its insertion numbers
+# The pre-#84 ColumnTrie build, to reproduce its build numbers
 kermit bench run triangle -i column-trie -a leapfrog-triejoin --ds-build column-trie=incremental
 
-# HashTrie's per-tuple build (`serial` before #107), to reproduce its insertion numbers
+# HashTrie's per-tuple build (`serial` before #107), to reproduce its build numbers
 kermit bench run triangle -i hash-trie -a hash-triejoin --ds-build hash-trie=incremental
 
 # HashTrie's radix-partitioned build (#91), 2^8 partitions
@@ -256,7 +256,7 @@ both Layout axes and its Config axis, so `ds_layout_pruning` and
 ```json
 [
   {
-    "schema_version": 4,
+    "schema_version": 5,
     "kind": "ds",
     "axes": {
       "data_structure": "HashTrie",
@@ -427,11 +427,12 @@ The composition is mechanical — the trait family does the heavy lifting.
 
 ### `ConfigurableRelation` and `Configured<R, P>` (kermit-ds)
 
-`Relation::new` / `from_tuples` have no parameter for a config value, so
+`Relation::new` / `from_view` have no parameter for a config value, so
 `kermit_ds::ConfigurableRelation` ([`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs))
-adds `with_config` / `from_tuples_with_config` / `config()`. Only structures
-with a Config axis implement it — today just `HashTrie<H, P>`, whose
-`Relation::new` / `from_tuples` delegate to it with
+adds `with_config` / `from_view_with_config` / `config()` (and
+`from_tuples_with_config`, the convenience over the identity view). Only
+structures with a Config axis implement it — today just `HashTrie<H, P>`,
+whose `Relation::new` / `from_view` delegate to it with
 `HashTrieConfig::default()`.
 
 `kermit_ds::Configured<R, P>` ([`kermit-ds/src/configured.rs`](../../kermit-ds/src/configured.rs))
@@ -446,15 +447,18 @@ a runtime value, which is what makes it Config rather than Layout.
 ### `BuildModeRelation` and `BuiltWith<R, P>` (kermit-ds)
 
 `kermit_ds::BuildModeRelation` ([`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs))
-adds `from_tuples_with_build_mode(header, mode, tuples)`. Every mode must build
+adds `from_view_with_build_mode(header, mode, view)`, where `view` is a
+borrowed `TupleView` (kermit-iters) that every mode reads and copies once.
+`from_tuples_with_build_mode(header, mode, tuples)` is the provided
+convenience over `TupleView::all`. Every mode must build
 an equivalent relation (the same contents and capacities; see the BuildMode
-rule above), and `Relation::from_tuples` must use the default mode.
+rule above), and `Relation::from_view` must use the default mode.
 `TreeTrie`, `ColumnTrie` and `HashTrie` implement it, and `Configured<R, P>`
 forwards it to the relation it wraps. HashTrie also has a Config, and
-each trait's constructor fixes the other axis to its default, so it adds one
-inherent constructor that takes both,
-`from_tuples_with_config_and_build_mode`. A mode with a Config prerequisite
-can only be built through it: `from_tuples_with_build_mode` uses the default
+each trait's constructor fixes the other axis to its default, so
+`ConfiguredBuildModeRelation` adds one constructor that takes both,
+`from_view_with_config_and_build_mode`. A mode with a Config prerequisite
+can only be built through it: `from_view_with_build_mode` uses the default
 config, so it panics for HashTrie's `presized:N`, which requires
 `root-capacity=tuples` (see [Dependencies](#dependencies-between-optimisations)).
 
@@ -530,8 +534,8 @@ pub struct HashTrie<H: HashStrategy = SipHashStrategy, P: PruningPolicy = NoPrun
 ```
 
 Implement `ConfigurableRelation` (`kermit-ds/src/relation.rs`) for it —
-`with_config(header, config)` and `from_tuples_with_config(header, config, tuples)` —
-and have `Relation::new` / `Relation::from_tuples` call them with
+`with_config(header, config)` and `from_view_with_config(header, config, view)` —
+and have `Relation::new` / `Relation::from_view` call them with
 `HashTrieConfig::default()`, so existing behaviour is unchanged.
 
 ### 4. Read the value where the constant was
@@ -729,17 +733,18 @@ is never read off the relation.
    `Parallel(Threads)`) cannot derive `clap::ValueEnum`; it implements
    `FromStr` over its `axis_value` strings instead, which
    `BuildChoices::resolved` calls (step 6).
-3. **Implement `BuildModeRelation`**, and make `Relation::from_tuples` call it
-   with the default mode. TreeTrie keeps `from_tuples` as its serial build and
-   dispatches in `from_tuples_with_build_mode` instead.
-4. **Pin equivalence** with a test over every mode: contents and capacities
+3. **Implement `BuildModeRelation`** (`from_view_with_build_mode`), and make
+   `Relation::from_view` call it with the default mode. TreeTrie keeps
+   `from_view` as its serial build and dispatches in
+   `from_view_with_build_mode` instead.
+4. **Pin equivalence** with a test over every mode, built from the same filtered and permuted `TupleView`: contents and capacities
    at every level, and `HeapSize`. Test at array level where placement is fixed
    (`bulk_and_incremental_builds_are_identical`), at content level where a mode
    stores its rows in another order, and as a map of maps where placement is
    free.
 5. **Carry the mode on the cell and family.** Implement `SortedTrieRelation`'s
    `BuildMode`, `kind`, `build_with` and `build_mode_axes`; the `SortedTrie`
-   variant and `TrieLftj::new(build, planner)` hold it, and the axis comes
+   variant and `TrieLftj::new(build)` hold it, and the axis comes
    from `RelationFamily::build_mode_axes`.
 6. **Add the CLI.** `--ds-build` takes `structure=mode` pairs (`BuildChoices`,
    `BuildModes`, `DsChoices.build`). A new consumer:
@@ -754,8 +759,12 @@ is never read off the relation.
    optimiser, `BuiltWith` aliases in `kermit-ds/tests/`, a CLI smoke test, and
    a spy test that the mode reaches the build (no output shows it).
 8. **kermit-lab.** Add a `SCOPED_AXIS_DEFAULTS` entry if pre-axis rows came
-   from a known mode. The `ablation` preset already limits `ds_build_mode` to
-   `insertion` / `end_to_end` and drops rows of structures without the axis.
+   from a known mode. The `ablation` preset puts no phase limit on
+   `ds_build_mode` (it has no `AXIS_PHASES` entry in
+   `python/kermit-lab/kermit_lab/presets.py`): a BuildMode builds the same
+   contents and capacities, so it cannot move `space`, but it can move every
+   time phase, `iteration` included (Amendment 2). The preset drops rows of
+   structures without the axis.
 
 ---
 
@@ -887,7 +896,7 @@ This is semantically correct — pre-standard HashTrie runs were SipHash-only. S
 | Why an axis value means one behaviour, and prerequisites | [`2026-10-07-dependent-optimisations-design.md`](2026-10-07-dependent-optimisations-design.md) |
 | Config-injection seam (`ConfigurableRelation`) | [`kermit-ds/src/relation.rs`](../../kermit-ds/src/relation.rs) |
 | `Configured` / `ConfigProvider` / `define_config_provider!` | [`kermit-ds/src/configured.rs`](../../kermit-ds/src/configured.rs) |
-| Config-aware construction in `bench run` | [`kermit/src/execution.rs`](../../kermit/src/execution.rs) — `ExecutionFamily::build_relation`, with `load` defaulting to read-then-`build_relation` |
+| Config-aware construction in `bench run` | [`kermit/src/execution.rs`](../../kermit/src/execution.rs) — `RelationFamily::build_index`, the one config- and mode-aware construction site, which `ExecutionFamily::build_indexes` calls once per index |
 | Config join test macro | [`kermit/tests/common/macros.rs`](../../kermit/tests/common/macros.rs) (search `with_config`) |
 | First BuildMode consumer (ColumnTrie build) | [`kermit-ds/src/ds/column_trie/build_mode.rs`](../../kermit-ds/src/ds/column_trie/build_mode.rs) |
 | Second BuildMode consumer (HashTrie radix build) | [`kermit-ds/src/ds/hash_trie/build_mode.rs`](../../kermit-ds/src/ds/hash_trie/build_mode.rs), [`radix.rs`](../../kermit-ds/src/ds/hash_trie/radix.rs) |
