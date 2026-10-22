@@ -25,6 +25,7 @@
 //! `kermit_algos::HashTriejoin`, never the family path.
 #![deny(missing_docs)]
 
+mod access;
 mod analysis;
 mod const_rewrite;
 mod hash;
@@ -44,6 +45,7 @@ mod sorted;
 // its implementations in `optimiser`.
 use clap::ValueEnum;
 pub use {
+    access::{extract_accesses, Access, AccessQuery, ACCESS_PREFIX},
     analysis::{analyse, canonical_names, QueryAnalysis},
     const_rewrite::{
         is_const_predicate, rewrite_atoms, ConstSpec, RewriteError, CONST_PREDICATE_PREFIX,
