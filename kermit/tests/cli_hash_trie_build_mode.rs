@@ -92,7 +92,7 @@ fn cli_bench_ds_with_parallel_build_records_axis() {
 }
 
 /// `bench join --output` builds through its own family
-/// (`load_query_runner`), so this pins that route's mode, which the
+/// (`write_query_csv`), so this pins that route's mode, which the
 /// `bench ds` and `bench run` tests do not reach.
 #[test]
 fn cli_bench_join_with_output_records_a_parallel_build() {

@@ -414,6 +414,139 @@ fn column_orders_flag_is_gone() {
     }
 }
 
+/// A relation file the query does not name: its header is valid, its only
+/// row is not a number, so loading it would fail.
+fn write_unreadable_unnamed_relation(dir: &Path) -> PathBuf {
+    let bad = dir.join("bad.csv");
+    fs::write(&bad, "a,b\n1,x\n").unwrap();
+    bad
+}
+
+/// `kermit join` reads only the relations its query names; the others are
+/// validated from their headers and left alone.
+#[test]
+fn join_reads_only_the_relations_the_query_names() {
+    let dir = TempDir::new().unwrap();
+    let (edge, query) = write_mutual_fixture(dir.path());
+    let bad = write_unreadable_unnamed_relation(dir.path());
+    for cell in [CELLS[0], CELLS[2]] {
+        let output = Command::new(kermit_bin())
+            .env("RUST_BACKTRACE", "0")
+            .env("RUST_LIB_BACKTRACE", "0")
+            .arg("join")
+            .arg("-r")
+            .arg(&edge)
+            .arg(&bad)
+            .arg("-q")
+            .arg(&query)
+            .args(cell)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{cell:?}: {stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let (header, rows) = header_and_sorted_rows(&stdout);
+        assert_eq!(header, "X,Y", "{cell:?}");
+        assert_eq!(rows, MUTUAL_ROWS, "{cell:?}");
+    }
+}
+
+/// `bench join --output` writes the CSV and runs the benchmark from one
+/// prepared workload: the CSV holds the answer, and the report names the
+/// same query and cell. The unnamed unreadable relation is never loaded
+/// for either.
+#[test]
+fn bench_join_output_and_benchmark_share_one_prepared_workload() {
+    let dir = TempDir::new().unwrap();
+    let (edge, query) = write_mutual_fixture(dir.path());
+    let bad = write_unreadable_unnamed_relation(dir.path());
+    for (structure, algorithm) in [
+        ("tree-trie", "leapfrog-triejoin"),
+        ("column-trie", "leapfrog-triejoin"),
+        ("hash-trie", "hash-triejoin"),
+    ] {
+        let csv = dir.path().join(format!("{structure}.csv"));
+        let report = dir.path().join(format!("{structure}.json"));
+        let output = Command::new(kermit_bin())
+            .env("RUST_BACKTRACE", "0")
+            .env("RUST_LIB_BACKTRACE", "0")
+            .args([
+                "bench",
+                "--sample-size",
+                "10",
+                "--measurement-time",
+                "1",
+                "--warm-up-time",
+                "1",
+                "--report-json",
+            ])
+            .arg(&report)
+            .arg("join")
+            .arg("--relations")
+            .arg(&edge)
+            .arg(&bad)
+            .arg("--query")
+            .arg(&query)
+            .args(["-i", structure, "-a", algorithm, "-m", "space", "--output"])
+            .arg(&csv)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{structure}: {stderr}");
+
+        let text = fs::read_to_string(&csv).unwrap();
+        let (header, rows) = header_and_sorted_rows(&text);
+        assert_eq!(header, "X,Y", "{structure}");
+        assert_eq!(rows, MUTUAL_ROWS, "{structure}");
+
+        let reports: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&report).unwrap()).unwrap();
+        let axes = &reports[0]["axes"];
+        assert_eq!(axes["query"], "mutual", "{structure}");
+        assert_eq!(axes["benchmark"], "adhoc", "{structure}");
+    }
+}
+
+/// A rejected query leaves no CSV behind, and says why: the output file is
+/// created only after the query has been prepared.
+#[test]
+fn bench_join_output_rejects_a_bad_query_before_creating_the_file() {
+    let dir = TempDir::new().unwrap();
+    let (edge, _) = write_mutual_fixture(dir.path());
+    let query = dir.path().join("unbound.dl");
+    fs::write(&query, "Q(X, Y) :- edge(X, Z).").unwrap();
+    let csv = dir.path().join("out.csv");
+    let output = Command::new(kermit_bin())
+        .env("RUST_BACKTRACE", "0")
+        .env("RUST_LIB_BACKTRACE", "0")
+        .args(["bench", "--report-json"])
+        .arg(dir.path().join("report.json"))
+        .arg("join")
+        .arg("--relations")
+        .arg(&edge)
+        .arg("--query")
+        .arg(&query)
+        .args([
+            "-i",
+            "tree-trie",
+            "-a",
+            "leapfrog-triejoin",
+            "-m",
+            "space",
+            "--output",
+        ])
+        .arg(&csv)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("head variable `Y` does not appear in the body"),
+        "{stderr}"
+    );
+    assert!(!csv.exists(), "a rejected query must not create the CSV");
+}
+
 /// `bench run` validates every query of a workload before it loads or
 /// times anything: the valid first query never reaches Criterion when the
 /// second cannot run.

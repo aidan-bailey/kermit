@@ -13,13 +13,11 @@
 use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
-    kermit::db::{validate_query, JoinError},
-    kermit_algos::{ColumnOrderPolicy, JoinAlgorithm, JoinQuery},
+    kermit_algos::{JoinAlgorithm, JoinQuery},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{IndexStructure, Relation, RelationHeader, Tuples},
+    kermit_ds::IndexStructure,
     kermit_parser::Term,
     std::{
-        collections::BTreeMap,
         fs,
         io::{self, BufWriter, Write},
         path::{Path, PathBuf},
@@ -36,10 +34,10 @@ mod options;
 use {
     bench::{
         check_sweep_group_directories, dispatch_ds_bench, dispatch_run_bench, gen::GenSubcommand,
-        resolve_sweep, Metric, RunSettings, Workload,
+        resolve_sweep, workload::PreparedWorkload, Metric, RunSettings, Workload,
     },
     bench_report::{BenchKind, ReportSink},
-    execution::{read_relation_header, Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
+    execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
     options::{
         with_hash_trie_layout, with_sorted_trie_layout, BuildChoices, ConfigChoices, DsChoices,
         DsFlag, LayoutChoices, PlannerArgs,
@@ -480,42 +478,30 @@ fn write_row(writer: &mut impl Write, tuple: &[usize]) -> io::Result<()> {
     writer.write_all(b"\n")
 }
 
-/// Runs `query` through `join`, streaming its header and rows to `writer`.
-fn write_join(
-    writer: impl Write, header: &[String], join: &mut JoinRunner, query: JoinQuery,
+/// Reads and plans the one query of `args`: the query file is parsed,
+/// validated against every header in `args.relations`, and prepared over a
+/// catalog of the relations it names (`Workload::prepare`). `kermit join`
+/// and `bench join` (its CSV and its benchmark alike) share the result, so
+/// the relations are read once.
+///
+/// # Errors
+///
+/// The query file cannot be read or parsed, a relation file cannot be
+/// read, or validation rejects the query, before any index is built.
+fn prepare_query(args: &QueryArgs) -> anyhow::Result<PreparedWorkload> {
+    Workload::adhoc(args.relations.clone(), &args.query)?.prepare(&args.planner.instantiate())
+}
+
+/// Builds the indexes of `workload`'s one query on `family` and streams the
+/// join to `writer` as CSV: the header row, then one line per tuple as the
+/// join produces it, so writing a result never materialises it. `workload`
+/// comes from [`prepare_query`], so it holds exactly one query.
+fn write_prepared_join<F: ExecutionFamily>(
+    family: F, cell: Execution, workload: &PreparedWorkload, writer: impl Write,
 ) -> anyhow::Result<()> {
-    let mut sink = CsvSink::new(writer, header)?;
-    join(query, &mut |tuple| sink.write_tuple(tuple))?;
-    sink.finish()?;
-    Ok(())
-}
-
-/// Parses the query file named by `args`.
-fn parse_query(args: &QueryArgs) -> anyhow::Result<JoinQuery> {
-    let query_str = fs::read_to_string(&args.query)
-        .map_err(|e| anyhow::anyhow!("Failed to read query file {:?}: {}", args.query, e))?;
-    query_str
-        .trim()
-        .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse query from {:?}: {}", args.query, e))
-}
-
-/// A built engine behind a closure: runs one query, passing each result
-/// tuple to the sink as the join produces it.
-type JoinRunner = Box<dyn FnMut(JoinQuery, &mut dyn FnMut(&[usize])) -> Result<(), JoinError>>;
-
-/// Loads `args.relations` into `family`'s engine and returns a runner over it.
-/// `cell` is the cell the caller resolved, which `family` must implement.
-/// Under `--column-orders any` the file-order tuples are kept, so a query's
-/// reordered copies can be built from them
-/// (`RelationFamily::load_with_tuples`) before its join and dropped after;
-/// under `stored` nothing is kept.
-fn build_join_runner<F: ExecutionFamily + 'static>(
-    family: F, cell: Execution, paths: &[PathBuf], column_orders: ColumnOrderPolicy,
-) -> anyhow::Result<JoinRunner> {
-    // The joins this runner serves (`kermit join`, `bench join --output`)
-    // write CSV, not a report axis, and every Layout gives the same answers,
-    // so this is the only check that a dispatch arm monomorphised the cell it
+    // The joins this writes (`kermit join`, `bench join --output`) produce
+    // CSV, not a report axis, and every Layout gives the same answers, so
+    // this is the only check that a dispatch arm monomorphised the cell it
     // was asked for: `execution` re-derives the Layout labels from the
     // family's type parameters.
     debug_assert_eq!(
@@ -523,44 +509,13 @@ fn build_join_runner<F: ExecutionFamily + 'static>(
         cell,
         "dispatch built a different cell than the one resolved"
     );
-    let mut relations = Vec::with_capacity(paths.len());
-    let mut inputs: BTreeMap<String, (RelationHeader, Tuples)> = BTreeMap::new();
-    for path in paths {
-        if column_orders == ColumnOrderPolicy::Any {
-            let (relation, tuples) = family.load_with_tuples(path)?;
-            let header = relation.header().clone();
-            inputs.insert(header.name().to_string(), (header, tuples));
-            relations.push(relation);
-        } else {
-            relations.push(family.load(path)?);
-        }
-    }
-    let mut engine = family.build(relations);
-    Ok(Box::new(move |q, sink| {
-        for spec in family.required_indexes(&engine, &q)? {
-            let (header, tuples) = inputs
-                .get(&spec.base)
-                .expect("validation checked that every base relation was loaded");
-            family.add_index(&mut engine, spec, header, tuples);
-        }
-        let result = family.join_for_each(&engine, q, sink);
-        F::clear_indexes(&mut engine);
-        result
-    }))
-}
-
-/// Checks `query` against the headers of `args.relations`, read without
-/// their tuples, so a query that cannot run fails before any relation is
-/// built. The error names the query file and is the same for every
-/// structure.
-fn validate_query_files(query: &JoinQuery, args: &QueryArgs) -> anyhow::Result<()> {
-    let headers = args
-        .relations
-        .iter()
-        .map(|path| read_relation_header(path))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    validate_query(query, headers.as_slice(), ColumnOrderPolicy::Any)
-        .map_err(|e| anyhow::anyhow!("query {:?}: {e}", args.query))
+    let query = &workload.workload.queries[0].query;
+    let prepared = &workload.prepared[0];
+    let indexes = family.build_indexes(&workload.catalog, prepared);
+    let mut sink = CsvSink::new(writer, &head_column_names(query))?;
+    family.execute(prepared, &indexes, |tuple| sink.write_tuple(tuple));
+    sink.finish()?;
+    Ok(())
 }
 
 /// Resolves the `(structure, algorithm)` pair in `args` to its execution
@@ -582,31 +537,32 @@ fn query_cell(args: &QueryArgs, choices: DsChoices) -> anyhow::Result<Execution>
     })
 }
 
-/// Builds a [`JoinRunner`] for `cell` over `args.relations`. `bench join
-/// --output` passes the very cell its measurements run, so the CSV comes from
-/// the same build.
-fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRunner> {
+/// Writes `workload`'s one query, run on `cell`'s family, to `writer` as
+/// CSV. `bench join --output` passes the very cell its measurements run, so
+/// the CSV comes from the same kind of build.
+fn write_query_csv(
+    cell: Execution, planner_args: PlannerArgs, workload: &PreparedWorkload, writer: impl Write,
+) -> anyhow::Result<()> {
     // One planner per family: a `Planner` owns its optimiser.
-    let planner = || args.planner.instantiate();
-    let column_orders = ColumnOrderPolicy::Any;
+    let planner = || planner_args.instantiate();
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
             build,
-        }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
+        }) => with_sorted_trie_layout!(seek, |S| write_prepared_join(
             TrieLftj::<kermit_ds::TreeTrie<S>>::new(build, planner()),
             cell,
-            &args.relations,
-            column_orders,
+            workload,
+            writer,
         )),
         | Execution::TrieLftj(SortedTrie::ColumnTrie {
             seek,
             build,
-        }) => with_sorted_trie_layout!(seek, |S| build_join_runner(
+        }) => with_sorted_trie_layout!(seek, |S| write_prepared_join(
             TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build, planner()),
             cell,
-            &args.relations,
-            column_orders,
+            workload,
+            writer,
         )),
         | Execution::HashHtj {
             hasher,
@@ -614,11 +570,11 @@ fn load_query_runner(args: &QueryArgs, cell: Execution) -> anyhow::Result<JoinRu
             expansion,
             config,
             build,
-        } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| build_join_runner(
+        } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| write_prepared_join(
             HashHtj::<H, P, E>::new(config, build, planner()),
             cell,
-            &args.relations,
-            column_orders,
+            workload,
+            writer,
         )),
     }
 }
@@ -703,8 +659,6 @@ fn resolve_benchmarks(
 /// Handler for the top-level `kermit join` subcommand: run one join query
 /// and write its tuples to `output` (or stdout when `None`).
 fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()> {
-    let join_query = parse_query(&query_args)?;
-    validate_query_files(&join_query, &query_args)?;
     // `kermit join` has no `--ds-config` / `--ds-build` (neither can change
     // an answer), so it resolves its layout flags against their defaults,
     // through the same validator as every bench command.
@@ -714,13 +668,13 @@ fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()
         &ConfigChoices::default(),
         &BuildChoices::default(),
     )?;
-    let mut join = load_query_runner(&query_args, query_cell(&query_args, choices)?)?;
-    let header = head_column_names(&join_query);
+    let cell = query_cell(&query_args, choices)?;
+    let workload = prepare_query(&query_args)?;
     let writer: Box<dyn Write> = match &output {
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         | None => Box::new(BufWriter::new(io::stdout().lock())),
     };
-    write_join(writer, &header, &mut join, join_query)
+    write_query_csv(cell, query_args.planner, &workload, writer)
 }
 
 /// Handler for `bench list`: print every discoverable benchmark with its
@@ -799,7 +753,8 @@ fn run_clean(name: Option<String>) -> anyhow::Result<()> {
 
 /// Handler for `bench join`: an ad-hoc workload over the given relation
 /// files, run through the same generic runner as `bench run` under the
-/// `adhoc/{query-stem}` identity.
+/// `adhoc/{query-stem}` identity. The CSV (`--output`) and the benchmark
+/// share one prepared workload, so the relations are read once.
 fn run_bench_join(
     bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>, metrics: &[Metric],
     queries_per_build: u32, config: ConfigChoices, build: BuildChoices,
@@ -807,18 +762,13 @@ fn run_bench_join(
     let selector = IndexStructureSelector::of(query_args.indexstructure);
     let choices = DsChoices::resolve(selector, &query_args.layout, &config, &build)?;
     let cell = query_cell(&query_args, choices)?;
+    let workload = prepare_query(&query_args)?;
 
     if let Some(path) = &output {
-        let join_query = parse_query(&query_args)?;
-        validate_query_files(&join_query, &query_args)?;
-        let mut join = load_query_runner(&query_args, cell)?;
-        let header = head_column_names(&join_query);
         let writer = BufWriter::new(fs::File::create(path)?);
-        write_join(writer, &header, &mut join, join_query)?;
+        write_query_csv(cell, query_args.planner, &workload, writer)?;
     }
 
-    let workload = Workload::adhoc(query_args.relations.clone(), &query_args.query)?
-        .prepare(&query_args.planner.instantiate())?;
     let settings = RunSettings {
         kind: BenchKind::Join,
         prefix: bench_args.name.as_deref().unwrap_or(DEFAULT_JOIN_GROUP),

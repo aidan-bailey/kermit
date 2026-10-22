@@ -549,7 +549,7 @@ pub(crate) fn validate_layout_choices(
 /// runtime.
 ///
 /// The dispatchers (`dispatch_ds_bench` and `dispatch_run_bench`, in
-/// `bench/ds.rs` and `bench/run.rs`) and `load_query_runner` (in `main.rs`)
+/// `bench/ds.rs` and `bench/run.rs`) and `write_query_csv` (in `main.rs`)
 /// all go through here, so the Layout product is written out once rather
 /// than once per caller. It is not free of the product, though: the arms
 /// *are* the cells, so each Layout dimension doubles them (2^n in general).
@@ -657,7 +657,7 @@ pub(crate) use with_hash_trie_layout;
 /// the one place a `--ds-layout-seek` choice becomes a type. The two
 /// products share no dimension (a sorted cell has no hasher, and a hash
 /// cell no seek), so they are separate macros. Called by the sorted arms of
-/// `dispatch_run_bench`, `dispatch_ds_bench` and `load_query_runner`.
+/// `dispatch_run_bench`, `dispatch_ds_bench` and `write_query_csv`.
 ///
 /// Hygiene contract as for `with_hash_trie_layout!`: `$S` becomes a type
 /// alias scoped to the arm.

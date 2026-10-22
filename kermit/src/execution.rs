@@ -388,6 +388,7 @@ pub trait RelationFamily {
     ///
     /// Returns an error if the extension is neither `csv` nor `parquet`,
     /// or if the reader fails.
+    #[allow(dead_code)] // Unused until Story 19
     fn load(&self, path: &Path) -> anyhow::Result<Self::Rel> {
         let (header, tuples) = read_relation(path)?;
         Ok(self.build_relation(header, tuples))
@@ -408,6 +409,7 @@ pub trait RelationFamily {
     /// # Errors
     ///
     /// As [`load`](Self::load).
+    #[allow(dead_code)] // Unused until Story 19
     fn load_with_tuples(&self, path: &Path) -> anyhow::Result<(Self::Rel, Tuples)> {
         let (header, tuples) = read_relation(path)?;
         Ok((self.build_relation(header, tuples.clone()), tuples))
@@ -546,6 +548,7 @@ pub trait ExecutionFamily: RelationFamily {
 
     /// Builds the engine from freshly loaded relations, retaining them for
     /// the copies a query's plan reads.
+    #[allow(dead_code)] // Unused until Story 19
     fn build(&self, relations: Vec<Self::Rel>) -> Self::Engine;
 
     /// Builds an engine from `(header, tuples)` snapshots along the same
@@ -598,6 +601,7 @@ pub trait ExecutionFamily: RelationFamily {
     /// # Errors
     ///
     /// As [`join_for_each`](Self::join_for_each).
+    #[allow(dead_code)] // Unused until Story 19
     fn required_indexes(
         &self, engine: &Self::Engine, query: &JoinQuery,
     ) -> Result<Vec<CopySpec>, JoinError>;
@@ -606,11 +610,13 @@ pub trait ExecutionFamily: RelationFamily {
     /// `tuples` through [`build_relation`](RelationFamily::build_relation),
     /// so the copy carries the configuration and build mode the report's
     /// axes name, and adds it to `engine`.
+    #[allow(dead_code)] // Unused until Story 19
     fn add_index(
         &self, engine: &mut Self::Engine, spec: CopySpec, base: &RelationHeader, tuples: &Tuples,
     );
 
     /// Drops every copy `engine` holds.
+    #[allow(dead_code)] // Unused until Story 19
     fn clear_indexes(engine: &mut Self::Engine);
 
     /// Every copy `engine` holds, with its spec: the `space/Index_*`
