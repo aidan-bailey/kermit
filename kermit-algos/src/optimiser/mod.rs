@@ -61,8 +61,9 @@ pub trait QueryOptimiser {
 /// benchmark dimension with its own `optimiser` report axis.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Optimiser {
-    /// Smallest canonical variable index first — reproduces the
-    /// pre-optimiser hardcoded ordering. The default.
+    /// Smallest canonical variable index first: the canonical order itself
+    /// (head variables, then body-only ones in first-appearance order),
+    /// kept only where the column-order precedence allows. The default.
     Lexicographic,
     /// Smallest-relation-first; see [`CardinalityOptimiser`].
     Cardinality,

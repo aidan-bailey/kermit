@@ -45,8 +45,10 @@ pub struct CostBasedOptimiser {
 }
 
 impl CostBasedOptimiser {
-    /// The default [`state_budget`](Self::state_budget): 20 times the 820
-    /// sets of the largest WatDiv stress template (q0034, 13 variables).
+    /// The default [`state_budget`](Self::state_budget): 2¹⁴ = 16,384 sets,
+    /// every subset of 14 variables. A query of up to 12 variables, the most
+    /// any committed query has (4,095 sets), is always searched in full; the
+    /// budget only bounds the planning time of a larger one.
     pub const DEFAULT_STATE_BUDGET: usize = 1 << 14;
 }
 
