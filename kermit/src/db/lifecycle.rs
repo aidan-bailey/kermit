@@ -53,6 +53,10 @@ impl Prepared {
     /// builds it once.
     pub fn indexes(&self) -> &[IndexSpec] { &self.indexes }
 
+    /// The rows each index's view admits, `index_rows()[id]` being `#<id>`'s,
+    /// counted by `prepare`.
+    pub fn index_rows(&self) -> &[usize] { &self.index_rows }
+
     /// The atoms with no variable, in body order. Each only has to count the
     /// rows its constants admit.
     pub fn checks(&self) -> &[Access] { &self.checks }

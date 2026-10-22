@@ -167,11 +167,9 @@ fn run_benchmark<F: ExecutionFamily>(
         let (index_lines, index_rows, as_built_bytes) = {
             let indexes = family.build_indexes(catalog, prepared);
             let mut lines = Vec::new();
-            for (position, (spec, index)) in indexes.iter().enumerate() {
-                let source = catalog
-                    .tuples(&spec.relation)
-                    .expect("prepare checked that every indexed relation is in the catalog");
-                let rows = spec.view(source).count();
+            for (position, ((spec, index), &rows)) in
+                indexes.iter().zip(prepared.index_rows()).enumerate()
+            {
                 lines.push(MetadataLine::new(
                     "index",
                     describe_index(position, spec, rows, index.heap_size_bytes()),
