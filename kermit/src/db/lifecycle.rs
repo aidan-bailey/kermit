@@ -8,11 +8,12 @@ use {
     super::{validate_query, Catalog, JoinError},
     kermit_algos::{
         distinct_per_column, extract_accesses, plan_indexes, rewrite_placeholders, Access,
-        CatalogStats, ColumnOrderPolicy, IndexPlan, IndexSpec, JoinQuery, Planner, QueryPlan,
-        RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
+        CatalogStats, ColumnOrderPolicy, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner,
+        QueryPlan, RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
     },
     kermit_ds::{Relation, RelationHeader, TupleView, Tuples},
-    std::collections::BTreeMap,
+    kermit_iters::JoinIterable,
+    std::collections::{BTreeMap, HashMap},
 };
 
 /// What a [`Prepared`] expects of the catalog it is used with: `prepare`
@@ -304,11 +305,81 @@ pub fn build<R: Relation>(catalog: &Catalog, prepared: &Prepared) -> Indexes<R> 
     build_with(catalog, prepared, R::from_view)
 }
 
+/// Joins `indexes` with `JA` and lends each answer's head to `emit`: the timed
+/// join.
+///
+/// `JoinAlgo::join_for_each` runs over the indexes the executed query names,
+/// and every row it produces is lent to `emit` as its first
+/// [`head_len`](Prepared::head_len) values (bag semantics: nothing is
+/// deduplicated). The head is emitted once per unit of
+/// [`multiplicity`](Indexes::multiplicity), so a check that holds nowhere emits
+/// nothing. When every atom was a check there is nothing to join, and the empty
+/// head row is emitted `multiplicity` times (validation makes the head empty
+/// then, since it binds every head variable in an atom).
+///
+/// Nothing is collected here. A lazy `HashTrie` builds the children a join
+/// reaches, through `&self`, so its heap size grows with each run: measure
+/// `space` before joining.
+///
+/// # Panics
+///
+/// In debug builds, if `indexes` were not built from `prepared` (their specs
+/// differ).
+pub fn execute<R, JA>(prepared: &Prepared, indexes: &Indexes<R>, mut emit: impl FnMut(&[usize]))
+where
+    R: JoinIterable,
+    JA: JoinAlgo<R>,
+{
+    debug_assert_eq!(
+        indexes.specs, prepared.indexes,
+        "the indexes were not built from this `Prepared`"
+    );
+    let multiplicity = indexes.multiplicity;
+    if multiplicity == 0 {
+        return;
+    }
+    if prepared.query.body.is_empty() {
+        debug_assert_eq!(prepared.head_len, 0, "a query of checks has an empty head");
+        for _ in 0..multiplicity {
+            emit(&[]);
+        }
+        return;
+    }
+
+    let ds_map: HashMap<String, &R> = prepared
+        .query
+        .body
+        .iter()
+        .map(|atom| {
+            let index = indexes.get(&atom.name);
+            (
+                atom.name.clone(),
+                index.expect("the executed query names only built indexes"),
+            )
+        })
+        .collect();
+
+    // The executors emit every variable of the query they run in canonical
+    // order, and `analyse` numbers the head's variables `0..head_len` in
+    // head order, so the head is each row's prefix. Lending it allocates
+    // nothing.
+    let head_len = prepared.head_len;
+    JA::join_for_each(&prepared.plan, prepared.query.clone(), ds_map, |row| {
+        let head = &row[..head_len];
+        for _ in 0..multiplicity {
+            emit(head);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use {
         super::*,
-        kermit_algos::{analyse, LexicographicOptimiser, QueryOptimiser, RewriteError},
+        kermit_algos::{
+            analyse, CardinalityOptimiser, CostBasedOptimiser, HashTriejoin, LeapfrogTriejoin,
+            LexicographicOptimiser, QueryOptimiser, RewriteError,
+        },
         kermit_ds::{Cardinality, Filter, HashTrie, RelationHeader, TreeTrie},
         std::{cell::RefCell, rc::Rc},
     };
@@ -798,5 +869,196 @@ mod tests {
         let indexes = build::<TreeTrie>(&c, &prepared_for(&c, "Q(X) :- e(X, Y)."));
         assert_eq!(indexes.rows(), 0);
         assert_eq!(stored(&indexes), vec![0]);
+    }
+
+    /// `query` prepared over `catalog` by `planner`, built as `R` and joined by
+    /// `JA`, with the rows sorted.
+    fn join_with<R: Relation, JA: JoinAlgo<R>>(
+        catalog: &Catalog, query: &JoinQuery, planner: &Planner,
+    ) -> Vec<Vec<usize>> {
+        let prepared = prepare(catalog, query, planner).expect("a valid query");
+        let indexes = build::<R>(catalog, &prepared);
+        let mut rows = Vec::new();
+        execute::<R, JA>(&prepared, &indexes, |row| rows.push(row.to_vec()));
+        rows.sort();
+        rows
+    }
+
+    /// The sorted answer of `text` (`TreeTrie` under `LeapfrogTriejoin`), then
+    /// its hash answer (`HashTrie` under `HashTriejoin`), both planned in
+    /// canonical order.
+    fn answers(catalog: &Catalog, text: &str) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+        let query = parse(text);
+        (
+            join_with::<TreeTrie, LeapfrogTriejoin>(catalog, &query, &lexicographic()),
+            join_with::<HashTrie, HashTriejoin>(catalog, &query, &lexicographic()),
+        )
+    }
+
+    /// Asserts that both families answer `text` with `expected`.
+    fn assert_answers(catalog: &Catalog, text: &str, expected: Vec<Vec<usize>>) {
+        let (sorted, hashed) = answers(catalog, text);
+        assert_eq!(sorted, expected, "TreeTrie, LeapfrogTriejoin: {text}");
+        assert_eq!(hashed, expected, "HashTrie, HashTriejoin: {text}");
+    }
+
+    #[test]
+    fn constants_and_repeats_filter_the_answer() {
+        let c = catalog(vec![
+            ("p", 2, vec![vec![1, 10], vec![2, 20], vec![3, 30]]),
+            ("r", 2, vec![
+                vec![1, 1],
+                vec![1, 2],
+                vec![2, 3],
+                vec![3, 3],
+                vec![4, 5],
+            ]),
+            ("t", 3, vec![
+                vec![1, 5, 1],
+                vec![1, 5, 2],
+                vec![2, 6, 2],
+                vec![3, 5, 3],
+            ]),
+        ]);
+        // A constant keeps the rows that hold it.
+        assert_answers(&c, "Q(X) :- p(X, c10).", vec![vec![1]]);
+        // A repeated variable keeps the diagonal.
+        assert_answers(&c, "Q(X) :- r(X, X).", vec![vec![1], vec![3]]);
+        // Both on one atom: column 1 is 5 and column 0 equals column 2.
+        assert_answers(&c, "Q(X) :- t(X, c5, X).", vec![vec![1], vec![3]]);
+        // Two reads of one relation: the diagonal joined with the whole
+        // relation.
+        assert_answers(&c, "Q(X, Y) :- r(X, X), r(X, Y).", vec![
+            vec![1, 1],
+            vec![1, 2],
+            vec![3, 3],
+        ]);
+    }
+
+    /// `_` is an unused variable, so `X` repeats once per row (bag semantics),
+    /// and a named variable missing from the head is not in the output.
+    #[test]
+    fn placeholders_keep_bag_semantics_and_the_head_projects() {
+        let c = catalog(vec![
+            ("r", 2, vec![vec![1, 2], vec![1, 3], vec![2, 4]]),
+            ("t", 3, vec![vec![1, 2, 3], vec![1, 4, 3], vec![2, 5, 6]]),
+        ]);
+        assert_answers(&c, "Q(X) :- r(X, _).", vec![vec![1], vec![1], vec![2]]);
+        assert_answers(&c, "Q(X, Z) :- t(X, _, Z).", vec![
+            vec![1, 3],
+            vec![1, 3],
+            vec![2, 6],
+        ]);
+        assert_answers(&c, "Q(X) :- r(X, Y).", vec![vec![1], vec![1], vec![2]]);
+    }
+
+    /// The three atoms read one merged index.
+    #[test]
+    fn a_self_join_reads_one_index_for_every_atom() {
+        let edges = vec![vec![1, 2], vec![2, 3], vec![1, 3], vec![3, 4], vec![2, 4]];
+        let c = catalog(vec![("e", 2, edges)]);
+        assert_answers(&c, "Q(X, Y, Z) :- e(X, Y), e(Y, Z), e(X, Z).", vec![
+            vec![1, 2, 3],
+            vec![2, 3, 4],
+        ]);
+    }
+
+    /// An atom against the stored column order, and the two-cycle `stored`
+    /// refused, run over reversed indexes.
+    #[test]
+    fn a_reversed_atom_joins_through_its_own_index() {
+        let c = catalog(vec![("edge", 2, vec![vec![1, 2], vec![3, 4]])]);
+        assert_answers(&c, "Q(X, Y) :- edge(Y, X).", vec![vec![2, 1], vec![4, 3]]);
+
+        let c = catalog(vec![("edge", 2, vec![vec![1, 2], vec![2, 1], vec![2, 3]])]);
+        assert_answers(&c, "Q(X, Y) :- edge(X, Y), edge(Y, X).", vec![
+            vec![1, 2],
+            vec![2, 1],
+        ]);
+    }
+
+    /// `s(c7, c8)` holds twice and `t(c5)` three times: hash tries answer six
+    /// times over, sorted tries once. A check that holds nowhere leaves no
+    /// answer on either.
+    #[test]
+    fn all_constant_atoms_multiply_the_answer_on_hash_tries_only() {
+        let c = catalog(vec![
+            ("r", 1, vec![vec![1], vec![2]]),
+            ("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]]),
+            ("t", 1, vec![vec![5], vec![5], vec![5]]),
+        ]);
+        let (sorted, hashed) = answers(&c, "Q(X) :- r(X), s(c7, c8), t(c5).");
+        assert_eq!(sorted, vec![vec![1], vec![2]]);
+        let mut copies = vec![vec![1]; 6];
+        copies.extend(vec![vec![2]; 6]);
+        assert_eq!(hashed, copies);
+
+        assert_answers(&c, "Q(X) :- r(X), s(c7, c9).", vec![]);
+    }
+
+    /// When every atom is a check there is nothing to join: the empty head row
+    /// is emitted once per unit of multiplicity. The parser cannot write an
+    /// empty head, so the query is built by clearing one.
+    #[test]
+    fn a_query_with_no_atom_left_emits_the_empty_head_per_unit_of_multiplicity() {
+        let c = catalog(vec![("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]])]);
+        let mut query = parse("Q(X) :- s(c7, c8).");
+        query.head.terms.clear();
+        assert!(prepare(&c, &query, &lexicographic())
+            .unwrap()
+            .query()
+            .body
+            .is_empty());
+
+        let sorted = join_with::<TreeTrie, LeapfrogTriejoin>(&c, &query, &lexicographic());
+        assert_eq!(sorted, vec![Vec::<usize>::new()]);
+        let hashed = join_with::<HashTrie, HashTriejoin>(&c, &query, &lexicographic());
+        assert_eq!(hashed, vec![Vec::<usize>::new(); 2]);
+
+        let mut absent = parse("Q(X) :- s(c7, c9).");
+        absent.head.terms.clear();
+        assert!(join_with::<HashTrie, HashTriejoin>(&c, &absent, &lexicographic()).is_empty());
+    }
+
+    #[test]
+    fn an_empty_relation_joins_to_nothing() {
+        let c = catalog(vec![
+            ("first", 1, vec![vec![1], vec![2]]),
+            ("nothing", 1, vec![]),
+        ]);
+        assert_answers(&c, "Q(X) :- first(X), nothing(X).", vec![]);
+    }
+
+    /// Every optimiser plans the query of accesses, and the plan does not
+    /// change the answer.
+    #[test]
+    fn every_optimiser_plans_over_the_accesses() {
+        let c = catalog_at(StatisticsLevel::ColumnDistinct, statistics_relations());
+        let query = parse(STATISTICS_QUERY);
+        let expected = vec![vec![1, 2], vec![1, 2], vec![1, 3], vec![1, 3]];
+        let planners = [
+            planner_of(LexicographicOptimiser),
+            planner_of(CardinalityOptimiser),
+            planner_of(CostBasedOptimiser::default()),
+        ];
+        for planner in &planners {
+            let sorted = join_with::<TreeTrie, LeapfrogTriejoin>(&c, &query, planner);
+            assert_eq!(sorted, expected, "{planner:?}");
+            let hashed = join_with::<HashTrie, HashTriejoin>(&c, &query, planner);
+            assert_eq!(hashed, expected, "{planner:?}");
+        }
+    }
+
+    /// Ids alone cannot tell two `Prepared` apart, since each numbers its
+    /// indexes from `#0`, so `execute` compares the specs, in debug builds.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "were not built from this `Prepared`")]
+    fn indexes_from_another_prepared_are_refused() {
+        let c = catalog(vec![("p", 2, vec![vec![1, 10], vec![2, 20]])]);
+        let first = prepared_for(&c, "Q(X) :- p(X, c10).");
+        let second = prepared_for(&c, "Q(X) :- p(X, c20).");
+        let indexes = build::<TreeTrie>(&c, &first);
+        execute::<TreeTrie, LeapfrogTriejoin>(&second, &indexes, |_| {});
     }
 }

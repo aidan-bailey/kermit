@@ -27,7 +27,7 @@ mod validation;
 pub use {
     catalog::Catalog,
     database::{build_index, index_header, Database},
-    lifecycle::{build, build_with, prepare, Indexes, Prepared},
+    lifecycle::{build, build_with, execute, prepare, Indexes, Prepared},
     validation::{validate_query, JoinError, RelationArities},
 };
 use {
