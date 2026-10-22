@@ -79,7 +79,7 @@ Useful flags:
 - `--query <NAME>` — run a single named query from the benchmark (default: all queries).
 - `--all` — run every benchmark in `benchmarks/`.
 - `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the three compatible pairings above are supported; `all` on either side expands to the valid cells and skips the rest, while naming a single incompatible pair is a usage error.
-- `--metrics insertion iteration space` — pick which metrics to measure (default: all three). The opt-in `end-to-end` metric times one database build plus K query executions per Criterion sample (`T = build + K × query`); it is never in the default set.
+- `--metrics build iteration space` — pick which metrics to measure (default: all three), per query: `build` times constructing the indexes the query's plan reads (each one a relation filtered by the query's constants and repeated variables and copied once, in the plan's column order), `iteration` times the join over indexes built once, and `space` is those indexes' heap bytes. Relations are read once per benchmark, untimed, and no structure is built until a query asks for it. The opt-in `end-to-end` metric times one build plus K query executions per Criterion sample (`T = build + K × query`); it is never in the default set.
 - `--queries-per-build <K>` — K for the `end-to-end` metric (default 1); recorded in the report's `queries_per_build` axis. Ignored by other metrics.
 - `--optimiser <lexicographic|cardinality|cost-based>` — pick the query optimiser planning each join's variable ordering (default: `lexicographic`). The choice is recorded in the JSON report's `optimiser` axis, making optimiser comparisons a third benchmark dimension alongside `-i`/`-a`.
 - `--force` — regenerate a declarative-generator benchmark when its cached `meta.json` no longer matches the YAML's `spec_hash` (otherwise drift is a hard error).
@@ -117,14 +117,14 @@ Benchmark a specific data structure against a single relation file:
 kermit bench ds \
   --relation data.csv \
   --indexstructure tree-trie \
-  --metrics insertion iteration space
+  --metrics build iteration space
 ```
 
-`--metrics` defaults to `insertion iteration space`; the opt-in `end-to-end` metric (with `--queries-per-build <K>`) times one build plus K full-trie iterations per Criterion sample.
+`--metrics` defaults to `build iteration space`; the opt-in `end-to-end` metric (with `--queries-per-build <K>`) times one build plus K full-trie iterations per Criterion sample.
 
 ### Join benchmark (`bench join`)
 
-Benchmark join execution (query only, against a pre-built database) on data files:
+Benchmark a join on data files (the relations are read once, untimed; each query then builds, and times, only the indexes its plan reads):
 
 ```sh
 kermit bench join \
@@ -134,7 +134,7 @@ kermit bench join \
   --indexstructure tree-trie
 ```
 
-Supported cells (for `bench join`): `tree-trie` / `column-trie` via `leapfrog-triejoin`, and `hash-trie` via `hash-triejoin`. Supported metrics (on `bench ds`/`bench run`): `insertion`, `iteration`, `space`, plus the opt-in `end-to-end`.
+Supported cells (for `bench join`): `tree-trie` / `column-trie` via `leapfrog-triejoin`, and `hash-trie` via `hash-triejoin`. Supported metrics (on `bench ds`/`bench run`): `build`, `iteration`, `space`, plus the opt-in `end-to-end`.
 
 ### JSON reports for tooling
 
@@ -149,7 +149,7 @@ kermit bench --report-json /tmp/triangle.json \
 # → writes /tmp/triangle.json
 ```
 
-The schema (currently v2) is documented in `docs/specs/bench-report-schema.md`.
+The schema (currently v5) is documented in `docs/specs/bench-report-schema.md`.
 
 ## Analysis and plotting
 

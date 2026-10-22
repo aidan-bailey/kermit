@@ -238,7 +238,7 @@ Two families of committed YAMLs are **frozen snapshots**, not declarative specs.
 
 The WatDiv snapshots must be regenerated as a unit: the `c<dict-id>` atoms in their query bodies (below) are tied to the dictionary of one specific preprocessor run, so the YAMLs, `dict.parquet`, and all `<predicate>.parquet` files must be rebuilt and re-uploaded together; mixing files from different runs makes constant atoms point at the wrong rows. Expected cardinalities for these snapshots are not yet in the YAMLs (the preprocessor's `expected.json` values could be folded in later); the on-the-fly WatDiv generator attaches none, because the vendored binary emits no `.desc` sidecars.
 
-Every WatDiv query body may contain `c<dict-id>` atom terms filtering a BGP position against a constant URI. At join time, the join entry point (`lftj_join` / `hash_join`) rewrites each atom into a fresh variable + synthetic `Const_c<id>` unary relation (Veldhuizen 2014 §3.4 point 4 — see `kermit-algos/src/const_rewrite.rs`).
+Every WatDiv query body may contain `c<dict-id>` atom terms filtering a BGP position against a constant URI. At join time, `prepare` turns each such constant into a filter on the index built for that body atom (`kermit-algos/src/access.rs`; Veldhuizen 2014 §3.4 point 4), so only the matching rows are copied into the index, inside the timed `build`, and the join never sees the constant.
 
 ## Caching
 
