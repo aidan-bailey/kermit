@@ -3,15 +3,19 @@
 //! A query runs in three steps, each a free function here: [`prepare`]
 //! validates and plans it against the catalog's headers and statistics,
 //! [`build`] builds the indexes the plan reads from the catalog's flat
-//! tuples, and [`execute`] joins over them. Each iterator family has one
-//! streaming function that runs all three — [`lftj_join_for_each`] for
-//! sorted tries under a [`TrieIterable`]-family algorithm,
-//! [`hash_join_for_each`] for [`HashTrieIterable`] structures under
-//! [`HashTriejoin`] — plus a collecting wrapper ([`lftj_join`],
-//! [`hash_join`]). Each is planned by a [`Planner`]. Both share one private
-//! body and differ only in the bounds they put on the relation type and the
-//! algorithm they run: an index is a plain relation, so no algorithm needs a
-//! wrapper for a constant or a repeated variable.
+//! tuples, and [`execute`] joins over them, lending each answer row to a
+//! sink. Each iterator family has one streaming function that runs all
+//! three — [`lftj_join_for_each`] for sorted tries under a
+//! [`TrieIterable`]-family algorithm, [`hash_join_for_each`] for
+//! [`HashTrieIterable`] structures under [`HashTriejoin`] — and one
+//! collecting function ([`lftj_join`], [`hash_join`]) whose sink is a flat
+//! [`Tuples`] batch. A collected answer is a relation: the
+//! [`RelationHeader`] that [`Prepared::answer_header`] names and its rows,
+//! the pair a [`Catalog`] is built from. Each is planned by a [`Planner`].
+//! The streaming functions share one private body and the collecting ones
+//! another, and they differ only in the bounds they put on the relation type
+//! and the algorithm they run: an index is a plain relation, so no algorithm
+//! needs a wrapper for a constant or a repeated variable.
 //!
 //! Every entry point is total: a query that cannot run over the catalog
 //! returns a [`JoinError`] rather than panicking, identically for both
@@ -31,7 +35,7 @@ pub use {
 };
 use {
     kermit_algos::{HashTriejoin, JoinAlgo, JoinQuery, Planner},
-    kermit_ds::Relation,
+    kermit_ds::{Relation, RelationHeader, Tuples},
     kermit_iters::{HashTrieIterable, TrieIterable},
 };
 
@@ -59,6 +63,33 @@ where
     Ok(())
 }
 
+/// The collecting twin of [`run_join`]: the same three steps, with a flat
+/// [`Tuples`] sink sized by the head, so an empty answer keeps the head's
+/// arity. Returns the answer as a relation, its header from
+/// [`Prepared::answer_header`].
+///
+/// # Errors
+///
+/// As [`run_join`].
+///
+/// # Panics
+///
+/// If the answer has more than [`RowId::MAX`](kermit_ds::RowId) rows, the
+/// most a [`Tuples`] batch holds.
+pub(crate) fn collect_join<R, JA>(
+    catalog: &Catalog, query: &JoinQuery, planner: &Planner,
+) -> Result<(RelationHeader, Tuples), JoinError>
+where
+    R: Relation,
+    JA: JoinAlgo<R>,
+{
+    let prepared = prepare(catalog, query, planner)?;
+    let indexes = build::<R>(catalog, &prepared);
+    let mut rows = Tuples::new(prepared.head_len());
+    execute::<R, JA>(&prepared, &indexes, |row| rows.push(row));
+    Ok((prepared.answer_header(), rows))
+}
+
 /// Sorted-family join entry point: runs `query` over `catalog` with the
 /// [`TrieIterable`]-family algorithm `JA` (normally
 /// [`LeapfrogTriejoin`](kermit_algos::LeapfrogTriejoin)), planned by
@@ -82,22 +113,27 @@ where
     run_join::<R, JA>(catalog, &query, planner, emit)
 }
 
-/// [`lftj_join_for_each`], collected: returns every result tuple. For
-/// callers that need the rows themselves; allocates one `Vec` per tuple.
+/// [`lftj_join_for_each`], collected: returns the answer as a relation, the
+/// header [`Prepared::answer_header`] names and every result row in one flat
+/// [`Tuples`] batch of the head's arity, the pair a [`Catalog`] is built
+/// from.
 ///
 /// # Errors
 ///
 /// As [`lftj_join_for_each`].
+///
+/// # Panics
+///
+/// If the answer has more than [`RowId::MAX`](kermit_ds::RowId) rows; stream
+/// such an answer with [`lftj_join_for_each`] instead.
 pub fn lftj_join<R, JA>(
     catalog: &Catalog, query: JoinQuery, planner: &Planner,
-) -> Result<Vec<Vec<usize>>, JoinError>
+) -> Result<(RelationHeader, Tuples), JoinError>
 where
     R: Relation + TrieIterable,
     JA: JoinAlgo<R>,
 {
-    let mut tuples = Vec::new();
-    lftj_join_for_each::<R, JA>(catalog, query, planner, |tuple| tuples.push(tuple.to_vec()))?;
-    Ok(tuples)
+    collect_join::<R, JA>(catalog, &query, planner)
 }
 
 /// Hash-family join entry point: runs `query` over `catalog` with
@@ -117,21 +153,24 @@ where
     run_join::<R, HashTriejoin>(catalog, &query, planner, emit)
 }
 
-/// [`hash_join_for_each`], collected: returns every result tuple. For
-/// callers that need the rows themselves; allocates one `Vec` per tuple.
+/// [`hash_join_for_each`], collected: returns the answer as a relation, as
+/// [`lftj_join`] does.
 ///
 /// # Errors
 ///
 /// As [`hash_join_for_each`].
+///
+/// # Panics
+///
+/// If the answer has more than [`RowId::MAX`](kermit_ds::RowId) rows; stream
+/// such an answer with [`hash_join_for_each`] instead.
 pub fn hash_join<R>(
     catalog: &Catalog, query: JoinQuery, planner: &Planner,
-) -> Result<Vec<Vec<usize>>, JoinError>
+) -> Result<(RelationHeader, Tuples), JoinError>
 where
     R: Relation + HashTrieIterable,
 {
-    let mut tuples = Vec::new();
-    hash_join_for_each::<R>(catalog, query, planner, |tuple| tuples.push(tuple.to_vec()))?;
-    Ok(tuples)
+    collect_join::<R, HashTriejoin>(catalog, &query, planner)
 }
 
 #[cfg(test)]
@@ -179,11 +218,12 @@ mod tests {
     fn sorted_family(catalog: &Catalog, query: &JoinQuery) -> Result<Rows, JoinError> {
         let planner = planner_of(LexicographicOptimiser);
         lftj_join::<TreeTrie, LeapfrogTriejoin>(catalog, query.clone(), &planner)
+            .map(|(_, rows)| rows.to_vecs())
     }
 
     fn hash_family(catalog: &Catalog, query: &JoinQuery) -> Result<Rows, JoinError> {
         let planner = planner_of(LexicographicOptimiser);
-        hash_join::<HashTrie>(catalog, query.clone(), &planner)
+        hash_join::<HashTrie>(catalog, query.clone(), &planner).map(|(_, rows)| rows.to_vecs())
     }
 
     /// The rows `query` returns from each family, sorted. The families must
@@ -279,11 +319,16 @@ mod tests {
             query.clone(),
             &planner_of(spy.clone()),
         )
-        .unwrap();
+        .unwrap()
+        .1
+        .to_vecs();
         check(&spy, rows);
 
         let spy = StatsSpy::default();
-        let rows = hash_join::<HashTrie>(&catalog, query, &planner_of(spy.clone())).unwrap();
+        let rows = hash_join::<HashTrie>(&catalog, query, &planner_of(spy.clone()))
+            .unwrap()
+            .1
+            .to_vecs();
         check(&spy, rows);
     }
 
@@ -317,7 +362,9 @@ mod tests {
         let analysed = store(StatisticsLevel::ColumnDistinct, entries());
         let mut got =
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&analysed, query, &planner_of(NeedsColumns))
-                .unwrap();
+                .unwrap()
+                .1
+                .to_vecs();
         got.sort();
         assert_eq!(got, vec![vec![2], vec![3]]);
     }
@@ -445,6 +492,98 @@ mod tests {
             .unwrap();
         hashed.sort();
         assert_eq!(hashed, vec![vec![2], vec![3]]);
+    }
+
+    /// A collected answer is a relation: named after the head predicate, one
+    /// attribute per head variable in head order, and its rows at the head's
+    /// arity, from both families.
+    #[test]
+    fn the_answer_is_a_relation_named_after_the_head() {
+        let catalog = counts(vec![("p", 2, vec![vec![1, 10], vec![2, 20]])]);
+        let query: JoinQuery = "Q(Y, X) :- p(X, Y).".parse().unwrap();
+        let planner = planner_of(LexicographicOptimiser);
+        for (header, rows) in [
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&catalog, query.clone(), &planner).unwrap(),
+            hash_join::<HashTrie>(&catalog, query.clone(), &planner).unwrap(),
+        ] {
+            assert_eq!(header.name(), "Q");
+            assert_eq!(header.attrs().to_vec(), vec!["Y", "X"]);
+            assert_eq!(rows.arity(), 2);
+            let mut got = rows.to_vecs();
+            got.sort();
+            assert_eq!(got, vec![vec![10, 1], vec![20, 2]]);
+        }
+    }
+
+    /// An empty answer keeps the head's arity: the batch is sized by the head,
+    /// not by a first row, which a list of rows could not show.
+    #[test]
+    fn an_empty_answer_keeps_the_heads_arity() {
+        let catalog = counts(vec![
+            ("p", 2, vec![vec![1, 10], vec![2, 20]]),
+            ("q", 1, vec![vec![30]]),
+        ]);
+        let query: JoinQuery = "Q(X, Y) :- p(X, Y), q(Y).".parse().unwrap();
+        let planner = planner_of(LexicographicOptimiser);
+        for (header, rows) in [
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&catalog, query.clone(), &planner).unwrap(),
+            hash_join::<HashTrie>(&catalog, query.clone(), &planner).unwrap(),
+        ] {
+            assert!(rows.is_empty());
+            assert_eq!(rows.arity(), 2);
+            assert_eq!(header.arity(), 2);
+        }
+    }
+
+    /// A query whose atoms are all constant checks answers with the empty
+    /// row: arity 0, once on a sorted trie and once per matching row on a
+    /// hash trie. The parser cannot write an empty head, so it is cleared.
+    #[test]
+    fn an_answer_of_checks_alone_has_arity_zero() {
+        let catalog = counts(vec![("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]])]);
+        let mut query: JoinQuery = "Q(X) :- s(c7, c8).".parse().unwrap();
+        query.head.terms.clear();
+        let planner = planner_of(LexicographicOptimiser);
+
+        let (header, sorted) =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&catalog, query.clone(), &planner).unwrap();
+        assert_eq!((header.name(), header.arity()), ("Q", 0));
+        assert_eq!((sorted.arity(), sorted.len()), (0, 1));
+
+        let (_, hashed) = hash_join::<HashTrie>(&catalog, query, &planner).unwrap();
+        assert_eq!((hashed.arity(), hashed.len()), (0, 2));
+    }
+
+    /// An answer is a relation in the form a catalog takes, so a second query
+    /// reads it with no conversion: two-step paths, then the vertices on a
+    /// two-cycle, under both families.
+    #[test]
+    fn an_answer_reenters_a_catalog_as_a_relation() {
+        let catalog = counts(vec![("edge", 2, vec![
+            vec![1, 2],
+            vec![2, 3],
+            vec![3, 1],
+            vec![2, 1],
+        ])]);
+        let paths: JoinQuery = "Q(X, Z) :- edge(X, Y), edge(Y, Z).".parse().unwrap();
+        let cycles: JoinQuery = "P(X) :- Q(X, X).".parse().unwrap();
+        let planner = planner_of(LexicographicOptimiser);
+
+        let answer =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&catalog, paths.clone(), &planner).unwrap();
+        let again = Catalog::new(vec![answer], StatisticsLevel::TupleCounts);
+        let (_, rows) =
+            lftj_join::<TreeTrie, LeapfrogTriejoin>(&again, cycles.clone(), &planner).unwrap();
+        let mut sorted = rows.to_vecs();
+        sorted.sort();
+        assert_eq!(sorted, vec![vec![1], vec![2]]);
+
+        let answer = hash_join::<HashTrie>(&catalog, paths, &planner).unwrap();
+        let again = Catalog::new(vec![answer], StatisticsLevel::TupleCounts);
+        let (_, rows) = hash_join::<HashTrie>(&again, cycles, &planner).unwrap();
+        let mut hashed = rows.to_vecs();
+        hashed.sort();
+        assert_eq!(hashed, vec![vec![1], vec![2]]);
     }
 
     /// `missing` was never added. Silently dropping the atom would mask typos
