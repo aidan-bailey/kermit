@@ -142,7 +142,7 @@ fn cli_bench_join_skips_space_for_indexes_that_hold_no_bytes() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        stderr.contains("skipping the space metric"),
+        stderr.contains("bench join: skipping the space metric"),
         "stderr: {stderr}"
     );
     assert!(

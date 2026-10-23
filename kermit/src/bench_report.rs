@@ -104,6 +104,17 @@ pub enum BenchKind {
     Run,
 }
 
+/// The subcommand's name, as the report's `kind` field spells it.
+impl std::fmt::Display for BenchKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            | Self::Join => "join",
+            | Self::Ds => "ds",
+            | Self::Run => "run",
+        })
+    }
+}
+
 /// Which Criterion measurement axis a benchmark function records.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -250,12 +261,7 @@ impl ReportSink {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
-        let kind_str = match kind {
-            | BenchKind::Join => "join",
-            | BenchKind::Ds => "ds",
-            | BenchKind::Run => "run",
-        };
-        PathBuf::from(format!("bench-runs/{kind_str}-{now_ms}.json"))
+        PathBuf::from(format!("bench-runs/{kind}-{now_ms}.json"))
     }
 
     /// Appends `reports` and rewrites the whole file atomically.
@@ -432,6 +438,15 @@ mod tests {
         for kind in [BenchKind::Join, BenchKind::Ds, BenchKind::Run] {
             let report = BenchReport::new(kind, &[], std::collections::BTreeMap::new(), vec![]);
             assert_eq!(report.axes["allocator"], crate::ALLOCATOR, "{kind:?}");
+        }
+    }
+
+    /// The `bench {kind}:` stderr notes and the default report path name a
+    /// kind as its report's `kind` field does.
+    #[test]
+    fn a_kind_displays_as_it_serialises() {
+        for kind in [BenchKind::Join, BenchKind::Ds, BenchKind::Run] {
+            assert_eq!(serde_json::json!(kind), serde_json::json!(kind.to_string()));
         }
     }
 

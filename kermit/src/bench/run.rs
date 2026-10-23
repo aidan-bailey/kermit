@@ -377,8 +377,8 @@ fn run_benchmark<F: ExecutionFamily>(
             let total_bytes: usize = built.iter().map(|index| index.heap_size_bytes()).sum();
             if total_bytes == 0 {
                 eprintln!(
-                    "bench run: skipping the space metric of query '{}': its indexes hold no heap \
-                     bytes (no index, or no row passes its filter)",
+                    "bench {kind}: skipping the space metric of query '{}': its indexes hold no \
+                     heap bytes (no index, or no row passes its filter)",
                     query_def.name
                 );
             } else {
