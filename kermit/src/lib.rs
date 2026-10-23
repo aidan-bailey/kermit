@@ -26,7 +26,8 @@ use {
 };
 
 /// Convenience function that builds relations from raw tuple batches and runs a
-/// join, returning the result tuples.
+/// join, returning the result rows in one flat [`Tuples`] batch. Its inputs
+/// carry no headers, so neither does its result.
 ///
 /// Constructs a synthetic Datalog query from the `variables` and
 /// `rel_variables` mappings (variable `v` is written `V{v}`, and input `i` is
@@ -49,10 +50,11 @@ use {
 /// the length of its `rel_variables` entry. The message is the
 /// [`db::JoinError`]'s. Also if `rel_variables` has more entries than
 /// `input` has batches: the entry's relation `R{i}` was never loaded, so its
-/// atom is an unknown relation.
+/// atom is an unknown relation. Also if the result has more than
+/// [`RowId::MAX`](kermit_ds::RowId) rows, the most a [`Tuples`] batch holds.
 pub fn compute_join<R, JA>(
     input: Vec<impl Into<Tuples>>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>,
-) -> Vec<Vec<usize>>
+) -> Tuples
 where
     R: Relation,
     JA: JoinAlgo<R>,
@@ -99,8 +101,7 @@ where
     // statistics, so plan with the stats-free default optimiser.
     let planner = Planner::new(Box::new(LexicographicOptimiser));
     let catalog = Catalog::new(relations, planner.required_statistics());
-    let mut rows = Vec::new();
-    db::run_join::<R, JA>(&catalog, &query, &planner, |row| rows.push(row.to_vec()))
+    let (_, rows) = db::collect_join::<R, JA>(&catalog, &query, &planner)
         .unwrap_or_else(|error| panic!("compute_join: {error}"));
     rows
 }
@@ -122,8 +123,10 @@ mod compute_join_tests {
             input.clone(),
             variables.clone(),
             rel_variables.clone(),
-        );
-        let mut hashed = compute_join::<HashTrie, HashTriejoin>(input, variables, rel_variables);
+        )
+        .to_vecs();
+        let mut hashed =
+            compute_join::<HashTrie, HashTriejoin>(input, variables, rel_variables).to_vecs();
         sorted.sort();
         hashed.sort();
         assert_eq!(sorted, hashed);
@@ -150,6 +153,24 @@ mod compute_join_tests {
     fn the_variables_are_the_output_columns() {
         let rows = joined(chain_input(), vec![0, 2], vec![vec![0, 1], vec![1, 2]]);
         assert_eq!(rows, vec![vec![1, 7], vec![1, 8], vec![2, 8]]);
+    }
+
+    /// The rows come back as one flat batch at the head's arity, which an
+    /// empty result keeps.
+    #[test]
+    fn the_result_is_one_batch_at_the_heads_arity() {
+        let rows = compute_join::<TreeTrie, LeapfrogTriejoin>(chain_input(), vec![0, 2], vec![
+            vec![0, 1],
+            vec![1, 2],
+        ]);
+        assert_eq!((rows.arity(), rows.len()), (2, 3));
+
+        let input: Vec<Rows> = vec![Vec::new(), vec![vec![2, 3]]];
+        let empty = compute_join::<HashTrie, HashTriejoin>(input, vec![0, 1, 2], vec![
+            vec![0, 1],
+            vec![1, 2],
+        ]);
+        assert_eq!((empty.arity(), empty.len()), (3, 0));
     }
 
     /// A variable repeated within one entry is a selection. The helper used
