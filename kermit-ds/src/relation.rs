@@ -269,14 +269,15 @@ pub trait Relation: JoinIterable + Projectable {
 
     /// Creates a relation from the rows `view` keeps, matching `header`.
     ///
-    /// The one required constructor: every `from_tuples*` method is this one
-    /// over [`TupleView::all`]. The relation reads the view's matching rows,
-    /// in its output-column order, and copies them once (into the structure,
-    /// or into a scratch buffer the build frees), so no build allocates per
-    /// input row. Implementations may sort or deduplicate during bulk
-    /// construction; prefer this over `new` followed by repeated `insert`
-    /// calls when all tuples are known up front. A view over an empty source
-    /// builds an empty relation under any header.
+    /// The one required bulk constructor: `from_tuples` is this one over
+    /// [`TupleView::all`], as each `from_tuples_with_*` is its
+    /// `from_view_with_*` counterpart. The relation reads the view's matching
+    /// rows, in its output-column order, and copies them once (into the
+    /// structure, or into a scratch buffer the build frees), so no build
+    /// allocates per input row. Implementations may sort or deduplicate
+    /// during bulk construction; prefer this over `new` followed by repeated
+    /// `insert` calls when all tuples are known up front. A view over an
+    /// empty source builds an empty relation under any header.
     ///
     /// # Panics
     ///
