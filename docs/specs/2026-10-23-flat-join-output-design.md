@@ -1,7 +1,8 @@
 # Flat Join Output: Answers as Relations
 
 **Date:** 2026-10-23
-**Status:** Design approved in conversation (2026-10-23), decision by decision.
+**Status:** Design approved in conversation (2026-10-23), decision by decision. Amendment 1 (the
+same day) records the decisions made while writing the plan.
 **Scope:** Every API that collects a join's result returns it flat. `kermit::db::lftj_join` and
 `hash_join` return the answer as a relation, the `(RelationHeader, Tuples)` pair that
 `Catalog::new` takes: a header named after the query's head with one column per head variable,
@@ -307,3 +308,20 @@ One change, with no dependency. A suggested order, each step green:
 - `kermit-algos/README.md:31`: the `join_iter` sentence goes.
 - `kermit/README.md` lines 13–16 and the crate docs of `kermit/src/lib.rs` and
   `kermit/src/db.rs`: the collectors return relations, and `compute_join` returns `Tuples`.
+
+## Amendment 1: decisions made while writing the plan (2026-10-23)
+
+1. **The allocation cells measure the public collectors.** Each cell measures `lftj_join` /
+   `hash_join` and its `_for_each` twin over the same catalog and takes the difference, at both
+   result sizes, instead of collecting over prebuilt indexes. Prepare and build run inside both
+   measurements and cancel, so a mutant in `collect_join` is what fails the cells.
+2. **`JoinEntry::join` calls `lftj_join` / `hash_join`.** The harness's own collector goes, so
+   every suite pattern runs the public collectors.
+3. **A CLI test pins the CSV header row.** Testing said `cli_join_tests.rs` already pins it; it
+   does not (it skips the row), and `head_column_names`'s unit test is deleted. So
+   `cli_join_writes_the_heads_variables_as_the_header_row` runs a new fixture,
+   `path(Z, X) :- edge(X, Y), edge(Y, Z).`, on every cell and checks the row `Z,X`.
+4. **The codegen check fingerprints every function.** `count_rows` and `execute` inline into their
+   callers and into Criterion's routines, so they may not exist as symbols. The check hashes each
+   function's instructions, with addresses, rip-relative displacements and padding masked, in both
+   binaries, and lists the functions that differ.
