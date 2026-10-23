@@ -231,7 +231,7 @@ fn validate_ds_flags(
 }
 
 /// CLI-side selector for `--ds-layout-hasher`. Picks the
-/// [`HashStrategy`](kermit_iters::HashStrategy) compile-time parameter
+/// [`HashStrategy`] compile-time parameter
 /// monomorphised into `HashTrie<H>` for the run.
 ///
 /// `Sip` (the default) preserves pre-Phase-1 behaviour — `HashTrie`
