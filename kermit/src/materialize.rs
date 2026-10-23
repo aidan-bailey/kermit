@@ -385,7 +385,8 @@ fn run_watdiv_basic(
             // Basic templates ignore stress params; defaults are recorded in
             // meta.json only for provenance.
             stress: kermit_rdf::driver::StressParams::default(),
-            // One concrete query per template -> the 20 canonical L/S/F/C queries.
+            // One concrete query per template -> the 20 canonical L/S/F/C
+            // queries.
             query_count_per_template: 1,
             use_bwrap: std::env::var_os("KERMIT_NO_BWRAP").is_none(),
         },

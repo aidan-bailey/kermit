@@ -71,8 +71,9 @@ fn fetch_pinned_queries() -> Result<Option<Queries>, String> {
         let dest = dir.path().join(file);
         match download_verified(&query_url(file), &dest, sha256) {
             | Ok(()) => {},
-            // Only a connection, DNS or timeout failure is "offline". A `Download` carrying
-            // an HTTP status (a 404 for a vanished pin) fails the test, as #96's does.
+            // Only a connection, DNS or timeout failure is "offline". A
+            // `Download` carrying an HTTP status (a 404 for a vanished pin)
+            // fails the test, as #96's does.
             | Err(BenchError::Download {
                 url,
                 source,

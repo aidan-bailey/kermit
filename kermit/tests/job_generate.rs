@@ -172,7 +172,8 @@ const TEMPLATE_1: &[Expect] = &[
             &[7, 3, 10],
         ],
     },
-    // `production_year > 1990`: 1990 itself, 1985, 1950 and the NULL year drop out.
+    // `production_year > 1990`: 1990 itself, 1985, 1950 and the NULL year drop
+    // out.
     Expect {
         name: "title_t_a",
         columns: &["id"],
@@ -199,7 +200,8 @@ const TEMPLATE_1: &[Expect] = &[
             &[3, 1, 16],
         ],
     },
-    // `production_year BETWEEN 1980 AND 1995`: both bounds are kept (1995 is title 2).
+    // `production_year BETWEEN 1980 AND 1995`: both bounds are kept (1995 is
+    // title 2).
     Expect {
         name: "title_t_b",
         columns: &["id"],
@@ -234,13 +236,15 @@ const TEMPLATE_2: &[Expect] = &[
         columns: &["id"],
         rows: &[&[2], &[4]],
     },
-    // The two titles holding `"Hero"` (the CSV's backslash-escaped quotes), with their kinds.
+    // The two titles holding `"Hero"` (the CSV's backslash-escaped quotes),
+    // with their kinds.
     Expect {
         name: "title_t_a",
         columns: &["id", "kind_id"],
         rows: &[&[2, 1], &[9, 2]],
     },
-    // `name LIKE '%Zed%'` matches no name: the file keeps its header and has no rows.
+    // `name LIKE '%Zed%'` matches no name: the file keeps its header and has no
+    // rows.
     Expect {
         name: "name_n_b",
         columns: &["id"],

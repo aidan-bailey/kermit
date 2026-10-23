@@ -682,7 +682,8 @@ mod tests {
             t("chair", ub("worksFor"), x("dept")),
             t("lecturer", ub("worksFor"), x("group")),
             t("lecturer", ub("memberOf"), x("group")),
-            // Realisation, then Chair ⊑ Professor ⊑ Faculty ⊑ Employee ⊑ Person.
+            // Realisation, then Chair ⊑ Professor ⊑ Faculty ⊑ Employee ⊑
+            // Person.
             t("chair", rdf_type(), class("Chair")),
             t("chair", rdf_type(), class("Professor")),
             t("chair", rdf_type(), class("Faculty")),

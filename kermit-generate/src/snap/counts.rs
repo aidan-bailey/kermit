@@ -296,7 +296,8 @@ mod tests {
             | SnapQuery::Path3 => (4, &[(0, 1), (1, 2), (2, 3)]),
             // edge(A, B), edge(B, C), edge(C, D), edge(A, D)
             | SnapQuery::Cycle4 => (4, &[(0, 1), (1, 2), (2, 3), (0, 3)]),
-            // edge(A, B), edge(A, C), edge(A, D), edge(B, C), edge(B, D), edge(C, D)
+            // edge(A, B), edge(A, C), edge(A, D), edge(B, C), edge(B, D),
+            // edge(C, D)
             | SnapQuery::Clique4 => (4, &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]),
         }
     }
