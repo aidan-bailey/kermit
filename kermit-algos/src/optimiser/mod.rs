@@ -7,8 +7,7 @@
 //! to pass a bare optimiser. Join algorithms (`JoinAlgo::join_for_each`)
 //! execute the plan. Every permutation of the variables is a valid plan,
 //! since each index is built with its columns in plan order (see
-//! [`topological_order`] and [`Precedence::free`]); executors defensively
-//! assert [`QueryPlan::validate`].
+//! [`order_by_rank`]); executors defensively assert [`QueryPlan::validate`].
 //!
 //! [`QueryPlan`] is the *only* type crossing from planner to executor.
 //! The canonical variable numbering both sides agree on is not a planning
@@ -26,7 +25,7 @@ pub use {
     cardinality::CardinalityOptimiser,
     cost_based::CostBasedOptimiser,
     lexicographic::LexicographicOptimiser,
-    ordering::{topological_order, Precedence},
+    ordering::order_by_rank,
     plan::{PlanError, QueryPlan},
     planner::Planner,
     stats::{distinct_per_column, CatalogStats, RelationStats, StatisticsLevel},
@@ -39,9 +38,9 @@ use {clap::ValueEnum, kermit_parser::JoinQuery};
 /// one per access, each over distinct variables) and produce a
 /// [`QueryPlan`] the executor consumes. Object safe: the engine holds
 /// `Box<dyn QueryOptimiser>` so the choice is a runtime decision. The
-/// returned plan orders the query's variables (any [`topological_order`]
-/// output over [`Precedence::free`] qualifies); executors assert
-/// [`QueryPlan::validate`] and panic on violation.
+/// returned plan orders the query's variables (any [`order_by_rank`]
+/// output qualifies); executors assert [`QueryPlan::validate`] and panic on
+/// violation.
 pub trait QueryOptimiser {
     /// Produces a plan for `query` given per-relation `stats`.
     fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan;

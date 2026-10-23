@@ -2,14 +2,11 @@
 
 use crate::{
     analysis::analyse,
-    optimiser::{
-        ordering::{topological_order, Precedence},
-        CatalogStats, QueryOptimiser, QueryPlan,
-    },
+    optimiser::{ordering::order_by_rank, CatalogStats, QueryOptimiser, QueryPlan},
 };
 
-/// Plans the global attribute order by Kahn's topological sort with a
-/// smallest-canonical-index tie-break.
+/// Plans the global attribute order by canonical variable index, smallest
+/// first.
 ///
 /// Nothing constrains it, so the plan is the canonical order itself: head
 /// variables first, then the body-only ones, fully deterministic. It
@@ -21,7 +18,7 @@ pub struct LexicographicOptimiser;
 impl QueryOptimiser for LexicographicOptimiser {
     fn plan(&self, query: &kermit_parser::JoinQuery, _stats: &CatalogStats) -> QueryPlan {
         QueryPlan {
-            variable_ordering: topological_order(&Precedence::free(analyse(query).num_vars), |v| v),
+            variable_ordering: order_by_rank(analyse(query).num_vars, |v| v),
         }
     }
 }

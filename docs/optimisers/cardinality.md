@@ -13,7 +13,7 @@ joins; prefer it when relation sizes are skewed.
 `rank(v) = min_size(v)` where `min_size(v)` is the minimum tuple count
 over the accesses (body atoms) that mention `v`. The canonical index acts as
 the final tie-break (supplied contractually by
-`kermit_algos::topological_order`'s heap key, not by the policy), keeping
+`kermit_algos::order_by_rank`'s sort key, not by the policy), keeping
 plans deterministic for reproducible benchmarks.
 
 ## Statistics consumed
@@ -28,8 +28,8 @@ large").
 
 ## Complexity
 
-O(P · a) to compute per-variable minimum sizes, plus O(V log V) for
-Kahn's sort over an edge-free precedence (a = max access arity).
+O(P · a) to compute per-variable minimum sizes, plus O(V log V) to sort
+the variables by them (a = max access arity).
 
 ## Worked micro-example
 
@@ -51,7 +51,7 @@ and `S`'s index is built with its columns swapped, `[1, 0]`.
 ## Index orders
 
 The plan is free: no atom is pinned to its stored column order, so the
-ranking alone decides (`Precedence::free`), and `plan_indexes` builds each
+ranking alone decides, and `plan_indexes` builds each
 access's index with its columns in plan order
 (`docs/specs/2026-10-22-per-query-index-build-design.md`). The smallest
 relation's variable therefore goes first even when its column is not that

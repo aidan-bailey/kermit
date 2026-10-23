@@ -62,8 +62,9 @@ impl QueryPlan {
     /// `0..num_vars` respecting every predicate's physical column order.
     ///
     /// Executors call this before descending; the provided optimisers are
-    /// valid by construction (they only pick among Kahn-ready variables),
-    /// so a failure here means a hand-built or third-party plan is broken.
+    /// valid by construction (any permutation is, once `plan_indexes` has
+    /// ordered each index's columns by the plan), so a failure here means a
+    /// hand-built or third-party plan is broken.
     ///
     /// # Errors
     ///

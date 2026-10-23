@@ -2,10 +2,7 @@
 
 use crate::{
     analysis::analyse,
-    optimiser::{
-        ordering::{topological_order, Precedence},
-        CatalogStats, QueryOptimiser, QueryPlan,
-    },
+    optimiser::{ordering::order_by_rank, CatalogStats, QueryOptimiser, QueryPlan},
 };
 
 /// Plans the global attribute order preferring variables that appear in
@@ -32,9 +29,7 @@ impl QueryOptimiser for CardinalityOptimiser {
             }
         }
         QueryPlan {
-            variable_ordering: topological_order(&Precedence::free(analysis.num_vars), |v| {
-                min_size[v]
-            }),
+            variable_ordering: order_by_rank(analysis.num_vars, |v| min_size[v]),
         }
     }
 }

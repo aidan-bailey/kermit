@@ -29,17 +29,15 @@ None. `plan()` ignores `CatalogStats` entirely.
 
 ## Complexity
 
-O(V log V) for Kahn's sort with a binary-heap ready set over an edge-free
-precedence; there are no constraint edges to build.
+O(V log V) to sort the variables by rank (`kermit_algos::order_by_rank`).
 
 ## Worked micro-example
 
 Query: `Q(Y, X) :- r(X, Y).` Canonical indices: `Y = 0`, `X = 1` (head
-variables first, in head order). There are no constraint edges, so the
-ready set is `{0, 1}`.
+variables first, in head order), and each variable ranks by its index:
 
-1. Emit `0` (`Y`), the smaller index.
-2. Emit `1` (`X`).
+1. `0` (`Y`), the smaller index, binds first.
+2. `1` (`X`).
 
 `variable_ordering = [0, 1]` — `Y` binds first although it is `r`'s second
 column. `r` is the access `@0` (no filter, both columns kept, variables
@@ -50,7 +48,7 @@ column. `r` is the access `@0` (no filter, both columns kept, variables
 
 The plan is the canonical order itself: head variables in head order, then
 body-only variables by first appearance. No atom is pinned to its stored
-column order (`Precedence::free`), and `plan_indexes` builds each access's
+column order, and `plan_indexes` builds each access's
 index with its columns in plan order
 (`docs/specs/2026-10-22-per-query-index-build-design.md`). Before that
 design, a flag pinned every atom to its stored order by default and lifted

@@ -4,7 +4,6 @@ use {
     crate::{
         analysis::analyse,
         optimiser::{
-            ordering::{topological_order, Precedence},
             CardinalityOptimiser, CatalogStats, QueryOptimiser, QueryPlan, StatisticsLevel,
         },
     },
@@ -70,28 +69,10 @@ impl QueryOptimiser for CostBasedOptimiser {
             analysis.num_vars,
             stats,
         );
-        let precedence = Precedence::free(analysis.num_vars);
-        let cheapest = precedence
-            .predecessor_masks()
-            .and_then(|predecessors| cheapest_order(&model, &predecessors, self.state_budget));
-        let Some(order) = cheapest else {
+        let Some(variable_ordering) = cheapest_order(&model, analysis.num_vars, self.state_budget)
+        else {
             return CardinalityOptimiser.plan(query, stats);
         };
-
-        // The search binds only ready variables, so `order` is already a
-        // topological order: ranked by its own positions, `topological_order`
-        // returns it unchanged, so this plan comes out of `topological_order`
-        // like every optimiser's. The assertion keeps that pass from quietly
-        // repairing a search bug.
-        let mut position = vec![0; analysis.num_vars];
-        for (index, &v) in order.iter().enumerate() {
-            position[v] = index;
-        }
-        let variable_ordering = topological_order(&precedence, |v| position[v]);
-        debug_assert_eq!(
-            variable_ordering, order,
-            "the search returned an order that violates a precedence edge"
-        );
         QueryPlan {
             variable_ordering,
         }
@@ -254,16 +235,17 @@ impl Partial {
     }
 }
 
-/// The cheapest order of the variables, by a forward dynamic programme
-/// over the sets a valid plan can bind. Layer k holds the k-variable sets,
-/// each with its cheapest order; a set grows only by a variable whose
-/// `predecessors` are all bound.
+/// The cheapest order of the `num_vars` variables, by a forward dynamic
+/// programme over the sets of bound variables. Layer k holds the k-variable
+/// sets, each with its cheapest order; a set grows by any variable not yet
+/// in it.
 ///
-/// `None` once more than `budget` sets have been reached.
-fn cheapest_order(
-    model: &CostModel<'_>, predecessors: &[u64], budget: usize,
-) -> Option<Vec<usize>> {
-    let num_vars = predecessors.len();
+/// `None` past 64 variables, which a `u64` set cannot index, and once more
+/// than `budget` sets have been reached.
+fn cheapest_order(model: &CostModel<'_>, num_vars: usize, budget: usize) -> Option<Vec<usize>> {
+    if num_vars > 64 {
+        return None;
+    }
     let mut layer = HashMap::from([(0u64, Partial {
         cost: 0.0,
         order: Vec::new(),
@@ -273,8 +255,7 @@ fn cheapest_order(
         let mut next: HashMap<u64, Partial> = HashMap::new();
         let mut estimates: HashMap<u64, f64> = HashMap::new();
         for (&bound, partial) in &layer {
-            let ready = |v: usize| !contains(bound, v) && predecessors[v] & !bound == 0;
-            for v in (0..num_vars).filter(|&v| ready(v)) {
+            for v in (0..num_vars).filter(|&v| !contains(bound, v)) {
                 let extended = bound | bit(v);
                 let estimate = *estimates
                     .entry(extended)
@@ -565,26 +546,21 @@ mod tests {
         );
     }
 
-    /// With no edges every subset is a state: three variables reach seven
-    /// sets, so a budget of six falls back to `cardinality`.
+    /// One ternary atom: the search binds its most selective column first,
+    /// whatever its position. (`the_budget_counts_every_set_reached` checks
+    /// that three variables reach seven sets.)
     #[test]
-    fn the_search_reaches_every_subset() {
+    fn the_most_selective_column_goes_first() {
         let q: JoinQuery = "Q(X, Y, Z) :- T(X, Y, Z).".parse().unwrap();
         let stats = stats_for(&q, &[("T", 1000, &[10, 5, 7])]);
-        let seven = CostBasedOptimiser {
-            state_budget: 7,
-        }
-        .plan(&q, &stats);
         // est({Y}) = 5 is the cheapest first step; then est({Y, Z}) = 35
         // beats est({X, Y}) = 50, and every order ends at est({X, Y, Z}) =
         // 1000: Y, Z, X costs 1040, the next best (Z, Y, X) 1042.
-        assert_eq!(seven.variable_ordering, vec![1, 2, 0]);
         assert_eq!(
-            CostBasedOptimiser {
-                state_budget: 6
-            }
-            .plan(&q, &stats),
-            CardinalityOptimiser.plan(&q, &stats)
+            CostBasedOptimiser::default()
+                .plan(&q, &stats)
+                .variable_ordering,
+            vec![1, 2, 0]
         );
     }
 
@@ -680,26 +656,23 @@ mod tests {
         (text, relations)
     }
 
-    /// Every order of the variables that binds each after its
-    /// `predecessors` (none, for a free graph: every permutation), in
-    /// lexicographic order.
-    fn valid_orders(predecessors: &[u64]) -> Vec<Vec<usize>> {
-        fn extend(predecessors: &[u64], order: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
-            if order.len() == predecessors.len() {
+    /// Every order of `num_vars` variables, in lexicographic order.
+    fn every_order(num_vars: usize) -> Vec<Vec<usize>> {
+        fn extend(num_vars: usize, order: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+            if order.len() == num_vars {
                 out.push(order.clone());
                 return;
             }
-            let bound = order.iter().fold(0, |set, &v| set | bit(v));
-            for v in 0..predecessors.len() {
-                if !contains(bound, v) && predecessors[v] & !bound == 0 {
+            for v in 0..num_vars {
+                if !order.contains(&v) {
                     order.push(v);
-                    extend(predecessors, order, out);
+                    extend(num_vars, order, out);
                     order.pop();
                 }
             }
         }
         let mut out = Vec::new();
-        extend(predecessors, &mut Vec::new(), &mut out);
+        extend(num_vars, &mut Vec::new(), &mut out);
         out
     }
 
@@ -730,11 +703,8 @@ mod tests {
         let stats = stats_for(q, &relations);
         let analysis = analyse(q);
         let model = CostModel::new(q, &analysis.predicate_variables, analysis.num_vars, &stats);
-        let predecessors = Precedence::free(analysis.num_vars)
-            .predecessor_masks()
-            .unwrap();
         let mut best: Option<(f64, Vec<usize>)> = None;
-        for order in valid_orders(&predecessors) {
+        for order in every_order(analysis.num_vars) {
             let cost = cost_of(&model, &order);
             if best.as_ref().is_none_or(|(least, _)| cost < *least) {
                 best = Some((cost, order));

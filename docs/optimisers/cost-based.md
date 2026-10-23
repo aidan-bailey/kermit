@@ -45,10 +45,7 @@ A forward dynamic programme.
   each with its cheapest order. No order constrains the plan, so every
   subset is a state.
 - **Validity.** A set grows by any variable not yet in it, so every plan
-  found is a permutation of the variables. The plan is passed through
-  `kermit_algos::topological_order` over `Precedence::free`, ranked by its
-  own positions, and comes back unchanged; a debug assertion checks that
-  nothing was repaired.
+  found is a permutation of the variables, and every permutation is valid.
 - **Ties** break towards the lexicographically smaller order of canonical
   indices, so plans are deterministic.
 
@@ -218,8 +215,7 @@ q0085 against the committed statistics
 ## Index orders
 
 The plan is free: no atom is pinned to its stored column order, so the
-estimate alone decides (`Precedence::free`), and `plan_indexes` builds each
-access's index with its columns in plan order
+estimate alone decides, and `plan_indexes` builds each access's index with its columns in plan order
 (`docs/specs/2026-10-22-per-query-index-build-design.md`). Before that
 design, a flag pinned every atom to its stored order by default and lifted
 the pin through reordered copies

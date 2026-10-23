@@ -8,11 +8,10 @@ when to prefer it.
 ## Ranking function
 
 The key the policy assigns each candidate variable, and how ties break.
-Every optimiser orders variables within Kahn's topological sort
-(`kermit_algos::topological_order`) over `Precedence::free`, an edge-free
-precedence: no column order constrains the plan, because each index is
-built in plan order. So every produced plan is valid by construction —
-the policy only chooses among all orders.
+A ranking policy orders the variables with `kermit_algos::order_by_rank`.
+No column order constrains the plan, because each index is built in plan
+order, so every produced plan is valid by construction — the policy only
+chooses among all orders.
 
 ## Statistics consumed
 
@@ -32,7 +31,7 @@ A small query (plus stats if consumed) and the resulting
 ## Index orders
 
 How the policy behaves when the plan is free: no atom is pinned to its
-stored column order (`Precedence::free`), so the ranking alone decides,
+stored column order, so the ranking alone decides,
 and `plan_indexes` builds each atom's index with its columns in plan
 order. What the plan becomes for a variable bound by an atom's later
 column, and any limit the larger search space hits.

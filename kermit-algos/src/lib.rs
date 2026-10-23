@@ -50,9 +50,9 @@ pub use {
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
     optimiser::{
-        distinct_per_column, topological_order, CardinalityOptimiser, CatalogStats,
-        CostBasedOptimiser, LexicographicOptimiser, Optimiser, PlanError, Planner, Precedence,
-        QueryOptimiser, QueryPlan, RelationStats, StatisticsLevel,
+        distinct_per_column, order_by_rank, CardinalityOptimiser, CatalogStats, CostBasedOptimiser,
+        LexicographicOptimiser, Optimiser, PlanError, Planner, QueryOptimiser, QueryPlan,
+        RelationStats, StatisticsLevel,
     },
     placeholder_rewrite::rewrite_placeholders,
     sorted::LeapfrogTriejoin,
