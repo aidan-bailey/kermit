@@ -65,6 +65,23 @@ impl Prepared {
     /// that `execute` lends to its sink.
     pub fn head_len(&self) -> usize { self.head_len }
 
+    /// The answer's header: named after the head predicate, with one attribute
+    /// per head term, in head order. [`prepare`] validated the head, so the
+    /// terms are distinct variables and the attributes are their names; an
+    /// empty head gives no attributes. Paired with the answer's rows, it is
+    /// the form a [`Catalog`] is built from.
+    ///
+    /// Built from the executed query's head on each call rather than stored,
+    /// so [`execute`], which reads a `Prepared` in the timed region, sees no
+    /// new field.
+    pub fn answer_header(&self) -> RelationHeader {
+        let head = &self.query.head;
+        RelationHeader::new(
+            &head.name,
+            head.terms.iter().map(ToString::to_string).collect(),
+        )
+    }
+
     /// The distinct relations the query reads: those of its indexes in id
     /// order, then those of its checks, each at its first appearance.
     pub fn relations(&self) -> Vec<&str> {
@@ -589,6 +606,33 @@ mod tests {
         assert_eq!(prepared.relations(), vec!["r", "s"]);
         assert_eq!(prepared.query().to_string(), "Q(X) :- #0(X).");
         assert_eq!(prepared.head_len(), 1);
+    }
+
+    /// The answer is named after the head predicate, with the head's
+    /// variables as its attributes in head order, also when the head reorders
+    /// the body's variables; its arity is the head's length.
+    #[test]
+    fn the_answer_header_names_the_head() {
+        let c = catalog(vec![("p", 2, vec![vec![1, 10]])]);
+        let prepared = prepared_for(&c, "Answer(Y, X) :- p(X, Y).");
+        let header = prepared.answer_header();
+        assert_eq!(header.name(), "Answer");
+        assert_eq!(header.attrs().to_vec(), vec!["Y", "X"]);
+        assert_eq!(header.arity(), prepared.head_len());
+    }
+
+    /// An empty head names an answer with no attributes. The parser cannot
+    /// write an empty head, so the query is built by clearing one.
+    #[test]
+    fn an_empty_head_names_an_answer_of_arity_zero() {
+        let c = catalog(vec![("s", 2, vec![vec![7, 8]])]);
+        let mut query = parse("Q(X) :- s(c7, c8).");
+        query.head.terms.clear();
+        let header = prepare(&c, &query, &lexicographic())
+            .expect("a query of checks")
+            .answer_header();
+        assert_eq!((header.name(), header.arity()), ("Q", 0));
+        assert!(header.attrs().is_empty());
     }
 
     #[test]
