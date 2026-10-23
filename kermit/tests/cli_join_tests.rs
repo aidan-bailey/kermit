@@ -268,6 +268,40 @@ fn cli_join_path_query() {
     assert_eq!(tuples, vec![vec![1, 2, 3], vec![1, 3, 4], vec![2, 3, 4]]);
 }
 
+/// The CSV header row is the answer's attributes: the head's variables in
+/// head order, not the body's, on every cell. `path(Z, X)` reorders and
+/// projects the path query's variables. Over edge = {(1,2), (2,3), (3,4),
+/// (1,3)} the paths are (1,2,3), (1,3,4) and (2,3,4).
+#[test]
+fn cli_join_writes_the_heads_variables_as_the_header_row() {
+    for (algorithm, indexstructure) in [
+        ("leapfrog-triejoin", "tree-trie"),
+        ("leapfrog-triejoin", "column-trie"),
+        ("hash-triejoin", "hash-trie"),
+    ] {
+        let output = run_join(
+            &["edge.csv"],
+            "reordered_head_query.dl",
+            algorithm,
+            indexstructure,
+        );
+        assert!(
+            output.status.success(),
+            "{indexstructure}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout.lines().next(),
+            Some("Z,X"),
+            "{indexstructure}: the header row is the head's variables"
+        );
+        assert_eq!(parse_output(&output), vec![vec![3, 1], vec![4, 1], vec![
+            4, 2
+        ]]);
+    }
+}
+
 #[test]
 fn cli_join_missing_query_file() {
     let output = run_join(

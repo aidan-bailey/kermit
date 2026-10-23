@@ -13,10 +13,9 @@
 use {
     anyhow::Context,
     clap::{Args, Parser, Subcommand},
-    kermit_algos::{JoinAlgorithm, JoinQuery},
+    kermit_algos::JoinAlgorithm,
     kermit_bench::BenchmarkDefinition,
     kermit_ds::IndexStructure,
-    kermit_parser::Term,
     std::{
         fs,
         io::{self, BufWriter, Write},
@@ -410,23 +409,6 @@ enum Commands {
 
 use materialize::workspace_root;
 
-/// Column names derived from a query's head predicate: one per head term,
-/// matching the columns the join emits (it projects to the head). A query
-/// reaching the join has a head of distinct variables — validation rejects
-/// head constants and placeholders — so the `Atom` (`"c<id>"`) and
-/// `Placeholder` (`"_"`) arms only keep this function total.
-fn head_column_names(query: &JoinQuery) -> Vec<String> {
-    query
-        .head
-        .terms
-        .iter()
-        .map(|t| match t {
-            | Term::Var(name) | Term::Atom(name) => name.clone(),
-            | Term::Placeholder => "_".to_string(),
-        })
-        .collect()
-}
-
 /// Streams a join result as CSV: the header row, then one line per tuple as
 /// the join produces it, so writing a result never materialises it (the
 /// memory half of issue #65: a result larger than RAM is written, not
@@ -493,9 +475,10 @@ fn prepare_query(args: &QueryArgs) -> anyhow::Result<PreparedWorkload> {
 }
 
 /// Builds the indexes of `workload`'s one query on `family` and streams the
-/// join to `writer` as CSV: the header row, then one line per tuple as the
-/// join produces it, so writing a result never materialises it. `workload`
-/// comes from [`prepare_query`], so it holds exactly one query.
+/// join to `writer` as CSV: the header row (the answer's attributes,
+/// `Prepared::answer_header`), then one line per tuple as the join produces
+/// it, so writing a result never materialises it. `workload` comes from
+/// [`prepare_query`], so it holds exactly one query.
 fn write_prepared_join<F: ExecutionFamily>(
     family: F, cell: Execution, workload: &PreparedWorkload, writer: impl Write,
 ) -> anyhow::Result<()> {
@@ -509,10 +492,9 @@ fn write_prepared_join<F: ExecutionFamily>(
         cell,
         "dispatch built a different cell than the one resolved"
     );
-    let query = &workload.workload.queries[0].query;
     let prepared = &workload.prepared[0];
     let indexes = family.build_indexes(&workload.catalog, prepared);
-    let mut sink = CsvSink::new(writer, &head_column_names(query))?;
+    let mut sink = CsvSink::new(writer, prepared.answer_header().attrs())?;
     family.execute(prepared, &indexes, |tuple| sink.write_tuple(tuple));
     sink.finish()?;
     Ok(())
@@ -1088,12 +1070,6 @@ mod tests {
         );
         let err = sink.finish().unwrap_err();
         assert_eq!(err.to_string(), "disk full");
-    }
-
-    #[test]
-    fn head_column_names_extracts_variables_atoms_and_placeholders() {
-        let q: JoinQuery = "Q(X, Y, _) :- R(X, Y, Z).".parse().unwrap();
-        assert_eq!(head_column_names(&q), vec!["X", "Y", "_"]);
     }
 
     fn make_generator_def(name: &str, spec: kermit_bench::GeneratorSpec) -> BenchmarkDefinition {
