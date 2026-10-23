@@ -33,7 +33,6 @@ mod seek;
 pub mod test_hooks;
 #[cfg(test)]
 mod test_support;
-mod tuple_scan;
 
 // Re-export IndexStructure for external crates (CLI) to reference directly
 pub use {
@@ -57,5 +56,4 @@ pub use {
         RelationError, RelationFileExt, RelationHeader,
     },
     seek::{BinarySeek, GallopingSeek, LinearSeek, SeekStrategy},
-    tuple_scan::TupleScan,
 };
