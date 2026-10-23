@@ -55,7 +55,10 @@
 //! `kermit::db::execute` over them.
 
 use {
-    kermit::db::{build, execute, prepare, Catalog, Indexes, Prepared},
+    kermit::db::{
+        build, execute, hash_join, hash_join_for_each, lftj_join, lftj_join_for_each, prepare,
+        Catalog, Indexes, Prepared,
+    },
     kermit_algos::{
         HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, Planner,
         StatisticsLevel,
@@ -713,5 +716,118 @@ fn hash_trie_fx_pruned_lazy_allocates_independently_of_descent_count() {
         "HashTrie<Fx, Pruned, Lazy>/HTJ",
         htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
         htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
+    );
+}
+
+// ------------------------------------------------------------------
+// Collecting an answer.
+//
+// `kermit::db::lftj_join` / `hash_join` run the lifecycle of their
+// `_for_each` twins and push each head row into one flat `Tuples` batch.
+// Measured against the streamed twin over the same catalog, the extra
+// allocations are the batch's growth and the answer's header: 1000x more
+// rows may add a few doublings, but never one allocation per row, as the
+// `Vec` per row the collectors built before did.
+// ------------------------------------------------------------------
+
+/// The most 1000x more collected rows may add to the collector's extra
+/// allocations: the batch's doublings, ⌈log₂ 1000⌉ = 10, with 2× slack. One
+/// allocation per row would add about 10⁵.
+const COLLECTED_GROWTH_BOUND: u64 = 20;
+
+/// `QUERY` over the relations of `fan_out`, in a catalog of tuple counts.
+fn collected_workload(fan_out: usize) -> (Catalog, JoinQuery) {
+    (
+        Catalog::new(relations(fan_out), StatisticsLevel::TupleCounts),
+        QUERY.parse().unwrap(),
+    )
+}
+
+/// The allocations `lftj_join` makes beyond `lftj_join_for_each` over the
+/// same catalog: both prepare, build and execute alike, so the difference is
+/// the collected batch and its header. Checks that the answer holds every
+/// row. `allocation-counter`'s allocator implements no `realloc`, so the
+/// default one allocates anew and every doubling of the batch is counted.
+fn lftj_collected_extra<Rel: TrieIterable + Relation>(fan_out: usize) -> u64 {
+    let (catalog, query) = collected_workload(fan_out);
+    let planner = planner();
+    let (collected_query, streamed_query) = (query.clone(), query);
+    let mut rows = 0;
+    let collected = allocation_counter::measure(|| {
+        let (_, answer) =
+            lftj_join::<Rel, LeapfrogTriejoin>(&catalog, collected_query, &planner).unwrap();
+        rows = std::hint::black_box(answer).len();
+    });
+    assert_eq!(rows, XS * fan_out, "the answer must hold every row");
+    let streamed = allocation_counter::measure(|| {
+        lftj_join_for_each::<Rel, LeapfrogTriejoin>(&catalog, streamed_query, &planner, |row| {
+            std::hint::black_box(row);
+        })
+        .unwrap();
+    });
+    collected
+        .count_total
+        .checked_sub(streamed.count_total)
+        .expect("collecting allocates at least what streaming does")
+}
+
+/// [`lftj_collected_extra`] for `HashTrie<H, P>` under `hash_join`.
+fn htj_collected_extra<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
+    let (catalog, query) = collected_workload(fan_out);
+    let planner = planner();
+    let (collected_query, streamed_query) = (query.clone(), query);
+    let mut rows = 0;
+    let collected = allocation_counter::measure(|| {
+        let (_, answer) = hash_join::<HashTrie<H, P>>(&catalog, collected_query, &planner).unwrap();
+        rows = std::hint::black_box(answer).len();
+    });
+    assert_eq!(rows, XS * fan_out, "the answer must hold every row");
+    let streamed = allocation_counter::measure(|| {
+        hash_join_for_each::<HashTrie<H, P>>(&catalog, streamed_query, &planner, |row| {
+            std::hint::black_box(row);
+        })
+        .unwrap();
+    });
+    collected
+        .count_total
+        .checked_sub(streamed.count_total)
+        .expect("collecting allocates at least what streaming does")
+}
+
+fn assert_collected_growth(cell: &str, small: u64, large: u64) {
+    assert!(
+        large <= small + COLLECTED_GROWTH_BOUND,
+        "{cell}: collecting 1000x more rows took {large} allocations beyond the streamed join, \
+         against {small}; the collector is allocating per row"
+    );
+}
+
+#[test]
+fn tree_trie_lftj_collects_without_allocating_per_row() {
+    lftj_collected_extra::<TreeTrie>(SMALL);
+    assert_collected_growth(
+        "TreeTrie/LFTJ",
+        lftj_collected_extra::<TreeTrie>(SMALL),
+        lftj_collected_extra::<TreeTrie>(LARGE),
+    );
+}
+
+#[test]
+fn column_trie_lftj_collects_without_allocating_per_row() {
+    lftj_collected_extra::<ColumnTrie>(SMALL);
+    assert_collected_growth(
+        "ColumnTrie/LFTJ",
+        lftj_collected_extra::<ColumnTrie>(SMALL),
+        lftj_collected_extra::<ColumnTrie>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_collects_without_allocating_per_row() {
+    htj_collected_extra::<SipHashStrategy, NoPruning>(SMALL);
+    assert_collected_growth(
+        "HashTrie<Sip>/HTJ",
+        htj_collected_extra::<SipHashStrategy, NoPruning>(SMALL),
+        htj_collected_extra::<SipHashStrategy, NoPruning>(LARGE),
     );
 }
