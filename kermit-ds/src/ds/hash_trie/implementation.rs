@@ -220,8 +220,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// or partition order after a build that copies its rows, #101): the
     /// trie's buffer, cloned (#111). O(n · arity) time and space; to visit
     /// the tuples without copying them, use
-    /// [`for_each_tuple`](Self::for_each_tuple) (a walk of the trie) or
-    /// `TupleScan::scan_tuples` (the buffer).
+    /// [`for_each_tuple`](Self::for_each_tuple), a walk of the trie.
     pub fn collect_tuples(&self) -> Tuples { self.tuples.clone() }
 
     /// Walk the trie depth-first, lending every stored tuple to `visit`:
@@ -232,8 +231,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// The walk allocates nothing per tuple: O(n) time, O(arity) stack.
     /// The CLI's `bench ds` `iteration` and `end_to_end` metrics time this
     /// walk (issue #79), so it traverses the structure; scanning the buffer
-    /// instead would time an array scan. `TupleScan::scan_tuples` is that
-    /// scan, for callers that need only the multiset (#111).
+    /// instead would time an array scan.
     ///
     /// Under `LazyExpansion` an unexpanded child lends its pending chain's
     /// rows in insertion order, and the walk expands nothing. A `visit` that
@@ -425,8 +423,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     ///
     /// `HashTrieIter::open` is the only caller, so only a probe expands
     /// anything. `for_each_tuple` walks the pending chain, `heap_size_bytes`
-    /// reads the tables and the links' capacity, and `collect_tuples` and
-    /// `scan_tuples` the buffer, so no read-only call expands a child.
+    /// reads the tables and the links' capacity, and `collect_tuples` the
+    /// buffer, so no read-only call expands a child.
     pub(crate) fn resolve<'t>(
         &'t self, node: &'t HashTrieNode<P, E>, depth: usize,
     ) -> &'t HashTrieNode<P, E> {
@@ -852,19 +850,6 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::heap_size::He
     /// counted once, in the buffer, and each link once, in the links.
     fn heap_size_bytes(&self) -> usize {
         self.tuples.heap_size_bytes() + self.links.heap_size_bytes() + node_heap_bytes(&self.root)
-    }
-}
-
-/// The trie's buffer, in its row order (#111): statistics need only the
-/// multiset, so the scan reads the rows without walking the trie, and it
-/// probes nothing, so it expands no unexpanded child.
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::tuple_scan::TupleScan
-    for HashTrie<H, P, E>
-{
-    fn scan_tuples(&self, mut visit: impl FnMut(&[usize])) {
-        for tuple in self.tuples.rows() {
-            visit(tuple);
-        }
     }
 }
 
@@ -1839,22 +1824,13 @@ mod tests {
         visited
     }
 
-    /// The tuples `TupleScan::scan_tuples` lends, in the order it lends them.
-    fn scanned<P: PruningPolicy>(trie: &HashTrie<SipHashStrategy, P>) -> Vec<Vec<usize>> {
-        use crate::tuple_scan::TupleScan;
-        let mut visited = Vec::new();
-        trie.scan_tuples(|t| visited.push(t.to_vec()));
-        visited
-    }
-
     /// `for_each_tuple` walks the trie (`bench ds` times it, #79), reading
     /// each row through its chain or `Singleton` id: it lends the stored
     /// multiset, a duplicate in one leaf chain and (pruned) a `Singleton`
-    /// subtrie included, one subtrie at a time. `scan_tuples` lends the
-    /// same multiset straight from the buffer, in arrival order, which is
-    /// what `collect_tuples` copies (#111).
+    /// subtrie included, one subtrie at a time. `collect_tuples` copies the
+    /// same multiset straight from the buffer, in arrival order (#111).
     #[test]
-    fn for_each_tuple_walks_the_trie_and_scan_tuples_reads_the_buffer() {
+    fn for_each_tuple_walks_the_trie_and_collect_tuples_copies_the_buffer() {
         // Arrival order interleaves first keys 1 and 7, so only a walk
         // visits each first key's tuples together.
         let tuples = vec![
@@ -1868,21 +1844,18 @@ mod tests {
         multiset.sort();
         let plain: HashTrie = HashTrie::from_tuples(3.into(), tuples.clone());
         let compact = pruned(3, tuples.clone());
-        for (name, mut walk, scan, collected) in [
+        for (name, mut walk, collected) in [
             (
                 "NoPruning",
                 walked(&plain),
-                scanned(&plain),
                 plain.collect_tuples().to_vecs(),
             ),
             (
                 "SingletonPruning",
                 walked(&compact),
-                scanned(&compact),
                 compact.collect_tuples().to_vecs(),
             ),
         ] {
-            assert_eq!(scan, tuples, "{name}: scan_tuples reads the buffer");
             assert_eq!(
                 collected, tuples,
                 "{name}: collect_tuples copies the buffer"
@@ -2104,7 +2077,6 @@ mod lazy_tests {
 
     #[test]
     fn walks_read_pending_tuples_without_expanding() {
-        use crate::tuple_scan::TupleScan;
         let trie = Lazy::from_tuples(3.into(), tuples());
         let before = trie.heap_size_bytes();
         assert_eq!(trie.collect_tuples().to_vecs(), tuples());
@@ -2113,10 +2085,6 @@ mod lazy_tests {
         trie.for_each_tuple(|t| walked.push(t.to_vec()));
         walked.sort();
         assert_eq!(walked, tuples());
-        // The scan reads the buffer, in arrival order.
-        let mut scanned = Vec::new();
-        trie.scan_tuples(|t| scanned.push(t.to_vec()));
-        assert_eq!(scanned, tuples());
         assert!(pending_of(&trie, child(&trie, 1)).is_some());
         assert_eq!(trie.heap_size_bytes(), before, "a walk changes nothing");
     }
