@@ -28,7 +28,7 @@ Each family directory holds a `mod.rs` documenting the family contract and one m
 
 Everything is re-exported flat from the crate root — consumers write `kermit_algos::HashTriejoin`, never the family path. The two `*Iter` types (`LeapfrogTriejoinIter`, `LeapfrogJoinIter`) and the traits driving them are `pub(crate)`: they are implementation detail, exercised by the inline tests, and not reachable from outside the crate.
 
-- [`JoinAlgo`](src/join_algo.rs) — the algorithm trait. Takes a `QueryPlan`, a parsed `JoinQuery`, and a map from predicate name to data structure reference; its one required method, `join_for_each`, passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result. `join_iter` is a provided method that collects through it, for callers that need the rows.
+- [`JoinAlgo`](src/join_algo.rs) — the algorithm trait. Takes a `QueryPlan`, a parsed `JoinQuery`, and a map from predicate name to data structure reference; its one required method, `join_for_each`, passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result. A caller that needs the rows collects them with a sink that pushes into a flat `Tuples` batch.
 - [`LeapfrogTriejoin`](src/sorted/leapfrog_triejoin.rs) — the sorted-family entry point (`-a leapfrog-triejoin`).
 - [`HashTriejoin`](src/hash/hash_triejoin.rs) — the hash-family entry point (`-a hash-triejoin`).
 - [`QueryOptimiser`](src/optimiser/mod.rs) — plans the variable ordering (`QueryPlan`) that `JoinAlgo::join_for_each` executes. Implementations: `LexicographicOptimiser` (default), `CardinalityOptimiser`, `CostBasedOptimiser`.

@@ -98,7 +98,7 @@ metric, default 1), `--ds-config` and `--ds-build` alongside the `--ds-layout-*`
    and the benchmark share that catalog, so the files are read once.
 3. If `--output` is set, build the query's indexes and execute the join
    once, streaming each row to the CSV with a header row of head variable
-   names (`head_column_names(query)`).
+   names (`Prepared::answer_header`).
 4. Run the `PreparedWorkload` through `bench::run::dispatch_run_bench` — the
    same runner as `bench run` — with prefix `--name` or `join`; function
    names as for `bench run`.

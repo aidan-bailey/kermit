@@ -10,10 +10,10 @@ See the workspace [`README.md`](../README.md) for a broader introduction and the
 ## Library surface
 
 - [`db::Catalog`](src/db/catalog.rs) — the loaded relations as flat `Tuples` plus the planner statistics gathered when it is built; no index structure is built at load. A join then runs three steps over it: [`db::prepare`](src/db/lifecycle.rs) (validate, plan and name the indexes the plan reads; untimed), [`db::build`](src/db/lifecycle.rs) (build one index per `IndexSpec`, each copied once from a filtered `TupleView` of the flat data, so a constant or a repeated variable filters rows while the index is built; timed as the `build` metric) and [`db::execute`](src/db/lifecycle.rs) (the join; timed as `iteration`).
-- [`db::lftj_join_for_each`](src/db.rs) — sorted-family join over a `Catalog`, generic in the algorithm and in the `TrieIterable` index structure; runs `prepare`, `build` and `execute`, and passes each result tuple to a sink without materialising the result. [`db::lftj_join`](src/db.rs) collects it.
-- [`db::hash_join_for_each`](src/db.rs) — hash-family join over a `Catalog` under `HashTriejoin`, streaming the same way. [`db::hash_join`](src/db.rs) collects it.
+- [`db::lftj_join_for_each`](src/db.rs) — sorted-family join over a `Catalog`, generic in the algorithm and in the `TrieIterable` index structure; runs `prepare`, `build` and `execute`, and passes each result tuple to a sink without materialising the result. [`db::lftj_join`](src/db.rs) collects it as a relation: the `RelationHeader` that `Prepared::answer_header` names and the rows in one flat `Tuples` batch, the pair a `Catalog` is built from.
+- [`db::hash_join_for_each`](src/db.rs) — hash-family join over a `Catalog` under `HashTriejoin`, streaming the same way. [`db::hash_join`](src/db.rs) collects it the same way.
 - Every entry point projects each row to the query head and returns `Result<_, db::JoinError>` instead of panicking on a query that cannot run; [`db::validate_query`](src/db/validation.rs) runs the same checks without joining, e.g. against relation headers before anything is read into the catalog.
-- [`compute_join`](src/lib.rs) — helper that builds a `Catalog` from raw tuple vectors and runs a join end-to-end.
+- [`compute_join`](src/lib.rs) — helper that builds a `Catalog` from raw tuple vectors and runs a join end-to-end, returning the rows as one flat `Tuples` batch.
 - `algos::LeapfrogTriejoin` and `ds::{RelationFileExt, TreeTrie}` re-exports for downstream consumers.
 
 ## CLI

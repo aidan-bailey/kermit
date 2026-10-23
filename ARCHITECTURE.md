@@ -319,7 +319,7 @@ Note one documented deviation from the paper: Veldhuizen keeps one persistent le
 4. **Emit**: at the leaf, cross-product the participating tuple chains (one `LeafCursor` per chain, an odometer whose overflow resets a cursor and carries), then **verify shared variables against the real tuple values** — hashing can produce false positives at any inner level, so equality must be re-checked before a tuple is emitted.
 5. **Ascend**: `up` exactly as many times as the descent opened, including on partial-open failure.
 
-Both algorithms stream. `JoinAlgo::join_for_each` passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result: LFTJ reorders each tuple that `TrieIteratorWrapper::advance` lends into one scratch row, and HashTriejoin's leaf cross product writes into scratch buffers allocated once per join. `join_iter` is a provided method that collects through `join_for_each`, for callers that need the rows; benchmarks never call it inside a timed region (issue #65).
+Both algorithms stream. `JoinAlgo::join_for_each` passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result: LFTJ reorders each tuple that `TrieIteratorWrapper::advance` lends into one scratch row, and HashTriejoin's leaf cross product writes into scratch buffers allocated once per join. `join_for_each` is the trait's only method: a caller that needs the rows collects them with a sink that pushes into a flat `Tuples` batch, and the benchmarks time it with a counting sink (issue #65).
 
 ### JoinAlgo Trait
 
@@ -331,13 +331,6 @@ pub trait JoinAlgo<DS> where DS: JoinIterable {
         datastructures: HashMap<String, &DS>,
         emit: S,
     );
-
-    // Provided: collects through `join_for_each`.
-    fn join_iter(
-        plan: &QueryPlan,
-        query: JoinQuery,
-        datastructures: HashMap<String, &DS>,
-    ) -> impl Iterator<Item = Vec<usize>> { … }
 }
 ```
 
@@ -461,11 +454,11 @@ Working examples live in `README.md` and `USAGE.md`; the YAML schema and generat
 `kermit/src/db.rs` runs a query as four steps over a `Catalog` (`kermit/src/db/catalog.rs`): the relations keyed by header name, each a header and a flat `Tuples` batch with no structure built, plus the statistics gathered once when it is built, up to the `StatisticsLevel` its optimiser declares (tuple counts are row counts; column-distinct counts only at `ColumnDistinct`). A later relation with a duplicate name replaces the earlier one.
 
 - **Load** (untimed) reads each relation the queries name into the catalog.
-- **`prepare(&catalog, &query, &planner) -> Result<Prepared, JoinError>`** (untimed, once per query; `kermit/src/db/lifecycle.rs`) validates, rewrites `_`, extracts accesses, gathers statistics, plans, and plans indexes. A `Prepared` holds the executed query, the plan, the `IndexSpec`s, the constant checks and the head's length.
+- **`prepare(&catalog, &query, &planner) -> Result<Prepared, JoinError>`** (untimed, once per query; `kermit/src/db/lifecycle.rs`) validates, rewrites `_`, extracts accesses, gathers statistics, plans, and plans indexes. A `Prepared` holds the executed query, the plan, the `IndexSpec`s, the constant checks and the head's length, and its `answer_header()` names the answer: a `RelationHeader` after the head predicate, with one attribute per head variable.
 - **`build::<R>(&catalog, &prepared) -> Indexes<R>`** (timed) turns each spec into a `TupleView` over its relation's flat tuples and calls the structure's `from_view`, which copies the matching rows once; each constant check becomes its view's `count()`. A zero count means the query has no answers; otherwise the counts multiply into `Indexes::multiplicity()`, each clamped to 1 unless `R::KEEPS_DUPLICATES`. `build_with` takes the constructor as a closure, which is how the binary's families inject their config and build mode.
 - **`execute::<R, JA>(&prepared, &indexes, emit)`** (timed) maps ids to indexes, calls `JoinAlgo::join_for_each`, and lends `emit` each row's head prefix once per unit of multiplicity, without materialising the result; when every atom was a constant check it emits the empty head row `multiplicity` times and runs no join. Executing with indexes built from another `Prepared` is a programming error, caught by a debug assertion that the specs are equal.
 
-The conveniences `lftj_join_for_each<R, JA>` and `hash_join_for_each<R>` (hardwired to `HashTriejoin`) run all three steps and stream; `lftj_join` / `hash_join` collect through them and return `Result<Vec<Vec<usize>>, JoinError>`; a query that cannot run returns a `JoinError` before anything is emitted. `kermit::compute_join` builds a `Catalog` from its inputs and calls `prepare`, `build` and `execute` itself (it is generic over the relation and the algorithm, which the family-bound conveniences are not), so it validates and applies every rewrite like every other entry point. Freeing what a timed step built is never timed: each step returns what it built, and Criterion drops it after the timer stops.
+The conveniences `lftj_join_for_each<R, JA>` and `hash_join_for_each<R>` (hardwired to `HashTriejoin`) run all three steps and stream; `lftj_join` / `hash_join` run the same steps with a flat `Tuples` sink sized by `Prepared::head_len()` and return the answer as a relation, `Result<(RelationHeader, Tuples), JoinError>`, the pair a `Catalog` is built from; a query that cannot run returns a `JoinError` before anything is emitted. `kermit::compute_join` builds a `Catalog` from its inputs and calls `prepare`, `build` and `execute` itself (it is generic over the relation and the algorithm, which the family-bound conveniences are not), so it validates and applies every rewrite like every other entry point; it returns the rows alone, as one `Tuples` batch, since its inputs carry no headers. Freeing what a timed step built is never timed: each step returns what it built, and Criterion drops it after the timer stops.
 
 In the binary, `RelationFamily::build_index(header, view)` is each family's one config- and mode-aware construction site. `ExecutionFamily::build_indexes(&catalog, &prepared)` is `build_with` over it, `execute(&prepared, &indexes, sink)` runs the join, and `count_rows` counts a join's rows through `black_box`. The families hold no `Planner`, because `prepare` runs before them. `bench run` reads every relation its queries name into one `Catalog` before the loop over cells (`Workload::prepare`, which returns a `PreparedWorkload`), prepares each query once, and shares both across every cell; `bench join` (both `--output` and the benchmark) and `kermit join` go through the same `Workload::prepare`.
 
