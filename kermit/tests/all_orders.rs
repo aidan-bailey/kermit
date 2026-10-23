@@ -262,10 +262,10 @@ fn rows_in_order<R: Relation, JA: JoinAlgo<R>>(
         "{label}: the plan does not bind the forced variables first"
     );
     let indexes = build::<R>(catalog, &prepared);
-    let mut rows = Vec::new();
-    execute::<R, JA>(&prepared, &indexes, |row| rows.push(row.to_vec()));
+    let mut rows = Tuples::new(prepared.head_len());
+    execute::<R, JA>(&prepared, &indexes, |row| rows.push(row));
     rows.sort();
-    rows
+    rows.to_vecs()
 }
 
 /// Runs `text` over `relations` under every order of its variables, each

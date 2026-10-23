@@ -49,7 +49,8 @@ fn join_with_specs<R: Relation + Cardinality, JA: JoinEntry<R>>(
     let inputs: Inputs = BTreeMap::from([("edge".to_string(), (header, Tuples::from(edges())))]);
     let catalog = catalog_of(&inputs, planner.required_statistics());
     let q: JoinQuery = query.parse().expect("parse");
-    join_under_planner::<R, JA>(&catalog, q, &planner).unwrap()
+    let (rows, specs) = join_under_planner::<R, JA>(&catalog, q, &planner).unwrap();
+    (rows.to_vecs(), specs)
 }
 
 /// The rows of [`join_with_specs`].

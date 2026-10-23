@@ -6,10 +6,12 @@
 //! through a view (constants and repeated variables pushed down into its
 //! filter) and `execute` joins over them, exactly as `kermit join` does. The
 //! [`JoinEntry`] trait maps an algorithm type to the execution that hosts
-//! it, mirroring how the CLI's `execution` module pairs them.
+//! it, mirroring how the CLI's `execution` module pairs them: `join`
+//! collects through `kermit::db::lftj_join` / `hash_join`, and `count`
+//! streams through `execute` into a counter.
 
 use {
-    kermit::db::{build, execute, prepare, Catalog, JoinError},
+    kermit::db::{build, execute, hash_join, lftj_join, prepare, Catalog, JoinError},
     kermit_algos::{
         HashTriejoin, IndexSpec, JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner, QueryOptimiser,
         StatisticsLevel,
@@ -25,10 +27,12 @@ pub const PLACEHOLDER: usize = usize::MAX;
 
 /// The execution in `kermit::db` that runs algorithm `Self` over `R`.
 pub trait JoinEntry<R> {
-    /// Every row of `query`'s head, collected.
+    /// `query`'s answer, collected by the entry point as a relation: the
+    /// header `Prepared::answer_header` names and every head row in one flat
+    /// `Tuples` batch.
     fn join(
         catalog: &Catalog, query: JoinQuery, planner: &Planner,
-    ) -> Result<Vec<Vec<usize>>, JoinError>;
+    ) -> Result<(RelationHeader, Tuples), JoinError>;
 
     /// Counts the result through the streamed `execute` — the path
     /// `bench run`'s `iteration` metric times.
@@ -46,14 +50,6 @@ fn run<R: Relation, JA: JoinAlgo<R>>(
     Ok(())
 }
 
-fn collect<R: Relation, JA: JoinAlgo<R>>(
-    catalog: &Catalog, query: &JoinQuery, planner: &Planner,
-) -> Result<Vec<Vec<usize>>, JoinError> {
-    let mut rows = Vec::new();
-    run::<R, JA>(catalog, query, planner, |row| rows.push(row.to_vec()))?;
-    Ok(rows)
-}
-
 fn count_rows<R: Relation, JA: JoinAlgo<R>>(
     catalog: &Catalog, query: &JoinQuery, planner: &Planner,
 ) -> Result<u64, JoinError> {
@@ -65,8 +61,8 @@ fn count_rows<R: Relation, JA: JoinAlgo<R>>(
 impl<R: Relation + TrieIterable> JoinEntry<R> for LeapfrogTriejoin {
     fn join(
         catalog: &Catalog, query: JoinQuery, planner: &Planner,
-    ) -> Result<Vec<Vec<usize>>, JoinError> {
-        collect::<R, LeapfrogTriejoin>(catalog, &query, planner)
+    ) -> Result<(RelationHeader, Tuples), JoinError> {
+        lftj_join::<R, LeapfrogTriejoin>(catalog, query, planner)
     }
 
     fn count(catalog: &Catalog, query: JoinQuery, planner: &Planner) -> Result<u64, JoinError> {
@@ -80,8 +76,8 @@ impl<R: Relation + TrieIterable> JoinEntry<R> for LeapfrogTriejoin {
 impl<R: Relation + HashTrieIterable> JoinEntry<R> for HashTriejoin {
     fn join(
         catalog: &Catalog, query: JoinQuery, planner: &Planner,
-    ) -> Result<Vec<Vec<usize>>, JoinError> {
-        collect::<R, HashTriejoin>(catalog, &query, planner)
+    ) -> Result<(RelationHeader, Tuples), JoinError> {
+        hash_join::<R>(catalog, query, planner)
     }
 
     fn count(catalog: &Catalog, query: JoinQuery, planner: &Planner) -> Result<u64, JoinError> {
@@ -121,13 +117,32 @@ pub fn catalog_of(inputs: &Inputs, level: StatisticsLevel) -> Catalog {
 
 /// Runs `query` over `catalog` under `planner` through `JA`: joined and
 /// collected, and counted through the streamed path `bench run` times, which
-/// must agree. Returns the rows and the index specs the query built (what
-/// `prepare` named; each is built again by the join and by the count).
+/// must agree. Checks the answer's header against `query`'s head: named
+/// after the head predicate, the head's variables as attributes in head
+/// order, and the batch's arity. Returns the rows and the index specs the
+/// query built (what `prepare` named; each is built again by the join and by
+/// the count).
 pub fn join_under_planner<R: Relation, JA: JoinEntry<R>>(
     catalog: &Catalog, query: JoinQuery, planner: &Planner,
-) -> Result<(Vec<Vec<usize>>, Vec<IndexSpec>), JoinError> {
+) -> Result<(Tuples, Vec<IndexSpec>), JoinError> {
     let specs = prepare(catalog, &query, planner)?.indexes().to_vec();
-    let rows = JA::join(catalog, query.clone(), planner)?;
+    let (header, rows) = JA::join(catalog, query.clone(), planner)?;
+    let head: Vec<String> = query.head.terms.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        header.name(),
+        query.head.name,
+        "the answer is named after the head"
+    );
+    assert_eq!(
+        header.attrs(),
+        head,
+        "the answer's attributes are the head's variables"
+    );
+    assert_eq!(
+        rows.arity(),
+        header.arity(),
+        "the rows have the header's arity"
+    );
     let streamed = JA::count(catalog, query, planner)?;
     assert_eq!(
         streamed,
@@ -199,13 +214,14 @@ pub fn test_join<R, JA, O>(
     // CLI's is.
     let planner = Planner::new(Box::new(O::default()));
     let catalog = catalog_of(&inputs, planner.required_statistics());
-    let (mut actual, _) = join_under_planner::<R, JA>(&catalog, query, &planner)
+    let (actual, _) = join_under_planner::<R, JA>(&catalog, query, &planner)
         .unwrap_or_else(|e| panic!("{query_str}: {e}"));
 
     // Multiset equality (relational algebra semantics) — sort both sides
     // before asserting so algorithms with non-sorted output (hash-trie
     // family) and plans with different enumeration orders pass the same
     // suite.
+    let mut actual = actual.to_vecs();
     actual.sort();
     let mut expected = result;
     expected.sort();
