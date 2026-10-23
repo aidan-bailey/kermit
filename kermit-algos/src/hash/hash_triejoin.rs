@@ -298,7 +298,20 @@ mod tests {
     use {
         super::*,
         crate::optimiser::{CatalogStats, LexicographicOptimiser, QueryOptimiser},
+        kermit_iters::Tuples,
     };
+
+    /// `query` joined by [`HashTriejoin`] under `plan`, collected as a caller
+    /// collects through `join_for_each`: into a flat [`Tuples`] batch with
+    /// one column per query variable. Returns the rows sorted.
+    fn joined<DS: HashTrieIterable>(
+        plan: &QueryPlan, query: JoinQuery, ds: HashMap<String, &DS>,
+    ) -> Vec<Vec<usize>> {
+        let mut rows = Tuples::new(plan.variable_ordering.len());
+        HashTriejoin::join_for_each(plan, query, ds, |row| rows.push(row));
+        rows.sort();
+        rows.to_vecs()
+    }
 
     #[test]
     fn variable_to_iter_map_triangle() {
@@ -476,9 +489,7 @@ mod tests {
         ds.insert("R".to_string(), &r);
         ds.insert("S".to_string(), &s);
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
-        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
-        out.sort();
-        assert_eq!(out, vec![vec![1, 2, 5]]);
+        assert_eq!(joined(&plan, query, ds), vec![vec![1, 2, 5]]);
     }
 
     #[test]
@@ -494,9 +505,7 @@ mod tests {
         ds.insert("R".to_string(), &r);
         ds.insert("S".to_string(), &s);
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
-        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
-        out.sort();
-        assert_eq!(out, vec![vec![11]]);
+        assert_eq!(joined(&plan, query, ds), vec![vec![11]]);
     }
 
     #[test]
@@ -509,9 +518,7 @@ mod tests {
         ds.insert("R".to_string(), &r);
         ds.insert("S".to_string(), &s);
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
-        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
-        out.sort();
-        assert_eq!(out, vec![vec![2], vec![3]]);
+        assert_eq!(joined(&plan, query, ds), vec![vec![2], vec![3]]);
     }
 
     #[test]
@@ -526,9 +533,11 @@ mod tests {
         ds.insert("S".to_string(), &s);
         ds.insert("T".to_string(), &t);
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
-        let mut out: Vec<Vec<usize>> = HashTriejoin::join_iter(&plan, query, ds).collect();
-        out.sort();
-        assert_eq!(out, vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]);
+        assert_eq!(joined(&plan, query, ds), vec![
+            vec![1, 2, 3],
+            vec![2, 3, 1],
+            vec![3, 1, 2]
+        ]);
     }
 
     #[test]
