@@ -115,6 +115,10 @@ fn a_probe_verifies_each_query_and_times_one_build_and_one_run() {
         assert_eq!(report["axes"]["plan"], "X, Y");
     }
     assert!(stderr.contains("--- bench probe metadata ---"), "{stderr}");
+    assert!(
+        stderr.contains("bench probe: skipping incompatible pair"),
+        "{stderr}"
+    );
     assert!(stderr.contains("single run:"), "{stderr}");
     assert!(
         !workspace.path().join("criterion").exists(),

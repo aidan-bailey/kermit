@@ -852,7 +852,7 @@ fn run_bench_run_command(
     } = selection;
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let given = DsFlag::given(&layout, &config, &build);
-    let cells = resolve_sweep(indexstructure, algorithm, choices, &given)?;
+    let cells = resolve_sweep(indexstructure, algorithm, choices, &given, kind)?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
         .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;

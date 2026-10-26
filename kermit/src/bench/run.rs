@@ -416,7 +416,8 @@ pub(crate) fn check_sweep_group_directories(
 /// Expands the `-i` / `-a` selectors into the valid execution cells.
 ///
 /// Incompatible concrete pairs are dropped: with `all` on either side they
-/// are announced on stderr and skipped, so `-i all -a all` runs exactly the
+/// are announced on stderr, naming the `kind` of `bench` subcommand, and
+/// skipped, so `-i all -a all` runs exactly the
 /// three valid cells; when the user named a single incompatible pair there
 /// is nothing left to run and that is a usage error.
 ///
@@ -428,7 +429,7 @@ pub(crate) fn check_sweep_group_directories(
 /// error too (#86).
 pub(crate) fn resolve_sweep(
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, choices: DsChoices,
-    given: &[DsFlag],
+    given: &[DsFlag], kind: BenchKind,
 ) -> anyhow::Result<Vec<Execution>> {
     let sweep = Sweep::expand(&indexstructure.expand(), &algorithm.expand(), choices);
     if sweep.cells.is_empty() {
@@ -457,7 +458,7 @@ pub(crate) fn resolve_sweep(
         );
     }
     for (ds, algo) in &sweep.skipped {
-        eprintln!("bench run: skipping incompatible pair ({ds:?}, {algo:?})");
+        eprintln!("bench {kind}: skipping incompatible pair ({ds:?}, {algo:?})");
     }
     Ok(sweep.cells)
 }
@@ -507,6 +508,7 @@ mod tests {
                 algorithm,
                 DsChoices::default(),
                 given,
+                BenchKind::Run,
             )
         };
         for &(algorithm, reached, unreached) in rows {
