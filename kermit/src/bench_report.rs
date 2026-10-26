@@ -134,6 +134,8 @@ pub enum BenchKind {
     /// `bench run`
     Run,
     /// `bench probe`
+    // Constructed once `bench probe` lands (Task 13 of the measure-layer plan).
+    #[allow(dead_code)]
     Probe,
 }
 
