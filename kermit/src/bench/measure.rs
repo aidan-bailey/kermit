@@ -1,7 +1,8 @@
 //! The measurement methodology every `bench` runner shares: one untimed
 //! describe build per subject, read for everything a report states without
-//! timing it, then the timed metrics in one fixed order. `bench run` and
-//! `bench join` measure a prepared query ([`QuerySubject`]); `bench ds`
+//! timing it, then the timed metrics in one fixed order. `bench run`,
+//! `bench join` and `bench probe` measure a prepared query
+//! ([`QuerySubject`]); `bench ds`
 //! measures one relation ([`RelationSubject`]).
 
 use {
@@ -234,13 +235,9 @@ impl<'s, S: Subject> Described<'s, S> {
     pub(crate) fn rows(&self) -> Option<u64> { self.counted.map(|counted| counted.rows) }
 
     /// How long the describe build took.
-    // Read by `bench probe`'s metadata (Task 13 of the measure-layer plan).
-    #[allow(dead_code)]
     pub(crate) fn build_time(&self) -> Duration { self.build_time }
 
     /// How long the describe step's exercise took, if it counted.
-    // Read by `bench probe`'s metadata (Task 13 of the measure-layer plan).
-    #[allow(dead_code)]
     pub(crate) fn exercise_time(&self) -> Option<Duration> {
         self.counted.map(|counted| counted.time)
     }

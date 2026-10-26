@@ -1,6 +1,6 @@
-//! The generic runner behind `bench run` and `bench join`: one execution
-//! cell over one [`PreparedWorkload`], every requested metric, one report
-//! per query, pushed as each query finishes.
+//! The generic runner behind `bench run`, `bench join` and `bench probe`:
+//! one execution cell over one [`PreparedWorkload`], every requested metric,
+//! one report per query, pushed as each query finishes.
 
 use {
     super::{
@@ -50,6 +50,9 @@ pub(crate) struct RunSettings<'a> {
     /// Compare each query's answer count with the workload's `expected`
     /// before timing it; a mismatch aborts.
     pub verify: bool,
+    /// Count every query and record the describe step's build and
+    /// execution times as single-run values (`bench probe`).
+    pub single_run: bool,
     /// Criterion sample/measurement/warm-up settings.
     pub criterion: &'a CriterionSettings,
 }
@@ -97,7 +100,8 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
 /// catalog as flat tuples, so a query that cannot run never reaches this
 /// function (issue #78). Per query, the cell measures a [`QuerySubject`]
 /// through the measure layer. One describe build outside Criterion gives the
-/// `index` lines, the exact `space` and the count `--verify` checks; then
+/// `index` lines, the exact `space` and the count `--verify` checks, which
+/// `bench probe` also times; then
 /// [`Described::measure`] runs `iteration` on that build, drops it, and times
 /// `build` and `end_to_end`. With `settings.verify`, a query with an
 /// `expected` count is checked before any timer starts, and a mismatch aborts
@@ -112,6 +116,7 @@ fn run_benchmark<F: ExecutionFamily>(
         metrics,
         queries_per_build,
         verify,
+        single_run,
         criterion,
     } = settings;
     let PreparedWorkload {
@@ -155,7 +160,7 @@ fn run_benchmark<F: ExecutionFamily>(
             catalog,
             prepared,
         };
-        let count = verify && query_def.expected.is_some();
+        let count = (verify && query_def.expected.is_some()) || single_run;
         let described = Described::new(&subject, count);
 
         let mut metadata = vec![
@@ -216,6 +221,16 @@ fn run_benchmark<F: ExecutionFamily>(
         if let Some(rows) = answer_rows {
             metadata.push(MetadataLine::new("answer rows", rows));
         }
+        if single_run {
+            let build = described.build_time();
+            let iteration = described
+                .exercise_time()
+                .expect("a probe counts every query");
+            metadata.push(MetadataLine::new(
+                "single run",
+                format!("build {build:?}, iteration {iteration:?}"),
+            ));
+        }
         if metrics.contains(&Metric::EndToEnd) {
             metadata.push(MetadataLine::new("queries per build", queries_per_build));
         }
@@ -227,12 +242,17 @@ fn run_benchmark<F: ExecutionFamily>(
                 ));
             }
         }
-        write_metadata_block(&mut io::stderr(), "bench run metadata", &metadata)?;
+        let title = if kind == BenchKind::Probe {
+            "bench probe metadata"
+        } else {
+            "bench run metadata"
+        };
+        write_metadata_block(&mut io::stderr(), title, &metadata)?;
 
         let group_name = criterion_group_name(prefix, &definition.name, &query_def.name, execution);
         let measured = described.measure(&MeasureRequest {
             metrics,
-            single_run: false,
+            single_run,
             queries_per_build,
             criterion,
             group: &group_name,

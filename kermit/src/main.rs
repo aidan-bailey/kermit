@@ -2,7 +2,8 @@
 //!
 //! Two top-level subcommands: `join` (execute a Datalog query against
 //! relation files) and `bench` (Criterion-based benchmarks, including the
-//! YAML-defined benchmarks under `benchmarks/`).
+//! YAML-defined benchmarks under `benchmarks/`, and `bench probe`, their
+//! Criterion-free screen).
 //!
 //! Run `kermit --help` for the full help text; each `clap` `#[arg(help =
 //! …)]` string drives that help output. Benchmark YAML schema is documented
@@ -207,8 +208,8 @@ struct BenchArgs {
     report_json: Option<PathBuf>,
 }
 
-/// Which benchmarks, queries and cells a `bench run` covers, and how each
-/// query is planned.
+/// Which benchmarks, queries and cells a `bench run` or `bench probe`
+/// covers, and how each query is planned.
 #[derive(Args)]
 struct RunSelection {
     /// Benchmark name (omit for --all)
@@ -367,6 +368,23 @@ enum BenchSubcommand {
         /// Queries without `expected` are noted and skipped.
         #[arg(long)]
         verify: bool,
+    },
+
+    /// Screen a named benchmark without Criterion: verify each query, time
+    /// one build and one run, record the exact space
+    ///
+    /// Per query and cell, the query's indexes are built once and the query
+    /// is run once, both timed (single runs, recorded as `values` with
+    /// estimator `single`), beside the exact `space`, the answer count and
+    /// the plan. Every query whose YAML declares `expected` is verified, and
+    /// a mismatch aborts. Takes `bench run`'s selection flags. `bench`'s
+    /// Criterion settings (`--name`, `--sample-size`, `--measurement-time`,
+    /// `--warm-up-time`) do not apply; `--report-json` does. A single run is
+    /// cold: compare it with other single runs, never with a Criterion
+    /// estimate.
+    Probe {
+        #[command(flatten)]
+        selection: RunSelection,
     },
 
     /// List available benchmarks
@@ -765,6 +783,7 @@ fn run_bench_join(
         metrics,
         queries_per_build,
         verify: false,
+        single_run: false,
         criterion: &criterion,
     };
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
@@ -812,12 +831,12 @@ fn run_ds_bench_command(
     Ok(())
 }
 
-/// Handler for `bench run`: materialise the selected benchmarks and run
-/// every valid (index-structure, algorithm) cell of the requested sweep,
-/// writing each query's report as it finishes.
+/// Handler for `bench run` and `bench probe`: materialise the selected
+/// benchmarks and run every valid (index-structure, algorithm) cell of the
+/// requested sweep, writing each query's report as it finishes.
 fn run_bench_run_command(
-    bench_args: &BenchArgs, selection: RunSelection, metrics: Vec<Metric>, queries_per_build: u32,
-    verify: bool,
+    bench_args: &BenchArgs, selection: RunSelection, kind: BenchKind, metrics: Vec<Metric>,
+    queries_per_build: u32, verify: bool, single_run: bool,
 ) -> anyhow::Result<()> {
     let RunSelection {
         name,
@@ -846,21 +865,26 @@ fn run_bench_run_command(
     let prepare_with = planner.instantiate();
     let criterion = CriterionSettings::from_args(bench_args);
     let settings = RunSettings {
-        kind: BenchKind::Run,
+        kind,
         prefix,
         planner,
         metrics: &metrics,
         queries_per_build,
         verify,
+        single_run,
         criterion: &criterion,
     };
     // Names only — nothing is fetched — so a sweep whose cells would
     // overwrite each other's Criterion results fails before any is timed.
-    check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells)?;
+    // A run with no time metric (`bench probe`, `-m space`) writes no
+    // Criterion group, so nothing can collide.
+    if metrics.iter().any(|metric| metric.is_timed()) {
+        check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells)?;
+    }
 
     // Opened before the loop so every finished query is on disk before the
     // next one starts; a crash mid-sweep keeps the completed queries.
-    let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Run)?;
+    let mut sink = ReportSink::open(bench_args.report_json.as_deref(), kind)?;
     for benchmark in &materialized {
         // Validated, read and planned once per benchmark, before its loop
         // over cells: every cell builds from this catalog and runs these
@@ -869,7 +893,7 @@ fn run_bench_run_command(
             .and_then(|workload| workload.prepare(&prepare_with))
             .with_context(|| {
                 format!(
-                    "bench run failed on benchmark '{}'; partial report retained at {}",
+                    "bench {kind} failed on benchmark '{}'; partial report retained at {}",
                     benchmark.name,
                     sink.path().display()
                 )
@@ -877,7 +901,8 @@ fn run_bench_run_command(
         for &cell in &cells {
             dispatch_run_bench(cell, &workload, settings, &mut sink).with_context(|| {
                 format!(
-                    "bench run failed on benchmark '{}' cell {:?}; partial report retained at {}",
+                    "bench {kind} failed on benchmark '{}' cell {:?}; partial report retained at \
+                     {}",
                     benchmark.name,
                     cell,
                     sink.path().display()
@@ -887,6 +912,23 @@ fn run_bench_run_command(
     }
     sink.finish()?;
     Ok(())
+}
+
+/// Handler for `bench probe`: `bench run`'s runner with the probe's fixed
+/// settings. Every query is counted and, where it declares `expected`,
+/// verified; its describe step's build and execution times are recorded as
+/// single-run values beside its exact `space`; nothing goes through
+/// Criterion.
+fn run_bench_probe_command(bench_args: &BenchArgs, selection: RunSelection) -> anyhow::Result<()> {
+    run_bench_run_command(
+        bench_args,
+        selection,
+        BenchKind::Probe,
+        vec![Metric::Space],
+        1,
+        true,
+        true,
+    )
 }
 
 fn main() -> anyhow::Result<()> {
@@ -953,7 +995,19 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 verify,
-            } => run_bench_run_command(&bench_args, selection, metrics, queries_per_build, verify)?,
+            } => run_bench_run_command(
+                &bench_args,
+                selection,
+                BenchKind::Run,
+                metrics,
+                queries_per_build,
+                verify,
+                false,
+            )?,
+
+            | BenchSubcommand::Probe {
+                selection,
+            } => run_bench_probe_command(&bench_args, selection)?,
 
             | BenchSubcommand::Gen {
                 subcommand,

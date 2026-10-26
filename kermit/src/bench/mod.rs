@@ -1,11 +1,11 @@
 //! The `bench` subcommands' measurement layer: what runs under Criterion
 //! once the CLI has resolved *which* structure, algorithm and workload.
 //!
-//! `workload` is the value both `bench run` (from a `benchmarks/*.yml`
-//! definition) and `bench join` (from `--relations` / `--query`) hand to
-//! the one generic runner in `run`; `ds` is the structure-only runner
-//! behind `bench ds`. `main.rs` keeps the clap types and the thin handlers
-//! that build these inputs and write the report.
+//! `workload` is the value `bench run` and `bench probe` (from a
+//! `benchmarks/*.yml` definition) and `bench join` (from `--relations` /
+//! `--query`) hand to the one generic runner in `run`; `ds` is the
+//! structure-only runner behind `bench ds`. `main.rs` keeps the clap types
+//! and the thin handlers that build these inputs and write the report.
 //!
 //! `measure` is the methodology every runner shares: one untimed describe
 //! build per subject, then the timed metrics in one fixed order.

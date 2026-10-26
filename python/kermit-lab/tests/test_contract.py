@@ -190,3 +190,18 @@ def test_bench_join_reports_a_per_query_build_and_space(tmp_path: Path) -> None:
     assert len(space) == 1 and space.iloc[0]["estimator"] == "exact"
     # Nor does the default back-fill label a v5 report `stored`.
     assert kl.load(report, criterion_root=criterion_root)["column_orders"].isna().all()
+
+
+def test_bench_probe_report_loads(tmp_path: Path) -> None:
+    report = tmp_path / "probe.json"
+    _run(tmp_path, report, "probe", "triangle", "-i", "tree-trie", "-a", "leapfrog-triejoin")
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
+    assert set(df["kind"]) == {"probe"}
+    assert set(df["schema_version"]) == {6}
+    assert set(df["estimator"]) == {"exact", "single"}
+    single = df[df["estimator"] == "single"]
+    assert set(single["phase"]) == {"build", "iteration"}
+    assert (single["mean_ns"] > 0).all()
+    assert df["verified"].all()
+    assert df["answer_rows"].notna().all()
+    assert df["plan"].notna().all()
