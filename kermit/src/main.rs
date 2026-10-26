@@ -207,6 +207,57 @@ struct BenchArgs {
     report_json: Option<PathBuf>,
 }
 
+/// Which benchmarks, queries and cells a `bench run` covers, and how each
+/// query is planned.
+#[derive(Args)]
+struct RunSelection {
+    /// Benchmark name (omit for --all)
+    #[arg(value_name = "NAME")]
+    name: Option<String>,
+
+    /// Run all available benchmarks
+    #[arg(long, conflicts_with = "name")]
+    all: bool,
+
+    /// Run only the named query (omit to run all queries)
+    #[arg(short, long, value_name = "QUERY")]
+    query: Option<String>,
+
+    /// Data structure (`all` sweeps every available structure)
+    #[arg(
+        short,
+        long,
+        value_name = "INDEXSTRUCTURE",
+        required = true,
+        value_enum
+    )]
+    indexstructure: IndexStructureSelector,
+
+    /// Join algorithm (`all` sweeps every available algorithm)
+    #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
+    algorithm: JoinAlgorithmSelector,
+
+    #[command(flatten)]
+    planner: PlannerArgs,
+
+    /// Regenerate generator-driven benchmarks if their cached
+    /// `meta.json` spec_hash differs from the current YAML's params.
+    /// Without this flag, a drifted benchmark is an error instead of
+    /// silently re-running an expensive pipeline. No-op for static
+    /// benchmarks.
+    #[arg(long)]
+    force: bool,
+
+    #[command(flatten)]
+    layout: LayoutChoices,
+
+    #[command(flatten)]
+    config: ConfigChoices,
+
+    #[command(flatten)]
+    build: BuildChoices,
+}
+
 #[derive(Subcommand)]
 enum BenchSubcommand {
     /// Benchmark a join query over relation files.
@@ -292,34 +343,8 @@ enum BenchSubcommand {
 
     /// Run a named benchmark from benchmarks/ YAML files
     Run {
-        /// Benchmark name (omit for --all)
-        #[arg(value_name = "NAME")]
-        name: Option<String>,
-
-        /// Run all available benchmarks
-        #[arg(long, conflicts_with = "name")]
-        all: bool,
-
-        /// Run only the named query (omit to run all queries)
-        #[arg(short, long, value_name = "QUERY")]
-        query: Option<String>,
-
-        /// Data structure (`all` sweeps every available structure)
-        #[arg(
-            short,
-            long,
-            value_name = "INDEXSTRUCTURE",
-            required = true,
-            value_enum
-        )]
-        indexstructure: IndexStructureSelector,
-
-        /// Join algorithm (`all` sweeps every available algorithm)
-        #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
-        algorithm: JoinAlgorithmSelector,
-
         #[command(flatten)]
-        planner: PlannerArgs,
+        selection: RunSelection,
 
         /// Metrics to benchmark (`end-to-end` is opt-in, not in the default
         /// set)
@@ -337,28 +362,11 @@ enum BenchSubcommand {
         #[arg(long, value_name = "K", default_value = "1", value_parser = clap::value_parser!(u32).range(1..))]
         queries_per_build: u32,
 
-        /// Regenerate generator-driven benchmarks if their cached
-        /// `meta.json` spec_hash differs from the current YAML's params.
-        /// Without this flag, `bench run` errors out on drift instead of
-        /// silently re-running an expensive pipeline. No-op for static
-        /// benchmarks.
-        #[arg(long)]
-        force: bool,
-
         /// Run each query once before timing and check its result count
         /// against the benchmark's `expected` value; a mismatch aborts.
         /// Queries without `expected` are noted and skipped.
         #[arg(long)]
         verify: bool,
-
-        #[command(flatten)]
-        layout: LayoutChoices,
-
-        #[command(flatten)]
-        config: ConfigChoices,
-
-        #[command(flatten)]
-        build: BuildChoices,
     },
 
     /// List available benchmarks
@@ -806,14 +814,23 @@ fn run_ds_bench_command(
 
 /// Handler for `bench run`: materialise the selected benchmarks and run
 /// every valid (index-structure, algorithm) cell of the requested sweep,
-/// writing the aggregated reports.
-#[allow(clippy::too_many_arguments)]
+/// writing each query's report as it finishes.
 fn run_bench_run_command(
-    bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
-    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, planner: PlannerArgs,
-    metrics: Vec<Metric>, queries_per_build: u32, force: bool, verify: bool, layout: LayoutChoices,
-    config: ConfigChoices, build: BuildChoices,
+    bench_args: &BenchArgs, selection: RunSelection, metrics: Vec<Metric>, queries_per_build: u32,
+    verify: bool,
 ) -> anyhow::Result<()> {
+    let RunSelection {
+        name,
+        all,
+        query,
+        indexstructure,
+        algorithm,
+        planner,
+        force,
+        layout,
+        config,
+        build,
+    } = selection;
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let given = DsFlag::given(&layout, &config, &build);
     let cells = resolve_sweep(indexstructure, algorithm, choices, &given)?;
@@ -932,35 +949,11 @@ fn main() -> anyhow::Result<()> {
             )?,
 
             | BenchSubcommand::Run {
-                name,
-                all,
-                query,
-                indexstructure,
-                algorithm,
-                planner,
+                selection,
                 metrics,
                 queries_per_build,
-                force,
                 verify,
-                layout,
-                config,
-                build,
-            } => run_bench_run_command(
-                &bench_args,
-                name,
-                all,
-                query,
-                indexstructure,
-                algorithm,
-                planner,
-                metrics,
-                queries_per_build,
-                force,
-                verify,
-                layout,
-                config,
-                build,
-            )?,
+            } => run_bench_run_command(&bench_args, selection, metrics, queries_per_build, verify)?,
 
             | BenchSubcommand::Gen {
                 subcommand,
