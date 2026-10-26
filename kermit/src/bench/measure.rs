@@ -1,6 +1,8 @@
 //! The measurement methodology every `bench` runner shares: one untimed
 //! describe build per subject, read for everything a report states without
-//! timing it, then the timed metrics in one fixed order.
+//! timing it, then the timed metrics in one fixed order. `bench run` and
+//! `bench join` measure a prepared query ([`QuerySubject`]); `bench ds`
+//! measures one relation ([`RelationSubject`]).
 
 // Unused until the runners call it (Tasks 9 and 10 of the measure-layer plan).
 #![allow(dead_code)]
@@ -9,9 +11,12 @@ use {
     super::Metric,
     crate::{
         bench_report::{CriterionGroupRef, Estimator, ReportMetric, ValueEntry},
+        execution::{ExecutionFamily, RelationFamily},
         BenchArgs,
     },
     criterion::{BatchSize, Criterion},
+    kermit::db::{Catalog, Indexes, Prepared},
+    kermit_ds::{HeapSize, RelationHeader, TupleView, Tuples},
     std::{
         path::PathBuf,
         time::{Duration, Instant},
@@ -41,6 +46,59 @@ pub(crate) trait Subject {
     /// scanned), returning how many rows it visited: the timed body of
     /// `iteration`, and K times in `end_to_end`.
     fn exercise(&self, built: &Self::Built) -> u64;
+}
+
+/// A prepared query on one execution cell. A build is the query's indexes,
+/// each copied once out of the catalog's flat tuples, and an exercise counts
+/// the join's rows.
+pub(crate) struct QuerySubject<'a, F> {
+    pub(crate) family: &'a F,
+    pub(crate) catalog: &'a Catalog,
+    pub(crate) prepared: &'a Prepared,
+}
+
+impl<F: ExecutionFamily> Subject for QuerySubject<'_, F> {
+    type Built = Indexes<F::Rel>;
+
+    const EXERCISE_MUTATES: bool = F::JOIN_MUTATES;
+
+    fn build(&self) -> Indexes<F::Rel> { self.family.build_indexes(self.catalog, self.prepared) }
+
+    fn heap_bytes(&self, built: &Indexes<F::Rel>) -> Vec<usize> {
+        built
+            .iter()
+            .map(|(_, index)| index.heap_size_bytes())
+            .collect()
+    }
+
+    fn exercise(&self, built: &Indexes<F::Rel>) -> u64 {
+        self.family.count_rows(self.prepared, built)
+    }
+}
+
+/// One relation on one structure: `bench ds`'s subject. A build is the
+/// relation, from its file's tuples in file order, and an exercise scans it.
+pub(crate) struct RelationSubject<'a, F> {
+    pub(crate) family: &'a F,
+    pub(crate) header: &'a RelationHeader,
+    pub(crate) tuples: &'a Tuples,
+}
+
+impl<F: RelationFamily> Subject for RelationSubject<'_, F> {
+    type Built = F::Rel;
+
+    /// A scan reads an unexpanded child's pending rows and expands nothing
+    /// (`HashTrie::for_each_tuple`), so no structure's scan mutates it.
+    const EXERCISE_MUTATES: bool = false;
+
+    fn build(&self) -> F::Rel {
+        self.family
+            .build_index(self.header.clone(), TupleView::all(self.tuples))
+    }
+
+    fn heap_bytes(&self, built: &F::Rel) -> Vec<usize> { vec![built.heap_size_bytes()] }
+
+    fn exercise(&self, built: &F::Rel) -> u64 { F::scan(built) }
 }
 
 /// How Criterion samples: from `bench`'s flags, or, in tests, milliseconds
@@ -569,5 +627,75 @@ mod tests {
         let measured = Described::new(&subject, false).measure(&prefixed);
         assert_eq!(measured.criterion_groups[0].function, "TreeTrie/build");
         assert_eq!(measured.values[0].function, "TreeTrie/space");
+    }
+
+    use {
+        crate::execution::{HashHtj, SortedTrieFamily, TrieLftj},
+        kermit::db::{Catalog, Prepared},
+        kermit_ds::{HeapSize, LazyExpansion, NoPruning, RelationHeader, Tuples},
+        kermit_iters::SipHashStrategy,
+    };
+
+    /// `edge` (1 → 2, 2 → 3, 1 → 3) as flat tuples.
+    fn edges() -> (RelationHeader, Tuples) {
+        let mut tuples = Tuples::new(2);
+        for row in [[1, 2], [2, 3], [1, 3]] {
+            tuples.push(&row);
+        }
+        (RelationHeader::new_positional("edge", 2), tuples)
+    }
+
+    /// The two-hop paths over [`edges`], prepared under the lexicographic
+    /// optimiser.
+    fn two_hops() -> (Catalog, Prepared) {
+        use kermit_algos::{JoinQuery, LexicographicOptimiser, Planner, StatisticsLevel};
+        let catalog = Catalog::new(vec![edges()], StatisticsLevel::TupleCounts);
+        let query: JoinQuery = "Q(X, Z) :- edge(X, Y), edge(Y, Z).".parse().unwrap();
+        let planner = Planner::new(Box::new(LexicographicOptimiser));
+        let prepared = kermit::db::prepare(&catalog, &query, &planner).unwrap();
+        (catalog, prepared)
+    }
+
+    #[test]
+    fn a_query_subject_builds_the_plans_indexes_and_counts_the_answer() {
+        let (catalog, prepared) = two_hops();
+        let family = TrieLftj::<kermit_ds::TreeTrie>::new(Default::default());
+        let subject = QuerySubject {
+            family: &family,
+            catalog: &catalog,
+            prepared: &prepared,
+        };
+        let described = Described::new(&subject, true);
+        assert_eq!(described.rows(), Some(1), "only 1 → 2 → 3");
+        assert_eq!(described.bytes().len(), prepared.indexes().len());
+        assert!(described.bytes().iter().all(|&bytes| bytes > 0));
+        const {
+            assert!(
+                !<QuerySubject<'static, TrieLftj<kermit_ds::TreeTrie>> as Subject>::EXERCISE_MUTATES
+            )
+        };
+    }
+
+    #[test]
+    fn a_lazy_hash_trie_query_subject_mutates() {
+        const {
+            assert!(
+                <QuerySubject<'static, HashHtj<SipHashStrategy, NoPruning, LazyExpansion>> as Subject>::EXERCISE_MUTATES
+            )
+        };
+    }
+
+    #[test]
+    fn a_relation_subject_builds_the_relation_and_scans_it() {
+        let (header, tuples) = edges();
+        let family = SortedTrieFamily::<kermit_ds::TreeTrie>::default();
+        let subject = RelationSubject {
+            family: &family,
+            header: &header,
+            tuples: &tuples,
+        };
+        let described = Described::new(&subject, true);
+        assert_eq!(described.rows(), Some(3));
+        assert_eq!(described.bytes(), [described.built().heap_size_bytes()]);
     }
 }
