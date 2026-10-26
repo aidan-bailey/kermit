@@ -978,18 +978,21 @@ fn cli_bench_run_writes_json_report() {
         "should reflect the committed 8-edge triangle fixture",
     );
 
-    let groups = report["criterion_groups"]
-        .as_array()
-        .expect("criterion_groups should be an array");
     assert!(
-        !groups.is_empty(),
-        "space metric must produce at least one criterion group"
+        report["criterion_groups"]
+            .as_array()
+            .expect("criterion_groups should be an array")
+            .is_empty(),
+        "space-only runs no Criterion function"
     );
-    // One `space` function per query: it measures every index the query
-    // reads, together.
-    assert_eq!(groups.len(), 1, "{groups:?}");
-    assert_eq!(groups[0]["metric"], "space");
-    assert_eq!(groups[0]["function"], "space");
+    // One exact `space` per query: every index the query reads, together.
+    let values = report["values"]
+        .as_array()
+        .expect("values should be an array");
+    assert_eq!(values.len(), 1, "{values:?}");
+    assert_eq!(values[0]["metric"], "space");
+    assert_eq!(values[0]["function"], "space");
+    assert_eq!(values[0]["estimator"], "exact");
 
     let _ = std::fs::remove_file(&tmp_report);
     let _ = std::fs::remove_dir_all(&tmp_cache);

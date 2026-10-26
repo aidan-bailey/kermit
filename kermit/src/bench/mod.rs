@@ -14,15 +14,6 @@
 //! subtree and the handlers that write a generated benchmark into the cache,
 //! which outgrew `main.rs`.
 
-use {
-    crate::{
-        bench_report::{CriterionGroupRef, ReportMetric},
-        measurement, BenchArgs,
-    },
-    kermit_ds::HeapSize,
-    std::time::Duration,
-};
-
 pub mod ds;
 pub mod gen;
 pub mod measure;
@@ -71,77 +62,9 @@ pub(super) fn criterion_directory_name(id: &str) -> String {
 /// Criterion 0.8.2's `MAX_DIRECTORY_NAME_LEN`.
 pub(super) const CRITERION_MAX_DIRECTORY_NAME_BYTES: usize = 64;
 
-pub(super) fn build_time_criterion(args: &BenchArgs) -> criterion::Criterion {
-    criterion::Criterion::default()
-        .sample_size(args.sample_size)
-        .measurement_time(Duration::from_secs(args.measurement_time))
-        .warm_up_time(Duration::from_secs(args.warm_up_time))
-}
-
-pub(super) fn build_space_criterion(
-    args: &BenchArgs,
-) -> criterion::Criterion<measurement::SpaceMeasurement> {
-    criterion::Criterion::default()
-        .with_measurement(measurement::SpaceMeasurement)
-        .sample_size(args.sample_size)
-        .measurement_time(Duration::from_secs(args.measurement_time))
-        .warm_up_time(Duration::from_secs(args.warm_up_time))
-}
-
-/// The summed heap bytes of `relations`, one `heap_size_bytes()` call each.
-/// Every reference goes through `black_box`, so a caller that loops over the
-/// same slice cannot have the compiler hoist the sum out of the loop.
-fn heap_bytes_of<R: HeapSize>(relations: &[&R]) -> usize {
-    relations
-        .iter()
-        .map(|relation| std::hint::black_box(*relation).heap_size_bytes())
-        .fold(0usize, usize::saturating_add)
-}
-
-/// Adds a single space-metric `bench_function` to `group` measuring the
-/// summed heap size in bytes of `relations`: the one relation of `bench ds`
-/// as a one-element slice, or every relation one function covers together.
-/// Centralises the `iter_custom` calibration-trap workaround (see
-/// [`measurement::SpaceMeasurement`] docs for the full explanation): an
-/// O(N) `heap_size_bytes()` call per relation inside the loop is required,
-/// and `black_box` is required to defeat LICM. Without these, Criterion's
-/// wall-clock warm-up makes `iters` ramp toward `u64::MAX` and the `usize`
-/// math saturates.
-///
-/// Returns the [`CriterionGroupRef`] the caller should append to its
-/// report's `criterion_groups`.
-pub(super) fn add_space_bench<R>(
-    group: &mut criterion::BenchmarkGroup<'_, measurement::SpaceMeasurement>, group_name: &str,
-    function: String, relations: &[&R],
-) -> CriterionGroupRef
-where
-    R: HeapSize,
-{
-    debug_assert!(
-        heap_bytes_of(relations) > 0,
-        "SpaceMeasurement requires O(N) work inside iter_custom; passing zero-cost HeapSize stubs \
-         re-triggers Criterion's iters-toward-u64::MAX calibration trap. See CLAUDE.md → Space \
-         benchmarks gotcha."
-    );
-    group.bench_function(&function, |b| {
-        b.iter_custom(|iters| {
-            let mut total = 0usize;
-            for _ in 0..iters {
-                total = total.saturating_add(heap_bytes_of(relations));
-            }
-            total
-        });
-    });
-    CriterionGroupRef {
-        group: group_name.to_string(),
-        function,
-        metric: ReportMetric::Space,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, std::time::Duration};
 
     #[test]
     fn criterion_directory_name_matches_criterion() {
@@ -174,28 +97,5 @@ mod tests {
     fn criterion_directory_name_truncates_on_a_char_boundary() {
         let name = criterion_directory_name(&format!("{}é", "a".repeat(63)));
         assert_eq!(name, "a".repeat(63));
-    }
-
-    /// A relation of a known heap size, standing in for a built index.
-    struct Bytes(usize);
-
-    impl HeapSize for Bytes {
-        fn heap_size_bytes(&self) -> usize { self.0 }
-    }
-
-    #[test]
-    fn heap_bytes_of_sums_every_relation() {
-        assert_eq!(heap_bytes_of(&[&Bytes(100), &Bytes(28)]), 128);
-        assert_eq!(heap_bytes_of(&[&Bytes(7)]), 7);
-    }
-
-    #[test]
-    fn heap_bytes_of_no_relation_is_zero() {
-        assert_eq!(heap_bytes_of::<Bytes>(&[]), 0);
-    }
-
-    #[test]
-    fn heap_bytes_of_saturates_instead_of_wrapping() {
-        assert_eq!(heap_bytes_of(&[&Bytes(usize::MAX), &Bytes(1)]), usize::MAX);
     }
 }

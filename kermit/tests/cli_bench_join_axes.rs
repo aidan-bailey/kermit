@@ -62,12 +62,19 @@ fn cli_bench_join_hash_trie_reports_axes_and_all_default_metrics() {
     let groups = r["criterion_groups"].as_array().unwrap();
     let group = "join/adhoc/intersect_query/HashTrie/HashTriejoin";
     assert!(groups.iter().all(|g| g["group"] == group), "{groups:?}");
-    let mut functions: Vec<&str> = groups
+    let functions: Vec<&str> = groups
         .iter()
         .map(|g| g["function"].as_str().unwrap())
         .collect();
-    functions.sort_unstable();
-    assert_eq!(functions, ["build", "iteration", "space"]);
+    // The fixed order: iteration on the describe build, then the timed build.
+    assert_eq!(functions, ["iteration", "build"]);
+    let values = r["values"].as_array().unwrap();
+    assert_eq!(values.len(), 1, "{values:?}");
+    assert_eq!(values[0]["function"], "space");
+    assert_eq!(values[0]["estimator"], "exact");
+    assert_eq!(axes["plan"], "X");
+    // Nothing verified the query, so nothing counted it.
+    assert!(axes.get("answer_rows").is_none(), "{axes}");
 }
 
 #[test]
@@ -94,7 +101,7 @@ fn cli_bench_join_name_is_a_prefix() {
         .arg(fixtures.join("second.csv"))
         .arg("--query")
         .arg(fixtures.join("intersect_query.dl"))
-        .args(["-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "space"])
+        .args(["-i", "tree-trie", "-a", "leapfrog-triejoin", "-m", "build"])
         .output()
         .unwrap();
     assert!(
@@ -109,12 +116,10 @@ fn cli_bench_join_name_is_a_prefix() {
     );
 }
 
-/// A TreeTrie built from a view whose filter keeps no row holds no heap, so
-/// its `space` has nothing to measure: the run succeeds, notes the skip on
-/// stderr and reports no `space` function, instead of tripping
-/// `add_space_bench`'s zero-cost guard.
+/// A TreeTrie built from a view whose filter keeps no row holds no heap: its
+/// `space` is an exact 0, recorded like any other value.
 #[test]
-fn cli_bench_join_skips_space_for_indexes_that_hold_no_bytes() {
+fn cli_bench_join_records_zero_space_for_indexes_that_hold_no_bytes() {
     let dir = TempDir::new().unwrap();
     let query = dir.path().join("no_match.dl");
     fs::write(&query, "Q(X) :- edge(X, c999).").unwrap();
@@ -142,22 +147,18 @@ fn cli_bench_join_skips_space_for_indexes_that_hold_no_bytes() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        stderr.contains("bench join: skipping the space metric"),
-        "stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("its indexes hold no heap bytes (no index, or no row passes its filter)"),
+        !stderr.contains("skipping the space metric"),
         "stderr: {stderr}"
     );
     let reports = reports_of(&report);
     assert_eq!(reports[0]["axes"]["index_rows"], 0);
-    assert!(
-        reports[0]["criterion_groups"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "{}",
-        reports[0]["criterion_groups"]
+    assert!(reports[0]["criterion_groups"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        reports[0]["values"],
+        serde_json::json!([{"function": "space", "metric": "space", "estimator": "exact", "value": 0}])
     );
 }
 
@@ -211,44 +212,6 @@ queries:
 
 /// Where `bench_run_per_query` sends Criterion's output.
 fn criterion_home(workspace: &TempDir) -> std::path::PathBuf { workspace.path().join("criterion") }
-
-/// The mean point estimate of the Criterion function `group`/`function`, found
-/// by the `group_id` and `function_id` in each `new/benchmark.json` under
-/// `home`, never by computing the directory name.
-fn mean_estimate(home: &std::path::Path, group: &str, function: &str) -> f64 {
-    fn benchmark_jsons(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                benchmark_jsons(&path, found);
-            } else if path
-                .file_name()
-                .is_some_and(|name| name == "benchmark.json")
-                && path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .is_some_and(|name| name == "new")
-            {
-                found.push(path);
-            }
-        }
-    }
-    let mut jsons = Vec::new();
-    benchmark_jsons(home, &mut jsons);
-    let matching: Vec<_> = jsons
-        .into_iter()
-        .filter(|path| {
-            let id: serde_json::Value =
-                serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-            id["group_id"] == group && id["function_id"] == function
-        })
-        .collect();
-    assert_eq!(matching.len(), 1, "{group}/{function}: {matching:?}");
-    let estimates = matching[0].with_file_name("estimates.json");
-    let estimates: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(estimates).unwrap()).unwrap();
-    estimates["mean"]["point_estimate"].as_f64().unwrap()
-}
 
 /// `bench run per-query` in `workspace` with `args`, returning the process
 /// output and the parsed report array (empty if no report was written).
@@ -332,10 +295,12 @@ fn bench_run_builds_one_index_per_atom_and_reports_each() {
     assert!(output.status.success(), "{stderr}");
     assert_eq!(reports.len(), 1, "{reports:?}");
     let report = &reports[0];
-    assert_eq!(functions_of(report), ["build", "iteration", "space"]);
+    assert_eq!(functions_of(report), ["build", "iteration"]);
     let axes = &report["axes"];
     assert!(axes.get("column_orders").is_none(), "{axes}");
     assert_eq!(axes["verified"], true);
+    assert_eq!(axes["plan"], "X, Y");
+    assert_eq!(axes["answer_rows"], 2);
     assert_eq!(
         axes["tuples"], 3,
         "the relation's rows, once, however many atoms read it"
@@ -365,37 +330,25 @@ fn bench_run_builds_one_index_per_atom_and_reports_each() {
         );
     }
 
-    // `space` is one function summing every index the query reads, so its
-    // per-iteration measurement is the sum of the `index` lines' bytes.
-    let indexed_bytes: usize = lines
+    // `space` is exact: the sum of the `index` lines' bytes.
+    let indexed_bytes: u64 = lines
         .iter()
         .map(|line| {
             let bytes = line.strip_suffix(" bytes").unwrap();
             bytes[bytes.rfind(", ").unwrap() + 2..]
-                .parse::<usize>()
+                .parse::<u64>()
                 .unwrap()
         })
         .sum();
-    let space = report["criterion_groups"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|g| g["function"] == "space")
-        .unwrap();
-    let measured = mean_estimate(
-        &criterion_home(&workspace),
-        space["group"].as_str().unwrap(),
-        "space",
-    );
-    assert!(
-        (measured - indexed_bytes as f64).abs() < 0.5,
-        "space measured {measured} bytes, the index lines sum to {indexed_bytes}"
+    assert_eq!(
+        report["values"],
+        serde_json::json!([{"function": "space", "metric": "space", "estimator": "exact", "value": indexed_bytes}])
     );
 }
 
-/// A lazy `HashTrie`'s joins expand it, so `--verify` and `iteration` run on
-/// fresh builds (#92), `end_to_end` builds its own, and `space` must find the
-/// as-built indexes untouched.
+/// A lazy `HashTrie`'s joins expand it, so `iteration` runs on a fresh build
+/// per sample (#92), `end_to_end` builds its own, and `space` is read off
+/// the describe build before its `--verify` count runs.
 #[test]
 fn bench_run_on_a_lazy_cell_runs_every_metric_over_fresh_builds() {
     let (workspace, cache) = per_query_workspace();
@@ -421,9 +374,9 @@ fn bench_run_on_a_lazy_cell_runs_every_metric_over_fresh_builds() {
     assert_eq!(functions_of(&reports[0]), [
         "build",
         "end_to_end",
-        "iteration",
-        "space"
+        "iteration"
     ]);
+    assert_eq!(reports[0]["values"][0]["function"], "space");
     assert_eq!(reports[0]["axes"]["verified"], true);
     assert_eq!(reports[0]["axes"]["ds_layout_expansion"], "lazy");
 }

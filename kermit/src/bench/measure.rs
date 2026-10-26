@@ -4,9 +4,6 @@
 //! `bench join` measure a prepared query ([`QuerySubject`]); `bench ds`
 //! measures one relation ([`RelationSubject`]).
 
-// Unused until the runners call it (Tasks 9 and 10 of the measure-layer plan).
-#![allow(dead_code)]
-
 use {
     super::Metric,
     crate::{
@@ -237,9 +234,13 @@ impl<'s, S: Subject> Described<'s, S> {
     pub(crate) fn rows(&self) -> Option<u64> { self.counted.map(|counted| counted.rows) }
 
     /// How long the describe build took.
+    // Read by `bench probe`'s metadata (Task 13 of the measure-layer plan).
+    #[allow(dead_code)]
     pub(crate) fn build_time(&self) -> Duration { self.build_time }
 
     /// How long the describe step's exercise took, if it counted.
+    // Read by `bench probe`'s metadata (Task 13 of the measure-layer plan).
+    #[allow(dead_code)]
     pub(crate) fn exercise_time(&self) -> Option<Duration> {
         self.counted.map(|counted| counted.time)
     }

@@ -84,7 +84,7 @@ const BYTES_PER_GIB: f64 = BYTES_PER_MIB * 1024.0;
 
 /// A binary-prefixed unit (`B`, `KiB`, `MiB`, `GiB`) for `typical` bytes,
 /// with the factor that scales a byte count into it.
-pub(crate) fn byte_unit(typical: f64) -> (f64, &'static str) {
+fn byte_unit(typical: f64) -> (f64, &'static str) {
     if typical < BYTES_PER_KIB {
         (1.0, "B")
     } else if typical < BYTES_PER_MIB {
@@ -157,7 +157,7 @@ impl std::fmt::Display for BenchKind {
 pub enum ReportMetric {
     /// Wall-clock time (Criterion's default `WallTime`).
     Time,
-    /// Heap bytes via [`crate::measurement::SpaceMeasurement`].
+    /// Exact heap bytes, reported in [`BenchReport::values`] (from v6).
     Space,
 }
 
@@ -283,12 +283,12 @@ pub fn write_json_report<W: Write>(w: &mut W, reports: &[BenchReport]) -> io::Re
 
 /// Crash-safe writer for the JSON report of one `bench` invocation.
 ///
-/// `bench run` produces reports one cell at a time, and a sweep can run
+/// `bench run` produces reports one query at a time, and a sweep can run
 /// for hours. The sink rewrites the complete array after every
 /// [`push`](Self::push) — to a `.part` sibling, then renamed into place —
 /// so at any instant the file on disk is a valid JSON array holding every
-/// cell that has finished. An interrupted sweep therefore keeps its
-/// completed cells; only the cell in flight is lost.
+/// query that has finished. An interrupted sweep therefore keeps its
+/// completed queries; only the query in flight is lost.
 ///
 /// `bench join` and `bench ds` produce a single report and use the same
 /// sink so all three subcommands share one output path.

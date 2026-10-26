@@ -169,7 +169,7 @@ def test_bench_ds_reports_the_build_phase(tmp_path: Path) -> None:
 
 def test_bench_join_reports_a_per_query_build_and_space(tmp_path: Path) -> None:
     """A query reading `edge` in both column orders builds two indexes of the
-    relation: one `build` and one `space` function cover both, and `index_rows`
+    relation: one `build` function and one exact `space` value cover both, and `index_rows`
     counts the rows the build copied (two copies of edge's four rows)."""
     query = tmp_path / "mutual.dl"
     query.write_text("Q(X, Y) :- edge(X, Y), edge(Y, X).\n")
@@ -186,7 +186,7 @@ def test_bench_join_reports_a_per_query_build_and_space(tmp_path: Path) -> None:
     assert set(raw.loc[raw["metric"] == "time", "phase"]) == {"build"}
     assert raw["column_orders"].isna().all()
     assert set(raw["index_rows"].dropna()) == {8}
-    space = raw.loc[raw["metric"] == "space", "criterion_function"]
-    assert len(space) == 1 and space.iloc[0].rsplit("/", 1)[-1] == "space"
+    space = raw.loc[raw["metric"] == "space"]
+    assert len(space) == 1 and space.iloc[0]["estimator"] == "exact"
     # Nor does the default back-fill label a v5 report `stored`.
     assert kl.load(report, criterion_root=criterion_root)["column_orders"].isna().all()

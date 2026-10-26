@@ -27,7 +27,6 @@ mod bench;
 mod bench_report;
 mod execution;
 mod materialize;
-mod measurement;
 mod options;
 
 use {
@@ -750,6 +749,7 @@ fn run_bench_join(
         write_query_csv(cell, &workload, writer)?;
     }
 
+    let criterion = CriterionSettings::from_args(bench_args);
     let settings = RunSettings {
         kind: BenchKind::Join,
         prefix: bench_args.name.as_deref().unwrap_or(DEFAULT_JOIN_GROUP),
@@ -757,11 +757,10 @@ fn run_bench_join(
         metrics,
         queries_per_build,
         verify: false,
-        bench_args,
+        criterion: &criterion,
     };
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
-    let reports = dispatch_run_bench(cell, &workload, settings)?;
-    sink.push(reports)?;
+    dispatch_run_bench(cell, &workload, settings, &mut sink)?;
     sink.finish()?;
     Ok(())
 }
@@ -828,6 +827,7 @@ fn run_bench_run_command(
 
     let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_RUN_GROUP);
     let prepare_with = planner.instantiate();
+    let criterion = CriterionSettings::from_args(bench_args);
     let settings = RunSettings {
         kind: BenchKind::Run,
         prefix,
@@ -835,14 +835,14 @@ fn run_bench_run_command(
         metrics: &metrics,
         queries_per_build,
         verify,
-        bench_args,
+        criterion: &criterion,
     };
     // Names only — nothing is fetched — so a sweep whose cells would
     // overwrite each other's Criterion results fails before any is timed.
     check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells)?;
 
-    // Opened before the loop so every finished cell is on disk before the
-    // next one starts; a crash mid-sweep keeps the completed cells.
+    // Opened before the loop so every finished query is on disk before the
+    // next one starts; a crash mid-sweep keeps the completed queries.
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Run)?;
     for benchmark in &materialized {
         // Validated, read and planned once per benchmark, before its loop
@@ -858,17 +858,14 @@ fn run_bench_run_command(
                 )
             })?;
         for &cell in &cells {
-            let cell_reports =
-                dispatch_run_bench(cell, &workload, settings).with_context(|| {
-                    format!(
-                        "bench run failed on benchmark '{}' cell {:?}; partial report retained at \
-                         {}",
-                        benchmark.name,
-                        cell,
-                        sink.path().display()
-                    )
-                })?;
-            sink.push(cell_reports)?;
+            dispatch_run_bench(cell, &workload, settings, &mut sink).with_context(|| {
+                format!(
+                    "bench run failed on benchmark '{}' cell {:?}; partial report retained at {}",
+                    benchmark.name,
+                    cell,
+                    sink.path().display()
+                )
+            })?;
         }
     }
     sink.finish()?;
