@@ -46,8 +46,21 @@ runner executes the query once before timing it and compares the returned
 tuple count with `expected`; a mismatch aborts the run, so a benchmark that
 declares its answers cannot produce timings for wrong ones. Queries without
 `expected` are timed as usual and flagged on stderr as not verified. The
-check is opt-in because it costs one extra query execution per cell, which
-is unwelcome in a long sweep once the answers are known to be right.
+check is opt-in because it costs one query execution per query and cell (on
+the build the runner makes anyway), which is unwelcome in a long sweep once
+the answers are known to be right.
+
+`bench probe` is the cheaper screen. It takes `bench run`'s selection flags
+and never runs Criterion. Per query and cell it builds once and runs once,
+timing both, verifies every query that declares `expected` (a mismatch
+aborts), and records the exact `space`, the answer count (`answer_rows`)
+and the plan (`plan`). Its two times are single runs, so they are cold: use
+them to screen queries and estimate a sweep, or to time queries too slow for
+Criterion, never beside a Criterion estimate.
+
+```sh
+kermit bench probe <name> -i all -a all --optimiser cost-based
+```
 
 `bench fetch` verifies relation digests for the same reason: a relation that
 declares a `sha256` is checked against the download before it is cached and
@@ -60,6 +73,15 @@ before it is measured.
 `iteration`, and `space` (the opt-in `end-to-end` phase is *not* in the
 default set). They fall into two families. (`bench join` accepts the same
 `--metrics` as `bench run`; it is the ad-hoc form of the same measurement.)
+
+Per query and cell, every runner measures in one order: one untimed
+*describe* build (read for the `index` lines, `space`, verification and a
+probe's single runs), `iteration` on that same build, then, with it
+dropped, `build` and `end_to_end`. So no other index set is alive while a
+build is timed. Lazy HashTrie cells follow the same order, but their
+`iteration` builds a fresh set per sample (#92). Every report row carries an
+`estimator`: `criterion` for a Criterion estimate, `exact` for `space`, and
+`single` for a probe's one-run times.
 
 ### Time — three phases
 
@@ -113,6 +135,15 @@ lists the changes, and `kermit-lab` refuses to load v4 and v5 reports
 together unless you pass `allow_mixed_schema=True`. There is no A/B against
 v4; the first v5 measurement is the next full sweep (#99).
 
+Reports with `schema_version` 6 (2026-10-25) measure what v5 measured:
+`space` moved from a Criterion function into the report's `values` list as
+an exact value, the axes gain `plan` and `answer_rows`, and `bench probe`
+reports (`kind: probe`) are new. `kermit-lab` loads v5 and v6 together.
+Within one binary, `iteration` now runs before `build` in every cell; the
+measure-layer spec's order check
+([`docs/specs/2026-10-25-bench-runner-measure-layer-design.md`](docs/specs/2026-10-25-bench-runner-measure-layer-design.md),
+Acceptance 7) bounds what that changes.
+
 The end-to-end phase exists because summing `build + K × iteration` after
 the fact assumes the phases are independent — precisely the assumption a
 build-then-query crossover study is testing (e.g. cache effects across the
@@ -141,13 +172,14 @@ kl.plot(df, kind="line", x="tuples", y="time",
 
 ### Space — deterministic by construction
 
-Space measures `HeapSize::heap_size_bytes()` — heap-allocated bytes only, not
-`size_of::<Self>`. It is **deterministic**: the same built relation returns the
-same byte count every iteration, so Criterion records zero variance and the
-95% CI is width-zero. That is expected, not a bug; figures still draw the CI
-(width zero) by convention. The mechanics and the `iter_custom`/`black_box`
-trap are documented in
-[`docs/specs/space-benchmarks.md`](docs/specs/space-benchmarks.md).
+Space measures `HeapSize::heap_size_bytes()` — heap-allocated bytes only,
+not `size_of::<Self>` — of what one describe build produced, read before
+anything runs on it, so a lazy HashTrie's `space` is its as-built footprint.
+It is exact: since report v6 it is one `values` entry (`estimator: exact`),
+not a Criterion function, and kermit-lab draws it with a zero-width
+interval, as it drew v5's zero-variance Criterion `space`. `bench probe`
+records it too, so one probe pass over a sweep's cells gives every cell's
+space.
 
 ## Getting trustworthy numbers
 

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Report schema v6: a report's `values` list (the exact `space`, `bench probe`'s single runs)
+  becomes summary rows, with an `estimator` column (`criterion`, `exact`, `single`)
+- `plan` and `answer_rows` axis columns
+- `kl.plot(..., estimator=)` and `kermit-lab plot --estimator`
+
+### Changed
+
+- Plots and `speedup_table` take Criterion time rows unless asked for single runs
+
 ## [0.2.0] - 2026-06-11
 
 ### Added
