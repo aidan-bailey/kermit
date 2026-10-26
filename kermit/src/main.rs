@@ -33,7 +33,8 @@ mod options;
 use {
     bench::{
         check_sweep_group_directories, dispatch_ds_bench, dispatch_run_bench, gen::GenSubcommand,
-        resolve_sweep, workload::PreparedWorkload, Metric, RunSettings, Workload,
+        measure::CriterionSettings, resolve_sweep, workload::PreparedWorkload, Metric, RunSettings,
+        Workload,
     },
     bench_report::{BenchKind, ReportSink},
     execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
@@ -786,6 +787,7 @@ fn run_ds_bench_command(
     }
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
+    let criterion = CriterionSettings::from_args(bench_args);
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Ds)?;
     for ds in indexstructure.expand() {
         let report = dispatch_ds_bench(
@@ -795,7 +797,7 @@ fn run_ds_bench_command(
             &metrics,
             queries_per_build,
             group_name,
-            bench_args,
+            &criterion,
         )?;
         sink.push(vec![report])?;
     }

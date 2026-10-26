@@ -484,28 +484,6 @@ fn cli_bench_default_name() {
     );
 }
 
-fn run_bench_ds(
-    relation: &str, indexstructure: &str, bench_args: &[&str], ds_args: &[&str],
-) -> std::process::Output {
-    let fixtures = fixtures_dir();
-    let report_path = temp_report_path("ds");
-    let mut cmd = Command::new(kermit_bin());
-    cmd.arg("bench");
-    for arg in bench_args {
-        cmd.arg(arg);
-    }
-    cmd.arg("--report-json").arg(&report_path);
-    cmd.arg("ds");
-    cmd.arg("--relation").arg(fixtures.join(relation));
-    cmd.arg("--indexstructure").arg(indexstructure);
-    for arg in ds_args {
-        cmd.arg(arg);
-    }
-    let output = cmd.output().expect("failed to execute kermit binary");
-    let _ = std::fs::remove_file(&report_path);
-    output
-}
-
 /// Runs `kermit bench` with fast Criterion settings and a throwaway
 /// `--report-json`, then `args`. Returns the process output and the first
 /// report the run wrote (`Null` when it wrote none).
@@ -570,19 +548,7 @@ fn functions_of(report: &serde_json::Value) -> Vec<String> {
 
 #[test]
 fn cli_bench_ds_all_metrics() {
-    let output = run_bench_ds(
-        "first.csv",
-        "tree-trie",
-        &[
-            "--sample-size",
-            "10",
-            "--measurement-time",
-            "1",
-            "--warm-up-time",
-            "1",
-        ],
-        &[],
-    );
+    let (output, report) = bench_ds_report("first.csv", "tree-trie", &[]);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -613,9 +579,17 @@ fn cli_bench_ds_all_metrics() {
         "stdout should contain iteration benchmark: {stdout}"
     );
     assert!(
-        stdout.contains("TreeTrie/space"),
-        "stdout should contain space benchmark: {stdout}"
+        !stdout.contains("TreeTrie/space"),
+        "space is exact, never a Criterion benchmark: {stdout}"
     );
+    // The fixed order: iteration on the describe build, then the timed build.
+    assert_eq!(functions_of(&report), [
+        "TreeTrie/iteration",
+        "TreeTrie/build"
+    ]);
+    assert_eq!(report["values"][0]["function"], "TreeTrie/space");
+    assert_eq!(report["values"][0]["estimator"], "exact");
+    assert!(report["values"][0]["value"].as_u64().unwrap() > 0);
 }
 
 #[test]
@@ -677,12 +651,20 @@ fn cli_bench_ds_writes_json_report() {
     assert!(axes["tuples"].is_number(), "tuples should be numeric");
     assert!(axes["arity"].is_number(), "arity should be numeric");
 
-    let groups = report["criterion_groups"]
+    assert!(
+        report["criterion_groups"]
+            .as_array()
+            .expect("criterion_groups should be an array")
+            .is_empty(),
+        "space-only runs no Criterion function"
+    );
+    let values = report["values"]
         .as_array()
-        .expect("criterion_groups should be an array");
-    assert_eq!(groups.len(), 1, "space-only should yield exactly one group");
-    assert_eq!(groups[0]["function"], "TreeTrie/space");
-    assert_eq!(groups[0]["metric"], "space");
+        .expect("values should be an array");
+    assert_eq!(values.len(), 1, "space-only should yield exactly one value");
+    assert_eq!(values[0]["function"], "TreeTrie/space");
+    assert_eq!(values[0]["metric"], "space");
+    assert_eq!(values[0]["estimator"], "exact");
 
     let _ = std::fs::remove_file(&tmp_report);
 }
@@ -747,28 +729,19 @@ fn cli_bench_ds_writes_default_report_when_path_omitted() {
 
 #[test]
 fn cli_bench_ds_space_only() {
-    let output = run_bench_ds("first.csv", "column-trie", &["--sample-size", "10"], &[
-        "-m", "space",
-    ]);
+    let (output, report) = bench_ds_report("first.csv", "column-trie", &["-m", "space"]);
     assert!(
         output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("ColumnTrie/space"),
-        "stdout should contain space benchmark: {stdout}"
+        !stdout.contains("ColumnTrie/"),
+        "space-only runs no Criterion benchmark: {stdout}"
     );
-    assert!(
-        !stdout.contains("ColumnTrie/build"),
-        "space-only should not have build benchmark: {stdout}"
-    );
-    assert!(
-        !stdout.contains("ColumnTrie/iteration"),
-        "space-only should not have iteration benchmark: {stdout}"
-    );
+    assert!(functions_of(&report).is_empty());
+    assert_eq!(report["values"][0]["function"], "ColumnTrie/space");
 }
 
 /// `build` and `end_to_end` both build through the family from a view of

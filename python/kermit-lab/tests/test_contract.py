@@ -54,6 +54,7 @@ def test_bench_ds_report_loads(tmp_path: Path) -> None:
     assert row["metric"] == "space"
     assert row["data_structure"] == "TreeTrie"
     assert row["mean_ns"] > 0
+    assert row["estimator"] == "exact"
 
 
 def test_bench_run_verify_reaches_the_frame(tmp_path: Path) -> None:
@@ -163,7 +164,7 @@ def test_bench_ds_reports_the_build_phase(tmp_path: Path) -> None:
     assert set(df["schema_version"]) == {5}
     assert set(df.loc[df["metric"] == "time", "phase"]) == {"build"}
     assert set(df.loc[df["metric"] == "time", "criterion_function"]) == {"TreeTrie/build"}
-    assert set(df.loc[df["metric"] == "space", "criterion_function"]) == {"TreeTrie/space"}
+    assert set(df.loc[df["metric"] == "space", "estimator"]) == {"exact"}
 
 
 def test_bench_join_reports_a_per_query_build_and_space(tmp_path: Path) -> None:
