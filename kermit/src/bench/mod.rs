@@ -7,6 +7,9 @@
 //! behind `bench ds`. `main.rs` keeps the clap types and the thin handlers
 //! that build these inputs and write the report.
 //!
+//! `measure` is the methodology every runner shares: one untimed describe
+//! build per subject, then the timed metrics in one fixed order.
+//!
 //! `gen` is the exception and measures nothing: it holds `bench gen`'s clap
 //! subtree and the handlers that write a generated benchmark into the cache,
 //! which outgrew `main.rs`.
@@ -22,6 +25,7 @@ use {
 
 pub mod ds;
 pub mod gen;
+pub mod measure;
 pub mod run;
 pub mod workload;
 
