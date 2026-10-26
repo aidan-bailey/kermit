@@ -758,3 +758,57 @@ def fixture_per_query_tree(tmp_path: Path) -> dict:
         "reports_dir": reports_dir,
         "paths": sorted(paths),
     }
+
+
+def _add_values(path: Path, values: list[dict]) -> None:
+    """Add a ``values`` list to the one report in ``path``."""
+    reports = json.loads(path.read_text())
+    reports[0]["values"] = values
+    path.write_text(json.dumps(reports))
+
+
+@pytest.fixture
+def fixture_values_tree(tmp_path: Path) -> dict:
+    """Reports carrying ``values`` (the measurements made without Criterion),
+    labelled v5 so they load before the v6 bump: a ``run`` report with
+    Criterion ``build`` and ``iteration`` functions and an exact ``space``
+    value, and a ``probe`` report with an exact ``space`` and single-run
+    ``build`` and ``iteration`` values and no Criterion function. Both carry
+    the ``plan`` and ``answer_rows`` axes."""
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+    axes = {
+        "benchmark": "triangle",
+        "query": "triangle",
+        "data_structure": "TreeTrie",
+        "algorithm": "LeapfrogTriejoin",
+        "optimiser": "cost-based",
+        "tuples": 12,
+        "index_rows": 9,
+        "plan": "X, Y, Z",
+        "answer_rows": 3,
+    }
+    groups: list[tuple[str, str, str]] = []
+    for phase, point in (("build", 300.0), ("iteration", 100.0)):
+        samples = [(i + 1, point * (i + 1)) for i in range(10)]
+        _write_function_dir(criterion_root, _FunctionSpec("run", phase, "time", point, samples))
+        groups.append(("run", phase, "time"))
+    run = _write_report(
+        reports_dir, "run", kind="run", axes=axes, metadata=[], groups=groups, schema_version=5,
+    )
+    _add_values(run, [{"function": "space", "metric": "space", "estimator": "exact", "value": 6400}])
+    probe = _write_report(
+        reports_dir, "probe", kind="probe", axes=axes, metadata=[], groups=[], schema_version=5,
+    )
+    _add_values(probe, [
+        {"function": "space", "metric": "space", "estimator": "exact", "value": 6400},
+        {"function": "build", "metric": "time", "estimator": "single", "value": 450},
+        {"function": "iteration", "metric": "time", "estimator": "single", "value": 150},
+    ])
+    return {
+        "criterion_root": criterion_root,
+        "reports_dir": reports_dir,
+        "paths": sorted([probe, run]),
+    }

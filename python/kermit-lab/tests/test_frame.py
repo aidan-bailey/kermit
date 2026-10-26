@@ -42,7 +42,7 @@ def test_load_returns_dataframe(df):
 
 def test_summary_columns_present(df):
     expected = {
-        "kind", "metric", "phase",
+        "kind", "metric", "phase", "estimator",
         "data_structure", "algorithm", "query", "benchmark", "relation_path",
         "tuples", "arity", "relations", "relation_bytes",
         "verified",
@@ -332,3 +332,46 @@ def test_build_of_names_exactly_the_modes_threads_of_reads() -> None:
         "parallel:", "presized:x", "parallel:²", pd.NA, None, float("nan"),
     ):
         assert (build_of(mode) is None) == (threads_of(mode) is None), mode
+
+
+def test_criterion_rows_carry_the_criterion_estimator(df):
+    assert set(df["estimator"]) == {"criterion"}
+
+
+def test_values_become_summary_rows(fixture_values_tree):
+    df = load(fixture_values_tree["paths"], fixture_values_tree["criterion_root"])
+    # run: two Criterion functions and one value; probe: three values.
+    assert len(df) == 6
+    assert set(df["estimator"]) == {"criterion", "exact", "single"}
+    criterion = df[df["estimator"] == "criterion"]
+    assert set(criterion["phase"]) == {"build", "iteration"}
+    assert criterion["criterion_function"].notna().all()
+
+
+def test_an_exact_value_is_its_own_zero_width_interval(fixture_values_tree):
+    df = load(fixture_values_tree["paths"], fixture_values_tree["criterion_root"])
+    space = df[df["metric"] == "space"]
+    assert len(space) == 2
+    assert set(space["estimator"]) == {"exact"}
+    for column in ("mean_ns", "mean_lo", "mean_hi", "median_ns", "median_lo", "median_hi"):
+        assert (space[column] == 6400.0).all(), column
+    assert (space["mean_se"] == 0.0).all()
+    assert space["phase"].isna().all()
+    assert space["criterion_group"].isna().all()
+
+
+def test_a_single_run_has_a_phase_and_no_interval(fixture_values_tree):
+    df = load(fixture_values_tree["paths"], fixture_values_tree["criterion_root"])
+    single = df[df["estimator"] == "single"].set_index("phase")
+    assert single.loc["build", "mean_ns"] == 450.0
+    assert single.loc["iteration", "median_ns"] == 150.0
+    assert single["mean_lo"].isna().all()
+    assert single["mean_se"].isna().all()
+    assert set(single["kind"]) == {"probe"}
+
+
+def test_plan_and_answer_rows_are_typed_columns(fixture_values_tree):
+    df = load(fixture_values_tree["paths"], fixture_values_tree["criterion_root"])
+    assert set(df["plan"]) == {"X, Y, Z"}
+    assert str(df["answer_rows"].dtype) == "Int64"
+    assert set(df["answer_rows"]) == {3}
