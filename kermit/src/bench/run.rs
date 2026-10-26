@@ -423,7 +423,13 @@ fn run_benchmark<F: ExecutionFamily>(
         if verified {
             axes.insert("verified".to_string(), serde_json::json!(true));
         }
-        reports.push(BenchReport::new(kind, &metadata, axes, criterion_groups));
+        reports.push(BenchReport::new(
+            kind,
+            &metadata,
+            axes,
+            criterion_groups,
+            Vec::new(),
+        ));
     }
 
     Ok(reports)

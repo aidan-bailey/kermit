@@ -5,13 +5,12 @@ use {
     super::{add_space_bench, build_space_criterion, build_time_criterion, Metric},
     crate::{
         bench_report::{
-            write_metadata_block, BenchKind, BenchReport, CriterionGroupRef, MetadataLine,
-            ReportMetric,
+            format_bytes, write_metadata_block, BenchKind, BenchReport, CriterionGroupRef,
+            MetadataLine, ReportMetric,
         },
         execution::{
             read_relation, Execution, HashTrieFamily, RelationFamily, SortedTrie, SortedTrieFamily,
         },
-        measurement,
         options::{with_hash_trie_layout, with_sorted_trie_layout, DsChoices},
         BenchArgs,
     },
@@ -63,7 +62,7 @@ fn run_ds_bench<F: RelationFamily>(
     let mut metadata = vec![
         MetadataLine::new("data structure", ds_name),
         MetadataLine::new("relation", relation_path.display()),
-        MetadataLine::new("relation size", measurement::format_bytes(relation_bytes)),
+        MetadataLine::new("relation size", format_bytes(relation_bytes)),
         MetadataLine::new("tuples", tuple_count),
         MetadataLine::new("arity", header.arity()),
         MetadataLine::new("allocator", crate::ALLOCATOR),
@@ -198,6 +197,7 @@ fn run_ds_bench<F: RelationFamily>(
         &metadata,
         axes,
         criterion_groups,
+        Vec::new(),
     ))
 }
 

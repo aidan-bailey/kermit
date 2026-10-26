@@ -3,42 +3,12 @@ use criterion::{
     Throughput,
 };
 
-/// Binary-prefix unit thresholds. Named so the `scale` function reads as
-/// `if typical < BYTES_PER_KIB { ... }` rather than `if typical < 1024.0
-/// { ... }`.
-const BYTES_PER_KIB: f64 = 1024.0;
-const BYTES_PER_MIB: f64 = BYTES_PER_KIB * 1024.0;
-const BYTES_PER_GIB: f64 = BYTES_PER_MIB * 1024.0;
-
 pub struct BytesFormatter;
 
 impl BytesFormatter {
-    /// Pick a binary-prefixed unit (`B`, `KiB`, `MiB`, `GiB`) for `typical`
-    /// and return the multiplicative scale factor plus the unit string.
-    /// Use [`format_bytes`] for one-shot formatting of a single byte count.
-    pub fn scale(typical: f64) -> (f64, &'static str) {
-        if typical < BYTES_PER_KIB {
-            (1.0, "B")
-        } else if typical < BYTES_PER_MIB {
-            (1.0 / BYTES_PER_KIB, "KiB")
-        } else if typical < BYTES_PER_GIB {
-            (1.0 / BYTES_PER_MIB, "MiB")
-        } else {
-            (1.0 / BYTES_PER_GIB, "GiB")
-        }
-    }
-}
-
-/// Render `n` bytes as a human-readable string using [`BytesFormatter::scale`].
-/// Whole-byte values render without a decimal (e.g. `"768 B"`); larger units
-/// render with two decimal places (e.g. `"1.50 MiB"`).
-pub fn format_bytes(n: u64) -> String {
-    let (factor, unit) = BytesFormatter::scale(n as f64);
-    if unit == "B" {
-        format!("{n} {unit}")
-    } else {
-        format!("{:.2} {unit}", n as f64 * factor)
-    }
+    /// A binary-prefixed unit for `typical`, with its scale factor
+    /// ([`crate::bench_report::byte_unit`]).
+    pub fn scale(typical: f64) -> (f64, &'static str) { crate::bench_report::byte_unit(typical) }
 }
 
 impl ValueFormatter for BytesFormatter {
@@ -104,15 +74,6 @@ impl Measurement for SpaceMeasurement {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_bytes_picks_unit_per_threshold() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(768), "768 B");
-        assert_eq!(format_bytes(1024), "1.00 KiB");
-        assert_eq!(format_bytes(2 * 1024 * 1024), "2.00 MiB");
-        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.00 GiB");
-    }
 
     #[test]
     fn scale_factor_matches_unit() {
