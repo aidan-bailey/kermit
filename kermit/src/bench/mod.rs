@@ -49,6 +49,12 @@ pub enum Metric {
     EndToEnd,
 }
 
+impl Metric {
+    /// Whether Criterion times this metric. `space` is exact: it is read off
+    /// the describe step, never sampled.
+    pub(crate) fn is_timed(self) -> bool { !matches!(self, Metric::Space) }
+}
+
 /// The directory name Criterion gives a benchmark id on disk: a copy of the
 /// private `criterion::report::make_filename_safe` (Criterion 0.8.2), pinned
 /// against the real crate by `criterion_directory_name_matches_criterion`.
