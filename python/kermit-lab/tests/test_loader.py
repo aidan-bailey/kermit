@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kermit_lab.loader import SchemaError, load_reports
+from kermit_lab.loader import SchemaError, iter_values, load_reports
 
 
 def test_loads_array_with_one_report(tmp_path: Path) -> None:
@@ -291,3 +291,50 @@ def test_phase_of_recognises_build() -> None:
     # Reports before v5 still load: their phases stay recognised.
     assert TIME_PHASES == ("build", "insertion", "copies", "iteration", "end_to_end")
     assert phase_of("TreeTrie/insertion") == "insertion"
+
+
+def _report_with_values(tmp_path: Path, values: list[dict] | None) -> Path:
+    """One schema-5 probe report whose ``values`` list is ``values`` (absent
+    when ``None``)."""
+    obj = {
+        "schema_version": 5,
+        "kind": "probe",
+        "metadata": [],
+        "axes": {"query": "q1", "data_structure": "TreeTrie"},
+        "criterion_groups": [],
+    }
+    if values is not None:
+        obj["values"] = values
+    p = tmp_path / "values.json"
+    p.write_text(json.dumps([obj]))
+    return p
+
+
+def test_values_parse_into_value_entries(tmp_path: Path) -> None:
+    p = _report_with_values(tmp_path, [
+        {"function": "space", "metric": "space", "estimator": "exact", "value": 65664},
+        {"function": "build", "metric": "time", "estimator": "single", "value": 1361000},
+    ])
+    [r] = load_reports([p])
+    assert [(v.function, v.metric, v.estimator, v.value) for v in r.values] == [
+        ("space", "space", "exact", 65664.0),
+        ("build", "time", "single", 1361000.0),
+    ]
+    assert r.has_metric("space")
+    assert r.has_metric("time")
+
+
+def test_a_report_without_values_has_none(tmp_path: Path) -> None:
+    [r] = load_reports([_report_with_values(tmp_path, None)])
+    assert r.values == []
+    assert not r.has_metric("space")
+
+
+def test_iter_values_pairs_each_entry_with_its_report(tmp_path: Path) -> None:
+    p = _report_with_values(tmp_path, [
+        {"function": "space", "metric": "space", "estimator": "exact", "value": 8},
+    ])
+    reports = load_reports([p])
+    [(report, entry)] = list(iter_values(reports))
+    assert report is reports[0]
+    assert entry.value == 8.0

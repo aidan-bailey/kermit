@@ -80,6 +80,22 @@ class CriterionGroupRef:
 
 
 @dataclass(frozen=True)
+class ValueEntry:
+    """One measurement made without Criterion: a ``values`` entry.
+
+    ``value`` is in the metric's unit, as Criterion's estimates are: ns for
+    time, bytes for space. ``estimator`` says how it was taken: ``"exact"``
+    for a deterministic quantity (a query's ``space``), ``"single"`` for one
+    run's wall time (``bench probe``).
+    """
+
+    function: str
+    metric: str  # "time" | "space"
+    estimator: str  # "exact" | "single"
+    value: float
+
+
+@dataclass(frozen=True)
 class BenchReport:
     """One ``--report-json`` array element. Constructed by :func:`load_reports`."""
 
@@ -88,6 +104,7 @@ class BenchReport:
     metadata: list[dict[str, str]]
     axes: dict[str, Any]
     criterion_groups: list[CriterionGroupRef]
+    values: list[ValueEntry] = field(default_factory=list)
     source_path: Path = field(default_factory=Path)
 
     def axis(self, key: str, default: Any = None) -> Any:
@@ -95,8 +112,10 @@ class BenchReport:
         return self.axes.get(key, default)
 
     def has_metric(self, metric: str) -> bool:
-        """True iff at least one ``CriterionGroupRef`` records ``metric``."""
-        return any(g.metric == metric for g in self.criterion_groups)
+        """True iff a ``CriterionGroupRef`` or a ``values`` entry records ``metric``."""
+        return any(g.metric == metric for g in self.criterion_groups) or any(
+            v.metric == metric for v in self.values
+        )
 
 
 def _parse_one(obj: dict, source_path: Path) -> BenchReport:
@@ -121,6 +140,15 @@ def _parse_one(obj: dict, source_path: Path) -> BenchReport:
                     metric=g["metric"],
                 )
                 for g in obj.get("criterion_groups", [])
+            ],
+            values=[
+                ValueEntry(
+                    function=v["function"],
+                    metric=v["metric"],
+                    estimator=v["estimator"],
+                    value=float(v["value"]),
+                )
+                for v in obj.get("values", [])
             ],
             source_path=source_path,
         )
@@ -224,3 +252,14 @@ def iter_function_data(
         for group_ref in report.criterion_groups:
             data = index.load(group_ref.group, group_ref.function)
             yield report, group_ref, data
+
+
+def iter_values(
+    reports: Iterable[BenchReport],
+) -> Iterator[tuple[BenchReport, ValueEntry]]:
+    """Yield ``(report, entry)`` for every ``values`` entry in ``reports``:
+    the measurements made without Criterion, which need no
+    ``criterion_root``."""
+    for report in reports:
+        for entry in report.values:
+            yield report, entry
