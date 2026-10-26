@@ -17,7 +17,9 @@ from .plots_errors import InsufficientAxesError
 
 @dataclass(frozen=True)
 class AestheticMap:
-    """Binding of visual channels to columns. ``y`` selects the metric."""
+    """Binding of visual channels to columns. ``y`` selects the metric, and
+    ``estimator`` which time rows: Criterion's estimates (the default) or
+    ``bench probe``'s single runs (``"single"``)."""
 
     kind: str  # "bar" | "line" | "scatter" | "violin"
     x: Optional[str]
@@ -27,6 +29,7 @@ class AestheticMap:
     facet: Optional[str] = None
     filter: Mapping[str, object] = field(default_factory=dict)
     phase: str = "iteration"
+    estimator: str = "criterion"
 
 
 @dataclass
@@ -65,17 +68,33 @@ def apply_filter(df: pd.DataFrame, amap: AestheticMap) -> pd.DataFrame:
 
 
 def select(df: pd.DataFrame, amap: AestheticMap) -> pd.DataFrame:
-    """Filter to the metric/phase rows this map needs; raise if empty."""
+    """Filter to the metric/phase rows this map needs; raise if empty.
+
+    Time rows are also filtered to ``amap.estimator``, so a single run never
+    joins a plot of Criterion estimates. Space rows are taken whatever their
+    estimator: a v5 Criterion ``space`` and a v6 exact one are the same bytes.
+    """
     metric = metric_of(amap.y)
     sub = apply_filter(df, amap)
     sub = sub[sub.metric == metric]
     if metric == "time":
-        sub = sub[sub.phase == amap.phase]
+        sub = _time_rows(sub, amap)
     if sub.empty:
         raise InsufficientAxesError(
-            f"no {metric} rows (phase={amap.phase}) after filter {dict(amap.filter)}"
+            f"no {metric} rows (phase={amap.phase}, estimator={amap.estimator}) "
+            f"after filter {dict(amap.filter)}"
         )
     return sub
+
+
+def _time_rows(df: pd.DataFrame, amap: AestheticMap) -> pd.DataFrame:
+    """``df``'s rows on ``amap.phase`` taken by ``amap.estimator``. A frame
+    without an ``estimator`` column (one built by hand) holds Criterion rows
+    only."""
+    rows = df[df.phase == amap.phase]
+    if "estimator" in rows.columns:
+        return rows[rows.estimator == amap.estimator]
+    return rows if amap.estimator == "criterion" else rows.iloc[0:0]
 
 
 def facet_values(df: pd.DataFrame, amap: AestheticMap) -> list:
@@ -128,8 +147,9 @@ def resolve_scalar(cell: pd.DataFrame, amap: AestheticMap) -> list[ResolvedSerie
         # mean_ns/lo/hi hold the metric's point estimate + CI regardless of
         # metric (ns for time, bytes for space).
         ys = g["mean_ns"].tolist()
-        lo = (g["mean_ns"] - g["mean_lo"]).clip(lower=0).tolist()
-        hi = (g["mean_hi"] - g["mean_ns"]).clip(lower=0).tolist()
+        # A single run has no interval (NaN bounds): it draws without error bars.
+        lo = (g["mean_ns"] - g["mean_lo"]).clip(lower=0).fillna(0.0).tolist()
+        hi = (g["mean_hi"] - g["mean_ns"]).clip(lower=0).fillna(0.0).tolist()
         series.append(_make_series(keyt, group_cols, xs, ys, lo, hi, amap))
     return series
 
@@ -143,7 +163,7 @@ def resolve_tradeoff(df: pd.DataFrame, amap: AestheticMap) -> list[ResolvedSerie
         [k for k in base_keys if k in df.columns]
         + [c for c in group_cols if c in df.columns]
     ))
-    t = df[(df.metric == "time") & (df.phase == amap.phase)]
+    t = _time_rows(df[df.metric == "time"], amap)
     s = df[df.metric == "space"]
     if t.empty or s.empty:
         raise InsufficientAxesError("tradeoff needs both time and space rows")

@@ -90,3 +90,56 @@ def test_resolve_scalar_raises_on_missing_x() -> None:
 def test_facet_values_none_when_unset() -> None:
     amap = AestheticMap(kind="bar", x="data_structure", y="time")
     assert facet_values(_df(), amap) == [None]
+
+
+def _df_with_estimators():
+    """``_df`` labelled with estimators, plus one single run on iteration."""
+    df = _df()
+    df["estimator"] = ["criterion", "criterion", "exact"]
+    single = pd.DataFrame(
+        {
+            "metric": ["time"],
+            "phase": ["iteration"],
+            "data_structure": ["TreeTrie"],
+            "algorithm": ["LeapfrogTriejoin"],
+            "tuples": pd.array([10], dtype="Int64"),
+            "query": ["triangle"],
+            "mean_ns": [5000.0],
+            "mean_lo": [float("nan")],
+            "mean_hi": [float("nan")],
+            "estimator": ["single"],
+        }
+    )
+    return pd.concat([df, single], ignore_index=True)
+
+
+def test_select_takes_criterion_time_rows_by_default() -> None:
+    amap = AestheticMap(kind="bar", x="data_structure", y="time")
+    out = select(_df_with_estimators(), amap)
+    assert set(out.estimator) == {"criterion"}
+    assert len(out) == 2
+
+
+def test_select_takes_single_runs_when_asked() -> None:
+    amap = AestheticMap(kind="bar", x="data_structure", y="time", estimator="single")
+    out = select(_df_with_estimators(), amap)
+    assert list(out.mean_ns) == [5000.0]
+
+
+def test_select_takes_space_rows_whatever_their_estimator() -> None:
+    amap = AestheticMap(kind="bar", x="data_structure", y="space")
+    assert len(select(_df_with_estimators(), amap)) == 1
+
+
+def test_a_frame_without_estimators_has_no_single_runs() -> None:
+    amap = AestheticMap(kind="bar", x="data_structure", y="time", estimator="single")
+    with pytest.raises(InsufficientAxesError):
+        select(_df(), amap)
+
+
+def test_a_single_run_draws_without_error_bars() -> None:
+    amap = AestheticMap(kind="bar", x="data_structure", y="time", estimator="single")
+    [series] = resolve_scalar(select(_df_with_estimators(), amap), amap)
+    assert series.ys == [5000.0]
+    assert series.lo == [0.0]
+    assert series.hi == [0.0]
