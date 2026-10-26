@@ -40,6 +40,13 @@ builds): ``build`` replaces ``insertion`` and ``copies``, ``iteration``
 excludes planning, ``end_to_end`` and ``space`` are per query, the
 ``column_orders`` axis is gone and ``index_rows`` is new."""
 
+VALUES_SCHEMA = 6
+"""First schema version whose measurements made without Criterion sit in
+the report's ``values`` list: ``space`` is an exact entry there, never a
+Criterion function, and ``bench probe`` reports add single-run times. No
+metric changes meaning, so it is not in :data:`MEANING_CHANGES`, and v5 and
+v6 reports load together."""
+
 MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (
         STREAMED_JOIN_SCHEMA,

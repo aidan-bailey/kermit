@@ -120,7 +120,11 @@ pub fn format_bytes(n: u64) -> String {
 /// query's constants and repeated variables. `build` replaces `insertion`
 /// and `copies`; `iteration` excludes planning; `end_to_end` and `space`
 /// are per query; the `column_orders` axis is gone and `index_rows` is new.
-pub const REPORT_SCHEMA_VERSION: u32 = 5;
+/// 6: the measurements made without Criterion move into `values`: `space` is
+/// an exact entry there and never a Criterion function, `bench probe` reports
+/// (`kind: probe`) add single-run `build` / `iteration` times, and the `plan`
+/// and `answer_rows` axes are new. No metric changes what it measures.
+pub const REPORT_SCHEMA_VERSION: u32 = 6;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).
@@ -452,7 +456,7 @@ mod tests {
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(json.is_array());
-        assert_eq!(json[0]["schema_version"], 5);
+        assert_eq!(json[0]["schema_version"], 6);
         assert_eq!(json[0]["values"], serde_json::json!([]));
         assert_eq!(json[0]["kind"], "ds");
         assert_eq!(json[0]["metadata"][0]["label"], "data structure");

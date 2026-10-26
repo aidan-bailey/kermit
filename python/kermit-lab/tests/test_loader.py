@@ -338,3 +338,15 @@ def test_iter_values_pairs_each_entry_with_its_report(tmp_path: Path) -> None:
     [(report, entry)] = list(iter_values(reports))
     assert report is reports[0]
     assert entry.value == 8.0
+
+
+def test_v5_and_v6_reports_load_together(tmp_path: Path) -> None:
+    paths = []
+    for version in (5, 6):
+        p = tmp_path / f"v{version}.json"
+        p.write_text(json.dumps([{
+            "schema_version": version, "kind": "run", "metadata": [], "axes": {},
+            "criterion_groups": [], "values": [],
+        }]))
+        paths.append(p)
+    assert [r.schema_version for r in load_reports(paths)] == [5, 6]
