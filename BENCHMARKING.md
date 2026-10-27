@@ -56,7 +56,10 @@ timing both, verifies every query that declares `expected` (a mismatch
 aborts), and records the exact `space`, the answer count (`answer_rows`)
 and the plan (`plan`). Its two times are single runs, so they are cold: use
 them to screen queries and estimate a sweep, or to time queries too slow for
-Criterion, never beside a Criterion estimate.
+Criterion, never beside a Criterion estimate. On the 2026-10-24 sweep's WatDiv
+and JOB template 13, every cell, a probe pass took 5.3 minutes where the
+Criterion-based screen it replaces (`-m build --verify` at 10 samples / 1 s / 1
+s) took 29.1 (`kermit-bench-runs/efficiency-ab-2026-10-26/`).
 
 ```sh
 kermit bench probe <name> -i all -a all --optimiser cost-based
@@ -139,10 +142,22 @@ Reports with `schema_version` 6 (2026-10-25) measure what v5 measured:
 `space` moved from a Criterion function into the report's `values` list as
 an exact value, the axes gain `plan` and `answer_rows`, and `bench probe`
 reports (`kind: probe`) are new. `kermit-lab` loads v5 and v6 together.
-Within one binary, `iteration` now runs before `build` in every cell; the
+Within one binary, `iteration` now runs before `build` in every cell. The
 measure-layer spec's order check
 ([`docs/specs/2026-10-25-bench-runner-measure-layer-design.md`](docs/specs/2026-10-25-bench-runner-measure-layer-design.md),
-Acceptance 7) bounds what that changes.
+Acceptance 7; run 2026-10-26 in `kermit-bench-runs/order-check-2026-10-26/`)
+measured what that changes. It timed `build` after `iteration` against `build`
+alone, in 5 alternating replicates, on the 2026-10-24 sweep's WatDiv Criterion
+set (123 queries) and JOB template 6, in every cell.
+
+- In five cells there is no effect: the 95% CI of the per-cell geometric-mean
+  ratio contains 1.
+- WatDiv TreeTrie builds run 0.6% faster after `iteration` (ratio 0.994, CI
+  [0.990, 0.998]). That is a real but small order effect, well inside the
+  codegen precision bound.
+
+So compare TreeTrie `build` across v5 and v6 only within that bound, as any
+two binaries already are.
 
 The end-to-end phase exists because summing `build + K × iteration` after
 the fact assumes the phases are independent — precisely the assumption a

@@ -431,6 +431,10 @@ pub(crate) trait Subject {
      bound, `BENCHMARKING.md`).
    - Otherwise stop: the order then matters for that structure, and B's order is
      reconsidered with the owner.
+   - **Outcome (2026-10-27): PASS in all six cells**
+     (`kermit-bench-runs/order-check-2026-10-26/analysis.txt`). Five CIs contain 1.
+     WatDiv TreeTrie is 0.994, CI [0.990, 0.998]: a 0.6% order effect inside the bound,
+     recorded in `BENCHMARKING.md`.
 8. The documentation below is updated.
 
 ## Documentation
