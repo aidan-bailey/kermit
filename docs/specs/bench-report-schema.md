@@ -272,17 +272,19 @@ bump — the `axes` field is an open map.
   pinned to it), or restructuring nesting.
 - **Also bump** when what a metric measures changes, even if every field
   keeps its name and type: values on either side are no longer comparable.
-  v3, v4 and v5 are such bumps.
+  v3, v4, v5 and v7 are such bumps.
 - **No bump** for additive changes: new `axes` keys, new optional fields on
   `CriterionGroupRef`, new conventional values for `kind` or `metric`.
 - Consumers should refuse to parse if `schema_version` is missing or
   greater than the highest version they know about. kermit-lab also
-  refuses to load reports from both sides of version 3, of version 4, or
-  of version 5, in one call: at 3 the `iteration` and `end_to_end` values
-  changed meaning, at 4 `insertion`, `copies`, `end_to_end`, HashTrie's
-  `space` and lazy-expansion HashTrie's `iteration` did, and at 5 the build
-  metric, `iteration`, `end_to_end` and `space` did (`insertion` and
-  `copies` became `build`).
+  refuses to load reports from both sides of version 3, of version 4, of
+  version 5, or of version 7, in one call: at 3 the `iteration` and
+  `end_to_end` values changed meaning, at 4 `insertion`, `copies`,
+  `end_to_end`, HashTrie's `space` and lazy-expansion HashTrie's
+  `iteration` did, at 5 the build metric, `iteration`, `end_to_end` and
+  `space` did (`insertion` and `copies` became `build`), and at 7
+  `iteration` and `end_to_end` did (they exclude the join's per-query
+  setup).
 - v6 is a structural bump with no meaning change: `space` moved from
   `criterion_groups` into `values`. kermit-lab loads v5 and v6 reports
   together.
@@ -316,3 +318,4 @@ bump — the `axes` field is an open map.
 | 6       | 2026-10-25 | The measurements made without Criterion move into a new top-level `values` list (`ValueEntry`: `function`, `metric`, `estimator`, `value`). `space` is an exact `values` entry in every subcommand and never a Criterion function, so `SpaceMeasurement` is gone. `bench probe` (`kind: probe`) is new: per query and cell, one describe build and one execution timed with an `Instant` (single-run `build` and `iteration`), the exact `space`, verification against `expected`, and no Criterion function. New axes: `plan` and `answer_rows`. Per query and cell the runners measure in one order: describe (one untimed build, read for the `index` lines, `space` and verification), `iteration` on that build, then `build` and `end_to_end`; reports are written after every query. No metric changes what it measures, so kermit-lab loads v5 and v6 together. |
 | 6 (no bump) | 2026-11-02 | Plans are payload last (#116 step 1): every optimiser orders the join keys (the variables two or more atoms carry) first, so a query with a payload variable can change plan, and so its indexes, on every structure. Rows are told apart by the `plan` axis (v6), as the seek-default and allocator changes were told apart by their axes. |
 | 6 (no bump) | 2026-11-02 | Added the `ds_layout_levels` axis (`--ds-layout-levels all\|keys`, #116 step 2) and the `index` line's ` levels n` suffix, present only under `keys`. Additive: an `all` report is unchanged, so `schema_version` stays 6. kermit-lab back-fills `all`. |
+| 7       | 2026-11-02 | What `iteration` and `end_to_end` measure changed, so they are not comparable with v6, and kermit-lab refuses to load v6 and v7 reports together unless `allow_mixed_schema=True`. The query reaches the join as an `ExecutedQuery` (`kermit-algos/src/executed.rs`), built once and untimed by `prepare`: no timed sample clones the query, runs `analyse` or `QueryPlan::validate`, builds the name-to-index map or parses `#k` ids, about 0.5 µs per join on a 3-atom triangle and 1.5 µs on an 8-atom chain (release, measured 2026-11-02). A query of constant checks now runs through the join, whose one answer is the empty row. `build`, `space` and every `bench ds` metric keep their meaning. No field or axis changed. |

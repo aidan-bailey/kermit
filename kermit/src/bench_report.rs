@@ -124,7 +124,11 @@ pub fn format_bytes(n: u64) -> String {
 /// an exact entry there and never a Criterion function, `bench probe` reports
 /// (`kind: probe`) add single-run `build` / `iteration` times, and the `plan`
 /// and `answer_rows` axes are new. No metric changes what it measures.
-pub const REPORT_SCHEMA_VERSION: u32 = 6;
+/// 7: `iteration` and `end_to_end` exclude the join's per-query setup: the
+/// query reaches the join as an `ExecutedQuery` built once, untimed, by
+/// `prepare`, so no timed sample clones the query, analyses it, checks its
+/// plan or maps its index names. No field or axis changes.
+pub const REPORT_SCHEMA_VERSION: u32 = 7;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).
