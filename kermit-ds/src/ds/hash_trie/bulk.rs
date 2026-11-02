@@ -1,4 +1,4 @@
-//! The `bulk` build of a [`HashTrie`](super::HashTrie): Algorithm 2 of
+//! The `bulk` build of a [`HashTrie`]: Algorithm 2 of
 //! Freitag et al., *Adopting Worst-Case Optimal Joins in Relational
 //! Database Systems* (VLDB 2020, §3.2.2), issue #107.
 //!

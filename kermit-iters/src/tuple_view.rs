@@ -1,5 +1,5 @@
 //! [`Filter`] and `TupleView`: a borrowed, filtered and projected reading of
-//! a [`Tuples`](crate::Tuples) batch.
+//! a [`Tuples`] batch.
 //!
 //! A query reads a relation through the view an index needs: only the rows
 //! that satisfy the query's constants and repeated variables, and only the

@@ -1,4 +1,4 @@
-//! The `radix:K` build of a [`HashTrie`](super::HashTrie): copy the rows
+//! The `radix:K` build of a [`HashTrie`]: copy the rows
 //! into `2^K` partitions on their first attribute's hash
 //! ([`partition_by_first_hash`]), group each partition into a scratch root
 //! and build its children by Algorithm 2 (`bulk.rs`), then merge the scratch

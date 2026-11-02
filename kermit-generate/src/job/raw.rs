@@ -263,8 +263,9 @@ pub fn build(duckdb: &Duckdb, dir: &Path, inputs: &BuildInputs<'_>) -> anyhow::R
 
 /// `<dir>.<kind>-<pid>-<seq>`, a sibling of `dir` (so the rename into place
 /// stays on one filesystem), with `seq` the next value of a process-wide
-/// counter: `kind` is `building` for [`build`] and `fetch` for [`ensure`]'s
-/// download. The pid keeps two processes apart and `seq` two calls in one.
+/// counter: `kind` is `building` for [`build`] and `fetch` for
+/// [`ensure`](fn@ensure)'s download. The pid keeps two processes apart and
+/// `seq` two calls in one.
 ///
 /// # Errors
 ///
@@ -497,10 +498,11 @@ impl Sources {
     }
 }
 
-/// [`ensure`] over any `sources` and any way of fetching: `fetch(url, dest,
-/// sha256)` must leave `dest` holding the file at `url` **whose SHA-256 is
-/// `sha256`**, or fail, as `download_verified` does: `fetch_and_build` records
-/// the pinned digest in the provenance without hashing the file again.
+/// [`ensure`](fn@ensure) over any `sources` and any way of fetching:
+/// `fetch(url, dest, sha256)` must leave `dest` holding the file at `url`
+/// **whose SHA-256 is `sha256`**, or fail, as `download_verified` does:
+/// `fetch_and_build` records the pinned digest in the provenance without
+/// hashing the file again.
 ///
 /// A `dir` without `provenance.json`, even an empty one (kermit never makes
 /// one), is refused before any fetch: [`build`] cannot rename over a non-empty
