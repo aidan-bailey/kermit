@@ -3,12 +3,13 @@
 //! `--queries-per-build` (default 1) and recorded in the report's
 //! `queries_per_build` axis.
 //!
-//! `bench run` is exercised for both trait families through the one
+//! `bench run` is exercised for all three trait families through the one
 //! generic `run_benchmark<F: ExecutionFamily>` — (tree-trie,
-//! leapfrog-triejoin) as `TrieLftj<R>` and (hash-trie, hash-triejoin) as
-//! `HashHtj<H, P>` — against a fake benchmark cache built from the
-//! committed watdiv-mini fixture, so no network access is needed. `bench
-//! ds` is exercised directly against the `edge.csv` fixture.
+//! leapfrog-triejoin) as `TrieLftj<R>`, (hash-trie, hash-triejoin) as
+//! `HashHtj<H, P>` and (hash-index, binary-hash-join) as the keyed cell —
+//! against a fake benchmark cache built from the committed watdiv-mini fixture,
+//! so no network access is needed. `bench ds` is exercised directly against the
+//! `edge.csv` fixture.
 
 use {
     std::{fs, path::PathBuf, process::Command},
@@ -106,7 +107,7 @@ fn run_bench_run_end_to_end(ds: &str, algo: &str, extra_args: &[&str]) -> Vec<se
     reports
 }
 
-/// Asserts the single-report shape shared by both families: exactly one
+/// Asserts the single-report shape shared by all three families: exactly one
 /// time-metric `end_to_end` criterion function and the expected
 /// `queries_per_build` axis value.
 fn assert_end_to_end_report(report: &serde_json::Value, expected_k: u64) {
@@ -155,6 +156,20 @@ fn cli_bench_run_end_to_end_hash_family() {
     assert_end_to_end_report(&reports[0], 1);
     assert_eq!(reports[0]["axes"]["data_structure"], "HashTrie");
     assert_eq!(reports[0]["axes"]["algorithm"], "HashTriejoin");
+}
+
+#[test]
+fn cli_bench_run_end_to_end_keyed_family() {
+    if skip_unsupported() {
+        return;
+    }
+    let reports = run_bench_run_end_to_end("hash-index", "binary-hash-join", &[
+        "--queries-per-build",
+        "2",
+    ]);
+    assert_end_to_end_report(&reports[0], 2);
+    assert_eq!(reports[0]["axes"]["data_structure"], "HashIndex");
+    assert_eq!(reports[0]["axes"]["algorithm"], "BinaryHashJoin");
 }
 
 /// Runs `bench ds` against `edge.csv` with `--metrics end-to-end` for the

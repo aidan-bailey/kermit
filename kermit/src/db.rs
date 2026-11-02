@@ -326,7 +326,7 @@ mod tests {
     /// access id: counts over the rows the access's filter keeps for a
     /// filtered access, and the catalog's own for an unfiltered one. Answers
     /// cannot show this, since a plan never changes them, so it is checked on
-    /// the statistics themselves, in both families.
+    /// the statistics themselves, in every family.
     #[test]
     fn the_planner_reads_the_catalogs_statistics_per_access() {
         let catalog = store(StatisticsLevel::ColumnDistinct, vec![
@@ -367,7 +367,14 @@ mod tests {
         check(&spy, rows);
 
         let spy = StatsSpy::default();
-        let rows = hash_join::<HashTrie>(&catalog, query, &planner_of(spy.clone()))
+        let rows = hash_join::<HashTrie>(&catalog, query.clone(), &planner_of(spy.clone()))
+            .unwrap()
+            .1
+            .to_vecs();
+        check(&spy, rows);
+
+        let spy = StatsSpy::default();
+        let rows = binary_join::<HashIndex>(&catalog, query, &planner_of(spy.clone()))
             .unwrap()
             .1
             .to_vecs();
@@ -538,7 +545,7 @@ mod tests {
 
     /// A collected answer is a relation: named after the head predicate, one
     /// attribute per head variable in head order, and its rows at the head's
-    /// arity, from both families.
+    /// arity, from every family.
     #[test]
     fn the_answer_is_a_relation_named_after_the_head() {
         let catalog = counts(vec![("p", 2, vec![vec![1, 10], vec![2, 20]])]);
@@ -547,6 +554,7 @@ mod tests {
         for (header, rows) in [
             lftj_join::<TreeTrie, LeapfrogTriejoin>(&catalog, query.clone(), &planner).unwrap(),
             hash_join::<HashTrie>(&catalog, query.clone(), &planner).unwrap(),
+            binary_join::<HashIndex>(&catalog, query.clone(), &planner).unwrap(),
         ] {
             assert_eq!(header.name(), "Q");
             assert_eq!(header.attrs().to_vec(), vec!["Y", "X"]);
@@ -598,7 +606,7 @@ mod tests {
 
     /// An answer is a relation in the form a catalog takes, so a second query
     /// reads it with no conversion: two-step paths, then the vertices on a
-    /// two-cycle, under both families.
+    /// two-cycle, under every family.
     #[test]
     fn an_answer_reenters_a_catalog_as_a_relation() {
         let catalog = counts(vec![("edge", 2, vec![
@@ -620,19 +628,26 @@ mod tests {
         sorted.sort();
         assert_eq!(sorted, vec![vec![1], vec![2]]);
 
-        let answer = hash_join::<HashTrie>(&catalog, paths, &planner).unwrap();
+        let answer = hash_join::<HashTrie>(&catalog, paths.clone(), &planner).unwrap();
         let again = Catalog::new(vec![answer], StatisticsLevel::TupleCounts);
-        let (_, rows) = hash_join::<HashTrie>(&again, cycles, &planner).unwrap();
+        let (_, rows) = hash_join::<HashTrie>(&again, cycles.clone(), &planner).unwrap();
         let mut hashed = rows.to_vecs();
         hashed.sort();
         assert_eq!(hashed, vec![vec![1], vec![2]]);
+
+        let answer = binary_join::<HashIndex>(&catalog, paths, &planner).unwrap();
+        let again = Catalog::new(vec![answer], StatisticsLevel::TupleCounts);
+        let (_, rows) = binary_join::<HashIndex>(&again, cycles, &planner).unwrap();
+        let mut keyed = rows.to_vecs();
+        keyed.sort();
+        assert_eq!(keyed, vec![vec![1], vec![2]]);
     }
 
     /// `missing` was never added. Silently dropping the atom would mask typos
     /// and load failures, and panicking exited 101; the entry points return
-    /// the error instead, the same one from both families.
+    /// the error instead, the same one from every family.
     #[test]
-    fn an_unknown_relation_is_an_error_in_both_families() {
+    fn an_unknown_relation_is_an_error_in_every_family() {
         let catalog = counts(vec![("edge", 2, vec![vec![1, 2]])]);
         let query: JoinQuery = "Q(X) :- missing(X).".parse().unwrap();
         let want: Result<Rows, JoinError> = Err(JoinError::UnknownRelation {
@@ -641,6 +656,7 @@ mod tests {
         });
         assert_eq!(sorted_family(&catalog, &query), want);
         assert_eq!(hash_family(&catalog, &query), want);
+        assert_eq!(keyed_family(&catalog, &query), want);
     }
 
     /// A rejected query emits nothing: validation runs before the join.

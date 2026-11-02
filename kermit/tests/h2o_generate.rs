@@ -1,7 +1,8 @@
 //! End-to-end H2O check (#95): the reference plan goes through
 //! `kermit_generate::run` in both row orders, then every query runs on the
-//! three (structure, algorithm) cells under every optimiser through the
-//! real `kermit::db` entry points, and must return the count the generator
+//! three of the four (structure, algorithm) cells (the keyed `HashIndex` cell
+//! is not run here) under every optimiser through the real `kermit::db`
+//! entry points, and must return the count the generator
 //! recorded as `expected`.
 //!
 //! It lives in the `kermit` crate for the reason `snap_generate.rs` does: only
@@ -11,7 +12,7 @@
 //! path that `bench run` takes is covered by the manual `--verify` acceptance
 //! at 1e7. The cells are `TreeTrie` and `ColumnTrie` under `LeapfrogTriejoin`,
 //! and `HashTrie` under `HashTriejoin`; the shared `JoinEntry` driver in
-//! `common/utils.rs` hosts both families.
+//! `common/utils.rs` hosts every family.
 //!
 //! # The reference plan
 //!

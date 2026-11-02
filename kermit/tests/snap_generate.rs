@@ -1,14 +1,15 @@
 //! End-to-end SNAP check (#96): the committed miniature graph goes through
-//! `kermit_generate::run`, then every query runs on the three
-//! (structure, algorithm) cells under every optimiser through the real
-//! `kermit::db` entry points, and must return the count the generator
+//! `kermit_generate::run`, then every query runs on three of
+//! the four (structure, algorithm) cells (the keyed `HashIndex` cell is not
+//! run here) under every optimiser through the real `kermit::db` entry
+//! points, and must return the count the generator
 //! recorded as `expected`.
 //!
 //! It lives in the `kermit` crate for the reason `lubm_mini_oracle.rs` does:
 //! only this crate has both the generator and the join engine, and it needs
 //! nothing of the binary. The cells are `TreeTrie` and `ColumnTrie` under
 //! `LeapfrogTriejoin`, and `HashTrie` under `HashTriejoin`; the shared
-//! `JoinEntry` driver in `common/utils.rs` hosts both families.
+//! `JoinEntry` driver in `common/utils.rs` hosts every family.
 //!
 //! # The fixture
 //!
