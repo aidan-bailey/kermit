@@ -97,10 +97,10 @@ class AxisScope:
 # optimization standard's Amendment 2, 2026-10-06).
 AXIS_PHASES: dict[str, AxisScope] = {
     # A seek strategy changes how a built trie is searched; no build calls
-    # seek (#80).
+    # seek (#80). A `materialize` runs the join, so it searches too.
     "ds_layout_seek": AxisScope(
-        frozenset({"iteration", "end_to_end"}),
-        "it changes only how a built trie is searched",
+        frozenset({"iteration", "end_to_end", "materialize"}),
+        "it changes only how a built trie is searched, as a join does",
     ),
 }
 
