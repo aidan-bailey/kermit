@@ -23,16 +23,16 @@
 
 use {
     crate::options::{
-        expansion_of, hasher_of, pruning_of, seek_of, DsChoices, ExpansionChoice, HasherChoice,
-        PruningChoice, SeekChoice,
+        expansion_of, hasher_of, levels_of, pruning_of, seek_of, DsChoices, ExpansionChoice,
+        HasherChoice, LevelsChoice, PruningChoice, SeekChoice,
     },
     kermit::db::{self, Catalog, Indexes, Prepared},
     kermit_algos::{HashTriejoin, JoinAlgorithm, LeapfrogTriejoin},
     kermit_ds::{
-        BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
+        AllLevels, BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
         ConfiguredBuildModeRelation, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
-        HeapSize, IndexStructure, PruningPolicy, Relation, RelationHeader, SeekStrategy, TreeTrie,
-        TreeTrieBuildMode, TupleView, Tuples,
+        HeapSize, IndexStructure, LevelPolicy, PruningPolicy, Relation, RelationHeader,
+        SeekStrategy, TreeTrie, TreeTrieBuildMode, TrieLevels, TupleView, Tuples,
     },
     kermit_iters::{
         BuildMode, HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -173,7 +173,7 @@ pub enum Execution {
     /// A sorted trie joined by Leapfrog Triejoin through
     /// [`kermit::db::execute`] with `LeapfrogTriejoin`.
     TrieLftj(SortedTrie),
-    /// `HashTrie<H, P, E>` joined by Hash Triejoin through
+    /// `HashTrie<H, P, E, L>` joined by Hash Triejoin through
     /// [`kermit::db::execute`] with `HashTriejoin`, with `H` chosen by
     /// `--ds-layout-hasher`, `P` by `--ds-layout-pruning`, `E` by
     /// `--ds-layout-expansion`, and the runtime values by `--ds-config`,
@@ -191,6 +191,9 @@ pub enum Execution {
         /// The `--ds-layout-expansion` choice, in the same two roles as
         /// `hasher` and `pruning`.
         expansion: ExpansionChoice,
+        /// The `--ds-layout-levels` choice, in the same two roles as `hasher`
+        /// and `pruning` (#116).
+        levels: LevelsChoice,
         /// The `--ds-config` runtime values every relation is built with.
         config: HashTrieConfig,
         /// The `--ds-build` mode every relation is built with.
@@ -211,6 +214,7 @@ impl Execution {
             hasher,
             pruning,
             expansion,
+            levels,
             seek,
             config,
             build,
@@ -232,6 +236,7 @@ impl Execution {
                 hasher,
                 pruning,
                 expansion,
+                levels,
                 config,
                 build: build.hash_trie,
             }),
@@ -253,6 +258,7 @@ impl Execution {
             hasher,
             pruning,
             expansion,
+            levels,
             seek,
             config,
             build,
@@ -270,6 +276,7 @@ impl Execution {
                 hasher,
                 pruning,
                 expansion,
+                levels,
                 config,
                 build: build.hash_trie,
             },
@@ -293,6 +300,18 @@ impl Execution {
             | Self::HashHtj {
                 ..
             } => JoinAlgorithm::HashTriejoin,
+        }
+    }
+
+    /// The trie-level policy this cell's queries are prepared under
+    /// (`kermit::db::prepare`): `All` for the sorted tries, the
+    /// `--ds-layout-levels` choice for `HashTrie` (#116).
+    pub fn trie_levels(self) -> TrieLevels {
+        match self {
+            | Self::TrieLftj(_) => TrieLevels::All,
+            | Self::HashHtj {
+                levels, ..
+            } => levels.trie_levels(),
         }
     }
 }
@@ -535,20 +554,20 @@ impl<R: SortedTrieRelation + 'static> RelationFamily for SortedTrieFamily<R> {
     }
 }
 
-/// `HashTrie<H, P, E>` on its own: what `bench ds -i hash-trie` measures.
+/// `HashTrie<H, P, E, L>` on its own: what `bench ds -i hash-trie` measures.
 /// Carries the `--ds-config` runtime values and the `--ds-build` mode every
 /// relation is built with; the `--ds-layout-hasher` / `--ds-layout-pruning` /
 /// `--ds-layout-expansion` labels are *not* parameters —
 /// [`execution`](RelationFamily::execution) derives them from `H`, `P` and
 /// `E`, so a report cannot name a Layout the family was not monomorphised
 /// over.
-pub struct HashTrieFamily<H, P, E> {
+pub struct HashTrieFamily<H, P, E, L = AllLevels> {
     config: HashTrieConfig,
     build: HashTrieBuildMode,
-    _layout: PhantomData<(H, P, E)>,
+    _layout: PhantomData<(H, P, E, L)>,
 }
 
-impl<H, P, E> HashTrieFamily<H, P, E> {
+impl<H, P, E, L> HashTrieFamily<H, P, E, L> {
     /// The family building every relation with the `--ds-config` values
     /// `config`, by the `--ds-build` mode `build`.
     pub fn new(config: HashTrieConfig, build: HashTrieBuildMode) -> Self {
@@ -560,27 +579,28 @@ impl<H, P, E> HashTrieFamily<H, P, E> {
     }
 }
 
-impl<H, P, E> Default for HashTrieFamily<H, P, E> {
+impl<H, P, E, L> Default for HashTrieFamily<H, P, E, L> {
     fn default() -> Self { Self::new(HashTrieConfig::default(), HashTrieBuildMode::default()) }
 }
 
-impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFamily
-    for HashTrieFamily<H, P, E>
+impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> RelationFamily
+    for HashTrieFamily<H, P, E, L>
 {
-    type Rel = HashTrie<H, P, E>;
+    type Rel = HashTrie<H, P, E, L>;
 
     fn execution(&self) -> Execution {
         Execution::HashHtj {
             hasher: hasher_of::<H>(),
             pruning: pruning_of::<P>(),
             expansion: expansion_of::<E>(),
+            levels: levels_of::<L>(),
             config: self.config,
             build: self.build,
         }
     }
 
-    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> HashTrie<H, P, E> {
-        <HashTrie<H, P, E> as ConfiguredBuildModeRelation>::from_view_with_config_and_build_mode(
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> HashTrie<H, P, E, L> {
+        <HashTrie<H, P, E, L> as ConfiguredBuildModeRelation>::from_view_with_config_and_build_mode(
             header,
             self.config,
             self.build,
@@ -588,15 +608,15 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFa
         )
     }
 
-    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P, E>, visit: V) {
+    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P, E, L>, visit: V) {
         rel.for_each_tuple(visit);
     }
 
     /// The trie's own multiset count, kept as it is built, so counting
     /// does not materialise every tuple.
-    fn tuple_count(rel: &HashTrie<H, P, E>) -> usize { Cardinality::tuple_count(rel) }
+    fn tuple_count(rel: &HashTrie<H, P, E, L>) -> usize { Cardinality::tuple_count(rel) }
 
-    fn optimization_axes(rel: &HashTrie<H, P, E>) -> BTreeMap<String, serde_json::Value> {
+    fn optimization_axes(rel: &HashTrie<H, P, E, L>) -> BTreeMap<String, serde_json::Value> {
         rel.optimization_axes()
     }
 
@@ -658,13 +678,13 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
     }
 }
 
-/// Hash family: `HashTrie<H, P, E>` under Hash Triejoin, through
+/// Hash family: `HashTrie<H, P, E, L>` under Hash Triejoin, through
 /// `kermit::db::execute`.
-pub struct HashHtj<H, P, E> {
-    structure: HashTrieFamily<H, P, E>,
+pub struct HashHtj<H, P, E, L = AllLevels> {
+    structure: HashTrieFamily<H, P, E, L>,
 }
 
-impl<H, P, E> HashHtj<H, P, E> {
+impl<H, P, E, L> HashHtj<H, P, E, L> {
     /// Creates the family for the `--ds-config` values `config` and the
     /// `--ds-build` mode `build`. The
     /// `--ds-layout-hasher` / `--ds-layout-pruning` / `--ds-layout-expansion`
@@ -678,25 +698,27 @@ impl<H, P, E> HashHtj<H, P, E> {
     }
 }
 
-impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFamily
-    for HashHtj<H, P, E>
+impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> RelationFamily
+    for HashHtj<H, P, E, L>
 {
-    type Rel = HashTrie<H, P, E>;
+    type Rel = HashTrie<H, P, E, L>;
 
     fn execution(&self) -> Execution { self.structure.execution() }
 
-    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> HashTrie<H, P, E> {
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> HashTrie<H, P, E, L> {
         self.structure.build_index(header, view)
     }
 
-    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P, E>, visit: V) {
-        HashTrieFamily::<H, P, E>::for_each_tuple(rel, visit);
+    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashTrie<H, P, E, L>, visit: V) {
+        HashTrieFamily::<H, P, E, L>::for_each_tuple(rel, visit);
     }
 
-    fn tuple_count(rel: &HashTrie<H, P, E>) -> usize { HashTrieFamily::<H, P, E>::tuple_count(rel) }
+    fn tuple_count(rel: &HashTrie<H, P, E, L>) -> usize {
+        HashTrieFamily::<H, P, E, L>::tuple_count(rel)
+    }
 
-    fn optimization_axes(rel: &HashTrie<H, P, E>) -> BTreeMap<String, serde_json::Value> {
-        HashTrieFamily::<H, P, E>::optimization_axes(rel)
+    fn optimization_axes(rel: &HashTrie<H, P, E, L>) -> BTreeMap<String, serde_json::Value> {
+        HashTrieFamily::<H, P, E, L>::optimization_axes(rel)
     }
 
     fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
@@ -704,16 +726,16 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> RelationFa
     }
 }
 
-impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy> ExecutionFamily
-    for HashHtj<H, P, E>
+impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>
+    ExecutionFamily for HashHtj<H, P, E, L>
 {
     /// A lazy trie expands the children a join reaches.
     const JOIN_MUTATES: bool = E::LAZY;
 
     fn execute<S: FnMut(&[usize])>(
-        &self, prepared: &Prepared, indexes: &Indexes<HashTrie<H, P, E>>, emit: S,
+        &self, prepared: &Prepared, indexes: &Indexes<HashTrie<H, P, E, L>>, emit: S,
     ) {
-        db::execute::<HashTrie<H, P, E>, HashTriejoin>(prepared, indexes, emit);
+        db::execute::<HashTrie<H, P, E, L>, HashTriejoin>(prepared, indexes, emit);
     }
 }
 
@@ -821,6 +843,7 @@ mod tests {
                 hasher: HasherChoice::Fxhash,
                 pruning: PruningChoice::Off,
                 expansion: ExpansionChoice::Eager,
+                levels: LevelsChoice::All,
                 config: HashTrieConfig::default(),
                 build: HashTrieBuildMode::Bulk,
             })
@@ -853,11 +876,16 @@ mod tests {
                 for hasher in [HasherChoice::Sip, HasherChoice::Fxhash] {
                     for pruning in [PruningChoice::Off, PruningChoice::On] {
                         for &expansion in ExpansionChoice::value_variants() {
-                            for &seek in SeekChoice::value_variants() {
+                            for (&levels, &seek) in
+                                LevelsChoice::value_variants().iter().flat_map(|l| {
+                                    SeekChoice::value_variants().iter().map(move |s| (l, s))
+                                })
+                            {
                                 let choices = DsChoices {
                                     hasher,
                                     pruning,
                                     expansion,
+                                    levels,
                                     seek,
                                     config,
                                     build,
@@ -958,6 +986,7 @@ mod tests {
             hasher: HasherChoice::Fxhash,
             pruning: PruningChoice::On,
             expansion: ExpansionChoice::Eager,
+            levels: LevelsChoice::All,
             config,
             build: radix,
         });
@@ -1656,6 +1685,7 @@ mod tests {
             hasher: HasherChoice::Sip,
             pruning: PruningChoice::Off,
             expansion: ExpansionChoice::Eager,
+            levels: LevelsChoice::All,
             config: HashTrieConfig::default(),
             build: radix,
         }));
@@ -2051,5 +2081,36 @@ mod tests {
         let family = TrieLftj::<TreeTrie>::new(TreeTrieBuildMode::default());
         let indexes = family.build_indexes(&catalog, &forward);
         family.execute(&reversed, &indexes, |_| {});
+    }
+
+    /// A cell prepares its queries under its structure's trie levels: the
+    /// sorted tries' are always `All`, `HashTrie`'s its `--ds-layout-levels`
+    /// choice (#116).
+    #[test]
+    fn a_cells_trie_levels_follow_its_structure_and_layout() {
+        let hash = |levels| Execution::HashHtj {
+            hasher: HasherChoice::Sip,
+            pruning: PruningChoice::Off,
+            expansion: ExpansionChoice::Eager,
+            levels,
+            config: HashTrieConfig::default(),
+            build: HashTrieBuildMode::default(),
+        };
+        assert_eq!(hash(LevelsChoice::All).trie_levels(), TrieLevels::All);
+        assert_eq!(hash(LevelsChoice::Keys).trie_levels(), TrieLevels::JoinKeys);
+        let keys = DsChoices {
+            levels: LevelsChoice::Keys,
+            ..DsChoices::default()
+        };
+        for ds in [IndexStructure::TreeTrie, IndexStructure::ColumnTrie] {
+            assert_eq!(
+                Execution::for_structure(ds, keys).trie_levels(),
+                TrieLevels::All
+            );
+        }
+        assert_eq!(
+            Execution::for_structure(IndexStructure::HashTrie, keys).trie_levels(),
+            TrieLevels::JoinKeys
+        );
     }
 }

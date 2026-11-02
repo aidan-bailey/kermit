@@ -496,8 +496,9 @@ fn write_row(writer: &mut impl Write, tuple: &[usize]) -> io::Result<()> {
 ///
 /// The query file cannot be read or parsed, a relation file cannot be
 /// read, or validation rejects the query, before any index is built.
-fn prepare_query(args: &QueryArgs) -> anyhow::Result<PreparedWorkload> {
-    Workload::adhoc(args.relations.clone(), &args.query)?.prepare(&args.planner.instantiate())
+fn prepare_query(args: &QueryArgs, cell: Execution) -> anyhow::Result<PreparedWorkload> {
+    Workload::adhoc(args.relations.clone(), &args.query)?
+        .prepare(&args.planner.instantiate(), &[cell.trie_levels()])
 }
 
 /// Builds the indexes of `workload`'s one query on `family` and streams the
@@ -518,7 +519,7 @@ fn write_prepared_join<F: ExecutionFamily>(
         cell,
         "dispatch built a different cell than the one resolved"
     );
-    let prepared = &workload.prepared[0];
+    let prepared = &workload.prepared(<F::Rel as kermit_ds::Relation>::TRIE_LEVELS)[0];
     let indexes = family.build_indexes(&workload.catalog, prepared);
     let mut sink = CsvSink::new(writer, prepared.answer_header().attrs())?;
     family.execute(prepared, &indexes, |tuple| sink.write_tuple(tuple));
@@ -574,14 +575,17 @@ fn write_query_csv(
             hasher,
             pruning,
             expansion,
+            levels,
             config,
             build,
-        } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| write_prepared_join(
-            HashHtj::<H, P, E>::new(config, build),
-            cell,
-            workload,
-            writer,
-        )),
+        } => with_hash_trie_layout!(hasher, pruning, expansion, levels, |H, P, E, L| {
+            write_prepared_join(
+                HashHtj::<H, P, E, L>::new(config, build),
+                cell,
+                workload,
+                writer,
+            )
+        }),
     }
 }
 
@@ -675,7 +679,7 @@ fn run_join(query_args: QueryArgs, output: Option<PathBuf>) -> anyhow::Result<()
         &BuildChoices::default(),
     )?;
     let cell = query_cell(&query_args, choices)?;
-    let workload = prepare_query(&query_args)?;
+    let workload = prepare_query(&query_args, cell)?;
     let writer: Box<dyn Write> = match &output {
         | Some(path) => Box::new(BufWriter::new(fs::File::create(path)?)),
         | None => Box::new(BufWriter::new(io::stdout().lock())),
@@ -768,7 +772,7 @@ fn run_bench_join(
     let selector = IndexStructureSelector::of(query_args.indexstructure);
     let choices = DsChoices::resolve(selector, &query_args.layout, &config, &build)?;
     let cell = query_cell(&query_args, choices)?;
-    let workload = prepare_query(&query_args)?;
+    let workload = prepare_query(&query_args, cell)?;
 
     if let Some(path) = &output {
         let writer = BufWriter::new(fs::File::create(path)?);
@@ -809,6 +813,15 @@ fn run_ds_bench_command(
             "--ds-layout-seek has no effect on bench ds: none of its metrics calls seek (build \
              constructs the relation; iteration and end-to-end scan it with open/next/up; space \
              measures it). Time a join with bench run or bench join."
+        );
+    }
+    // `bench ds` builds one relation from a whole file, with no query, so no
+    // column is a join key: `keys` would label an `all` build (#116).
+    if layout.hash_trie_levels_explicit() {
+        anyhow::bail!(
+            "--ds-layout-levels has no effect on bench ds: it builds one relation from a whole \
+             file, with no query, so no column is a join key and every level is kept. Time a \
+             query with bench run or bench join."
         );
     }
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
@@ -853,6 +866,10 @@ fn run_bench_run_command(
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let given = DsFlag::given(&layout, &config, &build);
     let cells = resolve_sweep(indexstructure, algorithm, choices, &given, kind)?;
+    // Each query is prepared once per trie-level policy its cells build
+    // under: at most two, since each Layout flag takes one value (#116).
+    let policies: Vec<kermit_ds::TrieLevels> =
+        cells.iter().map(|cell| cell.trie_levels()).collect();
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
         .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
@@ -890,7 +907,7 @@ fn run_bench_run_command(
         // over cells: every cell builds from this catalog and runs these
         // prepared queries.
         let workload = Workload::from_definition(benchmark, &workspace_root(), query.as_deref())
-            .and_then(|workload| workload.prepare(&prepare_with))
+            .and_then(|workload| workload.prepare(&prepare_with, &policies))
             .with_context(|| {
                 format!(
                     "bench {kind} failed on benchmark '{}'; partial report retained at {}",

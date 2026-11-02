@@ -9,7 +9,8 @@ use {
     kermit_algos::{Optimiser, Planner},
     kermit_ds::{
         ChildCapacity, ColumnTrieBuildMode, ExpansionPolicy, HashTrieBuildMode, HashTrieConfig,
-        IndexStructure, LoadFactor, PruningPolicy, RootCapacity, SeekStrategy, TreeTrieBuildMode,
+        IndexStructure, LevelPolicy, LoadFactor, PruningPolicy, RootCapacity, SeekStrategy,
+        TreeTrieBuildMode, TrieLevels,
     },
     kermit_iters::{HashStrategy, LayoutOption},
     std::fmt,
@@ -50,6 +51,8 @@ pub(crate) enum DsFlag {
     LayoutPruning,
     /// `--ds-layout-expansion`.
     LayoutExpansion,
+    /// `--ds-layout-levels`.
+    LayoutLevels,
     /// `--ds-layout-seek`.
     LayoutSeek,
     /// `--ds-config`.
@@ -77,9 +80,11 @@ impl DsFlag {
     /// listed here.
     pub(crate) fn structures(self) -> &'static [IndexStructure] {
         match self {
-            | Self::LayoutHasher | Self::LayoutPruning | Self::LayoutExpansion | Self::Config => {
-                &[IndexStructure::HashTrie]
-            },
+            | Self::LayoutHasher
+            | Self::LayoutPruning
+            | Self::LayoutExpansion
+            | Self::LayoutLevels
+            | Self::Config => &[IndexStructure::HashTrie],
             | Self::LayoutSeek => &[IndexStructure::TreeTrie, IndexStructure::ColumnTrie],
             | Self::Build(IndexStructure::TreeTrie) => &[IndexStructure::TreeTrie],
             | Self::Build(IndexStructure::ColumnTrie) => &[IndexStructure::ColumnTrie],
@@ -104,6 +109,7 @@ impl fmt::Display for DsFlag {
             | Self::LayoutHasher => f.write_str("--ds-layout-hasher"),
             | Self::LayoutPruning => f.write_str("--ds-layout-pruning"),
             | Self::LayoutExpansion => f.write_str("--ds-layout-expansion"),
+            | Self::LayoutLevels => f.write_str("--ds-layout-levels"),
             | Self::LayoutSeek => f.write_str("--ds-layout-seek"),
             | Self::Config => f.write_str("--ds-config"),
             | Self::Build(ds) => write!(f, "--ds-build {}", cli_name(*ds)),
@@ -387,6 +393,51 @@ pub(crate) fn expansion_of<E: ExpansionPolicy>() -> ExpansionChoice {
     })
 }
 
+/// `--ds-layout-levels`: whether a `HashTrie` index has a level per column
+/// (`all`, the default) or only up to its last join-key column (`keys`, the
+/// trie of Freitag et al., VLDB 2020 §3.1; #116). Selects the `L` of
+/// `HashTrie<H, P, E, L>`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum LevelsChoice {
+    /// A level per column (`AllLevels`).
+    #[default]
+    All,
+    /// Levels for the join keys only (`KeyLevels`).
+    Keys,
+}
+
+impl LevelsChoice {
+    /// The choice whose CLI value is `name`, a `LevelPolicy`'s
+    /// `LayoutOption::NAME`.
+    pub(crate) fn from_layout_name(name: &str) -> Option<Self> {
+        match name {
+            | "all" => Some(Self::All),
+            | "keys" => Some(Self::Keys),
+            | _ => None,
+        }
+    }
+
+    /// The policy `kermit::db::prepare` plans this choice's indexes under.
+    pub(crate) fn trie_levels(self) -> TrieLevels {
+        match self {
+            | Self::All => TrieLevels::All,
+            | Self::Keys => TrieLevels::JoinKeys,
+        }
+    }
+}
+
+/// The `--ds-layout-levels` choice of the level policy `L`, the label a
+/// `HashHtj` derives from its type (as `expansion_of`).
+pub(crate) fn levels_of<L: LevelPolicy>() -> LevelsChoice {
+    let name = <L as LayoutOption>::NAME;
+    LevelsChoice::from_layout_name(name).unwrap_or_else(|| {
+        panic!(
+            "no --ds-layout-levels choice for level policy {name:?} ({})",
+            std::any::type_name::<L>()
+        )
+    })
+}
+
 /// CLI-side selector for `--ds-layout-seek`: the [`SeekStrategy`]
 /// monomorphised into `TreeTrie<S>` / `ColumnTrie<S>`. `Galloping` is the
 /// default; `Binary` is the `partition_point` search both sorted tries used
@@ -465,6 +516,12 @@ pub(crate) struct LayoutChoices {
     /// Only valid when `--indexstructure hash-trie` is selected.
     #[arg(long = "ds-layout-expansion", value_name = "EXPANSION", value_enum)]
     hash_trie_expansion: Option<ExpansionChoice>,
+    /// Trie levels of `HashTrie<H, P, E, L>` (default: `all`): a level per
+    /// column, or `keys`, levels for the join keys only. Only valid when
+    /// `--indexstructure hash-trie` is selected, and not on `bench ds`,
+    /// whose relation has no query and so no join key.
+    #[arg(long = "ds-layout-levels", value_name = "LEVELS", value_enum)]
+    hash_trie_levels: Option<LevelsChoice>,
     /// Seek strategy of `TreeTrie<S>` / `ColumnTrie<S>` (default:
     /// `galloping`). Only valid when `--indexstructure tree-trie` or
     /// `column-trie` (or `all`) is selected, and not on `bench ds`, none of
@@ -506,6 +563,12 @@ impl LayoutChoices {
     /// Returns whether the user explicitly passed `--ds-layout-expansion`.
     pub(crate) fn hash_trie_expansion_explicit(&self) -> bool { self.hash_trie_expansion.is_some() }
 
+    pub(crate) fn hash_trie_levels_resolved(&self) -> LevelsChoice {
+        self.hash_trie_levels.unwrap_or_default()
+    }
+
+    pub(crate) fn hash_trie_levels_explicit(&self) -> bool { self.hash_trie_levels.is_some() }
+
     /// Returns the `SeekChoice` to monomorphise on, applying
     /// `SeekChoice::default()` when none was supplied on the command line.
     /// Use this at dispatch sites.
@@ -522,6 +585,7 @@ impl LayoutChoices {
             (DsFlag::LayoutHasher, self.hash_trie_hasher_explicit()),
             (DsFlag::LayoutPruning, self.hash_trie_pruning_explicit()),
             (DsFlag::LayoutExpansion, self.hash_trie_expansion_explicit()),
+            (DsFlag::LayoutLevels, self.hash_trie_levels_explicit()),
             (DsFlag::LayoutSeek, self.sorted_trie_seek_explicit()),
         ]
         .into_iter()
@@ -551,9 +615,12 @@ pub(crate) fn validate_layout_choices(
 /// `bench/ds.rs` and `bench/run.rs`) and `write_query_csv` (in `main.rs`)
 /// all go through here, so the Layout product is written out once rather
 /// than once per caller. It expands one dimension at a time (`@hasher`, then
-/// `@pruning`, then `@expansion`): each rule matches one choice, declares
-/// one alias and hands the rest on, so a dimension costs one rule, though
-/// the cells still double with each (2^n monomorphisations of `$body`). A
+/// `@pruning`, `@expansion` and `@levels`): each rule matches one choice,
+/// declares one alias and hands the rest on, so a dimension costs one rule,
+/// though the cells still double with each (2^n monomorphisations of
+/// `$body`: 16 for the join cells). `bench ds` calls the three-dimension
+/// form, which leaves `L` at `AllLevels`, since it refuses
+/// `--ds-layout-levels` and so never needs the other 8. A
 /// dimension also costs a `LayoutChoices` field, a `DsChoices` field, an
 /// `Execution::HashHtj` field, and a type parameter (with its `*_of::<X>()`
 /// label) on `HashHtj` and `HashTrieFamily`.
@@ -599,10 +666,34 @@ macro_rules! with_hash_trie_layout {
             },
         }
     };
+    (@levels $choice:expr; $L:ident; $then:expr) => {
+        match $choice {
+            | $crate::options::LevelsChoice::All => {
+                type $L = ::kermit_ds::AllLevels;
+                $then
+            },
+            | $crate::options::LevelsChoice::Keys => {
+                type $L = ::kermit_ds::KeyLevels;
+                $then
+            },
+        }
+    };
+    // Three dimensions, `L` left at its default, `AllLevels`: `bench ds`,
+    // which refuses `--ds-layout-levels`.
     ($hasher:expr, $pruning:expr, $expansion:expr, | $H:ident, $P:ident, $E:ident | $body:expr) => {
         $crate::options::with_hash_trie_layout!(@hasher $hasher; $H;
             $crate::options::with_hash_trie_layout!(@pruning $pruning; $P;
                 $crate::options::with_hash_trie_layout!(@expansion $expansion; $E; $body)))
+    };
+    // All four: the join cells.
+    (
+        $hasher:expr, $pruning:expr, $expansion:expr, $levels:expr,
+        | $H:ident, $P:ident, $E:ident, $L:ident | $body:expr
+    ) => {
+        $crate::options::with_hash_trie_layout!(@hasher $hasher; $H;
+            $crate::options::with_hash_trie_layout!(@pruning $pruning; $P;
+                $crate::options::with_hash_trie_layout!(@expansion $expansion; $E;
+                    $crate::options::with_hash_trie_layout!(@levels $levels; $L; $body))))
     };
 }
 
@@ -919,6 +1010,8 @@ pub(crate) struct DsChoices {
     pub pruning: PruningChoice,
     /// `--ds-layout-expansion`; reaches the hash-trie cell only.
     pub expansion: ExpansionChoice,
+    /// `--ds-layout-levels`; reaches the hash-trie cell only.
+    pub levels: LevelsChoice,
     /// `--ds-layout-seek`; reaches the two sorted-trie cells.
     pub seek: SeekChoice,
     /// `--ds-config`; reaches the hash-trie cell only.
@@ -947,6 +1040,7 @@ impl DsChoices {
             hasher: layout.hash_trie_hasher_resolved(),
             pruning: layout.hash_trie_pruning_resolved(),
             expansion: layout.hash_trie_expansion_resolved(),
+            levels: layout.hash_trie_levels_resolved(),
             seek: layout.sorted_trie_seek_resolved(),
             config: config.hash_trie_config_resolved()?,
             build: build.resolved()?,
@@ -1008,6 +1102,22 @@ mod tests {
                         expansion_of::<E>()
                     ));
                     assert_eq!(bound, (hasher, pruning, expansion));
+                    // The four-dimension form, the join cells' (#116).
+                    for &levels in LevelsChoice::value_variants() {
+                        let bound = with_hash_trie_layout!(
+                            hasher,
+                            pruning,
+                            expansion,
+                            levels,
+                            |H, P, E, L| (
+                                hasher_of::<H>(),
+                                pruning_of::<P>(),
+                                expansion_of::<E>(),
+                                levels_of::<L>()
+                            )
+                        );
+                        assert_eq!(bound, (hasher, pruning, expansion, levels));
+                    }
                 }
             }
         }
@@ -1050,6 +1160,38 @@ mod tests {
         }
         assert_eq!(expansion_of::<EagerExpansion>(), ExpansionChoice::Eager);
         assert_eq!(expansion_of::<LazyExpansion>(), ExpansionChoice::Lazy);
+    }
+
+    /// The same round trip for `--ds-layout-levels` and `LevelPolicy`
+    /// (#116), and each choice's trie-level policy.
+    #[test]
+    fn levels_choices_round_trip_through_layout_names() {
+        const TABLE: &[(LevelsChoice, &str)] = &[
+            (
+                LevelsChoice::All,
+                <kermit_ds::AllLevels as LayoutOption>::NAME,
+            ),
+            (
+                LevelsChoice::Keys,
+                <kermit_ds::KeyLevels as LayoutOption>::NAME,
+            ),
+        ];
+        for choice in LevelsChoice::value_variants() {
+            let (_, name) = TABLE
+                .iter()
+                .find(|(c, _)| c == choice)
+                .expect("every LevelsChoice has a marker");
+            assert_eq!(LevelsChoice::from_layout_name(name), Some(*choice));
+            assert_eq!(
+                choice.to_possible_value().unwrap().get_name(),
+                *name,
+                "the CLI value is the marker's name"
+            );
+        }
+        assert_eq!(levels_of::<kermit_ds::AllLevels>(), LevelsChoice::All);
+        assert_eq!(levels_of::<kermit_ds::KeyLevels>(), LevelsChoice::Keys);
+        assert_eq!(LevelsChoice::All.trie_levels(), TrieLevels::All);
+        assert_eq!(LevelsChoice::Keys.trie_levels(), TrieLevels::JoinKeys);
     }
 
     #[test]
@@ -1885,6 +2027,7 @@ mod tests {
             hash_trie_hasher: Some(HasherChoice::Fxhash),
             hash_trie_pruning: Some(PruningChoice::On),
             hash_trie_expansion: Some(ExpansionChoice::Lazy),
+            hash_trie_levels: Some(LevelsChoice::Keys),
             sorted_trie_seek: Some(SeekChoice::Binary),
         };
         let config = ConfigChoices {
@@ -1899,6 +2042,7 @@ mod tests {
             DsFlag::LayoutHasher,
             DsFlag::LayoutPruning,
             DsFlag::LayoutExpansion,
+            DsFlag::LayoutLevels,
             DsFlag::LayoutSeek,
             DsFlag::Config,
             DsFlag::Build(IndexStructure::ColumnTrie),

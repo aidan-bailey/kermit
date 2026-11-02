@@ -6,9 +6,9 @@ use {
     kermit::db::{self, validate_query, Catalog, Prepared},
     kermit_algos::{JoinQuery, Planner},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::RelationHeader,
+    kermit_ds::{RelationHeader, TrieLevels},
     std::{
-        collections::HashSet,
+        collections::{BTreeMap, BTreeSet, HashSet},
         path::{Path, PathBuf},
     },
 };
@@ -50,8 +50,23 @@ pub struct PreparedWorkload {
     pub workload: Workload,
     /// The relations the queries name, as flat tuples with their statistics.
     pub catalog: Catalog,
-    /// One per entry of `workload.queries`, in the same order.
-    pub prepared: Vec<Prepared>,
+    /// One list per trie-level policy the cells need, each one entry per
+    /// query of `workload.queries`, in order (#116).
+    prepared: BTreeMap<TrieLevels, Vec<Prepared>>,
+}
+
+impl PreparedWorkload {
+    /// The queries prepared under `levels`, one per entry of
+    /// `workload.queries`, in order.
+    ///
+    /// # Panics
+    ///
+    /// If no cell asked for `levels` when the workload was prepared.
+    pub fn prepared(&self, levels: TrieLevels) -> &[Prepared] {
+        self.prepared
+            .get(&levels)
+            .unwrap_or_else(|| panic!("the workload was not prepared for {levels:?} trie levels"))
+    }
 }
 
 impl Workload {
@@ -127,7 +142,9 @@ impl Workload {
     /// A relation file whose header or tuples cannot be read, or the first
     /// query that validation, planning or index planning rejects, named with
     /// its benchmark.
-    pub fn prepare(self, planner: &Planner) -> anyhow::Result<PreparedWorkload> {
+    pub fn prepare(
+        self, planner: &Planner, levels: &[TrieLevels],
+    ) -> anyhow::Result<PreparedWorkload> {
         let headers = self
             .relation_paths
             .iter()
@@ -150,15 +167,21 @@ impl Workload {
             }
         }
         let catalog = Catalog::new(relations, planner.required_statistics());
-        let prepared = self
-            .queries
-            .iter()
-            .map(|q| {
-                db::prepare(&catalog, &q.query, planner, kermit_ds::TrieLevels::All).map_err(|e| {
-                    anyhow::anyhow!("benchmark '{}' query '{}': {e}", self.name, q.name)
+        // Once per policy the cells need (#116): planning does not depend on
+        // it, but each policy's index specs do.
+        let mut prepared = BTreeMap::new();
+        for policy in levels.iter().copied().collect::<BTreeSet<_>>() {
+            let queries = self
+                .queries
+                .iter()
+                .map(|q| {
+                    db::prepare(&catalog, &q.query, planner, policy).map_err(|e| {
+                        anyhow::anyhow!("benchmark '{}' query '{}': {e}", self.name, q.name)
+                    })
                 })
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            prepared.insert(policy, queries);
+        }
         Ok(PreparedWorkload {
             workload: self,
             catalog,
@@ -343,12 +366,12 @@ mod tests {
         let (root, def) = def_with_an_unreadable_relation(&[("pair", "Q(X, Y) :- edge(X, Y).")]);
         let workload = Workload::from_definition(&def, root.path(), None).unwrap();
 
-        let prepared = workload.prepare(&free()).unwrap();
+        let prepared = workload.prepare(&free(), &[TrieLevels::All]).unwrap();
 
         assert_eq!(prepared.catalog.names().collect::<Vec<_>>(), ["edge"]);
         assert_eq!(prepared.catalog.tuples("edge").unwrap().len(), 3);
         assert_eq!(prepared.prepared.len(), 1);
-        assert_eq!(prepared.prepared[0].relations(), ["edge"]);
+        assert_eq!(prepared.prepared(TrieLevels::All)[0].relations(), ["edge"]);
     }
 
     /// The control for the test above: `unused.csv` really is unreadable, so a
@@ -359,7 +382,11 @@ mod tests {
             def_with_an_unreadable_relation(&[("both", "Q(X, Y) :- edge(X, Y), unused(X, Y).")]);
         let workload = Workload::from_definition(&def, root.path(), None).unwrap();
 
-        let err = workload.prepare(&free()).err().unwrap().to_string();
+        let err = workload
+            .prepare(&free(), &[TrieLevels::All])
+            .err()
+            .unwrap()
+            .to_string();
 
         assert!(err.contains("unused.csv"), "{err}");
         assert!(err.contains("cannot parse"), "{err}");
@@ -373,7 +400,11 @@ mod tests {
         let (root, def) = def_with_an_unreadable_relation(&[("narrow", "Q(X) :- unused(X).")]);
         let workload = Workload::from_definition(&def, root.path(), None).unwrap();
 
-        let err = workload.prepare(&free()).err().unwrap().to_string();
+        let err = workload
+            .prepare(&free(), &[TrieLevels::All])
+            .err()
+            .unwrap()
+            .to_string();
 
         assert!(err.contains("benchmark 'local' query 'narrow': "), "{err}");
         assert!(
@@ -389,7 +420,11 @@ mod tests {
         let level_under = |optimiser: Box<dyn QueryOptimiser>| {
             let workload = Workload::from_definition(&def, root.path(), None).unwrap();
             let planner = Planner::new(optimiser);
-            workload.prepare(&planner).unwrap().catalog.level()
+            workload
+                .prepare(&planner, &[TrieLevels::All])
+                .unwrap()
+                .catalog
+                .level()
         };
 
         assert_eq!(
@@ -410,7 +445,7 @@ mod tests {
         ]);
         let workload = Workload::from_definition(&def, root.path(), None).unwrap();
 
-        let prepared = workload.prepare(&free()).unwrap();
+        let prepared = workload.prepare(&free(), &[TrieLevels::All]).unwrap();
 
         let names: Vec<&str> = prepared
             .workload
@@ -419,7 +454,49 @@ mod tests {
             .map(|q| q.name.as_str())
             .collect();
         assert_eq!(names, ["pair", "start"]);
-        let heads: Vec<usize> = prepared.prepared.iter().map(Prepared::head_len).collect();
+        let heads: Vec<usize> = prepared
+            .prepared(TrieLevels::All)
+            .iter()
+            .map(Prepared::head_len)
+            .collect();
         assert_eq!(heads, [2, 1]);
+    }
+
+    /// Each query is prepared once per distinct policy the cells need, and
+    /// each policy's index specs follow it (#116).
+    #[test]
+    fn prepare_prepares_each_query_once_per_policy() {
+        // In `start`, Y is the join key and X and Z are payload, so under
+        // `JoinKeys` both of its `edge` indexes have one level.
+        let (root, def) = def_with_an_unreadable_relation(&[
+            ("pair", "Q(X, Y) :- edge(X, Y)."),
+            ("start", "Q(X) :- edge(X, Y), edge(Y, Z)."),
+        ]);
+        let workload = Workload::from_definition(&def, root.path(), None).unwrap();
+        let prepared = workload
+            .prepare(&free(), &[
+                TrieLevels::All,
+                TrieLevels::JoinKeys,
+                TrieLevels::All,
+            ])
+            .unwrap();
+        for policy in [TrieLevels::All, TrieLevels::JoinKeys] {
+            let queries = prepared.prepared(policy);
+            assert_eq!(queries.len(), prepared.workload.queries.len());
+            assert!(queries.iter().all(|p| p.trie_levels() == policy));
+        }
+        let start = &prepared.prepared(TrieLevels::JoinKeys)[1];
+        assert!(start.indexes().iter().all(|spec| spec.levels == 1));
+        let start = &prepared.prepared(TrieLevels::All)[1];
+        assert!(start.indexes().iter().all(|spec| spec.levels == 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "not prepared for JoinKeys trie levels")]
+    fn a_policy_no_cell_asked_for_is_refused() {
+        let (root, def) = def_with_an_unreadable_relation(&[("pair", "Q(X, Y) :- edge(X, Y).")]);
+        let workload = Workload::from_definition(&def, root.path(), None).unwrap();
+        let prepared = workload.prepare(&free(), &[TrieLevels::All]).unwrap();
+        let _ = prepared.prepared(TrieLevels::JoinKeys);
     }
 }

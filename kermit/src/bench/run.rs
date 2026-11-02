@@ -129,8 +129,10 @@ fn run_benchmark<F: ExecutionFamily>(
     let PreparedWorkload {
         workload: definition,
         catalog,
-        prepared: prepared_queries,
+        ..
     } = workload;
+    // The queries prepared under this family's trie levels (#116).
+    let prepared_queries = workload.prepared(<F::Rel as kermit_ds::Relation>::TRIE_LEVELS);
 
     // `ds_name`/`algo_name` become the report's identity axes and the
     // on-disk `target/criterion/{group}` names (the group_name below embeds
@@ -345,14 +347,17 @@ pub(crate) fn dispatch_run_bench(
             hasher,
             pruning,
             expansion,
+            levels,
             config,
             build,
-        } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| run_benchmark(
-            &HashHtj::<H, P, E>::new(config, build),
-            workload,
-            settings,
-            sink,
-        )),
+        } => with_hash_trie_layout!(hasher, pruning, expansion, levels, |H, P, E, L| {
+            run_benchmark(
+                &HashHtj::<H, P, E, L>::new(config, build),
+                workload,
+                settings,
+                sink,
+            )
+        }),
     }
 }
 

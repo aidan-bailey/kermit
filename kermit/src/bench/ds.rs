@@ -165,15 +165,21 @@ pub(crate) fn dispatch_ds_bench(
             hasher,
             pruning,
             expansion,
+            levels,
             config,
             build,
-        } => with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| run_ds_bench(
-            &HashTrieFamily::<H, P, E>::new(config, build),
-            relation,
-            metrics,
-            queries_per_build,
-            group_name,
-            criterion,
-        )),
+        } => {
+            // `bench ds` refuses `--ds-layout-levels` (its relation has no
+            // query, so no join key): every cell here builds `AllLevels`.
+            debug_assert_eq!(levels, crate::options::LevelsChoice::All);
+            with_hash_trie_layout!(hasher, pruning, expansion, |H, P, E| run_ds_bench(
+                &HashTrieFamily::<H, P, E>::new(config, build),
+                relation,
+                metrics,
+                queries_per_build,
+                group_name,
+                criterion,
+            ))
+        },
     }
 }
