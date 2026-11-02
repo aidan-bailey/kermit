@@ -25,14 +25,19 @@ use {
 /// is then a shortest path over sets of bound variables, found by dynamic
 /// programming in the style of Selinger et al. (1979). No column order
 /// constrains the plan, since a query builds each index with its columns in
-/// plan order, so every subset of the variables is a state: 2ⁿ − 1 for n
-/// variables, which fits the default budget up to 14 variables and falls
-/// back to [`CardinalityOptimiser`] above.
+/// plan order.
+///
+/// The search orders the join keys only, the variables two or more atoms
+/// carry, and the payload follows them in canonical order (#116). Every key
+/// order ends with every key bound, so the payload's estimates are the same
+/// after each and cannot change which key order is cheapest. Every subset
+/// of the k join keys is a state: 2ᵏ − 1 of them, which fits the default
+/// budget up to 14 join keys, however many variables are payload.
 ///
 /// Ties break towards the lexicographically smaller order, so plans are
-/// deterministic. A query with more than 64 variables, or whose search
+/// deterministic. A query with more than 64 join keys, or whose search
 /// would reach more than [`state_budget`](Self::state_budget) sets, gets
-/// [`CardinalityOptimiser`]'s plan.
+/// [`CardinalityOptimiser`]'s plan, which is payload last too.
 ///
 /// Reads per-column distinct counts, so it declares
 /// [`StatisticsLevel::ColumnDistinct`]. See `docs/optimisers/cost-based.md`.
@@ -63,16 +68,19 @@ impl Default for CostBasedOptimiser {
 impl QueryOptimiser for CostBasedOptimiser {
     fn plan(&self, query: &JoinQuery, stats: &CatalogStats) -> QueryPlan {
         let analysis = analyse(query);
+        let keys: Vec<usize> = (0..analysis.num_vars)
+            .filter(|&v| analysis.join_keys[v])
+            .collect();
         let model = CostModel::new(
             query,
             &analysis.predicate_variables,
-            analysis.num_vars,
+            key_bits(&keys, analysis.num_vars),
             stats,
         );
-        let Some(variable_ordering) = cheapest_order(&model, analysis.num_vars, self.state_budget)
-        else {
+        let Some(mut variable_ordering) = cheapest_order(&model, &keys, self.state_budget) else {
             return CardinalityOptimiser.plan(query, stats);
         };
+        variable_ordering.extend((0..analysis.num_vars).filter(|&v| !analysis.join_keys[v]));
         QueryPlan {
             variable_ordering,
         }
@@ -81,11 +89,25 @@ impl QueryOptimiser for CostBasedOptimiser {
     fn required_statistics(&self) -> StatisticsLevel { StatisticsLevel::ColumnDistinct }
 }
 
-/// The one-variable set `{v}`. Sets of variables are `u64` bitmasks.
-fn bit(v: usize) -> u64 { 1 << v }
+/// The one-variable set `{b}`, `b` a variable's bit (see [`key_bits`]). Sets
+/// of variables are `u64` bitmasks.
+fn bit(b: usize) -> u64 { 1 << b }
 
-/// Whether `set` holds variable `v`.
-fn contains(set: u64, v: usize) -> bool { set & bit(v) != 0 }
+/// Whether `set` holds the variable whose bit is `b`.
+fn contains(set: u64, b: usize) -> bool { set & bit(b) != 0 }
+
+/// The bits the search gives the join keys: `keys[b]` (a canonical variable)
+/// is bit `b`, in canonical order, and every other variable has none. So a
+/// set of bound keys fits a `u64` whenever there are at most 64 join keys,
+/// however many variables are payload, and comparing orders bit by bit
+/// compares them canonically, which keeps the tie-break.
+fn key_bits(keys: &[usize], num_vars: usize) -> Vec<Option<usize>> {
+    let mut bits = vec![None; num_vars];
+    for (b, &v) in keys.iter().enumerate() {
+        bits[v] = Some(b);
+    }
+    bits
+}
 
 /// One body atom's statistics, as the estimate reads them.
 struct AtomStats {
@@ -136,7 +158,9 @@ struct CostModel<'q> {
     atoms: Vec<AtomStats>,
     /// Each atom's variables in column order, as `analyse` numbers them.
     predicate_variables: &'q [Vec<usize>],
-    num_vars: usize,
+    /// `bits[v]`: variable `v`'s bit in a set of bound variables, or `None`
+    /// for a variable the search never binds (a payload variable).
+    bits: Vec<Option<usize>>,
 }
 
 impl<'q> CostModel<'q> {
@@ -144,7 +168,7 @@ impl<'q> CostModel<'q> {
     /// [`QueryOptimiser::plan`] receives it): one variable per column, so
     /// `predicate_variables[i][c]` is the variable in atom `i`'s column `c`.
     fn new(
-        query: &JoinQuery, predicate_variables: &'q [Vec<usize>], num_vars: usize,
+        query: &JoinQuery, predicate_variables: &'q [Vec<usize>], bits: Vec<Option<usize>>,
         stats: &CatalogStats,
     ) -> Self {
         debug_assert!(
@@ -163,7 +187,7 @@ impl<'q> CostModel<'q> {
         Self {
             atoms,
             predicate_variables,
-            num_vars,
+            bits,
         }
     }
 
@@ -184,11 +208,11 @@ impl<'q> CostModel<'q> {
         // variables in canonical order. Any fixed order gives the same value
         // up to rounding; this one follows the #68 prototype
         // (`planners.py`), which the parity check compares against.
-        let mut distinct_of: Vec<Vec<f64>> = vec![Vec::new(); self.num_vars];
+        let mut distinct_of: Vec<Vec<f64>> = vec![Vec::new(); self.bits.len()];
         let mut met: Vec<usize> = Vec::new();
         for (atom, vars) in self.atoms.iter().zip(self.predicate_variables) {
             let bound_columns: Vec<usize> = (0..vars.len())
-                .filter(|&c| contains(bound, vars[c]))
+                .filter(|&c| self.bits[vars[c]].is_some_and(|b| contains(bound, b)))
                 .collect();
             if bound_columns.is_empty() {
                 continue;
@@ -235,15 +259,16 @@ impl Partial {
     }
 }
 
-/// The cheapest order of the `num_vars` variables, by a forward dynamic
-/// programme over the sets of bound variables. Layer k holds the k-variable
-/// sets, each with its cheapest order; a set grows by any variable not yet
-/// in it.
+/// The cheapest order of the join keys `keys` (canonical variables, in
+/// canonical order, `keys[b]` having bit `b` in `model`), by a forward
+/// dynamic programme over the sets of bound keys. Layer k holds the k-key
+/// sets, each with its cheapest order; a set grows by any key not yet in it.
+/// The order holds canonical variables.
 ///
-/// `None` past 64 variables, which a `u64` set cannot index, and once more
+/// `None` past 64 join keys, which a `u64` set cannot index, and once more
 /// than `budget` sets have been reached.
-fn cheapest_order(model: &CostModel<'_>, num_vars: usize, budget: usize) -> Option<Vec<usize>> {
-    if num_vars > 64 {
+fn cheapest_order(model: &CostModel<'_>, keys: &[usize], budget: usize) -> Option<Vec<usize>> {
+    if keys.len() > 64 {
         return None;
     }
     let mut layer = HashMap::from([(0u64, Partial {
@@ -251,17 +276,17 @@ fn cheapest_order(model: &CostModel<'_>, num_vars: usize, budget: usize) -> Opti
         order: Vec::new(),
     })]);
     let mut reached = 0usize;
-    for _ in 0..num_vars {
+    for _ in 0..keys.len() {
         let mut next: HashMap<u64, Partial> = HashMap::new();
         let mut estimates: HashMap<u64, f64> = HashMap::new();
         for (&bound, partial) in &layer {
-            for v in (0..num_vars).filter(|&v| !contains(bound, v)) {
-                let extended = bound | bit(v);
+            for b in (0..keys.len()).filter(|&b| !contains(bound, b)) {
+                let extended = bound | bit(b);
                 let estimate = *estimates
                     .entry(extended)
                     .or_insert_with(|| model.estimate(extended));
                 let mut order = partial.order.clone();
-                order.push(v);
+                order.push(keys[b]);
                 let candidate = Partial {
                     cost: partial.cost + estimate,
                     order,
@@ -289,7 +314,11 @@ fn cheapest_order(model: &CostModel<'_>, num_vars: usize, budget: usize) -> Opti
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::optimiser::RelationStats, kermit_parser::JoinQuery};
+    use {
+        super::*,
+        crate::optimiser::{LexicographicOptimiser, RelationStats},
+        kermit_parser::JoinQuery,
+    };
 
     /// Statistics for `q`'s relations: `(name, tuples, per-column distinct
     /// counts)`.
@@ -300,10 +329,19 @@ mod tests {
         })
     }
 
+    /// Every variable boundable, at its own bit: the model the estimate
+    /// tables are written against.
+    fn identity_bits(num_vars: usize) -> Vec<Option<usize>> { (0..num_vars).map(Some).collect() }
+
     /// `est` of the set of canonical variable indices `vars`.
     fn estimate(q: &JoinQuery, stats: &CatalogStats, vars: &[usize]) -> f64 {
         let analysis = analyse(q);
-        let model = CostModel::new(q, &analysis.predicate_variables, analysis.num_vars, stats);
+        let model = CostModel::new(
+            q,
+            &analysis.predicate_variables,
+            identity_bits(analysis.num_vars),
+            stats,
+        );
         model.estimate(vars.iter().fold(0, |set, &v| set | bit(v)))
     }
 
@@ -407,11 +445,13 @@ mod tests {
         // search meets tied candidates in `HashMap` order, which changes
         // from map to map, so a lucky order could hide a missing tie-break:
         // each plan is repeated, every time with fresh maps.
-        let q: JoinQuery = "Q(X, Y) :- R(X), S(Y).".parse().unwrap();
+        // Both are join keys (#116), so the search orders them: each costs
+        // est = 10 · 10 / 10 alone, and both together 100.
+        let q: JoinQuery = "Q(X, Y) :- R(X), R(Y), S(X), S(Y).".parse().unwrap();
         let stats = stats_for(&q, &[("R", 10, &[10]), ("S", 10, &[10])]);
         // Swapping the head swaps the canonical indices; the smaller still
         // comes first.
-        let swapped: JoinQuery = "Q(Y, X) :- R(X), S(Y).".parse().unwrap();
+        let swapped: JoinQuery = "Q(Y, X) :- R(X), R(Y), S(X), S(Y).".parse().unwrap();
         for _ in 0..64 {
             let plan = CostBasedOptimiser::default().plan(&q, &stats);
             assert_eq!(plan.variable_ordering, vec![0, 1]);
@@ -440,11 +480,17 @@ mod tests {
 
     #[test]
     fn a_relation_without_statistics_is_assumed_large() {
-        let q: JoinQuery = "Q(X, Y) :- Known(X), Unknown(Y).".parse().unwrap();
+        // Each atom twice, so X and Y are join keys and the search orders
+        // them (#116).
+        let q: JoinQuery = "Q(X, Y) :- Known(X), Known(X), Unknown(Y), Unknown(Y)."
+            .parse()
+            .unwrap();
         let stats = stats_for(&q, &[("Known", 10, &[10])]);
         let plan = CostBasedOptimiser::default().plan(&q, &stats);
         assert_eq!(plan.variable_ordering, vec![0, 1]);
-        let q: JoinQuery = "Q(Y, X) :- Known(X), Unknown(Y).".parse().unwrap();
+        let q: JoinQuery = "Q(Y, X) :- Known(X), Known(X), Unknown(Y), Unknown(Y)."
+            .parse()
+            .unwrap();
         let plan = CostBasedOptimiser::default().plan(&q, &stats);
         assert_eq!(plan.variable_ordering, vec![1, 0]);
     }
@@ -467,18 +513,18 @@ mod tests {
 
     #[test]
     fn the_budget_counts_every_set_reached() {
-        // No constraint limits the search, so the worked example reaches
-        // every non-empty subset of its three variables: 3 + 3 + 1 = 7 sets.
+        // Only B and Y are join keys (A is payload, #116), so the search
+        // reaches the 2 + 1 = 3 non-empty sets of them.
         let (q, stats) = worked_example();
         let fits = CostBasedOptimiser {
-            state_budget: 7,
+            state_budget: 3,
         }
         .plan(&q, &stats);
         assert_eq!(fits.variable_ordering, vec![2, 1, 0]);
         let cardinality = CardinalityOptimiser.plan(&q, &stats);
         assert_eq!(
             CostBasedOptimiser {
-                state_budget: 6
+                state_budget: 2
             }
             .plan(&q, &stats),
             cardinality
@@ -492,14 +538,48 @@ mod tests {
         );
     }
 
+    /// The guard counts join keys: every variable sits in two atoms here.
     #[test]
-    fn more_than_64_variables_get_cardinalitys_plan() {
-        let body: Vec<String> = (0..65).map(|v| format!("R(V{v})")).collect();
+    fn more_than_64_join_keys_get_cardinalitys_plan() {
+        let body: Vec<String> = (0..65).map(|v| format!("R(V{v}), S(V{v})")).collect();
         let q: JoinQuery = format!("Q(V0) :- {}.", body.join(", ")).parse().unwrap();
-        let stats = stats_for(&q, &[("R", 10, &[10])]);
+        let stats = stats_for(&q, &[("R", 10, &[10]), ("S", 10, &[10])]);
         assert_eq!(
             CostBasedOptimiser::default().plan(&q, &stats),
             CardinalityOptimiser.plan(&q, &stats)
+        );
+    }
+
+    /// The worked example with 64 payload atoms added: 67 variables, but two
+    /// join keys, so the search runs and binds Y before B (cost 10 + 24
+    /// against 12 + 24), where Cardinality binds B, the smaller, first.
+    #[test]
+    fn many_payload_variables_leave_the_search_to_the_join_keys() {
+        let payload: Vec<String> = (0..64).map(|v| format!("p(V{v})")).collect();
+        let text = format!(
+            "Q(A, B, Y) :- small(A, Y), link(c7, B), owns(B, Y), {}.",
+            payload.join(", ")
+        );
+        let accesses = crate::extract_accesses(&text.parse().unwrap()).unwrap();
+        let mut relations: Vec<(String, usize, Vec<usize>)> = vec![
+            ("@0".into(), 100, vec![100, 10]),
+            ("@1".into(), 12, vec![12]),
+            ("@2".into(), 40_000, vec![20_000, 10]),
+        ];
+        relations.extend((3..67).map(|k| (format!("@{k}"), 5, vec![5])));
+        let borrowed: Vec<(&str, usize, &[usize])> = relations
+            .iter()
+            .map(|(name, tuples, distinct)| (name.as_str(), *tuples, distinct.as_slice()))
+            .collect();
+        let stats = stats_for(&accesses.query, &borrowed);
+        let plan = CostBasedOptimiser::default()
+            .plan(&accesses.query, &stats)
+            .variable_ordering;
+        assert_eq!(&plan[..2], &[2, 1], "the search's key order, not Cardinality's");
+        assert_eq!(plan.len(), 67);
+        assert_eq!(
+            &CardinalityOptimiser.plan(&accesses.query, &stats).variable_ordering[..2],
+            &[1, 2]
         );
     }
 
@@ -538,8 +618,14 @@ mod tests {
     /// constrains the plan, so the cheap side goes first.
     #[test]
     fn the_cheap_side_goes_first() {
-        let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
-        let stats = stats_for(&q, &[("R", 1000, &[1000, 1000]), ("S", 1, &[1])]);
+        // U(X) makes X a join key too (#116), so the cost alone decides:
+        // est({Y}) = 1 against est({X}) = 1000.
+        let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y), U(X).".parse().unwrap();
+        let stats = stats_for(&q, &[
+            ("R", 1000, &[1000, 1000]),
+            ("S", 1, &[1]),
+            ("U", 1000, &[1000]),
+        ]);
         assert_eq!(
             CostBasedOptimiser::default()
                 .plan(&q, &stats)
@@ -548,16 +634,16 @@ mod tests {
         );
     }
 
-    /// One ternary atom: the search binds its most selective column first,
-    /// whatever its position. (`the_budget_counts_every_set_reached` checks
-    /// that three variables reach seven sets.)
+    /// A ternary atom joined with itself, so every variable is a join key
+    /// (#116): the search binds its most selective column first, whatever
+    /// its position.
     #[test]
     fn the_most_selective_column_goes_first() {
-        let q: JoinQuery = "Q(X, Y, Z) :- T(X, Y, Z).".parse().unwrap();
+        let q: JoinQuery = "Q(X, Y, Z) :- T(X, Y, Z), T(X, Y, Z).".parse().unwrap();
         let stats = stats_for(&q, &[("T", 1000, &[10, 5, 7])]);
         // est({Y}) = 5 is the cheapest first step; then est({Y, Z}) = 35
         // beats est({X, Y}) = 50, and every order ends at est({X, Y, Z}) =
-        // 1000: Y, Z, X costs 1040, the next best (Z, Y, X) 1042.
+        // 1000² / 350: Y, Z, X costs 2 below the next best, Z, Y, X.
         assert_eq!(
             CostBasedOptimiser::default()
                 .plan(&q, &stats)
@@ -605,8 +691,10 @@ mod tests {
 
     /// A random query as the planner receives it, and its statistics: two
     /// to four atoms over three relations of arity 1–3, each atom's columns
-    /// distinct variables (an access repeats none) drawn from six, and the
-    /// head every variable used.
+    /// distinct variables (an access repeats none) drawn from four, and the
+    /// head every variable used. Four, not more, so that most variables are
+    /// carried by two atoms: the search orders only the join keys (#116), and
+    /// a case with one join key would test nothing.
     fn random_case(rng: &mut Lcg, counts: Counts) -> (String, Relations) {
         let relations: Relations = (0..3)
             .map(|i| {
@@ -641,7 +729,7 @@ mod tests {
         let atoms: Vec<String> = (0..2 + rng.below(3))
             .map(|_| {
                 let (name, _, distinct) = &relations[rng.below(relations.len())];
-                let mut pool: Vec<usize> = (0..6).collect();
+                let mut pool: Vec<usize> = (0..4).collect();
                 let terms: Vec<String> = (0..distinct.len())
                     .map(|_| {
                         let v = format!("V{}", pool.remove(rng.below(pool.len())));
@@ -704,9 +792,27 @@ mod tests {
             .collect();
         let stats = stats_for(q, &relations);
         let analysis = analyse(q);
-        let model = CostModel::new(q, &analysis.predicate_variables, analysis.num_vars, &stats);
+        let model = CostModel::new(
+            q,
+            &analysis.predicate_variables,
+            identity_bits(analysis.num_vars),
+            &stats,
+        );
+        // The orders the search can return (#116): each order of the join
+        // keys, then the payload in canonical order.
+        let keys: Vec<usize> = (0..analysis.num_vars)
+            .filter(|&v| analysis.join_keys[v])
+            .collect();
+        let payload: Vec<usize> = (0..analysis.num_vars)
+            .filter(|&v| !analysis.join_keys[v])
+            .collect();
         let mut best: Option<(f64, Vec<usize>)> = None;
-        for order in every_order(analysis.num_vars) {
+        for key_order in every_order(keys.len()) {
+            let order: Vec<usize> = key_order
+                .iter()
+                .map(|&k| keys[k])
+                .chain(payload.iter().copied())
+                .collect();
             let cost = cost_of(&model, &order);
             if best.as_ref().is_none_or(|(least, _)| cost < *least) {
                 best = Some((cost, order));
@@ -750,14 +856,20 @@ mod tests {
                 searched.plan, searched.cheapest
             );
             // The lexicographic plan is the canonical order 0, 1, 2, ...
-            if searched.plan.iter().enumerate().any(|(i, &v)| i != v) {
+            // Lexicographic's plan: the join keys, then the payload, each in
+            // canonical order (#116).
+            let canonical = LexicographicOptimiser.plan(&q, &CatalogStats::default());
+            if searched.plan != canonical.variable_ordering {
                 nontrivial += 1;
             }
         }
-        // Observed: 215 of the 300 seeds. The floor fails the test if
+        // Observed: 84 of the 300 seeds, against Lexicographic's payload-last
+        // plan (#116). Before #116 the search ordered the payload too and 215
+        // planned off the identity order; with only the join keys to order,
+        // a pool of six variables gave 64. The floor fails the test if
         // `random_case` degenerates into queries the search plans trivially.
         assert!(
-            nontrivial >= 160,
+            nontrivial >= 63,
             "only {nontrivial} of {SEARCH_SEEDS} random cases plan off the canonical order"
         );
     }
