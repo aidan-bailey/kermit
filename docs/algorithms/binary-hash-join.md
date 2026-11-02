@@ -4,7 +4,7 @@
 
 ## What it is
 
-A left-deep, pipelined binary hash join: the conventional join plan, and the baseline for what worst-case optimal joins buy. It is the plan of Wang, Willsey and Suciu, "Free Join: Unifying Worst-Case Optimal and Traditional Joins" (PACMMOD 2023), §2.2: the engine iterates over each tuple of the first atom, probes the hash table of the second on the variables the first binds, and for each match probes the third, and so on. Nothing intermediate is stored, so it fits `join_for_each`'s streaming contract unchanged.
+A left-deep, pipelined binary hash join: the conventional join plan, and the baseline for what worst-case optimal joins buy. It is the plan of Wang, Willsey and Suciu, "Free Join: Unifying Worst-Case Optimal and Traditional Joins" (SIGMOD 2023), §2.2: the engine iterates over each tuple of the first atom, probes the hash table of the second on the variables the first binds, and for each match probes the third, and so on. Nothing intermediate is stored, so it fits `join_for_each`'s streaming contract unchanged.
 
 It is not worst-case optimal. Its work is proportional to the sum of the sizes of its intermediate results, and on a cyclic query an intermediate result can exceed the AGM bound that [`HashTriejoin`](hash-triejoin.md) and [`LeapfrogTriejoin`](leapfrog-triejoin.md) meet. That gap is what this cell measures.
 

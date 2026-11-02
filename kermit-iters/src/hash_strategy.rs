@@ -3,11 +3,11 @@
 //! the algorithm.
 //!
 //! A `HashStrategy` is a zero-sized marker type passed as a generic
-//! parameter to `HashTrie<H>` (and `HashIndex<H>`) and used by the
-//! algorithm's singleton
-//! constructor (via precomputed hash). Each implementation is also a
-//! [`LayoutOption`] — the `NAME` constant flows into bench-report axes
-//! under `ds_layout_hasher`.
+//! parameter to `HashTrie<H>` and `HashIndex<H>`. `HashTrie` uses it in the
+//! algorithm's singleton constructor (via precomputed hash); `HashIndex`
+//! folds `H::hash` over a row's key values to select its bucket. Each
+//! implementation is also a [`LayoutOption`] — the `NAME` constant flows
+//! into bench-report axes under `ds_layout_hasher`.
 
 use crate::optimization::LayoutOption;
 

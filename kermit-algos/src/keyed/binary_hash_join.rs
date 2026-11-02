@@ -3,7 +3,7 @@
 //! The baseline that worst-case optimal joins are measured against. A binary
 //! plan joins one atom at a time. Written as a left-deep plan `[R_1, …, R_m]`
 //! it is executed by pipelining (Wang et al., "Free Join: Unifying
-//! Worst-Case Optimal and Traditional Joins", PACMMOD 2023, §2.2, Figure 2a):
+//! Worst-Case Optimal and Traditional Joins", SIGMOD 2023, §2.2, Figure 2a):
 //! the engine iterates over each tuple of the first atom, probes the hash
 //! table of the second atom on the variables the first binds, and for each
 //! match probes the third, and so on. Nothing intermediate is stored. For
