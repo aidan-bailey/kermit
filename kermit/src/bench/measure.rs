@@ -650,7 +650,8 @@ mod tests {
         let catalog = Catalog::new(vec![edges()], StatisticsLevel::TupleCounts);
         let query: JoinQuery = "Q(X, Z) :- edge(X, Y), edge(Y, Z).".parse().unwrap();
         let planner = Planner::new(Box::new(LexicographicOptimiser));
-        let prepared = kermit::db::prepare(&catalog, &query, &planner).unwrap();
+        let prepared =
+            kermit::db::prepare(&catalog, &query, &planner, kermit_ds::TrieLevels::All).unwrap();
         (catalog, prepared)
     }
 

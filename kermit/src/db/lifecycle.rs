@@ -38,6 +38,8 @@ pub struct Prepared {
     index_rows: Vec<usize>,
     checks: Vec<Access>,
     head_len: usize,
+    /// The policy the index specs were planned under (#116).
+    levels: TrieLevels,
 }
 
 impl Prepared {
@@ -64,6 +66,10 @@ impl Prepared {
     /// The number of head terms: the length of the prefix of each joined row
     /// that `execute` lends to its sink.
     pub fn head_len(&self) -> usize { self.head_len }
+
+    /// The trie-level policy [`prepare`] planned the index specs under: the
+    /// policy of the structure the query is meant to be built as (#116).
+    pub fn trie_levels(&self) -> TrieLevels { self.levels }
 
     /// The plan's variable order, by name: the executed query's variables in
     /// the order the join binds them. For one catalog and query it identifies
@@ -127,13 +133,17 @@ impl Prepared {
 /// plan: the statistics carry no policy, and `planner` plans over them
 /// freely.
 ///
+/// `levels` is the policy of the structure that will build the indexes
+/// ([`Relation::TRIE_LEVELS`]), which decides each spec's level count
+/// (#116). [`build`] refuses a structure with another.
+///
 /// # Errors
 ///
 /// The [`JoinError`] [`validate_query`] would return, or
 /// [`JoinError::MissingStatistics`] when `planner` reads statistics the catalog
 /// does not hold; in both cases nothing has been planned.
 pub fn prepare(
-    catalog: &Catalog, query: &JoinQuery, planner: &Planner,
+    catalog: &Catalog, query: &JoinQuery, planner: &Planner, levels: TrieLevels,
 ) -> Result<Prepared, JoinError> {
     validate_query(query, catalog)?;
 
@@ -166,7 +176,7 @@ pub fn prepare(
         query: executed,
         plan,
         indexes,
-    } = plan_indexes(&access_query, &ordering, TrieLevels::All);
+    } = plan_indexes(&access_query, &ordering, levels);
 
     // Counted here, untimed, for the report's `index_rows`, so reporting adds
     // no scan to the timed build. (A filtered build still counts before it
@@ -187,6 +197,7 @@ pub fn prepare(
         index_rows,
         checks: access_query.checks,
         head_len: query.head.terms.len(),
+        levels,
     })
 }
 
@@ -219,9 +230,9 @@ fn access_statistics(catalog: &Catalog, access: &Access, level: StatisticsLevel)
 
 /// The header of `spec`'s index: named for the relation, with the attributes of
 /// `base` at the spec's columns, or positional (at the index's arity) when
-/// `base` is.
+/// `base` is, and with the spec's level count (#116).
 fn spec_header(spec: &IndexSpec, base: &RelationHeader) -> RelationHeader {
-    if base.attrs().is_empty() {
+    let header = if base.attrs().is_empty() {
         RelationHeader::new_positional(&spec.relation, spec.columns.len())
     } else {
         let attrs = spec
@@ -230,7 +241,8 @@ fn spec_header(spec: &IndexSpec, base: &RelationHeader) -> RelationHeader {
             .map(|&column| base.attrs()[column].clone())
             .collect();
         RelationHeader::new(&spec.relation, attrs)
-    }
+    };
+    header.with_levels(spec.levels)
 }
 
 /// The indexes of one prepared query, made by [`build`] or [`build_with`]: one
@@ -290,12 +302,24 @@ impl<R> Indexes<R> {
 /// # Panics
 ///
 /// If `prepared` was made over another catalog and a relation it reads is
-/// missing. In debug builds, also if the catalog's rows changed since `prepare`
-/// counted them.
+/// missing, or for another trie-level policy than `R`'s
+/// ([`Prepared::trie_levels`], [`Relation::TRIE_LEVELS`]). In debug builds,
+/// also if the catalog's rows changed since `prepare` counted them.
 pub fn build_with<R: Relation>(
     catalog: &Catalog, prepared: &Prepared,
     mut construct: impl FnMut(RelationHeader, TupleView<'_>) -> R,
 ) -> Indexes<R> {
+    // A query planned for one structure's levels must not be built as
+    // another's: a `keys` trie given an `all` plan would build every level
+    // under a `keys` label.
+    assert_eq!(
+        prepared.levels,
+        R::TRIE_LEVELS,
+        "a query prepared for {:?} trie levels cannot be built by a structure with {:?} trie \
+         levels",
+        prepared.levels,
+        R::TRIE_LEVELS,
+    );
     // A check keeps no column: it only counts the rows its filter admits. A
     // structure that keeps duplicates answers once per row; one that does
     // not answers once.
@@ -455,7 +479,7 @@ mod tests {
     fn lexicographic() -> Planner { planner_of(LexicographicOptimiser) }
 
     fn prepared_for(catalog: &Catalog, text: &str) -> Prepared {
-        prepare(catalog, &parse(text), &lexicographic()).expect("a valid query")
+        prepare(catalog, &parse(text), &lexicographic(), TrieLevels::All).expect("a valid query")
     }
 
     fn spec(relation: &str, filter: Filter, columns: Vec<usize>) -> IndexSpec {
@@ -643,7 +667,7 @@ mod tests {
         let c = catalog(vec![("s", 2, vec![vec![7, 8]])]);
         let mut query = parse("Q(X) :- s(c7, c8).");
         query.head.terms.clear();
-        let header = prepare(&c, &query, &lexicographic())
+        let header = prepare(&c, &query, &lexicographic(), TrieLevels::All)
             .expect("a query of checks")
             .answer_header();
         assert_eq!((header.name(), header.arity()), ("Q", 0));
@@ -653,7 +677,8 @@ mod tests {
     #[test]
     fn a_malformed_query_is_refused_with_validations_error() {
         let c = catalog(vec![("edge", 2, vec![vec![1, 2]])]);
-        let refused = |text: &str| prepare(&c, &parse(text), &lexicographic()).unwrap_err();
+        let refused =
+            |text: &str| prepare(&c, &parse(text), &lexicographic(), TrieLevels::All).unwrap_err();
         assert_eq!(refused("Q(X) :- missing(X)."), JoinError::UnknownRelation {
             relation: "missing".into(),
             known: vec!["edge".into()],
@@ -693,7 +718,12 @@ mod tests {
     #[test]
     fn validation_errors_win_over_missing_statistics() {
         let c = catalog(vec![("edge", 2, vec![vec![1, 2]])]);
-        let refused = prepare(&c, &parse("Q(X) :- missing(X)."), &planner_of(NeedsColumns));
+        let refused = prepare(
+            &c,
+            &parse("Q(X) :- missing(X)."),
+            &planner_of(NeedsColumns),
+            TrieLevels::All,
+        );
         assert_eq!(refused.unwrap_err(), JoinError::UnknownRelation {
             relation: "missing".into(),
             known: vec!["edge".into()],
@@ -712,13 +742,13 @@ mod tests {
         };
         let query = parse("Q(X) :- first(X), second(X).");
         let planner = planner_of(NeedsColumns);
-        let refused = prepare(&catalog(relations()), &query, &planner);
+        let refused = prepare(&catalog(relations()), &query, &planner, TrieLevels::All);
         assert_eq!(refused.unwrap_err(), JoinError::MissingStatistics {
             required: StatisticsLevel::ColumnDistinct,
             available: StatisticsLevel::TupleCounts,
         });
         let analysed = catalog_at(StatisticsLevel::ColumnDistinct, relations());
-        assert!(prepare(&analysed, &query, &planner).is_ok());
+        assert!(prepare(&analysed, &query, &planner, TrieLevels::All).is_ok());
     }
 
     /// Plans like `lexicographic`, records the query and statistics it is
@@ -781,7 +811,13 @@ mod tests {
     fn the_planner_reads_statistics_of_the_accesses() {
         let c = catalog_at(StatisticsLevel::ColumnDistinct, statistics_relations());
         let spy = StatsSpy::new(StatisticsLevel::ColumnDistinct);
-        prepare(&c, &parse(STATISTICS_QUERY), &planner_of(spy.clone())).unwrap();
+        prepare(
+            &c,
+            &parse(STATISTICS_QUERY),
+            &planner_of(spy.clone()),
+            TrieLevels::All,
+        )
+        .unwrap();
         let (planned, stats) = spy.taken();
 
         assert_eq!(planned.to_string(), "Q(X, Y) :- @0(X), @1(X, W), @2(X, Y).");
@@ -812,7 +848,13 @@ mod tests {
     fn a_planner_reading_only_counts_gets_counts_of_filtered_accesses() {
         let c = catalog(statistics_relations());
         let spy = StatsSpy::new(StatisticsLevel::TupleCounts);
-        prepare(&c, &parse(STATISTICS_QUERY), &planner_of(spy.clone())).unwrap();
+        prepare(
+            &c,
+            &parse(STATISTICS_QUERY),
+            &planner_of(spy.clone()),
+            TrieLevels::All,
+        )
+        .unwrap();
         let (_, stats) = spy.taken();
         let counts = (stats.tuples("@0"), stats.tuples("@1"), stats.tuples("@2"));
         assert_eq!(counts, (Some(2), Some(3), Some(4)));
@@ -832,7 +874,13 @@ mod tests {
     fn a_planner_reading_only_counts_skips_the_distinct_scan_of_a_richer_catalog() {
         let c = catalog_at(StatisticsLevel::ColumnDistinct, statistics_relations());
         let spy = StatsSpy::new(StatisticsLevel::TupleCounts);
-        prepare(&c, &parse(STATISTICS_QUERY), &planner_of(spy.clone())).unwrap();
+        prepare(
+            &c,
+            &parse(STATISTICS_QUERY),
+            &planner_of(spy.clone()),
+            TrieLevels::All,
+        )
+        .unwrap();
         let (_, stats) = spy.taken();
         assert_eq!((stats.tuples("@0"), stats.tuples("@1")), (Some(2), Some(3)));
         for id in ["@0", "@1"] {
@@ -959,7 +1007,7 @@ mod tests {
     fn join_with<R: Relation, JA: JoinAlgo<R>>(
         catalog: &Catalog, query: &JoinQuery, planner: &Planner,
     ) -> Vec<Vec<usize>> {
-        let prepared = prepare(catalog, query, planner).expect("a valid query");
+        let prepared = prepare(catalog, query, planner, R::TRIE_LEVELS).expect("a valid query");
         let indexes = build::<R>(catalog, &prepared);
         let mut rows = Vec::new();
         execute::<R, JA>(&prepared, &indexes, |row| rows.push(row.to_vec()));
@@ -1087,7 +1135,7 @@ mod tests {
         let c = catalog(vec![("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]])]);
         let mut query = parse("Q(X) :- s(c7, c8).");
         query.head.terms.clear();
-        assert!(prepare(&c, &query, &lexicographic())
+        assert!(prepare(&c, &query, &lexicographic(), TrieLevels::All)
             .unwrap()
             .query()
             .body
@@ -1166,5 +1214,64 @@ mod tests {
         assert_eq!(prepared_for(&c, "Q(X) :- r(X, _).").variable_order(), [
             "X", "K0"
         ]);
+    }
+
+    /// R(X, P), S(X, Y), T(Y): X and Y are join keys, P payload.
+    fn payload_catalog() -> Catalog {
+        catalog(vec![("R", 2, vec![]), ("S", 2, vec![]), ("T", 1, vec![])])
+    }
+
+    const PAYLOAD_QUERY: &str = "Q(X, P, Y) :- R(X, P), S(X, Y), T(Y).";
+
+    #[test]
+    fn prepare_records_its_trie_levels_and_gives_them_to_the_specs() {
+        let c = payload_catalog();
+        let query = parse(PAYLOAD_QUERY);
+        let keys = prepare(&c, &query, &lexicographic(), TrieLevels::JoinKeys).unwrap();
+        assert_eq!(keys.trie_levels(), TrieLevels::JoinKeys);
+        let levels: Vec<usize> = keys.indexes().iter().map(|spec| spec.levels).collect();
+        assert_eq!(levels, vec![1, 2, 1]);
+        let all = prepare(&c, &query, &lexicographic(), TrieLevels::All).unwrap();
+        assert_eq!(all.trie_levels(), TrieLevels::All);
+        assert!(all
+            .indexes()
+            .iter()
+            .all(|spec| spec.levels == spec.columns.len()));
+    }
+
+    #[test]
+    #[should_panic(expected = "trie levels")]
+    fn a_sorted_trie_refuses_a_query_prepared_for_join_key_levels() {
+        let c = payload_catalog();
+        let keys = prepare(
+            &c,
+            &parse(PAYLOAD_QUERY),
+            &lexicographic(),
+            TrieLevels::JoinKeys,
+        )
+        .unwrap();
+        let _ = build::<TreeTrie>(&c, &keys);
+    }
+
+    /// Each index's header carries its spec's level count.
+    #[test]
+    fn an_index_header_carries_its_level_count() {
+        let c = payload_catalog();
+        let keys = prepare(
+            &c,
+            &parse(PAYLOAD_QUERY),
+            &lexicographic(),
+            TrieLevels::JoinKeys,
+        )
+        .unwrap();
+        let headers: Vec<(usize, usize)> = keys
+            .indexes()
+            .iter()
+            .map(|spec| {
+                let header = spec_header(spec, c.header(&spec.relation).unwrap());
+                (header.arity(), header.levels())
+            })
+            .collect();
+        assert_eq!(headers, vec![(2, 1), (2, 2), (1, 1)]);
     }
 }

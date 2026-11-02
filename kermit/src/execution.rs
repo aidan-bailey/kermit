@@ -741,7 +741,8 @@ mod tests {
         let catalog = Catalog::new(vec![(header, tuples)], StatisticsLevel::TupleCounts);
         let query: JoinQuery = query.parse().expect("the query parses");
         let planner = Planner::new(Box::new(LexicographicOptimiser));
-        let prepared = prepare(&catalog, &query, &planner).expect("the query prepares");
+        let prepared = prepare(&catalog, &query, &planner, kermit_ds::TrieLevels::All)
+            .expect("the query prepares");
         (catalog, prepared)
     }
 

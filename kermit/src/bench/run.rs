@@ -58,12 +58,19 @@ pub(crate) struct RunSettings<'a> {
 }
 
 /// The value of one `index` metadata line, for the `position`th index of a
-/// query: `{id} {relation} filter {filter} columns {columns:?}: {rows} rows,
-/// {bytes} bytes`. `rows` is what the build copied, the index view's count,
-/// and `bytes` the index's footprint as built.
+/// query: `{id} {relation} filter {filter} columns {columns:?}[ levels {n}]:
+/// {rows} rows, {bytes} bytes`. ` levels {n}` appears only when the trie has
+/// levels for fewer columns than it keeps (`--ds-layout-levels keys`, #116),
+/// so every `all` line reads as before. `rows` is what the build copied, the
+/// index view's count, and `bytes` the index's footprint as built.
 fn describe_index(position: usize, spec: &IndexSpec, rows: usize, bytes: usize) -> String {
+    let levels = if spec.levels < spec.columns.len() {
+        format!(" levels {}", spec.levels)
+    } else {
+        String::new()
+    };
     format!(
-        "{INDEX_ID_PREFIX}{position} {} filter {} columns {:?}: {rows} rows, {bytes} bytes",
+        "{INDEX_ID_PREFIX}{position} {} filter {} columns {:?}{levels}: {rows} rows, {bytes} bytes",
         spec.relation, spec.filter, spec.columns
     )
 }
@@ -571,6 +578,16 @@ mod tests {
         assert_eq!(
             describe_index(1, &reversed, 3, 128),
             "#1 edge filter - columns [1, 0]: 3 rows, 128 bytes"
+        );
+        // A trie with levels for fewer columns than it keeps names its count
+        // (#116); a full one does not, as above.
+        let one_level = IndexSpec {
+            levels: 1,
+            ..reversed
+        };
+        assert_eq!(
+            describe_index(1, &one_level, 3, 128),
+            "#1 edge filter - columns [1, 0] levels 1: 3 rows, 128 bytes"
         );
     }
 }

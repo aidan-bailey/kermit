@@ -254,7 +254,7 @@ fn rows_in_order<R: Relation, JA: JoinAlgo<R>>(
     catalog: &Catalog, label: &str, query: &JoinQuery, order: &[String],
 ) -> Vec<Vec<usize>> {
     let planner = Planner::new(Box::new(FixedOrder(order.to_vec())));
-    let prepared = prepare(catalog, query, &planner)
+    let prepared = prepare(catalog, query, &planner, R::TRIE_LEVELS)
         .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
     let names = canonical_names(prepared.query());
     let bound: Vec<String> = prepared
@@ -527,7 +527,7 @@ fn a_forced_order_reverses_the_index_columns() {
         let planner = Planner::new(Box::new(FixedOrder(
             order.iter().map(|v| (*v).to_string()).collect(),
         )));
-        let prepared = prepare(&catalog, &query, &planner).unwrap();
+        let prepared = prepare(&catalog, &query, &planner, kermit_ds::TrieLevels::All).unwrap();
         prepared
             .indexes()
             .iter()
@@ -574,7 +574,7 @@ fn every_optimiser_plans_payload_last() {
         let catalog = catalog_at(relations, StatisticsLevel::ColumnDistinct);
         let query: JoinQuery = text.parse().unwrap();
         for (optimiser, planner) in &planners {
-            let prepared = prepare(&catalog, &query, planner)
+            let prepared = prepare(&catalog, &query, planner, kermit_ds::TrieLevels::All)
                 .unwrap_or_else(|e| panic!("{name} under {optimiser}: {e}"));
             let analysis = analyse(prepared.query());
             let order = &prepared.plan().variable_ordering;

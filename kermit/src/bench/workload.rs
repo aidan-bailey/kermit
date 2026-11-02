@@ -154,7 +154,7 @@ impl Workload {
             .queries
             .iter()
             .map(|q| {
-                db::prepare(&catalog, &q.query, planner).map_err(|e| {
+                db::prepare(&catalog, &q.query, planner, kermit_ds::TrieLevels::All).map_err(|e| {
                     anyhow::anyhow!("benchmark '{}' query '{}': {e}", self.name, q.name)
                 })
             })

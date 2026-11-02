@@ -122,6 +122,7 @@ where
     P: ConfigProvider<R::Config>,
 {
     const KEEPS_DUPLICATES: bool = R::KEEPS_DUPLICATES;
+    const TRIE_LEVELS: kermit_iters::TrieLevels = R::TRIE_LEVELS;
 
     fn header(&self) -> &RelationHeader { self.inner.header() }
 

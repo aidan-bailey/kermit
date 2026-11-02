@@ -10,7 +10,7 @@
 //! stores raw strings or domain values directly.
 use {
     arrow::array::AsArray,
-    kermit_iters::{JoinIterable, RowId, TupleView, Tuples},
+    kermit_iters::{JoinIterable, RowId, TrieLevels, TupleView, Tuples},
     parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     std::{fmt, fs::File, path::Path},
 };
@@ -104,6 +104,11 @@ pub struct RelationHeader {
     /// positional headers (`attrs.is_empty()`) it is the only authoritative
     /// column count.
     arity: usize,
+    /// How many leading columns a trie over this header has levels for, at
+    /// most `arity`: `arity` unless [`with_levels`](Self::with_levels) says
+    /// otherwise. `kermit::db` sets it from an index's spec; only a structure
+    /// that builds levels by it reads it (#116).
+    levels: usize,
 }
 
 impl RelationHeader {
@@ -115,6 +120,7 @@ impl RelationHeader {
             name: name.into(),
             attrs,
             arity,
+            levels: arity,
         }
     }
 
@@ -126,6 +132,7 @@ impl RelationHeader {
             name: String::new(),
             attrs,
             arity,
+            levels: arity,
         }
     }
 
@@ -135,6 +142,7 @@ impl RelationHeader {
             name: name.into(),
             attrs: vec![],
             arity,
+            levels: arity,
         }
     }
 
@@ -144,6 +152,7 @@ impl RelationHeader {
             name: String::new(),
             attrs: vec![],
             arity,
+            levels: arity,
         }
     }
 
@@ -159,6 +168,25 @@ impl RelationHeader {
 
     /// Returns the arity (number of columns) of the relation.
     pub fn arity(&self) -> usize { self.arity }
+
+    /// This header with a trie of `levels` levels over its first columns.
+    ///
+    /// # Panics
+    ///
+    /// If `levels` exceeds the arity.
+    pub fn with_levels(mut self, levels: usize) -> Self {
+        assert!(
+            levels <= self.arity,
+            "a header of arity {} cannot have {levels} levels",
+            self.arity
+        );
+        self.levels = levels;
+        self
+    }
+
+    /// How many leading columns a trie over this header has levels for: the
+    /// arity unless [`with_levels`](Self::with_levels) set fewer.
+    pub fn levels(&self) -> usize { self.levels }
 
     /// Returns [`ModelType::Named`] when attribute names are set, otherwise
     /// [`ModelType::Positional`].
@@ -259,6 +287,12 @@ pub trait Relation: JoinIterable + Projectable {
     /// an all-constant atom multiplies its answers by that atom's row count
     /// only where this is `true`.
     const KEEPS_DUPLICATES: bool = false;
+
+    /// Which columns of an index this structure builds levels for, the
+    /// policy `kermit::db::prepare` plans its index specs under (#116).
+    /// [`TrieLevels::All`] (every column) unless a Layout says otherwise, as
+    /// `HashTrie`'s `KeyLevels` does.
+    const TRIE_LEVELS: TrieLevels = TrieLevels::All;
 
     /// Returns the header describing this relation's name, attributes, and
     /// arity.
@@ -1650,5 +1684,30 @@ mod tests {
         assert_eq!(built.source_rows, 0);
         assert!(built.rows.is_empty());
         assert_eq!(built.header().arity(), 2);
+    }
+}
+
+#[cfg(test)]
+mod header_level_tests {
+    use super::RelationHeader;
+
+    #[test]
+    fn a_header_has_a_level_per_column_until_told_otherwise() {
+        let header = RelationHeader::new("r", vec!["a".into(), "b".into(), "c".into()]);
+        assert_eq!(header.levels(), 3);
+        assert_eq!(header.clone().with_levels(1).levels(), 1);
+        assert_eq!(RelationHeader::new_nameless_positional(2).levels(), 2);
+        assert_eq!(RelationHeader::from(4).levels(), 4);
+        assert_ne!(
+            header.clone().with_levels(1),
+            header,
+            "the level count is part of a header"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot have 3 levels")]
+    fn a_header_cannot_have_more_levels_than_columns() {
+        let _ = RelationHeader::new_positional("r", 2).with_levels(3);
     }
 }

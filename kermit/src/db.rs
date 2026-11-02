@@ -57,7 +57,7 @@ where
     R: Relation,
     JA: JoinAlgo<R>,
 {
-    let prepared = prepare(catalog, query, planner)?;
+    let prepared = prepare(catalog, query, planner, R::TRIE_LEVELS)?;
     let indexes = build::<R>(catalog, &prepared);
     execute::<R, JA>(&prepared, &indexes, emit);
     Ok(())
@@ -83,7 +83,7 @@ where
     R: Relation,
     JA: JoinAlgo<R>,
 {
-    let prepared = prepare(catalog, query, planner)?;
+    let prepared = prepare(catalog, query, planner, R::TRIE_LEVELS)?;
     let indexes = build::<R>(catalog, &prepared);
     let mut rows = Tuples::new(prepared.head_len());
     execute::<R, JA>(&prepared, &indexes, |row| rows.push(row));
@@ -658,7 +658,13 @@ mod tests {
         assert_eq!(got, vec![vec![1, 2], vec![2, 1], vec![2, 3], vec![3, 2]]);
 
         let query: JoinQuery = text.parse().unwrap();
-        let prepared = prepare(&catalog, &query, &planner_of(LexicographicOptimiser)).unwrap();
+        let prepared = prepare(
+            &catalog,
+            &query,
+            &planner_of(LexicographicOptimiser),
+            kermit_ds::TrieLevels::All,
+        )
+        .unwrap();
         let mut columns: Vec<Vec<usize>> = prepared
             .indexes()
             .iter()
@@ -678,7 +684,13 @@ mod tests {
         assert_eq!(got, vec![vec![1, 2, 3], vec![1, 3, 2], vec![2, 1, 3]]);
 
         let query: JoinQuery = text.parse().unwrap();
-        let prepared = prepare(&catalog, &query, &planner_of(LexicographicOptimiser)).unwrap();
+        let prepared = prepare(
+            &catalog,
+            &query,
+            &planner_of(LexicographicOptimiser),
+            kermit_ds::TrieLevels::All,
+        )
+        .unwrap();
         assert_eq!(prepared.indexes().len(), 1);
     }
 

@@ -44,7 +44,7 @@ pub trait JoinEntry<R> {
 fn run<R: Relation, JA: JoinAlgo<R>>(
     catalog: &Catalog, query: &JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
 ) -> Result<(), JoinError> {
-    let prepared = prepare(catalog, query, planner)?;
+    let prepared = prepare(catalog, query, planner, R::TRIE_LEVELS)?;
     let indexes = build::<R>(catalog, &prepared);
     execute::<R, JA>(&prepared, &indexes, emit);
     Ok(())
@@ -125,7 +125,9 @@ pub fn catalog_of(inputs: &Inputs, level: StatisticsLevel) -> Catalog {
 pub fn join_under_planner<R: Relation, JA: JoinEntry<R>>(
     catalog: &Catalog, query: JoinQuery, planner: &Planner,
 ) -> Result<(Tuples, Vec<IndexSpec>), JoinError> {
-    let specs = prepare(catalog, &query, planner)?.indexes().to_vec();
+    let specs = prepare(catalog, &query, planner, R::TRIE_LEVELS)?
+        .indexes()
+        .to_vec();
     let (header, rows) = JA::join(catalog, query.clone(), planner)?;
     let head: Vec<String> = query.head.terms.iter().map(ToString::to_string).collect();
     assert_eq!(

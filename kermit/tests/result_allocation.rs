@@ -124,7 +124,7 @@ struct Built<R> {
 fn prebuilt<R: Relation>(query: &str, inputs: Inputs) -> Built<R> {
     let catalog = Catalog::new(inputs, StatisticsLevel::TupleCounts);
     let query: JoinQuery = query.parse().unwrap();
-    let prepared = prepare(&catalog, &query, &planner()).unwrap();
+    let prepared = prepare(&catalog, &query, &planner(), R::TRIE_LEVELS).unwrap();
     let indexes = build::<R>(&catalog, &prepared);
     Built {
         prepared,
