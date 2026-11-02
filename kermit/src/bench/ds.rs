@@ -17,6 +17,19 @@ use {
     std::{collections::BTreeMap, fs, io, path::Path},
 };
 
+/// `bench ds` measures one relation, which has no join to materialize: it
+/// refuses the `materialize` metric before anything is read.
+///
+/// # Errors
+///
+/// If `metrics` contains [`Metric::Materialize`].
+pub(crate) fn refuse_materialize(metrics: &[Metric]) -> anyhow::Result<()> {
+    if metrics.contains(&Metric::Materialize) {
+        anyhow::bail!("bench ds has no join, so it cannot measure materialize");
+    }
+    Ok(())
+}
+
 /// Benchmarks one index structure over one relation file.
 ///
 /// Generic over the [`RelationFamily`] so the sorted family
@@ -181,5 +194,28 @@ pub(crate) fn dispatch_ds_bench(
                 criterion,
             ))
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bench_ds_refuses_the_materialize_metric_and_only_that() {
+        let message = refuse_materialize(&[Metric::Build, Metric::Materialize])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            "bench ds has no join, so it cannot measure materialize"
+        );
+        refuse_materialize(&[
+            Metric::Build,
+            Metric::Iteration,
+            Metric::Space,
+            Metric::EndToEnd,
+        ])
+        .unwrap();
     }
 }

@@ -79,6 +79,10 @@ pub(crate) struct Materialized {
     /// The sorted batch (kermit and DuckDB), returned so that Criterion frees
     /// it after the timer stops. `None` where the engine keeps its result
     /// itself.
+    #[allow(
+        dead_code,
+        reason = "held only so that Criterion drops it after the timer"
+    )]
     pub(crate) kept: Option<Tuples>,
 }
 

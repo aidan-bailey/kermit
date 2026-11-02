@@ -80,6 +80,29 @@ const DEFAULT_JOIN_GROUP: &str = "join";
 /// prefix).
 const DEFAULT_DS_GROUP: &str = "ds";
 
+/// `--materialize-max-bytes`'s default (4 GiB) and bounds (1 MiB, 1 TiB).
+const DEFAULT_MATERIALIZE_MAX_BYTES: u64 = 4_294_967_296;
+const MIN_MATERIALIZE_MAX_BYTES: u64 = 1_048_576;
+const MAX_MATERIALIZE_MAX_BYTES: u64 = 1_099_511_627_776;
+
+/// Parses `--materialize-max-bytes`: whole bytes in
+/// `MIN_MATERIALIZE_MAX_BYTES..=MAX_MATERIALIZE_MAX_BYTES`. Outside it, the
+/// error names the range.
+fn parse_materialize_max_bytes(text: &str) -> Result<u64, String> {
+    let range = format!(
+        "--materialize-max-bytes must be between {MIN_MATERIALIZE_MAX_BYTES} (1 MiB) and \
+         {MAX_MATERIALIZE_MAX_BYTES} (1 TiB)"
+    );
+    let bytes: u64 = text
+        .parse()
+        .map_err(|_| format!("`{text}` is not a whole number of bytes; {range}"))?;
+    if (MIN_MATERIALIZE_MAX_BYTES..=MAX_MATERIALIZE_MAX_BYTES).contains(&bytes) {
+        Ok(bytes)
+    } else {
+        Err(range)
+    }
+}
+
 /// Sentinel cache path used only when the platform cache dir cannot be
 /// resolved (`base_cache_dir` errors). Discovery against this path finds no
 /// cached benchmarks, so behaviour degrades to "workspace benchmarks only".
@@ -208,6 +231,22 @@ struct BenchArgs {
     report_json: Option<PathBuf>,
 }
 
+/// The memory guard of the opt-in `materialize` metric, on `bench run`,
+/// `bench join` and `bench probe`.
+#[derive(Args, Clone, Copy, Debug)]
+struct MaterializeArgs {
+    /// Skip `materialize` (with a note) for a query whose full assignments
+    /// would take more than this many bytes (rows × variables × 8), between
+    /// 1 MiB and 1 TiB
+    #[arg(
+        long,
+        value_name = "BYTES",
+        default_value_t = DEFAULT_MATERIALIZE_MAX_BYTES,
+        value_parser = parse_materialize_max_bytes
+    )]
+    materialize_max_bytes: u64,
+}
+
 /// Which benchmarks, queries and cells a `bench run` or `bench probe`
 /// covers, and how each query is planned.
 #[derive(Args)]
@@ -296,6 +335,9 @@ enum BenchSubcommand {
 
         #[command(flatten)]
         build: BuildChoices,
+
+        #[command(flatten)]
+        materialize: MaterializeArgs,
     },
 
     /// Benchmark an index structure (build, iteration, space,
@@ -368,6 +410,9 @@ enum BenchSubcommand {
         /// Queries without `expected` are noted and skipped.
         #[arg(long)]
         verify: bool,
+
+        #[command(flatten)]
+        materialize: MaterializeArgs,
     },
 
     /// Screen a named benchmark without Criterion: verify each query, time
@@ -379,12 +424,21 @@ enum BenchSubcommand {
     /// the plan. Every query whose YAML declares `expected` is verified, and
     /// a mismatch aborts. Takes `bench run`'s selection flags. `bench`'s
     /// Criterion settings (`--name`, `--sample-size`, `--measurement-time`,
-    /// `--warm-up-time`) do not apply; `--report-json` does. A single run is
-    /// cold: compare it with other single runs, never with a Criterion
-    /// estimate.
+    /// `--warm-up-time`) do not apply; `--report-json` does. `--materialize`
+    /// adds a single-run `materialize` value (the join with every full
+    /// assignment kept, sorted and counted distinct), skipped when over
+    /// `--materialize-max-bytes`, as in `bench run`. A single run is cold:
+    /// compare it with other single runs, never with a Criterion estimate.
     Probe {
         #[command(flatten)]
         selection: RunSelection,
+
+        /// Also record a single-run `materialize` value
+        #[arg(long)]
+        materialize: bool,
+
+        #[command(flatten)]
+        limits: MaterializeArgs,
     },
 
     /// List available benchmarks
@@ -765,9 +819,10 @@ fn run_clean(name: Option<String>) -> anyhow::Result<()> {
 /// files, run through the same generic runner as `bench run` under the
 /// `adhoc/{query-stem}` identity. The CSV (`--output`) and the benchmark
 /// share one prepared workload, so the relations are read once.
+#[allow(clippy::too_many_arguments)]
 fn run_bench_join(
     bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>, metrics: &[Metric],
-    queries_per_build: u32, config: ConfigChoices, build: BuildChoices,
+    queries_per_build: u32, config: ConfigChoices, build: BuildChoices, materialize_max_bytes: u64,
 ) -> anyhow::Result<()> {
     let selector = IndexStructureSelector::of(query_args.indexstructure);
     let choices = DsChoices::resolve(selector, &query_args.layout, &config, &build)?;
@@ -788,6 +843,7 @@ fn run_bench_join(
         queries_per_build,
         verify: false,
         single_run: false,
+        materialize_max_bytes,
         criterion: &criterion,
     };
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
@@ -804,6 +860,8 @@ fn run_ds_bench_command(
     metrics: Vec<Metric>, queries_per_build: u32, layout: LayoutChoices, config: ConfigChoices,
     build: BuildChoices,
 ) -> anyhow::Result<()> {
+    // A relation has no join to materialize.
+    bench::ds::refuse_materialize(&metrics)?;
     // None of `bench ds`'s metrics calls `seek`: build constructs the
     // relation, iteration and end_to_end scan it with open/next/up
     // (`TrieIteratorWrapper::advance`), and space measures it. Accepting
@@ -847,9 +905,10 @@ fn run_ds_bench_command(
 /// Handler for `bench run` and `bench probe`: materialise the selected
 /// benchmarks and run every valid (index-structure, algorithm) cell of the
 /// requested sweep, writing each query's report as it finishes.
+#[allow(clippy::too_many_arguments)]
 fn run_bench_run_command(
     bench_args: &BenchArgs, selection: RunSelection, kind: BenchKind, metrics: Vec<Metric>,
-    queries_per_build: u32, verify: bool, single_run: bool,
+    queries_per_build: u32, verify: bool, single_run: bool, materialize_max_bytes: u64,
 ) -> anyhow::Result<()> {
     let RunSelection {
         name,
@@ -889,13 +948,15 @@ fn run_bench_run_command(
         queries_per_build,
         verify,
         single_run,
+        materialize_max_bytes,
         criterion: &criterion,
     };
     // Names only — nothing is fetched — so a sweep whose cells would
     // overwrite each other's Criterion results fails before any is timed.
-    // A run with no time metric (`bench probe`, `-m space`) writes no
+    // A run with no time metric (`-m space`) and a probe (its single runs go
+    // through no Criterion function, `materialize` included) write no
     // Criterion group, so nothing can collide.
-    if metrics.iter().any(|metric| metric.is_timed()) {
+    if !single_run && metrics.iter().any(|metric| metric.is_timed()) {
         check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells)?;
     }
 
@@ -935,16 +996,24 @@ fn run_bench_run_command(
 /// settings. Every query is counted and, where it declares `expected`,
 /// verified; its describe step's build and execution times are recorded as
 /// single-run values beside its exact `space`; nothing goes through
-/// Criterion.
-fn run_bench_probe_command(bench_args: &BenchArgs, selection: RunSelection) -> anyhow::Result<()> {
+/// Criterion. With `materialize`, the query is also materialized once and
+/// that time recorded as a single-run `materialize` value.
+fn run_bench_probe_command(
+    bench_args: &BenchArgs, selection: RunSelection, materialize: bool, materialize_max_bytes: u64,
+) -> anyhow::Result<()> {
+    let mut metrics = vec![Metric::Space];
+    if materialize {
+        metrics.push(Metric::Materialize);
+    }
     run_bench_run_command(
         bench_args,
         selection,
         BenchKind::Probe,
-        vec![Metric::Space],
+        metrics,
         1,
         true,
         true,
+        materialize_max_bytes,
     )
 }
 
@@ -978,6 +1047,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 config,
                 build,
+                materialize,
             } => run_bench_join(
                 &bench_args,
                 query_args,
@@ -986,6 +1056,7 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 config,
                 build,
+                materialize.materialize_max_bytes,
             )?,
 
             | BenchSubcommand::Ds {
@@ -1012,6 +1083,7 @@ fn main() -> anyhow::Result<()> {
                 metrics,
                 queries_per_build,
                 verify,
+                materialize,
             } => run_bench_run_command(
                 &bench_args,
                 selection,
@@ -1020,11 +1092,19 @@ fn main() -> anyhow::Result<()> {
                 queries_per_build,
                 verify,
                 false,
+                materialize.materialize_max_bytes,
             )?,
 
             | BenchSubcommand::Probe {
                 selection,
-            } => run_bench_probe_command(&bench_args, selection)?,
+                materialize,
+                limits,
+            } => run_bench_probe_command(
+                &bench_args,
+                selection,
+                materialize,
+                limits.materialize_max_bytes,
+            )?,
 
             | BenchSubcommand::Gen {
                 subcommand,

@@ -5,7 +5,7 @@
 use {
     super::{
         criterion_directory_name,
-        measure::{CriterionSettings, Described, MeasureRequest, QuerySubject},
+        measure::{CriterionSettings, Described, MeasureRequest, QuerySubject, Subject},
         workload::PreparedWorkload,
         Metric, CRITERION_MAX_DIRECTORY_NAME_BYTES,
     },
@@ -53,6 +53,10 @@ pub(crate) struct RunSettings<'a> {
     /// Count every query and record the describe step's build and
     /// execution times as single-run values (`bench probe`).
     pub single_run: bool,
+    /// `--materialize-max-bytes`: the `materialize` metric is skipped, with a
+    /// note, for a query whose full assignments would take more bytes than
+    /// this (see [`materialize_bytes`]).
+    pub materialize_max_bytes: u64,
     /// Criterion sample/measurement/warm-up settings.
     pub criterion: &'a CriterionSettings,
 }
@@ -91,6 +95,102 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
         .sum()
 }
 
+/// The bytes `materialize` keeps for `rows` assignments of `width` variables:
+/// `rows × width × 8`, saturating. The memory guard compares it with
+/// `--materialize-max-bytes`.
+pub(crate) fn materialize_bytes(rows: u64, width: usize) -> u64 {
+    let width = u64::try_from(width).unwrap_or(u64::MAX);
+    let value = u64::try_from(std::mem::size_of::<usize>()).unwrap_or(u64::MAX);
+    rows.saturating_mul(width).saturating_mul(value)
+}
+
+/// What the guard decides: `Some(bytes)`, the result's size, when it exceeds
+/// `limit` and `materialize` must be skipped; `None` when it fits.
+fn materialize_skip(rows: u64, width: usize, limit: u64) -> Option<u64> {
+    let bytes = materialize_bytes(rows, width);
+    (bytes > limit).then_some(bytes)
+}
+
+/// What the memory guard decides for one query's `materialize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaterializeVerdict {
+    /// `materialize` is not asked for.
+    NotAsked,
+    /// The result fits the limit.
+    Run,
+    /// A streaming subject's result is over the limit, by this many bytes.
+    /// The describe step may still count: its streamed count is cheap.
+    Skip(u64),
+    /// A subject that does not stream is over the limit, by this many bytes.
+    /// Its count is a `materialize`, so nothing materialises: no describe-step
+    /// count, no preflight count.
+    SkipUncounted(u64),
+    /// A streaming subject with no `expected`: ask again with the describe
+    /// step's streamed count.
+    AfterStreamedCount,
+    /// A subject that does not stream, with no `expected`: the guard has no
+    /// row count to read, so it warns and everything runs unguarded.
+    Unguarded,
+}
+
+impl MaterializeVerdict {
+    /// Whether the describe step and a cell's preflight may count: false only
+    /// when a subject that does not stream is skipped (its count is the
+    /// `materialize` the guard refused).
+    pub(crate) fn counts(self) -> bool { !matches!(self, Self::SkipUncounted(_)) }
+
+    /// The result's size in bytes, when the guard skips `materialize`.
+    pub(crate) fn skipped(self) -> Option<u64> {
+        match self {
+            | Self::Skip(bytes) | Self::SkipUncounted(bytes) => Some(bytes),
+            | _ => None,
+        }
+    }
+}
+
+/// The memory guard, in one place for every subject. `requested` is whether
+/// anything would materialise, as [`guard_requested`] computes it; `streams` is
+/// the subject type's [`Subject::STREAMS`]; `rows` is the full-assignment count
+/// the guard reads: the query's `expected`, or, on a second call for a
+/// streaming subject, the describe step's streamed count; `width` is
+/// `Prepared::assignment_width`.
+///
+/// A streaming subject with no `rows` answers
+/// [`AfterStreamedCount`](MaterializeVerdict::AfterStreamedCount). A subject
+/// that does not stream is decided before its describe step, from `expected`
+/// alone, so over the limit it answers
+/// [`SkipUncounted`](MaterializeVerdict::SkipUncounted) and nothing
+/// materialises; with no `expected` it answers
+/// [`Unguarded`](MaterializeVerdict::Unguarded).
+pub(crate) fn materialize_guard(
+    requested: bool, streams: bool, rows: Option<u64>, width: usize, limit: u64,
+) -> MaterializeVerdict {
+    use MaterializeVerdict::*;
+    if !requested {
+        return NotAsked;
+    }
+    match (rows, streams) {
+        | (Some(rows), _) => match materialize_skip(rows, width, limit) {
+            | None => Run,
+            | Some(bytes) if streams => Skip(bytes),
+            | Some(bytes) => SkipUncounted(bytes),
+        },
+        | (None, true) => AfterStreamedCount,
+        | (None, false) => Unguarded,
+    }
+}
+
+/// The guard's `requested`. For a streaming subject it is whether the
+/// `materialize` metric is asked for (`metric`): the describe step streams its
+/// count, so only the metric materialises. A subject that does not stream
+/// counts through `materialize`, so it is also whether `--verify` has an
+/// `expected` to check (`verifies`) or the run is a probe's single run
+/// (`single_run`): a `--verify`-only run over the limit then materialises
+/// nothing either.
+fn guard_requested(streams: bool, metric: bool, verifies: bool, single_run: bool) -> bool {
+    metric || (!streams && (verifies || single_run))
+}
+
 /// Runs every query of `workload` on one execution cell and pushes one
 /// report per query to `sink` as soon as that query finishes, each stamped
 /// with `settings.kind` and grouped under `settings.prefix`.
@@ -113,6 +213,14 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
 /// `build` and `end_to_end`. With `settings.verify`, a query with an
 /// `expected` count is checked before any timer starts, and a mismatch aborts
 /// with every earlier query's report already in `sink`.
+///
+/// `materialize`, when asked for, is guarded first (see
+/// [`materialize_guard`]): its result is every full assignment, so it is
+/// skipped, with a stderr note and a `materialize` metadata line, when
+/// `expected` (for a streaming subject, else the describe step's streamed
+/// count) times the variable count times 8 bytes exceeds
+/// `settings.materialize_max_bytes`. Otherwise `--verify` also checks its
+/// distinct count against `expected`, once.
 fn run_benchmark<F: ExecutionFamily>(
     family: &F, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
 ) -> anyhow::Result<()> {
@@ -124,6 +232,7 @@ fn run_benchmark<F: ExecutionFamily>(
         queries_per_build,
         verify,
         single_run,
+        materialize_max_bytes,
         criterion,
     } = settings;
     let PreparedWorkload {
@@ -141,6 +250,8 @@ fn run_benchmark<F: ExecutionFamily>(
     let execution = family.execution();
     let ds_name = execution.index_structure().axis_value();
     let algo_name = execution.algorithm().axis_value();
+    // The cell as notes name it.
+    let label = format!("{ds_name}/{algo_name}");
 
     // Standard optimization axes: the dimensions the structure emits (the
     // `ds_*` prefix convention, see `kermit_iters::HasOptimizationAxes`,
@@ -161,6 +272,32 @@ fn run_benchmark<F: ExecutionFamily>(
     };
 
     for (query_def, prepared) in definition.queries.iter().zip(prepared_queries) {
+        // The memory guard of `materialize`, first from `expected` alone; a
+        // streaming subject with none is decided again after its describe
+        // step has counted.
+        let streams = <QuerySubject<'_, F> as Subject>::STREAMS;
+        let materialize_requested = metrics.contains(&Metric::Materialize);
+        let width = prepared.assignment_width();
+        let mut guard = materialize_guard(
+            guard_requested(
+                streams,
+                materialize_requested,
+                verify && query_def.expected.is_some(),
+                single_run,
+            ),
+            streams,
+            query_def.expected,
+            width,
+            materialize_max_bytes,
+        );
+        if guard == MaterializeVerdict::Unguarded {
+            eprintln!(
+                "warning: {label} does not stream and {}/{} has no expected count, so materialize \
+                 runs without the --materialize-max-bytes guard",
+                definition.name, query_def.name
+            );
+        }
+
         // The describe step: this query's one build outside Criterion. Every
         // untimed number in its report is read from it, and `measure`
         // consumes it before any build is timed.
@@ -169,8 +306,9 @@ fn run_benchmark<F: ExecutionFamily>(
             catalog,
             prepared,
         };
-        let count = (verify && query_def.expected.is_some()) || single_run;
-        let described = Described::new(&subject, count);
+        let count = guard.counts()
+            && ((verify && query_def.expected.is_some()) || single_run || materialize_requested);
+        let mut described = Described::new(&subject, count);
 
         let mut metadata = vec![
             MetadataLine::new("benchmark", &definition.name),
@@ -197,6 +335,14 @@ fn run_benchmark<F: ExecutionFamily>(
         // path `iteration` times, so verifying a huge result never
         // materialised it.
         let verified = match (verify, query_def.expected) {
+            | (true, Some(_)) if !guard.counts() => {
+                eprintln!(
+                    "bench {kind}: query '{}' in benchmark '{}' on {label} is not verified: its \
+                     count would materialize the result, which the guard skips",
+                    query_def.name, definition.name
+                );
+                false
+            },
             | (true, Some(expected)) => {
                 let actual = described
                     .rows()
@@ -230,15 +376,68 @@ fn run_benchmark<F: ExecutionFamily>(
         if let Some(rows) = answer_rows {
             metadata.push(MetadataLine::new("answer rows", rows));
         }
+        // A streaming subject with no `expected` is decided now, from the
+        // streamed count the describe step just took.
+        if guard == MaterializeVerdict::AfterStreamedCount {
+            guard = materialize_guard(true, streams, answer_rows, width, materialize_max_bytes);
+            assert_ne!(
+                guard,
+                MaterializeVerdict::AfterStreamedCount,
+                "the describe step counts when materialize is requested"
+            );
+        }
+        let mut run_materialize = materialize_requested;
+        if let Some(bytes) = guard.skipped() {
+            eprintln!(
+                "note: skipping materialize for {}/{} on {label}: {bytes} bytes over \
+                 --materialize-max-bytes {materialize_max_bytes}",
+                definition.name, query_def.name
+            );
+            metadata.push(MetadataLine::new(
+                "materialize",
+                format!("skipped: {bytes} bytes over {materialize_max_bytes}"),
+            ));
+            run_materialize = false;
+        }
+        // `--verify`'s check of the materialized count, once; a probe's
+        // single-run `materialize` value comes from the same run. A subject
+        // that does not stream returns the describe step's count, so
+        // `materialize` has still run once on that build.
+        if run_materialize && (single_run || (verify && query_def.expected.is_some())) {
+            let distinct = described
+                .materialize_once()
+                .expect("a query subject materializes");
+            if let (true, Some(expected)) = (verify, query_def.expected) {
+                if distinct != expected {
+                    anyhow::bail!(
+                        "verification failed: benchmark '{}' query '{}' on {label} materialized \
+                         {distinct} distinct full assignments, expected {expected}",
+                        definition.name,
+                        query_def.name,
+                    );
+                }
+                metadata.push(MetadataLine::new("verified materialize", "yes"));
+            }
+        }
+        // A skipped `materialize` is not measured.
+        let measured_metrics: Vec<Metric> = metrics
+            .iter()
+            .copied()
+            .filter(|&metric| metric != Metric::Materialize || run_materialize)
+            .collect();
         if single_run {
             let build = described.build_time();
-            let iteration = described
-                .exercise_time()
-                .expect("a probe counts every query");
-            metadata.push(MetadataLine::new(
-                "single run",
-                format!("build {build:?}, iteration {iteration:?}"),
-            ));
+            let mut single = format!("build {build:?}");
+            if streams {
+                let iteration = described
+                    .exercise_time()
+                    .expect("a probe counts every query it streams");
+                single = format!("{single}, iteration {iteration:?}");
+            }
+            if let Some(materialize) = described.materialize_time() {
+                single = format!("{single}, materialize {materialize:?}");
+            }
+            metadata.push(MetadataLine::new("single run", single));
         }
         if metrics.contains(&Metric::EndToEnd) {
             metadata.push(MetadataLine::new("queries per build", queries_per_build));
@@ -260,7 +459,7 @@ fn run_benchmark<F: ExecutionFamily>(
 
         let group_name = criterion_group_name(prefix, &definition.name, &query_def.name, execution);
         let measured = described.measure(&MeasureRequest {
-            metrics,
+            metrics: &measured_metrics,
             single_run,
             queries_per_build,
             criterion,
@@ -593,6 +792,136 @@ mod tests {
         assert_eq!(
             describe_index(1, &one_level, 3, 128),
             "#1 edge filter - columns [1, 0] levels 1: 3 rows, 128 bytes"
+        );
+    }
+
+    #[test]
+    fn materialize_bytes_is_rows_times_width_times_eight() {
+        assert_eq!(materialize_bytes(0, 3), 0);
+        assert_eq!(materialize_bytes(10, 3), 240);
+        assert_eq!(
+            materialize_bytes(5, 0),
+            0,
+            "a query of checks has no variable"
+        );
+        assert_eq!(materialize_bytes(u64::MAX, 2), u64::MAX, "it saturates");
+        assert_eq!(
+            materialize_bytes(1_453_845_122, 4),
+            46_523_043_904,
+            "SNAP dblp path3: about 46.5 GB"
+        );
+    }
+
+    #[test]
+    fn the_guard_skips_only_what_exceeds_the_limit() {
+        // 131072 rows of one variable are exactly 1 MiB.
+        assert_eq!(materialize_skip(131_072, 1, 1_048_576), None);
+        assert_eq!(materialize_skip(131_073, 1, 1_048_576), Some(1_048_584));
+    }
+
+    /// 131072 rows of one variable are exactly the 1 MiB limit; one more row
+    /// is over it.
+    const LIMIT: u64 = 1_048_576;
+
+    #[test]
+    fn the_guard_decides_a_streaming_subject_from_expected_else_the_streamed_count() {
+        use MaterializeVerdict::*;
+        // With `expected`: decided before the describe step.
+        assert_eq!(materialize_guard(true, true, Some(131_072), 1, LIMIT), Run);
+        assert_eq!(
+            materialize_guard(true, true, Some(131_073), 1, LIMIT),
+            Skip(1_048_584)
+        );
+        // Without it: decided again once the describe step has counted.
+        assert_eq!(
+            materialize_guard(true, true, None, 1, LIMIT),
+            AfterStreamedCount
+        );
+        assert_eq!(materialize_guard(true, true, Some(10), 1, LIMIT), Run);
+        assert_eq!(
+            materialize_guard(true, true, Some(1_000_000), 1, LIMIT),
+            Skip(8_000_000)
+        );
+    }
+
+    #[test]
+    fn the_guard_decides_a_subject_that_does_not_stream_before_anything_materialises() {
+        use MaterializeVerdict::*;
+        assert_eq!(materialize_guard(true, false, Some(131_072), 1, LIMIT), Run);
+        // Over the limit nothing materialises, not even the describe step's
+        // count.
+        let over = materialize_guard(true, false, Some(131_073), 1, LIMIT);
+        assert_eq!(over, SkipUncounted(1_048_584));
+        assert!(!over.counts());
+        // No `expected`: the warning, then everything runs unguarded.
+        let unguarded = materialize_guard(true, false, None, 1, LIMIT);
+        assert_eq!(unguarded, Unguarded);
+        assert!(unguarded.counts());
+    }
+
+    #[test]
+    fn the_guard_counts_unless_a_non_streaming_subject_is_skipped() {
+        use MaterializeVerdict::*;
+        for streams in [true, false] {
+            assert_eq!(
+                materialize_guard(false, streams, Some(u64::MAX), 4, LIMIT),
+                NotAsked,
+                "nothing is decided when nothing would materialise"
+            );
+            assert!(NotAsked.counts());
+        }
+        assert!(Run.counts());
+        assert!(Skip(9).counts(), "a streamed count is cheap");
+        assert!(AfterStreamedCount.counts());
+        assert!(!SkipUncounted(9).counts());
+        assert_eq!(Skip(9).skipped(), Some(9));
+        assert_eq!(SkipUncounted(9).skipped(), Some(9));
+        assert_eq!(Run.skipped(), None);
+    }
+
+    #[test]
+    fn a_non_streaming_subject_is_guarded_when_only_verify_or_a_probe_would_materialise() {
+        use MaterializeVerdict::*;
+        // (streams, metric, verifies, single_run)
+        assert!(
+            guard_requested(false, false, true, false),
+            "--verify with expected"
+        );
+        assert!(
+            guard_requested(false, false, false, true),
+            "a probe's single run"
+        );
+        assert!(guard_requested(false, true, false, false), "the metric");
+        assert!(
+            !guard_requested(false, false, false, false),
+            "nothing would materialise"
+        );
+        // A streaming subject counts by streaming, so only the metric asks.
+        assert!(!guard_requested(true, false, true, true));
+        assert!(guard_requested(true, true, false, false));
+        // `--verify` alone, `expected` over the limit: skipped, and uncounted.
+        let verdict = materialize_guard(
+            guard_requested(false, false, true, false),
+            false,
+            Some(131_073),
+            1,
+            LIMIT,
+        );
+        assert_eq!(verdict, SkipUncounted(1_048_584));
+        assert!(
+            !verdict.counts(),
+            "so there is no describe-step count to verify"
+        );
+        // The same run on a streaming subject is not guarded at all.
+        assert_eq!(
+            materialize_guard(
+                guard_requested(true, false, true, false),
+                true,
+                Some(131_073),
+                1,
+                LIMIT
+            ),
+            NotAsked
         );
     }
 }
