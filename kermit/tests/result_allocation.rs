@@ -53,23 +53,30 @@
 //! Since the per-query index build every cell prepares its query and builds
 //! its indexes outside the measured region, and measures only the streamed
 //! `kermit::db::execute` over them.
+//!
+//! The keyed family (`HashIndex` under `BinaryHashJoin`) is held to the same
+//! standard: its join recurses once per atom and reuses one row and one key
+//! scratch, and its probe and scan iterators borrow the index. The cells
+//! below are the result-size, permuted-index, descent-count, collected and
+//! scan checks, each on the same workloads as the other families'.
 
 use {
     kermit::db::{
-        build, execute, hash_join, hash_join_for_each, lftj_join, lftj_join_for_each, prepare,
-        Catalog, Indexes, Prepared,
+        binary_join, binary_join_for_each, build, execute, hash_join, hash_join_for_each,
+        lftj_join, lftj_join_for_each, prepare, Catalog, Indexes, Prepared,
     },
     kermit_algos::{
-        HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin, LexicographicOptimiser, Planner,
-        StatisticsLevel,
+        BinaryHashJoin, HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin,
+        LexicographicOptimiser, Planner, StatisticsLevel,
     },
     kermit_ds::{
-        AllLevels, BinarySeek, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie, KeyLevels,
-        LazyExpansion, LevelPolicy, LinearSeek, NoPruning, PruningPolicy, Relation, RelationHeader,
-        SingletonPruning, TreeTrie, Tuples,
+        AllLevels, BinarySeek, ColumnTrie, EagerExpansion, ExpansionPolicy, HashIndex, HashTrie,
+        KeyLevels, LazyExpansion, LevelPolicy, LinearSeek, NoPruning, PruningPolicy, Relation,
+        RelationHeader, SingletonPruning, TreeTrie, Tuples,
     },
     kermit_iters::{
-        FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable, TrieIteratorWrapper,
+        FxHashStrategy, HashStrategy, KeyedIterable, SipHashStrategy, TrieIterable,
+        TrieIteratorWrapper,
     },
 };
 
@@ -1048,5 +1055,121 @@ fn hash_trie_single_atom_allocates_independently_of_result_size() {
         "HashTrie<Sip>/HTJ, one atom",
         htj_single_atom_allocations::<AllLevels>(SMALL),
         htj_single_atom_allocations::<AllLevels>(LARGE),
+    );
+}
+
+// ── The keyed family: HashIndex under BinaryHashJoin ─────────────────────
+
+/// Allocations made by one streamed `BinaryHashJoin` join of `QUERY`, after
+/// checking that it produced every row. The plan binds `X`, `Y`, `Z`; `R` is
+/// the driver and `S` is probed on `X`.
+fn bhj_allocations(fan_out: usize) -> u64 {
+    join_allocations::<HashIndex, BinaryHashJoin>(QUERY, relations(fan_out), XS * fan_out)
+}
+
+/// The `BinaryHashJoin` twin of [`lftj_reversed_allocations`]: the reversed
+/// `R` is read through an index whose columns are permuted into the join's
+/// variable order (`reversed` asserts it).
+fn bhj_reversed_allocations(fan_out: usize) -> u64 {
+    streamed_allocations::<HashIndex, BinaryHashJoin>(&reversed::<HashIndex>(fan_out), XS * fan_out)
+}
+
+/// Allocations made by one streamed `BinaryHashJoin` join of the descent
+/// workload: `R` drives, `S` is probed on `Y` and `T` on `Z`, and each dead
+/// end costs a hit on `S` and a miss on `T`.
+fn bhj_descent_allocations(dead_ends: usize) -> u64 {
+    join_allocations::<HashIndex, BinaryHashJoin>(
+        DESCENT_QUERY,
+        descent_relations(dead_ends),
+        DESCENT_ROWS,
+    )
+}
+
+/// The allocations `binary_join` makes beyond `binary_join_for_each` over the
+/// same catalog, as [`lftj_collected_extra`] measures them.
+fn bhj_collected_extra(fan_out: usize) -> u64 {
+    let (catalog, query) = collected_workload(fan_out);
+    let planner = planner();
+    let (collected_query, streamed_query) = (query.clone(), query);
+    let mut rows = 0;
+    let collected = allocation_counter::measure(|| {
+        let (_, answer) = binary_join::<HashIndex>(&catalog, collected_query, &planner).unwrap();
+        rows = std::hint::black_box(answer).len();
+    });
+    assert_eq!(rows, XS * fan_out, "the answer must hold every row");
+    let streamed = allocation_counter::measure(|| {
+        binary_join_for_each::<HashIndex>(&catalog, streamed_query, &planner, |row| {
+            std::hint::black_box(row);
+        })
+        .unwrap();
+    });
+    collected
+        .count_total
+        .checked_sub(streamed.count_total)
+        .expect("collecting allocates at least what streaming does")
+}
+
+/// Allocations made by one scan of a `HashIndex` holding `S`, through
+/// `KeyedIterable::scan`, after checking that it lent every tuple.
+fn hash_index_scan_allocations(fan_out: usize) -> u64 {
+    let rel: HashIndex = HashIndex::from_tuples(2.into(), s_tuples(fan_out));
+    let mut tuples = 0usize;
+    let info = allocation_counter::measure(|| {
+        for tuple in rel.scan() {
+            std::hint::black_box(tuple);
+            tuples += 1;
+        }
+    });
+    assert_eq!(tuples, XS * fan_out, "the scan must visit every tuple");
+    info.count_total
+}
+
+#[test]
+fn hash_index_bhj_allocates_independently_of_result_size() {
+    bhj_allocations(SMALL);
+    assert_flat(
+        "HashIndex/BinaryHashJoin",
+        bhj_allocations(SMALL),
+        bhj_allocations(LARGE),
+    );
+}
+
+#[test]
+fn hash_index_bhj_over_a_permuted_index_allocates_independently_of_result_size() {
+    bhj_reversed_allocations(SMALL);
+    assert_flat(
+        "HashIndex/BinaryHashJoin/permuted index",
+        bhj_reversed_allocations(SMALL),
+        bhj_reversed_allocations(LARGE),
+    );
+}
+
+#[test]
+fn hash_index_bhj_allocates_independently_of_descent_count() {
+    bhj_descent_allocations(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashIndex/BinaryHashJoin",
+        bhj_descent_allocations(FEW_DEAD_ENDS),
+        bhj_descent_allocations(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_index_bhj_collects_without_allocating_per_row() {
+    bhj_collected_extra(SMALL);
+    assert_collected_growth(
+        "HashIndex/BinaryHashJoin",
+        bhj_collected_extra(SMALL),
+        bhj_collected_extra(LARGE),
+    );
+}
+
+#[test]
+fn hash_index_scan_allocates_independently_of_relation_size() {
+    hash_index_scan_allocations(SMALL);
+    assert_flat(
+        "HashIndex scan",
+        hash_index_scan_allocations(SMALL),
+        hash_index_scan_allocations(LARGE),
     );
 }

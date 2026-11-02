@@ -55,10 +55,10 @@ use {
             take_hash_trie_parallel_builds, take_tree_trie_parallel_builds, HashTrieParallelBuild,
         },
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
-        ConfiguredBuildModeRelation, EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode,
-        HashTrieConfig, HeapSize, KeyLevels, LazyExpansion, NoPruning, PruningPolicy, RadixBits,
-        Relation, RelationHeader, RootCapacity, SingletonPruning, Threads, TreeTrie,
-        TreeTrieBuildMode, Tuples,
+        ConfiguredBuildModeRelation, EagerExpansion, ExpansionPolicy, HashIndex, HashTrie,
+        HashTrieBuildMode, HashTrieConfig, HeapSize, KeyLevels, LazyExpansion, NoPruning,
+        PruningPolicy, RadixBits, Relation, RelationHeader, RootCapacity, SingletonPruning,
+        Threads, TreeTrie, TreeTrieBuildMode, Tuples,
     },
     kermit_iters::{Filter, RowId, SipHashStrategy, TupleView},
     kermit_rdf::{parquet::write_relation, partition::PartitionedRelation},
@@ -1262,6 +1262,139 @@ fn hash_trie_view_builds_hold_the_kept_rows_once() {
             &info,
             heap,
             scratch,
+            copy / 8,
+            copy,
+        );
+    }
+}
+
+// ── HashIndex builds ────────────────────────────────────────────────────
+
+/// A `HashIndex` build allocates three arrays, whatever the row count: the one
+/// copy of the rows, the bucket directory and the per-row links. A per-row
+/// allocation adds 9 900 over the larger fixture.
+const HASH_INDEX_ARRAYS: u64 = 3;
+
+/// Allocations of one `HashIndex` build of [`repeated`]`(repeats)`, keyed on
+/// its first `levels` columns (`0` is a driver's empty key, `2` the
+/// `bench ds` build keyed on every column), after checking it stored every
+/// row.
+fn hash_index_build_allocations(levels: usize, repeats: usize) -> u64 {
+    let tuples = repeated(repeats);
+    let rows = tuples.len();
+    let header = RelationHeader::new_positional("r", 2).with_levels(levels);
+    let mut built: Option<HashIndex> = None;
+    let info = allocation_counter::measure(|| {
+        built = Some(HashIndex::from_tuples(header, tuples));
+    });
+    assert_eq!(
+        built.expect("measured").tuple_count(),
+        rows,
+        "levels {levels}"
+    );
+    info.count_total
+}
+
+/// The build allocates its arrays once, at either repetition and at every key
+/// length: the larger build may allocate no more than the smaller, and
+/// neither more than the arrays plus [`SCRATCH`].
+#[test]
+fn hash_index_builds_allocate_independently_of_their_row_count() {
+    for levels in 0..=2 {
+        let (once, many) = (
+            hash_index_build_allocations(levels, 1),
+            hash_index_build_allocations(levels, REPEATS),
+        );
+        assert!(
+            once <= HASH_INDEX_ARRAYS + SCRATCH,
+            "HashIndex keyed on {levels} columns: {once} allocations for {} rows; its arrays \
+             account for {HASH_INDEX_ARRAYS}",
+            KEYS * KEYS
+        );
+        assert!(
+            many <= once,
+            "HashIndex keyed on {levels} columns: {once} allocations for {} rows, {many} for {}: \
+             the larger build allocates more, so some row allocates",
+            KEYS * KEYS,
+            REPEATS * KEYS * KEYS
+        );
+    }
+}
+
+/// What [`hash_index_view_build`] observed of one build.
+struct HashIndexViewBuild {
+    /// The counter's totals and peak for the build.
+    info: allocation_counter::AllocationInfo,
+    /// The built index's `heap_size_bytes`.
+    heap: usize,
+    /// Rows the view keeps.
+    kept_rows: usize,
+}
+
+/// [`hash_index_build_allocations`] for a build from [`kept_rows`] over
+/// [`repeated_in_decoys`]: the rows the view keeps are `repeated(repeats)`'s,
+/// and the decoys it rejects must cost nothing.
+fn hash_index_view_build(levels: usize, repeats: usize) -> HashIndexViewBuild {
+    let source = repeated_in_decoys(repeats);
+    let view = kept_rows(&source);
+    let rows = repeats * KEYS * KEYS;
+    assert_eq!(
+        view.count(),
+        rows,
+        "the view keeps the repeated rows and no decoy"
+    );
+    assert!(
+        source.len() > rows,
+        "the source holds decoys the build must skip"
+    );
+    let header = RelationHeader::new_positional("r", 2).with_levels(levels);
+    let mut built: Option<HashIndex> = None;
+    let info = allocation_counter::measure(|| {
+        built = Some(HashIndex::from_view(header, view));
+    });
+    let built = built.expect("measured");
+    assert_eq!(built.tuple_count(), rows, "levels {levels}");
+    HashIndexViewBuild {
+        info,
+        heap: built.heap_size_bytes(),
+        kept_rows: rows,
+    }
+}
+
+/// A build from a filtered, projected and permuted view allocates the same
+/// three arrays, and holds the kept rows once: its peak is the finished
+/// index's `heap_size_bytes` plus a margin under one copy (see
+/// [`assert_peak`]; a `HashIndex` keeps its one copy of the rows as its own
+/// array and builds the directory and links in place, so it holds no scratch
+/// beside the finished index). The kept rows are 10 000 of 11 000 in the
+/// larger source, a copy of 160 000 bytes.
+#[test]
+fn hash_index_view_builds_allocate_once_per_array_and_hold_the_kept_rows_once() {
+    for levels in 0..=2 {
+        let small = hash_index_view_build(levels, 1);
+        let large = hash_index_view_build(levels, REPEATS);
+        assert!(
+            small.info.count_total <= HASH_INDEX_ARRAYS + SCRATCH,
+            "HashIndex keyed on {levels} columns from a view: {} allocations for {} kept rows; \
+             its arrays account for {HASH_INDEX_ARRAYS}",
+            small.info.count_total,
+            small.kept_rows
+        );
+        assert!(
+            large.info.count_total <= small.info.count_total,
+            "HashIndex keyed on {levels} columns from a view: {} allocations for {} kept rows, {} \
+             for {}: the larger build allocates more, so some row allocates",
+            small.info.count_total,
+            small.kept_rows,
+            large.info.count_total,
+            large.kept_rows
+        );
+        let copy = (large.kept_rows * 2 * WORD) as u64;
+        assert_peak(
+            &format!("HashIndex keyed on {levels} columns from a view"),
+            &large.info,
+            large.heap,
+            0,
             copy / 8,
             copy,
         );
