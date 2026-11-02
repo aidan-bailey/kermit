@@ -7,20 +7,25 @@
 `HashTrie` is a hash-based trie: each level is a hash table whose keys are 64-bit hashes of attribute values, and whose values are either child nodes (inner levels) or tuple chains (leaf level). A chain is a list of its tuples' row ids threaded through the trie's links, one 4-byte link per row beside the buffer; the tuples themselves live once, in the trie's buffer.
 
 ```rust
-HashTrie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> {
+HashTrie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> {
     header:      RelationHeader,
     tuples:      Tuples,            // every stored tuple: arrival or partition order (below); len() = multiset size
     links:       ChainLinks,        // one link per row of `tuples`: the next row in its list, or NIL
-    root:        HashTrieNode<P, E>,
+    root:        Root<P, E, L>,
     config:      HashTrieConfig,
-    _layout:     PhantomData<(H, P, E)>,
+    _layout:     PhantomData<(H, P, E, L)>,
+}
+
+enum Root<P, E, L: LevelPolicy> {             // levels.rs (#116)
+    Table(HashTrieNode<P, E>),                // a trie with levels: the first level's table
+    Rows(L::Rows<Option<Chain>>),             // a trie with no level: one chain, in source order
 }
 
 enum HashTrieNode<P: PruningPolicy, E: ExpansionPolicy> {
-    Inner(HashTable<HashTrieNode<P, E>>),     // depths 0..arity-1
-    Leaf(HashTable<Chain>),                   // depth arity-1: the chains
-    Singleton(P::Payload),                    // pruned subtrie, depths 1..arity
-    Unexpanded(E::Pending<HashTrieNode<P, E>>), // lazy child, depths 1..arity
+    Inner(HashTable<HashTrieNode<P, E>>),     // depths 0..levels-1
+    Leaf(HashTable<Chain>),                   // depth levels-1: the chains, of whole rows
+    Singleton(P::Payload),                    // pruned subtrie, depths 1..levels
+    Unexpanded(E::Pending<HashTrieNode<P, E>>), // lazy child, depths 1..levels
 }
 
 struct ChainLinks(Vec<AtomicU32>);           // kermit-iters; Relaxed loads and stores
@@ -46,6 +51,8 @@ struct Entry<V> { hash: u64, value: V }
 ```
 
 The `Singleton` payload is the second Layout parameter's associated type: the `RowId` of its one tuple under `SingletonPruning`, and the uninhabited `Never` under the default `NoPruning` — so with pruning off the variant cannot be constructed and every `Singleton` arm is dead code the compiler drops. rustc omits uninhabited variants when it computes a layout, so in practice the enum is laid out exactly as it was before pruning existed — an optimisation rustc performs, not a language guarantee, which is why the two size tests `node_does_not_grow_under_the_pruning_policy` (in `implementation.rs`) and `off_frame_is_the_bare_table_pair` (in `hash_trie_iter.rs`) pin it. See [Layout options](#layout-options).
+
+**Levels** (#116). The fourth Layout parameter, a `LevelPolicy`, decides how many of a trie's leading columns are levels (`levels`, read through `L::levels(&header)` everywhere the depth of the last level matters). `AllLevels`, the default, gives every column a level, as before #116: `levels` is the arity. `KeyLevels` (`--ds-layout-levels keys`) reads the header's level count, which `kermit::db::prepare` sets from each index spec: the columns up to the index's last join key, so the payload after it is no level and stays in the leaf chains, whose rows are whole tuples. A trie with no level (an index with no join key) has no table at all: its `Root::Rows` is one chain of its rows in source order, which `HashTrieIterator::leaf_tuples` lends at the pre-root. Under `AllLevels` that variant holds the uninhabited `Never`, so `Root` is the node's size and every zero-level path compiles away, pinned by `root_does_not_grow_under_the_level_policy` (`levels.rs`). See [Layout options](#layout-options), *Join-key levels*.
 
 The `Unexpanded` payload is the third Layout parameter's associated type, by the same device: `Box<LazyChild<N>>` under `LazyExpansion` and `Never` under the default `EagerExpansion`, pinned by `node_does_not_grow_under_the_expansion_policy`. Under lazy expansion only the root is built at construction; every child below it keeps its tuples as a pending `Chain` until `HashTrieIter::open` first enters it, and `HashTrie::resolve` then takes the chain (`Cell::take`) and re-threads its rows into a table built by Algorithm 2's `build` (`bulk.rs`), one level deep (its own children start unexpanded). The re-threading writes links through `&self`, which is why the links are atomics (spec Decision 3). `for_each_tuple` reads `built` if present and walks `pending` otherwise; `heap_size_bytes` counts the `Box` and `built`, since a pending chain owns no heap; `collect_tuples` reads the buffer; none of them expands anything.
 
@@ -117,7 +124,7 @@ heap, so no capacity can differ either.
 
 ## Invariants
 
-- **Path depth = arity.** Every root-to-leaf path has length `header.arity()`. Inner nodes at depths `0..arity-1`; leaf nodes at depth `arity-1`. Enforced at construction time by `make_root_sized` and the builds (`build_nested`, `insert_at`).
+- **Path depth = level count.** Every root-to-leaf path has length `levels`: `header.arity()` under `AllLevels`, `header.levels()` under `KeyLevels` (#116). Inner nodes at depths `0..levels-1`; leaf nodes at depth `levels-1`; every leaf chain holds whole rows, so a column past the last level is payload, read from the rows. A trie with no level has no table, only its `Root::Rows` chain. Enforced at construction time by `make_root_sized` and the builds (`build_nested`, `insert_at`, `unleveled`).
 - **Hash function consistency.** The hashing convention is the compile-time `HashStrategy` parameter `H`, whose single-argument method `H::hash(key: usize) -> u64` (defined in `kermit_iters::hash_strategy`; `SipHashStrategy` is the default, `FxHashStrategy` the alternative — see [Layout options](#layout-options)) hashes only the attribute value. There is no per-depth parameter: cross-attribute aliasing isn't an issue because attribute positions live in physically distinct hash tables — a value at column 0 and the same value at column 1 are stored in different tables and cannot collide. `HashTrie::insert_at` calls `H::hash(key)` directly, and so does every build. A constant is a filter applied while the rows are copied, so no hash is made for it outside the trie. Before per-query index builds (2026-10-22), a one-value iterator was handed a precomputed hash by `kermit::db::hash_join`, and both paths had to hash with the same `H` or queries against constants silently broke.
 - **Multiset semantics.** Duplicate tuples are preserved (added to the same leaf chain) rather than absorbed. This is a deliberate divergence from `TreeTrie`'s set behavior, motivated by the paper's "bag semantics" treatment in §3.2.4. Future enhancement: optional deduplication via a `with_set_semantics` flag. `Relation::KEEPS_DUPLICATES` is `true` for this structure alone: an atom with no kept column (only constants) builds no index, and its row count multiplies the join's results here, where the sorted tries clamp it to 1.
 - **Load factor cap.** Each `HashTable` resizes (doubles) when an insert would push occupancy above the configured cap — `HashTrieConfig::load_factor`, default 0.7 (see [Config flags](#config-flags)). The test is exact integer arithmetic, `(len + 1) * 100 > capacity * percent`. After resize, all entries are rehashed. Every table starts at 4 buckets except in a build from a known set of tuples, where `--ds-config root-capacity=tuples` sizes the root once for the tuple count, and `child-capacity=tuples` sizes every child once for its list (see [Config flags](#config-flags)).
@@ -149,6 +156,8 @@ Let `n` = tuple count, `a` = arity, `b` = max chain length at a leaf bucket.
 | `HashTrieIterator::leaf_tuples()` | O(1) | | a `LeafRows` view of the current bucket's chain in its linked form, the chain's head and length over the trie's buffer and links (a pruned level lends the listed form, its one row id); copies nothing. Reading it walks the chain, one link load and one row per step |
 | `HeapSize::heap_size_bytes()` | O(node count) | | the buffer (capacity × 8 B) and the links (capacity × 4 B), plus a recursive walk summing each `HashTable` shell (a chain lives in its bucket and owns no heap), and under lazy expansion each unexpanded child's `Box<LazyChild>` (`own_heap_bytes`) and, once built, its table. A tuple is counted once, in the buffer, plus its 4-byte link: at arity 2 that is 16 B plus 4, where a `Vec` per tuple cost 40 B before #111 and each chain added a heap list of 4-byte ids before #101 B2 |
 | `for_each_tuple(visit)` | O(n) | O(a) stack | depth-first walk of the trie lending each stored tuple: each chain walked through `links` (a lazy child's pending chain likewise), each pruned `Singleton` through its id, every row read from the buffer; allocates nothing per tuple, so `bench ds` times it (issue #79). `collect_tuples()` copies the buffer, in its row order, without walking the trie |
+
+Under `--ds-layout-levels keys`, read `a` in the per-level costs above as the trie's level count: a payload column costs no table, no hash and no chain push, only its share of the row copy. A trie with no level costs the `materialize()` copy and one chain through its rows in every build mode; its `open()` returns `false` at the pre-root, where `leaf_tuples()` lends the whole chain.
 
 The "amortized O(1)" claims assume good hash distribution (no chronic clustering on linear probes). For pathologically bad inputs (e.g., all keys hashing to the same bucket), `lookup` degrades to O(capacity). The hash function is a Layout choice, not a fixed cost: `fxhash` (`FxHashStrategy`) is implemented and selectable with `--ds-layout-hasher fxhash` — see [Layout options](#layout-options). Other non-cryptographic alternatives (`ahash`, AquaHash) remain unimplemented.
 
@@ -369,6 +378,70 @@ optimizations are classified into Layout, Config, or BuildMode.
       chain in its child's `LazyChild`, threaded through the trie's links,
       and expansion re-threads it, so lazy `insertion`, `space` and
       `iteration` all predate B2.
+
+- **Join-key levels** (`ds_layout_levels`, #116): a level for each of an
+  index's join keys only, as in the paper's hash trie (Freitag et al., VLDB
+  2020 §3.1: "each level of nesting corresponds to exactly one join key
+  attribute"), with every other column kept as payload in the leaf chains.
+  - **CLI:** `-i hash-trie --ds-layout-levels <all|keys>` (on `bench run`,
+    `bench probe`, `bench join` and `kermit join`; `bench ds` refuses it,
+    since its relation has no query and so no join key).
+  - **Choices:** `all` (default; a level per column, as before #116) and
+    `keys`.
+  - **Type-level:** `HashTrie<H, P, E, L: LevelPolicy>`, `L` one of
+    `AllLevels` or `KeyLevels` (`levels.rs`), with eight aliases more in the
+    tests, each of the eight Layout cells again with a `Keys` suffix
+    (`HashTrieSipKeys`, …, `HashTrieFxPrunedLazyKeys`).
+  - **Bench axis value:** `"all"` or `"keys"`. Each `index` metadata line of
+    a trie with fewer levels than columns ends its columns with
+    ` levels n`; an `all` line reads as before.
+  - **What `keys` builds.** `kermit::db::prepare` plans every query under
+    the structure's `Relation::TRIE_LEVELS` (`TrieLevels::All` or
+    `JoinKeys`), and `plan_indexes` gives each index spec its level count:
+    up to its last join-key column (a join key is a variable two or more
+    atoms carry). Every optimiser plans payload last (#116 step 1), so an
+    index's join keys are its first columns and the trie is the paper's: one
+    level per join key. A plan that puts payload before a join key (only a
+    forced order does, in the tests) keeps that payload as a level too
+    (rule (iii)), so every join key stays a level and every relation still
+    joins its intersection (Algorithm 1 line 3). Under `R(X, P), S(X, Y),
+    T(Y)` and the plan P, X, Y, `R` is read `[P, X]` and keeps both levels.
+  - **Zero levels.** An index with no join key (a single-atom query, a cross
+    product) has no level: one chain, which every build mode builds the same
+    way, the copy `bulk` makes, since there is no key to partition on (so
+    `parallel:N` and `presized:N` push no test-hook record there).
+  - **Sharing is exact.** Index specs merge only when identical, level
+    count included, as the paper builds identical hash tries once (§3.3.2).
+    SNAP's `path3` under the payload-last plan B, C, A, D reads `edge` as
+    `[1, 0]` at one level, `[0, 1]` at two and `[0, 1]` at one: three
+    tries under `keys`, two under `all`. One trie per column order at the
+    greatest depth (`keys-shared`) is deferred until a measurement asks
+    for it.
+  - **Prepared per policy.** `bench run` prepares each query once per
+    policy its cells build under (at most two: the sorted cells' `all` and
+    the HashTrie cell's), untimed; `build` refuses a structure whose policy
+    differs from the prepared one's.
+  - **Hash Triejoin** descends an atom only at the variables of its levels
+    and skips a position no trie has a level for; the leaf product binds the
+    payload from the rows (Algorithm 3, lines 16–19). See
+    [`hash-triejoin.md`](../algorithms/hash-triejoin.md).
+  - **Cost for `all`:** none. `AllLevels` reads the arity, the value every
+    site read before, and its zero-level root is uninhabited.
+  - **Measured:** not yet. `all` stays the default until the next sweep
+    (#99) measures `keys`; the flip is the owner's call.
+  - **Parity with the paper** (`docs/specs/2026-11-02-join-key-levels-design.md`):
+
+    | Element (Freitag et al., VLDB 2020) | kermit |
+    |---|---|
+    | One trie level per join key attribute (§3.1, §3.2.1) | ✓ under `keys`; ✗ under `all`, the default, until #99 measures `keys` |
+    | The other columns are payload, reached through the last level's identifiers (§3.1) | ✓ under `keys`: the last level's chains name whole rows by row id |
+    | Levels in the join's attribute order (§3.2.1; Algorithm 2 line 8) | ✓ an index's columns follow the plan |
+    | An attribute order over the join keys only (§3.2.1, §4) | — kermit's plans order every variable: the join keys first, then the payload, which no `keys` trie has a level for |
+    | Every relation holding a join key joins its intersection (Algorithm 1 line 3) | ✓ participation by level; skipping a position no trie has a level for is kermit's |
+    | The bag of tuples expanded after the join keys, collisions checked before output (Algorithm 3 lines 16–19, §3.2.4) | ✓ `emit_leaf` and `verify_and_construct`, unchanged |
+    | Identical hash tries built once (§3.3.2) | ✓ exact sharing (`keys-shared` deferred) |
+    | A plan with payload before a join key | — rule (iii), kermit's: such a trie keeps levels up to its last join key |
+    | A relation that holds no join key | — kermit's: no levels, one chain. The paper's multi-way joins come from inner equi-joins (§4), each of whose relations shares a join key |
 
 ### Config flags
 
@@ -624,7 +697,8 @@ same for every N, bucket for bucket, though each N's buffer is its own
 partitioned copy. The
 closest-to-paper configuration is
 `--ds-config root-capacity=tuples,child-capacity=tuples,load-factor=0.8
---ds-build hash-trie=presized:N`, with pruning and lazy expansion on.
+--ds-build hash-trie=presized:N`, with pruning and lazy expansion on, and
+`--ds-layout-levels keys` (#116).
 Details:
 [`parallel-build.md`](./parallel-build.md#the-presized-build-presizedn).
 

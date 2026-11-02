@@ -75,6 +75,8 @@ A **Layout** option changes the type of the data structure itself. Each combinat
 > **Second concrete example.** Singleton pruning is HashTrie's other Layout dimension: `HashTrie<H, NoPruning>` and `HashTrie<H, SingletonPruning>` differ in which node variants exist at all, because the policy's `Payload` associated type is uninhabited when pruning is off.
 >
 > **Third concrete example.** The sorted tries' seek strategy is a Layout of two structures at once: `TreeTrie<S>` and `ColumnTrie<S>` share one implementation per `S: SeekStrategy` (`linear`, `binary`, `galloping`), so the same strategy on both tries isolates the layout. Every strategy returns what `slice::partition_point` returns; only the probes differ.
+>
+> **Fourth concrete example.** HashTrie's trie levels (#116) are a Layout: `HashTrie<H, P, E, AllLevels>` gives every column a level, while `HashTrie<H, P, E, KeyLevels>` builds levels only up to an index's last join-key column and has a root variant for a trie with no level at all, one chain of its rows. Under `AllLevels` that variant's payload is uninhabited, so the off instantiation compiles to the trie without it, and the level count is the arity every site read before. It is no BuildMode, since `keys` changes a trie's contents per level, its capacities and its `space`, and no Config, since it changes which tables exist.
 
 | Aspect | Layout |
 |---|---|
@@ -671,13 +673,15 @@ its `HasOptimizationAxes` impl emits `ds_layout_pruning` from
 `LayoutChoices::given` and given a row in `DsFlag::structures` naming
 `hash-trie`, so it is rejected on non-`hash-trie` selectors and on a `bench
 run` sweep that `-a` leaves without a hash-trie cell. Dispatch does **not** repeat the
-product: `with_hash_trie_layout!(hasher, pruning, |H, P| …)` in
-`kermit/src/options.rs` expands the hasher × pruning cells once, and
-`dispatch_run_bench`, `dispatch_ds_bench` and `load_query_runner` (`main.rs`)
-all call it. **Adding a third
-Layout dimension means adding arms to that macro and nowhere else** — do
-not reach for a runtime enum inside the structure, which would reintroduce
-the tax the Layout category exists to avoid. That rule is per structure
+product: `with_hash_trie_layout!(hasher, pruning, expansion, levels, |H, P, E, L| …)`
+in `kermit/src/options.rs` expands the hasher × pruning × expansion × levels
+cells once (16), one dimension per rule (`@hasher`, `@pruning`, `@expansion`,
+`@levels`), and `dispatch_run_bench` and `write_query_csv` (`main.rs`) call
+it; `dispatch_ds_bench` calls its three-dimension form, since `bench ds`
+refuses `--ds-layout-levels`. **Adding a Layout dimension means adding a
+rule to that macro and nowhere else in dispatch** — do not reach for a
+runtime enum inside the structure, which would reintroduce the tax the
+Layout category exists to avoid. That rule is per structure
 family. The sorted tries' seek strategy has its own `with_sorted_trie_layout!`
 beside it, because the two products share no dimension.
 
@@ -701,6 +705,10 @@ define_multiway_join_test_suite!(HashTrieSipPruned, HashTriejoin, LexicographicO
 define_multiway_join_test_suite!(HashTrieSipPruned, HashTriejoin, CardinalityOptimiser);
 // … one pair per alias
 ```
+
+HashTrie has 16 such aliases: hasher × pruning × expansion, and each again
+under join-key levels with a `Keys` suffix (`HashTrieSipKeys`, …,
+`HashTrieFxPrunedLazyKeys`, #116).
 
 The DS-level `hash_trie_test_suite!` and `parquet_test_suite!` take the same
 aliases. Add two `#[test]` size assertions — a growth guard,
@@ -910,7 +918,7 @@ This is semantically correct — pre-standard HashTrie runs were SipHash-only. S
 
 ## What's implemented today, what's available
 
-Thirteen optimizations are implemented — four Layout dimensions, three Config
+Fourteen optimizations are implemented — five Layout dimensions, three Config
 values and six BuildModes:
 
 | Optimization | Category | Where | Paper § |
@@ -918,6 +926,7 @@ values and six BuildModes:
 | Hasher choice (Sip vs Fx) | Layout | `ds_layout_hasher` | §3.3.1 |
 | Singleton pruning (off/on) | Layout | `ds_layout_pruning` | §3.3.1, Fig 5 |
 | Lazy child expansion (eager/lazy) | Layout | `ds_layout_expansion` | §3.3.1, Fig 6 |
+| Join-key trie levels (all / keys) | Layout | `ds_layout_levels` | §3.1, §3.2.1, §3.2.4 (issue #116) |
 | Seek strategy (linear / binary / galloping) | Layout | `ds_layout_seek` | (kermit-specific; LFTJ §3) |
 | Load-factor cap | Config | `ds_config_load_factor` | (kermit-specific) |
 | Root capacity (grow / tuples) | Config | `ds_config_root_capacity` | §3.2.2, Alg. 2 line 3 (root only; issue #88) |

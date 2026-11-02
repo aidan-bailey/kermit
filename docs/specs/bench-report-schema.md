@@ -87,7 +87,10 @@ Each index gets an `index` metadata line, `{id} {relation} filter {filter}
 columns {columns:?}: {rows} rows, {bytes} bytes`, where the filter reads `-`
 for none and otherwise `col{c}={value}` for a constant and `col{a}=col{b}` for
 an equality, comma-separated (for example `#0 edge filter - columns [1, 0]: 4
-rows, 96 bytes`, illustrative).
+rows, 96 bytes`, illustrative). A HashTrie index under `--ds-layout-levels
+keys` whose trie has levels for fewer columns than it keeps ends its columns
+with ` levels {n}` (`#0 r filter - columns [0, 1] levels 1: 4 rows, 272
+bytes`, #116); every other line reads as before.
 
 In v5 the time functions ran as `build`, `iteration`, `end_to_end`, and
 `space` was a Criterion function (`space`, `{ds}/space`) measured through
@@ -197,7 +200,7 @@ tooling relies on them for cross-DS comparison.
 
 - `ds_layout_<dim>` — compile-time layout choice on the data structure
   (e.g., `ds_layout_hasher`, `ds_layout_pruning`, `ds_layout_expansion`,
-  `ds_layout_seek`, `ds_layout_pointer_encoding`).
+  `ds_layout_levels`, `ds_layout_seek`, `ds_layout_pointer_encoding`).
 - `ds_config_<flag>` — runtime configuration value on the data structure
   (e.g., `ds_config_load_factor`, `ds_config_root_capacity`,
   `ds_config_child_capacity`).
@@ -250,6 +253,14 @@ When pivoting bench reports in kermit-lab, downstream code should:
   build too, so `space` always measures the indexes as built. Every other
   structure reuses one set of indexes for `iteration`, which is the same
   state.
+- `ds_layout_levels` (HashTrie only, `"all"` / `"keys"`, #116): whether a
+  HashTrie index has a level per column (`all`, the default) or levels up to
+  its last join-key column only (`keys`), the other columns kept as payload in
+  its leaf rows. Under `keys` a query's indexes, and so `build`, `space`,
+  `iteration` and the `index` lines, can differ from `all`'s; the answers do
+  not. Emitted on `bench run`, `bench probe`, `bench join` and `bench ds`
+  reports of HashTrie (`bench ds` always `"all"`: it refuses the flag).
+  kermit-lab back-fills `"all"` on HashTrie rows without it.
 
 Adding new keys under these prefixes does not require a `schema_version`
 bump — the `axes` field is an open map.
@@ -304,3 +315,4 @@ bump — the `axes` field is an open map.
 | 5       | 2026-10-22 | What `insertion`, `copies`, `iteration`, `end_to_end` and `space` measure changed, so they are not comparable with v4, and kermit-lab refuses to load v4 and v5 reports together unless `allow_mixed_schema=True`. Relations load into a flat `Catalog` untimed, and each query builds, and times as `build`, only the indexes its plan reads: each a relation filtered by the query's constants and repeated variables, in plan order, copied exactly once from a borrowed `TupleView` in every build mode (so `serial` and `bulk` now copy inside the timer, as `radix:K`, `parallel:N` and `presized:N` already did, and a build is freed after the timer stops). `insertion` and `copies` are replaced by `build` (`--metrics build`; `copies` is no longer a metric); `iteration` excludes planning, which now runs once per query before any timer, and times the join over plain indexes with no const or selection wrapper; `end_to_end` and `space` are per query, and `space` sums the query's indexes in one function, replacing `space/<relation>` and `space/Index_<π>_<base>`. The `column_orders` axis is removed (`--column-orders` no longer exists; the planner is always free), `index_rows` is new, `tuples` for `join` and `run` is the flat row count of the relations the query reads, and each index adds an `index` metadata line. `bench ds` emits `{ds}/build` where it emitted `{ds}/insertion`. Criterion group names are unchanged. No v4 cell measures the same work under the same name, so there is no A/B against v4; the first v5 measurement is the next authoritative sweep (#99). |
 | 6       | 2026-10-25 | The measurements made without Criterion move into a new top-level `values` list (`ValueEntry`: `function`, `metric`, `estimator`, `value`). `space` is an exact `values` entry in every subcommand and never a Criterion function, so `SpaceMeasurement` is gone. `bench probe` (`kind: probe`) is new: per query and cell, one describe build and one execution timed with an `Instant` (single-run `build` and `iteration`), the exact `space`, verification against `expected`, and no Criterion function. New axes: `plan` and `answer_rows`. Per query and cell the runners measure in one order: describe (one untimed build, read for the `index` lines, `space` and verification), `iteration` on that build, then `build` and `end_to_end`; reports are written after every query. No metric changes what it measures, so kermit-lab loads v5 and v6 together. |
 | 6 (no bump) | 2026-11-02 | Plans are payload last (#116 step 1): every optimiser orders the join keys (the variables two or more atoms carry) first, so a query with a payload variable can change plan, and so its indexes, on every structure. Rows are told apart by the `plan` axis (v6), as the seek-default and allocator changes were told apart by their axes. |
+| 6 (no bump) | 2026-11-02 | Added the `ds_layout_levels` axis (`--ds-layout-levels all\|keys`, #116 step 2) and the `index` line's ` levels n` suffix, present only under `keys`. Additive: an `all` report is unchanged, so `schema_version` stays 6. kermit-lab back-fills `all`. |
