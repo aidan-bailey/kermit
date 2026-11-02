@@ -98,6 +98,52 @@ fn engine_threads_outside_its_range_is_a_usage_error() {
     }
 }
 
+/// The flag reaches DuckDB only: without a DuckDB engine it is refused (before
+/// its range is checked, so `0` is no range error), as #86 refuses a flag with
+/// no cell to reach.
+#[test]
+fn engine_threads_without_a_duckdb_engine_is_a_usage_error() {
+    let tmp = TempDir::new().unwrap();
+    for args in [
+        &[
+            "probe",
+            "triangle",
+            "--engine",
+            "nemo",
+            "--engine-threads",
+            "0",
+        ][..],
+        &[
+            "probe",
+            "triangle",
+            "--engine",
+            "nemo",
+            "--engine-threads",
+            "2",
+        ][..],
+        &[
+            "run",
+            "triangle",
+            "-i",
+            "tree-trie",
+            "-a",
+            "leapfrog-triejoin",
+            "--engine-threads",
+            "2",
+        ][..],
+    ] {
+        let (output, reports) = bench(&tmp, None, args);
+        assert!(!output.status.success(), "{args:?}");
+        let stderr = stderr(&output);
+        assert!(
+            stderr.contains("--engine-threads applies to --engine duckdb only"),
+            "{args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("must be between"), "{args:?}: {stderr}");
+        assert!(reports.is_empty());
+    }
+}
+
 #[cfg(not(feature = "engine-nemo"))]
 #[test]
 fn an_engine_without_its_feature_is_a_usage_error() {
@@ -301,7 +347,7 @@ mod with_both_engines {
             "--engine",
             "duckdb,nemo",
             "-m",
-            "iteration",
+            "build",
         ]);
         let stderr = stderr(&output);
         assert!(!output.status.success(), "{stderr}");
@@ -311,6 +357,52 @@ mod with_both_engines {
         );
         assert!(
             stderr.contains(&format!("{prefix}/triangle/triangle/nemo")),
+            "{stderr}"
+        );
+        assert!(stderr.contains("64"), "{stderr}");
+        assert!(
+            !tmp.path().join("criterion").exists(),
+            "nothing is timed before the refusal"
+        );
+        assert!(reports.is_empty());
+    }
+
+    /// `bench join` names its groups `{prefix}/adhoc/{stem}/{segment}`, and
+    /// its kermit cell and its engines are checked together, before anything
+    /// runs.
+    #[test]
+    fn bench_join_refuses_groups_that_share_a_criterion_directory() {
+        let tmp = TempDir::new().unwrap();
+        let query = tmp.path().join("triangle.dl");
+        fs::write(&query, "T(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).").unwrap();
+        let edge =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../benchmarks/data/triangle/edge.csv");
+        let prefix = "join-with-a-prefix-long-enough-to-push-the-segment-past-byte-64";
+        let (output, reports) = bench(&tmp, Some(prefix), &[
+            "join",
+            "-r",
+            edge.to_str().unwrap(),
+            "-q",
+            query.to_str().unwrap(),
+            "-i",
+            "tree-trie",
+            "-a",
+            "leapfrog-triejoin",
+            "--engine",
+            "duckdb,nemo",
+            "--metrics",
+            "build",
+        ]);
+        let stderr = stderr(&output);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "{prefix}/adhoc/triangle/TreeTrie/LeapfrogTriejoin"
+            )),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("{prefix}/adhoc/triangle/duckdb-t1")),
             "{stderr}"
         );
         assert!(stderr.contains("64"), "{stderr}");

@@ -251,7 +251,7 @@ impl<E: Engine + 'static> Cell for EngineCell<E> {
 /// The stderr notes for the metrics a cell cannot measure and the run asked
 /// for: `iteration` and `end-to-end` of an engine that does not stream, and
 /// `space` of one that reports none. A probe (`single_run`) asks for a single
-/// `iteration` run without naming it. The measure layer (Story 3) acts on the
+/// `iteration` run without naming it. The measure layer acts on the
 /// same fact: `Described::measure` skips `iteration` and `end_to_end` for
 /// a non-streaming subject, and `Described::materialize_once` /
 /// `Described::materialize_time` give it its single-run and timed
@@ -597,8 +597,7 @@ mod tests {
         // The fake has no thread count, and `engine_version` comes from the
         // subject.
         assert_eq!(axes.len(), 1);
-        let per_index_bytes = std::hint::black_box(<EngineCell<Bag> as Cell>::PER_INDEX_BYTES);
-        assert!(!per_index_bytes);
+        const { assert!(!<EngineCell<Bag> as Cell>::PER_INDEX_BYTES) };
     }
 
     #[test]
@@ -627,12 +626,8 @@ mod tests {
             vec!["note: fake does not stream, so it skips iteration and end-to-end".to_string()]
         );
         // A probe asks for a single `iteration` run without naming it.
-        assert_eq!(skip_notes(&storing, &[Space], true), vec!["note: fake \
-                                                               does not stream, \
-                                                               so it skips \
-                                                               iteration and \
-                                                               end-to-end"
-            .to_string()]);
+        let note = "note: fake does not stream, so it skips iteration and end-to-end";
+        assert_eq!(skip_notes(&storing, &[Space], true), vec![note.to_string()]);
         assert!(skip_notes(&storing, &[Build, Space], false).is_empty());
 
         let bag = cell::<Bag>();

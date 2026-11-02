@@ -32,9 +32,9 @@ mod options;
 
 use {
     bench::{
-        check_sweep_group_directories, dispatch_ds_bench, dispatch_run_bench, gen::GenSubcommand,
-        measure::CriterionSettings, resolve_sweep, workload::PreparedWorkload, Metric, RunSettings,
-        Workload,
+        check_join_group_directories, check_sweep_group_directories, dispatch_ds_bench,
+        gen::GenSubcommand, measure::CriterionSettings, resolve_sweep, workload::PreparedWorkload,
+        Metric, RunSettings, Workload,
     },
     bench_report::{BenchKind, ReportSink},
     execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
@@ -864,6 +864,17 @@ fn run_bench_join(
         .collect();
     let workload = prepare_query_under(&query_args, &levels)?;
 
+    // The kermit cell, then the engines: every cell goes through
+    // `dispatch_sweep_cell`, and the clash check names their groups before
+    // any is written.
+    let cells: Vec<bench::run::SweepCell> = std::iter::once(bench::run::SweepCell::Kermit(cell))
+        .chain(engine_cells.into_iter().map(bench::run::SweepCell::Engine))
+        .collect();
+    let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_JOIN_GROUP);
+    if metrics.iter().any(|metric| metric.is_timed()) {
+        check_join_group_directories(prefix, &workload.workload, &cells, metrics)?;
+    }
+
     if let Some(path) = &output {
         let writer = BufWriter::new(fs::File::create(path)?);
         write_query_csv(cell, &workload, writer)?;
@@ -872,7 +883,7 @@ fn run_bench_join(
     let criterion = CriterionSettings::from_args(bench_args);
     let settings = RunSettings {
         kind: BenchKind::Join,
-        prefix: bench_args.name.as_deref().unwrap_or(DEFAULT_JOIN_GROUP),
+        prefix,
         planner: query_args.planner,
         metrics,
         queries_per_build,
@@ -882,14 +893,8 @@ fn run_bench_join(
         criterion: &criterion,
     };
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
-    dispatch_run_bench(cell, &workload, settings, &mut sink)?;
-    for engine in engine_cells {
-        bench::run::dispatch_sweep_cell(
-            bench::run::SweepCell::Engine(engine),
-            &workload,
-            settings,
-            &mut sink,
-        )?;
+    for cell in cells {
+        bench::run::dispatch_sweep_cell(cell, &workload, settings, &mut sink)?;
     }
     sink.finish()?;
     Ok(())
@@ -1016,7 +1021,7 @@ fn run_bench_run_command(
     // through no Criterion function, `materialize` included) write no
     // Criterion group, so nothing can collide.
     if !single_run && metrics.iter().any(|metric| metric.is_timed()) {
-        check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells)?;
+        check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells, &metrics)?;
     }
 
     // Opened before the loop so every finished query is on disk before the
@@ -1039,10 +1044,10 @@ fn run_bench_run_command(
             bench::run::dispatch_sweep_cell(cell, &workload, settings, &mut sink).with_context(
                 || {
                     format!(
-                        "bench {kind} failed on benchmark '{}' cell {:?}; partial report retained \
+                        "bench {kind} failed on benchmark '{}' cell {}; partial report retained \
                          at {}",
                         benchmark.name,
-                        cell,
+                        cell.group_segment(),
                         sink.path().display()
                     )
                 },

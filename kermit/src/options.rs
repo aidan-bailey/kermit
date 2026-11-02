@@ -1101,10 +1101,11 @@ pub(crate) struct EngineChoices {
     #[arg(long, value_name = "ENGINE", value_enum, value_delimiter = ',')]
     pub(crate) engine: Vec<EngineSelector>,
 
-    /// DuckDB's thread count: 1 up to the available parallelism. Nemo is
-    /// single-threaded and ignores it.
-    #[arg(long, value_name = "N", default_value_t = 1)]
-    pub(crate) engine_threads: usize,
+    /// DuckDB's thread count: 1 (the default) up to the available
+    /// parallelism. Applies to `--engine duckdb` only, since Nemo is
+    /// single-threaded: given without a DuckDB engine it is a usage error.
+    #[arg(long, value_name = "N")]
+    pub(crate) engine_threads: Option<usize>,
 }
 
 /// One resolved `--engine` cell.
@@ -1126,6 +1127,22 @@ impl EngineChoice {
             | EngineSelector::Nemo => "nemo".to_string(),
         }
     }
+
+    /// Whether the engine measures `metric`, as `Cell::supports` answers for
+    /// its `EngineCell`: DuckDB streams and reports no space, Nemo stores its
+    /// result and reports space. Written out here, like [`label`](Self::label),
+    /// so that the sweep's group clash check can ask without the engine's
+    /// feature; feature-gated tests in `bench::run` pin the two together.
+    pub(crate) fn supports(self, metric: crate::bench::Metric) -> bool {
+        use crate::bench::Metric;
+        match (self.engine, metric) {
+            | (_, Metric::Build | Metric::Materialize) => true,
+            | (EngineSelector::Duckdb, Metric::Iteration | Metric::EndToEnd) => true,
+            | (EngineSelector::Nemo, Metric::Iteration | Metric::EndToEnd) => false,
+            | (EngineSelector::Duckdb, Metric::Space) => false,
+            | (EngineSelector::Nemo, Metric::Space) => true,
+        }
+    }
 }
 
 impl EngineChoices {
@@ -1133,8 +1150,10 @@ impl EngineChoices {
     ///
     /// # Errors
     ///
-    /// `--engine-threads` outside `1..=available_parallelism()`, or an engine
-    /// whose cargo feature this build lacks.
+    /// `--engine-threads` given with no DuckDB engine to reach (it would be
+    /// silently ignored, as #86 refuses a `--ds-*` flag with no cell), or
+    /// outside `1..=available_parallelism()`, or an engine whose cargo feature
+    /// this build lacks.
     pub(crate) fn resolve(&self) -> anyhow::Result<Vec<EngineChoice>> {
         let available = std::thread::available_parallelism().map_or(1, usize::from);
         self.resolve_within(available)
@@ -1143,10 +1162,18 @@ impl EngineChoices {
     /// [`resolve`](Self::resolve) for a machine with `available` hardware
     /// threads.
     fn resolve_within(&self, available: usize) -> anyhow::Result<Vec<EngineChoice>> {
+        let duckdb = self.engine.contains(&EngineSelector::Duckdb);
+        if self.engine_threads.is_some() && !duckdb {
+            anyhow::bail!(
+                "--engine-threads applies to --engine duckdb only (Nemo is single-threaded), but \
+                 this run names no --engine duckdb"
+            );
+        }
         if self.engine.is_empty() {
             return Ok(Vec::new());
         }
-        if !(1..=available).contains(&self.engine_threads) {
+        let threads = self.engine_threads.unwrap_or(1);
+        if !(1..=available).contains(&threads) {
             anyhow::bail!("--engine-threads must be between 1 and {available}");
         }
         let mut selected: Vec<EngineSelector> = Vec::new();
@@ -1162,7 +1189,7 @@ impl EngineChoices {
             .into_iter()
             .map(|engine| EngineChoice {
                 engine,
-                threads: self.engine_threads,
+                threads,
             })
             .collect())
     }
@@ -1196,14 +1223,14 @@ mod tests {
     fn engine_flags_parse_a_comma_list_and_default_to_one_thread() {
         let none = engine_choices(&[]);
         assert!(none.engine.is_empty());
-        assert_eq!(none.engine_threads, 1);
+        assert_eq!(none.engine_threads, None);
 
         let both = engine_choices(&["--engine", "duckdb,nemo", "--engine-threads", "2"]);
         assert_eq!(both.engine, vec![
             EngineSelector::Duckdb,
             EngineSelector::Nemo
         ]);
-        assert_eq!(both.engine_threads, 2);
+        assert_eq!(both.engine_threads, Some(2));
 
         let repeated = engine_choices(&["--engine", "nemo", "--engine", "duckdb"]);
         assert_eq!(repeated.engine, vec![
@@ -1216,9 +1243,41 @@ mod tests {
 
     #[test]
     fn no_engine_resolves_to_no_cells_whatever_the_thread_flag_holds() {
-        // `Default` leaves `engine_threads` at 0; with no engine it is never
-        // read.
         assert_eq!(EngineChoices::default().resolve_within(4).unwrap(), vec![]);
+    }
+
+    /// Without a DuckDB engine the flag reaches no cell, so it is refused
+    /// before its range is looked at (0 would otherwise be a range error).
+    #[test]
+    fn engine_threads_without_a_duckdb_engine_is_refused() {
+        for engine in [vec![], vec![EngineSelector::Nemo]] {
+            for threads in [0, 2] {
+                let choices = EngineChoices {
+                    engine: engine.clone(),
+                    engine_threads: Some(threads),
+                };
+                assert_eq!(
+                    choices.resolve_within(4).unwrap_err().to_string(),
+                    "--engine-threads applies to --engine duckdb only (Nemo is single-threaded), \
+                     but this run names no --engine duckdb"
+                );
+            }
+        }
+    }
+
+    /// With a DuckDB engine the flag is accepted (and range-checked), beside
+    /// Nemo too, whose cell carries the default.
+    #[cfg(all(feature = "engine-duckdb", feature = "engine-nemo"))]
+    #[test]
+    fn engine_threads_with_a_duckdb_engine_is_accepted() {
+        let choices = EngineChoices {
+            engine: vec![EngineSelector::Duckdb, EngineSelector::Nemo],
+            engine_threads: Some(2),
+        };
+        let cells = choices.resolve_within(4).unwrap();
+        assert_eq!(cells[0].threads, 2);
+        assert_eq!(cells[0].engine, EngineSelector::Duckdb);
+        assert_eq!(cells[1].engine, EngineSelector::Nemo);
     }
 
     #[test]
@@ -1226,7 +1285,7 @@ mod tests {
         for threads in [0, 5] {
             let choices = EngineChoices {
                 engine: vec![EngineSelector::Duckdb],
-                engine_threads: threads,
+                engine_threads: Some(threads),
             };
             assert_eq!(
                 choices.resolve_within(4).unwrap_err().to_string(),
@@ -1239,7 +1298,7 @@ mod tests {
     fn an_engine_whose_feature_is_not_compiled_in_is_a_usage_error() {
         let choices = |engine| EngineChoices {
             engine: vec![engine],
-            engine_threads: 1,
+            engine_threads: None,
         };
         for engine in [EngineSelector::Duckdb, EngineSelector::Nemo] {
             let name = engine.name();
@@ -1272,11 +1331,11 @@ mod tests {
         };
         let choices = EngineChoices {
             engine: vec![engine, engine],
-            engine_threads: 2,
+            engine_threads: None,
         };
         assert_eq!(choices.resolve_within(4).unwrap(), vec![EngineChoice {
             engine,
-            threads: 2,
+            threads: 1,
         }]);
     }
 

@@ -31,7 +31,9 @@ pub mod workload;
 pub use workload::Workload;
 pub(crate) use {
     ds::dispatch_ds_bench,
-    run::{check_sweep_group_directories, dispatch_run_bench, resolve_sweep, RunSettings},
+    run::{
+        check_join_group_directories, check_sweep_group_directories, resolve_sweep, RunSettings,
+    },
 };
 
 /// A measurement `bench ds` / `bench run` can record.

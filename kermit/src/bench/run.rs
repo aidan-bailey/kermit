@@ -8,7 +8,7 @@ use {
         criterion_directory_name,
         engine::{skip_notes, EngineCell},
         measure::{CriterionSettings, Described, MeasureRequest, Subject},
-        workload::PreparedWorkload,
+        workload::{PreparedWorkload, Workload},
         Metric, CRITERION_MAX_DIRECTORY_NAME_BYTES,
     },
     crate::{
@@ -20,6 +20,7 @@ use {
         },
         IndexStructureSelector, JoinAlgorithmSelector,
     },
+    anyhow::Context,
     kermit::{
         db::{Catalog, Prepared},
         engine::Engine,
@@ -50,13 +51,31 @@ impl SweepCell {
         }
     }
 
-    /// The Criterion group's last segments: `{ds}/{algo}` (Story 4's
-    /// `execution_segment`), or the engine's label.
-    fn group_segment(self) -> String {
+    /// The Criterion group's last segments, which are also the cell's label
+    /// in messages: `{ds}/{algo}` (`execution_segment`), or the engine's label.
+    pub(crate) fn group_segment(self) -> String {
         match self {
             | Self::Kermit(execution) => execution_segment(execution),
             | Self::Engine(choice) => choice.label(),
         }
+    }
+
+    /// Whether the cell measures `metric`, as `Cell::supports` answers for the
+    /// cell it dispatches to.
+    fn supports(self, metric: Metric) -> bool {
+        match self {
+            | Self::Kermit(_) => true,
+            | Self::Engine(choice) => choice.supports(metric),
+        }
+    }
+
+    /// Whether the cell writes a Criterion group when `metrics` are
+    /// requested: only a timed metric it supports does (`space` is exact, and
+    /// Nemo under `-m iteration` measures nothing).
+    fn writes_group(self, metrics: &[Metric]) -> bool {
+        metrics
+            .iter()
+            .any(|&metric| metric.is_timed() && self.supports(metric))
     }
 }
 
@@ -445,8 +464,12 @@ fn run_benchmark<C: Cell>(
         // The cell's preflight counts unless the materialize guard (bound at
         // the top of this loop body) has skipped an uncounted `materialize`: it
         // is that guard's decision, not a second copy of it.
-        cell.preflight(catalog, prepared, guard.counts())?;
-        let subject = cell.subject(catalog, prepared)?;
+        // The executed query (`#k` ids) is in the inner message; the benchmark
+        // and the YAML query name it came from are the context.
+        let context = || format!("benchmark '{}' query '{}'", definition.name, query_def.name);
+        cell.preflight(catalog, prepared, guard.counts())
+            .with_context(context)?;
+        let subject = cell.subject(catalog, prepared).with_context(context)?;
         let subject_axes = cell.subject_axes(&subject);
         let count = guard.counts()
             && ((verify && query_def.expected.is_some()) || single_run || materialize_requested);
@@ -751,16 +774,30 @@ fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: SweepCe
     group_with_segment(prefix, workload, query, &cell.group_segment())
 }
 
+/// The Criterion groups one query writes across `cells` when `metrics` are
+/// requested: a cell that measures none of the timed ones writes none.
+fn query_groups<'a>(
+    prefix: &'a str, workload: &'a str, query: &'a str, cells: &'a [SweepCell],
+    metrics: &'a [Metric],
+) -> impl Iterator<Item = String> + 'a {
+    cells
+        .iter()
+        .copied()
+        .filter(move |cell| cell.writes_group(metrics))
+        .map(move |cell| criterion_group_name(prefix, workload, query, cell))
+}
+
 /// Refuses a `bench run` sweep in which two (benchmark, query, cell) groups
 /// would share a Criterion directory; see [`check_group_directories_distinct`].
 ///
 /// Works from names alone, so it fetches nothing and runs before the first
 /// cell. A `query_filter` naming no query of a benchmark contributes no
 /// groups for it: that benchmark still fails in its own turn, after the
-/// benchmarks before it have run and been reported.
+/// benchmarks before it have run and been reported. A cell contributes a group
+/// only if it supports a requested timed metric.
 pub(crate) fn check_sweep_group_directories(
     prefix: &str, benchmarks: &[BenchmarkDefinition], query_filter: Option<&str>,
-    cells: &[SweepCell],
+    cells: &[SweepCell], metrics: &[Metric],
 ) -> anyhow::Result<()> {
     check_group_directories_distinct(benchmarks.iter().flat_map(|benchmark| {
         benchmark
@@ -768,11 +805,22 @@ pub(crate) fn check_sweep_group_directories(
             .iter()
             .filter(move |query| query_filter.is_none_or(|name| query.name == name))
             .flat_map(move |query| {
-                cells.iter().map(move |&cell| {
-                    criterion_group_name(prefix, &benchmark.name, &query.name, cell)
-                })
+                query_groups(prefix, &benchmark.name, &query.name, cells, metrics)
             })
     }))
+}
+
+/// [`check_sweep_group_directories`] for `bench join`: the one ad-hoc
+/// workload's queries over its kermit cell and its engines.
+pub(crate) fn check_join_group_directories(
+    prefix: &str, workload: &Workload, cells: &[SweepCell], metrics: &[Metric],
+) -> anyhow::Result<()> {
+    check_group_directories_distinct(
+        workload
+            .queries
+            .iter()
+            .flat_map(|query| query_groups(prefix, &workload.name, &query.name, cells, metrics)),
+    )
 }
 
 /// Expands the `-i` / `-a` selectors into the valid execution cells.
@@ -827,7 +875,7 @@ pub(crate) fn resolve_sweep(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, crate::bench::workload::NamedQuery};
 
     /// #86: under `-i all`, `-a` decides which cells run, and a flag must
     /// reach one of them. Each row is one `-a` with the flags that keep a
@@ -962,6 +1010,151 @@ mod tests {
         assert!(clash.contains("/nemo"), "{clash}");
         assert!(clash.contains("64"), "{clash}");
         check_group_directories_distinct(groups(&[duckdb(1)])).unwrap();
+    }
+
+    /// `Nemo`-shaped cells write a group only for the metrics they measure:
+    /// `-m iteration` writes none for Nemo, `-m space` none for anyone.
+    #[test]
+    fn a_cell_writes_a_group_only_for_a_timed_metric_it_supports() {
+        let groups = |cells: &[SweepCell], metrics: &[Metric]| {
+            query_groups("run", "triangle", "triangle", cells, metrics).collect::<Vec<_>>()
+        };
+        let cells = [tree_trie(), duckdb(1), nemo()];
+        assert_eq!(groups(&cells, &[Metric::Iteration]), [
+            "run/triangle/triangle/TreeTrie/LeapfrogTriejoin",
+            "run/triangle/triangle/duckdb-t1"
+        ]);
+        assert_eq!(groups(&cells, &[Metric::Build]).len(), 3);
+        assert!(groups(&cells, &[Metric::Space]).is_empty());
+        assert_eq!(
+            groups(&cells, &[Metric::Space, Metric::Materialize]).len(),
+            3
+        );
+    }
+
+    /// `bench join` names its groups from the ad-hoc workload, and a clash
+    /// between its kermit cell and an engine is found before any cell runs.
+    #[test]
+    fn bench_joins_groups_clash_check_covers_its_kermit_cell_and_engines() {
+        let workload = Workload {
+            name: Workload::ADHOC.to_string(),
+            relation_paths: Vec::new(),
+            queries: vec![NamedQuery {
+                name: "triangle".to_string(),
+                query: "Q(X) :- r(X).".parse().unwrap(),
+                expected: None,
+            }],
+        };
+        // `{prefix}/adhoc/triangle/{segment}`: every segment starts past byte
+        // 64.
+        let prefix = "join-with-a-prefix-long-enough-to-push-the-segment-past-byte-64";
+        let cells = [tree_trie(), duckdb(1), nemo()];
+        let clash = check_join_group_directories(prefix, &workload, &cells, &[Metric::Build])
+            .unwrap_err()
+            .to_string();
+        assert!(clash.contains("/TreeTrie/LeapfrogTriejoin"), "{clash}");
+        assert!(clash.contains("/duckdb-t1"), "{clash}");
+        // Nemo measures no `iteration`, so only the other two clash.
+        let clash = check_join_group_directories(prefix, &workload, &cells, &[Metric::Iteration])
+            .unwrap_err()
+            .to_string();
+        assert!(!clash.contains("/nemo"), "{clash}");
+        check_join_group_directories(prefix, &workload, &cells, &[Metric::Space]).unwrap();
+        check_join_group_directories("join", &workload, &cells, &[Metric::Build]).unwrap();
+    }
+
+    /// The executed query (`#0(X, Y)`) names no YAML query, so a failing
+    /// cell's error carries the benchmark and the query it came from.
+    #[test]
+    fn a_failing_engine_preflight_names_the_benchmark_and_the_query() {
+        use super::super::engine::test_support::Fake;
+        let dir = tempfile::tempdir().unwrap();
+        // `Fake` refuses any query that reads a relation named `banned`.
+        let banned = dir.path().join("banned.csv");
+        std::fs::write(&banned, "1,2\n2,3\n").unwrap();
+        let workload = Workload {
+            name: "demo".to_string(),
+            relation_paths: vec![banned],
+            queries: vec![NamedQuery {
+                name: "q-banned".to_string(),
+                query: "Q(X, Y) :- banned(X, Y).".parse().unwrap(),
+                expected: None,
+            }],
+        };
+        let planner = PlannerArgs {
+            optimiser: kermit_algos::Optimiser::Lexicographic,
+        };
+        let prepared = workload
+            .prepare(&planner.instantiate(), &[kermit_ds::TrieLevels::All])
+            .unwrap();
+        let criterion = CriterionSettings {
+            sample_size: 10,
+            measurement_time: std::time::Duration::from_secs(1),
+            warm_up_time: std::time::Duration::from_secs(1),
+            output_directory: Some(dir.path().join("criterion")),
+        };
+        let settings = RunSettings {
+            kind: BenchKind::Run,
+            prefix: "run",
+            planner,
+            metrics: &[Metric::Build],
+            queries_per_build: 1,
+            verify: false,
+            single_run: false,
+            materialize_max_bytes: u64::MAX,
+            criterion: &criterion,
+        };
+        let mut sink =
+            ReportSink::open(Some(&dir.path().join("report.json")), BenchKind::Run).unwrap();
+        let cell = EngineCell::<Fake<true, false, true>> {
+            settings: (),
+        };
+        let error = run_benchmark(&cell, &prepared, settings, &mut sink).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.starts_with("benchmark 'demo' query 'q-banned': "),
+            "{message}"
+        );
+        // The inner message keeps the executed query.
+        assert!(message.contains("fake cannot run query"), "{message}");
+        assert!(message.contains("#0(X, Y)"), "{message}");
+    }
+
+    #[cfg(feature = "engine-duckdb")]
+    #[test]
+    fn the_duckdb_choice_supports_what_its_cell_supports() {
+        use {
+            clap::ValueEnum,
+            kermit::engine::duckdb::{DuckDb, DuckDbSettings},
+        };
+        let cell = EngineCell::<DuckDb> {
+            settings: DuckDbSettings {
+                threads: 1,
+            },
+        };
+        for &metric in Metric::value_variants() {
+            assert_eq!(
+                duckdb(1).supports(metric),
+                Cell::supports(&cell, metric),
+                "{metric:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "engine-nemo")]
+    #[test]
+    fn the_nemo_choice_supports_what_its_cell_supports() {
+        use {clap::ValueEnum, kermit::engine::nemo::Nemo};
+        let cell = EngineCell::<Nemo> {
+            settings: (),
+        };
+        for &metric in Metric::value_variants() {
+            assert_eq!(
+                nemo().supports(metric),
+                Cell::supports(&cell, metric),
+                "{metric:?}"
+            );
+        }
     }
 
     #[test]
