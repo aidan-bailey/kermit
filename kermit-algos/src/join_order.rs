@@ -27,9 +27,6 @@
 //! the key of an atom joined across a cross product: both are an empty key,
 //! which selects every row.
 
-// Temporary (Task 1.2 removes this line): `plan_indexes` is the first caller.
-#![allow(dead_code)]
-
 use {
     crate::{analysis::analyse, optimiser::QueryPlan},
     kermit_parser::JoinQuery,

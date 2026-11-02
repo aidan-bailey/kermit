@@ -15,4 +15,23 @@ pub enum TrieLevels {
     /// that is one level per join key, the trie of Freitag et al., VLDB 2020
     /// §3.1. `HashTrie` builds it under `--ds-layout-levels keys`.
     JoinKeys,
+    /// Levels for the columns earlier atoms of the binary join order bind: the
+    /// key each index is probed on. Planning under it also reorders the plan
+    /// and the executed query's body into join order (`plan_indexes`).
+    /// `HashIndex` is planned under it.
+    ProbeKeys,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `bench run` keys its prepared queries by policy (a `BTreeMap`), so the
+    /// declaration order is the iteration order: `ProbeKeys` is the third.
+    #[test]
+    fn the_policies_are_ordered_all_then_join_keys_then_probe_keys() {
+        assert_eq!(TrieLevels::default(), TrieLevels::All);
+        assert!(TrieLevels::All < TrieLevels::JoinKeys);
+        assert!(TrieLevels::JoinKeys < TrieLevels::ProbeKeys);
+    }
 }

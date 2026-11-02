@@ -17,6 +17,7 @@ use {
     crate::{
         access::AccessQuery,
         analysis::{analyse, canonical_names},
+        join_order::join_order,
         optimiser::QueryPlan,
     },
     kermit_iters::{Filter, TrieLevels, TupleView, Tuples},
@@ -42,7 +43,9 @@ pub struct IndexSpec {
     pub columns: Vec<usize>,
     /// How many of `columns` the index's trie has levels for, the rest
     /// being payload kept in its leaf rows (#116): `columns.len()` under
-    /// [`TrieLevels::All`], fewer only under [`TrieLevels::JoinKeys`].
+    /// [`TrieLevels::All`], fewer under [`TrieLevels::JoinKeys`], and under
+    /// [`TrieLevels::ProbeKeys`] the access's key length, the columns an
+    /// earlier atom of the join order binds (`0` for the driver).
     /// Identical specs merge, so two specs that differ only here are two
     /// indexes.
     pub levels: usize,
@@ -65,10 +68,13 @@ impl IndexSpec {
 pub struct IndexPlan {
     /// The query to execute: the head unchanged, and `body[j]` the atom
     /// `#{id}` of the index the `j`-th access reads, over its variables in
-    /// plan order.
+    /// plan order. Under [`TrieLevels::ProbeKeys`] the body is in join
+    /// order instead: `body[j]` reads the `j`-th atom of the join order,
+    /// and `body[0]` is the driver.
     pub query: JoinQuery,
     /// The plan, translated to `query`'s variable numbering; it validates
-    /// against `query`.
+    /// against `query`. Under [`TrieLevels::ProbeKeys`] it is the reordered
+    /// plan `V′` of the join order, the order the joins bind in.
     pub plan: QueryPlan,
     /// The indexes to build, `indexes[id]`, with identical specs merged.
     pub indexes: Vec<IndexSpec>,
@@ -86,17 +92,31 @@ pub struct IndexPlan {
 /// design), or none when no column is. On a payload-last plan that is the
 /// number of join-key columns, since an index's columns follow the plan.
 ///
+/// Under [`TrieLevels::ProbeKeys`] the plan is first read as a left-deep
+/// join order (`join_order`): the columns follow the plan `V′` it returns,
+/// each spec's level count is the access's key length (the variables an
+/// earlier atom of the join order binds, `0` for the driver), and the
+/// accesses are visited in join order, so the spec ids and the executed
+/// body follow it, `#0` being the driver. The returned plan is `V′`.
+///
 /// # Panics
 ///
 /// Panics if `plan` is not a plan of `accesses.query`.
 pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan, levels: TrieLevels) -> IndexPlan {
     let source = &accesses.query;
     let names = canonical_names(source);
-    let plan_names: Vec<&str> = plan
-        .variable_ordering
-        .iter()
-        .map(|&v| names[v].as_str())
-        .collect();
+    // Under `ProbeKeys` the plan is read as a join order: the columns follow
+    // its `V′`, the accesses are visited in join order, and each index
+    // levels its probe key.
+    let join = matches!(levels, TrieLevels::ProbeKeys).then(|| join_order(source, plan));
+    let ordering = join
+        .as_ref()
+        .map_or(&plan.variable_ordering, |join| &join.plan.variable_ordering);
+    let visit: Vec<usize> = match &join {
+        | Some(join) => join.atoms.clone(),
+        | None => (0..accesses.accesses.len()).collect(),
+    };
+    let plan_names: Vec<&str> = ordering.iter().map(|&v| names[v].as_str()).collect();
     let position: HashMap<&str, usize> = plan_names
         .iter()
         .enumerate()
@@ -111,7 +131,8 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan, levels: TrieLevels
 
     let mut indexes: Vec<IndexSpec> = Vec::new();
     let mut body: Vec<Predicate> = Vec::with_capacity(accesses.accesses.len());
-    for access in &accesses.accesses {
+    for (rank, &at) in visit.iter().enumerate() {
+        let access = &accesses.accesses[at];
         // `order[j]` is the kept column that goes `j`-th: the kept columns
         // sorted by the plan position of the variable each binds. A
         // variable occurs once per access, so the positions are distinct.
@@ -123,6 +144,11 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan, levels: TrieLevels
                 .iter()
                 .rposition(|&kept| is_join_key[access.variables[kept].as_str()])
                 .map_or(0, |last| last + 1),
+            | TrieLevels::ProbeKeys => {
+                join.as_ref()
+                    .expect("ProbeKeys computes the join order")
+                    .key_lens[rank]
+            },
         };
         let spec = IndexSpec {
             relation: access.relation.clone(),
@@ -497,5 +523,131 @@ mod tests {
         assert_eq!(body_text(&keys.query), vec![
             "#0(B, A)", "#1(B, C)", "#2(C, D)"
         ]);
+    }
+
+    fn probe(text: &str, order: &[&str]) -> IndexPlan {
+        planned_with(text, order, TrieLevels::ProbeKeys)
+    }
+
+    fn relations_of(plan: &IndexPlan) -> Vec<&str> {
+        plan.indexes
+            .iter()
+            .map(|spec| spec.relation.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn under_probe_keys_each_triangle_index_levels_its_key() {
+        let out = probe("Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).", &["X", "Y", "Z"]);
+        assert_eq!(relations_of(&out), vec!["R", "S", "T"]);
+        assert_eq!(levels_of(&out), vec![
+            (vec![0, 1], 0),
+            (vec![0, 1], 1),
+            (vec![0, 1], 2)
+        ]);
+        assert_eq!(body_text(&out.query), vec![
+            "#0(X, Y)", "#1(Y, Z)", "#2(X, Z)"
+        ]);
+        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2]);
+        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+    }
+
+    /// The body is listed in join order, so the specs are numbered by it and
+    /// `#0` is the driver: `T` (which carries `C` and has `B` bound) joins
+    /// before `S`, and its columns follow `V′`.
+    #[test]
+    fn under_probe_keys_the_body_is_in_join_order_with_the_driver_first() {
+        let out = probe("Q(A, B, C, D) :- R(A, B), S(C, D), T(C, B, D).", &[
+            "A", "B", "C", "D",
+        ]);
+        assert_eq!(relations_of(&out), vec!["R", "T", "S"]);
+        // T(C, B, D) is read B, C, D: source columns 1, 0, 2.
+        assert_eq!(levels_of(&out), vec![
+            (vec![0, 1], 0),
+            (vec![1, 0, 2], 1),
+            (vec![0, 1], 2)
+        ]);
+        assert_eq!(body_text(&out.query), vec![
+            "#0(A, B)",
+            "#1(B, C, D)",
+            "#2(C, D)"
+        ]);
+        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2, 3]);
+        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+    }
+
+    /// The driver is the atom that binds the plan's first variable, not the
+    /// first atom of the body.
+    #[test]
+    fn under_probe_keys_the_driver_binds_the_plans_first_variable() {
+        let out = probe("Q(X, Y) :- R(Y), S(X, Y).", &["X", "Y"]);
+        assert_eq!(relations_of(&out), vec!["S", "R"]);
+        assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![0], 1)]);
+        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#1(Y)"]);
+        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+    }
+
+    /// `S(Y, Z)` is probed on `Z`, which `P(X, Z)` bound before `Y`: its
+    /// columns become `(Z, Y)` and the returned plan is `V′ = [X, Z, Y]`, in
+    /// the executed query's numbering (`X` = 0, `Y` = 1, `Z` = 2). Under `All`
+    /// and `JoinKeys` the same query keeps its body and its plan as given.
+    #[test]
+    fn under_probe_keys_the_returned_plan_is_the_reordered_one() {
+        let text = "Q(X, Y, Z) :- P(X, Z), S(Y, Z).";
+        let order = ["X", "Y", "Z"];
+        let out = probe(text, &order);
+        assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![1, 0], 1)]);
+        assert_eq!(body_text(&out.query), vec!["#0(X, Z)", "#1(Z, Y)"]);
+        assert_eq!(out.plan.variable_ordering, vec![0, 2, 1]);
+        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+
+        for levels in [TrieLevels::All, TrieLevels::JoinKeys] {
+            let out = planned_with(text, &order, levels);
+            assert_eq!(
+                body_text(&out.query),
+                vec!["#0(X, Z)", "#1(Y, Z)"],
+                "{levels:?}"
+            );
+            assert_eq!(out.plan.variable_ordering, vec![0, 1, 2], "{levels:?}");
+        }
+        let all = planned(text, &order);
+        assert_eq!(levels_of(&all), vec![(vec![0, 1], 2), (vec![0, 1], 2)]);
+    }
+
+    /// Atoms that share nothing join as a cross product, each with an empty
+    /// key and so no level.
+    #[test]
+    fn under_probe_keys_a_cross_product_levels_nothing() {
+        let out = probe("Q(A, B, C, D) :- R(A, B), S(C, D).", &["A", "C", "B", "D"]);
+        assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![0, 1], 0)]);
+        assert_eq!(body_text(&out.query), vec!["#0(A, B)", "#1(C, D)"]);
+        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2, 3]);
+        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+    }
+
+    /// A spec's levels are part of the comparison: the second read of `edge`
+    /// is a filter on both columns, the first the driver, so they are two
+    /// indexes under `ProbeKeys` and one under `All`.
+    #[test]
+    fn specs_that_differ_only_in_levels_stay_apart_under_probe_keys() {
+        let text = "Q(X, Y) :- edge(X, Y), edge(X, Y).";
+        let out = probe(text, &["X", "Y"]);
+        assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![0, 1], 2)]);
+        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#1(X, Y)"]);
+        assert_eq!(planned(text, &["X", "Y"]).indexes.len(), 1);
+    }
+
+    #[test]
+    fn a_query_with_no_accesses_plans_no_indexes_under_probe_keys() {
+        let mut query: JoinQuery = "Q(c9) :- r(c1, c2), s(c3).".parse().expect("parse");
+        query.head.terms.clear();
+        let accesses = extract_accesses(&rewrite_placeholders(query)).expect("extract");
+        let plan = QueryPlan {
+            variable_ordering: vec![],
+        };
+        let out = plan_indexes(&accesses, &plan, TrieLevels::ProbeKeys);
+        assert!(out.indexes.is_empty());
+        assert!(out.query.body.is_empty());
+        assert!(out.plan.variable_ordering.is_empty());
     }
 }
