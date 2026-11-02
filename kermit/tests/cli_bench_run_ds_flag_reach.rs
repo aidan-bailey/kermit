@@ -107,6 +107,44 @@ fn a_narrowed_sweep_keeping_the_flags_cell_still_runs() {
     assert_eq!(reports[0]["axes"]["ds_config_load_factor"], 0.5);
 }
 
+/// `-a binary-hash-join` keeps the hash-index cell, which has the hasher
+/// axis, so `--ds-layout-hasher` reaches it.
+#[test]
+fn ds_layout_hasher_reaches_the_hash_index_cell_under_binary_hash_join() {
+    let (output, report) = narrowed_sweep("binary-hash-join", &["--ds-layout-hasher", "fxhash"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reports = reports_of(&report);
+    assert_eq!(reports.len(), 1, "only the hash-index cell: {reports:?}");
+    assert_eq!(reports[0]["axes"]["data_structure"], "HashIndex");
+    assert_eq!(reports[0]["axes"]["ds_layout_hasher"], "fxhash");
+}
+
+/// The hash-index cell has no other axis, so under `-a binary-hash-join`
+/// every other flag reaches no cell and is a usage error.
+#[test]
+fn every_other_flag_is_rejected_when_binary_hash_join_leaves_only_the_hash_index_cell() {
+    let rejected: [(&str, &[&str]); 7] = [
+        ("--ds-layout-pruning", &["--ds-layout-pruning", "on"]),
+        ("--ds-layout-expansion", &["--ds-layout-expansion", "lazy"]),
+        ("--ds-layout-levels", &["--ds-layout-levels", "keys"]),
+        ("--ds-layout-seek", &["--ds-layout-seek", "binary"]),
+        ("--ds-config", &["--ds-config", "load-factor=0.5"]),
+        ("--ds-build tree-trie", &[
+            "--ds-build",
+            "tree-trie=parallel:2",
+        ]),
+        ("--ds-build hash-trie", &["--ds-build", "hash-trie=radix:4"]),
+    ];
+    for (flag, args) in rejected {
+        let (output, report) = narrowed_sweep("binary-hash-join", args);
+        assert_rejected_unreached(&output, &report, flag);
+    }
+}
+
 /// Acceptance criterion 2: under `-i all -a all` every flag has a cell, so
 /// all of them at once still run, each reaching exactly its own cells.
 #[test]

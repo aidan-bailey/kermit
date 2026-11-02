@@ -1,6 +1,7 @@
 //! Every query shape from issue #78's table, through the real binary, on
-//! all ten cells: TreeTrie and ColumnTrie under LFTJ, and HashTrie under
-//! Hash Triejoin with each hasher × pruning × expansion Layout.
+//! all twelve cells: TreeTrie and ColumnTrie under LFTJ, HashTrie under
+//! Hash Triejoin with each hasher × pruning × expansion Layout, and
+//! HashIndex under the binary hash join with each hasher.
 //!
 //! A query that cannot run must exit 1 — never 101, the panic exit — with
 //! a message naming the problem, byte-identical on every cell, and write no
@@ -19,8 +20,8 @@ use {
 
 fn kermit_bin() -> PathBuf { PathBuf::from(env!("CARGO_BIN_EXE_kermit")) }
 
-/// The ten (structure, algorithm, Layout) cells `kermit join` can run.
-const CELLS: [&[&str]; 10] = [
+/// The twelve (structure, algorithm, Layout) cells `kermit join` can run.
+const CELLS: [&[&str]; 12] = [
     &["-i", "tree-trie", "-a", "leapfrog-triejoin"],
     &["-i", "column-trie", "-a", "leapfrog-triejoin"],
     &[
@@ -110,6 +111,15 @@ const CELLS: [&[&str]; 10] = [
         "on",
         "--ds-layout-expansion",
         "lazy",
+    ],
+    &["-i", "hash-index", "-a", "binary-hash-join"],
+    &[
+        "-i",
+        "hash-index",
+        "-a",
+        "binary-hash-join",
+        "--ds-layout-hasher",
+        "fxhash",
     ],
 ];
 
@@ -454,6 +464,7 @@ fn bench_join_output_and_benchmark_share_one_prepared_workload() {
         ("tree-trie", "leapfrog-triejoin"),
         ("column-trie", "leapfrog-triejoin"),
         ("hash-trie", "hash-triejoin"),
+        ("hash-index", "binary-hash-join"),
     ] {
         let csv = dir.path().join(format!("{structure}.csv"));
         let report = dir.path().join(format!("{structure}.json"));

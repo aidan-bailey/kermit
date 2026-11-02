@@ -119,6 +119,7 @@ fn cli_join_answers_identically_under_every_optimiser() {
         ("tree-trie", "leapfrog-triejoin"),
         ("column-trie", "leapfrog-triejoin"),
         ("hash-trie", "hash-triejoin"),
+        ("hash-index", "binary-hash-join"),
     ] {
         let expected = rows("lexicographic", structure, algorithm);
         assert!(expected.len() > 1, "the fixture query must return rows");

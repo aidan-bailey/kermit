@@ -278,6 +278,7 @@ fn cli_join_writes_the_heads_variables_as_the_header_row() {
         ("leapfrog-triejoin", "tree-trie"),
         ("leapfrog-triejoin", "column-trie"),
         ("hash-triejoin", "hash-trie"),
+        ("binary-hash-join", "hash-index"),
     ] {
         let output = run_join(
             &["edge.csv"],

@@ -193,6 +193,57 @@ fn cli_bench_run_explicit_incompatible_pair_is_rejected() {
     assert!(reports.is_none(), "no report must be written: {reports:?}");
 }
 
+/// `-i all -a binary-hash-join` runs the hash-index cell alone and announces
+/// every other structure it skips.
+#[test]
+fn cli_bench_run_all_structures_with_binary_hash_join_runs_only_the_hash_index() {
+    if skip_unsupported() {
+        return;
+    }
+    let (output, reports) = run_sweep("all", "binary-hash-join");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    let reports = reports.expect("a report must be written");
+    assert_eq!(
+        cells(&reports),
+        BTreeSet::from([("HashIndex".to_string(), "BinaryHashJoin".to_string())]),
+        "{reports:?}"
+    );
+    for ds in ["ColumnTrie", "HashTrie", "TreeTrie"] {
+        assert!(
+            stderr.contains(&format!(
+                "skipping incompatible pair ({ds}, BinaryHashJoin)"
+            )),
+            "{ds} must be announced as skipped; stderr: {stderr}"
+        );
+    }
+}
+
+/// A single explicit pair that crosses the hash index with another family
+/// is a usage error that writes no report.
+#[test]
+fn cli_bench_run_explicit_hash_index_incompatible_pairs_are_rejected() {
+    if skip_unsupported() {
+        return;
+    }
+    for (ds, algo) in [
+        ("hash-index", "leapfrog-triejoin"),
+        ("hash-index", "hash-triejoin"),
+        ("tree-trie", "binary-hash-join"),
+        ("column-trie", "binary-hash-join"),
+        ("hash-trie", "binary-hash-join"),
+    ] {
+        let (output, reports) = run_sweep(ds, algo);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{ds} with {algo} must fail");
+        assert!(
+            stderr.contains("incompatible CLI selection"),
+            "{ds} with {algo}: {stderr}"
+        );
+        assert!(reports.is_none(), "{ds} with {algo}: {reports:?}");
+    }
+}
+
 /// Builds a fake cache with two static benchmarks: `a-ok` (the mini
 /// fixture, relations present) and `z-bad` (one relation whose parquet is
 /// missing and whose URL cannot be fetched). Filename order guarantees
