@@ -16,6 +16,13 @@ default = ["jemalloc"]
 # runs on the system allocator (glibc on Linux), whose cross-thread frees cap
 # the parallel builds. Every bench report records which ran (`allocator`).
 jemalloc = ["dep:tikv-jemallocator"]
+# External engines (docs/specs/2026-11-02-external-engines-design.md), off by default.
+# `engine-duckdb` links the system libduckdb, found through DUCKDB_LIB_DIR and
+# DUCKDB_INCLUDE_DIR, which the nix dev shell sets (build.rs adds the rpath). A dev-shell
+# build compiles no C++. `engine-duckdb-bundled` compiles DuckDB's amalgamation instead,
+# for CI, which has no Nix.
+engine-duckdb = ["dep:duckdb"]
+engine-duckdb-bundled = ["engine-duckdb", "duckdb/bundled"]
 
 [dependencies]
 kermit-ds = { version = "0.2.0", path = "../kermit-ds" }
@@ -34,6 +41,9 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 # Bundles jemalloc 5.3.1, the version #112 measured.
 tikv-jemallocator = { version = "0.7", optional = true }
+# The `~1.4` line is DuckDB 1.4.x, which matches the flake's DuckDB (the one that computes
+# JOB's `expected`). The newest crate is DuckDB 2.0.
+duckdb = { version = "~1.4", default-features = false, optional = true }
 
 [dev-dependencies]
 allocation-counter = "0.8"
