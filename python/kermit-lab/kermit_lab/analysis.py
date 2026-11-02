@@ -178,9 +178,11 @@ SPEEDUP_MEASURES: tuple[str, ...] = (
 
 
 # Each structure's default single-threaded build: what `speedup_table` divides
-# by when it is given no `baseline`. One entry per `data_structure` a report
-# can carry (`IndexStructure::axis_value`), so a new structure must name its
-# baseline here.
+# by when it is given no `baseline`. One entry per `data_structure` with build
+# modes (`IndexStructure::axis_value`), so a new structure with build modes
+# must name its baseline here. HashIndex has one build and its reports carry
+# no `ds_build_mode`, so `speedup_table` drops its rows before it reads this
+# map and never asks for it.
 BASELINE_BUILD_MODES: dict[str, str] = {
     "TreeTrie": "serial",
     "ColumnTrie": "bulk",

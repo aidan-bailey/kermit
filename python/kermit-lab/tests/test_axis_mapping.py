@@ -12,6 +12,8 @@ from kermit_lab.axis_mapping import (
 def test_committed_ds_colours() -> None:
     assert colour_for("data_structure", "TreeTrie") == DATA_STRUCTURE_COLOURS["TreeTrie"]
     assert "HashTrie" in DATA_STRUCTURE_COLOURS  # newly committed
+    assert "HashIndex" in DATA_STRUCTURE_COLOURS
+    assert len(set(DATA_STRUCTURE_COLOURS.values())) == len(DATA_STRUCTURE_COLOURS)
 
 
 def test_unknown_value_is_stable() -> None:

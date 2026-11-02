@@ -174,10 +174,18 @@ def test_speedup_table_ignores_single_runs() -> None:
 
 
 def test_baseline_build_modes_cover_every_structure_kermit_reports() -> None:
-    """The `data_structure` labels a report can carry, pinned on the Rust side
-    by `IndexStructure::axis_value`."""
+    """Every structure with build modes, among the `data_structure` labels a
+    report can carry (pinned on the Rust side by `IndexStructure::axis_value`).
+    HashIndex has one build and its reports carry no `ds_build_mode`, so its
+    rows pass through `speedup_table` without a baseline lookup."""
     assert set(BASELINE_BUILD_MODES) == {"TreeTrie", "ColumnTrie", "HashTrie"}
     assert baseline_build_mode("ColumnTrie") == "bulk"
+    tree = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    hash_index = _build_mode_rows({"serial": [70.0]}, data_structure="HashIndex")
+    hash_index["ds_build_mode"] = pd.NA
+    table = speedup_table(pd.concat([tree, hash_index], ignore_index=True))
+    assert table["data_structure"].tolist() == ["TreeTrie"]
+    assert table.iloc[0]["speedup"] == pytest.approx(2.0)
 
 
 def test_baseline_build_mode_refuses_a_structure_it_does_not_list() -> None:

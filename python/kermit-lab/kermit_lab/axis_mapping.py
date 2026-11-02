@@ -29,6 +29,7 @@ DATA_STRUCTURE_COLOURS: dict[str, str] = {
     "TreeTrie": WONG_PALETTE[5],    # blue
     "ColumnTrie": WONG_PALETTE[6],  # vermilion
     "HashTrie": WONG_PALETTE[3],    # bluish green
+    "HashIndex": WONG_PALETTE[1],   # orange
 }
 
 # algorithm → linestyle for line plots (scaling, dist).
