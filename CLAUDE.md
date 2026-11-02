@@ -52,7 +52,7 @@ cargo run -- bench run --all -i all -a all                         # Every bench
 cargo run -- bench run watdiv-example -i tree-trie -a leapfrog-triejoin --force  # Force-regenerate a generator-driven benchmark
 cargo run -- bench probe triangle -i all -a all                     # Screen a benchmark without Criterion: verify, one timed build and run, exact space
 cargo run -p kermit --features engine-duckdb,engine-nemo -- bench run triangle -i all -a all --engine duckdb,nemo --metrics build iteration space materialize end-to-end --verify  # External engines beside the three cells (features off by default; the dev shell links Nix's libduckdb)
-cargo run -p kermit --features engine-duckdb,engine-nemo -- bench probe triangle -i all -a all --engine duckdb,nemo --verify --materialize  # Screen engines too, and the opt-in materialize metric (single run)
+cargo run -p kermit --features engine-duckdb,engine-nemo -- bench probe triangle -i all -a all --engine duckdb,nemo --materialize  # Screen engines too, and the opt-in materialize metric (single run)
 cargo run -- bench gen watdiv --scale 100 --tag dev                # Generate WatDiv benchmark on the fly (imperative)
 cargo run -- bench gen lubm --scale 1 --tag dev                    # Generate LUBM benchmark on the fly (imperative)
 cargo run -- bench gen snap --graph com-amazon --tag dev           # Generate a SNAP community-graph benchmark on the fly (imperative; downloads and checks a 4.5 MB .gz)

@@ -327,7 +327,7 @@ features that are off by default, so build with them (in the dev shell,
 `--features engine-duckdb,engine-nemo`):
 
 ```sh
-cargo run -p kermit --features engine-duckdb,engine-nemo -- bench probe triangle -i all -a all --engine duckdb,nemo --verify --materialize
+cargo run -p kermit --features engine-duckdb,engine-nemo -- bench probe triangle -i all -a all --engine duckdb,nemo --materialize
 ```
 
 - `--engine duckdb,nemo` adds an engine cell per name beside the `-i`/`-a` cells; `-i`/`-a` are
