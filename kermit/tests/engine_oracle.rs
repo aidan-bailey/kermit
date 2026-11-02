@@ -188,9 +188,19 @@ mod duckdb_cells {
                 } else {
                     let (count, kept) = DuckDb::materialize(built)
                         .unwrap_or_else(|e| panic!("{}: {e}", case.label));
-                    assert!(
-                        kept.is_some(),
-                        "{}: DuckDB returns its sorted batch",
+                    // The batch is the engine's rows sorted, before
+                    // `check_multiplicity` repeats them: the oracle's bag with
+                    // each run of equal rows `multiplicity` times shorter.
+                    let expected: Vec<Vec<usize>> =
+                        case.bag.iter().step_by(multiplicity).cloned().collect();
+                    assert_eq!(
+                        kept.unwrap_or_else(|| panic!(
+                            "{}: DuckDB returns its sorted batch",
+                            case.label
+                        ))
+                        .to_vecs(),
+                        expected,
+                        "{}",
                         case.label
                     );
                     count
@@ -205,6 +215,9 @@ mod duckdb_cells {
         }
     }
 
+    /// On these 8-12-row fixtures DuckDB never runs a parallel pipeline, so
+    /// this is a smoke test of the two-thread setting, not a test of
+    /// parallelism.
     #[test]
     fn duckdb_agrees_with_the_oracle_on_two_threads() {
         let shapes = [

@@ -95,7 +95,7 @@ impl SpillDirectory {
         let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("kermit-duckdb-{}-{sequence}", std::process::id()));
-        fs::create_dir_all(&path).map_err(|e| {
+        fs::create_dir(&path).map_err(|e| {
             failure(
                 &format!("creating the spill directory {}", path.display()),
                 e,
@@ -257,22 +257,18 @@ fn collect_rows(built: &DuckDbBuilt<'_>) -> Result<Tuples, EngineError> {
     let mut rows = Tuples::new(built.width);
     let mut row = vec![0usize; built.width];
     for batch in batches {
-        if batch.num_columns() != built.width {
-            return Err(refusal(format!(
-                "the join returned {} columns, not {}",
-                batch.num_columns(),
-                built.width
-            )));
-        }
-        let mut columns: Vec<&UInt64Array> = Vec::with_capacity(built.width);
-        for index in 0..built.width {
-            let array = batch
-                .column(index)
-                .as_any()
-                .downcast_ref::<UInt64Array>()
-                .ok_or_else(|| refusal(format!("result column {index} is not a UBIGINT")))?;
-            columns.push(array);
-        }
+        // `stream_arrow` decodes each chunk with the schema passed to it, so
+        // the batch has `width` `UInt64` columns.
+        let columns: Vec<&UInt64Array> = batch
+            .columns()
+            .iter()
+            .map(|array| {
+                array
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .expect("the batch has the schema's UInt64 columns")
+            })
+            .collect();
         for at in 0..batch.num_rows() {
             for (slot, array) in row.iter_mut().zip(&columns) {
                 *slot = array.value(at) as usize;
@@ -613,6 +609,51 @@ mod tests {
         rows.sort();
         assert_eq!(rows, vec![vec![1, 2, 3], vec![1, 2, 3]]);
         assert_eq!(DuckDb::space(&built), None);
+    }
+
+    /// Keys above `i64::MAX` survive the base table's `UBIGINT` columns, a
+    /// constant filter on one, a join on one, and the conversion back to
+    /// `usize`.
+    #[test]
+    fn keys_above_i64_max_load_filter_join_and_come_back_exactly() {
+        const HIGH: usize = 1 << 63;
+        let catalog = catalog(vec![
+            ("e", 2, vec![
+                vec![usize::MAX, 1],
+                vec![HIGH, 2],
+                vec![5, 3],
+                vec![HIGH, 4],
+            ]),
+            ("f", 2, vec![vec![usize::MAX, 7], vec![HIGH, 8], vec![6, 9]]),
+        ]);
+        let rows_of = |text: &str| {
+            let prepared = prepared(&catalog, text);
+            let loaded = load(&catalog, &prepared);
+            let built = DuckDb::build(&loaded, &catalog, &prepared).expect("DuckDB builds");
+            let mut rows = DuckDb::rows(&built).expect("returns rows");
+            rows.sort();
+            rows
+        };
+        assert_eq!(
+            rows_of("Q(X) :- e(X, c4)."),
+            vec![vec![HIGH]],
+            "a constant filter on the second column"
+        );
+        assert_eq!(
+            rows_of("Q(Y) :- e(c9223372036854775808, Y)."),
+            vec![vec![2], vec![4]],
+            "a constant above i64::MAX"
+        );
+        assert_eq!(
+            rows_of(&format!("Q(Y) :- e(c{}, Y).", usize::MAX)),
+            vec![vec![1]],
+            "usize::MAX as a constant"
+        );
+        assert_eq!(
+            rows_of("Q(K, A, B) :- e(K, A), f(K, B)."),
+            vec![vec![HIGH, 2, 8], vec![HIGH, 4, 8], vec![usize::MAX, 1, 7]],
+            "a join on the large key"
+        );
     }
 
     #[test]
