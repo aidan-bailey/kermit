@@ -1266,7 +1266,8 @@ mod tests {
     }
 
     /// With a DuckDB engine the flag is accepted (and range-checked), beside
-    /// Nemo too, whose cell carries the default.
+    /// Nemo too: every choice gets the given count, so Nemo's cell carries it
+    /// as well (Nemo ignores it).
     #[cfg(all(feature = "engine-duckdb", feature = "engine-nemo"))]
     #[test]
     fn engine_threads_with_a_duckdb_engine_is_accepted() {
@@ -1278,6 +1279,7 @@ mod tests {
         assert_eq!(cells[0].threads, 2);
         assert_eq!(cells[0].engine, EngineSelector::Duckdb);
         assert_eq!(cells[1].engine, EngineSelector::Nemo);
+        assert_eq!(cells[1].threads, 2);
     }
 
     #[test]
