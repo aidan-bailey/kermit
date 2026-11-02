@@ -36,6 +36,9 @@ SCOPED_AXIS_DEFAULTS: dict[tuple[str, str], object] = {
     ("ds_layout_pruning", "HashTrie"): "off",
     # Every HashTrie before issue #92 built all levels at construction.
     ("ds_layout_expansion", "HashTrie"): "eager",
+    # Every HashTrie index had a level per column before `--ds-layout-levels`
+    # (#116), and `all` stays the default.
+    ("ds_layout_levels", "HashTrie"): "all",
     # Pre-Config HashTrie reports used the historical load factor.
     ("ds_config_load_factor", "HashTrie"): 0.7,
     # Every HashTrie root grew from 4 buckets before issue #88.

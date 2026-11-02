@@ -35,6 +35,8 @@ def test_ignores_absent_columns() -> None:
         ("ds_config_root_capacity", "grow", "tuples"),
         # Pre-#92 reports built every level eagerly.
         ("ds_layout_expansion", "eager", "lazy"),
+        # Pre-#116 reports gave every column of an index a level.
+        ("ds_layout_levels", "all", "keys"),
     ],
 )
 def test_hash_trie_axes_backfill_hash_trie_rows_only(axis, default, explicit) -> None:
