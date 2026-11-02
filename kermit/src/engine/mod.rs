@@ -18,6 +18,8 @@
 //! module, behind its own cargo feature (off by default), so that a default
 //! build compiles none of them.
 
+pub mod sql;
+
 use {
     crate::db::{Catalog, Prepared},
     kermit_ds::Tuples,
