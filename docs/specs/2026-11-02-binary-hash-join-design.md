@@ -239,7 +239,8 @@ next:      Vec<RowId>  // per row, the next row of its bucket's chain; empty whe
 - **Without a query.** `bench ds` builds from a header whose `levels()` is the arity, so the index
   is keyed on every column.
 
-Register it in `kermit-ds/src/ds/mod.rs` with an `IndexStructure::HashIndex` variant.
+Register it in `kermit-ds/src/ds/mod.rs` (`mod hash_index;`, `pub use`). Its
+`IndexStructure::HashIndex` variant lands with the binary's wiring (see "Sequencing").
 
 ### `BinaryHashJoin` (`kermit-algos/src/keyed/binary_hash_join.rs`, new)
 
@@ -274,8 +275,9 @@ descend(j):
 - Constants, repeated variables and all-constant atoms were handled by access extraction and
   `execute`'s multiplicity before the join, so it sees none of them.
 
-Register it in `kermit-algos/src/keyed/mod.rs`, re-export it flat from `lib.rs`, and add
-`JoinAlgorithm::BinaryHashJoin` (axis value `BinaryHashJoin`, CLI `binary-hash-join`).
+Register it in `kermit-algos/src/keyed/mod.rs` and re-export it flat from `lib.rs`.
+`JoinAlgorithm::BinaryHashJoin` (axis value `BinaryHashJoin`, CLI `binary-hash-join`) lands with
+the binary's wiring (see "Sequencing").
 
 ### Entry points (`kermit/src/db.rs`)
 
@@ -322,9 +324,15 @@ DuckDB is a production engine with its own optimiser.
   `ds_layout_hasher` on the new structure), and no metric changes meaning.
 - Criterion groups: `{name}/{workload}/{query}/HashIndex/BinaryHashJoin`. The existing 64-byte
   collision guard (`check_sweep_group_directories`) covers it.
-- kermit-lab must load a report whose structure has no `ds_build_mode` axis. The plan checks
-  `BASELINE_BUILD_MODES` (`python/kermit-lab/kermit_lab/analysis.py`) and adds a case to its
-  tests if one is missing.
+- kermit-lab: `BASELINE_BUILD_MODES` (`python/kermit-lab/kermit_lab/analysis.py`) stays at three
+  entries. `speedup_table` keeps only rows that carry a `ds_build_mode`
+  (`df["ds_build_mode"].notna()`) before it reads the map, and a HashIndex report carries none,
+  so the map is never asked for HashIndex. The map's comment ("one entry per `data_structure` a
+  report can carry") and the docstring of
+  `test_baseline_build_modes_cover_every_structure_kermit_reports`
+  (`python/kermit-lab/tests/test_analysis.py`) change to "every structure with build modes",
+  and that test gains an assertion that a frame with a HashIndex row and no `ds_build_mode`
+  passes through `speedup_table` without error.
 
 ## Testing
 
@@ -357,15 +365,17 @@ orders of magnitude slower than the WCOJ cells. That is the baseline's point, an
 - Renaming `TrieLevels`.
 - Running `BinaryHashJoin` over any other structure.
 
-## Premises to verify first
+## Premises (checked 2026-11-02)
 
-1. Nothing downstream of `prepare` assumes the executed body lists atoms in access order (index
-   ids, the report's `index` metadata lines, `Prepared::relations`, the CSV header). Only
-   `ProbeKeys` reorders it.
-2. `RelationHeader::with_levels(0)` is accepted (HashTrie's zero-level tries rely on it).
-3. kermit-lab loads a structure with no `ds_build_mode` axis.
-4. `lubm_mini_oracle.rs` and `lubm_cardinalities.rs` enumerate cells per structure, so a new cell
-   is a new row.
+1. Nothing downstream of `prepare` relies on the executed body's atom order. `Prepared::relations`
+   lists relations in index-id order, so under `ProbeKeys` it lists them in join order; its
+   callers treat it as a set. `answer_header` reads only the head. The only `query.body` walk in
+   the binary (`kermit/src/bench/workload.rs`) reads the source queries, not the executed ones.
+2. `RelationHeader::with_levels(0)` is accepted: it asserts only `levels <= arity`
+   (`kermit-ds/src/relation.rs`, `with_levels`).
+3. kermit-lab needs no new map entry (see "CLI, reports and kermit-lab").
+4. `lubm_mini_oracle.rs` and `lubm_cardinalities.rs` name their cells one by one (type aliases such
+   as `HashTrieSipKeys`), so the new cell is one more row in each.
 
 ## Sequencing
 
@@ -376,7 +386,13 @@ Each step leaves the gate green.
 2. `KeyedIterable`, `HashIndex`, its suite and `docs/data-structures/hash-index.md`.
 3. `BinaryHashJoin`, the `db` entry points, and the join-suite, all-orders, allocation, LUBM and
    `db` cells, with `docs/algorithms/binary-hash-join.md`.
-4. The binary's wiring: selectors, `Execution`, families, options, dispatch arms, and the CLI tests.
+4. The binary's wiring: the `IndexStructure::HashIndex` and `JoinAlgorithm::BinaryHashJoin`
+   variants, selectors, `Execution`, families, options, dispatch arms, the CLI tests and the
+   kermit-lab comment. The two registry variants wait until this step, though their files
+   change in steps 2 and 3, because the binary matches over both enums exhaustively
+   (`Execution::for_pair`, `for_structure`, `dispatch_run_bench`, `dispatch_ds_bench`, the
+   selectors' `expand`). Added earlier, they would leave steps 2 and 3 with a binary that does
+   not compile.
 5. The docs sweep (`ARCHITECTURE.md`, `CLAUDE.md`) and the smoke.
 
 ## Acceptance
@@ -387,8 +403,14 @@ Each step leaves the gate green.
   `python` job.
 - `cargo run -- bench run triangle -i all -a all -m iteration --verify` runs four cells, all
   verified.
-- A smoke run, `bench probe --all -i all -a all` over the committed small benchmarks: every count
-  with an `expected` is verified, and every `HashIndex` count equals `HashTrie`'s.
+- A smoke run after the final gate, by the manager, not a story. The committed benchmarks' ZivaHub
+  URLs cannot be fetched, so it reuses the 2026-10-22 smoke harness's private workspace and cache
+  (`/tb/Source/Academia/kermit-bench-runs/bench-smoke-2026-10-22/`: `KERMIT_WORKSPACE=$R/ws`,
+  `XDG_CACHE_HOME=$R/xdg`), so nothing writes the shared `~/.cache/kermit`. It uses a binary
+  built at the final commit, and each run sits in an 8 GiB `systemd-run --user --scope`.
+  `bench probe <bench> -i all -a all` runs over its tier-A benchmarks: `triangle`,
+  `oxford-uniform-s1`, `oxford-zipf-s1`, `lubm-reference`, `watdiv-example`. Every count with an
+  `expected` must verify, and every `HashIndex` `answer_rows` must equal `HashTrie`'s.
 - A status comment for #110 and #105 is drafted for the user to post.
 
 ## Documentation
@@ -409,3 +431,7 @@ Each step leaves the gate green.
   - the Testing Patterns aliases;
   - the reference-doc list;
   - a build command (`cargo run -- bench run triangle -i hash-index -a binary-hash-join`).
+- The user docs that list the valid cells or the hasher's reach: `README.md` (the `kermit join`
+  and `bench join` cell lists), `USAGE.md` (the `-a all` expansion and the `--ds-layout-hasher`
+  reach), `kermit/README.md`, `kermit-ds/README.md`, and `docs/specs/bench-report-schema.md`
+  (the `data_structure` and `algorithm` value lists, and `ds_layout_hasher` on `HashIndex`).
