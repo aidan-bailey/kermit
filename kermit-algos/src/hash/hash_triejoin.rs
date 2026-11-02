@@ -9,6 +9,12 @@
 //! it cross-products the participating iterators' tuple chains and
 //! verifies the actual join condition (hash collisions can produce false
 //! positives at any inner level).
+//!
+//! A relation participates at a variable only where its trie has a level
+//! for it (`HashTrieIterable::levels`, #116): under `--ds-layout-levels keys`
+//! a payload column is no level, so its variable is skipped on the way down
+//! and bound from the leaf rows, by the same leaf product (Algorithm 3,
+//! lines 16–19).
 
 use {
     crate::{analysis::analyse, join_algo::JoinAlgo, optimiser::QueryPlan},
@@ -17,25 +23,23 @@ use {
     std::collections::HashMap,
 };
 
-/// Build `variable_to_iter_map[i] = predicate indices that carry the i-th
-/// variable in `variable_ordering`. Identical shape to LFTJ's inline
-/// construction.
+/// Build `variable_to_iter_map[i]`: the predicates whose trie has a level
+/// for the `i`-th variable of `variable_ordering`, i.e. that carry it among
+/// their first `levels[p]` columns (#116). Under full levels that is every
+/// predicate carrying it, LFTJ's inline construction; under join-key levels
+/// a payload column is no level, and its variable is bound from the leaf
+/// rows instead.
 fn build_variable_to_iter_map(
-    variable_ordering: &[usize], predicate_variables: &[Vec<usize>],
+    variable_ordering: &[usize], predicate_variables: &[Vec<usize>], levels: &[usize],
 ) -> Vec<Vec<usize>> {
     variable_ordering
         .iter()
         .map(|v| {
             predicate_variables
                 .iter()
+                .zip(levels)
                 .enumerate()
-                .filter_map(|(i, vars)| {
-                    if vars.contains(v) {
-                        Some(i)
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|(p, (vars, &depth))| vars[..depth].contains(v).then_some(p))
                 .collect()
         })
         .collect()
@@ -107,10 +111,13 @@ impl LeafScratch {
 /// positions; passes every verified result tuple to `emit`.
 ///
 /// **Contract.** `enumerate(i, ...)` is called with each iterator in
-/// `variable_to_iter_map[i]` positioned at depth `i - 1` (or pre-root for
-/// `i == 0`). The function descends each one level (to depth `i`), scans
-/// at depth `i`, recurses on matches, then ascends back. This way the
-/// caller's stack is unchanged on return.
+/// `variable_to_iter_map[i]` standing at the level just before its level for
+/// the `i`-th variable (at its pre-root for its first level). The function
+/// descends each one level, scans, recurses on matches, then ascends back,
+/// so the caller's stack is unchanged on return. A position no iterator has
+/// a level for is skipped (#116). After the last position every iterator
+/// stands at its last level, or at its pre-root when it has no level, so
+/// `emit_leaf` reads every chain.
 fn enumerate<IT: HashTrieIterator, S: FnMut(&[usize])>(
     i: usize, arity: usize, iters: &mut [IT], predicate_variables: &[Vec<usize>],
     variable_to_iter_map: &[Vec<usize>], scratch: &mut LeafScratch, emit: &mut S,
@@ -122,7 +129,20 @@ fn enumerate<IT: HashTrieIterator, S: FnMut(&[usize])>(
 
     let participating = &variable_to_iter_map[i];
     if participating.is_empty() {
-        return; // no relation carries this variable
+        // No trie has a level for this variable: it is payload, bound from
+        // the leaf rows once the join keys are (Algorithm 3, lines 16–19).
+        // Under full levels every variable is some trie's level, so this
+        // never runs.
+        enumerate(
+            i + 1,
+            arity,
+            iters,
+            predicate_variables,
+            variable_to_iter_map,
+            scratch,
+            emit,
+        );
+        return;
     }
 
     // Descend every participating iterator to depth i. Track how many we
@@ -243,10 +263,11 @@ fn advance_cursor<IT: HashTrieIterator>(iters: &[IT], cursor: &mut [LeafCursor])
 }
 
 /// `it`'s current leaf chain: `emit_leaf` runs with every iterator on an
-/// occupied bucket of its leaf level.
+/// occupied bucket of its last level, or at the pre-root of a trie with no
+/// level (#116).
 fn leaf_chain<IT: HashTrieIterator>(it: &IT) -> LeafRows<'_> {
     it.leaf_tuples()
-        .expect("at leaf level for every participating iter")
+        .expect("every iterator is at its last level, or at the pre-root of a trie with no level")
 }
 
 /// Entry point for the hash-trie-join algorithm.
@@ -268,18 +289,23 @@ where
         }
         let variable_ordering = &plan.variable_ordering;
         let predicate_variables = analysis.predicate_variables;
-        let mut iters: Vec<_> = query
+        let relations: Vec<&DS> = query
             .body
             .iter()
             .map(|pred| {
-                datastructures
+                *datastructures
                     .get(&pred.name)
                     .expect("Missing datastructure for predicate name")
-                    .hash_trie_iter()
             })
             .collect();
+        let mut iters: Vec<_> = relations
+            .iter()
+            .map(|relation| relation.hash_trie_iter())
+            .collect();
+        // Each relation participates only at its levels' variables (#116).
+        let levels: Vec<usize> = relations.iter().map(|relation| relation.levels()).collect();
         let variable_to_iter_map =
-            build_variable_to_iter_map(variable_ordering, &predicate_variables);
+            build_variable_to_iter_map(variable_ordering, &predicate_variables, &levels);
         let mut scratch = LeafScratch::new(iters.len(), variable_ordering.len());
         enumerate(
             0,
@@ -316,7 +342,7 @@ mod tests {
     #[test]
     fn variable_to_iter_map_triangle() {
         let pred_vars = vec![vec![0, 1], vec![1, 2], vec![0, 2]];
-        let map = build_variable_to_iter_map(&[0, 1, 2], &pred_vars);
+        let map = build_variable_to_iter_map(&[0, 1, 2], &pred_vars, &[2, 2, 2]);
         assert_eq!(map, vec![vec![0, 2], vec![0, 1], vec![1, 2]]);
     }
 
@@ -630,5 +656,88 @@ mod tests {
         let mut joined = Vec::new();
         HashTriejoin::join_for_each(&plan, query, ds, |row| joined.push(row.to_vec()));
         assert_eq!(joined, expected);
+    }
+
+    type Keys = kermit_ds::HashTrie<
+        kermit_iters::SipHashStrategy,
+        kermit_ds::NoPruning,
+        kermit_ds::EagerExpansion,
+        kermit_ds::KeyLevels,
+    >;
+
+    /// A `keys` trie of `arity` columns, `levels` of them levelled.
+    fn keys_trie(arity: usize, levels: usize, rows: Vec<Vec<usize>>) -> Keys {
+        <Keys as kermit_ds::Relation>::from_tuples(
+            kermit_ds::RelationHeader::new_nameless_positional(arity).with_levels(levels),
+            rows,
+        )
+    }
+
+    fn by_name<'a, DS>(relations: &[(&str, &'a DS)]) -> HashMap<String, &'a DS> {
+        relations
+            .iter()
+            .map(|&(name, ds)| (name.to_string(), ds))
+            .collect()
+    }
+
+    /// Only the levelled columns participate (#116): R(X, P) at one level,
+    /// S(X, Y) at two and T(Y) at one, under X, P, Y.
+    #[test]
+    fn variable_to_iter_map_counts_only_levelled_columns() {
+        let pred_vars = vec![vec![0, 1], vec![0, 2], vec![2]];
+        let map = build_variable_to_iter_map(&[0, 1, 2], &pred_vars, &[1, 2, 1]);
+        assert_eq!(map, vec![vec![0, 1], vec![], vec![1, 2]]);
+    }
+
+    /// The #116 design's worked example: P is payload, skipped at its
+    /// position and bound from R's leaf rows; X and Y are joined by level.
+    /// Under `all`, the same rows.
+    #[test]
+    fn payload_is_skipped_at_its_position_and_bound_from_the_leaf_rows() {
+        let r = vec![vec![1, 10], vec![1, 11], vec![2, 20]];
+        let s = vec![vec![1, 5], vec![2, 6]];
+        let t = vec![vec![5], vec![7]];
+        let (kr, ks, kt) = (
+            keys_trie(2, 1, r.clone()),
+            keys_trie(2, 2, s.clone()),
+            keys_trie(1, 1, t.clone()),
+        );
+        use kermit_ds::{HashTrie, Relation};
+        let (ar, as_, at): (HashTrie, HashTrie, HashTrie) = (
+            HashTrie::from_tuples(2.into(), r),
+            HashTrie::from_tuples(2.into(), s),
+            HashTrie::from_tuples(1.into(), t),
+        );
+        let want = vec![vec![1, 10, 5], vec![1, 11, 5]];
+        // Today's lexicographic order (payload before a key), then payload
+        // last.
+        for order in [vec![0, 1, 2], vec![0, 2, 1]] {
+            let query: JoinQuery = "Q(X, P, Y) :- R(X, P), S(X, Y), T(Y).".parse().unwrap();
+            let plan = QueryPlan {
+                variable_ordering: order.clone(),
+            };
+            let keys = by_name(&[("R", &kr), ("S", &ks), ("T", &kt)]);
+            assert_eq!(joined(&plan, query.clone(), keys), want, "keys, {order:?}");
+            let all = by_name(&[("R", &ar), ("S", &as_), ("T", &at)]);
+            assert_eq!(joined(&plan, query, all), want, "all, {order:?}");
+        }
+    }
+
+    /// Two atoms with no level: every position is skipped and the leaf
+    /// product is their cross product; an empty one leaves none.
+    #[test]
+    fn atoms_with_no_level_cross_their_whole_chains() {
+        let r = keys_trie(1, 0, vec![vec![1], vec![2]]);
+        let s = keys_trie(1, 0, vec![vec![7]]);
+        let empty = keys_trie(1, 0, Vec::new());
+        let plan = QueryPlan {
+            variable_ordering: vec![0, 1],
+        };
+        let query: JoinQuery = "Q(X, Y) :- R(X), S(Y).".parse().unwrap();
+        assert_eq!(
+            joined(&plan, query.clone(), by_name(&[("R", &r), ("S", &s)])),
+            vec![vec![1, 7], vec![2, 7]]
+        );
+        assert!(joined(&plan, query, by_name(&[("R", &r), ("S", &empty)])).is_empty());
     }
 }
