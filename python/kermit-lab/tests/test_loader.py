@@ -302,7 +302,10 @@ def test_phase_of_recognises_build() -> None:
     assert phase_of("TreeTrie/build") == "build"
     assert phase_of("space") is None
     # Reports before v5 still load: their phases stay recognised.
-    assert TIME_PHASES == ("build", "insertion", "copies", "iteration", "end_to_end")
+    # `materialize` is the opt-in metric of report v8 (external engines).
+    assert TIME_PHASES == (
+        "build", "insertion", "copies", "iteration", "end_to_end", "materialize",
+    )
     assert phase_of("TreeTrie/insertion") == "insertion"
 
 
