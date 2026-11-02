@@ -64,9 +64,9 @@ use {
         StatisticsLevel,
     },
     kermit_ds::{
-        BinarySeek, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie, LazyExpansion,
-        LinearSeek, NoPruning, PruningPolicy, Relation, RelationHeader, SingletonPruning, TreeTrie,
-        Tuples,
+        AllLevels, BinarySeek, ColumnTrie, EagerExpansion, ExpansionPolicy, HashTrie, KeyLevels,
+        LazyExpansion, LevelPolicy, LinearSeek, NoPruning, PruningPolicy, Relation, RelationHeader,
+        SingletonPruning, TreeTrie, Tuples,
     },
     kermit_iters::{
         FxHashStrategy, HashStrategy, SipHashStrategy, TrieIterable, TrieIteratorWrapper,
@@ -175,13 +175,17 @@ fn lftj_allocations<Rel: TrieIterable + Relation>(fan_out: usize) -> u64 {
 
 /// Allocations made by one streamed HashTriejoin join of `QUERY` over
 /// `HashTrie<H, P>`, after checking that it produced every row.
-fn htj_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    join_allocations::<HashTrie<H, P>, HashTriejoin>(QUERY, relations(fan_out), XS * fan_out)
+fn htj_allocations<H: HashStrategy, P: PruningPolicy, L: LevelPolicy>(fan_out: usize) -> u64 {
+    join_allocations::<HashTrie<H, P, EagerExpansion, L>, HashTriejoin>(
+        QUERY,
+        relations(fan_out),
+        XS * fan_out,
+    )
 }
 
 /// [`htj_allocations`] for the lazy Layout, measured warm.
-fn htj_lazy_allocations<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
-    warm_join_allocations::<HashTrie<H, P, LazyExpansion>, HashTriejoin>(
+fn htj_lazy_allocations<H: HashStrategy, P: PruningPolicy, L: LevelPolicy>(fan_out: usize) -> u64 {
+    warm_join_allocations::<HashTrie<H, P, LazyExpansion, L>, HashTriejoin>(
         QUERY,
         relations(fan_out),
         XS * fan_out,
@@ -324,41 +328,41 @@ fn column_trie_binary_lftj_allocates_independently_of_result_size() {
 
 #[test]
 fn hash_trie_sip_allocates_independently_of_result_size() {
-    htj_allocations::<SipHashStrategy, NoPruning>(SMALL);
+    htj_allocations::<SipHashStrategy, NoPruning, AllLevels>(SMALL);
     assert_flat(
         "HashTrie<Sip>/HTJ",
-        htj_allocations::<SipHashStrategy, NoPruning>(SMALL),
-        htj_allocations::<SipHashStrategy, NoPruning>(LARGE),
+        htj_allocations::<SipHashStrategy, NoPruning, AllLevels>(SMALL),
+        htj_allocations::<SipHashStrategy, NoPruning, AllLevels>(LARGE),
     );
 }
 
 #[test]
 fn hash_trie_fx_allocates_independently_of_result_size() {
-    htj_allocations::<FxHashStrategy, NoPruning>(SMALL);
+    htj_allocations::<FxHashStrategy, NoPruning, AllLevels>(SMALL);
     assert_flat(
         "HashTrie<Fx>/HTJ",
-        htj_allocations::<FxHashStrategy, NoPruning>(SMALL),
-        htj_allocations::<FxHashStrategy, NoPruning>(LARGE),
+        htj_allocations::<FxHashStrategy, NoPruning, AllLevels>(SMALL),
+        htj_allocations::<FxHashStrategy, NoPruning, AllLevels>(LARGE),
     );
 }
 
 #[test]
 fn hash_trie_sip_pruned_allocates_independently_of_result_size() {
-    htj_allocations::<SipHashStrategy, SingletonPruning>(SMALL);
+    htj_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(SMALL);
     assert_flat(
         "HashTrie<Sip, Pruned>/HTJ",
-        htj_allocations::<SipHashStrategy, SingletonPruning>(SMALL),
-        htj_allocations::<SipHashStrategy, SingletonPruning>(LARGE),
+        htj_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(SMALL),
+        htj_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(LARGE),
     );
 }
 
 #[test]
 fn hash_trie_fx_pruned_allocates_independently_of_result_size() {
-    htj_allocations::<FxHashStrategy, SingletonPruning>(SMALL);
+    htj_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(SMALL);
     assert_flat(
         "HashTrie<Fx, Pruned>/HTJ",
-        htj_allocations::<FxHashStrategy, SingletonPruning>(SMALL),
-        htj_allocations::<FxHashStrategy, SingletonPruning>(LARGE),
+        htj_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(SMALL),
+        htj_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(LARGE),
     );
 }
 
@@ -366,8 +370,8 @@ fn hash_trie_fx_pruned_allocates_independently_of_result_size() {
 fn hash_trie_sip_lazy_allocates_independently_of_result_size() {
     assert_flat(
         "HashTrie<Sip, Lazy>/HTJ",
-        htj_lazy_allocations::<SipHashStrategy, NoPruning>(SMALL),
-        htj_lazy_allocations::<SipHashStrategy, NoPruning>(LARGE),
+        htj_lazy_allocations::<SipHashStrategy, NoPruning, AllLevels>(SMALL),
+        htj_lazy_allocations::<SipHashStrategy, NoPruning, AllLevels>(LARGE),
     );
 }
 
@@ -375,8 +379,8 @@ fn hash_trie_sip_lazy_allocates_independently_of_result_size() {
 fn hash_trie_fx_lazy_allocates_independently_of_result_size() {
     assert_flat(
         "HashTrie<Fx, Lazy>/HTJ",
-        htj_lazy_allocations::<FxHashStrategy, NoPruning>(SMALL),
-        htj_lazy_allocations::<FxHashStrategy, NoPruning>(LARGE),
+        htj_lazy_allocations::<FxHashStrategy, NoPruning, AllLevels>(SMALL),
+        htj_lazy_allocations::<FxHashStrategy, NoPruning, AllLevels>(LARGE),
     );
 }
 
@@ -384,8 +388,8 @@ fn hash_trie_fx_lazy_allocates_independently_of_result_size() {
 fn hash_trie_sip_pruned_lazy_allocates_independently_of_result_size() {
     assert_flat(
         "HashTrie<Sip, Pruned, Lazy>/HTJ",
-        htj_lazy_allocations::<SipHashStrategy, SingletonPruning>(SMALL),
-        htj_lazy_allocations::<SipHashStrategy, SingletonPruning>(LARGE),
+        htj_lazy_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(SMALL),
+        htj_lazy_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(LARGE),
     );
 }
 
@@ -393,8 +397,8 @@ fn hash_trie_sip_pruned_lazy_allocates_independently_of_result_size() {
 fn hash_trie_fx_pruned_lazy_allocates_independently_of_result_size() {
     assert_flat(
         "HashTrie<Fx, Pruned, Lazy>/HTJ",
-        htj_lazy_allocations::<FxHashStrategy, SingletonPruning>(SMALL),
-        htj_lazy_allocations::<FxHashStrategy, SingletonPruning>(LARGE),
+        htj_lazy_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(SMALL),
+        htj_lazy_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(LARGE),
     );
 }
 
@@ -558,8 +562,10 @@ fn lftj_descent_allocations<Rel: TrieIterable + Relation>(dead_ends: usize) -> u
 
 /// Allocations made by one streamed HashTriejoin join of the descent
 /// workload over `HashTrie<H, P>`.
-fn htj_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) -> u64 {
-    join_allocations::<HashTrie<H, P>, HashTriejoin>(
+fn htj_descent_allocations<H: HashStrategy, P: PruningPolicy, L: LevelPolicy>(
+    dead_ends: usize,
+) -> u64 {
+    join_allocations::<HashTrie<H, P, EagerExpansion, L>, HashTriejoin>(
         DESCENT_QUERY,
         descent_relations(dead_ends),
         DESCENT_ROWS,
@@ -567,8 +573,10 @@ fn htj_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) 
 }
 
 /// [`htj_descent_allocations`] for the lazy Layout, measured warm.
-fn htj_lazy_descent_allocations<H: HashStrategy, P: PruningPolicy>(dead_ends: usize) -> u64 {
-    warm_join_allocations::<HashTrie<H, P, LazyExpansion>, HashTriejoin>(
+fn htj_lazy_descent_allocations<H: HashStrategy, P: PruningPolicy, L: LevelPolicy>(
+    dead_ends: usize,
+) -> u64 {
+    warm_join_allocations::<HashTrie<H, P, LazyExpansion, L>, HashTriejoin>(
         DESCENT_QUERY,
         descent_relations(dead_ends),
         DESCENT_ROWS,
@@ -645,41 +653,41 @@ fn column_trie_binary_lftj_allocates_independently_of_descent_count() {
 
 #[test]
 fn hash_trie_sip_allocates_independently_of_descent_count() {
-    htj_descent_allocations::<SipHashStrategy, NoPruning>(FEW_DEAD_ENDS);
+    htj_descent_allocations::<SipHashStrategy, NoPruning, AllLevels>(FEW_DEAD_ENDS);
     assert_flat_in_descents(
         "HashTrie<Sip>/HTJ",
-        htj_descent_allocations::<SipHashStrategy, NoPruning>(FEW_DEAD_ENDS),
-        htj_descent_allocations::<SipHashStrategy, NoPruning>(MANY_DEAD_ENDS),
+        htj_descent_allocations::<SipHashStrategy, NoPruning, AllLevels>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<SipHashStrategy, NoPruning, AllLevels>(MANY_DEAD_ENDS),
     );
 }
 
 #[test]
 fn hash_trie_fx_allocates_independently_of_descent_count() {
-    htj_descent_allocations::<FxHashStrategy, NoPruning>(FEW_DEAD_ENDS);
+    htj_descent_allocations::<FxHashStrategy, NoPruning, AllLevels>(FEW_DEAD_ENDS);
     assert_flat_in_descents(
         "HashTrie<Fx>/HTJ",
-        htj_descent_allocations::<FxHashStrategy, NoPruning>(FEW_DEAD_ENDS),
-        htj_descent_allocations::<FxHashStrategy, NoPruning>(MANY_DEAD_ENDS),
+        htj_descent_allocations::<FxHashStrategy, NoPruning, AllLevels>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<FxHashStrategy, NoPruning, AllLevels>(MANY_DEAD_ENDS),
     );
 }
 
 #[test]
 fn hash_trie_sip_pruned_allocates_independently_of_descent_count() {
-    htj_descent_allocations::<SipHashStrategy, SingletonPruning>(FEW_DEAD_ENDS);
+    htj_descent_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(FEW_DEAD_ENDS);
     assert_flat_in_descents(
         "HashTrie<Sip, Pruned>/HTJ",
-        htj_descent_allocations::<SipHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
-        htj_descent_allocations::<SipHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
+        htj_descent_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(MANY_DEAD_ENDS),
     );
 }
 
 #[test]
 fn hash_trie_fx_pruned_allocates_independently_of_descent_count() {
-    htj_descent_allocations::<FxHashStrategy, SingletonPruning>(FEW_DEAD_ENDS);
+    htj_descent_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(FEW_DEAD_ENDS);
     assert_flat_in_descents(
         "HashTrie<Fx, Pruned>/HTJ",
-        htj_descent_allocations::<FxHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
-        htj_descent_allocations::<FxHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
+        htj_descent_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(MANY_DEAD_ENDS),
     );
 }
 
@@ -687,8 +695,8 @@ fn hash_trie_fx_pruned_allocates_independently_of_descent_count() {
 fn hash_trie_sip_lazy_allocates_independently_of_descent_count() {
     assert_flat_in_descents(
         "HashTrie<Sip, Lazy>/HTJ",
-        htj_lazy_descent_allocations::<SipHashStrategy, NoPruning>(FEW_DEAD_ENDS),
-        htj_lazy_descent_allocations::<SipHashStrategy, NoPruning>(MANY_DEAD_ENDS),
+        htj_lazy_descent_allocations::<SipHashStrategy, NoPruning, AllLevels>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<SipHashStrategy, NoPruning, AllLevels>(MANY_DEAD_ENDS),
     );
 }
 
@@ -696,8 +704,8 @@ fn hash_trie_sip_lazy_allocates_independently_of_descent_count() {
 fn hash_trie_fx_lazy_allocates_independently_of_descent_count() {
     assert_flat_in_descents(
         "HashTrie<Fx, Lazy>/HTJ",
-        htj_lazy_descent_allocations::<FxHashStrategy, NoPruning>(FEW_DEAD_ENDS),
-        htj_lazy_descent_allocations::<FxHashStrategy, NoPruning>(MANY_DEAD_ENDS),
+        htj_lazy_descent_allocations::<FxHashStrategy, NoPruning, AllLevels>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<FxHashStrategy, NoPruning, AllLevels>(MANY_DEAD_ENDS),
     );
 }
 
@@ -705,8 +713,10 @@ fn hash_trie_fx_lazy_allocates_independently_of_descent_count() {
 fn hash_trie_sip_pruned_lazy_allocates_independently_of_descent_count() {
     assert_flat_in_descents(
         "HashTrie<Sip, Pruned, Lazy>/HTJ",
-        htj_lazy_descent_allocations::<SipHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
-        htj_lazy_descent_allocations::<SipHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
+        htj_lazy_descent_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<SipHashStrategy, SingletonPruning, AllLevels>(
+            MANY_DEAD_ENDS,
+        ),
     );
 }
 
@@ -714,8 +724,8 @@ fn hash_trie_sip_pruned_lazy_allocates_independently_of_descent_count() {
 fn hash_trie_fx_pruned_lazy_allocates_independently_of_descent_count() {
     assert_flat_in_descents(
         "HashTrie<Fx, Pruned, Lazy>/HTJ",
-        htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning>(FEW_DEAD_ENDS),
-        htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning>(MANY_DEAD_ENDS),
+        htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning, AllLevels>(MANY_DEAD_ENDS),
     );
 }
 
@@ -772,20 +782,27 @@ fn lftj_collected_extra<Rel: TrieIterable + Relation>(fan_out: usize) -> u64 {
 }
 
 /// [`lftj_collected_extra`] for `HashTrie<H, P>` under `hash_join`.
-fn htj_collected_extra<H: HashStrategy, P: PruningPolicy>(fan_out: usize) -> u64 {
+fn htj_collected_extra<H: HashStrategy, P: PruningPolicy, L: LevelPolicy>(fan_out: usize) -> u64 {
     let (catalog, query) = collected_workload(fan_out);
     let planner = planner();
     let (collected_query, streamed_query) = (query.clone(), query);
     let mut rows = 0;
     let collected = allocation_counter::measure(|| {
-        let (_, answer) = hash_join::<HashTrie<H, P>>(&catalog, collected_query, &planner).unwrap();
+        let (_, answer) =
+            hash_join::<HashTrie<H, P, EagerExpansion, L>>(&catalog, collected_query, &planner)
+                .unwrap();
         rows = std::hint::black_box(answer).len();
     });
     assert_eq!(rows, XS * fan_out, "the answer must hold every row");
     let streamed = allocation_counter::measure(|| {
-        hash_join_for_each::<HashTrie<H, P>>(&catalog, streamed_query, &planner, |row| {
-            std::hint::black_box(row);
-        })
+        hash_join_for_each::<HashTrie<H, P, EagerExpansion, L>>(
+            &catalog,
+            streamed_query,
+            &planner,
+            |row| {
+                std::hint::black_box(row);
+            },
+        )
         .unwrap();
     });
     collected
@@ -824,10 +841,177 @@ fn column_trie_lftj_collects_without_allocating_per_row() {
 
 #[test]
 fn hash_trie_sip_collects_without_allocating_per_row() {
-    htj_collected_extra::<SipHashStrategy, NoPruning>(SMALL);
+    htj_collected_extra::<SipHashStrategy, NoPruning, AllLevels>(SMALL);
     assert_collected_growth(
         "HashTrie<Sip>/HTJ",
-        htj_collected_extra::<SipHashStrategy, NoPruning>(SMALL),
-        htj_collected_extra::<SipHashStrategy, NoPruning>(LARGE),
+        htj_collected_extra::<SipHashStrategy, NoPruning, AllLevels>(SMALL),
+        htj_collected_extra::<SipHashStrategy, NoPruning, AllLevels>(LARGE),
+    );
+}
+
+// ── Join-key levels (#116): the same cells under `KeyLevels`. `QUERY`'s Y and
+// Z, and `DESCENT_QUERY`'s X, are payload, read from the leaf rows. ──
+
+#[test]
+fn hash_trie_sip_keys_allocates_independently_of_result_size() {
+    htj_allocations::<SipHashStrategy, NoPruning, KeyLevels>(SMALL);
+    assert_flat(
+        "HashTrie<Sip, Keys>/HTJ",
+        htj_allocations::<SipHashStrategy, NoPruning, KeyLevels>(SMALL),
+        htj_allocations::<SipHashStrategy, NoPruning, KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_fx_keys_allocates_independently_of_result_size() {
+    htj_allocations::<FxHashStrategy, NoPruning, KeyLevels>(SMALL);
+    assert_flat(
+        "HashTrie<Fx, Keys>/HTJ",
+        htj_allocations::<FxHashStrategy, NoPruning, KeyLevels>(SMALL),
+        htj_allocations::<FxHashStrategy, NoPruning, KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_keys_allocates_independently_of_result_size() {
+    htj_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(SMALL);
+    assert_flat(
+        "HashTrie<Sip, Pruned, Keys>/HTJ",
+        htj_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(SMALL),
+        htj_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_fx_pruned_keys_allocates_independently_of_result_size() {
+    htj_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(SMALL);
+    assert_flat(
+        "HashTrie<Fx, Pruned, Keys>/HTJ",
+        htj_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(SMALL),
+        htj_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_lazy_keys_allocates_independently_of_result_size() {
+    assert_flat(
+        "HashTrie<Sip, Lazy, Keys>/HTJ",
+        htj_lazy_allocations::<SipHashStrategy, NoPruning, KeyLevels>(SMALL),
+        htj_lazy_allocations::<SipHashStrategy, NoPruning, KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_fx_lazy_keys_allocates_independently_of_result_size() {
+    assert_flat(
+        "HashTrie<Fx, Lazy, Keys>/HTJ",
+        htj_lazy_allocations::<FxHashStrategy, NoPruning, KeyLevels>(SMALL),
+        htj_lazy_allocations::<FxHashStrategy, NoPruning, KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_lazy_keys_allocates_independently_of_result_size() {
+    assert_flat(
+        "HashTrie<Sip, Pruned, Lazy, Keys>/HTJ",
+        htj_lazy_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(SMALL),
+        htj_lazy_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_fx_pruned_lazy_keys_allocates_independently_of_result_size() {
+    assert_flat(
+        "HashTrie<Fx, Pruned, Lazy, Keys>/HTJ",
+        htj_lazy_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(SMALL),
+        htj_lazy_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_sip_keys_allocates_independently_of_descent_count() {
+    htj_descent_allocations::<SipHashStrategy, NoPruning, KeyLevels>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashTrie<Sip, Keys>/HTJ",
+        htj_descent_allocations::<SipHashStrategy, NoPruning, KeyLevels>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<SipHashStrategy, NoPruning, KeyLevels>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_fx_keys_allocates_independently_of_descent_count() {
+    htj_descent_allocations::<FxHashStrategy, NoPruning, KeyLevels>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashTrie<Fx, Keys>/HTJ",
+        htj_descent_allocations::<FxHashStrategy, NoPruning, KeyLevels>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<FxHashStrategy, NoPruning, KeyLevels>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_keys_allocates_independently_of_descent_count() {
+    htj_descent_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashTrie<Sip, Pruned, Keys>/HTJ",
+        htj_descent_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_fx_pruned_keys_allocates_independently_of_descent_count() {
+    htj_descent_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(FEW_DEAD_ENDS);
+    assert_flat_in_descents(
+        "HashTrie<Fx, Pruned, Keys>/HTJ",
+        htj_descent_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(FEW_DEAD_ENDS),
+        htj_descent_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_sip_lazy_keys_allocates_independently_of_descent_count() {
+    assert_flat_in_descents(
+        "HashTrie<Sip, Lazy, Keys>/HTJ",
+        htj_lazy_descent_allocations::<SipHashStrategy, NoPruning, KeyLevels>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<SipHashStrategy, NoPruning, KeyLevels>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_fx_lazy_keys_allocates_independently_of_descent_count() {
+    assert_flat_in_descents(
+        "HashTrie<Fx, Lazy, Keys>/HTJ",
+        htj_lazy_descent_allocations::<FxHashStrategy, NoPruning, KeyLevels>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<FxHashStrategy, NoPruning, KeyLevels>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_sip_pruned_lazy_keys_allocates_independently_of_descent_count() {
+    assert_flat_in_descents(
+        "HashTrie<Sip, Pruned, Lazy, Keys>/HTJ",
+        htj_lazy_descent_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<SipHashStrategy, SingletonPruning, KeyLevels>(
+            MANY_DEAD_ENDS,
+        ),
+    );
+}
+
+#[test]
+fn hash_trie_fx_pruned_lazy_keys_allocates_independently_of_descent_count() {
+    assert_flat_in_descents(
+        "HashTrie<Fx, Pruned, Lazy, Keys>/HTJ",
+        htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(FEW_DEAD_ENDS),
+        htj_lazy_descent_allocations::<FxHashStrategy, SingletonPruning, KeyLevels>(MANY_DEAD_ENDS),
+    );
+}
+
+#[test]
+fn hash_trie_sip_keys_collects_without_allocating_per_row() {
+    htj_collected_extra::<SipHashStrategy, NoPruning, KeyLevels>(SMALL);
+    assert_collected_growth(
+        "HashTrie<Sip, Keys>/HTJ",
+        htj_collected_extra::<SipHashStrategy, NoPruning, KeyLevels>(SMALL),
+        htj_collected_extra::<SipHashStrategy, NoPruning, KeyLevels>(LARGE),
     );
 }

@@ -56,8 +56,9 @@ use {
         },
         BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
         ConfiguredBuildModeRelation, EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode,
-        HashTrieConfig, HeapSize, LazyExpansion, NoPruning, PruningPolicy, RadixBits, Relation,
-        RootCapacity, SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode, Tuples,
+        HashTrieConfig, HeapSize, KeyLevels, LazyExpansion, NoPruning, PruningPolicy, RadixBits,
+        Relation, RelationHeader, RootCapacity, SingletonPruning, Threads, TreeTrie,
+        TreeTrieBuildMode, Tuples,
     },
     kermit_iters::{Filter, RowId, SipHashStrategy, TupleView},
     kermit_rdf::{parquet::write_relation, partition::PartitionedRelation},
@@ -675,6 +676,134 @@ fn hash_trie_presized_build_allocates_independently_of_its_row_count() {
          allocates more, so some row or list allocates",
         KEYS * KEYS,
     );
+}
+
+/// [`measure_hash_build`]'s twin under join-key levels (#116): the same build
+/// of a `KeyLevels` trie over a header with `levels` of its two columns
+/// levelled, so the rest stays in the leaf chains.
+fn measure_keys_build<P: PruningPolicy, E: ExpansionPolicy>(
+    levels: usize, config: HashTrieConfig, mode: HashTrieBuildMode, repeats: usize,
+) -> (u64, Vec<HashTrieParallelBuild>) {
+    let tuples = repeated(repeats);
+    let rows = tuples.len();
+    let header = RelationHeader::new_nameless_positional(2).with_levels(levels);
+    let mut built: Option<HashTrie<SipHashStrategy, P, E, KeyLevels>> = None;
+    let info = allocation_counter::measure(|| {
+        built = Some(HashTrie::from_tuples_with_config_and_build_mode(
+            header, config, mode, tuples,
+        ));
+    });
+    assert_eq!(built.expect("measured").tuple_count(), rows);
+    (info.count_total, take_hash_trie_parallel_builds())
+}
+
+/// The differential above under join-key levels (#116), at one level of two
+/// (the second column is payload in the leaf chains) and at none (one chain
+/// of the rows), under every layout and mode it runs. A trie with no level is
+/// the same copy and one chain in every mode: no partition, so no parallel
+/// build and no test-hook record. Neither count grows with the rows.
+#[test]
+fn hash_trie_keys_builds_allocate_independently_of_their_row_count() {
+    let radix = HashTrieBuildMode::Radix(RadixBits::new(2).unwrap());
+    type Measure =
+        fn(usize, HashTrieConfig, HashTrieBuildMode, usize) -> (u64, Vec<HashTrieParallelBuild>);
+    let cells: [(&str, Measure, HashTrieBuildMode); 7] = [
+        (
+            "eager",
+            measure_keys_build::<NoPruning, EagerExpansion>,
+            HashTrieBuildMode::Bulk,
+        ),
+        (
+            "pruned",
+            measure_keys_build::<SingletonPruning, EagerExpansion>,
+            HashTrieBuildMode::Bulk,
+        ),
+        (
+            "lazy",
+            measure_keys_build::<NoPruning, LazyExpansion>,
+            HashTrieBuildMode::Bulk,
+        ),
+        (
+            "pruned lazy",
+            measure_keys_build::<SingletonPruning, LazyExpansion>,
+            HashTrieBuildMode::Bulk,
+        ),
+        (
+            "eager",
+            measure_keys_build::<NoPruning, EagerExpansion>,
+            HashTrieBuildMode::Incremental,
+        ),
+        (
+            "eager",
+            measure_keys_build::<NoPruning, EagerExpansion>,
+            radix,
+        ),
+        (
+            "eager",
+            measure_keys_build::<NoPruning, EagerExpansion>,
+            HashTrieBuildMode::Parallel(one_thread()),
+        ),
+    ];
+    for levels in [1, 0] {
+        for (layout, measure, mode) in cells {
+            let run = |repeats| {
+                let (allocations, builds) =
+                    measure(levels, HashTrieConfig::default(), mode, repeats);
+                let threads: Vec<usize> = builds.iter().map(|build| build.threads).collect();
+                let expected = match mode {
+                    | HashTrieBuildMode::Parallel(threads) if levels > 0 => vec![threads.get()],
+                    | _ => vec![],
+                };
+                assert_eq!(
+                    threads, expected,
+                    "{levels} levels, {mode:?}: the parallel builds that ran"
+                );
+                allocations
+            };
+            let (once, many) = (run(1), run(REPEATS));
+            assert!(
+                many <= once,
+                "HashTrie keys, {levels} levels, {layout} {mode:?}: {once} allocations for {} \
+                 rows, {many} for {}: the larger build allocates more, so some row or list \
+                 allocates",
+                KEYS * KEYS,
+                REPEATS * KEYS * KEYS
+            );
+        }
+    }
+}
+
+/// `presized:1` under join-key levels (#116), at one level and at none: at
+/// one its root is the leaf table of chains, sized once from the row count;
+/// at none there is no root table and no partition, so no presized build
+/// runs and no record is pushed.
+#[test]
+fn hash_trie_keys_presized_build_allocates_independently_of_its_row_count() {
+    let config = HashTrieConfig {
+        root_capacity: RootCapacity::Tuples,
+        ..HashTrieConfig::default()
+    };
+    let mode = HashTrieBuildMode::Presized(one_thread());
+    for levels in [1, 0] {
+        let run = |repeats| {
+            let (allocations, builds) =
+                measure_keys_build::<NoPruning, EagerExpansion>(levels, config, mode, repeats);
+            assert_eq!(
+                builds.len(),
+                usize::from(levels > 0),
+                "{levels} levels: the presized builds that ran"
+            );
+            allocations
+        };
+        let (once, many) = (run(1), run(REPEATS));
+        assert!(
+            many <= once,
+            "HashTrie keys presized:1, {levels} levels: {once} allocations for {} rows, {many} \
+             for {}: the larger build allocates more, so some row or list allocates",
+            KEYS * KEYS,
+            REPEATS * KEYS * KEYS
+        );
+    }
 }
 
 // ── Builds from views ───────────────────────────────────────────────────
