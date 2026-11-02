@@ -410,6 +410,61 @@ because the root merge runs on one thread.
 reported numbers is in
 [`docs/specs/2026-10-05-parallel-build-design.md`](docs/specs/2026-10-05-parallel-build-design.md).
 
+## Comparing against external engines
+
+kermit can run DuckDB and Nemo in process on the very queries its own cells run, measured by the same
+measure layer: `--engine duckdb,nemo` adds engine cells beside the `-i`/`-a` cells of `bench run`,
+`bench probe` and `bench join`. The engines are cargo features that are off by default, so the binary
+must be built with them (in the dev shell, `--features engine-duckdb,engine-nemo`):
+
+```sh
+cargo run -p kermit --features engine-duckdb,engine-nemo -- bench run triangle -i all -a all \
+  --engine duckdb,nemo --metrics build iteration space materialize end-to-end --verify
+```
+
+This is the thesis's RQ1.4: a **bounded sanity baseline** against an established peer engine, with
+explicit threats to validity, not a head-to-head claim. An engine reads the same `Prepared` query, so
+all of them answer the full conjunctive query, and on duplicate-free inputs every count equals the
+benchmark's `expected` (`--verify` checks it for each cell).
+
+**The phases differ, so only some pairs compare.** Where an engine does its index work decides which
+phase is the same work as kermit's:
+
+| Engine | Compare with kermit on | Why | Not offered |
+| --- | --- | --- | --- |
+| DuckDB (`duckdb-t{N}`) | `end_to_end` | its hash tables are built inside its `iteration`, while kermit's index work is in `build`, so only the sum is the same work | `space` (it keeps no index) |
+| Nemo (`nemo`) | `build`, `materialize`, `space` | it builds sorted tries as `ColumnTrie` does and stores its result | `iteration`, `end_to_end` (its streaming join is private upstream); stderr says so |
+
+`kl.engines()` draws exactly these pairs and no others, and per pair only the kermit rows of the
+(benchmark, query) the pair's engine ran. It raises `InsufficientAxesError` when one cell and query
+hold more than one row (two optimisers, several HashTrie Layouts, two benchmarks sharing a query
+name), so filter the frame first. kermit-lab's six structure figures
+(`scaling`, `bar_time`, `bar_space`, `tradeoff`, `dist` and `bar_queries`) draw kermit rows only,
+because a generic figure would put an engine beside kermit on a metric that is not a like-for-like
+pair; `kl.plot` draws engines too for a reader who picks the metric knowingly: with no `colour` and
+a frame holding non-kermit rows it colours by the cell label (`duckdb-t1`, `nemo`,
+`data_structure/algorithm` for kermit), and an explicit `colour` wins. `speedup_table` excludes
+engine rows. Read the fairness caveats before quoting a
+ratio: [`docs/engines/duckdb.md`](docs/engines/duckdb.md) and
+[`docs/engines/nemo.md`](docs/engines/nemo.md) (DuckDB plans its own join order, Nemo runs kermit's
+plan, and engine rows carry kermit's `plan` axis either way; DuckDB counts duplicate rows and Nemo does
+not; on a query with an all-constant atom whose count is 0 an engine cell skips its `build`, which
+kermit's cells do not, so that `build` is not like-for-like).
+
+**`materialize` (opt-in, `--metrics materialize`; probes: `--materialize`).** The join, collecting
+every full assignment of the executed query, sorted and counted distinct, on kermit's cells and
+DuckDB; Nemo stores its result trie and counts it. It is not `iteration`: kermit keeps streaming for
+that, because storing results adds a cost roughly equal for every structure and a result such as
+SNAP's `path3` does not fit in memory. A query whose `materialize` would exceed
+`--materialize-max-bytes` (default 4 GiB) is skipped with a stderr note and a metadata line. Nemo
+does not stream, so its guard reads `expected` alone; over the limit nothing materialises, and a run
+asked only for `--verify` skips verification for that cell with the same note.
+
+**Threads and variance.** DuckDB runs one thread (`--engine-threads N` for more; every report records
+`engine_threads`), the parallelism of kermit's joins and serial builds. Probe numbers are single cold
+runs: compare them with other single runs, not with Criterion estimates. `--engine-threads` applies to DuckDB only and is refused without it. Every report records the
+engine's version (`engine_version`) and the allocator; do not mix reports across an engine pin move.
+
 ## Statistical tooling
 
 When a bar chart isn't enough to claim a difference, `kermit_lab.analysis`
@@ -456,4 +511,5 @@ clean checkout).
 | The plotting engine design | [`docs/specs/2026-06-10-optimization-axis-graphs-design.md`](docs/specs/2026-06-10-optimization-axis-graphs-design.md) |
 | Analysis/plotting API + notebooks | [`python/kermit-lab/README.md`](python/kermit-lab/README.md) |
 | Benchmark catalogue, WatDiv, LUBM | [`docs/benchmarks/README.md`](docs/benchmarks/README.md) |
+| External engines (DuckDB, Nemo): phases, fairness, version pins | [`docs/engines/duckdb.md`](docs/engines/duckdb.md), [`docs/engines/nemo.md`](docs/engines/nemo.md) |
 | System architecture & data flow | [`ARCHITECTURE.md`](ARCHITECTURE.md) |

@@ -470,13 +470,25 @@ Consequently `-i all -a all` runs exactly the three valid cells, announcing each
 
 `bench ds` selects a structure but no algorithm, so it names its cell through the total `Execution::for_structure` (every structure has exactly one compatible algorithm) and runs the same kind of generic runner, `run_ds_bench<F: RelationFamily>`. `RelationFamily` is the relation-facing supertrait of `ExecutionFamily` (index construction, axes, cell label); `bench ds` instantiates the structure-only markers `SortedTrieFamily<R>` / `HashTrieFamily<H, P, E>`, which implement the supertrait alone and so cannot join. The join families `TrieLftj<R>` / `HashHtj<H, P, E>` embed those markers and delegate, so the two commands cannot disagree about a structure (issue #61). `HashTrieFamily<H, P, E>` is also where the `--ds-config` values live, so the `build` and `end_to_end` closures build through `RelationFamily::build_index` and measure the structure the report's `ds_config_*` axes describe. `SortedTrieFamily<R>` likewise carries the `--ds-build` mode (`R::BuildMode`: `ColumnTrieBuildMode` or `TreeTrieBuildMode`), builds through it, and reports it as `ds_build_mode` via `RelationFamily::build_mode_axes`.
 
+### External engines (`kermit::engine`)
+
+`kermit/src/engine/` runs other systems' joins on kermit's own prepared queries (spec `docs/specs/2026-11-02-external-engines-design.md`). It is a library module beside `kermit::db`, so the nested-loop oracle can check it from `kermit/tests`:
+
+- `mod.rs` holds the `Engine` trait (a family of associated constants and types, so it is deliberately not object-safe, like `ExecutionFamily`), `EngineError` and `Unsupported`. An engine reads `Prepared` (the executed query over index ids, each index's `IndexSpec`, the plan) and never parses Datalog.
+- `sql.rs` is the translator every SQL engine shares: a `CREATE TEMP TABLE` per spec, from the base relation under the spec's `Filter`, and one `SELECT` over aliases `a{i}` of the spec tables that selects every variable once, in canonical order.
+- `duckdb.rs` (feature `engine-duckdb`, or `engine-duckdb-bundled` in CI) and `nemo.rs` (feature `engine-nemo`) implement `Engine`. Both features are off by default.
+
+The binary wraps an engine as a cell. `run_benchmark` is generic over `bench::cell::Cell`; `FamilyCell` wraps today's `ExecutionFamily` cells unchanged, and `bench::engine::EngineCell<E>` wraps an engine, with `EngineSubject<E>` as its `Subject` (the engine's loaded database, its built state, and the same `Subject` methods the structure cells have, including `materialize`). Engine cells join the `bench run` / `bench probe` / `bench join` sweep through `--engine` and share the prepared queries of the sorted cells (`TrieLevels::All`). The timed `build` includes `kermit::db::check_multiplicity` with the engine's `KEEPS_DUPLICATES`, so an all-constant atom behaves as on every structure. Engines answer the full conjunctive query: `materialize` counts distinct full assignments on every cell (`kermit::db::execute_assignments`, `materialize_count`), and `Catalog` holds each relation's tuples behind an `Arc` so Nemo's table providers can stream from it with one copy.
+
+Which phases an engine offers differs (DuckDB: `build`, `iteration`, `materialize`, no `space`; Nemo: `build`, `materialize`, `space`, no `iteration`), so only like-for-like pairs compare: DuckDB with kermit on `end_to_end`, Nemo with kermit on `build`, `materialize` and `space` (`BENCHMARKING.md`; `kl.engines()`). Per-engine pages are in `docs/engines/`.
+
 ### Space measurement
 
 `kermit/src/measurement.rs` defines a custom Criterion `Measurement` (`SpaceMeasurement`) plus a `BytesFormatter` that picks a binary-prefixed unit (`B`/`KiB`/`MiB`/`GiB`). When `--metrics space` is requested, both `bench ds` and `bench run` route through `Criterion<SpaceMeasurement>` via `iter_custom`, producing `target/criterion/{group}/{dir}/...` JSON alongside the time metrics. The per-DS hook is the `HeapSize` trait (`heap_size_bytes()`); `add_space_bench` takes a slice of built relations and the closure sums their `heap_size_bytes()` once per iter (one relation for `bench ds`; a query's indexes together for `bench run`, one `space` function per query).
 
 ### JSON bench reports
 
-Every `kermit bench` invocation writes a `BenchReport` JSON array to disk. The default path is `bench-runs/{kind}-{unix-millis}.json` (the directory is auto-created and gitignored at the workspace root); pass `--report-json <PATH>` to override. Each report carries `metadata` (label/value pairs mirroring stderr), `axes` (a structured map for tooling: `data_structure`, `algorithm`, `query`, `tuples`, …), and `criterion_groups` pointers resolving to per-function `target/criterion/{group}/{dir}/` artefacts. The schema is versioned by `schema_version` (currently `5`) and lives in `kermit/src/bench_report.rs`; the full key catalogue is documented in `docs/specs/bench-report-schema.md`. Since v5 the join metrics are per query (`build` replaces `insertion` and `copies`; `iteration`, `end_to_end` and `space` follow), the `column_orders` axis is gone, an `index_rows` axis holds the rows the build copied, and each index adds an `index` metadata line (id, relation, filter, column order, rows, bytes).
+Every `kermit bench` invocation writes a `BenchReport` JSON array to disk. The default path is `bench-runs/{kind}-{unix-millis}.json` (the directory is auto-created and gitignored at the workspace root); pass `--report-json <PATH>` to override. Each report carries `metadata` (label/value pairs mirroring stderr), `axes` (a structured map for tooling: `data_structure`, `algorithm`, `query`, `tuples`, …), and `criterion_groups` pointers resolving to per-function `target/criterion/{group}/{dir}/` artefacts. The schema is versioned by `schema_version` (currently `8`) and lives in `kermit/src/bench_report.rs`; the full key catalogue is documented in `docs/specs/bench-report-schema.md`. Since v5 the join metrics are per query (`build` replaces `insertion` and `copies`; `iteration`, `end_to_end` and `space` follow), the `column_orders` axis is gone, an `index_rows` axis holds the rows the build copied, and each index adds an `index` metadata line (id, relation, filter, column order, rows, bytes). Since v8 every report carries `system` (`kermit`, `duckdb`, `nemo`), engine rows add `engine_version` (and `engine_threads` for DuckDB) and omit `data_structure` and `algorithm`, and `materialize` is a further opt-in metric.
 
 ## Analysis (`python/kermit-lab`)
 
@@ -529,6 +541,13 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 3. Register the module and add a variant to the `Optimiser` enum, with `instantiate()` and `axis_value()` arms. The `axis_values_match_clap_value_names` guard test pins axis naming.
 4. **Wire the tests.** A `define_multiway_join_test_suite!` invocation per valid (structure, algorithm) pair, plus unit tests for the ranking itself.
 5. **Write the doc** at `docs/optimisers/<name>.md` from the template.
+
+### New External Engine
+
+1. Create `kermit/src/engine/<name>.rs` behind a new cargo feature `engine-<name>` (never in `default`) and implement `Engine`: the constants, the `Settings` / `Loaded` / `Built` types and the phase methods. The engine reads `Prepared` and answers the full conjunctive query; a SQL engine reuses `engine/sql.rs`.
+2. Add a variant to `EngineSelector` in `kermit/src/options.rs`, with its feature-missing error in `EngineChoices::resolve`, and the arm that builds its `EngineCell<E>` in the sweep (`kermit/src/bench/run.rs`).
+3. **Wire the tests.** Add its cells to `kermit/tests/engine_oracle.rs` and its feature to the `engines` job of `.github/workflows/pr.yml`.
+4. **Write the doc** at `docs/engines/<name>.md` from the template, and add its like-for-like pair, if it has one, to `ENGINE_PAIRS` in `python/kermit-lab/kermit_lab/presets.py`.
 
 ### New Benchmark
 
