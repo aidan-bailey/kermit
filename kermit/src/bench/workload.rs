@@ -370,7 +370,7 @@ mod tests {
 
         assert_eq!(prepared.catalog.names().collect::<Vec<_>>(), ["edge"]);
         assert_eq!(prepared.catalog.tuples("edge").unwrap().len(), 3);
-        assert_eq!(prepared.prepared.len(), 1);
+        assert_eq!(prepared.prepared(TrieLevels::All).len(), 1);
         assert_eq!(prepared.prepared(TrieLevels::All)[0].relations(), ["edge"]);
     }
 

@@ -1015,3 +1015,38 @@ fn hash_trie_sip_keys_collects_without_allocating_per_row() {
         htj_collected_extra::<SipHashStrategy, NoPruning, KeyLevels>(LARGE),
     );
 }
+
+/// An index with no join key (#116): `S` alone, `XS * fan_out` rows. Under
+/// `keys` its trie has no level, one chain that the leaf product streams from
+/// the pre-root; under `all`, the full trie.
+const ZERO_LEVEL_QUERY: &str = "Q(X, Z) :- S(X, Z).";
+
+/// Allocations made by one streamed HashTriejoin join of
+/// [`ZERO_LEVEL_QUERY`] over `HashTrie<Sip, NoPruning, EagerExpansion, L>`.
+fn htj_single_atom_allocations<L: LevelPolicy>(fan_out: usize) -> u64 {
+    join_allocations::<HashTrie<SipHashStrategy, NoPruning, EagerExpansion, L>, HashTriejoin>(
+        ZERO_LEVEL_QUERY,
+        relations(fan_out),
+        XS * fan_out,
+    )
+}
+
+#[test]
+fn hash_trie_keys_zero_level_index_allocates_independently_of_result_size() {
+    htj_single_atom_allocations::<KeyLevels>(SMALL);
+    assert_flat(
+        "HashTrie<Sip, Keys>/HTJ, no join key",
+        htj_single_atom_allocations::<KeyLevels>(SMALL),
+        htj_single_atom_allocations::<KeyLevels>(LARGE),
+    );
+}
+
+#[test]
+fn hash_trie_single_atom_allocates_independently_of_result_size() {
+    htj_single_atom_allocations::<AllLevels>(SMALL);
+    assert_flat(
+        "HashTrie<Sip>/HTJ, one atom",
+        htj_single_atom_allocations::<AllLevels>(SMALL),
+        htj_single_atom_allocations::<AllLevels>(LARGE),
+    );
+}
