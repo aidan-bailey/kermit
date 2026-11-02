@@ -100,7 +100,7 @@ jobs:
     env:
       RUSTFLAGS: -Dwarnings
       RUSTDOCFLAGS: -Dwarnings
-      # The one place the job names its engines; the Nemo engine's feature joins this list.
+      # The one place the job names its engines.
       ENGINE_FEATURES: engine-duckdb-bundled,engine-nemo
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

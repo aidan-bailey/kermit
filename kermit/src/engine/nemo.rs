@@ -18,7 +18,9 @@
 //!   deduplicated trie and `count_rows_in_memory` counts it. Nemo stores its
 //!   result, so one build can be materialised once (`MATERIALIZE_MUTATES`).
 //! - **`space`**: Nemo's own `table_size_bytes` over the spec tables, read
-//!   after loading.
+//!   after loading. It leaves out the dictionary entries that keys above
+//!   `i64::MAX` take: Nemo stores those through its dictionary, and
+//!   `table_size_bytes` counts the tries only.
 //! - **No `stream`**: upstream's streaming join (`evaluate_operation` with
 //!   `RowScan`) is private, and the public `execute_plan` stores its result, so
 //!   `iteration` and `end_to_end` are not offered.
@@ -206,7 +208,9 @@ impl Engine for Nemo {
             tables.push(table);
         }
         // Loading is the one copy of the rows, plus Nemo's sort, deduplication
-        // and trie.
+        // and trie. A load touches nemo's global `TimedCode` only when it
+        // reorders columns (nemo-physical `order.rs`), which the default column
+        // order never does today, so this lock guards against that.
         {
             let _exclusive = exclusive();
             for &table in &tables {
@@ -292,6 +296,10 @@ impl Engine for Nemo {
 impl NemoBuilt {
     /// Where the plan's result is stored, running the plan if it has not run:
     /// `None` for an empty join.
+    ///
+    /// After a failed `execute_plan` the plan has been taken, so a retry
+    /// panics on the `expect` below: a broken invariant, as a second
+    /// `materialize` is.
     fn result(&self) -> Result<Option<PermanentTableId>, EngineError> {
         match self.outcome.get() {
             | Outcome::Table(table) => return Ok(Some(table)),

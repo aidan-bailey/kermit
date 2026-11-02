@@ -420,7 +420,7 @@ mod nemo_cells {
                         want.len() as u64,
                         "{label} in order {order:?}: materialize"
                     );
-                    answered = !want.is_empty();
+                    answered |= !want.is_empty();
                 }
                 total += 1;
                 with_rows += usize::from(answered);
