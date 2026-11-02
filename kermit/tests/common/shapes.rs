@@ -157,10 +157,10 @@ pub fn catalog_at(relations: &Relations, level: StatisticsLevel) -> Catalog {
 /// rows are the same set under set and bag semantics.
 ///
 /// The head rests on one premise: `rewrite_placeholders` is deterministic
-/// (`kermit-algos/src/placeholder_rewrite.rs:31-39` numbers each `_` from one
-/// counter, past the query's highest `K<n>`), so a `_` gets the same `K<n>`
-/// here as in the call `prepare` made, and the names in the executed query's
-/// canonical order are the rewritten body's own.
+/// (`rewrite_placeholders` in `kermit-algos/src/placeholder_rewrite.rs` numbers
+/// each `_` from one counter, past the query's highest `K<n>`), so a `_` gets
+/// the same `K<n>` here as in the call `prepare` made, and the names in the
+/// executed query's canonical order are the rewritten body's own.
 pub fn full_query(query: &JoinQuery, prepared: &Prepared) -> JoinQuery {
     let mut full = rewrite_placeholders(query.clone());
     full.head.terms = canonical_names(prepared.query())

@@ -38,6 +38,8 @@ pub struct Prepared {
     index_rows: Vec<usize>,
     checks: Vec<Access>,
     head_len: usize,
+    /// The executed query's variable count, computed once by `prepare`.
+    assignment_width: usize,
     /// The policy the index specs were planned under (#116).
     levels: TrieLevels,
 }
@@ -74,10 +76,8 @@ impl Prepared {
     /// body-only variables (the fresh `K<n>` of each `_` included). A query of
     /// checks has none.
     ///
-    /// Counted from the executed query on each call rather than stored, so
-    /// [`execute`], which reads a `Prepared` in the timed region, sees no new
-    /// field. Call it once per query, not once per row.
-    pub fn assignment_width(&self) -> usize { canonical_names(&self.query).len() }
+    /// Computed once, in [`prepare`], from the executed query.
+    pub fn assignment_width(&self) -> usize { self.assignment_width }
 
     /// The trie-level policy [`prepare`] planned the index specs under: the
     /// policy of the structure the query is meant to be built as (#116).
@@ -202,6 +202,8 @@ pub fn prepare(
         .map(|spec| spec.view(tuples_of(catalog, &spec.relation)).count())
         .collect();
 
+    let assignment_width = canonical_names(&executed).len();
+
     Ok(Prepared {
         query: executed,
         plan,
@@ -209,6 +211,7 @@ pub fn prepare(
         index_rows,
         checks: access_query.checks,
         head_len: query.head.terms.len(),
+        assignment_width,
         levels,
     })
 }
@@ -423,11 +426,11 @@ where
 /// head: each row is [`assignment_width`](Prepared::assignment_width) values
 /// in the executed query's canonical order (column `i` is
 /// `canonical_names(prepared.query())[i]`, the head's variables first), the
-/// order the executors emit. It slices no
-/// head, and applies [`multiplicity`](Indexes::multiplicity) as `execute`
-/// does: a check that holds nowhere emits nothing, and a query of checks emits
-/// the empty row `multiplicity` times. Nothing is collected here; the
-/// `materialize` metric pushes the rows into a `Tuples`.
+/// order the executors emit. It slices no head, and applies
+/// [`multiplicity`](Indexes::multiplicity) as `execute` does: a check that
+/// holds nowhere emits nothing, and a query of checks emits the empty row
+/// `multiplicity` times. Nothing is collected here; the `materialize` metric
+/// pushes the rows into a `Tuples`.
 ///
 /// # Panics
 ///

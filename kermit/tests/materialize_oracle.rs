@@ -27,9 +27,17 @@ use {
         canonical_names, rewrite_placeholders, HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin,
         Optimiser, Planner, StatisticsLevel,
     },
-    kermit_ds::{Cardinality, ColumnTrie, HashTrie, Relation, TreeTrie, Tuples},
+    kermit_ds::{
+        Cardinality, ColumnTrie, EagerExpansion, HashTrie, KeyLevels, NoPruning, Relation,
+        TreeTrie, Tuples,
+    },
     kermit_iters::SipHashStrategy,
 };
+
+/// A HashTrie levelled by its join keys (#116): the payload after the last
+/// join key stays in the leaf chains, and `prepare` plans it under
+/// `R::TRIE_LEVELS`.
+type HashTrieSipKeys = HashTrie<SipHashStrategy, NoPruning, EagerExpansion, KeyLevels>;
 
 /// Every optimiser, then the reversed canonical order of the rewritten
 /// query's variables, which puts the body-only variables of a `_` or a narrow
@@ -189,6 +197,14 @@ fn column_trie_materializes_the_oracles_assignments() {
 fn hash_trie_materializes_the_oracles_assignments() {
     assert!(
         check_cell::<HashTrie<SipHashStrategy>, HashTriejoin>() > 0,
+        "the random relations hold duplicate rows, which a bag answers twice"
+    );
+}
+
+#[test]
+fn keys_hash_trie_materializes_the_oracles_assignments() {
+    assert!(
+        check_cell::<HashTrieSipKeys, HashTriejoin>() > 0,
         "the random relations hold duplicate rows, which a bag answers twice"
     );
 }
