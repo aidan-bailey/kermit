@@ -1788,3 +1788,255 @@ macro_rules! hash_trie_test_suite {
         }
     };
 }
+
+// ---------------------------------------------------------------------------
+// Keyed-family suite.
+//
+// `HashIndex` implements `KeyedIterable`, a third iterator family beside the
+// sorted tries' and `HashTrie`'s, so it cannot be passed to the suites above.
+// The contract is exact-match: `probe(key)` lends the rows whose first
+// `key_len()` values equal `key`, in source order, whatever else shares their
+// bucket, so these tests state it against a brute-force filter of the rows
+// and never against a structure's internals.
+// ---------------------------------------------------------------------------
+
+/// Keyed-family counterpart of `hash_trie_test_suite!`. Takes the relation
+/// type (a `HashIndex<H>` alias such as `HashIndexSip`). Use a hasher that
+/// maps every value to one hash (see `hash_index_tests.rs`) to make the key
+/// comparison the only thing that separates keys.
+#[macro_export]
+macro_rules! keyed_index_test_suite {
+    ($relation_type:ident) => {
+        paste::paste! {
+            #[cfg(test)]
+            mod [<keyed_ $relation_type:lower>] {
+                use {
+                    super::*,
+                    kermit_ds::{Cardinality, Projectable, Relation, RelationHeader},
+                    kermit_iters::{HasOptimizationAxes, KeyedIterable},
+                };
+
+                /// An index over `rows` of `arity` columns, keyed on the first
+                /// `key_len`.
+                fn build(
+                    arity: usize, key_len: usize, rows: Vec<Vec<usize>>,
+                ) -> $relation_type {
+                    $relation_type::from_tuples(
+                        RelationHeader::new_nameless_positional(arity).with_levels(key_len),
+                        rows,
+                    )
+                }
+
+                /// `probe(key)` as owned rows.
+                fn probed(index: &$relation_type, key: &[usize]) -> Vec<Vec<usize>> {
+                    index.probe(key).map(<[usize]>::to_vec).collect()
+                }
+
+                /// `scan()` as owned rows.
+                fn scanned(index: &$relation_type) -> Vec<Vec<usize>> {
+                    index.scan().map(<[usize]>::to_vec).collect()
+                }
+
+                /// The rows of `rows` that start with `key`, in order: the
+                /// reference every probe is compared with.
+                fn matching(rows: &[Vec<usize>], key: &[usize]) -> Vec<Vec<usize>> {
+                    rows.iter()
+                        .filter(|row| row.starts_with(key))
+                        .cloned()
+                        .collect()
+                }
+
+                #[test]
+                fn probe_lends_exactly_the_rows_of_a_key_in_source_order() {
+                    let rows = vec![
+                        vec![1, 10],
+                        vec![2, 20],
+                        vec![1, 11],
+                        vec![3, 30],
+                        vec![1, 12],
+                        vec![2, 21],
+                    ];
+                    let index = build(2, 1, rows.clone());
+                    assert_eq!(index.key_len(), 1);
+                    assert_eq!(
+                        probed(&index, &[1]),
+                        vec![vec![1, 10], vec![1, 11], vec![1, 12]]
+                    );
+                    assert_eq!(probed(&index, &[2]), vec![vec![2, 20], vec![2, 21]]);
+                    assert_eq!(probed(&index, &[3]), vec![vec![3, 30]]);
+                    // An absent key, and a payload value, find nothing.
+                    assert!(probed(&index, &[4]).is_empty());
+                    assert!(probed(&index, &[10]).is_empty());
+                    for key in 0..6 {
+                        assert_eq!(probed(&index, &[key]), matching(&rows, &[key]), "key {key}");
+                    }
+                }
+
+                #[test]
+                fn a_composite_key_compares_every_key_column() {
+                    let rows = vec![
+                        vec![1, 1, 5],
+                        vec![1, 2, 6],
+                        vec![2, 1, 7],
+                        vec![1, 1, 8],
+                    ];
+                    let index = build(3, 2, rows);
+                    assert_eq!(index.key_len(), 2);
+                    assert_eq!(probed(&index, &[1, 1]), vec![vec![1, 1, 5], vec![1, 1, 8]]);
+                    assert_eq!(probed(&index, &[1, 2]), vec![vec![1, 2, 6]]);
+                    assert_eq!(probed(&index, &[2, 1]), vec![vec![2, 1, 7]]);
+                    assert!(probed(&index, &[2, 2]).is_empty());
+                }
+
+                #[test]
+                fn a_key_of_no_columns_lends_every_row() {
+                    let rows = vec![vec![3, 4], vec![1, 2], vec![3, 4], vec![5, 6]];
+                    let index = build(2, 0, rows.clone());
+                    assert_eq!(index.key_len(), 0);
+                    assert_eq!(probed(&index, &[]), rows);
+                    assert_eq!(probed(&index, &[]), scanned(&index));
+                }
+
+                #[test]
+                fn scan_lends_every_row_in_source_order() {
+                    let rows = vec![vec![3, 4], vec![1, 2], vec![3, 4], vec![5, 6]];
+                    let index = build(2, 1, rows.clone());
+                    assert_eq!(scanned(&index), rows);
+                    assert_eq!(index.tuple_count(), 4);
+                }
+
+                #[test]
+                fn an_empty_index_lends_nothing() {
+                    let keyed = build(2, 1, vec![]);
+                    assert!(scanned(&keyed).is_empty());
+                    assert!(probed(&keyed, &[1]).is_empty());
+                    assert_eq!(keyed.tuple_count(), 0);
+
+                    let unkeyed = build(2, 0, vec![]);
+                    assert!(scanned(&unkeyed).is_empty());
+                    assert!(probed(&unkeyed, &[]).is_empty());
+                }
+
+                /// `KEEPS_DUPLICATES` read through a function, so that the
+                /// assertion is not a constant expression.
+                fn keeps_duplicates() -> bool {
+                    <$relation_type as Relation>::KEEPS_DUPLICATES
+                }
+
+                #[test]
+                fn duplicates_are_kept() {
+                    assert!(keeps_duplicates());
+                    let rows = vec![vec![1, 2], vec![1, 2], vec![1, 3]];
+                    let index = build(2, 2, rows.clone());
+                    assert_eq!(index.tuple_count(), 3);
+                    assert_eq!(scanned(&index), rows);
+                    assert_eq!(probed(&index, &[1, 2]), vec![vec![1, 2], vec![1, 2]]);
+                    let by_first = build(2, 1, rows);
+                    assert_eq!(probed(&by_first, &[1]).len(), 3);
+                }
+
+                /// Seventy inserts pass the directory through every doubling
+                /// from 2 slots to 128; after each, every probe equals a
+                /// filter of the rows inserted so far.
+                #[test]
+                fn insert_keeps_probe_exact_through_every_rehash() {
+                    let mut index = $relation_type::new(
+                        RelationHeader::new_nameless_positional(2).with_levels(1),
+                    );
+                    let mut inserted: Vec<Vec<usize>> = vec![];
+                    for i in 0..70_usize {
+                        let row = vec![i % 5, i];
+                        index.insert(&row);
+                        inserted.push(row);
+                        for key in 0..6_usize {
+                            assert_eq!(
+                                probed(&index, &[key]),
+                                matching(&inserted, &[key]),
+                                "key {key} after {} inserts",
+                                i + 1
+                            );
+                        }
+                        assert_eq!(index.tuple_count(), i + 1);
+                    }
+                    assert_eq!(scanned(&index), inserted);
+                }
+
+                #[test]
+                fn insert_into_an_index_with_no_key_columns() {
+                    let mut index = $relation_type::new(RelationHeader::new_nameless_positional(2));
+                    let mut keyless = $relation_type::new(
+                        RelationHeader::new_nameless_positional(2).with_levels(0),
+                    );
+                    for i in 0..5_usize {
+                        index.insert([i, i + 1]);
+                        keyless.insert([i, i + 1]);
+                    }
+                    let expected: Vec<Vec<usize>> = (0..5).map(|i| vec![i, i + 1]).collect();
+                    assert_eq!(scanned(&keyless), expected);
+                    assert_eq!(probed(&keyless, &[]), expected);
+                    // The same rows keyed on both columns find one row per key.
+                    assert_eq!(probed(&index, &[2, 3]), vec![vec![2, 3]]);
+                }
+
+                #[test]
+                fn insert_all_inserts_every_row() {
+                    let mut index = build(2, 1, vec![vec![9, 9]]);
+                    index.insert_all(vec![vec![1, 2], vec![1, 3], vec![9, 8]]);
+                    assert_eq!(index.tuple_count(), 4);
+                    assert_eq!(probed(&index, &[1]), vec![vec![1, 2], vec![1, 3]]);
+                    assert_eq!(probed(&index, &[9]), vec![vec![9, 9], vec![9, 8]]);
+                }
+
+                #[test]
+                fn project_rebuilds_the_index_keyed_on_every_projected_column() {
+                    let source = build(3, 1, vec![vec![1, 2, 3], vec![1, 4, 5], vec![2, 2, 3]]);
+                    let projected = source.project(vec![2, 0]);
+                    assert_eq!(projected.header().arity(), 2);
+                    assert_eq!(projected.key_len(), 2);
+                    assert_eq!(
+                        scanned(&projected),
+                        vec![vec![3, 1], vec![5, 1], vec![3, 2]]
+                    );
+                    assert_eq!(probed(&projected, &[3, 2]), vec![vec![3, 2]]);
+                    assert!(probed(&projected, &[3, 3]).is_empty());
+                }
+
+                #[test]
+                #[should_panic(expected = "project: a column is out of range for arity 3")]
+                fn project_of_a_column_past_the_arity_panics() {
+                    let source = build(3, 1, vec![vec![1, 2, 3]]);
+                    let _ = source.project(vec![3]);
+                }
+
+                #[test]
+                #[should_panic(expected = "probe: a key of 1 values on an index keyed on 2 columns")]
+                fn probe_with_a_key_of_the_wrong_length_panics() {
+                    let index = build(3, 2, vec![vec![1, 2, 3]]);
+                    let _ = index.probe(&[1]);
+                }
+
+                #[test]
+                #[should_panic(expected = "tuple arity 1 does not match relation arity 2")]
+                fn insert_of_the_wrong_arity_panics() {
+                    let mut index = build(2, 1, vec![]);
+                    index.insert([1]);
+                }
+
+                #[test]
+                #[should_panic(
+                    expected = "from_tuples: tuple arity 2 does not match header arity 3"
+                )]
+                fn build_from_tuples_of_the_wrong_arity_panics() {
+                    let _ = build(3, 1, vec![vec![1, 2]]);
+                }
+
+                #[test]
+                fn the_hasher_is_the_one_layout_axis() {
+                    let axes = build(2, 1, vec![vec![1, 2]]).optimization_axes();
+                    assert_eq!(axes.len(), 1);
+                    assert!(axes.contains_key("ds_layout_hasher"));
+                }
+            }
+        }
+    };
+}
