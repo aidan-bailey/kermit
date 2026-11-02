@@ -57,8 +57,8 @@ them.
 
 ## Acceptance probes
 
-Appended by the story that runs spec Acceptance 3: one table of the engine's single-run times per
-probed query.
+One table per probed query, from `bench probe … --engine … --materialize`: the engine's single-run
+times.
 
 ## See also
 

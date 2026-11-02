@@ -208,10 +208,10 @@ A v8 report adds the `system` axis (`kermit`, `duckdb`, `nemo`) to every report,
 together (no metric changed meaning at v8), and `kermit_lab.analysis.cell_labels(df)` names a
 row's cell for plots (`system`, plus the thread count, for an engine). `kl.engines(df)` draws only
 the like-for-like pairs: DuckDB against kermit on `end_to_end`, Nemo against kermit on `build`,
-`materialize` and `space`. `speedup_table` excludes engine rows. `kl.engines(df)` draws, per pair, only the kermit rows of the
-(benchmark, query) the pair's engine ran, and raises `InsufficientAxesError` when one cell and query
+`materialize` and `space`, and per pair only the kermit rows of the
+(benchmark, query) the pair's engine ran. It raises `InsufficientAxesError` when one cell and query
 hold more than one row (two optimisers, several HashTrie Layouts, two benchmarks sharing a query
-name), so filter the frame first.
+name), so filter the frame first. `speedup_table` excludes engine rows.
 
 The six structure figures (`scaling`, `bar_time`, `bar_space`, `tradeoff`, `dist` and `bar_queries`)
 draw kermit rows only: they name kermit's data structures, and a generic figure never puts an engine

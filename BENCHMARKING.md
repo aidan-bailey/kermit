@@ -433,7 +433,9 @@ cargo run -p kermit --features engine-duckdb,engine-nemo -- bench run triangle -
 This is the thesis's RQ1.4: a **bounded sanity baseline** against an established peer engine, with
 explicit threats to validity, not a head-to-head claim. An engine reads the same `Prepared` query, so
 all of them answer the full conjunctive query, and on duplicate-free inputs every count equals the
-benchmark's `expected` (`--verify` checks it for each cell).
+benchmark's `expected` (`--verify` checks it for each cell). On inputs with duplicate rows DuckDB
+matches `HashTrie` (bag) and not the sorted tries or Nemo (set): `oxford-uniform-s3`'s triangle is
+7433 against 7430.
 
 **The phases differ, so only some pairs compare.** Where an engine does its index work decides which
 phase is the same work as kermit's:
@@ -468,10 +470,11 @@ SNAP's `path3` does not fit in memory. A query whose `materialize` would exceed
 does not stream, so its guard reads `expected` alone; over the limit nothing materialises, and a run
 asked only for `--verify` skips verification for that cell with the same note.
 
-**Threads and variance.** DuckDB runs one thread (`--engine-threads N` for more; every report records
+**Threads and variance.** DuckDB runs one thread (`--engine-threads N` for more; DuckDB's rows record
 `engine_threads`), the parallelism of kermit's joins and serial builds. Probe numbers are single cold
-runs: compare them with other single runs, not with Criterion estimates. `--engine-threads` applies to DuckDB only and is refused without it. Every report records the
-engine's version (`engine_version`) and the allocator; do not mix reports across an engine pin move.
+runs: compare them with other single runs, not with Criterion estimates. `--engine-threads` applies
+to DuckDB only and is refused without it. Every engine row records the engine's version
+(`engine_version`) and every report the allocator; do not mix reports across an engine pin move.
 
 ## Statistical tooling
 

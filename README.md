@@ -120,7 +120,7 @@ kermit bench ds \
   --metrics build iteration space
 ```
 
-`--metrics` defaults to `build iteration space`; the opt-in `end-to-end` metric (with `--queries-per-build <K>`) times one build plus K full-trie iterations per Criterion sample, and the opt-in `materialize` metric times the join collecting every full assignment.
+`--metrics` defaults to `build iteration space`; the opt-in `end-to-end` metric (with `--queries-per-build <K>`) times one build plus K full-trie iterations per Criterion sample. (`bench ds` has no join, so it rejects the `materialize` metric.)
 
 ### Join benchmark (`bench join`)
 

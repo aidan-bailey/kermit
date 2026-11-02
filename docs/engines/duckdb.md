@@ -27,24 +27,28 @@ bounded sanity baseline against an established peer, not a head-to-head claim.
 The shared SQL translator (`kermit/src/engine/sql.rs`) reads the executed query and its specs, whose
 shape `extract_accesses` and `plan_indexes` guarantee: every atom names an index id, has one variable
 per column in index-column order, repeats no variable and holds no constant. Each spec `#k` becomes
-a table `idx_k` followed by a per-build suffix; each atom becomes an alias `a{i}` over its spec's
+a table `idx_k_<build>` (`idx_k` followed by a per-build suffix); each atom becomes an alias `a{i}` over its spec's
 table, with column `c{j}` bound to the atom's `j`-th variable; every variable is selected once, at
 its first binding, in canonical order; every later binding is an equality with the first; an atom
 that shares no variable with the atoms before it joins by `CROSS JOIN`; identifiers are
 double-quoted. For the triangle under the plan `X, Y, Z`, where all three atoms read the merged
-spec `#0`:
+spec `#0` (the suffix `7` is an example build number):
 
 ```sql
 SELECT a0."c0" AS "X", a0."c1" AS "Y", a1."c1" AS "Z"
-FROM "idx_0" AS a0
-JOIN "idx_0" AS a1 ON a1."c0" = a0."c1"
-JOIN "idx_0" AS a2 ON a2."c0" = a0."c0" AND a2."c1" = a1."c1";
+FROM "idx_0_7" AS a0
+JOIN "idx_0_7" AS a1 ON a1."c0" = a0."c1"
+JOIN "idx_0_7" AS a2 ON a2."c0" = a0."c0" AND a2."c1" = a1."c1"
 ```
 
 A spec's build statement selects the spec's columns from the base relation under its `Filter`
 (constants as `c{c} = v`, equalities as `c{a} = c{b}`). For a ternary `r` read as `r(Y, X, c42)`
-under the plan `X, Y`:
-`CREATE TEMP TABLE "idx_0_<n>" AS SELECT "c1", "c0" FROM "rel_r" WHERE "c2" = 42`.
+under the plan `X, Y` (the suffix `5` is an example build number; each column is re-aliased to its
+position in the index):
+
+```sql
+CREATE TEMP TABLE "idx_0_5" AS SELECT "rel_r"."c1" AS "c0", "rel_r"."c0" AS "c1" FROM "rel_r" WHERE "rel_r"."c2" = 42
+```
 
 ## Fairness caveats
 
@@ -61,7 +65,10 @@ under the plan `X, Y`:
   kermit's variable order; DuckDB plans its own join order and does not follow it, so `plan` only
   says which query ran.
 - **Bag semantics.** DuckDB counts duplicate rows, as `HashTrie` does (`KEEPS_DUPLICATES`), so on
-  duplicate-free inputs its count equals kermit's and the benchmark's `expected`.
+  duplicate-free inputs its count equals kermit's and the benchmark's `expected`. On inputs with
+  duplicate rows DuckDB matches `HashTrie` (bag) and not the sorted tries or Nemo (set):
+  `oxford-uniform-s3`'s triangle is 7433 for `HashTrie` and DuckDB against 7430 for `TreeTrie`,
+  `ColumnTrie` and Nemo.
 - **One thread by default** (`PRAGMA threads = 1`), the same parallelism as kermit's joins and serial
   builds. `--engine-threads N` raises it; reports carry `engine_threads`.
 - **Memory.** Every connection sets `memory_limit = '8GB'`, under the sweep's 14 GiB cap (DuckDB's
@@ -117,8 +124,8 @@ To move the pin:
   over the shared query shapes (`kermit/tests/common/shapes.rs`), on bag semantics.
 - Unit tests in `kermit/src/engine/sql.rs` pin the translator's statements.
 - The `engines` job of `.github/workflows/pr.yml` runs both (bundled, since CI has no Nix). The
-  profile's gates build no cargo features, so a story that touches the engine names
-  `--features engine-duckdb` in its own Verify line.
+  profile's gates build no cargo features, so a change to the engine is checked with
+  `--features engine-duckdb`.
 
 ## Acceptance probes (2026-11-02)
 
