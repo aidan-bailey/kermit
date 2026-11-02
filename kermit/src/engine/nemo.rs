@@ -436,8 +436,16 @@ fn join_plan(markers: &PlanMarkers, tables: &[PermanentTableId]) -> (ExecutionPl
 /// A stored value as kermit's `usize` id. `ViewProvider` writes every value as
 /// an unsigned integer, so anything else in a result is a broken invariant.
 fn integer(value: &AnyDataValue) -> Result<usize, EngineError> {
+    // At the pinned revision Nemo's dictionary hands keys above `i64::MAX` back
+    // as an `Other` value of datatype xsd:unsignedLong, which `to_u64` refuses.
+    const UNSIGNED_LONG: &str = "http://www.w3.org/2001/XMLSchema#unsignedLong";
     value
         .to_u64()
+        .or_else(|| {
+            (value.datatype_iri() == UNSIGNED_LONG)
+                .then(|| value.lexical_value().parse::<u64>().ok())
+                .flatten()
+        })
         .and_then(|id| usize::try_from(id).ok())
         .ok_or_else(|| failure(format!("result value {value:?} is not an id")))
 }
@@ -743,6 +751,53 @@ mod tests {
             "Q(X, Y) :- r(X, Y).",
         );
         assert_eq!((count, rows), (2, vec![vec![1, 2], vec![3, 4]]));
+    }
+
+    /// Keys above `i64::MAX` take Nemo's `UnsignedLong` domain, stored through
+    /// its dictionary where small keys are `Int64`. They must load, filter,
+    /// join and come back exactly.
+    #[test]
+    fn keys_above_i64_max_load_filter_join_and_come_back_exactly() {
+        const HIGH: usize = 1 << 63;
+        let relations = || {
+            vec![
+                ("e", 2, vec![
+                    vec![usize::MAX, 1],
+                    vec![HIGH, 2],
+                    vec![5, 3],
+                    vec![HIGH, 4],
+                ]),
+                ("f", 2, vec![vec![usize::MAX, 7], vec![HIGH, 8], vec![6, 9]]),
+            ]
+        };
+        assert_eq!(
+            answer(relations(), "Q(X) :- e(X, c4).").1,
+            vec![vec![HIGH]],
+            "a constant filter on the second column"
+        );
+        assert_eq!(
+            answer(relations(), "Q(Y) :- e(c9223372036854775808, Y).").1,
+            vec![vec![2], vec![4]],
+            "a constant above i64::MAX"
+        );
+        assert_eq!(
+            answer(relations(), &format!("Q(Y) :- e(c{}, Y).", usize::MAX)).1,
+            vec![vec![1]],
+            "usize::MAX as a constant"
+        );
+        assert_eq!(
+            answer(relations(), "Q(K, A, B) :- e(K, A), f(K, B).").1,
+            vec![vec![HIGH, 2, 8], vec![HIGH, 4, 8], vec![usize::MAX, 1, 7]],
+            "a join on the large key"
+        );
+        assert_eq!(
+            answer(relations(), "Q(K, A) :- e(K, A).").1,
+            vec![vec![5, 3], vec![HIGH, 2], vec![HIGH, 4], vec![
+                usize::MAX,
+                1
+            ]],
+            "the keys come back as written"
+        );
     }
 
     /// `space` is Nemo's figure for the loaded spec tables, and grows with
