@@ -266,6 +266,7 @@ mod tests {
             Metric::Iteration,
             Metric::Space,
             Metric::EndToEnd,
+            Metric::Materialize,
         ] {
             assert!(cell.supports(metric), "{metric:?}");
         }

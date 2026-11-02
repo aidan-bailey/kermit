@@ -288,17 +288,17 @@ fn run_benchmark<C: Cell>(
             );
         }
 
-        // The describe step: this query's one build outside Criterion. Every
-        // untimed number in its report is read from it, and `measure`
-        // consumes it before any build is timed.
-        // The cell's preflight counts unless Story 3's guard (bound at the top
-        // of this loop body) has skipped an uncounted `materialize`: it is that
-        // guard's decision, not a second copy of it.
+        // The cell's preflight counts unless the materialize guard (bound at
+        // the top of this loop body) has skipped an uncounted `materialize`: it
+        // is that guard's decision, not a second copy of it.
         cell.preflight(catalog, prepared, guard.counts())?;
         let subject = cell.subject(catalog, prepared)?;
         let subject_axes = cell.subject_axes(&subject);
         let count = guard.counts()
             && ((verify && query_def.expected.is_some()) || single_run || materialize_requested);
+        // The describe step: this query's one build outside Criterion. Every
+        // untimed number in its report is read from it, and `measure`
+        // consumes it before any build is timed.
         let mut described = Described::new(&subject, count);
 
         let mut metadata = vec![
