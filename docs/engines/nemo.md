@@ -109,6 +109,22 @@ To move the pin:
   the join's markers follow kermit's plan order.
 - The `engines` job of `.github/workflows/pr.yml` runs them with `engine-nemo`.
 
+## Acceptance probes (2026-11-02)
+
+`bench probe <benchmark> [-q <query>] -i all -a all --engine duckdb,nemo --materialize` on one query of every benchmark family: three kermit cells and both engines; a probe verifies each cell's count against `expected` where the benchmark has one (watdiv and oxford have none), and the Cells agree column compares the cells' counts. Times are single cold runs in milliseconds: compare them with other single runs, never with Criterion estimates. `-` means the engine does not offer the phase.
+
+| Benchmark | Query | Cells | `answer_rows` | Cells agree | `build` ms | `iteration` ms | `materialize` ms | `space` bytes | `engine_version` |
+|---|---|---|---|---|---|---|---|---|---|
+| triangle | triangle | 5 | 4 | yes | 0.008 | - | 0.016 | 7088 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
+| lubm-reference | q1 | 5 | 4 | yes | 0.177 | - | 0.011 | 21824 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
+| watdiv-stress-100-test-1 | q0001 | 5 | 0 | yes | 27.952 | - | 0.040 | 5591356 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
+| oxford-uniform-s3 | triangle | 5 | 7430, 7433 | NO | 0.963 | - | 1.983 | 225114 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
+| sw-snap-amazon-pre | triangle | 5 | 4002774 | yes | 523.509 | - | 788.528 | 20178890 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
+| sw-h2o-pre | q1 | 5 | 8999658 | yes | 5710.832 | - | 188.578 | 80010840 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
+| sw-job-1-pre | 1a | 5 | 142 | yes | 416.715 | - | 2.413 | 26329844 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
+
+The oxford row disagrees by set against bag semantics, not by a fault: `R` and `S` of `oxford-uniform-s3` each hold one duplicate row (2744 rows, 2743 distinct, counted with DuckDB over the cache), so the bag cells (`HashTrie` and DuckDB) count 7433 and the set cells (`TreeTrie`, `ColumnTrie`, Nemo) 7430. See Fairness caveats, set semantics.
+
 ## See also
 
 - [`duckdb.md`](duckdb.md) and [`TEMPLATE.md`](TEMPLATE.md).

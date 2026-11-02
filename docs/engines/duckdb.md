@@ -120,6 +120,22 @@ To move the pin:
   profile's gates build no cargo features, so a story that touches the engine names
   `--features engine-duckdb` in its own Verify line.
 
+## Acceptance probes (2026-11-02)
+
+`bench probe <benchmark> [-q <query>] -i all -a all --engine duckdb,nemo --materialize` on one query of every benchmark family: three kermit cells and both engines; a probe verifies each cell's count against `expected` where the benchmark has one (watdiv and oxford have none), and the Cells agree column compares the cells' counts. Times are single cold runs in milliseconds: compare them with other single runs, never with Criterion estimates. `-` means the engine does not offer the phase.
+
+| Benchmark | Query | Cells | `answer_rows` | Cells agree | `build` ms | `iteration` ms | `materialize` ms | `space` bytes | `engine_version` |
+|---|---|---|---|---|---|---|---|---|---|
+| triangle | triangle | 5 | 4 | yes | 0.360 | 0.381 | 0.272 | - | v1.4.4 |
+| lubm-reference | q1 | 5 | 4 | yes | 0.632 | 0.185 | 0.139 | - | v1.4.4 |
+| watdiv-stress-100-test-1 | q0001 | 5 | 0 | yes | 6.610 | 0.379 | 0.311 | - | v1.4.4 |
+| oxford-uniform-s3 | triangle | 5 | 7430, 7433 | NO | 0.925 | 1.790 | 2.402 | - | v1.4.4 |
+| sw-snap-amazon-pre | triangle | 5 | 4002774 | yes | 26.908 | 875.905 | 1107.739 | - | v1.4.4 |
+| sw-h2o-pre | q1 | 5 | 8999658 | yes | 152.436 | 59.051 | 464.643 | - | v1.4.4 |
+| sw-job-1-pre | 1a | 5 | 142 | yes | 52.320 | 3.889 | 2.934 | - | v1.4.4 |
+
+The oxford row disagrees by set against bag semantics, not by a fault: `R` and `S` of `oxford-uniform-s3` each hold one duplicate row (2744 rows, 2743 distinct, counted with DuckDB over the cache), so the bag cells (`HashTrie` and DuckDB) count 7433 and the set cells (`TreeTrie`, `ColumnTrie`, Nemo) 7430. See Fairness caveats, bag semantics.
+
 ## See also
 
 - [`nemo.md`](nemo.md) and [`TEMPLATE.md`](TEMPLATE.md).
