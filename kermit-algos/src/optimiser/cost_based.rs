@@ -580,7 +580,9 @@ mod tests {
             &[2, 1],
             "the search's key order, not Cardinality's"
         );
-        assert_eq!(plan.len(), 67);
+        // Then the payload in canonical order: A, then V0 to V63.
+        let payload: Vec<usize> = std::iter::once(0).chain(3..67).collect();
+        assert_eq!(&plan[2..], payload.as_slice());
         assert_eq!(
             &CardinalityOptimiser
                 .plan(&accesses.query, &stats)
@@ -861,7 +863,6 @@ mod tests {
                 "seed {seed}: {text}: planned {:?}, cheapest {:?}",
                 searched.plan, searched.cheapest
             );
-            // The lexicographic plan is the canonical order 0, 1, 2, ...
             // Lexicographic's plan: the join keys, then the payload, each in
             // canonical order (#116).
             let canonical = LexicographicOptimiser.plan(&q, &CatalogStats::default());

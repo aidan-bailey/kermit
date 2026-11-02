@@ -74,8 +74,8 @@ fn verify_and_construct<'t>(
             }
         }
     }
-    // Every variable is carried by some relation, or `enumerate` would have
-    // returned before reaching the leaf, so no slot of `row` is stale.
+    // Every variable is carried by some relation (`join_for_each` returns
+    // before any descent otherwise), so no slot of `row` is stale.
     debug_assert!(bound.iter().all(|&b| b), "unbound variable at the leaf");
     true
 }
@@ -302,6 +302,16 @@ where
             .iter()
             .map(|relation| relation.hash_trie_iter())
             .collect();
+        // A variable no atom carries can take no value, so the query has no
+        // answer (validation rules it out for every query from `kermit::db`).
+        // Checked once here: `enumerate` skips a position no trie has a level
+        // for, which is a payload position, not this one (#116).
+        if variable_ordering
+            .iter()
+            .any(|v| !predicate_variables.iter().any(|vars| vars.contains(v)))
+        {
+            return;
+        }
         // Each relation participates only at its levels' variables (#116).
         let levels: Vec<usize> = relations.iter().map(|relation| relation.levels()).collect();
         let variable_to_iter_map =
@@ -739,5 +749,19 @@ mod tests {
             vec![vec![1, 7], vec![2, 7]]
         );
         assert!(joined(&plan, query, by_name(&[("R", &r), ("S", &empty)])).is_empty());
+    }
+
+    /// A variable no atom carries (only a direct caller can pass one:
+    /// `kermit::db` validation refuses it) gives no rows, as before #116,
+    /// rather than reaching the leaf with an unbound slot.
+    #[test]
+    fn a_variable_no_atom_carries_gives_no_rows() {
+        use kermit_ds::{HashTrie, Relation};
+        let r: HashTrie = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2]]);
+        let query: JoinQuery = "Q(X, Y) :- R(X).".parse().unwrap();
+        let plan = QueryPlan {
+            variable_ordering: vec![0, 1],
+        };
+        assert!(joined(&plan, query, by_name(&[("R", &r)])).is_empty());
     }
 }

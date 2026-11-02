@@ -86,22 +86,25 @@ pub fn analyse(query: &JoinQuery) -> QueryAnalysis {
         predicate_variables.push(vars_for_pred);
     }
 
-    // Pass 4: the join keys, the variables two or more atoms carry.
+    // Pass 4: the join keys, the variables two or more atoms carry (an atom
+    // that carries one twice counts once). It allocates only its result and
+    // copies no list: `analyse` also runs inside every executor's
+    // `join_for_each`, which the `iteration` metric times.
     let num_vars = var_to_index.len();
-    let mut carriers = vec![0usize; num_vars];
-    for vars in &predicate_variables {
-        let mut distinct = vars.clone();
-        distinct.sort_unstable();
-        distinct.dedup();
-        for v in distinct {
-            carriers[v] += 1;
-        }
-    }
+    let join_keys = (0..num_vars)
+        .map(|v| {
+            predicate_variables
+                .iter()
+                .filter(|vars| vars.contains(&v))
+                .count()
+                >= 2
+        })
+        .collect();
 
     QueryAnalysis {
         num_vars,
         predicate_variables,
-        join_keys: carriers.iter().map(|&n| n >= 2).collect(),
+        join_keys,
     }
 }
 

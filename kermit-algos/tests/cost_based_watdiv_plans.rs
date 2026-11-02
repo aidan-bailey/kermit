@@ -27,7 +27,8 @@
 use {
     kermit_algos::{
         analyse, canonical_names, extract_accesses, rewrite_placeholders, AccessQuery,
-        CatalogStats, CostBasedOptimiser, QueryOptimiser, RelationStats, ACCESS_PREFIX,
+        CardinalityOptimiser, CatalogStats, CostBasedOptimiser, QueryOptimiser, RelationStats,
+        ACCESS_PREFIX,
     },
     std::{collections::HashMap, path::Path},
 };
@@ -173,14 +174,30 @@ fn q0085_binds_the_filtered_offer_before_its_product() {
 #[test]
 fn q0034_fits_the_budget() {
     let access_query = accesses(Q0034);
-    assert_eq!(analyse(&access_query.query).num_vars, 12);
+    let analysis = analyse(&access_query.query);
+    assert_eq!(analysis.num_vars, 12);
+    assert_eq!(
+        analysis.join_keys.iter().filter(|&&key| key).count(),
+        3,
+        "V0, V4 and V1"
+    );
     let stats = catalog(&access_query);
-    let unbounded = CostBasedOptimiser {
-        state_budget: usize::MAX,
+    let plan = |state_budget| {
+        CostBasedOptimiser {
+            state_budget,
+        }
+        .plan(&access_query.query, &stats)
     };
+    let unbounded = plan(usize::MAX);
     assert_eq!(
         CostBasedOptimiser::default().plan(&access_query.query, &stats),
-        unbounded.plan(&access_query.query, &stats)
+        unbounded
+    );
+    // The three keys' 7 sets fit a budget of 7; at 6 the search falls back.
+    assert_eq!(plan(7), unbounded);
+    assert_eq!(
+        plan(6),
+        CardinalityOptimiser.plan(&access_query.query, &stats)
     );
 }
 
