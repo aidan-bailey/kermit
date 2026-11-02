@@ -138,20 +138,21 @@ pub fn join_select(prepared: &Prepared, build: u64) -> String {
                 panic!("join_select: `{atom}` holds a term that is not a variable");
             };
             match first.get(name.as_str()) {
-                | Some(&(earlier, source)) => conditions.push(format!(
-                    "a{alias}.{} = a{earlier}.{}",
-                    column(position),
-                    column(source)
-                )),
+                | Some(&(earlier, source)) => {
+                    // An earlier binding in this very atom has `earlier ==
+                    // alias`.
+                    assert!(earlier < alias, "join_select: `{atom}` repeats a variable");
+                    conditions.push(format!(
+                        "a{alias}.{} = a{earlier}.{}",
+                        column(position),
+                        column(source)
+                    ));
+                },
                 | None => {
                     first.insert(name.as_str(), (alias, position));
                 },
             }
         }
-        assert!(
-            alias > 0 || conditions.is_empty(),
-            "join_select: `{atom}` repeats a variable"
-        );
         clauses.push(match (alias, conditions.is_empty()) {
             | (0, _) => format!("FROM {table} AS a0"),
             | (_, true) => format!("CROSS JOIN {table} AS a{alias}"),
@@ -314,6 +315,28 @@ mod tests {
                 r#"SELECT a0."c0" AS "X", a1."c0" AS "Y""#,
                 r#"FROM "idx_0_3" AS a0"#,
                 r#"CROSS JOIN "idx_1_3" AS a1"#,
+            ]
+            .join("\n")
+        );
+    }
+
+    /// The third atom shares a variable with each side of the earlier `CROSS
+    /// JOIN`, so its `ON` clause references both aliases.
+    #[test]
+    fn a_later_atom_joins_both_sides_of_an_earlier_cross_join() {
+        let catalog = catalog(&[("r", 1), ("s", 1), ("t", 2)]);
+        let prepared = prepared(&catalog, "Q(X, Y) :- r(X), s(Y), t(X, Y).");
+        assert_eq!(
+            prepared.query().to_string(),
+            "Q(X, Y) :- #0(X), #1(Y), #2(X, Y)."
+        );
+        assert_eq!(
+            join_select(&prepared, 4),
+            [
+                r#"SELECT a0."c0" AS "X", a1."c0" AS "Y""#,
+                r#"FROM "idx_0_4" AS a0"#,
+                r#"CROSS JOIN "idx_1_4" AS a1"#,
+                r#"JOIN "idx_2_4" AS a2 ON a2."c0" = a0."c0" AND a2."c1" = a1."c0""#,
             ]
             .join("\n")
         );
