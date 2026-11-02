@@ -338,6 +338,7 @@ impl Execution {
         }
     }
 
+    /// The trie-level policy this cell's queries are prepared under
     /// (`kermit::db::prepare`): `All` for the sorted tries, the
     /// `--ds-layout-levels` choice for `HashTrie` (#116), and `ProbeKeys` for
     /// the hash index, whose levels are the probe key of each atom.
