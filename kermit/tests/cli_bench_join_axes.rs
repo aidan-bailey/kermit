@@ -47,6 +47,7 @@ fn cli_bench_join_hash_trie_reports_axes_and_all_default_metrics() {
         "system"
     };
     assert_eq!(axes["allocator"], allocator);
+    assert_eq!(axes["system"], "kermit");
     assert_eq!(axes["ds_layout_hasher"], "fxhash");
     assert_eq!(axes["ds_layout_pruning"], "off");
     assert_eq!(axes["ds_config_load_factor"], 0.5);

@@ -53,6 +53,13 @@ join's per-query setup: the query reaches the join as an ``ExecutedQuery``
 built once, untimed, by ``prepare``, so no timed sample clones the query,
 analyses it, checks its plan or maps its index names."""
 
+SYSTEM_SCHEMA = 8
+"""First schema version whose every row carries a ``system`` axis (``kermit``
+or an external engine's name), and whose engine rows omit
+``data_structure``, ``algorithm`` and every ``ds_*`` axis. No metric changes
+meaning, so it is not in :data:`MEANING_CHANGES`, and v7 and v8 reports load
+together."""
+
 MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (
         STREAMED_JOIN_SCHEMA,

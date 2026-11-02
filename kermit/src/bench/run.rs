@@ -244,11 +244,11 @@ fn run_benchmark<C: Cell>(
     // The queries prepared under this cell's trie levels (#116).
     let prepared_queries = workload.prepared(cell.trie_levels());
 
-    // The cell's label names it in the messages below; its axes
-    // (`data_structure`, `algorithm` and the `ds_*` dimensions, for a kermit
-    // cell) are the base of every query's report axes, and its group segment
-    // completes the Criterion group (the on-disk `target/criterion/{group}`
-    // names embed it).
+    // The cell's label names it in the messages below; its axes (`system`,
+    // and for a kermit cell `data_structure`, `algorithm` and the `ds_*`
+    // dimensions) are the base of every query's report axes, and its group
+    // segment completes the Criterion group (the on-disk
+    // `target/criterion/{group}` names embed it).
     let label = cell.label();
     let cell_axes = cell.axes();
     let group_segment = cell.group_segment();
