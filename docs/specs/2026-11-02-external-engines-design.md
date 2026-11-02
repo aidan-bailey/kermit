@@ -2,7 +2,8 @@
 
 **Date:** 2026-11-02
 **Status:** Design approved in conversation, decision by decision and then section by section
-(2026-11-02).
+(2026-11-02). The premises were then checked (§ Premises), decisions 9–13 followed, and the
+supervised plan's skeleton is `docs/superpowers/plans/2026-11-02-external-engines.md`.
 **Scope:** kermit gains a seam for running other systems' joins on its own workloads, measured by
 its own measure layer:
 - an `Engine` trait in a new `kermit::engine` module;
@@ -95,6 +96,39 @@ All made by the user on 2026-11-02.
    cells (an engine would have to pose as a kermit `Relation`).
 8. **Engine tests run in a separate `engines` CI job.** Rejected: engine tests run locally only.
 
+Decisions 9 to 13 followed the premise check (§ Premises), on 2026-11-02. The user took the
+recommendation on all five:
+
+9. **The flake's toolchain moves to `nightly-2026-11-02` or later, as the first step.**
+   `nemo-physical` at the pinned revision does not compile on the flake's `nightly-2026-10-31`.
+   The error is `E0391` ("cycle detected when computing when `TrieScanFilter` needs async drop"),
+   from a rustc regression on mutually recursive types held across `.await`
+   (rust-lang/rust#165263, closed 2026-11-01). CI's floating nightly already has the fix.
+10. **DuckDB is the `duckdb` crate's `~1.4` line (DuckDB 1.4.x), linked two ways.**
+    - Pinning `~1.4` matches the flake's DuckDB 1.4.4, which computes JOB's `expected`. The newest
+      crate (1.20000.1) is DuckDB 2.0.
+    - `engine-duckdb` links the system `libduckdb`, found through `DUCKDB_LIB_DIR` and
+      `DUCKDB_INCLUDE_DIR`. The flake's dev shell exports both, from Nix's `duckdb.lib` and
+      `duckdb.dev` outputs, so a dev-shell build compiles no C++.
+    - `engine-duckdb-bundled` adds `duckdb/bundled`, which compiles DuckDB's amalgamation, for CI
+      (no Nix).
+    - Sweeps build in the dev shell, so they measure 1.4.4. Every report's `engine_version` records
+      the library that actually ran (`pragma_version()`).
+11. **DuckDB prepares its statement at the end of `build`, not on first use.** This needs no
+    `OnceCell`, which the flow profile marks as a landmine (interior mutability). DuckDB's `build`
+    therefore includes its planning (well under a millisecond on these queries). `iteration` still
+    excludes it, and `end_to_end` includes it once per sample, as before.
+12. **Bounds and limits:**
+    - `--engine-threads` is in `1..=available_parallelism()`, default 1;
+    - `--materialize-max-bytes` is in `1 MiB..=1 TiB`, default 4 GiB;
+    - a value outside its range is a usage error naming the range;
+    - kermit sets no timeout of its own; the sweep harness's per-step timeout and memory cap apply;
+    - no engine calls an outside service at run time, since Nemo is a build-time git dependency;
+    - an engine that fails ends its cell with an error, and nothing is retried.
+13. **The flow profile's gates build no cargo features.** Every engine step's Verify line passes its
+    `--features` explicitly. The owner adds the `engines` CI job's command to the profile's `final`
+    gates.
+
 ## Background: what upstream offers (checked 2026-11-02)
 
 **Nemo** (`knowsys/nemo`: public, Apache-2.0, nightly toolchain, workspace version 0.10.2-dev;
@@ -127,11 +161,25 @@ the command-line tool at v1.4.4, which the JOB generator drives (`kermit-generat
   `kermit/tests` can check them against the nested-loop oracle.
 - **`kermit/src/bench/engine.rs` (binary).** `EngineSubject<E>` (implements `Subject`) and
   `EngineCell<E>` (implements `Cell`, below).
-- **`kermit/Cargo.toml`.** `engine-duckdb = ["dep:duckdb"]` (with `bundled`) and
-  `engine-nemo = ["dep:nemo-physical", "dep:futures"]`. `nemo-physical` is a git dependency at the
-  pinned revision; `futures` provides `executor::block_on`. Neither feature is in `default`.
+- **`kermit/Cargo.toml`:**
+  - `engine-duckdb = ["dep:duckdb"]`, with `duckdb = "~1.4"` and no default features, linking the
+    system `libduckdb` (decision 10);
+  - `engine-duckdb-bundled = ["engine-duckdb", "duckdb/bundled"]` for CI;
+  - `engine-nemo = ["dep:nemo-physical", "dep:futures", "dep:async-trait"]`. `nemo-physical` is a
+    git dependency at `rev = "04f0962b91edc1bbe73e6f65f08d41d1ee491980"`; `futures` provides
+    `executor::block_on`; `async-trait` implements `TableProvider`.
+  
+  None of these is in `default`.
+- **`kermit/build.rs` (new).** Under `engine-duckdb` without `engine-duckdb-bundled`, it emits
+  `cargo:rustc-link-arg=-Wl,-rpath,<DUCKDB_LIB_DIR>`. A dev-shell binary then finds Nix's
+  `libduckdb.so` when run outside the shell, as sweep binaries are. With `DUCKDB_LIB_DIR` unset and
+  no bundling, it fails the build with "engine-duckdb needs DUCKDB_LIB_DIR (the nix dev shell sets
+  it) or the engine-duckdb-bundled feature".
+- **`flake.nix`.** The dev shell exports `DUCKDB_LIB_DIR = "${pkgs.duckdb.lib}/lib"` and
+  `DUCKDB_INCLUDE_DIR = "${pkgs.duckdb.dev}/include"`, and its `rust-overlay` input is locked at a
+  nightly of 2026-11-02 or later (decision 9).
 - **Root `Cargo.toml`.** `[profile.dev.package.libduckdb-sys] opt-level = 3`, beside the existing
-  `tikv-jemalloc-sys` entry, so debug-built tests do not crawl.
+  `tikv-jemalloc-sys` entry, so a bundled debug build's tests do not crawl.
 
 No new crate (minimise new crates). kermit's structures and algorithms are not touched
 (Priority 6).
@@ -150,22 +198,34 @@ pub trait Engine {
     /// Whether `materialize` changes the built state (Nemo stores its result), so that every
     /// timed sample needs a fresh build.
     const MATERIALIZE_MUTATES: bool;
+    /// Whether `space` reports anything (DuckDB: false; it keeps no index).
+    const HAS_SPACE: bool;
 
-    type Settings: Default;        // DuckDB: threads (default 1). Nemo: ().
+    type Settings: Default + Clone + std::fmt::Debug; // DuckDB: threads (default 1). Nemo: ().
     type Loaded;                   // the query's relations inside the engine
-    type Built<'l> where Self: 'l; // what one timed build leaves; borrows `Loaded`
+    type Built<'l> where Self: 'l; // what one timed build leaves; may borrow `Loaded`
 
-    fn version(settings: &Self::Settings) -> String;
+    /// The Criterion group segment and stderr label: "duckdb-t1", "nemo".
+    fn label(settings: &Self::Settings) -> String;
+    /// The `engine_threads` axis: `Some(n)` for DuckDB, `None` for Nemo.
+    fn threads(settings: &Self::Settings) -> Option<usize>;
+    /// The `engine_version` axis, read from the running engine (DuckDB: `pragma_version()`).
+    fn version(loaded: &Self::Loaded) -> String;
     fn supports(prepared: &Prepared) -> Result<(), Unsupported>;
     fn load(settings: &Self::Settings, catalog: &Catalog, prepared: &Prepared)
         -> Result<Self::Loaded, EngineError>;                                       // untimed
-    fn build<'l>(loaded: &'l Self::Loaded, prepared: &Prepared)
+    fn build<'l>(loaded: &'l Self::Loaded, catalog: &Catalog, prepared: &Prepared)
         -> Result<Self::Built<'l>, EngineError>;                                    // `build`
     fn stream(built: &Self::Built<'_>) -> Result<u64, EngineError>;                 // `iteration`
     fn materialize(built: &Self::Built<'_>) -> Result<u64, EngineError>;            // `materialize`
     fn space(built: &Self::Built<'_>) -> Option<usize>;                             // exact `space`
+    /// The full assignments in canonical order, for the oracle tests; never timed. Nemo's result
+    /// columns follow kermit's plan order, so its `rows` permutes them.
+    fn rows(built: &Self::Built<'_>) -> Result<Vec<Vec<usize>>, EngineError>;
 }
 ```
+
+`build` takes the catalog because Nemo's providers stream from `Catalog::shared_tuples`.
 
 **Errors.** Every engine method is fallible, but timed bodies cannot return an error. So
 `EngineCell` runs one fallible preflight per query, untimed and before the describe step: `load`,
@@ -173,10 +233,23 @@ pub trait Engine {
 naming benchmark, query and engine. Timed bodies then `expect`: an error that appears only after a
 clean preflight is a broken invariant, and a panic is acceptable for that (Priority 5).
 
-**All-constant atoms** are handled once, in `EngineSubject`, by the lifecycle's rule. Each check's
-`TupleView::count()` is taken in `build` (timed, as kermit's are). A zero count means no rows.
-Otherwise the counts multiply the result, each clamped to 1 unless `E::KEEPS_DUPLICATES`. A query
-made only of checks never calls the engine. Translators therefore never see checks.
+`EngineError` is a struct, `{ engine: &'static str, message: String }`, with a manual `Display`
+(`"{engine}: {message}"`) and `std::error::Error`, following kermit's library convention.
+`Unsupported` is `{ reason: String }`.
+
+**All-constant atoms** are handled once, by the lifecycle's rule, factored out as
+`kermit::db::check_multiplicity(catalog, prepared, keeps_duplicates) -> usize`. `build_with` calls
+it, and so does `EngineSubject`, with `E::KEEPS_DUPLICATES`, in its timed `build`. A zero count
+means no rows. Otherwise the counts multiply the result, each clamped to 1 unless the
+duplicate-keeping flag is set. A query made only of checks never calls the engine, so translators
+never see checks.
+
+**DuckDB's own limits.** Every connection sets `SET memory_limit = '8GB'`, under the sweep's 14 GiB
+cap. DuckDB's default is 80% of RAM, which this host cannot spare. Each connection also gets
+`SET temp_directory` to a private directory, `<std::env::temp_dir()>/kermit-duckdb-<pid>-<n>`,
+removed when the connection drops. DuckDB deletes every spill file in its temp directory on exit,
+so two connections sharing one would corrupt each other's spills, the hazard the JOB generator
+already guards against.
 
 ### The `Cell` refactor (`kermit/src/bench/run.rs`)
 
@@ -195,8 +268,17 @@ loop needs from a cell:
 cells' prepared queries. Validation, `--verify`, `ReportSink`, group naming, the describe step and
 `measure` stay one copy.
 
-`Subject` gains `materialize(&self, built: &Self::Built) -> Option<Materialized>` (`None` for
-`bench ds`'s `RelationSubject`) and `const MATERIALIZE_MUTATES: bool`.
+`Subject` changes in four ways:
+- `type Built<'s> where Self: 's`, so an engine's built state can borrow the loaded database its
+  subject owns;
+- `const STREAMS: bool`, so the describe step counts a non-streaming subject (Nemo) through
+  `materialize`;
+- `const MATERIALIZE_MUTATES: bool`;
+- `materialize(&self, built: &Self::Built<'_>) -> Option<Materialized>`, which returns `None` for
+  `bench ds`'s `RelationSubject`.
+
+`Materialized` carries the distinct-row count and, for kermit and DuckDB, the sorted `Tuples`.
+Returning the batch means Criterion frees it after the timer stops.
 
 ### Translation
 
@@ -243,12 +325,12 @@ under the plan `X, Y`:
   `c0…`, `UBIGINT`) per relation the query reads, appended from the catalog's `Tuples` through the
   crate's appender.
 - **`build`.** One `CREATE TEMP TABLE` per spec, with a per-build suffix, so the describe set and a
-  timed build can coexist. `Built` holds the connection, its table names and a once-prepared
-  statement. Dropping a `Built` drops its tables, which happens after the timer stops.
-- **`stream`.** The statement, prepared on first use, is streamed as Arrow batches and their
-  `num_rows` summed. First use falls in the preflight, the describe step or Criterion's warm-up,
-  so `iteration` samples never include DuckDB's planning. Each `end_to_end` sample includes it
-  once.
+  timed build can coexist. Then the join statement is prepared, as the last step of the build
+  (decision 11). `Built` holds the connection, its table names and the prepared statement.
+  Dropping a `Built` drops its tables, which happens after the timer stops.
+- **`stream`.** The prepared statement is streamed as Arrow batches and their `num_rows` summed.
+  `iteration` samples therefore never include DuckDB's planning; `build` and each `end_to_end`
+  sample include it once.
 - **`materialize`.** The same statement. Every batch's columns are copied into kermit `Tuples`
   (row-major), then the shared sort and count (below).
 - **`space`:** `None`. DuckDB keeps no index; its hash tables exist only inside a query.
@@ -282,13 +364,19 @@ still borrow through `TupleView`, so nothing they measure changes.
 
 ### The `materialize` metric
 
-- **Surface.** `Metric::Materialize`, `--metrics materialize`. Off by default, like `end-to-end`.
-  Criterion function `materialize`. `bench ds` rejects it, since it has no join.
-- **kermit cells.** A new `kermit::db::execute_assignments`, beside `execute`, lends every variable
-  of the executed query in canonical order, with no head slice and with multiplicity applied as
-  `execute` does. The rows are pushed into a `Tuples` whose arity is the variable count.
-- **Shared sort and count.** `materialize_count(rows: Tuples) -> (Tuples, u64)` runs
-  `Tuples::sort`, then counts adjacent-distinct rows. kermit and DuckDB cells both call it.
+- **Surface.**
+  - `Metric::Materialize`, `--metrics materialize` on `bench run` and `bench join`. Off by default,
+    like `end-to-end`. Criterion function `materialize`.
+  - `bench probe`, which has no `--metrics`, takes a `--materialize` switch that adds a single-run
+    `materialize` value.
+  - `bench ds` rejects the metric with "bench ds has no join, so it cannot measure materialize".
+- **kermit cells.** A new library function `kermit::db::execute_assignments`, beside `execute`,
+  lends every variable of the executed query in canonical order. It slices no head and applies
+  multiplicity as `execute` does. The rows are pushed into a `Tuples` whose arity is
+  `Prepared::assignment_width()`, the variable count.
+- **Shared sort and count.** `kermit::db::materialize_count(rows: Tuples) -> (Tuples, u64)` runs
+  `Tuples::sort`, then counts adjacent-distinct rows. kermit and DuckDB cells both call it, so it
+  lives in the library.
 - **Why full assignments.** Deduplicating head rows would collapse duplicates that the bag
   `expected` counts, so counts could no longer be verified. On full assignments over
   duplicate-free inputs, deduplication removes nothing but pays for the sort, which is the cost
@@ -307,17 +395,30 @@ still borrow through `TupleView`, so nothing they measure changes.
 ## CLI, reports and kermit-lab
 
 **CLI** (`bench run`, `bench join`, `bench probe`):
-- **`--engine duckdb,nemo`** adds engine cells beside the `-i`/`-a` cells. `-i`/`-a` are required
-  only without `--engine`. Naming an engine whose feature was not compiled in is a usage error
-  naming the feature.
-- **`--engine-threads N`** sets DuckDB's thread count (default 1). `--ds-*` flags apply to kermit
-  cells only.
-- **`--materialize-max-bytes B`** sets the guard's limit (default 4 GiB).
+- **`--engine duckdb,nemo`** adds engine cells beside the `-i`/`-a` cells.
+  - On `bench run` and `bench probe`, `-i`/`-a` are required only without `--engine`.
+  - On `bench join` they stay required, because its `QueryArgs` is shared with `kermit join`,
+    which has no `--engine`. Engines there are additive.
+  
+  Naming an engine whose feature was not compiled in is a usage error naming the feature.
+- **`--engine-threads N`** sets DuckDB's thread count: default 1, range
+  `1..=available_parallelism()`, and outside it a usage error naming the range. `--ds-*` flags
+  apply to kermit cells only.
+- **`--materialize-max-bytes B`** sets the guard's limit in bytes: default 4 GiB
+  (4294967296), range 1 MiB to 1 TiB, and outside it a usage error naming the range.
 - **Criterion group** is `{prefix}/{workload}/{query}/{engine segment}`, e.g.
   `run/…/q0007/duckdb-t1`.
   `check_sweep_group_directories`' 64-byte clash check covers engine cells.
 - **`bench probe`:** engine cells get the single-run `build`, `iteration` (streaming engines only),
-  and `materialize` when asked.
+  and, with `--materialize`, `materialize`.
+- **Stderr notes, exactly as tests match them:**
+  - `note: {label} does not stream, so it skips iteration and end-to-end` (Nemo);
+  - `note: {label} reports no space` (DuckDB);
+  - `note: skipping materialize for {benchmark}/{query} on {label}: {bytes} bytes over --materialize-max-bytes {limit}`.
+  
+  `{label}` is `Engine::label`, and kermit cells use `{ds}/{algo}`. A skipped `materialize` also
+  adds a metadata line labelled `materialize` with the value `skipped: {bytes} bytes over {limit}`.
+- **Feature-missing error:** `--engine {name} needs the engine-{name} feature (build with --features engine-{name})`.
 
 **Report schema v7:**
 - `system` on every report (`kermit`, `duckdb`, `nemo`);
@@ -340,16 +441,19 @@ keeps them in step.
 
 ## Testing
 
+- **Shared shapes.** `all_orders.rs`'s private `Shape`, `shapes()`, `random_data` and catalog
+  helpers move to `kermit/tests/common/shapes.rs`. `all_orders.rs` and both oracle tests below use
+  them, so every test reads the same 16 suite patterns plus the constant, repeated-variable,
+  placeholder and all-constant cases.
 - **Engine oracle (`kermit/tests/engine_oracle.rs`, built only with an engine feature).**
-  - Reuses `tests/common/oracle.rs` and `all_orders.rs`'s query shapes: the 16 suite patterns, plus
-    the constant, repeated-variable, placeholder and all-constant cases, over seeded random
-    relations.
+  - Runs the shared shapes over seeded random relations.
   - Per engine: the count (DuckDB `stream`; both engines' `materialize`) and the contents
     (DuckDB's collected rows; Nemo's result rows through `table_row_iterator_inmemory`), sorted,
     against the oracle's sorted full assignments.
   - Contents matter beyond counts: on small fixtures a wrong join condition can still produce the
     right count.
-- **`materialize` on kermit's cells.** The same oracle check for TreeTrie, ColumnTrie and HashTrie.
+- **`materialize` on kermit's cells (`kermit/tests/materialize_oracle.rs`).** The same oracle check
+  for TreeTrie, ColumnTrie and HashTrie, through `execute_assignments` and `materialize_count`.
 - **Translator unit tests.** Golden SQL for representative queries: constants and equalities as
   filters, a self-join with two aliases of one merged spec, a disconnected query (`CROSS JOIN`),
   the full variable list selected. A Nemo plan test that the join's markers follow kermit's plan
@@ -369,26 +473,50 @@ keeps them in step.
   selects only the like-for-like pairs.
 - **CI.**
   - A new `engines` job runs clippy, rustdoc, the unit tests and the oracle with
-    `--features engine-duckdb,engine-nemo`. The existing jobs build without the features and are
-    unchanged.
-  - Sweep binaries are built with both features. Each report's `system` and `engine_version`
-    axes say what ran.
+    `--features engine-duckdb-bundled,engine-nemo`. CI has no Nix, so it compiles DuckDB's
+    amalgamation. The existing jobs build without the features and are unchanged.
+  - In the dev shell, every engine step's Verify line uses
+    `--features engine-duckdb,engine-nemo`, which links Nix's `libduckdb` and compiles no C++
+    (decision 10).
+  - Sweep binaries are built in the dev shell with `engine-duckdb,engine-nemo`. Each report's
+    `system` and `engine_version` axes say what ran.
 
-## Premises to verify first
+## Premises
 
-Check these before steps 3 and 4 of the sequencing. Each one either holds or changes the design
-above.
-1. **DuckDB:** a prepared statement executes without re-planning; Arrow streaming
-   (`stream_arrow`) and the appender (for `UBIGINT`) exist in the version pinned.
-2. **Nemo:** `load_trie_into_memory` and `execute_plan` complete under a plain
-   `futures::executor::block_on`, with no Tokio runtime.
-3. **Nemo:** whether `nemo-physical` uses threads when loading or joining. If it does, record it
-   as `engine_threads`, and limit it if it can be configured.
-4. **Nemo:** an integer `AnyDataValue` constructor takes kermit's ids losslessly (they are below
-   2^63), with no dictionary needed.
-5. **Nemo:** `table_size_bytes` counts the loaded tries, not only the sources.
-6. **Builds:** both dependency trees compile on kermit's nightly toolchain. Duplicate `arrow`
-   versions (DuckDB's against `kermit-ds`'s Parquet stack) cost compile time only.
+Verified on 2026-11-02 by a scratch crate outside the repo.
+- **Setup:** it depends on `nemo-physical` at the pinned revision, `duckdb ~1.4` (linked against
+  Nix's `libduckdb` 1.4.4) and the `kermit` crate itself, so the whole dependency graph resolves
+  together.
+- **Workload:** a triangle over 3,001 directed edges, with ids up to about 2^62, checked against a
+  nested-loop oracle (1,249 walks).
+
+1. **DuckDB: holds.**
+   - The appender writes `UBIGINT`; `query_arrow` returns `UInt64` columns whose rows equal the
+     oracle's; `stream_arrow` works.
+   - The linked library reports `v1.4.4` (the crate is 1.4.5).
+   - A prepared statement reuses its plan: a 10-way chain over one-row tables re-executed in
+     1.26 ms, against 2.06 ms for prepare plus execute (mean of 200).
+   - The 1.26 ms that remains is DuckDB's per-execution cost (executor and pipeline setup), and it
+     belongs in the measurement. On the smallest queries (LUBM's `iteration` is about 6 µs in
+     kermit), DuckDB's numbers will mostly be that fixed cost, and the analysis says so.
+2. **Nemo under `futures::executor::block_on`: holds.** `load_trie_into_memory` (0.40 ms) and
+   `execute_plan` (0.82 ms) complete with no Tokio runtime.
+3. **Nemo's threads: single-threaded.** The process stays at one thread throughout load and
+   execute, and `nemo-physical` contains no threading code. Nemo rows record no `engine_threads`.
+4. **Nemo integers: hold.** `AnyDataValue::new_integer_from_u64` and `DataValue::to_u64` round-trip
+   every id, including the one near 2^62. Nemo's triangle equals the oracle row for row. Its
+   loader deduplicates (3,002 rows in, 3,001 stored), as set semantics requires.
+5. **Nemo's `table_size_bytes`: holds, read after loading.**
+   - Before loading, it returns the source's own `ByteSized` figure (48,032 B, the provider's
+     3,002 × 16).
+   - After loading, the source has been consumed and it returns the trie's figure (35,938 B).
+   - So `space` is read after `build`, as § Nemo specifies. It is Nemo's own accounting, so beside
+     kermit's `HeapSize` it supports a sanity check, not a ratio claim.
+6. **Builds: hold on `nightly-2026-11-02` (rustc `3e92e1a2d`, 2026-11-01), and fail on the flake's
+   `nightly-2026-10-31`** (decision 9).
+   - With Nix's `libduckdb` (no C++), the whole graph builds in 5 min 57 s at two jobs.
+   - Nemo's `reqwest` 0.13 unifies with the 0.13.5 kermit already uses (through `kermit-bench`),
+     and Tokio is already in kermit's graph, so `engine-nemo` adds no second HTTP or TLS stack.
 
 ## Measurement
 
@@ -408,6 +536,9 @@ None in this change. The next sweep (#99) adds the engine cells (DuckDB at one t
 
 ## Sequencing
 
+0. The toolchain: lock the flake's `rust-overlay` at a nightly of 2026-11-02 or later
+   (`nix flake update rust-overlay`), and fix any clippy lint the new nightly raises (decision 9).
+   Also export `DUCKDB_LIB_DIR` and `DUCKDB_INCLUDE_DIR` from the dev shell (decision 10).
 1. `materialize` on kermit's cells: `execute_assignments`, `materialize_count`, `Metric`, the guard,
    `--verify`. It is useful on its own.
 2. The `Cell` refactor of `run_benchmark` (`FamilyCell`; no behaviour change).
@@ -427,8 +558,14 @@ Each step leaves the gate green. Steps 1 and 2 change nothing in an existing rep
 2. `bench run triangle -i all -a all --engine duckdb,nemo --metrics build iteration space
    materialize end-to-end --verify` writes a v7 report with three kermit cells and two engine
    cells. It skips Nemo's `iteration` and `end_to_end` with notes, and every count is verified.
-3. `bench probe --engine duckdb,nemo` with `--verify` passes on one query from every benchmark
-   family (triangle, WatDiv, LUBM, Oxford, SNAP, H2O, JOB).
+3. `bench probe … -i all -a all --engine duckdb,nemo --verify --materialize` passes on one query
+   from every benchmark family. Every cache is read without writing (no `--force`, no `bench gen`).
+   - From the shared cache: `triangle`, `lubm-reference -q q1`, `watdiv-stress-100-test-1 -q q0001`
+     and `oxford-uniform-s3 -q triangle`. The last two declare no `expected`, so their counts are
+     compared across the five cells (the report's `answer_rows`) instead.
+   - From the 2026-10-24 sweep's private cache, with
+     `XDG_CACHE_HOME=/tb/Source/Academia/kermit-bench-runs/full-sweep-2026-10-24/cache`:
+     `sw-snap-amazon-pre -q triangle`, `sw-h2o-pre -q q1`, `sw-job-1-pre -q 1a`.
 4. kermit-lab loads v6 and v7 reports together, and `kl.engines()` renders.
 5. A default `cargo build` compiles neither engine, and the existing CI jobs are unchanged.
 6. The documentation below is written.
@@ -444,4 +581,5 @@ Each step leaves the gate green. Steps 1 and 2 change nothing in an existing rep
   - gotchas: features off by default, full-assignment `materialize`, schema v7, the like-for-like
     pairs.
 - `docs/specs/bench-report-schema.md`: v7.
+- `ARCHITECTURE.md`: `kermit::engine` among the `kermit` crate's modules.
 - `BENCHMARKING.md`: running engines, and which pairs compare.
