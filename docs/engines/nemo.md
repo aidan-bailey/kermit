@@ -111,7 +111,11 @@ To move the pin:
 
 ## Acceptance probes (2026-11-02)
 
-`bench probe <benchmark> [-q <query>] -i all -a all --engine duckdb,nemo --materialize` on one query of every benchmark family: three kermit cells and both engines; a probe verifies each cell's count against `expected` where the benchmark has one (watdiv and oxford have none), and the Cells agree column compares the cells' counts. Times are single cold runs in milliseconds: compare them with other single runs, never with Criterion estimates. `-` means the engine does not offer the phase.
+`bench probe <benchmark> [-q <query>] -i all -a all --engine duckdb,nemo --materialize` on one query
+of every benchmark family: three kermit cells and both engines; a probe verifies each cell's count
+against `expected` where the benchmark has one (watdiv and oxford have none), and the Cells agree
+column compares the cells' counts. Times are single cold runs in milliseconds: compare them with
+other single runs, never with Criterion estimates. `-` means the engine does not offer the phase.
 
 | Benchmark | Query | Cells | `answer_rows` | Cells agree | `build` ms | `iteration` ms | `materialize` ms | `space` bytes | `engine_version` |
 |---|---|---|---|---|---|---|---|---|---|
@@ -123,7 +127,10 @@ To move the pin:
 | sw-h2o-pre | q1 | 5 | 8999658 | yes | 5710.832 | - | 188.578 | 80010840 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
 | sw-job-1-pre | 1a | 5 | 142 | yes | 416.715 | - | 2.413 | 26329844 | nemo-physical 0.10.2-dev @ 04f0962b91ed |
 
-The oxford row disagrees by set against bag semantics, not by a fault: `R` and `S` of `oxford-uniform-s3` each hold one duplicate row (2744 rows, 2743 distinct, counted with DuckDB over the cache), so the bag cells (`HashTrie` and DuckDB) count 7433 and the set cells (`TreeTrie`, `ColumnTrie`, Nemo) 7430. See Fairness caveats, set semantics.
+The oxford row disagrees by set against bag semantics, not by a fault: `R` and `S` of
+`oxford-uniform-s3` each hold one duplicate row (2744 rows, 2743 distinct, counted with DuckDB over
+the cache), so the bag cells (`HashTrie` and DuckDB) count 7433 and the set cells (`TreeTrie`,
+`ColumnTrie`, Nemo) 7430. See Fairness caveats, set semantics.
 
 ## See also
 
