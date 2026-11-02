@@ -6,7 +6,7 @@
 //! [`seek`](kermit_iters::LinearIterator::seek) is least-upper-bound and
 //! therefore requires sorted data. Nothing in this directory refers to
 //! anything in [`crate::hash`], and nothing there refers back — the two
-//! families are disjoint by construction (see "Two Iterator Families" in
+//! families are disjoint by construction (see "Three Iterator Families" in
 //! `ARCHITECTURE.md`).
 //!
 //! A family directory holds one module per algorithm ([`leapfrog_join`],

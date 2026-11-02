@@ -3,7 +3,8 @@
 //! Re-exports a curated subset of algorithm and data-structure types from
 //! [`kermit_algos`] and [`kermit_ds`], plus the [`db`] module's join entry
 //! points (`lftj_join` and `hash_join`) and the [`compute_join`] helper for
-//! running joins from raw tuple inputs.
+//! running joins from raw tuple inputs. A third entry point,
+//! [`db::binary_join`], runs the keyed family's binary hash join.
 
 #![deny(missing_docs)]
 
@@ -33,8 +34,9 @@ use {
 /// `rel_variables` mappings (variable `v` is written `V{v}`, and input `i` is
 /// the relation `R{i}`), loads the batches into a [`db::Catalog`], and runs
 /// [`db::prepare`], [`db::build`] and [`db::execute`] through the one body
-/// [`db::lftj_join`] and [`db::hash_join`] share, with `R` as the index
-/// structure and `JA` as the algorithm. The query is therefore validated first,
+/// [`db::lftj_join`], [`db::hash_join`] and [`db::binary_join`] share, with
+/// `R` as the index structure and `JA` as the algorithm. The query is
+/// therefore validated first,
 /// a variable repeated within one `rel_variables` entry selects the rows whose
 /// columns agree, and each result row holds the `variables`, in that order:
 /// a variable only the body binds is not part of it.
