@@ -10,8 +10,9 @@
 //! every order of its variables, forced by `FixedOrder`, through
 //! `kermit::db::{prepare, build, execute}` directly, on one alias per
 //! structure: `TreeTrie` and `ColumnTrie` under `LeapfrogTriejoin`,
-//! `HashTrie` under `HashTriejoin`. Rows are compared with the
-//! nested-loop oracle, which shares nothing with the executors.
+//! `HashTrie` under `HashTriejoin`, and `HashIndex` under
+//! `BinaryHashJoin`. Rows are compared with the nested-loop oracle, which
+//! shares nothing with the executors.
 
 mod common;
 
@@ -23,13 +24,13 @@ use {
     },
     kermit::db::{build, execute, prepare, Catalog},
     kermit_algos::{
-        analyse, canonical_names, rewrite_placeholders, CatalogStats, CostBasedOptimiser,
-        HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin, Optimiser, Planner, QueryOptimiser,
-        StatisticsLevel,
+        analyse, canonical_names, rewrite_placeholders, BinaryHashJoin, CatalogStats,
+        CostBasedOptimiser, HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin, Optimiser,
+        Planner, QueryOptimiser, StatisticsLevel,
     },
     kermit_ds::{
-        Cardinality, ColumnTrie, EagerExpansion, HashTrie, KeyLevels, LazyExpansion, NoPruning,
-        Relation, RelationHeader, SingletonPruning, TreeTrie, Tuples,
+        Cardinality, ColumnTrie, EagerExpansion, HashIndex, HashTrie, KeyLevels, LazyExpansion,
+        NoPruning, Relation, RelationHeader, SingletonPruning, TreeTrie, Tuples,
     },
     kermit_iters::SipHashStrategy,
 };
@@ -39,6 +40,10 @@ type HashTrieSipLazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
 /// Join-key levels (#116): every order runs, so the orders that put payload
 /// before a join key exercise rule (iii) and the skipped positions.
 type HashTrieSipKeys = HashTrie<SipHashStrategy, NoPruning, EagerExpansion, KeyLevels>;
+/// The keyed family (`ProbeKeys`): every order is a variable order for the
+/// binary join, whose rule turns it into a join order and keys, including
+/// the orders that force a cross product or an atom's probe on every column.
+type HashIndexSip = HashIndex<SipHashStrategy>;
 
 fn names(list: &[&str]) -> Vec<String> { list.iter().map(|s| (*s).to_string()).collect() }
 
@@ -253,6 +258,9 @@ fn catalog_at(relations: &Relations, level: StatisticsLevel) -> Catalog {
 /// in `order`: `prepare`, `build`, `execute`. Asserts that the prepared
 /// plan binds the forced variables first, so a planner that stopped
 /// honouring `order` fails here instead of running one order many times.
+/// Under `ProbeKeys` the prepared plan is V′, the binary join's variable
+/// order, which lists each joined atom's key variables before its new ones,
+/// so only the first forced variable is certain to lead.
 fn rows_in_order<R: Relation, JA: JoinAlgo<R>>(
     catalog: &Catalog, label: &str, query: &JoinQuery, order: &[String],
 ) -> Vec<Vec<usize>> {
@@ -266,9 +274,14 @@ fn rows_in_order<R: Relation, JA: JoinAlgo<R>>(
         .iter()
         .map(|&variable| names[variable].clone())
         .collect();
+    let forced = if R::TRIE_LEVELS == kermit_ds::TrieLevels::ProbeKeys {
+        &order[..order.len().min(1)]
+    } else {
+        order
+    };
     assert_eq!(
-        &bound[..order.len()],
-        order,
+        &bound[..forced.len()],
+        forced,
         "{label}: the plan does not bind the forced variables first"
     );
     let indexes = build::<R>(catalog, &prepared);
@@ -531,6 +544,19 @@ fn keys_hash_trie_shapes_under_every_order() { run_shapes::<HashTrieSipKeys, Has
 fn keys_hash_trie_pinned_queries_under_every_order() {
     run_pinned::<HashTrieSipKeys, HashTriejoin>();
 }
+
+/// The duplicated constant atom multiplies on the keyed family, which keeps
+/// duplicates like `HashTrie`.
+#[test]
+fn hash_index_duplicated_constant_atom_under_every_order() {
+    run_duplicated_constant_atom::<HashIndexSip, BinaryHashJoin>(3);
+}
+
+#[test]
+fn hash_index_shapes_under_every_order() { run_shapes::<HashIndexSip, BinaryHashJoin>(); }
+
+#[test]
+fn hash_index_pinned_queries_under_every_order() { run_pinned::<HashIndexSip, BinaryHashJoin>(); }
 
 /// The forced order reaches the index: `r0(X, Y)` read `X` then `Y` is
 /// built over columns `[0, 1]`, and read `Y` then `X` over `[1, 0]`.
