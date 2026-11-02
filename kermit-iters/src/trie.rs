@@ -1,6 +1,9 @@
 //! This module defines the `TrieIterator` trait.
 
-use crate::{joinable::JoinIterable, linear::LinearIterator};
+use {
+    crate::{joinable::JoinIterable, linear::LinearIterator},
+    std::iter::FusedIterator,
+};
 
 /// The `TrieIterator` trait, designed for iterators that traverse a trie-based
 /// structure.
@@ -62,7 +65,8 @@ pub trait TrieIterable: JoinIterable {
 /// path as a `Vec<usize>`. An internal `stack` tracks the keys along the
 /// current path. When `expected_arity` is set, tuples shorter than that
 /// length are skipped (useful for joins that produce partial paths at
-/// intermediate depths).
+/// intermediate depths). The wrapper is fused: once the walk has ended,
+/// every later call returns `None`.
 pub struct TrieIteratorWrapper<IT>
 where
     IT: TrieIterator,
@@ -70,6 +74,10 @@ where
     iter: IT,
     stack: Vec<usize>,
     expected_arity: Option<usize>,
+    /// Set when the walk ends. An exhausted iterator is back at its root,
+    /// where it looks like a fresh one, so this is what keeps a later call
+    /// from opening the root and walking the trie again.
+    exhausted: bool,
 }
 
 impl<IT> TrieIteratorWrapper<IT>
@@ -83,6 +91,7 @@ where
             iter,
             stack: vec![],
             expected_arity: None,
+            exhausted: false,
         }
     }
 
@@ -93,6 +102,7 @@ where
             iter,
             stack: vec![],
             expected_arity: Some(arity),
+            exhausted: false,
         }
     }
 
@@ -139,23 +149,29 @@ where
     /// Moves through the trie in depth-first order. Backtracks via
     /// `up`/`next_sibling` when a leaf is reached, then descends again via
     /// `down` until the next leaf. Returns `None` when the entire trie has
-    /// been exhausted.
+    /// been exhausted, and on every call after that.
     pub fn advance(&mut self) -> Option<&[usize]> {
         loop {
             // Phase 1: Backtrack — advance to the next sibling, moving up
-            // through ancestors until one has a remaining sibling.
+            // through ancestors until one has a remaining sibling. An empty
+            // stack means the walk has not started, or has ended: both
+            // `None` returns below leave the stack empty.
             if !self.stack.is_empty() {
                 while !self.next_sibling() {
                     if !self.up() {
+                        self.exhausted = true;
                         return None;
                     }
                 }
+            } else if self.exhausted {
+                return None;
             }
 
             // Phase 2: Descend — greedily open children until a leaf.
             while self.down() {}
 
             if self.stack.is_empty() {
+                self.exhausted = true;
                 return None;
             }
 
@@ -180,6 +196,10 @@ where
 
     fn next(&mut self) -> Option<Self::Item> { self.advance().map(<[usize]>::to_vec) }
 }
+
+/// [`advance`](TrieIteratorWrapper::advance) keeps returning `None` once the
+/// walk has ended.
+impl<IT> FusedIterator for TrieIteratorWrapper<IT> where IT: TrieIterator {}
 
 #[cfg(test)]
 mod tests {
@@ -471,6 +491,76 @@ mod tests {
         let iter = MockTrieIter::new(&trie);
         let mut wrapper = TrieIteratorWrapper::new(iter);
         assert_eq!(wrapper.next(), Some(vec![1]));
+        assert_eq!(wrapper.next(), None);
+    }
+
+    /// Once the walk has ended, every later call ends it again. An exhausted
+    /// trie iterator is back at its root, where it looks fresh, so a wrapper
+    /// that only reads it would reopen the root and walk the trie again.
+    #[test]
+    fn stays_exhausted_after_returning_none() {
+        let trie = MockTrie {
+            roots: vec![node(1, vec![leaf(2), leaf(3)]), leaf(4)],
+        };
+        let mut wrapper = TrieIteratorWrapper::with_arity(MockTrieIter::new(&trie), 2);
+        assert_eq!(wrapper.by_ref().count(), 2);
+        assert_eq!(wrapper.next(), None);
+        assert_eq!(wrapper.advance(), None);
+    }
+
+    /// The guarantee is declared, so generic code can rely on it and `fuse()`
+    /// adds nothing.
+    #[test]
+    fn declares_fused_iterator() {
+        fn fused<I: std::iter::FusedIterator>(_: &I) {}
+        let trie = MockTrie {
+            roots: vec![leaf(1)],
+        };
+        fused(&TrieIteratorWrapper::new(MockTrieIter::new(&trie)));
+    }
+
+    /// Refuses its first `open`, then behaves as the trie it wraps: an
+    /// iterator whose root opens on a second try.
+    struct RefusesFirstOpen<'a> {
+        inner: MockTrieIter<'a>,
+        refused: bool,
+    }
+
+    impl LinearIterator for RefusesFirstOpen<'_> {
+        fn key(&self) -> Option<usize> { self.inner.key() }
+
+        fn next(&mut self) -> Option<usize> { self.inner.next() }
+
+        fn seek(&mut self, seek_key: usize) -> bool { self.inner.seek(seek_key) }
+
+        fn at_end(&self) -> bool { self.inner.at_end() }
+    }
+
+    impl TrieIterator for RefusesFirstOpen<'_> {
+        fn open(&mut self) -> bool {
+            if !self.refused {
+                self.refused = true;
+                return false;
+            }
+            self.inner.open()
+        }
+
+        fn up(&mut self) -> bool { self.inner.up() }
+    }
+
+    /// A walk that ends at once, because the root would not open, stays
+    /// ended even if the root would open now: `FusedIterator` holds for any
+    /// trie iterator, not only for one that refuses the same way each time.
+    #[test]
+    fn stays_exhausted_when_the_root_would_open_later() {
+        let trie = MockTrie {
+            roots: vec![leaf(1)],
+        };
+        let mut wrapper = TrieIteratorWrapper::new(RefusesFirstOpen {
+            inner: MockTrieIter::new(&trie),
+            refused: false,
+        });
+        assert_eq!(wrapper.next(), None);
         assert_eq!(wrapper.next(), None);
     }
 }
