@@ -35,6 +35,7 @@ use {
         expansion::{ExpansionPolicy, PendingChild},
         hash_table::{home_bucket, HashTable},
         implementation::HashTrie,
+        levels::LevelPolicy,
         node::HashTrieNode,
         pruning::{PruningPolicy, SingletonPayload},
     },
@@ -61,8 +62,8 @@ impl<'t> Rows<'t> {
     }
 
     /// `trie`'s buffer and links.
-    pub(super) fn of<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-        trie: &'t HashTrie<H, P, E>,
+    pub(super) fn of<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>(
+        trie: &'t HashTrie<H, P, E, L>,
     ) -> Self {
         Self::new(trie.tuples(), trie.links())
     }
@@ -146,10 +147,40 @@ pub(super) fn assert_same_node<P: PruningPolicy, E: ExpansionPolicy>(
     }
 }
 
+/// The two tries' roots: both tables, compared by `tables`, or both a trie
+/// with no level, whose one chain each holds the same rows in the same
+/// order (#116).
+fn assert_same_root<
+    H: HashStrategy,
+    P: PruningPolicy,
+    E: ExpansionPolicy,
+    L1: LevelPolicy,
+    L2: LevelPolicy,
+>(
+    a: &HashTrie<H, P, E, L1>, b: &HashTrie<H, P, E, L2>, label: &str,
+    tables: impl FnOnce(&HashTrieNode<P, E>, &HashTrieNode<P, E>),
+) {
+    match (a.root_table(), b.root_table()) {
+        | (Some(x), Some(y)) => tables(x, y),
+        | (None, None) => assert_eq!(
+            a.root_rows().map(|rows| rows.to_vecs()),
+            b.root_rows().map(|rows| rows.to_vecs()),
+            "{label}: the rows of a trie with no level"
+        ),
+        | _ => panic!("{label}: one trie has levels and the other none"),
+    }
+}
+
 /// The premise of every id comparison: the two tries own equal buffers,
 /// row for row and at the same capacity.
-fn assert_same_buffer<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
+fn assert_same_buffer<
+    H: HashStrategy,
+    P: PruningPolicy,
+    E: ExpansionPolicy,
+    L1: LevelPolicy,
+    L2: LevelPolicy,
+>(
+    a: &HashTrie<H, P, E, L1>, b: &HashTrie<H, P, E, L2>, label: &str,
 ) {
     assert_eq!(a.tuples(), b.tuples(), "{label}: buffer");
     assert_eq!(
@@ -164,12 +195,20 @@ fn assert_same_buffer<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
 /// chain, singleton and pending chain, the heap size and the tuple count.
 /// The links are compared before any node, so a build that threads a row
 /// differently fails at `: links`.
-pub(super) fn assert_same_trie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
+pub(super) fn assert_same_trie<
+    H: HashStrategy,
+    P: PruningPolicy,
+    E: ExpansionPolicy,
+    L1: LevelPolicy,
+    L2: LevelPolicy,
+>(
+    a: &HashTrie<H, P, E, L1>, b: &HashTrie<H, P, E, L2>, label: &str,
 ) {
     assert_same_buffer(a, b, label);
     assert_eq!(a.links().to_vec(), b.links().to_vec(), "{label}: links");
-    assert_same_node(a.links(), a.root(), b.links(), b.root(), label);
+    assert_same_root(a, b, label, |x, y| {
+        assert_same_node(a.links(), x, b.links(), y, label);
+    });
     assert_eq!(
         a.heap_size_bytes(),
         b.heap_size_bytes(),
@@ -242,10 +281,18 @@ fn assert_same_buffer_contents(a: &Tuples, b: &Tuples, label: &str) {
 /// - and the heap size and tuple count.
 ///
 /// The walk runs first, so a row that differs is reported where it sits.
-pub(super) fn assert_same_contents<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
+pub(super) fn assert_same_contents<
+    H: HashStrategy,
+    P: PruningPolicy,
+    E: ExpansionPolicy,
+    L1: LevelPolicy,
+    L2: LevelPolicy,
+>(
+    a: &HashTrie<H, P, E, L1>, b: &HashTrie<H, P, E, L2>, label: &str,
 ) {
-    assert_same_node_contents(Rows::of(a), a.root(), Rows::of(b), b.root(), label);
+    assert_same_root(a, b, label, |x, y| {
+        assert_same_node_contents(Rows::of(a), x, Rows::of(b), y, label);
+    });
     assert_same_buffer_contents(a.tuples(), b.tuples(), label);
     assert_eq!(
         a.heap_size_bytes(),
@@ -437,11 +484,19 @@ fn assert_equivalent_table<V>(
 /// `presized:N`'s rule for whole tries: [`assert_equivalent_root`]'s root
 /// rule with every child compared by contents, buffers holding the same
 /// rows at the same capacity, and the same heap size and tuple count.
-pub(super) fn assert_equivalent_trie<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    a: &HashTrie<H, P, E>, b: &HashTrie<H, P, E>, label: &str,
+pub(super) fn assert_equivalent_trie<
+    H: HashStrategy,
+    P: PruningPolicy,
+    E: ExpansionPolicy,
+    L1: LevelPolicy,
+    L2: LevelPolicy,
+>(
+    a: &HashTrie<H, P, E, L1>, b: &HashTrie<H, P, E, L2>, label: &str,
 ) {
     assert_same_buffer_contents(a.tuples(), b.tuples(), label);
-    assert_equivalent_root_contents(Rows::of(a), a.root(), Rows::of(b), b.root(), label);
+    assert_same_root(a, b, label, |x, y| {
+        assert_equivalent_root_contents(Rows::of(a), x, Rows::of(b), y, label);
+    });
     assert_eq!(
         a.heap_size_bytes(),
         b.heap_size_bytes(),

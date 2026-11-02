@@ -58,7 +58,8 @@ pub trait HashTrieIterator {
     fn at_end(&self) -> bool;
 
     /// Descend into the child node at the current bucket. Returns `false`
-    /// if already at the leaf level or if the current bucket is empty.
+    /// if already at the last level (at the pre-root, for a trie with no
+    /// level) or if the current bucket is empty.
     fn open(&mut self) -> bool;
 
     /// Ascend to the parent node. Returns `false` at the root.
@@ -68,7 +69,10 @@ pub trait HashTrieIterator {
     /// chain's rows, in chain order, over the tuple buffer that holds them,
     /// named by a list of their ids or reached along their links
     /// ([`ChainLinks`](crate::ChainLinks)). Returns `Some` iff the current
-    /// node is a leaf and the current bucket is occupied; otherwise `None`.
+    /// node is the last level and the current bucket is occupied, or the
+    /// iterator stands at the pre-root of a trie with no level
+    /// ([`HashTrieIterable::levels`] is 0), where it lends the whole chain,
+    /// possibly empty; otherwise `None`.
     /// The view borrows the iterator, so reading a chain copies and
     /// allocates nothing.
     fn leaf_tuples(&self) -> Option<LeafRows<'_>>;
@@ -85,4 +89,11 @@ pub trait HashTrieIterator {
 pub trait HashTrieIterable: JoinIterable {
     /// Returns a `HashTrieIterator` over this structure.
     fn hash_trie_iter(&self) -> impl HashTrieIterator;
+
+    /// How many leading columns this structure's trie has levels for: all of
+    /// them, or, for an index planned under
+    /// [`TrieLevels::JoinKeys`](crate::TrieLevels), those up to its last join
+    /// key (#116). A join descends a relation only at the variables of these
+    /// columns; the rest are read from its leaf rows.
+    fn levels(&self) -> usize;
 }

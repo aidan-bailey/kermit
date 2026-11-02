@@ -62,6 +62,7 @@ use {
         expansion::{ExpansionPolicy, PendingChild},
         hash_table::HashTable,
         implementation::HashTrie,
+        levels::LevelPolicy,
         node::HashTrieNode,
         pruning::{PruningPolicy, SingletonPayload},
     },
@@ -75,16 +76,16 @@ use {
 /// `RowId::MAX` rows.
 pub(super) fn all_rows(tuples: &Tuples) -> std::ops::Range<RowId> { 0..row_id(tuples.len()) }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> HashTrie<H, P, E, L> {
     /// Algorithm 2: the table at `depth` over the rows of `tuples` that
     /// `list` names, allocated at `2^log2_capacity` buckets, its lists
     /// threaded through `links`.
     pub(super) fn build(
-        tuples: &Tuples, links: &ChainLinks, depth: usize, arity: usize,
+        tuples: &Tuples, links: &ChainLinks, depth: usize, levels: usize,
         list: impl IntoIterator<Item = RowId>, log2_capacity: u32, config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
         let lists = Self::group(tuples, links, depth, list, log2_capacity, config);
-        Self::build_nested(tuples, links, depth, arity, lists, config)
+        Self::build_nested(tuples, links, depth, levels, lists, config)
     }
 
     /// Lines 3–7: a table of `2^log2_capacity` buckets holding `list`'s
@@ -109,19 +110,21 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     }
 
     /// Lines 8–15: each bucket's chain replaced by the node built from it,
-    /// in bucket order (line 9). At the last attribute each chain is stored
-    /// itself (line 15), so the table of chains is the leaf.
+    /// in bucket order (line 9). At the last level (`levels`: the last
+    /// attribute under `AllLevels`, the last join key under `KeyLevels`, #116)
+    /// each chain is stored itself (line 15), so the table of chains is the
+    /// leaf, and its rows are whole tuples.
     pub(super) fn build_nested(
-        tuples: &Tuples, links: &ChainLinks, depth: usize, arity: usize, lists: HashTable<Chain>,
+        tuples: &Tuples, links: &ChainLinks, depth: usize, levels: usize, lists: HashTable<Chain>,
         config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
-        // `>=`, as `make_root_sized`'s `arity <= 1`, so the unsupported nullary
-        // root is a leaf under both builds.
-        if depth + 1 >= arity {
+        // `>=`, as `make_root_sized`'s `levels <= 1`, so the unsupported
+        // nullary root is a leaf under both builds.
+        if depth + 1 >= levels {
             return HashTrieNode::Leaf(lists);
         }
         HashTrieNode::Inner(
-            lists.map(|chain| Self::child(tuples, links, depth + 1, arity, chain, config)),
+            lists.map(|chain| Self::child(tuples, links, depth + 1, levels, chain, config)),
         )
     }
 
@@ -135,7 +138,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// A one-row chain was started, not pushed onto, so a `Singleton`'s row
     /// holds `NIL`, as `insert_at` leaves it.
     pub(super) fn child(
-        tuples: &Tuples, links: &ChainLinks, depth: usize, arity: usize, chain: Chain,
+        tuples: &Tuples, links: &ChainLinks, depth: usize, levels: usize, chain: Chain,
         config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
         if P::ENABLED && chain.len() == 1 {
@@ -144,7 +147,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         if E::LAZY {
             return HashTrieNode::Unexpanded(E::Pending::from_chain(chain));
         }
-        Self::build_child_table(tuples, links, depth, arity, chain, config)
+        Self::build_child_table(tuples, links, depth, levels, chain, config)
     }
 
     /// The table a bucket's `chain` becomes at `depth` when it is built
@@ -154,7 +157,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// child expanded from a chain is the eager child built from that chain,
     /// size and links included.
     pub(super) fn build_child_table(
-        tuples: &Tuples, links: &ChainLinks, depth: usize, arity: usize, chain: Chain,
+        tuples: &Tuples, links: &ChainLinks, depth: usize, levels: usize, chain: Chain,
         config: HashTrieConfig,
     ) -> HashTrieNode<P, E> {
         let log2_capacity = config.child_log2_capacity(chain.len());
@@ -162,7 +165,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             tuples,
             links,
             depth,
-            arity,
+            levels,
             chain.walk(links),
             log2_capacity,
             config,

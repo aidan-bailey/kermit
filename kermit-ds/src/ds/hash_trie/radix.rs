@@ -62,10 +62,10 @@ pub(super) type Arrival<V> = (RowId, u64, V);
 
 /// One partition's root entries, each tagged with the source row id at
 /// which its key first appeared, in that order. The root is `Inner` for
-/// arity ≥ 2, so its values are child nodes (subtries, or under pruning and
-/// lazy expansion their `Singleton`s and pending chains), and `Leaf` for
-/// arity 1, so its values are chains. Either way every id in them names a
-/// row of the copy, so they move into the real root as they are.
+/// two or more levels, so its values are child nodes (subtries, or under
+/// pruning and lazy expansion their `Singleton`s and pending chains), and
+/// `Leaf` for one level, so its values are chains. Either way every id in them
+/// names a row of the copy, so they move into the real root as they are.
 pub(super) enum Entries<P: PruningPolicy, E: ExpansionPolicy> {
     Children(Vec<Arrival<HashTrieNode<P, E>>>),
     Chains(Vec<Arrival<Chain>>),
@@ -111,16 +111,16 @@ impl<P: PruningPolicy, E: ExpansionPolicy> Entries<P, E> {
 /// build, threading every list through `links` (one link per matching row),
 /// and returns the trie's buffer: the matching rows copied into partition
 /// order. The view only borrows its source, which stays where it is. The
-/// caller checks that the view's arity is `arity`.
+/// caller checks the view's arity; `levels` is the trie's level count (#116).
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, levels: usize,
     bits: RadixBits, config: HashTrieConfig,
 ) -> Tuples {
     if links.is_empty() {
         // No row matches (`links` holds one link per matching row). The bulk
         // build of nothing is the empty root over the empty batch: copy
         // nothing and start no worker, as `parallel:N` does.
-        return Tuples::new(arity);
+        return Tuples::new(view.arity());
     }
     // 1. Partition, on this thread: copy the matching rows into `2^bits`
     //    partitions on the top `bits` of their first attribute's hash. Each
@@ -133,7 +133,7 @@ pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     let one_morsel = view.source_rows();
     let partitioned = partition_by_first_hash::<H>(one, view, one_morsel, u32::from(bits.get()));
     // 2 and 3, on this thread.
-    build_and_merge::<H, P, E>(partitioned, links, root, arity, one, config)
+    build_and_merge::<H, P, E>(partitioned, links, root, levels, one, config)
 }
 
 /// Step 1 of `radix:K` and `parallel:N`: copies the rows `view` selects into
@@ -163,7 +163,7 @@ pub(super) fn partition_by_first_hash<H: HashStrategy>(
 /// copy, the trie's buffer: every id in `root` names a row of it, and
 /// `links` holds one link per row of it.
 pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    partitioned: Partitioned, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    partitioned: Partitioned, links: &ChainLinks, root: &mut HashTrieNode<P, E>, levels: usize,
     threads: Threads, config: HashTrieConfig,
 ) -> Tuples {
     // An empty partition would build and drop an empty scratch root.
@@ -179,7 +179,7 @@ pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPol
     let (rows, origin) = (&partitioned.tuples, &partitioned.origin);
     let entries = dispatch(threads, ranges, |ids| {
         let (scratch, first_seen) =
-            build_scratch_root::<H, P, E>(rows, links, ids, origin, arity, config);
+            build_scratch_root::<H, P, E>(rows, links, ids, origin, levels, config);
         Entries::take_from(scratch, &first_seen)
     });
     // Every key's first source row id is in its entry now, so nothing reads
@@ -214,7 +214,7 @@ pub(super) fn build_and_merge<H: HashStrategy, P: PruningPolicy, E: ExpansionPol
 /// rows are written, so partitions can build on separate threads.
 pub(super) fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     tuples: &Tuples, links: &ChainLinks, ids: impl IntoIterator<Item = RowId>, origin: &[RowId],
-    arity: usize, config: HashTrieConfig,
+    levels: usize, config: HashTrieConfig,
 ) -> (HashTrieNode<P, E>, Vec<(RowId, u64)>) {
     // Lines 3–7 at the root. The scratch root starts at 4 buckets and
     // grows: its entries move into the real root, so its size is never
@@ -228,7 +228,7 @@ pub(super) fn build_scratch_root<H: HashStrategy, P: PruningPolicy, E: Expansion
         }
     }
     // Lines 8–15: each chain re-threaded into its child's chains.
-    let scratch = HashTrie::<H, P, E>::build_nested(tuples, links, 0, arity, lists, config);
+    let scratch = HashTrie::<H, P, E>::build_nested(tuples, links, 0, levels, lists, config);
     (scratch, first_seen)
 }
 
@@ -407,7 +407,7 @@ mod tests {
             HashTrieBuildMode::Radix(RadixBits::new(4).unwrap()),
             vec![],
         );
-        assert_same_trie(&HashTrie::from_tuples(2.into(), vec![]), &built, "empty");
+        assert_same_trie(&<HashTrie>::from_tuples(2.into(), vec![]), &built, "empty");
         assert!(crate::morsel::take_worker_runs().is_empty());
     }
 

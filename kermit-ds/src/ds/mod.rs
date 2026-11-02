@@ -16,10 +16,10 @@ use {clap::ValueEnum, std::str::FromStr};
 pub use {
     column_trie::{ColumnTrie, ColumnTrieBuildMode},
     hash_trie::{
-        ChildCapacity, EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode,
-        HashTrieConfig, InvalidLoadFactor, InvalidRadixBits, LazyExpansion, LoadFactor, NoPruning,
-        ParseChildCapacityError, ParseHashTrieBuildModeError, ParseRootCapacityError,
-        PruningPolicy, RadixBits, RootCapacity, SingletonPruning,
+        AllLevels, ChildCapacity, EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode,
+        HashTrieConfig, InvalidLoadFactor, InvalidRadixBits, KeyLevels, LazyExpansion, LevelPolicy,
+        LoadFactor, NoPruning, ParseChildCapacityError, ParseHashTrieBuildModeError,
+        ParseRootCapacityError, PruningPolicy, RadixBits, RootCapacity, SingletonPruning,
     },
     tree_trie::{ParseTreeTrieBuildModeError, TreeTrie, TreeTrieBuildMode},
 };

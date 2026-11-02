@@ -156,25 +156,25 @@ fn partition_sizes(partitioned: &crate::morsel::Partitioned) -> Vec<usize> {
 /// per matching row), and returns the partitioned copy of those rows that
 /// the trie keeps as its buffer: every id in `root` names a row of it. The
 /// view only borrows its source, which stays where it is. The caller checks
-/// that the view's arity is `arity`.
+/// the view's arity; `levels` is the trie's level count (#116).
 pub(super) fn fill_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, levels: usize,
     threads: Threads, config: HashTrieConfig,
 ) -> Tuples {
-    fill_root_in_morsels::<H, P, E>(view, links, root, arity, threads, MORSEL_TUPLES, config)
+    fill_root_in_morsels::<H, P, E>(view, links, root, levels, threads, MORSEL_TUPLES, config)
 }
 
 /// [`fill_root`] with the morsel size as a parameter, so tests can cut a
 /// small input into many morsels.
 fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, arity: usize,
+    view: &TupleView<'_>, links: &ChainLinks, root: &mut HashTrieNode<P, E>, levels: usize,
     threads: Threads, morsel_tuples: usize, config: HashTrieConfig,
 ) -> Tuples {
     if links.is_empty() {
         // No row matches (`links` holds one link per matching row). The bulk
         // build of nothing is the empty root over the empty batch: copy
         // nothing and start no worker.
-        return Tuples::new(arity);
+        return Tuples::new(view.arity());
     }
     // 1. Partition, on `threads` workers, by the top bits of each row's first
     //    attribute's hash. The matching rows are copied into partition order,
@@ -193,7 +193,7 @@ fn fill_root_in_morsels<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     // 2 and 3: each partition into a scratch root on `threads` workers, each
     //    threading only its own partition's rows through `links`, then the
     //    merge on this thread.
-    radix::build_and_merge::<H, P, E>(partitioned, links, root, arity, threads, config)
+    radix::build_and_merge::<H, P, E>(partitioned, links, root, levels, threads, config)
 }
 
 /// Buckets per region of a presized root. A probe during the parallel fill
@@ -221,17 +221,17 @@ fn presized_parts(log2_capacity: u32, threads: Threads, region_buckets: usize) -
 /// partitioned build of a presized root: the paper's partitioning and
 /// Algorithm 2, with kermit's regions, tail and per-run children
 /// (`docs/specs/2026-10-06-hash-trie-presized-parallel-build-design.md`).
-/// Every child is built by Algorithm 2 (#107). The caller checks that the
-/// view's arity is `arity`.
+/// Every child is built by Algorithm 2 (#107). The caller checks the view's
+/// arity; `levels` is the trie's level count (#116).
 pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    view: &TupleView<'_>, links: &ChainLinks, log2_capacity: u32, arity: usize, threads: Threads,
+    view: &TupleView<'_>, links: &ChainLinks, log2_capacity: u32, levels: usize, threads: Threads,
     config: HashTrieConfig,
 ) -> (Tuples, HashTrieNode<P, E>) {
     fill_presized_root_in::<H, P, E>(
         view,
         links,
         log2_capacity,
-        arity,
+        levels,
         threads,
         MORSEL_TUPLES,
         REGION_BUCKETS,
@@ -270,14 +270,14 @@ pub(super) fn fill_presized_root<H: HashStrategy, P: PruningPolicy, E: Expansion
 // Eight parameters: `fill_presized_root`'s six and the two sizes tests set.
 #[allow(clippy::too_many_arguments)]
 fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
-    view: &TupleView<'_>, links: &ChainLinks, log2_capacity: u32, arity: usize, threads: Threads,
+    view: &TupleView<'_>, links: &ChainLinks, log2_capacity: u32, levels: usize, threads: Threads,
     morsel_tuples: usize, region_buckets: usize, config: HashTrieConfig,
 ) -> (Tuples, HashTrieNode<P, E>) {
     if links.is_empty() {
         // No row matches (`links` holds one link per matching row): the empty
         // root over the empty batch, with no partition and no worker.
-        let root = HashTrie::<H, P, E>::make_root_sized(arity, log2_capacity);
-        return (Tuples::new(arity), root);
+        let root = HashTrie::<H, P, E>::make_root_sized(levels, log2_capacity);
+        return (Tuples::new(view.arity()), root);
     }
     let parts = presized_parts(log2_capacity, threads, region_buckets);
     let shift = log2_capacity - parts.trailing_zeros();
@@ -324,15 +324,15 @@ fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
     // 4. Every bucket's child, a run per worker, each chain re-threaded into
     //    its child's chains through the shared `links`. A run's chains may hold
     //    another partition's rows (a deferred key the tail placed here), but
-    //    every row is in one chain, so one worker writes its link. At arity 1
-    //    the chains are the leaf, and the table of chains is the root. `arity
-    //    <= 1`, as `build_nested` decides at depth 0 (`depth + 1 >= arity`).
-    let root = if arity <= 1 {
+    //    every row is in one chain, so one worker writes its link. At one level
+    //    the chains are the leaf, and the table of chains is the root. `levels
+    //    <= 1`, as `build_nested` decides at depth 0 (`depth + 1 >= levels`).
+    let root = if levels <= 1 {
         HashTrieNode::Leaf(lists)
     } else {
         HashTrieNode::Inner(lists.map_in_runs(parts, |runs| {
             dispatch(threads, runs, |run| {
-                run.map(|chain| HashTrie::<H, P, E>::child(rows, links, 1, arity, chain, config));
+                run.map(|chain| HashTrie::<H, P, E>::child(rows, links, 1, levels, chain, config));
             });
         }))
     };
@@ -340,8 +340,8 @@ fn fill_presized_root_in<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy>(
 }
 
 /// Algorithm 2's lines 6–7 inside one run of a presized table of chains:
-/// `presized:N`'s root step, the same for every arity. Pushes `row` onto the
-/// chain in its key's bucket, starting the chain in an empty bucket, so it
+/// `presized:N`'s root step, the same at every level count. Pushes `row` onto
+/// the chain in its key's bucket, starting the chain in an empty bucket, so it
 /// writes the links of `row` and of the chain's old tail, both rows of the
 /// run's own partition. Returns the row's id if its key's probe ran off its
 /// region, for the calling thread to push afterwards.
@@ -785,7 +785,7 @@ mod tests {
             HashTrieBuildMode::Parallel(threads(4)),
             vec![],
         );
-        assert_same_trie(&HashTrie::from_tuples(2.into(), vec![]), &built, "empty");
+        assert_same_trie(&<HashTrie>::from_tuples(2.into(), vec![]), &built, "empty");
         assert!(PARALLEL_BUILDS.with(|b| b.take()).is_empty());
         assert!(crate::morsel::take_worker_runs().is_empty());
     }

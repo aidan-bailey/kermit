@@ -169,6 +169,8 @@ impl<R: Cardinality, P> Cardinality for Configured<R, P> {
 
 impl<R: HashTrieIterable, P> HashTrieIterable for Configured<R, P> {
     fn hash_trie_iter(&self) -> impl HashTrieIterator { self.inner.hash_trie_iter() }
+
+    fn levels(&self) -> usize { self.inner.levels() }
 }
 
 impl<R: TrieIterable, P> TrieIterable for Configured<R, P> {

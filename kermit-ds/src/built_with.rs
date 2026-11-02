@@ -140,6 +140,8 @@ impl<R: TrieIterable, P> TrieIterable for BuiltWith<R, P> {
 
 impl<R: HashTrieIterable, P> HashTrieIterable for BuiltWith<R, P> {
     fn hash_trie_iter(&self) -> impl HashTrieIterator { self.inner.hash_trie_iter() }
+
+    fn levels(&self) -> usize { self.inner.levels() }
 }
 
 /// Reports the wrapped relation's Layout axes (e.g. `ds_layout_seek`); the

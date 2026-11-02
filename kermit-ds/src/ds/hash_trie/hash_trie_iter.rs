@@ -28,10 +28,10 @@ use {
     super::{
         expansion::{EagerExpansion, ExpansionPolicy},
         implementation::HashTrie,
+        levels::{AllLevels, LevelPolicy},
         node::HashTrieNode,
         pruning::{NoPruning, PruningPolicy, SingletonFrame, SingletonPayload},
     },
-    crate::relation::Relation,
     kermit_iters::{HashStrategy, HashTrieIterator, LeafRows, RowId, SipHashStrategy},
 };
 
@@ -84,28 +84,32 @@ pub struct HashTrieIter<
     H: HashStrategy = SipHashStrategy,
     P: PruningPolicy = NoPruning,
     E: ExpansionPolicy = EagerExpansion,
+    L: LevelPolicy = AllLevels,
 > {
     stack: Vec<Frame<'a, P, E>>,
-    trie: &'a HashTrie<H, P, E>,
+    trie: &'a HashTrie<H, P, E, L>,
 }
 
-impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIter<'a, H, P, E> {
+impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>
+    HashTrieIter<'a, H, P, E, L>
+{
     /// Construct a fresh iterator positioned before the root.
-    pub(crate) fn new(trie: &'a HashTrie<H, P, E>) -> Self {
+    pub(crate) fn new(trie: &'a HashTrie<H, P, E, L>) -> Self {
         Self {
             stack: Vec::new(),
             trie,
         }
     }
 
-    fn arity(&self) -> usize { self.trie.header().arity() }
+    /// The trie's level count: its arity under `AllLevels` (#116).
+    fn levels(&self) -> usize { self.trie.level_count() }
 
     /// The frame that opening `child` at `depth` produces, positioned on
     /// its first entry (or past-end if it has none). An unexpanded child
     /// is built here, the one expansion site (`HashTrie::resolve`); the
     /// built node is always a table, so a frame never holds `Unexpanded`.
     fn frame_for(&self, child: &'a HashTrieNode<P, E>, depth: usize) -> Frame<'a, P, E> {
-        let trie: &'a HashTrie<H, P, E> = self.trie;
+        let trie: &'a HashTrie<H, P, E, L> = self.trie;
         match trie.resolve(child, depth) {
             | HashTrieNode::Singleton(payload) => self.singleton_frame(payload.row(), depth),
             | table => Frame::Table {
@@ -136,7 +140,11 @@ impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIter<'a,
     /// `'a`, not the shorter borrow of `self.stack`.
     fn descent(&self) -> Descent<'a, P, E> {
         match self.stack.last() {
-            | None => Descent::Node(self.trie.root()),
+            // A trie with no level has no table to descend into (#116).
+            | None => match self.trie.root_table() {
+                | Some(root) => Descent::Node(root),
+                | None => Descent::Blocked,
+            },
             | Some(Frame::Table {
                 node,
                 idx,
@@ -154,7 +162,7 @@ impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIter<'a,
             | Some(Frame::Singleton(s)) => {
                 // The top frame stands at depth `stack.len() - 1`, so the
                 // level below it exists only while `stack.len() < arity`.
-                if s.at_end() || self.stack.len() >= self.arity() {
+                if s.at_end() || self.stack.len() >= self.levels() {
                     Descent::Blocked
                 } else {
                     Descent::Deeper(s.row())
@@ -164,8 +172,8 @@ impl<'a, H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIter<'a,
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIterator
-    for HashTrieIter<'_, H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> HashTrieIterator
+    for HashTrieIter<'_, H, P, E, L>
 {
     fn key(&self) -> Option<u64> {
         match self.stack.last()? {
@@ -254,7 +262,12 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIterator
         // A leaf bucket lends its chain linked, walked through the trie's
         // links; a singleton frame lends its one row id as a listed chain.
         let (tuples, links) = (self.trie.tuples(), self.trie.links());
-        match self.stack.last()? {
+        // At the pre-root a trie with no level lends its whole chain (#116);
+        // any other trie lends nothing there.
+        let Some(frame) = self.stack.last() else {
+            return self.trie.root_rows();
+        };
+        match frame {
             | Frame::Table {
                 node,
                 idx,
@@ -271,7 +284,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrieIterator
             // The top frame stands at depth `stack.len() - 1`, so it is the
             // leaf level exactly when `stack.len() == arity`. Its chain is
             // the one row the pruned subtrie holds.
-            | Frame::Singleton(s) => (!s.at_end() && self.stack.len() == self.arity())
+            | Frame::Singleton(s) => (!s.at_end() && self.stack.len() == self.levels())
                 .then(|| LeafRows::new(tuples, std::slice::from_ref(s.row()))),
         }
     }

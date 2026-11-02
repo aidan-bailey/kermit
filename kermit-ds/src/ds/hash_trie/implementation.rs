@@ -25,6 +25,7 @@ use {
         chain::{push_row, Chain},
         config::{ChildCapacity, HashTrieConfig, LoadFactor, RootCapacity},
         expansion::{EagerExpansion, ExpansionPolicy, PendingChild},
+        levels::{AllLevels, LevelPolicy, Root, ZeroLevelRows},
         node::HashTrieNode,
         parallel,
         pruning::{NoPruning, PruningPolicy, SingletonPayload},
@@ -38,8 +39,8 @@ use {
         },
     },
     kermit_iters::{
-        ChainLinks, ConfigOption, HashStrategy, JoinIterable, LayoutOption, RowId, SipHashStrategy,
-        TupleView, Tuples,
+        ChainLinks, ConfigOption, HashStrategy, JoinIterable, LayoutOption, LeafRows, RowId,
+        SipHashStrategy, TrieLevels, TupleView, Tuples,
     },
     std::marker::PhantomData,
 };
@@ -51,9 +52,14 @@ use {
 ///
 /// # Invariants
 ///
-/// - The depth of every root-to-leaf path equals `header.arity()`.
-/// - Inner nodes exist at depths `0..arity-1`; the leaf node at depth
-///   `arity-1`.
+/// - The depth of every root-to-leaf path is the level count: `header.arity()`
+///   under `AllLevels`, `header.levels()` under `KeyLevels` (#116). Inner nodes
+///   exist at depths `0..levels-1`, the leaf node at depth `levels-1`, and
+///   every leaf chain holds whole rows, so a column past the last level is
+///   payload, read from the rows.
+/// - A trie with no level (`KeyLevels` over a header with `levels() == 0`, an
+///   index with no join key) has no table: its root is one chain of its rows,
+///   in source order.
 /// - For arity = 0: undefined behavior (no nullary relations supported).
 /// - With `SingletonPruning`, a child node is `Singleton` iff exactly one tuple
 ///   lives below it (order-independent). Under `NoPruning` no `Singleton` can
@@ -138,10 +144,19 @@ use {
 /// Figure 6), while [`EagerExpansion`] (the default) makes the
 /// `Unexpanded` variant uninhabited, so the instantiation compiles to the
 /// eager structure. Bench axis `ds_layout_expansion`.
+///
+/// `L` is a [`LevelPolicy`] selecting how many columns have levels (#116):
+/// [`AllLevels`] (the default) gives every column one and makes the
+/// zero-level root uninhabited, so the instantiation compiles to the
+/// structure without it, while [`KeyLevels`](super::KeyLevels) builds levels
+/// for the header's first `levels()` columns, the join keys of the index's
+/// query, and keeps the rest as payload in the leaf rows. Bench axis
+/// `ds_layout_levels`.
 pub struct HashTrie<
     H: HashStrategy = SipHashStrategy,
     P: PruningPolicy = NoPruning,
     E: ExpansionPolicy = EagerExpansion,
+    L: LevelPolicy = AllLevels,
 > {
     header: RelationHeader,
     /// Every stored tuple: the build's batch, or its partitioned copy (see
@@ -154,25 +169,65 @@ pub struct HashTrie<
     /// expansion can re-thread a child's rows through the `&self` a probe
     /// holds (`resolve`).
     links: ChainLinks,
-    root: HashTrieNode<P, E>,
+    /// The first level's table, or, for a trie with no level, its rows.
+    root: Root<P, E, L>,
     /// Runtime values, fixed at construction; read by `insert_at`.
     config: HashTrieConfig,
-    _layout: PhantomData<(H, P, E)>,
+    _layout: PhantomData<(H, P, E, L)>,
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
-    /// Whether a node at `depth` is the leaf level, i.e. the last attribute.
-    /// Written `depth + 1 == arity` rather than `depth == arity - 1` to avoid
-    /// the `usize` underflow at `arity == 0`.
-    pub(super) fn is_leaf_depth(depth: usize, arity: usize) -> bool { depth + 1 == arity }
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> HashTrie<H, P, E, L> {
+    /// Whether a node at `depth` is the leaf level, i.e. the last of the
+    /// trie's `levels` levels (the last attribute under `AllLevels`, #116).
+    /// Written `depth + 1 == levels` rather than `depth == levels - 1` to
+    /// avoid the `usize` underflow at `levels == 0`.
+    pub(super) fn is_leaf_depth(depth: usize, levels: usize) -> bool { depth + 1 == levels }
 
-    /// Construct the root node appropriate for `arity` — Inner for arity ≥ 2,
-    /// Leaf for arity = 1 — at `2^log2_capacity` buckets. (The root sits at
-    /// depth 0, so it is a leaf exactly when `is_leaf_depth(0, arity)`;
-    /// `arity <= 1` matches that for every supported arity and additionally
-    /// treats the unsupported nullary case as a leaf.)
-    pub(super) fn make_root_sized(arity: usize, log2_capacity: u32) -> HashTrieNode<P, E> {
-        HashTrieNode::new_table_sized(arity <= 1, log2_capacity)
+    /// Construct the root node for a trie of `levels` levels — Inner for two
+    /// or more, Leaf for one — at `2^log2_capacity` buckets. (The root sits at
+    /// depth 0, so it is a leaf exactly when `is_leaf_depth(0, levels)`;
+    /// `levels <= 1` matches that for every supported count and additionally
+    /// treats the unsupported nullary case as a leaf. A trie with no level
+    /// under `KeyLevels` has no root table: see [`Self::is_unleveled`].)
+    pub(super) fn make_root_sized(levels: usize, log2_capacity: u32) -> HashTrieNode<P, E> {
+        HashTrieNode::new_table_sized(levels <= 1, log2_capacity)
+    }
+
+    /// How many levels this trie has: its arity under `AllLevels`, its
+    /// header's level count under `KeyLevels` (#116).
+    pub(crate) fn level_count(&self) -> usize { L::levels(&self.header) }
+
+    /// Whether a trie over `header` has no level: an index with no join key
+    /// under `KeyLevels`. Never under `AllLevels` (a nullary header keeps its
+    /// leaf root, as before #116), so the zero-level paths compile away there.
+    fn is_unleveled(header: &RelationHeader) -> bool {
+        matches!(L::TRIE_LEVELS, TrieLevels::JoinKeys)
+            && header.arity() > 0
+            && L::levels(header) == 0
+    }
+
+    /// A trie with no level over `view`: its matching rows copied once in
+    /// source order (`materialize`, the copy `bulk` makes), threaded into one
+    /// chain. Every build mode builds this: with no level there is no key to
+    /// group or partition on (#116).
+    fn unleveled(header: RelationHeader, config: HashTrieConfig, view: &TupleView<'_>) -> Self {
+        let tuples = Self::batch_from_view(&header, view);
+        let links = ChainLinks::new(tuples.len());
+        let mut rows: Option<Chain> = None;
+        for row in all_rows(&tuples) {
+            match &mut rows {
+                | Some(chain) => chain.push(&links, row),
+                | None => rows = Some(Chain::start(&links, row)),
+            }
+        }
+        Self {
+            header,
+            tuples,
+            links,
+            root: Root::Rows(L::Rows::from_rows(rows)),
+            config,
+            _layout: PhantomData,
+        }
     }
 
     /// A trie holding `config` and owning `tuples`, with an empty root sized
@@ -188,7 +243,14 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     pub(super) fn with_config_for(
         header: RelationHeader, config: HashTrieConfig, tuples: Tuples,
     ) -> Self {
-        let root = Self::make_root_sized(header.arity(), config.root_log2_capacity(tuples.len()));
+        let root = if Self::is_unleveled(&header) {
+            Root::Rows(L::Rows::from_rows(None))
+        } else {
+            Root::Table(Self::make_root_sized(
+                L::levels(&header),
+                config.root_log2_capacity(tuples.len()),
+            ))
+        };
         let links = ChainLinks::with_capacity(tuples.len());
         Self {
             header,
@@ -200,9 +262,38 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         }
     }
 
-    /// Crate-visible accessor for the root node. Used by `HashTrieIter`
-    /// (in the same crate) to navigate the trie via shared references.
-    pub(crate) fn root(&self) -> &HashTrieNode<P, E> { &self.root }
+    /// The root table, for tests of tries with levels.
+    ///
+    /// # Panics
+    ///
+    /// On a trie with no level, which has none ([`Self::root_table`] is the
+    /// total accessor).
+    #[cfg(test)]
+    pub(crate) fn root(&self) -> &HashTrieNode<P, E> {
+        self.root_table()
+            .expect("a trie with no level has no root table")
+    }
+
+    /// The root table, or `None` for a trie with no level. `HashTrieIter`
+    /// navigates the trie from it through shared references.
+    pub(crate) fn root_table(&self) -> Option<&HashTrieNode<P, E>> {
+        match &self.root {
+            | Root::Table(node) => Some(node),
+            | Root::Rows(_) => None,
+        }
+    }
+
+    /// A trie with no level: its rows as one leaf chain, empty when it has
+    /// none. `None` for a trie with levels.
+    pub(crate) fn root_rows(&self) -> Option<LeafRows<'_>> {
+        match &self.root {
+            | Root::Table(_) => None,
+            | Root::Rows(rows) => Some(match rows.rows() {
+                | Some(chain) => chain.leaf_rows(&self.tuples, &self.links),
+                | None => LeafRows::new(&self.tuples, &[]),
+            }),
+        }
+    }
 
     /// The trie's buffer: every stored tuple, in the order Storage
     /// describes. Its rows are threaded into the trie's chains through
@@ -241,7 +332,14 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// (before #101 B2 it panicked with `BorrowMutError`). No caller in the
     /// workspace does that.
     pub fn for_each_tuple<V: FnMut(&[usize])>(&self, mut visit: V) {
-        Self::visit_at(&self.tuples, &self.links, &self.root, &mut visit);
+        match &self.root {
+            | Root::Table(node) => Self::visit_at(&self.tuples, &self.links, node, &mut visit),
+            | Root::Rows(rows) => {
+                if let Some(chain) = rows.rows() {
+                    Self::visit_chain(&self.tuples, &self.links, chain, &mut visit);
+                }
+            },
+        }
     }
 
     fn visit_at<V: FnMut(&[usize])>(
@@ -293,7 +391,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// diverge while only the new tuple keeps descending.
     pub(super) fn insert_at(
         tuples: &Tuples, links: &ChainLinks, node: &mut HashTrieNode<P, E>, depth: usize,
-        arity: usize, row: RowId, load_factor: LoadFactor,
+        levels: usize, row: RowId, load_factor: LoadFactor,
     ) {
         let key = tuples.row(row)[depth];
         let hash = H::hash(key);
@@ -323,7 +421,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                 }
                 // The child lives at `depth + 1`; it is the leaf when that is
                 // the last attribute.
-                let child_is_leaf = Self::is_leaf_depth(depth + 1, arity);
+                let child_is_leaf = Self::is_leaf_depth(depth + 1, levels);
                 let child = table.entry_or_insert_with(hash, load_factor, || {
                     HashTrieNode::new_table(child_is_leaf)
                 });
@@ -339,7 +437,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                                 links,
                                 built,
                                 depth + 1,
-                                arity,
+                                levels,
                                 row,
                                 load_factor,
                             ),
@@ -377,12 +475,12 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                         links,
                         child,
                         depth + 1,
-                        arity,
+                        levels,
                         evicted.into_row(),
                         load_factor,
                     );
                 }
-                Self::insert_at(tuples, links, child, depth + 1, arity, row, load_factor);
+                Self::insert_at(tuples, links, child, depth + 1, levels, row, load_factor);
             },
             | HashTrieNode::Leaf(table) => {
                 push_row(table, hash, load_factor, links, row);
@@ -434,7 +532,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     &self.tuples,
                     &self.links,
                     depth,
-                    self.header.arity(),
+                    self.level_count(),
                     chain,
                     self.config,
                 )
@@ -444,12 +542,20 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> JoinIterable for HashTrie<H, P, E> {}
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> JoinIterable
+    for HashTrie<H, P, E, L>
+{
+}
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTrie<H, P, E> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> Relation
+    for HashTrie<H, P, E, L>
+{
     /// A hash trie is a multiset: a repeated row is stored and counted (see
     /// [`Cardinality`](crate::Cardinality)).
     const KEEPS_DUPLICATES: bool = true;
+    /// The level policy's (#116): every column under `AllLevels`, the join
+    /// keys under `KeyLevels`.
+    const TRIE_LEVELS: TrieLevels = L::TRIE_LEVELS;
 
     fn header(&self) -> &RelationHeader { &self.header }
 
@@ -480,15 +586,23 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
         self.tuples.push(tuple);
         self.links.push(ChainLinks::NIL);
         let row = row_id(self.tuples.len() - 1);
-        Self::insert_at(
-            &self.tuples,
-            &self.links,
-            &mut self.root,
-            0,
-            arity,
-            row,
-            self.config.load_factor,
-        );
+        let levels = self.level_count();
+        match &mut self.root {
+            | Root::Table(node) => Self::insert_at(
+                &self.tuples,
+                &self.links,
+                node,
+                0,
+                levels,
+                row,
+                self.config.load_factor,
+            ),
+            // A trie with no level appends to its one chain (#116).
+            | Root::Rows(rows) => match rows.rows_mut() {
+                | Some(chain) => chain.push(&self.links, row),
+                | slot @ None => *slot = Some(Chain::start(&self.links, row)),
+            },
+        }
     }
 
     fn insert_all(&mut self, tuples: impl Into<Tuples>) {
@@ -499,8 +613,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> Relation for HashTri
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfigurableRelation
-    for HashTrie<H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> ConfigurableRelation
+    for HashTrie<H, P, E, L>
 {
     type Config = HashTrieConfig;
 
@@ -526,7 +640,7 @@ thread_local! {
     pub(super) static BULK_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> HashTrie<H, P, E, L> {
     /// Creates a trie holding `config`, populated with `tuples` and built by
     /// `mode` — the one constructor that takes both the Config and the
     /// BuildMode. Every mode builds an equivalent trie (issues #91, #94,
@@ -589,10 +703,19 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     /// [`RootCapacity::Tuples`], or if `mode` is `Incremental` and
     /// `config.child_capacity` is not [`ChildCapacity::Grow`]: each mode's
     /// prerequisite.
+    ///
+    /// A trie with no level (an index with no join key under `KeyLevels`,
+    /// #116) is the same copy and one chain under every mode: there is no key
+    /// to group or partition on.
     pub fn from_view_with_config_and_build_mode(
         header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
         view: TupleView<'_>,
     ) -> Self {
+        Self::assert_mode_prerequisites(mode, config);
+        if Self::is_unleveled(&header) {
+            return Self::unleveled(header, config, &view);
+        }
+        let levels = L::levels(&header);
         match mode {
             | HashTrieBuildMode::Bulk => {
                 // Algorithm 2 from the root (`bulk.rs`) over every row id of
@@ -604,7 +727,6 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                 // link before any is read.
                 #[cfg(test)]
                 BULK_BUILDS.with(|n| n.set(n.get() + 1));
-                let arity = header.arity();
                 let tuples = Self::batch_from_view(&header, &view);
                 let log2_capacity = config.root_log2_capacity(tuples.len());
                 let links = ChainLinks::new(tuples.len());
@@ -612,7 +734,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     &tuples,
                     &links,
                     0,
-                    arity,
+                    levels,
                     all_rows(&tuples),
                     log2_capacity,
                     config,
@@ -621,7 +743,7 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     header,
                     tuples,
                     links,
-                    root,
+                    root: Root::Table(root),
                     config,
                     _layout: PhantomData,
                 }
@@ -629,10 +751,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
             | HashTrieBuildMode::Incremental => {
                 // One `insert_at` per row, in input order: the build
                 // `from_tuples_with_config` ran before #107.
-                Self::assert_incremental_prerequisite(config);
-                let arity = header.arity();
                 let tuples = Self::batch_from_view(&header, &view);
                 let mut trie = Self::with_config_for(header, config, tuples);
+                let Root::Table(root) = &mut trie.root else {
+                    unreachable!("a trie with levels has a root table")
+                };
                 for row in all_rows(&trie.tuples) {
                     // As `insert` does: a row's link is `NIL` until a chain
                     // threads it, so a row that stays a pruned `Singleton`
@@ -642,9 +765,9 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                     Self::insert_at(
                         &trie.tuples,
                         &trie.links,
-                        &mut trie.root,
+                        root,
                         0,
-                        arity,
+                        levels,
                         row,
                         config.load_factor,
                     );
@@ -652,38 +775,26 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
                 trie
             },
             | HashTrieBuildMode::Radix(bits) => {
-                Self::from_view_partitioned(header, config, &view, |view, links, log2, arity| {
-                    let mut root = Self::make_root_sized(arity, log2);
+                Self::from_view_partitioned(header, config, &view, |view, links, log2, levels| {
+                    let mut root = Self::make_root_sized(levels, log2);
                     let copy =
-                        radix::fill_root::<H, P, E>(view, links, &mut root, arity, bits, config);
+                        radix::fill_root::<H, P, E>(view, links, &mut root, levels, bits, config);
                     (copy, root)
                 })
             },
             | HashTrieBuildMode::Parallel(threads) => {
-                Self::from_view_partitioned(header, config, &view, |view, links, log2, arity| {
-                    let mut root = Self::make_root_sized(arity, log2);
+                Self::from_view_partitioned(header, config, &view, |view, links, log2, levels| {
+                    let mut root = Self::make_root_sized(levels, log2);
                     let copy = parallel::fill_root::<H, P, E>(
-                        view, links, &mut root, arity, threads, config,
+                        view, links, &mut root, levels, threads, config,
                     );
                     (copy, root)
                 })
             },
             | HashTrieBuildMode::Presized(threads) => {
-                // The prerequisite
-                // (docs/specs/2026-10-07-dependent-optimisations-design.md):
-                // the regions are cut from a root sized before any tuple
-                // arrives. The CLI rejects the pair first; here it is a
-                // broken invariant, like a wrong arity.
-                assert_eq!(
-                    config.root_capacity,
-                    RootCapacity::Tuples,
-                    "hash-trie=presized:{} requires root-capacity=tuples; got root-capacity={}",
-                    threads.get(),
-                    config.root_capacity.axis_value(),
-                );
-                Self::from_view_partitioned(header, config, &view, |view, links, log2, arity| {
+                Self::from_view_partitioned(header, config, &view, |view, links, log2, levels| {
                     parallel::fill_presized_root::<H, P, E>(
-                        view, links, log2, arity, threads, config,
+                        view, links, log2, levels, threads, config,
                     )
                 })
             },
@@ -735,19 +846,60 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
         fill: impl FnOnce(&TupleView<'_>, &ChainLinks, u32, usize) -> (Tuples, HashTrieNode<P, E>),
     ) -> Self {
         crate::relation::check_view_arity(&header, view);
-        let arity = header.arity();
+        let levels = L::levels(&header);
         let count = view.count();
         let log2_capacity = config.root_log2_capacity(count);
         let links = ChainLinks::new(count);
-        let (tuples, root) = fill(view, &links, log2_capacity, arity);
+        if count == 0 {
+            // No row matches: the empty root over an empty batch of the
+            // header's arity, which every partitioned build made, with no
+            // partition and no worker.
+            let tuples = Tuples::new(header.arity());
+            let root = Root::Table(Self::make_root_sized(levels, log2_capacity));
+            return Self {
+                header,
+                tuples,
+                links,
+                root,
+                config,
+                _layout: PhantomData,
+            };
+        }
+        let (tuples, root) = fill(view, &links, log2_capacity, levels);
         debug_assert_eq!(links.len(), tuples.len(), "one link per row of the buffer");
         Self {
             header,
             tuples,
             links,
-            root,
+            root: Root::Table(root),
             config,
             _layout: PhantomData,
+        }
+    }
+
+    /// Each build mode's prerequisite, checked before any build and at every
+    /// level count: `presized:N` cuts its regions from a root sized before any
+    /// tuple arrives (`root-capacity=tuples`), and `incremental` cannot size a
+    /// child it creates on its first tuple (`child-capacity=grow`). The CLI
+    /// rejects either pair first; here each is a broken invariant, like a
+    /// wrong arity (docs/specs/2026-10-07-dependent-optimisations-design.md).
+    ///
+    /// # Panics
+    ///
+    /// On a mode whose prerequisite `config` does not meet.
+    fn assert_mode_prerequisites(mode: HashTrieBuildMode, config: HashTrieConfig) {
+        match mode {
+            | HashTrieBuildMode::Incremental => Self::assert_incremental_prerequisite(config),
+            | HashTrieBuildMode::Presized(threads) => assert_eq!(
+                config.root_capacity,
+                RootCapacity::Tuples,
+                "hash-trie=presized:{} requires root-capacity=tuples; got root-capacity={}",
+                threads.get(),
+                config.root_capacity.axis_value(),
+            ),
+            | HashTrieBuildMode::Bulk
+            | HashTrieBuildMode::Radix(_)
+            | HashTrieBuildMode::Parallel(_) => {},
         }
     }
 
@@ -769,8 +921,8 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> HashTrie<H, P, E> {
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
-    for HashTrie<H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> BuildModeRelation
+    for HashTrie<H, P, E, L>
 {
     type BuildMode = HashTrieBuildMode;
 
@@ -794,19 +946,19 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> BuildModeRelation
 
 /// The view constructor of the build modes, so `BuiltWith` can stack on
 /// `Configured` in the test suites.
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> ConfiguredBuildModeRelation
-    for HashTrie<H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>
+    ConfiguredBuildModeRelation for HashTrie<H, P, E, L>
 {
     fn from_view_with_config_and_build_mode(
         header: RelationHeader, config: HashTrieConfig, mode: HashTrieBuildMode,
         view: TupleView<'_>,
     ) -> Self {
-        HashTrie::<H, P, E>::from_view_with_config_and_build_mode(header, config, mode, view)
+        HashTrie::<H, P, E, L>::from_view_with_config_and_build_mode(header, config, mode, view)
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::relation::Projectable
-    for HashTrie<H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>
+    crate::relation::Projectable for HashTrie<H, P, E, L>
 {
     fn project(&self, columns: Vec<usize>) -> Self {
         let arity = self.header.arity();
@@ -836,12 +988,12 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::relation::Pro
             row.extend(columns.iter().map(|&c| tuple[c]));
             projected.push(&row);
         }
-        HashTrie::<H, P, E>::from_tuples_with_config(new_header, self.config, projected)
+        HashTrie::<H, P, E, L>::from_tuples_with_config(new_header, self.config, projected)
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::heap_size::HeapSize
-    for HashTrie<H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>
+    crate::heap_size::HeapSize for HashTrie<H, P, E, L>
 {
     /// The buffer (capacity × 8 bytes), the links (capacity × 4 bytes, one
     /// per row), every table's bucket array, and each lazy child's box. A
@@ -849,26 +1001,34 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::heap_size::He
     /// lives in its parent's bucket, so neither adds anything: each tuple is
     /// counted once, in the buffer, and each link once, in the links.
     fn heap_size_bytes(&self) -> usize {
-        self.tuples.heap_size_bytes() + self.links.heap_size_bytes() + node_heap_bytes(&self.root)
+        // A trie with no level owns no table: its chain lives in the root,
+        // its rows in the buffer and its successors in the links.
+        let root = match &self.root {
+            | Root::Table(node) => node_heap_bytes(node),
+            | Root::Rows(_) => 0,
+        };
+        self.tuples.heap_size_bytes() + self.links.heap_size_bytes() + root
     }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> crate::cardinality::Cardinality
-    for HashTrie<H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>
+    crate::cardinality::Cardinality for HashTrie<H, P, E, L>
 {
     fn tuple_count(&self) -> usize { self.tuples.len() }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> kermit_iters::HashTrieIterable
-    for HashTrie<H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>
+    kermit_iters::HashTrieIterable for HashTrie<H, P, E, L>
 {
     fn hash_trie_iter(&self) -> impl kermit_iters::HashTrieIterator {
-        super::hash_trie_iter::HashTrieIter::<H, P, E>::new(self)
+        super::hash_trie_iter::HashTrieIter::<H, P, E, L>::new(self)
     }
+
+    fn levels(&self) -> usize { self.level_count() }
 }
 
-impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> kermit_iters::HasOptimizationAxes
-    for HashTrie<H, P, E>
+impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy>
+    kermit_iters::HasOptimizationAxes for HashTrie<H, P, E, L>
 {
     /// The layout axes `ds_layout_hasher` (the strategy's
     /// `LayoutOption::NAME`, e.g. `"sip"` / `"fxhash"`) and
@@ -888,6 +1048,10 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy> kermit_iters::HasOpt
         axes.insert(
             "ds_layout_expansion".to_string(),
             serde_json::Value::String(<E as LayoutOption>::NAME.to_string()),
+        );
+        axes.insert(
+            "ds_layout_levels".to_string(),
+            serde_json::Value::String(<L as LayoutOption>::NAME.to_string()),
         );
         for (suffix, value) in self.config.axes() {
             axes.insert(format!("ds_config_{suffix}"), value);
@@ -984,14 +1148,14 @@ mod tests {
     fn new_arity_2_creates_inner_root() {
         let trie: HashTrie = HashTrie::new(2.into());
         assert_eq!(trie.header().arity(), 2);
-        assert!(matches!(trie.root, HashTrieNode::Inner(_)));
+        assert!(matches!(trie.root(), HashTrieNode::Inner(_)));
     }
 
     #[test]
     fn new_arity_1_creates_leaf_root() {
         let trie: HashTrie = HashTrie::new(1.into());
         assert_eq!(trie.header().arity(), 1);
-        assert!(matches!(trie.root, HashTrieNode::Leaf(_)));
+        assert!(matches!(trie.root(), HashTrieNode::Leaf(_)));
     }
 
     #[test]
@@ -999,7 +1163,7 @@ mod tests {
         let mut trie: HashTrie = HashTrie::new(1.into());
         trie.insert(vec![42]);
         // Verify by inspecting the root: should be a Leaf with one entry.
-        match &trie.root {
+        match trie.root() {
             | HashTrieNode::Leaf(table) => assert_eq!(table.len(), 1),
             | _ => panic!("expected Leaf root"),
         }
@@ -1009,7 +1173,7 @@ mod tests {
     fn insert_arity_2_builds_inner_then_leaf() {
         let mut trie: HashTrie = HashTrie::new(2.into());
         trie.insert(vec![1, 2]);
-        match &trie.root {
+        match trie.root() {
             | HashTrieNode::Inner(root_table) => {
                 assert_eq!(root_table.len(), 1);
                 // Walk one level deeper and confirm it's a Leaf.
@@ -1034,7 +1198,7 @@ mod tests {
         trie.insert(vec![1, 3]);
         // Same attr-0 value => same hash at root => same child node; child has
         // two entries.
-        match &trie.root {
+        match trie.root() {
             | HashTrieNode::Inner(root_table) => {
                 assert_eq!(root_table.len(), 1);
                 for (_, child) in root_table.iter() {
@@ -1061,7 +1225,7 @@ mod tests {
         assert_eq!(trie.header().arity(), 2);
         // Same attr-0 inserts share a child; two distinct attr-0 values =>
         // two root-level entries.
-        match &trie.root {
+        match trie.root() {
             | HashTrieNode::Inner(root_table) => assert_eq!(root_table.len(), 2),
             | _ => panic!("expected Inner root"),
         }
@@ -1070,7 +1234,7 @@ mod tests {
     #[test]
     fn from_tuples_empty_input() {
         let trie: HashTrie = HashTrie::from_tuples(2.into(), vec![]);
-        match &trie.root {
+        match trie.root() {
             | HashTrieNode::Inner(root_table) => assert_eq!(root_table.len(), 0),
             | _ => panic!("expected Inner root"),
         }
@@ -1083,11 +1247,11 @@ mod tests {
         let b: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![2, 4]]);
         // Compare via heap_size and tuple set (via Projectable when ready) —
         // for now confirm both have populated roots with the same length.
-        let a_root_len = match &a.root {
+        let a_root_len = match a.root() {
             | HashTrieNode::Inner(t) => t.len(),
             | _ => unreachable!(),
         };
-        let b_root_len = match &b.root {
+        let b_root_len = match b.root() {
             | HashTrieNode::Inner(t) => t.len(),
             | _ => unreachable!(),
         };
@@ -1152,7 +1316,7 @@ mod tests {
         use crate::HeapSize;
         let trie: HashTrie =
             HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![1, 3], vec![4, 5]]);
-        let HashTrieNode::Inner(root) = &trie.root else {
+        let HashTrieNode::Inner(root) = trie.root() else {
             panic!("arity 2 has an Inner root")
         };
         let mut tables = root.shell_heap_bytes();
@@ -1183,7 +1347,7 @@ mod tests {
         let mut trie: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         trie.insert(vec![1, 2]);
         assert_eq!(trie.tuples().to_vecs(), vec![vec![1, 2], vec![1, 2]]);
-        let HashTrieNode::Inner(root) = &trie.root else {
+        let HashTrieNode::Inner(root) = trie.root() else {
             panic!("arity 2 has an Inner root")
         };
         let Some((_, HashTrieNode::Leaf(leaf))) = root.iter().next() else {
@@ -1423,11 +1587,16 @@ mod tests {
             "ds_config_root_capacity",
             "ds_layout_expansion",
             "ds_layout_hasher",
+            "ds_layout_levels",
             "ds_layout_pruning"
         ]);
         assert_eq!(
             axes.get("ds_layout_hasher"),
             Some(&serde_json::Value::String("sip".to_string())),
+        );
+        assert_eq!(
+            axes.get("ds_layout_levels"),
+            Some(&serde_json::Value::String("all".to_string())),
         );
     }
 
@@ -1444,6 +1613,7 @@ mod tests {
             "ds_config_root_capacity",
             "ds_layout_expansion",
             "ds_layout_hasher",
+            "ds_layout_levels",
             "ds_layout_pruning"
         ]);
         assert_eq!(
@@ -1566,10 +1736,10 @@ mod tests {
         trie: &HashTrie<SipHashStrategy, P, E>,
     ) -> usize {
         assert!(
-            !matches!(trie.root, HashTrieNode::Singleton(_)),
+            !matches!(trie.root(), HashTrieNode::Singleton(_)),
             "the root is never a Singleton"
         );
-        check_pruning_invariant_at(&trie.tuples, &trie.root, &mut Vec::new())
+        check_pruning_invariant_at(&trie.tuples, trie.root(), &mut Vec::new())
     }
 
     /// Recursive half of [`check_pruning_invariant`]. `prefix` is the
@@ -1626,7 +1796,7 @@ mod tests {
     fn pruning_on_single_tuple_subtries_are_singletons() {
         let trie = pruned(3, vec![vec![1, 2, 3], vec![5, 6, 7]]);
         assert_eq!(check_pruning_invariant(&trie), 2);
-        match &trie.root {
+        match trie.root() {
             | HashTrieNode::Inner(t) => {
                 assert_eq!(t.len(), 2);
                 for (_, child) in t.iter() {
@@ -1643,7 +1813,7 @@ mod tests {
         // never pruned — tuples land straight in leaf chains.
         let trie = pruned(1, vec![vec![1], vec![2]]);
         assert_eq!(check_pruning_invariant(&trie), 2);
-        assert!(matches!(trie.root, HashTrieNode::Leaf(_)));
+        assert!(matches!(trie.root(), HashTrieNode::Leaf(_)));
         assert_eq!(walked_sorted(&trie), vec![vec![1], vec![2]]);
     }
 
@@ -1946,7 +2116,7 @@ mod lazy_tests {
     fn child<P: PruningPolicy>(
         trie: &HashTrie<SipHashStrategy, P, LazyExpansion>, k: usize,
     ) -> &HashTrieNode<P, LazyExpansion> {
-        match &trie.root {
+        match trie.root() {
             | HashTrieNode::Inner(t) => t.get(h(k)).expect("bucket present"),
             | _ => panic!("arity >= 2 has an Inner root"),
         }
@@ -2048,7 +2218,7 @@ mod lazy_tests {
         let trie = LazyPruned::from_tuples(3.into(), tuples());
         let single = child(&trie, 7);
         assert!(std::ptr::eq(trie.resolve(single, 1), single));
-        assert!(std::ptr::eq(trie.resolve(&trie.root, 0), &trie.root));
+        assert!(std::ptr::eq(trie.resolve(trie.root(), 0), trie.root()));
     }
 
     #[test]

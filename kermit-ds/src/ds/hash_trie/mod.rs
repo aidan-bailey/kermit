@@ -19,6 +19,7 @@ mod hash_trie_iter;
 #[cfg(test)]
 mod identity;
 mod implementation;
+mod levels;
 mod node;
 mod parallel;
 mod pruning;
@@ -36,5 +37,6 @@ pub use {
     },
     expansion::{EagerExpansion, ExpansionPolicy, LazyExpansion},
     implementation::HashTrie,
+    levels::{AllLevels, KeyLevels, LevelPolicy},
     pruning::{NoPruning, PruningPolicy, SingletonPruning},
 };
