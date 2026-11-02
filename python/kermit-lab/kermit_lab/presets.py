@@ -29,8 +29,19 @@ from .plots_errors import InsufficientAxesError
 from .styles import apply as apply_style
 
 
+def _kermit_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` without the external engines' rows. An engine row has no ``data_structure`` or
+    ``algorithm``, which the figures below put on their axes and in their legends; they draw
+    kermit's cells, and :func:`engines` draws the engines beside them. A row without ``system``
+    (a v7 report, or a frame loaded without defaults) is kermit's."""
+    if "system" not in df.columns:
+        return df
+    is_engine = df["system"].notna() & (df["system"] != KERMIT_SYSTEM)
+    return df[~is_engine]
+
+
 def scaling(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] = None) -> Figure:
-    return plot(df, kind="line", x="tuples", y="time", colour="data_structure",
+    return plot(_kermit_rows(df), kind="line", x="tuples", y="time", colour="data_structure",
                 style="algorithm", phase=phase, logx=True, logy=True,
                 title="Scaling", out=out)
 
@@ -38,18 +49,20 @@ def scaling(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] =
 def bar_time(
     df: pd.DataFrame, *, query: str, phase: str = "iteration", out: Optional[Path] = None
 ) -> Figure:
-    return plot(df, kind="bar", x="data_structure", y="time", colour="data_structure",
+    return plot(_kermit_rows(df), kind="bar", x="data_structure", y="time",
+                colour="data_structure",
                 style="algorithm", filter={"query": query}, phase=phase,
                 title=f"Time — {query}", out=out)
 
 
 def bar_space(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
-    return plot(df, kind="bar", x="data_structure", y="space", colour="data_structure",
+    return plot(_kermit_rows(df), kind="bar", x="data_structure", y="space",
+                colour="data_structure",
                 title="Space per data structure", out=out)
 
 
 def tradeoff(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] = None) -> Figure:
-    return plot(df, kind="scatter", x="space", y="time", colour="data_structure",
+    return plot(_kermit_rows(df), kind="scatter", x="space", y="time", colour="data_structure",
                 style="algorithm", phase=phase, logx=True, title="Space vs time", out=out)
 
 
@@ -57,7 +70,8 @@ def dist(
     df: pd.DataFrame, *, samples: pd.DataFrame, phase: str = "iteration",
     out: Optional[Path] = None,
 ) -> Figure:
-    return plot(df, kind="violin", x="data_structure", y="time", style="algorithm",
+    return plot(_kermit_rows(df), kind="violin", x="data_structure", y="time",
+                style="algorithm",
                 phase=phase, samples=samples, title="Per-iter distribution", out=out)
 
 
@@ -71,7 +85,7 @@ def bar_queries(
         flt["data_structure"] = list(ds)
     if algo is not None:
         flt["algorithm"] = list(algo)
-    return plot(df, kind="bar", x="query", y="time", colour="data_structure",
+    return plot(_kermit_rows(df), kind="bar", x="query", y="time", colour="data_structure",
                 style="algorithm", filter=flt, phase=phase,
                 title="Across queries", out=out)
 

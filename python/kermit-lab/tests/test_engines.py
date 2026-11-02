@@ -15,8 +15,9 @@ from matplotlib.figure import Figure
 
 import kermit_lab as kl
 from kermit_lab import presets
+from kermit_lab.drivers.render_all import render_all
 from kermit_lab.plots_errors import InsufficientAxesError
-from kermit_lab.analysis import cell_labels, speedup_table
+from kermit_lab.analysis import cell_labels, compare, speedup_table, summary
 from kermit_lab.defaults import BINARY_AXIS_DEFAULTS, apply_axis_defaults
 from kermit_lab.frame import load
 from kermit_lab.loader import TIME_PHASES, load_reports, phase_of
@@ -287,3 +288,53 @@ def test_engines_saves_to_out(engine_tree, tmp_path: Path) -> None:
 def test_engines_is_public() -> None:
     assert kl.engines is presets.engines
     assert "engines" in kl.__all__
+
+
+def test_summary_pivots_engine_rows_by_system(engine_tree) -> None:
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    table = summary(df[df["metric"] == "time"], rows="system", cols="phase")
+    assert list(table.index) == ["duckdb", "kermit", "nemo"]
+    assert table.loc["duckdb", "iteration"] == 150.0
+    assert table.loc["nemo", "materialize"] == 1500.0
+    assert table.loc["kermit", "materialize"] == 2000.0
+
+
+def test_compare_pairs_kermit_cells_and_ignores_engine_rows() -> None:
+    df = pd.DataFrame(
+        {
+            "system": ["kermit", "kermit", "duckdb"],
+            "data_structure": ["TreeTrie", "HashTrie", pd.NA],
+            "query": ["triangle", "triangle", "triangle"],
+            "mean_ns": [300.0, 150.0, 100.0],
+            "mean_lo": [290.0, 140.0, 90.0],
+            "mean_hi": [310.0, 160.0, 110.0],
+        }
+    )
+    out = compare(df, baseline="TreeTrie", target="HashTrie")
+    assert len(out) == 1
+    assert out["speedup"].iloc[0] == pytest.approx(2.0)
+    assert out["system"].tolist() == ["kermit"]
+
+
+def _bar_heights(fig: Figure) -> list[float]:
+    return sorted(p.get_height() for ax in fig.axes if ax.get_visible() for p in ax.patches)
+
+
+def test_the_structure_figures_draw_kermit_rows_only(engine_tree) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    # Nemo's 3000 bytes are not drawn: only the TreeTrie (v7, no `system`) and HashTrie rows are.
+    assert _bar_heights(presets.bar_space(df)) == [6400.0, 9000.0]
+    # DuckDB's end_to_end (800) is not drawn either.
+    fig = presets.bar_time(df, query="triangle", phase="end_to_end")
+    assert _bar_heights(fig) == [700.0, 900.0]
+    plt.close("all")
+
+
+def test_render_all_takes_a_frame_holding_engine_rows(engine_tree, tmp_path: Path) -> None:
+    plt.close("all")
+    reports = load_reports(engine_tree["paths"])
+    render_all(reports, tmp_path, engine_tree["criterion_root"], "pdf", phase="end_to_end")
+    names = {p.name for p in tmp_path.iterdir()}
+    assert {"bar-space.pdf", "bar-time-triangle.pdf"} <= names
+    assert plt.get_fignums() == []
