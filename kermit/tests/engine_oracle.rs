@@ -1,7 +1,7 @@
 //! The engines against the nested-loop oracle: the shared shapes over seeded
 //! random relations, compared on contents as well as counts. Built only with an
 //! engine feature.
-#![cfg(feature = "engine-duckdb")]
+#![cfg(any(feature = "engine-duckdb", feature = "engine-nemo"))]
 
 mod common;
 
@@ -20,6 +20,7 @@ type HashTrieSip = HashTrie<SipHashStrategy>;
 
 /// One shape over one seeded database under one planner: what an engine is
 /// checked against.
+#[cfg_attr(not(feature = "engine-duckdb"), allow(dead_code))]
 struct Case {
     shape: &'static str,
     label: String,
@@ -100,6 +101,7 @@ fn the_cases_have_answers_and_duplicate_derivations() {
     );
 }
 
+#[cfg(feature = "engine-duckdb")]
 mod duckdb_cells {
     use {
         super::{cases, distinct_rows, Case},
@@ -242,5 +244,191 @@ mod duckdb_cells {
                 },
             );
         }
+    }
+}
+
+/// Nemo against the nested-loop oracle (`engine-nemo`).
+///
+/// Nemo answers the full conjunctive query as a set, so its rows and its
+/// `materialize` count are compared with the oracle's *distinct* full
+/// assignments: the same set under set and bag semantics, while the fixtures
+/// hold duplicate rows. The shared cases run the planners `bench run` has; the
+/// every-order test forces each variable order, so `rows`' permutation of
+/// the result's plan-ordered columns into canonical order is checked against
+/// every plan, and a mis-ordered join would show in the contents, which a count
+/// alone could miss on these small fixtures. Canonical order is
+/// `canonical_names(prepared.query())` of the `TrieLevels::All` query Nemo ran,
+/// so the oracle's query is `full_query(query, &prepared)` for that same
+/// `prepared`: the order can change with the plan, and so the oracle runs once
+/// per plan.
+#[cfg(feature = "engine-nemo")]
+mod nemo_cells {
+    use {
+        super::{cases, distinct_rows, Case, HashTrieSip},
+        crate::common::{
+            oracle::{oracle, Lcg, Relations},
+            orders::{every_order, FixedOrder},
+            shapes::{catalog_for, full_query, random_data, shapes, SEEDS},
+        },
+        kermit::{
+            db::{check_multiplicity, prepare, Catalog},
+            engine::{
+                nemo::{Nemo, NemoBuilt},
+                Engine,
+            },
+        },
+        kermit_algos::{canonical_names, rewrite_placeholders, JoinQuery, Planner},
+        kermit_ds::TrieLevels,
+    };
+
+    /// Loads and builds `case` on Nemo and hands `check` the built state and
+    /// the multiplicity of the case's all-constant atoms (Nemo has set
+    /// semantics, so each one clamps to one).
+    fn on_nemo(case: &Case, check: impl FnOnce(&NemoBuilt, usize)) {
+        let label = &case.label;
+        Nemo::supports(&case.prepared).unwrap_or_else(|e| panic!("{label}: {e}"));
+        let loaded = Nemo::load(&(), &case.catalog, &case.prepared)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        let built = Nemo::build(&loaded, &case.catalog, &case.prepared)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        let multiplicity =
+            check_multiplicity(&case.catalog, &case.prepared, Nemo::KEEPS_DUPLICATES);
+        check(&built, multiplicity);
+    }
+
+    #[test]
+    fn nemo_returns_the_oracles_distinct_full_assignments() {
+        for case in cases() {
+            on_nemo(&case, |built, multiplicity| {
+                // A check that holds nowhere means no rows, and the lifecycle
+                // never asks the engine then. Otherwise Nemo's set is the
+                // answer, whatever the check's count. `case.bag` is the
+                // oracle's for `full_query(query, &case.prepared)`, so its rows
+                // are in the same canonical order as `rows`.
+                let mut rows = if multiplicity == 0 {
+                    Vec::new()
+                } else {
+                    Nemo::rows(built).unwrap_or_else(|e| panic!("{}: {e}", case.label))
+                };
+                rows.sort();
+                // The oracle's bag is sorted, so its distinct rows are its
+                // deduplication.
+                let mut want = case.bag.clone();
+                want.dedup();
+                assert_eq!(rows, want, "{}", case.label);
+            });
+        }
+    }
+
+    #[test]
+    fn nemo_materializes_the_oracles_distinct_count() {
+        for case in cases() {
+            on_nemo(&case, |built, multiplicity| {
+                let materialized = if multiplicity == 0 {
+                    0
+                } else {
+                    let (count, kept) =
+                        Nemo::materialize(built).unwrap_or_else(|e| panic!("{}: {e}", case.label));
+                    assert!(kept.is_none(), "{}: Nemo keeps no batch", case.label);
+                    count
+                };
+                assert_eq!(
+                    materialized,
+                    distinct_rows(&case.bag) as u64,
+                    "{}",
+                    case.label
+                );
+            });
+        }
+    }
+
+    /// Nemo's `materialize` count and sorted `rows` for `query` over `catalog`,
+    /// with the plan binding `order` first, and the oracle's distinct rows for
+    /// `full_query(query, &prepared)` over `relations`, where `prepared` is the
+    /// `TrieLevels::All` query Nemo ran. Asserts the plan binds `order` first,
+    /// so a planner that stopped honouring `order` fails here instead
+    /// of running one order many times. The all-constant atoms are applied as
+    /// the runner applies them, through `check_multiplicity`.
+    fn nemo_in_order(
+        relations: &Relations, catalog: &Catalog, query: &JoinQuery, order: &[String], label: &str,
+    ) -> (u64, Vec<Vec<usize>>, Vec<Vec<usize>>) {
+        let planner = Planner::new(Box::new(FixedOrder(order.to_vec())));
+        let prepared = prepare(catalog, query, &planner, TrieLevels::All)
+            .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
+        let names = canonical_names(prepared.query());
+        let bound: Vec<String> = prepared
+            .plan()
+            .variable_ordering
+            .iter()
+            .map(|&variable| names[variable].clone())
+            .collect();
+        assert_eq!(
+            &bound[..order.len()],
+            order,
+            "{label}: the plan does not bind the forced variables first"
+        );
+        assert!(
+            !prepared.indexes().is_empty(),
+            "{label}: every shape reads at least one index"
+        );
+        let mut want = oracle::<HashTrieSip>(relations, &full_query(query, &prepared));
+        want.dedup();
+        Nemo::supports(&prepared).unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
+        if check_multiplicity(catalog, &prepared, Nemo::KEEPS_DUPLICATES) == 0 {
+            return (0, Vec::new(), want);
+        }
+        let loaded = Nemo::load(&(), catalog, &prepared)
+            .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
+        let built = Nemo::build(&loaded, catalog, &prepared)
+            .unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
+        let (count, kept) =
+            Nemo::materialize(&built).unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
+        assert!(
+            kept.is_none(),
+            "{label} in order {order:?}: Nemo keeps no batch"
+        );
+        let mut rows =
+            Nemo::rows(&built).unwrap_or_else(|e| panic!("{label} in order {order:?}: {e}"));
+        rows.sort();
+        (count, rows, want)
+    }
+
+    /// Every shape over `SEEDS` random relations, under every order of its
+    /// variables. The final bound catches a generator that stops producing
+    /// queries with answers, which would turn every comparison into `[] == []`.
+    #[test]
+    fn nemo_returns_the_distinct_full_assignments_in_every_order() {
+        let (mut with_rows, mut total) = (0, 0);
+        for (index, shape) in shapes().iter().enumerate() {
+            for seed in SEEDS {
+                let mut rng = Lcg(1000 * index as u64 + seed);
+                let relations = random_data(&mut rng, shape.arities);
+                let label = format!("{} seed {seed}", shape.name);
+                let query: JoinQuery = shape
+                    .query
+                    .parse()
+                    .unwrap_or_else(|e| panic!("{label}: unparsable: {e}"));
+                let catalog = catalog_for(&relations);
+                let variables = canonical_names(&rewrite_placeholders(query.clone()));
+                let mut answered = false;
+                for order in every_order(&variables) {
+                    let (count, rows, want) =
+                        nemo_in_order(&relations, &catalog, &query, &order, &label);
+                    assert_eq!(rows, want, "{label} in order {order:?}: rows");
+                    assert_eq!(
+                        count,
+                        want.len() as u64,
+                        "{label} in order {order:?}: materialize"
+                    );
+                    answered = !want.is_empty();
+                }
+                total += 1;
+                with_rows += usize::from(answered);
+            }
+        }
+        assert!(
+            with_rows * 4 >= total,
+            "only {with_rows} of {total} queries had an answer"
+        );
     }
 }
