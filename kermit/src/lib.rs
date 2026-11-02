@@ -18,6 +18,7 @@ pub mod ds {
 }
 
 pub mod db;
+pub mod engine;
 
 use {
     crate::db::Catalog,
