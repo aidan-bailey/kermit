@@ -51,12 +51,13 @@ iterator's state after a seek is therefore identical under every strategy.
 ## What a strategy may not touch
 
 The strategy computes the offset and nothing else. Around it, each
-iterator keeps the logic LFTJ depends on:
+iterator keeps the rest of its seek unchanged:
 
 - `TreeTrieIter` keeps its `at_end` guard and backward-seek panic, and
   moves the stack top only when the seek lands on a key. Off the end, the
   stack top stays on the last positioned node, so `open` after `at_end`
-  still descends from it (see `tree-trie.md`).
+  still descends from it and `up` returns to the parent (see
+  `tree-trie.md`).
 - `ColumnTrieIter` keeps its `at_end` guard and advances `slice_offset`
   by the offset.
 

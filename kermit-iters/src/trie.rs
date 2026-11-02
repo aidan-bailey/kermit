@@ -18,10 +18,12 @@ pub trait TrieIterator: LinearIterator {
     /// position is unchanged.
     ///
     /// # Note
-    /// If `open()` is called while `at_end()` is `true` (the cursor sits one
-    /// past the last sibling, so `key()` is `None`), it proceeds as if the
-    /// cursor were still on the last sibling — one step back from the end —
-    /// descending into that node's children rather than failing.
+    /// Before the first `open` an iterator may already report `at_end()`;
+    /// `open` must descend from there. Below the root, `open()` while
+    /// `at_end()` is `true` (the cursor one past the last sibling) is left to
+    /// the implementation: `TreeTrieIter` descends into the last sibling's
+    /// children, `ColumnTrieIter` returns `false`. Nothing relies on either,
+    /// since Leapfrog Triejoin never opens an exhausted iterator.
     fn open(&mut self) -> bool;
 
     /// If there is a parent iterator at the iterator's current position,
@@ -39,6 +41,8 @@ pub trait TrieIterator: LinearIterator {
     /// If `up()` is called while `at_end()` is `true`, it proceeds regardless
     /// of the end state — as if the cursor were on the last sibling, one step
     /// back from the end — ascending to the parent rather than failing.
+    /// Leapfrog Triejoin relies on this: it ascends from every depth it
+    /// exhausts.
     fn up(&mut self) -> bool;
 }
 
