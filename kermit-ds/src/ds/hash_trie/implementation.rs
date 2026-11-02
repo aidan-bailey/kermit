@@ -853,7 +853,11 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> Hash
         if count == 0 {
             // No row matches: the empty root over an empty batch of the
             // header's arity, which every partitioned build made, with no
-            // partition and no worker.
+            // partition and no worker. Every build reaches this guard; the
+            // `fill` functions' own empty guards (`radix::fill_root`,
+            // `parallel::fill_root_in_morsels`, `fill_presized_root_in`) only
+            // serve their direct callers, the tests, and could not keep the
+            // header's arity, since they see the trie's level count.
             let tuples = Tuples::new(header.arity());
             let root = Root::Table(Self::make_root_sized(levels, log2_capacity));
             return Self {

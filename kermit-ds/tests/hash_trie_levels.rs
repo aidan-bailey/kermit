@@ -4,9 +4,10 @@
 
 use {
     kermit_ds::{
-        EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig, KeyLevels,
-        LazyExpansion, NoPruning, PruningPolicy, RadixBits, Relation, RelationHeader, RootCapacity,
-        SingletonPruning, Threads,
+        define_build_mode_provider, define_config_provider, BuiltWith, Configured, EagerExpansion,
+        ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig, KeyLevels, LazyExpansion,
+        LoadFactor, NoPruning, PruningPolicy, RadixBits, Relation, RelationHeader, RootCapacity,
+        SingletonPruning, Threads, TrieLevels,
     },
     kermit_iters::{HasOptimizationAxes, HashTrieIterable, HashTrieIterator, SipHashStrategy},
 };
@@ -68,6 +69,11 @@ fn check_every_level_count<P: PruningPolicy, E: ExpansionPolicy>() {
             let mut walked = Vec::new();
             trie.for_each_tuple(|row| walked.push(row.to_vec()));
             assert_eq!(sorted(walked), sorted(rows()), "{label}: contents");
+            assert_eq!(
+                sorted(trie.collect_tuples().to_vecs()),
+                sorted(rows()),
+                "{label}: the buffer"
+            );
 
             // Down the first path: `levels` opens succeed, the next fails,
             // and the leaf lends whole rows.
@@ -131,4 +137,32 @@ fn the_axis_names_the_level_policy() {
     let keys: Keys<NoPruning, EagerExpansion> = HashTrie::from_tuples(3.into(), rows());
     assert_eq!(all.optimization_axes()["ds_layout_levels"], "all");
     assert_eq!(keys.optimization_axes()["ds_layout_levels"], "keys");
+}
+
+define_config_provider!(HalfFull, HashTrieConfig, HashTrieConfig {
+    load_factor: LoadFactor::percent(50).unwrap(),
+    ..HashTrieConfig::default()
+});
+
+define_build_mode_provider!(
+    Radix2,
+    HashTrieBuildMode,
+    HashTrieBuildMode::Radix(RadixBits::new(2).unwrap())
+);
+
+/// `Configured` and `BuiltWith` forward the level count and the policy, so a
+/// configured or mode-built `keys` cell joins by its levels too.
+#[test]
+fn the_wrappers_forward_the_level_count_and_the_policy() {
+    type ConfiguredKeys = Configured<Keys<NoPruning, EagerExpansion>, HalfFull>;
+    type BuiltKeys = BuiltWith<Keys<NoPruning, EagerExpansion>, Radix2>;
+    let configured = ConfiguredKeys::from_tuples(header(1), rows());
+    let built = BuiltKeys::from_tuples(header(1), rows());
+    assert_eq!(configured.levels(), 1);
+    assert_eq!(built.levels(), 1);
+    assert_eq!(
+        <ConfiguredKeys as Relation>::TRIE_LEVELS,
+        TrieLevels::JoinKeys
+    );
+    assert_eq!(<BuiltKeys as Relation>::TRIE_LEVELS, TrieLevels::JoinKeys);
 }

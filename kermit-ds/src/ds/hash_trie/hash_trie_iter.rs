@@ -744,4 +744,18 @@ mod tests {
         assert_eq!(rows.data().as_ptr(), trie.tuples().as_flat().as_ptr());
         assert_eq!(trie.links().get(2), ChainLinks::NIL);
     }
+
+    /// The level policy adds no field to the iterator (#116): it reads the
+    /// trie's level count through the trie it borrows, so under `AllLevels`
+    /// the iterator is the frame stack and the borrow, as before.
+    #[test]
+    fn the_iterator_does_not_grow_under_the_level_policy() {
+        use std::mem::size_of;
+        type All = HashTrieIter<'static, SipHashStrategy, NoPruning, EagerExpansion, AllLevels>;
+        assert_eq!(
+            size_of::<All>(),
+            size_of::<Vec<Frame<'static, NoPruning, EagerExpansion>>>()
+                + size_of::<&HashTrie<SipHashStrategy>>()
+        );
+    }
 }
