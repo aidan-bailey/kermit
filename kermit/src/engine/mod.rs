@@ -18,6 +18,8 @@
 //! module, behind its own cargo feature (off by default), so that a default
 //! build compiles none of them.
 
+#[cfg(feature = "engine-duckdb")]
+pub mod duckdb;
 pub mod sql;
 
 use {
