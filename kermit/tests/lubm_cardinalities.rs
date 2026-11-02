@@ -21,13 +21,13 @@ mod common;
 use {
     common::utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
     kermit_algos::{
-        CardinalityOptimiser, CostBasedOptimiser, HashTriejoin, JoinQuery, LeapfrogTriejoin,
-        LexicographicOptimiser, Planner, QueryOptimiser,
+        BinaryHashJoin, CardinalityOptimiser, CostBasedOptimiser, HashTriejoin, JoinQuery,
+        LeapfrogTriejoin, LexicographicOptimiser, Planner, QueryOptimiser,
     },
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, ColumnTrie, EagerExpansion, GallopingSeek, HashTrie, KeyLevels,
-        LazyExpansion, LinearSeek, NoPruning, Relation, SingletonPruning, TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, EagerExpansion, GallopingSeek, HashIndex, HashTrie,
+        KeyLevels, LazyExpansion, LinearSeek, NoPruning, Relation, SingletonPruning, TreeTrie,
     },
     kermit_iters::SipHashStrategy,
     kermit_rdf::lubm::{
@@ -213,12 +213,18 @@ fn lubm_one_university_query_cardinalities_match_paper() {
             HashTrieSipPrunedLazyKeys,
             HashTriejoin,
         >(&bench, out.path(), &planner, &label, &expected));
+        // The keyed family (a new structure and algorithm; the row this
+        // file's comment above asks for): real data, with its long chains.
+        mismatches.extend(cardinality_mismatches::<
+            HashIndex<SipHashStrategy>,
+            BinaryHashJoin,
+        >(&bench, out.path(), &planner, &label, &expected));
     }
 
     assert!(
         mismatches.is_empty(),
         "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers x (2 sorted \
-         tries x 3 seek strategies + 3 HashTrie cells)):\n{}",
+         tries x 3 seek strategies + 3 HashTrie cells + 1 HashIndex cell)):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimiser_count,

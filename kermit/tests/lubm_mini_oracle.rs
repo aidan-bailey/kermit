@@ -108,11 +108,11 @@ mod common;
 use {
     clap::ValueEnum,
     common::utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
-    kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
+    kermit_algos::{BinaryHashJoin, HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, ColumnTrie, EagerExpansion, GallopingSeek, HashTrie, KeyLevels,
-        LazyExpansion, LinearSeek, NoPruning, Relation, SingletonPruning, TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, EagerExpansion, GallopingSeek, HashIndex, HashTrie,
+        KeyLevels, LazyExpansion, LinearSeek, NoPruning, Relation, SingletonPruning, TreeTrie,
     },
     kermit_iters::SipHashStrategy,
     kermit_rdf::{
@@ -303,11 +303,17 @@ fn mini_lubm_abox_query_cardinalities_match_hand_derivation() {
             HashTrieSipPrunedLazyKeys,
             HashTriejoin,
         >(&bench, out.path(), &planner, &label, &expected));
+        // The keyed family: the binary join over `HashIndex`, which keeps
+        // duplicates like `HashTrie`, so its counts are the same.
+        mismatches.extend(cardinality_mismatches::<
+            HashIndex<SipHashStrategy>,
+            BinaryHashJoin,
+        >(&bench, out.path(), &planner, &label, &expected));
     }
     assert!(
         mismatches.is_empty(),
         "mini LUBM cardinality mismatches ({} across {} queries x {} optimisers x (2 sorted tries \
-         x 3 seek strategies + 3 HashTrie cells)):\n{}",
+         x 3 seek strategies + 3 HashTrie cells + 1 HashIndex cell)):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimisers.len(),
