@@ -24,6 +24,7 @@
 //! [`KeyedIterable`] is the third iterator family, beside [`TrieIterable`]
 //! and [`HashTrieIterable`]: an index keyed on its leading columns and probed
 //! by exact match, which a binary hash join drives.
+//!
 //! # Example
 //!
 //! `Vec<usize>` ships with a [`LinearIterable`] implementation, useful as a

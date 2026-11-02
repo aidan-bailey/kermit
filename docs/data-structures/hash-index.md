@@ -31,7 +31,7 @@ The key length is `header.levels()`. `kermit::db::prepare` plans an index under 
 
 ## Invariants
 
-- **Chains are in source order.** Linking last to first prepends each row to its bucket, so each chain lists its rows in ascending row id; `probe` and `scan` therefore lend rows in source order. `insert` keeps this by appending to a chain's tail and relinking last to first on a rehash, so an index built by inserts has the arrays a bulk build of the same rows has (`insert_builds_the_arrays_the_bulk_build_builds`).
+- **Chains are in source order.** Linking last to first prepends each row to its bucket, so each chain lists its rows in ascending row id; `probe` and `scan` therefore lend rows in source order. `insert` keeps this by appending to a chain's tail and relinking last to first on a rehash, so an index built by inserts has the same contents (`directory`, `next`, `rows`) as a bulk build of the same rows (`insert_builds_the_arrays_the_bulk_build_builds`). Capacities may differ, since `next` and `rows` grow by doubling; only `from_view` is benchmarked.
 - **`key_len == header.levels()`**, at most the arity. `probe` asserts `key.len() == key_len()`: a key of the wrong length would compare the wrong columns.
 - **The directory is a power of two, at least 2, and at least the row count**, and `directory` and `next` are empty exactly when `key_len == 0`.
 - **Duplicates are kept.** `Relation::KEEPS_DUPLICATES` is `true`: a repeated row is stored and lent once per copy, `Cardinality::tuple_count` counts it, and an all-constant atom's row count multiplies a join's results, as on `HashTrie` (`kermit::db::build` clamps it only for structures that absorb duplicates).

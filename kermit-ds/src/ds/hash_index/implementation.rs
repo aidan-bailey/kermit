@@ -212,9 +212,10 @@ impl<H: HashStrategy> Relation for HashIndex<H> {
     }
 
     /// Appends `tuple` and links it. Once the rows outnumber the slots the
-    /// directory doubles and every row is relinked, so the arrays equal those
-    /// of a bulk build of the same rows. `from_view` is the only build that
-    /// is benchmarked.
+    /// directory doubles and every row is relinked, so the contents
+    /// (`directory`, `next` and `rows`) equal those of a bulk build of the
+    /// same rows. Capacities may differ, since `next` and `rows` grow by
+    /// doubling; `from_view` is the only build that is benchmarked.
     ///
     /// # Panics
     ///
