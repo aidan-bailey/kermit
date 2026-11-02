@@ -92,7 +92,7 @@ jobs:
           KERMIT_BIN: ${{ github.workspace }}/target/debug/kermit
 
   engines:
-    name: Engines (DuckDB bundled)
+    name: Engines (DuckDB bundled, Nemo)
     runs-on: ubuntu-latest
     # CI has no Nix, so `engine-duckdb-bundled` compiles DuckDB's amalgamation, one large C++
     # translation unit: expect a long cold build.
@@ -101,7 +101,7 @@ jobs:
       RUSTFLAGS: -Dwarnings
       RUSTDOCFLAGS: -Dwarnings
       # The one place the job names its engines; the Nemo engine's feature joins this list.
-      ENGINE_FEATURES: engine-duckdb-bundled
+      ENGINE_FEATURES: engine-duckdb-bundled,engine-nemo
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
