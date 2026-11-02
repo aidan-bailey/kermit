@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from kermit_lab.analysis import cell_labels, speedup_table
 from kermit_lab.defaults import BINARY_AXIS_DEFAULTS, apply_axis_defaults
 from kermit_lab.frame import load
 from kermit_lab.loader import TIME_PHASES, load_reports, phase_of
@@ -150,3 +151,60 @@ def test_system_default_fills_rows_without_it_and_keeps_the_rest() -> None:
     assert BINARY_AXIS_DEFAULTS["system"] == "kermit"
     # The caller's frame is unchanged.
     assert df["system"].isna().tolist() == [True, False, True]
+
+
+def test_cell_labels_name_engines_by_system_and_kermit_cells_by_structure_and_algorithm() -> None:
+    df = pd.DataFrame(
+        {
+            "system": ["kermit", "kermit", "duckdb", "nemo", pd.NA],
+            "data_structure": ["TreeTrie", "HashTrie", pd.NA, pd.NA, "ColumnTrie"],
+            "algorithm": ["LeapfrogTriejoin", "HashTriejoin", pd.NA, pd.NA, pd.NA],
+            "engine_threads": pd.array([pd.NA, pd.NA, 4, pd.NA, pd.NA], dtype="Int64"),
+        },
+        index=[10, 11, 12, 13, 14],
+    )
+    labels = cell_labels(df)
+    assert labels.tolist() == [
+        "TreeTrie/LeapfrogTriejoin", "HashTrie/HashTriejoin", "duckdb-t4", "nemo", "ColumnTrie",
+    ]
+    # Aligned with the frame, so `df.assign(cell=cell_labels(df))` is safe.
+    assert labels.index.tolist() == [10, 11, 12, 13, 14]
+
+
+def test_cell_labels_of_a_frame_without_the_v8_columns() -> None:
+    df = pd.DataFrame({"data_structure": ["TreeTrie"], "algorithm": ["LeapfrogTriejoin"]})
+    assert cell_labels(df).tolist() == ["TreeTrie/LeapfrogTriejoin"]
+    assert cell_labels(pd.DataFrame({"metric": ["time"]})).tolist() == ["kermit"]
+
+
+def test_speedup_table_ignores_engine_rows() -> None:
+    """An engine row has no build mode, so it cannot be a baseline or an arm: a frame that
+    mixes engines in gives the table it gives without them."""
+    kermit = []
+    for mode, mean in (("serial", 100.0), ("parallel:2", 50.0)):
+        kermit.append({
+            "kind": "ds", "metric": "time", "phase": "build", "estimator": "criterion",
+            "system": "kermit", "data_structure": "TreeTrie", "relation_path": "r.parquet",
+            "ds_build_mode": mode, "threads": 2 if mode == "parallel:2" else pd.NA,
+            "mean_ns": mean, "mean_lo": mean * 0.99, "mean_hi": mean * 1.01,
+            "source_path": f"{mode}.json", "criterion_group": mode,
+            "criterion_function": "TreeTrie/build",
+        })
+    engine = {
+        "kind": "run", "metric": "time", "phase": "build", "estimator": "criterion",
+        "system": "nemo", "data_structure": pd.NA, "relation_path": pd.NA,
+        "ds_build_mode": pd.NA, "threads": pd.NA,
+        "mean_ns": 10.0, "mean_lo": 9.0, "mean_hi": 11.0,
+        "source_path": "nemo.json", "criterion_group": "nemo",
+        "criterion_function": "build",
+    }
+    plain = pd.DataFrame(kermit)
+    plain["threads"] = plain["threads"].astype("Int64")
+    mixed = pd.DataFrame([*kermit, engine])
+    mixed["threads"] = mixed["threads"].astype("Int64")
+
+    expected = speedup_table(plain)
+    got = speedup_table(mixed)
+    assert got["speedup"].tolist() == pytest.approx([2.0])
+    assert got["speedup"].tolist() == pytest.approx(expected["speedup"].tolist())
+    assert got["threads"].tolist() == expected["threads"].tolist()

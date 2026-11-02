@@ -31,6 +31,44 @@ _VALUE_FAMILY: frozenset[str] = frozenset({
 _DERIVED_COLS: frozenset[str] = frozenset({"threads"})
 
 
+#: The `system` axis of kermit's own cells. Every report before v8, and every v8 report of a
+#: structure cell, carries it (or is back-filled with it, `defaults.BINARY_AXIS_DEFAULTS`).
+KERMIT_SYSTEM = "kermit"
+
+
+def _cell_label(system: object, data_structure: object, algorithm: object, threads: object) -> str:
+    """One row's cell: an engine by its ``system`` (``duckdb-t4``: the engine's group segment,
+    with its thread count when it reports one), a kermit cell by ``data_structure/algorithm``
+    (just the structure for a ``bench ds`` row)."""
+    if not pd.isna(system) and system != KERMIT_SYSTEM:
+        return str(system) if pd.isna(threads) else f"{system}-t{int(threads)}"
+    parts = [str(p) for p in (data_structure, algorithm) if not pd.isna(p)]
+    return "/".join(parts) if parts else KERMIT_SYSTEM
+
+
+def cell_labels(df: pd.DataFrame) -> pd.Series:
+    """The cell label of every row of ``df``, aligned with its index: ``system`` (plus
+    ``-t{engine_threads}``) for an engine row, ``data_structure/algorithm`` for a kermit row.
+
+    The plot defaults colour and facet by it, so one figure can hold kermit's cells beside the
+    engines'. A column that is absent (a frame of v7 reports has no ``system`` or
+    ``engine_threads``) counts as missing in every row.
+    """
+    def column(name: str) -> pd.Series:
+        if name in df.columns:
+            return df[name]
+        return pd.Series(pd.NA, index=df.index, dtype="object")
+
+    labels = [
+        _cell_label(system, data_structure, algorithm, threads)
+        for system, data_structure, algorithm, threads in zip(
+            column("system"), column("data_structure"), column("algorithm"),
+            column("engine_threads"),
+        )
+    ]
+    return pd.Series(labels, index=df.index, dtype="object")
+
+
 def summary(
     df: pd.DataFrame,
     *,
@@ -271,6 +309,10 @@ def speedup_table(
     or when no case has both a baseline row and a ``parallel:N`` /
     ``presized:N`` row on ``phase``. Warns about ``parallel:N`` /
     ``presized:N`` rows whose case has no baseline row, and leaves them out.
+
+    Engine rows (``system`` other than kermit, report v8) have no ``ds_build_mode``, so they
+    are neither a baseline nor an arm and never enter a case; label cells with
+    :func:`cell_labels` to plot them beside the structures.
     """
     value_lo, value_hi = _ci_columns_for(value)
     needed = [
