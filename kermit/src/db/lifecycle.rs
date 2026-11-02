@@ -436,10 +436,10 @@ mod tests {
     use {
         super::*,
         kermit_algos::{
-            analyse, CardinalityOptimiser, CostBasedOptimiser, HashTriejoin, LeapfrogTriejoin,
-            LexicographicOptimiser, QueryOptimiser, RewriteError,
+            analyse, BinaryHashJoin, CardinalityOptimiser, CostBasedOptimiser, HashTriejoin,
+            LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser, RewriteError,
         },
-        kermit_ds::{Cardinality, Filter, HashTrie, RelationHeader, TreeTrie},
+        kermit_ds::{Cardinality, Filter, HashIndex, HashTrie, RelationHeader, TreeTrie},
         std::{cell::RefCell, rc::Rc},
     };
 
@@ -1336,5 +1336,54 @@ mod tests {
             join_with::<HashTrieSipKeys, HashTriejoin>(&c, &query, &lexicographic()),
             vec![vec![1], vec![1], vec![2], vec![2]]
         );
+    }
+
+    /// `HashIndex` keeps duplicate rows like `HashTrie`, so an all-constant
+    /// atom multiplies the answer under `ProbeKeys` too: `s(c7, c8)` holds
+    /// twice and `t(c5)` three times, so `r`'s two rows are answered six times
+    /// each. A count of zero empties the product.
+    #[test]
+    fn checks_multiply_on_a_hash_index() {
+        let c = catalog(vec![
+            ("r", 1, vec![vec![1], vec![2]]),
+            ("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]]),
+            ("t", 1, vec![vec![5], vec![5], vec![5]]),
+        ]);
+        let multiplicity = |text: &str| {
+            let prepared =
+                prepare(&c, &parse(text), &lexicographic(), TrieLevels::ProbeKeys).unwrap();
+            build::<HashIndex>(&c, &prepared).multiplicity()
+        };
+        assert_eq!(multiplicity("Q(X) :- r(X)."), 1);
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8)."), 2);
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8), t(c5)."), 6);
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8), s(c7, c9)."), 0);
+
+        let query = parse("Q(X) :- r(X), s(c7, c8), t(c5).");
+        let mut copies = vec![vec![1]; 6];
+        copies.extend(vec![vec![2]; 6]);
+        assert_eq!(
+            join_with::<HashIndex, BinaryHashJoin>(&c, &query, &lexicographic()),
+            copies
+        );
+        let none = parse("Q(X) :- r(X), s(c7, c9).");
+        assert!(join_with::<HashIndex, BinaryHashJoin>(&c, &none, &lexicographic()).is_empty());
+    }
+
+    /// A query prepared for `ProbeKeys` names its atoms in join order and
+    /// keys each index on the variables the earlier atoms bind. A structure
+    /// with another policy must refuse it, as it refuses a `JoinKeys` plan.
+    #[test]
+    #[should_panic(expected = "trie levels")]
+    fn a_sorted_trie_refuses_a_query_prepared_for_probe_key_levels() {
+        let c = catalog(vec![("r", 2, vec![vec![1, 2]]), ("s", 2, vec![vec![2, 3]])]);
+        let probe = prepare(
+            &c,
+            &parse("Q(X, Y, Z) :- r(X, Y), s(Y, Z)."),
+            &lexicographic(),
+            TrieLevels::ProbeKeys,
+        )
+        .unwrap();
+        let _ = build::<TreeTrie>(&c, &probe);
     }
 }

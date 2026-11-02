@@ -7,9 +7,11 @@
 //! sink. Each iterator family has one streaming function that runs all
 //! three — [`lftj_join_for_each`] for sorted tries under a
 //! [`TrieIterable`]-family algorithm, [`hash_join_for_each`] for
-//! [`HashTrieIterable`] structures under [`HashTriejoin`] — and one
-//! collecting function ([`lftj_join`], [`hash_join`]) whose sink is a flat
-//! [`Tuples`] batch. A collected answer is a relation: the
+//! [`HashTrieIterable`] structures under [`HashTriejoin`],
+//! [`binary_join_for_each`] for [`KeyedIterable`] structures under
+//! [`BinaryHashJoin`] — and one collecting function ([`lftj_join`],
+//! [`hash_join`], [`binary_join`]) whose sink is a flat [`Tuples`] batch. A
+//! collected answer is a relation: the
 //! [`RelationHeader`] that [`Prepared::answer_header`] names and its rows,
 //! the pair a [`Catalog`] is built from. Each is planned by a [`Planner`].
 //! The streaming functions share one private body and the collecting ones
@@ -18,8 +20,8 @@
 //! needs a wrapper for a constant or a repeated variable.
 //!
 //! Every entry point is total: a query that cannot run over the catalog
-//! returns a [`JoinError`] rather than panicking, identically for both
-//! families. [`validate_query`] runs the same checks without joining, for
+//! returns a [`JoinError`] rather than panicking, identically for every
+//! family. [`validate_query`] runs the same checks without joining, for
 //! callers that want to reject a query before building or timing anything.
 //! Runtime selection of the (structure, algorithm) cell lives in the CLI's
 //! `execution` module, not here.
@@ -34,9 +36,9 @@ pub use {
     validation::{validate_query, JoinError, RelationArities},
 };
 use {
-    kermit_algos::{HashTriejoin, JoinAlgo, JoinQuery, Planner},
+    kermit_algos::{BinaryHashJoin, HashTriejoin, JoinAlgo, JoinQuery, Planner},
     kermit_ds::{Relation, RelationHeader, Tuples},
-    kermit_iters::{HashTrieIterable, TrieIterable},
+    kermit_iters::{HashTrieIterable, KeyedIterable, TrieIterable},
 };
 
 /// The one join body: [`prepare`] (validation, accesses, statistics, plan,
@@ -173,6 +175,46 @@ where
     collect_join::<R, HashTriejoin>(catalog, &query, planner)
 }
 
+/// Keyed-family join entry point: runs `query` over `catalog` with
+/// [`BinaryHashJoin`], planned by `planner`, and passes each result tuple to
+/// `emit` without materialising the result. `R` is the structure every index
+/// is built as; the query is prepared under `R::TRIE_LEVELS`
+/// (`TrieLevels::ProbeKeys` for `HashIndex`), which puts the executed body in
+/// join order and keys each index on the variables the atoms before it bind.
+/// Mirror of [`hash_join_for_each`].
+///
+/// # Errors
+///
+/// As [`lftj_join_for_each`].
+pub fn binary_join_for_each<R>(
+    catalog: &Catalog, query: JoinQuery, planner: &Planner, emit: impl FnMut(&[usize]),
+) -> Result<(), JoinError>
+where
+    R: Relation + KeyedIterable,
+{
+    run_join::<R, BinaryHashJoin>(catalog, &query, planner, emit)
+}
+
+/// [`binary_join_for_each`], collected: returns the answer as a relation, as
+/// [`lftj_join`] does.
+///
+/// # Errors
+///
+/// As [`binary_join_for_each`].
+///
+/// # Panics
+///
+/// If the answer has more than [`RowId::MAX`](kermit_ds::RowId) rows; stream
+/// such an answer with [`binary_join_for_each`] instead.
+pub fn binary_join<R>(
+    catalog: &Catalog, query: JoinQuery, planner: &Planner,
+) -> Result<(RelationHeader, Tuples), JoinError>
+where
+    R: Relation + KeyedIterable,
+{
+    collect_join::<R, BinaryHashJoin>(catalog, &query, planner)
+}
+
 #[cfg(test)]
 mod tests {
     use {
@@ -181,7 +223,7 @@ mod tests {
             CatalogStats, LeapfrogTriejoin, LexicographicOptimiser, QueryOptimiser, QueryPlan,
             StatisticsLevel, ACCESS_PREFIX,
         },
-        kermit_ds::{HashTrie, RelationHeader, TreeTrie, Tuples},
+        kermit_ds::{HashIndex, HashTrie, RelationHeader, TreeTrie, Tuples},
         std::{cell::RefCell, rc::Rc},
     };
 
@@ -743,5 +785,108 @@ mod tests {
             "Q(X, Y) :- Const_c5(X), Select_0_r(X, Y), Index_1_0_edge(Y, X).",
         );
         assert_eq!(got, vec![vec![5, 50]]);
+    }
+
+    fn keyed_family(catalog: &Catalog, query: &JoinQuery) -> Result<Rows, JoinError> {
+        let planner = planner_of(LexicographicOptimiser);
+        binary_join::<HashIndex>(catalog, query.clone(), &planner).map(|(_, rows)| rows.to_vecs())
+    }
+
+    /// The keyed family (`HashIndex` under `BinaryHashJoin`) answers like the
+    /// hash family, bag semantics included: a triangle, a self-join read in
+    /// both column orders (two indexes of different key lengths), a cross
+    /// product (an atom with an empty key that is not the driver), duplicate
+    /// rows, and a duplicated join partner.
+    #[test]
+    fn the_keyed_family_answers_like_the_hash_family() {
+        let catalog = counts(vec![
+            ("r", 2, vec![vec![1, 2], vec![1, 3], vec![2, 3]]),
+            ("s", 2, vec![vec![2, 3], vec![3, 4], vec![3, 5]]),
+            ("t", 2, vec![vec![1, 3], vec![1, 4], vec![2, 5]]),
+            ("edge", 2, mutual_edges()),
+            ("dup", 2, vec![vec![1, 7], vec![1, 7], vec![2, 8]]),
+        ]);
+        let cases: Vec<(&str, Rows)> = vec![
+            ("Q(X, Y, Z) :- r(X, Y), s(Y, Z), t(X, Z).", vec![
+                vec![1, 2, 3],
+                vec![1, 3, 4],
+                vec![2, 3, 5],
+            ]),
+            ("Q(X, Y) :- edge(X, Y), edge(Y, X).", vec![
+                vec![1, 2],
+                vec![2, 1],
+                vec![2, 3],
+                vec![3, 2],
+            ]),
+            ("Q(X, Z) :- r(X, _), s(Z, c3).", vec![
+                vec![1, 2],
+                vec![1, 2],
+                vec![2, 2],
+            ]),
+            ("Q(X, Y) :- dup(X, Y).", vec![vec![1, 7], vec![1, 7], vec![
+                2, 8,
+            ]]),
+            ("Q(X) :- dup(X, c7), r(X, Y).", vec![vec![1]; 4]),
+        ];
+        for (text, want) in cases {
+            let query: JoinQuery = text.parse().unwrap();
+            let mut keyed = keyed_family(&catalog, &query).unwrap();
+            keyed.sort();
+            assert_eq!(keyed, want, "{text}");
+            let mut hashed = hash_family(&catalog, &query).unwrap();
+            hashed.sort();
+            assert_eq!(hashed, want, "{text} (hash family)");
+        }
+    }
+
+    /// The streaming entry point visits the rows `binary_join` collects,
+    /// without collecting.
+    #[test]
+    fn the_keyed_streaming_entry_point_visits_every_row() {
+        let catalog = counts(vec![
+            ("first", 1, vec![vec![1], vec![2], vec![3]]),
+            ("second", 1, vec![vec![2], vec![3], vec![4]]),
+        ]);
+        let query: JoinQuery = "Q(X) :- first(X), second(X).".parse().unwrap();
+        let planner = planner_of(LexicographicOptimiser);
+        let mut streamed = Vec::new();
+        binary_join_for_each::<HashIndex>(&catalog, query.clone(), &planner, |row| {
+            streamed.push(row.to_vec());
+        })
+        .unwrap();
+        streamed.sort();
+        assert_eq!(streamed, vec![vec![2], vec![3]]);
+
+        let (header, rows) = binary_join::<HashIndex>(&catalog, query, &planner).unwrap();
+        assert_eq!(header.name(), "Q");
+        assert_eq!(header.attrs().to_vec(), vec!["X"]);
+        let mut collected = rows.to_vecs();
+        collected.sort();
+        assert_eq!(collected, streamed);
+    }
+
+    /// Validation runs before the keyed family's code: every #78 shape gets
+    /// the hash family's error, and nothing is emitted.
+    #[test]
+    fn the_keyed_family_rejects_malformed_queries_like_the_hash_family() {
+        let catalog = counts(vec![("edge", 2, vec![vec![1, 2], vec![2, 1], vec![2, 3]])]);
+        let planner = planner_of(LexicographicOptimiser);
+        for q in [
+            "Q(X, Y) :- edge(X, Z).",
+            "Q(X, X) :- edge(X, Y).",
+            "Q(X, Y, Z) :- edge(X, Y, Z).",
+            "Q(X) :- edge(X).",
+            "Q(X, Y) :- nope(X, Y).",
+            "Q(_) :- edge(X, Y).",
+            "Q(X) :- edge(X, cfoo).",
+        ] {
+            let query: JoinQuery = q.parse().unwrap();
+            let keyed = keyed_family(&catalog, &query);
+            assert!(keyed.is_err(), "{q} was accepted");
+            assert_eq!(keyed, hash_family(&catalog, &query), "{q}");
+            let mut rows = 0;
+            let _ = binary_join_for_each::<HashIndex>(&catalog, query, &planner, |_| rows += 1);
+            assert_eq!(rows, 0, "{q}");
+        }
     }
 }
