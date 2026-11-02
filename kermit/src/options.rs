@@ -550,102 +550,59 @@ pub(crate) fn validate_layout_choices(
 /// The dispatchers (`dispatch_ds_bench` and `dispatch_run_bench`, in
 /// `bench/ds.rs` and `bench/run.rs`) and `write_query_csv` (in `main.rs`)
 /// all go through here, so the Layout product is written out once rather
-/// than once per caller. It is not free of the product, though: the arms
-/// *are* the cells, so each Layout dimension doubles them (2^n in general).
-/// The third, expansion (#92), took them to 8, and also cost a
-/// `LayoutChoices` field, a `DsChoices` field, an `Execution::HashHtj`
-/// field, and a type parameter (with its `*_of::<X>()` label) on `HashHtj`
-/// and `HashTrieFamily`. Before a fourth dimension, reach for a nested macro
-/// that expands one dimension at a time, or a builder — not another
-/// hand-written 16-arm match.
+/// than once per caller. It expands one dimension at a time (`@hasher`, then
+/// `@pruning`, then `@expansion`): each rule matches one choice, declares
+/// one alias and hands the rest on, so a dimension costs one rule, though
+/// the cells still double with each (2^n monomorphisations of `$body`). A
+/// dimension also costs a `LayoutChoices` field, a `DsChoices` field, an
+/// `Execution::HashHtj` field, and a type parameter (with its `*_of::<X>()`
+/// label) on `HashHtj` and `HashTrieFamily`.
 ///
 /// Hygiene contract: the identifiers named in the closure-like pattern
-/// become *type aliases* scoped to the whole arm, so `$body` must not need
-/// a different type of any of those names.
+/// become *type aliases* scoped to the arm that declares them and every arm
+/// nested in it, so `$body` must not need a different type of any of those
+/// names.
 macro_rules! with_hash_trie_layout {
-    ($hasher:expr, $pruning:expr, $expansion:expr, | $H:ident, $P:ident, $E:ident | $body:expr) => {
-        match ($hasher, $pruning, $expansion) {
-            | (
-                $crate::options::HasherChoice::Sip,
-                $crate::options::PruningChoice::Off,
-                $crate::options::ExpansionChoice::Eager,
-            ) => {
+    (@hasher $choice:expr; $H:ident; $then:expr) => {
+        match $choice {
+            | $crate::options::HasherChoice::Sip => {
                 type $H = ::kermit_iters::SipHashStrategy;
-                type $P = ::kermit_ds::NoPruning;
-                type $E = ::kermit_ds::EagerExpansion;
-                $body
+                $then
             },
-            | (
-                $crate::options::HasherChoice::Sip,
-                $crate::options::PruningChoice::Off,
-                $crate::options::ExpansionChoice::Lazy,
-            ) => {
-                type $H = ::kermit_iters::SipHashStrategy;
-                type $P = ::kermit_ds::NoPruning;
-                type $E = ::kermit_ds::LazyExpansion;
-                $body
-            },
-            | (
-                $crate::options::HasherChoice::Sip,
-                $crate::options::PruningChoice::On,
-                $crate::options::ExpansionChoice::Eager,
-            ) => {
-                type $H = ::kermit_iters::SipHashStrategy;
-                type $P = ::kermit_ds::SingletonPruning;
-                type $E = ::kermit_ds::EagerExpansion;
-                $body
-            },
-            | (
-                $crate::options::HasherChoice::Sip,
-                $crate::options::PruningChoice::On,
-                $crate::options::ExpansionChoice::Lazy,
-            ) => {
-                type $H = ::kermit_iters::SipHashStrategy;
-                type $P = ::kermit_ds::SingletonPruning;
-                type $E = ::kermit_ds::LazyExpansion;
-                $body
-            },
-            | (
-                $crate::options::HasherChoice::Fxhash,
-                $crate::options::PruningChoice::Off,
-                $crate::options::ExpansionChoice::Eager,
-            ) => {
+            | $crate::options::HasherChoice::Fxhash => {
                 type $H = ::kermit_iters::FxHashStrategy;
-                type $P = ::kermit_ds::NoPruning;
-                type $E = ::kermit_ds::EagerExpansion;
-                $body
-            },
-            | (
-                $crate::options::HasherChoice::Fxhash,
-                $crate::options::PruningChoice::Off,
-                $crate::options::ExpansionChoice::Lazy,
-            ) => {
-                type $H = ::kermit_iters::FxHashStrategy;
-                type $P = ::kermit_ds::NoPruning;
-                type $E = ::kermit_ds::LazyExpansion;
-                $body
-            },
-            | (
-                $crate::options::HasherChoice::Fxhash,
-                $crate::options::PruningChoice::On,
-                $crate::options::ExpansionChoice::Eager,
-            ) => {
-                type $H = ::kermit_iters::FxHashStrategy;
-                type $P = ::kermit_ds::SingletonPruning;
-                type $E = ::kermit_ds::EagerExpansion;
-                $body
-            },
-            | (
-                $crate::options::HasherChoice::Fxhash,
-                $crate::options::PruningChoice::On,
-                $crate::options::ExpansionChoice::Lazy,
-            ) => {
-                type $H = ::kermit_iters::FxHashStrategy;
-                type $P = ::kermit_ds::SingletonPruning;
-                type $E = ::kermit_ds::LazyExpansion;
-                $body
+                $then
             },
         }
+    };
+    (@pruning $choice:expr; $P:ident; $then:expr) => {
+        match $choice {
+            | $crate::options::PruningChoice::Off => {
+                type $P = ::kermit_ds::NoPruning;
+                $then
+            },
+            | $crate::options::PruningChoice::On => {
+                type $P = ::kermit_ds::SingletonPruning;
+                $then
+            },
+        }
+    };
+    (@expansion $choice:expr; $E:ident; $then:expr) => {
+        match $choice {
+            | $crate::options::ExpansionChoice::Eager => {
+                type $E = ::kermit_ds::EagerExpansion;
+                $then
+            },
+            | $crate::options::ExpansionChoice::Lazy => {
+                type $E = ::kermit_ds::LazyExpansion;
+                $then
+            },
+        }
+    };
+    ($hasher:expr, $pruning:expr, $expansion:expr, | $H:ident, $P:ident, $E:ident | $body:expr) => {
+        $crate::options::with_hash_trie_layout!(@hasher $hasher; $H;
+            $crate::options::with_hash_trie_layout!(@pruning $pruning; $P;
+                $crate::options::with_hash_trie_layout!(@expansion $expansion; $E; $body)))
     };
 }
 
