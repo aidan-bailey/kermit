@@ -198,3 +198,16 @@ def test_speedup_subcommand_does_not_back_fill_a_serial_baseline(
             "--out", str(tmp_path / "speedup.pdf"),
         ])
     assert rc == 3
+
+
+def test_general_plot_subcommand_plots_single_runs(fixture_values_tree, tmp_path: Path) -> None:
+    out = tmp_path / "single.pdf"
+    rc = main([
+        "plot", *[str(p) for p in fixture_values_tree["paths"]],
+        "--criterion-root", str(fixture_values_tree["criterion_root"]),
+        "--out", str(out),
+        "--kind", "bar", "--y", "time", "--x", "data_structure",
+        "--phase", "build", "--estimator", "single",
+    ])
+    assert rc == 0
+    assert out.exists() and out.stat().st_size > 0

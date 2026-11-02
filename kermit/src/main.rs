@@ -2,7 +2,8 @@
 //!
 //! Two top-level subcommands: `join` (execute a Datalog query against
 //! relation files) and `bench` (Criterion-based benchmarks, including the
-//! YAML-defined benchmarks under `benchmarks/`).
+//! YAML-defined benchmarks under `benchmarks/`, and `bench probe`, their
+//! Criterion-free screen).
 //!
 //! Run `kermit --help` for the full help text; each `clap` `#[arg(help =
 //! …)]` string drives that help output. Benchmark YAML schema is documented
@@ -27,13 +28,13 @@ mod bench;
 mod bench_report;
 mod execution;
 mod materialize;
-mod measurement;
 mod options;
 
 use {
     bench::{
         check_sweep_group_directories, dispatch_ds_bench, dispatch_run_bench, gen::GenSubcommand,
-        resolve_sweep, workload::PreparedWorkload, Metric, RunSettings, Workload,
+        measure::CriterionSettings, resolve_sweep, workload::PreparedWorkload, Metric, RunSettings,
+        Workload,
     },
     bench_report::{BenchKind, ReportSink},
     execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
@@ -207,6 +208,57 @@ struct BenchArgs {
     report_json: Option<PathBuf>,
 }
 
+/// Which benchmarks, queries and cells a `bench run` or `bench probe`
+/// covers, and how each query is planned.
+#[derive(Args)]
+struct RunSelection {
+    /// Benchmark name (omit for --all)
+    #[arg(value_name = "NAME")]
+    name: Option<String>,
+
+    /// Run all available benchmarks
+    #[arg(long, conflicts_with = "name")]
+    all: bool,
+
+    /// Run only the named query (omit to run all queries)
+    #[arg(short, long, value_name = "QUERY")]
+    query: Option<String>,
+
+    /// Data structure (`all` sweeps every available structure)
+    #[arg(
+        short,
+        long,
+        value_name = "INDEXSTRUCTURE",
+        required = true,
+        value_enum
+    )]
+    indexstructure: IndexStructureSelector,
+
+    /// Join algorithm (`all` sweeps every available algorithm)
+    #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
+    algorithm: JoinAlgorithmSelector,
+
+    #[command(flatten)]
+    planner: PlannerArgs,
+
+    /// Regenerate generator-driven benchmarks if their cached
+    /// `meta.json` spec_hash differs from the current YAML's params.
+    /// Without this flag, a drifted benchmark is an error instead of
+    /// silently re-running an expensive pipeline. No-op for static
+    /// benchmarks.
+    #[arg(long)]
+    force: bool,
+
+    #[command(flatten)]
+    layout: LayoutChoices,
+
+    #[command(flatten)]
+    config: ConfigChoices,
+
+    #[command(flatten)]
+    build: BuildChoices,
+}
+
 #[derive(Subcommand)]
 enum BenchSubcommand {
     /// Benchmark a join query over relation files.
@@ -292,34 +344,8 @@ enum BenchSubcommand {
 
     /// Run a named benchmark from benchmarks/ YAML files
     Run {
-        /// Benchmark name (omit for --all)
-        #[arg(value_name = "NAME")]
-        name: Option<String>,
-
-        /// Run all available benchmarks
-        #[arg(long, conflicts_with = "name")]
-        all: bool,
-
-        /// Run only the named query (omit to run all queries)
-        #[arg(short, long, value_name = "QUERY")]
-        query: Option<String>,
-
-        /// Data structure (`all` sweeps every available structure)
-        #[arg(
-            short,
-            long,
-            value_name = "INDEXSTRUCTURE",
-            required = true,
-            value_enum
-        )]
-        indexstructure: IndexStructureSelector,
-
-        /// Join algorithm (`all` sweeps every available algorithm)
-        #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
-        algorithm: JoinAlgorithmSelector,
-
         #[command(flatten)]
-        planner: PlannerArgs,
+        selection: RunSelection,
 
         /// Metrics to benchmark (`end-to-end` is opt-in, not in the default
         /// set)
@@ -337,28 +363,28 @@ enum BenchSubcommand {
         #[arg(long, value_name = "K", default_value = "1", value_parser = clap::value_parser!(u32).range(1..))]
         queries_per_build: u32,
 
-        /// Regenerate generator-driven benchmarks if their cached
-        /// `meta.json` spec_hash differs from the current YAML's params.
-        /// Without this flag, `bench run` errors out on drift instead of
-        /// silently re-running an expensive pipeline. No-op for static
-        /// benchmarks.
-        #[arg(long)]
-        force: bool,
-
         /// Run each query once before timing and check its result count
         /// against the benchmark's `expected` value; a mismatch aborts.
         /// Queries without `expected` are noted and skipped.
         #[arg(long)]
         verify: bool,
+    },
 
+    /// Screen a named benchmark without Criterion: verify each query, time
+    /// one build and one run, record the exact space
+    ///
+    /// Per query and cell, the query's indexes are built once and the query
+    /// is run once, both timed (single runs, recorded as `values` with
+    /// estimator `single`), beside the exact `space`, the answer count and
+    /// the plan. Every query whose YAML declares `expected` is verified, and
+    /// a mismatch aborts. Takes `bench run`'s selection flags. `bench`'s
+    /// Criterion settings (`--name`, `--sample-size`, `--measurement-time`,
+    /// `--warm-up-time`) do not apply; `--report-json` does. A single run is
+    /// cold: compare it with other single runs, never with a Criterion
+    /// estimate.
+    Probe {
         #[command(flatten)]
-        layout: LayoutChoices,
-
-        #[command(flatten)]
-        config: ConfigChoices,
-
-        #[command(flatten)]
-        build: BuildChoices,
+        selection: RunSelection,
     },
 
     /// List available benchmarks
@@ -749,6 +775,7 @@ fn run_bench_join(
         write_query_csv(cell, &workload, writer)?;
     }
 
+    let criterion = CriterionSettings::from_args(bench_args);
     let settings = RunSettings {
         kind: BenchKind::Join,
         prefix: bench_args.name.as_deref().unwrap_or(DEFAULT_JOIN_GROUP),
@@ -756,11 +783,11 @@ fn run_bench_join(
         metrics,
         queries_per_build,
         verify: false,
-        bench_args,
+        single_run: false,
+        criterion: &criterion,
     };
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
-    let reports = dispatch_run_bench(cell, &workload, settings)?;
-    sink.push(reports)?;
+    dispatch_run_bench(cell, &workload, settings, &mut sink)?;
     sink.finish()?;
     Ok(())
 }
@@ -786,6 +813,7 @@ fn run_ds_bench_command(
     }
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let group_name = bench_args.name.as_deref().unwrap_or(DEFAULT_DS_GROUP);
+    let criterion = CriterionSettings::from_args(bench_args);
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Ds)?;
     for ds in indexstructure.expand() {
         let report = dispatch_ds_bench(
@@ -795,7 +823,7 @@ fn run_ds_bench_command(
             &metrics,
             queries_per_build,
             group_name,
-            bench_args,
+            &criterion,
         )?;
         sink.push(vec![report])?;
     }
@@ -803,19 +831,28 @@ fn run_ds_bench_command(
     Ok(())
 }
 
-/// Handler for `bench run`: materialise the selected benchmarks and run
-/// every valid (index-structure, algorithm) cell of the requested sweep,
-/// writing the aggregated reports.
-#[allow(clippy::too_many_arguments)]
+/// Handler for `bench run` and `bench probe`: materialise the selected
+/// benchmarks and run every valid (index-structure, algorithm) cell of the
+/// requested sweep, writing each query's report as it finishes.
 fn run_bench_run_command(
-    bench_args: &BenchArgs, name: Option<String>, all: bool, query: Option<String>,
-    indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, planner: PlannerArgs,
-    metrics: Vec<Metric>, queries_per_build: u32, force: bool, verify: bool, layout: LayoutChoices,
-    config: ConfigChoices, build: BuildChoices,
+    bench_args: &BenchArgs, selection: RunSelection, kind: BenchKind, metrics: Vec<Metric>,
+    queries_per_build: u32, verify: bool, single_run: bool,
 ) -> anyhow::Result<()> {
+    let RunSelection {
+        name,
+        all,
+        query,
+        indexstructure,
+        algorithm,
+        planner,
+        force,
+        layout,
+        config,
+        build,
+    } = selection;
     let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
     let given = DsFlag::given(&layout, &config, &build);
-    let cells = resolve_sweep(indexstructure, algorithm, choices, &given)?;
+    let cells = resolve_sweep(indexstructure, algorithm, choices, &given, kind)?;
     let benchmarks = resolve_benchmarks(&name, all)?;
     let cache_root = kermit_bench::cache::base_cache_dir()
         .map_err(|e| anyhow::anyhow!("no cache directory available: {e}"))?;
@@ -826,22 +863,28 @@ fn run_bench_run_command(
 
     let prefix = bench_args.name.as_deref().unwrap_or(DEFAULT_RUN_GROUP);
     let prepare_with = planner.instantiate();
+    let criterion = CriterionSettings::from_args(bench_args);
     let settings = RunSettings {
-        kind: BenchKind::Run,
+        kind,
         prefix,
         planner,
         metrics: &metrics,
         queries_per_build,
         verify,
-        bench_args,
+        single_run,
+        criterion: &criterion,
     };
     // Names only — nothing is fetched — so a sweep whose cells would
     // overwrite each other's Criterion results fails before any is timed.
-    check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells)?;
+    // A run with no time metric (`bench probe`, `-m space`) writes no
+    // Criterion group, so nothing can collide.
+    if metrics.iter().any(|metric| metric.is_timed()) {
+        check_sweep_group_directories(prefix, &materialized, query.as_deref(), &cells)?;
+    }
 
-    // Opened before the loop so every finished cell is on disk before the
-    // next one starts; a crash mid-sweep keeps the completed cells.
-    let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Run)?;
+    // Opened before the loop so every finished query is on disk before the
+    // next one starts; a crash mid-sweep keeps the completed queries.
+    let mut sink = ReportSink::open(bench_args.report_json.as_deref(), kind)?;
     for benchmark in &materialized {
         // Validated, read and planned once per benchmark, before its loop
         // over cells: every cell builds from this catalog and runs these
@@ -850,27 +893,42 @@ fn run_bench_run_command(
             .and_then(|workload| workload.prepare(&prepare_with))
             .with_context(|| {
                 format!(
-                    "bench run failed on benchmark '{}'; partial report retained at {}",
+                    "bench {kind} failed on benchmark '{}'; partial report retained at {}",
                     benchmark.name,
                     sink.path().display()
                 )
             })?;
         for &cell in &cells {
-            let cell_reports =
-                dispatch_run_bench(cell, &workload, settings).with_context(|| {
-                    format!(
-                        "bench run failed on benchmark '{}' cell {:?}; partial report retained at \
-                         {}",
-                        benchmark.name,
-                        cell,
-                        sink.path().display()
-                    )
-                })?;
-            sink.push(cell_reports)?;
+            dispatch_run_bench(cell, &workload, settings, &mut sink).with_context(|| {
+                format!(
+                    "bench {kind} failed on benchmark '{}' cell {:?}; partial report retained at \
+                     {}",
+                    benchmark.name,
+                    cell,
+                    sink.path().display()
+                )
+            })?;
         }
     }
     sink.finish()?;
     Ok(())
+}
+
+/// Handler for `bench probe`: `bench run`'s runner with the probe's fixed
+/// settings. Every query is counted and, where it declares `expected`,
+/// verified; its describe step's build and execution times are recorded as
+/// single-run values beside its exact `space`; nothing goes through
+/// Criterion.
+fn run_bench_probe_command(bench_args: &BenchArgs, selection: RunSelection) -> anyhow::Result<()> {
+    run_bench_run_command(
+        bench_args,
+        selection,
+        BenchKind::Probe,
+        vec![Metric::Space],
+        1,
+        true,
+        true,
+    )
 }
 
 fn main() -> anyhow::Result<()> {
@@ -933,35 +991,23 @@ fn main() -> anyhow::Result<()> {
             )?,
 
             | BenchSubcommand::Run {
-                name,
-                all,
-                query,
-                indexstructure,
-                algorithm,
-                planner,
+                selection,
                 metrics,
                 queries_per_build,
-                force,
                 verify,
-                layout,
-                config,
-                build,
             } => run_bench_run_command(
                 &bench_args,
-                name,
-                all,
-                query,
-                indexstructure,
-                algorithm,
-                planner,
+                selection,
+                BenchKind::Run,
                 metrics,
                 queries_per_build,
-                force,
                 verify,
-                layout,
-                config,
-                build,
+                false,
             )?,
+
+            | BenchSubcommand::Probe {
+                selection,
+            } => run_bench_probe_command(&bench_args, selection)?,
 
             | BenchSubcommand::Gen {
                 subcommand,

@@ -281,6 +281,9 @@ def speedup_table(
     if missing:
         raise ValueError(f"speedup_table needs columns {missing}")
     on_phase = ((df["metric"] == "time") & (df["phase"] == phase)).fillna(False).astype(bool)
+    if "estimator" in df.columns:
+        # Criterion estimates only: a single run is not a replicate of a sample.
+        on_phase &= (df["estimator"] == "criterion").fillna(False).astype(bool)
     # Fresh labels, so `paired` below cannot mix up the rows of a frame whose
     # index repeats.
     rows = df[on_phase & df["ds_build_mode"].notna()].reset_index(drop=True)

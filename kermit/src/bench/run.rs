@@ -1,28 +1,27 @@
-//! The generic runner behind `bench run` and `bench join`: one execution
-//! cell over one [`PreparedWorkload`], every requested metric, one report
-//! per query.
+//! The generic runner behind `bench run`, `bench join` and `bench probe`:
+//! one execution cell over one [`PreparedWorkload`], every requested metric,
+//! one report per query, pushed as each query finishes.
 
 use {
     super::{
-        add_space_bench, build_space_criterion, build_time_criterion, criterion_directory_name,
-        workload::PreparedWorkload, Metric, CRITERION_MAX_DIRECTORY_NAME_BYTES,
+        criterion_directory_name,
+        measure::{CriterionSettings, Described, MeasureRequest, QuerySubject},
+        workload::PreparedWorkload,
+        Metric, CRITERION_MAX_DIRECTORY_NAME_BYTES,
     },
     crate::{
-        bench_report::{
-            write_metadata_block, BenchKind, BenchReport, CriterionGroupRef, MetadataLine,
-            ReportMetric,
-        },
+        bench_report::{write_metadata_block, BenchKind, BenchReport, MetadataLine, ReportSink},
         execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
         options::{
             unreached_flag, with_hash_trie_layout, with_sorted_trie_layout, DsChoices, DsFlag,
             PlannerArgs,
         },
-        BenchArgs, IndexStructureSelector, JoinAlgorithmSelector,
+        IndexStructureSelector, JoinAlgorithmSelector,
     },
     kermit::db::{Catalog, Prepared},
     kermit_algos::{IndexSpec, INDEX_ID_PREFIX},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{HeapSize, RelationHeader, TupleView, Tuples},
+    kermit_ds::{RelationHeader, TupleView, Tuples},
     std::{
         collections::{hash_map::Entry, BTreeMap, HashMap},
         io,
@@ -48,11 +47,14 @@ pub(crate) struct RunSettings<'a> {
     pub metrics: &'a [Metric],
     /// K in the `end_to_end` metric's `T = build + K × query`.
     pub queries_per_build: u32,
-    /// Run each query once before timing and compare its tuple count with
-    /// the workload's `expected`; a mismatch aborts.
+    /// Compare each query's answer count with the workload's `expected`
+    /// before timing it; a mismatch aborts.
     pub verify: bool,
+    /// Count every query and record the describe step's build and
+    /// execution times as single-run values (`bench probe`).
+    pub single_run: bool,
     /// Criterion sample/measurement/warm-up settings.
-    pub bench_args: &'a BenchArgs,
+    pub criterion: &'a CriterionSettings,
 }
 
 /// The value of one `index` metadata line, for the `position`th index of a
@@ -82,9 +84,9 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
         .sum()
 }
 
-/// Runs every query of `workload` on one execution cell and returns one
-/// report per query, each stamped with `settings.kind` and grouped under
-/// `settings.prefix`.
+/// Runs every query of `workload` on one execution cell and pushes one
+/// report per query to `sink` as soon as that query finishes, each stamped
+/// with `settings.kind` and grouped under `settings.prefix`.
 ///
 /// Generic over the [`ExecutionFamily`] so the sorted family
 /// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P, E>`) share one body:
@@ -96,20 +98,17 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
 /// The workload arrives prepared (`Workload::prepare`): every query is
 /// validated and planned, and the relations the queries name sit in the
 /// catalog as flat tuples, so a query that cannot run never reaches this
-/// function (issue #78). Per query, the cell builds exactly the indexes the
-/// plan reads (`ExecutionFamily::build_indexes`), and at most one set is
-/// alive at a time, so a timed build never runs beside another set. An untimed
-/// build backs the `index` metadata, `--verify` counts on a fresh one,
-/// a non-mutating `iteration` joins over one built just for it, `build` and
-/// `end_to_end` time fresh ones, and `space` measures one built after the
-/// timers; a family whose joins mutate their indexes
-/// (`ExecutionFamily::JOIN_MUTATES`) also joins over fresh ones for
-/// `iteration`. Every timed routine returns what it built, so Criterion frees
-/// it after the timer stops. With `settings.verify`, each query with an
-/// `expected` count is executed once before timing and a mismatch aborts.
+/// function (issue #78). Per query, the cell measures a [`QuerySubject`]
+/// through the measure layer. One describe build outside Criterion gives the
+/// `index` lines, the exact `space` and the count `--verify` checks, which
+/// `bench probe` also times; then
+/// [`Described::measure`] runs `iteration` on that build, drops it, and times
+/// `build` and `end_to_end`. With `settings.verify`, a query with an
+/// `expected` count is checked before any timer starts, and a mismatch aborts
+/// with every earlier query's report already in `sink`.
 fn run_benchmark<F: ExecutionFamily>(
-    family: &F, workload: &PreparedWorkload, settings: RunSettings<'_>,
-) -> anyhow::Result<Vec<BenchReport>> {
+    family: &F, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+) -> anyhow::Result<()> {
     let RunSettings {
         kind,
         prefix,
@@ -117,7 +116,8 @@ fn run_benchmark<F: ExecutionFamily>(
         metrics,
         queries_per_build,
         verify,
-        bench_args,
+        single_run,
+        criterion,
     } = settings;
     let PreparedWorkload {
         workload: definition,
@@ -132,10 +132,6 @@ fn run_benchmark<F: ExecutionFamily>(
     let execution = family.execution();
     let ds_name = execution.index_structure().axis_value();
     let algo_name = execution.algorithm().axis_value();
-
-    let has_time_metrics = metrics
-        .iter()
-        .any(|m| matches!(m, Metric::Build | Metric::Iteration | Metric::EndToEnd));
 
     // Standard optimization axes: the dimensions the structure emits (the
     // `ds_*` prefix convention, see `kermit_iters::HasOptimizationAxes`,
@@ -155,34 +151,17 @@ fn run_benchmark<F: ExecutionFamily>(
         axes
     };
 
-    let mut reports: Vec<BenchReport> = Vec::with_capacity(definition.queries.len());
-
     for (query_def, prepared) in definition.queries.iter().zip(prepared_queries) {
-        // One untimed build describes this query's indexes: the `index`
-        // metadata lines, the `index_rows` axis and, for a family whose joins
-        // mutate their indexes (a lazy HashTrie expands what a join reaches,
-        // #92), the footprint `space` checks against. It is dropped at the end
-        // of the block, so no index set built outside a timer is alive while
-        // the `build` or `end_to_end` timer runs.
-        let (index_lines, index_rows, as_built_bytes) = {
-            let indexes = family.build_indexes(catalog, prepared);
-            let mut lines = Vec::new();
-            for (position, ((spec, index), &rows)) in
-                indexes.iter().zip(prepared.index_rows()).enumerate()
-            {
-                lines.push(MetadataLine::new(
-                    "index",
-                    describe_index(position, spec, rows, index.heap_size_bytes()),
-                ));
-            }
-            let as_built_bytes: Option<Vec<usize>> = F::JOIN_MUTATES.then(|| {
-                indexes
-                    .iter()
-                    .map(|(_, index)| index.heap_size_bytes())
-                    .collect()
-            });
-            (lines, indexes.rows(), as_built_bytes)
+        // The describe step: this query's one build outside Criterion. Every
+        // untimed number in its report is read from it, and `measure`
+        // consumes it before any build is timed.
+        let subject = QuerySubject {
+            family,
+            catalog,
+            prepared,
         };
+        let count = (verify && query_def.expected.is_some()) || single_run;
+        let described = Described::new(&subject, count);
 
         let mut metadata = vec![
             MetadataLine::new("benchmark", &definition.name),
@@ -191,48 +170,67 @@ fn run_benchmark<F: ExecutionFamily>(
             MetadataLine::new("algorithm", algo_name),
             MetadataLine::new("allocator", crate::ALLOCATOR),
         ];
-        metadata.extend(index_lines);
-        // Correctness gate: with `--verify`, run the query once (untimed)
-        // and compare the answer count before spending any measurement time
-        // on it. A mismatch aborts so a wrong answer can never yield a
-        // plausible timing. The count comes through the same streaming path
-        // the `iteration` metric times, so verifying a huge result never
-        // materialises it. It runs on a fresh build, dropped right after the
-        // count, so no index set outlives it into the timers.
-        let verified = if verify {
-            match query_def.expected {
-                | Some(expected) => {
-                    let actual = {
-                        let fresh = family.build_indexes(catalog, prepared);
-                        family.count_rows(prepared, &fresh)
-                    };
-                    if actual != expected {
-                        anyhow::bail!(
-                            "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
-                             tuples, expected {}",
-                            definition.name,
-                            query_def.name,
-                            ds_name,
-                            algo_name,
-                            actual,
-                            expected
-                        );
-                    }
-                    metadata.push(MetadataLine::new("verified", "yes"));
-                    true
-                },
-                | None => {
-                    eprintln!(
-                        "bench run: no expected cardinality for query '{}' in benchmark '{}'; not \
-                         verified",
-                        query_def.name, definition.name
+        for (position, ((spec, &rows), &bytes)) in prepared
+            .indexes()
+            .iter()
+            .zip(prepared.index_rows())
+            .zip(described.bytes())
+            .enumerate()
+        {
+            metadata.push(MetadataLine::new(
+                "index",
+                describe_index(position, spec, rows, bytes),
+            ));
+        }
+        // Correctness gate: the describe step's count is compared before any
+        // measurement time is spent on the query, so a wrong answer can never
+        // yield a plausible timing. The count came through the same streaming
+        // path `iteration` times, so verifying a huge result never
+        // materialised it.
+        let verified = match (verify, query_def.expected) {
+            | (true, Some(expected)) => {
+                let actual = described
+                    .rows()
+                    .expect("the describe step counts every query it verifies");
+                if actual != expected {
+                    anyhow::bail!(
+                        "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
+                         tuples, expected {}",
+                        definition.name,
+                        query_def.name,
+                        ds_name,
+                        algo_name,
+                        actual,
+                        expected
                     );
-                    false
-                },
-            }
-        } else {
-            false
+                }
+                metadata.push(MetadataLine::new("verified", "yes"));
+                true
+            },
+            | (true, None) => {
+                eprintln!(
+                    "bench {kind}: no expected cardinality for query '{}' in benchmark '{}'; not \
+                     verified",
+                    query_def.name, definition.name
+                );
+                false
+            },
+            | (false, _) => false,
         };
+        let answer_rows = described.rows();
+        if let Some(rows) = answer_rows {
+            metadata.push(MetadataLine::new("answer rows", rows));
+        }
+        if single_run {
+            let build = described.build_time();
+            let iteration = described
+                .exercise_time()
+                .expect("a probe counts every query");
+            metadata.push(MetadataLine::new(
+                "single run",
+                format!("build {build:?}, iteration {iteration:?}"),
+            ));
+        }
         if metrics.contains(&Metric::EndToEnd) {
             metadata.push(MetadataLine::new("queries per build", queries_per_build));
         }
@@ -244,157 +242,22 @@ fn run_benchmark<F: ExecutionFamily>(
                 ));
             }
         }
-        write_metadata_block(&mut io::stderr(), "bench run metadata", &metadata)?;
+        let title = if kind == BenchKind::Probe {
+            "bench probe metadata"
+        } else {
+            "bench run metadata"
+        };
+        write_metadata_block(&mut io::stderr(), title, &metadata)?;
 
         let group_name = criterion_group_name(prefix, &definition.name, &query_def.name, execution);
-
-        let mut criterion_groups: Vec<CriterionGroupRef> = Vec::new();
-
-        if has_time_metrics {
-            let mut criterion = build_time_criterion(bench_args);
-            let mut group = criterion.benchmark_group(&group_name);
-
-            if metrics.contains(&Metric::Build) {
-                // Times `build_indexes` alone: every index this query's plan
-                // reads and its constant checks, each copied once from the
-                // catalog's flat tuples, through the same `build_index` that
-                // honours the configuration and build mode the report's
-                // `ds_config_*` / `ds_build_mode` axes name. Planning is done
-                // and statistics are gathered, so neither is in the timer.
-                // The setup is a no-op and the routine returns the indexes,
-                // so nothing is copied beforehand, Criterion drops them after
-                // the timer stops, and `PerIteration` keeps one set alive at
-                // a time.
-                group.bench_function("build", |b| {
-                    b.iter_batched(
-                        || (),
-                        |()| family.build_indexes(catalog, prepared),
-                        criterion::BatchSize::PerIteration,
-                    );
-                });
-                criterion_groups.push(CriterionGroupRef {
-                    group: group_name.clone(),
-                    function: "build".to_string(),
-                    metric: ReportMetric::Time,
-                });
-            }
-
-            if metrics.contains(&Metric::Iteration) {
-                // Times the join with its rows counted, never collected: the
-                // timed region holds no per-row allocation, and only a `u64`
-                // stays alive, so memory is independent of result size
-                // (issue #65).
-                if F::JOIN_MUTATES {
-                    // Cold (#92): each timed join runs on indexes built in
-                    // the untimed setup, so it pays the expansion its own
-                    // probes cause instead of finding it done by an earlier
-                    // sample. The routine hands the indexes back, so
-                    // Criterion drops them after timing, and `PerIteration`
-                    // keeps one fresh set alive at a time.
-                    group.bench_function("iteration", |b| {
-                        b.iter_batched(
-                            || family.build_indexes(catalog, prepared),
-                            |fresh| {
-                                let rows = family.count_rows(prepared, &fresh);
-                                (fresh, rows)
-                            },
-                            criterion::BatchSize::PerIteration,
-                        );
-                    });
-                } else {
-                    // Built just before the benchmark and dropped just after
-                    // it, so the `end_to_end` timer after it runs with no
-                    // other index set alive.
-                    let indexes = family.build_indexes(catalog, prepared);
-                    group.bench_function("iteration", |b| {
-                        b.iter(|| family.count_rows(prepared, &indexes));
-                    });
-                    drop(indexes);
-                }
-                criterion_groups.push(CriterionGroupRef {
-                    group: group_name.clone(),
-                    function: "iteration".to_string(),
-                    metric: ReportMetric::Time,
-                });
-            }
-
-            if metrics.contains(&Metric::EndToEnd) {
-                // The timed body is the `build` metric's `build_indexes`
-                // followed by K joins over the indexes it built, so the
-                // build term is the one the `iteration` metric's indexes
-                // paid; it is the same build and K executions as `build` + K ×
-                // `iteration`, and a gap beyond noise is the build-to-query
-                // interaction this metric measures.
-                //
-                // PerIteration: a fresh build per sample is the point of this
-                // metric — batching would amortise away the construction cost
-                // whose interaction with query traversal is under measurement.
-                // The routine returns the indexes, so they are freed outside
-                // the timer.
-                group.bench_function("end_to_end", |b| {
-                    b.iter_batched(
-                        || (),
-                        |()| {
-                            let built = family.build_indexes(catalog, prepared);
-                            for _ in 0..queries_per_build {
-                                std::hint::black_box(family.count_rows(prepared, &built));
-                            }
-                            built
-                        },
-                        criterion::BatchSize::PerIteration,
-                    );
-                });
-                criterion_groups.push(CriterionGroupRef {
-                    group: group_name.clone(),
-                    function: "end_to_end".to_string(),
-                    metric: ReportMetric::Time,
-                });
-            }
-
-            group.finish();
-            criterion.final_summary();
-        }
-
-        if metrics.contains(&Metric::Space) {
-            // A fresh build after the time metrics, so it is the only index
-            // set alive and, under `JOIN_MUTATES`, as built whatever ran
-            // before it.
-            let indexes = family.build_indexes(catalog, prepared);
-            let built: Vec<&F::Rel> = indexes.iter().map(|(_, index)| index).collect();
-            if let Some(as_built) = &as_built_bytes {
-                let now: Vec<usize> = built.iter().map(|index| index.heap_size_bytes()).collect();
-                anyhow::ensure!(
-                    now == *as_built,
-                    "internal error: two builds of the indexes of a {ds_name} cell differ in heap \
-                     size, so `space` is not the as-built footprint; see \
-                     `ExecutionFamily::JOIN_MUTATES`"
-                );
-            }
-            // A query whose atoms are all constant checks builds no index,
-            // and a TreeTrie built from a view that keeps no row holds no
-            // heap at all; either way there is nothing to measure, and
-            // `add_space_bench` needs O(N) work inside its loop.
-            let total_bytes: usize = built.iter().map(|index| index.heap_size_bytes()).sum();
-            if total_bytes == 0 {
-                eprintln!(
-                    "bench {kind}: skipping the space metric of query '{}': its indexes hold no \
-                     heap bytes (no index, or no row passes its filter)",
-                    query_def.name
-                );
-            } else {
-                let mut criterion = build_space_criterion(bench_args);
-                let mut group = criterion.benchmark_group(&group_name);
-                // One function per query, summing every index it reads.
-                criterion_groups.push(add_space_bench(
-                    &mut group,
-                    &group_name,
-                    "space".to_string(),
-                    &built,
-                ));
-                group.finish();
-                criterion.final_summary();
-            }
-        }
+        let measured = described.measure(&MeasureRequest {
+            metrics,
+            single_run,
+            queries_per_build,
+            criterion,
+            group: &group_name,
+            function_prefix: None,
+        });
 
         let mut axes = BTreeMap::from([
             ("benchmark".to_string(), serde_json::json!(definition.name)),
@@ -409,8 +272,18 @@ fn run_benchmark<F: ExecutionFamily>(
                 "tuples".to_string(),
                 serde_json::json!(tuples_read(catalog, prepared)),
             ),
-            ("index_rows".to_string(), serde_json::json!(index_rows)),
+            (
+                "index_rows".to_string(),
+                serde_json::json!(prepared.index_rows().iter().sum::<usize>()),
+            ),
+            (
+                "plan".to_string(),
+                serde_json::json!(prepared.variable_order().join(", ")),
+            ),
         ]);
+        if let Some(rows) = answer_rows {
+            axes.insert("answer_rows".to_string(), serde_json::json!(rows));
+        }
         // Only meaningful when the end-to-end metric ran; omitting it
         // otherwise keeps historical invocations' reports unchanged.
         if metrics.contains(&Metric::EndToEnd) {
@@ -423,18 +296,25 @@ fn run_benchmark<F: ExecutionFamily>(
         if verified {
             axes.insert("verified".to_string(), serde_json::json!(true));
         }
-        reports.push(BenchReport::new(kind, &metadata, axes, criterion_groups));
+        sink.push(vec![BenchReport::new(
+            kind,
+            &metadata,
+            axes,
+            measured.criterion_groups,
+            measured.values,
+        )])?;
     }
 
-    Ok(reports)
+    Ok(())
 }
 
 /// Runs one `bench run` cell by monomorphising [`run_benchmark`] over the
-/// [`ExecutionFamily`] the cell names. There is no separate algorithm
-/// parameter to ignore: the `Execution` fixes both halves of the pair.
+/// [`ExecutionFamily`] the cell names, pushing each query's report to
+/// `sink`. There is no separate algorithm parameter to ignore: the
+/// `Execution` fixes both halves of the pair.
 pub(crate) fn dispatch_run_bench(
-    cell: Execution, workload: &PreparedWorkload, settings: RunSettings<'_>,
-) -> anyhow::Result<Vec<BenchReport>> {
+    cell: Execution, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+) -> anyhow::Result<()> {
     match cell {
         | Execution::TrieLftj(SortedTrie::TreeTrie {
             seek,
@@ -443,6 +323,7 @@ pub(crate) fn dispatch_run_bench(
             &TrieLftj::<kermit_ds::TreeTrie<S>>::new(build),
             workload,
             settings,
+            sink,
         )),
         | Execution::TrieLftj(SortedTrie::ColumnTrie {
             seek,
@@ -451,6 +332,7 @@ pub(crate) fn dispatch_run_bench(
             &TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build),
             workload,
             settings,
+            sink,
         )),
         | Execution::HashHtj {
             hasher,
@@ -462,6 +344,7 @@ pub(crate) fn dispatch_run_bench(
             &HashHtj::<H, P, E>::new(config, build),
             workload,
             settings,
+            sink,
         )),
     }
 }
@@ -533,7 +416,8 @@ pub(crate) fn check_sweep_group_directories(
 /// Expands the `-i` / `-a` selectors into the valid execution cells.
 ///
 /// Incompatible concrete pairs are dropped: with `all` on either side they
-/// are announced on stderr and skipped, so `-i all -a all` runs exactly the
+/// are announced on stderr, naming the `kind` of `bench` subcommand, and
+/// skipped, so `-i all -a all` runs exactly the
 /// three valid cells; when the user named a single incompatible pair there
 /// is nothing left to run and that is a usage error.
 ///
@@ -545,7 +429,7 @@ pub(crate) fn check_sweep_group_directories(
 /// error too (#86).
 pub(crate) fn resolve_sweep(
     indexstructure: IndexStructureSelector, algorithm: JoinAlgorithmSelector, choices: DsChoices,
-    given: &[DsFlag],
+    given: &[DsFlag], kind: BenchKind,
 ) -> anyhow::Result<Vec<Execution>> {
     let sweep = Sweep::expand(&indexstructure.expand(), &algorithm.expand(), choices);
     if sweep.cells.is_empty() {
@@ -574,7 +458,7 @@ pub(crate) fn resolve_sweep(
         );
     }
     for (ds, algo) in &sweep.skipped {
-        eprintln!("bench run: skipping incompatible pair ({ds:?}, {algo:?})");
+        eprintln!("bench {kind}: skipping incompatible pair ({ds:?}, {algo:?})");
     }
     Ok(sweep.cells)
 }
@@ -624,6 +508,7 @@ mod tests {
                 algorithm,
                 DsChoices::default(),
                 given,
+                BenchKind::Run,
             )
         };
         for &(algorithm, reached, unreached) in rows {

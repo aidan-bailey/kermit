@@ -56,6 +56,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_plot.add_argument("--kind", required=True, choices=["bar", "line", "scatter", "violin"])
     p_plot.add_argument("--x", default=None, help="x column (or 'space'/'time' for tradeoff)")
     p_plot.add_argument("--y", default="time", choices=["time", "space"])
+    p_plot.add_argument("--estimator", choices=["criterion", "single"], default="criterion",
+                        help="time rows to plot: Criterion estimates (default) or "
+                             "bench probe single runs")
     p_plot.add_argument("--colour", default=None)
     p_plot.add_argument("--style", default=None)
     p_plot.add_argument("--facet", default=None)
@@ -117,7 +120,8 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "plot":
         fig = plot(df, kind=args.kind, x=args.x, y=args.y, colour=args.colour,
                    style=args.style, facet=args.facet, filter=_parse_filter(args.filter),
-                   phase=args.phase, logx=args.logx, logy=args.logy, out=args.out)
+                   phase=args.phase, estimator=args.estimator, logx=args.logx,
+                   logy=args.logy, out=args.out)
     elif args.command == "scaling":
         fig = presets.scaling(df, phase=args.phase, out=args.out)
     elif args.command == "bar-time":

@@ -68,10 +68,10 @@ fn cli_bench_run_sweep_carries_expansion_only_to_hash_trie_cells() {
     }
 }
 
-/// `--verify` and `iteration` run before `space` here. `space` measures a
-/// fresh build, and this test pins that `--verify` and lazy `iteration`
-/// succeed. Triangle's vertex 1 has four out-edges, so its child is a
-/// multi-tuple `Unexpanded` list under either pruning setting.
+/// `space` is read off the describe build before `--verify` counts on it, and
+/// this test pins that `--verify` and lazy `iteration` succeed. Triangle's
+/// vertex 1 has four out-edges, so its child is a multi-tuple `Unexpanded`
+/// list under either pruning setting.
 #[test]
 fn cli_bench_run_lazy_verify_iteration_and_space_succeed() {
     for pruning in ["off", "on"] {

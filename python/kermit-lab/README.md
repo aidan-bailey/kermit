@@ -45,6 +45,8 @@ kl.tradeoff(df)
 kl.dist(df, samples=samples)
 kl.bar_queries(df, ds=["TreeTrie"])
 kl.ablation(df, axis="ds_layout_hasher")   # time vs an optimization axis
+kl.plot(df, kind="bar", x="data_structure", y="time",
+        phase="build", estimator="single")      # bench probe's single runs
 ```
 
 Optimization axes (`ds_layout_*`, `ds_config_*`, `ds_build_mode`) are loaded as
@@ -167,7 +169,7 @@ CI runs it on every pull request.
 
 ## Schema
 
-`kermit-lab` parses `BenchReport` JSON up to v5 (see
+`kermit-lab` parses `BenchReport` JSON up to v6 (see
 `docs/specs/bench-report-schema.md`). The loader refuses to parse unknown
 major versions. It also refuses to mix reports from both sides of v3, of v4,
 or of v5 in one load: at v3 `iteration` and `end_to_end` changed meaning, at
@@ -187,3 +189,14 @@ count. Every row carries its report's `schema_version`. A v5 report adds
 `index_rows`, the rows the query's builds copied, and has no `column_orders`
 axis: the `column_orders: stored` back-fill applies only to join rows of
 reports older than v5, since a v5 report never ran that policy.
+
+A v6 report carries a `values` list, the measurements made without
+Criterion: the exact `space` (`estimator: exact`) and `bench probe`'s
+single-run `build` / `iteration` times (`estimator: single`). `kl.load`
+makes one row per entry, beside the Criterion rows, and every row has an
+`estimator` column (`criterion`, `exact`, `single`). An exact row is its own
+zero-width interval; a single row has NaN bounds. Plots and `speedup_table`
+take Criterion time rows unless asked for `estimator="single"`; space rows
+are taken whatever their estimator. v6 adds the `plan` and `answer_rows`
+columns. No metric changed meaning at v6, so v5 and v6 reports load
+together.

@@ -263,7 +263,7 @@ kermit bench run --all -i tree-trie -a leapfrog-triejoin
 ```
 
 `bench run` also accepts `--metrics` (same shape as `bench ds`); defaults to
-all three. To benchmark only space:
+all three. To record only space (exact, read off one build; no Criterion run):
 
 ```sh
 kermit bench run triangle -i tree-trie -a leapfrog-triejoin -m space
@@ -302,6 +302,25 @@ nothing is checked:
 ```sh
 kermit bench run triangle -i all -a all -m iteration --verify
 ```
+
+### Screen a benchmark (`bench probe`)
+
+`bench probe` takes `bench run`'s selection flags and screens a benchmark
+without Criterion. Per query and cell it builds the query's indexes once and
+runs the query once, timing both, and records the exact `space`, the answer
+count (`answer_rows`) and the plan (`plan`). Every query whose YAML declares
+`expected` is verified, and a mismatch aborts. The report's `kind` is `probe`,
+and its two times are `values` with estimator `single`:
+
+```sh
+kermit bench probe triangle -i all -a all
+kermit bench --report-json /tmp/probe.json probe watdiv-stress-c1 -i hash-trie -a hash-triejoin --optimiser cost-based
+```
+
+`bench`'s Criterion settings (`--name`, `--sample-size`,
+`--measurement-time`, `--warm-up-time`) don't apply to a probe. A single
+run is cold, so compare it with other single runs, never with a Criterion
+estimate.
 
 ### Sweep all index structures and algorithms
 
@@ -528,7 +547,9 @@ kermit bench --report-json /tmp/triangle.json \
 The shape is always a JSON array of `BenchReport` objects (one per query for
 `bench run`, exactly one for `bench join` / `bench ds`). Schema is documented
 in [`docs/specs/bench-report-schema.md`](docs/specs/bench-report-schema.md);
-the source of truth is `kermit/src/bench_report.rs`.
+the source of truth is `kermit/src/bench_report.rs`. From v6 each report also
+carries `values`, the measurements made without Criterion: the exact `space`,
+and a probe's single-run times.
 
 ## Analysis and plotting (`kermit-lab`)
 

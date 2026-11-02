@@ -7,9 +7,9 @@
 use {
     super::{validate_query, Catalog, JoinError},
     kermit_algos::{
-        distinct_per_column, extract_accesses, plan_indexes, rewrite_placeholders, Access,
-        CatalogStats, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner, QueryPlan, RelationStats,
-        StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
+        canonical_names, distinct_per_column, extract_accesses, plan_indexes, rewrite_placeholders,
+        Access, CatalogStats, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner, QueryPlan,
+        RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
     },
     kermit_ds::{Relation, RelationHeader, TupleView, Tuples},
     kermit_iters::JoinIterable,
@@ -64,6 +64,19 @@ impl Prepared {
     /// The number of head terms: the length of the prefix of each joined row
     /// that `execute` lends to its sink.
     pub fn head_len(&self) -> usize { self.head_len }
+
+    /// The plan's variable order, by name: the executed query's variables in
+    /// the order the join binds them. For one catalog and query it identifies
+    /// the whole plan, since [`plan_indexes`] derives every index spec and the
+    /// executed query from it. Reports record it as the `plan` axis.
+    pub fn variable_order(&self) -> Vec<String> {
+        let names = canonical_names(&self.query);
+        self.plan
+            .variable_ordering
+            .iter()
+            .map(|&variable| names[variable].clone())
+            .collect()
+    }
 
     /// The answer's header: named after the head predicate, with one attribute
     /// per head term, in head order. [`prepare`] validated the head, so the
@@ -1128,5 +1141,28 @@ mod tests {
         let second = prepared_for(&c, "Q(X) :- p(X, c20).");
         let indexes = build::<TreeTrie>(&c, &first);
         execute::<TreeTrie, LeapfrogTriejoin>(&second, &indexes, |_| {});
+    }
+
+    /// The plan's order by name. The lexicographic optimiser binds the head's
+    /// variables in head order, which this body reverses.
+    #[test]
+    fn the_variable_order_names_the_plan() {
+        let c = catalog(vec![("p", 2, vec![vec![1, 10]])]);
+        assert_eq!(
+            prepared_for(&c, "Answer(Y, X) :- p(X, Y).").variable_order(),
+            ["Y", "X"]
+        );
+        assert_eq!(prepared_for(&c, "Q(X) :- p(X, c10).").variable_order(), [
+            "X"
+        ]);
+    }
+
+    /// A `_` is planned under the fresh `K<n>` name its rewrite gave it.
+    #[test]
+    fn a_placeholder_appears_in_the_order_under_its_fresh_name() {
+        let c = catalog(vec![("r", 2, vec![vec![1, 2]])]);
+        assert_eq!(prepared_for(&c, "Q(X) :- r(X, _).").variable_order(), [
+            "X", "K0"
+        ]);
     }
 }

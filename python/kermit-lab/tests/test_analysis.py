@@ -157,6 +157,22 @@ def test_speedup_table_baseline_overrides_the_structures_default() -> None:
     assert speedup_table(df, baseline="incremental").iloc[0]["speedup"] == pytest.approx(2.0)
 
 
+def test_speedup_table_ignores_single_runs() -> None:
+    df = _build_mode_rows({"serial": [100.0], "parallel:2": [50.0]})
+    df["estimator"] = "criterion"
+    # A probe's single runs of both builds. Unfiltered, they would form a case
+    # of their own: another row in the table, or, since they name no Criterion
+    # directory, a shared-directory error.
+    single = df.copy()
+    single["estimator"] = "single"
+    single["mean_ns"] = [10.0, 1.0]
+    single["criterion_group"] = pd.NA
+    single["criterion_function"] = pd.NA
+    table = speedup_table(pd.concat([df, single], ignore_index=True))
+    assert len(table) == 1
+    assert table.iloc[0]["speedup"] == pytest.approx(2.0)
+
+
 def test_baseline_build_modes_cover_every_structure_kermit_reports() -> None:
     """The `data_structure` labels a report can carry, pinned on the Rust side
     by `IndexStructure::axis_value`."""

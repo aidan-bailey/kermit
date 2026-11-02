@@ -2,6 +2,15 @@
 
 **Date:** 2026-03-16
 
+> **Superseded (2026-10-25, report schema v6).** `space` is no longer a
+> Criterion measurement. The describe build of `bench run`, `bench join`,
+> `bench probe` and `bench ds` reads each structure's `heap_size_bytes()` once,
+> before anything runs on it, and the report records the sum as an exact
+> `values` entry; `SpaceMeasurement` and its `iter_custom` loop are gone. See
+> [`2026-10-25-bench-runner-measure-layer-design.md`](2026-10-25-bench-runner-measure-layer-design.md)
+> and [`bench-report-schema.md`](bench-report-schema.md). The rest of this
+> document describes reports up to v5.
+
 Space benchmarking is implemented entirely in the CLI: `kermit bench ds
 <relation> -i <ds> --metrics space` (and `kermit bench run <name> --metrics
 space`), routed through `kermit::measurement::SpaceMeasurement`. There is no

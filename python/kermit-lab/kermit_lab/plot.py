@@ -36,16 +36,19 @@ def plot(
     facet: Optional[str] = None,
     filter: Optional[Mapping[str, object]] = None,
     phase: str = "iteration",
+    estimator: str = "criterion",
     samples: Optional[pd.DataFrame] = None,
     logx: bool = False,
     logy: bool = False,
     title: Optional[str] = None,
     out: Optional[Path] = None,
 ) -> Figure:
-    """Render one figure. ``kind`` ∈ {bar, line, scatter, violin}."""
+    """Render one figure. ``kind`` ∈ {bar, line, scatter, violin}. Time rows
+    are Criterion estimates unless ``estimator="single"`` asks for
+    ``bench probe``'s single runs."""
     amap = AestheticMap(
         kind=kind, x=x, y=y, colour=colour, style=style, facet=facet,
-        filter=dict(filter or {}), phase=phase,
+        filter=dict(filter or {}), phase=phase, estimator=estimator,
     )
     apply_style()
 

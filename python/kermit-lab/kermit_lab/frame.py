@@ -19,7 +19,15 @@ from typing import Iterable, Sequence
 import pandas as pd
 
 from .criterion import FunctionData
-from .loader import BenchReport, CriterionGroupRef, iter_function_data, load_reports, phase_of
+from .loader import (
+    BenchReport,
+    CriterionGroupRef,
+    ValueEntry,
+    iter_function_data,
+    iter_values,
+    load_reports,
+    phase_of,
+)
 
 # Matches ds_layout_*, ds_config_*, ds_build_mode, and the algo_* analogues.
 _OPT_AXIS_RE = re.compile(r"^(ds|algo)_(layout_|config_|build_mode\b)")
@@ -37,6 +45,7 @@ _AXIS_STR_KEYS: tuple[str, ...] = (
     "query",
     "benchmark",
     "relation_path",
+    "plan",
 )
 _AXIS_INT_KEYS: tuple[str, ...] = (
     "tuples",
@@ -45,6 +54,7 @@ _AXIS_INT_KEYS: tuple[str, ...] = (
     "relation_bytes",
     "queries_per_build",
     "index_rows",
+    "answer_rows",
 )
 _AXIS_BOOL_KEYS: tuple[str, ...] = (
     "verified",
@@ -53,7 +63,7 @@ _AXIS_BOOL_KEYS: tuple[str, ...] = (
 # Fixed core columns (ordered). Optimization-axis tail and stat columns are
 # appended dynamically in ``_summary_from_reports``.
 _SUMMARY_COLUMNS_CORE: tuple[str, ...] = (
-    "kind", "metric", "phase",
+    "kind", "metric", "phase", "estimator",
     "schema_version",
     *_AXIS_STR_KEYS,
     *_AXIS_INT_KEYS,
@@ -66,19 +76,10 @@ _SUMMARY_COLUMNS_STATS: tuple[str, ...] = (
 )
 
 
-def _summary_row(
-    report: BenchReport,
-    group_ref: CriterionGroupRef,
-    data: FunctionData,
-    opt_axes: Sequence[str],
-) -> dict:
-    phase = phase_of(group_ref.function)
-    row: dict = {
-        "kind": report.kind,
-        "metric": group_ref.metric,
-        "phase": phase if phase is not None else pd.NA,
-        "schema_version": report.schema_version,
-    }
+def _axis_cells(report: BenchReport, opt_axes: Sequence[str]) -> dict:
+    """The columns every row of ``report`` shares: its kind, schema version,
+    axes and source."""
+    row: dict = {"kind": report.kind, "schema_version": report.schema_version}
     for key in _AXIS_STR_KEYS:
         v = report.axis(key)
         row[key] = v if isinstance(v, str) else pd.NA
@@ -94,6 +95,23 @@ def _summary_row(
         # (config flags) intentionally pass through — they render as True/False
         # categories when bound to a channel.
         row[key] = v if v is not None else pd.NA
+    row["source_path"] = str(report.source_path)
+    return row
+
+
+def _summary_row(
+    report: BenchReport,
+    group_ref: CriterionGroupRef,
+    data: FunctionData,
+    opt_axes: Sequence[str],
+) -> dict:
+    """One summary row for a Criterion function: its estimates, labelled
+    ``criterion``."""
+    phase = phase_of(group_ref.function)
+    row = _axis_cells(report, opt_axes)
+    row["metric"] = group_ref.metric
+    row["phase"] = phase if phase is not None else pd.NA
+    row["estimator"] = "criterion"
     row["mean_ns"] = data.mean.point
     row["mean_lo"] = data.mean.lower
     row["mean_hi"] = data.mean.upper
@@ -101,9 +119,32 @@ def _summary_row(
     row["median_ns"] = data.median.point
     row["median_lo"] = data.median.lower
     row["median_hi"] = data.median.upper
-    row["source_path"] = str(report.source_path)
     row["criterion_group"] = group_ref.group
     row["criterion_function"] = group_ref.function
+    return row
+
+
+def _value_row(report: BenchReport, entry: ValueEntry, opt_axes: Sequence[str]) -> dict:
+    """One summary row for a ``values`` entry. An ``exact`` value is its own
+    zero-width interval, as Criterion's deterministic space rows read; a
+    ``single`` run has no interval, so its bounds and standard error are
+    NaN."""
+    phase = phase_of(entry.function)
+    row = _axis_cells(report, opt_axes)
+    row["metric"] = entry.metric
+    row["phase"] = phase if phase is not None else pd.NA
+    row["estimator"] = entry.estimator
+    exact = entry.estimator == "exact"
+    bound = entry.value if exact else float("nan")
+    row["mean_ns"] = entry.value
+    row["mean_lo"] = bound
+    row["mean_hi"] = bound
+    row["mean_se"] = 0.0 if exact else float("nan")
+    row["median_ns"] = entry.value
+    row["median_lo"] = bound
+    row["median_hi"] = bound
+    row["criterion_group"] = pd.NA
+    row["criterion_function"] = pd.NA
     return row
 
 
@@ -180,6 +221,7 @@ def _summary_from_reports(
         _summary_row(report, gref, data, opt_axes)
         for report, gref, data in iter_function_data(reports, Path(criterion_root))
     ]
+    rows += [_value_row(report, entry, opt_axes) for report, entry in iter_values(reports)]
     columns = [*_SUMMARY_COLUMNS_CORE, *opt_axes, *_SUMMARY_COLUMNS_STATS]
     df = pd.DataFrame(rows, columns=columns)
     df["schema_version"] = df["schema_version"].astype("Int64")
@@ -238,8 +280,9 @@ def load(
 
     ``paths`` accepts a single path, a glob pattern (e.g.
     ``"bench-runs/*.json"``), or an iterable of paths. One row per
-    ``(report × criterion_group)``. Columns: ``kind``, ``metric``, ``phase``,
-    the axis columns (conventional + discovered optimization axes), a derived
+    ``(report × criterion_group)`` and per ``values`` entry. Columns:
+    ``kind``, ``metric``, ``phase``, ``estimator`` (``criterion``, ``exact``
+    or ``single``), the axis columns (conventional + discovered optimization axes), a derived
     ``threads`` column right after ``ds_build_mode`` when the reports have that
     axis (the ``N`` of a ``parallel:N`` or ``presized:N`` build, ``<NA>`` for
     every other mode),

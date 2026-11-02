@@ -78,3 +78,10 @@ def test_violin_dist(fixture_tree) -> None:
     # Violin bodies render as PolyCollections — proves a violin actually drew.
     assert any(len(ax.collections) > 0 for ax in fig.axes)
     plt.close(fig)
+
+
+def test_bar_of_single_runs(fixture_values_tree) -> None:
+    df = load(fixture_values_tree["paths"], fixture_values_tree["criterion_root"])
+    fig = plot(df, kind="bar", x="data_structure", y="time", phase="build", estimator="single")
+    assert isinstance(fig, Figure)
+    plt.close(fig)

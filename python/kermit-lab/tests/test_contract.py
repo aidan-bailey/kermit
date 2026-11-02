@@ -54,6 +54,7 @@ def test_bench_ds_report_loads(tmp_path: Path) -> None:
     assert row["metric"] == "space"
     assert row["data_structure"] == "TreeTrie"
     assert row["mean_ns"] > 0
+    assert row["estimator"] == "exact"
 
 
 def test_bench_run_verify_reaches_the_frame(tmp_path: Path) -> None:
@@ -160,15 +161,15 @@ def test_bench_ds_reports_the_build_phase(tmp_path: Path) -> None:
         "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "tree-trie", "-m", "build", "space",
     )
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
-    assert set(df["schema_version"]) == {5}
+    assert set(df["schema_version"]) == {6}
     assert set(df.loc[df["metric"] == "time", "phase"]) == {"build"}
     assert set(df.loc[df["metric"] == "time", "criterion_function"]) == {"TreeTrie/build"}
-    assert set(df.loc[df["metric"] == "space", "criterion_function"]) == {"TreeTrie/space"}
+    assert set(df.loc[df["metric"] == "space", "estimator"]) == {"exact"}
 
 
 def test_bench_join_reports_a_per_query_build_and_space(tmp_path: Path) -> None:
     """A query reading `edge` in both column orders builds two indexes of the
-    relation: one `build` and one `space` function cover both, and `index_rows`
+    relation: one `build` function and one exact `space` value cover both, and `index_rows`
     counts the rows the build copied (two copies of edge's four rows)."""
     query = tmp_path / "mutual.dl"
     query.write_text("Q(X, Y) :- edge(X, Y), edge(Y, X).\n")
@@ -181,11 +182,26 @@ def test_bench_join_reports_a_per_query_build_and_space(tmp_path: Path) -> None:
     criterion_root = tmp_path / "target" / "criterion"
     # Without the back-fill, so a missing key cannot pass as "stored".
     raw = kl.load(report, criterion_root=criterion_root, apply_defaults=False)
-    assert set(raw["schema_version"]) == {5}
+    assert set(raw["schema_version"]) == {6}
     assert set(raw.loc[raw["metric"] == "time", "phase"]) == {"build"}
     assert raw["column_orders"].isna().all()
     assert set(raw["index_rows"].dropna()) == {8}
-    space = raw.loc[raw["metric"] == "space", "criterion_function"]
-    assert len(space) == 1 and space.iloc[0].rsplit("/", 1)[-1] == "space"
+    space = raw.loc[raw["metric"] == "space"]
+    assert len(space) == 1 and space.iloc[0]["estimator"] == "exact"
     # Nor does the default back-fill label a v5 report `stored`.
     assert kl.load(report, criterion_root=criterion_root)["column_orders"].isna().all()
+
+
+def test_bench_probe_report_loads(tmp_path: Path) -> None:
+    report = tmp_path / "probe.json"
+    _run(tmp_path, report, "probe", "triangle", "-i", "tree-trie", "-a", "leapfrog-triejoin")
+    df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
+    assert set(df["kind"]) == {"probe"}
+    assert set(df["schema_version"]) == {6}
+    assert set(df["estimator"]) == {"exact", "single"}
+    single = df[df["estimator"] == "single"]
+    assert set(single["phase"]) == {"build", "iteration"}
+    assert (single["mean_ns"] > 0).all()
+    assert df["verified"].all()
+    assert df["answer_rows"].notna().all()
+    assert df["plan"].notna().all()

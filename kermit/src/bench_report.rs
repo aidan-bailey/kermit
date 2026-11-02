@@ -6,7 +6,7 @@
 //! it to [`write_metadata_block`], which produces a header banner plus
 //! left-aligned, column-padded entries. Centralising this here keeps the
 //! three call sites (`bench join`, `bench ds`, `bench run`) consistent and
-//! gives us a single place to integrate [`crate::measurement::format_bytes`]
+//! gives us a single place to integrate [`format_bytes`]
 //! for byte-valued fields.
 //!
 //! The report is written through [`ReportSink`], which rewrites it
@@ -46,7 +46,7 @@ pub struct MetadataLine {
 
 impl MetadataLine {
     /// Build a `MetadataLine` whose value is produced by `Display`. For byte
-    /// counts, compose with [`crate::measurement::format_bytes`]:
+    /// counts, compose with [`format_bytes`]:
     /// `MetadataLine::new("heap size", format_bytes(n))`.
     pub fn new(label: &'static str, value: impl std::fmt::Display) -> Self {
         Self {
@@ -76,6 +76,37 @@ pub fn write_metadata_block<W: Write>(
     Ok(())
 }
 
+/// Binary-prefix unit thresholds, so [`byte_unit`] reads as
+/// `if typical < BYTES_PER_KIB { ... }` rather than `if typical < 1024.0`.
+const BYTES_PER_KIB: f64 = 1024.0;
+const BYTES_PER_MIB: f64 = BYTES_PER_KIB * 1024.0;
+const BYTES_PER_GIB: f64 = BYTES_PER_MIB * 1024.0;
+
+/// A binary-prefixed unit (`B`, `KiB`, `MiB`, `GiB`) for `typical` bytes,
+/// with the factor that scales a byte count into it.
+fn byte_unit(typical: f64) -> (f64, &'static str) {
+    if typical < BYTES_PER_KIB {
+        (1.0, "B")
+    } else if typical < BYTES_PER_MIB {
+        (1.0 / BYTES_PER_KIB, "KiB")
+    } else if typical < BYTES_PER_GIB {
+        (1.0 / BYTES_PER_MIB, "MiB")
+    } else {
+        (1.0 / BYTES_PER_GIB, "GiB")
+    }
+}
+
+/// `n` bytes as a human-readable string: whole bytes without a decimal
+/// (`"768 B"`), larger units with two decimal places (`"1.50 MiB"`).
+pub fn format_bytes(n: u64) -> String {
+    let (factor, unit) = byte_unit(n as f64);
+    if unit == "B" {
+        format!("{n} {unit}")
+    } else {
+        format!("{:.2} {unit}", n as f64 * factor)
+    }
+}
+
 /// Schema version for the JSON report. Bump on any breaking change to
 /// [`BenchReport`] field names or value types, or to what a metric
 /// measures. 3: `iteration` / `end_to_end` time a streamed join whose rows
@@ -89,7 +120,11 @@ pub fn write_metadata_block<W: Write>(
 /// query's constants and repeated variables. `build` replaces `insertion`
 /// and `copies`; `iteration` excludes planning; `end_to_end` and `space`
 /// are per query; the `column_orders` axis is gone and `index_rows` is new.
-pub const REPORT_SCHEMA_VERSION: u32 = 5;
+/// 6: the measurements made without Criterion move into `values`: `space` is
+/// an exact entry there and never a Criterion function, `bench probe` reports
+/// (`kind: probe`) add single-run `build` / `iteration` times, and the `plan`
+/// and `answer_rows` axes are new. No metric changes what it measures.
+pub const REPORT_SCHEMA_VERSION: u32 = 6;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).
@@ -102,6 +137,8 @@ pub enum BenchKind {
     Ds,
     /// `bench run`
     Run,
+    /// `bench probe`
+    Probe,
 }
 
 /// The subcommand's name, as the report's `kind` field spells it.
@@ -111,6 +148,7 @@ impl std::fmt::Display for BenchKind {
             | Self::Join => "join",
             | Self::Ds => "ds",
             | Self::Run => "run",
+            | Self::Probe => "probe",
         })
     }
 }
@@ -121,8 +159,34 @@ impl std::fmt::Display for BenchKind {
 pub enum ReportMetric {
     /// Wall-clock time (Criterion's default `WallTime`).
     Time,
-    /// Heap bytes via [`crate::measurement::SpaceMeasurement`].
+    /// Exact heap bytes, reported in [`BenchReport::values`] (from v6).
     Space,
+}
+
+/// How a [`ValueEntry`] was taken.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Estimator {
+    /// A deterministic quantity: a structure's heap bytes, as built.
+    Exact,
+    /// One run's wall time (`bench probe`): cold, and not comparable with a
+    /// Criterion estimate.
+    Single,
+}
+
+/// One measurement made without Criterion. `value` is in the metric's unit,
+/// as Criterion's estimates are: ns for time, bytes for space.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ValueEntry {
+    /// The measured function: `space` (`{ds}/space` for `bench ds`), or
+    /// `build` / `iteration` for a probe's single run.
+    pub function: String,
+    /// What the value measures.
+    pub metric: ReportMetric,
+    /// How it was taken.
+    pub estimator: Estimator,
+    /// ns for time, bytes for space.
+    pub value: u64,
 }
 
 /// A single label/value pair as it appears in stderr metadata.
@@ -182,18 +246,22 @@ pub struct BenchReport {
     /// occur when a single subcommand records both time and space metrics or
     /// iterates several queries / relations.
     pub criterion_groups: Vec<CriterionGroupRef>,
+    /// The measurements made without Criterion: exact `space`, and a
+    /// probe's single-run times. Always serialised, possibly empty.
+    pub values: Vec<ValueEntry>,
 }
 
 impl BenchReport {
     /// Construct a report from the same `&[MetadataLine]` slice that
-    /// [`write_metadata_block`] consumes, the structured `axes` map, and the
-    /// list of Criterion functions that were run.
+    /// [`write_metadata_block`] consumes, the structured `axes` map, the list
+    /// of Criterion functions that were run, and the measurements made
+    /// without Criterion.
     ///
     /// Adds the `allocator` axis itself: every timing depends on the
     /// allocator (#112), so no report may leave it out.
     pub fn new(
         kind: BenchKind, metadata: &[MetadataLine], mut axes: BTreeMap<String, serde_json::Value>,
-        criterion_groups: Vec<CriterionGroupRef>,
+        criterion_groups: Vec<CriterionGroupRef>, values: Vec<ValueEntry>,
     ) -> Self {
         axes.insert("allocator".to_string(), serde_json::json!(crate::ALLOCATOR));
         Self {
@@ -202,6 +270,7 @@ impl BenchReport {
             metadata: metadata.iter().map(ReportField::from).collect(),
             axes,
             criterion_groups,
+            values,
         }
     }
 }
@@ -216,12 +285,12 @@ pub fn write_json_report<W: Write>(w: &mut W, reports: &[BenchReport]) -> io::Re
 
 /// Crash-safe writer for the JSON report of one `bench` invocation.
 ///
-/// `bench run` produces reports one cell at a time, and a sweep can run
+/// `bench run` produces reports one query at a time, and a sweep can run
 /// for hours. The sink rewrites the complete array after every
 /// [`push`](Self::push) — to a `.part` sibling, then renamed into place —
 /// so at any instant the file on disk is a valid JSON array holding every
-/// cell that has finished. An interrupted sweep therefore keeps its
-/// completed cells; only the cell in flight is lost.
+/// query that has finished. An interrupted sweep therefore keeps its
+/// completed queries; only the query in flight is lost.
 ///
 /// `bench join` and `bench ds` produce a single report and use the same
 /// sink so all three subcommands share one output path.
@@ -379,13 +448,14 @@ mod tests {
             function: "TreeTrie/space".into(),
             metric: ReportMetric::Space,
         }];
-        let report = BenchReport::new(BenchKind::Ds, &metadata, axes, groups);
+        let report = BenchReport::new(BenchKind::Ds, &metadata, axes, groups, vec![]);
 
         let mut buf = Vec::new();
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(json.is_array());
-        assert_eq!(json[0]["schema_version"], 5);
+        assert_eq!(json[0]["schema_version"], 6);
+        assert_eq!(json[0]["values"], serde_json::json!([]));
         assert_eq!(json[0]["kind"], "ds");
         assert_eq!(json[0]["metadata"][0]["label"], "data structure");
         assert_eq!(json[0]["metadata"][0]["value"], "TreeTrie");
@@ -404,7 +474,7 @@ mod tests {
             ("middle".to_string(), serde_json::json!(42)),
             ("nested".to_string(), serde_json::json!({"k": [1, 2]})),
         ]);
-        let report = BenchReport::new(BenchKind::Join, &[], axes, vec![]);
+        let report = BenchReport::new(BenchKind::Join, &[], axes, vec![], vec![]);
 
         let mut buf = Vec::new();
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
@@ -435,8 +505,14 @@ mod tests {
     #[test]
     fn every_report_records_the_allocator() {
         assert!(["jemalloc", "system"].contains(&crate::ALLOCATOR));
-        for kind in [BenchKind::Join, BenchKind::Ds, BenchKind::Run] {
-            let report = BenchReport::new(kind, &[], std::collections::BTreeMap::new(), vec![]);
+        for kind in [
+            BenchKind::Join,
+            BenchKind::Ds,
+            BenchKind::Run,
+            BenchKind::Probe,
+        ] {
+            let report =
+                BenchReport::new(kind, &[], std::collections::BTreeMap::new(), vec![], vec![]);
             assert_eq!(report.axes["allocator"], crate::ALLOCATOR, "{kind:?}");
         }
     }
@@ -445,14 +521,19 @@ mod tests {
     /// kind as its report's `kind` field does.
     #[test]
     fn a_kind_displays_as_it_serialises() {
-        for kind in [BenchKind::Join, BenchKind::Ds, BenchKind::Run] {
+        for kind in [
+            BenchKind::Join,
+            BenchKind::Ds,
+            BenchKind::Run,
+            BenchKind::Probe,
+        ] {
             assert_eq!(serde_json::json!(kind), serde_json::json!(kind.to_string()));
         }
     }
 
     fn report(kind: BenchKind, tag: &str) -> BenchReport {
         let axes = std::collections::BTreeMap::from([("tag".to_string(), serde_json::json!(tag))]);
-        BenchReport::new(kind, &[], axes, vec![])
+        BenchReport::new(kind, &[], axes, vec![], vec![])
     }
 
     fn read_tags(path: &std::path::Path) -> Vec<String> {
@@ -501,5 +582,40 @@ mod tests {
         let file = path.file_name().unwrap().to_str().unwrap();
         assert!(file.starts_with("ds-"), "{file}");
         assert!(file.ends_with(".json"), "{file}");
+    }
+
+    #[test]
+    fn a_value_entry_serialises_its_metric_and_estimator_in_lower_case() {
+        let entry = ValueEntry {
+            function: "space".into(),
+            metric: ReportMetric::Space,
+            estimator: Estimator::Exact,
+            value: 65_664,
+        };
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({
+                "function": "space", "metric": "space", "estimator": "exact", "value": 65664
+            })
+        );
+        assert_eq!(serde_json::json!(Estimator::Single), "single");
+    }
+
+    #[test]
+    fn values_are_always_serialised() {
+        let report = BenchReport::new(BenchKind::Run, &[], BTreeMap::new(), vec![], vec![]);
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["values"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn format_bytes_picks_unit_per_threshold() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(768), "768 B");
+        assert_eq!(format_bytes(1024), "1.00 KiB");
+        assert_eq!(format_bytes(2 * 1024 * 1024), "2.00 MiB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.00 GiB");
     }
 }

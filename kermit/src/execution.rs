@@ -444,11 +444,11 @@ pub(crate) fn read_relation(path: &Path) -> anyhow::Result<(RelationHeader, Tupl
 pub trait ExecutionFamily: RelationFamily {
     /// Whether running a join can change the indexes it reads: a lazy
     /// `HashTrie` builds each child a join first reaches (issue #92). When
-    /// true, `bench run` never executes against indexes it will measure
-    /// again. `--verify` and `iteration` run on fresh builds, so `space`
-    /// measures the indexes as built and each timed join pays its own
-    /// expansion. Required, like `build_index`: every family states what
-    /// its joins do.
+    /// true, `bench run` never times a join over indexes a join has already
+    /// run on: `iteration` runs on a fresh build per sample, so each timed
+    /// join pays its own expansion, and the describe step reads its bytes
+    /// before its `--verify` count, so `space` is the as-built footprint.
+    /// Required, like `build_index`: every family states what its joins do.
     const JOIN_MUTATES: bool;
 
     /// Builds the indexes `prepared` reads from the relations of `catalog`,
