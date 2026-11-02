@@ -88,8 +88,7 @@ pub fn analyse(query: &JoinQuery) -> QueryAnalysis {
 
     // Pass 4: the join keys, the variables two or more atoms carry (an atom
     // that carries one twice counts once). It allocates only its result and
-    // copies no list: `analyse` also runs inside every executor's
-    // `join_for_each`, which the `iteration` metric times.
+    // copies no list.
     let num_vars = var_to_index.len();
     let join_keys = (0..num_vars)
         .map(|v| {

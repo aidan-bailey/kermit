@@ -325,16 +325,11 @@ Both algorithms stream. `JoinAlgo::join_for_each` passes each result tuple to a 
 
 ```rust
 pub trait JoinAlgo<DS> where DS: JoinIterable {
-    fn join_for_each<S: FnMut(&[usize])>(
-        plan: &QueryPlan,
-        query: JoinQuery,
-        datastructures: HashMap<String, &DS>,
-        emit: S,
-    );
+    fn join_for_each<S: FnMut(&[usize])>(query: &ExecutedQuery, indexes: &[DS], emit: S);
 }
 ```
 
-This abstraction allows implementing different join algorithms that work with any join-iterable data structure. `plan` supplies the variable descent order (see "Query Planning" below); implementations validate it against the query with `QueryPlan::validate` and panic if it is inconsistent.
+This abstraction allows implementing different join algorithms that work with any join-iterable data structure. `query` is an `ExecutedQuery` (see `kermit-algos/src/executed.rs`): the executed form, its analysis and a plan checked when it was built (the variable descent order; see "Query Planning" below), so implementations validate nothing. `indexes[id]` is the index atom `j` names through `query.atom_indexes()[j]`, and a slice of the wrong length panics.
 
 The trait bound is the weak `JoinIterable` marker; each implementation narrows it to the family it can actually traverse:
 
@@ -457,7 +452,7 @@ Working examples live in `README.md` and `USAGE.md`; the YAML schema and generat
 - **Load** (untimed) reads each relation the queries name into the catalog.
 - **`prepare(&catalog, &query, &planner) -> Result<Prepared, JoinError>`** (untimed, once per query; `kermit/src/db/lifecycle.rs`) validates, rewrites `_`, extracts accesses, gathers statistics, plans, and plans indexes. A `Prepared` holds the executed query, the plan, the `IndexSpec`s, the constant checks and the head's length, and its `answer_header()` names the answer: a `RelationHeader` after the head predicate, with one attribute per head variable.
 - **`build::<R>(&catalog, &prepared) -> Indexes<R>`** (timed) turns each spec into a `TupleView` over its relation's flat tuples and calls the structure's `from_view`, which copies the matching rows once; each constant check becomes its view's `count()`. A zero count means the query has no answers; otherwise the counts multiply into `Indexes::multiplicity()`, each clamped to 1 unless `R::KEEPS_DUPLICATES`. `build_with` takes the constructor as a closure, which is how the binary's families inject their config and build mode.
-- **`execute::<R, JA>(&prepared, &indexes, emit)`** (timed) maps ids to indexes, calls `JoinAlgo::join_for_each`, and lends `emit` each row's head prefix once per unit of multiplicity, without materialising the result; when every atom was a constant check it emits the empty head row `multiplicity` times and runs no join. Executing with indexes built from another `Prepared` is a programming error, caught by a debug assertion that the specs are equal.
+- **`execute::<R, JA>(&prepared, &indexes, emit)`** (timed) passes its indexes, in id order, to `JoinAlgo::join_for_each`, and lends `emit` each row's head prefix once per unit of multiplicity, without materialising the result; when every atom was a constant check the executed query has no atom, and the join's one answer, the empty row, is emitted `multiplicity` times. Executing with indexes built from another `Prepared` is a programming error, caught by a debug assertion that the specs are equal.
 
 The conveniences `lftj_join_for_each<R, JA>` and `hash_join_for_each<R>` (hardwired to `HashTriejoin`) run all three steps and stream; `lftj_join` / `hash_join` run the same steps with a flat `Tuples` sink sized by `Prepared::head_len()` and return the answer as a relation, `Result<(RelationHeader, Tuples), JoinError>`, the pair a `Catalog` is built from; a query that cannot run returns a `JoinError` before anything is emitted. `kermit::compute_join` builds a `Catalog` from its inputs and calls `prepare`, `build` and `execute` itself (it is generic over the relation and the algorithm, which the family-bound conveniences are not), so it validates and applies every rewrite like every other entry point; it returns the rows alone, as one `Tuples` batch, since its inputs carry no headers. Freeing what a timed step built is never timed: each step returns what it built, and Criterion drops it after the timer stops.
 
@@ -521,7 +516,7 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 
 ### New Join Algorithm
 
-1. Create `kermit-algos/src/<family>/<name>.rs` (`sorted/` or `hash/`, matching the iterator family) and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable` or `HashTrieIterable` accordingly. The implementation runs over the executed query (every atom an index id `#<k>` over a plain index, each variable once per atom, columns in plan order, no constants) and must validate the incoming `QueryPlan`.
+1. Create `kermit-algos/src/<family>/<name>.rs` (`sorted/` or `hash/`, matching the iterator family) and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable` or `HashTrieIterable` accordingly. It receives an `ExecutedQuery`, whose type guarantees the executed form (every atom an index over distinct variables in plan order, no constants or `_`, every head variable carried) and a checked plan, and its indexes as `&[DS]` in id order; it validates nothing, calls `assert_index_count`, and emits one empty row for an empty body.
 2. Register the module in the family's `mod.rs`, re-export it from the flat facade in `kermit-algos/src/lib.rs`, and add a variant to the `JoinAlgorithm` enum there.
 3. Wire the CLI: a variant on `JoinAlgorithmSelector` and its `expand()`, plus the algorithm's valid cells in `Execution` / `Execution::for_pair` (the compiler flags the incomplete match) and a `dispatch_run_bench` arm. `kermit join` / `bench join` dispatch through the same cells (`write_query_csv`), so nothing extra is needed for them. A sorted-family algorithm plugs into `lftj_join<R, JA>`; a hash-family one needs its own entry point beside `hash_join` over `prepare` / `build` / `execute` (see "Catalog and lifecycle").
 4. **Wire the tests.** Add a `define_multiway_join_test_suite!` invocation per compatible index structure × optimiser, and a cell in `kermit/tests/all_orders.rs`.

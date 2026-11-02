@@ -16,7 +16,7 @@ StructureName {
 ## Invariants
 
 - One bullet per invariant maintained by `Relation::insert` / `from_view` / `insert_all`. Include the consequence — what breaks if the invariant breaks.
-- Include LFTJ-related invariants explicitly: the `open`-after-`at_end` discipline (see the LFTJ gotcha in `CLAUDE.md`), forward-only `seek`, sorted siblings.
+- Include LFTJ-related invariants explicitly: `up` after `at_end` returns to the parent (LFTJ ascends from every depth it exhausts; it never opens an exhausted iterator, so `open` after `at_end` may descend or refuse — see [`leapfrog-triejoin.md`](../algorithms/leapfrog-triejoin.md)), forward-only `seek`, sorted siblings.
 - State whether the structure keeps duplicate rows (`Relation::KEEPS_DUPLICATES`): a constant-only atom's row count multiplies a join's results only where it does.
 
 ## Complexity

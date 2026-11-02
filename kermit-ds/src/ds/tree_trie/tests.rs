@@ -152,9 +152,9 @@ fn seek_backward_panics_galloping() { seek_backward::<GallopingSeek>() }
 
 /// A successful seek moves the stack top; one that runs off the end leaves
 /// it on the last node the iterator was positioned on, so `open` still
-/// descends into *that* node's children after `at_end`: the descent LFTJ
-/// relies on (see `TreeTrieIter`'s position model). The strategy only
-/// computes the offset, so this holds under each of them.
+/// descends into *that* node's children after `at_end`, as the note on
+/// `TrieIterator::open` says of `TreeTrieIter` (see its position model). The
+/// strategy only computes the offset, so this holds under each of them.
 fn open_after_failed_seek<S: SeekStrategy>() {
     let trie: TreeTrie<S> =
         TreeTrie::from_tuples(2.into(), vec![vec![1, 5], vec![2, 6], vec![3, 7]]);

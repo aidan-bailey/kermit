@@ -161,7 +161,7 @@ def test_bench_ds_reports_the_build_phase(tmp_path: Path) -> None:
         "ds", "--relation", str(FIXTURES / "edge.csv"), "-i", "tree-trie", "-m", "build", "space",
     )
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
-    assert set(df["schema_version"]) == {6}
+    assert set(df["schema_version"]) == {kl.SCHEMA_VERSION}
     assert set(df.loc[df["metric"] == "time", "phase"]) == {"build"}
     assert set(df.loc[df["metric"] == "time", "criterion_function"]) == {"TreeTrie/build"}
     assert set(df.loc[df["metric"] == "space", "estimator"]) == {"exact"}
@@ -182,7 +182,7 @@ def test_bench_join_reports_a_per_query_build_and_space(tmp_path: Path) -> None:
     criterion_root = tmp_path / "target" / "criterion"
     # Without the back-fill, so a missing key cannot pass as "stored".
     raw = kl.load(report, criterion_root=criterion_root, apply_defaults=False)
-    assert set(raw["schema_version"]) == {6}
+    assert set(raw["schema_version"]) == {kl.SCHEMA_VERSION}
     assert set(raw.loc[raw["metric"] == "time", "phase"]) == {"build"}
     assert raw["column_orders"].isna().all()
     assert set(raw["index_rows"].dropna()) == {8}
@@ -197,7 +197,7 @@ def test_bench_probe_report_loads(tmp_path: Path) -> None:
     _run(tmp_path, report, "probe", "triangle", "-i", "tree-trie", "-a", "leapfrog-triejoin")
     df = kl.load(report, criterion_root=tmp_path / "target" / "criterion")
     assert set(df["kind"]) == {"probe"}
-    assert set(df["schema_version"]) == {6}
+    assert set(df["schema_version"]) == {kl.SCHEMA_VERSION}
     assert set(df["estimator"]) == {"exact", "single"}
     single = df[df["estimator"] == "single"]
     assert set(single["phase"]) == {"build", "iteration"}

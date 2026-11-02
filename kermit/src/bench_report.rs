@@ -124,7 +124,11 @@ pub fn format_bytes(n: u64) -> String {
 /// an exact entry there and never a Criterion function, `bench probe` reports
 /// (`kind: probe`) add single-run `build` / `iteration` times, and the `plan`
 /// and `answer_rows` axes are new. No metric changes what it measures.
-pub const REPORT_SCHEMA_VERSION: u32 = 6;
+/// 7: `iteration` and `end_to_end` exclude the join's per-query setup: the
+/// query reaches the join as an `ExecutedQuery` built once, untimed, by
+/// `prepare`, so no timed sample clones the query, analyses it, checks its
+/// plan or maps its index names. No field or axis changes.
+pub const REPORT_SCHEMA_VERSION: u32 = 7;
 
 /// Which `bench` subcommand produced the report. Serialised as a lower-case
 /// string (`"join"`, `"ds"`, `"run"`).
@@ -454,7 +458,7 @@ mod tests {
         write_json_report(&mut buf, std::slice::from_ref(&report)).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(json.is_array());
-        assert_eq!(json[0]["schema_version"], 6);
+        assert_eq!(json[0]["schema_version"], 7);
         assert_eq!(json[0]["values"], serde_json::json!([]));
         assert_eq!(json[0]["kind"], "ds");
         assert_eq!(json[0]["metadata"][0]["label"], "data structure");

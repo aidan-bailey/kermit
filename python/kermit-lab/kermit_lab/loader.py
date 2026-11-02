@@ -47,6 +47,12 @@ Criterion function, and ``bench probe`` reports add single-run times. No
 metric changes meaning, so it is not in :data:`MEANING_CHANGES`, and v5 and
 v6 reports load together."""
 
+EXECUTED_QUERY_SCHEMA = 7
+"""First schema version whose ``iteration`` and ``end_to_end`` exclude the
+join's per-query setup: the query reaches the join as an ``ExecutedQuery``
+built once, untimed, by ``prepare``, so no timed sample clones the query,
+analyses it, checks its plan or maps its index names."""
+
 MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (
         STREAMED_JOIN_SCHEMA,
@@ -68,6 +74,12 @@ MEANING_CHANGES: tuple[tuple[int, str, tuple[str, ...]], ...] = (
         "each query builds, and times, only the indexes it reads, so build replaces "
         "insertion and copies and iteration, end_to_end and space are measured per query",
         (),
+    ),
+    (
+        EXECUTED_QUERY_SCHEMA,
+        "iteration and end_to_end exclude the join's per-query setup (query clone, "
+        "analysis, plan check and index map)",
+        ("build", "space", "bench ds metrics"),
     ),
 )
 """Every schema version from which a metric changed meaning: the version,

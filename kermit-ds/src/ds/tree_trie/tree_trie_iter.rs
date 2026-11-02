@@ -19,9 +19,9 @@ use {
 /// the cursor advances past the last sibling, `sibling_idx` becomes
 /// `siblings.len()` (past-end) while the stack entry keeps pointing at the
 /// last *valid* node — so [`open`](TrieIterator::open) still descends into
-/// that node's children after [`at_end`](LinearIterator::at_end), the
-/// descent LFTJ relies on. Folding the cursor into the stack entry would
-/// lose that past-end state.
+/// that node's children after [`at_end`](LinearIterator::at_end), and
+/// [`up`](TrieIterator::up) returns to the parent's entry. Folding the
+/// cursor into the stack entry would lose that past-end state.
 ///
 /// Compare to [`ColumnTrieIter`](super::super::column_trie::ColumnTrie):
 /// where `ColumnTrieIter` carries three integer coordinates over flat
