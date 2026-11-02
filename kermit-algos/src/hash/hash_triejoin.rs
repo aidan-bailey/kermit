@@ -17,10 +17,11 @@
 //! lines 16–19).
 
 use {
-    crate::{analysis::analyse, join_algo::JoinAlgo, optimiser::QueryPlan},
+    crate::{
+        executed::ExecutedQuery,
+        join_algo::{assert_index_count, JoinAlgo},
+    },
     kermit_iters::{HashTrieIterable, HashTrieIterator, LeafCursor, LeafRows},
-    kermit_parser::JoinQuery,
-    std::collections::HashMap,
 };
 
 /// Build `variable_to_iter_map[i]`: the predicates whose trie has a level
@@ -72,8 +73,8 @@ fn verify_and_construct<'t>(
             }
         }
     }
-    // Every variable is carried by some relation (`join_for_each` returns
-    // before any descent otherwise), so no slot of `row` is stale.
+    // Every variable is carried by some relation (an [`ExecutedQuery`] holds
+    // no other), so no slot of `row` is stale.
     debug_assert!(bound.iter().all(|&b| b), "unbound variable at the leaf");
     true
 }
@@ -286,43 +287,24 @@ impl<DS> JoinAlgo<DS> for HashTriejoin
 where
     DS: HashTrieIterable,
 {
-    fn join_for_each<S: FnMut(&[usize])>(
-        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>, emit: S,
-    ) {
-        let analysis = analyse(&query);
-        if let Err(e) = plan.validate(&analysis) {
-            panic!("HashTriejoin::join_for_each: invalid query plan: {e}");
-        }
-        let predicate_variables = analysis.predicate_variables;
-        // A variable no atom carries can take no value, so the query has no
-        // answer (validation rules it out for every query from `kermit::db`).
-        // Checked once here: `enumerate` skips a position no trie has a level
-        // for, which is a payload position, not this one (#116).
-        if plan
-            .variable_ordering
-            .iter()
-            .any(|v| !predicate_variables.iter().any(|vars| vars.contains(v)))
-        {
-            return;
-        }
+    fn join_for_each<S: FnMut(&[usize])>(query: &ExecutedQuery, indexes: &[DS], emit: S) {
+        assert_index_count("HashTriejoin", query, indexes.len());
+        let predicate_variables = &query.analysis().predicate_variables;
+        let variable_ordering = &query.plan().variable_ordering;
         let relations: Vec<&DS> = query
-            .body
+            .atom_indexes()
             .iter()
-            .map(|atom| {
-                *datastructures
-                    .get(&atom.name)
-                    .expect("Missing datastructure for predicate name")
-            })
+            .map(|&id| &indexes[id])
             .collect();
         // Each relation participates only at its levels' variables (#116).
         let levels: Vec<usize> = relations.iter().map(|relation| relation.levels()).collect();
         let variable_to_iter_map =
-            build_variable_to_iter_map(&plan.variable_ordering, &predicate_variables, &levels);
+            build_variable_to_iter_map(variable_ordering, predicate_variables, &levels);
         let iters = relations
             .iter()
             .map(|relation| relation.hash_trie_iter())
             .collect();
-        Probe::new(iters, &predicate_variables, &variable_to_iter_map, emit).enumerate(0);
+        Probe::new(iters, predicate_variables, &variable_to_iter_map, emit).enumerate(0);
     }
 }
 
@@ -330,18 +312,20 @@ where
 mod tests {
     use {
         super::*,
-        crate::optimiser::{CatalogStats, LexicographicOptimiser, QueryOptimiser},
+        crate::{
+            optimiser::{CatalogStats, LexicographicOptimiser, QueryOptimiser, QueryPlan},
+            ExecutedQuery,
+        },
         kermit_iters::Tuples,
+        kermit_parser::JoinQuery,
     };
 
-    /// `query` joined by [`HashTriejoin`] under `plan`, collected as a caller
-    /// collects through `join_for_each`: into a flat [`Tuples`] batch with
-    /// one column per query variable. Returns the rows sorted.
-    fn joined<DS: HashTrieIterable>(
-        plan: &QueryPlan, query: JoinQuery, ds: HashMap<String, &DS>,
-    ) -> Vec<Vec<usize>> {
-        let mut rows = Tuples::new(plan.variable_ordering.len());
-        HashTriejoin::join_for_each(plan, query, ds, |row| rows.push(row));
+    /// `query` joined by [`HashTriejoin`] over `indexes`, collected as a
+    /// caller collects through `join_for_each`: into a flat [`Tuples`] batch
+    /// with one column per query variable. Returns the rows sorted.
+    fn joined<DS: HashTrieIterable>(query: &ExecutedQuery, indexes: &[DS]) -> Vec<Vec<usize>> {
+        let mut rows = Tuples::new(query.analysis().num_vars);
+        HashTriejoin::join_for_each(query, indexes, |row| rows.push(row));
         rows.sort();
         rows.to_vecs()
     }
@@ -547,16 +531,16 @@ mod tests {
         let r = CollidingHashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
         let s = CollidingHashTrie::from_tuples(2.into(), vec![vec![12, 3], vec![2, 5]]);
         let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z).".parse().unwrap();
-        let mut ds: HashMap<String, &CollidingHashTrie> = HashMap::new();
-        ds.insert("R".to_string(), &r);
-        ds.insert("S".to_string(), &s);
         // The order the tries' columns follow: X, Y, Z. (Every optimiser
         // plans the join key Y first, #116, which these tries are not laid
         // out for.)
         let plan = QueryPlan {
             variable_ordering: vec![0, 1, 2],
         };
-        assert_eq!(joined(&plan, query, ds), vec![vec![1, 2, 5]]);
+        assert_eq!(
+            joined(&ExecutedQuery::new(query, plan).unwrap(), &[r, s]),
+            vec![vec![1, 2, 5]]
+        );
     }
 
     #[test]
@@ -568,43 +552,38 @@ mod tests {
         let r = CollidingHashTrie::from_tuples(1.into(), vec![vec![1], vec![11]]);
         let s = CollidingHashTrie::from_tuples(1.into(), vec![vec![11]]);
         let query: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
-        let mut ds: HashMap<String, &CollidingHashTrie> = HashMap::new();
-        ds.insert("R".to_string(), &r);
-        ds.insert("S".to_string(), &s);
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
-        assert_eq!(joined(&plan, query, ds), vec![vec![11]]);
+        assert_eq!(
+            joined(&ExecutedQuery::new(query, plan).unwrap(), &[r, s]),
+            vec![vec![11]]
+        );
     }
 
     #[test]
     fn join_algo_unary_intersection() {
         use kermit_ds::{HashTrie, Relation};
-        let r = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
+        let r: HashTrie = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2], vec![3]]);
         let s = HashTrie::from_tuples(1.into(), vec![vec![2], vec![3], vec![4]]);
         let query: JoinQuery = "Q(X) :- R(X), S(X).".parse().unwrap();
-        let mut ds: HashMap<String, &HashTrie> = HashMap::new();
-        ds.insert("R".to_string(), &r);
-        ds.insert("S".to_string(), &s);
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
-        assert_eq!(joined(&plan, query, ds), vec![vec![2], vec![3]]);
+        assert_eq!(
+            joined(&ExecutedQuery::new(query, plan).unwrap(), &[r, s]),
+            vec![vec![2], vec![3]]
+        );
     }
 
     #[test]
     fn join_algo_triangle() {
         use kermit_ds::{HashTrie, Relation};
-        let r = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3], vec![3, 1]]);
+        let r: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3], vec![3, 1]]);
         let s = HashTrie::from_tuples(2.into(), vec![vec![2, 3], vec![3, 1], vec![1, 2]]);
         let t = HashTrie::from_tuples(2.into(), vec![vec![1, 3], vec![2, 1], vec![3, 2]]);
         let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).".parse().unwrap();
-        let mut ds: HashMap<String, &HashTrie> = HashMap::new();
-        ds.insert("R".to_string(), &r);
-        ds.insert("S".to_string(), &s);
-        ds.insert("T".to_string(), &t);
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
-        assert_eq!(joined(&plan, query, ds), vec![
-            vec![1, 2, 3],
-            vec![2, 3, 1],
-            vec![3, 1, 2]
-        ]);
+        assert_eq!(
+            joined(&ExecutedQuery::new(query, plan).unwrap(), &[r, s, t]),
+            vec![vec![1, 2, 3], vec![2, 3, 1], vec![3, 1, 2]]
+        );
     }
 
     /// Algorithm 3 lines 16–19 over three leaf chains of lengths 1, 2 and 3:
@@ -666,13 +645,9 @@ mod tests {
             .unwrap();
         let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
         assert_eq!(plan.variable_ordering, [0, 1, 2, 3]);
-        let ds: HashMap<String, &CollidingHashTrie> = HashMap::from([
-            ("R".to_string(), &r),
-            ("S".to_string(), &s),
-            ("T".to_string(), &t),
-        ]);
+        let executed = ExecutedQuery::new(query, plan).unwrap();
         let mut joined = Vec::new();
-        HashTriejoin::join_for_each(&plan, query, ds, |row| joined.push(row.to_vec()));
+        HashTriejoin::join_for_each(&executed, &[r, s, t], |row| joined.push(row.to_vec()));
         assert_eq!(joined, expected);
     }
 
@@ -689,13 +664,6 @@ mod tests {
             kermit_ds::RelationHeader::new_nameless_positional(arity).with_levels(levels),
             rows,
         )
-    }
-
-    fn by_name<'a, DS>(relations: &[(&str, &'a DS)]) -> HashMap<String, &'a DS> {
-        relations
-            .iter()
-            .map(|&(name, ds)| (name.to_string(), ds))
-            .collect()
     }
 
     /// Only the levelled columns participate (#116): R(X, P) at one level,
@@ -727,6 +695,8 @@ mod tests {
             HashTrie::from_tuples(1.into(), t),
         );
         let want = vec![vec![1, 10, 5], vec![1, 11, 5]];
+        let keys = [kr, ks, kt];
+        let all = [ar, as_, at];
         // A forced order with the payload before a key, then payload last
         // (what every optimiser plans, #116).
         for order in [vec![0, 1, 2], vec![0, 2, 1]] {
@@ -734,10 +704,9 @@ mod tests {
             let plan = QueryPlan {
                 variable_ordering: order.clone(),
             };
-            let keys = by_name(&[("R", &kr), ("S", &ks), ("T", &kt)]);
-            assert_eq!(joined(&plan, query.clone(), keys), want, "keys, {order:?}");
-            let all = by_name(&[("R", &ar), ("S", &as_), ("T", &at)]);
-            assert_eq!(joined(&plan, query, all), want, "all, {order:?}");
+            let executed = ExecutedQuery::new(query, plan).unwrap();
+            assert_eq!(joined(&executed, &keys), want, "keys, {order:?}");
+            assert_eq!(joined(&executed, &all), want, "all, {order:?}");
         }
     }
 
@@ -745,31 +714,45 @@ mod tests {
     /// product is their cross product; an empty one leaves none.
     #[test]
     fn atoms_with_no_level_cross_their_whole_chains() {
-        let r = keys_trie(1, 0, vec![vec![1], vec![2]]);
+        let r = || keys_trie(1, 0, vec![vec![1], vec![2]]);
         let s = keys_trie(1, 0, vec![vec![7]]);
         let empty = keys_trie(1, 0, Vec::new());
         let plan = QueryPlan {
             variable_ordering: vec![0, 1],
         };
         let query: JoinQuery = "Q(X, Y) :- R(X), S(Y).".parse().unwrap();
-        assert_eq!(
-            joined(&plan, query.clone(), by_name(&[("R", &r), ("S", &s)])),
-            vec![vec![1, 7], vec![2, 7]]
-        );
-        assert!(joined(&plan, query, by_name(&[("R", &r), ("S", &empty)])).is_empty());
+        let executed = ExecutedQuery::new(query, plan).unwrap();
+        assert_eq!(joined(&executed, &[r(), s]), vec![vec![1, 7], vec![2, 7]]);
+        assert!(joined(&executed, &[r(), empty]).is_empty());
     }
 
-    /// A variable no atom carries (only a direct caller can pass one:
-    /// `kermit::db` validation refuses it) gives no rows, as before #116,
-    /// rather than reaching the leaf with an unbound slot.
+    /// The empty conjunction: its one answer is the empty row.
     #[test]
-    fn a_variable_no_atom_carries_gives_no_rows() {
-        use kermit_ds::{HashTrie, Relation};
-        let r: HashTrie = HashTrie::from_tuples(1.into(), vec![vec![1], vec![2]]);
-        let query: JoinQuery = "Q(X, Y) :- R(X).".parse().unwrap();
+    fn join_for_each_emits_one_empty_row_for_an_empty_body() {
+        use kermit_ds::HashTrie;
+        let mut query: JoinQuery = "Q(c1) :- R(c1).".parse().unwrap();
+        query.head.terms.clear();
+        query.body.clear();
         let plan = QueryPlan {
-            variable_ordering: vec![0, 1],
+            variable_ordering: vec![],
         };
-        assert!(joined(&plan, query, by_name(&[("R", &r)])).is_empty());
+        let executed = ExecutedQuery::new(query, plan).unwrap();
+        let none: [HashTrie; 0] = [];
+        let mut rows: Vec<Vec<usize>> = Vec::new();
+        HashTriejoin::join_for_each(&executed, &none, |row| rows.push(row.to_vec()));
+        assert_eq!(rows, vec![Vec::<usize>::new()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "HashTriejoin::join_for_each: 1 indexes for a query that reads 2")]
+    fn join_for_each_panics_when_an_index_is_missing() {
+        use kermit_ds::{HashTrie, Relation};
+        let r: HashTrie = HashTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z).".parse().unwrap();
+        let plan = QueryPlan {
+            variable_ordering: vec![0, 1, 2],
+        };
+        let executed = ExecutedQuery::new(query, plan).unwrap();
+        HashTriejoin::join_for_each(&executed, &[r], |_| {});
     }
 }

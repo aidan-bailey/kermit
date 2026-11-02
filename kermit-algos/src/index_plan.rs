@@ -10,13 +10,14 @@
 //!
 //! The query it returns names its atoms by index id (`#0`, `#1`, …, see
 //! [`INDEX_ID_PREFIX`]), with each atom's variables in index column order,
-//! so atom and index agree by construction and [`QueryPlan::validate`]
-//! passes. It reads no data.
+//! so atom and index agree by construction, and returns it as an
+//! [`ExecutedQuery`], whose constructor checks the plan. It reads no data.
 
 use {
     crate::{
         access::AccessQuery,
         analysis::{analyse, canonical_names},
+        executed::ExecutedQuery,
         optimiser::QueryPlan,
     },
     kermit_iters::{Filter, TrieLevels, TupleView, Tuples},
@@ -63,13 +64,10 @@ impl IndexSpec {
 /// A planned query, ready to build and execute.
 #[derive(Clone, Debug)]
 pub struct IndexPlan {
-    /// The query to execute: the head unchanged, and `body[j]` the atom
-    /// `#{id}` of the index the `j`-th access reads, over its variables in
-    /// plan order.
-    pub query: JoinQuery,
-    /// The plan, translated to `query`'s variable numbering; it validates
-    /// against `query`.
-    pub plan: QueryPlan,
+    /// The query to execute, with its plan: the head unchanged, and
+    /// `body[j]` the atom `#{id}` of the index the `j`-th access reads, over
+    /// its variables in plan order, so atom `#k` reads index `k`.
+    pub query: ExecutedQuery,
     /// The indexes to build, `indexes[id]`, with identical specs merged.
     pub indexes: Vec<IndexSpec>,
 }
@@ -162,15 +160,20 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan, levels: TrieLevels
     let plan = QueryPlan {
         variable_ordering: plan_names.iter().map(|name| index_of[name]).collect(),
     };
-    debug_assert_eq!(
-        plan.validate(&analyse(&query)),
-        Ok(()),
-        "every atom lists its variables in plan order"
+    let query =
+        ExecutedQuery::new(query, plan).expect("a rewritten, validated query is in executed form");
+    debug_assert!(
+        query
+            .query()
+            .body
+            .iter()
+            .zip(query.atom_indexes())
+            .all(|(atom, &id)| atom.name == format!("{INDEX_ID_PREFIX}{id}")),
+        "atom `#k` reads index k"
     );
 
     IndexPlan {
         query,
-        plan,
         indexes,
     }
 }
@@ -179,7 +182,7 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan, levels: TrieLevels
 mod tests {
     use {
         super::*,
-        crate::{analyse, canonical_names, extract_accesses, rewrite_placeholders},
+        crate::{canonical_names, extract_accesses, rewrite_placeholders},
     };
 
     fn accesses_of(text: &str) -> AccessQuery {
@@ -246,18 +249,18 @@ mod tests {
             spec("S", Filter::none(), vec![0, 1]),
             spec("T", Filter::none(), vec![0, 1]),
         ]);
-        assert_eq!(body_text(&out.query), vec![
+        assert_eq!(body_text(out.query.query()), vec![
             "#0(X, Y)", "#1(Y, Z)", "#2(X, Z)"
         ]);
-        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2]);
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1, 2]);
     }
 
     #[test]
     fn a_reversed_order_reads_the_columns_reversed() {
         let out = planned("Q(X, Y) :- edge(Y, X).", &["X", "Y"]);
         assert_eq!(out.indexes, vec![spec("edge", Filter::none(), vec![1, 0])]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)"]);
-        assert_eq!(out.plan.variable_ordering, vec![0, 1]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)"]);
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1]);
     }
 
     #[test]
@@ -270,7 +273,7 @@ mod tests {
             Filter::new(vec![(1, 5)], vec![]),
             vec![2, 0]
         )]);
-        assert_eq!(body_text(&out.query), vec!["#0(Y, X)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(Y, X)"]);
 
         // The equality names source columns, so it does not move with the
         // order.
@@ -280,7 +283,7 @@ mod tests {
             Filter::new(vec![], vec![(0, 2)]),
             vec![1, 0]
         )]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)"]);
     }
 
     #[test]
@@ -288,14 +291,14 @@ mod tests {
         let accesses = accesses_of("Q(Z, X) :- R(X, Y), S(Y, Z).");
         let plan = plan_of(&accesses.query, &["Z", "Y", "X"]);
         let out = plan_indexes(&accesses, &plan, TrieLevels::All);
-        assert_eq!(out.query.head, accesses.query.head);
+        assert_eq!(out.query.query().head, accesses.query.head);
     }
 
     #[test]
     fn checks_are_not_indexed() {
         let out = planned("Q(X) :- p(X), r(c1, c2).", &["X"]);
         assert_eq!(out.indexes, vec![spec("p", Filter::none(), vec![0])]);
-        assert_eq!(body_text(&out.query), vec!["#0(X)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X)"]);
     }
 
     /// A body of only constants has no access: `extract_accesses` returns an
@@ -315,10 +318,10 @@ mod tests {
         };
         let out = plan_indexes(&accesses, &plan, TrieLevels::All);
         assert!(out.indexes.is_empty());
-        assert!(out.query.body.is_empty());
-        assert_eq!(out.query.head, accesses.query.head);
-        assert!(out.plan.variable_ordering.is_empty());
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert!(out.query.query().body.is_empty());
+        assert_eq!(out.query.query().head, accesses.query.head);
+        assert!(out.query.plan().variable_ordering.is_empty());
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     /// `analyse` numbers body-only variables by first appearance, and the
@@ -333,12 +336,12 @@ mod tests {
 
         let out = plan_indexes(&accesses, &old, TrieLevels::All);
         assert_eq!(out.indexes, vec![spec("r", Filter::none(), vec![1, 2, 0])]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, A, B)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, A, B)"]);
         // Numbering of the executed query: X = 0, A = 1, B = 2.
-        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1, 2]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
         // The untranslated plan would not have validated.
-        assert!(old.validate(&analyse(&out.query)).is_err());
+        assert!(old.validate(out.query.analysis()).is_err());
     }
 
     #[test]
@@ -353,10 +356,15 @@ mod tests {
         ];
         for order in orders {
             let out = planned("Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).", &order);
-            assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()), "{order:?}");
-            let names = canonical_names(&out.query);
+            assert_eq!(
+                out.query.plan().validate(out.query.analysis()),
+                Ok(()),
+                "{order:?}"
+            );
+            let names = canonical_names(out.query.query());
             let bound: Vec<&str> = out
-                .plan
+                .query
+                .plan()
                 .variable_ordering
                 .iter()
                 .map(|&v| names[v].as_str())
@@ -369,8 +377,8 @@ mod tests {
     fn a_self_join_that_reads_one_relation_one_way_builds_it_once() {
         let out = planned("Q(X, Y, Z) :- edge(Y, X), edge(Z, X).", &["X", "Y", "Z"]);
         assert_eq!(out.indexes, vec![spec("edge", Filter::none(), vec![1, 0])]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#0(X, Z)"]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)", "#0(X, Z)"]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     #[test]
@@ -380,7 +388,7 @@ mod tests {
             spec("edge", Filter::none(), vec![0, 1]),
             spec("edge", Filter::none(), vec![1, 0]),
         ]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#1(X, Z)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)", "#1(X, Z)"]);
     }
 
     #[test]
@@ -392,7 +400,7 @@ mod tests {
             spec("edge", Filter::none(), vec![1, 0]),
             spec("edge", Filter::none(), vec![0, 1]),
         ]);
-        assert_eq!(body_text(&out.query), vec![
+        assert_eq!(body_text(out.query.query()), vec![
             "#0(X, Y)", "#1(X, Y)", "#0(X, Y)"
         ]);
     }
@@ -405,7 +413,7 @@ mod tests {
             Filter::new(vec![(1, 1)], vec![]),
             vec![0]
         )]);
-        assert_eq!(body_text(&out.query), vec!["#0(X)", "#0(Y)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X)", "#0(Y)"]);
     }
 
     #[test]
@@ -415,7 +423,7 @@ mod tests {
             spec("p", Filter::new(vec![(1, 1)], vec![]), vec![0]),
             spec("p", Filter::new(vec![(1, 2)], vec![]), vec![0]),
         ]);
-        assert_eq!(body_text(&out.query), vec!["#0(X)", "#1(X)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X)", "#1(X)"]);
     }
 
     fn levels_of(plan: &IndexPlan) -> Vec<(Vec<usize>, usize)> {
@@ -485,7 +493,7 @@ mod tests {
         let order = &["B", "C", "A", "D"];
         let all = planned_with(text, order, TrieLevels::All);
         assert_eq!(levels_of(&all), vec![(vec![1, 0], 2), (vec![0, 1], 2)]);
-        assert_eq!(body_text(&all.query), vec![
+        assert_eq!(body_text(all.query.query()), vec![
             "#0(B, A)", "#1(B, C)", "#1(C, D)"
         ]);
         let keys = planned_with(text, order, TrieLevels::JoinKeys);
@@ -494,7 +502,7 @@ mod tests {
             (vec![0, 1], 2),
             (vec![0, 1], 1)
         ]);
-        assert_eq!(body_text(&keys.query), vec![
+        assert_eq!(body_text(keys.query.query()), vec![
             "#0(B, A)", "#1(B, C)", "#2(C, D)"
         ]);
     }

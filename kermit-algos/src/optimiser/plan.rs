@@ -85,7 +85,7 @@ impl QueryPlan {
         for (p, vars) in analysis.predicate_variables.iter().enumerate() {
             for pair in vars.windows(2) {
                 let (earlier, later) = (pair[0], pair[1]);
-                if earlier != later && position[earlier] > position[later] {
+                if position[earlier] > position[later] {
                     return Err(PlanError::ColumnOrderViolated {
                         predicate: p,
                         earlier,

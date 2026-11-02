@@ -8,12 +8,12 @@ use {
     super::{validate_query, Catalog, JoinError},
     kermit_algos::{
         canonical_names, distinct_per_column, extract_accesses, plan_indexes, rewrite_placeholders,
-        Access, CatalogStats, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner, QueryPlan,
-        RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
+        Access, CatalogStats, ExecutedQuery, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner,
+        QueryPlan, RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
     },
     kermit_ds::{Relation, RelationHeader, TrieLevels, TupleView, Tuples},
     kermit_iters::JoinIterable,
-    std::collections::{BTreeMap, HashMap},
+    std::collections::BTreeMap,
 };
 
 /// What a [`Prepared`] expects of the catalog it is used with: `prepare`
@@ -31,8 +31,7 @@ const CATALOG_HOLDS: &str =
 /// borrows nothing, and is meant for the catalog it was prepared over.
 #[derive(Clone, Debug)]
 pub struct Prepared {
-    query: JoinQuery,
-    plan: QueryPlan,
+    executed: ExecutedQuery,
     indexes: Vec<IndexSpec>,
     /// The rows `indexes[id]`'s view admits, counted by `prepare`.
     index_rows: Vec<usize>,
@@ -45,10 +44,14 @@ pub struct Prepared {
 impl Prepared {
     /// The executed query: the head as written, and one atom `#<id>` per body
     /// atom that binds a variable.
-    pub fn query(&self) -> &JoinQuery { &self.query }
+    pub fn query(&self) -> &JoinQuery { self.executed.query() }
 
     /// The plan for [`query`](Self::query); it validates against it.
-    pub fn plan(&self) -> &QueryPlan { &self.plan }
+    pub fn plan(&self) -> &QueryPlan { self.executed.plan() }
+
+    /// The executed query, with its analysis and plan: what
+    /// [`execute`] hands the join.
+    pub fn executed(&self) -> &ExecutedQuery { &self.executed }
 
     /// The indexes the query reads, `indexes()[id]` being `#<id>`. Identical
     /// specs are merged, so an atom list that reads one relation one way
@@ -76,8 +79,9 @@ impl Prepared {
     /// the whole plan, since [`plan_indexes`] derives every index spec and the
     /// executed query from it. Reports record it as the `plan` axis.
     pub fn variable_order(&self) -> Vec<String> {
-        let names = canonical_names(&self.query);
-        self.plan
+        let names = canonical_names(self.executed.query());
+        self.executed
+            .plan()
             .variable_ordering
             .iter()
             .map(|&variable| names[variable].clone())
@@ -94,7 +98,7 @@ impl Prepared {
     /// so [`execute`], which reads a `Prepared` in the timed region, sees no
     /// new field.
     pub fn answer_header(&self) -> RelationHeader {
-        let head = &self.query.head;
+        let head = &self.executed.query().head;
         RelationHeader::new(
             &head.name,
             head.terms.iter().map(ToString::to_string).collect(),
@@ -174,7 +178,6 @@ pub fn prepare(
 
     let IndexPlan {
         query: executed,
-        plan,
         indexes,
     } = plan_indexes(&access_query, &ordering, levels);
 
@@ -191,8 +194,7 @@ pub fn prepare(
         .collect();
 
     Ok(Prepared {
-        query: executed,
-        plan,
+        executed,
         indexes,
         index_rows,
         checks: access_query.checks,
@@ -372,9 +374,10 @@ pub fn build<R: Relation>(catalog: &Catalog, prepared: &Prepared) -> Indexes<R> 
 /// [`head_len`](Prepared::head_len) values (bag semantics: nothing is
 /// deduplicated). The head is emitted once per unit of
 /// [`multiplicity`](Indexes::multiplicity), so a check that holds nowhere emits
-/// nothing. When every atom was a check there is nothing to join, and the empty
-/// head row is emitted `multiplicity` times (validation makes the head empty
-/// then, since it binds every head variable in an atom).
+/// nothing. When every atom was a check the executed query has no atom, and
+/// the join's one answer, the empty row, is emitted `multiplicity` times
+/// (validation makes the head empty then, since it binds every head variable
+/// in an atom).
 ///
 /// Nothing is collected here. A lazy `HashTrie` builds the children a join
 /// reaches, through `&self`, so its heap size grows with each run: measure
@@ -397,33 +400,12 @@ where
     if multiplicity == 0 {
         return;
     }
-    if prepared.query.body.is_empty() {
-        debug_assert_eq!(prepared.head_len, 0, "a query of checks has an empty head");
-        for _ in 0..multiplicity {
-            emit(&[]);
-        }
-        return;
-    }
-
-    let ds_map: HashMap<String, &R> = prepared
-        .query
-        .body
-        .iter()
-        .map(|atom| {
-            let index = indexes.get(&atom.name);
-            (
-                atom.name.clone(),
-                index.expect("the executed query names only built indexes"),
-            )
-        })
-        .collect();
-
     // The executors emit every variable of the query they run in canonical
     // order, and `analyse` numbers the head's variables `0..head_len` in
     // head order, so the head is each row's prefix. Lending it allocates
     // nothing.
     let head_len = prepared.head_len;
-    JA::join_for_each(&prepared.plan, prepared.query.clone(), ds_map, |row| {
+    JA::join_for_each(&prepared.executed, &indexes.relations, |row| {
         let head = &row[..head_len];
         for _ in 0..multiplicity {
             emit(head);
