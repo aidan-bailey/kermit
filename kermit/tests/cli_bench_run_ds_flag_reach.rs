@@ -135,7 +135,7 @@ fn every_flag_reaches_its_cell_under_all_all() {
         String::from_utf8_lossy(&output.stderr)
     );
     let reports = reports_of(&report);
-    assert_eq!(reports.len(), 3, "three valid cells: {reports:?}");
+    assert_eq!(reports.len(), 4, "four valid cells: {reports:?}");
     for r in &reports {
         let axes = &r["axes"];
         match axes["data_structure"].as_str() {
@@ -150,6 +150,17 @@ fn every_flag_reaches_its_cell_under_all_all() {
                 assert_eq!(axes["ds_build_mode"], "incremental", "{axes}");
             },
             | Some("TreeTrie") => assert_eq!(axes["ds_layout_seek"], "binary", "{axes}"),
+            | Some("HashIndex") => {
+                assert_eq!(axes["ds_layout_hasher"], "fxhash", "{axes}");
+                for absent in [
+                    "ds_layout_pruning",
+                    "ds_layout_seek",
+                    "ds_config_load_factor",
+                    "ds_build_mode",
+                ] {
+                    assert!(axes.get(absent).is_none(), "{absent} on {axes}");
+                }
+            },
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }

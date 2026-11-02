@@ -11,10 +11,10 @@ use {
     },
     crate::{
         bench_report::{write_metadata_block, BenchKind, BenchReport, MetadataLine, ReportSink},
-        execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
+        execution::{Execution, ExecutionFamily, HashHtj, IndexBhj, SortedTrie, Sweep, TrieLftj},
         options::{
-            unreached_flag, with_hash_trie_layout, with_sorted_trie_layout, DsChoices, DsFlag,
-            PlannerArgs,
+            unreached_flag, with_hash_index_layout, with_hash_trie_layout, with_sorted_trie_layout,
+            DsChoices, DsFlag, PlannerArgs,
         },
         IndexStructureSelector, JoinAlgorithmSelector,
     },
@@ -59,10 +59,13 @@ pub(crate) struct RunSettings<'a> {
 
 /// The value of one `index` metadata line, for the `position`th index of a
 /// query: `{id} {relation} filter {filter} columns {columns:?}[ levels {n}]:
-/// {rows} rows, {bytes} bytes`. ` levels {n}` appears only when the trie has
-/// levels for fewer columns than it keeps (`--ds-layout-levels keys`, #116),
-/// so every `all` line reads as before. `rows` is what the build copied, the
-/// index view's count, and `bytes` the index's footprint as built.
+/// {rows} rows, {bytes} bytes`. ` levels {n}` appears whenever the index has
+/// levels for fewer columns than it keeps: under `--ds-layout-levels keys`
+/// (#116) that is a trie cut after its last join key, and under the hash
+/// index's `ProbeKeys` planning it is the index's key length (` levels 0` for
+/// the driver, which is scanned, not probed). So every `all` line reads as
+/// before. `rows` is what the build copied, the index view's count, and
+/// `bytes` the index's footprint as built.
 fn describe_index(position: usize, spec: &IndexSpec, rows: usize, bytes: usize) -> String {
     let levels = if spec.levels < spec.columns.len() {
         format!(" levels {}", spec.levels)
@@ -358,6 +361,14 @@ pub(crate) fn dispatch_run_bench(
                 sink,
             )
         }),
+        | Execution::IndexBhj {
+            hasher,
+        } => with_hash_index_layout!(hasher, |H| run_benchmark(
+            &IndexBhj::<H>::new(),
+            workload,
+            settings,
+            sink,
+        )),
     }
 }
 
@@ -430,7 +441,7 @@ pub(crate) fn check_sweep_group_directories(
 /// Incompatible concrete pairs are dropped: with `all` on either side they
 /// are announced on stderr, naming the `kind` of `bench` subcommand, and
 /// skipped, so `-i all -a all` runs exactly the
-/// three valid cells; when the user named a single incompatible pair there
+/// four valid cells; when the user named a single incompatible pair there
 /// is nothing left to run and that is a usage error.
 ///
 /// `given` are the `--ds-*` flags the user passed ([`DsFlag::given`]).
@@ -447,8 +458,8 @@ pub(crate) fn resolve_sweep(
     if sweep.cells.is_empty() {
         anyhow::bail!(
             "incompatible CLI selection: --indexstructure {indexstructure:?} cannot be joined \
-             with --algorithm {algorithm:?} (hash-trie pairs with hash-triejoin; sorted tries \
-             pair with leapfrog-triejoin)"
+             with --algorithm {algorithm:?} (hash-trie pairs with hash-triejoin; hash-index pairs \
+             with binary-hash-join; sorted tries pair with leapfrog-triejoin)"
         );
     }
     let ran: Vec<_> = sweep
@@ -499,6 +510,16 @@ mod tests {
                 &[LayoutHasher, LayoutPruning, LayoutExpansion, Config, hash],
                 &[LayoutSeek, tree, column],
             ),
+            (JoinAlgorithmSelector::BinaryHashJoin, &[LayoutHasher], &[
+                LayoutPruning,
+                LayoutExpansion,
+                LayoutLevels,
+                LayoutSeek,
+                Config,
+                tree,
+                column,
+                hash,
+            ]),
             (
                 JoinAlgorithmSelector::All,
                 &[

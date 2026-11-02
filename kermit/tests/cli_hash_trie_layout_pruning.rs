@@ -40,7 +40,7 @@ fn cli_bench_ds_rejects_pruning_flag_on_tree_trie() {
 
 #[test]
 fn cli_bench_run_sweep_carries_pruning_only_to_hash_trie_cells() {
-    // `-i all -a all --ds-layout-pruning on` runs the three valid cells; the
+    // `-i all -a all --ds-layout-pruning on` runs the four valid cells; the
     // sorted cells have no pruning axis and the hash cell reports "on".
     let (output, report) = bench_run("triangle", &[
         "-i",
@@ -58,7 +58,7 @@ fn cli_bench_run_sweep_carries_pruning_only_to_hash_trie_cells() {
         String::from_utf8_lossy(&output.stderr)
     );
     let reports = reports_of(&report);
-    assert_eq!(reports.len(), 3, "three valid cells: {reports:?}");
+    assert_eq!(reports.len(), 4, "four valid cells: {reports:?}");
     for r in &reports {
         let axes = &r["axes"];
         if axes["data_structure"] == "HashTrie" {

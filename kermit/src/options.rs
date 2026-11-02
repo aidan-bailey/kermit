@@ -1,7 +1,7 @@
 //! CLI option groups for the optimisation axes (`--ds-layout-*`,
 //! `--ds-config`, `--ds-build`), the planner (`--optimiser`), and the
-//! places the Layout products are monomorphised: `with_hash_trie_layout!`
-//! and `with_sorted_trie_layout!`.
+//! places the Layout products are monomorphised: `with_hash_trie_layout!`,
+//! `with_hash_index_layout!` and `with_sorted_trie_layout!`.
 
 use {
     crate::IndexStructureSelector,
@@ -80,15 +80,17 @@ impl DsFlag {
     /// listed here.
     pub(crate) fn structures(self) -> &'static [IndexStructure] {
         match self {
-            | Self::LayoutHasher
-            | Self::LayoutPruning
-            | Self::LayoutExpansion
-            | Self::LayoutLevels
-            | Self::Config => &[IndexStructure::HashTrie],
+            | Self::LayoutHasher => &[IndexStructure::HashTrie, IndexStructure::HashIndex],
+            | Self::LayoutPruning | Self::LayoutExpansion | Self::LayoutLevels | Self::Config => {
+                &[IndexStructure::HashTrie]
+            },
             | Self::LayoutSeek => &[IndexStructure::TreeTrie, IndexStructure::ColumnTrie],
             | Self::Build(IndexStructure::TreeTrie) => &[IndexStructure::TreeTrie],
             | Self::Build(IndexStructure::ColumnTrie) => &[IndexStructure::ColumnTrie],
             | Self::Build(IndexStructure::HashTrie) => &[IndexStructure::HashTrie],
+            // The hash index is built one way, so `--ds-build` has no key for
+            // it: `BuildChoices::given` never yields this flag.
+            | Self::Build(IndexStructure::HashIndex) => &[],
         }
     }
 
@@ -246,7 +248,8 @@ fn validate_ds_flags(
 /// ~10x faster per call on small integer keys but lacks SipHash's
 /// hash-DoS resistance.
 ///
-/// This flag only applies when the selected index structure is `hash-trie`;
+/// This flag only applies when the selected index structure is `hash-trie` or
+/// `hash-index` (`HashIndex<H>` takes the same hasher);
 /// `validate_layout_choices` rejects it on other index structures so users
 /// cannot silently pass it to a TreeTrie/ColumnTrie run.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -504,8 +507,9 @@ pub(crate) fn seek_of<S: SeekStrategy>() -> SeekChoice {
 /// supply the default at dispatch time.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct LayoutChoices {
-    /// Hash function used by `HashTrie<H, P>` (default: `sip`). Only valid
-    /// when `--indexstructure hash-trie` is selected.
+    /// Hash function used by `HashTrie<H, P>` and `HashIndex<H>` (default:
+    /// `sip`). Only valid when `--indexstructure hash-trie` or `hash-index` is
+    /// selected.
     #[arg(long = "ds-layout-hasher", value_name = "HASHER", value_enum)]
     hash_trie_hasher: Option<HasherChoice>,
     /// Singleton pruning Layout of `HashTrie<H, P>` (default: `off`). Only
@@ -698,6 +702,23 @@ macro_rules! with_hash_trie_layout {
 }
 
 pub(crate) use with_hash_trie_layout;
+
+/// Monomorphises `$body` over the `HashIndex` hasher selected at runtime.
+///
+/// The hash index has one Layout dimension, the hasher, so this is the
+/// hasher rule of `with_hash_trie_layout!` and nothing else: the hasher
+/// table stays written out once. Called by the hash-index arms of
+/// `dispatch_run_bench`, `dispatch_ds_bench` and `write_query_csv`.
+///
+/// Hygiene contract as for `with_hash_trie_layout!`: `$H` becomes a type
+/// alias scoped to the arm.
+macro_rules! with_hash_index_layout {
+    ($hasher:expr, | $H:ident | $body:expr) => {
+$crate::options::with_hash_trie_layout!(@hasher $hasher; $H; $body)
+    };
+}
+
+pub(crate) use with_hash_index_layout;
 
 /// Monomorphises `$body` over the sorted-trie seek strategy selected at
 /// runtime. It is the sorted counterpart of `with_hash_trie_layout!`, and
@@ -929,6 +950,7 @@ impl BuildChoices {
                         .parse()
                         .map_err(|why| anyhow::anyhow!("--ds-build hash-trie: {why}"))?;
                 },
+                | IndexStructure::HashIndex => unreachable!("not in STRUCTURES, refused above"),
             }
         }
         Ok(modes)
@@ -1912,7 +1934,12 @@ mod tests {
             ]),
         ];
         let defaults = labels(&BuildModes::default());
-        for ds in IndexStructure::value_variants() {
+        // `hash-index` is built one way, so it is the one structure with no
+        // `--ds-build` key.
+        for ds in IndexStructure::value_variants()
+            .iter()
+            .filter(|&&ds| ds != IndexStructure::HashIndex)
+        {
             assert!(
                 BuildChoices::STRUCTURES.contains(ds),
                 "{ds:?} has no --ds-build key"
@@ -2158,5 +2185,125 @@ mod tests {
             .err()
             .expect("the removed flag is rejected");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    /// Every `with_hash_index_layout!` arm binds the marker its choice
+    /// names, so a transposed arm fails here rather than mislabelling a
+    /// bench report.
+    #[test]
+    fn hash_index_layout_macro_binds_the_marker_its_arm_names() {
+        for &hasher in HasherChoice::value_variants() {
+            assert_eq!(
+                with_hash_index_layout!(hasher, |H| hasher_of::<H>()),
+                hasher
+            );
+        }
+    }
+
+    /// The hasher is the hash index's only `--ds-*` axis: it reaches
+    /// `hash-index`, and the table gives no other flag to it.
+    #[test]
+    fn ds_flag_structures_gives_hash_index_only_the_hasher() {
+        let flags = [
+            DsFlag::LayoutHasher,
+            DsFlag::LayoutPruning,
+            DsFlag::LayoutExpansion,
+            DsFlag::LayoutLevels,
+            DsFlag::LayoutSeek,
+            DsFlag::Config,
+            DsFlag::Build(IndexStructure::TreeTrie),
+            DsFlag::Build(IndexStructure::ColumnTrie),
+            DsFlag::Build(IndexStructure::HashTrie),
+            DsFlag::Build(IndexStructure::HashIndex),
+        ];
+        for flag in flags {
+            assert_eq!(
+                flag.structures().contains(&IndexStructure::HashIndex),
+                flag == DsFlag::LayoutHasher,
+                "{flag}"
+            );
+        }
+        assert_eq!(
+            DsFlag::LayoutHasher.structures_label(),
+            "hash-trie or hash-index"
+        );
+    }
+
+    /// `hash-index` takes `--ds-layout-hasher` and refuses every other
+    /// `--ds-*` flag, each with the usage error naming the structures that
+    /// have its axis. `--ds-build hash-index=…` is refused as a structure
+    /// with one build process.
+    #[test]
+    fn hash_index_takes_the_hasher_and_refuses_every_other_ds_flag() {
+        let resolve = |layout: &LayoutChoices, config: &ConfigChoices, build: &BuildChoices| {
+            DsChoices::resolve(IndexStructureSelector::HashIndex, layout, config, build)
+        };
+        let hasher = LayoutChoices {
+            hash_trie_hasher: Some(HasherChoice::Fxhash),
+            ..LayoutChoices::default()
+        };
+        let choices = resolve(&hasher, &ConfigChoices::default(), &BuildChoices::default())
+            .expect("the hasher reaches the hash index");
+        assert_eq!(choices.hasher, HasherChoice::Fxhash);
+
+        let layouts = [
+            ("--ds-layout-pruning", LayoutChoices {
+                hash_trie_pruning: Some(PruningChoice::On),
+                ..LayoutChoices::default()
+            }),
+            ("--ds-layout-expansion", LayoutChoices {
+                hash_trie_expansion: Some(ExpansionChoice::Lazy),
+                ..LayoutChoices::default()
+            }),
+            ("--ds-layout-levels", LayoutChoices {
+                hash_trie_levels: Some(LevelsChoice::Keys),
+                ..LayoutChoices::default()
+            }),
+            ("--ds-layout-seek", LayoutChoices {
+                sorted_trie_seek: Some(SeekChoice::Linear),
+                ..LayoutChoices::default()
+            }),
+        ];
+        for (flag, layout) in &layouts {
+            let msg = resolve(layout, &ConfigChoices::default(), &BuildChoices::default())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains(&format!("{flag} is only valid with --indexstructure")),
+                "{msg}"
+            );
+        }
+        let config = ConfigChoices {
+            ds_config: vec!["load-factor=0.5".into()],
+        };
+        let msg = resolve(&LayoutChoices::default(), &config, &BuildChoices::default())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("--ds-config is only valid with --indexstructure hash-trie"),
+            "{msg}"
+        );
+        let msg = resolve(
+            &LayoutChoices::default(),
+            &ConfigChoices::default(),
+            &build(&["hash-trie=radix:4"]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            msg.contains("--ds-build hash-trie is only valid with --indexstructure hash-trie"),
+            "{msg}"
+        );
+        // A pair naming the hash index passes the selector check (no
+        // structure has its flag) and is refused by `resolved`.
+        let own = build(&["hash-index=bulk"]);
+        assert_eq!(own.given(), vec![]);
+        let msg = resolve(&LayoutChoices::default(), &ConfigChoices::default(), &own)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("--ds-build: hash-index has a single build process"),
+            "{msg}"
+        );
     }
 }

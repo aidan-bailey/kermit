@@ -1,11 +1,12 @@
 //! Execution cells for `bench run` and `bench ds`.
 //!
 //! The CLI exposes an index structure (`-i`) and a join algorithm (`-a`)
-//! as two independent selectors, but only three of the six concrete
+//! as two independent selectors, but only four of the twelve concrete
 //! `(IndexStructure, JoinAlgorithm)` pairs are meaningful: the sorted
-//! tries pair with [`LeapfrogTriejoin`] and the hash trie pairs with
-//! [`HashTriejoin`]. The two families run through separate instantiations of
-//! [`kermit::db::execute`] (`LeapfrogTriejoin` vs `HashTriejoin`), and
+//! tries pair with [`LeapfrogTriejoin`], the hash trie with
+//! [`HashTriejoin`] and the hash index with [`BinaryHashJoin`]. The three
+//! families run through separate instantiations of [`kermit::db::execute`]
+//! (`LeapfrogTriejoin`, `HashTriejoin` and `BinaryHashJoin`), and
 //! historically the CLI carried two hand-reconciled copies of the benchmark
 //! runner, each taking the structure and the algorithm as *separate*
 //! parameters. That separation is what let `-i all -a leapfrog-triejoin` run
@@ -27,15 +28,16 @@ use {
         HasherChoice, LevelsChoice, PruningChoice, SeekChoice,
     },
     kermit::db::{self, Catalog, Indexes, Prepared},
-    kermit_algos::{HashTriejoin, JoinAlgorithm, LeapfrogTriejoin},
+    kermit_algos::{BinaryHashJoin, HashTriejoin, JoinAlgorithm, LeapfrogTriejoin},
     kermit_ds::{
         AllLevels, BuildModeRelation, Cardinality, ColumnTrie, ColumnTrieBuildMode,
-        ConfiguredBuildModeRelation, ExpansionPolicy, HashTrie, HashTrieBuildMode, HashTrieConfig,
-        HeapSize, IndexStructure, LevelPolicy, PruningPolicy, Relation, RelationHeader,
-        SeekStrategy, TreeTrie, TreeTrieBuildMode, TrieLevels, TupleView, Tuples,
+        ConfiguredBuildModeRelation, ExpansionPolicy, HashIndex, HashTrie, HashTrieBuildMode,
+        HashTrieConfig, HeapSize, IndexStructure, LevelPolicy, PruningPolicy, Relation,
+        RelationHeader, SeekStrategy, TreeTrie, TreeTrieBuildMode, TrieLevels, TupleView, Tuples,
     },
     kermit_iters::{
-        BuildMode, HasOptimizationAxes, HashStrategy, TrieIterable, TrieIteratorWrapper,
+        BuildMode, HasOptimizationAxes, HashStrategy, KeyedIterable, TrieIterable,
+        TrieIteratorWrapper,
     },
     std::{collections::BTreeMap, marker::PhantomData, path::Path},
 };
@@ -199,11 +201,22 @@ pub enum Execution {
         /// The `--ds-build` mode every relation is built with.
         build: HashTrieBuildMode,
     },
+    /// `HashIndex<H>` joined by the binary hash join through
+    /// [`kermit::db::execute`] with `BinaryHashJoin`, with `H` chosen by
+    /// `--ds-layout-hasher`. The hash index has no other Layout, Config or
+    /// BuildMode, and its queries are prepared under
+    /// [`TrieLevels::ProbeKeys`].
+    IndexBhj {
+        /// The `--ds-layout-hasher` choice, in the two roles of
+        /// [`Execution::HashHtj`]'s: the request that selects `H`, and the
+        /// label re-derived from `H`.
+        hasher: HasherChoice,
+    },
 }
 
 impl Execution {
     /// The only way to obtain an `Execution` from a concrete pair. Returns
-    /// `None` for the three incompatible pairs, which the sweep skips.
+    /// `None` for the eight incompatible pairs, which the sweep skips.
     /// `choices` reach the cells that have each axis: the hash-trie cell's
     /// hasher, pruning, expansion and config, both sorted cells' seek
     /// strategy, and each structure's build mode.
@@ -240,11 +253,24 @@ impl Execution {
                 config,
                 build: build.hash_trie,
             }),
+            | (IndexStructure::HashIndex, JoinAlgorithm::BinaryHashJoin) => {
+                Some(Execution::IndexBhj {
+                    hasher,
+                })
+            },
             | (
                 IndexStructure::TreeTrie | IndexStructure::ColumnTrie,
                 JoinAlgorithm::HashTriejoin,
             )
-            | (IndexStructure::HashTrie, JoinAlgorithm::LeapfrogTriejoin) => None,
+            | (IndexStructure::HashTrie, JoinAlgorithm::LeapfrogTriejoin)
+            | (
+                IndexStructure::HashIndex,
+                JoinAlgorithm::HashTriejoin | JoinAlgorithm::LeapfrogTriejoin,
+            )
+            | (
+                IndexStructure::TreeTrie | IndexStructure::ColumnTrie | IndexStructure::HashTrie,
+                JoinAlgorithm::BinaryHashJoin,
+            ) => None,
         }
     }
 
@@ -280,6 +306,9 @@ impl Execution {
                 config,
                 build: build.hash_trie,
             },
+            | IndexStructure::HashIndex => Execution::IndexBhj {
+                hasher,
+            },
         }
     }
 
@@ -290,6 +319,9 @@ impl Execution {
             | Self::HashHtj {
                 ..
             } => IndexStructure::HashTrie,
+            | Self::IndexBhj {
+                ..
+            } => IndexStructure::HashIndex,
         }
     }
 
@@ -300,18 +332,24 @@ impl Execution {
             | Self::HashHtj {
                 ..
             } => JoinAlgorithm::HashTriejoin,
+            | Self::IndexBhj {
+                ..
+            } => JoinAlgorithm::BinaryHashJoin,
         }
     }
 
-    /// The trie-level policy this cell's queries are prepared under
     /// (`kermit::db::prepare`): `All` for the sorted tries, the
-    /// `--ds-layout-levels` choice for `HashTrie` (#116).
+    /// `--ds-layout-levels` choice for `HashTrie` (#116), and `ProbeKeys` for
+    /// the hash index, whose levels are the probe key of each atom.
     pub fn trie_levels(self) -> TrieLevels {
         match self {
             | Self::TrieLftj(_) => TrieLevels::All,
             | Self::HashHtj {
                 levels, ..
             } => levels.trie_levels(),
+            | Self::IndexBhj {
+                ..
+            } => TrieLevels::ProbeKeys,
         }
     }
 }
@@ -631,6 +669,62 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy, L: LevelPo
     }
 }
 
+/// `HashIndex<H>` on its own: what `bench ds -i hash-index` measures. The
+/// index has one build and no Config, so the family carries no value; the
+/// `--ds-layout-hasher` label is *not* a parameter either:
+/// [`execution`](RelationFamily::execution) derives it from `H`, so a report
+/// cannot name a hasher the family was not monomorphised over.
+pub struct HashIndexFamily<H> {
+    _hasher: PhantomData<H>,
+}
+
+impl<H> HashIndexFamily<H> {
+    /// The family building every index with the hasher `H`.
+    pub fn new() -> Self {
+        Self {
+            _hasher: PhantomData,
+        }
+    }
+}
+
+impl<H> Default for HashIndexFamily<H> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<H: HashStrategy + 'static> RelationFamily for HashIndexFamily<H> {
+    type Rel = HashIndex<H>;
+
+    fn execution(&self) -> Execution {
+        Execution::IndexBhj {
+            hasher: hasher_of::<H>(),
+        }
+    }
+
+    /// The one build: `HashIndex::from_view`. The header's levels (the arity
+    /// for `bench ds`, a probe key's length under a prepared query) are the
+    /// index's key length.
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> HashIndex<H> {
+        HashIndex::<H>::from_view(header, view)
+    }
+
+    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashIndex<H>, mut visit: V) {
+        for row in rel.scan() {
+            visit(row);
+        }
+    }
+
+    /// The stored row count, duplicates included: a hash index keeps them.
+    fn tuple_count(rel: &HashIndex<H>) -> usize { Cardinality::tuple_count(rel) }
+
+    fn optimization_axes(rel: &HashIndex<H>) -> BTreeMap<String, serde_json::Value> {
+        rel.optimization_axes()
+    }
+
+    /// A hash index has one build process, so its reports carry no
+    /// `ds_build_mode`.
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> { BTreeMap::new() }
+}
+
 /// Sorted family: `R` under Leapfrog Triejoin, through `kermit::db::execute`.
 pub struct TrieLftj<R: SortedTrieRelation> {
     structure: SortedTrieFamily<R>,
@@ -739,6 +833,63 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy, L: LevelPo
     }
 }
 
+/// Keyed family: `HashIndex<H>` under the binary hash join, through
+/// `kermit::db::execute`.
+pub struct IndexBhj<H> {
+    structure: HashIndexFamily<H>,
+}
+
+impl<H> IndexBhj<H> {
+    /// Creates the family. The `--ds-layout-hasher` label is *not* a
+    /// parameter: [`execution`](RelationFamily::execution) derives it from
+    /// `H`, as for [`HashHtj`].
+    pub fn new() -> Self {
+        Self {
+            structure: HashIndexFamily::new(),
+        }
+    }
+}
+
+impl<H> Default for IndexBhj<H> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<H: HashStrategy + 'static> RelationFamily for IndexBhj<H> {
+    type Rel = HashIndex<H>;
+
+    fn execution(&self) -> Execution { self.structure.execution() }
+
+    fn build_index(&self, header: RelationHeader, view: TupleView<'_>) -> HashIndex<H> {
+        self.structure.build_index(header, view)
+    }
+
+    fn for_each_tuple<V: FnMut(&[usize])>(rel: &HashIndex<H>, visit: V) {
+        HashIndexFamily::<H>::for_each_tuple(rel, visit);
+    }
+
+    fn tuple_count(rel: &HashIndex<H>) -> usize { HashIndexFamily::<H>::tuple_count(rel) }
+
+    fn optimization_axes(rel: &HashIndex<H>) -> BTreeMap<String, serde_json::Value> {
+        HashIndexFamily::<H>::optimization_axes(rel)
+    }
+
+    fn build_mode_axes(&self) -> BTreeMap<String, serde_json::Value> {
+        self.structure.build_mode_axes()
+    }
+}
+
+impl<H: HashStrategy + 'static> ExecutionFamily for IndexBhj<H> {
+    /// A hash index is immutable under a join: the join only reads its
+    /// buckets and rows.
+    const JOIN_MUTATES: bool = false;
+
+    fn execute<S: FnMut(&[usize])>(
+        &self, prepared: &Prepared, indexes: &Indexes<HashIndex<H>>, emit: S,
+    ) {
+        db::execute::<HashIndex<H>, BinaryHashJoin>(prepared, indexes, emit);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {
@@ -756,6 +907,13 @@ mod tests {
     /// `query` prepared over a catalog holding `tuples` as the relation
     /// `header` names: what a family's `build_indexes` and `execute` take.
     fn prepared_over(header: RelationHeader, tuples: Tuples, query: &str) -> (Catalog, Prepared) {
+        prepared_over_levels(header, tuples, query, TrieLevels::All)
+    }
+
+    /// As [`prepared_over`], planned for the trie-level policy `levels`.
+    fn prepared_over_levels(
+        header: RelationHeader, tuples: Tuples, query: &str, levels: TrieLevels,
+    ) -> (Catalog, Prepared) {
         use {
             kermit::db::prepare,
             kermit_algos::{JoinQuery, LexicographicOptimiser, Planner, StatisticsLevel},
@@ -763,8 +921,7 @@ mod tests {
         let catalog = Catalog::new(vec![(header, tuples)], StatisticsLevel::TupleCounts);
         let query: JoinQuery = query.parse().expect("the query parses");
         let planner = Planner::new(Box::new(LexicographicOptimiser));
-        let prepared = prepare(&catalog, &query, &planner, kermit_ds::TrieLevels::All)
-            .expect("the query prepares");
+        let prepared = prepare(&catalog, &query, &planner, levels).expect("the query prepares");
         (catalog, prepared)
     }
 
@@ -772,13 +929,13 @@ mod tests {
 
     fn all_algorithms() -> Vec<JoinAlgorithm> { JoinAlgorithm::value_variants().to_vec() }
 
-    /// The full cross product yields exactly the three valid cells and
-    /// skips the other three — the `-i all -a all` acceptance criterion.
+    /// The full cross product yields exactly the four valid cells and
+    /// skips the other eight — the `-i all -a all` acceptance criterion.
     #[test]
-    fn sweep_of_full_cross_product_yields_exactly_three_cells() {
+    fn sweep_of_full_cross_product_yields_exactly_four_cells() {
         let sweep = Sweep::expand(&all_structures(), &all_algorithms(), DsChoices::default());
-        assert_eq!(sweep.cells.len(), 3, "{sweep:?}");
-        assert_eq!(sweep.skipped.len(), 3, "{sweep:?}");
+        assert_eq!(sweep.cells.len(), 4, "{sweep:?}");
+        assert_eq!(sweep.skipped.len(), 8, "{sweep:?}");
         let ran: Vec<(IndexStructure, JoinAlgorithm)> = sweep
             .cells
             .iter()
@@ -787,6 +944,7 @@ mod tests {
         assert!(ran.contains(&(IndexStructure::TreeTrie, JoinAlgorithm::LeapfrogTriejoin)));
         assert!(ran.contains(&(IndexStructure::ColumnTrie, JoinAlgorithm::LeapfrogTriejoin)));
         assert!(ran.contains(&(IndexStructure::HashTrie, JoinAlgorithm::HashTriejoin)));
+        assert!(ran.contains(&(IndexStructure::HashIndex, JoinAlgorithm::BinaryHashJoin)));
     }
 
     /// Regression for issue #56: `-i all -a leapfrog-triejoin` must not
@@ -798,14 +956,14 @@ mod tests {
             &[JoinAlgorithm::LeapfrogTriejoin],
             DsChoices::default(),
         );
-        assert!(sweep
-            .cells
-            .iter()
-            .all(|c| c.index_structure() != IndexStructure::HashTrie));
-        assert_eq!(sweep.skipped, vec![(
-            IndexStructure::HashTrie,
-            JoinAlgorithm::LeapfrogTriejoin
-        )]);
+        assert!(sweep.cells.iter().all(|c| !matches!(
+            c.index_structure(),
+            IndexStructure::HashTrie | IndexStructure::HashIndex
+        )));
+        assert_eq!(sweep.skipped, vec![
+            (IndexStructure::HashIndex, JoinAlgorithm::LeapfrogTriejoin),
+            (IndexStructure::HashTrie, JoinAlgorithm::LeapfrogTriejoin),
+        ]);
     }
 
     /// A concrete incompatible pair expands to no cells; the CLI turns
@@ -1098,6 +1256,224 @@ mod tests {
                 <HashHtj<SipHashStrategy, SingletonPruning, LazyExpansion> as ExecutionFamily>::JOIN_MUTATES
             )
         };
+    }
+
+    /// `-i all -a binary-hash-join` runs the hash-index cell alone and skips
+    /// every other structure.
+    #[test]
+    fn sweep_with_binary_hash_join_runs_only_the_hash_index_cell() {
+        let sweep = Sweep::expand(
+            &all_structures(),
+            &[JoinAlgorithm::BinaryHashJoin],
+            DsChoices::default(),
+        );
+        assert_eq!(sweep.cells, vec![Execution::IndexBhj {
+            hasher: HasherChoice::Sip
+        }]);
+        assert_eq!(sweep.skipped, vec![
+            (IndexStructure::ColumnTrie, JoinAlgorithm::BinaryHashJoin),
+            (IndexStructure::HashTrie, JoinAlgorithm::BinaryHashJoin),
+            (IndexStructure::TreeTrie, JoinAlgorithm::BinaryHashJoin),
+        ]);
+    }
+
+    /// A concrete pair that crosses the hash index with another family
+    /// expands to no cell; the CLI turns that into a usage error.
+    #[test]
+    fn sweep_of_incompatible_hash_index_pairs_is_empty() {
+        for (ds, algo) in [
+            (IndexStructure::HashIndex, JoinAlgorithm::LeapfrogTriejoin),
+            (IndexStructure::HashIndex, JoinAlgorithm::HashTriejoin),
+            (IndexStructure::TreeTrie, JoinAlgorithm::BinaryHashJoin),
+            (IndexStructure::ColumnTrie, JoinAlgorithm::BinaryHashJoin),
+            (IndexStructure::HashTrie, JoinAlgorithm::BinaryHashJoin),
+        ] {
+            let sweep = Sweep::expand(&[ds], &[algo], DsChoices::default());
+            assert!(sweep.cells.is_empty(), "{ds:?} with {algo:?}");
+            assert_eq!(sweep.skipped, vec![(ds, algo)]);
+        }
+    }
+
+    /// The hasher is the hash-index cell's only choice: no other `--ds-*`
+    /// value changes it, `for_structure` and `for_pair` name the same cell,
+    /// and its queries are prepared under `ProbeKeys` whatever the other
+    /// cells' policies are.
+    #[test]
+    fn hash_index_cell_takes_only_the_hasher() {
+        let busy = DsChoices {
+            hasher: HasherChoice::Fxhash,
+            pruning: PruningChoice::On,
+            expansion: ExpansionChoice::Lazy,
+            levels: LevelsChoice::Keys,
+            seek: SeekChoice::Linear,
+            config: HashTrieConfig {
+                load_factor: LoadFactor::percent(50).unwrap(),
+                ..HashTrieConfig::default()
+            },
+            build: BuildModes {
+                hash_trie: HashTrieBuildMode::Radix(RadixBits::new(2).unwrap()),
+                ..BuildModes::default()
+            },
+        };
+        let cell = Execution::IndexBhj {
+            hasher: HasherChoice::Fxhash,
+        };
+        assert_eq!(
+            Execution::for_pair(
+                IndexStructure::HashIndex,
+                JoinAlgorithm::BinaryHashJoin,
+                busy
+            ),
+            Some(cell)
+        );
+        assert_eq!(
+            Execution::for_structure(IndexStructure::HashIndex, busy),
+            cell
+        );
+        assert_eq!(cell.index_structure(), IndexStructure::HashIndex);
+        assert_eq!(cell.algorithm(), JoinAlgorithm::BinaryHashJoin);
+        assert_eq!(cell.trie_levels(), TrieLevels::ProbeKeys);
+        assert_eq!(
+            Execution::for_structure(IndexStructure::TreeTrie, busy).trie_levels(),
+            TrieLevels::All
+        );
+        assert_eq!(
+            Execution::for_structure(IndexStructure::HashTrie, busy).trie_levels(),
+            TrieLevels::JoinKeys
+        );
+    }
+
+    /// Both hash-index families derive the hasher label from `H`, and the
+    /// join family names the binary hash join.
+    #[test]
+    fn hash_index_families_report_their_hasher_from_the_type() {
+        use kermit_iters::FxHashStrategy;
+        let sip = Execution::IndexBhj {
+            hasher: HasherChoice::Sip,
+        };
+        let fx = Execution::IndexBhj {
+            hasher: HasherChoice::Fxhash,
+        };
+        assert_eq!(
+            HashIndexFamily::<SipHashStrategy>::default().execution(),
+            sip
+        );
+        assert_eq!(IndexBhj::<SipHashStrategy>::default().execution(), sip);
+        assert_eq!(HashIndexFamily::<FxHashStrategy>::default().execution(), fx);
+        assert_eq!(IndexBhj::<FxHashStrategy>::default().execution(), fx);
+        assert_eq!(
+            IndexBhj::<FxHashStrategy>::default()
+                .execution()
+                .algorithm(),
+            JoinAlgorithm::BinaryHashJoin
+        );
+    }
+
+    /// A hash index has one build, and a join does not change it.
+    #[test]
+    fn hash_index_family_has_no_build_mode_and_does_not_mutate_on_join() {
+        const { assert!(!<IndexBhj<SipHashStrategy> as ExecutionFamily>::JOIN_MUTATES) };
+        assert!(HashIndexFamily::<SipHashStrategy>::default()
+            .build_mode_axes()
+            .is_empty());
+        assert!(IndexBhj::<SipHashStrategy>::default()
+            .build_mode_axes()
+            .is_empty());
+    }
+
+    /// The family's report axes are the relation's own: the hasher it was
+    /// built with, and no other `ds_*` axis.
+    #[test]
+    fn hash_index_family_reports_the_relations_hasher_axis() {
+        fn axes<H: HashStrategy + 'static>() -> BTreeMap<String, serde_json::Value> {
+            let tuples = Tuples::from(vec![vec![1, 2]]);
+            let rel = HashIndexFamily::<H>::default().build_index(
+                RelationHeader::new_positional("r", 2),
+                TupleView::all(&tuples),
+            );
+            HashIndexFamily::<H>::optimization_axes(&rel)
+        }
+        let sip = axes::<SipHashStrategy>();
+        assert_eq!(sip.keys().map(String::as_str).collect::<Vec<_>>(), vec![
+            "ds_layout_hasher"
+        ]);
+        assert_eq!(sip["ds_layout_hasher"], "sip");
+        assert_eq!(
+            axes::<kermit_iters::FxHashStrategy>()["ds_layout_hasher"],
+            "fxhash"
+        );
+    }
+
+    /// `scan` counts every stored row, duplicates included, and agrees with
+    /// `tuple_count`, in the marker and the join family alike.
+    #[test]
+    fn hash_index_scan_agrees_with_tuple_count_and_keeps_duplicates() {
+        let tuples = Tuples::from(vec![vec![1, 2], vec![1, 2], vec![1, 3], vec![4, 5]]);
+        let rel = HashIndexFamily::<SipHashStrategy>::default().build_index(
+            RelationHeader::new_positional("r", 2),
+            TupleView::all(&tuples),
+        );
+        assert_eq!(HashIndexFamily::<SipHashStrategy>::scan(&rel), 4);
+        assert_eq!(HashIndexFamily::<SipHashStrategy>::tuple_count(&rel), 4);
+        assert_eq!(IndexBhj::<SipHashStrategy>::scan(&rel), 4);
+        assert_eq!(IndexBhj::<SipHashStrategy>::tuple_count(&rel), 4);
+    }
+
+    /// The hash-index families build what their view materialises, through
+    /// `build_index`, on the four views of the shared fixture.
+    #[test]
+    fn hash_index_builds_what_its_view_materialises() {
+        let source = view_source();
+        let views = [
+            TupleView::new(&source, kermit_ds::Filter::new(vec![(2, 5)], vec![]), vec![
+                1, 0,
+            ]),
+            TupleView::new(&source, kermit_ds::Filter::new(vec![], vec![(0, 1)]), vec![
+                1, 2,
+            ]),
+            TupleView::new(&source, kermit_ds::Filter::new(vec![(2, 9)], vec![]), vec![
+                0, 1,
+            ]),
+            TupleView::all(&source),
+        ];
+        for view in &views {
+            assert_view_builds_like_batch(&HashIndexFamily::<SipHashStrategy>::default(), view);
+            assert_view_builds_like_batch(&IndexBhj::<SipHashStrategy>::default(), view);
+        }
+    }
+
+    /// The join family builds the indexes of a query prepared under
+    /// `ProbeKeys` and streams the rows `count_rows` counts. The triangles
+    /// of the graph below are (1, 2, 3) and (2, 3, 4); a duplicated row is
+    /// kept, as it is by Hash Triejoin.
+    #[test]
+    fn index_bhj_streams_the_rows_count_rows_reports() {
+        let family = IndexBhj::<SipHashStrategy>::default();
+        let edges = Tuples::from(vec![vec![1, 2], vec![2, 3], vec![1, 3], vec![3, 4], vec![
+            2, 4,
+        ]]);
+        let (catalog, prepared) = prepared_over_levels(
+            RelationHeader::new_positional("edge", 2),
+            edges,
+            "Q(X, Y, Z) :- edge(X, Y), edge(Y, Z), edge(X, Z).",
+            TrieLevels::ProbeKeys,
+        );
+        let indexes = family.build_indexes(&catalog, &prepared);
+        let mut streamed = Vec::new();
+        family.execute(&prepared, &indexes, |row| streamed.push(row.to_vec()));
+        streamed.sort();
+        assert_eq!(streamed, vec![vec![1, 2, 3], vec![2, 3, 4]]);
+        assert_eq!(family.count_rows(&prepared, &indexes), 2);
+
+        let rows = Tuples::from(vec![vec![1, 2], vec![1, 2], vec![3, 4]]);
+        let (catalog, prepared) = prepared_over_levels(
+            RelationHeader::new_positional("r", 2),
+            rows,
+            "Q(X, Y) :- r(X, Y).",
+            TrieLevels::ProbeKeys,
+        );
+        let indexes = family.build_indexes(&catalog, &prepared);
+        assert_eq!(family.count_rows(&prepared, &indexes), 3);
     }
 
     /// Every tuple `F::for_each_tuple` lends, collected — the test-side

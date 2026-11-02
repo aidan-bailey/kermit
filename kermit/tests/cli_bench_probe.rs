@@ -94,7 +94,7 @@ fn a_probe_verifies_each_query_and_times_one_build_and_one_run() {
     let (output, reports) = probe(&workspace, &cache, &[], &["-i", "all", "-a", "all"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
-    assert_eq!(reports.len(), 6, "two queries on three cells");
+    assert_eq!(reports.len(), 8, "two queries on four cells");
     for report in &reports {
         assert_eq!(report["kind"], "probe");
         assert_eq!(report["schema_version"], 6);

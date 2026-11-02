@@ -33,6 +33,9 @@ pub use {
 pub enum IndexStructure {
     /// Column-oriented trie; see [`ColumnTrie`].
     ColumnTrie,
+    /// Keyed hash index, probed by exact match on its leading columns; see
+    /// [`HashIndex`].
+    HashIndex,
     /// Hash-based trie; see [`HashTrie`].
     HashTrie,
     /// Pointer-based trie; see [`TreeTrie`].
@@ -45,6 +48,7 @@ impl FromStr for IndexStructure {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             | "column_trie" => Ok(Self::ColumnTrie),
+            | "hash_index" => Ok(Self::HashIndex),
             | "hash_trie" => Ok(Self::HashTrie),
             | "tree_trie" => Ok(Self::TreeTrie),
             | _ => Err(format!("Invalid index structure: {}", s)),
@@ -62,6 +66,7 @@ impl IndexStructure {
     pub fn axis_value(self) -> &'static str {
         match self {
             | Self::ColumnTrie => "ColumnTrie",
+            | Self::HashIndex => "HashIndex",
             | Self::HashTrie => "HashTrie",
             | Self::TreeTrie => "TreeTrie",
         }
@@ -79,6 +84,7 @@ mod index_structure_tests {
     #[test]
     fn axis_values_are_pinned() {
         assert_eq!(IndexStructure::ColumnTrie.axis_value(), "ColumnTrie");
+        assert_eq!(IndexStructure::HashIndex.axis_value(), "HashIndex");
         assert_eq!(IndexStructure::HashTrie.axis_value(), "HashTrie");
         assert_eq!(IndexStructure::TreeTrie.axis_value(), "TreeTrie");
     }
@@ -92,5 +98,20 @@ mod index_structure_tests {
         for v in IndexStructure::value_variants() {
             assert_eq!(v.axis_value(), format!("{v:?}"));
         }
+    }
+
+    /// The `-i` spelling and the `FromStr` spelling of the hash index.
+    #[test]
+    fn hash_index_is_spelled_hash_index_on_the_command_line() {
+        let name = IndexStructure::HashIndex
+            .to_possible_value()
+            .expect("every IndexStructure is a CLI value")
+            .get_name()
+            .to_owned();
+        assert_eq!(name, "hash-index");
+        assert_eq!(
+            "hash_index".parse::<IndexStructure>(),
+            Ok(IndexStructure::HashIndex)
+        );
     }
 }

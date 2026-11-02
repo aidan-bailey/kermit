@@ -9,9 +9,12 @@ use {
     crate::{
         bench_report::{format_bytes, write_metadata_block, BenchKind, BenchReport, MetadataLine},
         execution::{
-            read_relation, Execution, HashTrieFamily, RelationFamily, SortedTrie, SortedTrieFamily,
+            read_relation, Execution, HashIndexFamily, HashTrieFamily, RelationFamily, SortedTrie,
+            SortedTrieFamily,
         },
-        options::{with_hash_trie_layout, with_sorted_trie_layout, DsChoices},
+        options::{
+            with_hash_index_layout, with_hash_trie_layout, with_sorted_trie_layout, DsChoices,
+        },
     },
     kermit_ds::IndexStructure,
     std::{collections::BTreeMap, fs, io, path::Path},
@@ -181,5 +184,15 @@ pub(crate) fn dispatch_ds_bench(
                 criterion,
             ))
         },
+        | Execution::IndexBhj {
+            hasher,
+        } => with_hash_index_layout!(hasher, |H| run_ds_bench(
+            &HashIndexFamily::<H>::new(),
+            relation,
+            metrics,
+            queries_per_build,
+            group_name,
+            criterion,
+        )),
     }
 }

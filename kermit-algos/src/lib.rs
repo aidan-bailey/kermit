@@ -43,7 +43,7 @@ mod sorted;
 // algorithm or optimiser touches one file for both the type and its CLI
 // spelling. The cost is `clap` in this crate's dependency tree. Decided in
 // aidan-bailey/kermit#60 (item 5). `JoinAlgorithm` lives here rather than in
-// a family module because it spans both families; `Optimiser` lives beside
+// a family module because it spans every family; `Optimiser` lives beside
 // its implementations in `optimiser`.
 use clap::ValueEnum;
 pub use {
@@ -68,6 +68,9 @@ pub use {
 /// Used as a CLI argument to select which algorithm to run.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, ValueEnum)]
 pub enum JoinAlgorithm {
+    /// The left-deep pipelined binary hash join of Free Join (Wang et al.,
+    /// 2023, §2.2); see [`BinaryHashJoin`].
+    BinaryHashJoin,
     /// The Hash Trie Join algorithm (SIGMOD 2020); see [`HashTriejoin`].
     HashTriejoin,
     /// The [Leapfrog Triejoin](https://arxiv.org/abs/1210.0481) algorithm;
@@ -84,6 +87,7 @@ impl JoinAlgorithm {
     /// continuity.
     pub fn axis_value(self) -> &'static str {
         match self {
+            | Self::BinaryHashJoin => "BinaryHashJoin",
             | Self::HashTriejoin => "HashTriejoin",
             | Self::LeapfrogTriejoin => "LeapfrogTriejoin",
         }
@@ -99,6 +103,7 @@ mod join_algorithm_tests {
     /// axis, so a change here repartitions every measurement taken so far.
     #[test]
     fn axis_values_are_pinned() {
+        assert_eq!(JoinAlgorithm::BinaryHashJoin.axis_value(), "BinaryHashJoin");
         assert_eq!(JoinAlgorithm::HashTriejoin.axis_value(), "HashTriejoin");
         assert_eq!(
             JoinAlgorithm::LeapfrogTriejoin.axis_value(),
@@ -114,5 +119,16 @@ mod join_algorithm_tests {
         for v in JoinAlgorithm::value_variants() {
             assert_eq!(v.axis_value(), format!("{v:?}"));
         }
+    }
+
+    /// The `-a` spelling of the binary hash join.
+    #[test]
+    fn binary_hash_join_is_spelled_binary_hash_join_on_the_command_line() {
+        let name = JoinAlgorithm::BinaryHashJoin
+            .to_possible_value()
+            .expect("every JoinAlgorithm is a CLI value")
+            .get_name()
+            .to_owned();
+        assert_eq!(name, "binary-hash-join");
     }
 }

@@ -42,13 +42,14 @@ fn cli_bench_run_sweep_reports_each_structures_build_mode() {
         String::from_utf8_lossy(&output.stderr)
     );
     let reports = reports_of(&report);
-    assert_eq!(reports.len(), 3, "three valid cells: {reports:?}");
+    assert_eq!(reports.len(), 4, "four valid cells: {reports:?}");
     for r in &reports {
         let axes = &r["axes"];
         match axes["data_structure"].as_str() {
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
             | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
             | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
+            | Some("HashIndex") => assert!(axes.get("ds_build_mode").is_none(), "{axes}"),
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }
@@ -113,13 +114,14 @@ fn cli_bench_run_sweep_carries_incremental_only_to_column_trie_cells() {
         String::from_utf8_lossy(&output.stderr)
     );
     let reports = reports_of(&report);
-    assert_eq!(reports.len(), 3, "three valid cells: {reports:?}");
+    assert_eq!(reports.len(), 4, "four valid cells: {reports:?}");
     for r in &reports {
         let axes = &r["axes"];
         match axes["data_structure"].as_str() {
             | Some("ColumnTrie") => assert_eq!(axes["ds_build_mode"], "incremental", "{axes}"),
             | Some("TreeTrie") => assert_eq!(axes["ds_build_mode"], "serial", "{axes}"),
             | Some("HashTrie") => assert_eq!(axes["ds_build_mode"], "bulk", "{axes}"),
+            | Some("HashIndex") => assert!(axes.get("ds_build_mode").is_none(), "{axes}"),
             | other => panic!("unexpected data_structure {other:?}: {axes}"),
         }
     }

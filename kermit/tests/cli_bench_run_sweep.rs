@@ -1,5 +1,5 @@
 //! CLI regression tests for issue #56: `bench run` with `-i all` / `-a all`
-//! must run exactly the three valid (structure, algorithm) cells, and no
+//! must run exactly the four valid (structure, algorithm) cells, and no
 //! report row may name an algorithm the cell did not execute — the
 //! historical bug was `-i all -a leapfrog-triejoin` stamping HashTrie's
 //! `hash_join` measurements with `LeapfrogTriejoin`.
@@ -114,15 +114,16 @@ fn valid_cells() -> BTreeSet<(String, String)> {
         ("TreeTrie", "LeapfrogTriejoin"),
         ("ColumnTrie", "LeapfrogTriejoin"),
         ("HashTrie", "HashTriejoin"),
+        ("HashIndex", "BinaryHashJoin"),
     ]
     .into_iter()
     .map(|(d, a)| (d.to_string(), a.to_string()))
     .collect()
 }
 
-/// Acceptance criterion: `-i all -a all` runs exactly the 3 valid cells.
+/// Acceptance criterion: `-i all -a all` runs exactly the 4 valid cells.
 #[test]
-fn cli_bench_run_all_all_runs_exactly_the_three_valid_cells() {
+fn cli_bench_run_all_all_runs_exactly_the_four_valid_cells() {
     if skip_unsupported() {
         return;
     }
@@ -133,11 +134,15 @@ fn cli_bench_run_all_all_runs_exactly_the_three_valid_cells() {
         String::from_utf8_lossy(&output.stderr)
     );
     let reports = reports.expect("a report must be written");
-    assert_eq!(reports.len(), 3, "one report per valid cell: {reports:?}");
+    assert_eq!(reports.len(), 4, "one report per valid cell: {reports:?}");
     assert_eq!(cells(&reports), valid_cells());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("skipping incompatible pair (HashTrie, LeapfrogTriejoin)"),
+        "skipped cells must be announced; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("skipping incompatible pair (HashIndex, LeapfrogTriejoin)"),
         "skipped cells must be announced; stderr: {stderr}"
     );
 }
@@ -166,8 +171,8 @@ fn cli_bench_run_all_structures_with_lftj_skips_hash_trie() {
         "{reports:?}"
     );
     assert!(
-        !ran.iter().any(|(d, _)| d == "HashTrie"),
-        "HashTrie must never be labelled LeapfrogTriejoin: {ran:?}"
+        !ran.iter().any(|(d, _)| d == "HashTrie" || d == "HashIndex"),
+        "a hash cell must never be labelled LeapfrogTriejoin: {ran:?}"
     );
 }
 

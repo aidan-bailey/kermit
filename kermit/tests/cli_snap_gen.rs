@@ -282,8 +282,8 @@ fn bench_gen_snap_from_a_url_then_bench_run_verifies_every_cell() {
     assert!(run.status.success(), "stderr: {stderr}");
     assert_eq!(
         reports.len(),
-        12,
-        "4 queries x the 3 valid cells; stderr: {stderr}"
+        16,
+        "4 queries x the 4 valid cells; stderr: {stderr}"
     );
     for report in &reports {
         assert_eq!(report["axes"]["benchmark"], "snap-mini-t");
@@ -293,7 +293,7 @@ fn bench_gen_snap_from_a_url_then_bench_run_verifies_every_cell() {
         reports.iter().map(|r| r["axes"][key].to_string()).collect()
     };
     let structures = distinct("data_structure");
-    assert_eq!(structures.len(), 3, "{structures:?}");
+    assert_eq!(structures.len(), 4, "{structures:?}");
     let queries = distinct("query");
     assert_eq!(queries.len(), 4, "{queries:?}");
     assert_eq!(server.connections(), 1, "`bench run` must not download");

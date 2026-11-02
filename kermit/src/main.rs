@@ -37,10 +37,10 @@ use {
         Workload,
     },
     bench_report::{BenchKind, ReportSink},
-    execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
+    execution::{Execution, ExecutionFamily, HashHtj, IndexBhj, SortedTrie, TrieLftj},
     options::{
-        with_hash_trie_layout, with_sorted_trie_layout, BuildChoices, ConfigChoices, DsChoices,
-        DsFlag, LayoutChoices, PlannerArgs,
+        with_hash_index_layout, with_hash_trie_layout, with_sorted_trie_layout, BuildChoices,
+        ConfigChoices, DsChoices, DsFlag, LayoutChoices, PlannerArgs,
     },
 };
 
@@ -132,6 +132,7 @@ struct QueryArgs {
 enum IndexStructureSelector {
     All,
     ColumnTrie,
+    HashIndex,
     HashTrie,
     TreeTrie,
 }
@@ -143,6 +144,7 @@ impl IndexStructureSelector {
     fn of(ds: IndexStructure) -> Self {
         match ds {
             | IndexStructure::ColumnTrie => Self::ColumnTrie,
+            | IndexStructure::HashIndex => Self::HashIndex,
             | IndexStructure::HashTrie => Self::HashTrie,
             | IndexStructure::TreeTrie => Self::TreeTrie,
         }
@@ -153,6 +155,7 @@ impl IndexStructureSelector {
         match self {
             | Self::All => IndexStructure::value_variants().to_vec(),
             | Self::ColumnTrie => vec![IndexStructure::ColumnTrie],
+            | Self::HashIndex => vec![IndexStructure::HashIndex],
             | Self::HashTrie => vec![IndexStructure::HashTrie],
             | Self::TreeTrie => vec![IndexStructure::TreeTrie],
         }
@@ -168,6 +171,7 @@ impl IndexStructureSelector {
 #[derive(Copy, Clone, Debug, PartialEq, clap::ValueEnum)]
 enum JoinAlgorithmSelector {
     All,
+    BinaryHashJoin,
     HashTriejoin,
     LeapfrogTriejoin,
 }
@@ -177,6 +181,7 @@ impl JoinAlgorithmSelector {
         use clap::ValueEnum;
         match self {
             | Self::All => JoinAlgorithm::value_variants().to_vec(),
+            | Self::BinaryHashJoin => vec![JoinAlgorithm::BinaryHashJoin],
             | Self::HashTriejoin => vec![JoinAlgorithm::HashTriejoin],
             | Self::LeapfrogTriejoin => vec![JoinAlgorithm::LeapfrogTriejoin],
         }
@@ -586,6 +591,14 @@ fn write_query_csv(
                 writer,
             )
         }),
+        | Execution::IndexBhj {
+            hasher,
+        } => with_hash_index_layout!(hasher, |H| write_prepared_join(
+            IndexBhj::<H>::new(),
+            cell,
+            workload,
+            writer,
+        )),
     }
 }
 
@@ -867,7 +880,8 @@ fn run_bench_run_command(
     let given = DsFlag::given(&layout, &config, &build);
     let cells = resolve_sweep(indexstructure, algorithm, choices, &given, kind)?;
     // Each query is prepared once per trie-level policy its cells build
-    // under: at most two, since each Layout flag takes one value (#116).
+    // under: at most three (`All`, `JoinKeys` and the hash index's
+    // `ProbeKeys`), since each Layout flag takes one value (#116).
     let policies: Vec<kermit_ds::TrieLevels> =
         cells.iter().map(|cell| cell.trie_levels()).collect();
     let benchmarks = resolve_benchmarks(&name, all)?;
@@ -1370,6 +1384,18 @@ mod tests {
         assert_eq!(IndexStructureSelector::HashTrie.expand(), vec![
             IndexStructure::HashTrie
         ]);
+        assert_eq!(IndexStructureSelector::HashIndex.expand(), vec![
+            IndexStructure::HashIndex
+        ]);
+    }
+
+    /// `of` names exactly the structure it is given, for every structure.
+    #[test]
+    fn index_structure_selector_of_names_exactly_its_structure() {
+        use clap::ValueEnum;
+        for &ds in IndexStructure::value_variants() {
+            assert_eq!(IndexStructureSelector::of(ds).expand(), vec![ds]);
+        }
     }
 
     #[test]
@@ -1388,6 +1414,9 @@ mod tests {
         ]);
         assert_eq!(JoinAlgorithmSelector::HashTriejoin.expand(), vec![
             JoinAlgorithm::HashTriejoin
+        ]);
+        assert_eq!(JoinAlgorithmSelector::BinaryHashJoin.expand(), vec![
+            JoinAlgorithm::BinaryHashJoin
         ]);
     }
 

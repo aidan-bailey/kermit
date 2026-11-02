@@ -21,7 +21,7 @@ fn sweep_whose_groups_share_a_criterion_directory_is_refused_before_timing() {
     let criterion_home = tmp.path().join("criterion");
     let report = tmp.path().join("report.json");
     // `{prefix}/triangle/triangle/{ds}/{algo}`: with this prefix the structure
-    // segment starts past byte 64, so all three cells truncate identically.
+    // segment starts past byte 64, so all four cells truncate identically.
     let prefix = "run-with-a-prefix-long-enough-to-push-the-structure-name-past-byte-64";
 
     let output = Command::new(kermit_bin())
@@ -60,10 +60,11 @@ fn sweep_whose_groups_share_a_criterion_directory_is_refused_before_timing() {
     );
     // Which pair is reported first depends on sweep order; either way the
     // error must name two distinct groups of this sweep.
-    let named: std::collections::BTreeSet<&str> = ["TreeTrie", "ColumnTrie", "HashTrie"]
-        .into_iter()
-        .filter(|ds| stderr.contains(&format!("{prefix}/triangle/triangle/{ds}/")))
-        .collect();
+    let named: std::collections::BTreeSet<&str> =
+        ["TreeTrie", "ColumnTrie", "HashTrie", "HashIndex"]
+            .into_iter()
+            .filter(|ds| stderr.contains(&format!("{prefix}/triangle/triangle/{ds}/")))
+            .collect();
     assert_eq!(
         named.len(),
         2,

@@ -57,7 +57,7 @@ fn cli_bench_run_sweep_carries_expansion_only_to_hash_trie_cells() {
     ]);
     assert_success(&output);
     let reports = reports_of(&report);
-    assert_eq!(reports.len(), 3, "three valid cells: {reports:?}");
+    assert_eq!(reports.len(), 4, "four valid cells: {reports:?}");
     for r in &reports {
         let axes = &r["axes"];
         if axes["data_structure"] == "HashTrie" {
