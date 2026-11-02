@@ -7,17 +7,17 @@
 //! filter) and `execute` joins over them, exactly as `kermit join` does. The
 //! [`JoinEntry`] trait maps an algorithm type to the execution that hosts
 //! it, mirroring how the CLI's `execution` module pairs them: `join`
-//! collects through `kermit::db::lftj_join` / `hash_join`, and `count`
-//! streams through `execute` into a counter.
+//! collects through `kermit::db::lftj_join` / `hash_join` / `binary_join`,
+//! and `count` streams through `execute` into a counter.
 
 use {
-    kermit::db::{build, execute, hash_join, lftj_join, prepare, Catalog, JoinError},
+    kermit::db::{binary_join, build, execute, hash_join, lftj_join, prepare, Catalog, JoinError},
     kermit_algos::{
-        HashTriejoin, IndexSpec, JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner, QueryOptimiser,
-        StatisticsLevel,
+        BinaryHashJoin, HashTriejoin, IndexSpec, JoinAlgo, JoinQuery, LeapfrogTriejoin, Planner,
+        QueryOptimiser, StatisticsLevel,
     },
     kermit_ds::{Relation, RelationHeader, Tuples},
-    kermit_iters::{HashTrieIterable, TrieIterable},
+    kermit_iters::{HashTrieIterable, KeyedIterable, TrieIterable},
     std::{collections::BTreeMap, path::Path},
 };
 
@@ -82,6 +82,21 @@ impl<R: Relation + HashTrieIterable> JoinEntry<R> for HashTriejoin {
 
     fn count(catalog: &Catalog, query: JoinQuery, planner: &Planner) -> Result<u64, JoinError> {
         count_rows::<R, HashTriejoin>(catalog, &query, planner)
+    }
+}
+
+/// One impl for every keyed relation (`HashIndex`): the keyed family's entry
+/// point. `R::TRIE_LEVELS` is `ProbeKeys`, so `prepare` puts the executed
+/// body in join order and keys each index for it.
+impl<R: Relation + KeyedIterable> JoinEntry<R> for BinaryHashJoin {
+    fn join(
+        catalog: &Catalog, query: JoinQuery, planner: &Planner,
+    ) -> Result<(RelationHeader, Tuples), JoinError> {
+        binary_join::<R>(catalog, query, planner)
+    }
+
+    fn count(catalog: &Catalog, query: JoinQuery, planner: &Planner) -> Result<u64, JoinError> {
+        count_rows::<R, BinaryHashJoin>(catalog, &query, planner)
     }
 }
 

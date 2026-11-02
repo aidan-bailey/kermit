@@ -2,12 +2,12 @@ mod common;
 
 use {
     kermit_algos::{
-        CardinalityOptimiser, CostBasedOptimiser, HashTriejoin, LeapfrogTriejoin,
+        BinaryHashJoin, CardinalityOptimiser, CostBasedOptimiser, HashTriejoin, LeapfrogTriejoin,
         LexicographicOptimiser,
     },
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, ChildCapacity, ColumnTrie,
-        ColumnTrieBuildMode, Configured, EagerExpansion, GallopingSeek, HashTrie,
+        ColumnTrieBuildMode, Configured, EagerExpansion, GallopingSeek, HashIndex, HashTrie,
         HashTrieBuildMode, HashTrieConfig, KeyLevels, LazyExpansion, LinearSeek, LoadFactor,
         NoPruning, RadixBits, RootCapacity, SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode,
     },
@@ -911,3 +911,18 @@ define_multiway_join_test_suite_for_build_mode!(
     CostBasedOptimiser,
     HashPresized2
 );
+
+// ── The keyed family: HashIndex under BinaryHashJoin ────────────────────
+// The third iterator family, planned under `ProbeKeys`: the executed body is
+// in join order and each index is keyed on the variables the atoms before it
+// bind. It has no Layout beyond the hasher, no Config and no BuildMode, so
+// the cells are the two hashers under every optimiser. Every variable order
+// is covered separately by `all_orders.rs`.
+type HashIndexSip = HashIndex<SipHashStrategy>;
+type HashIndexFx = HashIndex<FxHashStrategy>;
+define_multiway_join_test_suite!(HashIndexSip, BinaryHashJoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashIndexSip, BinaryHashJoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashIndexSip, BinaryHashJoin, CostBasedOptimiser);
+define_multiway_join_test_suite!(HashIndexFx, BinaryHashJoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashIndexFx, BinaryHashJoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashIndexFx, BinaryHashJoin, CostBasedOptimiser);
