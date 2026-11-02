@@ -7,13 +7,14 @@
 //!
 //! # Layout
 //!
-//! The crate is organised in seven parts. Four are family-agnostic and sit
+//! The crate is organised in eight parts. Five are family-agnostic and sit
 //! at the root — `placeholder_rewrite`, which turns each `_` into a fresh
 //! variable; `access`, which reads each body atom as a selection and a
 //! projection of its relation, so that constants and repeated variables
 //! become a filter applied when an index is built; `analysis`, the
 //! canonical variable numbering that planners and executors must agree on;
-//! and `index_plan`, which runs after planning, orders each access's columns
+//! `join_order`, which reads a plan as a left-deep join order; and
+//! `index_plan`, which runs after planning, orders each access's columns
 //! by the plan and merges identical accesses into the indexes a query
 //! builds. `optimiser` plans a [`QueryPlan`]. The remaining two are the
 //! iterator families, `sorted` (over
@@ -30,6 +31,7 @@ mod analysis;
 mod hash;
 mod index_plan;
 mod join_algo;
+mod join_order;
 mod optimiser;
 mod placeholder_rewrite;
 mod sorted;
