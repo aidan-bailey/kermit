@@ -87,10 +87,12 @@ Each index gets an `index` metadata line, `{id} {relation} filter {filter}
 columns {columns:?}: {rows} rows, {bytes} bytes`, where the filter reads `-`
 for none and otherwise `col{c}={value}` for a constant and `col{a}=col{b}` for
 an equality, comma-separated (for example `#0 edge filter - columns [1, 0]: 4
-rows, 96 bytes`, illustrative). A HashTrie index under `--ds-layout-levels
-keys` whose trie has levels for fewer columns than it keeps ends its columns
-with ` levels {n}` (`#0 r filter - columns [0, 1] levels 1: 4 rows, 272
-bytes`, #116); every other line reads as before.
+rows, 96 bytes`, illustrative). An index whose structure has levels for
+fewer columns than it keeps ends its columns with ` levels {n}`. That is a
+HashTrie index under `--ds-layout-levels keys` (`#0 r filter - columns [0, 1]
+levels 1: 4 rows, 272 bytes`, #116) and a HashIndex index whose key is shorter
+than its columns, where `n` is the key length (` levels 0` for the driver,
+which no earlier atom keys); every other line reads as before.
 
 In v5 the time functions ran as `build`, `iteration`, `end_to_end`, and
 `space` was a Criterion function (`space`, `{ds}/space`) measured through
@@ -116,8 +118,8 @@ semantics).
 
 | Key              | Populated by             | JSON type        | Notes |
 |------------------|--------------------------|------------------|-------|
-| `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`. The `IndexStructure::axis_value` string. |
-| `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`. The `JoinAlgorithm::axis_value` string. |
+| `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`, `"HashIndex"`. The `IndexStructure::axis_value` string. |
+| `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`, `"BinaryHashJoin"`. The `JoinAlgorithm::axis_value` string. |
 | `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`, `"cost-based"`. A `"cost-based"` run's per-column statistics walk runs when the catalog is read, outside every timer. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
 | `column_orders`  | `join`, `run`            | string           | *Removed in v5* (`--column-orders` no longer exists; the planner is always free). Schema 3 and 4 reports carry the column-order policy the join was planned under: `"stored"` (each relation read in its stored column order) or `"any"` (an atom whose plan disagreed with its stored order read a per-query reordered copy). kermit-lab back-fills `"stored"` only on join rows (rows with an `algorithm`) whose `schema_version` is below 5; a v5 row has no such axis, and labelling it `"stored"` would be false. |
 | `index_rows`     | `join`, `run`            | number (usize)   | v5: the rows the query's build copied, `Indexes::rows()`, the sum of its index views' counts (a filtered index counts only the rows that match). Lets build time be normalised per row. Absent from `ds` reports and from reports before v5. |
@@ -261,6 +263,7 @@ When pivoting bench reports in kermit-lab, downstream code should:
   not. Emitted on `bench run`, `bench probe`, `bench join` and `bench ds`
   reports of HashTrie (`bench ds` always `"all"`: it refuses the flag).
   kermit-lab back-fills `"all"` on HashTrie rows without it.
+- `ds_layout_hasher` (HashTrie and HashIndex, `"sip"` / `"fxhash"`, the `NAME` of the `HashStrategy` the structure was built over): the hash function. A HashIndex report always carries it, and carries no other `ds_*` axis (no `ds_layout_pruning`, `ds_layout_expansion`, `ds_layout_levels` or `ds_layout_seek`, no `ds_config_*` and no `ds_build_mode`), because the structure has none and the CLI refuses every other `--ds-*` flag on it. kermit-lab's back-fills are keyed by structure, so none applies to a HashIndex row, and `speedup_table` skips it, since it keeps only rows that carry a `ds_build_mode`.
 
 Adding new keys under these prefixes does not require a `schema_version`
 bump — the `axes` field is an open map.
@@ -316,3 +319,4 @@ bump — the `axes` field is an open map.
 | 6       | 2026-10-25 | The measurements made without Criterion move into a new top-level `values` list (`ValueEntry`: `function`, `metric`, `estimator`, `value`). `space` is an exact `values` entry in every subcommand and never a Criterion function, so `SpaceMeasurement` is gone. `bench probe` (`kind: probe`) is new: per query and cell, one describe build and one execution timed with an `Instant` (single-run `build` and `iteration`), the exact `space`, verification against `expected`, and no Criterion function. New axes: `plan` and `answer_rows`. Per query and cell the runners measure in one order: describe (one untimed build, read for the `index` lines, `space` and verification), `iteration` on that build, then `build` and `end_to_end`; reports are written after every query. No metric changes what it measures, so kermit-lab loads v5 and v6 together. |
 | 6 (no bump) | 2026-11-02 | Plans are payload last (#116 step 1): every optimiser orders the join keys (the variables two or more atoms carry) first, so a query with a payload variable can change plan, and so its indexes, on every structure. Rows are told apart by the `plan` axis (v6), as the seek-default and allocator changes were told apart by their axes. |
 | 6 (no bump) | 2026-11-02 | Added the `ds_layout_levels` axis (`--ds-layout-levels all\|keys`, #116 step 2) and the `index` line's ` levels n` suffix, present only under `keys`. Additive: an `all` report is unchanged, so `schema_version` stays 6. kermit-lab back-fills `all`. |
+| 6 (no bump) | 2026-11-02 | A fourth cell, `HashIndex` × `BinaryHashJoin` (a left-deep pipelined binary hash join over a keyed hash index): new `data_structure` and `algorithm` axis values, and `ds_layout_hasher` on the new structure's reports. The `index` line's ` levels {n}` suffix, which this table's previous row introduced under `keys`, also appears on a HashIndex index, with its key length as `n` (` levels 0` for the driver). Additive: no metric changes meaning and no existing key changes type, so `schema_version` stays 6. kermit-lab needs no new back-fill. |
