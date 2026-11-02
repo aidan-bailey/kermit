@@ -141,6 +141,7 @@ fn constants_and_repeats_become_the_filter_of_the_index_an_atom_reads() {
                 relation: "edge".to_string(),
                 filter: filter.clone(),
                 columns: columns.clone(),
+                levels: columns.len(),
             }];
             let (_, lftj) = join_with_specs::<TreeTrie, LeapfrogTriejoin>(query, optimiser);
             assert_eq!(lftj, want, "LFTJ {query}: {optimiser:?}");

@@ -47,7 +47,7 @@ pub use {
         RootCapacity, SingletonPruning, TreeTrie, TreeTrieBuildMode,
     },
     heap_size::HeapSize,
-    kermit_iters::{Filter, LeafCursor, LeafRows, RowId, TupleView, Tuples},
+    kermit_iters::{Filter, LeafCursor, LeafRows, RowId, TrieLevels, TupleView, Tuples},
     morsel::Threads,
     parquet_writer::{write_parquet, ParquetWriter},
     relation::{

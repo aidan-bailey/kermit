@@ -19,7 +19,7 @@ use {
         analysis::{analyse, canonical_names},
         optimiser::QueryPlan,
     },
-    kermit_iters::{Filter, TupleView, Tuples},
+    kermit_iters::{Filter, TrieLevels, TupleView, Tuples},
     kermit_parser::{JoinQuery, Predicate, Term},
     std::collections::HashMap,
 };
@@ -40,6 +40,12 @@ pub struct IndexSpec {
     /// The source columns it keeps, in plan order: column `i` of the index
     /// is column `columns[i]` of the relation.
     pub columns: Vec<usize>,
+    /// How many of `columns` the index's trie has levels for, the rest
+    /// being payload kept in its leaf rows (#116): `columns.len()` under
+    /// [`TrieLevels::All`], fewer only under [`TrieLevels::JoinKeys`].
+    /// Identical specs merge, so two specs that differ only here are two
+    /// indexes.
+    pub levels: usize,
 }
 
 impl IndexSpec {
@@ -74,10 +80,16 @@ pub struct IndexPlan {
 /// [`IndexSpec`]s share one index, numbered by first appearance. Checks (the
 /// atoms with no kept column) need no index and are not read here.
 ///
+/// `levels` decides each spec's level count: every column under
+/// [`TrieLevels::All`]; under [`TrieLevels::JoinKeys`], up to the last column
+/// whose variable is a join key of `accesses.query` (rule (iii) of the #116
+/// design), or none when no column is. On a payload-last plan that is the
+/// number of join-key columns, since an index's columns follow the plan.
+///
 /// # Panics
 ///
 /// Panics if `plan` is not a plan of `accesses.query`.
-pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan) -> IndexPlan {
+pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan, levels: TrieLevels) -> IndexPlan {
     let source = &accesses.query;
     let names = canonical_names(source);
     let plan_names: Vec<&str> = plan
@@ -90,6 +102,12 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan) -> IndexPlan {
         .enumerate()
         .map(|(at, &name)| (name, at))
         .collect();
+    let analysis = analyse(source);
+    let is_join_key: HashMap<&str, bool> = names
+        .iter()
+        .enumerate()
+        .map(|(v, name)| (name.as_str(), analysis.join_keys[v]))
+        .collect();
 
     let mut indexes: Vec<IndexSpec> = Vec::new();
     let mut body: Vec<Predicate> = Vec::with_capacity(accesses.accesses.len());
@@ -99,10 +117,18 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan) -> IndexPlan {
         // variable occurs once per access, so the positions are distinct.
         let mut order: Vec<usize> = (0..access.columns.len()).collect();
         order.sort_by_key(|&kept| position[access.variables[kept].as_str()]);
+        let count = match levels {
+            | TrieLevels::All => order.len(),
+            | TrieLevels::JoinKeys => order
+                .iter()
+                .rposition(|&kept| is_join_key[access.variables[kept].as_str()])
+                .map_or(0, |last| last + 1),
+        };
         let spec = IndexSpec {
             relation: access.relation.clone(),
             filter: access.filter.clone(),
             columns: order.iter().map(|&kept| access.columns[kept]).collect(),
+            levels: count,
         };
         let id = match indexes.iter().position(|existing| *existing == spec) {
             | Some(id) => id,
@@ -177,10 +203,14 @@ mod tests {
         }
     }
 
-    fn planned(text: &str, order: &[&str]) -> IndexPlan {
+    fn planned_with(text: &str, order: &[&str], levels: TrieLevels) -> IndexPlan {
         let accesses = accesses_of(text);
         let plan = plan_of(&accesses.query, order);
-        plan_indexes(&accesses, &plan)
+        plan_indexes(&accesses, &plan, levels)
+    }
+
+    fn planned(text: &str, order: &[&str]) -> IndexPlan {
+        planned_with(text, order, TrieLevels::All)
     }
 
     fn body_text(query: &JoinQuery) -> Vec<String> {
@@ -188,10 +218,12 @@ mod tests {
     }
 
     fn spec(relation: &str, filter: Filter, columns: Vec<usize>) -> IndexSpec {
+        let levels = columns.len();
         IndexSpec {
             relation: relation.to_string(),
             filter,
             columns,
+            levels,
         }
     }
 
@@ -255,7 +287,7 @@ mod tests {
     fn the_head_is_unchanged() {
         let accesses = accesses_of("Q(Z, X) :- R(X, Y), S(Y, Z).");
         let plan = plan_of(&accesses.query, &["Z", "Y", "X"]);
-        let out = plan_indexes(&accesses, &plan);
+        let out = plan_indexes(&accesses, &plan, TrieLevels::All);
         assert_eq!(out.query.head, accesses.query.head);
     }
 
@@ -281,7 +313,7 @@ mod tests {
         let plan = QueryPlan {
             variable_ordering: vec![],
         };
-        let out = plan_indexes(&accesses, &plan);
+        let out = plan_indexes(&accesses, &plan, TrieLevels::All);
         assert!(out.indexes.is_empty());
         assert!(out.query.body.is_empty());
         assert_eq!(out.query.head, accesses.query.head);
@@ -299,7 +331,7 @@ mod tests {
         let old = plan_of(&accesses.query, &["X", "A", "B"]);
         assert_eq!(old.variable_ordering, vec![0, 2, 1]);
 
-        let out = plan_indexes(&accesses, &old);
+        let out = plan_indexes(&accesses, &old, TrieLevels::All);
         assert_eq!(out.indexes, vec![spec("r", Filter::none(), vec![1, 2, 0])]);
         assert_eq!(body_text(&out.query), vec!["#0(X, A, B)"]);
         // Numbering of the executed query: X = 0, A = 1, B = 2.
@@ -384,5 +416,86 @@ mod tests {
             spec("p", Filter::new(vec![(1, 2)], vec![]), vec![0]),
         ]);
         assert_eq!(body_text(&out.query), vec!["#0(X)", "#1(X)"]);
+    }
+
+    fn levels_of(plan: &IndexPlan) -> Vec<(Vec<usize>, usize)> {
+        plan.indexes
+            .iter()
+            .map(|spec| (spec.columns.clone(), spec.levels))
+            .collect()
+    }
+
+    const PAYLOAD_QUERY: &str = "Q(X, P, Y) :- R(X, P), S(X, Y), T(Y).";
+
+    #[test]
+    fn under_all_every_column_is_a_level() {
+        let out = planned_with(PAYLOAD_QUERY, &["X", "Y", "P"], TrieLevels::All);
+        assert_eq!(levels_of(&out), vec![
+            (vec![0, 1], 2),
+            (vec![0, 1], 2),
+            (vec![0], 1)
+        ]);
+    }
+
+    #[test]
+    fn under_join_keys_a_payload_last_plan_levels_the_join_keys() {
+        let out = planned_with(PAYLOAD_QUERY, &["X", "Y", "P"], TrieLevels::JoinKeys);
+        assert_eq!(levels_of(&out), vec![
+            (vec![0, 1], 1),
+            (vec![0, 1], 2),
+            (vec![0], 1)
+        ]);
+    }
+
+    /// Rule (iii): a trie keeps levels up to its last join-key column, so a
+    /// payload column before a join key stays a level.
+    #[test]
+    fn under_join_keys_payload_before_a_join_key_stays_a_level() {
+        let out = planned_with(PAYLOAD_QUERY, &["P", "X", "Y"], TrieLevels::JoinKeys);
+        // R is read P then X: its last join key is its second column.
+        assert_eq!(levels_of(&out)[0], (vec![1, 0], 2));
+    }
+
+    #[test]
+    fn under_join_keys_an_index_with_no_join_key_has_no_level() {
+        let out = planned_with("Q(X, Y) :- R(X), S(Y).", &["X", "Y"], TrieLevels::JoinKeys);
+        assert_eq!(levels_of(&out), vec![(vec![0], 0), (vec![0], 0)]);
+    }
+
+    #[test]
+    fn under_join_keys_an_index_of_join_keys_keeps_every_level() {
+        let out = planned_with(
+            "Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).",
+            &["X", "Y", "Z"],
+            TrieLevels::JoinKeys,
+        );
+        assert!(out
+            .indexes
+            .iter()
+            .all(|spec| spec.levels == spec.columns.len()));
+    }
+
+    /// SNAP's `path3` under lexicographic's payload-last plan B, C, A, D:
+    /// `edge(B, C)` and `edge(C, D)` read `edge` the same way, but at 2 and 1
+    /// levels, so only `all` shares them (exact sharing, the #116 design's
+    /// Decision 5).
+    #[test]
+    fn path3_shares_an_index_under_all_but_not_under_join_keys() {
+        let text = "P(A, B, C, D) :- edge(A, B), edge(B, C), edge(C, D).";
+        let order = &["B", "C", "A", "D"];
+        let all = planned_with(text, order, TrieLevels::All);
+        assert_eq!(levels_of(&all), vec![(vec![1, 0], 2), (vec![0, 1], 2)]);
+        assert_eq!(body_text(&all.query), vec![
+            "#0(B, A)", "#1(B, C)", "#1(C, D)"
+        ]);
+        let keys = planned_with(text, order, TrieLevels::JoinKeys);
+        assert_eq!(levels_of(&keys), vec![
+            (vec![1, 0], 1),
+            (vec![0, 1], 2),
+            (vec![0, 1], 1)
+        ]);
+        assert_eq!(body_text(&keys.query), vec![
+            "#0(B, A)", "#1(B, C)", "#2(C, D)"
+        ]);
     }
 }

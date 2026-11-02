@@ -556,6 +556,7 @@ mod tests {
             relation: "edge".to_string(),
             filter: Filter::new(vec![(1, 2)], vec![]),
             columns: vec![0],
+            levels: 1,
         };
         assert_eq!(
             describe_index(0, &pinned, 1, 96),
@@ -565,6 +566,7 @@ mod tests {
             relation: "edge".to_string(),
             filter: Filter::none(),
             columns: vec![1, 0],
+            levels: 2,
         };
         assert_eq!(
             describe_index(1, &reversed, 3, 128),

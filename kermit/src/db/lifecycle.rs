@@ -11,7 +11,7 @@ use {
         Access, CatalogStats, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner, QueryPlan,
         RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
     },
-    kermit_ds::{Relation, RelationHeader, TupleView, Tuples},
+    kermit_ds::{Relation, RelationHeader, TrieLevels, TupleView, Tuples},
     kermit_iters::JoinIterable,
     std::collections::{BTreeMap, HashMap},
 };
@@ -166,7 +166,7 @@ pub fn prepare(
         query: executed,
         plan,
         indexes,
-    } = plan_indexes(&access_query, &ordering);
+    } = plan_indexes(&access_query, &ordering, TrieLevels::All);
 
     // Counted here, untimed, for the report's `index_rows`, so reporting adds
     // no scan to the timed build. (A filtered build still counts before it
@@ -459,10 +459,12 @@ mod tests {
     }
 
     fn spec(relation: &str, filter: Filter, columns: Vec<usize>) -> IndexSpec {
+        let levels = columns.len();
         IndexSpec {
             relation: relation.into(),
             filter,
             columns,
+            levels,
         }
     }
 
