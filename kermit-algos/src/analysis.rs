@@ -19,6 +19,10 @@ pub struct QueryAnalysis {
     /// the variables it carries, in the predicate's term (physical column)
     /// order.
     pub predicate_variables: Vec<Vec<usize>>,
+    /// `join_keys[v]`: whether two or more body atoms carry variable `v`
+    /// (an atom that carries it twice counts once). Every other variable is
+    /// payload: one atom holds it, so no intersection constrains it (#116).
+    pub join_keys: Vec<bool>,
 }
 
 /// Indexes the variables in a [`JoinQuery`].
@@ -27,7 +31,8 @@ pub struct QueryAnalysis {
 /// tuple order matches the head declaration), then body-only variables in
 /// first-appearance order. Specifically, the j-th distinct head variable
 /// receives canonical index j. A third pass collects per-predicate variable
-/// index lists. Placeholders (`_`) and atoms are skipped in all passes —
+/// index lists, and a fourth marks the join keys (`join_keys`).
+/// Placeholders (`_`) and atoms are skipped in all passes —
 /// they occupy trie levels but don't bind a join variable — so an atom
 /// holding either yields a list shorter than its arity. The executors need
 /// one variable per column, which is why `kermit::db` hands them the query
@@ -81,9 +86,22 @@ pub fn analyse(query: &JoinQuery) -> QueryAnalysis {
         predicate_variables.push(vars_for_pred);
     }
 
+    // Pass 4: the join keys, the variables two or more atoms carry.
+    let num_vars = var_to_index.len();
+    let mut carriers = vec![0usize; num_vars];
+    for vars in &predicate_variables {
+        let mut distinct = vars.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        for v in distinct {
+            carriers[v] += 1;
+        }
+    }
+
     QueryAnalysis {
-        num_vars: var_to_index.len(),
+        num_vars,
         predicate_variables,
+        join_keys: carriers.iter().map(|&n| n >= 2).collect(),
     }
 }
 
@@ -162,5 +180,24 @@ mod tests {
         let analysis = analyse(&query);
         assert_eq!(analysis.num_vars, 1);
         assert_eq!(analysis.predicate_variables, vec![vec![0, 0]]);
+    }
+
+    #[test]
+    fn join_keys_are_the_variables_two_atoms_share() {
+        // X = 0, P = 1, Y = 2.
+        let query: JoinQuery = "Q(X, P, Y) :- R(X, P), S(X, Y), T(Y).".parse().unwrap();
+        assert_eq!(analyse(&query).join_keys, vec![true, false, true]);
+    }
+
+    #[test]
+    fn a_variable_repeated_in_one_atom_is_not_a_join_key() {
+        let query: JoinQuery = "Q(X) :- R(X, X).".parse().unwrap();
+        assert_eq!(analyse(&query).join_keys, vec![false]);
+    }
+
+    #[test]
+    fn a_single_atom_has_no_join_key() {
+        let query: JoinQuery = "Q(X, Y) :- R(X, Y).".parse().unwrap();
+        assert_eq!(analyse(&query).join_keys, vec![false, false]);
     }
 }
