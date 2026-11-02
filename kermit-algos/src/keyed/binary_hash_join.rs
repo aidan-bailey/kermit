@@ -326,4 +326,18 @@ mod tests {
             ("S", &s),
         ]);
     }
+
+    /// `S(X, Y)` is keyed on `X`, which `R(X, Y)` binds, but carries `Y` past
+    /// its key, which `R` already binds too: the probe would overwrite `Y`
+    /// instead of joining on it, so the query is not planned under `ProbeKeys`.
+    #[test]
+    #[should_panic(expected = "probe keys lead the columns")]
+    fn a_column_past_the_key_that_an_earlier_atom_binds_is_refused() {
+        let r = index("R", 2, 0, &[&[1, 2]]);
+        let s = index("S", 2, 1, &[&[1, 2]]);
+        let _ = joined(&[0, 1], "Q(X, Y) :- R(X, Y), S(X, Y).", &[
+            ("R", &r),
+            ("S", &s),
+        ]);
+    }
 }

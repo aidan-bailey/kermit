@@ -213,8 +213,8 @@ fn lubm_one_university_query_cardinalities_match_paper() {
             HashTrieSipPrunedLazyKeys,
             HashTriejoin,
         >(&bench, out.path(), &planner, &label, &expected));
-        // The keyed family (a new structure and algorithm; the row this
-        // file's comment above asks for): real data, with its long chains.
+        // The keyed family's cell (a new structure and algorithm): real data,
+        // with its long chains.
         mismatches.extend(cardinality_mismatches::<
             HashIndex<SipHashStrategy>,
             BinaryHashJoin,
