@@ -23,6 +23,8 @@ jemalloc = ["dep:tikv-jemallocator"]
 # for CI, which has no Nix.
 engine-duckdb = ["dep:duckdb"]
 engine-duckdb-bundled = ["engine-duckdb", "duckdb/bundled"]
+# Nemo, in-process (`kermit::engine::nemo`). Off by default: a default build compiles no engine.
+engine-nemo = ["dep:nemo-physical", "dep:futures", "dep:async-trait"]
 
 [dependencies]
 kermit-ds = { version = "0.2.0", path = "../kermit-ds" }
@@ -44,6 +46,12 @@ tikv-jemallocator = { version = "0.7", optional = true }
 # The `~1.4` line is DuckDB 1.4.x, which matches the flake's DuckDB (the one that computes
 # JOB's `expected`). The newest crate is DuckDB 2.0.
 duckdb = { version = "~1.4", default-features = false, optional = true }
+# `engine-nemo`: `nemo-physical` is pinned to one revision of knowsys/nemo, which
+# `engine::nemo::NEMO_REV` repeats and a unit test checks. `futures` drives its async loader and
+# executor with `block_on`; `async-trait` implements its `TableProvider`.
+nemo-physical = { git = "https://github.com/knowsys/nemo", rev = "04f0962b91edc1bbe73e6f65f08d41d1ee491980", optional = true }
+futures = { version = "0.3", optional = true }
+async-trait = { version = "0.1", optional = true }
 
 [dev-dependencies]
 allocation-counter = "0.8"

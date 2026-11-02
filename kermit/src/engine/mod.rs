@@ -20,6 +20,8 @@
 
 #[cfg(feature = "engine-duckdb")]
 pub mod duckdb;
+#[cfg(feature = "engine-nemo")]
+pub mod nemo;
 pub mod sql;
 
 use {
