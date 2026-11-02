@@ -11,7 +11,8 @@ its own measure layer:
   Nemo (`nemo-physical`);
 - an opt-in `materialize` metric on every cell, kermit's own included.
 
-kermit's structures, algorithms and existing metrics are unchanged. The report schema moves to v7.
+kermit's structures, algorithms and existing metrics are unchanged. The report schema moves to v8
+(decision 14).
 
 **Related:**
 - Thesis RQ1.4 (`kermit-msc-thesis/artifacts/plan/outline.md`): "does Kermit's performance sit
@@ -21,7 +22,8 @@ kermit's structures, algorithms and existing metrics are unchanged. The report s
   the describe step, the mutating path.
 - Per-query index builds (`docs/specs/2026-10-22-per-query-index-build-design.md`): `Prepared`,
   `IndexSpec`, `TupleView`.
-- The report schema (`docs/specs/bench-report-schema.md`), v6 today.
+- The report schema (`docs/specs/bench-report-schema.md`), v7 today: since master's
+  7d7eb5fe, `iteration` excludes the join's per-query setup.
 - kraken, a private sibling harness that drives DuckDB, Nemo and five other systems in-process.
   Its trie systems build their indexes in the untimed load, while its hash-join engines build
   theirs inside the timed query. This design avoids that asymmetry.
@@ -128,6 +130,13 @@ recommendation on all five:
 13. **The flow profile's gates build no cargo features.** Every engine step's Verify line passes its
     `--features` explicitly. The owner adds the `engines` CI job's command to the profile's `final`
     gates.
+14. **The report schema moves to v8, not v7, and local master is merged in first** (the owner,
+    2026-11-02, during Story 9). Local master had already taken v7 (7d7eb5fe: `iteration`
+    excludes the join's per-query setup, a meaning change that kermit-lab refuses to mix with v6),
+    together with the `ExecutedQuery` join API (2987d9dd), which Story 10's runner code meets.
+    The merge (180ee8c0) lands before Story 9, so this change's bump is v7 → v8. It is
+    structural, so v7 and v8 load together. Rejected: v8 without the merge (Stories 10–12 would
+    be built on the old join API); keeping v7 (two v7s with different meanings).
 
 ## Background: what upstream offers (checked 2026-11-02)
 
@@ -420,14 +429,14 @@ still borrow through `TupleView`, so nothing they measure changes.
   adds a metadata line labelled `materialize` with the value `skipped: {bytes} bytes over {limit}`.
 - **Feature-missing error:** `--engine {name} needs the engine-{name} feature (build with --features engine-{name})`.
 
-**Report schema v7:**
+**Report schema v8:**
 - `system` on every report (`kermit`, `duckdb`, `nemo`);
 - `engine_version`, plus `engine_threads` (DuckDB), on engine rows;
 - engine rows omit `data_structure`, `algorithm` and every `ds_*` axis;
 - the new function `materialize`.
 
-The bump is not for a metric: none changes meaning, so v6 and v7 load together. It is because
-every v6 run report carries `data_structure` and `algorithm`, and kermit-lab relies on that (one
+The bump is not for a metric: none changes meaning, so v7 and v8 load together. It is because
+every v7 run report carries `data_structure` and `algorithm`, and kermit-lab relies on that (one
 back-fill keys on `algorithm` being present), so an old kermit-lab would misread engine rows.
 `REPORT_SCHEMA_VERSION` and Python's `SCHEMA_VERSION` bump together; the existing `cargo test`
 keeps them in step.
@@ -472,9 +481,9 @@ keeps them in step.
   - `--engine` without its feature is a usage error;
   - `-i`/`-a` are optional with `--engine`;
   - the group-name clash check covers engine cells;
-  - engine rows carry the v7 axes;
+  - engine rows carry the v8 axes;
   - the Nemo version constant matches `kermit/Cargo.toml`.
-- **kermit-lab pytest:** v6 and v7 load together, `system` is back-filled, and `kl.engines()`
+- **kermit-lab pytest:** v7 and v8 load together, `system` is back-filled, and `kl.engines()`
   selects only the like-for-like pairs.
 - **CI.**
   - A new `engines` job runs clippy, rustdoc, the unit tests and the oracle with
@@ -550,7 +559,7 @@ None in this change. The next sweep (#99) adds the engine cells (DuckDB at one t
 3. `Engine`, `EngineSubject`, `EngineCell`, the SQL translator and DuckDB, with the oracle and the
    `engines` CI job.
 4. Nemo, with the `Catalog` `Arc` change.
-5. Report v7 and kermit-lab (`system`, `kl.engines()`).
+5. Report v8 and kermit-lab (`system`, `kl.engines()`).
 6. Documentation.
 
 Each step leaves the gate green. Steps 1 and 2 change nothing in an existing report except adding
@@ -561,7 +570,7 @@ Each step leaves the gate green. Steps 1 and 2 change nothing in an existing rep
 1. With both features, the engine oracle passes for DuckDB and Nemo on counts and contents, in the
    `engines` job.
 2. `bench run triangle -i all -a all --engine duckdb,nemo --metrics build iteration space
-   materialize end-to-end --verify` writes a v7 report with three kermit cells and two engine
+   materialize end-to-end --verify` writes a v8 report with three kermit cells and two engine
    cells. It skips Nemo's `iteration` and `end_to_end` with notes, and every count is verified.
 3. `bench probe … -i all -a all --engine duckdb,nemo --verify --materialize` passes on one query
    from every benchmark family. Every cache is read without writing (no `--force`, no `bench gen`).
@@ -571,7 +580,7 @@ Each step leaves the gate green. Steps 1 and 2 change nothing in an existing rep
    - From the 2026-10-24 sweep's private cache, with
      `XDG_CACHE_HOME=/tb/Source/Academia/kermit-bench-runs/full-sweep-2026-10-24/cache`:
      `sw-snap-amazon-pre -q triangle`, `sw-h2o-pre -q q1`, `sw-job-1-pre -q 1a`.
-4. kermit-lab loads v6 and v7 reports together, and `kl.engines()` renders.
+4. kermit-lab loads v7 and v8 reports together, and `kl.engines()` renders.
 5. A default `cargo build` compiles neither engine, and the existing CI jobs are unchanged.
 6. The documentation below is written.
 
@@ -583,8 +592,8 @@ Each step leaves the gate green. Steps 1 and 2 change nothing in an existing rep
   - a new recipe, "Adding an external engine": module, `Engine` impl, feature, CLI value, oracle
     cell, doc;
   - `kermit::engine` in the architecture section;
-  - gotchas: features off by default, full-assignment `materialize`, schema v7, the like-for-like
+  - gotchas: features off by default, full-assignment `materialize`, schema v8, the like-for-like
     pairs.
-- `docs/specs/bench-report-schema.md`: v7.
+- `docs/specs/bench-report-schema.md`: v8.
 - `ARCHITECTURE.md`: `kermit::engine` among the `kermit` crate's modules.
 - `BENCHMARKING.md`: running engines, and which pairs compare.
