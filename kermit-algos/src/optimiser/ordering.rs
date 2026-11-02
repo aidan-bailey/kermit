@@ -49,7 +49,9 @@ mod tests {
         let one_key = analysis(3, &[1]);
         assert_eq!(order_by_rank(&one_key, |v| v), vec![1, 0, 2]);
         assert_eq!(order_by_rank(&one_key, |v| 2 - v), vec![1, 2, 0]);
-        assert_eq!(order_by_rank(&one_key, |v| usize::from(v == 1)), vec![1, 0, 2]);
+        assert_eq!(order_by_rank(&one_key, |v| usize::from(v == 1)), vec![
+            1, 0, 2
+        ]);
     }
 
     #[test]

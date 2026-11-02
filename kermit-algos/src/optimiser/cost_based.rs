@@ -575,10 +575,16 @@ mod tests {
         let plan = CostBasedOptimiser::default()
             .plan(&accesses.query, &stats)
             .variable_ordering;
-        assert_eq!(&plan[..2], &[2, 1], "the search's key order, not Cardinality's");
+        assert_eq!(
+            &plan[..2],
+            &[2, 1],
+            "the search's key order, not Cardinality's"
+        );
         assert_eq!(plan.len(), 67);
         assert_eq!(
-            &CardinalityOptimiser.plan(&accesses.query, &stats).variable_ordering[..2],
+            &CardinalityOptimiser
+                .plan(&accesses.query, &stats)
+                .variable_ordering[..2],
             &[1, 2]
         );
     }

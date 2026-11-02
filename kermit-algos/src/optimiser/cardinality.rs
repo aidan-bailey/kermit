@@ -89,12 +89,16 @@ mod tests {
         // ranks X by Small (2), beating Y's 5 — regardless of which
         // mentioning predicate comes first in the body. A max / first-wins /
         // last-wins bug would order Y first in one of the two shapes.
-        let q: JoinQuery = "Q(X, Y) :- Big(X), Small(X), Other(Y), Another(Y).".parse().unwrap();
+        let q: JoinQuery = "Q(X, Y) :- Big(X), Small(X), Other(Y), Another(Y)."
+            .parse()
+            .unwrap();
         let sizes: &[(&str, usize)] = &[("Big", 1000), ("Small", 2), ("Other", 5), ("Another", 6)];
         let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, sizes));
         assert_eq!(plan.variable_ordering, vec![0, 1]);
 
-        let q: JoinQuery = "Q(X, Y) :- Small(X), Big(X), Other(Y), Another(Y).".parse().unwrap();
+        let q: JoinQuery = "Q(X, Y) :- Small(X), Big(X), Other(Y), Another(Y)."
+            .parse()
+            .unwrap();
         let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, sizes));
         assert_eq!(plan.variable_ordering, vec![0, 1]);
     }
