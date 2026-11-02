@@ -7,7 +7,7 @@
 //!
 //! # Layout
 //!
-//! The crate is organised in eight parts. Five are family-agnostic and sit
+//! The crate is organised in nine parts. Five are family-agnostic and sit
 //! at the root — `placeholder_rewrite`, which turns each `_` into a fresh
 //! variable; `access`, which reads each body atom as a selection and a
 //! projection of its relation, so that constants and repeated variables
@@ -16,11 +16,12 @@
 //! `join_order`, which reads a plan as a left-deep join order; and
 //! `index_plan`, which runs after planning, orders each access's columns
 //! by the plan and merges identical accesses into the indexes a query
-//! builds. `optimiser` plans a [`QueryPlan`]. The remaining two are the
+//! builds. `optimiser` plans a [`QueryPlan`]. The remaining three are the
 //! iterator families, `sorted` (over
-//! [`TrieIterable`](kermit_iters::TrieIterable)) and `hash` (over
-//! [`HashTrieIterable`](kermit_iters::HashTrieIterable)); they share no
-//! code and never reference each other.
+//! [`TrieIterable`](kermit_iters::TrieIterable)), `hash` (over
+//! [`HashTrieIterable`](kermit_iters::HashTrieIterable)) and `keyed` (over
+//! [`KeyedIterable`](kermit_iters::KeyedIterable)); they share no code and
+//! never reference each other.
 //!
 //! Everything is re-exported flat from this root, so consumers name
 //! `kermit_algos::HashTriejoin`, never the family path.
@@ -32,6 +33,7 @@ mod hash;
 mod index_plan;
 mod join_algo;
 mod join_order;
+mod keyed;
 mod optimiser;
 mod placeholder_rewrite;
 mod sorted;
@@ -51,6 +53,7 @@ pub use {
     index_plan::{plan_indexes, IndexPlan, IndexSpec, INDEX_ID_PREFIX},
     join_algo::JoinAlgo,
     kermit_parser::JoinQuery,
+    keyed::BinaryHashJoin,
     optimiser::{
         distinct_per_column, order_by_rank, CardinalityOptimiser, CatalogStats, CostBasedOptimiser,
         LexicographicOptimiser, Optimiser, PlanError, Planner, QueryOptimiser, QueryPlan,
