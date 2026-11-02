@@ -3,18 +3,22 @@
 > **Status:** stable · **CLI:** `--optimiser cardinality` · **Implementation:** [`kermit_algos::optimiser::cardinality`](../../kermit-algos/src/optimiser/cardinality.rs)
 
 Smallest-relation-first: bind next the variable appearing in the smallest
-relation. A variable occurring in a small relation can take only few
-values, so binding it early shrinks the search space at every deeper
-level. This is the classic size-driven heuristic for worst-case-optimal
+relation, the join keys before the payload (#116). A variable occurring in
+a small relation can take only few values, so binding it early shrinks the
+search space at every deeper level. This is the classic size-driven heuristic for worst-case-optimal
 joins; prefer it when relation sizes are skewed.
 
 ## Ranking function
 
 `rank(v) = min_size(v)` where `min_size(v)` is the minimum tuple count
-over the accesses (body atoms) that mention `v`. The canonical index acts as
-the final tie-break (supplied contractually by
-`kermit_algos::order_by_rank`'s sort key, not by the policy), keeping
-plans deterministic for reproducible benchmarks.
+over the accesses (body atoms) that mention `v`. `order_by_rank` applies
+it within each group, the join keys and then the payload: a payload
+variable binds after every join key, however small its relation (see the
+lexicographic doc's [Payload last](./lexicographic.md#payload-last-116)
+for the rule and what it changes). The canonical index acts as the final
+tie-break (supplied contractually by `kermit_algos::order_by_rank`'s sort
+key, not by the policy), keeping plans deterministic for reproducible
+benchmarks.
 
 ## Statistics consumed
 
@@ -35,13 +39,12 @@ the variables by them (a = max access arity).
 
 Query: `Q(A, B, C) :- R(A, B), S(A, C).` with |R| = 1000, |S| = 3, both
 unfiltered (accesses `@0` and `@1`). Canonical indices: `A = 0`,
-`B = 1`, `C = 2`. No variable is constrained. Per-variable minimum sizes:
-`A -> min(1000, 3) = 3`, `B -> 1000`, `C -> 3`.
+`B = 1`, `C = 2`. `A` is the join key; `B` and `C` are payload.
+Per-variable minimum sizes: `A -> min(1000, 3) = 3`, `B -> 1000`,
+`C -> 3`.
 
-1. Ready set: `{A, B, C}` with ranks 3, 1000, 3. `A` and `C` tie, and the
-   canonical index breaks it. Emit `0`.
-2. Ready ranks: `B = 1000`, `C = 3`. `C` wins. Emit `2`.
-3. Emit `1`.
+1. The join keys: `{A}`. Emit `0`.
+2. The payload by rank: `C = 3` beats `B = 1000`. Emit `2`, then `1`.
 
 `variable_ordering = [0, 2, 1]` — the small relation's variable is bound
 before the large one's, unlike the [lexicographic](./lexicographic.md)
@@ -51,7 +54,7 @@ and `S`'s index is built with its columns swapped, `[1, 0]`.
 ## Index orders
 
 The plan is free: no atom is pinned to its stored column order, so the
-ranking alone decides, and `plan_indexes` builds each
+ranking alone decides within each group, and `plan_indexes` builds each
 access's index with its columns in plan order
 (`docs/specs/2026-10-22-per-query-index-build-design.md`). The smallest
 relation's variable therefore goes first even when its column is not that

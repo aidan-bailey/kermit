@@ -40,23 +40,33 @@ the denominator.
 
 ## Search
 
-A forward dynamic programme.
-- **Layers.** Layer k holds every k-variable set of the query's variables,
+A forward dynamic programme over the **join keys**, the variables two or
+more atoms carry; the payload follows them, in canonical order (#116; see
+the lexicographic doc's [Payload last](./lexicographic.md#payload-last-116)
+for the rule and what it changes).
+- **Layers.** Layer k holds every k-key set of the query's join keys,
   each with its cheapest order. No order constrains the plan, so every
   subset is a state.
-- **Validity.** A set grows by any variable not yet in it, so every plan
-  found is a permutation of the variables, and every permutation is valid.
+- **The payload.** Every key order ends with every key bound, so the
+  estimates of the payload suffix are the same after each, and leaving
+  them out cannot change which key order is cheapest. The cost model
+  numbers the join keys `0..k` in canonical order (`key_bits`), and a
+  payload variable has no bit, so it is never bound in the search.
+- **Validity.** A set grows by any key not yet in it, so every plan found
+  is a permutation of the variables, and every permutation is valid.
 - **Ties** break towards the lexicographically smaller order of canonical
-  indices, so plans are deterministic.
+  indices, so plans are deterministic (the key numbering keeps canonical
+  order, so it keeps the tie-break).
 
-**Budget.** The sets searched are all subsets of the query's variables,
-2ⁿ − 1 of them. A constant is a filter on its access, not a variable, so
-only distinct variables count. The largest WatDiv stress template (q0034)
-had 13 variables when each constant counted as one, which gave
-2¹³ − 1 = 8,191 sets; it has 12 now (4,095 sets), as does the largest of the
-12,400 committed queries. Past `state_budget` sets
-(default 2¹⁴ = 16,384), or past 64 variables (sets are `u64` bitmasks), the
-optimiser returns `CardinalityOptimiser`'s plan.
+**Budget.** The sets searched are all subsets of the query's join keys,
+2ᵏ − 1 of them. A constant is a filter on its access, not a variable, so
+only distinct variables count, and payload variables do not count at all.
+The largest WatDiv stress template (q0034) has 12 variables, of which three
+are join keys (7 sets; 4,095 before #116, when the search ordered every
+variable). Past `state_budget` sets (default 2¹⁴ = 16,384), or past 64 join
+keys (sets are `u64` bitmasks), the optimiser returns
+`CardinalityOptimiser`'s plan, which is payload last too. A query with
+more than 64 variables but at most 64 join keys is searched.
 
 ## Statistics consumed
 
@@ -91,8 +101,8 @@ at most a. It runs once per query, in `prepare`, outside every timer. On
 the 124 `watdiv-stress-100-test-1` templates (release build, measured
 before per-query index builds, when the plan was constrained by stored
 column order), planning took 4.6 µs at the median and 0.59 ms for q0034,
-the largest search (820 sets). A free search is larger, up to 2ⁿ − 1 sets,
-and is not re-measured here. The 0.59 ms was under 0.2 % of q0034's 0.36 s
+the largest search (820 sets). The search over join keys reaches at most
+2ᵏ − 1 sets (7 for q0034), and is not re-measured here. The 0.59 ms was under 0.2 % of q0034's 0.36 s
 `kermit join` on `column-trie`, and small queries plan in microseconds.
 
 ## Worked micro-example
@@ -128,13 +138,16 @@ those of the rows that match, not an estimate from the whole relation.
 
 **Plans** reaching the full set:
 
+B and Y are join keys and A is payload, so the search compares only the
+two orders that end in A:
+
 | Plan | Cost | |
 |---|---:|---|
 | Y, B, A | 10 + 24 + 240 = **274** | chosen |
-| B, Y, A | 12 + 24 + 240 = 276 | |
-| Y, A, B | 10 + 100 + 240 = 350 | |
-| B, A, Y | 12 + 1,200 + 240 = 1,452 | `cardinality`'s: the 12-tuple access binds first |
-| A, B, Y | 100 + 1,200 + 240 = 1,540 | `lexicographic`'s |
+| B, Y, A | 12 + 24 + 240 = 276 | `cardinality`'s (the 12-tuple access binds first) and `lexicographic`'s |
+| Y, A, B | 10 + 100 + 240 = 350 | not searched: A is payload |
+| B, A, Y | 12 + 1,200 + 240 = 1,452 | not searched; `cardinality`'s before #116 |
+| A, B, Y | 100 + 1,200 + 240 = 1,540 | not searched; `lexicographic`'s before #116 |
 
 `variable_ordering = [2, 1, 0]`. `plan_indexes` then builds `@0` as `small`
 with columns `[1, 0]` (Y before A), `@1` as `link` with the filter
@@ -143,7 +156,7 @@ before B).
 
 The unit tests `worked_example_estimates` (the estimate table) and
 `worked_example_plans` (each order's cost, the cost-based plan
-`[2, 1, 0]` and `cardinality`'s `[1, 0, 2]`) in `cost_based.rs` pin these
+`[2, 1, 0]` and `cardinality`'s `[1, 2, 0]`) in `cost_based.rs` pin these
 numbers, planning over the accesses as `prepare` does. The other unit tests
 there and in `cardinality.rs` state their own constant statistics, and
 `cost_based_watdiv_plans.rs` pins the real templates' plans (see "Index
@@ -221,12 +234,14 @@ design, a flag pinned every atom to its stored order by default and lifted
 the pin through reordered copies
 (`docs/specs/2026-10-05-column-orders-design.md`); the flag is gone.
 
-Every subset of the variables is a DP state (2ⁿ − 1), so the default
-budget covers up to 14 variables and the search falls back to
-`cardinality` above. Constants are filters, not variables, so they no
-longer count: none of the 124 `watdiv-stress-100-test-1` templates exceeds
-the budget, and the largest has 12 variables (4,095 states; it had 13 under
-the old const rewrite, which counted its constant as a variable).
+Every subset of the join keys is a DP state (2ᵏ − 1), so the default
+budget covers up to 14 join keys, however many variables are payload, and
+the search falls back to `cardinality` above. Constants are filters, not
+variables, so they do not count: none of the 124
+`watdiv-stress-100-test-1` templates exceeds the budget, and the largest
+has 12 variables, three of them join keys (7 states; 4,095 before #116,
+and it had 13 variables under the old const rewrite, which counted its
+constant as a variable).
 `kermit-algos/tests/cost_based_watdiv_plans.rs` pins the plans of the
 committed templates it names (q0020, q0034, q0008, q0264 and q0085)
 against the committed statistics. It has no data to scan, so it estimates

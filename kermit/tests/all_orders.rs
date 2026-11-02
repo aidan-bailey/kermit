@@ -16,14 +16,16 @@
 mod common;
 
 use {
+    clap::ValueEnum,
     common::{
         oracle::{oracle, Lcg, Relations},
         orders::{every_order, FixedOrder},
     },
     kermit::db::{build, execute, prepare, Catalog},
     kermit_algos::{
-        canonical_names, rewrite_placeholders, CatalogStats, HashTriejoin, JoinAlgo, JoinQuery,
-        LeapfrogTriejoin, Planner, QueryOptimiser, StatisticsLevel,
+        analyse, canonical_names, rewrite_placeholders, CatalogStats, CostBasedOptimiser,
+        HashTriejoin, JoinAlgo, JoinQuery, LeapfrogTriejoin, Optimiser, Planner, QueryOptimiser,
+        StatisticsLevel,
     },
     kermit_ds::{
         Cardinality, ColumnTrie, HashTrie, LazyExpansion, NoPruning, Relation, RelationHeader,
@@ -224,6 +226,11 @@ fn random_data(rng: &mut Lcg, arities: &[usize]) -> Relations {
 /// `FixedOrder` reads. Each relation is built row by row, so an empty one
 /// still has its arity.
 fn catalog_for(relations: &Relations) -> Catalog {
+    catalog_at(relations, StatisticsLevel::TupleCounts)
+}
+
+/// A catalog of `relations` with the statistics `level` asks for.
+fn catalog_at(relations: &Relations, level: StatisticsLevel) -> Catalog {
     Catalog::new(
         relations
             .iter()
@@ -235,7 +242,7 @@ fn catalog_for(relations: &Relations) -> Catalog {
                 (RelationHeader::new_positional(name.as_str(), *arity), flat)
             })
             .collect(),
-        StatisticsLevel::TupleCounts,
+        level,
     )
 }
 
@@ -529,4 +536,59 @@ fn a_forced_order_reverses_the_index_columns() {
     };
     assert_eq!(columns(["X", "Y"]), vec![vec![0, 1]]);
     assert_eq!(columns(["Y", "X"]), vec![vec![1, 0]]);
+}
+
+/// Step 1 of #116: every optimiser plans the join keys before the payload,
+/// on every shape and pinned query this file runs. Cost-based is also run
+/// with a budget of one set, which forces its Cardinality fallback.
+#[test]
+fn every_optimiser_plans_payload_last() {
+    let mut planners: Vec<(String, Planner)> = Optimiser::value_variants()
+        .iter()
+        .map(|optimiser| {
+            (
+                optimiser.axis_value().to_string(),
+                Planner::new(optimiser.instantiate()),
+            )
+        })
+        .collect();
+    planners.push((
+        "cost-based, budget 1".to_string(),
+        Planner::new(Box::new(CostBasedOptimiser {
+            state_budget: 1,
+        })),
+    ));
+    let cases: Vec<(String, Relations, &str)> = shapes()
+        .iter()
+        .map(|shape| {
+            let relations = random_data(&mut Lcg(0), shape.arities);
+            (shape.name.to_string(), relations, shape.query)
+        })
+        .chain(
+            pinned()
+                .into_iter()
+                .map(|(relations, query, _)| (query.to_string(), relations, query)),
+        )
+        .collect();
+    for (name, relations, text) in &cases {
+        let catalog = catalog_at(relations, StatisticsLevel::ColumnDistinct);
+        let query: JoinQuery = text.parse().unwrap();
+        for (optimiser, planner) in &planners {
+            let prepared = prepare(&catalog, &query, planner)
+                .unwrap_or_else(|e| panic!("{name} under {optimiser}: {e}"));
+            let analysis = analyse(prepared.query());
+            let order = &prepared.plan().variable_ordering;
+            let first_payload = order
+                .iter()
+                .position(|&v| !analysis.join_keys[v])
+                .unwrap_or(order.len());
+            assert!(
+                order[first_payload..]
+                    .iter()
+                    .all(|&v| !analysis.join_keys[v]),
+                "{name} under {optimiser}: plan {:?} puts a join key after payload",
+                prepared.variable_order()
+            );
+        }
+    }
 }
