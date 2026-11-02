@@ -236,7 +236,7 @@ fn counts_of(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
 }
 
 /// `bench gen snap --url … --sha256 …` writes `snap-mini-t`, and `bench run`
-/// verifies every query on all three cells against the generator's counts.
+/// verifies every query on all four cells against the generator's counts.
 #[test]
 fn bench_gen_snap_from_a_url_then_bench_run_verifies_every_cell() {
     if skip_unsupported() {

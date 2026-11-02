@@ -394,7 +394,8 @@ optimizations are classified into Layout, Config, or BuildMode.
     (`HashTrieSipKeys`, …, `HashTrieFxPrunedLazyKeys`).
   - **Bench axis value:** `"all"` or `"keys"`. Each `index` metadata line of
     a trie with fewer levels than columns ends its columns with
-    ` levels n` (a HashIndex line ends the same way, with its key length as `n`); an `all` line reads as before.
+    ` levels n` (a HashIndex line ends the same way, with its key length as
+    `n`); an `all` line reads as before.
   - **What `keys` builds.** `kermit::db::prepare` plans every query under
     the structure's `Relation::TRIE_LEVELS` (`TrieLevels::All` or
     `JoinKeys`), and `plan_indexes` gives each index spec its level count:
@@ -419,8 +420,9 @@ optimizations are classified into Layout, Config, or BuildMode.
     for it.
   - **Prepared per policy.** `bench run` prepares each query once per
     policy its cells build under (at most three: the sorted cells' `all`,
-    the HashTrie cell's and the HashIndex cell's `ProbeKeys`), untimed; `build` refuses a structure whose policy
-    differs from the prepared one's.
+    the HashTrie cell's and the HashIndex cell's `ProbeKeys`), untimed;
+    `build` refuses a structure whose policy differs from the prepared
+    one's.
   - **Hash Triejoin** descends an atom only at the variables of its levels
     and skips a position no trie has a level for; the leaf product binds the
     payload from the rows (Algorithm 3, lines 16–19). See

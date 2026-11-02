@@ -172,7 +172,7 @@ its structure, not a copy of it. It differs in these ways:
   descend its unused columns on every query, under either column-order policy.
 - **The carried `id3`.** Each `x` projection carries `id3`, which is unique per row.
   Every result row is therefore distinct and no relation holds a duplicate, so
-  `expected` is the same for all three cells, HashTrie's multiset count included.
+  `expected` is the same for all four cells, HashTrie's multiset count included.
 - **Dropped.** q3 (a left outer join), q4 (string keys, which under dictionary encoding
   are q2), the `v1`/`v2` payloads, the right-hand tables' extra columns and NAs.
 - **The random-number generator.** Upstream draws from R's. Kermit's is in-repo
@@ -247,7 +247,7 @@ dictionary.
   builds a column-swapped index instead, inside `build`.
 - **No query repeats a variable in an atom or uses a constant**, so every access is
   unfiltered: each index is a whole relation, and `build` is a plain copy of it.
-- **Counts are exact and the same on all three cells**, because no relation holds a
+- **Counts are exact and the same on all four cells**, because no relation holds a
   duplicate row (see [Differences from upstream](#differences-from-upstream)).
 
 ### Verified counts

@@ -18,7 +18,7 @@
 //! `data_structure` / `algorithm` axes are derived from the `Execution`
 //! that actually ran, so no code path can label a measurement with an
 //! algorithm it did not execute. [`RelationFamily`] captures the handful
-//! of relation-level operations that differ between the two families and
+//! of relation-level operations that differ between the three families and
 //! [`ExecutionFamily`] the join-level ones on top; `bench ds` and
 //! `bench run` (`bench/ds.rs`, `bench/run.rs`) are generic over one each.
 

@@ -1,8 +1,10 @@
-//! Layout option: which hash function `HashTrie` uses to convert tuple
-//! attribute values (`usize`) into the `u64` hashes used by the algorithm.
+//! Layout option: which hash function `HashTrie` and `HashIndex` use to
+//! convert tuple attribute values (`usize`) into the `u64` hashes used by
+//! the algorithm.
 //!
 //! A `HashStrategy` is a zero-sized marker type passed as a generic
-//! parameter to `HashTrie<H>` and used by the algorithm's singleton
+//! parameter to `HashTrie<H>` (and `HashIndex<H>`) and used by the
+//! algorithm's singleton
 //! constructor (via precomputed hash). Each implementation is also a
 //! [`LayoutOption`] — the `NAME` constant flows into bench-report axes
 //! under `ds_layout_hasher`.

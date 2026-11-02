@@ -36,10 +36,10 @@ use {
 /// [`db::prepare`], [`db::build`] and [`db::execute`] through the one body
 /// [`db::lftj_join`], [`db::hash_join`] and [`db::binary_join`] share, with
 /// `R` as the index structure and `JA` as the algorithm. The query is
-/// therefore validated first,
-/// a variable repeated within one `rel_variables` entry selects the rows whose
-/// columns agree, and each result row holds the `variables`, in that order:
-/// a variable only the body binds is not part of it.
+/// therefore validated first, a variable repeated within one `rel_variables`
+/// entry selects the rows whose columns agree, and each result row holds the
+/// `variables`, in that order: a variable only the body binds is not part of
+/// it.
 ///
 /// An empty batch carries no arity (an empty `Vec` converts to arity 0), so
 /// a relation with no rows takes its arity from its atom. An empty

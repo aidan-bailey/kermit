@@ -1,5 +1,5 @@
 //! The `bench ds` runner: one index structure over one relation file,
-//! generic over the [`RelationFamily`] so both trait families share it.
+//! generic over the [`RelationFamily`] so all three families share it.
 
 use {
     super::{
