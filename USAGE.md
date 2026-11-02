@@ -81,13 +81,22 @@ kermit join … --output results.csv
 ### Pick the index structure
 
 `--indexstructure` accepts `tree-trie` (pointer-based), `column-trie`
-(column-oriented), or `hash-trie` (hash-based). The two sorted tries implement
+(column-oriented), `hash-trie` (hash-based) or `hash-index` (a chained hash
+table keyed on its leading columns). The two sorted tries implement
 the same `Relation` + `TrieIterable` traits, pair with `-a leapfrog-triejoin`,
 and are interchangeable from the CLI's perspective; benchmark to pick one.
 `hash-trie` lives in a different trait family (`HashTrieIterable`) and pairs
-only with `-a hash-triejoin`. Every command, including the one-shot
-`kermit join` / `bench join`, accepts all three valid pairs; an incompatible
-pair is rejected as a usage error.
+only with `-a hash-triejoin`. `hash-index` lives in a third (`KeyedIterable`)
+and pairs only with `-a binary-hash-join`, a left-deep pipelined binary hash
+join: the baseline for what the worst-case optimal joins buy. Every command,
+including the one-shot `kermit join` / `bench join`, accepts all four valid
+pairs; an incompatible pair is rejected as a usage error.
+
+`--ds-layout-hasher sip|fxhash` picks the hash function of `hash-trie` and of
+`hash-index`, so a comparison between the two can hold the hasher fixed. It is
+the only `--ds-*` flag `hash-index` takes: every other one is refused, and,
+as above, under `-i all -a all` each flag reaches the cells that have its
+axis. `bench ds` has no query, so there a `hash-index` is keyed on every column.
 
 The sorted tries also take `--ds-layout-seek linear|binary|galloping`
 (default `galloping`), the search their iterators' `seek` uses. Every strategy
@@ -338,17 +347,19 @@ kermit bench run triangle -i tree-trie -a leapfrog-triejoin
 kermit bench run triangle -i column-trie -a leapfrog-triejoin
 ```
 
-`-i all` expands to all three index structures (`column-trie`, `hash-trie`,
-`tree-trie`) and `-a all` expands to both concrete algorithms (`hash-triejoin`,
-`leapfrog-triejoin`); the selectors are wired up so adding a new `IndexStructure`
-or `JoinAlgorithm` variant automatically joins the sweep. The cross product is
-filtered to the three valid (structure, algorithm) cells, and each skipped pair
+`-i all` expands to all four index structures (`column-trie`, `hash-index`,
+`hash-trie`, `tree-trie`) and `-a all` expands to all three concrete algorithms
+(`binary-hash-join`, `hash-triejoin`, `leapfrog-triejoin`); the selectors are
+wired up so adding a new `IndexStructure` or `JoinAlgorithm` variant
+automatically joins the sweep. The cross product is
+filtered to the four valid (structure, algorithm) cells, and each skipped pair
 is announced on stderr, so `-i all -a all` runs exactly:
 
 ```sh
 kermit bench run triangle -i tree-trie -a leapfrog-triejoin
 kermit bench run triangle -i column-trie -a leapfrog-triejoin
 kermit bench run triangle -i hash-trie -a hash-triejoin
+kermit bench run triangle -i hash-index -a binary-hash-join
 ```
 
 `-i all -a leapfrog-triejoin` runs the two sorted cells, and a single explicit
@@ -658,8 +669,9 @@ alias kermit=./target/release/kermit
 for s in 1 2 3 4 5 6; do kermit bench fetch oxford-uniform-s$s; done
 
 # 3. Run the triangle query at each scale, against the two sorted-family DS
-#    implementations (tree-trie and column-trie); hash-trie is omitted because
-#    it requires hash-triejoin rather than leapfrog-triejoin.
+#    implementations (tree-trie and column-trie); hash-trie and hash-index are
+#    omitted because each requires its own algorithm (hash-triejoin and
+#    binary-hash-join) rather than leapfrog-triejoin.
 for s in 1 2 3 4 5 6; do
   for ds in tree-trie column-trie; do
     kermit bench run oxford-uniform-s$s \

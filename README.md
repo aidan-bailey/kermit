@@ -51,7 +51,7 @@ Output (CSV to stdout):
 2,3,4
 ```
 
-Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. `kermit join` accepts every valid cell: `tree-trie` / `column-trie` with `leapfrog-triejoin`, and `hash-trie` with `hash-triejoin` (optionally `--ds-layout-hasher fxhash`); an incompatible pair is a usage error.
+Use `--output results.csv` to write to a file instead. Multiple relation files can be provided by repeating the `--relations` flag. `kermit join` accepts every valid cell: `tree-trie` / `column-trie` with `leapfrog-triejoin`, `hash-trie` with `hash-triejoin` (optionally `--ds-layout-hasher fxhash`), and `hash-index` with `binary-hash-join` (a left-deep pipelined binary hash join, the baseline for what worst-case optimal joins buy; `--ds-layout-hasher` is its only `--ds-*` flag); an incompatible pair is a usage error.
 
 An optional `--optimiser <lexicographic|cardinality|cost-based>` flag picks the query optimiser that plans the join's variable ordering (default: `lexicographic`, which plans the canonical order, head variables first and then the body-only ones; `cardinality` binds variables from the smallest relations first; `cost-based` minimises an estimated cost from per-column distinct counts). See [`docs/optimisers/`](docs/optimisers/).
 
@@ -69,16 +69,16 @@ kermit bench run triangle \
   --algorithm leapfrog-triejoin
 
 # Sweep every benchmark over every compatible (index, algorithm) cell.
-# Only three pairings are valid — (tree-trie|column-trie, leapfrog-triejoin)
-# and (hash-trie, hash-triejoin) — and `all` on either side skips the
-# incompatible ones, announcing each skip on stderr.
+# Only four pairings are valid — (tree-trie|column-trie, leapfrog-triejoin),
+# (hash-trie, hash-triejoin) and (hash-index, binary-hash-join) — and `all`
+# on either side skips the incompatible ones, announcing each skip on stderr.
 kermit bench run --all -i all -a all
 ```
 
 Useful flags:
 - `--query <NAME>` — run a single named query from the benchmark (default: all queries).
 - `--all` — run every benchmark in `benchmarks/`.
-- `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the three compatible pairings above are supported; `all` on either side expands to the valid cells and skips the rest, while naming a single incompatible pair is a usage error.
+- `-i <ds>` / `-a <algo>` — pick the index structure / join algorithm. Only the four compatible pairings above are supported; `all` on either side expands to the valid cells and skips the rest, while naming a single incompatible pair is a usage error.
 - `--metrics build iteration space` — pick which metrics to measure (default: all three), per query: `build` times constructing the indexes the query's plan reads (each one a relation filtered by the query's constants and repeated variables and copied once, in the plan's column order), `iteration` times the join over indexes built once, and `space` is those indexes' heap bytes. Relations are read once per benchmark, untimed, and no structure is built until a query asks for it. The opt-in `end-to-end` metric times one build plus K query executions per Criterion sample (`T = build + K × query`); it is never in the default set.
 - `--queries-per-build <K>` — K for the `end-to-end` metric (default 1); recorded in the report's `queries_per_build` axis. Ignored by other metrics.
 - `--optimiser <lexicographic|cardinality|cost-based>` — pick the query optimiser planning each join's variable ordering (default: `lexicographic`). The choice is recorded in the JSON report's `optimiser` axis, making optimiser comparisons a third benchmark dimension alongside `-i`/`-a`.
@@ -134,7 +134,7 @@ kermit bench join \
   --indexstructure tree-trie
 ```
 
-Supported cells (for `bench join`): `tree-trie` / `column-trie` via `leapfrog-triejoin`, and `hash-trie` via `hash-triejoin`. Supported metrics (on `bench ds`/`bench run`): `build`, `iteration`, `space`, plus the opt-in `end-to-end`.
+Supported cells (for `bench join`): `tree-trie` / `column-trie` via `leapfrog-triejoin`, `hash-trie` via `hash-triejoin`, and `hash-index` via `binary-hash-join`. Supported metrics (on `bench ds`/`bench run`): `build`, `iteration`, `space`, plus the opt-in `end-to-end`.
 
 ### JSON reports for tooling
 
