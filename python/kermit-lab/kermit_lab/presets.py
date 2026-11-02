@@ -12,9 +12,17 @@ from typing import Optional, Sequence
 import pandas as pd
 from matplotlib.figure import Figure
 
-from .analysis import SPEEDUP_MEASURES, baseline_build_mode, speedup_table
+from .analysis import (
+    KERMIT_SYSTEM,
+    SPEEDUP_MEASURES,
+    baseline_build_mode,
+    cell_labels,
+    speedup_table,
+)
+from .encoding import AestheticMap, resolve_scalar, select
 from .facet import finish, make_grid
 from .frame import build_of
+from .geoms import draw_bar
 from .loader import TIME_PHASES
 from .plot import plot
 from .plots_errors import InsufficientAxesError
@@ -185,4 +193,66 @@ def speedup(
     lone_presized = set(build) == {"presized"}
     title = "Presized build speedup" if lone_presized else "Parallel build speedup"
     finish(fig, axes, title=title, out=out)
+    return fig
+
+
+#: The like-for-like pairs (the external engines' design, Summary), as ``(engine, y, phase)``:
+#: an engine is drawn against kermit's own cells only where both do the same work. DuckDB's
+#: index work (its hash tables) sits in its ``iteration`` while kermit's sits in ``build``, so
+#: only ``end_to_end`` is the same work; Nemo builds its tries in ``build`` and stores its
+#: result in ``materialize``, as kermit's structures and their ``materialize`` do, and its
+#: exact ``space`` is a trie's, as theirs are.
+ENGINE_PAIRS: tuple[tuple[str, str, str], ...] = (
+    ("duckdb", "time", "end_to_end"),
+    ("nemo", "time", "build"),
+    ("nemo", "time", "materialize"),
+    ("nemo", "space", "space"),
+)
+
+
+def engines(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
+    """Each engine against kermit's cells on the pairs that compare like with like
+    (:data:`ENGINE_PAIRS`): DuckDB on ``end_to_end``; Nemo on ``build``, ``materialize`` and
+    ``space``. One panel per pair that has engine rows, bars per query coloured by cell
+    (:func:`~kermit_lab.analysis.cell_labels`), Criterion estimates for time and exact bytes for
+    space. A row without ``system`` counts as kermit's.
+
+    Raises :class:`InsufficientAxesError` when ``df`` has no ``system`` column (load v8
+    reports) or no engine row on any pair.
+    """
+    if "system" not in df.columns:
+        raise InsufficientAxesError(
+            "engines needs the 'system' column that report v8 adds; load v8 reports"
+        )
+    labelled = df.assign(
+        cell=cell_labels(df),
+        system=df["system"].mask(df["system"].isna(), KERMIT_SYSTEM),
+    )
+    panels = []
+    for engine, y, phase in ENGINE_PAIRS:
+        pair = labelled[labelled["system"].isin([engine, KERMIT_SYSTEM])]
+        if not (pair["system"] == engine).any():
+            continue
+        amap = AestheticMap(kind="bar", x="query", y=y, colour="cell", phase=phase)
+        try:
+            rows = select(pair, amap)
+        except InsufficientAxesError:
+            continue
+        if not (rows["system"] == engine).any():
+            continue
+        title = f"{engine} vs kermit: {phase}"
+        ylabel = "space (bytes)" if y == "space" else "time (ns)"
+        panels.append((title, ylabel, resolve_scalar(rows, amap)))
+    if not panels:
+        raise InsufficientAxesError(
+            "no engine rows on a like-for-like pair (duckdb on end_to_end; nemo on build, "
+            "materialize and space)"
+        )
+
+    apply_style()
+    fig, axes = make_grid(len(panels))
+    for ax, (title, ylabel, series) in zip(axes, panels):
+        draw_bar(ax, series, xlabel="query", ylabel=ylabel)
+        ax.set_title(title)
+    finish(fig, axes, title="Engines against kermit, like-for-like pairs", out=out)
     return fig

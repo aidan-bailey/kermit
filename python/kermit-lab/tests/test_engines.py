@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
+from matplotlib.figure import Figure
 
+import kermit_lab as kl
+from kermit_lab import presets
+from kermit_lab.plots_errors import InsufficientAxesError
 from kermit_lab.analysis import cell_labels, speedup_table
 from kermit_lab.defaults import BINARY_AXIS_DEFAULTS, apply_axis_defaults
 from kermit_lab.frame import load
@@ -208,3 +217,73 @@ def test_speedup_table_ignores_engine_rows() -> None:
     assert got["speedup"].tolist() == pytest.approx([2.0])
     assert got["speedup"].tolist() == pytest.approx(expected["speedup"].tolist())
     assert got["threads"].tolist() == expected["threads"].tolist()
+
+
+def _panels(fig: Figure) -> dict[str, list[float]]:
+    """Each visible panel's title -> its sorted bar heights."""
+    return {
+        ax.get_title(): sorted(p.get_height() for p in ax.patches)
+        for ax in fig.axes
+        if ax.get_visible()
+    }
+
+
+def test_engines_draws_only_the_like_for_like_pairs(engine_tree) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    fig = kl.engines(df)
+    assert isinstance(fig, Figure)
+    panels = _panels(fig)
+    # DuckDB against kermit on end_to_end only: its iteration (150) is not drawn.
+    assert panels["duckdb vs kermit: end_to_end"] == [700.0, 800.0, 900.0]
+    # Nemo against kermit on build, materialize and space. The v7 TreeTrie report has no
+    # materialize function, so that panel holds the HashTrie cell and Nemo.
+    assert panels["nemo vs kermit: build"] == [300.0, 500.0, 600.0]
+    assert panels["nemo vs kermit: materialize"] == [1500.0, 2000.0]
+    assert panels["nemo vs kermit: space"] == [3000.0, 6400.0, 9000.0]
+    assert len(panels) == 4
+    plt.close("all")
+
+
+def test_engines_labels_cells_by_system_and_by_structure_and_algorithm(engine_tree) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    fig = kl.engines(df)
+    ax = next(a for a in fig.axes if a.get_title() == "nemo vs kermit: build")
+    labels = set(ax.get_legend_handles_labels()[1])
+    assert labels == {"HashTrie/HashTriejoin", "TreeTrie/LeapfrogTriejoin", "nemo"}
+    ax = next(a for a in fig.axes if a.get_title() == "duckdb vs kermit: end_to_end")
+    assert "duckdb-t1" in set(ax.get_legend_handles_labels()[1])
+    plt.close("all")
+
+
+def test_engines_skips_the_pairs_of_an_engine_that_is_absent(engine_tree) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    only_duckdb = df[~df["system"].isin(["nemo"])]
+    assert list(_panels(kl.engines(only_duckdb))) == ["duckdb vs kermit: end_to_end"]
+    plt.close("all")
+
+
+def test_engines_needs_an_engine_row(fixture_tree) -> None:
+    plt.close("all")
+    kermit_only = load(fixture_tree["paths"], fixture_tree["criterion_root"])
+    with pytest.raises(InsufficientAxesError, match="no engine rows"):
+        kl.engines(kermit_only)
+    with pytest.raises(InsufficientAxesError, match="'system' column"):
+        kl.engines(pd.DataFrame({"metric": ["time"]}))
+    plt.close("all")
+
+
+def test_engines_saves_to_out(engine_tree, tmp_path: Path) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    out = tmp_path / "engines.pdf"
+    kl.engines(df, out=out)
+    assert out.is_file() and out.stat().st_size > 0
+    plt.close("all")
+
+
+def test_engines_is_public() -> None:
+    assert kl.engines is presets.engines
+    assert "engines" in kl.__all__
