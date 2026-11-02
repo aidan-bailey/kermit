@@ -1205,6 +1205,12 @@ mod tests {
         rows
     }
 
+    /// A `HashIndex`'s rows, scanned: it keeps them in source order.
+    fn index_rows(index: &crate::ds::HashIndex) -> Vec<Vec<usize>> {
+        use kermit_iters::KeyedIterable;
+        index.scan().map(<[usize]>::to_vec).collect()
+    }
+
     /// Every constructor takes a [`Tuples`] batch as well as one `Vec` per
     /// tuple, and `insert` takes a slice or an array as well as a `Vec`;
     /// every form builds the same relation.
@@ -1365,6 +1371,17 @@ mod tests {
         assert_eq!(trie_rows(&column), expected);
         assert_eq!(column.heap_size_bytes(), column_batch.heap_size_bytes());
 
+        // `HashIndex` keeps the view's rows in source order, keyed on every
+        // column.
+        {
+            use crate::ds::HashIndex;
+            let index: HashIndex = HashIndex::from_view(2.into(), view.clone());
+            let index_batch: HashIndex = HashIndex::from_tuples(2.into(), batch.clone());
+            assert_eq!(index_rows(&index), expected);
+            assert_eq!(index_rows(&index_batch), expected);
+            assert_eq!(index.heap_size_bytes(), index_batch.heap_size_bytes());
+        }
+
         let hash: HashTrie = HashTrie::from_view(2.into(), view);
         let hash_batch: HashTrie = HashTrie::from_tuples(2.into(), batch.clone());
         assert_eq!(hash.collect_tuples(), batch);
@@ -1480,6 +1497,12 @@ mod tests {
         assert_eq!(tree.tuple_count(), 2);
         assert_eq!(column.tuple_count(), 2);
         assert_eq!(hash.tuple_count(), 3);
+
+        // `HashIndex` is a multiset too.
+        let index: crate::ds::HashIndex =
+            crate::ds::HashIndex::from_view(2.into(), TupleView::all(&source));
+        assert!(keeps_duplicates::<crate::ds::HashIndex>());
+        assert_eq!(index.tuple_count(), 3);
     }
 
     #[test]
@@ -1500,6 +1523,12 @@ mod tests {
         let _: crate::ds::HashTrie = build_from_a_rejecting_view_of_the_wrong_arity();
     }
 
+    #[test]
+    #[should_panic(expected = "from_tuples: tuple arity 2 does not match header arity 3")]
+    fn a_rejecting_view_of_the_wrong_arity_panics_for_a_hash_index() {
+        let _: crate::ds::HashIndex = build_from_a_rejecting_view_of_the_wrong_arity();
+    }
+
     /// An empty source builds an empty relation under any header, as
     /// `from_tuples(header, vec![])` does.
     #[test]
@@ -1517,6 +1546,10 @@ mod tests {
         assert_eq!(tree.tuple_count(), 0);
         assert_eq!(column.tuple_count(), 0);
         assert_eq!(hash.tuple_count(), 0);
+
+        let index: crate::ds::HashIndex = build_from_an_empty_source_of_another_arity();
+        assert_eq!(index.header().arity(), 2);
+        assert_eq!(index.tuple_count(), 0);
     }
     // ── from_tuples* are provided over from_view* ──────────────────────
 
