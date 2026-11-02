@@ -323,6 +323,12 @@ enum BenchSubcommand {
         #[command(flatten)]
         query_args: QueryArgs,
 
+        /// External engines to run beside the `-i` / `-a` cell (additive:
+        /// `-i` and `-a` stay required, since `QueryArgs` is shared with
+        /// `kermit join`).
+        #[command(flatten)]
+        engines: EngineChoices,
+
         /// Output file for one run's results (optional)
         #[arg(short, long, value_name = "PATH")]
         output: Option<PathBuf>,
@@ -564,8 +570,16 @@ fn write_row(writer: &mut impl Write, tuple: &[usize]) -> io::Result<()> {
 /// The query file cannot be read or parsed, a relation file cannot be
 /// read, or validation rejects the query, before any index is built.
 fn prepare_query(args: &QueryArgs, cell: Execution) -> anyhow::Result<PreparedWorkload> {
+    prepare_query_under(args, &[cell.trie_levels()])
+}
+
+/// [`prepare_query`] for every trie-level policy in `levels`: `bench join`
+/// adds `TrieLevels::All` for its engine cells.
+fn prepare_query_under(
+    args: &QueryArgs, levels: &[kermit_ds::TrieLevels],
+) -> anyhow::Result<PreparedWorkload> {
     Workload::adhoc(args.relations.clone(), &args.query)?
-        .prepare(&args.planner.instantiate(), &[cell.trie_levels()])
+        .prepare(&args.planner.instantiate(), levels)
 }
 
 /// Builds the indexes of `workload`'s one query on `family` and streams the
@@ -836,11 +850,19 @@ fn run_clean(name: Option<String>) -> anyhow::Result<()> {
 fn run_bench_join(
     bench_args: &BenchArgs, query_args: QueryArgs, output: Option<PathBuf>, metrics: &[Metric],
     queries_per_build: u32, config: ConfigChoices, build: BuildChoices, materialize_max_bytes: u64,
+    engines: EngineChoices,
 ) -> anyhow::Result<()> {
+    // Resolved first, so a bad `--engine` fails before anything is read.
+    let engine_cells = engines.resolve()?;
     let selector = IndexStructureSelector::of(query_args.indexstructure);
     let choices = DsChoices::resolve(selector, &query_args.layout, &config, &build)?;
     let cell = query_cell(&query_args, choices)?;
-    let workload = prepare_query(&query_args, cell)?;
+    // Engines prepare under `TrieLevels::All`; the kermit cell under its own
+    // policy.
+    let levels: Vec<kermit_ds::TrieLevels> = std::iter::once(cell.trie_levels())
+        .chain(engine_cells.iter().map(|_| kermit_ds::TrieLevels::All))
+        .collect();
+    let workload = prepare_query_under(&query_args, &levels)?;
 
     if let Some(path) = &output {
         let writer = BufWriter::new(fs::File::create(path)?);
@@ -861,6 +883,14 @@ fn run_bench_join(
     };
     let mut sink = ReportSink::open(bench_args.report_json.as_deref(), BenchKind::Join)?;
     dispatch_run_bench(cell, &workload, settings, &mut sink)?;
+    for engine in engine_cells {
+        bench::run::dispatch_sweep_cell(
+            bench::run::SweepCell::Engine(engine),
+            &workload,
+            settings,
+            &mut sink,
+        )?;
+    }
     sink.finish()?;
     Ok(())
 }
@@ -1073,6 +1103,7 @@ fn main() -> anyhow::Result<()> {
 
             | BenchSubcommand::Join {
                 query_args,
+                engines,
                 output,
                 metrics,
                 queries_per_build,
@@ -1088,6 +1119,7 @@ fn main() -> anyhow::Result<()> {
                 config,
                 build,
                 materialize.materialize_max_bytes,
+                engines,
             )?,
 
             | BenchSubcommand::Ds {
