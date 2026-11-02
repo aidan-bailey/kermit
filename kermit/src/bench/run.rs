@@ -4,15 +4,15 @@
 
 use {
     super::{
-        cell::execution_segment,
+        cell::{execution_segment, Cell, FamilyCell},
         criterion_directory_name,
-        measure::{CriterionSettings, Described, MeasureRequest, QuerySubject, Subject},
+        measure::{CriterionSettings, Described, MeasureRequest, Subject},
         workload::PreparedWorkload,
         Metric, CRITERION_MAX_DIRECTORY_NAME_BYTES,
     },
     crate::{
         bench_report::{write_metadata_block, BenchKind, BenchReport, MetadataLine, ReportSink},
-        execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, Sweep, TrieLftj},
+        execution::{Execution, HashHtj, SortedTrie, Sweep, TrieLftj},
         options::{
             unreached_flag, with_hash_trie_layout, with_sorted_trie_layout, DsChoices, DsFlag,
             PlannerArgs,
@@ -22,7 +22,6 @@ use {
     kermit::db::{Catalog, Prepared},
     kermit_algos::{IndexSpec, INDEX_ID_PREFIX},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{RelationHeader, TupleView, Tuples},
     std::{
         collections::{hash_map::Entry, BTreeMap, HashMap},
         io,
@@ -196,17 +195,18 @@ fn guard_requested(streams: bool, metric: bool, verifies: bool, single_run: bool
 /// report per query to `sink` as soon as that query finishes, each stamped
 /// with `settings.kind` and grouped under `settings.prefix`.
 ///
-/// Generic over the [`ExecutionFamily`] so the sorted family
-/// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P, E>`) share one body:
-/// metadata, Criterion group wiring and report assembly are identical, and
-/// the report's `data_structure` / `algorithm` axes come from
-/// `family.execution()` — the same value that picked the code path — so a
-/// report can never name an algorithm it did not run (issue #56).
+/// Generic over the [`Cell`] so every kind of cell shares one body: kermit's
+/// sorted family (`TrieLftj<R>`) and hash family (`HashHtj<H, P, E>`), each
+/// wrapped in a [`FamilyCell`], and any other cell. Metadata, Criterion group
+/// wiring and report assembly are identical; what differs is asked of the
+/// cell. For a `FamilyCell` the report's `data_structure` / `algorithm` axes
+/// come from `family.execution()` — the same value that picked the code path
+/// — so a report can never name an algorithm it did not run (issue #56).
 ///
 /// The workload arrives prepared (`Workload::prepare`): every query is
 /// validated and planned, and the relations the queries name sit in the
 /// catalog as flat tuples, so a query that cannot run never reaches this
-/// function (issue #78). Per query, the cell measures a [`QuerySubject`]
+/// function (issue #78). Per query, the cell measures its subject
 /// through the measure layer. One describe build outside Criterion gives the
 /// `index` lines, the exact `space` and the count `--verify` checks, which
 /// `bench probe` also times; then
@@ -222,8 +222,8 @@ fn guard_requested(streams: bool, metric: bool, verifies: bool, single_run: bool
 /// count) times the variable count times 8 bytes exceeds
 /// `settings.materialize_max_bytes`. Otherwise `--verify` also checks its
 /// distinct count against `expected`, once.
-fn run_benchmark<F: ExecutionFamily>(
-    family: &F, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+fn run_benchmark<C: Cell>(
+    cell: &C, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
 ) -> anyhow::Result<()> {
     let RunSettings {
         kind,
@@ -241,42 +241,31 @@ fn run_benchmark<F: ExecutionFamily>(
         catalog,
         ..
     } = workload;
-    // The queries prepared under this family's trie levels (#116).
-    let prepared_queries = workload.prepared(<F::Rel as kermit_ds::Relation>::TRIE_LEVELS);
+    // The queries prepared under this cell's trie levels (#116).
+    let prepared_queries = workload.prepared(cell.trie_levels());
 
-    // `ds_name`/`algo_name` become the report's identity axes and the
-    // on-disk `target/criterion/{group}` names (the group_name below embeds
-    // them). The labels are pinned by `IndexStructure::axis_value` and
-    // `JoinAlgorithm::axis_value`; see the tests there before changing one.
-    let execution = family.execution();
-    let ds_name = execution.index_structure().axis_value();
-    let algo_name = execution.algorithm().axis_value();
-    // The cell as notes name it.
-    let label = format!("{ds_name}/{algo_name}");
+    // The cell's label names it in the messages below; its axes
+    // (`data_structure`, `algorithm` and the `ds_*` dimensions, for a kermit
+    // cell) are the base of every query's report axes, and its group segment
+    // completes the Criterion group (the on-disk `target/criterion/{group}`
+    // names embed it).
+    let label = cell.label();
+    let cell_axes = cell.axes();
+    let group_segment = cell.group_segment();
 
-    // Standard optimization axes: the dimensions the structure emits (the
-    // `ds_*` prefix convention, see `kermit_iters::HasOptimizationAxes`,
-    // guarantees no collision with the base axes assembled per query below)
-    // plus the build mode, which comes from the family because it leaves no
-    // trace in the structure. They are read off one empty relation, since
-    // they depend on the type, not on the data, and a query whose atoms are
-    // all constant checks builds no index to read them from.
-    let optimization_axes = {
-        let empty = Tuples::new(1);
-        let probe = family.build_index(
-            RelationHeader::new_positional("axes", 1),
-            TupleView::all(&empty),
-        );
-        let mut axes = F::optimization_axes(&probe);
-        axes.extend(family.build_mode_axes());
-        axes
-    };
+    // A metric the cell cannot measure is not requested of it.
+    let supported: Vec<Metric> = metrics
+        .iter()
+        .copied()
+        .filter(|&metric| cell.supports(metric))
+        .collect();
+    let metrics = supported.as_slice();
 
     for (query_def, prepared) in definition.queries.iter().zip(prepared_queries) {
         // The memory guard of `materialize`, first from `expected` alone; a
         // streaming subject with none is decided again after its describe
         // step has counted.
-        let streams = <QuerySubject<'_, F> as Subject>::STREAMS;
+        let streams = <C::Subject<'_> as Subject>::STREAMS;
         let materialize_requested = metrics.contains(&Metric::Materialize);
         let width = prepared.assignment_width();
         let mut guard = materialize_guard(
@@ -302,11 +291,12 @@ fn run_benchmark<F: ExecutionFamily>(
         // The describe step: this query's one build outside Criterion. Every
         // untimed number in its report is read from it, and `measure`
         // consumes it before any build is timed.
-        let subject = QuerySubject {
-            family,
-            catalog,
-            prepared,
-        };
+        // The cell's preflight counts unless Story 3's guard (bound at the top
+        // of this loop body) has skipped an uncounted `materialize`: it is that
+        // guard's decision, not a second copy of it.
+        cell.preflight(catalog, prepared, guard.counts())?;
+        let subject = cell.subject(catalog, prepared)?;
+        let subject_axes = cell.subject_axes(&subject);
         let count = guard.counts()
             && ((verify && query_def.expected.is_some()) || single_run || materialize_requested);
         let mut described = Described::new(&subject, count);
@@ -314,21 +304,22 @@ fn run_benchmark<F: ExecutionFamily>(
         let mut metadata = vec![
             MetadataLine::new("benchmark", &definition.name),
             MetadataLine::new("query", &query_def.name),
-            MetadataLine::new("data structure", ds_name),
-            MetadataLine::new("algorithm", algo_name),
-            MetadataLine::new("allocator", crate::ALLOCATOR),
         ];
-        for (position, ((spec, &rows), &bytes)) in prepared
-            .indexes()
-            .iter()
-            .zip(prepared.index_rows())
-            .zip(described.bytes())
-            .enumerate()
-        {
-            metadata.push(MetadataLine::new(
-                "index",
-                describe_index(position, spec, rows, bytes),
-            ));
+        metadata.extend(cell.metadata());
+        metadata.push(MetadataLine::new("allocator", crate::ALLOCATOR));
+        if C::PER_INDEX_BYTES {
+            for (position, ((spec, &rows), &bytes)) in prepared
+                .indexes()
+                .iter()
+                .zip(prepared.index_rows())
+                .zip(described.bytes())
+                .enumerate()
+            {
+                metadata.push(MetadataLine::new(
+                    "index",
+                    describe_index(position, spec, rows, bytes),
+                ));
+            }
         }
         // Correctness gate: the describe step's count is compared before any
         // measurement time is spent on the query, so a wrong answer can never
@@ -350,12 +341,11 @@ fn run_benchmark<F: ExecutionFamily>(
                     .expect("the describe step counts every query it verifies");
                 if actual != expected {
                     anyhow::bail!(
-                        "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
-                         tuples, expected {}",
+                        "verification failed: benchmark '{}' query '{}' on {} returned {} tuples, \
+                         expected {}",
                         definition.name,
                         query_def.name,
-                        ds_name,
-                        algo_name,
+                        label,
                         actual,
                         expected
                     );
@@ -460,7 +450,8 @@ fn run_benchmark<F: ExecutionFamily>(
         };
         write_metadata_block(&mut io::stderr(), title, &metadata)?;
 
-        let group_name = criterion_group_name(prefix, &definition.name, &query_def.name, execution);
+        let group_name =
+            group_with_segment(prefix, &definition.name, &query_def.name, &group_segment);
         let measured = described.measure(&MeasureRequest {
             metrics: &measured_metrics,
             single_run,
@@ -473,8 +464,6 @@ fn run_benchmark<F: ExecutionFamily>(
         let mut axes = BTreeMap::from([
             ("benchmark".to_string(), serde_json::json!(definition.name)),
             ("query".to_string(), serde_json::json!(query_def.name)),
-            ("data_structure".to_string(), serde_json::json!(ds_name)),
-            ("algorithm".to_string(), serde_json::json!(algo_name)),
             (
                 "optimiser".to_string(),
                 serde_json::json!(planner.optimiser.axis_value()),
@@ -503,7 +492,8 @@ fn run_benchmark<F: ExecutionFamily>(
                 serde_json::json!(queries_per_build),
             );
         }
-        axes.extend(optimization_axes.clone());
+        axes.extend(cell_axes.clone());
+        axes.extend(subject_axes);
         if verified {
             axes.insert("verified".to_string(), serde_json::json!(true));
         }
@@ -520,7 +510,7 @@ fn run_benchmark<F: ExecutionFamily>(
 }
 
 /// Runs one `bench run` cell by monomorphising [`run_benchmark`] over the
-/// [`ExecutionFamily`] the cell names, pushing each query's report to
+/// [`FamilyCell`] of the family the cell names, pushing each query's report to
 /// `sink`. There is no separate algorithm parameter to ignore: the
 /// `Execution` fixes both halves of the pair.
 pub(crate) fn dispatch_run_bench(
@@ -531,7 +521,7 @@ pub(crate) fn dispatch_run_bench(
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie<S>>::new(build),
+            &FamilyCell(&TrieLftj::<kermit_ds::TreeTrie<S>>::new(build)),
             workload,
             settings,
             sink,
@@ -540,7 +530,7 @@ pub(crate) fn dispatch_run_bench(
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build),
+            &FamilyCell(&TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build)),
             workload,
             settings,
             sink,
@@ -554,7 +544,7 @@ pub(crate) fn dispatch_run_bench(
             build,
         } => with_hash_trie_layout!(hasher, pruning, expansion, levels, |H, P, E, L| {
             run_benchmark(
-                &HashHtj::<H, P, E, L>::new(config, build),
+                &FamilyCell(&HashHtj::<H, P, E, L>::new(config, build)),
                 workload,
                 settings,
                 sink,
