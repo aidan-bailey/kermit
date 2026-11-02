@@ -21,6 +21,9 @@
 //! and column equalities) and a list of output columns, so a build copies
 //! only the rows and columns an index needs, once.
 //!
+//! [`KeyedIterable`] is the third iterator family, beside [`TrieIterable`]
+//! and [`HashTrieIterable`]: an index keyed on its leading columns and probed
+//! by exact match, which a binary hash join drives.
 //! # Example
 //!
 //! `Vec<usize>` ships with a [`LinearIterable`] implementation, useful as a
@@ -51,6 +54,7 @@ mod hash_strategy;
 mod hash_trie;
 mod joinable;
 mod key_type;
+mod keyed;
 mod leaf_rows;
 mod linear;
 mod optimization;
@@ -65,6 +69,7 @@ pub use {
     hash_trie::{HashTrieIterable, HashTrieIterator},
     joinable::JoinIterable,
     key_type::Key,
+    keyed::KeyedIterable,
     leaf_rows::{LeafCursor, LeafRows},
     linear::{LinearIterable, LinearIterator},
     optimization::{BuildMode, ConfigOption, HasOptimizationAxes, LayoutOption},
