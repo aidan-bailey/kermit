@@ -18,6 +18,11 @@
 //! The two sorted tries take their seek algorithm as a Layout type
 //! parameter, [`SeekStrategy`]: [`LinearSeek`], [`BinarySeek`] (the
 //! default) or [`GallopingSeek`].
+//!
+//! [`HashIndex`] is not a trie. It is a chained hash table keyed on its
+//! leading columns, the build side of a binary hash join, and it implements
+//! [`KeyedIterable`](kermit_iters::KeyedIterable), a third iterator family,
+//! beside [`Relation`].
 #![deny(missing_docs)]
 
 mod built_with;
@@ -41,7 +46,7 @@ pub use {
     configured::{ConfigProvider, Configured},
     ds::{
         AllLevels, ChildCapacity, ColumnTrie, ColumnTrieBuildMode, EagerExpansion, ExpansionPolicy,
-        HashTrie, HashTrieBuildMode, HashTrieConfig, IndexStructure, InvalidLoadFactor,
+        HashIndex, HashTrie, HashTrieBuildMode, HashTrieConfig, IndexStructure, InvalidLoadFactor,
         InvalidRadixBits, KeyLevels, LazyExpansion, LevelPolicy, LoadFactor, NoPruning,
         ParseChildCapacityError, ParseHashTrieBuildModeError, ParseRootCapacityError,
         ParseTreeTrieBuildModeError, PruningPolicy, RadixBits, RootCapacity, SingletonPruning,

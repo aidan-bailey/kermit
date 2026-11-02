@@ -1,4 +1,5 @@
 mod column_trie;
+mod hash_index;
 mod hash_trie;
 mod tree_trie;
 
@@ -15,6 +16,7 @@ pub(crate) use tree_trie::take_parallel_builds as take_tree_trie_parallel_builds
 use {clap::ValueEnum, std::str::FromStr};
 pub use {
     column_trie::{ColumnTrie, ColumnTrieBuildMode},
+    hash_index::HashIndex,
     hash_trie::{
         AllLevels, ChildCapacity, EagerExpansion, ExpansionPolicy, HashTrie, HashTrieBuildMode,
         HashTrieConfig, InvalidLoadFactor, InvalidRadixBits, KeyLevels, LazyExpansion, LevelPolicy,
