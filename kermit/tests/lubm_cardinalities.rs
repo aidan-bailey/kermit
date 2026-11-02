@@ -19,16 +19,17 @@
 mod common;
 
 use {
-    common::utils::{catalog_of, join_under_planner, load_parquet_inputs},
+    common::utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
     kermit_algos::{
-        CardinalityOptimiser, CostBasedOptimiser, JoinQuery, LeapfrogTriejoin,
+        CardinalityOptimiser, CostBasedOptimiser, HashTriejoin, JoinQuery, LeapfrogTriejoin,
         LexicographicOptimiser, Planner, QueryOptimiser,
     },
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, EagerExpansion, GallopingSeek, HashTrie, KeyLevels,
+        LazyExpansion, LinearSeek, NoPruning, Relation, SingletonPruning, TreeTrie,
     },
-    kermit_iters::TrieIterable,
+    kermit_iters::SipHashStrategy,
     kermit_rdf::lubm::{
         driver::{LubmDriverInputs, DEFAULT_ONTOLOGY_IRI},
         pipeline::{run_lubm_pipeline, LubmPipelineInputs},
@@ -40,6 +41,13 @@ use {
         process::Command,
     },
 };
+
+/// HashTrie cells (#116): the default trie, and two under join-key levels,
+/// one with pruning and lazy expansion, so real data, with its long chains and
+/// deep pruning, reaches the leaf product's payload binding.
+type HashTrieSipKeys = HashTrie<SipHashStrategy, NoPruning, EagerExpansion, KeyLevels>;
+type HashTrieSipPrunedLazyKeys =
+    HashTrie<SipHashStrategy, SingletonPruning, LazyExpansion, KeyLevels>;
 
 /// Builds one optimiser: a planner owns its optimiser, so each planner
 /// needs a fresh one.
@@ -66,7 +74,7 @@ fn vendored_jar() -> PathBuf {
 /// plan reads), and returns one line per query whose result count differs
 /// from the paper's reference cardinality. `label` names the optimiser in
 /// each line.
-fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
+fn cardinality_mismatches<R: Relation + Cardinality, JA: JoinEntry<R>>(
     bench: &BenchmarkDefinition, dir: &Path, planner: &Planner, label: &str,
     expected: &HashMap<String, u64>,
 ) -> Vec<String> {
@@ -82,7 +90,7 @@ fn cardinality_mismatches<R: TrieIterable + Relation + Cardinality>(
             .unwrap_or_else(|| panic!("no reference cardinality for query {}", q.name));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let (rows, _) = join_under_planner::<R, LeapfrogTriejoin>(&catalog, parsed, planner)
+        let (rows, _) = join_under_planner::<R, JA>(&catalog, parsed, planner)
             .unwrap_or_else(|e| panic!("query {}: {e}", q.name));
         let got = rows.len() as u64;
 
@@ -166,54 +174,51 @@ fn lubm_one_university_query_cardinalities_match_paper() {
     for (name, optimiser) in &optimisers {
         let planner = Planner::new(optimiser());
         let label = (*name).to_string();
-        mismatches.extend(cardinality_mismatches::<TreeTrie<LinearSeek>>(
+        mismatches.extend(cardinality_mismatches::<
+            TreeTrie<LinearSeek>,
+            LeapfrogTriejoin,
+        >(&bench, out.path(), &planner, &label, &expected));
+        mismatches.extend(cardinality_mismatches::<
+            TreeTrie<BinarySeek>,
+            LeapfrogTriejoin,
+        >(&bench, out.path(), &planner, &label, &expected));
+        mismatches.extend(cardinality_mismatches::<
+            TreeTrie<GallopingSeek>,
+            LeapfrogTriejoin,
+        >(&bench, out.path(), &planner, &label, &expected));
+        mismatches.extend(cardinality_mismatches::<
+            ColumnTrie<LinearSeek>,
+            LeapfrogTriejoin,
+        >(&bench, out.path(), &planner, &label, &expected));
+        mismatches.extend(cardinality_mismatches::<
+            ColumnTrie<BinarySeek>,
+            LeapfrogTriejoin,
+        >(&bench, out.path(), &planner, &label, &expected));
+        mismatches.extend(cardinality_mismatches::<
+            ColumnTrie<GallopingSeek>,
+            LeapfrogTriejoin,
+        >(&bench, out.path(), &planner, &label, &expected));
+        mismatches.extend(cardinality_mismatches::<
+            HashTrie<SipHashStrategy>,
+            HashTriejoin,
+        >(&bench, out.path(), &planner, &label, &expected));
+        mismatches.extend(cardinality_mismatches::<HashTrieSipKeys, HashTriejoin>(
             &bench,
             out.path(),
             &planner,
             &label,
             &expected,
         ));
-        mismatches.extend(cardinality_mismatches::<TreeTrie<BinarySeek>>(
-            &bench,
-            out.path(),
-            &planner,
-            &label,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<TreeTrie<GallopingSeek>>(
-            &bench,
-            out.path(),
-            &planner,
-            &label,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<ColumnTrie<LinearSeek>>(
-            &bench,
-            out.path(),
-            &planner,
-            &label,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<ColumnTrie<BinarySeek>>(
-            &bench,
-            out.path(),
-            &planner,
-            &label,
-            &expected,
-        ));
-        mismatches.extend(cardinality_mismatches::<ColumnTrie<GallopingSeek>>(
-            &bench,
-            out.path(),
-            &planner,
-            &label,
-            &expected,
-        ));
+        mismatches.extend(cardinality_mismatches::<
+            HashTrieSipPrunedLazyKeys,
+            HashTriejoin,
+        >(&bench, out.path(), &planner, &label, &expected));
     }
 
     assert!(
         mismatches.is_empty(),
-        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers x 2 sorted tries \
-         x 3 seek strategies):\n{}",
+        "LUBM(1, 0) cardinality mismatches ({} across {} queries x {} optimisers x (2 sorted \
+         tries x 3 seek strategies + 3 HashTrie cells)):\n{}",
         mismatches.len(),
         bench.queries.len(),
         optimiser_count,

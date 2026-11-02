@@ -14,18 +14,26 @@ mod common;
 
 use {
     clap::ValueEnum,
-    common::utils::{catalog_of, join_under_planner, load_parquet_inputs},
-    kermit_algos::{JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
+    common::utils::{catalog_of, join_under_planner, load_parquet_inputs, JoinEntry},
+    kermit_algos::{HashTriejoin, JoinQuery, LeapfrogTriejoin, Optimiser, Planner},
     kermit_bench::BenchmarkDefinition,
     kermit_ds::{
-        BinarySeek, Cardinality, ColumnTrie, GallopingSeek, LinearSeek, Relation, TreeTrie,
+        BinarySeek, Cardinality, ColumnTrie, EagerExpansion, GallopingSeek, HashTrie, KeyLevels,
+        LazyExpansion, LinearSeek, NoPruning, Relation, SingletonPruning, TreeTrie,
     },
-    kermit_iters::TrieIterable,
+    kermit_iters::SipHashStrategy,
     std::{
         collections::HashMap,
         path::{Path, PathBuf},
     },
 };
+
+/// HashTrie cells (#116): the default trie, and two under join-key levels,
+/// one with pruning and lazy expansion, so real data, with its long chains and
+/// deep pruning, reaches the leaf product's payload binding.
+type HashTrieSipKeys = HashTrie<SipHashStrategy, NoPruning, EagerExpansion, KeyLevels>;
+type HashTrieSipPrunedLazyKeys =
+    HashTrie<SipHashStrategy, SingletonPruning, LazyExpansion, KeyLevels>;
 
 fn artifacts_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/watdiv-mini/artifacts")
@@ -45,7 +53,7 @@ fn load_expected(dir: &Path) -> HashMap<String, usize> {
 /// Loads the fixture's relations flat and checks every query's result
 /// count, joined as `R` and planned by `optimiser`, against
 /// `expected.json`.
-fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Optimiser) {
+fn check_cardinalities<R: Relation + Cardinality, JA: JoinEntry<R>>(optimiser: Optimiser) {
     let dir = artifacts_dir();
     let bench = load_yaml(&dir);
     let expected = load_expected(&dir);
@@ -61,7 +69,7 @@ fn check_cardinalities<R: TrieIterable + Relation + Cardinality>(optimiser: Opti
             .unwrap_or_else(|| panic!("no expected entry for {key}"));
 
         let parsed: JoinQuery = q.query.parse().expect("datalog parse failure");
-        let (rows, _) = join_under_planner::<R, LeapfrogTriejoin>(&catalog, parsed, &planner)
+        let (rows, _) = join_under_planner::<R, JA>(&catalog, parsed, &planner)
             .unwrap_or_else(|e| panic!("query {}: {e}", q.name));
         let got = rows.len();
 
@@ -81,11 +89,14 @@ fn watdiv_mini_cardinalities_match() {
     // The plan an optimiser picks changes the descent order, never the
     // answer; iterating the CLI enum covers optimisers added later.
     for &optimiser in Optimiser::value_variants() {
-        check_cardinalities::<TreeTrie<LinearSeek>>(optimiser);
-        check_cardinalities::<TreeTrie<BinarySeek>>(optimiser);
-        check_cardinalities::<TreeTrie<GallopingSeek>>(optimiser);
-        check_cardinalities::<ColumnTrie<LinearSeek>>(optimiser);
-        check_cardinalities::<ColumnTrie<BinarySeek>>(optimiser);
-        check_cardinalities::<ColumnTrie<GallopingSeek>>(optimiser);
+        check_cardinalities::<TreeTrie<LinearSeek>, LeapfrogTriejoin>(optimiser);
+        check_cardinalities::<TreeTrie<BinarySeek>, LeapfrogTriejoin>(optimiser);
+        check_cardinalities::<TreeTrie<GallopingSeek>, LeapfrogTriejoin>(optimiser);
+        check_cardinalities::<ColumnTrie<LinearSeek>, LeapfrogTriejoin>(optimiser);
+        check_cardinalities::<ColumnTrie<BinarySeek>, LeapfrogTriejoin>(optimiser);
+        check_cardinalities::<ColumnTrie<GallopingSeek>, LeapfrogTriejoin>(optimiser);
+        check_cardinalities::<HashTrie<SipHashStrategy>, HashTriejoin>(optimiser);
+        check_cardinalities::<HashTrieSipKeys, HashTriejoin>(optimiser);
+        check_cardinalities::<HashTrieSipPrunedLazyKeys, HashTriejoin>(optimiser);
     }
 }
