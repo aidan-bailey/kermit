@@ -200,3 +200,22 @@ take Criterion time rows unless asked for `estimator="single"`; space rows
 are taken whatever their estimator. v6 adds the `plan` and `answer_rows`
 columns. No metric changed meaning at v6, so v5 and v6 reports load
 together.
+
+A v8 report adds the `system` axis (`kermit`, `duckdb`, `nemo`) to every report, the
+`engine_version` axis (and DuckDB's `engine_threads`) to engine rows, which have no
+`data_structure`, `algorithm` or `ds_*` axis, and the `materialize` time phase.
+`kl.load` back-fills `system = "kermit"` on rows that lack it, so v7 and v8 reports load
+together (no metric changed meaning at v8), and `kermit_lab.analysis.cell_labels(df)` names a
+row's cell for plots (`system`, plus the thread count, for an engine). `kl.engines(df)` draws only
+the like-for-like pairs: DuckDB against kermit on `end_to_end`, Nemo against kermit on `build`,
+`materialize` and `space`. `speedup_table` excludes engine rows. `kl.engines(df)` draws, per pair, only the kermit rows of the
+(benchmark, query) the pair's engine ran, and raises `InsufficientAxesError` when one cell and query
+hold more than one row (two optimisers, several HashTrie Layouts, two benchmarks sharing a query
+name), so filter the frame first.
+
+The six structure figures (`scaling`, `bar_time`, `bar_space`, `tradeoff`, `dist` and `bar_queries`)
+draw kermit rows only: they name kermit's data structures, and a generic figure never puts an engine
+beside kermit on a metric that is not a like-for-like pair. Engines are drawn by `kl.engines()`, and
+by `kl.plot`: with no `colour` and a frame holding non-kermit rows (`system` other than `kermit`) it
+colours by the cell label (`duckdb-t1`, `nemo`, `data_structure/algorithm` for kermit), a kermit-only
+frame is unchanged, and an explicit `colour` wins.

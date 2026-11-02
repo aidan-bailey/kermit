@@ -73,8 +73,9 @@ before it is measured.
 ## What you can measure
 
 `bench ds` and `bench run` accept `--metrics`, defaulting to `build`,
-`iteration`, and `space` (the opt-in `end-to-end` phase is *not* in the
-default set). They fall into two families. (`bench join` accepts the same
+`iteration`, and `space` (the opt-in `end-to-end` and `materialize` phases
+are *not* in the default set, and `bench ds` rejects `materialize`, since it
+has no join). They fall into two families. (`bench join` accepts the same
 `--metrics` as `bench run`; it is the ad-hoc form of the same measurement.)
 
 Per query and cell, every runner measures in one order: one untimed
@@ -96,6 +97,7 @@ Time is split into phases because they stress different things and a single
 | **Build** | `build` | `bench run` / `bench join`: building the indexes one query reads (each a relation filtered by the query's constants and repeated variables, in plan order) from the catalog's flat tuples, plus its all-constant checks. `bench ds`: building the one relation from its flat tuples in file order. The built structure is freed after the timer stops | Construction-heavy workloads; one-shot queries; comparing build cost of structures |
 | **Iteration** | `iteration` | Running the join itself (`open`/`up`/`seek`/`next` traversal). In `bench run` / `bench join`, each result tuple is passed to a counting `black_box` sink and dropped: no result rows are allocated, and memory does not grow with the result. `bench ds` scans its relation the same way: tuples are counted through the sink, never collected. | The worst-case-optimal join's actual cost; the headline number for query performance |
 | **End-to-end** | `end-to-end` | One database build **plus K query executions** in a single timed body (`T = build + K × query`, K from `--queries-per-build`, default 1); each execution counts its rows the same way as Iteration | Amortisation/crossover questions: which structure wins depends on how many queries run per build |
+| **Materialize** | `materialize` | Opt-in. The join collecting every full assignment of the executed query into one flat batch, sorting it (`Tuples::sort`) and counting adjacent-distinct rows; Nemo stores its result trie and counts that. A cell whose `materialize` changes its built state (a lazy HashTrie, Nemo) runs every sample on a fresh build | Comparing against engines that store their results; it is not a replacement for Iteration, which stays streaming |
 
 Reports with `schema_version` below 3 are not comparable with later ones.
 Before v3, `bench run` / `bench join` timed a join that also collected every
@@ -158,6 +160,12 @@ set (123 queries) and JOB template 6, in every cell.
 
 So compare TreeTrie `build` across v5 and v6 only within that bound, as any
 two binaries already are.
+
+Reports with `schema_version` 8 measure what v7 measured: every report gains the `system`
+axis (`kermit`, `duckdb`, `nemo`), engine rows add `engine_version` (and `engine_threads` for
+DuckDB) and omit `data_structure`, `algorithm` and the `ds_*` axes, and `materialize` is a new opt-in
+phase. `kermit-lab` loads v7 and v8 together and back-fills `system = "kermit"`. See
+[Comparing against external engines](#comparing-against-external-engines).
 
 The end-to-end phase exists because summing `build + K × iteration` after
 the fact assumes the phases are independent — precisely the assumption a

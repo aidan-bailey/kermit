@@ -14,6 +14,7 @@ See the workspace [`README.md`](../README.md) for a broader introduction and the
 - [`db::hash_join_for_each`](src/db.rs) — hash-family join over a `Catalog` under `HashTriejoin`, streaming the same way. [`db::hash_join`](src/db.rs) collects it the same way.
 - Every entry point projects each row to the query head and returns `Result<_, db::JoinError>` instead of panicking on a query that cannot run; [`db::validate_query`](src/db/validation.rs) runs the same checks without joining, e.g. against relation headers before anything is read into the catalog.
 - [`compute_join`](src/lib.rs) — helper that builds a `Catalog` from raw tuple vectors and runs a join end-to-end, returning the rows as one flat `Tuples` batch.
+- [`engine`](src/engine/mod.rs) — external engines (DuckDB, Nemo) that run a join on a prepared query: the `Engine` trait, the shared SQL translator, and one module per engine behind the off-by-default cargo features `engine-duckdb` and `engine-nemo`. The binary's `--engine` flag wraps each as a benchmark cell.
 - `algos::LeapfrogTriejoin` and `ds::{RelationFileExt, TreeTrie}` re-exports for downstream consumers.
 
 ## CLI

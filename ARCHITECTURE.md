@@ -91,7 +91,7 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 | `Projectable` | `project_via_trie_iter` (shared helper) | hand-rolled on `HashTrie` |
 | Engine | `lftj_join` free function over a `Catalog`, building `R` indexes per query | `hash_join` free function over a `Catalog`, building `HashTrie<H, P, E, L>` indexes per query |
 | Bench cell | `Execution::TrieLftj(SortedTrie::TreeTrie { seek, build } \| ColumnTrie { seek, build })` (`seek` carries `--ds-layout-seek`, `build` `--ds-build tree-trie=…` / `column-trie=…`) / `TrieLftj<R>` | `Execution::HashHtj { hasher, pruning, expansion, config, build }` (`build` carries `--ds-build hash-trie=…`) / `HashHtj<H, P, E>` (labels derived from `H`/`P`/`E`) |
-| `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
+| `bench run` dispatch | one generic `run_benchmark<C: Cell>`, the structure cell wrapped in a `FamilyCell` | the same `run_benchmark<C>` |
 | `bench ds` dispatch | one generic `run_ds_bench<F: RelationFamily>` over `SortedTrieFamily<R>` | the same `run_ds_bench<F>` over `HashTrieFamily<H, P, E>` |
 
 Only three `(index structure, algorithm)` pairs are valid: `(TreeTrie, LeapfrogTriejoin)`, `(ColumnTrie, LeapfrogTriejoin)`, and `(HashTrie, HashTriejoin)`. The type system enforces this at every layer, the CLI included: user strings are resolved into two independent enums, but `Execution::for_pair` is the only bridge from that pair back to a runnable cell — see "Selector dispatch" under CLI.
@@ -436,8 +436,8 @@ The binary exposes two top-level subcommands:
 - `kermit bench` — Criterion-driven benchmarking, with the following subcommands:
   - `bench join` — wrap a join in Criterion timing.
   - `bench ds` — measure build / iteration / heap size for a single relation file against one or more index structures.
-  - `bench run [<NAME> | --all]` — run YAML-defined benchmarks; `--metrics` selects from `build`, `iteration`, `space`, plus the opt-in `end-to-end`. `--force` opts into regenerating a generator-driven benchmark when its spec hash drifts.
-  - `bench probe [<NAME> | --all]` — screen YAML-defined benchmarks without Criterion: per query and cell, verify against `expected`, time one build and one execution, record the exact `space`, `answer_rows` and `plan`.
+  - `bench run [<NAME> | --all]` — run YAML-defined benchmarks; `--metrics` selects from `build`, `iteration`, `space`, plus the opt-in `end-to-end` and `materialize`. `--engine duckdb,nemo` adds external-engine cells beside the structure cells. `--force` opts into regenerating a generator-driven benchmark when its spec hash drifts.
+  - `bench probe [<NAME> | --all]` — screen YAML-defined benchmarks without Criterion: per query and cell, verify against `expected`, time one build and one execution, record the exact `space`, `answer_rows` and `plan`. `--materialize` adds a single-run `materialize`, and `--engine` adds engine cells.
   - `bench list` — list benchmarks; status distinguishes `cached` / `not cached` for static and `not generated` / `cached` / `stale` for generator-driven.
   - `bench fetch [<NAME>]` — download relation parquets for static benchmarks.
   - `bench clean [<NAME>]` — remove cached benchmark artefacts.
