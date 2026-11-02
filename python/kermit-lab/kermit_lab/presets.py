@@ -255,18 +255,8 @@ ENGINE_PAIRS: tuple[tuple[str, str, str], ...] = (
 
 
 def _query_keys(rows: pd.DataFrame) -> list[tuple]:
-    """The ``(benchmark, query)`` of every row of ``rows`` (``query`` alone for a frame without
-    ``benchmark``), a missing value as ``None``."""
-    columns = [c for c in ("benchmark", "query") if c in rows.columns]
-    return [
-        tuple(None if pd.isna(v) else v for v in key)
-        for key in rows[columns].itertuples(index=False, name=None)
-    ]
-
-
-def _benchmark_query_pairs(rows: pd.DataFrame) -> list[tuple]:
-    """The ``(benchmark, query)`` of every row (``benchmark`` ``None`` for a frame without the
-    column), a missing value as ``None``."""
+    """The ``(benchmark, query)`` of every row of ``rows`` (``benchmark`` ``None`` for a frame
+    without the column), a missing value as ``None``."""
     benchmarks = rows["benchmark"] if "benchmark" in rows.columns else [None] * len(rows)
     return [
         tuple(None if pd.isna(v) else v for v in pair) for pair in zip(benchmarks, rows["query"])
@@ -286,7 +276,7 @@ def _refuse_overlaid_bars(rows: pd.DataFrame, engine: str, phase: str) -> None:
     """Raise when two rows of a panel share a ``(cell, query)``: the bar chart places bars by
     query alone, so it draws one bar for each, at the same place, whatever their benchmark."""
     benchmarks: dict[tuple, list] = {}
-    for cell, (benchmark, query) in zip(rows["cell"], _benchmark_query_pairs(rows)):
+    for cell, (benchmark, query) in zip(rows["cell"], _query_keys(rows)):
         benchmarks.setdefault((cell, query), []).append(benchmark)
     for (cell, query), found in benchmarks.items():
         if len(found) < 2:
