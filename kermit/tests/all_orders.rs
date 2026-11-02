@@ -20,6 +20,7 @@ use {
     common::{
         oracle::{oracle, Lcg, Relations},
         orders::{every_order, FixedOrder},
+        shapes::{catalog_at, catalog_for, full_query, random_data, shapes, SEEDS},
     },
     kermit::db::{build, execute, prepare, Catalog},
     kermit_algos::{
@@ -29,7 +30,7 @@ use {
     },
     kermit_ds::{
         Cardinality, ColumnTrie, EagerExpansion, HashTrie, KeyLevels, LazyExpansion, NoPruning,
-        Relation, RelationHeader, SingletonPruning, TreeTrie, Tuples,
+        Relation, SingletonPruning, TreeTrie, Tuples,
     },
     kermit_iters::SipHashStrategy,
 };
@@ -110,143 +111,6 @@ fn a_placeholder_is_ordered_like_a_variable() {
     };
     assert_eq!(orders("Q(V0) :- r0(V0, _), r1(V0)."), 2);
     assert_eq!(orders("Q(V0, V2) :- r0(V0, _, V2), r1(V2)."), 6);
-}
-
-/// The values in the random relations, and so the constants `c0`..`c2` the
-/// shapes use.
-const DOMAIN: usize = 3;
-
-/// Seeds per shape. Each seed gives the shape's relations other tuples,
-/// duplicates included.
-const SEEDS: std::ops::Range<u64> = 0..6;
-
-/// A query over relations `r0`, `r1`, …, with the arity of each.
-struct Shape {
-    name: &'static str,
-    query: &'static str,
-    arities: &'static [usize],
-}
-
-fn shape(name: &'static str, query: &'static str, arities: &'static [usize]) -> Shape {
-    Shape {
-        name,
-        query,
-        arities,
-    }
-}
-
-/// The 16 standard patterns' shapes (those whose fixtures differ only in
-/// data share a shape and keep their names), then the constant cases.
-fn shapes() -> Vec<Shape> {
-    vec![
-        shape("unary", "Q(V0) :- r0(V0).", &[1]),
-        shape(
-            "triangle",
-            "Q(V0, V1, V2) :- r0(V0, V1), r1(V1, V2), r2(V0, V2).",
-            &[2, 2, 2],
-        ),
-        shape(
-            "chain",
-            "Q(V0, V1, V2, V3) :- r0(V0, V1), r1(V1, V2), r2(V2, V3).",
-            &[2, 2, 2],
-        ),
-        shape("star", "Q(V0, V1, V2) :- r0(V0, V1), r1(V0, V2).", &[2, 2]),
-        shape("selfjoin", "Q(V0, V1, V2) :- r0(V0, V1), r0(V1, V2).", &[2]),
-        shape("existential", "Q(V0) :- r0(V0), r1(V0).", &[1, 1]),
-        shape(
-            "empty-result",
-            "Q(V0, V1, V2) :- r0(V0, V1), r1(V1, V2).",
-            &[2, 2],
-        ),
-        shape("single-relation", "Q(V0, V1) :- r0(V0, V1).", &[2]),
-        shape(
-            "four-way-chain",
-            "Q(V0, V1, V2, V3, V4) :- r0(V0, V1), r1(V1, V2), r2(V2, V3), r3(V3, V4).",
-            &[2, 2, 2, 2],
-        ),
-        shape(
-            "wide-fanout",
-            "Q(V0, V1, V2) :- r0(V0, V1), r1(V0, V2).",
-            &[2, 2],
-        ),
-        shape("dead-end", "Q(V0, V1, V2) :- r0(V0, V1), r1(V1, V2).", &[
-            2, 2,
-        ]),
-        shape(
-            "deep-dead-end",
-            "Q(V0, V1, V2, V3) :- r0(V0, V1), r1(V1, V2), r2(V2, V3).",
-            &[2, 2, 2],
-        ),
-        shape("diagonal", "Q(V0) :- r0(V0, V0).", &[2]),
-        shape(
-            "repeated-nonadjacent",
-            "Q(V0, V1) :- r0(V0, V1, V0), r1(V1).",
-            &[3, 1],
-        ),
-        shape("trailing-placeholder", "Q(V0) :- r0(V0, _), r1(V0).", &[
-            2, 1,
-        ]),
-        shape(
-            "middle-placeholder",
-            "Q(V0, V2) :- r0(V0, _, V2), r1(V2).",
-            &[3, 1],
-        ),
-        shape("constant-object", "Q(X) :- r0(X, c1).", &[2]),
-        shape("constant-with-repeat", "Q(X) :- r0(X, X, c1).", &[3]),
-        shape(
-            "constant-in-a-join",
-            "Q(X, Z) :- r0(X, Y), r1(Y, c2), r2(Y, Z).",
-            &[2, 2, 2],
-        ),
-        shape("constant-subject", "Q(Y) :- r0(c1, Y), r1(Y).", &[2, 1]),
-        shape("atom-of-only-constants", "Q(X) :- r0(X), r1(c0, c1).", &[
-            1, 2,
-        ]),
-        shape(
-            "mixed-constants-and-repeats",
-            "Q(X, Z) :- r0(X, c1, Y), r1(Y, Z, Z), r2(c0, c1).",
-            &[3, 3, 2],
-        ),
-    ]
-}
-
-/// One relation per arity, `r0`, `r1`, …, each with 8–12 tuples drawn from
-/// `0..DOMAIN`, so duplicates are likely and joins are dense.
-fn random_data(rng: &mut Lcg, arities: &[usize]) -> Relations {
-    arities
-        .iter()
-        .enumerate()
-        .map(|(i, &arity)| {
-            let tuples = (0..8 + rng.below(5))
-                .map(|_| (0..arity).map(|_| rng.below(DOMAIN)).collect())
-                .collect();
-            (format!("r{i}"), arity, tuples)
-        })
-        .collect()
-}
-
-/// `relations` as a catalog at the tuple-count level, which is all
-/// `FixedOrder` reads. Each relation is built row by row, so an empty one
-/// still has its arity.
-fn catalog_for(relations: &Relations) -> Catalog {
-    catalog_at(relations, StatisticsLevel::TupleCounts)
-}
-
-/// A catalog of `relations` with the statistics `level` asks for.
-fn catalog_at(relations: &Relations, level: StatisticsLevel) -> Catalog {
-    Catalog::new(
-        relations
-            .iter()
-            .map(|(name, arity, tuples)| {
-                let mut flat = Tuples::new(*arity);
-                for tuple in tuples {
-                    flat.push(tuple);
-                }
-                (RelationHeader::new_positional(name.as_str(), *arity), flat)
-            })
-            .collect(),
-        level,
-    )
 }
 
 /// The sorted rows of `query` over `catalog` as `R` through `JA`, planned
@@ -607,4 +471,41 @@ fn every_optimiser_plans_payload_last() {
             );
         }
     }
+}
+
+/// `full_query` puts every variable of the rewritten query in the head, in
+/// the executed query's canonical order (`canonical_names(prepared.query())`):
+/// a `_` as its fresh variable, a body-only variable after the head's, and,
+/// under a forced order, in the order the executed atoms list them, which is
+/// not the order of the query as written. Constants stay in the body.
+#[test]
+fn full_query_heads_every_variable_in_the_executed_canonical_order() {
+    let levels = <TreeTrie as Relation>::TRIE_LEVELS;
+
+    let relations: Relations = vec![("r0".to_string(), 3, vec![]), ("r1".to_string(), 1, vec![])];
+    let catalog = catalog_for(&relations);
+    let query: JoinQuery = "Q(V0) :- r0(V0, _, V2), r1(V2).".parse().unwrap();
+    let planner = Planner::new(Box::new(FixedOrder(names(&["V2", "K0", "V0"]))));
+    let prepared = prepare(&catalog, &query, &planner, levels).unwrap();
+    let full = full_query(&query, &prepared);
+    // `#0` lists r0's columns in plan order, V2 then K0 then V0, so the
+    // body-only variables come after the head's as V2, K0.
+    assert_eq!(canonical_names(prepared.query()), ["V0", "V2", "K0"]);
+    assert_eq!(full.head.to_string(), "Q(V0, V2, K0)");
+    let body: Vec<String> = full.body.iter().map(ToString::to_string).collect();
+    assert_eq!(body, ["r0(V0, K0, V2)", "r1(V2)"]);
+
+    let relations: Relations = vec![
+        ("r0".to_string(), 2, vec![]),
+        ("r1".to_string(), 2, vec![]),
+        ("r2".to_string(), 2, vec![]),
+    ];
+    let catalog = catalog_for(&relations);
+    let query: JoinQuery = "Q(X, Z) :- r0(X, Y), r1(Y, c2), r2(Y, Z).".parse().unwrap();
+    let planner = Planner::new(Box::new(FixedOrder(names(&["X", "Y", "Z"]))));
+    let prepared = prepare(&catalog, &query, &planner, levels).unwrap();
+    let full = full_query(&query, &prepared);
+    assert_eq!(full.head.to_string(), "Q(X, Z, Y)");
+    assert_eq!(canonical_names(prepared.query()), ["X", "Z", "Y"]);
+    assert_eq!(full.body[1].to_string(), "r1(Y, c2)");
 }

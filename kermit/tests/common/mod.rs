@@ -12,6 +12,8 @@ pub mod oracle;
 #[allow(dead_code)]
 pub mod orders;
 #[allow(dead_code)]
+pub mod shapes;
+#[allow(dead_code)]
 pub mod snap;
 #[allow(dead_code)]
 pub mod utils;
