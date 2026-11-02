@@ -112,13 +112,13 @@ where
 mod compute_join_tests {
     use {
         super::*,
-        kermit_algos::{HashTriejoin, LeapfrogTriejoin},
-        kermit_ds::{HashTrie, TreeTrie},
+        kermit_algos::{BinaryHashJoin, HashTriejoin, LeapfrogTriejoin},
+        kermit_ds::{HashIndex, HashTrie, TreeTrie},
     };
 
     type Rows = Vec<Vec<usize>>;
 
-    /// `compute_join` under both families; they must agree. Returns the rows
+    /// `compute_join` under every family; they must agree. Returns the rows
     /// sorted.
     fn joined(input: Vec<Rows>, variables: Vec<usize>, rel_variables: Vec<Vec<usize>>) -> Rows {
         let mut sorted = compute_join::<TreeTrie, LeapfrogTriejoin>(
@@ -127,11 +127,19 @@ mod compute_join_tests {
             rel_variables.clone(),
         )
         .to_vecs();
-        let mut hashed =
-            compute_join::<HashTrie, HashTriejoin>(input, variables, rel_variables).to_vecs();
+        let mut hashed = compute_join::<HashTrie, HashTriejoin>(
+            input.clone(),
+            variables.clone(),
+            rel_variables.clone(),
+        )
+        .to_vecs();
+        let mut keyed =
+            compute_join::<HashIndex, BinaryHashJoin>(input, variables, rel_variables).to_vecs();
         sorted.sort();
         hashed.sort();
+        keyed.sort();
         assert_eq!(sorted, hashed);
+        assert_eq!(sorted, keyed);
         sorted
     }
 
@@ -144,7 +152,7 @@ mod compute_join_tests {
     }
 
     #[test]
-    fn a_chain_joins_on_both_families() {
+    fn a_chain_joins_on_every_family() {
         let rows = joined(chain_input(), vec![0, 1, 2], vec![vec![0, 1], vec![1, 2]]);
         assert_eq!(rows, vec![vec![1, 2, 7], vec![1, 3, 8], vec![2, 3, 8]]);
     }
