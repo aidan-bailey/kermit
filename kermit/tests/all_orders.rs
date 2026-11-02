@@ -28,14 +28,17 @@ use {
         StatisticsLevel,
     },
     kermit_ds::{
-        Cardinality, ColumnTrie, HashTrie, LazyExpansion, NoPruning, Relation, RelationHeader,
-        SingletonPruning, TreeTrie, Tuples,
+        Cardinality, ColumnTrie, EagerExpansion, HashTrie, KeyLevels, LazyExpansion, NoPruning,
+        Relation, RelationHeader, SingletonPruning, TreeTrie, Tuples,
     },
     kermit_iters::SipHashStrategy,
 };
 
 type HashTrieSipPruned = HashTrie<SipHashStrategy, SingletonPruning>;
 type HashTrieSipLazy = HashTrie<SipHashStrategy, NoPruning, LazyExpansion>;
+/// Join-key levels (#116): every order runs, so the orders that put payload
+/// before a join key exercise rule (iii) and the skipped positions.
+type HashTrieSipKeys = HashTrie<SipHashStrategy, NoPruning, EagerExpansion, KeyLevels>;
 
 fn names(list: &[&str]) -> Vec<String> { list.iter().map(|s| (*s).to_string()).collect() }
 
@@ -514,6 +517,19 @@ fn pruned_hash_trie_pinned_queries_under_every_order() {
 #[test]
 fn lazy_hash_trie_pinned_queries_under_every_order() {
     run_pinned::<HashTrieSipLazy, HashTriejoin>();
+}
+
+#[test]
+fn keys_hash_trie_duplicated_constant_atom_under_every_order() {
+    run_duplicated_constant_atom::<HashTrieSipKeys, HashTriejoin>(3);
+}
+
+#[test]
+fn keys_hash_trie_shapes_under_every_order() { run_shapes::<HashTrieSipKeys, HashTriejoin>(); }
+
+#[test]
+fn keys_hash_trie_pinned_queries_under_every_order() {
+    run_pinned::<HashTrieSipKeys, HashTriejoin>();
 }
 
 /// The forced order reaches the index: `r0(X, Y)` read `X` then `Y` is

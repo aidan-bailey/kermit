@@ -7,9 +7,9 @@ use {
     },
     kermit_ds::{
         define_build_mode_provider, define_config_provider, BinarySeek, ChildCapacity, ColumnTrie,
-        ColumnTrieBuildMode, Configured, GallopingSeek, HashTrie, HashTrieBuildMode,
-        HashTrieConfig, LazyExpansion, LinearSeek, LoadFactor, NoPruning, RadixBits, RootCapacity,
-        SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode,
+        ColumnTrieBuildMode, Configured, EagerExpansion, GallopingSeek, HashTrie,
+        HashTrieBuildMode, HashTrieConfig, KeyLevels, LazyExpansion, LinearSeek, LoadFactor,
+        NoPruning, RadixBits, RootCapacity, SingletonPruning, Threads, TreeTrie, TreeTrieBuildMode,
     },
     kermit_iters::{FxHashStrategy, SipHashStrategy},
 };
@@ -692,4 +692,222 @@ define_multiway_join_test_suite_with_config!(
     HashTriejoin,
     CostBasedOptimiser,
     PaperSizing
+);
+
+// ── Layout: join-key levels (#116) ───────────────────────────────────────
+// The eight Layout cells again under `--ds-layout-levels keys`: a HashTrie
+// index has levels only up to its last join-key column, and its payload
+// stays in the leaf rows, bound by Hash Triejoin's leaf product. Then one
+// `Keys` alias per Config and BuildMode group above, as lazy expansion
+// joined them: Sip in the three config groups, the pruned lazy Sip trie in
+// the rest, and the closest-to-paper stack with `keys` added last.
+type HashTrieSipKeys = HashTrie<SipHashStrategy, NoPruning, EagerExpansion, KeyLevels>;
+type HashTrieFxKeys = HashTrie<FxHashStrategy, NoPruning, EagerExpansion, KeyLevels>;
+type HashTrieSipPrunedKeys = HashTrie<SipHashStrategy, SingletonPruning, EagerExpansion, KeyLevels>;
+type HashTrieFxPrunedKeys = HashTrie<FxHashStrategy, SingletonPruning, EagerExpansion, KeyLevels>;
+type HashTrieSipLazyKeys = HashTrie<SipHashStrategy, NoPruning, LazyExpansion, KeyLevels>;
+type HashTrieFxLazyKeys = HashTrie<FxHashStrategy, NoPruning, LazyExpansion, KeyLevels>;
+type HashTrieSipPrunedLazyKeys =
+    HashTrie<SipHashStrategy, SingletonPruning, LazyExpansion, KeyLevels>;
+type HashTrieFxPrunedLazyKeys =
+    HashTrie<FxHashStrategy, SingletonPruning, LazyExpansion, KeyLevels>;
+type HashTrieSipPrunedLazyKeysPresized = Configured<HashTrieSipPrunedLazyKeys, PresizedRoot>;
+type HashTrieSipPrunedLazyKeysPaper = Configured<HashTrieSipPrunedLazyKeys, PaperSizing>;
+define_multiway_join_test_suite!(HashTrieSipKeys, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieSipKeys, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieSipKeys, HashTriejoin, CostBasedOptimiser);
+define_multiway_join_test_suite!(HashTrieFxKeys, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieFxKeys, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieFxKeys, HashTriejoin, CostBasedOptimiser);
+define_multiway_join_test_suite!(HashTrieSipPrunedKeys, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieSipPrunedKeys, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieSipPrunedKeys, HashTriejoin, CostBasedOptimiser);
+define_multiway_join_test_suite!(HashTrieFxPrunedKeys, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieFxPrunedKeys, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieFxPrunedKeys, HashTriejoin, CostBasedOptimiser);
+define_multiway_join_test_suite!(HashTrieSipLazyKeys, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieSipLazyKeys, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieSipLazyKeys, HashTriejoin, CostBasedOptimiser);
+define_multiway_join_test_suite!(HashTrieFxLazyKeys, HashTriejoin, LexicographicOptimiser);
+define_multiway_join_test_suite!(HashTrieFxLazyKeys, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieFxLazyKeys, HashTriejoin, CostBasedOptimiser);
+define_multiway_join_test_suite!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    LexicographicOptimiser
+);
+define_multiway_join_test_suite!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CardinalityOptimiser
+);
+define_multiway_join_test_suite!(HashTrieSipPrunedLazyKeys, HashTriejoin, CostBasedOptimiser);
+define_multiway_join_test_suite!(
+    HashTrieFxPrunedLazyKeys,
+    HashTriejoin,
+    LexicographicOptimiser
+);
+define_multiway_join_test_suite!(HashTrieFxPrunedLazyKeys, HashTriejoin, CardinalityOptimiser);
+define_multiway_join_test_suite!(HashTrieFxPrunedLazyKeys, HashTriejoin, CostBasedOptimiser);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HalfFull
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HalfFull
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HalfFull
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    LexicographicOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    CardinalityOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    CostBasedOptimiser,
+    PresizedRoot
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    LexicographicOptimiser,
+    SizedChildren
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    CardinalityOptimiser,
+    SizedChildren
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipKeys,
+    HashTriejoin,
+    CostBasedOptimiser,
+    SizedChildren
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    LexicographicOptimiser,
+    PaperSizing
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CardinalityOptimiser,
+    PaperSizing
+);
+define_multiway_join_test_suite_with_config!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CostBasedOptimiser,
+    PaperSizing
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    LexicographicOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CardinalityOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CostBasedOptimiser,
+    Radix2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashIncremental
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashIncremental
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashIncremental
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeys,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashParallel2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeysPresized,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashPresized2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeysPresized,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashPresized2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeysPresized,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashPresized2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeysPaper,
+    HashTriejoin,
+    LexicographicOptimiser,
+    HashPresized2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeysPaper,
+    HashTriejoin,
+    CardinalityOptimiser,
+    HashPresized2
+);
+define_multiway_join_test_suite_for_build_mode!(
+    HashTrieSipPrunedLazyKeysPaper,
+    HashTriejoin,
+    CostBasedOptimiser,
+    HashPresized2
 );

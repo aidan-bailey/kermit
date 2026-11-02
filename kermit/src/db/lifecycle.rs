@@ -1274,4 +1274,67 @@ mod tests {
             .collect();
         assert_eq!(headers, vec![(2, 1), (2, 2), (1, 1)]);
     }
+
+    type HashTrieSipKeys = HashTrie<
+        kermit_iters::SipHashStrategy,
+        kermit_ds::NoPruning,
+        kermit_ds::EagerExpansion,
+        kermit_ds::KeyLevels,
+    >;
+
+    #[test]
+    #[should_panic(expected = "trie levels")]
+    fn a_keys_hash_trie_refuses_a_query_prepared_for_all_levels() {
+        let c = payload_catalog();
+        let all = prepare(&c, &parse(PAYLOAD_QUERY), &lexicographic(), TrieLevels::All).unwrap();
+        let _ = build::<HashTrieSipKeys>(&c, &all);
+    }
+
+    /// SNAP's `path3` (#116 design, Decision 5): exact sharing builds three
+    /// `edge` tries under `keys` and two under `all`, and every structure
+    /// answers alike.
+    #[test]
+    fn path3_builds_three_edge_tries_under_keys_and_two_under_all() {
+        let c = catalog(vec![("edge", 2, vec![
+            vec![1, 2],
+            vec![2, 3],
+            vec![3, 4],
+            vec![4, 5],
+        ])]);
+        let query = parse("P(A, B, C, D) :- edge(A, B), edge(B, C), edge(C, D).");
+        let keys = prepare(&c, &query, &lexicographic(), TrieLevels::JoinKeys).unwrap();
+        let all = prepare(&c, &query, &lexicographic(), TrieLevels::All).unwrap();
+        assert_eq!(keys.indexes().len(), 3);
+        assert_eq!(all.indexes().len(), 2);
+        let want = vec![vec![1, 2, 3, 4], vec![2, 3, 4, 5]];
+        assert_eq!(
+            join_with::<HashTrieSipKeys, HashTriejoin>(&c, &query, &lexicographic()),
+            want
+        );
+        assert_eq!(
+            join_with::<HashTrie, HashTriejoin>(&c, &query, &lexicographic()),
+            want
+        );
+        assert_eq!(
+            join_with::<TreeTrie, LeapfrogTriejoin>(&c, &query, &lexicographic()),
+            want
+        );
+    }
+
+    /// An all-constant atom multiplies the answers of a query whose index has
+    /// no level: `r` carries no join key, and `s` holds `1` twice.
+    #[test]
+    fn a_count_multiplies_a_zero_level_index() {
+        let c = catalog(vec![
+            ("r", 1, vec![vec![1], vec![2]]),
+            ("s", 1, vec![vec![1], vec![1]]),
+        ]);
+        let query = parse("Q(X) :- r(X), s(c1).");
+        let keys = prepare(&c, &query, &lexicographic(), TrieLevels::JoinKeys).unwrap();
+        assert_eq!(keys.indexes()[0].levels, 0);
+        assert_eq!(
+            join_with::<HashTrieSipKeys, HashTriejoin>(&c, &query, &lexicographic()),
+            vec![vec![1], vec![1], vec![2], vec![2]]
+        );
+    }
 }
