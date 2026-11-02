@@ -430,3 +430,50 @@ def test_every_structure_preset_draws_kermit_rows_only(engine_tree) -> None:
         t.get_text() for ax in reference.axes for t in ax.get_xticklabels()
     ]
     plt.close("all")
+
+
+def _bar_colour_plot(df: pd.DataFrame, **kwargs) -> Figure:
+    return kl.plot(df, kind="bar", x="query", y="time", phase="end_to_end", **kwargs)
+
+
+def test_plot_colours_a_frame_holding_engine_rows_by_cell(engine_tree) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    fig = _bar_colour_plot(df)
+    assert _legend_labels(fig) == {"TreeTrie/LeapfrogTriejoin", "HashTrie/HashTriejoin", "duckdb-t1"}
+    fig = kl.plot(df, kind="bar", x="query", y="time", phase="build")
+    assert _legend_labels(fig) == {
+        "TreeTrie/LeapfrogTriejoin", "HashTrie/HashTriejoin", "duckdb-t1", "nemo",
+    }
+    # The tradeoff scatter takes the default too: a point per cell with time and space.
+    fig = kl.plot(df, kind="scatter", x="space", y="time", phase="build")
+    assert _legend_labels(fig) == {"TreeTrie/LeapfrogTriejoin", "HashTrie/HashTriejoin", "nemo"}
+    plt.close("all")
+
+
+def test_plot_leaves_a_kermit_only_frame_uncoloured_and_unmutated(engine_tree) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    kermit = df[df["data_structure"].notna()].copy()
+    columns = list(kermit.columns)
+    fig = _bar_colour_plot(kermit)
+    # One series, labelled by the metric as before, and no `cell` column added to the caller's.
+    assert _legend_labels(fig) == {"time"}
+    assert list(kermit.columns) == columns
+    # A frame whose `system` is all kermit, or has no `system` at all, is the same case.
+    kermit["system"] = "kermit"
+    assert _legend_labels(_bar_colour_plot(kermit)) == {"time"}
+    assert _legend_labels(_bar_colour_plot(kermit.drop(columns=["system"]))) == {"time"}
+    # The engine frame itself is not mutated either.
+    columns = list(df.columns)
+    _bar_colour_plot(df)
+    assert list(df.columns) == columns and "cell" not in df.columns
+    plt.close("all")
+
+
+def test_plot_explicit_colour_beats_the_cell_default(engine_tree) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    fig = _bar_colour_plot(df, colour="system")
+    assert _legend_labels(fig) == {"kermit", "duckdb"}
+    plt.close("all")
