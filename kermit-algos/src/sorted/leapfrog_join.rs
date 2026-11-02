@@ -1,62 +1,33 @@
-//! This modules defines traits, structs and iters used to compute a Leapfrog
-//! Join.
+//! Leapfrog join: the k-way intersection of sorted linear iterators, after
+//! Algorithms 1–4 of [Veldhuizen 2014](https://arxiv.org/abs/1210.0481).
 
 use kermit_iters::LinearIterator;
 
-/// The `LeapfrogJoinIterator` trait defines the interface for a leapfrog join
-/// iterator.
-pub(crate) trait LeapfrogJoinIterator {
-    /// Returns a reference to the key at the iterator's current position,
-    /// otherwise `None` if `leapfrog_init` has not yet been called, or the
-    /// iterator is positioned at the end.
-    fn key(&self) -> Option<usize>;
-
-    /// Initialises the iterator and finds the first common key.
-    ///
-    /// Returns `true` if a common key is found, otherwise `false`.
-    fn leapfrog_init(&mut self) -> bool;
-
-    /// Searches for a common key in the iterators.
-    ///
-    /// Returns `true` if a common key is found, otherwise `false`.
-    fn leapfrog_search(&mut self) -> bool;
-
-    /// Seeks the iterator to the least upper bound for the `seek_key`,
-    /// i.e., the smallest key ≥ `seek_key`.
-    ///
-    /// Returns `true` if the key exists, otherwise `false`.
-    fn leapfrog_seek(&mut self, seek_key: usize) -> bool;
-
-    /// Moves the iterator to the next common key and returns a reference
-    /// to it, or `None` if there are no more common keys.
-    fn leapfrog_next(&mut self) -> Option<usize>;
-
-    /// Returns `true` if the iterator is positioned at the end.
-    fn at_end(&self) -> bool;
-}
-
-/// Concrete implementation of the leapfrog join over sorted linear iterators.
+/// The leapfrog join of `k` sorted [`LinearIterator`]s: the keys all `k`
+/// hold, in ascending order.
 ///
-/// Coordinates `k` sorted iterators to find their common keys. The iterators
-/// are arranged in a logical ring whose order is determined by their current
-/// keys: `sorted_iter_perm` is a permutation of `0..k` sorted by each
-/// iterator's initial key (computed in
-/// [`leapfrog_init`](LeapfrogJoinIterator::leapfrog_init)), and `p` walks
-/// this permutation cyclically.
+/// # The ring
+///
+/// The iterators form a ring that `p` walks cyclically. As in the paper, the
+/// ring stays sorted by the iterators' current keys read from `p`: the
+/// iterator at `p` holds the least key and the one before it the greatest.
+/// That is why one comparison, least against greatest, proves every
+/// iterator is at the same key. The paper sorts its iterator array itself;
+/// here the iterators stay where they were given and `ring` holds their
+/// indices in ring order, so the paper's `Iter[p]` is
+/// [`iter_at(p)`](Self::iter_at).
+///
+/// Call [`leapfrog_init`](Self::leapfrog_init) before any other operation,
+/// and only while `k >= 1`.
 pub(crate) struct LeapfrogJoinIter<IT>
 where
     IT: LinearIterator,
 {
-    /// The underlying sorted iterators being joined.
+    /// The iterators being intersected, in the order they were given.
     pub(crate) iterators: Vec<IT>,
-    /// Permutation of `0..k` ordering the iterators by their initial key.
-    /// The leapfrog walks this permutation cyclically (the "ring") rather
-    /// than `iterators` directly.
-    sorted_iter_perm: Vec<usize>,
-    /// Index into `sorted_iter_perm` for the current iterator in the ring.
-    /// This is the paper's ring position: the paper's `Iter[p]` corresponds
-    /// to `iterators[sorted_iter_perm[p]]` here (resolved via `mut_iter`),
-    /// never to `iterators[p]` directly.
+    /// Indices into `iterators`, in ring order (see [the ring](Self#the-ring)).
+    ring: Vec<usize>,
+    /// The paper's ring position `p`: an index into `ring`.
     p: usize,
 }
 
@@ -67,7 +38,7 @@ where
     /// Creates a new leapfrog join over the given sorted iterators.
     pub(crate) fn new(iterators: Vec<IT>) -> Self {
         LeapfrogJoinIter {
-            sorted_iter_perm: (0..iterators.len()).collect(),
+            ring: (0..iterators.len()).collect(),
             iterators,
             p: 0,
         }
@@ -75,9 +46,9 @@ where
 
     /// Refills a drained join with a new set of sorted iterators, leaving it
     /// as [`new`](Self::new) would but in the existing buffers: once
-    /// `iterators` and `sorted_iter_perm` have grown to the widest set they
-    /// will hold, a refill allocates nothing. The triejoin refills on every
-    /// depth change rather than building a new join (issue #83).
+    /// `iterators` and `ring` have grown to the widest set they will hold, a
+    /// refill allocates nothing. The triejoin refills on every depth change
+    /// rather than building a new join (issue #83).
     ///
     /// The caller must already have taken every previous iterator out of
     /// `iterators`.
@@ -87,129 +58,100 @@ where
             "refill needs the previous iterators drained first"
         );
         self.iterators.extend(iterators);
-        self.sorted_iter_perm.clear();
-        self.sorted_iter_perm.extend(0..self.iterators.len());
+        self.ring.clear();
+        self.ring.extend(0..self.iterators.len());
         self.p = 0;
     }
 
     /// Returns the number of iterators being joined.
     pub(crate) fn k(&self) -> usize { self.iterators.len() }
 
-    /// Resolves a ring position `i` (an index into `sorted_iter_perm`) to the
-    /// corresponding underlying iterator. Centralised so the cyclic-walk call
-    /// sites read as `self.mut_iter(self.p)` rather than the double
-    /// indirection `&mut self.iterators[self.sorted_iter_perm[self.p]]`.
-    ///
-    /// This is the paper-to-code index mapping: the paper's `Iter[p]` is
-    /// `iterators[sorted_iter_perm[p]]`, i.e. `mut_iter(p)`.
-    fn mut_iter(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.sorted_iter_perm[i]] }
-}
+    /// The iterator at ring position `i`: the paper's `Iter[i]`.
+    fn iter_at(&self, i: usize) -> &IT { &self.iterators[self.ring[i]] }
 
-impl<IT> LeapfrogJoinIterator for LeapfrogJoinIter<IT>
-where
-    IT: LinearIterator,
-{
-    /// Returns the current common key, or `None` if the join is exhausted.
-    ///
-    /// Resolves the ring position through `sorted_iter_perm` like every other
-    /// site (`&self` receiver, so the indexing is written out rather than
-    /// going through [`mut_iter`](LeapfrogJoinIter::mut_iter)). After a
-    /// successful search all active iterators hold the same key; after a
-    /// failed one the ring-current iterator is at its end, so this correctly
-    /// yields `None`.
-    fn key(&self) -> Option<usize> { self.iterators[self.sorted_iter_perm[self.p]].key() }
+    /// The iterator at ring position `i`, mutably.
+    fn iter_at_mut(&mut self, i: usize) -> &mut IT { &mut self.iterators[self.ring[i]] }
 
-    fn leapfrog_init(&mut self) -> bool {
+    /// Returns the current common key, or `None` once the join is exhausted
+    /// (the iterator at `p` is then the one that ran off its end).
+    pub(crate) fn key(&self) -> Option<usize> { self.iter_at(self.p).key() }
+
+    /// Returns `true` once any iterator has run off its end: no further
+    /// common key exists. The paper keeps this as a flag; it is derived here.
+    pub(crate) fn at_end(&self) -> bool { self.iterators.iter().any(LinearIterator::at_end) }
+
+    /// Algorithm 1, `leapfrog-init`: sorts the ring by current key and finds
+    /// the first common key. Returns whether one exists.
+    pub(crate) fn leapfrog_init(&mut self) -> bool {
         for iter in &mut self.iterators {
+            // The paper's iterators are always positioned on a key, as a trie
+            // iterator is after `open`. A fresh `LinearIterator` sits before
+            // its first key instead, so step it there first.
             if iter.key().is_none() {
-                // Relies on the LinearIterator convention that a fresh,
-                // unpositioned iterator (one whose `key()` is `None` because it
-                // sits *before* its first element, not because it is at the
-                // end) yields its first key on `next()`. So here `next()` means
-                // "reach the first key", not "advance past the current key" as
-                // it does everywhere else in this file.
                 iter.next();
             }
             if iter.at_end() {
-                return false; // If iterator is at the end, no common key can be
-                              // found.
+                return false;
             }
         }
-
-        self.sorted_iter_perm.sort_unstable_by(|a, b| {
-            self.iterators[*a]
-                .key()
-                .unwrap()
-                .cmp(&self.iterators[*b].key().unwrap())
-        });
-
+        self.ring.sort_unstable_by_key(|&i| self.iterators[i].key());
         self.p = 0;
         self.leapfrog_search()
     }
 
+    /// Algorithm 2, `leapfrog-search`: from a sorted ring, seeks the
+    /// iterator with the least key to the greatest key until all agree.
+    /// Returns whether they do; `false` means one ran off its end.
+    ///
+    /// Each pass that does not return moves `iter_at(p)` strictly forward,
+    /// since its least key differs from the greatest, and makes it the new
+    /// greatest. So the ring stays sorted from the next `p`, and the loop
+    /// ends within as many seeks as the iterators have keys.
     fn leapfrog_search(&mut self) -> bool {
-        // Loop invariant: `target_key` is the largest key any iterator
-        // currently holds. The loop terminates because each `seek` either
-        // advances the current iterator's key strictly past `target_key`
-        // (raising the bar for the next ring step) or finds equality (a
-        // common key, returned immediately) or runs off the end (no common
-        // key exists). Because keys are monotone non-decreasing, the maximum
-        // can only rise finitely many times before some iterator hits its
-        // end.
-        //
-        // The predecessor in the ring (wraps to k-1 when p == 0). Its key is
-        // the largest one any iterator currently holds.
-        let prev_idx = if self.p == 0 {
-            self.k() - 1
-        } else {
-            self.p - 1
-        };
-        let mut target_key = self.mut_iter(prev_idx).key().unwrap();
+        let k = self.k();
+        // No iterator is at its end on entry, so every key is `Some`.
+        let mut max_key = self.iter_at((self.p + k - 1) % k).key().unwrap();
         loop {
-            let current_key = self.mut_iter(self.p).key().unwrap();
-            if current_key == target_key {
-                return true;
+            let least_key = self.iter_at(self.p).key().unwrap();
+            if least_key == max_key {
+                return true; // every iterator is at the same key
             }
-            self.mut_iter(self.p).seek(target_key);
-            if self.mut_iter(self.p).at_end() {
+            let iter = self.iter_at_mut(self.p);
+            iter.seek(max_key);
+            if iter.at_end() {
                 return false;
             }
-            // Advancing the current iterator may have raised its key past the
-            // old target; that key becomes the new target for the next ring
-            // step.
-            target_key = self.mut_iter(self.p).key().unwrap();
-            self.p = (self.p + 1) % self.k();
+            max_key = iter.key().unwrap();
+            self.p = (self.p + 1) % k;
         }
     }
 
-    fn leapfrog_next(&mut self) -> Option<usize> {
-        self.mut_iter(self.p).next();
-        if self.mut_iter(self.p).at_end() {
-            None
-        } else {
-            self.p = (self.p + 1) % self.k();
-            self.leapfrog_search();
+    /// Algorithm 3, `leapfrog-next`: moves to the next common key and
+    /// returns it, or `None` if there is none.
+    pub(crate) fn leapfrog_next(&mut self) -> Option<usize> {
+        let iter = self.iter_at_mut(self.p);
+        iter.next();
+        if iter.at_end() {
+            return None;
+        }
+        self.p = (self.p + 1) % self.k();
+        if self.leapfrog_search() {
             self.key()
-        }
-    }
-
-    fn at_end(&self) -> bool {
-        for iter in &self.iterators {
-            if iter.at_end() {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn leapfrog_seek(&mut self, seek_key: usize) -> bool {
-        self.mut_iter(self.p).seek(seek_key);
-        if self.mut_iter(self.p).at_end() {
-            false
         } else {
-            self.p = (self.p + 1) % self.k();
-            self.leapfrog_search()
+            None
         }
+    }
+
+    /// Algorithm 4, `leapfrog-seek`: moves to the least common key
+    /// `≥ seek_key`. Returns whether one exists.
+    pub(crate) fn leapfrog_seek(&mut self, seek_key: usize) -> bool {
+        let iter = self.iter_at_mut(self.p);
+        iter.seek(seek_key);
+        if iter.at_end() {
+            return false;
+        }
+        self.p = (self.p + 1) % self.k();
+        self.leapfrog_search()
     }
 }
 
@@ -361,7 +303,7 @@ mod tests {
         join_iter.iterators.clear();
 
         join_iter.refill([v1.linear_iter(), v2.linear_iter(), v3.linear_iter()]);
-        assert_eq!(join_iter.sorted_iter_perm, vec![0, 1, 2]);
+        assert_eq!(join_iter.ring, vec![0, 1, 2]);
         assert_eq!(join_iter.p, 0);
         // A ring left over two iterators would also report the 5 that only
         // `v1` and `v2` share.

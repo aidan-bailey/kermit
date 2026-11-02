@@ -11,27 +11,13 @@
 
 use {
     crate::{
-        analysis::analyse,
-        join_algo::JoinAlgo,
-        optimiser::QueryPlan,
-        sorted::leapfrog_join::{LeapfrogJoinIter, LeapfrogJoinIterator},
+        analysis::analyse, join_algo::JoinAlgo, optimiser::QueryPlan,
+        sorted::leapfrog_join::LeapfrogJoinIter,
     },
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
     kermit_parser::JoinQuery,
     std::collections::HashMap,
 };
-
-/// Extension of [`LeapfrogJoinIterator`] with trie navigation for the
-/// [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
-pub(crate) trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
-    /// Descends one level in the trie, opening child iterators at the current
-    /// key and initializing the leapfrog join at the new depth.
-    fn triejoin_open(&mut self) -> bool;
-
-    /// Ascends one level, restoring the leapfrog join state at the parent
-    /// depth.
-    fn triejoin_up(&mut self) -> bool;
-}
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
 ///
@@ -49,13 +35,11 @@ pub(crate) trait LeapfrogTriejoinIterator: LeapfrogJoinIterator {
 /// - in `leapfrog.iterators` — *active*; participating in the inner leapfrog at
 ///   the current depth.
 ///
-/// `active_iter_indices` is the list of pool slots currently lent to the
-/// leapfrog (parallel to `leapfrog.iterators`, in pop order). The only
-/// function that moves iterators between the two places is
-/// [`update_iters`](Self::update_iters), called by every depth change
-/// ([`triejoin_open`](Self::triejoin_open) /
-/// [`triejoin_up`](Self::triejoin_up)). All other code reads — never moves —
-/// iterators across this boundary.
+/// `active_iter_indices` names the slot each active iterator was lent from
+/// (parallel to `leapfrog.iterators`). The only function that moves
+/// iterators between the two places is [`update_iters`](Self::update_iters),
+/// called by every depth change ([`triejoin_open`](Self::triejoin_open) /
+/// [`triejoin_up`](Self::triejoin_up)).
 ///
 /// ## Why this deviates from the paper
 ///
@@ -76,48 +60,21 @@ where
     /// Number of variables in the join (i.e. the maximum depth).
     arity: usize,
     /// Idle trie iterators, indexed by body-predicate position. The slot is
-    /// `Some` while the iterator is idle and `None` while it is borrowed by
+    /// `Some` while the iterator is idle and `None` while it is lent to
     /// `leapfrog`.
     idle_iterators: Vec<Option<IT>>,
-    /// Indices into `idle_iterators` currently lent to `leapfrog`, parallel
-    /// to `leapfrog.iterators` in pop order.
+    /// The `idle_iterators` slot each iterator in `leapfrog.iterators` was
+    /// lent from, in the same order.
     active_iter_indices: Vec<usize>,
-    /// For each depth (`0..arity`), the `idle_iterators` indices of every
-    /// iterator that must participate in the leapfrog at that depth.
-    variable_to_iter_map: Vec<Vec<usize>>,
-    /// Current depth in the join: `0` = uninitialised, `1..=arity` = active.
+    /// `participants[d - 1]`: the `idle_iterators` slots of every iterator
+    /// whose predicate carries the variable bound at depth `d` (the paper's
+    /// per-variable leapfrog joins, §3.5).
+    participants: Vec<Vec<usize>>,
+    /// Current depth in the join: `0` = the root, `1..=arity` = a variable.
     depth: usize,
     /// The inner leapfrog join operating at the current depth (empty at
     /// depth 0).
     leapfrog: LeapfrogJoinIter<IT>,
-}
-
-impl<IT> LeapfrogJoinIterator for LeapfrogTriejoinIter<IT>
-where
-    IT: TrieIterator,
-{
-    fn leapfrog_next(&mut self) -> Option<usize> { self.leapfrog.leapfrog_next() }
-
-    fn key(&self) -> Option<usize> {
-        if self.depth == 0 {
-            None
-        } else {
-            self.leapfrog.key()
-        }
-    }
-
-    fn leapfrog_init(&mut self) -> bool { self.leapfrog.leapfrog_init() }
-
-    fn leapfrog_search(&mut self) -> bool { self.leapfrog.leapfrog_search() }
-
-    fn at_end(&self) -> bool {
-        if self.depth == 0 {
-            return true;
-        }
-        self.leapfrog.at_end()
-    }
-
-    fn leapfrog_seek(&mut self, seek_key: usize) -> bool { self.leapfrog.leapfrog_seek(seek_key) }
 }
 
 impl<IT> LeapfrogTriejoinIter<IT>
@@ -148,165 +105,119 @@ where
     ///   carries.
     /// * `iters` — Trie iterators, one per body predicate.
     pub(crate) fn new(
-        variable_ordering: Vec<usize>, predicate_variables: Vec<Vec<usize>>, iters: Vec<IT>,
+        variable_ordering: &[usize], predicate_variables: &[Vec<usize>], iters: Vec<IT>,
     ) -> Self {
-        // Build the variable-to-iterator lookup table. For each depth (position
-        // in `variable_ordering`), collect the indices of every body predicate
-        // that mentions that variable. The triejoin uses this on every depth
-        // change to pick which iterators belong in the active leapfrog.
-        let mut variable_to_iter_map: Vec<Vec<usize>> = Vec::new();
-        for v in &variable_ordering {
-            let mut iters_at_this_depth: Vec<usize> = Vec::new();
-            for (predicate_i, predicate_vars) in predicate_variables.iter().enumerate() {
-                if predicate_vars.contains(v) {
-                    iters_at_this_depth.push(predicate_i);
-                }
-            }
-            variable_to_iter_map.push(iters_at_this_depth);
-        }
-
-        let idle_iterators = iters.into_iter().map(Some).collect();
-
+        let participants = variable_ordering
+            .iter()
+            .map(|v| {
+                (0..predicate_variables.len())
+                    .filter(|&i| predicate_variables[i].contains(v))
+                    .collect()
+            })
+            .collect();
         LeapfrogTriejoinIter {
-            idle_iterators,
-            active_iter_indices: Vec::new(),
-            variable_to_iter_map,
             arity: variable_ordering.len(),
+            idle_iterators: iters.into_iter().map(Some).collect(),
+            active_iter_indices: Vec::new(),
+            participants,
             depth: 0,
             leapfrog: LeapfrogJoinIter::new(vec![]),
         }
     }
 
     /// Restores the [state-machine](Self#state-machine) invariant after a
-    /// depth change.
-    ///
-    /// Called by [`triejoin_open`](Self::triejoin_open) and
-    /// [`triejoin_up`](Self::triejoin_up). Two phases:
-    ///
-    /// 1. **Drain** the existing leapfrog: every active iterator returns to its
-    ///    idle slot via `active_iter_indices`.
-    /// 2. **Refill** for the new depth: `variable_to_iter_map[depth - 1]` names
-    ///    the idle slots whose iterators belong in the new leapfrog; each one
-    ///    is taken out of `idle_iterators` and moved into the same
-    ///    [`LeapfrogJoinIter`] by [`refill`](LeapfrogJoinIter::refill).
-    ///
-    /// At depth 0 the second phase is skipped — the leapfrog stays empty.
+    /// depth change: returns every active iterator to its idle slot, then
+    /// lends the new depth's participants to the leapfrog through
+    /// [`refill`](LeapfrogJoinIter::refill), which reuses its buffers and so
+    /// saves two allocations and two frees per depth change (issue #83). At
+    /// depth 0 the leapfrog stays empty.
     fn update_iters(&mut self) {
-        while let Some(i) = self.active_iter_indices.pop() {
-            let iter = self
-                .leapfrog
-                .iterators
-                .pop()
-                .expect("There should always be an iterator here");
-            self.idle_iterators[i] = Some(iter);
+        debug_assert_eq!(self.active_iter_indices.len(), self.leapfrog.k());
+        let lent = self.active_iter_indices.drain(..);
+        for (slot, iter) in lent.zip(self.leapfrog.iterators.drain(..)) {
+            self.idle_iterators[slot] = Some(iter);
         }
-
         if self.depth == 0 {
             return;
         }
-
-        // Refill the one leapfrog rather than building a new one: `refill`
-        // reuses its iterator and permutation buffers, which saves two
-        // allocations and two frees per depth change (issue #83).
-        let participants = &self.variable_to_iter_map[self.depth - 1];
+        let participants = &self.participants[self.depth - 1];
         let idle_iterators = &mut self.idle_iterators;
-        self.leapfrog.refill(
-            participants
-                .iter()
-                .map(|&i| idle_iterators[i].take().expect("There is an iterator here")),
-        );
+        self.leapfrog.refill(participants.iter().map(|&slot| {
+            idle_iterators[slot]
+                .take()
+                .expect("a participant is idle until it is lent")
+        }));
         self.active_iter_indices.extend_from_slice(participants);
     }
 
-    /// Undoes a descent that could not be completed, restoring the parent
-    /// depth exactly as [`triejoin_up`](Self::triejoin_up) would.
+    /// Ascends the first `opened` active iterators, the ones that descended
+    /// to the current depth, and returns to the parent depth.
     ///
-    /// Only the first `opened` iterators actually descended:
-    /// [`TrieIterator::open`] leaves the position unchanged when it returns
-    /// `false`, and the iterators after the refusing one were never asked.
-    /// Ascending the others would drift them a level above the join.
-    fn abandon_descent(&mut self, opened: usize) {
-        for iter in self.leapfrog.iterators.iter_mut().take(opened) {
+    /// # Panics
+    ///
+    /// If one of them cannot move back up. Every iterator that opened can,
+    /// so a panic here means the triejoin's depth and an iterator's have
+    /// drifted apart, or the iterator's `up` is buggy: always a programming
+    /// error.
+    fn ascend(&mut self, opened: usize) {
+        for iter in &mut self.leapfrog.iterators[..opened] {
             assert!(
                 iter.up(),
-                "iterator that descended must be able to move back up (LFTJ invariant)"
+                "an iterator that descended must be able to move back up (LFTJ invariant)"
             );
         }
         self.depth -= 1;
         self.update_iters();
     }
-}
 
-impl<IT> LeapfrogTriejoinIterator for LeapfrogTriejoinIter<IT>
-where
-    IT: TrieIterator,
-{
-    /// Descends one variable: takes the iterators that participate at the new
-    /// depth, opens each at the current key, and seeds the inner leapfrog.
+    /// Algorithm 5, `triejoin-open`: descends one variable, opening each
+    /// participant of the new depth at its current key and seeding the
+    /// leapfrog there.
     ///
-    /// Returns `false` if the join is already at maximum depth, if a
-    /// participating iterator has no children at this key (that subtree is
-    /// exhausted), or if the leapfrog finds no common key at the new depth.
+    /// Returns `false` if every variable is already bound, if a participant
+    /// has no child at its key, or if the participants share no key at the
+    /// new depth.
     ///
     /// A `false` return leaves the triejoin exactly where it started: the
-    /// depth, the participating iterators and the inner leapfrog are all
-    /// restored to the parent level, so the caller may advance or ascend
-    /// there without backing out first. That honours [`TrieIterator::open`]'s
-    /// contract that a failed open leaves the position unchanged, which
-    /// [`TrieIteratorWrapper`] depends on — it pushes nothing when `open`
+    /// depth, the participants and the leapfrog are all restored to the
+    /// parent level, so the caller may advance or ascend there without
+    /// backing out first. That honours [`TrieIterator::open`]'s contract that
+    /// a failed open leaves the position unchanged, which
+    /// [`TrieIteratorWrapper`] depends on: it pushes nothing when `open`
     /// fails, and would otherwise run one level out of step with the join,
     /// overwriting the wrong key on its tuple stack.
     fn triejoin_open(&mut self) -> bool {
         if self.depth == self.arity {
             return false;
         }
-        // Deviation from the paper's `triejoin-open` (open iterators first,
-        // then increment depth): here the iterators participating at the new
-        // depth are *selected* by `update_iters`, which is keyed on the new
-        // depth — so the increment and swap must come before the opens can
-        // happen at all. See the state-machine note on the struct for why
-        // participation is per-depth rather than the paper's all-iterators.
+        // As in the paper, the depth rises before the opens. Here that is
+        // also what selects the iterators to open: `update_iters` lends the
+        // new depth's participants to the leapfrog.
         self.depth += 1;
         self.update_iters();
-        let mut opened = 0;
-        for iter in &mut self.leapfrog.iterators {
-            if !iter.open() {
-                break;
-            }
-            opened += 1;
-        }
-        if opened == self.leapfrog.iterators.len() && self.leapfrog_init() {
+        // Open each participant in turn, stopping at the first that refuses
+        // (its position is then unchanged, and the later ones are not asked).
+        let opened = self
+            .leapfrog
+            .iterators
+            .iter_mut()
+            .map(|iter| iter.open())
+            .take_while(|&opened| opened)
+            .count();
+        if opened == self.leapfrog.k() && self.leapfrog.leapfrog_init() {
             return true;
         }
-        self.abandon_descent(opened);
+        self.ascend(opened);
         false
     }
 
-    /// Ascends one variable, returning all participating iterators to the
-    /// pool and rebuilding the leapfrog at the parent depth.
-    ///
-    /// Returns `false` (no-op) when already at the root.
-    ///
-    /// # Panics
-    ///
-    /// By the LFTJ invariant, every iterator that successfully opened at the
-    /// current depth can move back up. A panic here means a participating
-    /// trie iterator violated this contract — either the triejoin's depth
-    /// tracking and the iterator's state have drifted, or the iterator's
-    /// `up` is buggy. Always a programming error, never a recoverable
-    /// runtime condition.
+    /// Algorithm 6, `triejoin-up`: ascends one variable. Returns `false`
+    /// (and does nothing) at the root.
     fn triejoin_up(&mut self) -> bool {
         if self.depth == 0 {
             return false;
         }
-        for iter in &mut self.leapfrog.iterators {
-            assert!(
-                iter.up(),
-                "iterator must be able to move up from non-root depth (LFTJ invariant)"
-            );
-        }
-        self.depth -= 1;
-        self.update_iters();
+        self.ascend(self.leapfrog.k());
         true
     }
 }
@@ -320,17 +231,27 @@ where
     fn up(&mut self) -> bool { self.triejoin_up() }
 }
 
+/// The linear-iterator operations are the current depth's leapfrog join's
+/// (§3.5). At the root, as in the paper, only `open` is permitted: `key` is
+/// `None` and `at_end` is `true` there, which is all [`TrieIteratorWrapper`]
+/// asks before it opens.
 impl<IT> LinearIterator for LeapfrogTriejoinIter<IT>
 where
     IT: TrieIterator,
 {
-    fn key(&self) -> Option<usize> { LeapfrogJoinIterator::key(self) }
+    fn key(&self) -> Option<usize> {
+        if self.depth == 0 {
+            None
+        } else {
+            self.leapfrog.key()
+        }
+    }
 
-    fn next(&mut self) -> Option<usize> { self.leapfrog_next() }
+    fn next(&mut self) -> Option<usize> { self.leapfrog.leapfrog_next() }
 
-    fn seek(&mut self, seek_key: usize) -> bool { self.leapfrog_seek(seek_key) }
+    fn seek(&mut self, seek_key: usize) -> bool { self.leapfrog.leapfrog_seek(seek_key) }
 
-    fn at_end(&self) -> bool { LeapfrogJoinIterator::at_end(self) }
+    fn at_end(&self) -> bool { self.depth == 0 || self.leapfrog.at_end() }
 }
 
 impl<IT> IntoIterator for LeapfrogTriejoinIter<IT>
@@ -347,7 +268,7 @@ where
 }
 
 /// Entry point for the Leapfrog Triejoin algorithm, implementing
-/// [`JoinAlgo`](crate::JoinAlgo) for any [`TrieIterable`] data structure.
+/// [`JoinAlgo`] for any [`TrieIterable`] data structure.
 pub struct LeapfrogTriejoin {}
 
 impl<DS> JoinAlgo<DS> for LeapfrogTriejoin
@@ -361,40 +282,28 @@ where
         if let Err(e) = plan.validate(&analysis) {
             panic!("LeapfrogTriejoin::join_for_each: invalid query plan: {e}");
         }
-        let variable_ordering = plan.variable_ordering.clone();
-        let predicate_variables = analysis.predicate_variables;
-
         let trie_iters: Vec<_> = query
             .body
             .iter()
             .map(|pred| {
-                let ds = datastructures
+                datastructures
                     .get(&pred.name)
-                    .expect("Missing datastructure for predicate name");
-                ds.trie_iter()
+                    .expect("Missing datastructure for predicate name")
+                    .trie_iter()
             })
             .collect();
-
-        // The triejoin descends in `variable_ordering` (a valid descent order)
-        // and yields tuples in *descent* order. Map descent position back to
-        // canonical variable index so output columns stay in head-first order
-        // regardless of the descent order chosen.
-        let arity = variable_ordering.len();
-        let mut descent_pos_of_var = vec![0usize; arity];
-        for (pos, &v) in variable_ordering.iter().enumerate() {
-            descent_pos_of_var[v] = pos;
-        }
-
-        // One scratch row for the whole join: `advance` lends the descent
-        // tuple and `emit` borrows the reordered one, so no result tuple is
-        // ever allocated (issue #65).
+        let order = &plan.variable_ordering;
         let mut descents =
-            LeapfrogTriejoinIter::new(variable_ordering, predicate_variables, trie_iters)
-                .into_iter();
-        let mut tuple = vec![0usize; arity];
+            LeapfrogTriejoinIter::new(order, &analysis.predicate_variables, trie_iters).into_iter();
+
+        // The triejoin yields each tuple in descent order: position `pos`
+        // binds variable `order[pos]`. Scatter it into one scratch row in
+        // canonical (head-first) order, so no result tuple is ever allocated
+        // (issue #65).
+        let mut tuple = vec![0usize; order.len()];
         while let Some(descent_tuple) = descents.advance() {
-            for (v, slot) in tuple.iter_mut().enumerate() {
-                *slot = descent_tuple[descent_pos_of_var[v]];
+            for (&v, &key) in order.iter().zip(descent_tuple) {
+                tuple[v] = key;
             }
             emit(&tuple);
         }
@@ -412,15 +321,11 @@ where
 mod tests {
     use {
         crate::{
-            optimiser::QueryPlan,
-            sorted::{
-                leapfrog_join::LeapfrogJoinIterator,
-                leapfrog_triejoin::{LeapfrogTriejoinIter, LeapfrogTriejoinIterator},
-            },
-            JoinAlgo, LeapfrogTriejoin,
+            optimiser::QueryPlan, sorted::leapfrog_triejoin::LeapfrogTriejoinIter, JoinAlgo,
+            LeapfrogTriejoin,
         },
         kermit_ds::{Relation, TreeTrie},
-        kermit_iters::TrieIterable,
+        kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
         kermit_parser::JoinQuery,
         std::collections::HashMap,
     };
@@ -431,7 +336,7 @@ mod tests {
         relations: Vec<&TreeTrie>,
     ) -> Vec<Vec<usize>> {
         let iters: Vec<_> = relations.iter().map(|r| r.trie_iter()).collect();
-        LeapfrogTriejoinIter::new(variable_ordering, predicate_variables, iters)
+        LeapfrogTriejoinIter::new(&variable_ordering, &predicate_variables, iters)
             .into_iter()
             .collect()
     }
@@ -445,12 +350,12 @@ mod tests {
         let t1_iter = t1.trie_iter();
         let t2_iter = t2.trie_iter();
         let mut triejoin_iter =
-            LeapfrogTriejoinIter::new(vec![0], vec![vec![0], vec![0]], vec![t1_iter, t2_iter]);
+            LeapfrogTriejoinIter::new(&[0], &[vec![0], vec![0]], vec![t1_iter, t2_iter]);
         triejoin_iter.triejoin_open();
         assert_eq!(triejoin_iter.key(), Some(1));
-        assert_eq!(triejoin_iter.leapfrog_next(), Some(2));
-        assert_eq!(triejoin_iter.leapfrog_next(), Some(3));
-        triejoin_iter.leapfrog_next();
+        assert_eq!(triejoin_iter.next(), Some(2));
+        assert_eq!(triejoin_iter.next(), Some(3));
+        triejoin_iter.next();
         assert!(triejoin_iter.at_end());
         triejoin_iter.triejoin_up();
         assert!(triejoin_iter.at_end());
@@ -458,31 +363,35 @@ mod tests {
         assert_eq!(res, vec![vec![1], vec![2], vec![3]]);
     }
 
+    /// The triangle `R(a, b), S(b, c), T(a, c)` stepped by hand, as
+    /// `TrieIteratorWrapper` steps it: each `triejoin_open` binds one more
+    /// variable, and on the way back each depth is exhausted before it is
+    /// left. `T` participates at depths 1 and 3 but not 2.
     #[test]
-    fn more_complicated() {
+    fn triangle_stepped_by_hand() {
         let r: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![7, 4]]);
         let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 4], vec![4, 5], vec![
             4, 9,
         ]]);
         let t = TreeTrie::from_tuples(2.into(), vec![vec![7, 2], vec![7, 3], vec![7, 5]]);
-        let r_iter = r.trie_iter();
-        let s_iter = s.trie_iter();
-        let t_iter = t.trie_iter();
-        let mut triejoin_iter = LeapfrogTriejoinIter::new(
-            vec![0, 1, 2],
-            vec![vec![0, 1], vec![1, 2], vec![0, 2]],
-            vec![r_iter, s_iter, t_iter],
-        );
-        triejoin_iter.triejoin_open();
-        assert_eq!(triejoin_iter.key().unwrap().clone(), 7);
-        triejoin_iter.leapfrog_next();
-        assert!(triejoin_iter.at_end());
-        triejoin_iter.triejoin_open();
-        assert_eq!(triejoin_iter.key().unwrap().clone(), 4);
-        triejoin_iter.leapfrog_next();
-        assert!(triejoin_iter.at_end());
-        triejoin_iter.triejoin_open();
-        assert_eq!(triejoin_iter.key().unwrap().clone(), 5);
+        let mut triejoin_iter =
+            LeapfrogTriejoinIter::new(&[0, 1, 2], &[vec![0, 1], vec![1, 2], vec![0, 2]], vec![
+                r.trie_iter(),
+                s.trie_iter(),
+                t.trie_iter(),
+            ]);
+        for key in [7, 4, 5] {
+            assert!(triejoin_iter.triejoin_open());
+            assert_eq!(triejoin_iter.key(), Some(key));
+        }
+        assert!(!triejoin_iter.triejoin_open(), "every variable is bound");
+        assert_eq!(triejoin_iter.key(), Some(5), "a refused open moves nothing");
+        for _ in 0..3 {
+            assert_eq!(triejoin_iter.next(), None);
+            assert!(triejoin_iter.at_end());
+            assert!(triejoin_iter.triejoin_up());
+        }
+        assert!(!triejoin_iter.triejoin_up(), "already at the root");
     }
 
     #[test]
@@ -493,11 +402,10 @@ mod tests {
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
         let t_iter = t.trie_iter();
-        let mut triejoin_iter = LeapfrogTriejoinIter::new(
-            vec![0, 1, 2, 3],
-            vec![vec![0, 1], vec![1, 2], vec![2, 3]],
-            vec![r_iter, s_iter, t_iter],
-        );
+        let mut triejoin_iter =
+            LeapfrogTriejoinIter::new(&[0, 1, 2, 3], &[vec![0, 1], vec![1, 2], vec![2, 3]], vec![
+                r_iter, s_iter, t_iter,
+            ]);
         assert!(triejoin_iter.triejoin_open());
         assert_eq!(triejoin_iter.key(), Some(1));
         assert!(triejoin_iter.triejoin_open());
@@ -511,7 +419,7 @@ mod tests {
         assert!(triejoin_iter.triejoin_up());
         assert!(triejoin_iter.triejoin_up());
 
-        assert_eq!(triejoin_iter.leapfrog_next(), Some(2));
+        assert_eq!(triejoin_iter.next(), Some(2));
         assert!(triejoin_iter.triejoin_open());
         assert_eq!(triejoin_iter.key(), Some(3));
         assert!(triejoin_iter.triejoin_open());
@@ -679,11 +587,9 @@ mod tests {
         let r_iter = r.trie_iter();
         let s_iter = s.trie_iter();
         let result: Vec<Vec<usize>> =
-            LeapfrogTriejoinIter::new(vec![0, 1, 2], vec![vec![0, 1], vec![1, 2]], vec![
-                r_iter, s_iter,
-            ])
-            .into_iter()
-            .collect();
+            LeapfrogTriejoinIter::new(&[0, 1, 2], &[vec![0, 1], vec![1, 2]], vec![r_iter, s_iter])
+                .into_iter()
+                .collect();
         assert_eq!(result, vec![vec![1, 2, 4], vec![1, 3, 5]]);
     }
 
@@ -839,5 +745,74 @@ mod tests {
             |tuple| rows.push(tuple.to_vec()),
         );
         assert_eq!(rows, vec![vec![10, 1], vec![20, 2]]);
+    }
+
+    /// A trie iterator that panics if it is opened at its end, below its
+    /// root (where a trie iterator reports `at_end` before its first open).
+    struct NoOpenAtEnd<IT> {
+        inner: IT,
+        depth: usize,
+    }
+
+    impl<IT: TrieIterator> LinearIterator for NoOpenAtEnd<IT> {
+        fn key(&self) -> Option<usize> { self.inner.key() }
+
+        fn next(&mut self) -> Option<usize> { self.inner.next() }
+
+        fn seek(&mut self, seek_key: usize) -> bool { self.inner.seek(seek_key) }
+
+        fn at_end(&self) -> bool { self.inner.at_end() }
+    }
+
+    impl<IT: TrieIterator> TrieIterator for NoOpenAtEnd<IT> {
+        fn open(&mut self) -> bool {
+            assert!(
+                self.depth == 0 || !self.inner.at_end(),
+                "the triejoin opened an exhausted iterator"
+            );
+            let opened = self.inner.open();
+            self.depth += usize::from(opened);
+            opened
+        }
+
+        fn up(&mut self) -> bool {
+            let ascended = self.inner.up();
+            self.depth -= usize::from(ascended);
+            ascended
+        }
+    }
+
+    /// Driven by its wrapper, the triejoin descends only from a key: every
+    /// participant of the depth it leaves holds the common key, and every
+    /// other iterator still holds the key of its own last depth. So an index
+    /// structure need not support `open` after `at_end`; it must support
+    /// `up` after `at_end`, which every exhausted depth calls. The fixtures
+    /// exhaust every depth, fail descents at depths 2 and 3 (the chain's
+    /// `a = 3` has no `b`, the triangle's `a = 1` no `c`), and have `T` skip
+    /// depth 2.
+    #[test]
+    fn never_opens_an_exhausted_iterator() {
+        let chain: TreeTrie =
+            TreeTrie::from_tuples(2.into(), vec![vec![1, 2], vec![2, 3], vec![3, 4]]);
+        let r: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 4], vec![7, 4]]);
+        let s = TreeTrie::from_tuples(2.into(), vec![vec![4, 1], vec![4, 5], vec![4, 9]]);
+        let t = TreeTrie::from_tuples(2.into(), vec![vec![1, 3], vec![7, 2], vec![7, 5]]);
+        let count = |atoms: &[Vec<usize>], relations: &[&TreeTrie]| {
+            let iters = relations
+                .iter()
+                .map(|r| NoOpenAtEnd {
+                    inner: r.trie_iter(),
+                    depth: 0,
+                })
+                .collect();
+            LeapfrogTriejoinIter::new(&[0, 1, 2], atoms, iters)
+                .into_iter()
+                .count()
+        };
+        assert_eq!(count(&[vec![0, 1], vec![1, 2]], &[&chain, &chain]), 2);
+        assert_eq!(
+            count(&[vec![0, 1], vec![1, 2], vec![0, 2]], &[&r, &s, &t]),
+            1
+        );
     }
 }
