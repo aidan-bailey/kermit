@@ -545,8 +545,8 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 ### New External Engine
 
 1. Create `kermit/src/engine/<name>.rs` behind a new cargo feature `engine-<name>` (never in `default`) and implement `Engine`: the constants, the `Settings` / `Loaded` / `Built` types and the phase methods. The engine reads `Prepared` and answers the full conjunctive query; a SQL engine reuses `engine/sql.rs`.
-2. Add a variant to `EngineSelector` in `kermit/src/options.rs`, with its feature-missing error in `EngineSelector::compiled` (`missing_feature`), arms in `EngineChoice::label` and `EngineChoice::supports`, and, in `kermit/src/bench/run.rs`, the arm that builds its `EngineCell<E>` in the sweep's engine dispatch together with its no-feature stub.
-3. **Wire the tests.** Add its cells to `kermit/tests/engine_oracle.rs` and its feature to the `engines` job of `.github/workflows/pr.yml`.
+2. Add a variant to `EngineSelector` in `kermit/src/options.rs`, with its arms in `EngineSelector::name` and `EngineSelector::compiled` (whose feature-missing error is `missing_feature`) and in `EngineChoice::label` and `EngineChoice::supports`, and, in `kermit/src/bench/run.rs`, an arm in `dispatch_engine_bench` calling a `run_<engine>` pair: one with the feature, building its `EngineCell<E>`, and a no-feature stub.
+3. **Wire the tests.** Add its cells to `kermit/tests/engine_oracle.rs` and its feature to the `engines` job of `.github/workflows/pr.yml`, which runs the feature and its gated test targets (`--lib`, `--test engine_oracle`, `--bin kermit`, `--test cli_engines`).
 4. **Write the doc** at `docs/engines/<name>.md` from the template, and add its like-for-like pair, if it has one, to `ENGINE_PAIRS` in `python/kermit-lab/kermit_lab/presets.py`.
 
 ### New Benchmark
