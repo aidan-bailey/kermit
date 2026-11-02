@@ -19,10 +19,10 @@
 //!
 //! On every `open`, we descend either into the root (when the stack is
 //! empty) or into the child of the current bucket. In the table case we
-//! then advance to the first occupied bucket within that node; if the node
-//! has no occupied buckets, the new frame sits past-end and `at_end`
-//! returns true. A singleton frame needs no such advance — its single
-//! entry is ready as soon as the frame is built.
+//! then advance to the first occupied bucket within that node; a node with
+//! none (only an empty trie's root) is not entered, so `open` fails and the
+//! iterator stays where it was. A singleton frame needs no such advance —
+//! its single entry is ready as soon as the frame is built.
 
 use {
     super::{
@@ -251,9 +251,13 @@ impl<H: HashStrategy, P: PruningPolicy, E: ExpansionPolicy, L: LevelPolicy> Hash
             | Descent::Deeper(row) => self.singleton_frame(row, depth),
             | Descent::Blocked => return false,
         };
-        let opened = !frame.at_end();
+        // A failed open leaves the iterator where it was. Only an empty
+        // trie's root yields a frame with no entry: every child holds a row.
+        if frame.at_end() {
+            return false;
+        }
         self.stack.push(frame);
-        opened
+        true
     }
 
     fn up(&mut self) -> bool { self.stack.pop().is_some() }
@@ -306,6 +310,10 @@ mod tests {
         let trie: HashTrie = HashTrie::new(2.into());
         let mut it = HashTrieIter::new(&trie);
         assert!(!it.open());
+        assert!(
+            !it.up(),
+            "a failed open leaves the iterator at the pre-root"
+        );
     }
 
     #[test]
