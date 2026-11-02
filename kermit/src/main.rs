@@ -40,7 +40,7 @@ use {
     execution::{Execution, ExecutionFamily, HashHtj, SortedTrie, TrieLftj},
     options::{
         with_hash_trie_layout, with_sorted_trie_layout, BuildChoices, ConfigChoices, DsChoices,
-        DsFlag, LayoutChoices, PlannerArgs,
+        DsFlag, EngineChoices, LayoutChoices, PlannerArgs,
     },
 };
 
@@ -263,19 +263,29 @@ struct RunSelection {
     #[arg(short, long, value_name = "QUERY")]
     query: Option<String>,
 
-    /// Data structure (`all` sweeps every available structure)
+    /// Data structure (`all` sweeps every available structure). Required
+    /// unless `--engine` names the cells, and then only together with `-a`.
     #[arg(
         short,
         long,
         value_name = "INDEXSTRUCTURE",
-        required = true,
+        required_unless_present = "engine",
+        requires = "algorithm",
         value_enum
     )]
-    indexstructure: IndexStructureSelector,
+    indexstructure: Option<IndexStructureSelector>,
 
-    /// Join algorithm (`all` sweeps every available algorithm)
-    #[arg(short, long, value_name = "ALGORITHM", required = true, value_enum)]
-    algorithm: JoinAlgorithmSelector,
+    /// Join algorithm (`all` sweeps every available algorithm). Required
+    /// unless `--engine` names the cells, and then only together with `-i`.
+    #[arg(
+        short,
+        long,
+        value_name = "ALGORITHM",
+        required_unless_present = "engine",
+        requires = "indexstructure",
+        value_enum
+    )]
+    algorithm: Option<JoinAlgorithmSelector>,
 
     #[command(flatten)]
     planner: PlannerArgs,
@@ -287,6 +297,9 @@ struct RunSelection {
     /// benchmarks.
     #[arg(long)]
     force: bool,
+
+    #[command(flatten)]
+    engines: EngineChoices,
 
     #[command(flatten)]
     layout: LayoutChoices,
@@ -918,13 +931,29 @@ fn run_bench_run_command(
         algorithm,
         planner,
         force,
+        engines,
         layout,
         config,
         build,
     } = selection;
-    let choices = DsChoices::resolve(indexstructure, &layout, &config, &build)?;
+    // Without `-i` / `-a` (engines only) every `--ds-*` flag is checked against
+    // all structures here, and `sweep_cells` then refuses one that has no
+    // kermit cell to reach.
+    let choices = DsChoices::resolve(
+        indexstructure.unwrap_or(IndexStructureSelector::All),
+        &layout,
+        &config,
+        &build,
+    )?;
     let given = DsFlag::given(&layout, &config, &build);
-    let cells = resolve_sweep(indexstructure, algorithm, choices, &given, kind)?;
+    let kermit_cells = match (indexstructure, algorithm) {
+        | (Some(indexstructure), Some(algorithm)) => {
+            resolve_sweep(indexstructure, algorithm, choices, &given, kind)?
+        },
+        // clap's `requires` rules out one selector without the other.
+        | _ => Vec::new(),
+    };
+    let cells = bench::run::sweep_cells(kermit_cells, &given, engines.resolve()?)?;
     // Each query is prepared once per trie-level policy its cells build
     // under: at most two, since each Layout flag takes one value (#116).
     let policies: Vec<kermit_ds::TrieLevels> =
@@ -977,15 +1006,17 @@ fn run_bench_run_command(
                 )
             })?;
         for &cell in &cells {
-            dispatch_run_bench(cell, &workload, settings, &mut sink).with_context(|| {
-                format!(
-                    "bench {kind} failed on benchmark '{}' cell {:?}; partial report retained at \
-                     {}",
-                    benchmark.name,
-                    cell,
-                    sink.path().display()
-                )
-            })?;
+            bench::run::dispatch_sweep_cell(cell, &workload, settings, &mut sink).with_context(
+                || {
+                    format!(
+                        "bench {kind} failed on benchmark '{}' cell {:?}; partial report retained \
+                         at {}",
+                        benchmark.name,
+                        cell,
+                        sink.path().display()
+                    )
+                },
+            )?;
         }
     }
     sink.finish()?;

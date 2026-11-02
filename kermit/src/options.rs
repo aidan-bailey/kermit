@@ -1055,8 +1055,6 @@ impl DsChoices {
 /// An external engine `--engine` can add to a `bench run`, `bench probe` or
 /// `bench join`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-// Used from `bench/run.rs` (Task 10.3), which removes this allow.
-#[allow(dead_code)]
 pub(crate) enum EngineSelector {
     /// DuckDB, in-process (feature `engine-duckdb`).
     Duckdb,
@@ -1064,7 +1062,6 @@ pub(crate) enum EngineSelector {
     Nemo,
 }
 
-#[allow(dead_code)]
 impl EngineSelector {
     /// The flag value, which is also the cargo feature's suffix
     /// (`engine-{name}`).
@@ -1097,7 +1094,6 @@ impl EngineSelector {
 /// `-a` are then optional) and into `bench join` (where they stay required).
 /// The `--ds-*` flags never reach an engine.
 #[derive(Args, Clone, Debug, Default)]
-#[allow(dead_code)]
 pub(crate) struct EngineChoices {
     /// External engines to run beside the kermit cells, comma-separated or
     /// repeated (`duckdb`, `nemo`). An engine whose cargo feature is not
@@ -1113,14 +1109,12 @@ pub(crate) struct EngineChoices {
 
 /// One resolved `--engine` cell.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) struct EngineChoice {
     pub(crate) engine: EngineSelector,
     /// `--engine-threads`; only DuckDB reads it.
     pub(crate) threads: usize,
 }
 
-#[allow(dead_code)]
 impl EngineChoice {
     /// The Criterion group's last segment and the stderr label, as
     /// `Engine::label` spells them: `duckdb-t{threads}`, `nemo`. Written out
@@ -1134,7 +1128,6 @@ impl EngineChoice {
     }
 }
 
-#[allow(dead_code)]
 impl EngineChoices {
     /// The cells `--engine` names, in the order given and without repeats.
     ///

@@ -6,6 +6,7 @@ use {
     super::{
         cell::{execution_segment, Cell, FamilyCell},
         criterion_directory_name,
+        engine::{skip_notes, EngineCell},
         measure::{CriterionSettings, Described, MeasureRequest, Subject},
         workload::PreparedWorkload,
         Metric, CRITERION_MAX_DIRECTORY_NAME_BYTES,
@@ -19,7 +20,10 @@ use {
         },
         IndexStructureSelector, JoinAlgorithmSelector,
     },
-    kermit::db::{Catalog, Prepared},
+    kermit::{
+        db::{Catalog, Prepared},
+        engine::Engine,
+    },
     kermit_algos::{IndexSpec, INDEX_ID_PREFIX},
     kermit_bench::BenchmarkDefinition,
     std::{
@@ -27,6 +31,156 @@ use {
         io,
     },
 };
+
+/// One cell of a `bench run`, `bench probe` or `bench join` sweep: a kermit
+/// (structure, algorithm) cell, or an external engine.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SweepCell {
+    Kermit(Execution),
+    Engine(crate::options::EngineChoice),
+}
+
+impl SweepCell {
+    /// The trie-level policy this cell's queries are prepared under. Engines
+    /// read no trie, and share the sorted cells' `All`.
+    pub(crate) fn trie_levels(self) -> kermit_ds::TrieLevels {
+        match self {
+            | Self::Kermit(execution) => execution.trie_levels(),
+            | Self::Engine(_) => kermit_ds::TrieLevels::All,
+        }
+    }
+
+    /// The Criterion group's last segments: `{ds}/{algo}` (Story 4's
+    /// `execution_segment`), or the engine's label.
+    fn group_segment(self) -> String {
+        match self {
+            | Self::Kermit(execution) => execution_segment(execution),
+            | Self::Engine(choice) => choice.label(),
+        }
+    }
+}
+
+/// The sweep a run covers: its kermit cells (from `-i` / `-a`, already
+/// expanded by [`resolve_sweep`], empty without them), then its engines.
+///
+/// `given` are the `--ds-*` flags the user passed. They reach kermit cells
+/// only, so one given with no kermit cell would be silently ignored, which is
+/// a usage error (#86).
+///
+/// # Errors
+///
+/// No cell at all, or a `--ds-*` flag with no kermit cell to reach.
+pub(crate) fn sweep_cells(
+    kermit: Vec<Execution>, given: &[DsFlag], engines: Vec<crate::options::EngineChoice>,
+) -> anyhow::Result<Vec<SweepCell>> {
+    if kermit.is_empty() && engines.is_empty() {
+        anyhow::bail!("nothing to run: give -i and -a, or --engine");
+    }
+    if kermit.is_empty() {
+        if let Some(flag) = given.first() {
+            anyhow::bail!(
+                "{flag} applies only to {} cells, but this run names no -i and -a; --engine cells \
+                 take no --ds-* flags",
+                flag.structures_label()
+            );
+        }
+    }
+    Ok(kermit
+        .into_iter()
+        .map(SweepCell::Kermit)
+        .chain(engines.into_iter().map(SweepCell::Engine))
+        .collect())
+}
+
+/// Runs one sweep cell over `workload`: a kermit cell through
+/// [`dispatch_run_bench`], an engine through [`dispatch_engine_bench`].
+pub(crate) fn dispatch_sweep_cell(
+    cell: SweepCell, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    match cell {
+        | SweepCell::Kermit(execution) => dispatch_run_bench(execution, workload, settings, sink),
+        | SweepCell::Engine(choice) => dispatch_engine_bench(choice, workload, settings, sink),
+    }
+}
+
+/// Monomorphises [`run_engine_cell`] over the engine `choice` names. An engine
+/// whose feature this build lacks is refused before any cell runs
+/// (`EngineChoices::resolve`), so its arm here only keeps the match total.
+fn dispatch_engine_bench(
+    choice: crate::options::EngineChoice, workload: &PreparedWorkload, settings: RunSettings<'_>,
+    sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    match choice.engine {
+        | crate::options::EngineSelector::Duckdb => {
+            run_duckdb(choice.threads, workload, settings, sink)
+        },
+        | crate::options::EngineSelector::Nemo => run_nemo(workload, settings, sink),
+    }
+}
+
+#[cfg(feature = "engine-duckdb")]
+fn run_duckdb(
+    threads: usize, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    run_engine_cell(
+        &EngineCell::<kermit::engine::duckdb::DuckDb> {
+            settings: kermit::engine::duckdb::DuckDbSettings {
+                threads,
+            },
+        },
+        workload,
+        settings,
+        sink,
+    )
+}
+
+#[cfg(not(feature = "engine-duckdb"))]
+fn run_duckdb(
+    _threads: usize, _workload: &PreparedWorkload, _settings: RunSettings<'_>,
+    _sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    Err(crate::options::EngineSelector::Duckdb.missing_feature())
+}
+
+#[cfg(feature = "engine-nemo")]
+fn run_nemo(
+    workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    run_engine_cell(
+        &EngineCell::<kermit::engine::nemo::Nemo> {
+            settings: (),
+        },
+        workload,
+        settings,
+        sink,
+    )
+}
+
+#[cfg(not(feature = "engine-nemo"))]
+fn run_nemo(
+    _workload: &PreparedWorkload, _settings: RunSettings<'_>, _sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    Err(crate::options::EngineSelector::Nemo.missing_feature())
+}
+
+/// Runs one engine cell over every query of `workload`: the skip notes for
+/// the metrics it cannot measure, once per cell and benchmark, then
+/// [`run_benchmark`] over the requested metrics. `run_benchmark` filters them
+/// through `Cell::supports` and prints no note; this function filters nothing.
+// Only a feature that compiles an engine in calls it.
+#[cfg_attr(
+    not(any(feature = "engine-duckdb", feature = "engine-nemo")),
+    allow(dead_code)
+)]
+fn run_engine_cell<E: Engine + 'static>(
+    cell: &EngineCell<E>, workload: &PreparedWorkload, settings: RunSettings<'_>,
+    sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    for note in skip_notes(cell, settings.metrics, settings.single_run) {
+        eprintln!("{note}");
+    }
+    run_benchmark(cell, workload, settings, sink)
+}
 
 /// Everything a measured join needs besides the cell and the workload:
 /// what kind of report to stamp, how to name the Criterion group, which
@@ -590,10 +744,11 @@ fn group_with_segment(prefix: &str, workload: &str, query: &str, segment: &str) 
     format!("{prefix}/{workload}/{query}/{segment}")
 }
 
-/// [`group_with_segment`] for an [`Execution`] cell, which is how the sweep's
-/// clash check names the groups before any cell runs.
-fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: Execution) -> String {
-    group_with_segment(prefix, workload, query, &execution_segment(cell))
+/// [`group_with_segment`] for a [`SweepCell`], which is how the sweep's clash
+/// check names the groups before any cell runs: `{ds}/{algo}` for a kermit
+/// cell, the engine's label for an engine.
+fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: SweepCell) -> String {
+    group_with_segment(prefix, workload, query, &cell.group_segment())
 }
 
 /// Refuses a `bench run` sweep in which two (benchmark, query, cell) groups
@@ -605,7 +760,7 @@ fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: Executi
 /// benchmarks before it have run and been reported.
 pub(crate) fn check_sweep_group_directories(
     prefix: &str, benchmarks: &[BenchmarkDefinition], query_filter: Option<&str>,
-    cells: &[Execution],
+    cells: &[SweepCell],
 ) -> anyhow::Result<()> {
     check_group_directories_distinct(benchmarks.iter().flat_map(|benchmark| {
         benchmark
@@ -733,18 +888,157 @@ mod tests {
     /// The group name `bench run` has always used, pinned before it moves.
     #[test]
     fn a_kermit_cells_group_is_prefix_workload_query_structure_algorithm() {
-        let cell =
-            Execution::for_structure(kermit_ds::IndexStructure::ColumnTrie, DsChoices::default());
+        let cell = SweepCell::Kermit(Execution::for_structure(
+            kermit_ds::IndexStructure::ColumnTrie,
+            DsChoices::default(),
+        ));
         assert_eq!(
             criterion_group_name("run", "triangle", "q0000", cell),
             "run/triangle/q0000/ColumnTrie/LeapfrogTriejoin"
         );
-        let cell =
-            Execution::for_structure(kermit_ds::IndexStructure::HashTrie, DsChoices::default());
+        let cell = SweepCell::Kermit(Execution::for_structure(
+            kermit_ds::IndexStructure::HashTrie,
+            DsChoices::default(),
+        ));
         assert_eq!(
             criterion_group_name("join", "adhoc", "q", cell),
             "join/adhoc/q/HashTrie/HashTriejoin"
         );
+    }
+
+    fn duckdb(threads: usize) -> SweepCell {
+        SweepCell::Engine(crate::options::EngineChoice {
+            engine: crate::options::EngineSelector::Duckdb,
+            threads,
+        })
+    }
+
+    fn nemo() -> SweepCell {
+        SweepCell::Engine(crate::options::EngineChoice {
+            engine: crate::options::EngineSelector::Nemo,
+            threads: 1,
+        })
+    }
+
+    fn tree_trie() -> SweepCell {
+        SweepCell::Kermit(Execution::for_structure(
+            kermit_ds::IndexStructure::TreeTrie,
+            DsChoices::default(),
+        ))
+    }
+
+    #[test]
+    fn a_group_name_ends_in_the_cells_segment() {
+        assert_eq!(
+            criterion_group_name("run", "triangle", "triangle", tree_trie()),
+            "run/triangle/triangle/TreeTrie/LeapfrogTriejoin"
+        );
+        assert_eq!(
+            criterion_group_name("run", "triangle", "triangle", duckdb(4)),
+            "run/triangle/triangle/duckdb-t4"
+        );
+        assert_eq!(
+            criterion_group_name("run", "triangle", "triangle", nemo()),
+            "run/triangle/triangle/nemo"
+        );
+    }
+
+    /// The 64-byte clash check covers engine cells: past byte 64 the engines'
+    /// segments are truncated away, so two of them (or one and a kermit cell)
+    /// share a directory.
+    #[test]
+    fn engine_groups_share_a_criterion_directory_past_byte_64() {
+        let prefix = format!("run-{}", "long-prefix-".repeat(6));
+        let groups = |cells: &[SweepCell]| {
+            cells
+                .iter()
+                .map(|&cell| criterion_group_name(&prefix, "triangle", "triangle", cell))
+                .collect::<Vec<_>>()
+        };
+        let clash = check_group_directories_distinct(groups(&[duckdb(1), nemo()]))
+            .unwrap_err()
+            .to_string();
+        assert!(clash.contains("/duckdb-t1"), "{clash}");
+        assert!(clash.contains("/nemo"), "{clash}");
+        assert!(clash.contains("64"), "{clash}");
+        check_group_directories_distinct(groups(&[duckdb(1)])).unwrap();
+    }
+
+    #[test]
+    fn a_cells_trie_levels_follow_its_kind() {
+        assert_eq!(nemo().trie_levels(), kermit_ds::TrieLevels::All);
+        assert_eq!(duckdb(2).trie_levels(), kermit_ds::TrieLevels::All);
+        let keys = DsChoices {
+            levels: crate::options::LevelsChoice::Keys,
+            ..DsChoices::default()
+        };
+        let hash_trie = Execution::for_structure(kermit_ds::IndexStructure::HashTrie, keys);
+        assert_eq!(
+            SweepCell::Kermit(hash_trie).trie_levels(),
+            kermit_ds::TrieLevels::JoinKeys
+        );
+    }
+
+    #[test]
+    fn the_sweep_lists_the_kermit_cells_then_the_engines() {
+        let choice = |engine| crate::options::EngineChoice {
+            engine,
+            threads: 1,
+        };
+        let engines = vec![
+            choice(crate::options::EngineSelector::Duckdb),
+            choice(crate::options::EngineSelector::Nemo),
+        ];
+        let kermit = vec![Execution::for_structure(
+            kermit_ds::IndexStructure::TreeTrie,
+            DsChoices::default(),
+        )];
+        let cells = sweep_cells(kermit.clone(), &[], engines.clone()).unwrap();
+        assert_eq!(cells, vec![
+            SweepCell::Kermit(kermit[0]),
+            SweepCell::Engine(engines[0]),
+            SweepCell::Engine(engines[1]),
+        ]);
+        // Engines alone are a sweep too: `-i` and `-a` are optional beside
+        // `--engine`.
+        let alone = sweep_cells(Vec::new(), &[], engines.clone()).unwrap();
+        assert_eq!(alone.len(), 2);
+    }
+
+    #[test]
+    fn a_sweep_with_no_cell_is_refused() {
+        let error = sweep_cells(Vec::new(), &[], Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("nothing to run"), "{error}");
+        assert!(error.contains("-i and -a"), "{error}");
+        assert!(error.contains("--engine"), "{error}");
+    }
+
+    #[test]
+    fn a_ds_flag_needs_a_kermit_cell_to_reach() {
+        let engines = vec![crate::options::EngineChoice {
+            engine: crate::options::EngineSelector::Nemo,
+            threads: 1,
+        }];
+        let error = sweep_cells(Vec::new(), &[DsFlag::LayoutSeek], engines.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("--ds-layout-seek applies only to tree-trie or column-trie cells"),
+            "{error}"
+        );
+        assert!(
+            error.contains("--engine cells take no --ds-* flags"),
+            "{error}"
+        );
+        // With a kermit cell the flag is the sweep's business
+        // (`resolve_sweep`), not this check's.
+        let kermit = vec![Execution::for_structure(
+            kermit_ds::IndexStructure::TreeTrie,
+            DsChoices::default(),
+        )];
+        sweep_cells(kermit, &[DsFlag::LayoutSeek], engines).unwrap();
     }
 
     #[test]
