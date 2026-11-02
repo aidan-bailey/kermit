@@ -25,6 +25,11 @@ use {
     std::collections::BTreeMap,
 };
 
+/// The `system` axis of every report that kermit's own structures produce:
+/// `bench run`, `bench join`, `bench probe` through a [`FamilyCell`], and
+/// `bench ds`. An external engine names itself instead (`duckdb`, `nemo`).
+pub(crate) const KERMIT_SYSTEM: &str = "kermit";
+
 /// What the per-query loop of `run_benchmark` needs from one cell.
 pub(crate) trait Cell {
     /// What one prepared query is measured as on this cell.
@@ -39,9 +44,9 @@ pub(crate) trait Cell {
     /// and before `allocator`: `data structure` and `algorithm`.
     fn metadata(&self) -> Vec<MetadataLine>;
 
-    /// The report axes this cell sets: `data_structure`, `algorithm` and the
-    /// `ds_*` optimization axes. The runner adds the axes that belong to the
-    /// query.
+    /// The report axes this cell sets: `system`, and for a kermit cell
+    /// `data_structure`, `algorithm` and the `ds_*` optimization axes. The
+    /// runner adds the axes that belong to the query.
     fn axes(&self) -> BTreeMap<String, serde_json::Value>;
 
     /// The Criterion group's last segments: `{ds}/{algo}`.
@@ -129,6 +134,7 @@ impl<F: ExecutionFamily> Cell for FamilyCell<'_, F> {
             TupleView::all(&empty),
         );
         let mut axes = BTreeMap::from([
+            ("system".to_string(), serde_json::json!(KERMIT_SYSTEM)),
             (
                 "data_structure".to_string(),
                 serde_json::json!(execution.index_structure().axis_value()),
@@ -255,6 +261,17 @@ mod tests {
 
         let sorted = TrieLftj::<TreeTrie>::new(Default::default());
         assert_eq!(FamilyCell(&sorted).trie_levels(), TrieLevels::All);
+    }
+
+    #[test]
+    fn every_kermit_cell_sets_the_kermit_system_axis() {
+        let sorted = TrieLftj::<TreeTrie>::new(Default::default());
+        assert_eq!(FamilyCell(&sorted).axes()["system"], "kermit");
+        let hash = HashHtj::<SipHashStrategy, NoPruning, EagerExpansion, kermit_ds::AllLevels>::new(
+            HashTrieConfig::default(),
+            HashTrieBuildMode::default(),
+        );
+        assert_eq!(FamilyCell(&hash).axes()["system"], "kermit");
     }
 
     #[test]

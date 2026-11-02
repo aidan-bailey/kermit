@@ -3,6 +3,7 @@
 
 use {
     super::{
+        cell::KERMIT_SYSTEM,
         measure::{CriterionSettings, Described, MeasureRequest, RelationSubject},
         Metric,
     },
@@ -90,6 +91,7 @@ fn run_ds_bench<F: RelationFamily>(
     write_metadata_block(&mut io::stderr(), "bench ds metadata", &metadata)?;
 
     let mut axes = BTreeMap::from([
+        ("system".to_string(), serde_json::json!(KERMIT_SYSTEM)),
         ("data_structure".to_string(), serde_json::json!(ds_name)),
         (
             "relation_path".to_string(),

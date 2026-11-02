@@ -644,6 +644,7 @@ fn cli_bench_ds_writes_json_report() {
     let axes = &report["axes"];
     assert!(axes.is_object(), "axes should be a JSON object");
     assert_eq!(axes["data_structure"], "TreeTrie");
+    assert_eq!(axes["system"], "kermit");
     assert!(
         axes["relation_bytes"].is_number(),
         "relation_bytes should be numeric, not stringified"
@@ -964,6 +965,7 @@ fn cli_bench_run_writes_json_report() {
     let axes = &report["axes"];
     assert!(axes.is_object(), "axes should be a JSON object");
     assert_eq!(axes["benchmark"], "triangle");
+    assert_eq!(axes["system"], "kermit");
     assert_eq!(axes["data_structure"], "TreeTrie");
     assert_eq!(axes["algorithm"], "LeapfrogTriejoin");
     assert!(

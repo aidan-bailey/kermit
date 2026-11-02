@@ -97,6 +97,7 @@ fn a_probe_verifies_each_query_and_times_one_build_and_one_run() {
     assert_eq!(reports.len(), 6, "two queries on three cells");
     for report in &reports {
         assert_eq!(report["kind"], "probe");
+        assert_eq!(report["axes"]["system"], "kermit");
         assert_eq!(report["schema_version"], 7);
         assert!(report["criterion_groups"].as_array().unwrap().is_empty());
         assert_eq!(report["axes"]["verified"], true);
