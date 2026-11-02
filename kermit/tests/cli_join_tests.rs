@@ -746,14 +746,15 @@ fn cli_bench_ds_space_only() {
 }
 
 /// `build` and `end_to_end` both build through the family from a view of
-/// the file's tuples, on both trait families; the `tuples` axis is still
-/// what the structure stores.
+/// the file's tuples, on every structure (all three families); the `tuples`
+/// axis is still what the structure stores.
 #[test]
 fn cli_bench_ds_times_build_and_end_to_end_on_every_structure() {
     for (indexstructure, label) in [
         ("tree-trie", "TreeTrie"),
         ("column-trie", "ColumnTrie"),
         ("hash-trie", "HashTrie"),
+        ("hash-index", "HashIndex"),
     ] {
         let (output, report) = bench_ds_report("edge.csv", indexstructure, &[
             "-m",
