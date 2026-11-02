@@ -1,10 +1,10 @@
 # kermit-algos
 
-Join algorithms and query optimisers for the Kermit workspace. Implements two worst-case-optimal multi-way joins: the [Leapfrog Triejoin](https://arxiv.org/abs/1210.0481), over any data structure implementing [`TrieIterable`](../kermit-iters/src/trie.rs), and the Hash Trie Join (SIGMOD 2020), over any implementing [`HashTrieIterable`](../kermit-iters/src/hash_trie.rs).
+Join algorithms and query optimisers for the Kermit workspace. Implements two worst-case-optimal multi-way joins: the [Leapfrog Triejoin](https://arxiv.org/abs/1210.0481), over any data structure implementing [`TrieIterable`](../kermit-iters/src/trie.rs), and the Hash Trie Join (SIGMOD 2020), over any implementing [`HashTrieIterable`](../kermit-iters/src/hash_trie.rs). It also holds the binary baseline they are measured against, a left-deep pipelined hash join (Free Join, section 2.2), over any data structure implementing [`KeyedIterable`](../kermit-iters/src/keyed.rs).
 
 ## Layout
 
-`src/` is split by **iterator family**. The sorted and hash families share no code and never reference each other — their iterator contracts cannot merge (least-upper-bound `seek` needs sorted data; hash `lookup` is exact-match), and that fork propagates through the whole stack. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) § "Two Iterator Families".
+`src/` is split by **iterator family**. The sorted, hash and keyed families share no code and never reference one another — their iterator contracts cannot merge (least-upper-bound `seek` needs sorted data; hash `lookup` is exact-match), and that fork propagates through the whole stack. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) § "Three Iterator Families".
 
 ```
 src/
@@ -17,9 +17,12 @@ src/
                     repeated-variable filter, and the columns it keeps
   index_plan.rs     turns a plan into the indexes a query builds (relation, filter,
                     column order)
+  join_order.rs     turns a variable order into a left-deep join order (private;
+                    index_plan.rs uses it under TrieLevels::ProbeKeys)
   optimiser/        planning: QueryOptimiser, QueryPlan, CatalogStats, the policies
   sorted/           the TrieIterable family
   hash/             the HashTrieIterable family
+  keyed/            the KeyedIterable family (binary_hash_join.rs)
 ```
 
 Each family directory holds a `mod.rs` documenting the family contract and one module per algorithm, named to match its `docs/algorithms/<name>.md` page and its CLI value. There are no view or wrapper types: constants and repeated variables are filters on the index a query builds (see `access.rs`), so an executor only ever reads real indexes.
@@ -28,16 +31,17 @@ Each family directory holds a `mod.rs` documenting the family contract and one m
 
 Everything is re-exported flat from the crate root — consumers write `kermit_algos::HashTriejoin`, never the family path. The two `*Iter` types (`LeapfrogTriejoinIter`, `LeapfrogJoinIter`) and the traits driving them are `pub(crate)`: they are implementation detail, exercised by the inline tests, and not reachable from outside the crate.
 
-- [`JoinAlgo`](src/join_algo.rs) — the algorithm trait. Takes a `QueryPlan`, a parsed `JoinQuery`, and a map from predicate name to data structure reference; its one required method, `join_for_each`, passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result. A caller that needs the rows collects them with a sink that pushes into a flat `Tuples` batch.
+- [`JoinAlgo`](src/join_algo.rs) — the algorithm trait. Takes a `QueryPlan`, a parsed `JoinQuery`, and a map from predicate name to data structure reference; its one required method, `join_for_each`, passes each result tuple to a caller-supplied sink as a borrowed slice, so no algorithm materialises its result. A caller that needs the rows collects them with a sink that pushes into a flat `Tuples` batch.
 - [`LeapfrogTriejoin`](src/sorted/leapfrog_triejoin.rs) — the sorted-family entry point (`-a leapfrog-triejoin`).
 - [`HashTriejoin`](src/hash/hash_triejoin.rs) — the hash-family entry point (`-a hash-triejoin`).
+- [`BinaryHashJoin`](src/keyed/binary_hash_join.rs) — the keyed-family entry point (`-a binary-hash-join`): a left-deep pipelined binary hash join, the baseline for what the worst-case-optimal joins buy. It is not worst-case optimal.
 - [`QueryOptimiser`](src/optimiser/mod.rs) — plans the variable ordering (`QueryPlan`) that `JoinAlgo::join_for_each` executes. Implementations: `LexicographicOptimiser` (default), `CardinalityOptimiser`, `CostBasedOptimiser`.
 - [`extract_accesses`](src/access.rs) and [`plan_indexes`](src/index_plan.rs) — the two steps the caller runs around planning. `extract_accesses` turns each body atom into an `Access` (a constant or a repeated variable becomes a filter, not a predicate); `plan_indexes` turns the plan into the `IndexSpec`s (relation, filter, column order) the query builds, and renames the atoms to those indexes, with their variables in index-column order. A `JoinAlgo` impl therefore receives atoms whose term order equals their index's column order, and needs no handling of constants, repeated variables or reordered copies.
 - `JoinAlgorithm` / `Optimiser` — CLI registry enums used by the binary to pick an implementation at runtime.
 
 ## Relationship to other crates
 
-Depends on [`kermit-iters`](../kermit-iters) for iterator traits and [`kermit-parser`](../kermit-parser) for query ASTs — nothing else. [`kermit-ds`](../kermit-ds) is a **dev-dependency only**, so there is no production edge to the data structures: `LeapfrogTriejoin` accepts any `TrieIterable` (in practice `TreeTrie` and `ColumnTrie`), `HashTriejoin` any `HashTrieIterable` (in practice `HashTrie`).
+Depends on [`kermit-iters`](../kermit-iters) for iterator traits and [`kermit-parser`](../kermit-parser) for query ASTs — nothing else. [`kermit-ds`](../kermit-ds) is a **dev-dependency only**, so there is no production edge to the data structures: `LeapfrogTriejoin` accepts any `TrieIterable` (in practice `TreeTrie` and `ColumnTrie`), `HashTriejoin` any `HashTrieIterable` (in practice `HashTrie`), `BinaryHashJoin` any `KeyedIterable` (in practice `HashIndex`).
 
 See [`ARCHITECTURE.md`](../ARCHITECTURE.md) for the overall query-evaluation flow, and the per-component docs under [`docs/algorithms/`](../docs/algorithms) and [`docs/optimisers/`](../docs/optimisers).
 
