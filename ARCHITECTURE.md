@@ -48,7 +48,7 @@ kermit-iters   ──▶ (none)
 
 Three crates are leaves with no internal dependencies: `kermit-iters`, `kermit-parser`, and `kermit-bench`.
 
-`kermit-algos` is decoupled from the data structures (per Design Goal #1). The `JoinAlgo<DS>` trait is generic over `DS: JoinIterable`; each implementation narrows that bound to the iterator family it needs (`TrieIterable` or `HashTrieIterable`, see "Two Iterator Families" below). `kermit-ds` appears only as a `[dev-dependencies]` entry for the crate's own tests, so there is no production `kermit-algos → kermit-ds` edge.
+`kermit-algos` is decoupled from the data structures (per Design Goal #1). The `JoinAlgo<DS>` trait is generic over `DS: JoinIterable`; each implementation narrows that bound to the iterator family it needs (`TrieIterable`, `HashTrieIterable` or `KeyedIterable`, see "Three Iterator Families" below). `kermit-ds` appears only as a `[dev-dependencies]` entry for the crate's own tests, so there is no production `kermit-algos → kermit-ds` edge.
 
 `kermit-derive` is a proc-macro crate; its `kermit-iters` dependency is dev-only, used by its integration tests. The `kermit` binary depends on every sibling except `kermit-derive`, which it pulls in transitively via `kermit-ds`.
 
@@ -70,17 +70,22 @@ JoinIterable (marker trait, no methods)
      ├── TrieIterable ─────► TrieIterator : LinearIterator
      │                         (sorted keys, least-upper-bound `seek`)
      │
-     └── HashTrieIterable ─► HashTrieIterator
-                               (hashed keys, exact-match `lookup`)
+     ├── HashTrieIterable ─► HashTrieIterator
+     │                         (hashed keys, exact-match `lookup`)
+     │
+     └── KeyedIterable
+                               (an index keyed on a column prefix: `scan`, exact-match `probe`)
 ```
 
-#### Two Iterator Families
+#### Three Iterator Families
 
-`TrieIterator` and `HashTrieIterator` are **parallel families, not a hierarchy**. They share only the empty `JoinIterable` marker.
+`TrieIterator`, `HashTrieIterator` and `KeyedIterable` are **parallel families, not a hierarchy**. They share only the empty `JoinIterable` marker.
 
 The split is deliberate. `LinearIterator::seek` has least-upper-bound semantics, which requires sorted data; hash navigation is exact-match. The two contracts cannot be satisfied by one trait, so `HashTrieIterator` is a fork rather than an extension (see the rationale in `kermit-iters/src/hash_trie.rs`, citing the SIGMOD 2020 hash-trie-join paper).
 
-The consequence is that the fork propagates up every layer of the stack, and each layer must be split by hand:
+`KeyedIterable` (`kermit-iters/src/keyed.rs`) is the third fork, added for the binary hash join baseline, and it is not a trie at all: an index keyed on its first `key_len()` columns, with no `open`/`up`, no per-level hash and no order. `scan` lends every row in source order, and `probe(key)` lends the rows whose first `key_len()` values equal `key`, in source order; neither allocates. The key length is the index's `RelationHeader::levels()`, which index planning sets under `TrieLevels::ProbeKeys` (see "Index planning" below).
+
+The consequence is that each fork propagates up every layer of the stack, and each layer must be split by hand. The table shows the sorted and hash families; the keyed family follows it.
 
 | Layer | Sorted family | Hash family |
 |---|---|---|
@@ -94,7 +99,14 @@ The consequence is that the fork propagates up every layer of the stack, and eac
 | `bench run` dispatch | one generic `run_benchmark<F: ExecutionFamily>` | the same `run_benchmark<F>` |
 | `bench ds` dispatch | one generic `run_ds_bench<F: RelationFamily>` over `SortedTrieFamily<R>` | the same `run_ds_bench<F>` over `HashTrieFamily<H, P, E>` |
 
-Only three `(index structure, algorithm)` pairs are valid: `(TreeTrie, LeapfrogTriejoin)`, `(ColumnTrie, LeapfrogTriejoin)`, and `(HashTrie, HashTriejoin)`. The type system enforces this at every layer, the CLI included: user strings are resolved into two independent enums, but `Execution::for_pair` is the only bridge from that pair back to a runnable cell — see "Selector dispatch" under CLI.
+The keyed family has the same layers, with no iterator type of its own:
+
+- **Structure** `HashIndex<H>`; **algorithm** `BinaryHashJoin`; **`Projectable`** hand-rolled on `HashIndex` (it rebuilds from `scan`, keyed on every projected column).
+- **Engine** `binary_join_for_each` / `binary_join` free functions over a `Catalog`, building `HashIndex<H>` indexes per query, over the same `prepare` / `build` / `execute` lifecycle.
+- **Bench cell** `Execution::IndexBhj { hasher }` / `IndexBhj<H>` (`JOIN_MUTATES = false`, since a probe changes nothing).
+- **`bench run` dispatch** the same generic `run_benchmark<F>`; **`bench ds` dispatch** the same `run_ds_bench<F>`, over `HashIndexFamily<H>`.
+
+Only four `(index structure, algorithm)` pairs are valid: `(TreeTrie, LeapfrogTriejoin)`, `(ColumnTrie, LeapfrogTriejoin)`, `(HashTrie, HashTriejoin)`, and `(HashIndex, BinaryHashJoin)`. The type system enforces this at every layer, the CLI included: user strings are resolved into two independent enums, but `Execution::for_pair` is the only bridge from that pair back to a runnable cell — see "Selector dispatch" under CLI.
 
 #### LinearIterator
 
@@ -244,6 +256,25 @@ Tables use linear probing with power-of-two capacity, doubling above a 0.7 load 
 
 `HashTrie<H, P, E, L>` has four Layout axes — the hasher `H` (`SipHashStrategy` default, `FxHashStrategy`), the pruning policy `P`, the expansion policy `E` and the level policy `L` (`AllLevels` default, `KeyLevels`: levels up to each index's last join key, #116) — and three Config axes, the load factor, the root capacity and the child capacity; its `HasOptimizationAxes` impl reports `ds_layout_hasher`, `ds_layout_pruning`, `ds_layout_expansion`, `ds_layout_levels`, `ds_config_load_factor`, `ds_config_root_capacity` and `ds_config_child_capacity`. `TreeTrie<S>` and `ColumnTrie<S>` implement `HasOptimizationAxes` too, reporting their seek-strategy Layout `S` (`LinearSeek`, `BinarySeek` (the default until 2026-10-05), `GallopingSeek` (the default since); see [`docs/data-structures/seek-strategies.md`](docs/data-structures/seek-strategies.md)) as `ds_layout_seek`. Each structure's BuildMode axis, `ds_build_mode` (`ColumnTrie`: `bulk` / `incremental`; `TreeTrie`: `serial` / `parallel:N`; `HashTrie`: `bulk` / `incremental` / `radix:<bits>` / `parallel:N` / `presized:N`), is reported by its bench family instead, because the built trie holds the same contents under every mode.
 
+#### HashIndex
+
+A chained hash table keyed on the first `levels()` columns: the structure of the binary hash join baseline, Free Join §2.2's "hash table keyed on the attributes shared with the relations before it". It is generic over a `HashStrategy` (`SipHashStrategy` default, `FxHashStrategy`), reuses `--ds-layout-hasher`, and has no other Layout, Config or BuildMode axis. In outline:
+
+```text
+header:    RelationHeader
+rows:      Tuples      // the view's rows, one copy, in source order
+key_len:   usize       // header.levels()
+directory: Vec<RowId>  // power-of-two bucket heads, NIL when empty
+next:      Vec<RowId>  // per row, the next row of its bucket's chain
+```
+
+- **Sizing and hashing.** `slots = max(2, rows.next_power_of_two())`, so the load factor is at most 1. The key hash folds `H::hash` over the key columns with FxHash's combine step, and the bucket is the top bits of a Fibonacci multiply of that hash.
+- **Construction.** `from_view` copies the view's matching rows once and links them from last to first, each prepended to its bucket's chain, so every chain is in source order. That is three allocations and none per row. The links are plain `Vec<RowId>`, not the HashTrie's `ChainLinks`.
+- **Probe.** It hashes the key, walks the bucket's chain and lends each row whose first `key_len()` values equal the key, so rows of other keys that share the bucket are skipped by comparison. With `key_len() == 0` it lends every row.
+- **`Relation`.** `TRIE_LEVELS` is `TrieLevels::ProbeKeys` and `KEEPS_DUPLICATES` is `true`, so each duplicate row is lent separately and an all-constant atom's multiplicity counts them, as on `HashTrie`. `bench ds` builds from a header whose `levels()` is the arity, so there the index is keyed on every column.
+
+See `docs/data-structures/hash-index.md` for the invariants, the complexity of `from_view`, `probe` and `scan`, and a worked example.
+
 ### Query Representation (`kermit-parser`)
 
 Queries follow Datalog syntax and are parsed into an AST:
@@ -319,7 +350,22 @@ Note one documented deviation from the paper: Veldhuizen keeps one persistent le
 4. **Emit**: at the leaf, cross-product the participating tuple chains (one `LeafCursor` per chain, an odometer whose overflow resets a cursor and carries), then **verify shared variables against the real tuple values** — hashing can produce false positives at any inner level, so equality must be re-checked before a tuple is emitted.
 5. **Ascend**: `up` exactly as many times as the descent opened, including on partial-open failure.
 
-Both algorithms stream. `JoinAlgo::join_for_each` passes each result tuple to a caller-supplied sink as a borrowed slice, so neither algorithm materialises its result: LFTJ reorders each tuple that `TrieIteratorWrapper::advance` lends into one scratch row, and HashTriejoin's leaf cross product writes into scratch buffers allocated once per join. `join_for_each` is the trait's only method: a caller that needs the rows collects them with a sink that pushes into a flat `Tuples` batch, and the benchmarks time it with a counting sink (issue #65).
+All three algorithms stream. `JoinAlgo::join_for_each` passes each result tuple to a caller-supplied sink as a borrowed slice, so none of them materialises its result: LFTJ reorders each tuple that `TrieIteratorWrapper::advance` lends into one scratch row, HashTriejoin's leaf cross product writes into scratch buffers allocated once per join, and `BinaryHashJoin`'s recursion writes into scratch rows allocated once per join. `join_for_each` is the trait's only method: a caller that needs the rows collects them with a sink that pushes into a flat `Tuples` batch, and the benchmarks time it with a counting sink (issue #65).
+
+### Binary Hash Join
+
+`BinaryHashJoin` is the left-deep pipelined hash join of Free Join §2.2 (Wang et al., SIGMOD 2023), over the `KeyedIterable` family, and it is the in-kermit baseline for what the worst-case optimal joins buy. The executed query's first atom (`#0`, the driver) is scanned and every later atom is probed on the variables the atoms before it bound; each match binds the atom's other columns and descends. Nothing intermediate is stored. The executor reads the executed body left to right and derives nothing, because index planning under `TrieLevels::ProbeKeys` has already put the body in join order and given every index its probe key (see "Index planning" below):
+
+```text
+descend(j):
+    if j = steps: emit(row); return
+    key_j ← row[vars_j[..k_j]]
+    for t in index_j.probe(key_j):
+        row[vars_j[i]] ← t[i]   for i in k_j..arity_j
+        descend(j + 1)
+```
+
+Its invariant is "probe keys lead the columns": for each step `j`, the first `k_j = index_j.key_len()` variables are bound by the steps before `j` and the rest are not. It is asserted at the start of every join, in the role LFTJ's ascent assertion plays, and it catches a query that was not planned under `ProbeKeys`. The join does work proportional to the sum of its intermediate results (on the triangle, `|R ⋈ S|`), which is the gap to the AGM bound that the worst-case optimal joins close. See `docs/algorithms/binary-hash-join.md`.
 
 ### JoinAlgo Trait
 
@@ -341,6 +387,7 @@ The trait bound is the weak `JoinIterable` marker; each implementation narrows i
 ```rust
 impl<DS: TrieIterable>     JoinAlgo<DS> for LeapfrogTriejoin { … }
 impl<DS: HashTrieIterable> JoinAlgo<DS> for HashTriejoin     { … }
+impl<DS: KeyedIterable>    JoinAlgo<DS> for BinaryHashJoin   { … }
 ```
 
 That is what makes `(HashTrie, LeapfrogTriejoin)` a compile error rather than a runtime concern — everywhere except the CLI, which erases both sides into enums.
@@ -370,6 +417,8 @@ After access extraction, `prepare` gathers statistics per access id and plans th
 ### Index planning
 
 Finally, `kermit_algos::plan_indexes` (see `kermit-algos/src/index_plan.rs`) turns the plan into the indexes the query builds. Each access's kept columns are sorted by the plan position of their variables, giving an `IndexSpec { relation, filter, columns }`; identical specs merge, so a self-join that reads one relation one way builds it once, while `edge(X, Y), edge(Y, X)` builds two. Specs get ids `#0`, `#1`, … in order of first appearance, and the executed query's atoms name those ids with their variables in index-column order, so by the time the plan reaches `join_for_each` every atom's term order equals its index's column order and no index is read through a wrapper. The plan is translated by variable name, since `analyse` numbers body-only variables by first appearance. The result is an `IndexPlan { query, plan, indexes }`, which `prepare` keeps, with the checks, in a `Prepared`. The step reads only the plan and the accesses, never the data, so a symmetric relation read reversed (SNAP's undirected `edge`, #96, in the 4-cycle's `edge(D, A)`) can still build a second, identical index; writing the atom `edge(A, D)` avoids it.
+
+The step runs under one of three policies, `TrieLevels`, which the structure declares (`Relation::TRIE_LEVELS`): `All` (a level per column), `JoinKeys` (levels up to the last join key, #116) and `ProbeKeys`. Under `ProbeKeys` (`HashIndex`) the step first calls `join_order` (`kermit-algos/src/join_order.rs`, a private module beside `access` and `index_plan`), which reads the plan's variable order left to right as a sequence of binding events: each unbound variable joins the atom that binds it (the one with the most variables already bound, ties to the earliest in the body), and any atom whose variables are then all bound is probed at once. The result is a left-deep join order and a reordered plan V′ in which every atom's key variables (those bound by the atoms before it) precede its new ones. `plan_indexes` then sorts each access's columns by V′, sets each spec's `levels` to that access's key length (`0` for the driver, and for an atom joined across a cross product), visits the accesses in join order, so spec ids and the executed body follow it with `#0` the driver, and returns V′ as `IndexPlan.plan`, which is also what the report's `plan` axis shows. A spec's `levels` is part of the merge comparison, so two reads of one relation with different key lengths are two indexes. `All` and `JoinKeys` plan exactly as before, and no optimiser, `QueryPlan` or existing structure changes.
 
 ## Benchmarking (`kermit-bench`)
 
@@ -459,21 +508,21 @@ Working examples live in `README.md` and `USAGE.md`; the YAML schema and generat
 - **`build::<R>(&catalog, &prepared) -> Indexes<R>`** (timed) turns each spec into a `TupleView` over its relation's flat tuples and calls the structure's `from_view`, which copies the matching rows once; each constant check becomes its view's `count()`. A zero count means the query has no answers; otherwise the counts multiply into `Indexes::multiplicity()`, each clamped to 1 unless `R::KEEPS_DUPLICATES`. `build_with` takes the constructor as a closure, which is how the binary's families inject their config and build mode.
 - **`execute::<R, JA>(&prepared, &indexes, emit)`** (timed) maps ids to indexes, calls `JoinAlgo::join_for_each`, and lends `emit` each row's head prefix once per unit of multiplicity, without materialising the result; when every atom was a constant check it emits the empty head row `multiplicity` times and runs no join. Executing with indexes built from another `Prepared` is a programming error, caught by a debug assertion that the specs are equal.
 
-The conveniences `lftj_join_for_each<R, JA>` and `hash_join_for_each<R>` (hardwired to `HashTriejoin`) run all three steps and stream; `lftj_join` / `hash_join` run the same steps with a flat `Tuples` sink sized by `Prepared::head_len()` and return the answer as a relation, `Result<(RelationHeader, Tuples), JoinError>`, the pair a `Catalog` is built from; a query that cannot run returns a `JoinError` before anything is emitted. `kermit::compute_join` builds a `Catalog` from its inputs and calls `prepare`, `build` and `execute` itself (it is generic over the relation and the algorithm, which the family-bound conveniences are not), so it validates and applies every rewrite like every other entry point; it returns the rows alone, as one `Tuples` batch, since its inputs carry no headers. Freeing what a timed step built is never timed: each step returns what it built, and Criterion drops it after the timer stops.
+The conveniences `lftj_join_for_each<R, JA>`, `hash_join_for_each<R>` (hardwired to `HashTriejoin`) and `binary_join_for_each<R>` (hardwired to `BinaryHashJoin`, for a `KeyedIterable` structure) run all three steps and stream; `lftj_join` / `hash_join` / `binary_join` run the same steps with a flat `Tuples` sink sized by `Prepared::head_len()` and return the answer as a relation, `Result<(RelationHeader, Tuples), JoinError>`, the pair a `Catalog` is built from; a query that cannot run returns a `JoinError` before anything is emitted. `kermit::compute_join` builds a `Catalog` from its inputs and calls `prepare`, `build` and `execute` itself (it is generic over the relation and the algorithm, which the family-bound conveniences are not), so it validates and applies every rewrite like every other entry point; it returns the rows alone, as one `Tuples` batch, since its inputs carry no headers. Freeing what a timed step built is never timed: each step returns what it built, and Criterion drops it after the timer stops.
 
 In the binary, `RelationFamily::build_index(header, view)` is each family's one config- and mode-aware construction site. `ExecutionFamily::build_indexes(&catalog, &prepared)` is `build_with` over it, `execute(&prepared, &indexes, sink)` runs the join, and `count_rows` counts a join's rows through `black_box`. The families hold no `Planner`, because `prepare` runs before them. `bench run` reads every relation its queries name into one `Catalog` before the loop over cells (`Workload::prepare`, which returns a `PreparedWorkload`), prepares each query once, and shares both across every cell; `bench join` (both `--output` and the benchmark) and `kermit join` go through the same `Workload::prepare`. Every bench runner measures through `kermit/src/bench/measure.rs`: one describe build per query and cell outside Criterion (the `index` lines, exact `space`, verification and a probe's single runs come from it), then `iteration` on it, then, with it dropped, `build` and `end_to_end`.
 
-There is deliberately no object-safe engine trait. Runtime selection of the `(structure, algorithm)` cell — for `kermit join` and `bench join` as much as for `bench run` — goes through `Execution::for_pair` and the `ExecutionFamily` impls in `kermit/src/execution.rs` (`query_cell` in `main.rs` resolves the one cell both join commands use, and `write_query_csv` monomorphises it exactly as `dispatch_run_bench` does; `write_prepared_join` debug-asserts that the family it was handed reports that cell). An incompatible pair is a usage error, and all three valid cells, including `(HashTrie, HashTriejoin)`, are reachable from every command.
+There is deliberately no object-safe engine trait. Runtime selection of the `(structure, algorithm)` cell — for `kermit join` and `bench join` as much as for `bench run` — goes through `Execution::for_pair` and the `ExecutionFamily` impls in `kermit/src/execution.rs` (`query_cell` in `main.rs` resolves the one cell both join commands use, and `write_query_csv` monomorphises it exactly as `dispatch_run_bench` does; `write_prepared_join` debug-asserts that the family it was handed reports that cell). An incompatible pair is a usage error, and all four valid cells, including `(HashTrie, HashTriejoin)` and `(HashIndex, BinaryHashJoin)`, are reachable from every command.
 
 ### Selector dispatch
 
 `bench ds` and `bench run` accept `all` for `--indexstructure` and `--algorithm`, expanding to a Cartesian sweep.
 
-For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(SortedTrie::TreeTrie { seek, build } | ColumnTrie { seek, build })` (`seek` carries the `--ds-layout-seek` strategy, and `build` the structure's `--ds-build` mode) and `HashHtj { hasher, pruning, expansion, config, build }` — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the three incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
+For `bench run`, that sweep is expressed as *cells* rather than pairs. `kermit/src/execution.rs` defines `Execution`, an enum whose variants each fix **both** halves of the combination — `TrieLftj(SortedTrie::TreeTrie { seek, build } | ColumnTrie { seek, build })` (`seek` carries the `--ds-layout-seek` strategy, and `build` the structure's `--ds-build` mode), `HashHtj { hasher, pruning, expansion, config, build }` and `IndexBhj { hasher }` (`hasher` carries `--ds-layout-hasher`) — so an `Execution` cannot describe something the CLI is unable to run. `Execution::for_pair` is the sole constructor and returns `None` for the eight incompatible pairs; `Sweep::expand` partitions the cross product into `cells` and a `skipped` list.
 
-Consequently `-i all -a all` runs exactly the three valid cells, announcing each skipped pair on stderr, while a single explicitly-named incompatible pair leaves nothing to run and is reported as a usage error. Because the report's `data_structure` and `algorithm` axes are both derived from `ExecutionFamily::execution()`, a report cannot name an algorithm it did not run (issue #56).
+Consequently `-i all -a all` runs exactly the four valid cells, announcing each skipped pair on stderr, while a single explicitly-named incompatible pair leaves nothing to run and is reported as a usage error. Because the report's `data_structure` and `algorithm` axes are both derived from `ExecutionFamily::execution()`, a report cannot name an algorithm it did not run (issue #56).
 
-`bench ds` selects a structure but no algorithm, so it names its cell through the total `Execution::for_structure` (every structure has exactly one compatible algorithm) and runs the same kind of generic runner, `run_ds_bench<F: RelationFamily>`. `RelationFamily` is the relation-facing supertrait of `ExecutionFamily` (index construction, axes, cell label); `bench ds` instantiates the structure-only markers `SortedTrieFamily<R>` / `HashTrieFamily<H, P, E>`, which implement the supertrait alone and so cannot join. The join families `TrieLftj<R>` / `HashHtj<H, P, E>` embed those markers and delegate, so the two commands cannot disagree about a structure (issue #61). `HashTrieFamily<H, P, E>` is also where the `--ds-config` values live, so the `build` and `end_to_end` closures build through `RelationFamily::build_index` and measure the structure the report's `ds_config_*` axes describe. `SortedTrieFamily<R>` likewise carries the `--ds-build` mode (`R::BuildMode`: `ColumnTrieBuildMode` or `TreeTrieBuildMode`), builds through it, and reports it as `ds_build_mode` via `RelationFamily::build_mode_axes`.
+`bench ds` selects a structure but no algorithm, so it names its cell through the total `Execution::for_structure` (every structure has exactly one compatible algorithm) and runs the same kind of generic runner, `run_ds_bench<F: RelationFamily>`. `RelationFamily` is the relation-facing supertrait of `ExecutionFamily` (index construction, axes, cell label); `bench ds` instantiates the structure-only markers `SortedTrieFamily<R>` / `HashTrieFamily<H, P, E>` / `HashIndexFamily<H>`, which implement the supertrait alone and so cannot join. The join families `TrieLftj<R>` / `HashHtj<H, P, E>` / `IndexBhj<H>` embed those markers and delegate, so the two commands cannot disagree about a structure (issue #61). `HashTrieFamily<H, P, E>` is also where the `--ds-config` values live, so the `build` and `end_to_end` closures build through `RelationFamily::build_index` and measure the structure the report's `ds_config_*` axes describe. `SortedTrieFamily<R>` likewise carries the `--ds-build` mode (`R::BuildMode`: `ColumnTrieBuildMode` or `TreeTrieBuildMode`), builds through it, and reports it as `ds_build_mode` via `RelationFamily::build_mode_axes`.
 
 ### Space measurement
 
@@ -513,7 +562,7 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 
 1. Create `kermit-ds/src/ds/<name>/` with `mod.rs`, `implementation.rs`, `<name>_iter.rs`.
 2. Implement `Relation` + `Projectable` + `HeapSize` + `Cardinality` on the structure. `HeapSize::heap_size_bytes` returns heap bytes only, excluding `size_of::<Self>`. `Relation::from_view` is the required bulk constructor: it reads a `TupleView` and copies the matching rows once, and the `from_tuples*` constructors are provided over `TupleView::all`; `KEEPS_DUPLICATES` is `true` if the structure counts duplicate rows.
-3. Implement the iterator. For the sorted family that is `TrieIterator` plus `#[derive(IntoTrieIter)]`, then `TrieIterable` on the structure. For the hash family it is `HashTrieIterator` and `HashTrieIterable` — and note that the shared helpers `project_via_trie_iter` and `TrieIteratorWrapper` are `TrieIterable`-only, so a hash-family structure must supply its own equivalents. The `kermit-ds` test macros fork along the same seam: `hash_trie_test_suite!` covers the hash family, `relation_trie_test_suite!` the sorted one.
+3. Implement the iterator. For the sorted family that is `TrieIterator` plus `#[derive(IntoTrieIter)]`, then `TrieIterable` on the structure. For the hash family it is `HashTrieIterator` and `HashTrieIterable` — and note that the shared helpers `project_via_trie_iter` and `TrieIteratorWrapper` are `TrieIterable`-only, so a hash-family structure must supply its own equivalents. The `kermit-ds` test macros fork along the same seam: `hash_trie_test_suite!` covers the hash family, `relation_trie_test_suite!` the sorted one, and `keyed_index_test_suite!` the keyed family (whose structure implements `KeyedIterable` alone: `scan` and `probe`, no iterator type).
 4. Register the module and add a variant to `IndexStructure` in `kermit-ds/src/ds/mod.rs`.
 5. Wire the CLI: a variant on `IndexStructureSelector` and its `expand()`. A sorted-family structure also needs a `SortedTrie` variant plus a `SortedTrieRelation` impl (with its `BuildMode`, `()` for a single build process) and an `Execution::for_pair` arm (`kermit/src/execution.rs`), an arm in `write_query_csv` (`kermit/src/main.rs`), and arms in `dispatch_run_bench` / `dispatch_ds_bench` (`kermit/src/bench/{run,ds}.rs`). A structure in a new trait family needs its own `ExecutionFamily` impl.
 6. **Wire the tests.** Add `define_multiway_join_test_suite!(<Type>, <Algo>, LexicographicOptimiser)` and a second invocation with `CardinalityOptimiser` in `kermit/tests/join_tests.rs`, so all 16 standard join patterns run against the structure. Each distinct layout combination is its own suite invocation (e.g. `HashTrieSip`, `HashTrieFx`). Add a cell for the structure in `kermit/tests/all_orders.rs`, which runs every query shape under every variable order, and in `kermit/tests/result_allocation.rs` and `kermit/tests/tuple_allocation.rs`.
@@ -521,7 +570,7 @@ These are summaries. `CLAUDE.md` holds the authoritative step-by-step recipes, i
 
 ### New Join Algorithm
 
-1. Create `kermit-algos/src/<family>/<name>.rs` (`sorted/` or `hash/`, matching the iterator family) and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable` or `HashTrieIterable` accordingly. The implementation runs over the executed query (every atom an index id `#<k>` over a plain index, each variable once per atom, columns in plan order, no constants) and must validate the incoming `QueryPlan`.
+1. Create `kermit-algos/src/<family>/<name>.rs` (`sorted/`, `hash/` or `keyed/`, matching the iterator family) and implement `JoinAlgo<DS>`, narrowing `DS` to `TrieIterable`, `HashTrieIterable` or `KeyedIterable` accordingly. The implementation runs over the executed query (every atom an index id `#<k>` over a plain index, each variable once per atom, columns in plan order, no constants) and must validate the incoming `QueryPlan`.
 2. Register the module in the family's `mod.rs`, re-export it from the flat facade in `kermit-algos/src/lib.rs`, and add a variant to the `JoinAlgorithm` enum there.
 3. Wire the CLI: a variant on `JoinAlgorithmSelector` and its `expand()`, plus the algorithm's valid cells in `Execution` / `Execution::for_pair` (the compiler flags the incomplete match) and a `dispatch_run_bench` arm. `kermit join` / `bench join` dispatch through the same cells (`write_query_csv`), so nothing extra is needed for them. A sorted-family algorithm plugs into `lftj_join<R, JA>`; a hash-family one needs its own entry point beside `hash_join` over `prepare` / `build` / `execute` (see "Catalog and lifecycle").
 4. **Wire the tests.** Add a `define_multiway_join_test_suite!` invocation per compatible index structure × optimiser, and a cell in `kermit/tests/all_orders.rs`.
