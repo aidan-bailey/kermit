@@ -2,8 +2,9 @@
 
 > **Status:** [stable | experimental] · **CLI:** `--engine <name>` · **Feature:** `engine-<name>` · **Implementation:** [`kermit::engine::<module>`](../../kermit/src/engine/<module>.rs)
 
-One paragraph: what the engine is, what it is compared against and why (the thesis question it serves,
-RQ1.4: a bounded sanity baseline against an established peer engine, not a head-to-head claim).
+One paragraph: what the engine is, what it is compared against and why (the thesis question it
+serves, RQ1.4: a bounded sanity baseline against an established peer engine, not a head-to-head
+claim).
 
 ## Phase mapping
 
@@ -63,5 +64,7 @@ times.
 ## See also
 
 - Sibling pages in `docs/engines/`.
-- The design: [`docs/specs/2026-11-02-external-engines-design.md`](../specs/2026-11-02-external-engines-design.md).
-- The report schema's v8 axes: [`docs/specs/bench-report-schema.md`](../specs/bench-report-schema.md).
+- The design:
+  [`docs/specs/2026-11-02-external-engines-design.md`](../specs/2026-11-02-external-engines-design.md).
+- The report schema's v8 axes:
+  [`docs/specs/bench-report-schema.md`](../specs/bench-report-schema.md).

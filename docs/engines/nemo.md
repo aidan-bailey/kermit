@@ -30,8 +30,8 @@ Nemo's translator (`kermit/src/engine/nemo.rs`) builds one public `ExecutionPlan
   table, fetched by several atoms);
 - `join_empty(result_markers)`, then `add_subnode` per atom, then `write_permanent`.
 
-The result's columns follow the plan order, so `Engine::rows` (used by tests only) permutes them into
-canonical order.
+The result's columns follow the plan order, so `Engine::rows` (used by tests only) permutes them
+into canonical order.
 
 ## Fairness caveats
 
@@ -44,8 +44,8 @@ canonical order.
 - **`materialize` is not a streamed join.** Nemo stores its result trie; kermit's cells and DuckDB
   copy rows into a `Tuples`, sort and count. The costs are alike in kind (a stored, ordered result),
   not equal.
-- **Join order.** Nemo runs kermit's plan, so a difference is not a join-order difference. Engine rows
-  carry the `plan` axis, which is that order: Nemo follows it (DuckDB does not).
+- **Join order.** Nemo runs kermit's plan, so a difference is not a join-order difference. Engine
+  rows carry the `plan` axis, which is that order: Nemo follows it (DuckDB does not).
 - **A zero all-constant count skips the engine's build.** On a query with an all-constant atom whose
   count is 0 the result is known to be empty, so the engine cell skips its `build` entirely, while
   kermit's `build` still builds every index. The engine's `build` there is near zero and is not
@@ -98,15 +98,15 @@ To move the pin:
   which does not stream, the row count is `expected` alone and the guard runs before the describe
   step, and a `--verify`-only run over the limit skips verification for the cell with the note (see
   Fairness caveats, Memory).
-- kermit sets no timeout of its own, and an engine that fails ends its cell with an error; nothing is
-  retried. No engine calls an outside service at run time: Nemo is a build-time git dependency.
+- kermit sets no timeout of its own, and an engine that fails ends its cell with an error; nothing
+  is retried. No engine calls an outside service at run time: Nemo is a build-time git dependency.
 
 ## Tests
 
 - `kermit/tests/engine_oracle.rs` checks Nemo's counts and contents against the **distinct** rows of
   the nested-loop oracle (distinct full assignments are the same set under set and bag semantics).
-- Unit tests in `kermit/src/engine/nemo.rs` pin `NEMO_REV` against `kermit/Cargo.toml` and check that
-  the join's markers follow kermit's plan order.
+- Unit tests in `kermit/src/engine/nemo.rs` pin `NEMO_REV` against `kermit/Cargo.toml` and check
+  that the join's markers follow kermit's plan order.
 - The `engines` job of `.github/workflows/pr.yml` runs them with `engine-nemo`.
 
 ## Acceptance probes (2026-11-02)
@@ -128,5 +128,7 @@ The oxford row disagrees by set against bag semantics, not by a fault: `R` and `
 ## See also
 
 - [`duckdb.md`](duckdb.md) and [`TEMPLATE.md`](TEMPLATE.md).
-- [`docs/data-structures/column-trie.md`](../data-structures/column-trie.md), Nemo's own family inside kermit.
-- The design: [`docs/specs/2026-11-02-external-engines-design.md`](../specs/2026-11-02-external-engines-design.md).
+- [`docs/data-structures/column-trie.md`](../data-structures/column-trie.md), Nemo's own family
+  inside kermit.
+- The design:
+  [`docs/specs/2026-11-02-external-engines-design.md`](../specs/2026-11-02-external-engines-design.md).

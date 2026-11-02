@@ -25,14 +25,14 @@ bounded sanity baseline against an established peer, not a head-to-head claim.
 ## Translation
 
 The shared SQL translator (`kermit/src/engine/sql.rs`) reads the executed query and its specs, whose
-shape `extract_accesses` and `plan_indexes` guarantee: every atom names an index id, has one variable
-per column in index-column order, repeats no variable and holds no constant. Each spec `#k` becomes
-a table `idx_k_<build>` (`idx_k` followed by a per-build suffix); each atom becomes an alias `a{i}` over its spec's
-table, with column `c{j}` bound to the atom's `j`-th variable; every variable is selected once, at
-its first binding, in canonical order; every later binding is an equality with the first; an atom
-that shares no variable with the atoms before it joins by `CROSS JOIN`; identifiers are
-double-quoted. For the triangle under the plan `X, Y, Z`, where all three atoms read the merged
-spec `#0` (the suffix `7` is an example build number):
+shape `extract_accesses` and `plan_indexes` guarantee: every atom names an index id, has one
+variable per column in index-column order, repeats no variable and holds no constant. Each spec `#k`
+becomes a table `idx_k_<build>` (`idx_k` followed by a per-build suffix); each atom becomes an alias
+`a{i}` over its spec's table, with column `c{j}` bound to the atom's `j`-th variable; every variable
+is selected once, at its first binding, in canonical order; every later binding is an equality with
+the first; an atom that shares no variable with the atoms before it joins by `CROSS JOIN`;
+identifiers are double-quoted. For the triangle under the plan `X, Y, Z`, where all three atoms read
+the merged spec `#0` (the suffix `7` is an example build number):
 
 ```sql
 SELECT a0."c0" AS "X", a0."c1" AS "Y", a1."c1" AS "Z"
@@ -52,8 +52,8 @@ CREATE TEMP TABLE "idx_0_5" AS SELECT "rel_r"."c1" AS "c0", "rel_r"."c0" AS "c1"
 
 ## Fairness caveats
 
-- **Compare DuckDB with kermit on `end_to_end` only.** DuckDB's index work (its hash tables) sits
-  in its `iteration`, while kermit's sits in `build`, so only the sum is the same work. `kl.engines()`
+- **Compare DuckDB with kermit on `end_to_end` only.** DuckDB's index work (its hash tables) sits in
+  its `iteration`, while kermit's sits in `build`, so only the sum is the same work. `kl.engines()`
   draws exactly that pair.
 - **DuckDB chooses its own join order.** The statement fixes the query, not the order: kermit's
   variable order is the plan of its own cells, and DuckDB's optimiser plans the joins itself.
@@ -61,20 +61,20 @@ CREATE TEMP TABLE "idx_0_5" AS SELECT "rel_r"."c1" AS "c0", "rel_r"."c0" AS "c1"
   count is 0 the result is known to be empty, so the engine cell skips its `build` entirely, while
   kermit's `build` still builds every index. The engine's `build` there is near zero and is not
   like-for-like.
-- **The `plan` axis is kermit's order, DuckDB ignores it.** Engine rows carry the `plan` axis, which is
-  kermit's variable order; DuckDB plans its own join order and does not follow it, so `plan` only
+- **The `plan` axis is kermit's order, DuckDB ignores it.** Engine rows carry the `plan` axis, which
+  is kermit's variable order; DuckDB plans its own join order and does not follow it, so `plan` only
   says which query ran.
 - **Bag semantics.** DuckDB counts duplicate rows, as `HashTrie` does (`KEEPS_DUPLICATES`), so on
   duplicate-free inputs its count equals kermit's and the benchmark's `expected`. On inputs with
   duplicate rows DuckDB matches `HashTrie` (bag) and not the sorted tries or Nemo (set):
   `oxford-uniform-s3`'s triangle is 7433 for `HashTrie` and DuckDB against 7430 for `TreeTrie`,
   `ColumnTrie` and Nemo.
-- **One thread by default** (`PRAGMA threads = 1`), the same parallelism as kermit's joins and serial
-  builds. `--engine-threads N` raises it; reports carry `engine_threads`.
+- **One thread by default** (`PRAGMA threads = 1`), the same parallelism as kermit's joins and
+  serial builds. `--engine-threads N` raises it; reports carry `engine_threads`.
 - **Memory.** Every connection sets `memory_limit = '8GB'`, under the sweep's 14 GiB cap (DuckDB's
   default is 80% of RAM), and a private spill directory.
-- **Probes are single cold runs.** A probe's `build`, `iteration` and `materialize` are one run each:
-  compare them with other single runs, never with a Criterion estimate.
+- **Probes are single cold runs.** A probe's `build`, `iteration` and `materialize` are one run
+  each: compare them with other single runs, never with a Criterion estimate.
 
 ## Version pin
 
@@ -104,8 +104,9 @@ To move the pin:
 
 ## Settings and limits
 
-- `DuckDbSettings { threads }`: `--engine-threads N`, default 1, range `1..=available_parallelism()`;
-  outside it the error reads `--engine-threads must be between 1 and {available_parallelism}`.
+- `DuckDbSettings { threads }`: `--engine-threads N`, default 1, range
+  `1..=available_parallelism()`; outside it the error reads
+  `--engine-threads must be between 1 and {available_parallelism}`.
 - `memory_limit = '8GB'` and the private spill directory `kermit-duckdb-<pid>-<n>` under the system
   temporary directory, removed when the connection drops. DuckDB deletes every spill file in its
   directory on exit, so two connections sharing one would corrupt each other's spills; the JOB
@@ -146,5 +147,7 @@ The oxford row disagrees by set against bag semantics, not by a fault: `R` and `
 ## See also
 
 - [`nemo.md`](nemo.md) and [`TEMPLATE.md`](TEMPLATE.md).
-- The design: [`docs/specs/2026-11-02-external-engines-design.md`](../specs/2026-11-02-external-engines-design.md).
-- The report schema's v8 axes: [`docs/specs/bench-report-schema.md`](../specs/bench-report-schema.md).
+- The design:
+  [`docs/specs/2026-11-02-external-engines-design.md`](../specs/2026-11-02-external-engines-design.md).
+- The report schema's v8 axes:
+  [`docs/specs/bench-report-schema.md`](../specs/bench-report-schema.md).
