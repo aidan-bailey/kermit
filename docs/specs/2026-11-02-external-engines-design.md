@@ -437,7 +437,12 @@ keeps them in step.
 - recognise `materialize` as a phase;
 - a cell label (`system` for engines, `data_structure` / `algorithm` for kermit) used by the colour
   and facet defaults and by `speedup_table`;
-- a preset `kl.engines()` that plots only the like-for-like pairs from the Summary.
+- a preset `kl.engines()` that plots only the like-for-like pairs from the Summary;
+- the six structure figures (`scaling`, `bar_time`, `bar_space`, `tradeoff`, `dist`,
+  `bar_queries`) draw kermit rows only, and say so in their docstrings. Engines appear in
+  `kl.engines()` and through `kl.plot`'s cell-label defaults, so a generic figure never puts an
+  engine beside kermit on a metric that is not a like-for-like pair (the owner's decision,
+  2026-11-02, during drafting: the alternative drew engine rows in every figure).
 
 ## Testing
 
