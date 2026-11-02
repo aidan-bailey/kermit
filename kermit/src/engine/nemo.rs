@@ -33,7 +33,7 @@
 use {
     super::{Engine, EngineError, Unsupported},
     crate::db::{Catalog, Prepared},
-    kermit_algos::{IndexSpec, INDEX_ID_PREFIX},
+    kermit_algos::IndexSpec,
     kermit_ds::{Filter, TupleView, Tuples},
     kermit_parser::Term,
     nemo_physical::{
@@ -351,24 +351,18 @@ struct PlanMarkers {
 ///
 /// # Errors
 ///
-/// An atom of the executed query that does not name one of its indexes, holds
-/// anything but a variable, or lists its variables out of plan order: `prepare`
-/// guarantees none of these, so each is a broken invariant reported rather than
-/// passed on to Nemo.
+/// An atom of the executed query that holds anything but a variable, or lists
+/// its variables out of plan order: `prepare` guarantees neither, so each is a
+/// broken invariant reported rather than passed on to Nemo.
 fn plan_markers(prepared: &Prepared) -> Result<PlanMarkers, EngineError> {
     let order = prepared.variable_order();
     let mut atoms = Vec::with_capacity(prepared.query().body.len());
-    for atom in &prepared.query().body {
-        let index = atom
-            .name
-            .strip_prefix(INDEX_ID_PREFIX)
-            .and_then(|digits| digits.parse::<usize>().ok())
-            .filter(|&index| index < prepared.indexes().len())
-            .ok_or_else(|| {
-                failure(format!(
-                    "atom {atom} does not name one of the query's indexes"
-                ))
-            })?;
+    for (atom, &index) in prepared
+        .query()
+        .body
+        .iter()
+        .zip(prepared.executed().atom_indexes())
+    {
         let mut markers = Vec::with_capacity(atom.terms.len());
         for term in &atom.terms {
             let Term::Var(name) = term else {

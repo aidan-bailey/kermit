@@ -29,8 +29,8 @@
 
 use {
     crate::db::Prepared,
-    kermit_algos::{canonical_names, IndexSpec, INDEX_ID_PREFIX},
-    kermit_parser::{Predicate, Term},
+    kermit_algos::{canonical_names, IndexSpec},
+    kermit_parser::Term,
     std::collections::HashMap,
 };
 
@@ -97,14 +97,6 @@ pub fn create_spec_table(spec: &IndexSpec, index: usize, build: u64) -> String {
     )
 }
 
-/// The index an executed atom `#k` reads.
-fn index_of(atom: &Predicate) -> usize {
-    atom.name
-        .strip_prefix(INDEX_ID_PREFIX)
-        .and_then(|digits| digits.parse().ok())
-        .unwrap_or_else(|| panic!("join_select: `{}` does not name an index", atom.name))
-}
-
 /// The join of `prepared`'s executed query over the spec tables of build
 /// `build`, as one `SELECT` (clauses on separate lines, no trailing semicolon).
 ///
@@ -130,8 +122,9 @@ pub fn join_select(prepared: &Prepared, build: u64) -> String {
     // Where each variable is first bound: (alias, column).
     let mut first: HashMap<&str, (usize, usize)> = HashMap::new();
     let mut clauses: Vec<String> = Vec::with_capacity(query.body.len());
+    let atom_indexes = prepared.executed().atom_indexes();
     for (alias, atom) in query.body.iter().enumerate() {
-        let table = spec_table(index_of(atom), build);
+        let table = spec_table(atom_indexes[alias], build);
         let mut conditions: Vec<String> = Vec::new();
         for (position, term) in atom.terms.iter().enumerate() {
             let Term::Var(name) = term else {
