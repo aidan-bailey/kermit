@@ -4,6 +4,7 @@
 
 use {
     super::{
+        cell::execution_segment,
         criterion_directory_name,
         measure::{CriterionSettings, Described, MeasureRequest, QuerySubject, Subject},
         workload::PreparedWorkload,
@@ -593,13 +594,16 @@ fn check_group_directories_distinct(
 }
 
 /// The Criterion group under which one query of one cell is measured:
-/// `{prefix}/{workload}/{query}/{ds}/{algo}`.
+/// `{prefix}/{workload}/{query}/{segment}`, where the segment is the cell's
+/// own (`{ds}/{algo}` for a kermit cell).
+fn group_with_segment(prefix: &str, workload: &str, query: &str, segment: &str) -> String {
+    format!("{prefix}/{workload}/{query}/{segment}")
+}
+
+/// [`group_with_segment`] for an [`Execution`] cell, which is how the sweep's
+/// clash check names the groups before any cell runs.
 fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: Execution) -> String {
-    format!(
-        "{prefix}/{workload}/{query}/{}/{}",
-        cell.index_structure().axis_value(),
-        cell.algorithm().axis_value()
-    )
+    group_with_segment(prefix, workload, query, &execution_segment(cell))
 }
 
 /// Refuses a `bench run` sweep in which two (benchmark, query, cell) groups
@@ -734,6 +738,23 @@ mod tests {
                 assert!(msg.contains(&format!("{algorithm:?}")), "{msg}");
             }
         }
+    }
+
+    /// The group name `bench run` has always used, pinned before it moves.
+    #[test]
+    fn a_kermit_cells_group_is_prefix_workload_query_structure_algorithm() {
+        let cell =
+            Execution::for_structure(kermit_ds::IndexStructure::ColumnTrie, DsChoices::default());
+        assert_eq!(
+            criterion_group_name("run", "triangle", "q0000", cell),
+            "run/triangle/q0000/ColumnTrie/LeapfrogTriejoin"
+        );
+        let cell =
+            Execution::for_structure(kermit_ds::IndexStructure::HashTrie, DsChoices::default());
+        assert_eq!(
+            criterion_group_name("join", "adhoc", "q", cell),
+            "join/adhoc/q/HashTrie/HashTriejoin"
+        );
     }
 
     #[test]

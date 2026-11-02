@@ -14,6 +14,7 @@
 //! subtree and the handlers that write a generated benchmark into the cache,
 //! which outgrew `main.rs`.
 
+mod cell;
 pub mod ds;
 pub mod gen;
 pub mod measure;
