@@ -205,7 +205,12 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan, levels: TrieLevels
 mod tests {
     use {
         super::*,
-        crate::{analyse, canonical_names, extract_accesses, rewrite_placeholders},
+        crate::{
+            analyse, canonical_names, extract_accesses,
+            join_order::suite::{permutations, QUERIES},
+            rewrite_placeholders,
+        },
+        std::collections::HashSet,
     };
 
     fn accesses_of(text: &str) -> AccessQuery {
@@ -649,5 +654,85 @@ mod tests {
         assert!(out.indexes.is_empty());
         assert!(out.query.body.is_empty());
         assert!(out.plan.variable_ordering.is_empty());
+    }
+
+    /// The variables of an executed atom, in column order.
+    fn variables_of(atom: &Predicate) -> Vec<String> {
+        atom.terms
+            .iter()
+            .map(|term| match term {
+                | Term::Var(name) => name.clone(),
+                | _ => panic!("an executed atom holds variables only"),
+            })
+            .collect()
+    }
+
+    /// On the 16 suite shapes under every variable order, `ProbeKeys`
+    /// planning follows the join order of `join_order`: the body lists the
+    /// atoms in join order with `#0` the driver, each spec levels exactly its
+    /// key, which leads the atom's columns, spec ids follow first appearance,
+    /// and the returned plan validates against the executed query. The
+    /// count is the sum of `n!` over the shapes' variable counts, as in
+    /// `join_order`'s own sweep.
+    #[test]
+    fn under_probe_keys_every_suite_shape_under_every_order_plans_its_join_order() {
+        let mut checked = 0usize;
+        for (name, text) in QUERIES {
+            let accesses = accesses_of(text);
+            for order in permutations(analyse(&accesses.query).num_vars) {
+                let context = format!("{name} under {order:?}");
+                let plan = QueryPlan {
+                    variable_ordering: order,
+                };
+                let join = join_order(&accesses.query, &plan);
+                let out = plan_indexes(&accesses, &plan, TrieLevels::ProbeKeys);
+
+                assert_eq!(
+                    out.plan.validate(&analyse(&out.query)),
+                    Ok(()),
+                    "{context}: the plan validates"
+                );
+                assert_eq!(out.query.head, accesses.query.head, "{context}");
+                assert_eq!(out.query.body.len(), join.atoms.len(), "{context}");
+                assert_eq!(out.query.body[0].name, "#0", "{context}: #0 is the driver");
+                assert_eq!(out.indexes[0].levels, 0, "{context}: the driver has no key");
+
+                let mut bound: HashSet<String> = HashSet::new();
+                let mut next_id = 0;
+                for (rank, atom) in out.query.body.iter().enumerate() {
+                    let read = &accesses.accesses[join.atoms[rank]];
+                    let id: usize = atom
+                        .name
+                        .strip_prefix(INDEX_ID_PREFIX)
+                        .and_then(|id| id.parse().ok())
+                        .expect("an index id");
+                    assert!(id <= next_id, "{context}: ids follow first appearance");
+                    next_id = next_id.max(id + 1);
+
+                    let spec = &out.indexes[id];
+                    assert_eq!(spec.relation, read.relation, "{context}: atom {rank}");
+                    assert_eq!(spec.levels, join.key_lens[rank], "{context}: atom {rank}");
+
+                    let terms = variables_of(atom);
+                    assert_eq!(
+                        terms.iter().collect::<HashSet<_>>(),
+                        read.variables.iter().collect::<HashSet<_>>(),
+                        "{context}: atom {rank} keeps its variables"
+                    );
+                    let (key, rest) = terms.split_at(spec.levels);
+                    assert!(
+                        key.iter().all(|v| bound.contains(v)),
+                        "{context}: the key of atom {rank} is bound"
+                    );
+                    assert!(
+                        rest.iter().all(|v| !bound.contains(v)),
+                        "{context}: atom {rank} binds only what follows its key"
+                    );
+                    bound.extend(terms);
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 219);
     }
 }
