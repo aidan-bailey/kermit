@@ -998,8 +998,20 @@ mod tests {
         let events = subject.events();
         assert!(builds(&events) > 1, "Criterion built fresh sets");
         assert_eq!(materializes(&events, 0), 1);
-        for id in 1..builds(&events) {
-            assert_eq!(materializes(&events, id), 1, "fresh build {id}");
+        // One pass over the log, tallying each build's `materialize`s.
+        let mut per = vec![0usize; builds(&events)];
+        for event in &events {
+            if let Event::Materialize(id) = event {
+                per[*id] += 1;
+            }
+        }
+        assert_eq!(per[0], 1);
+        if let Some(id) = per.iter().skip(1).position(|&n| n != 1) {
+            panic!(
+                "fresh build {}: {} materializes, expected 1",
+                id + 1,
+                per[id + 1]
+            );
         }
     }
 

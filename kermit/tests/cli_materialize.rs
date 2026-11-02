@@ -333,11 +333,12 @@ fn a_probe_records_a_single_run_materialize_value_when_asked() {
         .as_array()
         .unwrap()
         .is_empty());
-    assert!(
-        stderr(&output).contains("materialize"),
-        "{}",
-        stderr(&output)
-    );
+    let stderr_text = stderr(&output);
+    let single_run = stderr_text
+        .lines()
+        .find(|line| line.contains("single run"))
+        .unwrap_or_else(|| panic!("no `single run` line:\n{stderr_text}"));
+    assert!(single_run.contains(", materialize "), "{single_run}");
     assert!(
         !workspace.path().join("criterion").exists(),
         "a probe writes no Criterion output"

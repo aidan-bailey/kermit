@@ -434,8 +434,10 @@ fn run_benchmark<F: ExecutionFamily>(
                     .expect("a probe counts every query it streams");
                 single = format!("{single}, iteration {iteration:?}");
             }
-            if let Some(materialize) = described.materialize_time() {
-                single = format!("{single}, materialize {materialize:?}");
+            if run_materialize {
+                if let Some(materialize) = described.materialize_time() {
+                    single = format!("{single}, materialize {materialize:?}");
+                }
             }
             metadata.push(MetadataLine::new("single run", single));
         }
