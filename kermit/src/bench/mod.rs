@@ -16,6 +16,13 @@
 
 mod cell;
 pub mod ds;
+// Engine cells exist only when an engine feature compiles one in; the gates
+// build none.
+#[cfg_attr(
+    not(any(feature = "engine-duckdb", feature = "engine-nemo")),
+    allow(dead_code)
+)]
+mod engine;
 pub mod gen;
 pub mod measure;
 pub mod run;
