@@ -14,7 +14,9 @@
 //! `docs/algorithms/<name>.md` page and its CLI value. An algorithm reads
 //! only real indexes: a query's constants and repeated variables were
 //! applied as a filter when each index was built (see
-//! [`crate::extract_accesses`]).
+//! [`crate::extract_accesses`]). It receives the query as an
+//! [`crate::ExecutedQuery`], so no constant, `_` or repeated variable reaches
+//! it.
 
 mod leapfrog_join;
 mod leapfrog_triejoin;

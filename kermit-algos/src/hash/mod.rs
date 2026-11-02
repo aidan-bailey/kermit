@@ -11,6 +11,9 @@
 //! directory refers to anything in [`crate::sorted`], and nothing there
 //! refers back.
 //!
+//! An algorithm here receives the query as an [`crate::ExecutedQuery`], so
+//! no constant, `_` or repeated variable reaches it.
+//!
 //! The module shape mirrors [`crate::sorted`] exactly — one module per
 //! algorithm ([`hash_triejoin`]) — so the two families stay comparable at a
 //! glance.

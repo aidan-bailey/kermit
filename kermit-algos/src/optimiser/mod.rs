@@ -7,9 +7,11 @@
 //! to pass a bare optimiser. Join algorithms (`JoinAlgo::join_for_each`)
 //! execute the plan. Every permutation of the variables is a valid plan,
 //! since each index is built with its columns in plan order (see
-//! [`order_by_rank`]); executors defensively assert [`QueryPlan::validate`].
+//! [`order_by_rank`]); [`crate::ExecutedQuery::new`] still checks it with
+//! [`QueryPlan::validate`].
 //!
-//! [`QueryPlan`] is the *only* type crossing from planner to executor.
+//! [`QueryPlan`] is the *only* type crossing from planner to executor, inside
+//! the [`crate::ExecutedQuery`] a join accepts.
 //! The canonical variable numbering both sides agree on is not a planning
 //! decision and lives one level up, in [`crate::analysis`].
 
