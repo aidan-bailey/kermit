@@ -50,8 +50,9 @@ def cell_labels(df: pd.DataFrame) -> pd.Series:
     """The cell label of every row of ``df``, aligned with its index: ``system`` (plus
     ``-t{engine_threads}``) for an engine row, ``data_structure/algorithm`` for a kermit row.
 
-    The plot defaults colour and facet by it, so one figure can hold kermit's cells beside the
-    engines'. A column that is absent (a frame of v7 reports has no ``system`` or
+    Add it as a column (``df.assign(cell=cell_labels(df))``) and pass ``colour="cell"`` to
+    :func:`kermit_lab.plot`, so one figure can hold kermit's cells beside the engines' (as
+    :func:`kermit_lab.engines` does itself). A column that is absent (a frame of v7 reports has no ``system`` or
     ``engine_threads``) counts as missing in every row.
     """
     def column(name: str) -> pd.Series:

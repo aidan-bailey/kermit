@@ -16,11 +16,11 @@ from matplotlib.figure import Figure
 import kermit_lab as kl
 from kermit_lab import presets
 from kermit_lab.drivers.render_all import render_all
-from kermit_lab.plots_errors import InsufficientAxesError
 from kermit_lab.analysis import cell_labels, compare, speedup_table, summary
 from kermit_lab.defaults import BINARY_AXIS_DEFAULTS, apply_axis_defaults
-from kermit_lab.frame import load
+from kermit_lab.frame import load, load_samples
 from kermit_lab.loader import TIME_PHASES, load_reports, phase_of
+from kermit_lab.plots_errors import InsufficientAxesError
 
 from .conftest import _add_values, _FunctionSpec, _write_function_dir, _write_report
 
@@ -44,7 +44,8 @@ def _write_time_functions(
 @pytest.fixture
 def engine_tree(tmp_path: Path) -> dict:
     """Four reports of one query, `triangle`: a v7 TreeTrie report (no `system`), a v8 HashTrie
-    report, a v8 DuckDB report (no `space`, no `materialize`) and a v8 Nemo report (no
+    report, a v8 DuckDB report (no `space`; a `materialize` function that DuckDB does not
+    report in reality, so that no like-for-like pair may draw it) and a v8 Nemo report (no
     `iteration` or `end_to_end`, but a `materialize` and a `space`)."""
     criterion_root = tmp_path / "target" / "criterion"
     reports_dir = tmp_path / "reports"
@@ -86,7 +87,7 @@ def engine_tree(tmp_path: Path) -> dict:
         metadata=[],
         groups=_write_time_functions(
             criterion_root, "run/tri/duckdb-t1",
-            {"build": 400.0, "iteration": 150.0, "end_to_end": 800.0},
+            {"build": 400.0, "iteration": 150.0, "end_to_end": 800.0, "materialize": 1234.0},
         ),
         schema_version=8,
     )
@@ -243,6 +244,10 @@ def test_engines_draws_only_the_like_for_like_pairs(engine_tree) -> None:
     assert panels["nemo vs kermit: materialize"] == [1500.0, 2000.0]
     assert panels["nemo vs kermit: space"] == [3000.0, 6400.0, 9000.0]
     assert len(panels) == 4
+    # DuckDB is paired on end_to_end only: neither its materialize (1234) nor a DuckDB
+    # materialize panel is drawn.
+    assert "duckdb vs kermit: materialize" not in panels
+    assert not any(1234.0 in heights for heights in panels.values())
     plt.close("all")
 
 
@@ -338,3 +343,90 @@ def test_render_all_takes_a_frame_holding_engine_rows(engine_tree, tmp_path: Pat
     names = {p.name for p in tmp_path.iterdir()}
     assert {"bar-space.pdf", "bar-time-triangle.pdf"} <= names
     assert plt.get_fignums() == []
+
+
+def test_engines_draws_kermit_rows_only_of_the_queries_an_engine_ran(engine_tree) -> None:
+    """A kermit row of a query no engine ran, and a `bench ds` row (no query), are not drawn."""
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    expected = _panels(kl.engines(df))
+    kermit = df[df["system"] == "kermit"]
+    other_query = kermit.assign(query="chain", mean_ns=kermit["mean_ns"] + 11.0)
+    ds_rows = kermit.assign(query=pd.NA, kind="ds", mean_ns=kermit["mean_ns"] + 22.0)
+    fig = kl.engines(pd.concat([df, other_query, ds_rows], ignore_index=True))
+    assert _panels(fig) == expected
+    plt.close("all")
+
+
+def test_engines_keys_on_the_query_alone_without_a_benchmark_column(engine_tree) -> None:
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    expected = _panels(kl.engines(df))
+    kermit = df[df["system"] == "kermit"]
+    other_query = kermit.assign(query="chain", mean_ns=kermit["mean_ns"] + 11.0)
+    mixed = pd.concat([df, other_query], ignore_index=True).drop(columns=["benchmark"])
+    assert _panels(kl.engines(mixed)) == expected
+    plt.close("all")
+
+
+def test_engines_refuses_two_rows_of_one_cell_and_query(engine_tree) -> None:
+    """Both optimisers' rows of one cell would be drawn as overlaid bars."""
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    hash_trie = df[df["data_structure"] == "HashTrie"]
+    both = pd.concat(
+        [df, hash_trie.assign(optimiser="cardinality", mean_ns=hash_trie["mean_ns"] + 5.0)],
+        ignore_index=True,
+    )
+    with pytest.raises(InsufficientAxesError, match=r"HashTrie/HashTriejoin.*triangle.*filter"):
+        kl.engines(both)
+    # Filtering by optimiser, as the message says, draws it.
+    kl.engines(both[both["optimiser"] == "lexicographic"])
+    plt.close("all")
+
+
+def test_engines_draws_a_kermit_row_without_system_as_kermit(engine_tree) -> None:
+    """Loaded without defaults, the v7 report has no `system`: it is still kermit's."""
+    plt.close("all")
+    raw = load(engine_tree["paths"], engine_tree["criterion_root"], apply_defaults=False)
+    assert raw.loc[raw["data_structure"] == "TreeTrie", "system"].isna().all()
+    panels = _panels(kl.engines(raw))
+    assert panels["nemo vs kermit: build"] == [300.0, 500.0, 600.0]
+    assert panels["duckdb vs kermit: end_to_end"] == [700.0, 800.0, 900.0]
+    plt.close("all")
+
+
+def _legend_labels(fig: Figure) -> set[str]:
+    return {
+        label for ax in fig.axes if ax.get_visible() for label in ax.get_legend_handles_labels()[1]
+    }
+
+
+def test_every_structure_preset_draws_kermit_rows_only(engine_tree) -> None:
+    """`scaling`, `tradeoff`, `dist` and `bar_queries` (like `bar_space` and `bar_time`) drop
+    the engines' rows. The presets are called directly: `render_all` swallows their errors."""
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    samples = load_samples(engine_tree["paths"], engine_tree["criterion_root"])
+    kermit_cells = {"HashTrie / HashTriejoin", "TreeTrie / LeapfrogTriejoin"}
+
+    fig = presets.scaling(df, phase="build")
+    assert _legend_labels(fig) == kermit_cells
+    fig = presets.bar_queries(df, phase="build")
+    assert _legend_labels(fig) == kermit_cells
+    assert _bar_heights(fig) == [300.0, 500.0]
+    fig = presets.tradeoff(df, phase="build")
+    assert _legend_labels(fig) == kermit_cells
+    points = sorted(
+        tuple(xy) for ax in fig.axes for c in ax.collections for xy in c.get_offsets().tolist()
+    )
+    assert points == [(6400.0, 300.0), (9000.0, 500.0)]
+
+    only_kermit = df[df["system"] == "kermit"]
+    fig = presets.dist(df, samples=samples, phase="build")
+    reference = presets.dist(only_kermit, samples=samples, phase="build")
+    assert [len(ax.collections) for ax in fig.axes] == [len(ax.collections) for ax in reference.axes]
+    assert [t.get_text() for ax in fig.axes for t in ax.get_xticklabels()] == [
+        t.get_text() for ax in reference.axes for t in ax.get_xticklabels()
+    ]
+    plt.close("all")

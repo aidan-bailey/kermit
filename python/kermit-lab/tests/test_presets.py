@@ -111,6 +111,7 @@ def test_ablation_draws_seek_on_materialize(tmp_path) -> None:
             "data_structure": "TreeTrie",
             "algorithm": "LeapfrogTriejoin",
             "tuples": 100,
+            "system": "kermit",
             "ds_layout_seek": seek,
         }
         paths.append(

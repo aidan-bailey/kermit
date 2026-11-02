@@ -41,6 +41,11 @@ def _kermit_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def scaling(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] = None) -> Figure:
+    """Time against tuple count, a line per structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
     return plot(_kermit_rows(df), kind="line", x="tuples", y="time", colour="data_structure",
                 style="algorithm", phase=phase, logx=True, logy=True,
                 title="Scaling", out=out)
@@ -49,6 +54,11 @@ def scaling(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] =
 def bar_time(
     df: pd.DataFrame, *, query: str, phase: str = "iteration", out: Optional[Path] = None
 ) -> Figure:
+    """Time of one query, a bar per structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
     return plot(_kermit_rows(df), kind="bar", x="data_structure", y="time",
                 colour="data_structure",
                 style="algorithm", filter={"query": query}, phase=phase,
@@ -56,12 +66,22 @@ def bar_time(
 
 
 def bar_space(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
+    """Space per data structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
     return plot(_kermit_rows(df), kind="bar", x="data_structure", y="space",
                 colour="data_structure",
                 title="Space per data structure", out=out)
 
 
 def tradeoff(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] = None) -> Figure:
+    """Space against time, a point per cell.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
     return plot(_kermit_rows(df), kind="scatter", x="space", y="time", colour="data_structure",
                 style="algorithm", phase=phase, logx=True, title="Space vs time", out=out)
 
@@ -70,6 +90,11 @@ def dist(
     df: pd.DataFrame, *, samples: pd.DataFrame, phase: str = "iteration",
     out: Optional[Path] = None,
 ) -> Figure:
+    """The per-iteration time distribution per structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
     return plot(_kermit_rows(df), kind="violin", x="data_structure", y="time",
                 style="algorithm",
                 phase=phase, samples=samples, title="Per-iter distribution", out=out)
@@ -80,6 +105,11 @@ def bar_queries(
     algo: Optional[Sequence[str]] = None, phase: str = "iteration",
     out: Optional[Path] = None,
 ) -> Figure:
+    """Time across queries, a bar per structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
     flt: dict[str, object] = {}
     if ds is not None:
         flt["data_structure"] = list(ds)
@@ -224,6 +254,41 @@ ENGINE_PAIRS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _query_keys(rows: pd.DataFrame) -> list[tuple]:
+    """The ``(benchmark, query)`` of every row of ``rows`` (``query`` alone for a frame without
+    ``benchmark``), a missing value as ``None``."""
+    columns = [c for c in ("benchmark", "query") if c in rows.columns]
+    return [
+        tuple(None if pd.isna(v) else v for v in key)
+        for key in rows[columns].itertuples(index=False, name=None)
+    ]
+
+
+def _same_queries_as_engine(rows: pd.DataFrame, engine: str) -> pd.DataFrame:
+    """``rows`` with the kermit rows of a ``(benchmark, query)`` the ``engine`` has no row for
+    dropped: a ``bench ds`` row (no query) and a query only kermit ran have nothing to compare."""
+    keys = _query_keys(rows)
+    ran = {k for k, system in zip(keys, rows["system"]) if system == engine}
+    keep = [system == engine or k in ran for k, system in zip(keys, rows["system"])]
+    return rows[keep]
+
+
+def _refuse_overlaid_bars(rows: pd.DataFrame, engine: str, phase: str) -> None:
+    """Raise when two rows of a panel share a ``(cell, benchmark, query)``: the bar chart draws
+    one bar for each, at the same place."""
+    seen: set[tuple] = set()
+    for cell, key in zip(rows["cell"], _query_keys(rows)):
+        if (cell, key) in seen:
+            columns = [c for c in ("benchmark", "query") if c in rows.columns]
+            raise InsufficientAxesError(
+                f"engines: more than one row for cell {cell!r}, "
+                f"{dict(zip(columns, key))} in the {engine} vs kermit {phase} panel; "
+                "filter the frame first (by optimiser or the ds_* axes) so that each cell has "
+                "one row per query"
+            )
+        seen.add((cell, key))
+
+
 def engines(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
     """Each engine against kermit's cells on the pairs that compare like with like
     (:data:`ENGINE_PAIRS`): DuckDB on ``end_to_end``; Nemo on ``build``, ``materialize`` and
@@ -231,8 +296,16 @@ def engines(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
     (:func:`~kermit_lab.analysis.cell_labels`), Criterion estimates for time and exact bytes for
     space. A row without ``system`` counts as kermit's.
 
+    In each panel only the kermit rows of a ``(benchmark, query)`` that the pair's engine has
+    rows for are drawn, so a ``bench ds`` row and a query no engine ran drop out (a frame
+    without ``benchmark`` is keyed on ``query`` alone). A panel draws one bar per cell and
+    query: when several rows share a ``(cell, benchmark, query)`` (both optimisers, the Layout
+    variants of one structure, probe beside run reports) the figure would overlay them, so
+    filter the frame first (by ``optimiser``, the ``ds_*`` axes, or ``kind``).
+
     Raises :class:`InsufficientAxesError` when ``df`` has no ``system`` column (load v8
-    reports) or no engine row on any pair.
+    reports), no engine row on any pair, or more than one row for a ``(cell, benchmark, query)``
+    of a panel.
     """
     if "system" not in df.columns:
         raise InsufficientAxesError(
@@ -254,6 +327,8 @@ def engines(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
             continue
         if not (rows["system"] == engine).any():
             continue
+        rows = _same_queries_as_engine(rows, engine)
+        _refuse_overlaid_bars(rows, engine, phase)
         title = f"{engine} vs kermit: {phase}"
         ylabel = "space (bytes)" if y == "space" else "time (ns)"
         panels.append((title, ylabel, resolve_scalar(rows, amap)))
