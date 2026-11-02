@@ -642,6 +642,22 @@ mod tests {
         assert_eq!(planned(text, &["X", "Y"]).indexes.len(), 1);
     }
 
+    /// Identical specs still merge under `ProbeKeys`: the second and third
+    /// reads of `r` are probed on `X` alone, in the same column order, so they
+    /// share one index; the driver, with no key, is a spec of its own.
+    #[test]
+    fn identical_specs_still_merge_under_probe_keys() {
+        let out = probe("Q(X, A, B, C) :- r(X, A), r(X, B), r(X, C).", &[
+            "X", "A", "B", "C",
+        ]);
+        assert_eq!(relations_of(&out), vec!["r", "r"]);
+        assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![0, 1], 1)]);
+        assert_eq!(body_text(&out.query), vec![
+            "#0(X, A)", "#1(X, B)", "#1(X, C)"
+        ]);
+        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+    }
+
     #[test]
     fn a_query_with_no_accesses_plans_no_indexes_under_probe_keys() {
         let mut query: JoinQuery = "Q(c9) :- r(c1, c2), s(c3).".parse().expect("parse");

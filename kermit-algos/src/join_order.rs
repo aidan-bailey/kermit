@@ -259,16 +259,17 @@ mod tests {
         }
     }
 
-    /// Worked example 1: a tie between `R` and `T` goes to the earlier atom,
-    /// and `T` is probed on both its variables once `S` has bound `Z`.
+    /// The spec's worked example 1, renamed: a tie between `R` and `T` goes to
+    /// the earlier atom, and `T` is probed on both its variables once `S` has
+    /// bound `C`.
     #[test]
     fn a_triangle_joins_in_body_order_with_growing_keys() {
         let got = joined("Q(A, B, C) :- R(A, B), S(B, C), T(A, C).", &["A", "B", "C"]);
         assert_eq!(got, expected(&[0, 1, 2], &[0, 1, 2], &[0, 1, 2]));
     }
 
-    /// Worked example 2: `B(y, z)` is probed on `z`, which `A(x, z)` bound
-    /// before `y`, so `z` moves ahead of `y` in `V′`.
+    /// The spec's worked example 2, renamed: `S(Y, Z)` is probed on `Z`, which
+    /// `P(X, Z)` bound before `Y`, so `Z` moves ahead of `Y` in `V′`.
     #[test]
     fn a_shared_variable_is_bound_before_the_variable_that_precedes_it() {
         let got = joined("Q(X, Y, Z) :- P(X, Z), S(Y, Z).", &["X", "Y", "Z"]);
