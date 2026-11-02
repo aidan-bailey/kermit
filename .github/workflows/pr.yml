@@ -113,3 +113,5 @@ jobs:
       - run: cargo doc -p kermit --no-deps --features "$ENGINE_FEATURES"
       - run: cargo test -p kermit --features "$ENGINE_FEATURES" --lib
       - run: cargo test -p kermit --features "$ENGINE_FEATURES" --test engine_oracle
+      - run: cargo test -p kermit --features "$ENGINE_FEATURES" --bin kermit
+      - run: cargo test -p kermit --features "$ENGINE_FEATURES" --test cli_engines
