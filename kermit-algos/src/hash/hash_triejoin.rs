@@ -488,7 +488,12 @@ mod tests {
         let mut ds: HashMap<String, &CollidingHashTrie> = HashMap::new();
         ds.insert("R".to_string(), &r);
         ds.insert("S".to_string(), &s);
-        let plan = LexicographicOptimiser.plan(&query, &CatalogStats::default());
+        // The order the tries' columns follow: X, Y, Z. (Every optimiser
+        // plans the join key Y first, #116, which these tries are not laid
+        // out for.)
+        let plan = QueryPlan {
+            variable_ordering: vec![0, 1, 2],
+        };
         assert_eq!(joined(&plan, query, ds), vec![vec![1, 2, 5]]);
     }
 

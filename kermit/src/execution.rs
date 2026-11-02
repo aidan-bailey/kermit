@@ -1903,15 +1903,17 @@ mod tests {
     #[test]
     fn build_indexes_builds_each_index_by_the_familys_mode_and_config() {
         let tuples = || Tuples::from(vec![vec![1, 2], vec![2, 1], vec![3, 4]]);
+        // The plan is payload last (#116), Y then X then Z, so `r` is read Y
+        // first in `r(X, Y)` and Y first in `r(Y, Z)`: two ways, two indexes.
         let (catalog, prepared) = prepared_over(
             RelationHeader::new_positional("r", 2),
             tuples(),
-            "Q(X, Y, Z) :- r(X, Y), r(Z, Y).",
+            "Q(X, Y, Z) :- r(X, Y), r(Y, Z).",
         );
         let specs = prepared.indexes();
         assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].columns, vec![0, 1]);
-        assert_eq!(specs[1].columns, vec![1, 0]);
+        assert_eq!(specs[0].columns, vec![1, 0]);
+        assert_eq!(specs[1].columns, vec![0, 1]);
 
         // ColumnTrie `incremental`, seen by the spy.
         let spy = TrieLftj::<Spy>::new(ColumnTrieBuildMode::Incremental);

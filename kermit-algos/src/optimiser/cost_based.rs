@@ -396,7 +396,9 @@ mod tests {
         let plan = CostBasedOptimiser::default().plan(&q, &stats);
         assert_eq!(plan.variable_ordering, vec![2, 1, 0], "cost-based");
         let cardinality = CardinalityOptimiser.plan(&q, &stats);
-        assert_eq!(cardinality.variable_ordering, vec![1, 0, 2], "cardinality");
+        // Payload last (#116): B and Y are join keys, ranked 12 and 100, and A
+        // is payload.
+        assert_eq!(cardinality.variable_ordering, vec![1, 2, 0], "cardinality");
     }
 
     #[test]

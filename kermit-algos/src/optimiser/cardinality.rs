@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// Plans the global attribute order preferring variables that appear in
-/// the smallest relations.
+/// the smallest relations, with the join keys before the payload (#116).
 ///
 /// Each variable is ranked by the minimum tuple count over the body
 /// predicates that mention it (a variable in a small relation can only
@@ -29,7 +29,7 @@ impl QueryOptimiser for CardinalityOptimiser {
             }
         }
         QueryPlan {
-            variable_ordering: order_by_rank(analysis.num_vars, |v| min_size[v]),
+            variable_ordering: order_by_rank(&analysis, |v| min_size[v]),
         }
     }
 }
@@ -84,16 +84,17 @@ mod tests {
 
     #[test]
     fn shared_variable_ranks_by_its_smallest_relation() {
-        // X appears in both Big and Small; the min fold ranks X by
-        // Small (2), beating Y's 5 — regardless of which mentioning
-        // predicate comes first in the body. A max / first-wins /
+        // X appears in both Big and Small, and Y in Other and Another, so
+        // both are join keys and the ranking alone decides. The min fold
+        // ranks X by Small (2), beating Y's 5 — regardless of which
+        // mentioning predicate comes first in the body. A max / first-wins /
         // last-wins bug would order Y first in one of the two shapes.
-        let q: JoinQuery = "Q(X, Y) :- Big(X), Small(X), Other(Y).".parse().unwrap();
-        let sizes: &[(&str, usize)] = &[("Big", 1000), ("Small", 2), ("Other", 5)];
+        let q: JoinQuery = "Q(X, Y) :- Big(X), Small(X), Other(Y), Another(Y).".parse().unwrap();
+        let sizes: &[(&str, usize)] = &[("Big", 1000), ("Small", 2), ("Other", 5), ("Another", 6)];
         let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, sizes));
         assert_eq!(plan.variable_ordering, vec![0, 1]);
 
-        let q: JoinQuery = "Q(X, Y) :- Small(X), Big(X), Other(Y).".parse().unwrap();
+        let q: JoinQuery = "Q(X, Y) :- Small(X), Big(X), Other(Y), Another(Y).".parse().unwrap();
         let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, sizes));
         assert_eq!(plan.variable_ordering, vec![0, 1]);
     }
@@ -103,8 +104,20 @@ mod tests {
     /// in plan order, so no column order constrains the plan.
     #[test]
     fn the_smallest_relation_goes_first_regardless_of_column_order() {
-        let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y).".parse().unwrap();
-        let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, &[("R", 1000), ("S", 1)]));
+        // Both variables are join keys, so the ranking alone decides.
+        let q: JoinQuery = "Q(X, Y) :- R(X, Y), S(Y), U(X).".parse().unwrap();
+        let sizes: &[(&str, usize)] = &[("R", 1000), ("S", 1), ("U", 1000)];
+        let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, sizes));
         assert_eq!(plan.variable_ordering, vec![1, 0]);
+    }
+
+    /// Payload last (#116): P's relation is the smallest, but P is payload,
+    /// so the join key X still goes first.
+    #[test]
+    fn a_payload_variable_follows_every_join_key_whatever_its_rank() {
+        let q: JoinQuery = "Q(X, P) :- R(P), S(X), T(X).".parse().unwrap();
+        let sizes: &[(&str, usize)] = &[("R", 1), ("S", 1000), ("T", 1000)];
+        let plan = CardinalityOptimiser.plan(&q, &stats_for(&q, sizes));
+        assert_eq!(plan.variable_ordering, vec![0, 1]);
     }
 }

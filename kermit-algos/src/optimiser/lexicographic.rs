@@ -6,19 +6,20 @@ use crate::{
 };
 
 /// Plans the global attribute order by canonical variable index, smallest
-/// first.
+/// first, with the join keys before the payload (#116).
 ///
-/// Nothing constrains it, so the plan is the canonical order itself: head
-/// variables first, then the body-only ones, fully deterministic. It
-/// ignores statistics, which makes it the control arm for optimiser
-/// ablation studies and the default everywhere.
+/// Nothing else constrains it, so the plan is the canonical order of the join
+/// keys (head variables first, then the body-only ones), then the canonical
+/// order of the payload, fully deterministic. It ignores statistics, which
+/// makes it the control arm for optimiser ablation studies and the default
+/// everywhere.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LexicographicOptimiser;
 
 impl QueryOptimiser for LexicographicOptimiser {
     fn plan(&self, query: &kermit_parser::JoinQuery, _stats: &CatalogStats) -> QueryPlan {
         QueryPlan {
-            variable_ordering: order_by_rank(analyse(query).num_vars, |v| v),
+            variable_ordering: order_by_rank(&analyse(query), |v| v),
         }
     }
 }
@@ -37,10 +38,19 @@ mod tests {
     #[test]
     fn a_late_canonical_variable_is_not_forced_first() {
         // K (canonical 1) is the first column of r, but nothing forces it
-        // before Y (canonical 0): the index is built in plan order.
-        let q: JoinQuery = "Q(Y) :- r(K, Y), Const_c7(K).".parse().unwrap();
+        // before Y (canonical 0): both are join keys, and the index is built
+        // in plan order.
+        let q: JoinQuery = "Q(Y) :- r(K, Y), s(Y), Const_c7(K).".parse().unwrap();
         let plan = LexicographicOptimiser.plan(&q, &CatalogStats::default());
         assert_eq!(plan.variable_ordering, vec![0, 1]);
+    }
+
+    /// Payload last (#116): P is canonically second but carried by R alone.
+    #[test]
+    fn payload_follows_the_join_keys() {
+        let q: JoinQuery = "Q(X, P, Y) :- R(X, P), S(X, Y), T(Y).".parse().unwrap();
+        let plan = LexicographicOptimiser.plan(&q, &CatalogStats::default());
+        assert_eq!(plan.variable_ordering, vec![0, 2, 1]);
     }
 
     #[test]
