@@ -59,7 +59,9 @@ pub trait HashTrieIterator {
 
     /// Descend into the child node at the current bucket. Returns `false`
     /// if already at the last level (at the pre-root, for a trie with no
-    /// level) or if the current bucket is empty.
+    /// level), if the current bucket is empty, or if the node below has no
+    /// occupied bucket (an empty trie's root). A `false` return leaves the
+    /// iterator where it was, as a failed `TrieIterator::open` does.
     fn open(&mut self) -> bool;
 
     /// Ascend to the parent node. Returns `false` at the root.

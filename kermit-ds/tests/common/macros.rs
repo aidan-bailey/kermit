@@ -1181,7 +1181,9 @@ macro_rules! hash_trie_traversal_tests {
                     assert!(iter.leaf_tuples().is_none());
                     assert!(!iter.up());
 
-                    // open() enters the root node but finds no occupied bucket.
+                    // The root node has no occupied bucket, so open() fails
+                    // and, as with `TrieIterator`, leaves the iterator at the
+                    // pre-root: everything reads as it did before the open.
                     assert!(!iter.open());
                     assert!(iter.at_end());
                     assert!(iter.key().is_none());
@@ -1189,13 +1191,8 @@ macro_rules! hash_trie_traversal_tests {
                     assert!(iter.next().is_none());
                     assert!(!iter.lookup(h(1)));
                     assert!(iter.leaf_tuples().is_none());
-                    assert!(!iter.open()); // a past-end bucket has no child
-
-                    // Unlike `TrieIterator`, a failed open() still entered the
-                    // (empty) root node, so one up() leaves it; a second is a
-                    // no-op at the pre-root position.
-                    assert!(iter.up());
-                    assert!(!iter.up());
+                    assert!(!iter.open()); // and fails again the same way
+                    assert!(!iter.up()); // nothing was entered to leave
                 }
             );
 
