@@ -264,6 +264,15 @@ def _query_keys(rows: pd.DataFrame) -> list[tuple]:
     ]
 
 
+def _benchmark_query_pairs(rows: pd.DataFrame) -> list[tuple]:
+    """The ``(benchmark, query)`` of every row (``benchmark`` ``None`` for a frame without the
+    column), a missing value as ``None``."""
+    benchmarks = rows["benchmark"] if "benchmark" in rows.columns else [None] * len(rows)
+    return [
+        tuple(None if pd.isna(v) else v for v in pair) for pair in zip(benchmarks, rows["query"])
+    ]
+
+
 def _same_queries_as_engine(rows: pd.DataFrame, engine: str) -> pd.DataFrame:
     """``rows`` with the kermit rows of a ``(benchmark, query)`` the ``engine`` has no row for
     dropped: a ``bench ds`` row (no query) and a query only kermit ran have nothing to compare."""
@@ -274,19 +283,26 @@ def _same_queries_as_engine(rows: pd.DataFrame, engine: str) -> pd.DataFrame:
 
 
 def _refuse_overlaid_bars(rows: pd.DataFrame, engine: str, phase: str) -> None:
-    """Raise when two rows of a panel share a ``(cell, benchmark, query)``: the bar chart draws
-    one bar for each, at the same place."""
-    seen: set[tuple] = set()
-    for cell, key in zip(rows["cell"], _query_keys(rows)):
-        if (cell, key) in seen:
-            columns = [c for c in ("benchmark", "query") if c in rows.columns]
+    """Raise when two rows of a panel share a ``(cell, query)``: the bar chart places bars by
+    query alone, so it draws one bar for each, at the same place, whatever their benchmark."""
+    benchmarks: dict[tuple, list] = {}
+    for cell, (benchmark, query) in zip(rows["cell"], _benchmark_query_pairs(rows)):
+        benchmarks.setdefault((cell, query), []).append(benchmark)
+    for (cell, query), found in benchmarks.items():
+        if len(found) < 2:
+            continue
+        if len(set(found)) > 1:
+            names = ", ".join(sorted(map(str, set(found))))
             raise InsufficientAxesError(
-                f"engines: more than one row for cell {cell!r}, "
-                f"{dict(zip(columns, key))} in the {engine} vs kermit {phase} panel; "
-                "filter the frame first (by optimiser or the ds_* axes) so that each cell has "
-                "one row per query"
+                f"engines: cell {cell!r}, query {query!r} has rows from more than one benchmark "
+                f"({names}) in the {engine} vs kermit {phase} panel, and bars are placed by "
+                "query alone; filter the frame by benchmark first"
             )
-        seen.add((cell, key))
+        raise InsufficientAxesError(
+            f"engines: more than one row for cell {cell!r}, query {query!r} in the {engine} "
+            f"vs kermit {phase} panel; filter the frame first (by optimiser or the ds_* axes) "
+            "so that each cell has one row per query"
+        )
 
 
 def engines(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
@@ -299,13 +315,15 @@ def engines(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
     In each panel only the kermit rows of a ``(benchmark, query)`` that the pair's engine has
     rows for are drawn, so a ``bench ds`` row and a query no engine ran drop out (a frame
     without ``benchmark`` is keyed on ``query`` alone). A panel draws one bar per cell and
-    query: when several rows share a ``(cell, benchmark, query)`` (both optimisers, the Layout
-    variants of one structure, probe beside run reports) the figure would overlay them, so
-    filter the frame first (by ``optimiser``, the ``ds_*`` axes, or ``kind``).
+    query, placed by ``query`` alone: when several rows share a ``(cell, query)`` the figure
+    would overlay them, so filter the frame first. The rows may differ in ``optimiser``, in the
+    ``ds_*`` axes (the Layout variants of one structure), in ``kind`` (probe beside run
+    reports), or in ``benchmark`` (benchmarks that share query names, such as ``h2o`` and
+    ``h2o-sorted``).
 
     Raises :class:`InsufficientAxesError` when ``df`` has no ``system`` column (load v8
-    reports), no engine row on any pair, or more than one row for a ``(cell, benchmark, query)``
-    of a panel.
+    reports), no engine row on any pair, or more than one row for a ``(cell, query)`` of a
+    panel.
     """
     if "system" not in df.columns:
         raise InsufficientAxesError(

@@ -385,6 +385,21 @@ def test_engines_refuses_two_rows_of_one_cell_and_query(engine_tree) -> None:
     plt.close("all")
 
 
+def test_engines_refuses_one_query_name_under_two_benchmarks(engine_tree) -> None:
+    """Bars are placed by query alone, so h2o and h2o-sorted (both q1) would overlay."""
+    plt.close("all")
+    df = load(engine_tree["paths"], engine_tree["criterion_root"])
+    first = df["benchmark"].dropna().iloc[0]
+    second = f"{first}-sorted"
+    renamed = df.assign(benchmark=second, mean_ns=df["mean_ns"] + 5.0)
+    both = pd.concat([df, renamed], ignore_index=True)
+    with pytest.raises(InsufficientAxesError, match=rf"{first}.*{second}.*filter.*benchmark"):
+        kl.engines(both)
+    # Filtering by benchmark, as the message says, draws it.
+    kl.engines(both[both["benchmark"] == second])
+    plt.close("all")
+
+
 def test_engines_draws_a_kermit_row_without_system_as_kermit(engine_tree) -> None:
     """Loaded without defaults, the v7 report has no `system`: it is still kermit's."""
     plt.close("all")
