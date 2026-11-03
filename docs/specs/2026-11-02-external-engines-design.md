@@ -316,10 +316,19 @@ JOIN "idx_0" AS a1 ON a1."c0" = a0."c1"
 JOIN "idx_0" AS a2 ON a2."c0" = a0."c0" AND a2."c1" = a1."c1";
 ```
 
-A spec's build statement selects the spec's columns from the base relation under its `Filter`.
-Constants become `c{c} = v` and equalities `c{a} = c{b}`. For a ternary `r` read as `r(Y, X, c42)`
-under the plan `X, Y`:
-`CREATE TEMP TABLE "idx_0_<n>" AS SELECT "c1", "c0" FROM "rel_r" WHERE "c2" = 42`.
+A spec's build statement selects the spec's columns from the base relation under its `Filter`,
+renamed `c0…` in output order, so the join reads index column `j` as `c{j}`. Every source column
+is qualified by its table, because an output name can equal another source column's name (`"c1"
+AS "c0"`); the reference then never depends on an engine's alias rules. Constants become
+`c{c} = v` and equalities `c{a} = c{b}`, joined by `AND`. For a ternary `r` read as
+`r(Y, X, c42)` under the plan `X, Y` (one line in the code):
+
+```sql
+CREATE TEMP TABLE "idx_0_<n>" AS
+SELECT "rel_r"."c1" AS "c0", "rel_r"."c0" AS "c1"
+FROM "rel_r"
+WHERE "rel_r"."c2" = 42
+```
 
 **Nemo (`engine/nemo.rs`).**
 - One `OperationTable` of result markers, pushed in **kermit's plan order** (`Prepared::plan()`),
@@ -572,11 +581,15 @@ Each step leaves the gate green. Steps 1 and 2 change nothing in an existing rep
 2. `bench run triangle -i all -a all --engine duckdb,nemo --metrics build iteration space
    materialize end-to-end --verify` writes a v8 report with three kermit cells and two engine
    cells. It skips Nemo's `iteration` and `end_to_end` with notes, and every count is verified.
-3. `bench probe … -i all -a all --engine duckdb,nemo --verify --materialize` passes on one query
-   from every benchmark family. Every cache is read without writing (no `--force`, no `bench gen`).
+3. `bench probe … -i all -a all --engine duckdb,nemo --materialize` passes on one query from every
+   benchmark family (a probe always verifies, so it takes no `--verify`). Every cache is read
+   without writing (no `--force`, no `bench gen`).
    - From the shared cache: `triangle`, `lubm-reference -q q1`, `watdiv-stress-100-test-1 -q q0001`
      and `oxford-uniform-s3 -q triangle`. The last two declare no `expected`, so their counts are
-     compared across the five cells (the report's `answer_rows`) instead.
+     compared across the five cells (the report's `answer_rows`) instead: all five agree on an
+     input without duplicate rows, and otherwise the cells of each semantics agree. `R` and `S` of
+     `oxford-uniform-s3` each hold one duplicate row, so its bag cells (`HashTrie`, DuckDB) count
+     7433 and its set cells (`TreeTrie`, `ColumnTrie`, Nemo) 7430.
    - From the 2026-10-24 sweep's private cache, with
      `XDG_CACHE_HOME=/tb/Source/Academia/kermit-bench-runs/full-sweep-2026-10-24/cache`:
      `sw-snap-amazon-pre -q triangle`, `sw-h2o-pre -q q1`, `sw-job-1-pre -q 1a`.
