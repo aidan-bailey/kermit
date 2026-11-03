@@ -34,6 +34,13 @@ kermit-parser = { path = "kermit-parser" }
 kermit-rdf = { path = "kermit-rdf" }
 kermit-generate = { path = "kermit-generate" }
 
+# Full DWARF was ~86% of every debug test binary, and the generic code it describes is
+# instantiated in each workspace crate, so it was duplicated across dozens of test binaries
+# (a worktree's target/ reached 79 GB). Line tables keep file:line in panic backtraces and
+# perf; debuggers lose locals. Release and bench builds are unaffected.
+[profile.dev]
+debug = "line-tables-only"
+
 # jemalloc (the `kermit` binary's allocator, #112) runs its configure probes with
 # -Werror. Where the C compiler defines _FORTIFY_SOURCE by default (nix's gcc
 # wrapper does), glibc warns that it needs optimisation, so at the dev profile's
