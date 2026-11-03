@@ -1,6 +1,6 @@
 # `BenchReport` JSON schema
 
-**Current schema version:** `6`
+**Current schema version:** `8`
 **Source of truth:** `kermit/src/bench_report.rs`
 
 ## Top-level shape
@@ -20,7 +20,7 @@ always parse a list.
 ```json
 [
   {
-    "schema_version": 6,
+    "schema_version": 8,
     "kind": "ds",
     "metadata": [
       { "label": "data structure", "value": "TreeTrie" },
@@ -34,6 +34,7 @@ always parse a list.
       "data_structure": "TreeTrie",
       "relation_bytes": 24,
       "relation_path": "kermit/tests/fixtures/edge.csv",
+      "system": "kermit",
       "tuples": 4
     },
     "criterion_groups": [],
@@ -48,7 +49,7 @@ always parse a list.
 
 | Field              | Type                         | Description |
 |--------------------|------------------------------|-------------|
-| `schema_version`   | u32                          | Currently `6`. Consumers should refuse unknown majors. |
+| `schema_version`   | u32                          | Currently `8`. Consumers should refuse unknown majors. |
 | `kind`             | `"join"` \| `"ds"` \| `"run"` \| `"probe"` | Which `bench` subcommand produced the report. |
 | `metadata`         | Array of `{label, value}`    | Human-readable label/value pairs mirroring the stderr block. Both fields are strings (numerics get stringified for stderr alignment). |
 | `axes`             | Object (string → JSON value) | Structured axis values for downstream tooling. Numeric axes are kept numeric; alphabetically ordered (`BTreeMap`) so JSON diffs are deterministic. |
@@ -67,7 +68,7 @@ always parse a list.
 
 | Field       | Type                     | Description |
 |-------------|--------------------------|-------------|
-| `function`  | string                   | `space` (`bench run`, `bench join`, `bench probe`), `{ds}/space` (`bench ds`), or `build` / `iteration` (a probe's single runs). |
+| `function`  | string                   | `space` (`bench run`, `bench join`, `bench probe`), `{ds}/space` (`bench ds`), or `build` / `iteration` / `materialize` (a probe's single runs; `materialize` only under `--materialize`). |
 | `metric`    | `"time"` \| `"space"`    | What the value measures. |
 | `estimator` | `"exact"` \| `"single"`  | `exact`: a deterministic quantity (heap bytes, as built). `single`: one run's wall time, timed with an `Instant` around one describe build or one execution. A single run is cold; compare it with other single runs, never with a Criterion estimate. |
 | `value`     | number (u64)             | ns for time, bytes for space. |
@@ -94,6 +95,15 @@ levels 1: 4 rows, 272 bytes`, #116) and a HashIndex index whose key is shorter
 than its columns, where `n` is the key length (` levels 0` for the driver,
 which no earlier atom keys); every other line reads as before.
 
+From v8, `materialize` is a further opt-in Criterion time function (`--metrics materialize` on
+`bench run` and `bench join`; `bench probe --materialize` writes a single-run value of the same
+name): the join collecting every full assignment of the executed query, sorted and counted
+distinct (kermit's cells and DuckDB), or Nemo's `execute_plan` and row count. `bench ds` has no
+join and rejects it. An engine's rows (below) use the same bare function ids under the group
+segment `duckdb-t{N}` or `nemo` in place of `{ds}/{algo}`: `build`, `materialize`, and, for DuckDB
+only (it streams), `iteration` and `end_to_end`; `space` is an exact `values` entry for Nemo only
+(DuckDB keeps no index).
+
 In v5 the time functions ran as `build`, `iteration`, `end_to_end`, and
 `space` was a Criterion function (`space`, `{ds}/space`) measured through
 `SpaceMeasurement`.
@@ -118,14 +128,17 @@ semantics).
 
 | Key              | Populated by             | JSON type        | Notes |
 |------------------|--------------------------|------------------|-------|
-| `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`, `"HashIndex"`. The `IndexStructure::axis_value` string. |
-| `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`, `"BinaryHashJoin"`. The `JoinAlgorithm::axis_value` string. |
+| `data_structure` | `join`, `ds`, `run`      | string           | `"TreeTrie"`, `"ColumnTrie"`, `"HashTrie"`, `"HashIndex"`. The `IndexStructure::axis_value` string. Absent from engine rows (v8). |
+| `algorithm`      | `join`, `run`            | string           | `"LeapfrogTriejoin"`, `"HashTriejoin"`, `"BinaryHashJoin"`. The `JoinAlgorithm::axis_value` string. Absent from engine rows (v8). |
 | `optimiser`      | `join`, `run`            | string           | Query optimiser that planned the join's variable ordering. Values: `"lexicographic"` (default), `"cardinality"`, `"cost-based"`. A `"cost-based"` run's per-column statistics walk runs when the catalog is read, outside every timer. Emitted by `bench join` and `bench run` (not `bench ds`, which performs no join). |
 | `column_orders`  | `join`, `run`            | string           | *Removed in v5* (`--column-orders` no longer exists; the planner is always free). Schema 3 and 4 reports carry the column-order policy the join was planned under: `"stored"` (each relation read in its stored column order) or `"any"` (an atom whose plan disagreed with its stored order read a per-query reordered copy). kermit-lab back-fills `"stored"` only on join rows (rows with an `algorithm`) whose `schema_version` is below 5; a v5 row has no such axis, and labelling it `"stored"` would be false. |
 | `index_rows`     | `join`, `run`            | number (usize)   | v5: the rows the query's build copied, `Indexes::rows()`, the sum of its index views' counts (a filtered index counts only the rows that match). Lets build time be normalised per row. Absent from `ds` reports and from reports before v5. |
-| `plan`           | `join`, `run`, `probe`   | string           | v6: the plan's variable order by name, joined by `", "` (`Prepared::variable_order`; a `_` appears under its `K<n>` name). For one catalog and query it identifies the whole plan, so two reports of one (benchmark, query) with the same `plan` ran the same build and join. |
-| `answer_rows`    | `run`, `probe`           | number (u64)     | v6: the answer's row count from the describe step's count; present whenever it counted (`bench run --verify` on a query with `expected`, and every probe query). |
+| `plan`           | `join`, `run`, `probe`   | string           | v6: the plan's variable order by name, joined by `", "` (`Prepared::variable_order`; a `_` appears under its `K<n>` name). For one catalog and query it identifies the whole plan, so two reports of one (benchmark, query) with the same `plan` ran the same build and join. Engine rows carry it too: it is kermit's variable order, which Nemo follows and DuckDB does not (DuckDB plans its own join order). |
+| `answer_rows`    | `join`, `run`, `probe`   | number (u64)     | v6: the answer's row count from the describe step's count; present whenever it counted (`bench run --verify` on a query with `expected`, every probe query, and `-m materialize` on `bench run` and `bench join`). For a cell that streams (kermit's cells, DuckDB) it is the streamed bag count; for one that does not (Nemo) the describe step counts through its one `materialize`, so it is the distinct count of that run. Comparing `answer_rows` across cells on inputs with duplicate rows therefore depends on the cell's semantics: bag cells (`HashTrie`, DuckDB) count the duplicates and set cells (the sorted tries, Nemo) do not, as on `oxford-uniform-s3`'s triangle, 7433 against 7430. |
 | `allocator`      | `join`, `ds`, `run`      | string           | The allocator the binary runs on: `"jemalloc"` (the default `jemalloc` cargo feature of `kermit`) or `"system"` (built with `--no-default-features`; glibc on Linux). Every timing depends on it (#112), so `BenchReport::new` adds it to every report. Always emitted since #112; kermit-lab back-fills `"system"` on every earlier row. |
+| `system`         | `join`, `ds`, `run`, `probe` | string       | v8: what ran the query. `"kermit"` for kermit's own cells (and `bench ds`), `"duckdb"` or `"nemo"` for an external engine cell (`--engine`). On every report from v8; kermit-lab back-fills `"kermit"` on earlier rows, which could only be kermit's. |
+| `engine_version` | `join`, `run`, `probe` (engine rows) | string  | v8: the version of the engine library that actually ran. DuckDB: `SELECT library_version FROM pragma_version()` (for example `v1.4.4`). Nemo: `nemo-physical {version} @ {first 12 characters of the git revision}`. Absent from kermit rows. |
+| `engine_threads` | `join`, `run`, `probe` (DuckDB rows) | number (usize) | v8: DuckDB's `PRAGMA threads` (`--engine-threads`, default 1). Absent from Nemo rows, which have no thread setting, and from kermit rows. |
 | `query`          | `join`, `run`            | string           | Query name. `run`: from the YAML `queries:` list (e.g. `"triangle"`). `bench join`: the query file's stem. |
 | `benchmark`      | `join`, `run`            | string           | Workload name. `run`: YAML benchmark name (e.g. `"triangle"`, `"watdiv-stress-c1"`). `bench join`: `"adhoc"`. |
 | `relation_path`  | `ds`                     | string           | The single relation file passed to `bench ds`. Workspace-relative if invoked from the workspace root. |
@@ -135,6 +148,15 @@ semantics).
 | `relations`      | *(removed 2026-09-09)*   | —                | `bench join` used to emit its relation count; it now reports `tuples` like `bench run`. Old reports may still carry it. |
 | `verified`       | `run`, `probe`           | boolean          | `true` when `--verify` checked the query's result count against the YAML's `expected`; absent otherwise. `bench probe` checks every query that declares `expected`. |
 | `queries_per_build` | `ds`, `join`, `run`   | number (u32)     | K for the `end-to-end` metric (`T = build + K × query`), from `--queries-per-build` (default 1). Emitted **only** when `--metrics` includes `end-to-end`, so historical invocations' reports are byte-identical. K never appears in the Criterion function id — the id is the bare `end_to_end` token (prefixed `{ds}/` for `bench ds`). |
+
+An engine row sets `system`, `engine_version` and, for DuckDB, `engine_threads`; it omits
+`data_structure`, `algorithm` and every `ds_*` axis. The rest of its axes (`benchmark`, `query`,
+`optimiser`, `tuples`, `index_rows`, `plan`, `answer_rows`, `verified`, `allocator`, and
+`queries_per_build` when `end-to-end` is measured, which DuckDB offers and Nemo does not) are the
+run's, as for a kermit cell.
+
+The `system` axis says what ran the query; it is unrelated to `allocator: "system"`, which names the
+system allocator the binary was built with (`--no-default-features`).
 
 ## Resolving a `CriterionGroupRef` to filesystem paths
 
@@ -275,20 +297,28 @@ bump — the `axes` field is an open map.
   pinned to it), or restructuring nesting.
 - **Also bump** when what a metric measures changes, even if every field
   keeps its name and type: values on either side are no longer comparable.
-  v3, v4 and v5 are such bumps.
+  v3, v4, v5 and v7 are such bumps.
 - **No bump** for additive changes: new `axes` keys, new optional fields on
   `CriterionGroupRef`, new conventional values for `kind` or `metric`.
 - Consumers should refuse to parse if `schema_version` is missing or
   greater than the highest version they know about. kermit-lab also
-  refuses to load reports from both sides of version 3, of version 4, or
-  of version 5, in one call: at 3 the `iteration` and `end_to_end` values
-  changed meaning, at 4 `insertion`, `copies`, `end_to_end`, HashTrie's
-  `space` and lazy-expansion HashTrie's `iteration` did, and at 5 the build
-  metric, `iteration`, `end_to_end` and `space` did (`insertion` and
-  `copies` became `build`).
+  refuses to load reports from both sides of version 3, of version 4, of
+  version 5, or of version 7, in one call: at 3 the `iteration` and
+  `end_to_end` values changed meaning, at 4 `insertion`, `copies`,
+  `end_to_end`, HashTrie's `space` and lazy-expansion HashTrie's
+  `iteration` did, at 5 the build metric, `iteration`, `end_to_end` and
+  `space` did (`insertion` and `copies` became `build`), and at 7
+  `iteration` and `end_to_end` did (they exclude the join's per-query
+  setup).
 - v6 is a structural bump with no meaning change: `space` moved from
   `criterion_groups` into `values`. kermit-lab loads v5 and v6 reports
   together.
+- v8 adds the `system` axis and engine rows, which omit `data_structure` and
+  `algorithm`. No metric changes meaning (`materialize` is new and opt-in), so
+  kermit-lab loads v7 and v8 reports together. The bump is there because every
+  v7 run report carries `data_structure` and `algorithm`, kermit-lab relies on
+  that (one back-fill keys on `algorithm` being present), and an older
+  kermit-lab would misread an engine row.
 
 ## Change log
 
@@ -319,4 +349,6 @@ bump — the `axes` field is an open map.
 | 6       | 2026-10-25 | The measurements made without Criterion move into a new top-level `values` list (`ValueEntry`: `function`, `metric`, `estimator`, `value`). `space` is an exact `values` entry in every subcommand and never a Criterion function, so `SpaceMeasurement` is gone. `bench probe` (`kind: probe`) is new: per query and cell, one describe build and one execution timed with an `Instant` (single-run `build` and `iteration`), the exact `space`, verification against `expected`, and no Criterion function. New axes: `plan` and `answer_rows`. Per query and cell the runners measure in one order: describe (one untimed build, read for the `index` lines, `space` and verification), `iteration` on that build, then `build` and `end_to_end`; reports are written after every query. No metric changes what it measures, so kermit-lab loads v5 and v6 together. |
 | 6 (no bump) | 2026-11-02 | Plans are payload last (#116 step 1): every optimiser orders the join keys (the variables two or more atoms carry) first, so a query with a payload variable can change plan, and so its indexes, on every structure. Rows are told apart by the `plan` axis (v6), as the seek-default and allocator changes were told apart by their axes. |
 | 6 (no bump) | 2026-11-02 | Added the `ds_layout_levels` axis (`--ds-layout-levels all\|keys`, #116 step 2) and the `index` line's ` levels n` suffix, present only under `keys`. Additive: an `all` report is unchanged, so `schema_version` stays 6. kermit-lab back-fills `all`. |
-| 6 (no bump) | 2026-11-02 | A fourth cell, `HashIndex` × `BinaryHashJoin` (a left-deep pipelined binary hash join over a keyed hash index): new `data_structure` and `algorithm` axis values, and `ds_layout_hasher` on the new structure's reports. The `index` line's ` levels {n}` suffix, which this table's previous row introduced under `keys`, also appears on a HashIndex index, with its key length as `n` (` levels 0` for the driver). Additive: no metric changes meaning and no existing key changes type, so `schema_version` stays 6. kermit-lab needs no new back-fill. |
+| 7       | 2026-11-02 | What `iteration` and `end_to_end` measure changed, so they are not comparable with v6, and kermit-lab refuses to load v6 and v7 reports together unless `allow_mixed_schema=True`. The query reaches the join as an `ExecutedQuery` (`kermit-algos/src/executed.rs`), built once and untimed by `prepare`: no timed sample clones the query, runs `analyse` or `QueryPlan::validate`, builds the name-to-index map or parses `#k` ids, about 0.5 µs per join on a 3-atom triangle and 1.5 µs on an 8-atom chain (release, measured 2026-11-02). A query of constant checks now runs through the join, whose one answer is the empty row. `build`, `space` and every `bench ds` metric keep their meaning. No field or axis changed. |
+| 8       | 2026-11-02 | External engines (DuckDB, Nemo, in process; `--engine`) and the opt-in `materialize` metric. New axes: `system` (on every report: `kermit`, `duckdb`, `nemo`), `engine_version` and `engine_threads` (engine rows only). Engine rows omit `data_structure`, `algorithm` and every `ds_*` axis. New Criterion function `materialize`, and a probe's single-run `materialize` value under `--materialize`. No metric changes what it measures, so kermit-lab loads v7 and v8 reports together and back-fills `system = "kermit"`. |
+| 8 (no bump) | 2026-11-03 | A fourth kermit cell, `HashIndex` × `BinaryHashJoin` (a left-deep pipelined binary hash join over a keyed hash index): new `data_structure` and `algorithm` axis values, and `ds_layout_hasher` on the new structure's reports. The `index` line's ` levels {n}` suffix, which the 2026-11-02 `ds_layout_levels` row introduced under `keys`, also appears on a HashIndex index, with its key length as `n` (` levels 0` for the driver). Additive: no metric changes meaning and no existing key changes type, so `schema_version` stays 8. kermit-lab needs no new back-fill. |

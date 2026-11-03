@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.figure import Figure
 
+from .analysis import KERMIT_SYSTEM, cell_labels
 from .encoding import (
     AestheticMap,
     apply_filter,
@@ -23,6 +24,20 @@ from .facet import finish, make_grid
 from .geoms import draw_bar, draw_line, draw_scatter, draw_violin
 from .plots_errors import InsufficientAxesError
 from .styles import apply as apply_style
+
+
+def _default_colour(df: pd.DataFrame) -> tuple[pd.DataFrame, Optional[str]]:
+    """The frame and colour column ``plot`` uses when the caller names no colour.
+
+    A frame holding a non-kermit row (a ``system`` other than ``kermit``; a missing value
+    counts as kermit, as the back-fill does) gets a ``cell`` column of
+    :func:`~kermit_lab.analysis.cell_labels`, on a copy, and is coloured by it. Any other frame
+    comes back as it is, uncoloured.
+    """
+    system = df["system"] if "system" in df.columns else pd.Series(dtype="object")
+    if not (system.notna() & (system != KERMIT_SYSTEM)).any():
+        return df, None
+    return df.assign(cell=cell_labels(df)), "cell"
 
 
 def plot(
@@ -45,7 +60,16 @@ def plot(
 ) -> Figure:
     """Render one figure. ``kind`` ∈ {bar, line, scatter, violin}. Time rows
     are Criterion estimates unless ``estimator="single"`` asks for
-    ``bench probe``'s single runs."""
+    ``bench probe``'s single runs.
+
+    ``colour`` left as ``None`` colours by the cell label
+    (:func:`~kermit_lab.analysis.cell_labels`: ``system`` for an engine,
+    ``data_structure/algorithm`` for a kermit cell) when ``df`` holds a row of an external
+    engine, so engines and kermit's cells get one colour each; a frame of kermit rows alone
+    stays uncoloured. This holds for the tradeoff scatter too. An explicit ``colour`` always
+    wins. ``facet`` has no default."""
+    if colour is None:
+        df, colour = _default_colour(df)
     amap = AestheticMap(
         kind=kind, x=x, y=y, colour=colour, style=style, facet=facet,
         filter=dict(filter or {}), phase=phase, estimator=estimator,

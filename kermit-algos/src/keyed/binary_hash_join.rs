@@ -30,10 +30,11 @@
 //! `j` is body atom `j`.
 
 use {
-    crate::{analysis::analyse, join_algo::JoinAlgo, optimiser::QueryPlan},
+    crate::{
+        executed::ExecutedQuery,
+        join_algo::{assert_index_count, JoinAlgo},
+    },
     kermit_iters::KeyedIterable,
-    kermit_parser::JoinQuery,
-    std::collections::HashMap,
 };
 
 /// One level of the loop nest: a body atom, probed on the variables the
@@ -129,46 +130,44 @@ fn descend<DS: KeyedIterable, S: FnMut(&[usize])>(
 ///
 /// # Panics
 ///
-/// `join_for_each` panics if the plan is invalid, and if an index is not
-/// keyed on exactly the variables the atoms before it bind (the panic message
-/// starts with `probe keys lead the columns`). Both are caller errors:
-/// `kermit::db::build` already refuses an index set planned under another
-/// trie-level policy.
+/// `join_for_each` panics if it is given the wrong number of indexes (see
+/// [`JoinAlgo::join_for_each`]), and if an index is not keyed on exactly the
+/// variables the atoms before it bind (the panic message starts with `probe
+/// keys lead the columns`). Both are caller errors: `kermit::db::build`
+/// already refuses an index set planned under another trie-level policy.
 pub struct BinaryHashJoin;
 
 impl<DS> JoinAlgo<DS> for BinaryHashJoin
 where
     DS: KeyedIterable,
 {
-    fn join_for_each<S: FnMut(&[usize])>(
-        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>, mut emit: S,
-    ) {
-        let analysis = analyse(&query);
-        if let Err(e) = plan.validate(&analysis) {
-            panic!("BinaryHashJoin::join_for_each: invalid query plan: {e}");
-        }
+    fn join_for_each<S: FnMut(&[usize])>(query: &ExecutedQuery, indexes: &[DS], mut emit: S) {
+        assert_index_count("BinaryHashJoin", query, indexes.len());
+        let analysis = query.analysis();
         // One step per body atom, in body order, which is the join order.
         // `bound` records which variables the steps so far bind.
         let mut bound = vec![false; analysis.num_vars];
-        let mut steps = Vec::with_capacity(query.body.len());
-        for (position, (atom, variables)) in query
+        let mut steps = Vec::with_capacity(query.atom_indexes().len());
+        for (position, ((atom, &id), variables)) in query
+            .query()
             .body
             .iter()
+            .zip(query.atom_indexes())
             .zip(&analysis.predicate_variables)
             .enumerate()
         {
-            let index = *datastructures
-                .get(&atom.name)
-                .expect("Missing datastructure for predicate name");
             steps.push(Step::new(
-                position, &atom.name, index, variables, &mut bound,
+                position,
+                &atom.name,
+                &indexes[id],
+                variables,
+                &mut bound,
             ));
         }
-        // A variable no atom carries can take no value, so the query has no
-        // answer (validation rules it out for every query from `kermit::db`).
-        if !bound.iter().all(|&b| b) {
-            return;
-        }
+        // Every variable is carried by some atom (an [`ExecutedQuery`] holds
+        // no other), so no slot of `row` is left unbound. An empty body has
+        // no step, and `descend` emits its one answer, the empty row.
+        debug_assert!(bound.iter().all(|&b| b), "unbound variable");
         // The only allocations of the join besides the steps: the row, in
         // canonical variable order, and the keys, `key_len` slots per step.
         let mut row = vec![0; analysis.num_vars];
@@ -181,8 +180,10 @@ where
 mod tests {
     use {
         super::*,
+        crate::optimiser::QueryPlan,
         kermit_ds::{HashIndex, Relation, RelationHeader},
         kermit_iters::Tuples,
+        kermit_parser::JoinQuery,
     };
 
     /// `rows` as an index of `arity` columns keyed on its first `levels`.
@@ -197,18 +198,20 @@ mod tests {
         )
     }
 
-    /// `query` joined by [`BinaryHashJoin`] under the plan `order`, over the
-    /// named indexes, with the rows sorted.
-    fn joined(order: &[usize], query: &str, indexes: &[(&str, &HashIndex)]) -> Vec<Vec<usize>> {
+    /// `query` as an [`ExecutedQuery`] under the plan `order`.
+    fn executed(order: &[usize], query: &str) -> ExecutedQuery {
         let plan = QueryPlan {
             variable_ordering: order.to_vec(),
         };
-        let datastructures: HashMap<String, &HashIndex> = indexes
-            .iter()
-            .map(|&(name, index)| (name.to_string(), index))
-            .collect();
+        ExecutedQuery::new(query.parse().unwrap(), plan).unwrap()
+    }
+
+    /// `query` joined by [`BinaryHashJoin`] under the plan `order`, over
+    /// `indexes` in id order (the body's distinct atom names by first
+    /// appearance), with the rows sorted.
+    fn joined(order: &[usize], query: &str, indexes: &[HashIndex]) -> Vec<Vec<usize>> {
         let mut rows = Vec::new();
-        BinaryHashJoin::join_for_each(&plan, query.parse().unwrap(), datastructures, |row| {
+        BinaryHashJoin::join_for_each(&executed(order, query), indexes, |row| {
             rows.push(row.to_vec());
         });
         rows.sort();
@@ -221,18 +224,17 @@ mod tests {
     /// the variable order `[X, Y, Z]`: `R` is the driver (no key), `S` is
     /// keyed on `Y`, `T` on `(X, Z)`. `|R ⋈ S|` is 5, the output 3: the
     /// worked micro-example of `docs/algorithms/binary-hash-join.md`.
-    fn triangle_indexes() -> (HashIndex, HashIndex, HashIndex) {
-        (
+    fn triangle_indexes() -> [HashIndex; 3] {
+        [
             index("R", 2, 0, &[&[1, 2], &[1, 3], &[2, 3]]),
             index("S", 2, 1, &[&[2, 3], &[3, 4], &[3, 5]]),
             index("T", 2, 2, &[&[1, 3], &[1, 4], &[2, 5]]),
-        )
+        ]
     }
 
     #[test]
     fn the_triangle_probes_each_atom_on_what_the_earlier_ones_bind() {
-        let (r, s, t) = triangle_indexes();
-        let rows = joined(&[0, 1, 2], TRIANGLE, &[("R", &r), ("S", &s), ("T", &t)]);
+        let rows = joined(&[0, 1, 2], TRIANGLE, &triangle_indexes());
         assert_eq!(rows, vec![vec![1, 2, 3], vec![1, 3, 4], vec![2, 3, 5]]);
     }
 
@@ -242,10 +244,7 @@ mod tests {
     fn an_empty_key_crosses_every_row() {
         let r = index("R", 2, 0, &[&[1, 2], &[3, 4]]);
         let s = index("S", 2, 0, &[&[5, 6], &[7, 8]]);
-        let rows = joined(&[0, 1, 2, 3], "Q(A, B, C, D) :- R(A, B), S(C, D).", &[
-            ("R", &r),
-            ("S", &s),
-        ]);
+        let rows = joined(&[0, 1, 2, 3], "Q(A, B, C, D) :- R(A, B), S(C, D).", &[r, s]);
         assert_eq!(rows, vec![
             vec![1, 2, 5, 6],
             vec![1, 2, 7, 8],
@@ -258,11 +257,11 @@ mod tests {
     /// whole join.
     #[test]
     fn a_probe_with_no_match_ends_its_branch() {
-        let (r, s, t) = triangle_indexes();
+        let [r, s, t] = triangle_indexes();
         let no_s = index("S", 2, 1, &[]);
         let no_t = index("T", 2, 2, &[&[9, 9]]);
-        assert!(joined(&[0, 1, 2], TRIANGLE, &[("R", &r), ("S", &no_s), ("T", &t)]).is_empty());
-        assert!(joined(&[0, 1, 2], TRIANGLE, &[("R", &r), ("S", &s), ("T", &no_t)]).is_empty());
+        assert!(joined(&[0, 1, 2], TRIANGLE, &[r.clone(), no_s, t]).is_empty());
+        assert!(joined(&[0, 1, 2], TRIANGLE, &[r, s, no_t]).is_empty());
     }
 
     /// Duplicate rows are matched separately: bag semantics, as for
@@ -271,10 +270,7 @@ mod tests {
     fn duplicate_rows_multiply() {
         let r = index("R", 1, 0, &[&[1], &[1]]);
         let s = index("S", 2, 1, &[&[1, 5]]);
-        let rows = joined(&[0, 1], "Q(X, Y) :- R(X), S(X, Y).", &[
-            ("R", &r),
-            ("S", &s),
-        ]);
+        let rows = joined(&[0, 1], "Q(X, Y) :- R(X), S(X, Y).", &[r, s]);
         assert_eq!(rows, vec![vec![1, 5], vec![1, 5]]);
     }
 
@@ -284,23 +280,42 @@ mod tests {
     #[test]
     fn rows_are_emitted_in_canonical_variable_order() {
         let r = index("R", 2, 0, &[&[1, 10], &[2, 20]]);
-        let rows = joined(&[1, 0], "Q(Y, X) :- R(X, Y).", &[("R", &r)]);
+        let rows = joined(&[1, 0], "Q(Y, X) :- R(X, Y).", &[r]);
         assert_eq!(rows, vec![vec![10, 1], vec![20, 2]]);
     }
 
-    /// A variable no atom carries can take no value, so the query has no
-    /// answer. Validation rules it out for every query from `kermit::db`.
+    /// A self-join reads one index twice: the two atoms share id 0.
     #[test]
-    fn a_variable_no_atom_carries_has_no_answer() {
-        let r = index("R", 1, 0, &[&[1]]);
-        assert!(joined(&[0, 1], "Q(X, W) :- R(X).", &[("R", &r)]).is_empty());
+    fn a_self_join_reads_one_index_through_both_atoms() {
+        let r = index("R", 2, 1, &[&[1, 2], &[2, 3], &[3, 4]]);
+        let driver = index("D", 1, 0, &[&[1], &[2]]);
+        let rows = joined(&[0, 1, 2], "Q(X, Y, Z) :- D(X), R(X, Y), R(Y, Z).", &[
+            driver, r,
+        ]);
+        assert_eq!(rows, vec![vec![1, 2, 3], vec![2, 3, 4]]);
+    }
+
+    /// The empty conjunction: its one answer is the empty row.
+    #[test]
+    fn join_for_each_emits_one_empty_row_for_an_empty_body() {
+        let mut query: JoinQuery = "Q(c1) :- R(c1).".parse().unwrap();
+        query.head.terms.clear();
+        query.body.clear();
+        let plan = QueryPlan {
+            variable_ordering: vec![],
+        };
+        let executed = ExecutedQuery::new(query, plan).unwrap();
+        let none: [HashIndex; 0] = [];
+        let mut rows: Vec<Vec<usize>> = Vec::new();
+        BinaryHashJoin::join_for_each(&executed, &none, |row| rows.push(row.to_vec()));
+        assert_eq!(rows, vec![Vec::<usize>::new()]);
     }
 
     #[test]
-    #[should_panic(expected = "invalid query plan")]
-    fn a_plan_that_is_not_a_permutation_is_refused() {
-        let (r, s, t) = triangle_indexes();
-        let _ = joined(&[0, 0, 1], TRIANGLE, &[("R", &r), ("S", &s), ("T", &t)]);
+    #[should_panic(expected = "BinaryHashJoin::join_for_each: 1 indexes for a query that reads 2")]
+    fn join_for_each_panics_when_an_index_is_missing() {
+        let r = index("R", 2, 0, &[&[1, 2]]);
+        let _ = joined(&[0, 1, 2], "Q(X, Y, Z) :- R(X, Y), S(Y, Z).", &[r]);
     }
 
     /// Indexes keyed on every column, as `bench ds` builds them (the header's
@@ -309,9 +324,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "probe keys lead the columns")]
     fn an_index_keyed_on_every_column_is_refused() {
-        let (_, s, t) = triangle_indexes();
+        let [_, s, t] = triangle_indexes();
         let r = index("R", 2, 2, &[&[1, 2]]);
-        let _ = joined(&[0, 1, 2], TRIANGLE, &[("R", &r), ("S", &s), ("T", &t)]);
+        let _ = joined(&[0, 1, 2], TRIANGLE, &[r, s, t]);
     }
 
     /// `S(Z, Y)` is keyed on `Z`, which `R(X, Y)` does not bind: a query not
@@ -321,10 +336,7 @@ mod tests {
     fn a_key_no_earlier_atom_binds_is_refused() {
         let r = index("R", 2, 0, &[&[1, 2]]);
         let s = index("S", 2, 1, &[&[3, 2]]);
-        let _ = joined(&[0, 2, 1], "Q(X, Y, Z) :- R(X, Y), S(Z, Y).", &[
-            ("R", &r),
-            ("S", &s),
-        ]);
+        let _ = joined(&[0, 2, 1], "Q(X, Y, Z) :- R(X, Y), S(Z, Y).", &[r, s]);
     }
 
     /// `S(X, Y)` is keyed on `X`, which `R(X, Y)` binds, but carries `Y` past
@@ -335,9 +347,6 @@ mod tests {
     fn a_column_past_the_key_that_an_earlier_atom_binds_is_refused() {
         let r = index("R", 2, 0, &[&[1, 2]]);
         let s = index("S", 2, 1, &[&[1, 2]]);
-        let _ = joined(&[0, 1], "Q(X, Y) :- R(X, Y), S(X, Y).", &[
-            ("R", &r),
-            ("S", &s),
-        ]);
+        let _ = joined(&[0, 1], "Q(X, Y) :- R(X, Y), S(X, Y).", &[r, s]);
     }
 }

@@ -84,6 +84,9 @@ BINARY_AXIS_DEFAULTS: dict[str, object] = {
     # The binary linked no allocator of its own before #112, so every earlier
     # report ran on the system allocator (glibc on the hosts measured).
     "allocator": "system",
+    # Every report before v8 came from one of kermit's own cells; the external engines
+    # (DuckDB, Nemo) arrived with the `system` axis and always carry it.
+    "system": "kermit",
 }
 
 

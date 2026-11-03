@@ -42,6 +42,8 @@ _AXIS_STR_KEYS: tuple[str, ...] = (
     "optimiser",
     "column_orders",
     "allocator",
+    "system",
+    "engine_version",
     "query",
     "benchmark",
     "relation_path",
@@ -55,6 +57,7 @@ _AXIS_INT_KEYS: tuple[str, ...] = (
     "queries_per_build",
     "index_rows",
     "answer_rows",
+    "engine_threads",
 )
 _AXIS_BOOL_KEYS: tuple[str, ...] = (
     "verified",

@@ -176,7 +176,7 @@ def test_allow_mixed_schema_loads_both_sides(tmp_path: Path) -> None:
 
 
 def test_single_sided_loads_are_unaffected(tmp_path: Path) -> None:
-    for version in (2, 3, 4, 5):
+    for version in (2, 3, 4, 5, 6, 7):
         same = [_versioned_report(tmp_path / f"v{version}_{i}.json", version) for i in range(2)]
         assert len(load_reports(same)) == 2
 
@@ -190,6 +190,19 @@ def test_refuses_to_mix_reports_across_the_flat_tuples_boundary(tmp_path: Path) 
         load_reports([new, old])
     reports = load_reports([old, new], allow_mixed_schema=True)
     assert [r.schema_version for r in reports] == [3, 4]
+
+
+def test_refuses_to_mix_reports_across_the_executed_query_boundary(tmp_path: Path) -> None:
+    old = _versioned_report(tmp_path / "v6.json", 6)
+    new = _versioned_report(tmp_path / "v7.json", 7)
+    with pytest.raises(SchemaError, match="refusing to mix schema_version 6"):
+        load_reports([old, new])
+    with pytest.raises(SchemaError, match="per-query setup"):
+        load_reports([new, old])
+    with pytest.raises(SchemaError, match="to compare build, space and bench ds metrics only"):
+        load_reports([old, new])
+    reports = load_reports([old, new], allow_mixed_schema=True)
+    assert [r.schema_version for r in reports] == [6, 7]
 
 
 def test_a_load_straddling_both_boundaries_names_the_first(tmp_path: Path) -> None:
@@ -289,7 +302,10 @@ def test_phase_of_recognises_build() -> None:
     assert phase_of("TreeTrie/build") == "build"
     assert phase_of("space") is None
     # Reports before v5 still load: their phases stay recognised.
-    assert TIME_PHASES == ("build", "insertion", "copies", "iteration", "end_to_end")
+    # `materialize` is the opt-in metric of report v8 (external engines).
+    assert TIME_PHASES == (
+        "build", "insertion", "copies", "iteration", "end_to_end", "materialize",
+    )
     assert phase_of("TreeTrie/insertion") == "insertion"
 
 

@@ -29,6 +29,7 @@
 
 mod access;
 mod analysis;
+mod executed;
 mod hash;
 mod index_plan;
 mod join_algo;
@@ -49,6 +50,7 @@ use clap::ValueEnum;
 pub use {
     access::{extract_accesses, Access, AccessQuery, RewriteError, ACCESS_PREFIX},
     analysis::{analyse, canonical_names, QueryAnalysis},
+    executed::{ExecutedQuery, ExecutedQueryError},
     hash::HashTriejoin,
     index_plan::{plan_indexes, IndexPlan, IndexSpec, INDEX_ID_PREFIX},
     join_algo::JoinAlgo,

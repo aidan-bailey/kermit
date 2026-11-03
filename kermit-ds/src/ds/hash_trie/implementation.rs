@@ -3,8 +3,8 @@
 //! `HeapSize`, and `HashTrieIterable`.
 //!
 //! `HashTrie` is generic over three Layout dimensions: a
-//! [`HashStrategy`](kermit_iters::HashStrategy) `H` (default
-//! [`SipHashStrategy`](kermit_iters::SipHashStrategy)), which controls how
+//! [`HashStrategy`] `H` (default
+//! [`SipHashStrategy`]), which controls how
 //! attribute values are hashed at every level of the trie, a
 //! [`PruningPolicy`] `P` (default [`NoPruning`]), which decides whether the
 //! `Singleton` node variant exists at all, and an [`ExpansionPolicy`] `E`
@@ -16,7 +16,7 @@
 //!
 //! Runtime values live in [`HashTrieConfig`] (the Config axis, emitted as
 //! `ds_config_<value>`); they reach the trie through
-//! [`ConfigurableRelation`](crate::relation::ConfigurableRelation).
+//! [`ConfigurableRelation`].
 
 use {
     super::{
@@ -111,7 +111,7 @@ use {
 /// from its list. `insert` places one tuple by `insert_at`, which the
 /// `incremental` build mode runs once per tuple; both build the identical
 /// trie. `with_config` / `from_tuples_with_config`
-/// (via [`ConfigurableRelation`](crate::relation::ConfigurableRelation)) are
+/// (via [`ConfigurableRelation`]) are
 /// the config-carrying constructors; `new` / `from_tuples` are thin wrappers
 /// over them that supply the default configuration. A known set of tuples
 /// can also be built by the `incremental`, `radix:K`, `parallel:N` and

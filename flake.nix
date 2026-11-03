@@ -50,6 +50,13 @@
           MIRIFLAGS = "-Zmiri-disable-isolation";
           RUST_BACKTRACE = "1";
 
+          # The `engine-duckdb` feature of `kermit` links Nix's libduckdb instead of
+          # compiling DuckDB's C++ amalgamation (`kermit/build.rs` reads both, and
+          # emits an rpath to the first). `engine-duckdb-bundled` is for CI, which
+          # has no Nix.
+          DUCKDB_LIB_DIR = "${pkgs.duckdb.lib}/lib";
+          DUCKDB_INCLUDE_DIR = "${pkgs.duckdb.dev}/include";
+
           # LD_LIBRARY_PATH covers two NixOS-specific dynamic-loading needs:
           #   - the vendored watdiv binary (kermit-rdf/vendor/watdiv) dlopens
           #     libstdc++.so.6 by bare name — required by the kermit-rdf e2e

@@ -4,14 +4,15 @@ use {
     super::RelationArities,
     kermit_algos::{distinct_per_column, RelationStats, StatisticsLevel},
     kermit_ds::{RelationHeader, Tuples},
-    std::collections::BTreeMap,
+    std::{collections::BTreeMap, sync::Arc},
 };
 
-/// One relation: its header, its rows, and the statistics gathered from
-/// them when the catalog was created.
+/// One relation: its header, its rows (shared, see
+/// [`Catalog::shared_tuples`]), and the statistics gathered from them when
+/// the catalog was created.
 struct Entry {
     header: RelationHeader,
-    tuples: Tuples,
+    tuples: Arc<Tuples>,
     statistics: RelationStats,
 }
 
@@ -89,7 +90,7 @@ impl Catalog {
                 }
                 let entry = Entry {
                     header,
-                    tuples,
+                    tuples: Arc::new(tuples),
                     statistics,
                 };
                 (name, entry)
@@ -108,7 +109,19 @@ impl Catalog {
 
     /// The rows of the relation called `name`, if the catalog holds one.
     pub fn tuples(&self, name: &str) -> Option<&Tuples> {
-        self.relations.get(name).map(|entry| &entry.tuples)
+        self.relations
+            .get(name)
+            .map(|entry| Arc::as_ref(&entry.tuples))
+    }
+
+    /// A shared handle on the rows of the relation called `name`, if the
+    /// catalog holds one: the catalog's own batch, not a copy. A consumer
+    /// that must own its source (an engine's `'static` table provider) keeps
+    /// the handle and streams from it, so the rows exist once.
+    pub fn shared_tuples(&self, name: &str) -> Option<Arc<Tuples>> {
+        self.relations
+            .get(name)
+            .map(|entry| Arc::clone(&entry.tuples))
     }
 
     /// The statistics gathered for `name`, if the catalog holds it.
@@ -268,5 +281,39 @@ mod tests {
             "edge".to_string(),
             "r".to_string()
         ]);
+    }
+
+    /// `shared_tuples` is a handle on the catalog's own batch, not a copy: the
+    /// pointer is the one `tuples` lends, and each call adds one strong count.
+    #[test]
+    fn shared_tuples_hands_out_the_catalogs_own_rows() {
+        let catalog = Catalog::new(vec![edge(), r()], StatisticsLevel::TupleCounts);
+        let shared = catalog.shared_tuples("edge").unwrap();
+        assert!(std::ptr::eq(&*shared, catalog.tuples("edge").unwrap()));
+        assert_eq!(shared.to_vecs(), vec![
+            vec![1, 10],
+            vec![1, 20],
+            vec![2, 10],
+            vec![3, 30]
+        ]);
+        assert_eq!(Arc::strong_count(&shared), 2);
+        let again = catalog.shared_tuples("edge").unwrap();
+        assert!(Arc::ptr_eq(&shared, &again));
+        assert_eq!(Arc::strong_count(&shared), 3);
+        // Another relation is another batch.
+        assert!(!Arc::ptr_eq(&shared, &catalog.shared_tuples("r").unwrap()));
+        assert!(catalog.shared_tuples("nope").is_none());
+    }
+
+    /// A provider holds its handle after the catalog is gone, which is why
+    /// the handle is an `Arc` and not a borrow.
+    #[test]
+    fn a_shared_handle_outlives_the_catalog() {
+        let catalog = Catalog::new(vec![edge()], StatisticsLevel::TupleCounts);
+        let shared = catalog.shared_tuples("edge").unwrap();
+        drop(catalog);
+        assert_eq!(Arc::strong_count(&shared), 1);
+        assert_eq!(shared.len(), 4);
+        assert_eq!(shared.arity(), 2);
     }
 }

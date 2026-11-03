@@ -79,8 +79,8 @@ pub(crate) fn join_order(query: &JoinQuery, plan: &QueryPlan) -> JoinOrder {
             .min_by_key(|&a| (Reverse(joiner.bound_in(a)), a))
             .expect("join_order: some unjoined atom carries the plan's next variable");
         joiner.join(driver);
-        for a in 0..atom_count {
-            if !joiner.joined[a] && atom_vars[a].iter().all(|&v| joiner.bound[v]) {
+        for (a, vars) in atom_vars.iter().enumerate() {
+            if !joiner.joined[a] && vars.iter().all(|&v| joiner.bound[v]) {
                 joiner.join(a);
             }
         }

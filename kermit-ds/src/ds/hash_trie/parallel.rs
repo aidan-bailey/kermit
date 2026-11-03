@@ -1,4 +1,4 @@
-//! The `parallel:N` and `presized:N` builds of a [`HashTrie`](super::HashTrie):
+//! The `parallel:N` and `presized:N` builds of a [`HashTrie`]:
 //! `parallel:N` is the radix build's three steps (`radix.rs`), with the
 //! partition and build steps run on N threads by the morsel-driven helpers
 //! of `crate::morsel` (Leis et al., SIGMOD 2014; SIGMOD 2020 §3.3.2; issue

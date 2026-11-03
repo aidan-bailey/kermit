@@ -14,7 +14,15 @@
 //! subtree and the handlers that write a generated benchmark into the cache,
 //! which outgrew `main.rs`.
 
+mod cell;
 pub mod ds;
+// Engine cells exist only when an engine feature compiles one in; the gates
+// build none.
+#[cfg_attr(
+    not(any(feature = "engine-duckdb", feature = "engine-nemo")),
+    allow(dead_code)
+)]
+mod engine;
 pub mod gen;
 pub mod measure;
 pub mod run;
@@ -23,7 +31,9 @@ pub mod workload;
 pub use workload::Workload;
 pub(crate) use {
     ds::dispatch_ds_bench,
-    run::{check_sweep_group_directories, dispatch_run_bench, resolve_sweep, RunSettings},
+    run::{
+        check_join_group_directories, check_sweep_group_directories, resolve_sweep, RunSettings,
+    },
 };
 
 /// A measurement `bench ds` / `bench run` can record.
@@ -38,6 +48,12 @@ pub enum Metric {
     /// (`BatchSize::PerIteration`) is expensive, and existing invocations
     /// must keep their historical measurement surface.
     EndToEnd,
+    /// The join with its result kept: every full assignment of the executed
+    /// query pushed into a flat batch, sorted, and the distinct rows counted.
+    /// Opt-in like `end-to-end`, because streaming stays the baseline
+    /// (`iteration`), and guarded by `--materialize-max-bytes`, since the
+    /// result can dwarf memory. `bench ds` has no join and refuses it.
+    Materialize,
 }
 
 impl Metric {
@@ -97,5 +113,21 @@ mod tests {
     fn criterion_directory_name_truncates_on_a_char_boundary() {
         let name = criterion_directory_name(&format!("{}é", "a".repeat(63)));
         assert_eq!(name, "a".repeat(63));
+    }
+
+    #[test]
+    fn materialize_is_a_timed_opt_in_metric_named_on_the_command_line() {
+        use clap::ValueEnum;
+        assert!(Metric::Materialize.is_timed());
+        assert!(Metric::EndToEnd.is_timed());
+        assert!(!Metric::Space.is_timed());
+        assert_eq!(
+            Metric::Materialize.to_possible_value().unwrap().get_name(),
+            "materialize"
+        );
+        assert_eq!(
+            Metric::EndToEnd.to_possible_value().unwrap().get_name(),
+            "end-to-end"
+        );
     }
 }

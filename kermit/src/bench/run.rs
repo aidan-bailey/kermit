@@ -4,29 +4,202 @@
 
 use {
     super::{
+        cell::{execution_segment, Cell, FamilyCell},
         criterion_directory_name,
-        measure::{CriterionSettings, Described, MeasureRequest, QuerySubject},
-        workload::PreparedWorkload,
+        engine::{skip_notes, EngineCell},
+        measure::{CriterionSettings, Described, MeasureRequest, Subject},
+        workload::{PreparedWorkload, Workload},
         Metric, CRITERION_MAX_DIRECTORY_NAME_BYTES,
     },
     crate::{
         bench_report::{write_metadata_block, BenchKind, BenchReport, MetadataLine, ReportSink},
-        execution::{Execution, ExecutionFamily, HashHtj, IndexBhj, SortedTrie, Sweep, TrieLftj},
+        execution::{Execution, HashHtj, IndexBhj, SortedTrie, Sweep, TrieLftj},
         options::{
             unreached_flag, with_hash_index_layout, with_hash_trie_layout, with_sorted_trie_layout,
             DsChoices, DsFlag, PlannerArgs,
         },
         IndexStructureSelector, JoinAlgorithmSelector,
     },
-    kermit::db::{Catalog, Prepared},
+    anyhow::Context,
+    kermit::{
+        db::{Catalog, Prepared},
+        engine::Engine,
+    },
     kermit_algos::{IndexSpec, INDEX_ID_PREFIX},
     kermit_bench::BenchmarkDefinition,
-    kermit_ds::{RelationHeader, TupleView, Tuples},
     std::{
         collections::{hash_map::Entry, BTreeMap, HashMap},
         io,
     },
 };
+
+/// One cell of a `bench run`, `bench probe` or `bench join` sweep: a kermit
+/// (structure, algorithm) cell, or an external engine.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SweepCell {
+    Kermit(Execution),
+    Engine(crate::options::EngineChoice),
+}
+
+impl SweepCell {
+    /// The trie-level policy this cell's queries are prepared under. Engines
+    /// read no trie, and share the sorted cells' `All`.
+    pub(crate) fn trie_levels(self) -> kermit_ds::TrieLevels {
+        match self {
+            | Self::Kermit(execution) => execution.trie_levels(),
+            | Self::Engine(_) => kermit_ds::TrieLevels::All,
+        }
+    }
+
+    /// The Criterion group's last segments, which are also the cell's label
+    /// in messages: `{ds}/{algo}` (`execution_segment`), or the engine's label.
+    pub(crate) fn group_segment(self) -> String {
+        match self {
+            | Self::Kermit(execution) => execution_segment(execution),
+            | Self::Engine(choice) => choice.label(),
+        }
+    }
+
+    /// Whether the cell measures `metric`, as `Cell::supports` answers for the
+    /// cell it dispatches to.
+    fn supports(self, metric: Metric) -> bool {
+        match self {
+            | Self::Kermit(_) => true,
+            | Self::Engine(choice) => choice.supports(metric),
+        }
+    }
+
+    /// Whether the cell writes a Criterion group when `metrics` are
+    /// requested: only a timed metric it supports does (`space` is exact, and
+    /// Nemo under `-m iteration` measures nothing).
+    fn writes_group(self, metrics: &[Metric]) -> bool {
+        metrics
+            .iter()
+            .any(|&metric| metric.is_timed() && self.supports(metric))
+    }
+}
+
+/// The sweep a run covers: its kermit cells (from `-i` / `-a`, already
+/// expanded by [`resolve_sweep`], empty without them), then its engines.
+///
+/// `given` are the `--ds-*` flags the user passed. They reach kermit cells
+/// only, so one given with no kermit cell would be silently ignored, which is
+/// a usage error (#86).
+///
+/// # Errors
+///
+/// No cell at all, or a `--ds-*` flag with no kermit cell to reach.
+pub(crate) fn sweep_cells(
+    kermit: Vec<Execution>, given: &[DsFlag], engines: Vec<crate::options::EngineChoice>,
+) -> anyhow::Result<Vec<SweepCell>> {
+    if kermit.is_empty() && engines.is_empty() {
+        anyhow::bail!("nothing to run: give -i and -a, or --engine");
+    }
+    if kermit.is_empty() {
+        if let Some(flag) = given.first() {
+            anyhow::bail!(
+                "{flag} applies only to {} cells, but this run names no -i and -a; --engine cells \
+                 take no --ds-* flags",
+                flag.structures_label()
+            );
+        }
+    }
+    Ok(kermit
+        .into_iter()
+        .map(SweepCell::Kermit)
+        .chain(engines.into_iter().map(SweepCell::Engine))
+        .collect())
+}
+
+/// Runs one sweep cell over `workload`: a kermit cell through
+/// [`dispatch_run_bench`], an engine through [`dispatch_engine_bench`].
+pub(crate) fn dispatch_sweep_cell(
+    cell: SweepCell, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    match cell {
+        | SweepCell::Kermit(execution) => dispatch_run_bench(execution, workload, settings, sink),
+        | SweepCell::Engine(choice) => dispatch_engine_bench(choice, workload, settings, sink),
+    }
+}
+
+/// Monomorphises [`run_engine_cell`] over the engine `choice` names. An engine
+/// whose feature this build lacks is refused before any cell runs
+/// (`EngineChoices::resolve`), so its arm here only keeps the match total.
+fn dispatch_engine_bench(
+    choice: crate::options::EngineChoice, workload: &PreparedWorkload, settings: RunSettings<'_>,
+    sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    match choice.engine {
+        | crate::options::EngineSelector::Duckdb => {
+            run_duckdb(choice.threads, workload, settings, sink)
+        },
+        | crate::options::EngineSelector::Nemo => run_nemo(workload, settings, sink),
+    }
+}
+
+#[cfg(feature = "engine-duckdb")]
+fn run_duckdb(
+    threads: usize, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    run_engine_cell(
+        &EngineCell::<kermit::engine::duckdb::DuckDb> {
+            settings: kermit::engine::duckdb::DuckDbSettings {
+                threads,
+            },
+        },
+        workload,
+        settings,
+        sink,
+    )
+}
+
+#[cfg(not(feature = "engine-duckdb"))]
+fn run_duckdb(
+    _threads: usize, _workload: &PreparedWorkload, _settings: RunSettings<'_>,
+    _sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    Err(crate::options::EngineSelector::Duckdb.missing_feature())
+}
+
+#[cfg(feature = "engine-nemo")]
+fn run_nemo(
+    workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    run_engine_cell(
+        &EngineCell::<kermit::engine::nemo::Nemo> {
+            settings: (),
+        },
+        workload,
+        settings,
+        sink,
+    )
+}
+
+#[cfg(not(feature = "engine-nemo"))]
+fn run_nemo(
+    _workload: &PreparedWorkload, _settings: RunSettings<'_>, _sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    Err(crate::options::EngineSelector::Nemo.missing_feature())
+}
+
+/// Runs one engine cell over every query of `workload`: the skip notes for
+/// the metrics it cannot measure, once per cell and benchmark, then
+/// [`run_benchmark`] over the requested metrics. `run_benchmark` filters them
+/// through `Cell::supports` and prints no note; this function filters nothing.
+// Only a feature that compiles an engine in calls it.
+#[cfg_attr(
+    not(any(feature = "engine-duckdb", feature = "engine-nemo")),
+    allow(dead_code)
+)]
+fn run_engine_cell<E: Engine + 'static>(
+    cell: &EngineCell<E>, workload: &PreparedWorkload, settings: RunSettings<'_>,
+    sink: &mut ReportSink,
+) -> anyhow::Result<()> {
+    for note in skip_notes(cell, settings.metrics, settings.single_run) {
+        eprintln!("{note}");
+    }
+    run_benchmark(cell, workload, settings, sink)
+}
 
 /// Everything a measured join needs besides the cell and the workload:
 /// what kind of report to stamp, how to name the Criterion group, which
@@ -53,6 +226,10 @@ pub(crate) struct RunSettings<'a> {
     /// Count every query and record the describe step's build and
     /// execution times as single-run values (`bench probe`).
     pub single_run: bool,
+    /// `--materialize-max-bytes`: the `materialize` metric is skipped, with a
+    /// note, for a query whose full assignments would take more bytes than
+    /// this (see [`materialize_bytes`]).
+    pub materialize_max_bytes: u64,
     /// Criterion sample/measurement/warm-up settings.
     pub criterion: &'a CriterionSettings,
 }
@@ -94,21 +271,119 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
         .sum()
 }
 
+/// The bytes `materialize` keeps for `rows` assignments of `width` variables:
+/// `rows × width × 8`, saturating. The memory guard compares it with
+/// `--materialize-max-bytes`.
+pub(crate) fn materialize_bytes(rows: u64, width: usize) -> u64 {
+    let width = u64::try_from(width).unwrap_or(u64::MAX);
+    let value = u64::try_from(std::mem::size_of::<usize>()).unwrap_or(u64::MAX);
+    rows.saturating_mul(width).saturating_mul(value)
+}
+
+/// What the guard decides: `Some(bytes)`, the result's size, when it exceeds
+/// `limit` and `materialize` must be skipped; `None` when it fits.
+fn materialize_skip(rows: u64, width: usize, limit: u64) -> Option<u64> {
+    let bytes = materialize_bytes(rows, width);
+    (bytes > limit).then_some(bytes)
+}
+
+/// What the memory guard decides for one query's `materialize`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaterializeVerdict {
+    /// `materialize` is not asked for.
+    NotAsked,
+    /// The result fits the limit.
+    Run,
+    /// A streaming subject's result is over the limit, by this many bytes.
+    /// The describe step may still count: its streamed count is cheap.
+    Skip(u64),
+    /// A subject that does not stream is over the limit, by this many bytes.
+    /// Its count is a `materialize`, so nothing materialises: no describe-step
+    /// count, no preflight count.
+    SkipUncounted(u64),
+    /// A streaming subject with no `expected`: ask again with the describe
+    /// step's streamed count.
+    AfterStreamedCount,
+    /// A subject that does not stream, with no `expected`: the guard has no
+    /// row count to read, so it warns and everything runs unguarded.
+    Unguarded,
+}
+
+impl MaterializeVerdict {
+    /// Whether the describe step and a cell's preflight may count: false only
+    /// when a subject that does not stream is skipped (its count is the
+    /// `materialize` the guard refused).
+    pub(crate) fn counts(self) -> bool { !matches!(self, Self::SkipUncounted(_)) }
+
+    /// The result's size in bytes, when the guard skips `materialize`.
+    pub(crate) fn skipped(self) -> Option<u64> {
+        match self {
+            | Self::Skip(bytes) | Self::SkipUncounted(bytes) => Some(bytes),
+            | _ => None,
+        }
+    }
+}
+
+/// The memory guard, in one place for every subject. `requested` is whether
+/// anything would materialise, as [`guard_requested`] computes it; `streams` is
+/// the subject type's [`Subject::STREAMS`]; `rows` is the full-assignment count
+/// the guard reads: the query's `expected`, or, on a second call for a
+/// streaming subject, the describe step's streamed count; `width` is
+/// `Prepared::assignment_width`.
+///
+/// A streaming subject with no `rows` answers
+/// [`AfterStreamedCount`](MaterializeVerdict::AfterStreamedCount). A subject
+/// that does not stream is decided before its describe step, from `expected`
+/// alone, so over the limit it answers
+/// [`SkipUncounted`](MaterializeVerdict::SkipUncounted) and nothing
+/// materialises; with no `expected` it answers
+/// [`Unguarded`](MaterializeVerdict::Unguarded).
+pub(crate) fn materialize_guard(
+    requested: bool, streams: bool, rows: Option<u64>, width: usize, limit: u64,
+) -> MaterializeVerdict {
+    use MaterializeVerdict::*;
+    if !requested {
+        return NotAsked;
+    }
+    match (rows, streams) {
+        | (Some(rows), _) => match materialize_skip(rows, width, limit) {
+            | None => Run,
+            | Some(bytes) if streams => Skip(bytes),
+            | Some(bytes) => SkipUncounted(bytes),
+        },
+        | (None, true) => AfterStreamedCount,
+        | (None, false) => Unguarded,
+    }
+}
+
+/// The guard's `requested`. For a streaming subject it is whether the
+/// `materialize` metric is asked for (`metric`): the describe step streams its
+/// count, so only the metric materialises. A subject that does not stream
+/// counts through `materialize`, so it is also whether `--verify` has an
+/// `expected` to check (`verifies`) or the run is a probe's single run
+/// (`single_run`): a `--verify`-only run over the limit then materialises
+/// nothing either.
+fn guard_requested(streams: bool, metric: bool, verifies: bool, single_run: bool) -> bool {
+    metric || (!streams && (verifies || single_run))
+}
+
 /// Runs every query of `workload` on one execution cell and pushes one
 /// report per query to `sink` as soon as that query finishes, each stamped
 /// with `settings.kind` and grouped under `settings.prefix`.
 ///
-/// Generic over the [`ExecutionFamily`] so the sorted family
-/// (`TrieLftj<R>`) and the hash family (`HashHtj<H, P, E>`) share one body:
-/// metadata, Criterion group wiring and report assembly are identical, and
-/// the report's `data_structure` / `algorithm` axes come from
-/// `family.execution()` — the same value that picked the code path — so a
-/// report can never name an algorithm it did not run (issue #56).
+/// Generic over the [`Cell`] so every kind of cell shares one body: kermit's
+/// sorted family (`TrieLftj<R>`), hash family (`HashHtj<H, P, E, L>`) and
+/// keyed family (`IndexBhj<H>`), each wrapped in a [`FamilyCell`], and any
+/// other cell. Metadata, Criterion group
+/// wiring and report assembly are identical; what differs is asked of the
+/// cell. For a `FamilyCell` the report's `data_structure` / `algorithm` axes
+/// come from `family.execution()` — the same value that picked the code path
+/// — so a report can never name an algorithm it did not run (issue #56).
 ///
 /// The workload arrives prepared (`Workload::prepare`): every query is
 /// validated and planned, and the relations the queries name sit in the
 /// catalog as flat tuples, so a query that cannot run never reaches this
-/// function (issue #78). Per query, the cell measures a [`QuerySubject`]
+/// function (issue #78). Per query, the cell measures its subject
 /// through the measure layer. One describe build outside Criterion gives the
 /// `index` lines, the exact `space` and the count `--verify` checks, which
 /// `bench probe` also times; then
@@ -116,8 +391,16 @@ fn tuples_read(catalog: &Catalog, prepared: &Prepared) -> usize {
 /// `build` and `end_to_end`. With `settings.verify`, a query with an
 /// `expected` count is checked before any timer starts, and a mismatch aborts
 /// with every earlier query's report already in `sink`.
-fn run_benchmark<F: ExecutionFamily>(
-    family: &F, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
+///
+/// `materialize`, when asked for, is guarded first (see
+/// [`materialize_guard`]): its result is every full assignment, so it is
+/// skipped, with a stderr note and a `materialize` metadata line, when
+/// `expected` (for a streaming subject, else the describe step's streamed
+/// count) times the variable count times 8 bytes exceeds
+/// `settings.materialize_max_bytes`. Otherwise `--verify` also checks its
+/// distinct count against `expected`, once.
+fn run_benchmark<C: Cell>(
+    cell: &C, workload: &PreparedWorkload, settings: RunSettings<'_>, sink: &mut ReportSink,
 ) -> anyhow::Result<()> {
     let RunSettings {
         kind,
@@ -127,6 +410,7 @@ fn run_benchmark<F: ExecutionFamily>(
         queries_per_build,
         verify,
         single_run,
+        materialize_max_bytes,
         criterion,
     } = settings;
     let PreparedWorkload {
@@ -134,65 +418,89 @@ fn run_benchmark<F: ExecutionFamily>(
         catalog,
         ..
     } = workload;
-    // The queries prepared under this family's trie levels (#116).
-    let prepared_queries = workload.prepared(<F::Rel as kermit_ds::Relation>::TRIE_LEVELS);
+    // The queries prepared under this cell's trie levels (#116).
+    let prepared_queries = workload.prepared(cell.trie_levels());
 
-    // `ds_name`/`algo_name` become the report's identity axes and the
-    // on-disk `target/criterion/{group}` names (the group_name below embeds
-    // them). The labels are pinned by `IndexStructure::axis_value` and
-    // `JoinAlgorithm::axis_value`; see the tests there before changing one.
-    let execution = family.execution();
-    let ds_name = execution.index_structure().axis_value();
-    let algo_name = execution.algorithm().axis_value();
+    // The cell's label names it in the messages below; its axes (`system`,
+    // and for a kermit cell `data_structure`, `algorithm` and the `ds_*`
+    // dimensions) are the base of every query's report axes, and its group
+    // segment completes the Criterion group (the on-disk
+    // `target/criterion/{group}` names embed it).
+    let label = cell.label();
+    let cell_axes = cell.axes();
+    let group_segment = cell.group_segment();
 
-    // Standard optimization axes: the dimensions the structure emits (the
-    // `ds_*` prefix convention, see `kermit_iters::HasOptimizationAxes`,
-    // guarantees no collision with the base axes assembled per query below)
-    // plus the build mode, which comes from the family because it leaves no
-    // trace in the structure. They are read off one empty relation, since
-    // they depend on the type, not on the data, and a query whose atoms are
-    // all constant checks builds no index to read them from.
-    let optimization_axes = {
-        let empty = Tuples::new(1);
-        let probe = family.build_index(
-            RelationHeader::new_positional("axes", 1),
-            TupleView::all(&empty),
-        );
-        let mut axes = F::optimization_axes(&probe);
-        axes.extend(family.build_mode_axes());
-        axes
-    };
+    // A metric the cell cannot measure is not requested of it.
+    let supported: Vec<Metric> = metrics
+        .iter()
+        .copied()
+        .filter(|&metric| cell.supports(metric))
+        .collect();
+    let metrics = supported.as_slice();
 
     for (query_def, prepared) in definition.queries.iter().zip(prepared_queries) {
+        // The memory guard of `materialize`, first from `expected` alone; a
+        // streaming subject with none is decided again after its describe
+        // step has counted.
+        let streams = <C::Subject<'_> as Subject>::STREAMS;
+        let materialize_requested = metrics.contains(&Metric::Materialize);
+        let width = prepared.assignment_width();
+        let mut guard = materialize_guard(
+            guard_requested(
+                streams,
+                materialize_requested,
+                verify && query_def.expected.is_some(),
+                single_run,
+            ),
+            streams,
+            query_def.expected,
+            width,
+            materialize_max_bytes,
+        );
+        if guard == MaterializeVerdict::Unguarded {
+            eprintln!(
+                "warning: {label} does not stream and {}/{} has no expected count, so materialize \
+                 runs without the --materialize-max-bytes guard",
+                definition.name, query_def.name
+            );
+        }
+
+        // The cell's preflight counts unless the materialize guard (bound at
+        // the top of this loop body) has skipped an uncounted `materialize`: it
+        // is that guard's decision, not a second copy of it.
+        // The executed query (`#k` ids) is in the inner message; the benchmark
+        // and the YAML query name it came from are the context.
+        let context = || format!("benchmark '{}' query '{}'", definition.name, query_def.name);
+        cell.preflight(catalog, prepared, guard.counts())
+            .with_context(context)?;
+        let subject = cell.subject(catalog, prepared).with_context(context)?;
+        let subject_axes = cell.subject_axes(&subject);
+        let count = guard.counts()
+            && ((verify && query_def.expected.is_some()) || single_run || materialize_requested);
         // The describe step: this query's one build outside Criterion. Every
         // untimed number in its report is read from it, and `measure`
         // consumes it before any build is timed.
-        let subject = QuerySubject {
-            family,
-            catalog,
-            prepared,
-        };
-        let count = (verify && query_def.expected.is_some()) || single_run;
-        let described = Described::new(&subject, count);
+        let mut described = Described::new(&subject, count);
 
         let mut metadata = vec![
             MetadataLine::new("benchmark", &definition.name),
             MetadataLine::new("query", &query_def.name),
-            MetadataLine::new("data structure", ds_name),
-            MetadataLine::new("algorithm", algo_name),
-            MetadataLine::new("allocator", crate::ALLOCATOR),
         ];
-        for (position, ((spec, &rows), &bytes)) in prepared
-            .indexes()
-            .iter()
-            .zip(prepared.index_rows())
-            .zip(described.bytes())
-            .enumerate()
-        {
-            metadata.push(MetadataLine::new(
-                "index",
-                describe_index(position, spec, rows, bytes),
-            ));
+        metadata.extend(cell.metadata());
+        metadata.push(MetadataLine::new("allocator", crate::ALLOCATOR));
+        if C::PER_INDEX_BYTES {
+            for (position, ((spec, &rows), &bytes)) in prepared
+                .indexes()
+                .iter()
+                .zip(prepared.index_rows())
+                .zip(described.bytes())
+                .enumerate()
+            {
+                metadata.push(MetadataLine::new(
+                    "index",
+                    describe_index(position, spec, rows, bytes),
+                ));
+            }
         }
         // Correctness gate: the describe step's count is compared before any
         // measurement time is spent on the query, so a wrong answer can never
@@ -200,18 +508,25 @@ fn run_benchmark<F: ExecutionFamily>(
         // path `iteration` times, so verifying a huge result never
         // materialised it.
         let verified = match (verify, query_def.expected) {
+            | (true, Some(_)) if !guard.counts() => {
+                eprintln!(
+                    "bench {kind}: query '{}' in benchmark '{}' on {label} is not verified: its \
+                     count would materialize the result, which the guard skips",
+                    query_def.name, definition.name
+                );
+                false
+            },
             | (true, Some(expected)) => {
                 let actual = described
                     .rows()
                     .expect("the describe step counts every query it verifies");
                 if actual != expected {
                     anyhow::bail!(
-                        "verification failed: benchmark '{}' query '{}' on {}/{} returned {} \
-                         tuples, expected {}",
+                        "verification failed: benchmark '{}' query '{}' on {} returned {} tuples, \
+                         expected {}",
                         definition.name,
                         query_def.name,
-                        ds_name,
-                        algo_name,
+                        label,
                         actual,
                         expected
                     );
@@ -233,15 +548,70 @@ fn run_benchmark<F: ExecutionFamily>(
         if let Some(rows) = answer_rows {
             metadata.push(MetadataLine::new("answer rows", rows));
         }
+        // A streaming subject with no `expected` is decided now, from the
+        // streamed count the describe step just took.
+        if guard == MaterializeVerdict::AfterStreamedCount {
+            guard = materialize_guard(true, streams, answer_rows, width, materialize_max_bytes);
+            assert_ne!(
+                guard,
+                MaterializeVerdict::AfterStreamedCount,
+                "the describe step counts when materialize is requested"
+            );
+        }
+        let mut run_materialize = materialize_requested;
+        if let Some(bytes) = guard.skipped() {
+            eprintln!(
+                "note: skipping materialize for {}/{} on {label}: {bytes} bytes over \
+                 --materialize-max-bytes {materialize_max_bytes}",
+                definition.name, query_def.name
+            );
+            metadata.push(MetadataLine::new(
+                "materialize",
+                format!("skipped: {bytes} bytes over {materialize_max_bytes}"),
+            ));
+            run_materialize = false;
+        }
+        // `--verify`'s check of the materialized count, once; a probe's
+        // single-run `materialize` value comes from the same run. A subject
+        // that does not stream returns the describe step's count, so
+        // `materialize` has still run once on that build.
+        if run_materialize && (single_run || (verify && query_def.expected.is_some())) {
+            let distinct = described
+                .materialize_once()
+                .expect("a query subject materializes");
+            if let (true, Some(expected)) = (verify, query_def.expected) {
+                if distinct != expected {
+                    anyhow::bail!(
+                        "verification failed: benchmark '{}' query '{}' on {label} materialized \
+                         {distinct} distinct full assignments, expected {expected}",
+                        definition.name,
+                        query_def.name,
+                    );
+                }
+                metadata.push(MetadataLine::new("verified materialize", "yes"));
+            }
+        }
+        // A skipped `materialize` is not measured.
+        let measured_metrics: Vec<Metric> = metrics
+            .iter()
+            .copied()
+            .filter(|&metric| metric != Metric::Materialize || run_materialize)
+            .collect();
         if single_run {
             let build = described.build_time();
-            let iteration = described
-                .exercise_time()
-                .expect("a probe counts every query");
-            metadata.push(MetadataLine::new(
-                "single run",
-                format!("build {build:?}, iteration {iteration:?}"),
-            ));
+            let mut single = format!("build {build:?}");
+            if streams {
+                let iteration = described
+                    .exercise_time()
+                    .expect("a probe counts every query it streams");
+                single = format!("{single}, iteration {iteration:?}");
+            }
+            if run_materialize {
+                if let Some(materialize) = described.materialize_time() {
+                    single = format!("{single}, materialize {materialize:?}");
+                }
+            }
+            metadata.push(MetadataLine::new("single run", single));
         }
         if metrics.contains(&Metric::EndToEnd) {
             metadata.push(MetadataLine::new("queries per build", queries_per_build));
@@ -261,9 +631,10 @@ fn run_benchmark<F: ExecutionFamily>(
         };
         write_metadata_block(&mut io::stderr(), title, &metadata)?;
 
-        let group_name = criterion_group_name(prefix, &definition.name, &query_def.name, execution);
+        let group_name =
+            group_with_segment(prefix, &definition.name, &query_def.name, &group_segment);
         let measured = described.measure(&MeasureRequest {
-            metrics,
+            metrics: &measured_metrics,
             single_run,
             queries_per_build,
             criterion,
@@ -274,8 +645,6 @@ fn run_benchmark<F: ExecutionFamily>(
         let mut axes = BTreeMap::from([
             ("benchmark".to_string(), serde_json::json!(definition.name)),
             ("query".to_string(), serde_json::json!(query_def.name)),
-            ("data_structure".to_string(), serde_json::json!(ds_name)),
-            ("algorithm".to_string(), serde_json::json!(algo_name)),
             (
                 "optimiser".to_string(),
                 serde_json::json!(planner.optimiser.axis_value()),
@@ -304,7 +673,8 @@ fn run_benchmark<F: ExecutionFamily>(
                 serde_json::json!(queries_per_build),
             );
         }
-        axes.extend(optimization_axes.clone());
+        axes.extend(cell_axes.clone());
+        axes.extend(subject_axes);
         if verified {
             axes.insert("verified".to_string(), serde_json::json!(true));
         }
@@ -321,7 +691,7 @@ fn run_benchmark<F: ExecutionFamily>(
 }
 
 /// Runs one `bench run` cell by monomorphising [`run_benchmark`] over the
-/// [`ExecutionFamily`] the cell names, pushing each query's report to
+/// [`FamilyCell`] of the family the cell names, pushing each query's report to
 /// `sink`. There is no separate algorithm parameter to ignore: the
 /// `Execution` fixes both halves of the pair.
 pub(crate) fn dispatch_run_bench(
@@ -332,7 +702,7 @@ pub(crate) fn dispatch_run_bench(
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::TreeTrie<S>>::new(build),
+            &FamilyCell(&TrieLftj::<kermit_ds::TreeTrie<S>>::new(build)),
             workload,
             settings,
             sink,
@@ -341,7 +711,7 @@ pub(crate) fn dispatch_run_bench(
             seek,
             build,
         }) => with_sorted_trie_layout!(seek, |S| run_benchmark(
-            &TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build),
+            &FamilyCell(&TrieLftj::<kermit_ds::ColumnTrie<S>>::new(build)),
             workload,
             settings,
             sink,
@@ -355,7 +725,7 @@ pub(crate) fn dispatch_run_bench(
             build,
         } => with_hash_trie_layout!(hasher, pruning, expansion, levels, |H, P, E, L| {
             run_benchmark(
-                &HashHtj::<H, P, E, L>::new(config, build),
+                &FamilyCell(&HashHtj::<H, P, E, L>::new(config, build)),
                 workload,
                 settings,
                 sink,
@@ -364,7 +734,7 @@ pub(crate) fn dispatch_run_bench(
         | Execution::IndexBhj {
             hasher,
         } => with_hash_index_layout!(hasher, |H| run_benchmark(
-            &IndexBhj::<H>::new(),
+            &FamilyCell(&IndexBhj::<H>::new()),
             workload,
             settings,
             sink,
@@ -403,13 +773,30 @@ fn check_group_directories_distinct(
 }
 
 /// The Criterion group under which one query of one cell is measured:
-/// `{prefix}/{workload}/{query}/{ds}/{algo}`.
-fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: Execution) -> String {
-    format!(
-        "{prefix}/{workload}/{query}/{}/{}",
-        cell.index_structure().axis_value(),
-        cell.algorithm().axis_value()
-    )
+/// `{prefix}/{workload}/{query}/{segment}`, where the segment is the cell's
+/// own (`{ds}/{algo}` for a kermit cell).
+fn group_with_segment(prefix: &str, workload: &str, query: &str, segment: &str) -> String {
+    format!("{prefix}/{workload}/{query}/{segment}")
+}
+
+/// [`group_with_segment`] for a [`SweepCell`], which is how the sweep's clash
+/// check names the groups before any cell runs: `{ds}/{algo}` for a kermit
+/// cell, the engine's label for an engine.
+fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: SweepCell) -> String {
+    group_with_segment(prefix, workload, query, &cell.group_segment())
+}
+
+/// The Criterion groups one query writes across `cells` when `metrics` are
+/// requested: a cell that measures none of the timed ones writes none.
+fn query_groups<'a>(
+    prefix: &'a str, workload: &'a str, query: &'a str, cells: &'a [SweepCell],
+    metrics: &'a [Metric],
+) -> impl Iterator<Item = String> + 'a {
+    cells
+        .iter()
+        .copied()
+        .filter(move |cell| cell.writes_group(metrics))
+        .map(move |cell| criterion_group_name(prefix, workload, query, cell))
 }
 
 /// Refuses a `bench run` sweep in which two (benchmark, query, cell) groups
@@ -418,10 +805,11 @@ fn criterion_group_name(prefix: &str, workload: &str, query: &str, cell: Executi
 /// Works from names alone, so it fetches nothing and runs before the first
 /// cell. A `query_filter` naming no query of a benchmark contributes no
 /// groups for it: that benchmark still fails in its own turn, after the
-/// benchmarks before it have run and been reported.
+/// benchmarks before it have run and been reported. A cell contributes a group
+/// only if it supports a requested timed metric.
 pub(crate) fn check_sweep_group_directories(
     prefix: &str, benchmarks: &[BenchmarkDefinition], query_filter: Option<&str>,
-    cells: &[Execution],
+    cells: &[SweepCell], metrics: &[Metric],
 ) -> anyhow::Result<()> {
     check_group_directories_distinct(benchmarks.iter().flat_map(|benchmark| {
         benchmark
@@ -429,11 +817,22 @@ pub(crate) fn check_sweep_group_directories(
             .iter()
             .filter(move |query| query_filter.is_none_or(|name| query.name == name))
             .flat_map(move |query| {
-                cells.iter().map(move |&cell| {
-                    criterion_group_name(prefix, &benchmark.name, &query.name, cell)
-                })
+                query_groups(prefix, &benchmark.name, &query.name, cells, metrics)
             })
     }))
+}
+
+/// [`check_sweep_group_directories`] for `bench join`: the one ad-hoc
+/// workload's queries over its kermit cell and its engines.
+pub(crate) fn check_join_group_directories(
+    prefix: &str, workload: &Workload, cells: &[SweepCell], metrics: &[Metric],
+) -> anyhow::Result<()> {
+    check_group_directories_distinct(
+        workload
+            .queries
+            .iter()
+            .flat_map(|query| query_groups(prefix, &workload.name, &query.name, cells, metrics)),
+    )
 }
 
 /// Expands the `-i` / `-a` selectors into the valid execution cells.
@@ -488,7 +887,7 @@ pub(crate) fn resolve_sweep(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, crate::bench::workload::NamedQuery};
 
     /// #86: under `-i all`, `-a` decides which cells run, and a flag must
     /// reach one of them. Each row is one `-a` with the flags that keep a
@@ -556,6 +955,307 @@ mod tests {
         }
     }
 
+    /// The group name `bench run` has always used, pinned before it moves.
+    #[test]
+    fn a_kermit_cells_group_is_prefix_workload_query_structure_algorithm() {
+        let cell = SweepCell::Kermit(Execution::for_structure(
+            kermit_ds::IndexStructure::ColumnTrie,
+            DsChoices::default(),
+        ));
+        assert_eq!(
+            criterion_group_name("run", "triangle", "q0000", cell),
+            "run/triangle/q0000/ColumnTrie/LeapfrogTriejoin"
+        );
+        let cell = SweepCell::Kermit(Execution::for_structure(
+            kermit_ds::IndexStructure::HashTrie,
+            DsChoices::default(),
+        ));
+        assert_eq!(
+            criterion_group_name("join", "adhoc", "q", cell),
+            "join/adhoc/q/HashTrie/HashTriejoin"
+        );
+    }
+
+    fn duckdb(threads: usize) -> SweepCell {
+        SweepCell::Engine(crate::options::EngineChoice {
+            engine: crate::options::EngineSelector::Duckdb,
+            threads,
+        })
+    }
+
+    fn nemo() -> SweepCell {
+        SweepCell::Engine(crate::options::EngineChoice {
+            engine: crate::options::EngineSelector::Nemo,
+            threads: 1,
+        })
+    }
+
+    fn tree_trie() -> SweepCell {
+        SweepCell::Kermit(Execution::for_structure(
+            kermit_ds::IndexStructure::TreeTrie,
+            DsChoices::default(),
+        ))
+    }
+
+    #[test]
+    fn a_group_name_ends_in_the_cells_segment() {
+        assert_eq!(
+            criterion_group_name("run", "triangle", "triangle", tree_trie()),
+            "run/triangle/triangle/TreeTrie/LeapfrogTriejoin"
+        );
+        assert_eq!(
+            criterion_group_name("run", "triangle", "triangle", duckdb(4)),
+            "run/triangle/triangle/duckdb-t4"
+        );
+        assert_eq!(
+            criterion_group_name("run", "triangle", "triangle", nemo()),
+            "run/triangle/triangle/nemo"
+        );
+    }
+
+    /// The 64-byte clash check covers engine cells: past byte 64 the engines'
+    /// segments are truncated away, so two of them (or one and a kermit cell)
+    /// share a directory.
+    #[test]
+    fn engine_groups_share_a_criterion_directory_past_byte_64() {
+        let prefix = format!("run-{}", "long-prefix-".repeat(6));
+        let groups = |cells: &[SweepCell]| {
+            cells
+                .iter()
+                .map(|&cell| criterion_group_name(&prefix, "triangle", "triangle", cell))
+                .collect::<Vec<_>>()
+        };
+        let clash = check_group_directories_distinct(groups(&[duckdb(1), nemo()]))
+            .unwrap_err()
+            .to_string();
+        assert!(clash.contains("/duckdb-t1"), "{clash}");
+        assert!(clash.contains("/nemo"), "{clash}");
+        assert!(clash.contains("64"), "{clash}");
+        check_group_directories_distinct(groups(&[duckdb(1)])).unwrap();
+    }
+
+    /// `Nemo`-shaped cells write a group only for the metrics they measure:
+    /// `-m iteration` writes none for Nemo, `-m space` none for anyone.
+    #[test]
+    fn a_cell_writes_a_group_only_for_a_timed_metric_it_supports() {
+        let groups = |cells: &[SweepCell], metrics: &[Metric]| {
+            query_groups("run", "triangle", "triangle", cells, metrics).collect::<Vec<_>>()
+        };
+        let cells = [tree_trie(), duckdb(1), nemo()];
+        assert_eq!(groups(&cells, &[Metric::Iteration]), [
+            "run/triangle/triangle/TreeTrie/LeapfrogTriejoin",
+            "run/triangle/triangle/duckdb-t1"
+        ]);
+        assert_eq!(groups(&cells, &[Metric::Build]).len(), 3);
+        assert!(groups(&cells, &[Metric::Space]).is_empty());
+        assert_eq!(
+            groups(&cells, &[Metric::Space, Metric::Materialize]).len(),
+            3
+        );
+    }
+
+    /// `bench join` names its groups from the ad-hoc workload, and a clash
+    /// between its kermit cell and an engine is found before any cell runs.
+    #[test]
+    fn bench_joins_groups_clash_check_covers_its_kermit_cell_and_engines() {
+        let workload = Workload {
+            name: Workload::ADHOC.to_string(),
+            relation_paths: Vec::new(),
+            queries: vec![NamedQuery {
+                name: "triangle".to_string(),
+                query: "Q(X) :- r(X).".parse().unwrap(),
+                expected: None,
+            }],
+        };
+        // `{prefix}/adhoc/triangle/{segment}`: every segment starts past byte
+        // 64.
+        let prefix = "join-with-a-prefix-long-enough-to-push-the-segment-past-byte-64";
+        let cells = [tree_trie(), duckdb(1), nemo()];
+        let clash = check_join_group_directories(prefix, &workload, &cells, &[Metric::Build])
+            .unwrap_err()
+            .to_string();
+        assert!(clash.contains("/TreeTrie/LeapfrogTriejoin"), "{clash}");
+        assert!(clash.contains("/duckdb-t1"), "{clash}");
+        // Nemo measures no `iteration`, so only the other two clash.
+        let clash = check_join_group_directories(prefix, &workload, &cells, &[Metric::Iteration])
+            .unwrap_err()
+            .to_string();
+        assert!(!clash.contains("/nemo"), "{clash}");
+        check_join_group_directories(prefix, &workload, &cells, &[Metric::Space]).unwrap();
+        check_join_group_directories("join", &workload, &cells, &[Metric::Build]).unwrap();
+    }
+
+    /// The executed query (`#0(X, Y)`) names no YAML query, so a failing
+    /// cell's error carries the benchmark and the query it came from.
+    #[test]
+    fn a_failing_engine_preflight_names_the_benchmark_and_the_query() {
+        use super::super::engine::test_support::Fake;
+        let dir = tempfile::tempdir().unwrap();
+        // `Fake` refuses any query that reads a relation named `banned`.
+        let banned = dir.path().join("banned.csv");
+        std::fs::write(&banned, "1,2\n2,3\n").unwrap();
+        let workload = Workload {
+            name: "demo".to_string(),
+            relation_paths: vec![banned],
+            queries: vec![NamedQuery {
+                name: "q-banned".to_string(),
+                query: "Q(X, Y) :- banned(X, Y).".parse().unwrap(),
+                expected: None,
+            }],
+        };
+        let planner = PlannerArgs {
+            optimiser: kermit_algos::Optimiser::Lexicographic,
+        };
+        let prepared = workload
+            .prepare(&planner.instantiate(), &[kermit_ds::TrieLevels::All])
+            .unwrap();
+        let criterion = CriterionSettings {
+            sample_size: 10,
+            measurement_time: std::time::Duration::from_secs(1),
+            warm_up_time: std::time::Duration::from_secs(1),
+            output_directory: Some(dir.path().join("criterion")),
+        };
+        let settings = RunSettings {
+            kind: BenchKind::Run,
+            prefix: "run",
+            planner,
+            metrics: &[Metric::Build],
+            queries_per_build: 1,
+            verify: false,
+            single_run: false,
+            materialize_max_bytes: u64::MAX,
+            criterion: &criterion,
+        };
+        let mut sink =
+            ReportSink::open(Some(&dir.path().join("report.json")), BenchKind::Run).unwrap();
+        let cell = EngineCell::<Fake<true, false, true>> {
+            settings: (),
+        };
+        let error = run_benchmark(&cell, &prepared, settings, &mut sink).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.starts_with("benchmark 'demo' query 'q-banned': "),
+            "{message}"
+        );
+        // The inner message keeps the executed query.
+        assert!(message.contains("fake cannot run query"), "{message}");
+        assert!(message.contains("#0(X, Y)"), "{message}");
+    }
+
+    #[cfg(feature = "engine-duckdb")]
+    #[test]
+    fn the_duckdb_choice_supports_what_its_cell_supports() {
+        use {
+            clap::ValueEnum,
+            kermit::engine::duckdb::{DuckDb, DuckDbSettings},
+        };
+        let cell = EngineCell::<DuckDb> {
+            settings: DuckDbSettings {
+                threads: 1,
+            },
+        };
+        for &metric in Metric::value_variants() {
+            assert_eq!(
+                duckdb(1).supports(metric),
+                Cell::supports(&cell, metric),
+                "{metric:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "engine-nemo")]
+    #[test]
+    fn the_nemo_choice_supports_what_its_cell_supports() {
+        use {clap::ValueEnum, kermit::engine::nemo::Nemo};
+        let cell = EngineCell::<Nemo> {
+            settings: (),
+        };
+        for &metric in Metric::value_variants() {
+            assert_eq!(
+                nemo().supports(metric),
+                Cell::supports(&cell, metric),
+                "{metric:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cells_trie_levels_follow_its_kind() {
+        assert_eq!(nemo().trie_levels(), kermit_ds::TrieLevels::All);
+        assert_eq!(duckdb(2).trie_levels(), kermit_ds::TrieLevels::All);
+        let keys = DsChoices {
+            levels: crate::options::LevelsChoice::Keys,
+            ..DsChoices::default()
+        };
+        let hash_trie = Execution::for_structure(kermit_ds::IndexStructure::HashTrie, keys);
+        assert_eq!(
+            SweepCell::Kermit(hash_trie).trie_levels(),
+            kermit_ds::TrieLevels::JoinKeys
+        );
+    }
+
+    #[test]
+    fn the_sweep_lists_the_kermit_cells_then_the_engines() {
+        let choice = |engine| crate::options::EngineChoice {
+            engine,
+            threads: 1,
+        };
+        let engines = vec![
+            choice(crate::options::EngineSelector::Duckdb),
+            choice(crate::options::EngineSelector::Nemo),
+        ];
+        let kermit = vec![Execution::for_structure(
+            kermit_ds::IndexStructure::TreeTrie,
+            DsChoices::default(),
+        )];
+        let cells = sweep_cells(kermit.clone(), &[], engines.clone()).unwrap();
+        assert_eq!(cells, vec![
+            SweepCell::Kermit(kermit[0]),
+            SweepCell::Engine(engines[0]),
+            SweepCell::Engine(engines[1]),
+        ]);
+        // Engines alone are a sweep too: `-i` and `-a` are optional beside
+        // `--engine`.
+        let alone = sweep_cells(Vec::new(), &[], engines.clone()).unwrap();
+        assert_eq!(alone.len(), 2);
+    }
+
+    #[test]
+    fn a_sweep_with_no_cell_is_refused() {
+        let error = sweep_cells(Vec::new(), &[], Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("nothing to run"), "{error}");
+        assert!(error.contains("-i and -a"), "{error}");
+        assert!(error.contains("--engine"), "{error}");
+    }
+
+    #[test]
+    fn a_ds_flag_needs_a_kermit_cell_to_reach() {
+        let engines = vec![crate::options::EngineChoice {
+            engine: crate::options::EngineSelector::Nemo,
+            threads: 1,
+        }];
+        let error = sweep_cells(Vec::new(), &[DsFlag::LayoutSeek], engines.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("--ds-layout-seek applies only to tree-trie or column-trie cells"),
+            "{error}"
+        );
+        assert!(
+            error.contains("--engine cells take no --ds-* flags"),
+            "{error}"
+        );
+        // With a kermit cell the flag is the sweep's business
+        // (`resolve_sweep`), not this check's.
+        let kermit = vec![Execution::for_structure(
+            kermit_ds::IndexStructure::TreeTrie,
+            DsChoices::default(),
+        )];
+        sweep_cells(kermit, &[DsFlag::LayoutSeek], engines).unwrap();
+    }
+
     #[test]
     fn groups_sharing_a_truncated_directory_are_rejected() {
         let prefix = format!("run/{}", "long-benchmark-name-".repeat(3));
@@ -614,6 +1314,136 @@ mod tests {
         assert_eq!(
             describe_index(1, &one_level, 3, 128),
             "#1 edge filter - columns [1, 0] levels 1: 3 rows, 128 bytes"
+        );
+    }
+
+    #[test]
+    fn materialize_bytes_is_rows_times_width_times_eight() {
+        assert_eq!(materialize_bytes(0, 3), 0);
+        assert_eq!(materialize_bytes(10, 3), 240);
+        assert_eq!(
+            materialize_bytes(5, 0),
+            0,
+            "a query of checks has no variable"
+        );
+        assert_eq!(materialize_bytes(u64::MAX, 2), u64::MAX, "it saturates");
+        assert_eq!(
+            materialize_bytes(1_453_845_122, 4),
+            46_523_043_904,
+            "SNAP dblp path3: about 46.5 GB"
+        );
+    }
+
+    #[test]
+    fn the_guard_skips_only_what_exceeds_the_limit() {
+        // 131072 rows of one variable are exactly 1 MiB.
+        assert_eq!(materialize_skip(131_072, 1, 1_048_576), None);
+        assert_eq!(materialize_skip(131_073, 1, 1_048_576), Some(1_048_584));
+    }
+
+    /// 131072 rows of one variable are exactly the 1 MiB limit; one more row
+    /// is over it.
+    const LIMIT: u64 = 1_048_576;
+
+    #[test]
+    fn the_guard_decides_a_streaming_subject_from_expected_else_the_streamed_count() {
+        use MaterializeVerdict::*;
+        // With `expected`: decided before the describe step.
+        assert_eq!(materialize_guard(true, true, Some(131_072), 1, LIMIT), Run);
+        assert_eq!(
+            materialize_guard(true, true, Some(131_073), 1, LIMIT),
+            Skip(1_048_584)
+        );
+        // Without it: decided again once the describe step has counted.
+        assert_eq!(
+            materialize_guard(true, true, None, 1, LIMIT),
+            AfterStreamedCount
+        );
+        assert_eq!(materialize_guard(true, true, Some(10), 1, LIMIT), Run);
+        assert_eq!(
+            materialize_guard(true, true, Some(1_000_000), 1, LIMIT),
+            Skip(8_000_000)
+        );
+    }
+
+    #[test]
+    fn the_guard_decides_a_subject_that_does_not_stream_before_anything_materialises() {
+        use MaterializeVerdict::*;
+        assert_eq!(materialize_guard(true, false, Some(131_072), 1, LIMIT), Run);
+        // Over the limit nothing materialises, not even the describe step's
+        // count.
+        let over = materialize_guard(true, false, Some(131_073), 1, LIMIT);
+        assert_eq!(over, SkipUncounted(1_048_584));
+        assert!(!over.counts());
+        // No `expected`: the warning, then everything runs unguarded.
+        let unguarded = materialize_guard(true, false, None, 1, LIMIT);
+        assert_eq!(unguarded, Unguarded);
+        assert!(unguarded.counts());
+    }
+
+    #[test]
+    fn the_guard_counts_unless_a_non_streaming_subject_is_skipped() {
+        use MaterializeVerdict::*;
+        for streams in [true, false] {
+            assert_eq!(
+                materialize_guard(false, streams, Some(u64::MAX), 4, LIMIT),
+                NotAsked,
+                "nothing is decided when nothing would materialise"
+            );
+            assert!(NotAsked.counts());
+        }
+        assert!(Run.counts());
+        assert!(Skip(9).counts(), "a streamed count is cheap");
+        assert!(AfterStreamedCount.counts());
+        assert!(!SkipUncounted(9).counts());
+        assert_eq!(Skip(9).skipped(), Some(9));
+        assert_eq!(SkipUncounted(9).skipped(), Some(9));
+        assert_eq!(Run.skipped(), None);
+    }
+
+    #[test]
+    fn a_non_streaming_subject_is_guarded_when_only_verify_or_a_probe_would_materialise() {
+        use MaterializeVerdict::*;
+        // (streams, metric, verifies, single_run)
+        assert!(
+            guard_requested(false, false, true, false),
+            "--verify with expected"
+        );
+        assert!(
+            guard_requested(false, false, false, true),
+            "a probe's single run"
+        );
+        assert!(guard_requested(false, true, false, false), "the metric");
+        assert!(
+            !guard_requested(false, false, false, false),
+            "nothing would materialise"
+        );
+        // A streaming subject counts by streaming, so only the metric asks.
+        assert!(!guard_requested(true, false, true, true));
+        assert!(guard_requested(true, true, false, false));
+        // `--verify` alone, `expected` over the limit: skipped, and uncounted.
+        let verdict = materialize_guard(
+            guard_requested(false, false, true, false),
+            false,
+            Some(131_073),
+            1,
+            LIMIT,
+        );
+        assert_eq!(verdict, SkipUncounted(1_048_584));
+        assert!(
+            !verdict.counts(),
+            "so there is no describe-step count to verify"
+        );
+        // The same run on a streaming subject is not guarded at all.
+        assert_eq!(
+            materialize_guard(
+                guard_requested(true, false, true, false),
+                true,
+                Some(131_073),
+                1,
+                LIMIT
+            ),
+            NotAsked
         );
     }
 }

@@ -10,13 +10,14 @@
 //!
 //! The query it returns names its atoms by index id (`#0`, `#1`, …, see
 //! [`INDEX_ID_PREFIX`]), with each atom's variables in index column order,
-//! so atom and index agree by construction and [`QueryPlan::validate`]
-//! passes. It reads no data.
+//! so atom and index agree by construction, and returns it as an
+//! [`ExecutedQuery`], whose constructor checks the plan. It reads no data.
 
 use {
     crate::{
         access::AccessQuery,
         analysis::{analyse, canonical_names},
+        executed::ExecutedQuery,
         join_order::join_order,
         optimiser::QueryPlan,
     },
@@ -66,16 +67,14 @@ impl IndexSpec {
 /// A planned query, ready to build and execute.
 #[derive(Clone, Debug)]
 pub struct IndexPlan {
-    /// The query to execute: the head unchanged, and `body[j]` the atom
-    /// `#{id}` of the index the `j`-th access reads, over its variables in
-    /// plan order. Under [`TrieLevels::ProbeKeys`] the body is in join
-    /// order instead: `body[j]` reads the `j`-th atom of the join order,
-    /// and `body[0]` is the driver.
-    pub query: JoinQuery,
-    /// The plan, translated to `query`'s variable numbering; it validates
-    /// against `query`. Under [`TrieLevels::ProbeKeys`] it is the reordered
-    /// plan `V′` of the join order, the order the joins bind in.
-    pub plan: QueryPlan,
+    /// The query to execute, with its plan: the head unchanged, and
+    /// `body[j]` the atom `#{id}` of the index the `j`-th access reads, over
+    /// its variables in plan order, so atom `#k` reads index `k`. Under
+    /// [`TrieLevels::ProbeKeys`] the body is in join order instead: `body[j]`
+    /// reads the `j`-th atom of the join order, `body[0]` is the driver, and
+    /// the plan is the reordered plan `V′` of the join order, the order the
+    /// joins bind in.
+    pub query: ExecutedQuery,
     /// The indexes to build, `indexes[id]`, with identical specs merged.
     pub indexes: Vec<IndexSpec>,
 }
@@ -188,15 +187,20 @@ pub fn plan_indexes(accesses: &AccessQuery, plan: &QueryPlan, levels: TrieLevels
     let plan = QueryPlan {
         variable_ordering: plan_names.iter().map(|name| index_of[name]).collect(),
     };
-    debug_assert_eq!(
-        plan.validate(&analyse(&query)),
-        Ok(()),
-        "every atom lists its variables in plan order"
+    let query =
+        ExecutedQuery::new(query, plan).expect("a rewritten, validated query is in executed form");
+    debug_assert!(
+        query
+            .query()
+            .body
+            .iter()
+            .zip(query.atom_indexes())
+            .all(|(atom, &id)| atom.name == format!("{INDEX_ID_PREFIX}{id}")),
+        "atom `#k` reads index k"
     );
 
     IndexPlan {
         query,
-        plan,
         indexes,
     }
 }
@@ -277,18 +281,18 @@ mod tests {
             spec("S", Filter::none(), vec![0, 1]),
             spec("T", Filter::none(), vec![0, 1]),
         ]);
-        assert_eq!(body_text(&out.query), vec![
+        assert_eq!(body_text(out.query.query()), vec![
             "#0(X, Y)", "#1(Y, Z)", "#2(X, Z)"
         ]);
-        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2]);
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1, 2]);
     }
 
     #[test]
     fn a_reversed_order_reads_the_columns_reversed() {
         let out = planned("Q(X, Y) :- edge(Y, X).", &["X", "Y"]);
         assert_eq!(out.indexes, vec![spec("edge", Filter::none(), vec![1, 0])]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)"]);
-        assert_eq!(out.plan.variable_ordering, vec![0, 1]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)"]);
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1]);
     }
 
     #[test]
@@ -301,7 +305,7 @@ mod tests {
             Filter::new(vec![(1, 5)], vec![]),
             vec![2, 0]
         )]);
-        assert_eq!(body_text(&out.query), vec!["#0(Y, X)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(Y, X)"]);
 
         // The equality names source columns, so it does not move with the
         // order.
@@ -311,7 +315,7 @@ mod tests {
             Filter::new(vec![], vec![(0, 2)]),
             vec![1, 0]
         )]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)"]);
     }
 
     #[test]
@@ -319,14 +323,14 @@ mod tests {
         let accesses = accesses_of("Q(Z, X) :- R(X, Y), S(Y, Z).");
         let plan = plan_of(&accesses.query, &["Z", "Y", "X"]);
         let out = plan_indexes(&accesses, &plan, TrieLevels::All);
-        assert_eq!(out.query.head, accesses.query.head);
+        assert_eq!(out.query.query().head, accesses.query.head);
     }
 
     #[test]
     fn checks_are_not_indexed() {
         let out = planned("Q(X) :- p(X), r(c1, c2).", &["X"]);
         assert_eq!(out.indexes, vec![spec("p", Filter::none(), vec![0])]);
-        assert_eq!(body_text(&out.query), vec!["#0(X)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X)"]);
     }
 
     /// A body of only constants has no access: `extract_accesses` returns an
@@ -346,10 +350,10 @@ mod tests {
         };
         let out = plan_indexes(&accesses, &plan, TrieLevels::All);
         assert!(out.indexes.is_empty());
-        assert!(out.query.body.is_empty());
-        assert_eq!(out.query.head, accesses.query.head);
-        assert!(out.plan.variable_ordering.is_empty());
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert!(out.query.query().body.is_empty());
+        assert_eq!(out.query.query().head, accesses.query.head);
+        assert!(out.query.plan().variable_ordering.is_empty());
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     /// `analyse` numbers body-only variables by first appearance, and the
@@ -364,12 +368,12 @@ mod tests {
 
         let out = plan_indexes(&accesses, &old, TrieLevels::All);
         assert_eq!(out.indexes, vec![spec("r", Filter::none(), vec![1, 2, 0])]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, A, B)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, A, B)"]);
         // Numbering of the executed query: X = 0, A = 1, B = 2.
-        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1, 2]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
         // The untranslated plan would not have validated.
-        assert!(old.validate(&analyse(&out.query)).is_err());
+        assert!(old.validate(out.query.analysis()).is_err());
     }
 
     #[test]
@@ -384,10 +388,15 @@ mod tests {
         ];
         for order in orders {
             let out = planned("Q(X, Y, Z) :- R(X, Y), S(Y, Z), T(X, Z).", &order);
-            assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()), "{order:?}");
-            let names = canonical_names(&out.query);
+            assert_eq!(
+                out.query.plan().validate(out.query.analysis()),
+                Ok(()),
+                "{order:?}"
+            );
+            let names = canonical_names(out.query.query());
             let bound: Vec<&str> = out
-                .plan
+                .query
+                .plan()
                 .variable_ordering
                 .iter()
                 .map(|&v| names[v].as_str())
@@ -400,8 +409,8 @@ mod tests {
     fn a_self_join_that_reads_one_relation_one_way_builds_it_once() {
         let out = planned("Q(X, Y, Z) :- edge(Y, X), edge(Z, X).", &["X", "Y", "Z"]);
         assert_eq!(out.indexes, vec![spec("edge", Filter::none(), vec![1, 0])]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#0(X, Z)"]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)", "#0(X, Z)"]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     #[test]
@@ -411,7 +420,7 @@ mod tests {
             spec("edge", Filter::none(), vec![0, 1]),
             spec("edge", Filter::none(), vec![1, 0]),
         ]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#1(X, Z)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)", "#1(X, Z)"]);
     }
 
     #[test]
@@ -423,7 +432,7 @@ mod tests {
             spec("edge", Filter::none(), vec![1, 0]),
             spec("edge", Filter::none(), vec![0, 1]),
         ]);
-        assert_eq!(body_text(&out.query), vec![
+        assert_eq!(body_text(out.query.query()), vec![
             "#0(X, Y)", "#1(X, Y)", "#0(X, Y)"
         ]);
     }
@@ -436,7 +445,7 @@ mod tests {
             Filter::new(vec![(1, 1)], vec![]),
             vec![0]
         )]);
-        assert_eq!(body_text(&out.query), vec!["#0(X)", "#0(Y)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X)", "#0(Y)"]);
     }
 
     #[test]
@@ -446,7 +455,7 @@ mod tests {
             spec("p", Filter::new(vec![(1, 1)], vec![]), vec![0]),
             spec("p", Filter::new(vec![(1, 2)], vec![]), vec![0]),
         ]);
-        assert_eq!(body_text(&out.query), vec!["#0(X)", "#1(X)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X)", "#1(X)"]);
     }
 
     fn levels_of(plan: &IndexPlan) -> Vec<(Vec<usize>, usize)> {
@@ -516,7 +525,7 @@ mod tests {
         let order = &["B", "C", "A", "D"];
         let all = planned_with(text, order, TrieLevels::All);
         assert_eq!(levels_of(&all), vec![(vec![1, 0], 2), (vec![0, 1], 2)]);
-        assert_eq!(body_text(&all.query), vec![
+        assert_eq!(body_text(all.query.query()), vec![
             "#0(B, A)", "#1(B, C)", "#1(C, D)"
         ]);
         let keys = planned_with(text, order, TrieLevels::JoinKeys);
@@ -525,7 +534,7 @@ mod tests {
             (vec![0, 1], 2),
             (vec![0, 1], 1)
         ]);
-        assert_eq!(body_text(&keys.query), vec![
+        assert_eq!(body_text(keys.query.query()), vec![
             "#0(B, A)", "#1(B, C)", "#2(C, D)"
         ]);
     }
@@ -550,11 +559,11 @@ mod tests {
             (vec![0, 1], 1),
             (vec![0, 1], 2)
         ]);
-        assert_eq!(body_text(&out.query), vec![
+        assert_eq!(body_text(out.query.query()), vec![
             "#0(X, Y)", "#1(Y, Z)", "#2(X, Z)"
         ]);
-        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1, 2]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     /// The body is listed in join order, so the specs are numbered by it and
@@ -572,13 +581,13 @@ mod tests {
             (vec![1, 0, 2], 1),
             (vec![0, 1], 2)
         ]);
-        assert_eq!(body_text(&out.query), vec![
+        assert_eq!(body_text(out.query.query()), vec![
             "#0(A, B)",
             "#1(B, C, D)",
             "#2(C, D)"
         ]);
-        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2, 3]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1, 2, 3]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     /// The driver is the atom that binds the plan's first variable, not the
@@ -588,8 +597,8 @@ mod tests {
         let out = probe("Q(X, Y) :- R(Y), S(X, Y).", &["X", "Y"]);
         assert_eq!(relations_of(&out), vec!["S", "R"]);
         assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![0], 1)]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#1(Y)"]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)", "#1(Y)"]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     /// `S(Y, Z)` is probed on `Z`, which `P(X, Z)` bound before `Y`: its
@@ -602,18 +611,22 @@ mod tests {
         let order = ["X", "Y", "Z"];
         let out = probe(text, &order);
         assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![1, 0], 1)]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Z)", "#1(Z, Y)"]);
-        assert_eq!(out.plan.variable_ordering, vec![0, 2, 1]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Z)", "#1(Z, Y)"]);
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 2, 1]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
 
         for levels in [TrieLevels::All, TrieLevels::JoinKeys] {
             let out = planned_with(text, &order, levels);
             assert_eq!(
-                body_text(&out.query),
+                body_text(out.query.query()),
                 vec!["#0(X, Z)", "#1(Y, Z)"],
                 "{levels:?}"
             );
-            assert_eq!(out.plan.variable_ordering, vec![0, 1, 2], "{levels:?}");
+            assert_eq!(
+                out.query.plan().variable_ordering,
+                vec![0, 1, 2],
+                "{levels:?}"
+            );
         }
         let all = planned(text, &order);
         assert_eq!(levels_of(&all), vec![(vec![0, 1], 2), (vec![0, 1], 2)]);
@@ -625,9 +638,9 @@ mod tests {
     fn under_probe_keys_a_cross_product_levels_nothing() {
         let out = probe("Q(A, B, C, D) :- R(A, B), S(C, D).", &["A", "C", "B", "D"]);
         assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![0, 1], 0)]);
-        assert_eq!(body_text(&out.query), vec!["#0(A, B)", "#1(C, D)"]);
-        assert_eq!(out.plan.variable_ordering, vec![0, 1, 2, 3]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(body_text(out.query.query()), vec!["#0(A, B)", "#1(C, D)"]);
+        assert_eq!(out.query.plan().variable_ordering, vec![0, 1, 2, 3]);
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     /// A spec's levels are part of the comparison: the second read of `edge`
@@ -638,7 +651,7 @@ mod tests {
         let text = "Q(X, Y) :- edge(X, Y), edge(X, Y).";
         let out = probe(text, &["X", "Y"]);
         assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![0, 1], 2)]);
-        assert_eq!(body_text(&out.query), vec!["#0(X, Y)", "#1(X, Y)"]);
+        assert_eq!(body_text(out.query.query()), vec!["#0(X, Y)", "#1(X, Y)"]);
         assert_eq!(planned(text, &["X", "Y"]).indexes.len(), 1);
     }
 
@@ -652,10 +665,10 @@ mod tests {
         ]);
         assert_eq!(relations_of(&out), vec!["r", "r"]);
         assert_eq!(levels_of(&out), vec![(vec![0, 1], 0), (vec![0, 1], 1)]);
-        assert_eq!(body_text(&out.query), vec![
+        assert_eq!(body_text(out.query.query()), vec![
             "#0(X, A)", "#1(X, B)", "#1(X, C)"
         ]);
-        assert_eq!(out.plan.validate(&analyse(&out.query)), Ok(()));
+        assert_eq!(out.query.plan().validate(out.query.analysis()), Ok(()));
     }
 
     #[test]
@@ -668,8 +681,8 @@ mod tests {
         };
         let out = plan_indexes(&accesses, &plan, TrieLevels::ProbeKeys);
         assert!(out.indexes.is_empty());
-        assert!(out.query.body.is_empty());
-        assert!(out.plan.variable_ordering.is_empty());
+        assert!(out.query.query().body.is_empty());
+        assert!(out.query.plan().variable_ordering.is_empty());
     }
 
     /// The variables of an executed atom, in column order.
@@ -704,18 +717,22 @@ mod tests {
                 let out = plan_indexes(&accesses, &plan, TrieLevels::ProbeKeys);
 
                 assert_eq!(
-                    out.plan.validate(&analyse(&out.query)),
+                    out.query.plan().validate(out.query.analysis()),
                     Ok(()),
                     "{context}: the plan validates"
                 );
-                assert_eq!(out.query.head, accesses.query.head, "{context}");
-                assert_eq!(out.query.body.len(), join.atoms.len(), "{context}");
-                assert_eq!(out.query.body[0].name, "#0", "{context}: #0 is the driver");
+                assert_eq!(out.query.query().head, accesses.query.head, "{context}");
+                assert_eq!(out.query.query().body.len(), join.atoms.len(), "{context}");
+                assert_eq!(
+                    out.query.query().body[0].name,
+                    "#0",
+                    "{context}: #0 is the driver"
+                );
                 assert_eq!(out.indexes[0].levels, 0, "{context}: the driver has no key");
 
                 let mut bound: HashSet<String> = HashSet::new();
                 let mut next_id = 0;
-                for (rank, atom) in out.query.body.iter().enumerate() {
+                for (rank, atom) in out.query.query().body.iter().enumerate() {
                     let read = &accesses.accesses[join.atoms[rank]];
                     let id: usize = atom
                         .name
@@ -723,6 +740,11 @@ mod tests {
                         .and_then(|id| id.parse().ok())
                         .expect("an index id");
                     assert!(id <= next_id, "{context}: ids follow first appearance");
+                    assert_eq!(
+                        out.query.atom_indexes()[rank],
+                        id,
+                        "{context}: atom {rank} reads index {id}"
+                    );
                     next_id = next_id.max(id + 1);
 
                     let spec = &out.indexes[id];

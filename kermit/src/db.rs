@@ -32,7 +32,10 @@ mod validation;
 
 pub use {
     catalog::Catalog,
-    lifecycle::{build, build_with, execute, prepare, Indexes, Prepared},
+    lifecycle::{
+        build, build_with, check_multiplicity, execute, execute_assignments, materialize_count,
+        prepare, Indexes, Prepared,
+    },
     validation::{validate_query, JoinError, RelationArities},
 };
 use {

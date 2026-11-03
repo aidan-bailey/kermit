@@ -41,3 +41,9 @@ kermit-generate = { path = "kermit-generate" }
 # optimised in every profile; release already is.
 [profile.dev.package.tikv-jemalloc-sys]
 opt-level = 3
+
+# `engine-duckdb-bundled` compiles DuckDB's C++ amalgamation through libduckdb-sys; at the dev
+# profile's -O0 a debug test of the engine would crawl. The system-library build
+# (`engine-duckdb`) compiles no C++, so this entry costs it nothing.
+[profile.dev.package.libduckdb-sys]
+opt-level = 3

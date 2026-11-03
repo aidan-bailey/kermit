@@ -173,8 +173,8 @@ Pass `-o`/`--output <PATH>` to also write the join's tuples to a CSV file
 
 `bench join` runs through the same runner as `bench run`: it records the
 `build`, `iteration` and `space` metrics by default (`-m`
-selects; `end-to-end` is opt-in, with `--queries-per-build K` setting its K,
-default 1), accepts
+selects; `end-to-end` and `materialize` are opt-in, with `--queries-per-build K` setting the K
+of `end-to-end`, default 1), accepts
 `--ds-config` and `--ds-build` alongside the `--ds-layout-*` flags (including
 `--ds-layout-seek linear|binary|galloping` for the sorted tries), and writes
 its Criterion output under `{--name|join}/adhoc/{query-file-stem}/{ds}/{algo}`.
@@ -330,6 +330,25 @@ kermit bench --report-json /tmp/probe.json probe watdiv-stress-c1 -i hash-trie -
 `--measurement-time`, `--warm-up-time`) don't apply to a probe. A single
 run is cold, so compare it with other single runs, never with a Criterion
 estimate.
+
+Probe also runs external engines and the opt-in `materialize` metric. The engines are cargo
+features that are off by default, so build with them (in the dev shell,
+`--features engine-duckdb,engine-nemo`):
+
+```sh
+cargo run -p kermit --features engine-duckdb,engine-nemo -- bench probe triangle -i all -a all --engine duckdb,nemo --materialize
+```
+
+- `--engine duckdb,nemo` adds an engine cell per name beside the `-i`/`-a` cells; `-i`/`-a` are
+  required only without it. Naming an engine whose feature is not compiled in is a usage error that
+  names the feature.
+- `--engine-threads N` sets DuckDB's threads (default 1, range `1..=available_parallelism()`);
+  it applies to `--engine duckdb` only and is a usage error when no DuckDB engine is selected.
+- `--materialize` adds a single-run `materialize` value to every cell. `--materialize-max-bytes B`
+  (default 4294967296, range 1 MiB to 1 TiB) skips a `materialize` whose collected rows would
+  exceed `B`, with a stderr note and a `materialize` metadata line.
+- An engine cell gets the single-run `build`, `iteration` (DuckDB only: Nemo does not stream, and
+  stderr says so) and, with `--materialize`, `materialize`. DuckDB reports no `space`.
 
 ### Sweep all index structures and algorithms
 

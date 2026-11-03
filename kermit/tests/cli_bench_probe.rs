@@ -97,7 +97,8 @@ fn a_probe_verifies_each_query_and_times_one_build_and_one_run() {
     assert_eq!(reports.len(), 8, "two queries on four cells");
     for report in &reports {
         assert_eq!(report["kind"], "probe");
-        assert_eq!(report["schema_version"], 6);
+        assert_eq!(report["axes"]["system"], "kermit");
+        assert_eq!(report["schema_version"], 8);
         assert!(report["criterion_groups"].as_array().unwrap().is_empty());
         assert_eq!(report["axes"]["verified"], true);
         let space = value(report, "space");

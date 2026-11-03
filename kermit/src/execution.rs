@@ -528,6 +528,14 @@ pub trait ExecutionFamily: RelationFamily {
         &self, prepared: &Prepared, indexes: &Indexes<Self::Rel>, emit: S,
     );
 
+    /// [`execute`](Self::execute), lending every variable of the executed
+    /// query instead of the head ([`kermit::db::execute_assignments`]): the
+    /// rows the `materialize` metric keeps. Like `execute`, it expands the
+    /// indexes it is given when [`JOIN_MUTATES`](Self::JOIN_MUTATES).
+    fn execute_assignments<S: FnMut(&[usize])>(
+        &self, prepared: &Prepared, indexes: &Indexes<Self::Rel>, emit: S,
+    );
+
     /// Runs `prepared` over its `indexes` and counts its result rows,
     /// passing each through [`std::hint::black_box`] so the traversal cannot
     /// be optimised away. Allocates no result rows: this is what the
@@ -771,6 +779,12 @@ impl<R: SortedTrieRelation + 'static> ExecutionFamily for TrieLftj<R> {
     fn execute<S: FnMut(&[usize])>(&self, prepared: &Prepared, indexes: &Indexes<R>, emit: S) {
         db::execute::<R, LeapfrogTriejoin>(prepared, indexes, emit);
     }
+
+    fn execute_assignments<S: FnMut(&[usize])>(
+        &self, prepared: &Prepared, indexes: &Indexes<R>, emit: S,
+    ) {
+        db::execute_assignments::<R, LeapfrogTriejoin>(prepared, indexes, emit);
+    }
 }
 
 /// Hash family: `HashTrie<H, P, E, L>` under Hash Triejoin, through
@@ -832,6 +846,12 @@ impl<H: HashStrategy + 'static, P: PruningPolicy, E: ExpansionPolicy, L: LevelPo
     ) {
         db::execute::<HashTrie<H, P, E, L>, HashTriejoin>(prepared, indexes, emit);
     }
+
+    fn execute_assignments<S: FnMut(&[usize])>(
+        &self, prepared: &Prepared, indexes: &Indexes<HashTrie<H, P, E, L>>, emit: S,
+    ) {
+        db::execute_assignments::<HashTrie<H, P, E, L>, HashTriejoin>(prepared, indexes, emit);
+    }
 }
 
 /// Keyed family: `HashIndex<H>` under the binary hash join, through
@@ -888,6 +908,12 @@ impl<H: HashStrategy + 'static> ExecutionFamily for IndexBhj<H> {
         &self, prepared: &Prepared, indexes: &Indexes<HashIndex<H>>, emit: S,
     ) {
         db::execute::<HashIndex<H>, BinaryHashJoin>(prepared, indexes, emit);
+    }
+
+    fn execute_assignments<S: FnMut(&[usize])>(
+        &self, prepared: &Prepared, indexes: &Indexes<HashIndex<H>>, emit: S,
+    ) {
+        db::execute_assignments::<HashIndex<H>, BinaryHashJoin>(prepared, indexes, emit);
     }
 }
 

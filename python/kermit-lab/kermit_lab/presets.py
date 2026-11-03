@@ -12,17 +12,41 @@ from typing import Optional, Sequence
 import pandas as pd
 from matplotlib.figure import Figure
 
-from .analysis import SPEEDUP_MEASURES, baseline_build_mode, speedup_table
+from .analysis import (
+    KERMIT_SYSTEM,
+    SPEEDUP_MEASURES,
+    baseline_build_mode,
+    cell_labels,
+    speedup_table,
+)
+from .encoding import AestheticMap, resolve_scalar, select
 from .facet import finish, make_grid
 from .frame import build_of
+from .geoms import draw_bar
 from .loader import TIME_PHASES
 from .plot import plot
 from .plots_errors import InsufficientAxesError
 from .styles import apply as apply_style
 
 
+def _kermit_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """``df`` without the external engines' rows. An engine row has no ``data_structure`` or
+    ``algorithm``, which the figures below put on their axes and in their legends; they draw
+    kermit's cells, and :func:`engines` draws the engines beside them. A row without ``system``
+    (a v7 report, or a frame loaded without defaults) is kermit's."""
+    if "system" not in df.columns:
+        return df
+    is_engine = df["system"].notna() & (df["system"] != KERMIT_SYSTEM)
+    return df[~is_engine]
+
+
 def scaling(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] = None) -> Figure:
-    return plot(df, kind="line", x="tuples", y="time", colour="data_structure",
+    """Time against tuple count, a line per structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
+    return plot(_kermit_rows(df), kind="line", x="tuples", y="time", colour="data_structure",
                 style="algorithm", phase=phase, logx=True, logy=True,
                 title="Scaling", out=out)
 
@@ -30,18 +54,35 @@ def scaling(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] =
 def bar_time(
     df: pd.DataFrame, *, query: str, phase: str = "iteration", out: Optional[Path] = None
 ) -> Figure:
-    return plot(df, kind="bar", x="data_structure", y="time", colour="data_structure",
+    """Time of one query, a bar per structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
+    return plot(_kermit_rows(df), kind="bar", x="data_structure", y="time",
+                colour="data_structure",
                 style="algorithm", filter={"query": query}, phase=phase,
                 title=f"Time — {query}", out=out)
 
 
 def bar_space(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
-    return plot(df, kind="bar", x="data_structure", y="space", colour="data_structure",
+    """Space per data structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
+    return plot(_kermit_rows(df), kind="bar", x="data_structure", y="space",
+                colour="data_structure",
                 title="Space per data structure", out=out)
 
 
 def tradeoff(df: pd.DataFrame, *, phase: str = "iteration", out: Optional[Path] = None) -> Figure:
-    return plot(df, kind="scatter", x="space", y="time", colour="data_structure",
+    """Space against time, a point per cell.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
+    return plot(_kermit_rows(df), kind="scatter", x="space", y="time", colour="data_structure",
                 style="algorithm", phase=phase, logx=True, title="Space vs time", out=out)
 
 
@@ -49,7 +90,13 @@ def dist(
     df: pd.DataFrame, *, samples: pd.DataFrame, phase: str = "iteration",
     out: Optional[Path] = None,
 ) -> Figure:
-    return plot(df, kind="violin", x="data_structure", y="time", style="algorithm",
+    """The per-iteration time distribution per structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
+    return plot(_kermit_rows(df), kind="violin", x="data_structure", y="time",
+                style="algorithm",
                 phase=phase, samples=samples, title="Per-iter distribution", out=out)
 
 
@@ -58,12 +105,17 @@ def bar_queries(
     algo: Optional[Sequence[str]] = None, phase: str = "iteration",
     out: Optional[Path] = None,
 ) -> Figure:
+    """Time across queries, a bar per structure.
+
+    Draws kermit's own cells only: the external engines' rows are dropped (they have no
+    ``data_structure`` or ``algorithm``); see :func:`engines` for the engines beside kermit.
+    """
     flt: dict[str, object] = {}
     if ds is not None:
         flt["data_structure"] = list(ds)
     if algo is not None:
         flt["algorithm"] = list(algo)
-    return plot(df, kind="bar", x="query", y="time", colour="data_structure",
+    return plot(_kermit_rows(df), kind="bar", x="query", y="time", colour="data_structure",
                 style="algorithm", filter=flt, phase=phase,
                 title="Across queries", out=out)
 
@@ -89,10 +141,10 @@ class AxisScope:
 # optimization standard's Amendment 2, 2026-10-06).
 AXIS_PHASES: dict[str, AxisScope] = {
     # A seek strategy changes how a built trie is searched; no build calls
-    # seek (#80).
+    # seek (#80). A `materialize` runs the join, so it searches too.
     "ds_layout_seek": AxisScope(
-        frozenset({"iteration", "end_to_end"}),
-        "it changes only how a built trie is searched",
+        frozenset({"iteration", "end_to_end", "materialize"}),
+        "it changes only how a built trie is searched, as a join does",
     ),
 }
 
@@ -185,4 +237,119 @@ def speedup(
     lone_presized = set(build) == {"presized"}
     title = "Presized build speedup" if lone_presized else "Parallel build speedup"
     finish(fig, axes, title=title, out=out)
+    return fig
+
+
+#: The like-for-like pairs (the external engines' design, Summary), as ``(engine, y, phase)``:
+#: an engine is drawn against kermit's own cells only where both do the same work. DuckDB's
+#: index work (its hash tables) sits in its ``iteration`` while kermit's sits in ``build``, so
+#: only ``end_to_end`` is the same work; Nemo builds its tries in ``build`` and stores its
+#: result in ``materialize``, as kermit's structures and their ``materialize`` do, and its
+#: exact ``space`` is a trie's, as theirs are.
+ENGINE_PAIRS: tuple[tuple[str, str, str], ...] = (
+    ("duckdb", "time", "end_to_end"),
+    ("nemo", "time", "build"),
+    ("nemo", "time", "materialize"),
+    ("nemo", "space", "space"),
+)
+
+
+def _query_keys(rows: pd.DataFrame) -> list[tuple]:
+    """The ``(benchmark, query)`` of every row of ``rows`` (``benchmark`` ``None`` for a frame
+    without the column), a missing value as ``None``."""
+    benchmarks = rows["benchmark"] if "benchmark" in rows.columns else [None] * len(rows)
+    return [
+        tuple(None if pd.isna(v) else v for v in pair) for pair in zip(benchmarks, rows["query"])
+    ]
+
+
+def _same_queries_as_engine(rows: pd.DataFrame, engine: str) -> pd.DataFrame:
+    """``rows`` with the kermit rows of a ``(benchmark, query)`` the ``engine`` has no row for
+    dropped: a ``bench ds`` row (no query) and a query only kermit ran have nothing to compare."""
+    keys = _query_keys(rows)
+    ran = {k for k, system in zip(keys, rows["system"]) if system == engine}
+    keep = [system == engine or k in ran for k, system in zip(keys, rows["system"])]
+    return rows[keep]
+
+
+def _refuse_overlaid_bars(rows: pd.DataFrame, engine: str, phase: str) -> None:
+    """Raise when two rows of a panel share a ``(cell, query)``: the bar chart places bars by
+    query alone, so it draws one bar for each, at the same place, whatever their benchmark."""
+    benchmarks: dict[tuple, list] = {}
+    for cell, (benchmark, query) in zip(rows["cell"], _query_keys(rows)):
+        benchmarks.setdefault((cell, query), []).append(benchmark)
+    for (cell, query), found in benchmarks.items():
+        if len(found) < 2:
+            continue
+        if len(set(found)) > 1:
+            names = ", ".join(sorted(map(str, set(found))))
+            raise InsufficientAxesError(
+                f"engines: cell {cell!r}, query {query!r} has rows from more than one benchmark "
+                f"({names}) in the {engine} vs kermit {phase} panel, and bars are placed by "
+                "query alone; filter the frame by benchmark first"
+            )
+        raise InsufficientAxesError(
+            f"engines: more than one row for cell {cell!r}, query {query!r} in the {engine} "
+            f"vs kermit {phase} panel; filter the frame first (by optimiser or the ds_* axes) "
+            "so that each cell has one row per query"
+        )
+
+
+def engines(df: pd.DataFrame, *, out: Optional[Path] = None) -> Figure:
+    """Each engine against kermit's cells on the pairs that compare like with like
+    (:data:`ENGINE_PAIRS`): DuckDB on ``end_to_end``; Nemo on ``build``, ``materialize`` and
+    ``space``. One panel per pair that has engine rows, bars per query coloured by cell
+    (:func:`~kermit_lab.analysis.cell_labels`), Criterion estimates for time and exact bytes for
+    space. A row without ``system`` counts as kermit's.
+
+    In each panel only the kermit rows of a ``(benchmark, query)`` that the pair's engine has
+    rows for are drawn, so a ``bench ds`` row and a query no engine ran drop out (a frame
+    without ``benchmark`` is keyed on ``query`` alone). A panel draws one bar per cell and
+    query, placed by ``query`` alone: when several rows share a ``(cell, query)`` the figure
+    would overlay them, so filter the frame first. The rows may differ in ``optimiser``, in the
+    ``ds_*`` axes (the Layout variants of one structure), in ``kind`` (probe beside run
+    reports), or in ``benchmark`` (benchmarks that share query names, such as ``h2o`` and
+    ``h2o-sorted``).
+
+    Raises :class:`InsufficientAxesError` when ``df`` has no ``system`` column (load v8
+    reports), no engine row on any pair, or more than one row for a ``(cell, query)`` of a
+    panel.
+    """
+    if "system" not in df.columns:
+        raise InsufficientAxesError(
+            "engines needs the 'system' column that report v8 adds; load v8 reports"
+        )
+    labelled = df.assign(
+        cell=cell_labels(df),
+        system=df["system"].mask(df["system"].isna(), KERMIT_SYSTEM),
+    )
+    panels = []
+    for engine, y, phase in ENGINE_PAIRS:
+        pair = labelled[labelled["system"].isin([engine, KERMIT_SYSTEM])]
+        if not (pair["system"] == engine).any():
+            continue
+        amap = AestheticMap(kind="bar", x="query", y=y, colour="cell", phase=phase)
+        try:
+            rows = select(pair, amap)
+        except InsufficientAxesError:
+            continue
+        if not (rows["system"] == engine).any():
+            continue
+        rows = _same_queries_as_engine(rows, engine)
+        _refuse_overlaid_bars(rows, engine, phase)
+        title = f"{engine} vs kermit: {phase}"
+        ylabel = "space (bytes)" if y == "space" else "time (ns)"
+        panels.append((title, ylabel, resolve_scalar(rows, amap)))
+    if not panels:
+        raise InsufficientAxesError(
+            "no engine rows on a like-for-like pair (duckdb on end_to_end; nemo on build, "
+            "materialize and space)"
+        )
+
+    apply_style()
+    fig, axes = make_grid(len(panels))
+    for ax, (title, ylabel, series) in zip(axes, panels):
+        draw_bar(ax, series, xlabel="query", ylabel=ylabel)
+        ax.set_title(title)
+    finish(fig, axes, title="Engines against kermit, like-for-like pairs", out=out)
     return fig

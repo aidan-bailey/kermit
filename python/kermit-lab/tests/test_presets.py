@@ -90,6 +90,44 @@ def test_ablation_lets_seek_through_on_end_to_end(fixture_seek_tree) -> None:
         presets.ablation(df, axis="ds_layout_seek", phase="end_to_end")
 
 
+def test_ablation_draws_seek_on_materialize(tmp_path) -> None:
+    """`materialize` runs the join, which seeks, so the seek ablation is drawn on it."""
+    from .conftest import _FunctionSpec, _write_function_dir, _write_report
+
+    criterion_root = tmp_path / "target" / "criterion"
+    reports_dir = tmp_path / "reports"
+    criterion_root.mkdir(parents=True)
+    reports_dir.mkdir()
+    paths = []
+    for seek, point in (("binary", 2000.0), ("galloping", 1500.0)):
+        function = f"TreeTrie/{seek}/materialize"
+        samples = [(i + 1, point * (i + 1)) for i in range(10)]
+        _write_function_dir(
+            criterion_root, _FunctionSpec("run", function, "time", point, samples)
+        )
+        axes = {
+            "benchmark": "triangle",
+            "query": "triangle",
+            "data_structure": "TreeTrie",
+            "algorithm": "LeapfrogTriejoin",
+            "tuples": 100,
+            "system": "kermit",
+            "ds_layout_seek": seek,
+        }
+        paths.append(
+            _write_report(
+                reports_dir, f"run-TreeTrie-{seek}", kind="run", axes=axes, metadata=[],
+                groups=[("run", function, "time")], schema_version=8,
+            )
+        )
+    df = kl.load(paths, criterion_root=criterion_root)
+    assert set(df["phase"].dropna()) == {"materialize"}
+    assert isinstance(
+        presets.ablation(df, axis="ds_layout_seek", phase="materialize"), Figure
+    )
+    plt.close("all")
+
+
 def _as_hash_trie(tree: pd.DataFrame) -> pd.DataFrame:
     """TreeTrie rows relabelled as HashTrie's: ``presized:N`` is HashTrie's
     build, which TreeTrie has no counterpart of, and HashTrie's baseline is

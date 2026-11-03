@@ -11,12 +11,11 @@
 
 use {
     crate::{
-        analysis::analyse, join_algo::JoinAlgo, optimiser::QueryPlan,
+        executed::ExecutedQuery,
+        join_algo::{assert_index_count, JoinAlgo},
         sorted::leapfrog_join::LeapfrogJoinIter,
     },
     kermit_iters::{LinearIterator, TrieIterable, TrieIterator, TrieIteratorWrapper},
-    kermit_parser::JoinQuery,
-    std::collections::HashMap,
 };
 
 /// An iterator that performs the [Leapfrog Triejoin algorithm](https://arxiv.org/abs/1210.0481).
@@ -275,26 +274,22 @@ impl<DS> JoinAlgo<DS> for LeapfrogTriejoin
 where
     DS: TrieIterable,
 {
-    fn join_for_each<S: FnMut(&[usize])>(
-        plan: &QueryPlan, query: JoinQuery, datastructures: HashMap<String, &DS>, mut emit: S,
-    ) {
-        let analysis = analyse(&query);
-        if let Err(e) = plan.validate(&analysis) {
-            panic!("LeapfrogTriejoin::join_for_each: invalid query plan: {e}");
+    fn join_for_each<S: FnMut(&[usize])>(query: &ExecutedQuery, indexes: &[DS], mut emit: S) {
+        assert_index_count("LeapfrogTriejoin", query, indexes.len());
+        if query.atom_indexes().is_empty() {
+            // The empty conjunction: one answer, the empty row.
+            emit(&[]);
+            return;
         }
         let trie_iters: Vec<_> = query
-            .body
+            .atom_indexes()
             .iter()
-            .map(|pred| {
-                datastructures
-                    .get(&pred.name)
-                    .expect("Missing datastructure for predicate name")
-                    .trie_iter()
-            })
+            .map(|&id| indexes[id].trie_iter())
             .collect();
-        let order = &plan.variable_ordering;
+        let order = &query.plan().variable_ordering;
         let mut descents =
-            LeapfrogTriejoinIter::new(order, &analysis.predicate_variables, trie_iters).into_iter();
+            LeapfrogTriejoinIter::new(order, &query.analysis().predicate_variables, trie_iters)
+                .into_iter();
 
         // The triejoin yields each tuple in descent order: position `pos`
         // binds variable `order[pos]`. Scatter it into one scratch row in
@@ -314,20 +309,19 @@ where
 // roughly half this file. They drive `LeapfrogTriejoinIter` directly — a
 // `pub(crate)` type — rather than the public
 // `LeapfrogTriejoin::join_for_each`, so moving them to `tests/` would mean
-// exporting the iterator and its two traits purely to serve tests. Keeping
+// exporting the iterator purely to serve tests. Keeping
 // the iterator internal is the deliberate choice; the test placement follows
 // from it.
 #[cfg(test)]
 mod tests {
     use {
         crate::{
-            optimiser::QueryPlan, sorted::leapfrog_triejoin::LeapfrogTriejoinIter, JoinAlgo,
-            LeapfrogTriejoin,
+            optimiser::QueryPlan, sorted::leapfrog_triejoin::LeapfrogTriejoinIter, ExecutedQuery,
+            JoinAlgo, LeapfrogTriejoin,
         },
         kermit_ds::{Relation, TreeTrie},
         kermit_iters::{LinearIterator, TrieIterable, TrieIterator},
         kermit_parser::JoinQuery,
-        std::collections::HashMap,
     };
 
     /// Collect triejoin results end-to-end via `into_iter().collect()`.
@@ -737,14 +731,40 @@ mod tests {
         let plan = QueryPlan {
             variable_ordering: vec![1, 0],
         };
+        let executed = ExecutedQuery::new(query, plan).unwrap();
         let mut rows = Vec::new();
-        LeapfrogTriejoin::join_for_each(
-            &plan,
-            query,
-            HashMap::from([("R".to_string(), &r)]),
-            |tuple| rows.push(tuple.to_vec()),
-        );
+        LeapfrogTriejoin::join_for_each(&executed, &[r], |tuple| rows.push(tuple.to_vec()));
         assert_eq!(rows, vec![vec![10, 1], vec![20, 2]]);
+    }
+
+    /// The empty conjunction: its one answer is the empty row.
+    #[test]
+    fn join_for_each_emits_one_empty_row_for_an_empty_body() {
+        let mut query: JoinQuery = "Q(c1) :- R(c1).".parse().unwrap();
+        query.head.terms.clear();
+        query.body.clear();
+        let plan = QueryPlan {
+            variable_ordering: vec![],
+        };
+        let executed = ExecutedQuery::new(query, plan).unwrap();
+        let none: [TreeTrie; 0] = [];
+        let mut rows: Vec<Vec<usize>> = Vec::new();
+        LeapfrogTriejoin::join_for_each(&executed, &none, |row| rows.push(row.to_vec()));
+        assert_eq!(rows, vec![Vec::<usize>::new()]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LeapfrogTriejoin::join_for_each: 1 indexes for a query that reads 2"
+    )]
+    fn join_for_each_panics_when_an_index_is_missing() {
+        let r: TreeTrie = TreeTrie::from_tuples(2.into(), vec![vec![1, 2]]);
+        let query: JoinQuery = "Q(X, Y, Z) :- R(X, Y), S(Y, Z).".parse().unwrap();
+        let plan = QueryPlan {
+            variable_ordering: vec![0, 1, 2],
+        };
+        let executed = ExecutedQuery::new(query, plan).unwrap();
+        LeapfrogTriejoin::join_for_each(&executed, &[r], |_| {});
     }
 
     /// A trie iterator that panics if it is opened at its end, below its

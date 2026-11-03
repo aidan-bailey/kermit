@@ -3,6 +3,7 @@
 
 use {
     super::{
+        cell::KERMIT_SYSTEM,
         measure::{CriterionSettings, Described, MeasureRequest, RelationSubject},
         Metric,
     },
@@ -19,6 +20,19 @@ use {
     kermit_ds::IndexStructure,
     std::{collections::BTreeMap, fs, io, path::Path},
 };
+
+/// `bench ds` measures one relation, which has no join to materialize: it
+/// refuses the `materialize` metric before anything is read.
+///
+/// # Errors
+///
+/// If `metrics` contains [`Metric::Materialize`].
+pub(crate) fn refuse_materialize(metrics: &[Metric]) -> anyhow::Result<()> {
+    if metrics.contains(&Metric::Materialize) {
+        anyhow::bail!("bench ds has no join, so it cannot measure materialize");
+    }
+    Ok(())
+}
 
 /// Benchmarks one index structure over one relation file.
 ///
@@ -80,6 +94,7 @@ fn run_ds_bench<F: RelationFamily>(
     write_metadata_block(&mut io::stderr(), "bench ds metadata", &metadata)?;
 
     let mut axes = BTreeMap::from([
+        ("system".to_string(), serde_json::json!(KERMIT_SYSTEM)),
         ("data_structure".to_string(), serde_json::json!(ds_name)),
         (
             "relation_path".to_string(),
@@ -194,5 +209,28 @@ pub(crate) fn dispatch_ds_bench(
             group_name,
             criterion,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bench_ds_refuses_the_materialize_metric_and_only_that() {
+        let message = refuse_materialize(&[Metric::Build, Metric::Materialize])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            "bench ds has no join, so it cannot measure materialize"
+        );
+        refuse_materialize(&[
+            Metric::Build,
+            Metric::Iteration,
+            Metric::Space,
+            Metric::EndToEnd,
+        ])
+        .unwrap();
     }
 }

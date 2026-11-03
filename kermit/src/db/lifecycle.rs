@@ -8,12 +8,12 @@ use {
     super::{validate_query, Catalog, JoinError},
     kermit_algos::{
         canonical_names, distinct_per_column, extract_accesses, plan_indexes, rewrite_placeholders,
-        Access, CatalogStats, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner, QueryPlan,
-        RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
+        Access, CatalogStats, ExecutedQuery, IndexPlan, IndexSpec, JoinAlgo, JoinQuery, Planner,
+        QueryPlan, RelationStats, StatisticsLevel, ACCESS_PREFIX, INDEX_ID_PREFIX,
     },
     kermit_ds::{Relation, RelationHeader, TrieLevels, TupleView, Tuples},
     kermit_iters::JoinIterable,
-    std::collections::{BTreeMap, HashMap},
+    std::collections::BTreeMap,
 };
 
 /// What a [`Prepared`] expects of the catalog it is used with: `prepare`
@@ -31,13 +31,14 @@ const CATALOG_HOLDS: &str =
 /// borrows nothing, and is meant for the catalog it was prepared over.
 #[derive(Clone, Debug)]
 pub struct Prepared {
-    query: JoinQuery,
-    plan: QueryPlan,
+    executed: ExecutedQuery,
     indexes: Vec<IndexSpec>,
     /// The rows `indexes[id]`'s view admits, counted by `prepare`.
     index_rows: Vec<usize>,
     checks: Vec<Access>,
     head_len: usize,
+    /// The executed query's variable count, computed once by `prepare`.
+    assignment_width: usize,
     /// The policy the index specs were planned under (#116).
     levels: TrieLevels,
 }
@@ -45,10 +46,14 @@ pub struct Prepared {
 impl Prepared {
     /// The executed query: the head as written, and one atom `#<id>` per body
     /// atom that binds a variable.
-    pub fn query(&self) -> &JoinQuery { &self.query }
+    pub fn query(&self) -> &JoinQuery { self.executed.query() }
 
     /// The plan for [`query`](Self::query); it validates against it.
-    pub fn plan(&self) -> &QueryPlan { &self.plan }
+    pub fn plan(&self) -> &QueryPlan { self.executed.plan() }
+
+    /// The executed query, with its analysis and plan: what
+    /// [`execute`] hands the join.
+    pub fn executed(&self) -> &ExecutedQuery { &self.executed }
 
     /// The indexes the query reads, `indexes()[id]` being `#<id>`. Identical
     /// specs are merged, so an atom list that reads one relation one way
@@ -67,6 +72,16 @@ impl Prepared {
     /// that `execute` lends to its sink.
     pub fn head_len(&self) -> usize { self.head_len }
 
+    /// The executed query's variable count: the width of the rows
+    /// [`execute_assignments`] lends, whose column `i` is the variable
+    /// `canonical_names(self.query())[i]`. The head's variables come first, so
+    /// this is at least [`head_len`](Self::head_len), and it exceeds it by the
+    /// body-only variables (the fresh `K<n>` of each `_` included). A query of
+    /// checks has none.
+    ///
+    /// Computed once, in [`prepare`], from the executed query.
+    pub fn assignment_width(&self) -> usize { self.assignment_width }
+
     /// The trie-level policy [`prepare`] planned the index specs under: the
     /// policy of the structure the query is meant to be built as (#116).
     pub fn trie_levels(&self) -> TrieLevels { self.levels }
@@ -76,8 +91,9 @@ impl Prepared {
     /// the whole plan, since [`plan_indexes`] derives every index spec and the
     /// executed query from it. Reports record it as the `plan` axis.
     pub fn variable_order(&self) -> Vec<String> {
-        let names = canonical_names(&self.query);
-        self.plan
+        let names = canonical_names(self.executed.query());
+        self.executed
+            .plan()
             .variable_ordering
             .iter()
             .map(|&variable| names[variable].clone())
@@ -94,7 +110,7 @@ impl Prepared {
     /// so [`execute`], which reads a `Prepared` in the timed region, sees no
     /// new field.
     pub fn answer_header(&self) -> RelationHeader {
-        let head = &self.query.head;
+        let head = &self.executed.query().head;
         RelationHeader::new(
             &head.name,
             head.terms.iter().map(ToString::to_string).collect(),
@@ -174,7 +190,6 @@ pub fn prepare(
 
     let IndexPlan {
         query: executed,
-        plan,
         indexes,
     } = plan_indexes(&access_query, &ordering, levels);
 
@@ -190,13 +205,15 @@ pub fn prepare(
         .map(|spec| spec.view(tuples_of(catalog, &spec.relation)).count())
         .collect();
 
+    let assignment_width = canonical_names(executed.query()).len();
+
     Ok(Prepared {
-        query: executed,
-        plan,
+        executed,
         indexes,
         index_rows,
         checks: access_query.checks,
         head_len: query.head.terms.len(),
+        assignment_width,
         levels,
     })
 }
@@ -290,6 +307,33 @@ impl<R> Indexes<R> {
     pub fn rows(&self) -> usize { self.rows }
 }
 
+/// How many times `execute` emits each answer, decided by the constant checks
+/// alone: 1 with no checks; 0 when any check's view counts no row; otherwise
+/// the product of the checks' counts, each clamped to 1 unless
+/// `keeps_duplicates` ([`Relation::KEEPS_DUPLICATES`]: a structure that keeps
+/// duplicates answers once per row, one that does not answers once). It reads
+/// the catalog only, so an engine that builds no [`Indexes`] applies the same
+/// rule, and [`build_with`] calls it with its structure's flag.
+///
+/// # Panics
+///
+/// If `prepared` was made over another catalog and a relation a check reads
+/// is missing.
+pub fn check_multiplicity(catalog: &Catalog, prepared: &Prepared, keeps_duplicates: bool) -> usize {
+    let mut multiplicity = 1usize;
+    for check in &prepared.checks {
+        let tuples = tuples_of(catalog, &check.relation);
+        let count = TupleView::new(tuples, check.filter.clone(), Vec::new()).count();
+        let copies = if keeps_duplicates {
+            count
+        } else {
+            count.min(1)
+        };
+        multiplicity = multiplicity.saturating_mul(copies);
+    }
+    multiplicity
+}
+
 /// Builds the indexes of `prepared` from `catalog`, constructing each with
 /// `construct`: the timed build.
 ///
@@ -320,20 +364,8 @@ pub fn build_with<R: Relation>(
         prepared.levels,
         R::TRIE_LEVELS,
     );
-    // A check keeps no column: it only counts the rows its filter admits. A
-    // structure that keeps duplicates answers once per row; one that does
-    // not answers once.
-    let mut multiplicity = 1usize;
-    for check in &prepared.checks {
-        let tuples = tuples_of(catalog, &check.relation);
-        let count = TupleView::new(tuples, check.filter.clone(), Vec::new()).count();
-        let copies = if R::KEEPS_DUPLICATES {
-            count
-        } else {
-            count.min(1)
-        };
-        multiplicity = multiplicity.saturating_mul(copies);
-    }
+    // A check keeps no column: it only counts the rows its filter admits.
+    let multiplicity = check_multiplicity(catalog, prepared, R::KEEPS_DUPLICATES);
 
     let relations: Vec<R> = prepared
         .indexes
@@ -372,9 +404,10 @@ pub fn build<R: Relation>(catalog: &Catalog, prepared: &Prepared) -> Indexes<R> 
 /// [`head_len`](Prepared::head_len) values (bag semantics: nothing is
 /// deduplicated). The head is emitted once per unit of
 /// [`multiplicity`](Indexes::multiplicity), so a check that holds nowhere emits
-/// nothing. When every atom was a check there is nothing to join, and the empty
-/// head row is emitted `multiplicity` times (validation makes the head empty
-/// then, since it binds every head variable in an atom).
+/// nothing. When every atom was a check the executed query has no atom, and
+/// the join's one answer, the empty row, is emitted `multiplicity` times
+/// (validation makes the head empty then, since it binds every head variable
+/// in an atom).
 ///
 /// Nothing is collected here. A lazy `HashTrie` builds the children a join
 /// reaches, through `&self`, so its heap size grows with each run: measure
@@ -384,8 +417,47 @@ pub fn build<R: Relation>(catalog: &Catalog, prepared: &Prepared) -> Indexes<R> 
 ///
 /// In debug builds, if `indexes` were not built from `prepared` (their specs
 /// differ).
-pub fn execute<R, JA>(prepared: &Prepared, indexes: &Indexes<R>, mut emit: impl FnMut(&[usize]))
+pub fn execute<R, JA>(prepared: &Prepared, indexes: &Indexes<R>, emit: impl FnMut(&[usize]))
 where
+    R: JoinIterable,
+    JA: JoinAlgo<R>,
+{
+    execute_prefix::<R, JA>(prepared, indexes, prepared.head_len, emit);
+}
+
+/// [`execute`], lending every variable of the executed query instead of the
+/// head: each row is [`assignment_width`](Prepared::assignment_width) values
+/// in the executed query's canonical order (column `i` is
+/// `canonical_names(prepared.query())[i]`, the head's variables first), the
+/// order the executors emit. It slices no head, and applies
+/// [`multiplicity`](Indexes::multiplicity) as `execute` does: a check that
+/// holds nowhere emits nothing, and a query of checks emits the empty row
+/// `multiplicity` times. Nothing is collected here; the `materialize` metric
+/// pushes the rows into a `Tuples`.
+///
+/// # Panics
+///
+/// As [`execute`].
+pub fn execute_assignments<R, JA>(
+    prepared: &Prepared, indexes: &Indexes<R>, emit: impl FnMut(&[usize]),
+) where
+    R: JoinIterable,
+    JA: JoinAlgo<R>,
+{
+    execute_prefix::<R, JA>(prepared, indexes, prepared.assignment_width(), emit);
+}
+
+/// The one body of [`execute`] and [`execute_assignments`]: the join, lending
+/// the first `lent` values of each row, `multiplicity` times. The executors
+/// emit every variable of the query they run in its canonical order
+/// (`canonical_names(prepared.query())`), and `analyse` numbers the head's
+/// variables `0..head_len` in head order, so the head is each row's prefix, and
+/// the whole row is its first `assignment_width` values. Lending a prefix
+/// allocates nothing.
+#[inline]
+fn execute_prefix<R, JA>(
+    prepared: &Prepared, indexes: &Indexes<R>, lent: usize, mut emit: impl FnMut(&[usize]),
+) where
     R: JoinIterable,
     JA: JoinAlgo<R>,
 {
@@ -397,38 +469,32 @@ where
     if multiplicity == 0 {
         return;
     }
-    if prepared.query.body.is_empty() {
-        debug_assert_eq!(prepared.head_len, 0, "a query of checks has an empty head");
+    JA::join_for_each(&prepared.executed, &indexes.relations, |row| {
+        let lent_row = &row[..lent];
         for _ in 0..multiplicity {
-            emit(&[]);
-        }
-        return;
-    }
-
-    let ds_map: HashMap<String, &R> = prepared
-        .query
-        .body
-        .iter()
-        .map(|atom| {
-            let index = indexes.get(&atom.name);
-            (
-                atom.name.clone(),
-                index.expect("the executed query names only built indexes"),
-            )
-        })
-        .collect();
-
-    // The executors emit every variable of the query they run in canonical
-    // order, and `analyse` numbers the head's variables `0..head_len` in
-    // head order, so the head is each row's prefix. Lending it allocates
-    // nothing.
-    let head_len = prepared.head_len;
-    JA::join_for_each(&prepared.plan, prepared.query.clone(), ds_map, |row| {
-        let head = &row[..head_len];
-        for _ in 0..multiplicity {
-            emit(head);
+            emit(lent_row);
         }
     });
+}
+
+/// Sorts `rows` (`Tuples::sort`, the sort both sorted tries build with) and
+/// counts the adjacent-distinct rows, returning the sorted batch and the count.
+/// The `materialize` metric of kermit's cells and of DuckDB both end here, so
+/// the sort costs the same everywhere; the batch is returned so that the
+/// caller frees it after its timer stops. Over the full assignments of
+/// duplicate-free inputs nothing is removed by the count, and the sort is the
+/// cost a deduplicating result trie pays.
+pub fn materialize_count(mut rows: Tuples) -> (Tuples, u64) {
+    rows.sort();
+    let mut distinct = 0u64;
+    let mut previous: Option<&[usize]> = None;
+    for row in rows.rows() {
+        if previous != Some(row) {
+            distinct += 1;
+        }
+        previous = Some(row);
+    }
+    (rows, distinct)
 }
 
 #[cfg(test)]
@@ -1149,6 +1215,202 @@ mod tests {
         let mut absent = parse("Q(X) :- s(c7, c9).");
         absent.head.terms.clear();
         assert!(join_with::<HashTrie, HashTriejoin>(&c, &absent, &lexicographic()).is_empty());
+    }
+
+    /// The sorted full assignments of `query` (planned in canonical order) as
+    /// `R` through `JA`, each row `assignment_width` values wide.
+    fn assignments_with<R: Relation, JA: JoinAlgo<R>>(
+        catalog: &Catalog, query: &JoinQuery,
+    ) -> Vec<Vec<usize>> {
+        let prepared =
+            prepare(catalog, query, &lexicographic(), R::TRIE_LEVELS).expect("a valid query");
+        let indexes = build::<R>(catalog, &prepared);
+        let mut rows = Vec::new();
+        execute_assignments::<R, JA>(&prepared, &indexes, |row| {
+            assert_eq!(row.len(), prepared.assignment_width());
+            rows.push(row.to_vec());
+        });
+        rows.sort();
+        rows
+    }
+
+    /// A head of `X` leaves `Y` (named, or a rewritten `_`) out of `execute`'s
+    /// rows; `execute_assignments` lends it, after the head's variables.
+    #[test]
+    fn execute_assignments_lends_every_variable_where_execute_lends_the_head() {
+        let c = catalog(vec![("r", 2, vec![vec![1, 2], vec![1, 3], vec![2, 4]])]);
+        let want = vec![vec![1, 2], vec![1, 3], vec![2, 4]];
+        for text in [
+            "Q(X) :- r(X, Y).",
+            "Q(X) :- r(X, _).",
+            "Q(X, Y) :- r(X, Y).",
+        ] {
+            let query = parse(text);
+            assert_eq!(prepared_for(&c, text).assignment_width(), 2, "{text}");
+            assert_eq!(
+                assignments_with::<TreeTrie, LeapfrogTriejoin>(&c, &query),
+                want,
+                "{text}"
+            );
+            assert_eq!(
+                assignments_with::<HashTrie, HashTriejoin>(&c, &query),
+                want,
+                "{text}"
+            );
+        }
+        // `execute` still lends the head alone.
+        let narrow = "Q(X) :- r(X, Y).";
+        assert_eq!(prepared_for(&c, narrow).head_len(), 1);
+        assert_eq!(
+            join_with::<TreeTrie, LeapfrogTriejoin>(&c, &parse(narrow), &lexicographic()),
+            vec![vec![1], vec![1], vec![2]]
+        );
+    }
+
+    #[test]
+    fn the_assignment_width_is_the_executed_querys_variable_count() {
+        let c = catalog(vec![("r", 2, vec![vec![1, 2]]), ("s", 2, vec![vec![2, 3]])]);
+        assert_eq!(
+            prepared_for(&c, "Q(X) :- r(X, Y), s(Y, Z).").assignment_width(),
+            3
+        );
+        assert_eq!(
+            prepared_for(&c, "Q(X, Y, Z) :- r(X, Y), s(Y, Z).").assignment_width(),
+            3
+        );
+        // A constant is no variable, and a repeated variable counts once.
+        assert_eq!(
+            prepared_for(&c, "Q(X) :- r(X, X), s(c2, c3).").assignment_width(),
+            1
+        );
+    }
+
+    /// Multiplicity applies to assignments as to head rows: hash tries answer
+    /// once per copy of an all-constant atom's row, sorted tries once, and a
+    /// check that holds nowhere leaves nothing.
+    #[test]
+    fn execute_assignments_applies_the_multiplicity_of_the_checks() {
+        let c = catalog(vec![
+            ("r", 2, vec![vec![1, 2], vec![2, 3]]),
+            ("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]]),
+        ]);
+        let query = parse("Q(X) :- r(X, Y), s(c7, c8).");
+        assert_eq!(
+            assignments_with::<TreeTrie, LeapfrogTriejoin>(&c, &query),
+            vec![vec![1, 2], vec![2, 3]]
+        );
+        assert_eq!(
+            assignments_with::<HashTrie, HashTriejoin>(&c, &query),
+            vec![vec![1, 2], vec![1, 2], vec![2, 3], vec![2, 3]]
+        );
+        let absent = parse("Q(X) :- r(X, Y), s(c7, c9).");
+        assert!(assignments_with::<TreeTrie, LeapfrogTriejoin>(&c, &absent).is_empty());
+        assert!(assignments_with::<HashTrie, HashTriejoin>(&c, &absent).is_empty());
+    }
+
+    /// When every atom is a check there is no variable to lend: the empty row
+    /// is emitted once per unit of multiplicity.
+    #[test]
+    fn execute_assignments_of_a_query_of_checks_emits_the_empty_row_per_multiplicity() {
+        let c = catalog(vec![("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]])]);
+        let mut query = parse("Q(X) :- s(c7, c8).");
+        query.head.terms.clear();
+        let prepared =
+            prepare(&c, &query, &lexicographic(), TrieLevels::All).expect("a valid query");
+        assert_eq!(prepared.assignment_width(), 0);
+        assert_eq!(
+            assignments_with::<TreeTrie, LeapfrogTriejoin>(&c, &query),
+            vec![Vec::<usize>::new()]
+        );
+        assert_eq!(
+            assignments_with::<HashTrie, HashTriejoin>(&c, &query),
+            vec![Vec::<usize>::new(); 2]
+        );
+    }
+
+    /// The factored rule is the one `build_with` applied inline: one unit per
+    /// check unless the structure keeps duplicates, then the check's own
+    /// count, and zero when a check admits no row.
+    #[test]
+    fn check_multiplicity_is_the_rule_the_build_applies() {
+        let c = catalog(vec![
+            ("r", 1, vec![vec![1], vec![2]]),
+            ("s", 2, vec![vec![7, 8], vec![7, 8], vec![9, 9]]),
+            ("t", 1, vec![vec![5], vec![5], vec![5]]),
+        ]);
+        let multiplicity = |text: &str, keeps_duplicates: bool| {
+            check_multiplicity(&c, &prepared_for(&c, text), keeps_duplicates)
+        };
+        assert_eq!(multiplicity("Q(X) :- r(X).", false), 1);
+        assert_eq!(multiplicity("Q(X) :- r(X).", true), 1);
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8).", false), 1);
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8).", true), 2);
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8), t(c5).", false), 1);
+        assert_eq!(multiplicity("Q(X) :- r(X), s(c7, c8), t(c5).", true), 6);
+        let nowhere = "Q(X) :- r(X), s(c7, c8), s(c7, c9).";
+        assert_eq!(multiplicity(nowhere, false), 0);
+        assert_eq!(multiplicity(nowhere, true), 0);
+
+        // `build` still takes it, per structure.
+        let prepared = prepared_for(&c, "Q(X) :- r(X), s(c7, c8), t(c5).");
+        assert_eq!(
+            build::<TreeTrie>(&c, &prepared).multiplicity(),
+            check_multiplicity(&c, &prepared, <TreeTrie as Relation>::KEEPS_DUPLICATES)
+        );
+        assert_eq!(
+            build::<HashTrie>(&c, &prepared).multiplicity(),
+            check_multiplicity(&c, &prepared, <HashTrie as Relation>::KEEPS_DUPLICATES)
+        );
+    }
+
+    /// A batch of `arity`-ary rows.
+    fn rows_of(arity: usize, rows: &[&[usize]]) -> Tuples {
+        let mut batch = Tuples::new(arity);
+        for row in rows {
+            batch.push(row);
+        }
+        batch
+    }
+
+    #[test]
+    fn materialize_count_sorts_the_rows_and_counts_the_distinct_ones() {
+        let (sorted, distinct) =
+            materialize_count(rows_of(2, &[&[2, 1], &[1, 2], &[2, 1], &[1, 1]]));
+        assert_eq!(sorted.to_vecs(), vec![
+            vec![1, 1],
+            vec![1, 2],
+            vec![2, 1],
+            vec![2, 1]
+        ]);
+        assert_eq!(distinct, 3, "the duplicate row counts once");
+    }
+
+    #[test]
+    fn materialize_count_of_no_rows_is_zero_and_keeps_the_arity() {
+        let (sorted, distinct) = materialize_count(Tuples::new(3));
+        assert_eq!((sorted.len(), sorted.arity(), distinct), (0, 3, 0));
+    }
+
+    /// Arity 0 has nothing to order, and every row is the empty row.
+    #[test]
+    fn materialize_count_of_empty_rows_is_one() {
+        let (sorted, distinct) = materialize_count(rows_of(0, &[&[], &[], &[]]));
+        assert_eq!((sorted.len(), distinct), (3, 1));
+    }
+
+    /// Rows wider than four sort by a permutation of row ids, not as arrays.
+    #[test]
+    fn materialize_count_sorts_wide_rows() {
+        let (sorted, distinct) =
+            materialize_count(rows_of(5, &[&[1, 2, 3, 4, 5], &[0, 9, 9, 9, 9], &[
+                1, 2, 3, 4, 5,
+            ]]));
+        assert_eq!(sorted.to_vecs(), vec![
+            vec![0, 9, 9, 9, 9],
+            vec![1, 2, 3, 4, 5],
+            vec![1, 2, 3, 4, 5]
+        ]);
+        assert_eq!(distinct, 2);
     }
 
     #[test]
