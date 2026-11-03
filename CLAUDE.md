@@ -52,7 +52,7 @@ cargo run -- bench run triangle -i hash-index -a binary-hash-join  # The binary 
 cargo run -- bench run --all -i all -a all                         # Every benchmark × the 4 valid (structure, algorithm) cells; incompatible pairs are skipped with a stderr note
 cargo run -- bench run watdiv-example -i tree-trie -a leapfrog-triejoin --force  # Force-regenerate a generator-driven benchmark
 cargo run -- bench probe triangle -i all -a all                     # Screen a benchmark without Criterion: verify, one timed build and run, exact space
-cargo run -p kermit --features engine-duckdb,engine-nemo -- bench run triangle -i all -a all --engine duckdb,nemo --metrics build iteration space materialize end-to-end --verify  # External engines beside the three cells (features off by default; the dev shell links Nix's libduckdb)
+cargo run -p kermit --features engine-duckdb,engine-nemo -- bench run triangle -i all -a all --engine duckdb,nemo --metrics build iteration space materialize end-to-end --verify  # External engines beside the four cells (features off by default; the dev shell links Nix's libduckdb)
 cargo run -p kermit --features engine-duckdb,engine-nemo -- bench probe triangle -i all -a all --engine duckdb,nemo --materialize  # Screen engines too, and the opt-in materialize metric (single run)
 cargo run -- bench gen watdiv --scale 100 --tag dev                # Generate WatDiv benchmark on the fly (imperative)
 cargo run -- bench gen lubm --scale 1 --tag dev                    # Generate LUBM benchmark on the fly (imperative)
@@ -171,7 +171,7 @@ kermit          → CLI binary (clap). Subcommands: join, bench (join|ds|run|lis
                   on kermit's own prepared queries: the `Engine` trait, the shared SQL translator
                   (`engine/sql.rs`), DuckDB (`engine/duckdb.rs`, feature `engine-duckdb`) and
                   Nemo (`engine/nemo.rs`, feature `engine-nemo`). Both features are off by
-                  default; `bench/engine.rs` wraps an engine as a `Cell` beside the three
+                  default; `bench/engine.rs` wraps an engine as a `Cell` beside the four
                   structure cells (`--engine`).
 ```
 

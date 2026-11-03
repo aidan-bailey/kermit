@@ -97,8 +97,9 @@ pub(crate) fn execution_segment(cell: Execution) -> String {
 }
 
 /// A kermit structure under its join algorithm: a sorted trie under Leapfrog
-/// Triejoin (`TrieLftj<R>`) or the hash trie under Hash Triejoin
-/// (`HashHtj<H, P, E, L>`). The report's `data_structure` / `algorithm` axes
+/// Triejoin (`TrieLftj<R>`), the hash trie under Hash Triejoin
+/// (`HashHtj<H, P, E, L>`) or the hash index under the binary hash join
+/// (`IndexBhj<H>`). The report's `data_structure` / `algorithm` axes
 /// come from `family.execution()`, the same value that picked the code path,
 /// so a report can never name an algorithm it did not run (issue #56).
 pub(crate) struct FamilyCell<'f, F: ExecutionFamily>(pub(crate) &'f F);
@@ -195,6 +196,7 @@ mod tests {
             (IndexStructure::TreeTrie, "TreeTrie/LeapfrogTriejoin"),
             (IndexStructure::ColumnTrie, "ColumnTrie/LeapfrogTriejoin"),
             (IndexStructure::HashTrie, "HashTrie/HashTriejoin"),
+            (IndexStructure::HashIndex, "HashIndex/BinaryHashJoin"),
         ] {
             let cell = Execution::for_structure(structure, DsChoices::default());
             assert_eq!(execution_segment(cell), segment);

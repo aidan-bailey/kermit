@@ -1257,6 +1257,11 @@ mod tests {
                 want,
                 "{text}"
             );
+            assert_eq!(
+                assignments_with::<HashIndex, BinaryHashJoin>(&c, &query),
+                want,
+                "{text}"
+            );
         }
         // `execute` still lends the head alone.
         let narrow = "Q(X) :- r(X, Y).";
@@ -1303,9 +1308,14 @@ mod tests {
             assignments_with::<HashTrie, HashTriejoin>(&c, &query),
             vec![vec![1, 2], vec![1, 2], vec![2, 3], vec![2, 3]]
         );
+        assert_eq!(
+            assignments_with::<HashIndex, BinaryHashJoin>(&c, &query),
+            vec![vec![1, 2], vec![1, 2], vec![2, 3], vec![2, 3]]
+        );
         let absent = parse("Q(X) :- r(X, Y), s(c7, c9).");
         assert!(assignments_with::<TreeTrie, LeapfrogTriejoin>(&c, &absent).is_empty());
         assert!(assignments_with::<HashTrie, HashTriejoin>(&c, &absent).is_empty());
+        assert!(assignments_with::<HashIndex, BinaryHashJoin>(&c, &absent).is_empty());
     }
 
     /// When every atom is a check there is no variable to lend: the empty row
@@ -1324,6 +1334,10 @@ mod tests {
         );
         assert_eq!(
             assignments_with::<HashTrie, HashTriejoin>(&c, &query),
+            vec![Vec::<usize>::new(); 2]
+        );
+        assert_eq!(
+            assignments_with::<HashIndex, BinaryHashJoin>(&c, &query),
             vec![Vec::<usize>::new(); 2]
         );
     }
