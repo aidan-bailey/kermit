@@ -101,7 +101,7 @@ The consequence is that each fork propagates up every layer of the stack, and ea
 
 The keyed family has the same layers, with no iterator type of its own:
 
-- **Structure** `HashIndex<H>`; **algorithm** `BinaryHashJoin`; **`Projectable`** hand-rolled on `HashIndex` (it rebuilds from `scan`, keyed on every projected column).
+- **Structure** `HashIndex<H>`; **algorithm** `BinaryHashJoin`; **`Projectable`** hand-rolled on `HashIndex` (it rebuilds through a `TupleView` of its rows, keyed on every projected column).
 - **Engine** `binary_join_for_each` / `binary_join` free functions over a `Catalog`, building `HashIndex<H>` indexes per query, over the same `prepare` / `build` / `execute` lifecycle.
 - **Bench cell** `Execution::IndexBhj { hasher }` / `IndexBhj<H>` (`JOIN_MUTATES = false`, since a probe changes nothing).
 - **`bench run` dispatch** the same generic `run_benchmark<C>`, the cell wrapped in a `FamilyCell`; **`bench ds` dispatch** the same `run_ds_bench<F>`, over `HashIndexFamily<H>`.

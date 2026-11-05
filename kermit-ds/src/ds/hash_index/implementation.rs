@@ -8,8 +8,8 @@ use {
         relation::{check_view_arity, Projectable, Relation, RelationHeader},
     },
     kermit_iters::{
-        HasOptimizationAxes, HashStrategy, JoinIterable, LayoutOption, RowId, SipHashStrategy,
-        TrieLevels, TupleView, Tuples,
+        Filter, HasOptimizationAxes, HashStrategy, JoinIterable, LayoutOption, RowId,
+        SipHashStrategy, TrieLevels, TupleView, Tuples,
     },
     serde_json::Value,
     std::{collections::BTreeMap, marker::PhantomData},
@@ -253,9 +253,10 @@ impl<H: HashStrategy> Relation for HashIndex<H> {
 }
 
 impl<H: HashStrategy> Projectable for HashIndex<H> {
-    /// Rebuilds from the stored rows (the rows `scan` lends) with only
-    /// `columns`, in the order given, under a nameless header; the new index
-    /// is keyed on every projected column.
+    /// Rebuilds from the stored rows (the rows `scan` lends) read through a
+    /// view of only `columns`, in the order given, so they are copied once,
+    /// under a nameless header; the new index is keyed on every projected
+    /// column.
     ///
     /// # Panics
     ///
@@ -275,15 +276,7 @@ impl<H: HashStrategy> Projectable for HashIndex<H> {
         } else {
             RelationHeader::new_nameless(attrs)
         };
-
-        let mut projected = Tuples::with_capacity(columns.len(), self.rows.len());
-        let mut row = Vec::with_capacity(columns.len());
-        for tuple in self.rows.rows() {
-            row.clear();
-            row.extend(columns.iter().map(|&column| tuple[column]));
-            projected.push(&row);
-        }
-        Self::from_tuples(header, projected)
+        Self::from_view(header, TupleView::new(&self.rows, Filter::none(), columns))
     }
 }
 
