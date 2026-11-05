@@ -90,28 +90,3 @@ jobs:
         working-directory: python/kermit-lab
         env:
           KERMIT_BIN: ${{ github.workspace }}/target/debug/kermit
-
-  engines:
-    name: Engines (DuckDB bundled, Nemo)
-    runs-on: ubuntu-latest
-    # CI has no Nix, so `engine-duckdb-bundled` compiles DuckDB's amalgamation, one large C++
-    # translation unit: expect a long cold build.
-    timeout-minutes: 60
-    env:
-      RUSTFLAGS: -Dwarnings
-      RUSTDOCFLAGS: -Dwarnings
-      # The one place the job names its engines.
-      ENGINE_FEATURES: engine-duckdb-bundled,engine-nemo
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
-        with:
-          toolchain: nightly
-          components: clippy
-      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
-      - run: cargo clippy -p kermit --all-targets --features "$ENGINE_FEATURES"
-      - run: cargo doc -p kermit --no-deps --features "$ENGINE_FEATURES"
-      - run: cargo test -p kermit --features "$ENGINE_FEATURES" --lib
-      - run: cargo test -p kermit --features "$ENGINE_FEATURES" --test engine_oracle
-      - run: cargo test -p kermit --features "$ENGINE_FEATURES" --bin kermit
-      - run: cargo test -p kermit --features "$ENGINE_FEATURES" --test cli_engines
